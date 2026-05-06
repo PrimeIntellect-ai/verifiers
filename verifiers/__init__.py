@@ -8,9 +8,14 @@ from typing import TYPE_CHECKING
 from .errors import *  # noqa # isort: skip
 from .types import *  # noqa # isort: skip
 from .decorators import (  # noqa # isort: skip
+    advantage,
     cleanup,
+    metric,
+    reward,
+    setup,
     stop,
     teardown,
+    update,
 )
 from .types import DatasetBuilder  # noqa # isort: skip
 from .parsers.parser import Parser  # noqa # isort: skip
@@ -56,6 +61,26 @@ __all__ = [
     "MCPEnv",
     "BrowserEnv",
     "OpenEnvEnv",
+    "Env",
+    "Task",
+    "Taskset",
+    "TasksetConfig",
+    "Harness",
+    "HarnessConfig",
+    "MCPTool",
+    "MCPToolConfig",
+    "SandboxConfig",
+    "Toolset",
+    "ToolsetConfig",
+    "User",
+    "UserConfig",
+    "HarborTaskset",
+    "HarborTasksetConfig",
+    "CLIHarness",
+    "MiniSWEAgent",
+    "OpenCode",
+    "Pi",
+    "RLM",
     "Environment",
     "MultiTurnEnv",
     "SingleTurnEnv",
@@ -67,8 +92,9 @@ __all__ = [
     "Client",
     "AnthropicMessagesClient",
     "OpenAIChatCompletionsClient",
-    "RendererClient",
     "OpenAICompletionsClient",
+    "OpenAIResponsesClient",
+    "RendererClient",
     "extract_boxed_answer",
     "extract_hash_answer",
     "load_example_dataset",
@@ -78,8 +104,13 @@ __all__ = [
     "load_environment",
     "print_prompt_completions_sample",
     "cleanup",
+    "metric",
+    "reward",
+    "advantage",
+    "setup",
     "stop",
     "teardown",
+    "update",
     "ensure_keys",
     "MissingKeyError",
     "get_model",
@@ -103,6 +134,9 @@ _LAZY_IMPORTS = {
     "RendererClient": ("verifiers.clients.renderer_client:RendererClient"),
     "OpenAICompletionsClient": (
         "verifiers.clients.openai_completions_client:OpenAICompletionsClient"
+    ),
+    "OpenAIResponsesClient": (
+        "verifiers.clients.openai_responses_client:OpenAIResponsesClient"
     ),
     "Environment": "verifiers.envs.environment:Environment",
     "MultiTurnEnv": "verifiers.envs.multiturn_env:MultiTurnEnv",
@@ -132,6 +166,26 @@ _LAZY_IMPORTS = {
     "TextArenaEnv": "verifiers.envs.integrations.textarena_env:TextArenaEnv",
     "BrowserEnv": "verifiers.envs.integrations.browser_env:BrowserEnv",
     "OpenEnvEnv": "verifiers.envs.integrations.openenv_env:OpenEnvEnv",
+    "Env": "verifiers.v1:Env",
+    "Task": "verifiers.v1:Task",
+    "Taskset": "verifiers.v1:Taskset",
+    "TasksetConfig": "verifiers.v1:TasksetConfig",
+    "Harness": "verifiers.v1:Harness",
+    "HarnessConfig": "verifiers.v1:HarnessConfig",
+    "MCPTool": "verifiers.v1:MCPTool",
+    "MCPToolConfig": "verifiers.v1:MCPToolConfig",
+    "SandboxConfig": "verifiers.v1:SandboxConfig",
+    "Toolset": "verifiers.v1:Toolset",
+    "ToolsetConfig": "verifiers.v1:ToolsetConfig",
+    "User": "verifiers.v1:User",
+    "UserConfig": "verifiers.v1:UserConfig",
+    "HarborTaskset": "verifiers.v1:HarborTaskset",
+    "HarborTasksetConfig": "verifiers.v1:HarborTasksetConfig",
+    "CLIHarness": "verifiers.v1:CLIHarness",
+    "MiniSWEAgent": "verifiers.v1:MiniSWEAgent",
+    "OpenCode": "verifiers.v1:OpenCode",
+    "Pi": "verifiers.v1:Pi",
+    "RLM": "verifiers.v1:RLM",
 }
 
 
@@ -156,6 +210,10 @@ def __getattr__(name: str):
             raise AttributeError(
                 f"To use verifiers.{name}, install as `verifiers-rl`."
             ) from e
+        if name == "RendererClient":
+            raise AttributeError(
+                "To use verifiers.RendererClient, install as `verifiers[renderers]`."
+            ) from e
         raise AttributeError(
             f"To use verifiers.{name}, install as `verifiers[all]`. "
         ) from e
@@ -170,6 +228,7 @@ if TYPE_CHECKING:
         OpenAIChatCompletionsClient,
     )
     from .clients.openai_completions_client import OpenAICompletionsClient  # noqa: F401
+    from .clients.openai_responses_client import OpenAIResponsesClient  # noqa: F401
     from .clients.renderer_client import RendererClient  # noqa: F401
     from .envs.env_group import EnvGroup  # noqa: F401
     from .envs.environment import Environment  # noqa: F401
@@ -191,6 +250,28 @@ if TYPE_CHECKING:
     from .rubrics.judge_rubric import JudgeRubric  # noqa: F401
     from .rubrics.math_rubric import MathRubric  # noqa: F401
     from .utils.env_utils import load_environment  # noqa: F401
+    from .v1 import (  # noqa: F401
+        Env,
+        Harness,
+        HarnessConfig,
+        MCPTool,
+        MCPToolConfig,
+        SandboxConfig,
+        HarborTaskset,
+        HarborTasksetConfig,
+        CLIHarness,
+        MiniSWEAgent,
+        OpenCode,
+        Pi,
+        RLM,
+        Task,
+        Taskset,
+        TasksetConfig,
+        Toolset,
+        ToolsetConfig,
+        User,
+        UserConfig,
+    )
 
     # Optional verifiers-rl exports. Keep type-checking clean when extra is absent.
     RLConfig: Any

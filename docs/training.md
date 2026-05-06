@@ -74,6 +74,36 @@ project = "alphabet-sort"
 name = "qwen3-30b-i-alphabet-sort"
 ```
 
+For v1 BYO Harness environments, put taskset/harness config under
+`args.config`:
+
+```toml
+model = "Qwen/Qwen3-30B-A3B-Instruct-2507"
+max_steps = 100
+batch_size = 256
+rollouts_per_example = 8
+
+[sampling]
+max_tokens = 4096
+
+[[env]]
+id = "primeintellect/my-v1-env"
+
+[env.args.config.harness]
+max_turns = 8
+
+[env.args.config.taskset.toolsets.search]
+tools = ["my_env.tools:search"]
+bindings = { "search.index" = "objects.index" }
+
+[[env.args.config.taskset.rewards]]
+fn = "my_env.signals:exact_answer"
+weight = 1.0
+```
+
+See [BYO Harness](byo-harness.md#toml-config) for the matching eval config
+shape and v1 callable/toolset patterns.
+
 We currently support the following models for Hosted Training:
 - `Qwen/Qwen3-4B-Instruct-2507` 
 - `Qwen/Qwen3-4B-Thinking-2507`
@@ -167,7 +197,7 @@ The rollout client's `client_type` controls how prompt assembly and token state 
 
 - **`openai_chat_completions`** (MITO, *messages-in*): standard OpenAI-compatible path. Server-side chat templating, returns text. The trainer re-tokenizes — fine for eval and short single-turn training, but can fragment multi-turn rollouts.
 - **`openai_chat_completions_token`** (TITO, *token-in*): server-side templating, but returns prompt and completion token IDs alongside text so the trainer doesn't re-tokenize. Use when you trust the server's chat template to be stable across turns.
-- **`renderer`** *(experimental)*: client-side tokenization via a per-model renderer in the [`renderers` package](https://github.com/PrimeIntellect-ai/verifiers/tree/main/packages/renderers). The trainer renders messages to token IDs locally and sends those to vLLM's `/v1/generate` endpoint. The renderer's `bridge_to_next_turn` extends prior-turn tokens verbatim across multi-turn boundaries (the *extension property*) and synthesizes the canonical turn-close on mid-completion truncation, so multi-turn rollouts merge into one training sample with one clean loss mask.
+- **`renderer`** *(experimental)*: client-side tokenization via a per-model renderer in the [`renderers` package](https://github.com/PrimeIntellect-ai/verifiers/tree/main/packages/renderers). Install it with `uv add "verifiers[renderers]"` before using `client_type="renderer"`. The trainer renders messages to token IDs locally and sends those to vLLM's `/v1/generate` endpoint. The renderer's `bridge_to_next_turn` extends prior-turn tokens verbatim across multi-turn boundaries (the *extension property*) and synthesizes the canonical turn-close on mid-completion truncation, so multi-turn rollouts merge into one training sample with one clean loss mask.
 
 For production RL training, use `openai_chat_completions_token` — it's the tried-and-tested path with broad model coverage. The `renderer` client is newer and offers stronger token-preservation guarantees in theory, but is experimental: hand-coded renderers exist only for a subset of models, and corner cases are still being shaken out. See [reference § Built-in Clients](reference.md#built-in-client-implementations) for the full list.
 

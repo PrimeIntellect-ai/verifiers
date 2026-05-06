@@ -4,7 +4,6 @@ from unittest.mock import patch
 import pytest
 
 import verifiers as vf
-from verifiers.errors import EmptyModelResponseError
 from renderers import RendererPool
 from renderers.base import ParsedResponse, create_renderer
 from verifiers.clients.renderer_client import (
@@ -15,6 +14,7 @@ from verifiers.clients.renderer_client import (
     _step_token_ids,
     _to_renderer_message,
 )
+from verifiers.errors import EmptyModelResponseError
 from verifiers.types import (
     AssistantMessage,
     SystemMessage,
@@ -152,16 +152,15 @@ async def test_renderer_client_rejects_empty_dict_native_response():
 
 
 @pytest.mark.asyncio
-async def test_from_native_response_propagates_id_model_created():
-    """vLLM /generate returns id/model/created at the top of the response;
-    completions_request must thread them through so Response.id, .model,
-    and .created don't fall back to empty defaults.
+async def test_from_native_response_uses_request_id_and_token_lengths():
+    """vLLM's /inference/v1/generate returns ``request_id`` (not ``id``) and
+    no ``usage``/``model``/``created``. ``Response.id`` should pick up
+    ``request_id``; usage is reconstructed from token-list lengths;
+    model/created are unused metadata.
     """
     client = object.__new__(RendererClient)
     response_dict = {
-        "id": "resp-42",
-        "model": "Qwen/Qwen3-8B",
-        "created": 1700000000,
+        "request_id": "resp-42",
         "content": "ok",
         "reasoning_content": None,
         "tool_calls": None,
@@ -169,14 +168,14 @@ async def test_from_native_response_propagates_id_model_created():
         "prompt_ids": [1, 2, 3],
         "completion_ids": [4, 5],
         "completion_logprobs": [-0.1, -0.2],
-        "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
         "routed_experts": None,
     }
 
     response = await client.from_native_response(response_dict)
     assert response.id == "resp-42"
-    assert response.model == "Qwen/Qwen3-8B"
-    assert response.created == 1700000000
+    assert response.usage.prompt_tokens == 3
+    assert response.usage.completion_tokens == 2
+    assert response.usage.total_tokens == 5
 
 
 class _BridgeRenderer:
@@ -477,17 +476,17 @@ def _build_truncated_state(tokenizer, renderer):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "model_name,renderer_name",
+    "model_id,renderer_id",
     _TRUNCATED_ANCHOR_MODELS,
 )
 async def test_get_incremental_prompt_ids_bridges_over_truncated_step(
-    model_name, renderer_name
+    model_id, renderer_id
 ):
     """The bridge anchors on the truncated step and returns new prompt_ids
     that start with prev_prompt + prev_completion byte-identically (the
     extension invariant). This is what keeps interleave_rollout from
     fragmenting the rollout into two samples."""
-    tokenizer, renderer = _load_tokenizer_and_renderer(model_name, renderer_name)
+    tokenizer, renderer = _load_tokenizer_and_renderer(model_id, renderer_id)
     prev_prompt_ids, prev_completion_ids, state, next_turn_prompt = (
         _build_truncated_state(tokenizer, renderer)
     )
@@ -497,13 +496,13 @@ async def test_get_incremental_prompt_ids_bridges_over_truncated_step(
     )
 
     prefix = list(prev_prompt_ids) + list(prev_completion_ids)
-    assert result is not None, f"{model_name}: bridge returned None on truncated anchor"
+    assert result is not None, f"{model_id}: bridge returned None on truncated anchor"
     assert result[: len(prefix)] == prefix, (
-        f"{model_name}: bridge result does not prefix-preserve "
+        f"{model_id}: bridge result does not prefix-preserve "
         f"prev_prompt + prev_completion"
     )
     assert len(result) > len(prefix), (
-        f"{model_name}: bridge produced no tail tokens for the new user turn"
+        f"{model_id}: bridge produced no tail tokens for the new user turn"
     )
 
 

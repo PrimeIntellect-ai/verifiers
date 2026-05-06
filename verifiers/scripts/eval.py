@@ -279,7 +279,7 @@ def build_parser() -> argparse.ArgumentParser:
         "-e",
         type=str,
         default=DEFAULT_ENDPOINTS_PATH,
-        help="Path to API endpoints registry (.toml preferred, .py supported)",
+        help="Path to API endpoints TOML registry",
     )
     parser.add_argument(
         "--model",
@@ -292,12 +292,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--api-client-type",
         type=str,
         default=None,
-        help="Which client type to use ('openai_completions', 'openai_chat_completions', 'renderer', 'anthropic_messages')",
+        help="Which client type to use ('openai_completions', 'openai_chat_completions', 'openai_chat_completions_token', 'openai_responses', 'renderer', 'anthropic_messages', 'nemorl_chat_completions')",
         choices=[
             "openai_completions",
             "openai_chat_completions",
+            "openai_chat_completions_token",
+            "openai_responses",
             "renderer",
             "anthropic_messages",
+            "nemorl_chat_completions",
         ],
     )
     parser.add_argument(
@@ -565,10 +568,6 @@ def main(argv: list[str] | None = None):
                 f"Using rollouts_per_example={rollouts_per_example} from {source}"
             )
 
-        # Resolve model and endpoint config
-        endpoints_path = raw.get("endpoints_path", DEFAULT_ENDPOINTS_PATH)
-        endpoints = load_endpoints(endpoints_path)
-
         raw_endpoint_id = raw.get("endpoint_id")
         raw_model_field = raw.get("model")
         if raw_endpoint_id is not None and raw_model_field is not None:
@@ -579,6 +578,7 @@ def main(argv: list[str] | None = None):
             raise ValueError("'endpoint_id' must be a string when provided.")
         if isinstance(raw_endpoint_id, str) and not raw_endpoint_id:
             raise ValueError("'endpoint_id' must be a non-empty string when provided.")
+        endpoints_path = raw.get("endpoints_path", DEFAULT_ENDPOINTS_PATH)
         resolved_endpoints_file = resolve_endpoints_file(str(endpoints_path))
         if raw_endpoint_id is not None and (
             resolved_endpoints_file is None or resolved_endpoints_file.suffix != ".toml"
@@ -608,6 +608,10 @@ def main(argv: list[str] | None = None):
         api_key_override = raw_api_key_var is not None
         api_base_url_override = raw_api_base_url is not None
         client_type_override = raw_client_type is not None
+        direct_endpoint_config = (
+            raw_endpoint_id is None and api_key_override and api_base_url_override
+        )
+        endpoints = {} if direct_endpoint_config else load_endpoints(endpoints_path)
         endpoint_group: list[Endpoint] | None = None
         resolved_endpoint_id: str | None = None
 

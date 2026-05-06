@@ -1,6 +1,6 @@
 # Environments
 
-This guide walks through building environments in Verifiers, from simple single-turn tasks to complex multi-turn agents with tools. See [Overview](overview.md) for how to initialize a new environment template.
+This guide walks through building environments in Verifiers, from simple single-turn tasks to complex multi-turn agents with tools. See [Overview](overview.md) for how to initialize a new environment template. For composable taskset/harness environments, see [BYO Harness](byo-harness.md).
 
 ## Table of Contents
 
@@ -785,7 +785,9 @@ combined = vf.EnvGroup(
 )
 ```
 
-The group concatenates all sub-environment datasets, tagging each row with a `task` column that routes rollouts to the appropriate environment for generation and scoring. Metrics from all environments are tracked together.
+The group concatenates all sub-environment datasets and injects
+`info["env_id"]` as internal routing metadata. It is not a top-level input,
+state, or output field. Metrics from all environments are tracked together.
 
 ## Performance
 

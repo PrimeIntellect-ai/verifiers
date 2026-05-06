@@ -16,6 +16,10 @@ from verifiers.utils.eval_utils import load_toml_config
 from verifiers.utils.save_utils import states_to_outputs
 
 
+def fail_load_endpoints(*_: object) -> dict:
+    raise AssertionError("load_endpoints should not be called")
+
+
 @pytest.fixture
 def run_cli(make_metadata, make_state, make_input):
     def _run_cli(
@@ -23,6 +27,7 @@ def run_cli(make_metadata, make_state, make_input):
         overrides,
         capture_all_configs: bool = False,
         endpoints: dict | None = None,
+        fail_on_load_endpoints: bool = False,
     ):
         """Run CLI with mocked arguments and capture config(s).
 
@@ -76,7 +81,10 @@ def run_cli(make_metadata, make_state, make_input):
             lambda self: args_namespace,
         )
         monkeypatch.setattr(vf_eval, "setup_logging", lambda *_, **__: None)
-        monkeypatch.setattr(vf_eval, "load_endpoints", lambda *_: endpoints or {})
+        if fail_on_load_endpoints:
+            monkeypatch.setattr(vf_eval, "load_endpoints", fail_load_endpoints)
+        else:
+            monkeypatch.setattr(vf_eval, "load_endpoints", lambda *_: endpoints or {})
 
         async def fake_run_evaluation(config, **kwargs):
             captured["sampling_args"] = dict(config.sampling_args)
@@ -440,7 +448,7 @@ def test_cli_direct_fields_work_without_endpoint_registry(monkeypatch, run_cli):
             "api_key_var": "CUSTOM_API_KEY",
             "api_base_url": "https://custom.example/v1",
         },
-        endpoints={},
+        fail_on_load_endpoints=True,
     )
 
     config = captured["configs"][0]
@@ -448,6 +456,36 @@ def test_cli_direct_fields_work_without_endpoint_registry(monkeypatch, run_cli):
     assert config.model == "my/custom-model"
     assert config.client_config.api_key_var == "CUSTOM_API_KEY"
     assert config.client_config.api_base_url == "https://custom.example/v1"
+
+
+def test_cli_accepts_openai_responses_client_type(monkeypatch, run_cli):
+    captured = run_cli(
+        monkeypatch,
+        {
+            "model": "gpt-5.2",
+            "api_client_type": "openai_responses",
+            "api_key_var": "OPENAI_API_KEY",
+            "api_base_url": "https://api.openai.com/v1",
+        },
+    )
+
+    config = captured["configs"][0]
+    assert config.client_config.client_type == "openai_responses"
+
+
+def test_cli_accepts_nemorl_chat_completions_client_type(monkeypatch, run_cli):
+    captured = run_cli(
+        monkeypatch,
+        {
+            "model": "nemotron",
+            "api_client_type": "nemorl_chat_completions",
+            "api_key_var": "NEMO_API_KEY",
+            "api_base_url": "https://nemo.example/v1",
+        },
+    )
+
+    config = captured["configs"][0]
+    assert config.client_config.client_type == "nemorl_chat_completions"
 
 
 def test_cli_endpoint_alias_multi_variant_supports_mixed_keys(monkeypatch, run_cli):
@@ -575,7 +613,7 @@ def test_cli_endpoint_id_not_found_raises(monkeypatch, run_cli):
 def test_cli_endpoint_id_requires_toml_endpoints_path(monkeypatch, run_cli):
     with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
         f.write(
-            'endpoints_path = "./configs/endpoints.py"\n\n'
+            'endpoints_path = "./configs/endpoints.json"\n\n'
             '[[eval]]\nenv_id = "env1"\nendpoint_id = "gpt-5-mini"\n'
         )
         f.flush()

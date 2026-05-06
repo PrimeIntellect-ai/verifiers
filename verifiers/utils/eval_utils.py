@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-import importlib.util
 import itertools
+import json
 import logging
 import math
 import os
@@ -12,7 +12,7 @@ from collections import Counter, defaultdict
 from collections.abc import Mapping
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
-from typing import Callable, cast
+from typing import Any, Callable, cast
 
 import numpy as np
 from datasets import disable_progress_bar, enable_progress_bar
@@ -96,14 +96,19 @@ def _coerce_endpoint(raw_endpoint: object, source: str) -> Endpoint:
         short_client_type if short_client_type is not None else long_client_type
     )
     if client_type is not None:
-        if client_type not in (
+        allowed_types = (
             "openai_completions",
             "openai_chat_completions",
+            "openai_chat_completions_token",
+            "openai_responses",
             "renderer",
             "anthropic_messages",
-        ):
+            "nemorl_chat_completions",
+        )
+        if client_type not in allowed_types:
+            allowed_str = "', '".join(allowed_types)
             raise ValueError(
-                f"Field 'type'/'api_client_type' must be 'openai_completions' or 'openai_chat_completions' or 'renderer' or 'anthropic_messages' in {source}"
+                f"Field 'type'/'api_client_type' must be one of '{allowed_str}' in {source}"
             )
         endpoint["api_client_type"] = cast(ClientType, client_type)
 
@@ -120,39 +125,6 @@ def _coerce_endpoint(raw_endpoint: object, source: str) -> Endpoint:
             endpoint["extra_headers"] = coerced_headers
 
     return endpoint
-
-
-def _normalize_python_endpoints(raw_endpoints: object, source: Path) -> Endpoints:
-    if not isinstance(raw_endpoints, dict):
-        raise ValueError(f"ENDPOINTS must be a dict in {source}")
-
-    raw_endpoints_dict = cast(dict[str, object], raw_endpoints)
-    normalized: Endpoints = {}
-    for endpoint_id, raw_endpoint_group in raw_endpoints_dict.items():
-        if not isinstance(endpoint_id, str):
-            raise ValueError(f"Endpoint ids must be strings in {source}")
-
-        if isinstance(raw_endpoint_group, list):
-            if not raw_endpoint_group:
-                raise ValueError(
-                    f"Endpoint '{endpoint_id}' has an empty endpoint list in {source}"
-                )
-            normalized[endpoint_id] = [
-                _coerce_endpoint(
-                    raw_endpoint,
-                    source=f"{source} (ENDPOINTS['{endpoint_id}'])",
-                )
-                for raw_endpoint in raw_endpoint_group
-            ]
-        else:
-            normalized[endpoint_id] = [
-                _coerce_endpoint(
-                    raw_endpoint_group,
-                    source=f"{source} (ENDPOINTS['{endpoint_id}'])",
-                )
-            ]
-
-    return normalized
 
 
 def _normalize_toml_endpoints(raw_toml: object, source: Path) -> Endpoints:
@@ -215,40 +187,36 @@ def resolve_endpoints_file(endpoints_path: str) -> Path | None:
         toml_file = endpoints_path_obj / "endpoints.toml"
         python_file = endpoints_path_obj / "endpoints.py"
         if toml_file.exists():
+            if python_file.exists():
+                logger.warning(
+                    "Ignoring deprecated Python endpoint registry at %s; using %s.",
+                    python_file,
+                    toml_file,
+                )
             return toml_file
         if python_file.exists():
-            return python_file
+            raise ValueError(
+                "Python endpoint registries are no longer supported. "
+                f"Replace {python_file} with endpoints.toml."
+            )
         return None
+    if endpoints_path_obj.suffix == ".py":
+        raise ValueError(
+            "Python endpoint registries are no longer supported. "
+            f"Replace {endpoints_path_obj} with an endpoints.toml file."
+        )
     return endpoints_path_obj
 
 
 def load_endpoints(endpoints_path: str):
+    endpoints_file = resolve_endpoints_file(endpoints_path)
     try:
-        endpoints_file = resolve_endpoints_file(endpoints_path)
         if endpoints_file is None:
-            raise ImportError(
-                f"Neither endpoints.py nor endpoints.toml found at {endpoints_path}"
-            )
+            raise ImportError(f"endpoints.toml not found at {endpoints_path}")
 
         if endpoints_file.exists():
             logger.debug(f"Loading endpoint registry from {endpoints_file}")
-            if endpoints_file.suffix == ".py":
-                spec = importlib.util.spec_from_file_location(
-                    "endpoints", endpoints_file
-                )
-                assert spec and spec.loader
-                endpoints_module = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(endpoints_module)
-                # check that module exposes ENDPOINTS
-                if not hasattr(endpoints_module, "ENDPOINTS"):
-                    raise AttributeError(
-                        f"Module '{endpoints_file}' does not have a 'ENDPOINTS' attribute"
-                    )
-                endpoints = _normalize_python_endpoints(
-                    cast(object, endpoints_module.ENDPOINTS),
-                    source=endpoints_file,
-                )
-            elif endpoints_file.suffix == ".toml":
+            if endpoints_file.suffix == ".toml":
                 with open(endpoints_file, "rb") as f:
                     raw_toml = load_toml(f)
                 endpoints = _normalize_toml_endpoints(raw_toml, source=endpoints_file)
@@ -563,9 +531,21 @@ def to_col_order(list_of_dicts: list[Mapping[str, float]]) -> dict[str, list[flo
     return {k: [m[k] for m in list_of_dicts] for k in list_of_dicts[0].keys()}
 
 
-def get_task_outputs(results: GenerateOutputs, task: str) -> GenerateOutputs:
-    """Get only the rollouts for a given task."""
-    outputs = [o for o in results["outputs"] if o["task"] == task]
+def output_env_id(output: Mapping[str, Any]) -> str:
+    info = output.get("info") or {}
+    if isinstance(info, str):
+        info = json.loads(info)
+    value = info.get("env_id") if isinstance(info, Mapping) else None
+    if isinstance(value, list | tuple):
+        return "/".join(str(part) for part in value)
+    if value is not None:
+        return str(value)
+    return str(output.get("env_id", "default"))
+
+
+def get_env_outputs(results: GenerateOutputs, env_id: str) -> GenerateOutputs:
+    """Get only the rollouts for a given env_id."""
+    outputs = [o for o in results["outputs"] if output_env_id(o) == env_id]
     return GenerateOutputs(
         outputs=outputs,
         metadata=results["metadata"],  # duplicate metadata
@@ -744,15 +724,15 @@ def print_results(results: GenerateOutputs, num_samples: int = 1):
     print_timing(results)
     print_usage(results)
 
-    tasks = set([o["task"] for o in results["outputs"]])
-    if len(tasks) > 1:
-        for task in tasks:
-            task_results = get_task_outputs(results, task)
-            print(f"\n--- {task} ---")
-            print_rewards(task_results)
-            print_info(task_results)
-            print_timing(task_results)
-            print_usage(task_results)
+    env_ids = {output_env_id(o) for o in results["outputs"]}
+    if len(env_ids) > 1:
+        for env_id in env_ids:
+            env_results = get_env_outputs(results, env_id)
+            print(f"\n--- {env_id} ---")
+            print_rewards(env_results)
+            print_info(env_results)
+            print_timing(env_results)
+            print_usage(env_results)
 
 
 def get_log_level(verbose: bool) -> str:

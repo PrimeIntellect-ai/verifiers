@@ -41,9 +41,8 @@ prime env install math-python --from-repo
 - `MultiTurnEnv` for custom interaction loops.
 - `ToolEnv` or `MCPEnv` for stateless tools.
 - `StatefulToolEnv` for per-rollout resources.
-- `ApiEnv` for running a local Python callable (`agent_fn`) with automatic LLM API interception. The agent receives a `base_url` and can use any HTTP client or framework (OpenAI SDK, DSPy, LangChain, etc).
-- `CliAgentEnv` (`ApiEnv` subclass) for running agent binaries in sandboxes with API interception. Override `get_sandbox_resources(state)` for per-instance resources, `build_env_vars(state)` for custom env vars.
-- `ComposableEnv` (with `TaskSet`/`SandboxTaskSet` + `Harness`) for separating *what to solve* from *how to solve it*. Define a `TaskSet` (dataset, instructions, sandbox spec, rubric) and a `Harness` (install script, run command, system prompt), wire them together with zero subclassing. Use `SandboxTaskSet` when tasks need sandboxes with per-instance images/resources. `TaskSet`/`SandboxTaskSet` also accept a `filter_fn: str | None` kwarg (a Python expression string, typically a lambda, evaluating to `Callable[[dict], bool]`) for ad-hoc row filtering at `load_environment(...)` time — applied to post-processed rows (`{"question", "info", "answer", ...}`) with restricted builtins, intended for local `vf-eval` runs (e.g. `filter_fn="lambda x: x['info']['repo'] == 'django/django'"`), not untrusted inputs.
+- `CliAgentEnv` for running agent binaries in sandboxes with API interception. Override `get_sandbox_resources(state)` for per-instance resources, `build_env_vars(state)` for custom env vars.
+- V1 `vf.Env` with `vf.Taskset`/`vf.Harness` for new compositional environments that separate the task collection from the rollout runner. Prefer this for new taskset/harness work that needs config-driven metrics, rewards, toolsets, user functions, endpoint interception, or sandboxed Python/command programs. Framework programs should build clients from `state.get_endpoint_config(api="chat")`.
 3. Implement `load_environment(...) -> vf.Environment` with explicit arguments.
 4. Add `pyproject.toml` defaults in `[tool.verifiers.eval]` only when stable.
 

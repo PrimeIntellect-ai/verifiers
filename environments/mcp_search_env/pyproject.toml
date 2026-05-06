@@ -7,6 +7,7 @@ requires-python = ">=3.11"
 dependencies = [
     "verifiers>=0.1.8.post2",
     "mcp>=1.0.0",
+    "openai",
 ]
 
 [build-system]
@@ -14,5 +15,4 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build]
-include = ["mcp_search_env.py"]
-
+include = ["mcp_search_env.py", "mcp_search_v1.py", "mcp_server.py", "pyproject.toml"]

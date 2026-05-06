@@ -14,4 +14,4 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build]
-include = ["reverse_text.py"]
+include = ["reverse_text.py", "reverse_text_v1.py"]

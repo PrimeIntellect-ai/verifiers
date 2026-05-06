@@ -119,10 +119,12 @@ env.set_concurrency(256)
 | `--model` | `-m` | `openai/gpt-4.1-mini` | Model name or endpoint alias |
 | `--api-base-url` | `-b` | `https://api.pinference.ai/api/v1` | API base URL |
 | `--api-key-var` | `-k` | `PRIME_API_KEY` | Environment variable containing API key |
-| `--api-client-type` | — | `openai_chat_completions` | Client type: `openai_completions`, `openai_chat_completions`, `openai_chat_completions_token`, `renderer`, `anthropic_messages`, or `nemorl_chat_completions` |
+| `--api-client-type` | — | `openai_chat_completions` | Client type: `openai_completions`, `openai_chat_completions`, `openai_chat_completions_token`, `openai_responses`, `renderer`, `anthropic_messages`, or `nemorl_chat_completions` |
 | `--endpoints-path` | `-e` | `./configs/endpoints.toml` | Path to TOML endpoints registry |
 | `--header` | — | — | Extra HTTP header (`Name: Value`), repeatable |
 | `--header-from-state` | — | `X-Session-ID: example_id` | Per-request header whose value is read from rollout state (`Name: state_key`), repeatable |
+
+The `renderer` client type requires the optional renderer package. Install it with `uv add "verifiers[renderers]"` before running evals with `--api-client-type renderer`.
 
 For convenience, define model endpoints in `./configs/endpoints.toml` to avoid repeating URL and key flags.
 
@@ -147,7 +149,7 @@ key = "ANTHROPIC_API_KEY"
 api_client_type = "anthropic_messages"
 ```
 
-Each endpoint entry supports an optional `api_client_type` field to select the client implementation (defaults to `"openai_chat_completions"`). Use `"anthropic_messages"` for Anthropic models when calling the Anthropic API directly.
+Each endpoint entry supports an optional `api_client_type` field to select the client implementation (defaults to `"openai_chat_completions"`). Use `"anthropic_messages"` for Anthropic models when calling the Anthropic API directly, and `"openai_responses"` for OpenAI-compatible Responses endpoints.
 
 Optional HTTP headers for inference requests use a short TOML key `headers` (inline table). The alias `extra_headers` is accepted with the same shape; do not set both on one row.
 
@@ -380,6 +382,24 @@ num_examples = 50
 difficulty = "hard"
 split = "test"
 ```
+
+For v1 BYO Harness environments, pass taskset/harness config under
+`env_args.config`:
+
+```toml
+[[eval]]
+env_id = "my-v1-env"
+sampling_args = { max_tokens = 4096 }
+
+[eval.env_args.config.harness]
+max_turns = 4
+
+[eval.env_args.config.taskset.scoring.exact_answer]
+weight = 0.5
+```
+
+See [BYO Harness](byo-harness.md#toml-config) for the matching RL config shape
+and v1 callable/toolset patterns.
 
 ### Ablation Sweeps
 

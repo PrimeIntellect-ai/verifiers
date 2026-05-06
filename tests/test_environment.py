@@ -1,5 +1,7 @@
 """Tests for the base Environment class."""
 
+import json
+from typing import cast
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -88,6 +90,38 @@ class TestEnvironmentBase:
         assert env.message_type == "chat"
         assert isinstance(env.parser, Parser)
         assert isinstance(env.rubric, Rubric)
+
+    def test_environment_capabilities_follow_group_rewards(self, sample_dataset):
+        """Test group rollout capabilities derive from legacy rubric shape."""
+
+        async def rollout_reward(completion):
+            _ = completion
+            return 1.0
+
+        async def group_reward(states):
+            return [1.0 for _ in states]
+
+        rollout_env = SimpleEnvironment(
+            dataset=sample_dataset,
+            rubric=Rubric(funcs=[rollout_reward]),
+        )
+        group_env = SimpleEnvironment(
+            dataset=sample_dataset,
+            rubric=Rubric(funcs=[group_reward]),
+        )
+        grouped_rubric_env = SimpleEnvironment(
+            dataset=sample_dataset,
+            rubric=vf.RubricGroup(
+                [Rubric(funcs=[rollout_reward]), Rubric(funcs=[group_reward])]
+            ),
+        )
+
+        assert not rollout_env.requires_group_rollouts
+        assert not rollout_env.provides_advantages
+        assert group_env.requires_group_rollouts
+        assert not group_env.provides_advantages
+        assert grouped_rubric_env.requires_group_rollouts
+        assert not grouped_rubric_env.provides_advantages
 
     def test_environment_with_eval_dataset_only(self, sample_dataset):
         """Test Environment with only eval_dataset."""
@@ -275,6 +309,55 @@ class TestEnvironmentBase:
         assert first_tool.name == "echo"
 
     @pytest.mark.asyncio
+    async def test_init_state_rejects_plain_string_task(
+        self, mock_client, sample_dataset, make_input
+    ):
+        """Plain string task routes are not part of the rollout input schema."""
+        env = SimpleEnvironment(
+            dataset=sample_dataset,
+            parser=Parser(),
+            rubric=Rubric(),
+        )
+        input_data = dict(make_input(prompt=[{"role": "user", "content": "Hello"}]))
+        input_data["task"] = "legacy-route"
+
+        with pytest.raises(ValueError, match="Plain string task routes"):
+            await env.init_state(
+                input=cast(RolloutInput, input_data),
+                client=mock_client,
+                model="test-model",
+            )
+
+    @pytest.mark.asyncio
+    async def test_init_state_accepts_json_task_payload(
+        self, mock_client, sample_dataset, make_input
+    ):
+        """Serialized task payloads remain accepted for worker compatibility."""
+        env = SimpleEnvironment(
+            dataset=sample_dataset,
+            parser=Parser(),
+            rubric=Rubric(),
+        )
+        task_payload = {
+            "prompt": [{"role": "user", "content": "Hello"}],
+            "answer": "Hello",
+            "example_id": 3,
+            "custom": "field",
+        }
+        input_data = dict(make_input(prompt=[{"role": "user", "content": "ignored"}]))
+        input_data["task"] = json.dumps(task_payload)
+
+        state = await env.init_state(
+            input=cast(RolloutInput, input_data),
+            client=mock_client,
+            model="test-model",
+        )
+
+        assert state["task"] == task_payload
+        assert state["input"]["custom"] == "field"
+        assert state["prompt"][0]["content"] == "Hello"
+
+    @pytest.mark.asyncio
     async def test_init_state_rejects_info_oai_tools(
         self, mock_client, sample_dataset, make_input
     ):
@@ -381,7 +464,6 @@ class TestEnvironmentBase:
         assert "prompt" in dataset.column_names
         assert "completion" in dataset.column_names
         assert "reward" in dataset.column_names
-        assert "task" in dataset.column_names
         assert "example_id" in dataset.column_names
         assert "foo" in dataset.column_names  # custom field from make_output fixture
 

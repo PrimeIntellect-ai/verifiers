@@ -2,6 +2,7 @@ import asyncio
 import inspect
 import logging
 from collections import deque
+from collections.abc import Mapping
 from collections.abc import Coroutine
 from time import perf_counter
 from typing import Any, AsyncContextManager, Callable, Optional, TypeVar
@@ -12,6 +13,7 @@ from pydantic import BaseModel
 
 import verifiers as vf
 from verifiers.utils.error_utils import ErrorChain
+from verifiers.utils.error_utils import error_info_to_exception
 from verifiers.utils.logging_utils import print_time
 
 logger = logging.getLogger(__name__)
@@ -34,6 +36,14 @@ async def maybe_await(func: Callable, *args, **kwargs):
     if inspect.isawaitable(result):
         return await result
     return result
+
+
+async def maybe_call_with_named_args(func: Callable, **objects):
+    sig = inspect.signature(func)
+    if any(p.kind == p.VAR_KEYWORD for p in sig.parameters.values()):
+        return await maybe_await(func, **objects)
+    allowed = {key: value for key, value in objects.items() if key in sig.parameters}
+    return await maybe_await(func, **allowed)
 
 
 class NullContext:
@@ -165,11 +175,19 @@ def maybe_retry(
             err = result.get("error")
             if err and any(isinstance(err, err_type) for err_type in error_types):
                 raise err
+            if isinstance(err, Mapping):
+                retry_error = error_info_to_exception(err, error_types)
+                if retry_error is not None:
+                    raise retry_error
         elif isinstance(result, list):
             for state in result:
                 err = state.get("error")
                 if err and any(isinstance(err, err_type) for err_type in error_types):
                     raise err
+                if isinstance(err, Mapping):
+                    retry_error = error_info_to_exception(err, error_types)
+                    if retry_error is not None:
+                        raise retry_error
 
     def log_retry(retry_state: tc.RetryCallState) -> None:
         """Log a warning with the exception and the number of attempts."""

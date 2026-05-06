@@ -2,6 +2,7 @@
 
 import asyncio
 import hmac
+import inspect
 import json
 import logging
 import time
@@ -25,7 +26,7 @@ from openai.types.chat.chat_completion_chunk import (
 )
 
 from verifiers.errors import InfraError
-from verifiers.types import Response
+from verifiers.types import Response, Tool
 from verifiers.utils.logging_utils import print_time, truncate
 
 logger = logging.getLogger(__name__)
@@ -42,6 +43,16 @@ class StreamInterrupted(InfraError):
     often exiting with code 0 and an empty trajectory — bypassing the
     non-zero-exit error capture in `CliAgentEnv.poll_job_completion`.
     """
+
+
+def protocol_from_path(path: str) -> str:
+    if path.endswith("/v1/messages"):
+        return "anthropic_messages"
+    if path.endswith("/v1/responses"):
+        return "openai_responses"
+    if path.endswith("/v1/completions"):
+        return "openai_completions"
+    return "openai_chat_completions"
 
 
 class InterceptionServer:
@@ -83,6 +94,34 @@ class InterceptionServer:
             app.router.add_post(
                 "/rollout/{rollout_id}/v1/chat/completions",
                 self._handle_request,
+            )
+            app.router.add_post(
+                "/rollout/{rollout_id}/v1/completions",
+                self._handle_request,
+            )
+            app.router.add_post(
+                "/rollout/{rollout_id}/v1/responses",
+                self._handle_request,
+            )
+            app.router.add_post(
+                "/rollout/{rollout_id}/v1/messages",
+                self._handle_request,
+            )
+            app.router.add_post(
+                "/rollout/{rollout_id}/vf/tools/{tool_name}",
+                self._handle_tool_request,
+            )
+            app.router.add_get(
+                "/rollout/{rollout_id}/vf/tools",
+                self._handle_tools_list_request,
+            )
+            app.router.add_post(
+                "/rollout/{rollout_id}/vf/user",
+                self._handle_user_request,
+            )
+            app.router.add_post(
+                "/rollout/{rollout_id}/vf/stop",
+                self._handle_stop_request,
             )
             app.router.add_get(
                 "/health",
@@ -141,12 +180,22 @@ class InterceptionServer:
         state["error"] = error
 
     def register_rollout(
-        self, rollout_id: str, state: dict[str, Any] | None = None
+        self,
+        rollout_id: str,
+        state: dict[str, Any] | None = None,
+        tool_handler: Any | None = None,
+        tool_defs: Any | None = None,
+        user_handler: Any | None = None,
+        stop_handler: Any | None = None,
     ) -> asyncio.Queue:
         request_queue: asyncio.Queue = asyncio.Queue()
         self.active_rollouts[rollout_id] = {
             "request_id_queue": request_queue,
             "state": state,
+            "tool_handler": tool_handler,
+            "tool_defs": tool_defs,
+            "user_handler": user_handler,
+            "stop_handler": stop_handler,
         }
         return request_queue
 
@@ -196,10 +245,15 @@ class InterceptionServer:
             asyncio.Queue() if is_streaming else None
         )
 
+        protocol = protocol_from_path(str(request.path))
         intercept = {
             "request_id": request_id,
             "rollout_id": rollout_id,
-            "messages": request_body["messages"],
+            "protocol": protocol,
+            "messages": request_body.get("messages"),
+            "prompt": request_body.get("prompt"),
+            "input": request_body.get("input"),
+            "system": request_body.get("system"),
             "model": request_body.get("model"),
             "tools": request_body.get("tools"),
             "stream": is_streaming,
@@ -227,10 +281,118 @@ class InterceptionServer:
                 )
                 return web.json_response({"error": str(e)}, status=500)
 
-            response_dict = serialize_intercept_response(response)
+            response_dict = serialize_intercept_response(
+                response,
+                protocol=str(intercept["protocol"]),
+            )
 
             _log_response(rollout_id, response_dict)
             return web.json_response(response_dict)
+
+    async def _handle_tool_request(self, request: Any) -> Any:
+        if self.secret:
+            auth = request.headers.get("Authorization", "")
+            if not hmac.compare_digest(auth, f"Bearer {self.secret}"):
+                return web.json_response({"error": "Unauthorized"}, status=401)
+
+        rollout_id = request.match_info["rollout_id"]
+        context = self.active_rollouts.get(rollout_id)
+        if not context:
+            return web.json_response({"error": "Rollout not found"}, status=404)
+        tool_handler = context.get("tool_handler")
+        if tool_handler is None:
+            return web.json_response({"error": "Tool proxy unavailable"}, status=404)
+
+        try:
+            request_body = await request.json()
+        except Exception as e:
+            return web.json_response({"error": f"Invalid JSON: {e}"}, status=400)
+        arguments = request_body.get("arguments") or {}
+        if not isinstance(arguments, dict):
+            return web.json_response(
+                {"error": "Tool arguments must be an object"}, status=400
+            )
+
+        try:
+            result = tool_handler(request.match_info["tool_name"], arguments)
+            if inspect.isawaitable(result):
+                result = await result
+            result = jsonable(result)
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+        return web.json_response({"result": result})
+
+    async def _handle_tools_list_request(self, request: Any) -> Any:
+        if self.secret:
+            auth = request.headers.get("Authorization", "")
+            if not hmac.compare_digest(auth, f"Bearer {self.secret}"):
+                return web.json_response({"error": "Unauthorized"}, status=401)
+
+        rollout_id = request.match_info["rollout_id"]
+        context = self.active_rollouts.get(rollout_id)
+        if not context:
+            return web.json_response({"error": "Rollout not found"}, status=404)
+
+        protocol = request.query.get("protocol")
+        try:
+            tools = serialize_tool_defs(context.get("tool_defs") or [], protocol)
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+        return web.json_response({"tools": tools})
+
+    async def _handle_user_request(self, request: Any) -> Any:
+        if self.secret:
+            auth = request.headers.get("Authorization", "")
+            if not hmac.compare_digest(auth, f"Bearer {self.secret}"):
+                return web.json_response({"error": "Unauthorized"}, status=401)
+
+        rollout_id = request.match_info["rollout_id"]
+        context = self.active_rollouts.get(rollout_id)
+        if not context:
+            return web.json_response({"error": "Rollout not found"}, status=404)
+        user_handler = context.get("user_handler")
+        if user_handler is None:
+            return web.json_response({"messages": []})
+
+        try:
+            request_body = await request.json()
+        except Exception as e:
+            return web.json_response({"error": f"Invalid JSON: {e}"}, status=400)
+        transcript = request_body.get("transcript") or []
+        if not isinstance(transcript, list):
+            return web.json_response({"error": "Transcript must be a list"}, status=400)
+
+        try:
+            result = user_handler(transcript)
+            if inspect.isawaitable(result):
+                result = await result
+            messages = jsonable(result or [])
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+        return web.json_response({"messages": messages})
+
+    async def _handle_stop_request(self, request: Any) -> Any:
+        if self.secret:
+            auth = request.headers.get("Authorization", "")
+            if not hmac.compare_digest(auth, f"Bearer {self.secret}"):
+                return web.json_response({"error": "Unauthorized"}, status=401)
+
+        rollout_id = request.match_info["rollout_id"]
+        context = self.active_rollouts.get(rollout_id)
+        if not context:
+            return web.json_response({"error": "Rollout not found"}, status=404)
+        stop_handler = context.get("stop_handler")
+        if stop_handler is None:
+            return web.json_response({"done": False, "stop_condition": None})
+
+        try:
+            result = stop_handler()
+            if inspect.isawaitable(result):
+                result = await result
+            result = jsonable(result)
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+        return web.json_response(result)
 
     async def _handle_streaming_response(
         self, http_request: Any, rollout_id: str, intercept: dict
@@ -517,9 +679,17 @@ def _response_content_to_text(content: Any) -> str:
     return ""
 
 
-def serialize_intercept_response(response: Any) -> dict[str, Any]:
-    """Serialize intercepted responses to OpenAI ChatCompletion JSON shape."""
+def serialize_intercept_response(
+    response: Any, protocol: str = "openai_chat_completions"
+) -> dict[str, Any]:
+    """Serialize intercepted responses to the requested endpoint protocol shape."""
     if isinstance(response, Response):
+        if protocol == "anthropic_messages":
+            return serialize_anthropic_message_response(response)
+        if protocol == "openai_responses":
+            return serialize_openai_responses_response(response)
+        if protocol == "openai_completions":
+            return serialize_openai_completion_response(response)
         message = response.message
         tool_calls = []
         for tc in message.tool_calls or []:
@@ -565,6 +735,173 @@ def serialize_intercept_response(response: Any) -> dict[str, Any]:
     if hasattr(response, "model_dump"):
         return response.model_dump()
     return dict(response)
+
+
+def serialize_openai_completion_response(response: Response) -> dict[str, Any]:
+    output = {
+        "id": response.id,
+        "object": "text_completion",
+        "created": response.created,
+        "model": response.model,
+        "choices": [
+            {
+                "text": _response_content_to_text(response.message.content),
+                "index": 0,
+                "logprobs": None,
+                "finish_reason": response.message.finish_reason,
+            }
+        ],
+    }
+    if response.usage is not None:
+        output["usage"] = response.usage.model_dump(exclude_none=True)
+    return output
+
+
+def jsonable(value: Any) -> Any:
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        return jsonable(model_dump(exclude_none=True))
+    if isinstance(value, list):
+        return [jsonable(item) for item in value]
+    if isinstance(value, tuple):
+        return [jsonable(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): jsonable(item) for key, item in value.items()}
+    return json.loads(json.dumps(value))
+
+
+def serialize_tool_defs(
+    tools: Any, protocol: str | None = None
+) -> list[dict[str, Any]]:
+    """Serialize provider-agnostic vf.Tool definitions for an endpoint protocol."""
+    if not isinstance(tools, list):
+        tools = list(tools)
+    serialized: list[dict[str, Any]] = []
+    for raw_tool in tools:
+        tool = raw_tool if isinstance(raw_tool, Tool) else Tool.model_validate(raw_tool)
+        if protocol == "openai_chat_completions":
+            function: dict[str, Any] = {
+                "name": tool.name,
+                "description": tool.description,
+                "parameters": tool.parameters,
+            }
+            if tool.strict is not None:
+                function["strict"] = tool.strict
+            serialized.append({"type": "function", "function": function})
+        elif protocol == "openai_responses":
+            payload: dict[str, Any] = {
+                "type": "function",
+                "name": tool.name,
+                "description": tool.description,
+                "parameters": tool.parameters,
+            }
+            if tool.strict is not None:
+                payload["strict"] = tool.strict
+            serialized.append(payload)
+        elif protocol == "anthropic_messages":
+            serialized.append(
+                {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "input_schema": tool.parameters,
+                }
+            )
+        elif protocol is None or protocol == "vf":
+            serialized.append(jsonable(tool))
+        else:
+            raise ValueError(f"Unsupported tool serialization protocol: {protocol!r}")
+    return serialized
+
+
+def serialize_anthropic_message_response(response: Response) -> dict[str, Any]:
+    content: list[dict[str, Any]] = []
+    message = response.message
+    if message.content:
+        content.append(
+            {"type": "text", "text": _response_content_to_text(message.content)}
+        )
+    for tool_call in message.tool_calls or []:
+        try:
+            tool_input = json.loads(tool_call.arguments)
+        except json.JSONDecodeError:
+            tool_input = {"arguments": tool_call.arguments}
+        content.append(
+            {
+                "type": "tool_use",
+                "id": tool_call.id,
+                "name": tool_call.name,
+                "input": tool_input,
+            }
+        )
+    if not content:
+        content.append({"type": "text", "text": ""})
+    usage = {}
+    if response.usage is not None:
+        usage = {
+            "input_tokens": response.usage.prompt_tokens,
+            "output_tokens": response.usage.completion_tokens,
+        }
+    return {
+        "id": response.id,
+        "type": "message",
+        "role": "assistant",
+        "model": response.model,
+        "content": content,
+        "stop_reason": "tool_use" if message.tool_calls else "end_turn",
+        "stop_sequence": None,
+        "usage": usage,
+    }
+
+
+def serialize_openai_responses_response(response: Response) -> dict[str, Any]:
+    output: list[dict[str, Any]] = []
+    message = response.message
+    if message.content:
+        output.append(
+            {
+                "id": f"msg_{response.id}",
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": _response_content_to_text(message.content),
+                        "annotations": [],
+                    }
+                ],
+            }
+        )
+    for tool_call in message.tool_calls or []:
+        output.append(
+            {
+                "id": tool_call.id,
+                "type": "function_call",
+                "call_id": tool_call.id,
+                "name": tool_call.name,
+                "arguments": tool_call.arguments,
+                "status": "completed",
+            }
+        )
+    usage = None
+    if response.usage is not None:
+        usage = {
+            "input_tokens": response.usage.prompt_tokens,
+            "output_tokens": response.usage.completion_tokens,
+            "total_tokens": response.usage.total_tokens,
+        }
+    return {
+        "id": response.id,
+        "object": "response",
+        "created_at": float(response.created),
+        "status": "completed",
+        "model": response.model,
+        "output": output,
+        "parallel_tool_calls": True,
+        "tool_choice": "auto",
+        "tools": [],
+        "usage": usage,
+    }
 
 
 def _log_request(rollout_id: str, body: dict) -> None:

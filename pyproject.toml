@@ -53,7 +53,6 @@ dependencies = [
     "aiolimiter>=1.2.1",
     "setproctitle>=1.3.0",
     "regex<2026.4.4",
-    "renderers",
     "httpx>=0.27.0",
 ]
 
@@ -75,6 +74,7 @@ dev = [
     "aiohttp>=3.9.0",
     "python-dotenv>=1.0.0",
     "nltk",
+    "renderers>=0.1.6",
 ]
 
 [project.optional-dependencies]
@@ -93,6 +93,9 @@ browser = [
     "aiohttp>=3.9.0",
     "python-dotenv>=1.0.0",
 ]
+renderers = [
+    "renderers>=0.1.6",
+]
 rl = [
     "torch>=2.8.0,<2.9.0",
     "transformers>=4.56.2",
@@ -110,8 +113,21 @@ rl = [
 preview = true
 required-version = ">=0.11.1"
 
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+default = true
+exclude-newer = "7 days"
+
+[tool.uv.exclude-newer-package]
+# PrimeIntellect-published on PyPI (trusted publisher)
+prime-tunnel = false
+prime-sandboxes = false
+renderers = false
+
 [tool.uv.sources]
-renderers = { path = "packages/renderers", editable = true }
+# Pinned to renderers main until v0.1.6 lands on PyPI; drop after.
+renderers = { git = "https://github.com/PrimeIntellect-ai/renderers.git", rev = "9acdc60" }
 
 [tool.uv.extra-build-dependencies]
 flash-attn = [{ requirement = "torch", match-runtime = true }]
@@ -175,6 +191,7 @@ addopts = [
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "integration: marks tests as integration tests",
+    "prime_sandbox: marks tests that provision real Prime sandbox or tunnel resources",
     "unit: marks tests as unit tests",
     "asyncio: marks tests as async tests",
     "parsers: marks tests for parser components",
@@ -200,7 +217,7 @@ unknown-argument = "warn"
 redundant-cast = "ignore"
 
 [tool.ty.src]
-exclude = ["environments"]
+exclude = ["environments", "verifiers/v1/sketch.py"]
 
 [[tool.ty.overrides]]
 include = ["verifiers/envs/experimental/composable/tasksets/**"]

@@ -1,6 +1,8 @@
+from collections.abc import Mapping
 from typing import Callable, cast
 
 import verifiers as vf
+from verifiers.types import ErrorInfo
 
 
 def get_error_chain(
@@ -52,3 +54,34 @@ class ErrorChain:
 
     def __repr__(self) -> str:
         return " -> ".join([repr(e) for e in self.chain])
+
+
+def error_info(error: BaseException) -> ErrorInfo:
+    error_chain = ErrorChain(error)
+    return ErrorInfo(
+        error=type(error).__name__,
+        error_chain_repr=repr(error_chain),
+        error_chain_str=str(error_chain),
+    )
+
+
+def error_type_name(error: object) -> str | None:
+    if isinstance(error, BaseException):
+        return type(error).__name__
+    if isinstance(error, Mapping):
+        raw_error = cast(Mapping[str, object], error).get("error")
+        if isinstance(raw_error, str):
+            return raw_error
+    return None
+
+
+def error_info_to_exception(
+    error: Mapping[str, object],
+    error_types: tuple[type[Exception], ...],
+) -> Exception | None:
+    chain = str(error.get("error_chain_str") or error.get("error") or "")
+    detail = str(error.get("error_chain_repr") or error.get("error") or "")
+    for error_type in error_types:
+        if error_type.__name__ in chain:
+            return error_type(detail)
+    return None

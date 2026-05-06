@@ -244,7 +244,6 @@ class TestMultiTurnEnv:
             input=make_input(
                 prompt=prompt,
                 answer="test_answer",
-                task="test_task",
                 info={"extra": "data"},
             ),
             client=mock_multiturn_env.client,
@@ -254,7 +253,6 @@ class TestMultiTurnEnv:
         # Check all state fields are initialized
         assert state["prompt"] == prompt
         assert state["answer"] == "test_answer"
-        assert state["task"] == "test_task"
         assert state["info"] == {"extra": "data"}
         assert state["example_id"] == 0
         assert "trajectory" in state

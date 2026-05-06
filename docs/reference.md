@@ -6,6 +6,7 @@
 - [Data Types](#data-types)
 - [Classes](#classes)
   - [Environment Classes](#environment-classes)
+  - [v1 Taskset/Harness Classes](#v1-tasksetharness-classes)
   - [Parser Classes](#parser-classes)
   - [Rubric Classes](#rubric-classes)
 - [Client Classes](#client-classes)
@@ -80,6 +81,7 @@ ClientType = Literal[
     "openai_completions",
     "openai_chat_completions",
     "openai_chat_completions_token",
+    "openai_responses",
     "renderer",
     "anthropic_messages",
     "nemorl_chat_completions",
@@ -96,7 +98,7 @@ Selects which `Client` implementation to use. Set via `ClientConfig.client_type`
 
 ```python
 class State(dict):
-    INPUT_FIELDS = ["prompt", "answer", "task", "info", "example_id"]
+    INPUT_FIELDS = ["prompt", "answer", "info", "example_id"]
 ```
 
 A `dict` subclass that tracks rollout information. Accessing keys in `INPUT_FIELDS` automatically forwards to the nested `input` object.
@@ -133,7 +135,6 @@ A `dict` subclass that tracks rollout information. Accessing keys in `INPUT_FIEL
 class RolloutInput(TypedDict):
     prompt: Messages        # Required
     example_id: int         # Required
-    task: str               # Required
     answer: str             # Optional
     info: Info              # Optional
 ```
@@ -144,7 +145,6 @@ class RolloutInput(TypedDict):
 class RolloutOutput(dict):
     # Required fields
     example_id: int
-    task: str
     prompt: Messages | None
     completion: Messages | None
     reward: float
@@ -521,11 +521,221 @@ OpenEnv integration that runs OpenEnv projects in Prime Sandboxes using a prebui
 ```python
 env_group = vf.EnvGroup(
     envs=[env1, env2, env3],
-    names=["math", "code", "qa"]  # optional
+    env_names=["math", "code", "qa"]  # optional
 )
 ```
 
-Combines multiple environments for mixed-task training.
+Combines multiple environments for mixed-task training. Combined datasets use
+`info["env_id"]` as internal routing metadata; it is not a top-level input,
+state, or output field.
+
+---
+
+### v1 Taskset/Harness Classes
+
+The v1 API is exposed as `verifiers.v1` and documented in
+[BYO Harness](byo-harness.md). Its core unit is:
+
+```python
+state = await harness.run(task, state=None)
+```
+
+`Taskset` and `Env` package that runner for datasets, evals, and training.
+
+#### Task
+
+```python
+class Task(dict):
+    def freeze(self) -> Task: ...
+```
+
+Immutable, JSON-serializable input data. A task is usually created by a
+`Taskset`, but can be run directly through a standalone `Harness`.
+
+Common top-level fields:
+
+| Field | Description |
+|-------|-------------|
+| `prompt` | User/developer/tool messages for the rollout. Must not contain system messages. |
+| `system_prompt` | Per-task system messages or string. |
+| `answer` | Reference answer or target data. Stays on task, not state. |
+| `info` | Serializable metadata. |
+| `max_turns` | Per-task base-loop turn limit. |
+| `tools` | Tool visibility: `{"show": [...]}` or `{"hide": [...]}`. |
+| `toolsets` | Toolset visibility or rollout-local toolset config. |
+| `sandbox` | Per-task sandbox overrides for sandboxed programs. |
+| `program` | Task-owned files, dirs, env, setup, artifacts, bindings, and command args. |
+
+`task.runtime` is not public schema. Runtime metadata belongs on `State`.
+
+#### State
+
+```python
+class State(dict):
+    @classmethod
+    def for_task(task: Mapping[str, Any], ...) -> State: ...
+    def stop(self, condition: str = "state_done") -> None: ...
+    def get_model(self) -> str: ...
+    def get_client(api: str = "chat_completions", *, sync: bool = False) -> object: ...
+    def get_endpoint_config(api: str = "chat_completions") -> dict[str, str]: ...
+    def get_tools() -> dict[str, Callable[..., Awaitable[object]]]: ...
+    def get_max_turns(default: int) -> int: ...
+    def finalize() -> State: ...
+```
+
+Mutable rollout output. State starts from a task and accumulates trajectory,
+completion, metrics, reward, timing, artifacts, errors, and user-defined
+serializable fields.
+
+Framework-managed fields such as `is_completed`, `stop_condition`,
+`is_truncated`, and `error` cannot be written directly. Use `state.stop(...)` or
+raise `vf.Error` subclasses.
+
+`State.for_task(...)` can borrow selected active runtime handles from another
+state:
+
+```python
+child_state = state.for_task(child_task, borrow=["model", "sandbox"], tools="bash")
+child_state = await child_harness.run(child_task, child_state)
+```
+
+Borrowed handles are process-local and stripped before state crosses the
+serialization boundary.
+
+#### Taskset
+
+```python
+class Taskset:
+    def __init__(
+        source=None,
+        eval_source=None,
+        taskset_id: str | None = None,
+        system_prompt=None,
+        user=None,
+        toolsets=(),
+        stops=(),
+        setups=(),
+        updates=(),
+        metrics=(),
+        rewards=(),
+        advantages=(),
+        cleanups=(),
+        config: TasksetConfig | Mapping[str, object] | None = None,
+    ): ...
+
+    def rows() -> list[dict[str, Any]]: ...
+    def eval_rows() -> list[dict[str, Any]]: ...
+    def task(row: Mapping[str, Any]) -> Task: ...
+    def to_task(value: Mapping[str, Any] | Task | str) -> Task: ...
+    async def init_group(task: Task, num_rollouts: int) -> tuple[list[Task], list[State]]: ...
+    def get_dataset() -> Dataset: ...
+    def get_eval_dataset() -> Dataset: ...
+```
+
+Packages task rows and task-owned behavior. `source` and `eval_source` may be
+iterables or zero-argument loaders. Loaders should close over resolved config
+instead of accepting runtime kwargs.
+
+#### Harness
+
+```python
+class Harness:
+    def __init__(
+        program=None,
+        system_prompt=None,
+        user=None,
+        sandbox=None,
+        client=None,
+        model: str | None = None,
+        sampling_args: SamplingArgs | None = None,
+        max_turns: int | None = None,
+        toolsets=None,
+        stops=None,
+        setups=None,
+        updates=None,
+        metrics=None,
+        rewards=None,
+        advantages=None,
+        cleanups=None,
+        config: HarnessConfig | Mapping[str, object] | None = None,
+    ): ...
+
+    async def run(task: Task | Mapping[str, Any], state: State | None = None) -> State: ...
+    async def score_group(tasks: list[Task], states: list[State]) -> list[State]: ...
+    async def cleanup_group(tasks: list[Task], states: list[State]) -> None: ...
+    async def teardown() -> None: ...
+```
+
+Runs one task. All model calls go through the v1 interception endpoint so
+trajectory capture, sampling args, tool forwarding, and protocol translation use
+one path across local Python, sandboxed Python, command programs, and the base
+tool loop.
+
+`program` forms:
+
+| Form | Meaning |
+|------|---------|
+| `None` | Default endpoint-backed tool loop. |
+| callable | In-process Python program with `task, state`. |
+| `{"base": true, ...}` | Explicit default loop, usually with sandbox options. |
+| `{"fn": "pkg.module:run", ...}` | Importable Python program. |
+| `{"command": ["cmd", "arg"], ...}` | Local or sandboxed command. |
+
+#### Env
+
+```python
+class Env(vf.Environment):
+    def __init__(taskset: Taskset, harness: Harness | None = None): ...
+```
+
+Adapter that makes a v1 taskset/harness pair usable by eval and training
+workers. If `harness` is omitted, `Env` uses the base `Harness`.
+
+#### Toolset And MCPTool
+
+```python
+class Toolset:
+    def __init__(
+        tools=(),
+        show=None,
+        hide=None,
+        bindings=None,
+        objects=None,
+        write: bool = False,
+        scope: Literal["rollout", "group", "global"] = "rollout",
+        sandbox=None,
+        stops=(),
+        setups=(),
+        updates=(),
+        metrics=(),
+        rewards=(),
+        advantages=(),
+        cleanups=(),
+        config: ToolsetConfig | Mapping[str, object] | None = None,
+    ): ...
+
+class MCPTool:
+    def __init__(command: str, args=None, env=None, cwd: str | None = None): ...
+```
+
+Toolsets package callable tools, MCP servers, private dependency factories, and
+hidden bindings. `objects.*` bindings are private to the owning toolset/user and
+are not directly accessible from state.
+
+#### v1 Config Models
+
+```python
+TasksetConfig.from_toml(path, section=None)
+HarnessConfig.from_toml(path, section=None)
+ToolsetConfig(...)
+SandboxConfig(...)
+UserConfig(...)
+MCPToolConfig(...)
+```
+
+v1 config models are Pydantic models. Constructors accept config objects or
+plain mappings; TOML config uses `"module:object"` refs for Python callables and
+loaders. Unknown fields fail validation.
 
 ---
 
@@ -625,7 +835,6 @@ def my_reward(
     prompt: Messages | None = None,
     state: State | None = None,
     parser: Parser | None = None,  # if rubric has parser
-    task: str = "",
     info: Info | None = None,
     **kwargs
 ) -> float:
@@ -705,11 +914,12 @@ Abstract base class for all model clients. Wraps a provider-specific SDK client 
 | `OpenAIChatCompletionsClient` | `"openai_chat_completions"` | `AsyncOpenAI` | Chat Completions API (default) |
 | `OpenAICompletionsClient` | `"openai_completions"` | `AsyncOpenAI` | Legacy Completions API |
 | `OpenAIChatCompletionsTokenClient` | `"openai_chat_completions_token"` | `AsyncOpenAI` | Custom vLLM token route (`/v1/chat/completions/tokens`) — server-side templating + token IDs returned alongside content |
+| `OpenAIResponsesClient` | `"openai_responses"` | `AsyncOpenAI` | OpenAI Responses API |
 | `RendererClient` | `"renderer"` | `AsyncOpenAI` | Renderer-backed token-in generate client (client-side tokenization via the `renderers` package) |
 | `AnthropicMessagesClient` | `"anthropic_messages"` | `AsyncAnthropic` | Anthropic Messages API |
 | `NeMoRLChatCompletionsClient` | `"nemorl_chat_completions"` | `AsyncOpenAI` | NeMo-RL Chat Completions variant |
 
-All built-in clients are available as `vf.OpenAIChatCompletionsClient`, `vf.AnthropicMessagesClient`, etc.
+All built-in clients are available as `vf.OpenAIChatCompletionsClient`, `vf.AnthropicMessagesClient`, etc. `RendererClient` requires the optional renderer package; install it with `uv add "verifiers[renderers]"` before importing `vf.RendererClient` or using `client_type="renderer"`.
 
 ### Response
 

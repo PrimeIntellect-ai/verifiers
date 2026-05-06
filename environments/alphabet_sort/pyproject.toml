@@ -13,4 +13,4 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build]
-include = ["alphabet_sort.py"]
+include = ["alphabet_sort.py", "alphabet_sort_v1.py"]

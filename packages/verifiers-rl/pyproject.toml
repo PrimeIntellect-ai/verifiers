@@ -22,6 +22,19 @@ dependencies = [
     "flash-attn>=2.8.3",
 ]
 
+[tool.uv]
+preview = true
+
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+default = true
+exclude-newer = "7 days"
+
+[tool.uv.exclude-newer-package]
+# PrimeIntellect-published on PyPI (trusted publisher)
+verifiers = false
+
 [tool.uv.extra-build-dependencies]
 flash-attn = [{ requirement = "torch", match-runtime = true }]
 

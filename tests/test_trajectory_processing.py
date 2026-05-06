@@ -151,7 +151,6 @@ def test_process_trajectory_steps_for_training(make_input):
     state1 = State(
         input=make_input(
             prompt=[{"role": "user", "content": "Hello"}],
-            task="test",
         )
     )
     state1["trajectory"] = [
@@ -180,7 +179,6 @@ def test_process_trajectory_steps_for_training(make_input):
         input=make_input(
             prompt=[{"role": "user", "content": "Bye"}],
             example_id=1,
-            task="test",
         )
     )
     state2["trajectory"] = [
@@ -243,7 +241,6 @@ def test_process_trajectory_steps_skip_missing_tokens(make_input):
     state = State(
         input=make_input(
             prompt=[{"role": "user", "content": "Hello"}],
-            task="test",
         )
     )
     state["trajectory"] = [

@@ -125,15 +125,19 @@ class MultiTurnEnv(vf.Environment):
         prompt_messages = state["prompt"]
         state["completion"] = full_conversation[len(prompt_messages) :]
 
+    @vf.cleanup(priority=100)
+    async def render_state(self, state: State) -> None:
+        """Render core rollout fields before user cleanup handlers run."""
+        state["timing"].generation.end = time.time()
+        await self.render_completion(state)
+
     async def add_trajectory_step(self, state: State, trajectory_step: TrajectoryStep):
         """Override to set intermediate rewards, advantages, or extra metadata."""
         state["trajectory"].append(trajectory_step)
 
     async def _finalize_rollout(self, state: State) -> None:
-        """Finalize rollout: render timing/completion and run cleanup handlers exactly once."""
-        await self._cleanup(state)
-        state["timing"].generation.end = time.time()
-        await self.render_completion(state)
+        """Finalize rollout state and run cleanup handlers exactly once."""
+        await self.cleanup(state)
 
     async def add_model_response(
         self,
@@ -179,7 +183,6 @@ class MultiTurnEnv(vf.Environment):
                 state["error"] = e
             finally:
                 state["timing"].setup.end = time.time()
-            # checks all @vf.stop methods, runs all @vf.cleanup methods if any are True
             while not await self.is_completed(state):
                 try:
                     timing = state["timing"]
