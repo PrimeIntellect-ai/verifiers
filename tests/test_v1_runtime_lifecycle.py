@@ -691,6 +691,43 @@ async def test_base_program_submits_system_prompt_before_prompt() -> None:
 
 
 @pytest.mark.asyncio
+async def test_taskset_setup_initializes_base_harness_prompt_and_sampling() -> None:
+    @vf.setup
+    async def initialize_from_taskset(task, state) -> None:
+        runtime = state.runtime_state()
+        sampling_args = {"top_p": 1.0}
+        sampling_args.update(dict(runtime.get("sampling_args") or {}))
+        runtime["sampling_args"] = sampling_args
+        state.setdefault("prompt", []).append(
+            {"role": "user", "content": f"task {task['answer']}"}
+        )
+
+    taskset = vf.Taskset(
+        source=[{"prompt": [], "answer": "ready", "max_turns": 3}],
+        setups=[initialize_from_taskset],
+    )
+    env = vf.Env(taskset=taskset)
+    client = CapturingModelClient([fake_response(content="ok")])
+
+    state = await env.rollout(
+        taskset.task(taskset.rows()[0]),
+        cast(Client, client),
+        "fake",
+        {"temperature": 0.4},
+    )
+
+    prompt = cast(list[object], client.requests[0]["prompt"])
+    assert type(env.harness) is vf.Harness
+    assert [getattr(message, "role", None) for message in prompt] == ["user"]
+    assert getattr(prompt[0], "content", None) == "task ready"
+    assert client.requests[0]["sampling_args"] == {
+        "top_p": 1.0,
+        "temperature": 0.4,
+    }
+    assert state["runtime"]["max_turns"] == 3
+
+
+@pytest.mark.asyncio
 async def test_callable_tool_can_accept_name_argument() -> None:
     harness = vf.Harness(toolsets=[vf.Toolset(tools=[named_tool])])
     task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
