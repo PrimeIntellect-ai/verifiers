@@ -64,7 +64,7 @@ def completion_text(state: Mapping[str, Any]) -> str:
         if isinstance(last_message, Mapping):
             return str(last_message.get("content") or "")
         return str(getattr(last_message, "content", last_message) or "")
-    return str(state.get("agent_result") or "")
+    return ""
 
 
 def extract_dspy_answer(text: str) -> str:
