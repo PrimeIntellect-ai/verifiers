@@ -15,10 +15,10 @@
 - **Rubric overview**: Binary, returned by running task tests
 
 ### Quickstart
-Run an evaluation with default settings:
+Run the v1 Taskset/Harness path:
 
 ```bash
-prime eval run opencode-harbor
+prime eval run opencode-harbor -a '{"v1": true}'
 ```
 
 Configure model and sampling:
@@ -31,11 +31,14 @@ Notes:
 - Use `-a` / `--env-args` to pass environment-specific configuration as a JSON object.
 
 ### Environment Arguments
-Document any supported environment arguments and their meaning. Example:
 
 | Arg | Type | Default | Description |
 | --- | ---- | ------- | ----------- |
-| `max_examples` | int | `-1` | Limit on dataset size (use -1 for all) |
+| `v1` | bool | `false` | Use `vf.HarborTaskset` + `vf.OpenCode`. |
+| `dataset_path` | str | bundled `tasks/` | Local Harbor task directory or dataset directory. |
+| `dataset` | str | `null` | `terminal-bench-sample` or `terminal-bench` task selection. |
+| `tasks` | list[str] | `null` | Explicit Harbor task names to run. |
+| `max_turns` | int | `4` | Harness turn cap for the v1 path. |
 
 ### Metrics
 Summarize key metrics your rubric emits and how they’re interpreted.
@@ -47,12 +50,15 @@ Summarize key metrics your rubric emits and how they’re interpreted.
 
 ## How It Works
 
-1. Creates a Prime sandbox for each Harbor task
-2. Installs OpenCode CLI in the sandbox via curl
-3. Configures OpenCode with an `openai-compatible` provider pointing to the intercepted base URL
-4. Runs OpenCode autonomously on the task instruction
-5. Intercepts all API requests through Prime Tunnel
-6. Computes reward by running Harbor test scripts
+1. `vf.HarborTaskset` loads Harbor task rows and contributes sandbox settings,
+   task uploads, env vars, and the Harbor reward.
+2. `vf.OpenCode` contributes the reusable OpenCode CLI program, install/setup,
+   intercepted endpoint config, MCP tool proxy, and log artifact collection.
+3. v1 resolves both sides into one sandboxed command program at rollout time.
+4. Reward is computed by running the Harbor test scripts after the rollout.
+
+`HarborTaskset` and `OpenCode` are packaged under `verifiers.v1.packages` and
+re-exported from `verifiers.v1`.
 
 ## Requirements
 
@@ -70,7 +76,6 @@ Uses Harbor's standard reward mechanism:
 
 ## Notes
 
-- OpenCode is installed at runtime (adds ~10-20s to startup)
-- The agent writes `/tmp/vf_complete` when finished
+- OpenCode is installed at runtime.
 - Agent logs are saved to `/logs/agent/opencode.txt` in the sandbox
 - Uses `@ai-sdk/openai-compatible` provider for API interception

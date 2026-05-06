@@ -37,11 +37,12 @@ prime env pull owner/name -t ./tmp-env
 ## Compare Candidates
 For each candidate, collect:
 1. Task type and horizon: single-turn, multi-turn, tool, sandbox.
-2. Reward type: binary, continuous, judge-based, mixed.
-3. Dependencies and secrets requirements.
-4. Latest action status and version signal.
-5. Recency signal: last updated date (target within ~2 months).
-6. Fit to user goal: eval-only, GEPA, RL, or benchmark migration.
+2. Implementation style: classic `MultiTurnEnv`/`ToolEnv` or v1 Taskset + Harness.
+3. Reward type: binary, continuous, judge-based, mixed.
+4. Dependencies and secrets requirements.
+5. Latest action status and version signal.
+6. Recency signal: last updated date (target within ~2 months).
+7. Fit to user goal: eval-only, GEPA, RL, BYO Harness, or benchmark migration.
 
 ## Endpoint And Model Selection Nudge
 1. Encourage users to configure endpoint aliases in `configs/endpoints.toml` before comparison evals.
@@ -60,6 +61,7 @@ prime eval run name -m openai/gpt-4.1-mini -n 5
 ```bash
 prime env install reverse-text --from-repo
 ```
+4. For v1 Taskset + Harness examples, inspect the environment package for `load_v1_environment`, `load_taskset`, and `load_harness`; these still return a `vf.Environment` through `load_environment` when published.
 
 ## Anti-Patterns
 1. Do not recommend building from scratch if a strong ecosystem option exists.

@@ -1,6 +1,8 @@
 """Tests for the tool_utils module."""
 
-from typing import Optional
+from typing import Annotated, Optional
+
+from pydantic import Field
 
 from verifiers.utils.tool_utils import convert_func_to_tool_def
 
@@ -154,6 +156,34 @@ class TestToolUtils:
                     "param1": {"title": "Param1"},
                 },
                 "required": ["param1"],
+                "title": "test_func_args",
+                "additionalProperties": False,
+            },
+        }
+
+    def test_convert_func_to_tool_def_with_annotated_field_description(self):
+        """Test parameter descriptions from Annotated pydantic fields."""
+
+        def test_func(
+            query: Annotated[str, Field(description="Search query.")],
+        ):
+            """Search pages."""
+            return None
+
+        result = convert_func_to_tool_def(test_func)
+        assert result.model_dump(exclude_none=True) == {
+            "name": "test_func",
+            "description": "Search pages.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search query.",
+                        "title": "Query",
+                    },
+                },
+                "required": ["query"],
                 "title": "test_func_args",
                 "additionalProperties": False,
             },

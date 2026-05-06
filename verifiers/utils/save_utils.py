@@ -174,11 +174,10 @@ def state_to_output(
         prompt=state.get("prompt"),
         completion=state.get("completion"),
         answer=state.get("answer", ""),
-        task=state.get("task", "default"),
         info=state.get("info", {}),
         reward=state.get("reward", 0.0),
         error=state.get("error", None),
-        timing=state["timing"].model_dump(),
+        timing=serialize_timing(state["timing"]),
         is_completed=state.get("is_completed", False),
         is_truncated=state.get("is_truncated", False),
         stop_condition=state.get("stop_condition", None),
@@ -231,15 +230,27 @@ def state_to_output(
         )
         output["completion"] = output_completion
     # use repr for error
-    if state.get("error") is not None:
-        error_chain = ErrorChain(state.get("error"))
-        output["error"] = ErrorInfo(
-            error=type(state.get("error")).__name__,
-            error_chain_repr=repr(error_chain),
-            error_chain_str=str(error_chain),
-        )
-        output["error_chain"] = repr(error_chain)
-        output["long_error_chain"] = str(error_chain)
+    error = state.get("error")
+    if error is not None:
+        if isinstance(error, Mapping) and {
+            "error",
+            "error_chain_repr",
+            "error_chain_str",
+        } <= set(error):
+            output["error"] = ErrorInfo(
+                error=str(error["error"]),
+                error_chain_repr=str(error["error_chain_repr"]),
+                error_chain_str=str(error["error_chain_str"]),
+            )
+        else:
+            error_chain = ErrorChain(cast(BaseException, error))
+            output["error"] = ErrorInfo(
+                error=type(error).__name__,
+                error_chain_repr=repr(error_chain),
+                error_chain_str=str(error_chain),
+            )
+        output["error_chain"] = output["error"]["error_chain_repr"]
+        output["long_error_chain"] = output["error"]["error_chain_str"]
     # only include optional fields if non-empty
     if "answer" in output and not output["answer"]:
         output.pop("answer")
@@ -260,6 +271,15 @@ def state_to_output(
         output[col] = value
 
     return output
+
+
+def serialize_timing(timing: object) -> dict[str, Any]:
+    model_dump = getattr(timing, "model_dump", None)
+    if callable(model_dump):
+        return cast(dict[str, Any], model_dump())
+    if isinstance(timing, Mapping):
+        return dict(cast(Mapping[str, Any], timing))
+    raise TypeError("state['timing'] must be a RolloutTiming or mapping.")
 
 
 def states_to_outputs(

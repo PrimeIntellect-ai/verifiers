@@ -1,0 +1,18 @@
+schema_version = "1.1"
+
+[task]
+name = "verifiers/rlm-swe-v1-smoke"
+description = "Smoke task for the v1 RLM Harbor environment."
+authors = []
+keywords = ["demo", "rlm", "harbor"]
+
+[verifier]
+timeout_sec = 300.0
+
+[agent]
+timeout_sec = 600.0
+
+[environment]
+cpus = 1
+memory_mb = 2048
+allow_internet = true

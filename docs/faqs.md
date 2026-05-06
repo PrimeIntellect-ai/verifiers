@@ -83,7 +83,7 @@ Reward functions receive any of these via `**kwargs`:
 - `prompt` - the input prompt
 - `state` - full rollout state
 - `parser` - the rubric's parser (if set)
-- `task` - task identifier
+- `task` - `vf.Task` object for taskset-backed environments
 - `info` - metadata dict from dataset
 
 Just include the ones you need in your function signature.

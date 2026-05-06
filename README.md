@@ -124,9 +124,76 @@ def load_environment(dataset_name: str = 'gsm8k') -> vf.Environment:
     async def correct_answer(completion, answer) -> float:
         completion_ans = completion[-1]['content']
         return 1.0 if completion_ans == answer else 0.0
-    rubric = Rubric(funcs=[correct_answer])
+    rubric = vf.Rubric(funcs=[correct_answer])
     env = vf.SingleTurnEnv(dataset=dataset, rubric=rubric)
     return env
+```
+
+For composable environments with reusable tasksets, toolsets, custom programs,
+or custom harnesses, use the v1 BYO Harness path:
+```python
+# my_env.py
+import verifiers.v1 as vf
+
+def source():
+    yield {
+        "prompt": [{"role": "user", "content": "Reverse abc."}],
+        "answer": "cba",
+        "max_turns": 1,
+    }
+
+@vf.reward(weight=1.0)
+async def contains_answer(task, state) -> float:
+    return float(task["answer"] in str(state.get("completion") or ""))
+
+def load_taskset(config=None):
+    return vf.Taskset(source=source, rewards=[contains_answer], config=config)
+
+def load_environment(config=None) -> vf.Env:
+    config = config or {}
+    return vf.Env(taskset=load_taskset(config.get("taskset")))
+```
+If no harness is passed, `vf.Env` uses the base endpoint-backed harness. See
+**[BYO Harness](docs/byo-harness.md)** for the advanced v1 taskset/harness API.
+Reusable taskset and harness packages live under `verifiers.v1.packages` while
+the v1 API stabilizes, and are re-exported from `verifiers.v1` for normal use.
+For example, Harbor task directories can run through the bundled OpenCode CLI
+harness with:
+
+```python
+env = vf.Env(
+    taskset=vf.HarborTaskset(tasks="/path/to/harbor/tasks"),
+    harness=vf.OpenCode(),
+)
+```
+
+The same environment package is the unit used by evals and `prime-rl`. The
+trainer owns model, endpoint, sampling, and rollout count; v1-specific taskset
+and harness options stay under `env.args.config`:
+
+```toml
+# configs/rl/my-v1-env.toml
+model = "Qwen/Qwen3-30B-A3B-Instruct-2507"
+max_steps = 100
+batch_size = 256
+rollouts_per_example = 8
+
+[sampling]
+max_tokens = 4096
+
+[[env]]
+id = "my-env"
+
+[env.args.config.harness]
+max_turns = 1
+
+[env.args.config.taskset.scoring.contains_answer]
+weight = 1.0
+```
+
+```bash
+prime env install my-env
+uv run prime-rl configs/rl/my-v1-env.toml
 ```
 
 To install the environment module into your project, do:
@@ -163,6 +230,8 @@ prime eval run primeintellect/math-python
 ## Documentation
 
 **[Environments](docs/environments.md)** — Create datasets, rubrics, and custom multi-turn interaction protocols.
+
+**[BYO Harness](docs/byo-harness.md)** — Build composable v1 taskset/harness environments with custom tools, sandboxes, users, and custom programs.
 
 **[Evaluation](docs/evaluation.md)** - Evaluate models using your environments.
 

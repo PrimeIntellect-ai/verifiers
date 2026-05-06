@@ -249,7 +249,7 @@ async def test_reverse_text_single_turn(tokenizer_and_renderer, model_family):
             "prompt": input_messages,
             "answer": "olleh",
             "example_id": 0,
-            "task": "reverse-text",
+            "info": {"env_id": "reverse-text"},
         },
         client=client,
         model=model_name,
@@ -356,7 +356,7 @@ async def test_alphabet_sort_multi_turn(tokenizer_and_renderer, model_family):
         input={
             "prompt": [{"role": "user", "content": turn1_prompt}],
             "example_id": 0,
-            "task": "alphabet-sort",
+            "info": {"env_id": "alphabet-sort"},
         },
         client=client,
         model=model_name,

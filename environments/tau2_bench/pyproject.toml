@@ -1,0 +1,26 @@
+[project]
+name = "tau2-bench-v1"
+version = "0.1.0"
+description = "τ²-bench as a verifiers v1 taskset/harness environment."
+tags = ["tau2", "tool-use", "user-sim", "multi-turn", "v1"]
+requires-python = ">=3.11"
+dependencies = [
+    "verifiers>=0.1.9",
+    "datasets",
+    "loguru",
+    "tau2 @ git+https://github.com/sierra-research/tau2-bench.git@337326e",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["tau2_bench.py", "pyproject.toml"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.verifiers.eval]
+num_examples = 3
+rollouts_per_example = 1

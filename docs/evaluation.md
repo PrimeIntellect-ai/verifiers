@@ -149,7 +149,7 @@ key = "ANTHROPIC_API_KEY"
 api_client_type = "anthropic_messages"
 ```
 
-Each endpoint entry supports an optional `api_client_type` field to select the client implementation (defaults to `"openai_chat_completions"`). Use `"anthropic_messages"` for Anthropic models when calling the Anthropic API directly.
+Each endpoint entry supports an optional `api_client_type` field to select the client implementation (defaults to `"openai_chat_completions"`). Use `"anthropic_messages"` for Anthropic models when calling the Anthropic API directly, and `"openai_responses"` for OpenAI-compatible Responses endpoints.
 
 Optional HTTP headers for inference requests use a short TOML key `headers` (inline table). The alias `extra_headers` is accepted with the same shape; do not set both on one row.
 
@@ -382,6 +382,24 @@ num_examples = 50
 difficulty = "hard"
 split = "test"
 ```
+
+For v1 BYO Harness environments, pass taskset/harness config under
+`env_args.config`:
+
+```toml
+[[eval]]
+env_id = "my-v1-env"
+sampling_args = { max_tokens = 4096 }
+
+[eval.env_args.config.harness]
+max_turns = 4
+
+[eval.env_args.config.taskset.scoring.exact_answer]
+weight = 0.5
+```
+
+See [BYO Harness](byo-harness.md#toml-config) for the matching RL config shape
+and v1 callable/toolset patterns.
 
 ### Ablation Sweeps
 
