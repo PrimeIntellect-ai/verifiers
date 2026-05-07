@@ -472,11 +472,25 @@ class RendererClient(
         )
 
     async def to_native_tool(self, tool: Tool) -> ToolSpec:
-        return ToolSpec(
-            name=tool.name,
-            description=tool.description or "",
-            parameters=tool.parameters or {},
-        )
+        # Wrap in the OpenAI envelope (``{"type": "function", "function":
+        # {...}}``) — the same shape ``OpenAIChatCompletionsClient`` sends
+        # to ``apply_chat_template`` server-side under TITO/MITO. Modern
+        # function-calling models (Qwen3 family, GLM, Kimi, ...) saw the
+        # envelope at training time, so the renderer's prompt has to match.
+        # Earlier versions emitted bare ``{name, description, parameters}``
+        # which is out-of-distribution and silently breaks tool calling
+        # (model never emits ``<tool_call>`` blocks → reward 0). The
+        # rendered ``ToolSpec`` TypedDict is a plain dict at runtime;
+        # ``cast`` here keeps type-check parity until the renderers package
+        # publishes an envelope-shaped ``ToolSpec``.
+        function: dict[str, Any] = {
+            "name": tool.name,
+            "description": tool.description or "",
+            "parameters": tool.parameters or {},
+        }
+        if tool.strict is not None:
+            function["strict"] = tool.strict
+        return cast(ToolSpec, {"type": "function", "function": function})
 
     # ── Core request cycle ──────────────────────────────────────────
 
