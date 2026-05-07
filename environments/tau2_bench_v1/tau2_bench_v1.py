@@ -677,47 +677,73 @@ async def tau2_num_user_tool_calls(task, state) -> float:
     return float(state.get("num_user_tool_calls", 0.0))
 
 
+class Tau2TasksetConfig(vf.TasksetConfig):
+    domain: str = "telecom"
+    user_model: str = DEFAULT_USER_MODEL
+    user_args: dict[str, object] | None = None
+    user_base_url: str = DEFAULT_USER_BASE_URL
+    user_api_key_var: str = DEFAULT_USER_API_KEY_VAR
+    max_steps: int = DEFAULT_MAX_STEPS
+    max_errors: int = DEFAULT_MAX_ERRORS
+    max_turns: int = DEFAULT_MAX_STEPS
+
+
 class Tau2Taskset(vf.Taskset):
+    config_type = Tau2TasksetConfig
+
     def __init__(
         self,
-        domain: str = "telecom",
+        domain: str | None = None,
         *,
-        user_model: str = DEFAULT_USER_MODEL,
+        user_model: str | None = None,
         user_args: Mapping[str, object] | None = None,
-        user_base_url: str = DEFAULT_USER_BASE_URL,
-        user_api_key_var: str = DEFAULT_USER_API_KEY_VAR,
-        max_steps: int = DEFAULT_MAX_STEPS,
-        max_errors: int = DEFAULT_MAX_ERRORS,
-        max_turns: int = DEFAULT_MAX_STEPS,
-        config=None,
+        user_base_url: str | None = None,
+        user_api_key_var: str | None = None,
+        max_steps: int | None = None,
+        max_errors: int | None = None,
+        max_turns: int | None = None,
+        config: vf.TasksetConfig | Mapping[str, object] | None = None,
     ):
-        resolved_user_args = DEFAULT_LLM_ARGS_USER if user_args is None else user_args
-        session_factory = load_session_factory(
+        config = Tau2TasksetConfig(
+            config,
             domain=domain,
             user_model=user_model,
-            user_args=tau2_user_args(
-                resolved_user_args, user_base_url, user_api_key_var
-            ),
-            max_steps=max_steps,
-            max_errors=max_errors,
-        )
-        toolset = load_toolset(
-            domain=domain,
-            user_model=user_model,
-            user_args=resolved_user_args,
+            user_args=dict(user_args) if user_args is not None else None,
             user_base_url=user_base_url,
             user_api_key_var=user_api_key_var,
             max_steps=max_steps,
             max_errors=max_errors,
+            max_turns=max_turns,
+        )
+        resolved_user_args = (
+            DEFAULT_LLM_ARGS_USER if config.user_args is None else config.user_args
+        )
+        session_factory = load_session_factory(
+            domain=config.domain,
+            user_model=config.user_model,
+            user_args=tau2_user_args(
+                resolved_user_args, config.user_base_url, config.user_api_key_var
+            ),
+            max_steps=config.max_steps,
+            max_errors=config.max_errors,
+        )
+        toolset = load_toolset(
+            domain=config.domain,
+            user_model=config.user_model,
+            user_args=resolved_user_args,
+            user_base_url=config.user_base_url,
+            user_api_key_var=config.user_api_key_var,
+            max_steps=config.max_steps,
+            max_errors=config.max_errors,
             session_factory=session_factory,
         )
 
         def load_rows():
-            return source(domain, max_turns=max_turns)
+            return source(config.domain, max_turns=config.max_turns)
 
         super().__init__(
             source=load_rows,
-            taskset_id=f"tau2_{domain}",
+            taskset_id=f"tau2_{config.domain}",
             setups=[make_tau2_setup(session_factory)],
             rewards=[tau2_reward],
             metrics=[
@@ -733,16 +759,16 @@ class Tau2Taskset(vf.Taskset):
 
 
 def load_taskset(
-    domain: str = "telecom",
+    domain: str | None = None,
     *,
-    user_model: str = DEFAULT_USER_MODEL,
+    user_model: str | None = None,
     user_args: Mapping[str, object] | None = None,
-    user_base_url: str = DEFAULT_USER_BASE_URL,
-    user_api_key_var: str = DEFAULT_USER_API_KEY_VAR,
-    max_steps: int = DEFAULT_MAX_STEPS,
-    max_errors: int = DEFAULT_MAX_ERRORS,
-    max_turns: int = DEFAULT_MAX_STEPS,
-    config=None,
+    user_base_url: str | None = None,
+    user_api_key_var: str | None = None,
+    max_steps: int | None = None,
+    max_errors: int | None = None,
+    max_turns: int | None = None,
+    config: vf.TasksetConfig | Mapping[str, object] | None = None,
 ) -> Tau2Taskset:
     return Tau2Taskset(
         domain=domain,
@@ -767,16 +793,23 @@ def load_v1_environment(
     max_steps: int = DEFAULT_MAX_STEPS,
     max_errors: int = DEFAULT_MAX_ERRORS,
     max_turns: int = DEFAULT_MAX_STEPS,
+    config: vf.EnvConfig | None = None,
 ) -> vf.Env:
+    config = vf.EnvConfig(
+        config,
+        taskset=Tau2TasksetConfig(
+            domain=domain,
+            user_model=user_model,
+            user_args=dict(user_args) if user_args is not None else None,
+            user_base_url=user_base_url,
+            user_api_key_var=user_api_key_var,
+            max_steps=max_steps,
+            max_errors=max_errors,
+            max_turns=max_turns,
+        ),
+    )
     taskset = load_taskset(
-        domain=domain,
-        user_model=user_model,
-        user_args=user_args,
-        user_base_url=user_base_url,
-        user_api_key_var=user_api_key_var,
-        max_steps=max_steps,
-        max_errors=max_errors,
-        max_turns=max_turns,
+        config=config.taskset,
     )
     return vf.Env(taskset=taskset)
 
@@ -791,6 +824,7 @@ def load_environment(
     max_steps: int = DEFAULT_MAX_STEPS,
     max_errors: int = DEFAULT_MAX_ERRORS,
     max_turns: int = DEFAULT_MAX_STEPS,
+    config: vf.EnvConfig | None = None,
 ) -> vf.Env:
     return load_v1_environment(
         domain=domain,
@@ -801,4 +835,5 @@ def load_environment(
         max_steps=max_steps,
         max_errors=max_errors,
         max_turns=max_turns,
+        config=config,
     )
