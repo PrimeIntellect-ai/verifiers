@@ -18,6 +18,7 @@ from verifiers.types import ClientConfig
 from verifiers.types import Response, ResponseMessage, ToolCall
 from verifiers.types import Tool
 from verifiers.v1.runtime import Runtime
+from verifiers.v1.utils.endpoint_utils import endpoint_api_key
 from verifiers.v1.utils import mcp_utils
 from verifiers.v1.utils.mcp_proxy_utils import MCP_PROXY_CONFIG_PATH, MCP_PROXY_PATH
 from verifiers.v1.utils.mcp_proxy_utils import proxy_command, proxy_source
@@ -284,16 +285,18 @@ async def endpoint_program(task, state):
     root = state["endpoint_root_url"].rstrip("/")
     client = state.get_client(api="chat")
     config = state.get_endpoint_config(api="responses")
+    auth_headers = {"Authorization": f"Bearer {config['api_key']}"}
 
     def get_json(url: str) -> dict[str, object]:
-        with urllib.request.urlopen(url) as response:
+        request = urllib.request.Request(url, headers=auth_headers)
+        with urllib.request.urlopen(request) as response:
             return json.loads(response.read().decode())
 
     def post_json(url: str, payload: dict[str, object]) -> dict[str, object]:
         request = urllib.request.Request(
             url,
             data=json.dumps(payload).encode(),
-            headers={"content-type": "application/json"},
+            headers={"content-type": "application/json", **auth_headers},
         )
         with urllib.request.urlopen(request) as response:
             return json.loads(response.read().decode())
@@ -342,7 +345,7 @@ async def mcp_proxy_program(task, state):
         json.dumps(
             {
                 "tool_base_url": f"{state['endpoint_root_url'].rstrip('/')}/vf/tools",
-                "tool_api_key": "intercepted",
+                "tool_api_key": endpoint_api_key(state),
             }
         )
     )
@@ -777,7 +780,7 @@ async def test_command_env_exposes_model_endpoint_without_tool_payloads() -> Non
     env = await command_env({}, task, state, harness.runtime, include_base=False)
 
     assert env["OPENAI_BASE_URL"] == "http://127.0.0.1:1/rollout/test/v1"
-    assert env["OPENAI_API_KEY"] == "intercepted"
+    assert env["OPENAI_API_KEY"] == harness.endpoint.secret
     assert set(env) == {
         "ANTHROPIC_API_KEY",
         "ANTHROPIC_BASE_URL",
@@ -924,7 +927,7 @@ def test_program_tools_mcp_injects_proxy_into_sandbox_program() -> None:
     config = json.loads(files[MCP_PROXY_CONFIG_PATH])
     assert config == {
         "tool_base_url": "http://127.0.0.1:1/rollout/test/vf/tools",
-        "tool_api_key": "intercepted",
+        "tool_api_key": harness.endpoint.secret,
     }
     assert proxy_command() == ["python3", MCP_PROXY_PATH, MCP_PROXY_CONFIG_PATH]
     packages = sandbox["packages"]

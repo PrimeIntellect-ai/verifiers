@@ -138,10 +138,12 @@ class Endpoint:
         logger: logging.Logger | None = None,
     ):
         self.port = get_free_port() if port is None else port
-        self.secret = secret or os.environ.get("ENDPOINT_SECRET")
         self.use_tunnel = use_tunnel
         self.logger = logger or logging.getLogger(__name__)
-        self.server = InterceptionServer(self.port, secret=self.secret)
+        self.server = InterceptionServer(
+            self.port, secret=secret or os.environ.get("ENDPOINT_SECRET")
+        )
+        self.secret = self.server.secret
         self._tunnel: object | None = None
         self._tunnel_lock = asyncio.Lock()
         self._tunnel_last_checked = 0.0

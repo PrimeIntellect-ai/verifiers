@@ -321,9 +321,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         env_vars.setdefault("OPENAI_TIMEOUT", "3600")
         env_vars.setdefault("OPENAI_REQUEST_TIMEOUT", "3600")
         env_vars.setdefault("HTTPX_TIMEOUT", "3600")
-        secret = os.environ.get("INTERCEPTION_SECRET")
-        if secret:
-            env_vars["OPENAI_API_KEY"] = secret
+        env_vars["OPENAI_API_KEY"] = self._require_interception_server().secret
         model = state.get("model")
         if model:
             env_vars["OPENAI_MODEL"] = model
