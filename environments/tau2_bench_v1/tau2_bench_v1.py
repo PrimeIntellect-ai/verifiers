@@ -811,7 +811,7 @@ def load_v1_environment(
     taskset = load_taskset(
         config=config.taskset,
     )
-    return vf.Env(taskset=taskset)
+    return vf.Env(taskset=taskset, harness=vf.Harness(config=config.harness))
 
 
 def load_environment(

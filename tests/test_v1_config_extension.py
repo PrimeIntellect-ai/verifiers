@@ -1262,6 +1262,130 @@ def test_bfcl_v1_loader_preserves_mapping_config_sections(
     assert isinstance(seen["harness_config"], module.BFCLHarnessConfig)
 
 
+def test_tau2_loader_forwards_mapping_harness_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_tau2_import_stubs(monkeypatch)
+    module = importlib.import_module("environments.tau2_bench_v1.tau2_bench_v1")
+    seen: dict[str, object] = {}
+
+    def fake_taskset(config: object = None) -> Taskset:
+        seen["taskset_config"] = config
+        return Taskset(source=source_loader)
+
+    monkeypatch.setattr(module, "load_taskset", fake_taskset)
+
+    env = module.load_v1_environment(
+        config=EnvConfig(
+            taskset={"max_turns": 7},
+            harness={"model": "configured-model", "max_turns": 3},
+        )
+    )
+
+    assert type(env.harness) is Harness
+    assert env.harness.config.model == "configured-model"
+    assert env.harness.config.max_turns == 3
+    assert isinstance(seen["taskset_config"], module.Tau2TasksetConfig)
+    assert seen["taskset_config"].max_turns == 7
+
+
+def install_tau2_import_stubs(monkeypatch: pytest.MonkeyPatch) -> None:
+    modules = [
+        "tau2",
+        "tau2.agent",
+        "tau2.agent.llm_agent",
+        "tau2.config",
+        "tau2.data_model",
+        "tau2.data_model.message",
+        "tau2.data_model.simulation",
+        "tau2.data_model.tasks",
+        "tau2.environment",
+        "tau2.environment.environment",
+        "tau2.evaluator",
+        "tau2.evaluator.evaluator",
+        "tau2.orchestrator",
+        "tau2.orchestrator.orchestrator",
+        "tau2.registry",
+        "tau2.run",
+        "tau2.user",
+        "tau2.user.user_simulator",
+        "tau2.utils",
+        "tau2.utils.utils",
+    ]
+    for module_name in modules:
+        monkeypatch.setitem(sys.modules, module_name, types.ModuleType(module_name))
+
+    llm_agent = sys.modules["tau2.agent.llm_agent"]
+    llm_agent.AGENT_INSTRUCTION = "agent"
+    llm_agent.SYSTEM_PROMPT = "{agent_instruction} {domain_policy}"
+    llm_agent.LLMAgent = type("LLMAgent", (), {})
+    llm_agent.is_valid_agent_history_message = lambda message: True
+
+    config = sys.modules["tau2.config"]
+    config.DEFAULT_LLM_ARGS_AGENT = {}
+    config.DEFAULT_LLM_ARGS_USER = {}
+    config.DEFAULT_MAX_ERRORS = 10
+    config.DEFAULT_MAX_STEPS = 20
+
+    message = sys.modules["tau2.data_model.message"]
+    for name in (
+        "AssistantMessage",
+        "Message",
+        "MultiToolMessage",
+        "ToolCall",
+        "ToolMessage",
+        "UserMessage",
+    ):
+        setattr(message, name, type(name, (), {}))
+
+    simulation = sys.modules["tau2.data_model.simulation"]
+    simulation.SimulationRun = type("SimulationRun", (), {})
+    simulation.TerminationReason = type(
+        "TerminationReason",
+        (),
+        {
+            "AGENT_ERROR": "agent_error",
+            "AGENT_STOP": "agent_stop",
+            "MAX_STEPS": "max_steps",
+            "TOO_MANY_ERRORS": "too_many_errors",
+            "USER_STOP": "user_stop",
+        },
+    )
+
+    tasks = sys.modules["tau2.data_model.tasks"]
+    tasks.Task = type("Task", (), {})
+
+    environment = sys.modules["tau2.environment.environment"]
+    environment.Environment = type("Environment", (), {})
+
+    evaluator = sys.modules["tau2.evaluator.evaluator"]
+    evaluator.EvaluationType = type("EvaluationType", (), {"ALL": "all"})
+    evaluator.evaluate_simulation = lambda **kwargs: None
+
+    orchestrator = sys.modules["tau2.orchestrator.orchestrator"]
+    orchestrator.DEFAULT_FIRST_AGENT_MESSAGE = object()
+    orchestrator.Role = type(
+        "Role", (), {"AGENT": "agent", "ENV": "env", "USER": "user"}
+    )
+
+    registry_module = sys.modules["tau2.registry"]
+    registry_module.registry = type(
+        "Registry", (), {"get_env_constructor": lambda *args: None}
+    )()
+
+    run = sys.modules["tau2.run"]
+    run.load_tasks = lambda *args, **kwargs: []
+
+    user_simulator = sys.modules["tau2.user.user_simulator"]
+    user_simulator.UserSimulator = type("UserSimulator", (), {})
+    user_simulator.is_valid_user_history_message = lambda message: True
+
+    utils = sys.modules["tau2.utils.utils"]
+    utils.DATA_DIR = "unused"
+    utils.format_time = lambda value: str(value)
+    utils.get_now = lambda: "now"
+
+
 def test_self_judge_loader_projects_shortcuts_to_child_configs() -> None:
     module = importlib.import_module(
         "environments.hello_self_judge_v1.hello_self_judge_v1"
