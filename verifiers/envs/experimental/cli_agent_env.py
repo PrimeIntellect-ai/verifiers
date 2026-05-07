@@ -311,17 +311,23 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             "HTTPX_TIMEOUT",
             "OPENAI_MODEL",
             "OPENAI_API_KEY",
+            "ANTHROPIC_BASE_URL",
+            "ANTHROPIC_API_KEY",
         }
     )
 
     async def build_env_vars(self, state: State) -> dict[str, str]:
         """Build environment variables for the sandbox. Override to add custom vars."""
         env_vars = dict(self.environment_vars) if self.environment_vars else {}
-        env_vars["OPENAI_BASE_URL"] = state["interception_base_url"]
+        interception_base_url = str(state["interception_base_url"]).rstrip("/")
+        env_vars["OPENAI_BASE_URL"] = interception_base_url
+        env_vars["ANTHROPIC_BASE_URL"] = interception_base_url.removesuffix("/v1")
         env_vars.setdefault("OPENAI_TIMEOUT", "3600")
         env_vars.setdefault("OPENAI_REQUEST_TIMEOUT", "3600")
         env_vars.setdefault("HTTPX_TIMEOUT", "3600")
-        env_vars["OPENAI_API_KEY"] = self._require_interception_server().secret
+        secret = self._require_interception_server().secret
+        env_vars["OPENAI_API_KEY"] = secret
+        env_vars["ANTHROPIC_API_KEY"] = secret
         model = state.get("model")
         if model:
             env_vars["OPENAI_MODEL"] = model
