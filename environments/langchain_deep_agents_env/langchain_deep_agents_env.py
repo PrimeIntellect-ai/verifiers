@@ -1,13 +1,35 @@
 from __future__ import annotations
 
+import ast
+import math
+import operator
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 
 import verifiers as vf
 from verifiers.utils.data_utils import load_example_dataset
 
 ANSWER_RE = re.compile(r"^\s*ANSWER\s*:?\s*(.+?)\s*$", re.IGNORECASE)
+
+MAX_EXPRESSION_LENGTH = 256
+MAX_AST_NODES = 64
+MAX_ABSOLUTE_VALUE = 1e100
+MAX_POWER_EXPONENT = 100
+
+BINARY_OPERATORS: dict[type[ast.operator], Callable[[float, float], float]] = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.Div: operator.truediv,
+    ast.FloorDiv: operator.floordiv,
+    ast.Mod: operator.mod,
+    ast.Pow: operator.pow,
+}
+UNARY_OPERATORS: dict[type[ast.unaryop], Callable[[float], float]] = {
+    ast.UAdd: operator.pos,
+    ast.USub: operator.neg,
+}
 
 SYSTEM_PROMPT = (
     "You are a math problem solver. Use the calculate tool to evaluate "
@@ -17,19 +39,55 @@ SYSTEM_PROMPT = (
 )
 
 
+def _check_numeric_limit(value: float) -> float:
+    if not math.isfinite(value) or abs(value) > MAX_ABSOLUTE_VALUE:
+        raise ValueError("result is too large")
+    return value
+
+
+def _evaluate_math_node(node: ast.AST) -> float:
+    if isinstance(node, ast.Expression):
+        return _evaluate_math_node(node.body)
+    if isinstance(node, ast.Constant):
+        if isinstance(node.value, bool) or not isinstance(node.value, int | float):
+            raise ValueError("only numeric literals are allowed")
+        return _check_numeric_limit(node.value)
+    if isinstance(node, ast.UnaryOp) and type(node.op) in UNARY_OPERATORS:
+        return _check_numeric_limit(
+            UNARY_OPERATORS[type(node.op)](_evaluate_math_node(node.operand))
+        )
+    if isinstance(node, ast.BinOp) and type(node.op) in BINARY_OPERATORS:
+        left = _evaluate_math_node(node.left)
+        right = _evaluate_math_node(node.right)
+        if isinstance(node.op, ast.Pow) and abs(right) > MAX_POWER_EXPONENT:
+            raise ValueError("exponent is too large")
+        return _check_numeric_limit(BINARY_OPERATORS[type(node.op)](left, right))
+    raise ValueError("only arithmetic expressions are allowed")
+
+
+def evaluate_math_expression(expression: str) -> float:
+    expression = expression.strip()
+    if len(expression) > MAX_EXPRESSION_LENGTH:
+        raise ValueError("expression is too long")
+    tree = ast.parse(expression, mode="eval")
+    if sum(1 for _ in ast.walk(tree)) > MAX_AST_NODES:
+        raise ValueError("expression is too complex")
+    return _evaluate_math_node(tree)
+
+
+def calculate(expression: str) -> str:
+    """Evaluate a mathematical expression and return the result."""
+    try:
+        result = evaluate_math_expression(expression)
+    except Exception as exc:
+        return f"Error: {exc}"
+    return str(result)
+
+
 async def run_langchain_deep_agents_program(task: Mapping[str, Any], state: Any):
     from deepagents import create_deep_agent
     from langchain_core.tools import tool
     from langchain_openai import ChatOpenAI
-
-    @tool
-    def calculate(expression: str) -> str:
-        """Evaluate a mathematical expression and return the result."""
-        try:
-            result = eval(expression, {"__builtins__": {}}, {})
-        except Exception as exc:
-            return f"Error: {exc}"
-        return str(result)
 
     endpoint_config = state.get_endpoint_config(api="chat")
     model = ChatOpenAI(
@@ -39,7 +97,7 @@ async def run_langchain_deep_agents_program(task: Mapping[str, Any], state: Any)
     )
     agent = create_deep_agent(
         model=model,
-        tools=[calculate],
+        tools=[tool(calculate)],
         system_prompt=SYSTEM_PROMPT,
     )
 
