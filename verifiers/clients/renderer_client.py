@@ -474,8 +474,8 @@ class RendererClient(
     async def to_native_tool(self, tool: Tool) -> ToolSpec:
         function: dict[str, Any] = {
             "name": tool.name,
-            "description": tool.description or "",
-            "parameters": tool.parameters or {},
+            "description": tool.description,
+            "parameters": tool.parameters,
         }
         if tool.strict is not None:
             function["strict"] = tool.strict
