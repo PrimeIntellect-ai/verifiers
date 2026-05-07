@@ -789,6 +789,36 @@ async def test_command_env_exposes_model_endpoint_without_tool_payloads() -> Non
     }
 
 
+@pytest.mark.asyncio
+async def test_command_env_endpoint_auth_overrides_inherited_keys(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.openai.invalid/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "host-openai-key")
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://api.anthropic.invalid")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "host-anthropic-key")
+
+    harness = vf.Harness(toolsets=[vf.Toolset(tools=[echo_tool])])
+    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+    state = vf.State.for_task(task)
+    state["endpoint_root_url"] = "http://127.0.0.1:1/rollout/test"
+    state["endpoint_base_url"] = "http://127.0.0.1:1/rollout/test/v1"
+    harness.runtime.prepare_state(task, state)
+
+    env = await command_env({}, task, state, harness.runtime, include_base=True)
+    explicit_env = await command_env(
+        {"env": {"OPENAI_API_KEY": "program-key"}},
+        task,
+        state,
+        harness.runtime,
+        include_base=True,
+    )
+
+    assert env["OPENAI_BASE_URL"] == "http://127.0.0.1:1/rollout/test/v1"
+    assert env["OPENAI_API_KEY"] == harness.endpoint.secret
+    assert env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:1/rollout/test"
+    assert env["ANTHROPIC_API_KEY"] == harness.endpoint.secret
+    assert explicit_env["OPENAI_API_KEY"] == "program-key"
+
+
 def test_sandbox_base_program_uses_openai_tool_payloads() -> None:
     task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
     state = vf.State.for_task(task)
