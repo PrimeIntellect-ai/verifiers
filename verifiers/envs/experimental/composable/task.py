@@ -316,6 +316,7 @@ class TaskSet:
         out_path: str | Path | None = None,
         max_retries: int = 0,
         resume: bool = False,
+        sandbox_client_max_workers: int | None = None,
         test_output_tail_chars: int = 2000,
     ) -> list[dict]:
         """Validate instances with streaming progress and crash-safe output.
@@ -345,6 +346,10 @@ class TaskSet:
             rows are returned in the result list unchanged (so downstream
             analysis sees the union of old + new). If False (default),
             ``out_path`` is truncated at start.
+        sandbox_client_max_workers:
+            Max worker threads for the sandbox client used by sandbox taskset
+            validation. Defaults to the threaded sandbox client's standard
+            worker cap; pass an explicit value to raise or lower it.
         test_output_tail_chars:
             Number of trailing characters of ``state["test_output"]`` to
             store in each result's ``test_output_tail``. Default 2000,
@@ -541,9 +546,7 @@ class TaskSet:
                 ThreadedAsyncSandboxClient,
             )
 
-            client = ThreadedAsyncSandboxClient(
-                max_workers=min(max(1, concurrency // 8), 50)
-            )
+            client = ThreadedAsyncSandboxClient(max_workers=sandbox_client_max_workers)
             assert isinstance(self, SandboxTaskSet)
 
             async def _validate_once(i: int) -> tuple[bool, BaseException | None, dict]:

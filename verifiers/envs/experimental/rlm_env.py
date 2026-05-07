@@ -2378,7 +2378,7 @@ class RLMEnv(vf.StatefulToolEnv):
         sandbox_timeout_minutes: int = 60,
         sandbox_environment_vars: dict[str, str] | None = None,
         sandbox_labels: list[str] | None = None,
-        sandbox_client_max_workers: int = 50,
+        sandbox_client_max_workers: int | None = None,
         sandbox_client_max_connections: int = 100,
         sandbox_client_max_keepalive_connections: int = 50,
         sandbox_transfer_max_retries: int = 3,

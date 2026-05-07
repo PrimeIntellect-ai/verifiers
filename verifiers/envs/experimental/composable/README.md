@@ -45,6 +45,7 @@ results = await taskset.validate(
     concurrency=50,
     out_path="outputs/validate.jsonl",
     max_retries=2,       # retry on vf.InfraError
+    sandbox_client_max_workers=100,  # optional sandbox client worker cap override
     resume=True,         # skip indices already in out_path
 )
 
