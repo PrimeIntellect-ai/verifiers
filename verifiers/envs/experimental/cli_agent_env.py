@@ -197,8 +197,10 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                     try:
                         registered = await self._tunnel.check_registered()
                         if not registered:
+                            frpc_output = "\n".join(self._tunnel.recent_output)
                             self.logger.warning(
-                                "Tunnel registration expired server-side, recreating."
+                                "Tunnel registration expired server-side, recreating. "
+                                f"frpc output:\n{frpc_output}"
                             )
                             self._tunnel.sync_stop()
                             self._tunnel = None
@@ -210,13 +212,15 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             if self._tunnel is None:
                 interception_server = self._require_interception_server()
                 port = interception_server.port
+                tunnel_log_cb = lambda line: self.logger.debug(f"tunnel: {line}")
                 if self.logger.isEnabledFor(logging.DEBUG):
                     self._tunnel = Tunnel(
                         local_port=port,
                         log_level="debug",
+                        log_callback=tunnel_log_cb,
                     )
                 else:
-                    self._tunnel = Tunnel(local_port=port)
+                    self._tunnel = Tunnel(local_port=port, log_callback=tunnel_log_cb)
                 url = await self._tunnel.start()
                 self._tunnel_last_checked = time.time()
                 self.logger.debug(f"Prime Tunnel started: {url}")
