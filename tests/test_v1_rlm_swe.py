@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, cast
 
+import pytest
 from datasets import Dataset
 
 import verifiers.v1 as vf
@@ -68,6 +69,22 @@ def test_rlm_swe_environment_uses_v1_r2e_taskset(monkeypatch):
     assert program["env"]["RLM_TOOLS"] == "bash,edit"
 
 
+def test_rlm_swe_taskset_hooks_are_registered_with_runtime():
+    taskset = rlm_swe_v1.load_taskset()
+    env = vf.Env(taskset=taskset)
+
+    setup_names = [handler.__name__ for handler in env.harness.runtime.rollout_setup]
+    cleanup_names = [
+        handler.__name__ for handler in env.harness.runtime.rollout_cleanup
+    ]
+    signal_names = {signal["name"] for signal in env.harness.runtime.rollout_signals}
+
+    assert setup_names.count("setup_r2e_sandbox") == 1
+    assert cleanup_names.count("cleanup_r2e_state") == 1
+    assert "solved" in signal_names
+
+
+@pytest.mark.asyncio
 async def test_rlm_swe_taskset_setup_and_reward(monkeypatch):
     monkeypatch.setattr(
         rlm_swe_v1, "load_dataset", lambda *args, **kwargs: fake_r2e_dataset()
@@ -112,6 +129,7 @@ PASSED tests/test_example.py::test_fix
     assert "_rlm_swe_sandbox" not in state
 
 
+@pytest.mark.asyncio
 async def test_rlm_swe_run_tests_quotes_env_values():
     taskset = rlm_swe_v1.load_taskset(
         hide_tests_from_agent=False,
