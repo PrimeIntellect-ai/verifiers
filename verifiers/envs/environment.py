@@ -68,6 +68,7 @@ from verifiers.types import (
     flatten_task_input,
 )
 from verifiers import telemetry as _tel
+from verifiers.utils.usage_utils import extract_usage_tokens
 from verifiers.utils.async_utils import (
     maybe_call_with_named_args,
     maybe_retry,
@@ -542,6 +543,8 @@ class Environment(ABC):
 
         t0 = time.monotonic()
         err_msg = ""
+        in_tok = 0.0
+        out_tok = 0.0
         try:
             response = await client.get_response(
                 prompt=prompt,
@@ -550,19 +553,21 @@ class Environment(ABC):
                 sampling_args=sampling_args,
                 state=state,
             )
+            req_in, req_out = extract_usage_tokens(response)
+            in_tok = float(req_in)
+            out_tok = float(req_out)
         except Exception as exc:
             err_msg = repr(exc)[:500]
             raise
         finally:
-            usage = self.get_state_usage(state)
             _tel.model_request(
                 env_id=self.env_id,
                 model=model,
                 trajectory_id=state.get("trajectory_id", ""),
                 turn_index=len(state.get("trajectory", [])),
                 duration_s=time.monotonic() - t0,
-                input_tokens=float((usage or {}).get("input_tokens", 0)),
-                output_tokens=float((usage or {}).get("output_tokens", 0)),
+                input_tokens=in_tok,
+                output_tokens=out_tok,
                 error=err_msg,
             )
         self.increment_state_usage_from_response(state, response)
