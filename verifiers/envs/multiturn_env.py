@@ -94,8 +94,9 @@ class MultiTurnEnv(vf.Environment):
         """Check if env_response signaled termination via final_env_response."""
         return state.get("final_env_response") is not None
 
-    async def setup_state(self, state: State) -> None:
+    async def setup_state(self, state: State) -> State | None:
         """Override to add environment-specific state fields. Mutate state in place."""
+        return state
 
     async def get_prompt_messages(self, state: State) -> Messages:
         """Override for rollouts with non-linear message sequences."""
@@ -175,10 +176,13 @@ class MultiTurnEnv(vf.Environment):
         state = await self.init_state(input, client, model, sampling_args)
 
         async def rollout_loop() -> None:
+            nonlocal state
             state["timing"].generation.start = time.time()
             state["timing"].setup.start = time.time()
             try:
-                await self.setup_state(state)
+                setup_state = await self.setup_state(state)
+                if setup_state is not None:
+                    state = setup_state
             except vf.Error as e:
                 state["error"] = e
             finally:
