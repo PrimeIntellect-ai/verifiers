@@ -222,6 +222,11 @@ class OpenCodeEnv(CliAgentEnv):
     def remote_logs_path(self) -> str:
         return f"{self.asset_dir}/logs.txt"
 
+    def get_failure_log_paths(self, state: vf.State) -> dict[str, str]:
+        paths = super().get_failure_log_paths(state)
+        paths["agent_log"] = self.remote_logs_path
+        return paths
+
     async def post_sandbox_setup(self, state: vf.State) -> None:
         """Upload prompt and optional system prompt after sandbox creation."""
         sandbox_id = state.get("sandbox_id")
@@ -341,7 +346,7 @@ class OpenCodeEnv(CliAgentEnv):
                 num_turns = len(state.get("trajectory", []))
                 agent_error = state.get("agent_exit_code", 0) != 0
                 if (agent_error or num_turns == 0) and agent_logs:
-                    logger.warning(
+                    logger.debug(
                         f"Agent logs (example_id={state.get('example_id')}, "
                         f"exit_code={state.get('agent_exit_code')}, turns={num_turns}):\n{agent_logs}"
                     )

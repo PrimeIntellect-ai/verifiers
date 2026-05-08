@@ -69,18 +69,19 @@ def build_install_script(
     # bug #1876035. apt's default retries is 0, so one bad fetch fails the rollout.
     return f"""\
 set -e
+: > /tmp/install_progress.log
 run_setup_step() {{
   name="$1"
   shift
   start="$(date +%s)"
-  echo "[setup] start $name"
+  echo "[setup] start $name" | tee -a /tmp/install_progress.log
   set +e
   eval "$*"
   exit_code="$?"
   set -e
   end="$(date +%s)"
   elapsed_s="$((end - start))"
-  echo "[setup] end $name exit=$exit_code elapsed_s=$elapsed_s"
+  echo "[setup] end $name exit=$exit_code elapsed_s=$elapsed_s" | tee -a /tmp/install_progress.log
   return "$exit_code"
 }}
 

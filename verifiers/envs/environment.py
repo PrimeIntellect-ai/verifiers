@@ -608,6 +608,7 @@ class Environment(ABC):
         state["reward"] = None
         state["metrics"] = None
         state["error"] = None
+        state["failure"] = None
         state["final_env_response"] = None
         state["timing"] = RolloutTiming()
         return state

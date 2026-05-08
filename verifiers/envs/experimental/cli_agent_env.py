@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import shlex
 import time
 import uuid
 from collections import Counter
@@ -38,6 +39,14 @@ from verifiers.utils.interception_utils import (
     deliver_response,
     synthesize_stream,
 )
+from verifiers.utils.failure_utils import (
+    FAILURE_ORIGIN_AGENT,
+    FAILURE_REASON_AGENT_NONZERO_EXIT,
+    FAILURE_REASON_AGENT_POLL_FAILED,
+    add_failure_logs,
+    ensure_rollout_failure,
+    tail_text,
+)
 from verifiers.utils.logging_utils import truncate
 from verifiers.utils.message_utils import normalize_messages
 
@@ -48,7 +57,13 @@ class AgentError(vf.InfraError):
     """Raised when the agent process fails or exits unexpectedly."""
 
 
-def make_agent_error(state: State, message: str) -> AgentError:
+class AgentPollError(AgentError):
+    """Raised when polling the sandbox background job fails."""
+
+
+def make_agent_error(
+    state: State, message: str, error_cls: type[AgentError] = AgentError
+) -> AgentError:
     """Create an AgentError with rollout-specific sandbox context when available."""
     context_parts = [
         f"sandbox_id={state['sandbox_id']}",
@@ -59,7 +74,7 @@ def make_agent_error(state: State, message: str) -> AgentError:
     instance_id = state_info.get("instance_id")
     if instance_id:
         context_parts.append(f"instance_id={instance_id}")
-    return AgentError(f"{message} ({', '.join(context_parts)})")
+    return error_cls(f"{message} ({', '.join(context_parts)})")
 
 
 def _collect_tool_counts(state: State) -> Counter[str]:
@@ -169,17 +184,33 @@ class CliAgentMonitorRubric(vf.Rubric):
         super().__init__(**kwargs)
         self.add_metric(self.agent_timeout)
         self.add_metric(self.agent_error)
+        self.add_metric(self.agent_nonzero_exit)
+        self.add_metric(self.agent_poll_failed)
 
     async def agent_timeout(self, state: vf.State) -> float:
         """Whether the agent timed out."""
         return float(bool(state.get("timed_out")))
 
     async def agent_error(self, state: vf.State) -> float:
-        """Whether the agent errored (non-zero exit_code)."""
+        """Whether the rollout failure originated in the CLI agent."""
+        failure = ensure_rollout_failure(state)
+        if failure is None:
+            return 0.0
+        return float(failure.get("origin") == FAILURE_ORIGIN_AGENT)
+
+    async def agent_nonzero_exit(self, state: vf.State) -> float:
+        """Whether the agent process completed with a non-zero exit code."""
         agent_exit_code = state.get("agent_exit_code")
         if agent_exit_code is None:
             return 0.0
         return float(agent_exit_code != 0)
+
+    async def agent_poll_failed(self, state: vf.State) -> float:
+        """Whether polling/reading the background agent job failed."""
+        failure = ensure_rollout_failure(state)
+        if failure is None:
+            return 0.0
+        return float(failure.get("reason") == FAILURE_REASON_AGENT_POLL_FAILED)
 
     @vf.cleanup
     async def log_rollout_finished(self, state: vf.State) -> None:
@@ -199,15 +230,19 @@ class CliAgentMonitorRubric(vf.Rubric):
         timed_out = state.get("timed_out", False)
         stop_condition = state.get("stop_condition", "unknown")
         exit_code = state.get("agent_exit_code")
+        turns = len(state.get("trajectory", []))
+        failure = ensure_rollout_failure(state)
 
         if error_info or timed_out:
-            self.logger.info(
+            self.logger.error(
                 format_rollout_log_event(
                     "rollout_aborted",
                     state,
                     stop=stop_condition,
                     exit_code=exit_code,
                     timed_out=timed_out if timed_out else None,
+                    reason=failure.get("reason") if failure else None,
+                    origin=failure.get("origin") if failure else None,
                     error=error_info,
                 )
             )
@@ -228,6 +263,20 @@ class CliAgentMonitorRubric(vf.Rubric):
                 duration_s=_rollout_total_s(state),
             )
         )
+
+        if turns == 0 and not error_info and not timed_out:
+            self.logger.error(
+                format_rollout_log_event(
+                    "rollout_empty_trajectory",
+                    state,
+                    stop=stop_condition,
+                    exit_code=exit_code,
+                    reason=failure.get("reason") if failure else None,
+                    origin=failure.get("origin") if failure else None,
+                    agent_s=_agent_duration_s(state),
+                    duration_s=_rollout_total_s(state),
+                )
+            )
 
 
 class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
@@ -397,6 +446,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                 status="ok" if setup_succeeded else "error",
                 elapsed_s=time.perf_counter() - setup_start,
             )
+        return state
 
     async def _setup_sandbox_and_agent(self, state: State, rollout_id: str) -> None:
         """Create sandbox resources and launch the CLI agent."""
@@ -454,7 +504,6 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             f"example_id={state['example_id']}",
         ]
         self.logger.info(" | ".join(parts))
-        return state
 
     async def get_docker_image(self, state: State) -> str:
         """Get the Docker image for the sandbox. Override for per-task images."""
@@ -551,9 +600,24 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             self.logger.debug("Completion wait task cancelled")
             raise
         except Exception as e:
-            error = make_agent_error(state, f"Agent polling failed: {e}")
+            state["agent_poll_failed"] = True
+            error = make_agent_error(
+                state, f"Agent polling failed: {e}", error_cls=AgentPollError
+            )
             state["error"] = error
-            self.logger.error(str(error))
+            ensure_rollout_failure(
+                state,
+                reason=FAILURE_REASON_AGENT_POLL_FAILED,
+                origin=FAILURE_ORIGIN_AGENT,
+                error=error,
+            )
+            self.logger.error(
+                format_rollout_log_event(
+                    "agent_poll_failed",
+                    state,
+                    error=truncate(str(error), 500),
+                )
+            )
         finally:
             state["agent_completed"] = True
 
@@ -590,7 +654,21 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                             f"(exit_code={status.exit_code}): {stderr_full}",
                         )
                     state["error"] = error
-                    self.logger.error(str(error))
+                    ensure_rollout_failure(
+                        state,
+                        reason=FAILURE_REASON_AGENT_NONZERO_EXIT,
+                        origin=FAILURE_ORIGIN_AGENT,
+                        error=error,
+                    )
+                    self.logger.error(
+                        format_rollout_log_event(
+                            "rollout_aborted",
+                            state,
+                            stop="agent_nonzero_exit",
+                            exit_code=status.exit_code,
+                            error=truncate(str(error), 500),
+                        )
+                    )
                 return
             await asyncio.sleep(self.poll_interval)
 
@@ -811,6 +889,91 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             state, prompt_messages, await self.normalize_response(response)
         )
 
+    FAILURE_LOG_TAIL_CHARS = 12000
+    SETUP_DIAGNOSTIC_LOG_PATHS = {
+        "observed_command_log": "/tmp/vf_observed_command.log",
+        "install_progress_log": "/tmp/install_progress.log",
+    }
+
+    def get_failure_log_paths(self, state: State) -> dict[str, str]:
+        """Return sandbox paths whose bounded tails should be attached to failures."""
+        return dict(self.SETUP_DIAGNOSTIC_LOG_PATHS)
+
+    async def _read_sandbox_log_tail(
+        self, sandbox_id: str, path: str, *, max_chars: int | None = None
+    ) -> str:
+        max_chars = max_chars or self.FAILURE_LOG_TAIL_CHARS
+        quoted_path = shlex.quote(path)
+        result = await self.sandbox_client.execute_command(
+            sandbox_id,
+            f"tail -c {int(max_chars)} {quoted_path} 2>/dev/null || true",
+            working_dir=None,
+            timeout=self.timeouts.read_file,
+        )
+        return (result.stdout or "").strip()
+
+    async def _collect_background_job_log_tails(self, state: State) -> dict[str, str]:
+        logs: dict[str, str] = {}
+        for key in ("agent_stdout", "agent_stderr"):
+            if state.get(key):
+                logs[key] = tail_text(state.get(key), self.FAILURE_LOG_TAIL_CHARS)
+
+        sandbox_id = state.get("sandbox_id")
+        background_job = state.get("background_job")
+        if (
+            sandbox_id
+            and background_job
+            and not {"agent_stdout", "agent_stderr"} <= logs.keys()
+        ):
+            try:
+                status = await self.sandbox_client.get_background_job(
+                    sandbox_id, background_job, timeout=self.timeouts.poll
+                )
+                if status.stdout and "agent_stdout" not in logs:
+                    logs["agent_stdout"] = tail_text(
+                        status.stdout, self.FAILURE_LOG_TAIL_CHARS
+                    )
+                if status.stderr and "agent_stderr" not in logs:
+                    logs["agent_stderr"] = tail_text(
+                        status.stderr, self.FAILURE_LOG_TAIL_CHARS
+                    )
+            except Exception as e:
+                self.logger.warning(
+                    format_rollout_log_event(
+                        "diagnostic_collection_failed",
+                        state,
+                        source="background_job",
+                        error=f"{type(e).__name__}: {truncate(str(e), 200)}",
+                    )
+                )
+        return logs
+
+    async def collect_failure_diagnostics(self, state: State) -> dict[str, str]:
+        """Collect bounded diagnostic log tails without masking rollout failures."""
+        logs = await self._collect_background_job_log_tails(state)
+        sandbox_id = state.get("sandbox_id")
+        if sandbox_id:
+            for name, path in self.get_failure_log_paths(state).items():
+                try:
+                    value = await self._read_sandbox_log_tail(sandbox_id, path)
+                except Exception as e:
+                    self.logger.warning(
+                        format_rollout_log_event(
+                            "diagnostic_collection_failed",
+                            state,
+                            source=name,
+                            error=f"{type(e).__name__}: {truncate(str(e), 200)}",
+                        )
+                    )
+                    continue
+                if value:
+                    logs[name] = tail_text(value, self.FAILURE_LOG_TAIL_CHARS)
+        for name, value in logs.items():
+            self.logger.debug(
+                f"{format_rollout_log_event('failure_log_collected', state, source=name, chars=len(value))}\n{value}"
+            )
+        return logs
+
     @vf.teardown
     async def teardown_resources(self):
         """Stop Prime Tunnel and HTTP interception server."""
@@ -838,8 +1001,6 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             except asyncio.CancelledError:
                 pass
 
-        state.pop("background_job", None)
-
         rollout_id = state.get("rollout_id")
         if rollout_id and self._interception_server is not None:
             self._interception_server.unregister_rollout(rollout_id)
@@ -855,6 +1016,10 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         run computation here and cache the result in state before sandbox is destroyed.
         """
         state["_cli_agent_tool_counts"] = dict(_collect_tool_counts(state))
+        failure = ensure_rollout_failure(state)
+        if failure is not None:
+            logs = await self.collect_failure_diagnostics(state)
+            add_failure_logs(state, logs)
 
     @vf.cleanup
     async def destroy_sandbox(self, state: State):
@@ -877,6 +1042,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                 self.deregister_sandbox(sandbox_id)
             else:
                 await self.delete_sandbox(sandbox_id)
+        state.pop("background_job", None)
 
     async def env_response(
         self, messages: Messages, state: State, **kwargs

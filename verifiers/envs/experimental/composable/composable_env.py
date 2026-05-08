@@ -52,10 +52,18 @@ import verifiers as vf
 from verifiers.envs.experimental.cli_agent_env import CliAgentEnv
 from verifiers.envs.experimental.composable.harness import Harness
 from verifiers.envs.experimental.composable.task import TaskSet
-from verifiers.envs.experimental.sandbox_mixin import log_rollout_event
+from verifiers.envs.experimental.sandbox_mixin import (
+    format_rollout_log_event,
+    log_rollout_event,
+)
 from verifiers.envs.experimental.utils.file_locks import shared_path_lock
 from verifiers.envs.tool_env import ToolMonitorRubric
 from verifiers.types import State, TrajectoryStep
+from verifiers.utils.failure_utils import (
+    FAILURE_ORIGIN_SANDBOX,
+    FAILURE_REASON_SANDBOX_SETUP_FAILED,
+    ensure_rollout_failure,
+)
 from verifiers.utils.logging_utils import print_size, print_time
 
 logger = logging.getLogger(__name__)
@@ -305,7 +313,22 @@ class ComposableEnv(CliAgentEnv):
         log_rollout_event(self.logger, "setup_step_started", state, step=step)
         try:
             result = await func(*args)
-        except BaseException:
+        except BaseException as e:
+            if not isinstance(e, asyncio.CancelledError):
+                ensure_rollout_failure(
+                    state,
+                    reason=FAILURE_REASON_SANDBOX_SETUP_FAILED,
+                    origin=FAILURE_ORIGIN_SANDBOX,
+                    error=e,
+                )
+                self.logger.error(
+                    format_rollout_log_event(
+                        "setup_failed",
+                        state,
+                        step=step,
+                        error=f"{type(e).__name__}: {str(e)[:500]}",
+                    )
+                )
             log_rollout_event(
                 self.logger,
                 "setup_step_finished",
@@ -427,6 +450,34 @@ class ComposableEnv(CliAgentEnv):
             kwargs["env"] = self.install_env
         return kwargs
 
+    def get_failure_log_paths(self, state: State) -> dict[str, str]:
+        paths = super().get_failure_log_paths(state)
+        if self.harness.log_path:
+            paths["agent_log"] = self.harness.log_path
+        return paths
+
+    @staticmethod
+    def _wrap_observed_setup_command(command: str, step: str) -> str:
+        """Wrap setup commands with a grep-friendly trace log in the sandbox."""
+        one_line = " ".join(command.split())
+        if len(one_line) > 1000:
+            one_line = one_line[:1000] + "...<truncated>"
+        script = f"""\
+set +e
+{{
+  echo "event=observed_command_started step={shlex.quote(step)} command={shlex.quote(one_line)}"
+  bash -lc {shlex.quote(command)}
+  exit_code="$?"
+  if [ "$exit_code" -ne 0 ]; then
+    echo "event=setup_failed step={shlex.quote(step)} exit_code=$exit_code"
+  fi
+  echo "event=observed_command_finished step={shlex.quote(step)} exit_code=$exit_code"
+  exit "$exit_code"
+}} 2>&1 | tee -a /tmp/vf_observed_command.log
+exit "${{PIPESTATUS[0]}}"
+"""
+        return f"bash -lc {shlex.quote(script)}"
+
     async def _install_agent(self, sandbox_id: str) -> None:
         """Install the agent inside the sandbox when an install script is present."""
         if self.harness.install_script:
@@ -434,7 +485,9 @@ class ComposableEnv(CliAgentEnv):
             install_start = time.perf_counter()
             result = await self.sandbox_client.execute_command(
                 sandbox_id,
-                self.harness.install_script,
+                self._wrap_observed_setup_command(
+                    self.harness.install_script, "agent_install"
+                ),
                 **self._get_install_execute_kwargs(),
             )
             elapsed = time.perf_counter() - install_start
@@ -465,7 +518,9 @@ class ComposableEnv(CliAgentEnv):
             self.logger.debug(f"Running post-install script in sandbox {sandbox_id}")
             result = await self.sandbox_client.execute_command(
                 sandbox_id,
-                self.harness.post_install_script,
+                self._wrap_observed_setup_command(
+                    self.harness.post_install_script, "post_install"
+                ),
                 **self._get_install_execute_kwargs(),
             )
             if result.exit_code != 0:

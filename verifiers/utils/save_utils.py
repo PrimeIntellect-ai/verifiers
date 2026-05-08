@@ -22,6 +22,7 @@ from verifiers.types import (
     Tool,
 )
 from verifiers.utils.error_utils import ErrorChain
+from verifiers.utils.failure_utils import ensure_rollout_failure
 from verifiers.utils.message_utils import (
     sanitize_tool_calls,
     serialize_messages_for_output,
@@ -251,6 +252,9 @@ def state_to_output(
             )
         output["error_chain"] = output["error"]["error_chain_repr"]
         output["long_error_chain"] = output["error"]["error_chain_str"]
+    failure = ensure_rollout_failure(state, detect_empty_trajectory=False)
+    if failure is not None:
+        output["failure"] = failure
     # only include optional fields if non-empty
     if "answer" in output and not output["answer"]:
         output.pop("answer")
