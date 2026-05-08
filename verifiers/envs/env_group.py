@@ -84,6 +84,12 @@ class EnvGroupRubric(vf.Rubric):
         """Return all unique reward function names across all environments."""
         return self.all_reward_names
 
+    async def teardown(self) -> None:
+        """Propagate teardown to each child environment's rubric."""
+        await super().teardown()
+        for env in self.env_map.values():
+            await env.rubric.teardown()
+
     async def score_rollout(
         self,
         state: vf.State,
