@@ -67,6 +67,7 @@ from verifiers.types import (
     Tool,
     flatten_task_input,
 )
+from verifiers import telemetry as _tel
 from verifiers.utils.async_utils import (
     maybe_call_with_named_args,
     maybe_retry,
@@ -539,13 +540,31 @@ class Environment(ABC):
 
         self._get_usage_tracker(state, create_if_missing=True)
 
-        response = await client.get_response(
-            prompt=prompt,
-            model=model,
-            tools=tool_defs,
-            sampling_args=sampling_args,
-            state=state,
-        )
+        t0 = time.monotonic()
+        err_msg = ""
+        try:
+            response = await client.get_response(
+                prompt=prompt,
+                model=model,
+                tools=tool_defs,
+                sampling_args=sampling_args,
+                state=state,
+            )
+        except Exception as exc:
+            err_msg = repr(exc)[:500]
+            raise
+        finally:
+            usage = self.get_state_usage(state)
+            _tel.model_request(
+                env_id=self.env_id,
+                model=model,
+                trajectory_id=state.get("trajectory_id", ""),
+                turn_index=len(state.get("trajectory", [])),
+                duration_s=time.monotonic() - t0,
+                input_tokens=float((usage or {}).get("input_tokens", 0)),
+                output_tokens=float((usage or {}).get("output_tokens", 0)),
+                error=err_msg,
+            )
         self.increment_state_usage_from_response(state, response)
 
         return response
@@ -667,6 +686,12 @@ class Environment(ABC):
                 err = state["error"]
                 err_chain = ErrorChain(err)
                 self.logger.error(f"Aborted rollout due to {repr(err_chain)}")
+            _tel.stop_condition_triggered(
+                env_id=self.env_id,
+                trajectory_id=state.get("trajectory_id", ""),
+                condition=condition.__name__,
+                error=repr(state["error"])[:500] if state.get("error") else "",
+            )
             return True
         return False
 
@@ -685,6 +710,12 @@ class Environment(ABC):
         model: str,
         sampling_args: SamplingArgs,
     ) -> State:
+        t0 = time.monotonic()
+        _tel.rollout_started(
+            env_id=self.env_id,
+            model=model,
+            example_id=input.get("example_id", ""),
+        )
         state = await self.rollout(
             input,
             client,
@@ -699,7 +730,30 @@ class Environment(ABC):
             await self.rubric.dummy_score_rollout(state)
         state["timing"].scoring.end = time.time()
 
+        scoring_dur = state["timing"].scoring.end - state["timing"].scoring.start
+        _tel.scoring_completed(
+            env_id=self.env_id,
+            trajectory_id=state.get("trajectory_id", ""),
+            duration_s=scoring_dur,
+            reward=state.get("reward"),
+        )
+
         await self.rubric.cleanup(state)
+
+        usage = self.get_state_usage(state) or {}
+        _tel.rollout_completed(
+            env_id=self.env_id,
+            model=model,
+            example_id=input.get("example_id", ""),
+            trajectory_id=state.get("trajectory_id", ""),
+            reward=state.get("reward"),
+            num_turns=len(state.get("trajectory", [])),
+            duration_s=time.monotonic() - t0,
+            stop_condition=state.get("stop_condition", ""),
+            error=repr(state["error"])[:500] if state.get("error") else "",
+            input_tokens=float(usage.get("input_tokens", 0)),
+            output_tokens=float(usage.get("output_tokens", 0)),
+        )
         return state
 
     async def _run_group_states(
@@ -709,6 +763,14 @@ class Environment(ABC):
         model: str,
         sampling_args: SamplingArgs,
     ) -> list[State]:
+        t0 = time.monotonic()
+        example_id = group_inputs[0].get("example_id", "") if group_inputs else ""
+        _tel.group_started(
+            env_id=self.env_id,
+            model=model,
+            example_id=example_id,
+            group_size=len(group_inputs),
+        )
         rollout_tasks = [
             self.rollout(
                 input,
@@ -734,6 +796,15 @@ class Environment(ABC):
         for state in group_states:
             await self.rubric.cleanup(state)
 
+        rewards = [s.get("reward") for s in group_states if s.get("reward") is not None]
+        _tel.group_completed(
+            env_id=self.env_id,
+            model=model,
+            example_id=example_id,
+            group_size=len(group_inputs),
+            duration_s=time.monotonic() - t0,
+            avg_reward=sum(rewards) / len(rewards) if rewards else None,
+        )
         return group_states
 
     @final
@@ -990,6 +1061,15 @@ class Environment(ABC):
             assert single_client is not None
             return single_client
 
+        gen_t0 = time.monotonic()
+        _tel.generate_started(
+            env_id=self.env_id,
+            model=model,
+            total_rollouts=total_rollouts,
+            num_examples=num_examples,
+            rollouts_per_example=rollouts_per_example,
+            max_concurrent=max_concurrent,
+        )
         try:
             if self.env_client is None and endpoint_client_configs:
                 for endpoint_config in endpoint_client_configs:
@@ -1117,8 +1197,16 @@ class Environment(ABC):
                         f"Saved final results to {results['metadata']['path_to_save']}"
                     )
 
+            _tel.generate_completed(
+                env_id=self.env_id,
+                model=model,
+                total_rollouts=len(results.get("outputs", [])),
+                duration_s=time.monotonic() - gen_t0,
+                avg_reward=results.get("metadata", {}).get("avg_reward"),
+            )
             return results
         finally:
+            _tel.flush()
             if pbar is not None:
                 pbar.close()
             if local_endpoint_clients:

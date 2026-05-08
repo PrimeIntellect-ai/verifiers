@@ -1,7 +1,9 @@
 import json
+import time
 from typing import Callable, cast
 
 import verifiers as vf
+from verifiers import telemetry as _tel
 from verifiers.types import AssistantMessage, Messages, ToolCall, ToolMessage
 from verifiers.utils.async_utils import maybe_await
 from verifiers.utils.tool_utils import (
@@ -133,14 +135,34 @@ class ToolEnv(vf.MultiTurnEnv):
         self, tool_name: str, tool_args: dict, tool_call_id: str, **kwargs
     ) -> ToolMessage:
         """Call a tool based on JSON command."""
-        tool_func = self.tool_map[tool_name]
-        result = await maybe_await(tool_func, **tool_args)
-        content = result if is_valid_tool_content_parts(result) else str(result)
-        return ToolMessage(
-            role="tool",
-            content=content,
+        _env_id = getattr(self, "env_id", "")
+        _tel.tool_call_started(
+            env_id=_env_id,
+            tool_name=tool_name,
             tool_call_id=tool_call_id,
         )
+        t0 = time.monotonic()
+        err_msg = ""
+        try:
+            tool_func = self.tool_map[tool_name]
+            result = await maybe_await(tool_func, **tool_args)
+            content = result if is_valid_tool_content_parts(result) else str(result)
+            return ToolMessage(
+                role="tool",
+                content=content,
+                tool_call_id=tool_call_id,
+            )
+        except Exception as exc:
+            err_msg = repr(exc)[:500]
+            raise
+        finally:
+            _tel.tool_call_completed(
+                env_id=_env_id,
+                tool_name=tool_name,
+                tool_call_id=tool_call_id,
+                duration_s=time.monotonic() - t0,
+                error=err_msg,
+            )
 
     async def env_response(
         self, messages: vf.Messages, state: vf.State, **kwargs

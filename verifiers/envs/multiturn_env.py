@@ -5,6 +5,7 @@ from abc import abstractmethod
 from typing import final
 
 import verifiers as vf
+from verifiers import telemetry as _tel
 from verifiers.clients import Client
 from verifiers.types import (
     Messages,
@@ -174,11 +175,16 @@ class MultiTurnEnv(vf.Environment):
         sampling_args: SamplingArgs | None = None,
     ) -> State:
         state = await self.init_state(input, client, model, sampling_args)
+        _env_id = getattr(self, "env_id", "")
 
         async def rollout_loop() -> None:
             nonlocal state
             state["timing"].generation.start = time.time()
             state["timing"].setup.start = time.time()
+            _tel.setup_started(
+                env_id=_env_id,
+                trajectory_id=state.get("trajectory_id", ""),
+            )
             try:
                 setup_state = await self.setup_state(state)
                 if setup_state is not None:
@@ -187,7 +193,23 @@ class MultiTurnEnv(vf.Environment):
                 state["error"] = e
             finally:
                 state["timing"].setup.end = time.time()
+                _tel.setup_completed(
+                    env_id=_env_id,
+                    trajectory_id=state.get("trajectory_id", ""),
+                    duration_s=state["timing"].setup.end - state["timing"].setup.start,
+                    error=repr(state["error"])[:500] if state.get("error") else "",
+                )
             while not await self.is_completed(state):
+                turn_t0 = time.monotonic()
+                turn_idx = len(state["trajectory"])
+                _tel.turn_started(
+                    env_id=_env_id,
+                    trajectory_id=state.get("trajectory_id", ""),
+                    turn_index=turn_idx,
+                )
+                turn_err = ""
+                env_dur: float | None = None
+                model_dur: float | None = None
                 try:
                     timing = state["timing"]
                     start_time = time.time()
@@ -198,6 +220,7 @@ class MultiTurnEnv(vf.Environment):
                         timing.env.spans.append(
                             TimeSpan(start=start_time, end=end_time)
                         )
+                        env_dur = end_time - start_time
 
                     prompt_messages = maybe_normalize_messages(
                         prompt_messages, field_name="prompt_messages"
@@ -208,19 +231,37 @@ class MultiTurnEnv(vf.Environment):
                     start_time = time.time()
                     response = await self.get_model_response(state, prompt_messages)
                     end_time = time.time()
+                    model_dur = end_time - start_time
                     timing.model.spans.append(TimeSpan(start=start_time, end=end_time))
                     await self.add_model_response(state, prompt_messages, response)
                 except vf.Error as e:
+                    turn_err = repr(e)[:500]
                     if isinstance(e, vf.OverlongPromptError):
                         state["prompt_too_long"] = True
                         state["is_truncated"] = True
                     else:
                         state["error"] = e
+                finally:
+                    _tel.turn_completed(
+                        env_id=_env_id,
+                        trajectory_id=state.get("trajectory_id", ""),
+                        turn_index=turn_idx,
+                        duration_s=time.monotonic() - turn_t0,
+                        model_duration_s=model_dur,
+                        env_duration_s=env_dur,
+                        is_truncated=state.get("is_truncated", False),
+                        error=turn_err,
+                    )
 
         try:
             await asyncio.wait_for(rollout_loop(), timeout=self.timeout_seconds)
         except asyncio.TimeoutError:
             self.mark_timed_out(state)
+            _tel.timeout_triggered(
+                env_id=_env_id,
+                trajectory_id=state.get("trajectory_id", ""),
+                timeout_seconds=self.timeout_seconds,
+            )
         finally:
             await self._finalize_rollout(state)
         return state
