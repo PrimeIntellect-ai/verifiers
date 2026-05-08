@@ -126,10 +126,9 @@ prime-sandboxes = false
 renderers = false
 
 [tool.uv.sources]
-# Pinned to renderers main until the next PyPI release lands; drop after.
-# fe67f9f = renderers main: PR #4 squash-merge — construction-time
-# preserve_*_thinking flags on create_renderer / create_renderer_pool.
-renderers = { git = "https://github.com/PrimeIntellect-ai/renderers.git", rev = "fe67f9f" }
+# Pinned to renderers PR #11 until the next PyPI release lands; drop after.
+# 1f3de65 = Dynamo chat nvext transport for token-in /chat/completions.
+renderers = { git = "https://github.com/PrimeIntellect-ai/renderers.git", rev = "1f3de65" }
 
 [tool.uv.extra-build-dependencies]
 flash-attn = [{ requirement = "torch", match-runtime = true }]

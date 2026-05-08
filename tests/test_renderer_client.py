@@ -156,6 +156,48 @@ async def test_renderer_client_rejects_empty_dict_native_response():
 
 
 @pytest.mark.asyncio
+async def test_get_native_response_passes_renderer_transport_to_generate(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    client = object.__new__(RendererClient)
+    client._client = object()
+    client._config = vf.ClientConfig(
+        client_type="renderer",
+        renderer_transport="dynamo_chat_nvext",
+    )
+    renderer = _BridgeRenderer()
+    calls = []
+
+    client._get_renderer_or_pool = lambda model: renderer  # type: ignore[method-assign]
+
+    async def fake_get_incremental_prompt_ids(**kwargs):
+        return [10, 20]
+
+    async def fake_generate(**kwargs):
+        calls.append(kwargs)
+        return {"content": "ok"}
+
+    monkeypatch.setattr(
+        "verifiers.clients.renderer_client._get_incremental_prompt_ids",
+        fake_get_incremental_prompt_ids,
+    )
+    monkeypatch.setattr("verifiers.clients.renderer_client.generate", fake_generate)
+
+    response = await client.get_native_response(
+        prompt=[{"role": "user", "content": "hi"}],
+        model="test-model",
+        sampling_args={"temperature": 0.1},
+        tools=None,
+        state={"trajectory": []},
+    )
+
+    assert response == {"content": "ok"}
+    assert len(calls) == 1
+    assert calls[0]["transport"] == "dynamo_chat_nvext"
+    assert calls[0]["prompt_ids"] == [10, 20]
+
+
+@pytest.mark.asyncio
 async def test_from_native_response_uses_request_id_and_token_lengths():
     """vLLM's /inference/v1/generate returns ``request_id`` (not ``id``) and
     no ``usage``/``model``/``created``. ``Response.id`` should pick up
