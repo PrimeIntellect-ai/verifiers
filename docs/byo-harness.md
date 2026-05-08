@@ -1,8 +1,8 @@
 # BYO Harness
 
-BYO Harness is the `verifiers.v1` authoring path for environments that need a
-clean separation between the task being attempted and the way a model attempts
-it.
+BYO Harness is the preferred `verifiers.v1` Taskset/Harness authoring path for
+new environments that need a clean separation between the task being attempted
+and the way a model attempts it.
 
 Use this path when you want to bring your own harness: a tool loop, CLI program,
 third-party Python program, sandboxed program, user simulator, MCP server, or

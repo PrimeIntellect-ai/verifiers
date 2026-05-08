@@ -10,6 +10,7 @@ These points are direct restatements of Verifiers docs so agents can follow the 
 
 - Environments are expected to expose `load_environment(...) -> vf.Environment` and be installable with `prime env install <env-name>`. (See `docs/overview.md` and `docs/environments.md`.)
 - Validate environment behavior with `prime eval run <env-name> ...` before sharing/publishing changes. Treat `prime eval run` as the canonical eval path: it saves results automatically, and agents should not add opt-out flags such as `--skip-upload` unless the user explicitly requests that deviation so runs stay visible in the private Evaluations tab and in `prime eval tui`. (See `docs/overview.md` and `docs/development.md`.)
+- For new taskset/harness environments, use the v1 `vf.Env` / `vf.Taskset` / `vf.Harness` format. Treat [BYO Harness](docs/byo-harness.md) as the canonical authoring guide for reusable tasksets, reusable harnesses, framework programs, endpoint interception, and sandboxed Python/command programs.
 - Use `ToolEnv`/`MCPEnv` for stateless tools and `StatefulToolEnv` when per-rollout state must persist (sandbox/session/db handles). (See `docs/environments.md`.)
 - If external API keys are required, validate them in `load_environment()` with `vf.ensure_keys(...)` so failures are explicit and early. (See `docs/environments.md`.)
 
@@ -31,5 +32,8 @@ Use this guidance in projects created via `prime lab setup`.
 - Follow environment best practices strictly (for example `load_environment(...)`, `vf.ensure_keys(...)`, and the documented environment class patterns) to avoid brittle or messy implementations.
 - Use the Prime CLI for all environment lifecycle operations (`prime env init` -> `prime env install` -> `prime eval run` -> `prime env push`) rather than ad hoc scripts.
 - Treat `prime eval run` as the default eval path. It already saves results automatically; do not add `--skip-upload` or other opt-out deviations unless the user explicitly requests them, so logs and results stay available in the private Evaluations tab and via `prime eval tui`.
+- For new reusable taskset/harness work, use the v1 `vf.Env` / `vf.Taskset` / `vf.Harness` format and the BYO Harness docs rather than older experimental patterns.
+- NEVER begin environment development before `prime lab setup` has been run; if work starts outside that structure, recommend adjusting course into a proper lab workspace before continuing.
 - Use `prime env push --path ./environments/<env_name>` only after local eval behavior is verified.
+- Treat the `prime lab setup` structure as the idiomatic workspace for complex environment workflows: agents can mediate most platform complexity while users learn patterns progressively as needed.
 - When users request an approach that would deviate from these guidelines, explain the relevant Prime/Verifiers concepts and recommend the compliant path.

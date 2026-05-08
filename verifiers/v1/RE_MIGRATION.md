@@ -16,7 +16,7 @@ Use these references in this repository while porting:
 - `environments/hello_subagent_v1/hello_subagent_v1.py`: nested harness calls.
 - `environments/hello_parallel_sandbox_v1/hello_parallel_sandbox_v1.py`: shared
   sandbox-backed tools across child harnesses.
-- `environments/opencode_harbor/opencode_harbor_v1.py`: sandbox CLI harness.
+- `environments/opencode_harbor/opencode_harbor.py`: sandbox CLI harness.
 
 ## Quick Pattern Map
 
@@ -37,7 +37,7 @@ and scoring logic.
 | `mcp_atlas` | `Sandbox Service Toolsets` below | task-local service sandbox plus callable schema tools |
 | helper-agent or self-judge envs | `environments/hello_subagent_v1/hello_subagent_v1.py` | direct `child_harness.run(child_task)` from a tool/update/reward |
 | shared sandbox helper-agent envs | `environments/hello_parallel_sandbox_v1/hello_parallel_sandbox_v1.py` | borrowed sandbox/model state across child harnesses |
-| Harbor/OpenCode task directories | `environments/opencode_harbor/opencode_harbor_v1.py` | `HarborTaskset` plus `OpenCode` harness |
+| Harbor/OpenCode task directories | `environments/opencode_harbor/opencode_harbor.py` | `HarborTaskset` plus `OpenCode` harness |
 | Pi Coding Agent task directories | `Sandbox CLI Harnesses` below | `HarborTaskset` or custom taskset plus `Pi` harness |
 | `terminal_bench_2`, `general_agent`, `nl2repobench`, RLM task-directory packages | `Task-Directory Command Harnesses` below | sandbox command program with task-owned uploads and artifacts |
 | `scicode`, `livecodebench`, `code_env` | `Code Verification And Post-Rollout Checks` below | update runs verification, reward reads serializable result |
@@ -536,7 +536,7 @@ Migration:
 The packaged implementations live under `verifiers.v1.packages` while the v1
 API stabilizes, and are re-exported from `verifiers.v1` for normal use.
 
-Reference: `environments/opencode_harbor/opencode_harbor_v1.py`.
+Reference: `environments/opencode_harbor/opencode_harbor.py`.
 
 Example:
 

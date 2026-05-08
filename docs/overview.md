@@ -76,8 +76,8 @@ def load_environment(dataset_name: str = 'gsm8k') -> vf.Environment:
     return env
 ```
 
-For composable environments with reusable tasksets, toolsets, custom programs,
-or custom harnesses, use the v1 BYO Harness path:
+For new environments with reusable tasksets, toolsets, custom programs, or
+custom harnesses, use the v1 Taskset/Harness path:
 ```python
 # my_env.py
 import verifiers.v1 as vf
@@ -150,7 +150,7 @@ prime eval run primeintellect/math-python
 
 **[Environments](environments.md)** — Create datasets, rubrics, and custom multi-turn interaction protocols.
 
-**[BYO Harness](byo-harness.md)** — Build composable v1 taskset/harness environments with custom tools, sandboxes, users, and custom programs.
+**[BYO Harness](byo-harness.md)** — Build v1 Taskset/Harness environments with custom tools, sandboxes, users, and custom programs.
 
 **[Evaluation](evaluation.md)** - Evaluate models using your environments.
 
