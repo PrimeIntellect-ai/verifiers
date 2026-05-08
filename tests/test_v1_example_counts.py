@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import importlib
-import tomllib
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
+
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]

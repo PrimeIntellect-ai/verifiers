@@ -65,6 +65,7 @@ def test_rlm_swe_environment_uses_v1_r2e_taskset(monkeypatch):
     assert program["env"]["PATH"] == "/task/bin"
     assert program["env"]["CUSTOM"] == "1"
     assert program["env"]["CALLER"] == "1"
+    assert program["env"]["RLM_TOOLS"] == "bash,edit"
 
 
 async def test_rlm_swe_taskset_setup_and_reward(monkeypatch):
@@ -111,6 +112,23 @@ PASSED tests/test_example.py::test_fix
     assert "_rlm_swe_sandbox" not in state
 
 
+async def test_rlm_swe_run_tests_quotes_env_values():
+    taskset = rlm_swe_v1.load_taskset(
+        hide_tests_from_agent=False,
+        env={"SAFE": "two words; $(echo nope)", "QUOTE": "it's ok"},
+    )
+    sandbox = RecordingSandbox()
+
+    output = await taskset.run_tests(sandbox, {}, 123)
+
+    assert output == "test output"
+    assert len(sandbox.background_jobs) == 1
+    command = sandbox.background_jobs[0]["command"]
+    assert "SAFE='two words; $(echo nope)'" in command
+    assert "QUOTE='it'\"'\"'s ok'" in command
+    assert command.endswith("/bin/bash run_tests.sh > test_output.txt 2>&1")
+
+
 def fake_r2e_dataset() -> Dataset:
     return Dataset.from_list(
         [
@@ -134,3 +152,51 @@ class FakeLease:
 class FakeSandbox:
     id = "sandbox-1"
     lease = FakeLease()
+
+
+class FakeCommandResult:
+    def __init__(
+        self,
+        stdout: str = "",
+        stderr: str = "",
+        exit_code: int = 0,
+    ):
+        self.stdout = stdout
+        self.stderr = stderr
+        self.exit_code = exit_code
+
+
+class RecordingSandbox:
+    def __init__(self):
+        self.background_jobs: list[dict[str, object]] = []
+        self.commands: list[dict[str, object]] = []
+
+    async def run_background_job(
+        self,
+        command: str,
+        timeout: int | None = None,
+        working_dir: str | None = None,
+    ) -> FakeCommandResult:
+        self.background_jobs.append(
+            {
+                "command": command,
+                "timeout": timeout,
+                "working_dir": working_dir,
+            }
+        )
+        return FakeCommandResult()
+
+    async def execute(
+        self,
+        command: str,
+        timeout: int | None = None,
+        working_dir: str | None = None,
+    ) -> FakeCommandResult:
+        self.commands.append(
+            {
+                "command": command,
+                "timeout": timeout,
+                "working_dir": working_dir,
+            }
+        )
+        return FakeCommandResult(stdout="test output")

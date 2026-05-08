@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import shlex
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,7 @@ REGISTRY_PREFIX = "us-central1-docker.pkg.dev/prime-intellect-platform/prod-sand
 DEFAULT_DATASET_NAME = "R2E-Gym/R2E-Gym-Subset"
 DEFAULT_REPO_PATH = "/testbed"
 DEFAULT_ALT_PATH = "/root"
+DEFAULT_RLM_TOOLS = ("bash", "edit")
 
 
 class RlmSweTasksetConfig(vf.TasksetConfig):
@@ -272,7 +274,8 @@ class R2ESWETaskset(vf.Taskset):
             )
 
         env_str = " ".join(
-            f"{key}={value}" for key, value in self.get_env_vars().items()
+            f"{shlex.quote(key)}={shlex.quote(value)}"
+            for key, value in self.get_env_vars().items()
         )
         command = f"export {env_str}; /bin/bash run_tests.sh > test_output.txt 2>&1"
         result = await sandbox.run_background_job(
@@ -488,10 +491,11 @@ def load_harness(
     **rlm_kwargs: Any,
 ) -> vf.RLM:
     token = gh_token or os.environ.get("GH_TOKEN")
+    tools = list(rlm_tools if rlm_tools is not None else DEFAULT_RLM_TOOLS)
     return vf.RLM(
         workdir=workdir,
         gh_token=token,
-        rlm_tools=rlm_tools,
+        rlm_tools=tools,
         skills=skills,
         config=config,
         **rlm_kwargs,
