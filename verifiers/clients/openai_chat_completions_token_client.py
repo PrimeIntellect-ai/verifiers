@@ -2,7 +2,14 @@ from collections.abc import Mapping
 from typing import Any, Optional, cast
 
 from openai import AsyncOpenAI, BaseModel
-from openai.types.chat import ChatCompletion, ChatCompletionAssistantMessageParam
+from openai.types.chat import (
+    ChatCompletion,
+    ChatCompletionAssistantMessageParam,
+)
+from openai.types.chat.chat_completion_message_function_tool_call_param import (
+    ChatCompletionMessageFunctionToolCallParam,
+    Function,
+)
 
 from verifiers.clients.openai_chat_completions_client import (
     OpenAIChatCompletionsClient,
@@ -110,6 +117,11 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
             )
         prompt_ids = await self.get_prompt_ids(state, prompt, tools)
         if prompt_ids is None:
+            # Reaching this branch means we have a non-empty trajectory but
+            # could not stitch — surface it loudly so ops catches regressions.
+            self.logger.warning(
+                f"TITO fell back to MITO on turn {len(state['trajectory']) + 1}"
+            )
             return await super().get_native_response(
                 prompt, model, sampling_args, tools, extra_headers=extra_headers
             )
@@ -152,10 +164,18 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
             if hasattr(value, "model_dump"):
                 return normalize_for_comparison(value.model_dump())
             if isinstance(value, Mapping):
-                return {
+                normalized = {
                     str(key): normalize_for_comparison(val)
                     for key, val in value.items()
                 }
+                # Treat content=None and content="" as equivalent: tool-call-only
+                # assistant messages can be serialized either way depending on the
+                # upstream pipeline (e.g., reasoning parsers strip text content
+                # to "" while other paths leave it as None). Coerce to None so
+                # prefix-match equality is unaffected.
+                if normalized.get("content") == "":
+                    normalized["content"] = None
+                return normalized
             if isinstance(value, list):
                 return [normalize_for_comparison(item) for item in value]
             return value
@@ -231,9 +251,37 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
         # assistant and env response is correct, while avoiding template behaviors
         # that depend on the assistant being the last message (e.g., Qwen3's
         # context-dependent think block injection with add_generation_prompt=False).
-        dummy_assistant: OpenAIChatMessage = ChatCompletionAssistantMessageParam(
-            role="assistant", content="x"
-        )
+        # Collect tool_call_ids from leading tool messages so the dummy
+        # assistant satisfies chat-template validation ("tool message must
+        # follow an assistant message with a tool call").
+        tool_call_ids: list[str] = []
+        for msg in env_messages:
+            if _get_role(msg) != "tool":
+                break
+            tc_id = (
+                msg.get("tool_call_id")
+                if hasattr(msg, "get")
+                else getattr(msg, "tool_call_id", None)
+            )
+            if tc_id:
+                tool_call_ids.append(tc_id)
+
+        if tool_call_ids:
+            dummy_assistant: OpenAIChatMessage = ChatCompletionAssistantMessageParam(
+                role="assistant",
+                tool_calls=[
+                    ChatCompletionMessageFunctionToolCallParam(
+                        id=tc_id,
+                        type="function",
+                        function=Function(name="f", arguments="{}"),
+                    )
+                    for tc_id in tool_call_ids
+                ],
+            )
+        else:
+            dummy_assistant: OpenAIChatMessage = ChatCompletionAssistantMessageParam(
+                role="assistant", content="x"
+            )
 
         try:
             bridge_full_ids = await self.tokenize(
@@ -287,10 +335,12 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
         messages: str | OpenAIChatMessages,
         tools: list[OpenAITool] | None,
         model: str,
-        extra_kwargs: dict = {},
+        extra_kwargs: dict | None = None,
         **kwargs,
     ) -> list[int]:
         """Tokenize messages using the vLLM /tokenize API."""
+        if extra_kwargs is None:
+            extra_kwargs = {}
         if isinstance(messages, str):
             body = dict(
                 model=model,

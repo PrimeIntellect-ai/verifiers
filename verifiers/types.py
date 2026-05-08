@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import json
 import sys
+import time
+import uuid
 from collections.abc import Mapping
+from copy import deepcopy
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -10,9 +14,10 @@ from typing import (
     Callable,
     Literal,
     TypeAlias,
+    cast,
 )
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
 
 if TYPE_CHECKING:
     from anthropic.types import RedactedThinkingBlock
@@ -35,7 +40,10 @@ ClientType = Literal[
     "openai_completions",
     "openai_chat_completions",
     "openai_chat_completions_token",
+    "openai_responses",
+    "renderer",
     "anthropic_messages",
+    "nemorl_chat_completions",
 ]
 MessageType = Literal["chat", "completion"]  # deprecated
 
@@ -48,6 +56,9 @@ class CustomBaseModel(BaseModel):
 
     def __getitem__(self, key):
         return getattr(self, key)
+
+    def __setitem__(self, key, value):
+        setattr(self, key, value)
 
     def get(self, key, default=None):
         return getattr(self, key, default)
@@ -107,6 +118,10 @@ MessageContent: TypeAlias = str | list[ContentPart]
 class SystemMessage(CustomBaseModel):
     role: Literal["system"] = "system"
     content: MessageContent
+
+    @classmethod
+    def from_path(cls, path: str | Path) -> "SystemMessage":
+        return cls(content=Path(path).read_text(encoding="utf-8"))
 
 
 class UserMessage(CustomBaseModel):
@@ -206,6 +221,8 @@ class TrajectoryStepTokens(TypedDict):
 class TokenUsage(TypedDict):
     input_tokens: float
     output_tokens: float
+    final_input_tokens: NotRequired[float]
+    final_output_tokens: NotRequired[float]
 
 
 class VersionInfo(TypedDict):
@@ -230,21 +247,79 @@ class TrajectoryStep(TypedDict):
 class BaseRolloutInput(TypedDict):
     prompt: Messages
     example_id: int
-    task: str
 
 
 class RolloutInput(BaseRolloutInput, total=False):
-    # required: prompt, example_id, task
+    # required: prompt, example_id
     # optional: answer, info
     answer: str
     info: Info | str
 
 
-class RolloutTiming(TypedDict, total=False):
-    start_time: float
-    generation_ms: float
-    scoring_ms: float
-    total_ms: float
+class TimeSpan(CustomBaseModel):
+    """A timed span. ``duration`` derives from start/end Unix timestamps.
+
+    ``start`` and ``end`` are wall-clock seconds since the epoch (i.e.
+    ``time.time()``). Downstream display can convert directly to a
+    human-readable timestamp via ``datetime.fromtimestamp(span.start)``.
+    """
+
+    start: float = 0.0
+    end: float = 0.0
+
+    @computed_field
+    @property
+    def duration(self) -> float:
+        if self.end <= 0.0:
+            return 0.0
+        return self.end - self.start
+
+
+class TimeSpans(CustomBaseModel):
+    """A list of ``TimeSpan``s. ``duration`` is the sum over children."""
+
+    spans: list[TimeSpan] = Field(default_factory=list)
+
+    @computed_field
+    @property
+    def duration(self) -> float:
+        return sum(s.duration for s in self.spans)
+
+
+class RolloutTiming(CustomBaseModel):
+    """Rollout-level timing. All values in seconds (Unix timestamps).
+
+    Each measured phase (``setup``, ``generation``, ``scoring``) is a
+    ``TimeSpan`` carrying wall-clock start/end timestamps. ``model`` and
+    ``env`` are ``TimeSpans`` collections of the corresponding step slices
+    (each appended in execution order).
+    """
+
+    start_time: float = Field(default_factory=time.time)
+
+    setup: TimeSpan = Field(default_factory=TimeSpan)
+    generation: TimeSpan = Field(default_factory=TimeSpan)
+    scoring: TimeSpan = Field(default_factory=TimeSpan)
+    model: TimeSpans = Field(default_factory=TimeSpans)
+    env: TimeSpans = Field(default_factory=TimeSpans)
+
+    @computed_field
+    @property
+    def total(self) -> float:
+        if self.scoring.end <= 0.0:
+            return 0.0
+        return self.scoring.end - self.generation.start
+
+    @computed_field
+    @property
+    def overhead(self) -> float:
+        return (
+            self.total
+            - self.setup.duration
+            - self.model.duration
+            - self.env.duration
+            - self.scoring.duration
+        )
 
 
 class ErrorInfo(TypedDict):
@@ -260,7 +335,7 @@ class RolloutOutput(dict):
     arbitrary additional fields from state_columns. All values must be
     JSON-serializable.
 
-    Required fields: example_id, task, prompt, completion, reward, timing,
+    Required fields: example_id, prompt, completion, reward, timing,
                      is_completed, is_truncated, metrics
     Optional fields: answer, info, error, stop_condition, trajectory, tool_defs,
                      token_usage
@@ -269,7 +344,6 @@ class RolloutOutput(dict):
 
     # Required fields
     example_id: int
-    task: str
     prompt: Messages | None
     completion: Messages | None
     reward: float
@@ -288,9 +362,10 @@ class RolloutOutput(dict):
 
 
 class State(dict):
-    INPUT_FIELDS = ["prompt", "answer", "task", "info", "example_id"]
+    INPUT_FIELDS = ["prompt", "answer", "info", "example_id"]
     # rollout inputs
     input: RolloutInput
+    task: dict[str, Any]
     client: Client
     model: str
     sampling_args: SamplingArgs | None
@@ -305,7 +380,7 @@ class State(dict):
     advantage: float | None
     metrics: dict[str, float] | None
     timing: RolloutTiming | None
-    error: Error | None
+    error: Error | ErrorInfo | None
     usage: TokenUsage | None
     usage_tracker: object
 
@@ -317,6 +392,12 @@ class State(dict):
                 return input_obj[key]
         return super().__getitem__(key)
 
+    def get(self, key: str, default: Any = None) -> Any:
+        try:
+            return self[key]
+        except KeyError:
+            return default
+
     def __setitem__(self, key: str, value: Any) -> None:
         # forward to input if exists
         if key in self.INPUT_FIELDS and "input" in self:
@@ -326,11 +407,85 @@ class State(dict):
                 return
         super().__setitem__(key, value)
 
-    def get(self, key: str, default: Any = None) -> Any:
+    @classmethod
+    def for_task(cls, task: Mapping[str, Any]) -> State:
+        state = cls(
+            {
+                "task": dict(task),
+                "runtime": dict(task.get("runtime", {})),
+                "trajectory": [],
+                "trajectory_id": uuid.uuid4().hex,
+                "artifacts": {},
+                "metrics": {},
+                "reward": 0.0,
+                "is_completed": False,
+                "is_truncated": False,
+                "stop_condition": None,
+                "completion": None,
+                "error": None,
+                "timing": {
+                    "generation_ms": 0.0,
+                    "scoring_ms": 0.0,
+                    "total_ms": 0.0,
+                    "start_time": time.time(),
+                },
+            }
+        )
+        for key in ("prompt", "answer", "info", "example_id"):
+            if key in task:
+                state[key] = deepcopy(task[key])
+        return state
+
+    def assert_serializable(self) -> None:
+        assert_json_serializable(self)
+
+
+def assert_json_serializable(value: object) -> None:
+    try:
+        json.dumps(value)
+    except TypeError as e:
+        raise TypeError("Task and State values must be JSON-serializable.") from e
+
+
+TASK_INPUT_FIELDS = {"prompt", "answer", "info", "example_id"}
+
+
+def normalize_task_payload(value: object) -> dict[str, Any]:
+    """Normalize a serialized task payload attached to rollout info."""
+    if isinstance(value, str):
         try:
-            return self[key]
-        except KeyError:
-            return default
+            value = json.loads(value)
+        except json.JSONDecodeError as e:
+            raise ValueError(
+                "Serialized task payloads must be JSON objects. Plain string task "
+                "routes are no longer supported; use info['env_id'] for routing."
+            ) from e
+    if not isinstance(value, Mapping):
+        raise TypeError("Serialized task payloads must decode to a mapping.")
+    return dict(cast(Mapping[str, Any], value))
+
+
+def task_payload_from_info(info: object) -> dict[str, Any] | None:
+    """Return the canonical task payload from info.task if one is present."""
+    if isinstance(info, str):
+        info = json.loads(info)
+    if not isinstance(info, Mapping):
+        return None
+    task_payload = cast(Mapping[str, Any], info).get("task")
+    if task_payload is None:
+        return None
+    return normalize_task_payload(task_payload)
+
+
+def flatten_task_input(input_data: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the canonical task payload for a rollout input."""
+    task_payload = task_payload_from_info(input_data.get("info"))
+    if task_payload is not None:
+        return task_payload
+    direct_task_payload = input_data.get("task")
+    if direct_task_payload is not None:
+        return normalize_task_payload(direct_task_payload)
+    return dict(input_data)
 
 
 # oai tools
@@ -357,7 +512,7 @@ class GenerateMetadata(TypedDict):
     rollouts_per_example: int
     sampling_args: SamplingArgs
     date: str
-    time_ms: float
+    time: float  # whole-eval wall-clock seconds
     avg_reward: float
     avg_metrics: dict[str, float]
     avg_error: float
@@ -423,6 +578,13 @@ class ClientConfig(BaseModel):
 
     client_idx: int = 0
     client_type: ClientType = "openai_chat_completions"
+    renderer: str = "auto"
+    renderer_model_name: str | None = None
+    renderer_pool_size: int | None = None
+    tool_parser: str | None = None
+    reasoning_parser: str | None = None
+    preserve_all_thinking: bool = False
+    preserve_thinking_between_tool_calls: bool = False
     api_key_var: str = "PRIME_API_KEY"
     api_base_url: str = "https://api.pinference.ai/api/v1"
     endpoint_configs: list["EndpointClientConfig"] = Field(default_factory=list)
@@ -531,7 +693,7 @@ class EvalConfig(BaseModel):
     disable_env_server: bool = False
     # logging
     verbose: bool = False
-    debug: bool = False
+    disable_tui: bool = False
     # saving
     output_dir: str | None = None
     state_columns: list[str] | None = None

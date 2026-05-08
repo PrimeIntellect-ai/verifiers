@@ -23,11 +23,12 @@ Key features:
 import asyncio
 import base64
 import contextvars
+import hmac
 import json
 import logging
 import os
-import pickle
 import re
+import secrets
 import shlex
 import shutil
 import sys
@@ -515,12 +516,10 @@ def _build_python_worker_script_template() -> str:
     lines: list[str] = [
         "",
         "import ast",
-        "import base64",
         "import contextlib",
         "import io",
         "import json",
         "import os",
-        "import pickle",
         "import sys",
     ]
 
@@ -556,6 +555,7 @@ def _build_python_worker_script_template() -> str:
             "        answer = json.load(f)",
             "",
             'ROOT_TOOL_URL = os.environ.get("RLM_ROOT_TOOL_URL", "")',
+            'ROOT_TOOL_HEADERS = {"Authorization": "Bearer " + os.environ.get("RLM_INTERCEPTION_SECRET", "")}',
             'ROOT_TOOL_NAMES_RAW = os.environ.get("RLM_ROOT_TOOL_NAMES", "[]")',
             "try:",
             "    ROOT_TOOL_NAMES = json.loads(ROOT_TOOL_NAMES_RAW)",
@@ -566,27 +566,25 @@ def _build_python_worker_script_template() -> str:
             "    if not ROOT_TOOL_URL:",
             '        raise RuntimeError("Root tool URL not configured")',
             "",
-            '    args_payload = base64.b64encode(pickle.dumps(args)).decode("ascii")',
-            '    kwargs_payload = base64.b64encode(pickle.dumps(kwargs)).decode("ascii")',
             f"    payload = {dict_open}",
             '        "tool_name": tool_name,',
-            '        "args": args_payload,',
-            '        "kwargs": kwargs_payload,',
+            '        "args": list(args),',
+            '        "kwargs": kwargs,',
             f"    {dict_close}",
             "",
             "    resp = requests.post(",
             "        ROOT_TOOL_URL,",
             "        json=payload,",
+            "        headers=ROOT_TOOL_HEADERS,",
             "        timeout=SUB_LLM_TIMEOUT,",
             "    )",
             "    resp.raise_for_status()",
             "    data = resp.json()",
-            '    if data.get("print_lines"):',
-            '        for line in data["print_lines"]:',
-            "            print(line)",
             '    if data.get("error"):',
             '        raise RuntimeError(data["error"])',
-            '    return pickle.loads(base64.b64decode(data.get("result", "")))',
+            '    if "result" in data:',
+            '        return data["result"]',
+            '    return data.get("result_repr")',
             "",
             "def _make_root_tool(name: str):",
             "    def _tool(*args, **kwargs):",
@@ -699,15 +697,14 @@ def _build_python_worker_script_template() -> str:
 
 _RLM_BASH_TOOL_HELPER_SCRIPT = textwrap.dedent(
     """
-    import base64
     import json
     import os
-    import pickle
     import sys
     import urllib.error
     import urllib.request
 
     ROOT_TOOL_URL = os.environ.get("RLM_ROOT_TOOL_URL", "")
+    ROOT_TOOL_SECRET = os.environ.get("RLM_INTERCEPTION_SECRET", "")
     ROOT_TOOL_USER_AGENT = os.environ.get(
         "RLM_ROOT_TOOL_USER_AGENT", "python-requests/2.32.3"
     )
@@ -725,12 +722,10 @@ _RLM_BASH_TOOL_HELPER_SCRIPT = textwrap.dedent(
         if not ROOT_TOOL_URL:
             raise RuntimeError("Root tool URL not configured")
 
-        args_payload = base64.b64encode(pickle.dumps(args)).decode("ascii")
-        kwargs_payload = base64.b64encode(pickle.dumps(kwargs)).decode("ascii")
         payload = {
             "tool_name": tool_name,
-            "args": args_payload,
-            "kwargs": kwargs_payload,
+            "args": list(args),
+            "kwargs": kwargs,
         }
 
         data = json.dumps(payload).encode("utf-8")
@@ -741,6 +736,7 @@ _RLM_BASH_TOOL_HELPER_SCRIPT = textwrap.dedent(
                 "Content-Type": "application/json",
                 "Accept": "application/json",
                 "User-Agent": ROOT_TOOL_USER_AGENT,
+                "Authorization": f"Bearer {ROOT_TOOL_SECRET}",
             },
             method="POST",
         )
@@ -758,10 +754,10 @@ _RLM_BASH_TOOL_HELPER_SCRIPT = textwrap.dedent(
         if response_data.get("error"):
             raise RuntimeError(response_data["error"])
 
-        result_payload = response_data.get("result", "")
-        result = pickle.loads(base64.b64decode(result_payload))
-        print_lines = response_data.get("print_lines") or []
-        return result, print_lines
+        result = response_data.get("result")
+        if "result" not in response_data:
+            result = response_data.get("result_repr")
+        return result
 
 
     def _print_result(result):
@@ -776,14 +772,6 @@ _RLM_BASH_TOOL_HELPER_SCRIPT = textwrap.dedent(
         except Exception:
             sys.stdout.write(repr(result))
             sys.stdout.write("\\n")
-
-
-    def _print_lines(lines):
-        for line in lines:
-            text = str(line)
-            sys.stdout.write(text)
-            if not text.endswith("\\n"):
-                sys.stdout.write("\\n")
 
 
     def _load_json_payload(json_payload):
@@ -904,7 +892,7 @@ _RLM_BASH_TOOL_HELPER_SCRIPT = textwrap.dedent(
                         prompts = [raw]
                     else:
                         prompts = _coerce_prompts(data)
-            result, _ = _call_root_tool(tool_name, (prompts,), {})
+            result = _call_root_tool(tool_name, (prompts,), {})
             sys.stdout.write(json.dumps(result))
             sys.stdout.write("\\n")
             return
@@ -914,18 +902,14 @@ _RLM_BASH_TOOL_HELPER_SCRIPT = textwrap.dedent(
                 raise RuntimeError("--json does not accept extra args.")
             data = _load_json_payload(json_payload)
             parsed_args, parsed_kwargs = _coerce_args_kwargs(data)
-            result, print_lines = _call_root_tool(
+            result = _call_root_tool(
                 tool_name, tuple(parsed_args), parsed_kwargs
             )
-            if print_lines:
-                _print_lines(print_lines)
             _print_result(result)
             return
 
         parsed_args = tuple(_decode_arg(arg) for arg in args)
-        result, print_lines = _call_root_tool(tool_name, parsed_args, {})
-        if print_lines:
-            _print_lines(print_lines)
+        result = _call_root_tool(tool_name, parsed_args, {})
         _print_result(result)
 
 
@@ -1205,21 +1189,6 @@ class RLMPromptBuilder:
         ),
     }
 
-    MESSAGE_HISTORY_NOTE_PYTHON: str = """
-The file `.messages` in your working directory contains your conversation history (JSONL, one message object per line). It is updated before each code execution. You can read it, e.g.:
-```python
-import json
-history = [json.loads(line) for line in open(".messages")]
-```
-"""
-
-    MESSAGE_HISTORY_NOTE_BASH: str = """
-The file `.messages` in your working directory contains your conversation history (JSONL, one message object per line). It is updated before each code execution. You can read it, e.g.:
-```bash
-cat .messages  # one JSON object per line
-```
-"""
-
     PYTHON_BASE_PROMPT: str = """You have the `call_python_repl` tool and a filesystem available to you.
 
 There exists an `answer` variable, which is a dict. `answer["content"]` must contain your answer. When the final answer is set, set `answer["ready"] = True`.
@@ -1253,7 +1222,6 @@ In the end, the `ANSWER_CONTENT` environment variable must contain your answer. 
         sub_prompt_verbosity: Literal["light", "medium", "heavy"],
         custom_system_prompt: str | None,
         pip_install_packages: str,
-        expose_message_history: bool,
         root_max_completion_tokens: int | None,
         sub_max_completion_tokens: int | None,
         sub_llm_max_turns: int,
@@ -1262,13 +1230,13 @@ In the end, the `ANSWER_CONTENT` environment variable must contain your answer. 
         enable_sub_llms: bool = True,
         enable_summarization: bool = False,
         min_turns_in_context: int = 3,
+        max_turns_in_context: int | None = None,
     ) -> None:
         self.repl_language = repl_language
         self.root_prompt_verbosity = root_prompt_verbosity
         self.sub_prompt_verbosity = sub_prompt_verbosity
         self.custom_system_prompt = custom_system_prompt
         self.pip_install_packages = pip_install_packages
-        self.expose_message_history = expose_message_history
         self.root_max_completion_tokens = root_max_completion_tokens
         self.sub_max_completion_tokens = sub_max_completion_tokens
         self.sub_llm_max_turns = sub_llm_max_turns
@@ -1277,6 +1245,7 @@ In the end, the `ANSWER_CONTENT` environment variable must contain your answer. 
         self.enable_sub_llms = enable_sub_llms
         self.enable_summarization = enable_summarization
         self.min_turns_in_context = min_turns_in_context
+        self.max_turns_in_context = max_turns_in_context
 
     def build_base_system_prompt(self) -> str:
         """Select the base system prompt or custom override."""
@@ -1376,21 +1345,20 @@ In the end, the `ANSWER_CONTENT` environment variable must contain your answer. 
 
         return "\n".join(lines)
 
-    def build_message_history_note(self) -> str:
-        """Return the message-history documentation note, or empty string."""
-        if not self.expose_message_history:
+    def build_turn_limit_note(self) -> str:
+        """Return context-dropping documentation note, or empty string."""
+        if self.max_turns_in_context is None:
             return ""
-        if self.repl_language == "bash":
-            return self.MESSAGE_HISTORY_NOTE_BASH
-        return self.MESSAGE_HISTORY_NOTE_PYTHON
-
-    def build_context_dropping_note(self) -> str:
-        """Return context-dropping documentation note, or empty string.
-
-        Currently returns empty — the ``summarize_turns`` tool docstring and
-        rejection messages provide all necessary information to the model.
-        """
-        return ""
+        note = (
+            f"\nYour session will end after {self.max_turns_in_context}"
+            f" turns in context (each tool call counts as one turn)."
+        )
+        if self.enable_summarization:
+            note += (
+                " Use `summarize_turns` to drop old turns and stay"
+                f" within this limit beyond {self.max_turns_in_context} turns."
+            )
+        return note + "\n"
 
     def build_root_budget_note(self) -> str:
         """Return root-model token budget note, or empty string."""
@@ -1414,6 +1382,21 @@ In the end, the `ANSWER_CONTENT` environment variable must contain your answer. 
 
     def build_system_prompt(self) -> str:
         """Assemble the full RLM system prompt, wrapped in scaffolding tags."""
+        if self.repl_language == "bash":
+            message_history_note = """
+The file `.messages` in your working directory contains the full observable conversation transcript (JSONL, one message object per line). It is overwritten before each code execution. You can read it, e.g.:
+```bash
+cat .messages  # one JSON object per line
+```
+"""
+        else:
+            message_history_note = """
+The file `.messages` in your working directory contains the full observable conversation transcript (JSONL, one message object per line). It is overwritten before each code execution. You can read it, e.g.:
+```python
+import json
+history = [json.loads(line) for line in open(".messages")]
+```
+"""
         body = (
             self.build_base_system_prompt()
             + self.build_packages_documentation()
@@ -1422,8 +1405,8 @@ In the end, the `ANSWER_CONTENT` environment variable must contain your answer. 
             + self.build_sub_tools_documentation()
             + self.build_root_budget_note()
             + self.build_sub_budget_note()
-            + self.build_message_history_note()
-            + self.build_context_dropping_note()
+            + message_history_note
+            + self.build_turn_limit_note()
         )
         return "<SCAFFOLDING>\n" + body + "\n</SCAFFOLDING>\n\n"
 
@@ -2297,10 +2280,6 @@ class RLMEnv(vf.StatefulToolEnv):
         abort_on_code_timeout: If True, abort the rollout when code execution times out.
                    If False (default), return an error message to the model so it can
                    try a more efficient approach.
-        expose_message_history: If True, the model's conversation history is
-                   written to `.messages` (JSONL) in the sandbox working directory
-                   and updated incrementally before each code execution. This lets
-                   the model read or forward its own conversation to sub-LLMs.
         retain_filesystem_after_rollout: If True, keep filesystem after rollout.
         sandbox_docker_image: Docker image for sandbox backend (default: python:3.11-slim)
         sandbox_cpu_cores: Sandbox CPU cores (default: 1)
@@ -2390,7 +2369,6 @@ class RLMEnv(vf.StatefulToolEnv):
         max_startup_wait_seconds: int = 120,
         code_execution_timeout: int = 120,
         abort_on_code_timeout: bool = False,
-        expose_message_history: bool = True,
         retain_filesystem_after_rollout: bool = False,
         sandbox_docker_image: str = "python:3.11-slim",
         sandbox_cpu_cores: int = 1,
@@ -2400,7 +2378,7 @@ class RLMEnv(vf.StatefulToolEnv):
         sandbox_timeout_minutes: int = 60,
         sandbox_environment_vars: dict[str, str] | None = None,
         sandbox_labels: list[str] | None = None,
-        sandbox_client_max_workers: int = 50,
+        sandbox_client_max_workers: int | None = None,
         sandbox_client_max_connections: int = 100,
         sandbox_client_max_keepalive_connections: int = 50,
         sandbox_transfer_max_retries: int = 3,
@@ -2436,13 +2414,13 @@ class RLMEnv(vf.StatefulToolEnv):
         self.custom_system_prompt = system_prompt
         self.interception_port = 0
         self._interception_url_override: str | None = None
+        self._interception_secret = secrets.token_urlsafe(32)
         self.pip_install_packages = pip_install_packages
         self.max_startup_wait_seconds = max_startup_wait_seconds
         self.include_sub_llm_in_trajectory = include_sub_llm_in_trajectory
         self.context_warning_threshold = context_warning_threshold
         self.code_execution_timeout = code_execution_timeout
         self.abort_on_code_timeout = abort_on_code_timeout
-        self.expose_message_history = expose_message_history
         self.enable_summarization = enable_summarization
         self.min_turns_in_context = min_turns_in_context
         self.max_turns_in_context = max_turns_in_context
@@ -2453,16 +2431,6 @@ class RLMEnv(vf.StatefulToolEnv):
                 "max_turns_in_context ineffective.",
                 max_turns_in_context,
                 max_turns,
-            )
-        if self.enable_summarization and not self.expose_message_history:
-            import warnings
-
-            warnings.warn(
-                "enable_summarization=True but expose_message_history=False. "
-                "The model won't be able to read dropped context from .messages. "
-                "Consider setting expose_message_history=True.",
-                UserWarning,
-                stacklevel=2,
             )
         if not self.enable_sub_llms:
             if sub_max_completion_tokens is not None:
@@ -2561,7 +2529,6 @@ class RLMEnv(vf.StatefulToolEnv):
             sub_prompt_verbosity=self.sub_prompt_verbosity,
             custom_system_prompt=self.custom_system_prompt,
             pip_install_packages=self.pip_install_packages,
-            expose_message_history=self.expose_message_history,
             root_max_completion_tokens=self.root_max_completion_tokens,
             sub_max_completion_tokens=self.sub_max_completion_tokens,
             sub_llm_max_turns=self.sub_llm_max_turns,
@@ -2570,6 +2537,7 @@ class RLMEnv(vf.StatefulToolEnv):
             enable_sub_llms=self.enable_sub_llms,
             enable_summarization=self.enable_summarization,
             min_turns_in_context=self.min_turns_in_context,
+            max_turns_in_context=self.max_turns_in_context,
         )
 
         # Add the REPL tool (state is injected via update_tool_args)
@@ -2656,6 +2624,7 @@ class RLMEnv(vf.StatefulToolEnv):
         return {
             "RLM_INTERCEPTION_URL": state.get("interception_url", ""),
             "RLM_ROOT_TOOL_URL": state.get("root_tool_url", ""),
+            "RLM_INTERCEPTION_SECRET": self._interception_secret,
             "RLM_ROOT_TOOL_NAMES": json.dumps(self.root_tool_names),
             "RLM_SUB_LLM_TIMEOUT": str(self.sub_llm_timeout),
         }
@@ -3108,8 +3077,16 @@ class RLMEnv(vf.StatefulToolEnv):
             )
 
     async def _get_tunnel_url(self) -> str:
-        """Get tunnel URL, starting the tunnel if needed."""
+        """Get tunnel URL, starting the tunnel if needed. Recreates dead tunnels."""
         async with self._tunnel_lock:
+            if self._tunnel is not None and not self._tunnel.is_running:
+                logger.warning(
+                    "Tunnel process died, recreating. frpc output:\n%s",
+                    "\n".join(self._tunnel.recent_output),
+                )
+                self._tunnel.sync_stop()
+                self._tunnel = None
+
             if self._tunnel is None:
                 if logger.isEnabledFor(logging.DEBUG):
                     self._tunnel = Tunnel(
@@ -3263,6 +3240,10 @@ class RLMEnv(vf.StatefulToolEnv):
 
     async def _handle_root_tool_request(self, request: Any) -> Any:
         """Handle root tool requests from worker."""
+        auth = request.headers.get("Authorization", "")
+        if not hmac.compare_digest(auth, f"Bearer {self._interception_secret}"):
+            return web.json_response({"error": "Unauthorized"}, status=401)
+
         rollout_id = request.match_info["rollout_id"]
         context = self.active_rollouts.get(rollout_id)
         if not context:
@@ -3285,15 +3266,16 @@ class RLMEnv(vf.StatefulToolEnv):
         if state_ref is None:
             return web.json_response({"error": "State not available"}, status=500)
 
-        try:
-            args = pickle.loads(base64.b64decode(request_body.get("args", "")))
-            kwargs = pickle.loads(base64.b64decode(request_body.get("kwargs", "")))
-            if not isinstance(args, tuple):
-                raise ValueError("Pickle args payload must be a tuple.")
-            if not isinstance(kwargs, dict):
-                raise ValueError("Pickle kwargs payload must be a dict.")
-        except Exception as e:
-            return web.json_response({"error": str(e)}, status=400)
+        args_raw = request_body.get("args", [])
+        kwargs_raw = request_body.get("kwargs", {})
+        if not isinstance(args_raw, list):
+            return web.json_response({"error": "args must be a JSON array"}, status=400)
+        if not isinstance(kwargs_raw, dict):
+            return web.json_response(
+                {"error": "kwargs must be a JSON object"}, status=400
+            )
+        args = tuple(args_raw)
+        kwargs = kwargs_raw
 
         parent_turn = context.get("current_turn", 0)
         root_tool_context = {
@@ -3336,11 +3318,20 @@ class RLMEnv(vf.StatefulToolEnv):
             )
             self._root_tool_context_var.reset(token)
 
-        result_payload = base64.b64encode(pickle.dumps(result_value)).decode("ascii")
-        return web.json_response({"result": result_payload})
+        response_body: dict[str, Any] = {}
+        try:
+            json.dumps(result_value)
+            response_body["result"] = result_value
+        except (TypeError, ValueError):
+            response_body["result_repr"] = repr(result_value)
+        return web.json_response(response_body)
 
     async def _handle_sub_llm_request(self, request: Any) -> Any:
         """Handle sub-LLM requests from worker code."""
+        auth = request.headers.get("Authorization", "")
+        if not hmac.compare_digest(auth, f"Bearer {self._interception_secret}"):
+            return web.json_response({"error": "Unauthorized"}, status=401)
+
         rollout_id = request.match_info["rollout_id"]
         context = self.active_rollouts.get(rollout_id)
         if not context:
@@ -3460,10 +3451,7 @@ class RLMEnv(vf.StatefulToolEnv):
             updated_args = dict(tool_args)
             updated_args["state"] = state
             return updated_args
-        else:
-            return super().update_tool_args(
-                tool_name, tool_args, messages, state, **kwargs
-            )
+        return tool_args
 
     async def _setup_interception_and_register(
         self, state: State, rollout_id: str
@@ -3490,7 +3478,9 @@ class RLMEnv(vf.StatefulToolEnv):
 
     async def setup_state(self, state: State, **kwargs) -> State:
         """Setup worker, filesystem context, and interception for sub-LLM calls."""
-        state = await vf.StatefulToolEnv.setup_state(self, state, **kwargs)
+        setup_state = await vf.StatefulToolEnv.setup_state(self, state, **kwargs)
+        if setup_state is not None:
+            state = setup_state
 
         rollout_id = f"rlm_{uuid.uuid4().hex[:8]}"
         state["rollout_id"] = rollout_id
@@ -3499,7 +3489,7 @@ class RLMEnv(vf.StatefulToolEnv):
 
         try:
             # 1. Setup interception and register rollout
-            state = await self._setup_interception_and_register(state, rollout_id)
+            await self._setup_interception_and_register(state, rollout_id)
 
             # 2. Create rollout directories
             self._executor.create_rollout_dirs(state)
@@ -3550,15 +3540,12 @@ class RLMEnv(vf.StatefulToolEnv):
             # Initialize FIFO sequence counter for detecting stale responses
             state["_exec_seq"] = 0
 
-            # Initialize message history upload counter
-            state["_messages_uploaded_count"] = 0
-
             # Initialize context dropping state
             state["_keep_from_assistant_index"] = 0
             state["_summary_text"] = ""
+            state["_observable_messages"] = []
 
             _ensure_rlm_metric_state(state)
-
             return state
         except Exception:
             # Best-effort cleanup to avoid leaking tunnels/sandboxes on setup failure.
@@ -3739,20 +3726,9 @@ class RLMEnv(vf.StatefulToolEnv):
     # Message History Upload
     # =========================================================================
 
-    _SUMMARY_BLOCK_RE = re.compile(r"<SUMMARY>\n.*?\n</SUMMARY>\n\n", re.DOTALL)
-
     def _build_message_history(self, state: State) -> list[dict[str, Any]]:
-        """Build the serialized message history from the trajectory.
-
-        Reads from the last main trajectory step (which has the full
-        cumulative conversation in its prompt) and strips any injected
-        ``<SUMMARY>`` blocks so that ``.messages`` reflects the raw
-        conversation without summarization artifacts.
-        """
-        last_main = self._last_main_trajectory_step(state)
-        if last_main is None:
-            return []
-        messages = concat_messages([last_main["prompt"], last_main["completion"]])
+        """Build the serialized observable message history for `.messages`."""
+        messages = cast(Messages, state.get("_observable_messages", []))
         serialized: list[dict[str, Any]] = []
         for msg in messages:
             if hasattr(msg, "model_dump"):
@@ -3761,32 +3737,31 @@ class RLMEnv(vf.StatefulToolEnv):
                 entry = dict(msg)
             else:
                 continue
-            content = entry.get("content")
-            if isinstance(content, str) and "<SUMMARY>" in content:
-                entry["content"] = self._SUMMARY_BLOCK_RE.sub("", content)
             serialized.append(entry)
         return serialized
 
     async def _upload_message_history(self, state: State) -> None:
-        """Incrementally upload new messages to .messages (JSONL) in the sandbox."""
+        """Overwrite `.messages` in the sandbox with the observable transcript."""
         messages = self._build_message_history(state)
-        uploaded_count: int = state.get("_messages_uploaded_count", 0)
-        new_messages = messages[uploaded_count:]
-        if not new_messages and uploaded_count > 0:
-            return
 
-        session = self._executor._get_session(state)
+        try:
+            session = self._executor._get_session(state)
+        except RLMSessionError:
+            return
         assert session.sandbox_id is not None, "sandbox must be initialized"
         fs_root = session.sandbox_fs_root or state.get("rlm_fs_root_remote", "")
         remote_path = f"{fs_root}/.messages"
 
-        if new_messages:
-            lines = [json.dumps(msg, ensure_ascii=False) for msg in new_messages]
+        if messages:
+            lines = [json.dumps(msg, ensure_ascii=False) for msg in messages]
             delta = "\n".join(lines) + "\n"
             delta_b64 = base64.b64encode(delta.encode("utf-8")).decode("ascii")
-            cmd = f"echo '{delta_b64}' | base64 -d >> {remote_path}"
+            cmd = (
+                f"mkdir -p {shlex.quote(fs_root)} && "
+                f"echo '{delta_b64}' | base64 -d > {shlex.quote(remote_path)}"
+            )
         else:
-            cmd = f"touch {remote_path}"
+            cmd = f"mkdir -p {shlex.quote(fs_root)} && : > {shlex.quote(remote_path)}"
 
         try:
             await self._executor._execute_sandbox_command(
@@ -3794,7 +3769,6 @@ class RLMEnv(vf.StatefulToolEnv):
                 f"bash -lc {shlex.quote(cmd)}",
                 timeout=30,
             )
-            state["_messages_uploaded_count"] = len(messages)
         except Exception as e:
             logger.warning("Failed to upload message history: %s", e)
 
@@ -3825,8 +3799,7 @@ class RLMEnv(vf.StatefulToolEnv):
             len(code),
         )
 
-        if self.expose_message_history:
-            await self._upload_message_history(state)
+        await self._upload_message_history(state)
 
         execution_start = perf_counter()
         result = await self._execute_code(code, state)
@@ -3947,6 +3920,7 @@ class RLMEnv(vf.StatefulToolEnv):
         state["_summary_text"] = (
             f"{prev_summary}\n{section}" if prev_summary else section
         )
+        self._refresh_observable_summary_insertion(state)
 
         logger.debug(
             "[%s] main turn %d: summarize_turns: %d turn(s) dropped "
@@ -4063,6 +4037,11 @@ class RLMEnv(vf.StatefulToolEnv):
                 state["raw_prompt"] = state["prompt"]
             state["prompt"] = prompt_messages
         await super().add_model_response(state, prompt_messages, response)
+        if not state.get("_observable_messages"):
+            self._append_observable_messages(state, cast(Messages, state["prompt"]))
+        self._append_observable_messages(
+            state, cast(Messages, state["trajectory"][-1]["completion"])
+        )
 
     def _main_turn_count(self, state: State) -> int:
         """Count the number of main-model trajectory steps."""
@@ -4164,52 +4143,85 @@ class RLMEnv(vf.StatefulToolEnv):
         # Inject or replace summary in the first remaining assistant message
         if summary_text and remaining:
             first_asst = remaining[0]
-            summary_block = f"<SUMMARY>\n{summary_text}\n</SUMMARY>\n\n"
-            content = getattr(first_asst, "content", None)
-            if isinstance(content, str):
-                # Strip any existing summary block before prepending the new one
-                content = re.sub(
-                    r"<SUMMARY>\n.*?\n</SUMMARY>\n\n",
-                    "",
-                    content,
-                    count=1,
-                    flags=re.DOTALL,
-                )
-                remaining[0] = AssistantMessage(
-                    content=summary_block + content,
-                    tool_calls=getattr(first_asst, "tool_calls", None),
-                    reasoning_content=getattr(first_asst, "reasoning_content", None),
-                    thinking_blocks=getattr(first_asst, "thinking_blocks", None),
-                )
-            elif isinstance(content, list):
-                # Remove any existing summary text block, then prepend new one
-                filtered = [
-                    part
-                    for part in content
-                    if not (
-                        isinstance(part, dict)
-                        and part.get("type") == "text"
-                        and "<SUMMARY>" in str(part.get("text", ""))
-                    )
-                ]
-                new_content = [
-                    {"type": "text", "text": summary_block},
-                    *filtered,
-                ]
-                remaining[0] = AssistantMessage(
-                    content=new_content,
-                    tool_calls=getattr(first_asst, "tool_calls", None),
-                    reasoning_content=getattr(first_asst, "reasoning_content", None),
-                    thinking_blocks=getattr(first_asst, "thinking_blocks", None),
-                )
+            remaining[0] = self._with_summary_on_assistant_message(
+                first_asst, summary_text
+            )
 
         return preamble + remaining
+
+    def _with_summary_on_assistant_message(
+        self, message: Message, summary_text: str
+    ) -> AssistantMessage:
+        """Return an assistant message with the provided summary block applied."""
+        summary_block = f"<SUMMARY>\n{summary_text}\n</SUMMARY>\n\n"
+        content = getattr(message, "content", None)
+        if isinstance(content, str):
+            content = re.sub(
+                r"^<SUMMARY>\n.*?\n</SUMMARY>\n\n",
+                "",
+                content,
+                count=1,
+                flags=re.DOTALL,
+            )
+            content = summary_block + content if summary_text else content
+        elif isinstance(content, list):
+            filtered = [
+                part
+                for part in content
+                if not (
+                    isinstance(part, dict)
+                    and part.get("type") == "text"
+                    and "<SUMMARY>" in str(part.get("text", ""))
+                )
+            ]
+            content = (
+                [{"type": "text", "text": summary_block}, *filtered]
+                if summary_text
+                else filtered
+            )
+        else:
+            content = summary_block if summary_text else content
+
+        return AssistantMessage(
+            content=content,
+            tool_calls=getattr(message, "tool_calls", None),
+            reasoning_content=getattr(message, "reasoning_content", None),
+            thinking_blocks=getattr(message, "thinking_blocks", None),
+        )
+
+    def _refresh_observable_summary_insertion(self, state: State) -> None:
+        """Move the cumulative summary block onto the current visible assistant turn."""
+        observable = cast(Messages, state.get("_observable_messages", []))
+        if not observable:
+            return
+
+        target_assistant_index = state.get("_keep_from_assistant_index", 0)
+        summary_text = state.get("_summary_text", "")
+        assistant_index = 0
+
+        for i, message in enumerate(observable):
+            if getattr(message, "role", None) != "assistant":
+                continue
+            if summary_text and assistant_index == target_assistant_index:
+                observable[i] = self._with_summary_on_assistant_message(
+                    message, summary_text
+                )
+            else:
+                observable[i] = self._with_summary_on_assistant_message(message, "")
+            assistant_index += 1
+
+    def _append_observable_messages(self, state: State, messages: Messages) -> None:
+        """Append messages to the observable transcript."""
+        observable = cast(list[Message], state.setdefault("_observable_messages", []))
+        observable.extend(_clone_messages(messages))
 
     async def env_response(
         self, messages: Messages, state: State, **kwargs
     ) -> Messages:
         """Override to set final_env_response when answer is ready, root budget or context turn limit is exhausted."""
         tool_messages = await super().env_response(messages, state, **kwargs)
+        if tool_messages:
+            self._append_observable_messages(state, tool_messages)
         if "final_answer" in state:
             state["final_env_response"] = tool_messages
         elif self._is_root_budget_exhausted(state):
@@ -4297,7 +4309,7 @@ class RLMEnv(vf.StatefulToolEnv):
                 await self._teardown_tunnel()
 
     async def render_completion(self, state: State):
-        """Render completion from main model steps only, ignoring sub-LLM steps."""
+        """Render the tracked observable main-model rollout."""
         rid = state.get("rollout_id", "?")
         _ensure_rlm_metric_state(state)
         logger.debug(
@@ -4313,26 +4325,9 @@ class RLMEnv(vf.StatefulToolEnv):
             state["completion"] = []
             return
 
-        # Find the last trajectory step from the main model (matching trajectory_id)
-        main_trajectory_id = state["trajectory_id"]
-        last_main_step = None
-        for step in reversed(state["trajectory"]):
-            if step.get("trajectory_id") == main_trajectory_id:
-                last_main_step = step
-                break
-
-        if last_main_step is None:
-            state["completion"] = []
-            return
-
-        last_prompt = last_main_step["prompt"]
-        last_completion = last_main_step["completion"]
-        full_conversation = concat_messages([last_prompt, last_completion])
-        if state.get("final_env_response"):
-            full_conversation = concat_messages(
-                [full_conversation, state["final_env_response"]]
-            )
-        state["completion"] = full_conversation[len(state["prompt"]) :]
+        observable = cast(Messages, state.get("_observable_messages", []))
+        prompt = cast(Messages, state.get("prompt", []))
+        state["completion"] = _clone_messages(observable[len(prompt) :])
 
     async def post_rollout(self, state: State):
         """Read final answer from worker if not already set."""

@@ -71,6 +71,12 @@ export PATH="$HOME/.opencode/bin:$PATH"
 
 mkdir -p ~/.config/opencode
 
+# Ensure OPENAI_MODEL has provider/model format for opencode AI SDK config.
+# LoRA adapter names (e.g. "rft-abc123") lack a slash, causing empty modelID.
+if [[ "$OPENAI_MODEL" != *"/"* ]]; then
+    export OPENAI_MODEL="vllm/$OPENAI_MODEL"
+fi
+
 SCHEMA_DOLLAR='$'
 
 cat > ~/.config/opencode/opencode.json << EOFCONFIG
@@ -263,7 +269,8 @@ class OpenCodeEnv(CliAgentEnv):
         - Compact JSON arguments
         - Strip trailing newlines from assistant content
 
-        Applying the same normalization to the stored step enables TITO prefix hits.
+        Applying the same normalization to the stored step keeps the trajectory
+        aligned with OpenCode's own history format.
         """
 
         def _normalize() -> vf.Response:

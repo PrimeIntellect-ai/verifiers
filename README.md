@@ -34,7 +34,9 @@ Verifiers: Environments for LLM Reinforcement Learning
 
 ## News & Updates
 
-- [03/22/26] v0.1.12.dev0 release prep is up, featuring opencode RLM environments, performance and autoscaling improvements, stronger cancellation/runtime handling, multimodal save fidelity, and updated development docs.
+- [05/07/26] v0.1.14 is released, featuring the v1 Taskset/Harness API, shared eval and training config shape, model-family starter configs, OpenAI Responses and renderer-backed clients, per-turn timing, GEPA prompt artifacts, Lean guard markers, and release/infrastructure hardening.
+- [04/28/26] v0.1.13.dev8 is released, featuring per-rollout wall-clock timeouts for `MultiTurnEnv`, CLI timeout config, sandbox timeout propagation, and smaller `CliAgentEnv` and RLM fixes.
+- [04/17/26] v0.1.12 is released, featuring upstreamed opencode and RLM harnesses/tasksets, major `RLMEnv` improvements (context dropping, prompt builder, hardened transport), multi-worker env server support, expanded `vf-tui` capabilities, and richer eval configuration.
 - [03/12/26] v0.1.11 is released, featuring a unified client stack, major `RLMEnv` and env server reliability improvements, a substantially refined eval TUI, new pass@k and ablation sweep support, and bundled opencode environments.
 - [02/10/26] v0.1.10 is released, featuring OpenEnv and BrowserEnv integrations, resumed evals, improved rollout and token tracking, safer sandbox lifecycle behavior, refreshed workspace setup, and opencode harbor improvements.
 - [01/08/26] v0.1.9 is released, featuring a number of new experimental environment class types, monitor rubrics for automatic metric collection, improved workspace setup flow, improved error handling, bug fixes, and a documentation overhaul.
@@ -124,9 +126,79 @@ def load_environment(dataset_name: str = 'gsm8k') -> vf.Environment:
     async def correct_answer(completion, answer) -> float:
         completion_ans = completion[-1]['content']
         return 1.0 if completion_ans == answer else 0.0
-    rubric = Rubric(funcs=[correct_answer])
+    rubric = vf.Rubric(funcs=[correct_answer])
     env = vf.SingleTurnEnv(dataset=dataset, rubric=rubric)
     return env
+```
+
+For new environments with reusable tasksets, toolsets, custom programs, or
+custom harnesses, use the v1 Taskset/Harness path:
+```python
+# my_env.py
+import verifiers.v1 as vf
+
+def source():
+    yield {
+        "prompt": [{"role": "user", "content": "Reverse abc."}],
+        "answer": "cba",
+        "max_turns": 1,
+    }
+
+@vf.reward(weight=1.0)
+async def contains_answer(task, state) -> float:
+    return float(task["answer"] in str(state.get("completion") or ""))
+
+def load_taskset(config: vf.TasksetConfig | None = None):
+    return vf.Taskset(source=source, rewards=[contains_answer], config=config)
+
+def load_environment(config: vf.EnvConfig | None = None) -> vf.Env:
+    config = config or vf.EnvConfig()
+    return vf.Env(taskset=load_taskset(config=config.taskset))
+```
+If no harness is passed, `vf.Env` uses the base endpoint-backed harness. See
+**[BYO Harness](docs/byo-harness.md)** for the advanced v1 taskset/harness API.
+Reusable taskset and harness packages live under `verifiers.v1.packages` while
+the v1 API stabilizes, and are re-exported from `verifiers.v1` for normal use.
+For example, Harbor task directories can run through the bundled OpenCode CLI
+harness with:
+
+```python
+env = vf.Env(
+    taskset=vf.HarborTaskset(tasks="/path/to/harbor/tasks"),
+    harness=vf.OpenCode(),
+)
+```
+
+The same environment package is the unit used by evals and `prime-rl`. The
+trainer owns model, endpoint, sampling, and rollout count; v1-specific taskset
+and harness options stay under `env.taskset` and `env.harness`:
+
+```toml
+# configs/rl/my-v1-env.toml
+model = "Qwen/Qwen3-30B-A3B-Instruct-2507"
+max_steps = 100
+batch_size = 256
+rollouts_per_example = 8
+
+[sampling]
+max_tokens = 4096
+
+[[env]]
+id = "my-env"
+
+[env.args]
+arg1 = "non-th-arg"
+
+[env.harness]
+max_turns = 1
+
+[env.taskset.scoring.contains_answer]
+weight = 1.0
+```
+
+```bash
+prime env install my-env
+uv run prime-rl configs/rl/my-v1-env.toml
 ```
 
 To install the environment module into your project, do:
@@ -141,7 +213,7 @@ prime env install primeintellect/math-python
 
 To run a local evaluation with any OpenAI-compatible model, do:
 ```bash
-prime eval run my-env -m gpt-5-nano # run and save eval results locally
+prime eval run my-env -m openai/gpt-5-nano # run and save eval results locally
 ```
 Evaluations use [Prime Inference](https://docs.primeintellect.ai/inference/overview) by default; configure your own API endpoints in `./configs/endpoints.toml`.
 
@@ -163,6 +235,8 @@ prime eval run primeintellect/math-python
 ## Documentation
 
 **[Environments](docs/environments.md)** — Create datasets, rubrics, and custom multi-turn interaction protocols.
+
+**[BYO Harness](docs/byo-harness.md)** — Build v1 Taskset/Harness environments with custom tools, sandboxes, users, and custom programs.
 
 **[Evaluation](docs/evaluation.md)** - Evaluate models using your environments.
 

@@ -14,7 +14,7 @@ Build production-quality verifiers environments that work immediately in the Pri
 ```bash
 prime env init my-env
 prime env install my-env
-prime eval run my-env -m gpt-4.1-mini -n 5
+prime eval run my-env -m openai/gpt-4.1-mini -n 5
 ```
 3. Treat `prime eval run` as the canonical eval path. It saves results automatically, so do not add `--skip-upload` unless the user explicitly requests that deviation.
 4. Prefer an existing environment as a starting point when possible:
@@ -42,7 +42,7 @@ prime env install math-python --from-repo
 - `ToolEnv` or `MCPEnv` for stateless tools.
 - `StatefulToolEnv` for per-rollout resources.
 - `CliAgentEnv` for running agent binaries in sandboxes with API interception. Override `get_sandbox_resources(state)` for per-instance resources, `build_env_vars(state)` for custom env vars.
-- `ComposableEnv` (with `TaskSet`/`SandboxTaskSet` + `Harness`) for separating *what to solve* from *how to solve it*. Define a `TaskSet` (dataset, instructions, sandbox spec, rubric) and a `Harness` (install script, run command, system prompt), wire them together with zero subclassing. Use `SandboxTaskSet` when tasks need sandboxes with per-instance images/resources.
+- V1 `vf.Env` with `vf.Taskset`/`vf.Harness` for the current taskset/harness environment pattern that separates the task collection from the rollout runner. Use this for new taskset/harness work that needs config-driven metrics, rewards, toolsets, user functions, endpoint interception, or sandboxed Python/command programs. Framework programs should build clients from `state.get_endpoint_config(api="chat")`.
 3. Implement `load_environment(...) -> vf.Environment` with explicit arguments.
 4. Add `pyproject.toml` defaults in `[tool.verifiers.eval]` only when stable.
 
@@ -78,12 +78,12 @@ prime env pull owner/name -t ./tmp-env
 Run these before claiming completion:
 ```bash
 prime env install my-env
-prime eval run my-env -m gpt-4.1-mini -n 5
-prime eval run my-env -m gpt-4.1-mini -n 50 -r 1 -s
+prime eval run my-env -m openai/gpt-4.1-mini -n 5
+prime eval run my-env -m openai/gpt-4.1-mini -n 50 -r 1 -s
 ```
 If multi-turn or tool-heavy, also run with higher rollouts:
 ```bash
-prime eval run my-env -m gpt-4.1-mini -n 30 -r 3 -s
+prime eval run my-env -m openai/gpt-4.1-mini -n 30 -r 3 -s
 ```
 
 ## Publish Gate Before Large Evals Or Training
@@ -99,7 +99,7 @@ prime env push my-env --visibility PRIVATE
 ```
 4. For hosted or large-scale workflows, prefer running with the Hub slug after push:
 ```bash
-prime eval run owner/my-env -m gpt-4.1-mini -n 200 -r 3 -s
+prime eval run owner/my-env -m openai/gpt-4.1-mini -n 200 -r 3 -s
 ```
 
 ## Synthetic Data

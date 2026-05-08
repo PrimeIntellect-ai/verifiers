@@ -234,7 +234,7 @@ class RemoteHybridMathRubric(SandboxMixin, HybridMathRubric):
         solution_path: str = DEFAULT_SOLUTION_PATH,
         scorer_path: str = DEFAULT_SCORER_PATH,
         scorer_timeout: int = DEFAULT_SCORER_TIMEOUT,
-        sandbox_client_max_workers: int = 50,
+        sandbox_client_max_workers: int | None = None,
         sandbox_client_max_connections: int = 1000,
         sandbox_client_max_keepalive_connections: int = 200,
         **kwargs,

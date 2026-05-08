@@ -7,7 +7,7 @@
 Use `prime eval run` with a small sample:
 
 ```bash
-prime eval run my-environment -m gpt-4.1-mini -n 5
+prime eval run my-environment -m openai/gpt-4.1-mini -n 5
 ```
 
 The `-s` flag prints sample outputs so you can see what's happening.
@@ -32,7 +32,7 @@ vf.print_prompt_completions_sample(outputs, n=3)
 Set the `VF_LOG_LEVEL` environment variable:
 
 ```bash
-VF_LOG_LEVEL=DEBUG prime eval run my-environment -m gpt-4.1-mini -n 5
+VF_LOG_LEVEL=DEBUG prime eval run my-environment -m openai/gpt-4.1-mini -n 5
 ```
 
 ## Environments
@@ -83,7 +83,7 @@ Reward functions receive any of these via `**kwargs`:
 - `prompt` - the input prompt
 - `state` - full rollout state
 - `parser` - the rubric's parser (if set)
-- `task` - task identifier
+- `task` - `vf.Task` object for taskset-backed environments
 - `info` - metadata dict from dataset
 
 Just include the ones you need in your function signature.
@@ -117,3 +117,13 @@ client = AsyncOpenAI(
 
 outputs = await env.evaluate(client, model="your-model-name", ...)
 ```
+
+### Which `client_type` should I use for RL training?
+
+Three options trade off control vs simplicity:
+
+- **`openai_chat_completions`** (MITO) — server-side templating, text only. Standard OpenAI path. The trainer re-tokenizes for training, which can drift across multi-turn rollouts and fragment them into multiple samples.
+- **`openai_chat_completions_token`** (TITO) — server-side templating, returns token IDs alongside text. The trainer doesn't re-tokenize. Use when the server's chat template is stable across turns.
+- **`renderer`** *(experimental)* — client-side tokenization via a per-model renderer in the [`renderers` package](https://github.com/PrimeIntellect-ai/verifiers/tree/main/packages/renderers). Install it with `uv add "verifiers[renderers]"` before using `client_type="renderer"`. Stronger token-preservation in theory: `bridge_to_next_turn` keeps multi-turn rollouts merged into one sample and survives mid-completion truncation cleanly. Hand-coded renderers exist only for a subset of models and corner cases are still being shaken out.
+
+For production training, use `openai_chat_completions_token` — it's the tried-and-tested path. Try `renderer` if you want the stronger guarantees and your model has a hand-coded renderer. See [Inference Client Types](training.md#inference-client-types) for the full breakdown.

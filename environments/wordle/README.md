@@ -29,7 +29,7 @@ Configure model and sampling:
 
 ```bash
 prime eval run wordle \
-  -m gpt-4.1-mini \
+  -m openai/gpt-4.1-mini \
   -n 20 -r 3 -t 1024 -T 0.7 \
   -a '{"num_train_examples": 2000, "num_eval_examples": 20}'
 ```
@@ -39,6 +39,7 @@ prime eval run wordle \
 | --- | ---- | ------- | ----------- |
 | `num_train_examples` | int | `2000` | Number of training episodes |
 | `num_eval_examples` | int | `20` | Number of evaluation episodes |
+| `path_to_system_prompt` | str \| Path \| None | `None` | Path to a text file used as the system prompt |
 
 ### Metrics
 | Metric | Meaning |

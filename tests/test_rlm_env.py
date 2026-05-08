@@ -1,12 +1,10 @@
 """Tests for the RLMEnv class (filesystem-based, local-only)."""
 
 import ast
-import base64
 import contextlib
 import io
 import json
 import os
-import pickle
 import shutil
 from pathlib import Path
 from typing import Any
@@ -86,7 +84,6 @@ def rlm_env() -> RLMEnv:
         max_turns=10,
         max_output_length=1000,
         repl_language="python",
-        expose_message_history=False,
         interception_url="http://test.invalid",
     )
 
@@ -107,7 +104,6 @@ def rlm_env_with_sub_tools() -> RLMEnv:
         sub_tools=[sample_tool, another_tool],
         sub_llm_max_turns=3,
         repl_language="python",
-        expose_message_history=False,
         interception_url="http://test.invalid",
     )
 
@@ -120,7 +116,6 @@ def rlm_env_bash() -> RLMEnv:
         max_turns=10,
         max_output_length=1000,
         repl_language="bash",
-        expose_message_history=False,
         interception_url="http://test.invalid",
     )
 
@@ -255,22 +250,22 @@ class TestContextFilesystemSetup:
             "model": "m",
             "client": MagicMock(),
         }
-        result = await env.setup_state(state)
+        await env.setup_state(state)
 
         try:
-            fs_root = Path(result["rlm_fs_root"])
-            control_dir = Path(result["rlm_control_dir"])
-            rollout_dir = Path(result["rlm_rollout_dir"])
+            fs_root = Path(state["rlm_fs_root"])
+            control_dir = Path(state["rlm_control_dir"])
+            rollout_dir = Path(state["rlm_rollout_dir"])
 
             assert fs_root.is_dir()
             assert (fs_root / "data.txt").read_text(encoding="utf-8") == "hello"
             assert fs_root.parent == control_dir.parent == rollout_dir
             assert fs_root.name == "rlm_fs"
             assert control_dir.name == "rlm_control"
-            assert result["rlm_fs_has_data"] is True
-            assert result["rlm_fs_source"] == str(context_dir)
+            assert state["rlm_fs_has_data"] is True
+            assert state["rlm_fs_source"] == str(context_dir)
         finally:
-            await env.cleanup_rlm_state(result)
+            await env.cleanup_rlm_state(state)
 
     @pytest.mark.asyncio
     async def test_setup_state_writes_builtin_context_json(self):
@@ -281,15 +276,15 @@ class TestContextFilesystemSetup:
         env._executor.setup = AsyncMock()
 
         state = {"info": {"context": {"a": 1}}, "model": "m", "client": MagicMock()}
-        result = await env.setup_state(state)
+        await env.setup_state(state)
         try:
-            fs_root = Path(result["rlm_fs_root"])
+            fs_root = Path(state["rlm_fs_root"])
             context_file = fs_root / "context.json"
             assert context_file.exists()
             assert json.loads(context_file.read_text(encoding="utf-8")) == {"a": 1}
-            assert result["rlm_fs_has_data"] is True
+            assert state["rlm_fs_has_data"] is True
         finally:
-            await env.cleanup_rlm_state(result)
+            await env.cleanup_rlm_state(state)
 
     @pytest.mark.asyncio
     async def test_setup_state_writes_builtin_context_text(self):
@@ -300,15 +295,15 @@ class TestContextFilesystemSetup:
         env._executor.setup = AsyncMock()
 
         state = {"info": {"context": "hello"}, "model": "m", "client": MagicMock()}
-        result = await env.setup_state(state)
+        await env.setup_state(state)
         try:
-            fs_root = Path(result["rlm_fs_root"])
+            fs_root = Path(state["rlm_fs_root"])
             context_file = fs_root / "context.txt"
             assert context_file.exists()
             assert context_file.read_text(encoding="utf-8") == "hello"
-            assert result["rlm_fs_has_data"] is True
+            assert state["rlm_fs_has_data"] is True
         finally:
-            await env.cleanup_rlm_state(result)
+            await env.cleanup_rlm_state(state)
 
     @pytest.mark.asyncio
     async def test_setup_state_rejects_symlinks(self, tmp_path: Path):
@@ -364,14 +359,14 @@ class TestContextFilesystemSetup:
         env._executor.setup = AsyncMock()
 
         state = {"info": {}, "model": "m", "client": MagicMock()}
-        result = await env.setup_state(state)
+        await env.setup_state(state)
         try:
-            fs_root = Path(result["rlm_fs_root"])
+            fs_root = Path(state["rlm_fs_root"])
             assert fs_root.exists()
             assert list(fs_root.iterdir()) == []
-            assert result["rlm_fs_has_data"] is False
+            assert state["rlm_fs_has_data"] is False
         finally:
-            await env.cleanup_rlm_state(result)
+            await env.cleanup_rlm_state(state)
 
     @pytest.mark.asyncio
     async def test_system_prompt_mentions_working_dir_and_empty_context(self):
@@ -382,14 +377,14 @@ class TestContextFilesystemSetup:
         env._executor.setup = AsyncMock()
 
         state = {"info": {}, "model": "m", "client": MagicMock()}
-        result = await env.setup_state(state)
+        await env.setup_state(state)
         try:
-            prompt = result["rlm_system_prompt"]
+            prompt = state["rlm_system_prompt"]
             assert "filesystem available" in prompt
             assert "Working directory:" not in prompt
             assert "No extra data was provided" not in prompt
         finally:
-            await env.cleanup_rlm_state(result)
+            await env.cleanup_rlm_state(state)
 
 
 class TestFilesystemCleanup:
@@ -402,11 +397,11 @@ class TestFilesystemCleanup:
         env._executor.setup = AsyncMock()
 
         state = {"info": {"context": "hello"}, "model": "m", "client": MagicMock()}
-        result = await env.setup_state(state)
-        rollout_dir = Path(result["rlm_rollout_dir"])
+        await env.setup_state(state)
+        rollout_dir = Path(state["rlm_rollout_dir"])
         assert rollout_dir.exists()
 
-        await env.cleanup_rlm_state(result)
+        await env.cleanup_rlm_state(state)
         assert not rollout_dir.exists()
 
     @pytest.mark.asyncio
@@ -422,12 +417,12 @@ class TestFilesystemCleanup:
         env._executor.setup = AsyncMock()
 
         state = {"info": {"context": "hello"}, "model": "m", "client": MagicMock()}
-        result = await env.setup_state(state)
-        rollout_dir = Path(result["rlm_rollout_dir"])
+        await env.setup_state(state)
+        rollout_dir = Path(state["rlm_rollout_dir"])
         assert rollout_dir.exists()
 
         try:
-            await env.cleanup_rlm_state(result)
+            await env.cleanup_rlm_state(state)
             assert rollout_dir.exists()
         finally:
             shutil.rmtree(rollout_dir, ignore_errors=True)
@@ -442,13 +437,13 @@ class TestBashPrompt:
         env._executor.setup = AsyncMock()
 
         state = {"info": {}, "model": "m", "client": MagicMock()}
-        result = await env.setup_state(state)
+        await env.setup_state(state)
         try:
-            prompt = result["rlm_system_prompt"]
+            prompt = state["rlm_system_prompt"]
             assert "ANSWER_READY" in prompt
             assert "ANSWER_CONTENT" in prompt
         finally:
-            await env.cleanup_rlm_state(result)
+            await env.cleanup_rlm_state(state)
 
 
 class TestPromptVerbosity:
@@ -505,15 +500,15 @@ class TestPromptVerbosity:
         env._executor.setup = AsyncMock()
 
         state = {"info": {}, "model": "m", "client": MagicMock()}
-        result = await env.setup_state(state)
+        await env.setup_state(state)
         try:
-            prompt = result["rlm_system_prompt"]
+            prompt = state["rlm_system_prompt"]
             for snippet in expected_snippets:
                 assert snippet in prompt
             for snippet in unexpected_snippets:
                 assert snippet not in prompt
         finally:
-            await env.cleanup_rlm_state(result)
+            await env.cleanup_rlm_state(state)
 
     @pytest.mark.asyncio
     async def test_enable_sub_llms_false_omits_sub_llm_docs(self):
@@ -530,14 +525,14 @@ class TestPromptVerbosity:
         env._executor.setup = AsyncMock()
 
         state = {"info": {}, "model": "m", "client": MagicMock()}
-        result = await env.setup_state(state)
+        await env.setup_state(state)
         try:
-            prompt = result["rlm_system_prompt"]
+            prompt = state["rlm_system_prompt"]
             assert "llm_batch" not in prompt
             assert "sub-LLM" not in prompt
             assert "You have the `call_python_repl` tool" in prompt
         finally:
-            await env.cleanup_rlm_state(result)
+            await env.cleanup_rlm_state(state)
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("verbosity", ["light", "medium", "heavy"])
@@ -656,7 +651,6 @@ class TestBashToolHelper:
         stderr_buffer = io.StringIO()
         env = {
             "RLM_ROOT_TOOL_URL": "http://example.invalid/",
-            "RLM_ROOT_TOOL_SERIALIZATION": "pickle",
         }
         captured_payload: dict | None = None
         with patch("urllib.request.urlopen") as mock_urlopen:
@@ -664,8 +658,8 @@ class TestBashToolHelper:
             def _capture_request(req, timeout=300):
                 nonlocal captured_payload
                 data = json.loads(req.data.decode("utf-8"))
-                args = list(pickle.loads(base64.b64decode(data["args"])))
-                kwargs = pickle.loads(base64.b64decode(data["kwargs"]))
+                args = data["args"]
+                kwargs = data["kwargs"]
                 captured_payload = {
                     "tool_name": data.get("tool_name"),
                     "args": args,
@@ -678,7 +672,7 @@ class TestBashToolHelper:
             response.__exit__.return_value = None
             if response_data is None:
                 response_data = {
-                    "result": base64.b64encode(pickle.dumps(["ok"])).decode("ascii"),
+                    "result": ["ok"],
                     "error": None,
                 }
             response.read.return_value = json.dumps(response_data).encode("utf-8")
@@ -814,9 +808,7 @@ class TestBashToolHelper:
     def test_llm_batch_output_json(self):
         payload = json.dumps({"prompts": ["one", "two"]})
         response_data = {
-            "result": base64.b64encode(pickle.dumps(["first", "second"])).decode(
-                "ascii"
-            ),
+            "result": ["first", "second"],
             "error": None,
         }
         stdout, stderr, code, captured = self._run_helper(
@@ -957,9 +949,9 @@ class TestToolSplitConfiguration:
         env._executor.setup = AsyncMock()
 
         state = {"info": {}, "model": "test-model", "client": MagicMock()}
-        result = await env.setup_state(state)
+        await env.setup_state(state)
         try:
-            prompt = result["rlm_system_prompt"]
+            prompt = state["rlm_system_prompt"]
             assert "REPL Tools" in prompt
             assert "llm_batch Tools" in prompt
 
@@ -978,13 +970,13 @@ class TestToolSplitConfiguration:
             assert "sub_tool" in sub_section
             assert "repl_tool" not in sub_section
 
-            assert result["rlm_root_tools"] == [
+            assert state["rlm_root_tools"] == [
                 "llm_batch",
                 "repl_tool",
             ]
-            assert result["rlm_sub_tools"] == ["sub_tool"]
+            assert state["rlm_sub_tools"] == ["sub_tool"]
         finally:
-            await env.cleanup_rlm_state(result)
+            await env.cleanup_rlm_state(state)
 
 
 # =============================================================================
@@ -1265,13 +1257,13 @@ class TestLLMBatchPromptValidation:
 
 
 # =============================================================================
-# 9. Root Tool Serialization (pickle)
+# 9. Root Tool Serialization
 # =============================================================================
 
 
 class TestRootToolSerialization:
     @pytest.mark.asyncio
-    async def test_root_tool_request_uses_pickle(self):
+    async def test_root_tool_request_uses_json(self):
         def echo_tool(value):
             return value
 
@@ -1288,17 +1280,16 @@ class TestRootToolSerialization:
         }
 
         payload = {"value": 123}
-        args_payload = base64.b64encode(pickle.dumps((payload,))).decode("ascii")
-        kwargs_payload = base64.b64encode(pickle.dumps({})).decode("ascii")
-
         mock_request = MagicMock()
         mock_request.match_info = {"rollout_id": rollout_id}
+        mock_request.headers = {
+            "Authorization": f"Bearer {env._interception_secret}",
+        }
         mock_request.json = AsyncMock(
             return_value={
                 "tool_name": "echo_tool",
-                "serialization": "pickle",
-                "args": args_payload,
-                "kwargs": kwargs_payload,
+                "args": [payload],
+                "kwargs": {},
             }
         )
 
@@ -1306,9 +1297,7 @@ class TestRootToolSerialization:
         assert response.status == 200
 
         response_data = json.loads(response.text)
-        result_payload = response_data["result"]
-        decoded = pickle.loads(base64.b64decode(result_payload))
-        assert decoded == payload
+        assert response_data["result"] == payload
 
 
 # =============================================================================
@@ -1657,7 +1646,7 @@ class TestSubLLMEmptyModelResponseErrorRaised:
 
 
 class TestMessageHistory:
-    """Tests for expose_message_history feature."""
+    """Tests for the always-on observable `.messages` transcript."""
 
     @pytest.fixture
     def env_with_history(self) -> RLMEnv:
@@ -1665,66 +1654,31 @@ class TestMessageHistory:
         return build_env(
             dataset,
             repl_language="python",
-            expose_message_history=True,
-            interception_url="http://test.invalid",
-        )
-
-    @pytest.fixture
-    def env_without_history(self) -> RLMEnv:
-        dataset = make_dataset({})
-        return build_env(
-            dataset,
-            repl_language="python",
-            expose_message_history=False,
             interception_url="http://test.invalid",
         )
 
     def _make_state_with_trajectory(
-        self, env: RLMEnv, messages_per_step: int = 2, num_steps: int = 1
+        self, messages_per_step: int = 2, num_steps: int = 1
     ) -> dict:
-        """Build a state dict with a realistic trajectory."""
-        trajectory_id = "main_traj"
-        trajectory = []
+        """Build a state dict with a realistic observable transcript."""
+        messages: list[vf.Message] = []
         for step_idx in range(num_steps):
-            prompt_msgs = [
-                vf.UserMessage(content=f"Step {step_idx} user message {i}")
-                for i in range(messages_per_step)
-            ]
-            completion_msgs = [
+            for i in range(messages_per_step):
+                messages.append(
+                    vf.UserMessage(content=f"Step {step_idx} user message {i}")
+                )
+            messages.append(
                 vf.AssistantMessage(content=f"Step {step_idx} assistant response")
-            ]
-            trajectory.append(
-                {
-                    "prompt": prompt_msgs,
-                    "completion": completion_msgs,
-                    "response": None,
-                    "tokens": None,
-                    "reward": None,
-                    "advantage": None,
-                    "is_truncated": False,
-                    "trajectory_id": trajectory_id,
-                    "extras": {},
-                }
             )
-        return {
-            "trajectory": trajectory,
-            "trajectory_id": trajectory_id,
-            "_messages_uploaded_count": 0,
-        }
+        return {"_observable_messages": messages}
 
     def test_build_message_history_empty_trajectory(self, env_with_history):
-        state = {
-            "trajectory": [],
-            "trajectory_id": "main",
-            "_messages_uploaded_count": 0,
-        }
+        state = {"_observable_messages": []}
         result = env_with_history._build_message_history(state)
         assert result == []
 
     def test_build_message_history_one_step(self, env_with_history):
-        state = self._make_state_with_trajectory(
-            env_with_history, messages_per_step=1, num_steps=1
-        )
+        state = self._make_state_with_trajectory(messages_per_step=1, num_steps=1)
         result = env_with_history._build_message_history(state)
         # 1 prompt message + 1 completion message = 2 messages
         assert len(result) == 2
@@ -1734,121 +1688,34 @@ class TestMessageHistory:
         assert result[1]["content"] == "Step 0 assistant response"
 
     def test_build_message_history_multi_step(self, env_with_history):
-        state = self._make_state_with_trajectory(
-            env_with_history, messages_per_step=2, num_steps=3
-        )
+        state = self._make_state_with_trajectory(messages_per_step=2, num_steps=3)
         result = env_with_history._build_message_history(state)
-        # Last step: 2 prompt messages + 1 completion = 3
-        assert len(result) == 3
-        # Should be from the last step
-        assert result[0]["content"] == "Step 2 user message 0"
-        assert result[1]["content"] == "Step 2 user message 1"
-        assert result[2]["content"] == "Step 2 assistant response"
+        # Full transcript: 3 steps * (2 user + 1 assistant) = 9
+        assert len(result) == 9
+        assert result[0]["content"] == "Step 0 user message 0"
+        assert result[-1]["content"] == "Step 2 assistant response"
 
-    def test_build_message_history_skips_sub_llm_steps(self, env_with_history):
-        main_id = "main_traj"
-        sub_id = "sub_batch_1"
-        trajectory = [
-            {
-                "prompt": [vf.UserMessage(content="main prompt")],
-                "completion": [vf.AssistantMessage(content="main response")],
-                "response": None,
-                "tokens": None,
-                "reward": None,
-                "advantage": None,
-                "is_truncated": False,
-                "trajectory_id": main_id,
-                "extras": {},
-            },
-            {
-                "prompt": [vf.UserMessage(content="sub prompt")],
-                "completion": [vf.AssistantMessage(content="sub response")],
-                "response": None,
-                "tokens": None,
-                "reward": None,
-                "advantage": None,
-                "is_truncated": False,
-                "trajectory_id": sub_id,
-                "extras": {"is_sub_llm_call": True},
-            },
-        ]
+    def test_build_message_history_preserves_summaries(self, env_with_history):
         state = {
-            "trajectory": trajectory,
-            "trajectory_id": main_id,
-            "_messages_uploaded_count": 0,
+            "_observable_messages": [
+                UserMessage(content="scaffolded prompt"),
+                vf.AssistantMessage(
+                    content="<SUMMARY>\n[Turns 1-1] summary\n</SUMMARY>\n\nresponse 1"
+                ),
+            ]
         }
         result = env_with_history._build_message_history(state)
-        # Should only include the main step's messages
         assert len(result) == 2
-        assert result[0]["content"] == "main prompt"
-        assert result[1]["content"] == "main response"
-
-    def test_incremental_delta_computation(self, env_with_history):
-        """Verify that only new messages are uploaded on subsequent calls."""
-        main_id = "main_traj"
-        # Step 0: 1 user + 1 assistant = 2 messages
-        step0 = {
-            "prompt": [vf.UserMessage(content="q0")],
-            "completion": [vf.AssistantMessage(content="a0")],
-            "response": None,
-            "tokens": None,
-            "reward": None,
-            "advantage": None,
-            "is_truncated": False,
-            "trajectory_id": main_id,
-            "extras": {},
-        }
-        state = {
-            "trajectory": [step0],
-            "trajectory_id": main_id,
-            "_messages_uploaded_count": 0,
-        }
-
-        # First call: all messages are new
-        messages = env_with_history._build_message_history(state)
-        uploaded_count = state["_messages_uploaded_count"]
-        new_messages = messages[uploaded_count:]
-        assert len(new_messages) == 2
-
-        # Simulate upload completing
-        state["_messages_uploaded_count"] = len(messages)
-
-        # Step 1: prompt = [q0, a0, tool_result], completion = [a1] = 4 messages total
-        step1 = {
-            "prompt": [
-                vf.UserMessage(content="q0"),
-                vf.AssistantMessage(content="a0"),
-                vf.ToolMessage(tool_call_id="tc1", content="tool output"),
-            ],
-            "completion": [vf.AssistantMessage(content="a1")],
-            "response": None,
-            "tokens": None,
-            "reward": None,
-            "advantage": None,
-            "is_truncated": False,
-            "trajectory_id": main_id,
-            "extras": {},
-        }
-        state["trajectory"].append(step1)
-
-        # Second call: only the new messages
-        messages = env_with_history._build_message_history(state)
-        new_messages = messages[state["_messages_uploaded_count"] :]
-        # Delta = 4 total - 2 already uploaded = 2 new messages
-        assert len(new_messages) == 2
-        assert new_messages[0]["role"] == "tool"
-        assert new_messages[1]["role"] == "assistant"
-        assert new_messages[1]["content"] == "a1"
+        assert "<SUMMARY>" in result[1]["content"]
+        assert "[Turns 1-1] summary" in result[1]["content"]
 
     @pytest.mark.asyncio
     async def test_upload_creates_file_on_first_call_with_empty_trajectory(
         self, env_with_history
     ):
-        """First call with no trajectory should touch .messages to create it."""
+        """First call with no transcript should create an empty `.messages` file."""
         state = {
-            "trajectory": [],
-            "trajectory_id": "main",
-            "_messages_uploaded_count": 0,
+            "_observable_messages": [],
             "rollout_id": "test_rollout",
         }
 
@@ -1863,15 +1730,12 @@ class TestMessageHistory:
         env_with_history._executor._execute_sandbox_command.assert_called_once()
         cmd = env_with_history._executor._execute_sandbox_command.call_args[0][1]
         assert ".messages" in cmd
-        assert "touch" in cmd
-        assert state["_messages_uploaded_count"] == 0
+        assert ": >" in cmd
 
     @pytest.mark.asyncio
     async def test_upload_message_history_calls_sandbox_command(self, env_with_history):
-        """Verify _upload_message_history sends base64-encoded JSONL via sandbox command."""
-        state = self._make_state_with_trajectory(
-            env_with_history, messages_per_step=1, num_steps=1
-        )
+        """Verify `_upload_message_history` overwrites `.messages` with JSONL."""
+        state = self._make_state_with_trajectory(messages_per_step=1, num_steps=1)
         state["rollout_id"] = "test_rollout"
 
         mock_session = MagicMock()
@@ -1889,18 +1753,15 @@ class TestMessageHistory:
         cmd = call_args[0][1]
         assert ".messages" in cmd
         assert "base64" in cmd
-
-        # Counter should be updated
-        assert state["_messages_uploaded_count"] == 2
+        assert " > " in cmd
 
     @pytest.mark.asyncio
-    async def test_upload_skips_when_no_new_messages(self, env_with_history):
-        """Verify no sandbox command when all messages already uploaded."""
-        state = self._make_state_with_trajectory(
-            env_with_history, messages_per_step=1, num_steps=1
-        )
+    async def test_upload_overwrites_even_when_transcript_unchanged(
+        self, env_with_history
+    ):
+        """Overwrite semantics mean the file is rewritten on every upload."""
+        state = self._make_state_with_trajectory(messages_per_step=1, num_steps=1)
         state["rollout_id"] = "test_rollout"
-        state["_messages_uploaded_count"] = 2  # Already uploaded all 2 messages
 
         mock_session = MagicMock()
         mock_session.sandbox_id = "sandbox_123"
@@ -1909,16 +1770,14 @@ class TestMessageHistory:
         env_with_history._executor._execute_sandbox_command = AsyncMock()
 
         await env_with_history._upload_message_history(state)
+        await env_with_history._upload_message_history(state)
 
-        # Should NOT have called sandbox command
-        env_with_history._executor._execute_sandbox_command.assert_not_called()
+        assert env_with_history._executor._execute_sandbox_command.await_count == 2
 
     @pytest.mark.asyncio
     async def test_upload_failure_is_non_fatal(self, env_with_history):
         """Verify that sandbox command failure doesn't raise."""
-        state = self._make_state_with_trajectory(
-            env_with_history, messages_per_step=1, num_steps=1
-        )
+        state = self._make_state_with_trajectory(messages_per_step=1, num_steps=1)
         state["rollout_id"] = "test_rollout"
 
         mock_session = MagicMock()
@@ -1932,16 +1791,12 @@ class TestMessageHistory:
         # Should not raise
         await env_with_history._upload_message_history(state)
 
-        # Counter should NOT be updated
-        assert state["_messages_uploaded_count"] == 0
-
     @pytest.mark.asyncio
-    async def test_system_prompt_includes_history_note_when_enabled(self):
+    async def test_system_prompt_includes_history_note(self):
         dataset = make_dataset({})
         env = build_env(
             dataset,
             repl_language="python",
-            expose_message_history=True,
             interception_url="http://test.invalid",
         )
         env._ensure_interception_server = AsyncMock()
@@ -1949,34 +1804,15 @@ class TestMessageHistory:
         env._executor.setup = AsyncMock()
 
         state = {"info": {}, "model": "m", "client": MagicMock()}
-        result = await env.setup_state(state)
+        await env.setup_state(state)
         try:
-            prompt = result["rlm_system_prompt"]
+            prompt = state["rlm_system_prompt"]
             assert ".messages" in prompt
             assert "JSONL" in prompt
+            assert "observable conversation transcript" in prompt
+            assert "<SUMMARY>" not in prompt
         finally:
-            await env.cleanup_rlm_state(result)
-
-    @pytest.mark.asyncio
-    async def test_system_prompt_excludes_history_note_when_disabled(self):
-        dataset = make_dataset({})
-        env = build_env(
-            dataset,
-            repl_language="python",
-            expose_message_history=False,
-            interception_url="http://test.invalid",
-        )
-        env._ensure_interception_server = AsyncMock()
-        env._executor.prepare_filesystem = AsyncMock()
-        env._executor.setup = AsyncMock()
-
-        state = {"info": {}, "model": "m", "client": MagicMock()}
-        result = await env.setup_state(state)
-        try:
-            prompt = result["rlm_system_prompt"]
-            assert ".messages" not in prompt
-        finally:
-            await env.cleanup_rlm_state(result)
+            await env.cleanup_rlm_state(state)
 
     @pytest.mark.asyncio
     async def test_system_prompt_bash_history_note(self):
@@ -1984,7 +1820,6 @@ class TestMessageHistory:
         env = build_env(
             dataset,
             repl_language="bash",
-            expose_message_history=True,
             interception_url="http://test.invalid",
         )
         env._ensure_interception_server = AsyncMock()
@@ -1992,25 +1827,20 @@ class TestMessageHistory:
         env._executor.setup = AsyncMock()
 
         state = {"info": {}, "model": "m", "client": MagicMock()}
-        result = await env.setup_state(state)
+        await env.setup_state(state)
         try:
-            prompt = result["rlm_system_prompt"]
+            prompt = state["rlm_system_prompt"]
             assert ".messages" in prompt
             assert "cat .messages" in prompt
+            assert "<SUMMARY>" not in prompt
         finally:
-            await env.cleanup_rlm_state(result)
-
-    def test_expose_message_history_defaults_to_true(self):
-        dataset = make_dataset({})
-        env = build_env(dataset, interception_url="http://test.invalid")
-        assert env.expose_message_history is True
+            await env.cleanup_rlm_state(state)
 
     @pytest.mark.asyncio
-    async def test_setup_state_initializes_upload_counter(self):
+    async def test_setup_state_initializes_observable_transcript(self):
         dataset = make_dataset({})
         env = build_env(
             dataset,
-            expose_message_history=True,
             interception_url="http://test.invalid",
         )
         env._ensure_interception_server = AsyncMock()
@@ -2018,11 +1848,11 @@ class TestMessageHistory:
         env._executor.setup = AsyncMock()
 
         state = {"info": {}, "model": "m", "client": MagicMock()}
-        result = await env.setup_state(state)
+        await env.setup_state(state)
         try:
-            assert result["_messages_uploaded_count"] == 0
+            assert state["_observable_messages"] == []
         finally:
-            await env.cleanup_rlm_state(result)
+            await env.cleanup_rlm_state(state)
 
 
 # =============================================================================
@@ -2200,14 +2030,14 @@ class TestSubLLMCompletionTokenBudget:
         env._executor.setup = AsyncMock()
 
         state = {"info": {}, "model": "m", "client": MagicMock()}
-        result = await env.setup_state(state)
+        await env.setup_state(state)
         try:
-            prompt = result["rlm_system_prompt"]
+            prompt = state["rlm_system_prompt"]
             assert "50000" in prompt
             assert "completion tokens" in prompt
             assert "llm_batch" in prompt
         finally:
-            await env.cleanup_rlm_state(result)
+            await env.cleanup_rlm_state(state)
 
     @pytest.mark.asyncio
     async def test_system_prompt_excludes_budget_when_none(self):
@@ -2223,12 +2053,12 @@ class TestSubLLMCompletionTokenBudget:
         env._executor.setup = AsyncMock()
 
         state = {"info": {}, "model": "m", "client": MagicMock()}
-        result = await env.setup_state(state)
+        await env.setup_state(state)
         try:
-            prompt = result["rlm_system_prompt"]
+            prompt = state["rlm_system_prompt"]
             assert "budget" not in prompt.lower()
         finally:
-            await env.cleanup_rlm_state(result)
+            await env.cleanup_rlm_state(state)
 
     @pytest.mark.asyncio
     async def test_budget_enforced_within_tool_loop(self, rlm_env_with_sub_tools):
@@ -2380,14 +2210,14 @@ class TestRootLLMMaxCompletionTokens:
         env._executor.setup = AsyncMock()
 
         state: dict[str, Any] = {"info": {}, "model": "m", "client": MagicMock()}
-        result = await env.setup_state(state)
+        await env.setup_state(state)
         try:
-            prompt = result["rlm_system_prompt"]
+            prompt = state["rlm_system_prompt"]
             assert "20000" in prompt
             assert "completion tokens" in prompt
             assert "your own responses" in prompt
         finally:
-            await env.cleanup_rlm_state(result)
+            await env.cleanup_rlm_state(state)
 
     @pytest.mark.asyncio
     async def test_system_prompt_excludes_root_budget_when_none(self):
@@ -2403,12 +2233,12 @@ class TestRootLLMMaxCompletionTokens:
         env._executor.setup = AsyncMock()
 
         state: dict[str, Any] = {"info": {}, "model": "m", "client": MagicMock()}
-        result = await env.setup_state(state)
+        await env.setup_state(state)
         try:
-            prompt = result["rlm_system_prompt"]
+            prompt = state["rlm_system_prompt"]
             assert "your own responses" not in prompt
         finally:
-            await env.cleanup_rlm_state(result)
+            await env.cleanup_rlm_state(state)
 
     @pytest.mark.asyncio
     async def test_env_response_sets_final_env_response_when_budget_exhausted(
@@ -2537,11 +2367,11 @@ class TestTunnelRouting:
             tunnel.start = AsyncMock(return_value="https://tunnel.example")
             tunnel.stop = AsyncMock()
 
-            result = await env.setup_state(state)
+            await env.setup_state(state)
 
         tunnel.start.assert_awaited_once()
-        assert result["interception_url"].startswith("https://tunnel.example")
-        assert result["root_tool_url"].startswith("https://tunnel.example")
+        assert state["interception_url"].startswith("https://tunnel.example")
+        assert state["root_tool_url"].startswith("https://tunnel.example")
 
     @pytest.mark.asyncio
     async def test_skips_tunnel_when_interception_url_provided(self, tmp_path: Path):
@@ -2560,11 +2390,11 @@ class TestTunnelRouting:
         env._executor.create_rollout_dirs = MagicMock(side_effect=lambda s=state: None)
 
         with patch("verifiers.envs.experimental.rlm_env.Tunnel") as TunnelMock:
-            result = await env.setup_state(state)
+            await env.setup_state(state)
 
         TunnelMock.assert_not_called()
-        assert result["interception_url"].startswith("https://override.example")
-        assert result["root_tool_url"].startswith("https://override.example")
+        assert state["interception_url"].startswith("https://override.example")
+        assert state["root_tool_url"].startswith("https://override.example")
 
 
 class TestCleanupSemantics:
@@ -2588,8 +2418,8 @@ class TestCleanupSemantics:
         _seed_rollout_dirs(state, tmp_path)
         env._executor.create_rollout_dirs = MagicMock(side_effect=lambda s=state: None)
 
-        result = await env.setup_state(state)
-        await env.cleanup_rlm_state(result)
+        await env.setup_state(state)
+        await env.cleanup_rlm_state(state)
 
         env._executor.cleanup.assert_awaited_once()
 
@@ -2727,17 +2557,12 @@ class TestSummarizeTurns:
     @pytest.fixture
     def env_with_summarize(self) -> RLMEnv:
         dataset = make_dataset({})
-        import warnings
-
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", UserWarning)
-            return build_env(
-                dataset,
-                enable_summarization=True,
-                min_turns_in_context=3,
-                expose_message_history=False,
-                interception_url="http://test.invalid",
-            )
+        return build_env(
+            dataset,
+            enable_summarization=True,
+            min_turns_in_context=3,
+            interception_url="http://test.invalid",
+        )
 
     @pytest.fixture
     def env_without_summarize(self) -> RLMEnv:
@@ -2745,7 +2570,6 @@ class TestSummarizeTurns:
         return build_env(
             dataset,
             enable_summarization=False,
-            expose_message_history=False,
             interception_url="http://test.invalid",
         )
 
@@ -2822,34 +2646,6 @@ class TestSummarizeTurns:
     # =====================================================================
     # Default configuration
     # =====================================================================
-
-    def test_expose_message_history_defaults_to_true(self):
-        dataset = make_dataset({})
-        env = build_env(dataset, interception_url="http://test.invalid")
-        assert env.expose_message_history is True
-
-    def test_warning_when_dropping_without_message_history(self):
-        dataset = make_dataset({})
-        with pytest.warns(UserWarning, match="enable_summarization=True"):
-            build_env(
-                dataset,
-                enable_summarization=True,
-                expose_message_history=False,
-                interception_url="http://test.invalid",
-            )
-
-    def test_no_warning_when_dropping_with_message_history(self):
-        dataset = make_dataset({})
-        import warnings
-
-        with warnings.catch_warnings():
-            warnings.simplefilter("error")
-            build_env(
-                dataset,
-                enable_summarization=True,
-                expose_message_history=True,
-                interception_url="http://test.invalid",
-            )
 
     # =====================================================================
     # System prompt
@@ -3124,43 +2920,186 @@ class TestSummarizeTurns:
         assert "r0" in result[1].content
 
     # =====================================================================
-    # .messages file unaffected
+    # .messages / observable transcript
     # =====================================================================
 
-    def test_message_history_excludes_summaries(self, env_with_summarize):
-        """_build_message_history returns uncompacted history without <SUMMARY> tags."""
-        trajectory_id = "main_traj"
+    def test_message_history_preserves_summaries(self, env_with_summarize):
+        """Observable `.messages` preserves summary blocks."""
         state = {
-            "trajectory_id": trajectory_id,
+            "_observable_messages": [
+                UserMessage(content="scaffolded prompt"),
+                vf.AssistantMessage(
+                    content="<SUMMARY>\n[Turns 1-1] some summary\n</SUMMARY>\n\nresponse 1"
+                ),
+            ],
+        }
+
+        history = env_with_summarize._build_message_history(state)
+        assert "<SUMMARY>" in history[1]["content"]
+
+    @pytest.mark.asyncio
+    async def test_add_model_response_appends_raw_completion(self, env_with_summarize):
+        """Main-model completions should be appended without retroactive annotation."""
+        state = {
+            "trajectory_id": "main_traj",
+            "trajectory": [],
+            "prompt": [UserMessage(content="scaffolded prompt")],
+            "_observable_messages": [],
+        }
+
+        prompt_messages = [
+            UserMessage(content="scaffolded prompt"),
+            vf.AssistantMessage(
+                content="<SUMMARY>\n[Turns 1-1] summarized turn 0\n</SUMMARY>\n\nresponse 1"
+            ),
+            vf.ToolMessage(
+                tool_call_id="tsum", content="[Turns 1-1] summarized turn 0"
+            ),
+        ]
+
+        mock_response = MagicMock()
+        mock_response.message.is_truncated = False
+        mock_response.usage = MagicMock(prompt_tokens=1, completion_tokens=1)
+
+        with (
+            patch(
+                "verifiers.envs.multiturn_env.parse_response_message",
+                new=AsyncMock(return_value=[vf.AssistantMessage(content="response 2")]),
+            ),
+            patch(
+                "verifiers.envs.multiturn_env.parse_response_tokens",
+                new=AsyncMock(return_value=None),
+            ),
+        ):
+            await env_with_summarize.add_model_response(
+                state, prompt_messages, mock_response
+            )
+
+        observable = state["_observable_messages"]
+        assert len(observable) == 4
+        assert observable[0].content == "scaffolded prompt"
+        assert observable[-1].content == "response 2"
+
+    @pytest.mark.asyncio
+    async def test_summarize_turns_updates_observable_insertion_point(
+        self, env_with_summarize
+    ):
+        """summarize_turns should add the summary to the assistant turn it targets."""
+        state = self._make_state(main_turns=5)
+        state["_observable_messages"] = [UserMessage(content="prompt")]
+        for i in range(5):
+            state["_observable_messages"].append(
+                vf.AssistantMessage(content=f"response {i}")
+            )
+
+        await env_with_summarize.summarize_turns(
+            n_turns=2, summary="batch 1", state=state
+        )
+
+        assistants = [
+            message
+            for message in state["_observable_messages"]
+            if message.role == "assistant"
+        ]
+        assert "<SUMMARY>" not in assistants[0].content
+        assert "<SUMMARY>" not in assistants[1].content
+        assert assistants[2].content.startswith("<SUMMARY>")
+        assert "[Turns 1-2] batch 1" in assistants[2].content
+        assert assistants[2].content.endswith("response 2")
+
+    @pytest.mark.asyncio
+    async def test_summarize_turns_moves_observable_summary_to_new_turn(
+        self, env_with_summarize
+    ):
+        """A later summarize call should move the summary to the new insertion turn."""
+        state = self._make_state(main_turns=6)
+        state["_observable_messages"] = [UserMessage(content="prompt")]
+        for i in range(6):
+            state["_observable_messages"].append(
+                vf.AssistantMessage(content=f"response {i}")
+            )
+
+        await env_with_summarize.summarize_turns(
+            n_turns=2, summary="batch 1", state=state
+        )
+        await env_with_summarize.summarize_turns(
+            n_turns=1, summary="batch 2", state=state
+        )
+
+        assistants = [
+            message
+            for message in state["_observable_messages"]
+            if message.role == "assistant"
+        ]
+        assert "<SUMMARY>" not in assistants[2].content
+        assert assistants[3].content.startswith("<SUMMARY>")
+        assert "[Turns 1-2] batch 1" in assistants[3].content
+        assert "[Turns 3-3] batch 2" in assistants[3].content
+
+    @pytest.mark.asyncio
+    async def test_env_response_appends_tool_messages_to_observable_log(
+        self, env_with_summarize
+    ):
+        """Tool/env messages should be appended when they occur, not reconstructed later."""
+
+        def echo_tool(text: str) -> str:
+            return text
+
+        env_with_summarize.add_tool(echo_tool)
+        state = {"trajectory": [], "_observable_messages": []}
+        tool_call = vf.ToolCall(
+            id="call_0",
+            name="echo_tool",
+            arguments=json.dumps({"text": "tool 0"}),
+        )
+        messages = [
+            UserMessage(content="prompt"),
+            vf.AssistantMessage(content=None, tool_calls=[tool_call]),
+        ]
+
+        result = await env_with_summarize.env_response(messages, state)
+
+        assert len(result) == 1
+        assert result[0].content == "tool 0"
+        assert len(state["_observable_messages"]) == 1
+        assert state["_observable_messages"][0].content == "tool 0"
+
+    @pytest.mark.asyncio
+    async def test_render_completion_uses_observable_log(self, env_with_summarize):
+        """render_completion should return the tracked observable rollout verbatim."""
+        state = {
+            "trajectory_id": "main_traj",
+            "prompt": [UserMessage(content="prompt")],
             "trajectory": [
                 {
-                    "prompt": [
-                        UserMessage(content="scaffolded prompt"),
-                    ],
-                    "completion": [
-                        vf.AssistantMessage(content="response 0"),
-                        vf.ToolMessage(tool_call_id="t0", content="tool 0"),
-                        vf.AssistantMessage(content="response 1"),
-                    ],
+                    "prompt": [UserMessage(content="prompt")],
+                    "completion": [vf.AssistantMessage(content="unused")],
                     "response": None,
                     "tokens": None,
                     "reward": None,
                     "advantage": None,
                     "is_truncated": False,
-                    "trajectory_id": trajectory_id,
+                    "trajectory_id": "main_traj",
                     "extras": {},
                 }
             ],
-            "_summary_text": "[Turns 1-1] some summary",
-            "_keep_from_assistant_index": 1,
+            "_observable_messages": [
+                UserMessage(content="prompt"),
+                vf.AssistantMessage(
+                    content="<SUMMARY>\n[Turns 1-1] summarized turn 0\n</SUMMARY>\n\nresponse 0"
+                ),
+                vf.ToolMessage(tool_call_id="t0", content="tool 0"),
+                vf.AssistantMessage(content="response 2"),
+            ],
         }
 
-        history = env_with_summarize._build_message_history(state)
+        await env_with_summarize.render_completion(state)
 
-        for entry in history:
-            content = entry.get("content", "")
-            if isinstance(content, str):
-                assert "<SUMMARY>" not in content
+        completion = state["completion"]
+        assert len(completion) == 3
+        assert completion[0].content.startswith("<SUMMARY>")
+        assert completion[1].content == "tool 0"
+        assert completion[2].content == "response 2"
 
     # =====================================================================
     # Metrics
@@ -3280,14 +3219,11 @@ class TestSummarizeTurns:
         )
         assert result == messages
 
-    def test_warn_when_dropping_without_message_history(self):
-        """Warning still fires when enable_summarization=True
-        but expose_message_history=False."""
+    def test_summarization_setup_emits_no_history_warning(self):
+        """Summarization setup should not warn about `.messages`."""
         dataset = make_dataset({})
-        with pytest.warns(UserWarning, match="enable_summarization=True"):
-            build_env(
-                dataset,
-                enable_summarization=True,
-                expose_message_history=False,
-                interception_url="http://test.invalid",
-            )
+        build_env(
+            dataset,
+            enable_summarization=True,
+            interception_url="http://test.invalid",
+        )

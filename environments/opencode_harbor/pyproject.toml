@@ -1,9 +1,9 @@
 [project]
 name = "opencode-harbor"
-description = "Opencode agent on Harbor tasks"
+description = "OpenCode v1 taskset/harness agent on Harbor tasks"
 license = "MIT"
-tags = ["eval", "cli_agent"]
-version = "0.1.1"
+tags = ["eval", "cli_agent", "v1", "taskset", "harness"]
+version = "0.1.2"
 requires-python = ">=3.10"
 dependencies = [
     "verifiers>=0.1.10.dev4",

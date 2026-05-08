@@ -1,0 +1,24 @@
+# Nemotron 3 models. Uncomment exactly one model.
+model = "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16"
+# model = "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16"
+
+num_examples = 20
+rollouts_per_example = 1
+max_tokens = 2048
+
+[[eval]]
+env_id = "primeintellect/wiki-search"
+
+# [[eval]]
+# env_id = "primeintellect/reverse-text"
+
+# [[eval]]
+# env_id = "primeintellect/wordle"
+
+# [[eval]]
+# env_id = "primeintellect/dspy-flights"
+
+# [[eval]]
+# env_id = "primeintellect/opencode-harbor"
+
+# Hosted Training docs: https://docs.primeintellect.ai/hosted-training

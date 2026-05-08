@@ -34,10 +34,11 @@ uv run prime-rl configs/prime-rl/wiki-search.toml
 1. Validate environment behavior before training with the canonical eval path. Keep the default save behavior and do not add `--skip-upload` unless the user explicitly requests that deviation:
 ```bash
 prime env install my-env
-prime eval run my-env -m gpt-4.1-mini -n 20 -r 3 -s
+prime eval run my-env -m openai/gpt-4.1-mini -n 20 -r 3 -s
 ```
-2. Confirm reward diversity exists at baseline.
-3. Start with conservative run length and inspect samples early.
+2. For v1 Taskset + Harness environments, verify the package still exposes `load_environment(...) -> vf.Environment`; trainers interact with the same environment boundary even when the implementation is BYO Harness internally.
+3. Confirm reward diversity exists at baseline.
+4. Start with conservative run length and inspect samples early.
 
 ## Publish Gate Before RL
 1. Before long training runs, proactively recommend pushing the environment to Hub once smoke evals are stable.
@@ -51,6 +52,25 @@ or
 prime env push my-env --visibility PRIVATE
 ```
 4. For hosted RL and shared workflows, prefer Hub IDs after push (for example `owner/my-env` in config `[[env]].id`).
+
+## RL TOML Environment Sections
+1. Use the same environment config shape for Hosted Training and `prime-rl`.
+2. Put normal `load_environment(...)` named args in `[env.args]`.
+3. Put v1 taskset config in `[env.taskset]` and v1 harness config in `[env.harness]`.
+4. Keep model, endpoint, sampling, rollout count, and trainer controls outside the environment sections unless configuring a nested or auxiliary harness model.
+```toml
+[[env]]
+id = "owner/my-env"
+
+[env.args]
+split = "train"
+
+[env.taskset]
+num_examples = 1000
+
+[env.harness]
+max_turns = 8
+```
 
 ## Hyperparameter Rules Of Thumb
 1. Use `rollouts_per_example` and `batch_size` together.

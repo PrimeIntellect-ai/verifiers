@@ -70,6 +70,7 @@ class EnvServer(ABC):
             log_level=log_level,
             log_dir=log_dir,
             console_logging=console_logging,
+            json_logging=json_logging,
             num_workers=num_workers,
             worker_heartbeat_timeout=worker_heartbeat_timeout,
             stats_log_interval=stats_log_interval,

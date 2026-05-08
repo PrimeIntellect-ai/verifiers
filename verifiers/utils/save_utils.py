@@ -29,6 +29,8 @@ from verifiers.utils.message_utils import (
 from verifiers.utils.metric_utils import (
     EnvMetrics,
     ErrorRateMetric,
+    FinalInputTokensMetric,
+    FinalOutputTokensMetric,
     InputTokensMetric,
     OutputTokensMetric,
     PassAtKMetric,
@@ -97,8 +99,13 @@ def _coerce_token_usage(value: object) -> TokenUsage | None:
         return None
     mapping_value = cast(Mapping[str, Any], value)
     try:
+        # Accept current and legacy key names
         input_raw = mapping_value.get("input_tokens")
+        if input_raw is None:
+            input_raw = mapping_value.get("prefill_tokens")
         output_raw = mapping_value.get("output_tokens")
+        if output_raw is None:
+            output_raw = mapping_value.get("decode_tokens")
         input_tokens = float(0.0 if input_raw is None else input_raw)
         output_tokens = float(0.0 if output_raw is None else output_raw)
     except (TypeError, ValueError):
@@ -167,11 +174,10 @@ def state_to_output(
         prompt=state.get("prompt"),
         completion=state.get("completion"),
         answer=state.get("answer", ""),
-        task=state.get("task", "default"),
         info=state.get("info", {}),
         reward=state.get("reward", 0.0),
         error=state.get("error", None),
-        timing=state.get("timing", {}),
+        timing=serialize_timing(state["timing"]),
         is_completed=state.get("is_completed", False),
         is_truncated=state.get("is_truncated", False),
         stop_condition=state.get("stop_condition", None),
@@ -200,7 +206,17 @@ def state_to_output(
                 "output_tokens": float(output_tokens),
             }
     if usage is not None:
-        output["token_usage"] = usage
+        token_usage: dict[str, float] = {
+            "input_tokens": usage.get("input_tokens", 0.0),
+            "output_tokens": usage.get("output_tokens", 0.0),
+        }
+        # Add context token metrics from trajectory
+        trajectory = state.get("trajectory", [])
+        if trajectory:
+            from verifiers.utils.usage_utils import compute_context_token_metrics
+
+            token_usage.update(compute_context_token_metrics(trajectory))
+        output["token_usage"] = token_usage
 
     # sanitize messages (handle None for error cases)
     prompt = state.get("prompt")
@@ -214,15 +230,27 @@ def state_to_output(
         )
         output["completion"] = output_completion
     # use repr for error
-    if state.get("error") is not None:
-        error_chain = ErrorChain(state.get("error"))
-        output["error"] = ErrorInfo(
-            error=type(state.get("error")).__name__,
-            error_chain_repr=repr(error_chain),
-            error_chain_str=str(error_chain),
-        )
-        output["error_chain"] = repr(error_chain)
-        output["long_error_chain"] = str(error_chain)
+    error = state.get("error")
+    if error is not None:
+        if isinstance(error, Mapping) and {
+            "error",
+            "error_chain_repr",
+            "error_chain_str",
+        } <= set(error):
+            output["error"] = ErrorInfo(
+                error=str(error["error"]),
+                error_chain_repr=str(error["error_chain_repr"]),
+                error_chain_str=str(error["error_chain_str"]),
+            )
+        else:
+            error_chain = ErrorChain(cast(BaseException, error))
+            output["error"] = ErrorInfo(
+                error=type(error).__name__,
+                error_chain_repr=repr(error_chain),
+                error_chain_str=str(error_chain),
+            )
+        output["error_chain"] = output["error"]["error_chain_repr"]
+        output["long_error_chain"] = output["error"]["error_chain_str"]
     # only include optional fields if non-empty
     if "answer" in output and not output["answer"]:
         output.pop("answer")
@@ -243,6 +271,15 @@ def state_to_output(
         output[col] = value
 
     return output
+
+
+def serialize_timing(timing: object) -> dict[str, Any]:
+    model_dump = getattr(timing, "model_dump", None)
+    if callable(model_dump):
+        return cast(dict[str, Any], model_dump())
+    if isinstance(timing, Mapping):
+        return dict(cast(Mapping[str, Any], timing))
+    raise TypeError("state['timing'] must be a RolloutTiming or mapping.")
 
 
 def states_to_outputs(
@@ -291,6 +328,8 @@ class GenerateOutputsBuilder:
         self.env_metrics = EnvMetrics()
         self.input_tokens = InputTokensMetric()
         self.output_tokens = OutputTokensMetric()
+        self.final_input_tokens = FinalInputTokensMetric()
+        self.final_output_tokens = FinalOutputTokensMetric()
         self.pass_at_k = PassAtKMetric(rollouts_per_example, threshold=pass_threshold)
 
         # Tools tracking
@@ -339,6 +378,8 @@ class GenerateOutputsBuilder:
         self.env_metrics.add_outputs(new_outputs)
         self.input_tokens.add_outputs(new_outputs)
         self.output_tokens.add_outputs(new_outputs)
+        self.final_input_tokens.add_outputs(new_outputs)
+        self.final_output_tokens.add_outputs(new_outputs)
         self.pass_at_k.add_outputs(new_outputs)
 
         for output in new_outputs:
@@ -357,10 +398,13 @@ class GenerateOutputsBuilder:
 
         usage: TokenUsage | None = None
         if self.input_tokens.count > 0:
-            usage = {
-                "input_tokens": self.input_tokens.compute(),
-                "output_tokens": self.output_tokens.compute(),
-            }
+            usage = TokenUsage(
+                input_tokens=self.input_tokens.compute(),
+                output_tokens=self.output_tokens.compute(),
+            )
+            if self.final_input_tokens.count > 0:
+                usage["final_input_tokens"] = self.final_input_tokens.compute()
+                usage["final_output_tokens"] = self.final_output_tokens.compute()
 
         return GenerateMetadata(
             env_id=self.env_id,
@@ -371,7 +415,7 @@ class GenerateOutputsBuilder:
             rollouts_per_example=self.rollouts_per_example,
             sampling_args=self.sampling_args,
             date=datetime.now().isoformat(),
-            time_ms=(time.time() - self.start_time) * 1000.0,
+            time=time.time() - self.start_time,
             avg_reward=self.reward.compute(),
             avg_metrics=self.env_metrics.compute(),
             avg_error=self.error_rate.compute(),

@@ -40,7 +40,7 @@ from verifiers.utils.save_utils import state_to_output
 # Local simple concrete Environment for testing
 class DummyEnvironment(Environment):
     async def setup_state(self, state):
-        return state
+        pass
 
     async def rollout(
         self,
@@ -52,7 +52,7 @@ class DummyEnvironment(Environment):
         state = await self.init_state(
             input, client=client, model=model, sampling_args=sampling_args
         )
-        state = await self.setup_state(state)
+        await self.setup_state(state)
 
         prompt_messages = state["prompt"]
         response = await self.get_model_response(state=state, prompt=prompt_messages)
@@ -237,7 +237,9 @@ async def test_state_to_output_uses_state_usage_not_trajectory(
     state["reward"] = 0.0
 
     output = state_to_output(state, state_columns=[])
-    assert output["token_usage"] == {"input_tokens": 5.0, "output_tokens": 4.0}
+    usage = output["token_usage"]
+    assert usage["input_tokens"] == 5.0
+    assert usage["output_tokens"] == 4.0
 
 
 @pytest.mark.asyncio
@@ -335,7 +337,6 @@ async def test_generate_grouped_scoring_distributes_per_group(
             return [
                 {
                     "example_id": input_item["example_id"],
-                    "task": "dummy",
                     "prompt": "p",
                     "completion": "c",
                     "answer": "a",
@@ -430,7 +431,6 @@ async def test_run_group_server_mode_resolves_endpoint_config(
             return [
                 {
                     "example_id": input_item["example_id"],
-                    "task": "dummy",
                     "prompt": "p",
                     "completion": "c",
                     "answer": "a",

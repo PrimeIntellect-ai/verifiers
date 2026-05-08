@@ -35,18 +35,26 @@ def make_aligned_row(left: Text, right: Text) -> Table:
 
 
 def make_kv_line(
-    items: dict[str, object], prefix: str = "╰─ ", prefix_style: str = "dim"
+    items: dict[str, object],
+    prefix: str = "╰─ ",
+    prefix_style: str = "dim",
+    section_label: str | None = None,
+    value_style: str = "bold",
 ) -> Text:
     """Create a key-value line like: ╰─ name value   name value
 
-    Keys are dim, values are bold, separated by 3 spaces.
+    Keys are dim, values use ``value_style`` (default bold), separated by 3 spaces.
+    If ``section_label`` is provided it is inserted after the prefix in a distinct style.
     """
     text = Text()
     text.append(prefix, style=prefix_style)
+    if section_label:
+        text.append(section_label, style="bold dim")
+        text.append("  ")
     for i, (name, value) in enumerate(items.items()):
         text.append(name, style="dim")
         text.append(" ", style="dim")
-        text.append(str(value), style="bold")
+        text.append(str(value), style=value_style)
         if i < len(items) - 1:
             text.append("   ")
     return text
@@ -188,7 +196,7 @@ class BaseDisplay:
 
     def get_log_hint(self) -> Text | None:
         """Return an optional hint for viewing full logs."""
-        return Text("full logs: --debug", style="dim")
+        return Text("full logs: --disable-tui", style="dim")
 
     def _make_log_panel(self) -> Panel:
         """Create a panel showing recent log messages with placeholder lines."""
@@ -499,3 +507,82 @@ class BaseDisplay:
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         """Sync context manager exit - stop the display."""
         self.stop()
+
+
+def _timing_parts(
+    setup: float = 0.0,
+    generation: float = 0.0,
+    scoring: float = 0.0,
+    overhead: float = 0.0,
+    model: float = 0.0,
+    env: float = 0.0,
+) -> list[tuple[str, str, list[tuple[str, str]]]]:
+    """Return timing breakdown as structured parts.
+
+    Each part is ``(label, value, sub_parts)`` where *sub_parts* is a list of
+    ``(label, value)`` tuples for the parenthesised breakdown (e.g. model/env
+    inside generation).
+    """
+    from verifiers.utils.logging_utils import print_time
+
+    parts: list[tuple[str, str, list[tuple[str, str]]]] = []
+    if setup > 0:
+        parts.append(("setup", print_time(setup), []))
+    if generation > 0:
+        subs = [("model", print_time(model)), ("env", print_time(env))]
+        parts.append(("generation", print_time(generation), subs))
+    if scoring > 0:
+        parts.append(("scoring", print_time(scoring), []))
+    parts.append(("overhead", print_time(overhead), []))
+    return parts
+
+
+def format_timing_line(
+    setup: float = 0.0,
+    generation: float = 0.0,
+    scoring: float = 0.0,
+    overhead: float = 0.0,
+    model: float = 0.0,
+    env: float = 0.0,
+) -> str:
+    """Format a compact timing breakdown string.
+
+    Example: setup 750ms + generation 30s (model 27s + env 3s) + scoring 100ms + overhead 250ms
+    """
+    parts = _timing_parts(setup, generation, scoring, overhead, model, env)
+    strs: list[str] = []
+    for label, value, subs in parts:
+        s = f"{label} {value}"
+        if subs:
+            s += " (" + " + ".join(f"{sl} {sv}" for sl, sv in subs) + ")"
+        strs.append(s)
+    return " + ".join(strs)
+
+
+def format_timing_rich(
+    setup: float = 0.0,
+    generation: float = 0.0,
+    scoring: float = 0.0,
+    overhead: float = 0.0,
+    model: float = 0.0,
+    env: float = 0.0,
+    label_style: str = "dim",
+    value_style: str = "white",
+) -> Text:
+    """Like :func:`format_timing_line` but returns a :class:`rich.text.Text` with styled labels and values."""
+    parts = _timing_parts(setup, generation, scoring, overhead, model, env)
+    text = Text()
+    for i, (label, value, subs) in enumerate(parts):
+        if i > 0:
+            text.append(" + ", style=label_style)
+        text.append(f"{label} ", style=label_style)
+        text.append(value, style=value_style)
+        if subs:
+            text.append(" (", style=label_style)
+            for j, (sl, sv) in enumerate(subs):
+                if j > 0:
+                    text.append(" + ", style=label_style)
+                text.append(f"{sl} ", style=label_style)
+                text.append(sv, style=value_style)
+            text.append(")", style=label_style)
+    return text

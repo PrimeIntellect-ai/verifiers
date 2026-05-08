@@ -1,0 +1,23 @@
+[project]
+name = "hello-self-judge-v1"
+version = "0.1.0"
+tags = ["v1", "self-judge", "sandbox", "tool-use", "llm-judge"]
+license = "Apache-2.0"
+description = "V1 example where a model answers web evidence tasks with bash and a shared-runtime judge grades self-consistency."
+requires-python = ">=3.11"
+dependencies = [
+    "verifiers>=0.1.13.dev0",
+    "prime-sandboxes>=0.2.7",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["hello_self_judge_v1.py", "README.md", "pyproject.toml"]
+
+[tool.verifiers.eval]
+num_examples = 3
+rollouts_per_example = 1
+max_tokens = 4096

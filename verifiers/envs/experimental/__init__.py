@@ -8,6 +8,7 @@ __all__ = [
     "TaskSet",
     "Harness",
     "ComposableEnv",
+    "SWEDebugEnv",
 ]
 
 
@@ -19,6 +20,7 @@ def __getattr__(name: str):
         "TaskSet": "verifiers.envs.experimental.composable:TaskSet",
         "Harness": "verifiers.envs.experimental.composable:Harness",
         "ComposableEnv": "verifiers.envs.experimental.composable:ComposableEnv",
+        "SWEDebugEnv": "verifiers.envs.experimental.composable:SWEDebugEnv",
     }
     if name in _lazy:
         import importlib

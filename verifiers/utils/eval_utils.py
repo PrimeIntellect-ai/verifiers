@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-import importlib.util
 import itertools
+import json
 import logging
 import math
 import os
@@ -12,7 +12,7 @@ from collections import Counter, defaultdict
 from collections.abc import Mapping
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
-from typing import Callable, cast
+from typing import Any, Callable, cast
 
 import numpy as np
 from datasets import disable_progress_bar, enable_progress_bar
@@ -32,9 +32,11 @@ from verifiers.types import (
     RolloutInput,
     RolloutOutput,
     StartCallback,
+    TokenUsage,
     _validate_extra_headers_value,
 )
 from verifiers.utils.async_utils import EventLoopLagMonitor
+from verifiers.utils.env_config_utils import config_table, normalize_env_config_sections
 from verifiers.utils.import_utils import load_toml
 from verifiers.utils.logging_utils import (
     log_level,
@@ -44,6 +46,7 @@ from verifiers.utils.logging_utils import (
 from verifiers.utils.path_utils import get_eval_results_path
 
 logger = logging.getLogger(__name__)
+FREEFORM_ABLATION_SWEEP_FIELDS = {"args", "env_args"}
 
 
 def _coerce_endpoint(raw_endpoint: object, source: str) -> Endpoint:
@@ -95,14 +98,19 @@ def _coerce_endpoint(raw_endpoint: object, source: str) -> Endpoint:
         short_client_type if short_client_type is not None else long_client_type
     )
     if client_type is not None:
-        if client_type not in (
+        allowed_types = (
             "openai_completions",
             "openai_chat_completions",
             "openai_chat_completions_token",
+            "openai_responses",
+            "renderer",
             "anthropic_messages",
-        ):
+            "nemorl_chat_completions",
+        )
+        if client_type not in allowed_types:
+            allowed_str = "', '".join(allowed_types)
             raise ValueError(
-                f"Field 'type'/'api_client_type' must be 'openai_completions' or 'openai_chat_completions' or 'openai_chat_completions_token' or 'anthropic_messages' in {source}"
+                f"Field 'type'/'api_client_type' must be one of '{allowed_str}' in {source}"
             )
         endpoint["api_client_type"] = cast(ClientType, client_type)
 
@@ -119,39 +127,6 @@ def _coerce_endpoint(raw_endpoint: object, source: str) -> Endpoint:
             endpoint["extra_headers"] = coerced_headers
 
     return endpoint
-
-
-def _normalize_python_endpoints(raw_endpoints: object, source: Path) -> Endpoints:
-    if not isinstance(raw_endpoints, dict):
-        raise ValueError(f"ENDPOINTS must be a dict in {source}")
-
-    raw_endpoints_dict = cast(dict[str, object], raw_endpoints)
-    normalized: Endpoints = {}
-    for endpoint_id, raw_endpoint_group in raw_endpoints_dict.items():
-        if not isinstance(endpoint_id, str):
-            raise ValueError(f"Endpoint ids must be strings in {source}")
-
-        if isinstance(raw_endpoint_group, list):
-            if not raw_endpoint_group:
-                raise ValueError(
-                    f"Endpoint '{endpoint_id}' has an empty endpoint list in {source}"
-                )
-            normalized[endpoint_id] = [
-                _coerce_endpoint(
-                    raw_endpoint,
-                    source=f"{source} (ENDPOINTS['{endpoint_id}'])",
-                )
-                for raw_endpoint in raw_endpoint_group
-            ]
-        else:
-            normalized[endpoint_id] = [
-                _coerce_endpoint(
-                    raw_endpoint_group,
-                    source=f"{source} (ENDPOINTS['{endpoint_id}'])",
-                )
-            ]
-
-    return normalized
 
 
 def _normalize_toml_endpoints(raw_toml: object, source: Path) -> Endpoints:
@@ -214,40 +189,36 @@ def resolve_endpoints_file(endpoints_path: str) -> Path | None:
         toml_file = endpoints_path_obj / "endpoints.toml"
         python_file = endpoints_path_obj / "endpoints.py"
         if toml_file.exists():
+            if python_file.exists():
+                logger.warning(
+                    "Ignoring deprecated Python endpoint registry at %s; using %s.",
+                    python_file,
+                    toml_file,
+                )
             return toml_file
         if python_file.exists():
-            return python_file
+            raise ValueError(
+                "Python endpoint registries are no longer supported. "
+                f"Replace {python_file} with endpoints.toml."
+            )
         return None
+    if endpoints_path_obj.suffix == ".py":
+        raise ValueError(
+            "Python endpoint registries are no longer supported. "
+            f"Replace {endpoints_path_obj} with an endpoints.toml file."
+        )
     return endpoints_path_obj
 
 
 def load_endpoints(endpoints_path: str):
+    endpoints_file = resolve_endpoints_file(endpoints_path)
     try:
-        endpoints_file = resolve_endpoints_file(endpoints_path)
         if endpoints_file is None:
-            raise ImportError(
-                f"Neither endpoints.py nor endpoints.toml found at {endpoints_path}"
-            )
+            raise ImportError(f"endpoints.toml not found at {endpoints_path}")
 
         if endpoints_file.exists():
             logger.debug(f"Loading endpoint registry from {endpoints_file}")
-            if endpoints_file.suffix == ".py":
-                spec = importlib.util.spec_from_file_location(
-                    "endpoints", endpoints_file
-                )
-                assert spec and spec.loader
-                endpoints_module = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(endpoints_module)
-                # check that module exposes ENDPOINTS
-                if not hasattr(endpoints_module, "ENDPOINTS"):
-                    raise AttributeError(
-                        f"Module '{endpoints_file}' does not have a 'ENDPOINTS' attribute"
-                    )
-                endpoints = _normalize_python_endpoints(
-                    cast(object, endpoints_module.ENDPOINTS),
-                    source=endpoints_file,
-                )
-            elif endpoints_file.suffix == ".toml":
+            if endpoints_file.suffix == ".toml":
                 with open(endpoints_file, "rb") as f:
                     raw_toml = load_toml(f)
                 endpoints = _normalize_toml_endpoints(raw_toml, source=endpoints_file)
@@ -278,17 +249,17 @@ def _expand_ablation(ablation: dict, global_defaults: dict) -> list[dict]:
     """Expand an [[ablation]] block into eval configs via cartesian product.
 
     Sweep keys are lists of values under [ablation.sweep]. Environment args
-    can be swept via [ablation.sweep.env_args]. All sweep dimensions are
+    can be swept via [ablation.sweep.args]. All sweep dimensions are
     crossed to produce one eval config per combination.
 
     Example TOML:
         [[ablation]]
-        env_id = "my-env"
+        id = "my-env"
 
         [ablation.sweep]
         temperature = [0.0, 0.5]
 
-        [ablation.sweep.env_args]
+        [ablation.sweep.args]
         difficulty = ["easy", "hard"]
 
     This produces 4 eval configs (2 temperatures × 2 difficulties).
@@ -296,6 +267,7 @@ def _expand_ablation(ablation: dict, global_defaults: dict) -> list[dict]:
     ablation = dict(ablation)  # don't mutate caller's dict
     sweep = ablation.pop("sweep", {})
     sweep = dict(sweep)  # copy before mutating
+    args_sweep = sweep.pop("args", {})
     env_args_sweep = sweep.pop("env_args", {})
 
     # Collect all sweep dimensions: [(key, [values]), ...]
@@ -314,24 +286,41 @@ def _expand_ablation(ablation: dict, global_defaults: dict) -> list[dict]:
                 f"{type(values).__name__} for '{key}'"
             )
         dimensions.append((f"env_args.{key}", values))
+    for key, values in args_sweep.items():
+        if not isinstance(values, list):
+            raise ValueError(
+                f"Ablation sweep.args values must be lists, got "
+                f"{type(values).__name__} for '{key}'"
+            )
+        dimensions.append((f"args.{key}", values))
 
     if not dimensions:
         raise ValueError(
             "[[ablation]] block must have a non-empty [ablation.sweep] section"
         )
 
-    # Guard against same key in both fixed env_args and sweep.env_args
-    fixed_env_args = ablation.get("env_args", {})
-    if fixed_env_args and env_args_sweep:
-        overlap = set(fixed_env_args.keys()) & set(env_args_sweep.keys())
+    # Guard against same key in both fixed env args and swept env args.
+    fixed_env_args = {
+        **config_table(ablation.get("env_args", {}), "ablation.env_args"),
+        **config_table(ablation.get("args", {}), "ablation.args"),
+    }
+    swept_env_arg_keys = set(env_args_sweep) | set(args_sweep)
+    if fixed_env_args and swept_env_arg_keys:
+        overlap = set(fixed_env_args) & swept_env_arg_keys
         if overlap:
             raise ValueError(
-                f"env_args key(s) {overlap} appear in both fixed env_args and "
-                f"sweep.env_args — use one or the other"
+                f"environment arg key(s) {overlap} appear in both fixed args and "
+                f"sweep args — use one or the other"
             )
+
+    explicit_keys = (set(ablation.keys()) - {"sweep"}) | set(sweep.keys())
 
     # Fixed fields: global defaults overridden by ablation-level fields
     fixed = {**global_defaults, **ablation}
+    if "endpoint_id" in explicit_keys and "model" not in explicit_keys:
+        fixed.pop("model", None)
+    if "model" in explicit_keys and "endpoint_id" not in explicit_keys:
+        fixed.pop("endpoint_id", None)
 
     # Expand cartesian product
     keys = [k for k, _ in dimensions]
@@ -344,6 +333,9 @@ def _expand_ablation(ablation: dict, global_defaults: dict) -> list[dict]:
             if key.startswith("env_args."):
                 env_key = key[len("env_args.") :]
                 config["env_args"] = {**config.get("env_args", {}), env_key: value}
+            elif key.startswith("args."):
+                env_key = key[len("args.") :]
+                config["args"] = {**config.get("args", {}), env_key: value}
             else:
                 config[key] = value
         expanded.append(config)
@@ -351,7 +343,24 @@ def _expand_ablation(ablation: dict, global_defaults: dict) -> list[dict]:
     return expanded
 
 
-def load_toml_config(path: Path) -> list[dict]:
+def normalize_env_id_alias(config: Mapping[str, Any], section: str) -> dict[str, Any]:
+    normalized = dict(config)
+    if "id" in normalized and "env_id" in normalized:
+        raise ValueError(f"{section} cannot contain both id and env_id.")
+    if "id" in normalized:
+        normalized["env_id"] = normalized.pop("id")
+    return normalized
+
+
+def invalid_ablation_sweep_fields(
+    sweep: Mapping[str, Any], valid_fields: set[str]
+) -> set[str]:
+    return set(sweep) - valid_fields - FREEFORM_ABLATION_SWEEP_FIELDS
+
+
+def load_toml_config(
+    path: Path, extra_valid_fields: set[str] | None = None
+) -> list[dict]:
     """Loads and validates a TOML config file.
 
     Config format supports global defaults at the top level, with per-eval overrides
@@ -362,20 +371,20 @@ def load_toml_config(path: Path) -> list[dict]:
         num_examples = 10
 
         [[eval]]
-        env_id = "gsm8k"
+        id = "gsm8k"
 
         [[eval]]
-        env_id = "math-python"
+        id = "math-python"
         num_examples = 5  # overrides global default
 
         # Ablation: cartesian product of sweep values
         [[ablation]]
-        env_id = "my-env"
+        id = "my-env"
 
         [ablation.sweep]
         temperature = [0.0, 0.5, 1.0]
 
-        [ablation.sweep.env_args]
+        [ablation.sweep.args]
         difficulty = ["easy", "hard"]
         # → 6 eval configs
     """
@@ -404,8 +413,15 @@ def load_toml_config(path: Path) -> list[dict]:
             f"Config file must contain at least one [[eval]] or [[ablation]] section: {path}"
         )
 
+    eval_list = [
+        normalize_env_id_alias(eval_config, "[[eval]]") for eval_config in eval_list
+    ]
+    ablation_list = [
+        normalize_env_id_alias(ablation, "[[ablation]]") for ablation in ablation_list
+    ]
+
     if not all("env_id" in e for e in eval_list):
-        raise ValueError(f"All [[eval]] sections must contain an env_id field: {path}")
+        raise ValueError(f"All [[eval]] sections must contain an id field: {path}")
 
     # extract global defaults (everything except 'eval' and 'ablation' keys)
     global_defaults = {
@@ -417,7 +433,10 @@ def load_toml_config(path: Path) -> list[dict]:
     valid_fields = {
         # environment
         "env_id",
+        "args",
         "env_args",
+        "taskset",
+        "harness",
         "env_dir_path",
         "endpoints_path",
         "extra_env_kwargs",
@@ -430,6 +449,8 @@ def load_toml_config(path: Path) -> list[dict]:
         "api_base_url",
         "header",
         "headers",
+        "header_from_state",
+        "headers_from_state",
         # sampling
         "sampling_args",
         "max_tokens",
@@ -442,9 +463,10 @@ def load_toml_config(path: Path) -> list[dict]:
         "max_retries",
         "num_workers",
         "disable_env_server",
+        "timeout",
         # logging
         "verbose",
-        "debug",
+        "disable_tui",
         # saving
         "output_dir",
         "state_columns",
@@ -454,6 +476,7 @@ def load_toml_config(path: Path) -> list[dict]:
         "save_to_hf_hub",
         "hf_hub_dataset_name",
     }
+    valid_fields |= extra_valid_fields or set()
 
     # validate global fields
     if global_defaults:
@@ -475,10 +498,22 @@ def load_toml_config(path: Path) -> list[dict]:
             )
         # global defaults, then per-eval overrides
         merged = {**global_defaults, **eval_config}
-        merged_eval_list.append(merged)
+        if "endpoint_id" in eval_config and "model" not in eval_config:
+            merged.pop("model", None)
+        if "model" in eval_config and "endpoint_id" not in eval_config:
+            merged.pop("endpoint_id", None)
+        merged_eval_list.append(normalize_env_config_sections(merged))
 
     # expand [[ablation]] blocks into eval configs
     for ablation in ablation_list:
+        if isinstance(ablation.get("sweep"), Mapping):
+            ablation = {
+                **ablation,
+                "sweep": normalize_env_id_alias(
+                    cast(Mapping[str, Any], ablation["sweep"]),
+                    "[ablation.sweep]",
+                ),
+            }
         # Validate fixed fields (everything except 'sweep')
         ablation_fixed_keys = set(ablation.keys()) - {"sweep"}
         invalid_fields = ablation_fixed_keys - valid_fields
@@ -487,22 +522,25 @@ def load_toml_config(path: Path) -> list[dict]:
                 f"Invalid field(s) {invalid_fields} in [[ablation]] block. "
                 f"Valid fields are: {sorted(valid_fields)}"
             )
-        # Validate sweep keys (except env_args which has freeform sub-keys)
+        # Validate sweep keys (except arg tables, which have freeform sub-keys)
         sweep = ablation.get("sweep", {})
-        invalid_sweep = set(sweep.keys()) - valid_fields - {"env_args"}
+        invalid_sweep = invalid_ablation_sweep_fields(sweep, valid_fields)
         if invalid_sweep:
             raise ValueError(
                 f"Invalid sweep field(s) {invalid_sweep} in [[ablation]] block. "
                 f"Valid fields are: {sorted(valid_fields)}"
             )
-        expanded = _expand_ablation(ablation, global_defaults)
+        expanded = [
+            normalize_env_config_sections(config)
+            for config in _expand_ablation(ablation, global_defaults)
+        ]
         merged_eval_list.extend(expanded)
 
     # Validate all expanded configs have env_id
     for config in merged_eval_list:
         if "env_id" not in config:
             raise ValueError(
-                "All eval configs (including expanded ablations) must have an env_id"
+                "All eval configs (including expanded ablations) must have an id"
             )
 
     # Resolve endpoints_path relative to the config file location
@@ -539,16 +577,29 @@ def filter_inputs(
     return filtered_inputs
 
 
-def to_col_order(list_of_dicts: list[Mapping[str, float]]) -> dict[str, list[float]]:
-    """Convert a list of mappings to a dictionary of lists, ordered by the keys of the first mapping."""
-    if not list_of_dicts:
-        return {}
-    return {k: [m[k] for m in list_of_dicts] for k in list_of_dicts[0].keys()}
+def to_col_order(
+    list_of_dicts: list[Mapping[str, float]],
+) -> dict[str, list[float | None]]:
+    """Convert a list of mappings to a dictionary of lists."""
+    keys = sorted({key for mapping in list_of_dicts for key in mapping})
+    return {key: [mapping.get(key) for mapping in list_of_dicts] for key in keys}
 
 
-def get_task_outputs(results: GenerateOutputs, task: str) -> GenerateOutputs:
-    """Get only the rollouts for a given task."""
-    outputs = [o for o in results["outputs"] if o["task"] == task]
+def output_env_id(output: Mapping[str, Any]) -> str:
+    info = output.get("info") or {}
+    if isinstance(info, str):
+        info = json.loads(info)
+    value = info.get("env_id") if isinstance(info, Mapping) else None
+    if isinstance(value, list | tuple):
+        return "/".join(str(part) for part in value)
+    if value is not None:
+        return str(value)
+    return str(output.get("env_id", "default"))
+
+
+def get_env_outputs(results: GenerateOutputs, env_id: str) -> GenerateOutputs:
+    """Get only the rollouts for a given env_id."""
+    outputs = [o for o in results["outputs"] if output_env_id(o) == env_id]
     return GenerateOutputs(
         outputs=outputs,
         metadata=results["metadata"],  # duplicate metadata
@@ -588,9 +639,17 @@ def print_rewards(results: GenerateOutputs):
     metrics_col = to_col_order(metrics)
     for k in metrics_col.keys():
         v = metrics_col[k]
-        print(f"{k}: avg - {sum(v) / len(v):.3f}, std - {np.std(v):.3f}")
+        present_values = [value for value in v if value is not None]
+        print(
+            f"{k}: avg - {sum(present_values) / len(present_values):.3f}, "
+            f"std - {np.std(present_values):.3f}"
+        )
         for i in range(r):
-            trials = [round(v[i + (j * r)], 3) for j in range(n)]
+            trials = [
+                round(value, 3)
+                for j in range(n)
+                if (value := v[i + (j * r)]) is not None
+            ]
             out = f"r{i + 1}: {trials}"
             print(out)
 
@@ -620,45 +679,65 @@ def print_info(results: GenerateOutputs):
 
 
 def print_timing(results: GenerateOutputs):
-    print("Timing:")
-    timing = [o["timing"] for o in results["outputs"]]
-    timing_col = to_col_order(timing)
-    generation_ms_arr = np.array(timing_col["generation_ms"])
-    scoring_ms_arr = np.array(timing_col["scoring_ms"])
-    total_ms_arr = np.array(timing_col["total_ms"])
-    generation_arr = generation_ms_arr / 1000
-    scoring_arr = scoring_ms_arr / 1000
-    total_arr = total_ms_arr / 1000
+    from verifiers.utils.logging_utils import print_time
 
-    print(
-        f"generation: min - {print_time(float(np.min(generation_arr)))}, mean - {print_time(float(np.mean(generation_arr)))}, max - {print_time(float(np.max(generation_arr)))}"
-    )
-    print(
-        f"scoring: min - {print_time(float(np.min(scoring_arr)))}, mean - {print_time(float(np.mean(scoring_arr)))}, max - {print_time(float(np.max(scoring_arr)))}"
-    )
-    print(
-        f"total: min - {print_time(float(np.min(total_arr)))}, mean - {print_time(float(np.mean(total_arr)))}, max - {print_time(float(np.max(total_arr)))}"
-    )
+    outputs = results["outputs"]
+
+    def _values(key: str) -> list[float]:
+        out: list[float] = []
+        for o in outputs:
+            t = o.get("timing")
+            if not isinstance(t, dict) or key not in t:
+                continue
+            v = t[key]
+            if isinstance(v, dict):
+                v = v.get("duration", 0.0)
+            out.append(float(v))
+        return out
+
+    print("Timing:")
+    for key in ("total", "setup", "generation", "model", "env", "scoring", "overhead"):
+        vals = _values(key)
+        if not vals:
+            continue
+        lo = float(np.min(vals))
+        mean = float(np.mean(vals))
+        hi = float(np.max(vals))
+        print(
+            f"  {key:<10} min - {print_time(lo)}, mean - {print_time(mean)}, max - {print_time(hi)}"
+        )
 
 
 def print_usage(results: GenerateOutputs):
     usage_count = 0
-    input_tokens_total = 0.0
-    output_tokens_total = 0.0
+    input_total = 0.0
+    output_total = 0.0
+    final_input_total = 0.0
+    final_output_total = 0.0
+    context_count = 0
     for output in results["outputs"]:
         token_usage = output.get("token_usage")
         if not isinstance(token_usage, Mapping):
             continue
         usage_count += 1
-        input_tokens_total += float(token_usage.get("input_tokens", 0.0))
-        output_tokens_total += float(token_usage.get("output_tokens", 0.0))
+        input_total += float(token_usage.get("input_tokens", 0.0))
+        output_total += float(token_usage.get("output_tokens", 0.0))
+        inp = token_usage.get("final_input_tokens")
+        out = token_usage.get("final_output_tokens")
+        if inp is not None and out is not None:
+            context_count += 1
+            final_input_total += float(inp)
+            final_output_total += float(out)
 
-    usage = None
+    usage: TokenUsage | None = None
     if usage_count > 0:
-        usage = {
-            "input_tokens": input_tokens_total / usage_count,
-            "output_tokens": output_tokens_total / usage_count,
-        }
+        usage = TokenUsage(
+            input_tokens=input_total / usage_count,
+            output_tokens=output_total / usage_count,
+        )
+        if context_count > 0:
+            usage["final_input_tokens"] = final_input_total / context_count
+            usage["final_output_tokens"] = final_output_total / context_count
     elif results["metadata"].get("usage") is not None:
         usage = results["metadata"]["usage"]
 
@@ -666,8 +745,14 @@ def print_usage(results: GenerateOutputs):
         return
 
     print("Usage:")
-    print(f"input_tokens (avg): {usage['input_tokens']:.3f}")
-    print(f"output_tokens (avg): {usage['output_tokens']:.3f}")
+    print(f"input_tokens (avg): {float(usage.get('input_tokens', 0.0)):.3f}")
+    print(f"output_tokens (avg): {float(usage.get('output_tokens', 0.0)):.3f}")
+    inp = usage.get("final_input_tokens")
+    out = usage.get("final_output_tokens")
+    if inp is not None:
+        print(f"final_input_tokens (avg): {float(inp):.3f}")
+    if out is not None:
+        print(f"final_output_tokens (avg): {float(out):.3f}")
 
 
 def print_results(results: GenerateOutputs, num_samples: int = 1):
@@ -701,15 +786,15 @@ def print_results(results: GenerateOutputs, num_samples: int = 1):
     print_timing(results)
     print_usage(results)
 
-    tasks = set([o["task"] for o in results["outputs"]])
-    if len(tasks) > 1:
-        for task in tasks:
-            task_results = get_task_outputs(results, task)
-            print(f"\n--- {task} ---")
-            print_rewards(task_results)
-            print_info(task_results)
-            print_timing(task_results)
-            print_usage(task_results)
+    env_ids = {output_env_id(o) for o in results["outputs"]}
+    if len(env_ids) > 1:
+        for env_id in env_ids:
+            env_results = get_env_outputs(results, env_id)
+            print(f"\n--- {env_id} ---")
+            print_rewards(env_results)
+            print_info(env_results)
+            print_timing(env_results)
+            print_usage(env_results)
 
 
 def get_log_level(verbose: bool) -> str:
@@ -786,7 +871,7 @@ async def run_evaluation(
                 num_workers=num_workers,
                 log_level=get_log_level(config.verbose),
                 log_dir=log_dir,
-                console_logging=config.debug,
+                console_logging=config.disable_tui,
             )
             if on_log_file is not None:
                 from verifiers.serve import EnvServer
@@ -884,13 +969,14 @@ async def run_evaluations(config: EvalRunConfig) -> None:
 
 
 async def run_evaluations_tui(
-    config: EvalRunConfig, tui_mode: bool = True, compact: bool = False
+    config: EvalRunConfig, fullscreen: bool = False, compact: bool = False
 ) -> None:
     """Run multi-environment evaluation with a Rich display.
 
     Args:
         config: Evaluation run configuration.
-        tui_mode: If True, use alternate screen (--tui flag). If False, refresh in-place.
+        fullscreen: If True, use alternate screen buffer (--fullscreen flag).
+            If False, refresh in-place.
         compact: If True, show compact summary (settings + stats, skip example prompts).
     """
     from verifiers.utils.eval_display import EvalDisplay, is_tty
@@ -907,7 +993,7 @@ async def run_evaluations_tui(
 
         heart = Heartbeat(config.heartbeat_url)
 
-    display = EvalDisplay(config.evals, screen=tui_mode, compact=compact)
+    display = EvalDisplay(config.evals, screen=fullscreen, compact=compact)
 
     async def run_with_progress(
         env_config: EvalConfig, env_idx: int
@@ -930,6 +1016,20 @@ async def run_evaluations_tui(
                 env_idx, total=total, num_examples=num_examples, progress=resumed
             )
 
+        # Running sums for live timing average — only walk new outputs each
+        # progress event (O(M) per update, O(N) total across the run).
+        timing_sums: dict[str, float] = {}
+        timing_counts: dict[str, int] = {}
+        TIMING_KEYS = (
+            "setup",
+            "generation",
+            "scoring",
+            "overhead",
+            "total",
+            "model",
+            "env",
+        )
+
         def on_display_progress(
             all_outputs: list[RolloutOutput],
             new_outputs: list[RolloutOutput],
@@ -942,6 +1042,25 @@ async def run_evaluations_tui(
             pass_all_k = metadata.get("pass_all_k") or {}
             for k, v in pass_all_k.items():
                 metrics[f"pass^{k}"] = v
+
+            for o in new_outputs:
+                t = o.get("timing")
+                if not isinstance(t, dict):
+                    continue
+                for key in TIMING_KEYS:
+                    if key not in t:
+                        continue
+                    val = t[key]
+                    if isinstance(val, dict):
+                        val = val.get("duration", 0.0)
+                    timing_sums[key] = timing_sums.get(key, 0.0) + float(val)
+                    timing_counts[key] = timing_counts.get(key, 0) + 1
+            avg_timing = (
+                {k: timing_sums[k] / timing_counts[k] for k in timing_sums}
+                if timing_sums
+                else None
+            )
+
             display.update_env_state(
                 env_idx,
                 progress=len(all_outputs),
@@ -949,6 +1068,7 @@ async def run_evaluations_tui(
                 metrics=metrics,
                 error_rate=metadata.get("avg_error"),
                 usage=metadata.get("usage"),
+                avg_timing=avg_timing,
             )
 
         on_progress: list[ProgressCallback] = [on_display_progress]
@@ -1011,7 +1131,7 @@ async def run_evaluations_tui(
                 )
 
                 display.refresh()
-                if tui_mode:
+                if fullscreen:
                     await display.wait_for_exit()
             finally:
                 refresh_stop.set()

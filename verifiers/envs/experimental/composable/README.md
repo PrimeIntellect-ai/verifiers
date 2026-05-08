@@ -1,6 +1,10 @@
-# Composable Task / Agent Architecture
+# Legacy Composable Task / Agent Architecture
 
-Separates **what to solve** (the task) from **how to solve it** (the agent) by reusing the battle-tested `CliAgentEnv` and delegating task-specific behavior to a `TaskSet`.
+This is the legacy experimental taskset/harness stack. New environments should
+use the `verifiers.v1` `Taskset` / `Harness` format (`vf.Env`, `vf.Taskset`,
+and `vf.Harness`) instead.
+
+This stack separates **what to solve** (the task) from **how to solve it** (the agent) by reusing the battle-tested `CliAgentEnv` and delegating task-specific behavior to a `TaskSet`.
 
 ## Core concepts
 
@@ -14,13 +18,17 @@ Separates **what to solve** (the task) from **how to solve it** (the agent) by r
 
 **Harness** — agent-side configuration. Declares how to install and run an agent binary, and where it expects to find task-provided content (instruction, system prompt).
 
-**ComposableEnv** — a `CliAgentEnv` subclass that wires a TaskSet + Harness. Inherits all interception machinery unchanged.
+**ComposableEnv** — a `CliAgentEnv` subclass that wires a TaskSet + Harness. Inherits all interception machinery unchanged. Supports `install_env` for install-only environment variables, automatic upload of task-declared directories (via `TaskSet.get_upload_dirs()`), and harness-declared metrics collection (via `Harness.metrics_path`).
+
+**Skills** are first-class: any taskset with a sibling `skills/` directory gets automatic upload for free. `TaskSet.get_skills_dir()` auto-discovers it, and `get_upload_dirs()` includes it under the `"skills"` key by default. The harness's `upload_dir_mapping` decides where skills land in the sandbox (e.g. RLM puts them at `/task/rlm-skills`).
+
+**discover_sibling_dir(taskset_cls, dirname)** — utility to auto-discover a directory co-located with a TaskSet's module. Works with installed packages and filesystem paths.
 
 ## Usage
 
 ```python
-from swe_tasksets import R2EGymTaskSet
-from opencode_harness import opencode_harness
+from verifiers.envs.experimental.composable.tasksets.swe.r2e_gym import R2EGymTaskSet
+from verifiers.envs.experimental.composable.harnesses.opencode import opencode_harness
 from verifiers.envs.experimental.composable import ComposableEnv
 
 # Create a taskset
@@ -36,12 +44,36 @@ task.sandbox_spec.image                    # per-instance docker image
 small = taskset.take(100)
 filtered = taskset.filter(lambda ex: ...)
 
-# Validate gold solutions
-results = await taskset.take(10).validate(concurrency=5)
+# Validate gold solutions (streaming JSONL + tqdm + crash-safe resume)
+results = await taskset.validate(
+    concurrency=50,
+    out_path="outputs/validate.jsonl",
+    max_retries=2,       # retry on vf.InfraError
+    sandbox_client_max_workers=100,  # optional sandbox client worker cap override
+    resume=True,         # skip indices already in out_path
+)
 
 # Run with an agent
 harness = opencode_harness(system_prompt="You are a coding agent...")
 env = ComposableEnv(taskset=taskset, harness=harness, keep_sandbox_for_scoring=True)
+```
+
+For RLM-backed agents, use `ComposableEnv` with `rlm_harness(...)`. If your taskset has a sibling `skills/` directory, it's uploaded automatically — no override needed:
+
+```python
+# my_taskset/
+# ├── __init__.py
+# ├── taskset.py     ← defines MySweTaskSet
+# └── skills/
+#     └── demo/
+#         ├── SKILL.md
+#         └── pyproject.toml
+
+env = ComposableEnv(
+    taskset=taskset,
+    harness=rlm_harness(...),  # maps "skills" → "/task/rlm-skills"
+    install_env={"GH_TOKEN": token},
+)
 ```
 
 ## Writing a new TaskSet
@@ -142,7 +174,7 @@ ComposableEnv subclasses `CliAgentEnv` without modifying it. It overrides these 
 - **`post_sandbox_setup(state)`** — runs task setup, uploads instruction + system prompt, installs agent
 - **`post_rollout(state)`** — collects agent logs (scoring is done by the rubric)
 
-Everything else — tunnel, HTTP interception, background job polling, streaming, TITO caching — is inherited from `CliAgentEnv` unchanged.
+Everything else — tunnel, HTTP interception, background job polling, and streaming — is inherited from `CliAgentEnv` unchanged.
 
 ## Limitations and future work
 
