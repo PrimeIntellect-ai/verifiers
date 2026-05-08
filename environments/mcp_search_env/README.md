@@ -10,13 +10,16 @@
 - **Short description**: Example environment using `vf.MCPEnv` for MCP server integration
 - **Tags**: MCP, Tools
 
-This environment demonstrates how to use the first-class `MCPEnv` from `verifiers.envs.experimental`.
+This environment demonstrates MCP server integration. The v1 variant uses a
+package-local documentation server backed by markdown files bundled under
+`docs/`, so installed environment packages do not need access to the source
+repository checkout.
 
 ### Datasets
 
-- **Primary dataset(s)**: N/A
-- **Source links**: N/A
-- **Split sizes**: N/A
+- **Primary dataset(s)**: bundled Verifiers documentation snippets
+- **Source links**: package-local `docs/*.md`
+- **Split sizes**: 10 v1 examples
 
 ### Task
 

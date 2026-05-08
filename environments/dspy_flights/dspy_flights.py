@@ -183,6 +183,52 @@ def source():
                 "contains": "wheelchair assistance",
             },
         ),
+        row(
+            4,
+            ("my name is Adam and I need a vegetarian meal noted for my upcoming trip"),
+            {
+                "kind": "ticket",
+                "user": "Adam",
+                "contains": "vegetarian meal",
+            },
+        ),
+        row(
+            5,
+            "please cancel itinerary BO456 for Bob because his plans changed",
+            {"kind": "cancel", "confirmation_number": "BO456"},
+            {"BO456": itinerary("BO456", "Bob", "DA456").model_dump()},
+        ),
+        row(
+            6,
+            (
+                "please help me book a flight from SFO to JFK on 09/01/2025, "
+                "my name is Chelsie"
+            ),
+            {"kind": "book", "user": "Chelsie", "flight_id": "DA123"},
+        ),
+        row(
+            7,
+            (
+                "please help me book a flight from SFO to SNA on 10/01/2025, "
+                "my name is David"
+            ),
+            {"kind": "book", "user": "David", "flight_id": "DA456"},
+        ),
+        row(
+            8,
+            "cancel confirmation AD460 for Adam; he will rebook later",
+            {"kind": "cancel", "confirmation_number": "AD460"},
+            {"AD460": itinerary("AD460", "Adam", "DA460").model_dump()},
+        ),
+        row(
+            9,
+            "my name is Chelsie and I need to travel with a service animal",
+            {
+                "kind": "ticket",
+                "user": "Chelsie",
+                "contains": "service animal",
+            },
+        ),
     ]
 
 

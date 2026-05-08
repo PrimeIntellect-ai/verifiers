@@ -47,9 +47,29 @@ def default_dataset() -> Dataset:
     return Dataset.from_dict(
         {
             "question": [
-                "Use the MCP tools to find the document about runtime handles. What is the document title? Answer with exactly two words.",
+                "Use the MCP tools to find the bundled document about reinforcement learning, evaluations, synthetic data generation, agent harness experiments, and Hosted Training. What is the document title? Answer with the exact title.",
+                "Use the MCP tools to find the bundled document about installing uv, installing prime, logging in, and setting up a lab workspace. What is the document title? Answer with the exact title.",
+                "Use the MCP tools to find the bundled document about the v1 BYO Harness path for reusable tasksets and harnesses. What is the document title? Answer with the exact title.",
+                "Use the MCP tools to find the bundled document about files created by prime env init. What is the document title? Answer with the exact title.",
+                "Use the MCP tools to find the bundled document about custom multi-turn conversation loops. What is the document title? Answer with the exact title.",
+                "Use the MCP tools to find the bundled document about exposing Python functions as tools. What is the document title? Answer with the exact title.",
+                "Use the MCP tools to find the bundled document about connecting external MCP servers. What is the document title? Answer with the exact title.",
+                "Use the MCP tools to find the bundled document about running and saving eval results with prime eval. What is the document title? Answer with the exact title.",
+                "Use the MCP tools to find the bundled document about training models with reinforcement learning. What is the document title? Answer with the exact title.",
+                "Use the MCP tools to find the bundled document about contributor checks with ruff, pytest, and pre-commit. What is the document title? Answer with the exact title.",
             ],
-            "answer": ["Runtime Boundary"],
+            "answer": [
+                "Overview",
+                "Getting Started",
+                "BYO Harness",
+                "Environment Structure",
+                "MultiTurnEnv",
+                "ToolEnv",
+                "MCPEnv",
+                "Evaluation",
+                "Training",
+                "Development",
+            ],
         }
     )
 

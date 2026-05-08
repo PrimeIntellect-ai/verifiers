@@ -53,7 +53,43 @@ def source():
         {
             "question": "Reply with exactly hello rlm.",
             "answer": "hello rlm",
-        }
+        },
+        {
+            "question": "Reply with exactly taskset harness.",
+            "answer": "taskset harness",
+        },
+        {
+            "question": "Reply with exactly runtime boundary.",
+            "answer": "runtime boundary",
+        },
+        {
+            "question": "Reply with exactly sandbox lease.",
+            "answer": "sandbox lease",
+        },
+        {
+            "question": "Reply with exactly toolset scope.",
+            "answer": "toolset scope",
+        },
+        {
+            "question": "Reply with exactly group reward.",
+            "answer": "group reward",
+        },
+        {
+            "question": "Reply with exactly endpoint proxy.",
+            "answer": "endpoint proxy",
+        },
+        {
+            "question": "Reply with exactly cleanup signal.",
+            "answer": "cleanup signal",
+        },
+        {
+            "question": "Reply with exactly harbor task.",
+            "answer": "harbor task",
+        },
+        {
+            "question": "Reply with exactly recursive model.",
+            "answer": "recursive model",
+        },
     ]
 
 

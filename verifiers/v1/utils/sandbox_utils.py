@@ -71,11 +71,49 @@ class SandboxLease:
             filename=filename or path.rsplit("/", 1)[-1] or "file",
         )
 
+    async def upload_file(
+        self, path: str, local_path: str, timeout: int | None = None
+    ) -> object:
+        return await maybe_call_with_named_args(
+            getattr(self.client, "upload_file"),
+            sandbox_id=self.id,
+            file_path=path,
+            local_file_path=local_path,
+            timeout=timeout,
+        )
+
+    async def download_file(
+        self, path: str, local_path: str, timeout: int | None = None
+    ) -> object:
+        return await maybe_call_with_named_args(
+            getattr(self.client, "download_file"),
+            sandbox_id=self.id,
+            file_path=path,
+            local_file_path=local_path,
+            timeout=timeout,
+        )
+
     async def read_file(self, path: str) -> object:
         return await maybe_call_with_named_args(
             getattr(self.client, "read_file"),
             sandbox_id=self.id,
             path=path,
+        )
+
+    async def run_background_job(
+        self,
+        command: str,
+        timeout: int | None = None,
+        working_dir: str | None = None,
+        env: Mapping[str, str] | None = None,
+    ) -> object:
+        return await maybe_call_with_named_args(
+            getattr(self.client, "run_background_job"),
+            sandbox_id=self.id,
+            command=command,
+            timeout=timeout,
+            working_dir=working_dir,
+            env=env,
         )
 
     async def delete(self) -> None:
@@ -120,8 +158,34 @@ class SandboxHandle:
     ) -> object:
         return await self.lease.upload_bytes(path, content, filename)
 
+    async def upload_file(
+        self, path: str, local_path: str, timeout: int | None = None
+    ) -> object:
+        return await self.lease.upload_file(path, local_path, timeout)
+
+    async def download_file(
+        self, path: str, local_path: str, timeout: int | None = None
+    ) -> object:
+        return await self.lease.download_file(path, local_path, timeout)
+
     async def read_file(self, path: str) -> object:
         return await self.lease.read_file(path)
+
+    async def run_background_job(
+        self,
+        command: str,
+        timeout: int | None = None,
+        working_dir: str | None = None,
+        env: Mapping[str, str] | None = None,
+    ) -> object:
+        result = await self.lease.run_background_job(
+            command=command,
+            timeout=timeout,
+            working_dir=working_dir,
+            env=env,
+        )
+        record_tool_sandbox_command(self.state, self.lease, command, result)
+        return result
 
     async def delete(self) -> None:
         await self.lease.delete()

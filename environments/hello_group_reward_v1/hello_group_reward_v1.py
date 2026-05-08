@@ -21,53 +21,108 @@ class GroupRewardHarnessConfig(vf.HarnessConfig):
     max_turns: int = 1
 
 
+def group_reward_task(
+    task_id: str,
+    question: str,
+    target: str,
+    near: str,
+    partial: str,
+    wrong: str,
+) -> dict[str, object]:
+    return {
+        "task_id": task_id,
+        "question": question,
+        "target": target,
+        "candidates": [
+            {"id": "exact", "answer": target},
+            {"id": "near", "answer": near},
+            {"id": "partial", "answer": partial},
+            {"id": "off-topic", "answer": wrong},
+        ],
+    }
+
+
 TASKS: list[dict[str, object]] = [
-    {
-        "task_id": "distributed-systems",
-        "question": "Describe v1 verifiers in one short phrase.",
-        "target": "composable tasksets and harnesses with group-aware scoring",
-        "candidates": [
-            {
-                "id": "exact",
-                "answer": "composable tasksets and harnesses with group-aware scoring",
-            },
-            {
-                "id": "missing-group",
-                "answer": "composable tasksets and harnesses with rollout scoring",
-            },
-            {
-                "id": "too-short",
-                "answer": "tasksets and harnesses",
-            },
-            {
-                "id": "off-topic",
-                "answer": "a single monolithic environment object",
-            },
-        ],
-    },
-    {
-        "task_id": "runtime-boundary",
-        "question": "Describe the v1 runtime boundary in one short phrase.",
-        "target": "serializable task and state with hidden runtime handles",
-        "candidates": [
-            {
-                "id": "exact",
-                "answer": "serializable task and state with hidden runtime handles",
-            },
-            {
-                "id": "leaky",
-                "answer": "serializable task and state with public runtime handles",
-            },
-            {
-                "id": "partial",
-                "answer": "task and state with runtime handles",
-            },
-            {
-                "id": "wrong",
-                "answer": "global objects stored directly in every task",
-            },
-        ],
-    },
+    group_reward_task(
+        "distributed-systems",
+        "Describe v1 verifiers in one short phrase.",
+        "composable tasksets and harnesses with group-aware scoring",
+        "composable tasksets and harnesses with rollout scoring",
+        "tasksets and harnesses",
+        "a single monolithic environment object",
+    ),
+    group_reward_task(
+        "runtime-boundary",
+        "Describe the v1 runtime boundary in one short phrase.",
+        "serializable task and state with hidden runtime handles",
+        "serializable task and state with runtime handles",
+        "task and state",
+        "global objects stored directly in every task",
+    ),
+    group_reward_task(
+        "toolset-scope",
+        "Describe v1 toolset scope in one short phrase.",
+        "rollout group and global tool lifetimes",
+        "rollout and group tool lifetimes",
+        "tool lifetimes",
+        "static imports with no runtime handles",
+    ),
+    group_reward_task(
+        "sandbox-sharing",
+        "Describe sandbox sharing in one short phrase.",
+        "borrowed sandbox handles shared across nested stages",
+        "sandbox handles shared across stages",
+        "shared sandbox handles",
+        "new isolated machines for every function call",
+    ),
+    group_reward_task(
+        "endpoint-controls",
+        "Describe endpoint controls in one short phrase.",
+        "nested programs inherit active model endpoint controls",
+        "programs inherit model endpoint controls",
+        "model endpoint controls",
+        "hardcoded providers inside task rows",
+    ),
+    group_reward_task(
+        "user-callbacks",
+        "Describe v1 user callbacks in one short phrase.",
+        "task-owned follow-up messages between assistant turns",
+        "follow-up messages between assistant turns",
+        "follow-up messages",
+        "metrics computed before any rollout starts",
+    ),
+    group_reward_task(
+        "program-uploads",
+        "Describe program uploads in one short phrase.",
+        "task fields and files staged before harness execution",
+        "files staged before harness execution",
+        "staged files",
+        "reward weights serialized into model prompts",
+    ),
+    group_reward_task(
+        "cleanup-hooks",
+        "Describe cleanup hooks in one short phrase.",
+        "final artifact collection after rewards and metrics",
+        "artifact collection after metrics",
+        "artifact collection",
+        "dataset filtering before import time",
+    ),
+    group_reward_task(
+        "harbor-taskset",
+        "Describe HarborTaskset in one short phrase.",
+        "task directories converted into sandboxed rollout rows",
+        "task directories converted into rollout rows",
+        "task directories",
+        "chat templates stored in every reward function",
+    ),
+    group_reward_task(
+        "advantage-baseline",
+        "Describe group advantages in one short phrase.",
+        "rollout rewards centered against a group baseline",
+        "rewards centered against a baseline",
+        "centered rewards",
+        "single responses scored without group context",
+    ),
 ]
 
 

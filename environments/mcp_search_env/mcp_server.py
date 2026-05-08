@@ -1,38 +1,81 @@
 import json
+import re
+from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
 mcp = FastMCP("mcp-search-v1")
-
-DOCUMENTS = {
-    "v1_composition": {
-        "title": "v1 Taskset Harness Composition",
-        "content": (
-            "verifiers.v1 composes reusable tasksets with reusable harnesses "
-            "through vf.Env. Promoted config fields resolve tools, users, "
-            "signals, cleanup, endpoints, and sandboxes."
-        ),
-    },
-    "runtime": {
-        "title": "Runtime Boundary",
-        "content": (
-            "Task and State stay serializable. Harness runtime owns live "
-            "clients, tool handles, MCP sessions, and sandbox leases."
-        ),
-    },
+STOPWORDS = {
+    "about",
+    "answer",
+    "bundled",
+    "document",
+    "exact",
+    "find",
+    "mcp",
+    "the",
+    "title",
+    "tool",
+    "tools",
+    "use",
+    "what",
+    "with",
 }
+
+
+def load_documents() -> dict[str, dict[str, str]]:
+    docs_dir = Path(__file__).with_name("docs")
+    documents: dict[str, dict[str, str]] = {}
+    for path in sorted(docs_dir.glob("*.md")):
+        text = path.read_text()
+        title = path.stem
+        body_lines = []
+        for line in text.splitlines():
+            if line.startswith("# "):
+                title = line[2:].strip()
+                continue
+            body_lines.append(line)
+        documents[path.stem] = {
+            "title": title,
+            "content": "\n".join(body_lines).strip(),
+        }
+    if not documents:
+        raise RuntimeError(f"No bundled MCP search documents found in {docs_dir}.")
+    return documents
+
+
+DOCUMENTS = load_documents()
 
 
 @mcp.tool()
 def search_documents(query: str) -> str:
     matches = []
-    normalized = query.lower()
+    tokens = [
+        token
+        for token in re.findall(r"[a-z0-9]+", query.lower())
+        if token not in STOPWORDS and len(token) > 2
+    ]
     for document_id, document in DOCUMENTS.items():
-        text = f"{document['title']} {document['content']}".lower()
-        if any(token in text for token in normalized.split()):
-            matches.append({"document_id": document_id, "title": document["title"]})
+        title_tokens = set(re.findall(r"[a-z0-9]+", document["title"].lower()))
+        content_tokens = set(re.findall(r"[a-z0-9]+", document["content"].lower()))
+        score = sum(
+            (3 if token in title_tokens else 0) + (1 if token in content_tokens else 0)
+            for token in tokens
+        )
+        if score:
+            matches.append(
+                {
+                    "document_id": document_id,
+                    "title": document["title"],
+                    "score": score,
+                }
+            )
+    matches.sort(key=lambda item: (-item["score"], item["title"]))
     return json.dumps(
-        matches
+        [
+            {"document_id": item["document_id"], "title": item["title"]}
+            for item in matches
+        ]
         or [
             {"document_id": key, "title": value["title"]}
             for key, value in DOCUMENTS.items()
