@@ -3765,7 +3765,7 @@ wheels = [
 
 [[package]]
 name = "prime-sandboxes"
-version = "0.2.22"
+version = "0.2.23"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiofiles" },
@@ -3775,9 +3775,9 @@ dependencies = [
     { name = "pydantic" },
     { name = "tenacity" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/dc/a7/eb9cb01ce7fa812022ec7c2ffaeb379e1103e07f093a4b85e879b2d0143d/prime_sandboxes-0.2.22.tar.gz", hash = "sha256:7901adca4ff7fff1e7f08c06c4b76765cd90791965216655eb3a87d459588f5e", size = 64970, upload-time = "2026-04-22T18:32:12.973Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/60/51/dc57b32ffae7e3d1cd7ba3404ccc706fadaeca63e742610f64a6c0403b79/prime_sandboxes-0.2.23.tar.gz", hash = "sha256:948f8477240f69de70486bbb5cda718c60623928ab687cde41104a13bf8f5ee7", size = 65139, upload-time = "2026-05-07T20:00:19.745Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/90/b8/46bf98c06826fc26d982c53e10d9d4f086a4c322993a6c51188e5bd6fd30/prime_sandboxes-0.2.22-py3-none-any.whl", hash = "sha256:0a75bb02049c16b55aae7475cc4082e8559ffa6d65181b238077771a95b57855", size = 33182, upload-time = "2026-04-22T18:32:11.739Z" },
+    { url = "https://files.pythonhosted.org/packages/66/92/5dc80c9b92e1677d92b7a442a866ea4290b6148a884d9875407ac0589b27/prime_sandboxes-0.2.23-py3-none-any.whl", hash = "sha256:9e5ea5a21bac4baf6733c5bd4b678b17e15818dfb69befb5fa4ec54565b5b567", size = 33228, upload-time = "2026-05-07T20:00:18.655Z" },
 ]
 
 [[package]]
@@ -6202,7 +6202,7 @@ requires-dist = [
     { name = "openai-agents", specifier = ">=0.0.7" },
     { name = "openenv-core", extras = ["core"], marker = "extra == 'openenv'", specifier = "==0.2.1" },
     { name = "peft", marker = "extra == 'rl'" },
-    { name = "prime-sandboxes", specifier = ">=0.2.21" },
+    { name = "prime-sandboxes", specifier = ">=0.2.23" },
     { name = "prime-tunnel", specifier = ">=0.1.6" },
     { name = "pydantic", specifier = ">=2.11.9" },
     { name = "python-dotenv", marker = "extra == 'browser'", specifier = ">=1.0.0" },
