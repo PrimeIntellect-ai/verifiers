@@ -177,7 +177,6 @@ class MultiSWETaskSet(SandboxTaskSet):
         self,
         dataset_name: str = "PrimeIntellect/Multi-SWE-RL",
         split: str = "train",
-        exclude_langs: tuple[str, ...] = ("c", "cpp"),
         filter_repos: list[str] | None = None,
         filter_fn: str | None = None,
         ds_num_proc: int | None = None,
@@ -194,7 +193,6 @@ class MultiSWETaskSet(SandboxTaskSet):
         """
         self.dataset_name = dataset_name
         self.split = split
-        self.exclude_langs = tuple(exclude_langs)
         self.filter_repos = filter_repos
         self.ds_num_proc = ds_num_proc
         self.ds_keep_in_memory = ds_keep_in_memory
@@ -219,9 +217,6 @@ class MultiSWETaskSet(SandboxTaskSet):
             keep_in_memory=self.ds_keep_in_memory,
             num_proc=self.ds_num_proc,
         )
-        if self.exclude_langs:
-            excluded = frozenset(self.exclude_langs)
-            dataset = dataset.filter(lambda x: x.get("lang") not in excluded, **_kw)
         if self.filter_repos:
             filter_set = frozenset(self.filter_repos)
             dataset = dataset.filter(lambda x: x.get("repo") not in filter_set, **_kw)
