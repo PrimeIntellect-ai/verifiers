@@ -11,6 +11,10 @@ from typing import Any
 
 import verifiers as vf
 from verifiers.envs.experimental.composable import SandboxSpec, SandboxTaskSet
+from verifiers.envs.experimental.composable.tasksets.swe._filters import (
+    combine_filter_fns,
+    deprecated_filter_repos_filter_fn,
+)
 
 # swebench's __init__.py calls logging.basicConfig() at import time (via
 # build_dataset), which hijacks the root logger with an INFO-level
@@ -367,10 +371,13 @@ class SWEBenchTaskSet(SandboxTaskSet):
         """
         self.dataset_name = dataset_name
         self.skip_install = skip_install
-        self.filter_repos = filter_repos
         self.ds_num_proc = ds_num_proc
         self.ds_keep_in_memory = ds_keep_in_memory
         self.timeout_minutes = timeout_minutes
+        filter_fn = combine_filter_fns(
+            deprecated_filter_repos_filter_fn(filter_repos),
+            filter_fn,
+        )
         super().__init__(
             dataset=self._build_dataset,
             name="swe/swebench",
@@ -392,12 +399,6 @@ class SWEBenchTaskSet(SandboxTaskSet):
             keep_in_memory=self.ds_keep_in_memory,
             num_proc=self.ds_num_proc,
         )
-        if self.filter_repos:
-            filter_set = set(self.filter_repos)
-            dataset = dataset.filter(
-                lambda x: filter_set.isdisjoint((x.get("repo"), x.get("repo_name"))),
-                **_kw,
-            )
         return dataset.map(_process_example, remove_columns=dataset.column_names, **_kw)
 
     def get_instruction(self, info: dict) -> str:

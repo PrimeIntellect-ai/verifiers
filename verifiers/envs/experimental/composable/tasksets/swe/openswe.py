@@ -9,6 +9,10 @@ from typing import Any
 import verifiers as vf
 from datasets import load_dataset
 from verifiers.envs.experimental.composable import SandboxSpec, SandboxTaskSet
+from verifiers.envs.experimental.composable.tasksets.swe._filters import (
+    combine_filter_fns,
+    deprecated_filter_repos_filter_fn,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -96,10 +100,13 @@ class OpenSWETaskSet(SandboxTaskSet):
         """
         self.dataset_name = dataset_name
         self.config = config
-        self.filter_repos = filter_repos
         self.ds_num_proc = ds_num_proc
         self.ds_keep_in_memory = ds_keep_in_memory
         self.timeout_minutes = timeout_minutes
+        filter_fn = combine_filter_fns(
+            deprecated_filter_repos_filter_fn(filter_repos),
+            filter_fn,
+        )
         super().__init__(
             dataset=self._build_dataset,
             name="swe/openswe",
@@ -119,9 +126,6 @@ class OpenSWETaskSet(SandboxTaskSet):
             keep_in_memory=self.ds_keep_in_memory,
             num_proc=self.ds_num_proc,
         )
-        if self.filter_repos:
-            filter_set = frozenset(self.filter_repos)
-            dataset = dataset.filter(lambda x: x.get("repo") not in filter_set, **_kw)
         return dataset.map(_process_example, remove_columns=dataset.column_names, **_kw)
 
     def get_instruction(self, info: dict) -> str:

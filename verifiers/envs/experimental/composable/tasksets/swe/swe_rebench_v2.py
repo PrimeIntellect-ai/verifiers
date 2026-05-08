@@ -40,6 +40,11 @@ from verifiers.envs.experimental.composable import SandboxSpec, SandboxTaskSet
 from verifiers.envs.experimental.composable.tasksets.swe import (
     swe_rebench_v2_log_parsers as _lp,
 )
+from verifiers.envs.experimental.composable.tasksets.swe._filters import (
+    combine_filter_fns,
+    deprecated_filter_repos_filter_fn,
+    deprecated_swerebench_language_filter_fn,
+)
 from verifiers.envs.experimental.composable.tasksets.swe._test_patch import (
     revert_and_reapply_test_patch,
 )
@@ -237,11 +242,15 @@ class SWERebenchV2TaskSet(SandboxTaskSet):
         self.language = language
         self.dataset_name = dataset_name
         self.split = split
-        self.filter_repos = filter_repos
         self.ds_num_proc = ds_num_proc
         self.ds_keep_in_memory = ds_keep_in_memory
         self.timeout_minutes = timeout_minutes
         suffix = f"-{language}" if language else ""
+        filter_fn = combine_filter_fns(
+            deprecated_swerebench_language_filter_fn(language),
+            deprecated_filter_repos_filter_fn(filter_repos),
+            filter_fn,
+        )
         super().__init__(
             dataset=self._build_dataset,
             name=f"swe/swerebench-v2{suffix}",
@@ -260,12 +269,6 @@ class SWERebenchV2TaskSet(SandboxTaskSet):
             keep_in_memory=self.ds_keep_in_memory,
             num_proc=self.ds_num_proc,
         )
-        if self.language:
-            lang = self.language
-            dataset = dataset.filter(lambda x: x.get("language") == lang, **_kw)
-        if self.filter_repos:
-            filter_set = frozenset(self.filter_repos)
-            dataset = dataset.filter(lambda x: x.get("repo") not in filter_set, **_kw)
         # Row-level dicts (``install_config``, ``meta``) have variable
         # sub-schemas; Arrow can't infer a consistent struct type across
         # batches, so pre-serialize them to JSON strings. Same trick as
