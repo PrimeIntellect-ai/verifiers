@@ -23,7 +23,14 @@ from .config import (
 )
 from .env import Env
 from .harness import Harness
-from .packages.harnesses import CLIHarness, MiniSWEAgent, OpenCode, Pi, RLM
+from .packages.harnesses import (
+    CLIHarness,
+    MiniSWEAgent,
+    OpenCode,
+    OpenCodeConfig,
+    Pi,
+    RLM,
+)
 from .utils.scoring_utils import (
     add_metric,
     add_reward,
@@ -56,6 +63,7 @@ __all__ = [
     "MCPToolConfig",
     "MiniSWEAgent",
     "OpenCode",
+    "OpenCodeConfig",
     "Pi",
     "RLM",
     "SandboxConfig",
