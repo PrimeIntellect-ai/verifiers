@@ -5263,8 +5263,8 @@ wheels = [
 
 [[package]]
 name = "renderers"
-version = "0.1.8.dev0"
-source = { registry = "https://pypi.org/simple" }
+version = "0.1.7"
+source = { git = "https://github.com/PrimeIntellect-ai/renderers.git?rev=1f3de65#1f3de6506208233217f61671ebe81a00b0f5082a" }
 dependencies = [
     { name = "jinja2" },
     { name = "numpy" },
@@ -5272,10 +5272,6 @@ dependencies = [
     { name = "openai-harmony" },
     { name = "tiktoken" },
     { name = "transformers" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/50/de/a445036157af3367c6a962c13333427c83c08926934c541886eb87f9dcdf/renderers-0.1.8.dev0.tar.gz", hash = "sha256:71eef7bfa3d3f5849ba070d38cd89a1f6387ca7710824f2e50d8c05c9b1048b9", size = 210667, upload-time = "2026-05-12T17:48:45.352Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/e7/33/936a38c7f20fbe096b751842ffc6ef254c9eb2223153aa860a122ce9a834/renderers-0.1.8.dev0-py3-none-any.whl", hash = "sha256:09bb35233f67599519c0ff6edfad469f0836a55a6b78e039cd8e7b5e527bdcb3", size = 98617, upload-time = "2026-05-12T17:48:44.222Z" },
 ]
 
 [[package]]
@@ -6690,7 +6686,7 @@ requires-dist = [
     { name = "pyzmq", specifier = ">=27.1.0" },
     { name = "reasoning-gym", marker = "extra == 'rg'" },
     { name = "regex", specifier = "<2026.4.4" },
-    { name = "renderers", marker = "extra == 'renderers'", specifier = ">=0.1.8.dev0" },
+    { name = "renderers", marker = "extra == 'renderers'", git = "https://github.com/PrimeIntellect-ai/renderers.git?rev=1f3de65" },
     { name = "requests" },
     { name = "requests", marker = "extra == 'rl'" },
     { name = "rich" },
@@ -6721,7 +6717,7 @@ dev = [
     { name = "pytest-xdist", specifier = ">=3.8.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
     { name = "reasoning-gym" },
-    { name = "renderers", specifier = ">=0.1.8.dev0" },
+    { name = "renderers", git = "https://github.com/PrimeIntellect-ai/renderers.git?rev=1f3de65" },
     { name = "ruff" },
     { name = "stagehand", specifier = ">=3.0.0" },
     { name = "textarena" },

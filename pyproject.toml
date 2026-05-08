@@ -132,6 +132,11 @@ prime-sandboxes = false
 renderers = false
 openenv-core = false
 
+[tool.uv.sources]
+# Pinned to renderers PR #11 until the next PyPI release lands; drop after.
+# 1f3de65 = Dynamo chat nvext transport for token-in /chat/completions.
+renderers = { git = "https://github.com/PrimeIntellect-ai/renderers.git", rev = "1f3de65" }
+
 [tool.uv.extra-build-dependencies]
 flash-attn = [{ requirement = "torch", match-runtime = true }]
 

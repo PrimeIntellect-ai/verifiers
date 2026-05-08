@@ -589,6 +589,9 @@ class RendererClient(
             or sampling_params.pop("cache_salt", None),
             priority=args.get("priority") or sampling_params.pop("priority", None),
             extra_headers=args.get("extra_headers"),
+            transport=getattr(
+                self._config, "renderer_transport", "prime_vllm_generate"
+            ),
         )
 
     async def raise_from_native_response(self, response: dict[str, Any]) -> None:
