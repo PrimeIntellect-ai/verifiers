@@ -7,10 +7,17 @@ from typing import cast
 from datasets import Dataset
 
 import verifiers.v1 as vf
+from verifiers.v1.utils.prompt_utils import state_system_prompt_text
 from wiki_graph import WikiGraph, WikiPair, load_wiki_graph
 
 
-SYSTEM_PROMPT = """\
+def system_prompt(allow_go_back: bool = True) -> str:
+    backtracking = (
+        "Use `go_back` to undo your last click."
+        if allow_go_back
+        else "Backtracking is disabled, so choose each link carefully."
+    )
+    return f"""\
 This game is easy and fun:
 
 You are given two Wikipedia articles. Starting from the first article, your goal \
@@ -18,8 +25,8 @@ is to reach the second one, exclusively by following links in the articles you \
 encounter. (For the articles you are given this is always possible.)
 
 Each article ends with a list of `Available links: ...` — those are the only \
-links you can follow. Use the `click_link` tool to navigate to one. Use \
-`go_back` to undo your last click.
+links you can follow. Use the `click_link` tool to navigate to one. \
+{backtracking}
 
 You also have access to deep-agent scaffolding tools (`write_todos`, \
 `write_file`, `read_file`, `ls`, `edit_file`, `task`). Use them when they help: \
@@ -33,6 +40,9 @@ among its links.
 
 When you reach the target the system will say `TARGET REACHED`. Stop calling \
 tools at that point and reply with a brief confirmation."""
+
+
+SYSTEM_PROMPT = system_prompt()
 
 
 def format_article(wiki: WikiGraph, article: str, links_only: bool = False) -> str:
@@ -307,6 +317,31 @@ def serialize_agent_completion(messages: Sequence[object]) -> list[dict[str, obj
     return serialized
 
 
+def langchain_navigation_tools(runtime_tools):
+    from langchain_core.tools import tool
+
+    nav_tools = []
+    if "click_link" in runtime_tools:
+        click_link_tool = runtime_tools["click_link"]
+
+        @tool
+        async def click_link(article: str) -> str:
+            """Navigate to a linked Wikipedia article."""
+            return str(await click_link_tool(article=article))
+
+        nav_tools.append(click_link)
+    if "go_back" in runtime_tools:
+        go_back_tool = runtime_tools["go_back"]
+
+        @tool
+        async def go_back() -> str:
+            """Undo the last click_link and return to the previous article."""
+            return str(await go_back_tool())
+
+        nav_tools.append(go_back)
+    return nav_tools
+
+
 def make_langchain_deep_agents_program(
     max_turns: int,
     timeout_seconds: float,
@@ -316,6 +351,7 @@ def make_langchain_deep_agents_program(
     ) -> vf.State:
         from deepagents import create_deep_agent
         from langchain_openai import ChatOpenAI
+        from langgraph.errors import GraphRecursionError
 
         state["current_article"] = state["info"]["source"]
         state["path"] = [state["info"]["source"]]
@@ -329,18 +365,12 @@ def make_langchain_deep_agents_program(
             base_url=endpoint_config["api_base"],
             api_key=endpoint_config["api_key"],
         )
-        from langchain_core.tools import tool
-
         runtime_tools = state.get_tools()
-        nav_tools = [
-            tool(runtime_tools[name])
-            for name in ("click_link", "go_back")
-            if name in runtime_tools
-        ]
+        nav_tools = langchain_navigation_tools(runtime_tools)
         agent = create_deep_agent(
             model=model,
             tools=nav_tools,
-            system_prompt=SYSTEM_PROMPT,
+            system_prompt=state_system_prompt_text(task, state) or SYSTEM_PROMPT,
         )
         prompt = str(cast(list[dict[str, object]], state["prompt"])[-1]["content"])
         recursion_limit = state.get_max_turns(max_turns)
@@ -353,9 +383,13 @@ def make_langchain_deep_agents_program(
         )
         try:
             result = await asyncio.wait_for(invoke, timeout=timeout_seconds)
-        except TimeoutError:
+        except (TimeoutError, GraphRecursionError) as exc:
             state["agent_timeout"] = True
-            state.stop("agent_timeout")
+            state.stop(
+                "agent_timeout"
+                if isinstance(exc, TimeoutError)
+                else "agent_recursion_limit"
+            )
             state.setdefault("agent_completion", [])
             return state
 
@@ -445,7 +479,7 @@ def load_taskset(
         source=build_train,
         eval_source=build_eval,
         taskset_id="langchain-deep-agents-wikispeedia",
-        system_prompt=SYSTEM_PROMPT,
+        system_prompt=system_prompt(allow_go_back=allow_go_back),
         toolsets=[load_toolset(cache_dir=cache_dir, allow_go_back=allow_go_back)],
         rewards=rewards,
         metrics=metrics,

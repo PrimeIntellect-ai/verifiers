@@ -8,6 +8,7 @@ dependencies = [
     "verifiers>=0.1.14",
     "datasets",
     "deepagents>=0.5.5",
+    "langgraph",
     "langchain-openai>=1.2.1",
 ]
 
