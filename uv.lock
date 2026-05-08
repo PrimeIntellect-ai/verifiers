@@ -5264,7 +5264,7 @@ wheels = [
 [[package]]
 name = "renderers"
 version = "0.1.7"
-source = { git = "https://github.com/PrimeIntellect-ai/renderers.git?rev=1f3de65#1f3de6506208233217f61671ebe81a00b0f5082a" }
+source = { git = "https://github.com/PrimeIntellect-ai/renderers.git?rev=7ca1ab3#7ca1ab357f3ae2262ad10ffe757670739a8ec2c5" }
 dependencies = [
     { name = "jinja2" },
     { name = "numpy" },
@@ -6686,7 +6686,7 @@ requires-dist = [
     { name = "pyzmq", specifier = ">=27.1.0" },
     { name = "reasoning-gym", marker = "extra == 'rg'" },
     { name = "regex", specifier = "<2026.4.4" },
-    { name = "renderers", marker = "extra == 'renderers'", git = "https://github.com/PrimeIntellect-ai/renderers.git?rev=1f3de65" },
+    { name = "renderers", marker = "extra == 'renderers'", git = "https://github.com/PrimeIntellect-ai/renderers.git?rev=7ca1ab3" },
     { name = "requests" },
     { name = "requests", marker = "extra == 'rl'" },
     { name = "rich" },
@@ -6717,7 +6717,7 @@ dev = [
     { name = "pytest-xdist", specifier = ">=3.8.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
     { name = "reasoning-gym" },
-    { name = "renderers", git = "https://github.com/PrimeIntellect-ai/renderers.git?rev=1f3de65" },
+    { name = "renderers", git = "https://github.com/PrimeIntellect-ai/renderers.git?rev=7ca1ab3" },
     { name = "ruff" },
     { name = "stagehand", specifier = ">=3.0.0" },
     { name = "textarena" },
