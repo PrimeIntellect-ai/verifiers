@@ -43,7 +43,7 @@ from verifiers.utils.logging_utils import (
     print_time,
 )
 from verifiers.utils.path_utils import get_eval_results_path
-from verifiers.utils.v1_config_aliases import normalize_v1_config_aliases
+from verifiers.utils.v1_config_aliases import merge_v1_config_aliases
 
 logger = logging.getLogger(__name__)
 
@@ -464,13 +464,14 @@ def load_toml_config(
             merged.pop("model", None)
         if "model" in eval_config and "endpoint_id" not in eval_config:
             merged.pop("endpoint_id", None)
-        merged_eval_list.append(
-            normalize_v1_config_aliases(
-                merged,
-                args_key="env_args",
+        merged.update(
+            merge_v1_config_aliases(
+                taskset=merged.get("taskset"),
+                harness=merged.get("harness"),
                 global_harness=global_harness,
             )
         )
+        merged_eval_list.append(merged)
 
     # expand [[ablation]] blocks into eval configs
     for ablation in ablation_list:
@@ -491,14 +492,15 @@ def load_toml_config(
                 f"Valid fields are: {sorted(valid_fields)}"
             )
         expanded = _expand_ablation(ablation, global_defaults)
-        merged_eval_list.extend(
-            normalize_v1_config_aliases(
-                config,
-                args_key="env_args",
-                global_harness=global_harness,
+        for config in expanded:
+            config.update(
+                merge_v1_config_aliases(
+                    taskset=config.get("taskset"),
+                    harness=config.get("harness"),
+                    global_harness=global_harness,
+                )
             )
-            for config in expanded
-        )
+        merged_eval_list.extend(expanded)
 
     # Validate all expanded configs have env_id
     for config in merged_eval_list:
@@ -779,8 +781,15 @@ async def run_evaluation(
     maybe_suppress_logs = (
         log_level(logging.CRITICAL) if not config.disable_env_server else nullcontext()
     )
+    env_kwargs = dict(config.env_args)
+    v1_config = merge_v1_config_aliases(
+        taskset=config.taskset,
+        harness=config.harness,
+    )
+    if v1_config:
+        env_kwargs["config"] = v1_config
     with maybe_suppress_logs:
-        vf_env = vf.load_environment(env_id=config.env_id, **config.env_args)
+        vf_env = vf.load_environment(env_id=config.env_id, **env_kwargs)
 
     # set extra environment kwargs
     if config.extra_env_kwargs:

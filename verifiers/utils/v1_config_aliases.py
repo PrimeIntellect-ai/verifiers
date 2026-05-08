@@ -5,44 +5,25 @@ from collections.abc import Mapping
 from typing import Any
 
 
-def normalize_v1_config_aliases(
-    env_config: Mapping[str, Any],
+def merge_v1_config_aliases(
     *,
-    args_key: str,
-    global_harness: Mapping[str, Any] | None = None,
+    taskset: object | None = None,
+    harness: object | None = None,
+    global_harness: object | None = None,
 ) -> dict[str, Any]:
-    normalized = dict(env_config)
-    taskset = normalized.pop("taskset", None)
-    harness = normalized.pop("harness", None)
+    config: dict[str, Any] = {}
     if global_harness is None and taskset is None and harness is None:
-        return normalized
-
-    args = normalized.get(args_key, {}) or {}
-    if not isinstance(args, Mapping):
-        raise ValueError(f"{args_key} must be a table when using taskset/harness.")
-    args = dict(args)
-
-    config = args.get("config", {}) or {}
-    if not isinstance(config, Mapping):
-        raise ValueError(f"{args_key}.config must be a table.")
-    config = dict(config)
+        return config
 
     if global_harness is not None:
-        config["harness"] = merge_v1_config_tables(
-            global_harness, config.get("harness"), "harness"
-        )
-    if taskset is not None:
-        config["taskset"] = merge_v1_config_tables(
-            config.get("taskset"), taskset, "taskset"
-        )
-    if harness is not None:
-        config["harness"] = merge_v1_config_tables(
-            config.get("harness"), harness, "harness"
-        )
+        config["harness"] = merge_v1_config_tables(global_harness, harness, "harness")
+    elif harness is not None:
+        config["harness"] = merge_v1_config_tables(None, harness, "harness")
 
-    args["config"] = config
-    normalized[args_key] = args
-    return normalized
+    if taskset is not None:
+        config["taskset"] = merge_v1_config_tables(None, taskset, "taskset")
+
+    return config
 
 
 def merge_v1_config_tables(
@@ -60,9 +41,14 @@ def merge_v1_config_tables(
     return merged
 
 
-def v1_config_table(value: object, field_name: str) -> Mapping[str, Any]:
+def v1_config_table(value: object, field_name: str) -> dict[str, Any]:
     if value is None:
         return {}
     if not isinstance(value, Mapping):
         raise ValueError(f"{field_name} must be a table.")
-    return value
+    result: dict[str, Any] = {}
+    for key, item in value.items():
+        if not isinstance(key, str):
+            raise TypeError(f"{field_name} keys must be strings.")
+        result[key] = item
+    return result

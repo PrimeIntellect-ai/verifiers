@@ -675,6 +675,8 @@ class EvalConfig(BaseModel):
     # environment
     env_id: str
     env_args: dict
+    taskset: dict[str, Any] = Field(default_factory=dict)
+    harness: dict[str, Any] = Field(default_factory=dict)
     env_dir_path: str
     # evaluation
     endpoint_id: str | None = None

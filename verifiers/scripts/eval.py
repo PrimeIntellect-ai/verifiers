@@ -795,6 +795,8 @@ def main(argv: list[str] | None = None):
         return EvalConfig(
             env_id=env_id,
             env_args=raw.get("env_args", {}),
+            taskset=raw.get("taskset", {}),
+            harness=raw.get("harness", {}),
             env_dir_path=raw.get("env_dir_path", DEFAULT_ENV_DIR_PATH),
             output_dir=raw.get("output_dir"),
             extra_env_kwargs=extra_env_kwargs,
