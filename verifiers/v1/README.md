@@ -1125,7 +1125,8 @@ def load_environment(config=None):
     return vf.Env(taskset=load_taskset(config.get("taskset")))
 ```
 
-With that loader, eval TOML routes v1 config through `env_args.config`:
+With that loader, eval TOML can put v1 config beside the eval entry. A
+top-level `[harness]` table is used by every `[[eval]]`:
 
 ```toml
 # configs/eval/my-v1-env.toml
@@ -1133,18 +1134,18 @@ model = "openai/gpt-5.4-mini"
 num_examples = 5
 rollouts_per_example = 3
 
+[harness]
+max_turns = 4
+
 [[eval]]
 env_id = "my-v1-env"
 sampling_args = { max_tokens = 4096, reasoning_effort = "medium" }
 
-[eval.env_args.config.harness]
-max_turns = 4
-
-[eval.env_args.config.taskset.scoring.exact_answer]
+[eval.taskset.scoring.exact_answer]
 weight = 0.5
 ```
 
-RL and Hosted Training TOML routes the same v1 config through `args.config`:
+RL and Hosted Training TOML uses the same aliases under each `[[env]]`:
 
 ```toml
 # configs/rl/my-v1-env.toml
@@ -1156,13 +1157,13 @@ rollouts_per_example = 8
 [sampling]
 max_tokens = 4096
 
+[harness]
+max_turns = 8
+
 [[env]]
 id = "primeintellect/my-v1-env"
 
-[env.args.config.harness]
-max_turns = 8
-
-[env.args.config.taskset.scoring.exact_answer]
+[env.taskset.scoring.exact_answer]
 weight = 1.0
 ```
 
@@ -1200,20 +1201,20 @@ Callable config fields use one grammar. Function identity is always the Python
 function name; TOML does not define custom metric/reward/update names.
 
 ```toml
-[[env.args.config.taskset.setups]]
+[[env.taskset.setups]]
 fn = "my_env.setup:prepare_state"
 priority = 20
 
-[[env.args.config.taskset.updates]]
+[[env.taskset.updates]]
 fn = "my_env.signals:parse_answer"
 priority = 10
 
-[[env.args.config.taskset.rewards]]
+[[env.taskset.rewards]]
 fn = "my_env.signals:exact_answer"
 weight = 1.0
 priority = 0
 
-[[env.args.config.harness.cleanups]]
+[[env.harness.cleanups]]
 fn = "my_env.signals:close_trace"
 stage = "group"
 ```
@@ -1221,7 +1222,7 @@ stage = "group"
 A bare string is shorthand when no metadata is needed:
 
 ```toml
-[env.args.config.taskset]
+[env.taskset]
 rewards = ["my_env.signals:exact_answer"]
 ```
 
@@ -1232,10 +1233,10 @@ plural args (`tasks, states`). Rollout-stage callables are the default and use
 `scoring` tunes existing signal names:
 
 ```toml
-[env.args.config.taskset.scoring.exact_answer]
+[env.taskset.scoring.exact_answer]
 weight = 0.5
 
-[env.args.config.harness.scoring.turns]
+[env.harness.scoring.turns]
 skip = true
 ```
 
@@ -1249,7 +1250,7 @@ Use zero-argument source loaders in config so environment construction stays
 cheap and import-safe:
 
 ```toml
-[env.args.config.taskset]
+[env.taskset]
 source = "my_env.data:train_rows"
 eval_source = "my_env.data:eval_rows"
 ```
@@ -1271,14 +1272,14 @@ def train_rows():
 Toolsets are addressable resource packages, so TOML keys are toolset ids:
 
 ```toml
-[env.args.config.taskset.toolsets]
+[env.taskset.toolsets]
 wiki = "my_env.tools:load_wiki_toolset"
 
-[env.args.config.taskset.toolsets.python]
+[env.taskset.toolsets.python]
 fn = "my_env.tools:load_python_toolset"
 packages = ["numpy", "pandas"]
 
-[env.args.config.taskset.toolsets.search]
+[env.taskset.toolsets.search]
 tools = ["my_env.tools:search"]
 bindings = { "search.index" = "objects.index" }
 ```
@@ -1303,7 +1304,7 @@ remove a subset. Do not set both.
 Python programs can be configured directly:
 
 ```toml
-[env.args.config.harness.program]
+[env.harness.program]
 fn = "my_env.programs:run_agent"
 sandbox = true
 tools = "callable"
@@ -1313,14 +1314,14 @@ Command programs use `command` and can receive the resolved tools as an MCP
 server when they run in a sandbox:
 
 ```toml
-[env.args.config.harness.program]
+[env.harness.program]
 command = ["bash", "-lc", "my-cli run /task/instruction.md"]
 sandbox = true
 
-[env.args.config.harness.program.tools]
+[env.harness.program.tools]
 mcp = true
 
-[env.args.config.harness.program.files]
+[env.harness.program.files]
 "/task/instruction.md" = "task.instruction"
 ```
 
@@ -1329,14 +1330,14 @@ tool or endpoint config after the interception endpoint is live and before the
 command runs:
 
 ```toml
-[env.args.config.harness.program]
+[env.harness.program]
 command = ["my-cli", "run", "--config", "/tmp/my-cli.json"]
 sandbox = true
 
-[env.args.config.harness.program.tools]
+[env.harness.program.tools]
 mcp = { fn = "my_env.cli:write_cli_config" }
 
-[env.args.config.harness.program.bindings]
+[env.harness.program.bindings]
 "write_cli_config.endpoint_config" = { fn = "my_env.cli:endpoint_config" }
 ```
 

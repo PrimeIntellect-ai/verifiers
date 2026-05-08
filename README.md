@@ -169,7 +169,8 @@ env = vf.Env(
 
 The same environment package is the unit used by evals and `prime-rl`. The
 trainer owns model, endpoint, sampling, and rollout count; v1-specific taskset
-and harness options stay under `env.args.config`:
+and harness options stay beside each env. A top-level `[harness]` table is used
+by every `[[env]]`:
 
 ```toml
 # configs/rl/my-v1-env.toml
@@ -181,13 +182,13 @@ rollouts_per_example = 8
 [sampling]
 max_tokens = 4096
 
+[harness]
+max_turns = 1
+
 [[env]]
 id = "my-env"
 
-[env.args.config.harness]
-max_turns = 1
-
-[env.args.config.taskset.scoring.contains_answer]
+[env.taskset.scoring.contains_answer]
 weight = 1.0
 ```
 

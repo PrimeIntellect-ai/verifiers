@@ -383,18 +383,18 @@ difficulty = "hard"
 split = "test"
 ```
 
-For v1 BYO Harness environments, pass taskset/harness config under
-`env_args.config`:
+For v1 BYO Harness environments, put taskset/harness config beside each eval.
+A top-level `[harness]` table is used by every `[[eval]]`:
 
 ```toml
+[harness]
+max_turns = 4
+
 [[eval]]
 env_id = "my-v1-env"
 sampling_args = { max_tokens = 4096 }
 
-[eval.env_args.config.harness]
-max_turns = 4
-
-[eval.env_args.config.taskset.scoring.exact_answer]
+[eval.taskset.scoring.exact_answer]
 weight = 0.5
 ```
 

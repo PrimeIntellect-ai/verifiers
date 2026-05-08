@@ -700,6 +700,43 @@ def test_load_toml_config_with_env_args():
         assert result[0]["env_args"]["max_examples"] == 100
 
 
+def test_load_toml_config_accepts_v1_taskset_and_harness_aliases():
+    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
+        f.write(
+            "[harness]\n"
+            "max_turns = 4\n"
+            "[harness.sampling_args]\n"
+            "temperature = 0.2\n"
+            "\n"
+            "[[eval]]\n"
+            'env_id = "env1"\n'
+            "[eval.env_args.config.harness.sampling_args]\n"
+            "max_tokens = 128\n"
+            "[eval.taskset]\n"
+            'tasks = "/tmp/tasks"\n'
+            "[eval.harness]\n"
+            "max_turns = 8\n"
+            "\n"
+            "[[eval]]\n"
+            'env_id = "env2"\n'
+        )
+        f.flush()
+        result = load_toml_config(Path(f.name))
+
+    config = result[0]["env_args"]["config"]
+    assert "taskset" not in result[0]
+    assert "harness" not in result[0]
+    assert config["taskset"] == {"tasks": "/tmp/tasks"}
+    assert config["harness"] == {
+        "max_turns": 8,
+        "sampling_args": {"temperature": 0.2, "max_tokens": 128},
+    }
+    assert result[1]["env_args"]["config"]["harness"] == {
+        "max_turns": 4,
+        "sampling_args": {"temperature": 0.2},
+    }
+
+
 def test_load_toml_config_missing_env_section():
     """TOML without [[eval]] section raises ValueError."""
     with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:

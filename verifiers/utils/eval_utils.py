@@ -43,6 +43,7 @@ from verifiers.utils.logging_utils import (
     print_time,
 )
 from verifiers.utils.path_utils import get_eval_results_path
+from verifiers.utils.v1_config_aliases import normalize_v1_config_aliases
 
 logger = logging.getLogger(__name__)
 
@@ -388,6 +389,7 @@ def load_toml_config(
     global_defaults = {
         k: v for k, v in raw_config.items() if k not in ("eval", "ablation")
     }
+    global_harness = global_defaults.pop("harness", None)
 
     # valid fields mirror cli args, not evalconfig
     # TODO: properly tie EvalConfig to CLI
@@ -398,6 +400,8 @@ def load_toml_config(
         "env_dir_path",
         "endpoints_path",
         "extra_env_kwargs",
+        "harness",
+        "taskset",
         # model/client
         "provider",
         "endpoint_id",
@@ -460,7 +464,13 @@ def load_toml_config(
             merged.pop("model", None)
         if "model" in eval_config and "endpoint_id" not in eval_config:
             merged.pop("endpoint_id", None)
-        merged_eval_list.append(merged)
+        merged_eval_list.append(
+            normalize_v1_config_aliases(
+                merged,
+                args_key="env_args",
+                global_harness=global_harness,
+            )
+        )
 
     # expand [[ablation]] blocks into eval configs
     for ablation in ablation_list:
@@ -481,7 +491,14 @@ def load_toml_config(
                 f"Valid fields are: {sorted(valid_fields)}"
             )
         expanded = _expand_ablation(ablation, global_defaults)
-        merged_eval_list.extend(expanded)
+        merged_eval_list.extend(
+            normalize_v1_config_aliases(
+                config,
+                args_key="env_args",
+                global_harness=global_harness,
+            )
+            for config in expanded
+        )
 
     # Validate all expanded configs have env_id
     for config in merged_eval_list:

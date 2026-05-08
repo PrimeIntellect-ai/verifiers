@@ -74,8 +74,8 @@ project = "alphabet-sort"
 name = "qwen3-30b-i-alphabet-sort"
 ```
 
-For v1 BYO Harness environments, put taskset/harness config under
-`args.config`:
+For v1 BYO Harness environments, put taskset/harness config beside each
+environment. A top-level `[harness]` table is used by every `[[env]]`:
 
 ```toml
 model = "Qwen/Qwen3-30B-A3B-Instruct-2507"
@@ -86,17 +86,17 @@ rollouts_per_example = 8
 [sampling]
 max_tokens = 4096
 
+[harness]
+max_turns = 8
+
 [[env]]
 id = "primeintellect/my-v1-env"
 
-[env.args.config.harness]
-max_turns = 8
-
-[env.args.config.taskset.toolsets.search]
+[env.taskset.toolsets.search]
 tools = ["my_env.tools:search"]
 bindings = { "search.index" = "objects.index" }
 
-[[env.args.config.taskset.rewards]]
+[[env.taskset.rewards]]
 fn = "my_env.signals:exact_answer"
 weight = 1.0
 ```

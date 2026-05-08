@@ -7,6 +7,7 @@ except ImportError:
     import tomli as tomllib
 
 import verifiers as vf
+from verifiers.utils.v1_config_aliases import normalize_v1_config_aliases
 from verifiers_rl.rl.trainer import RLConfig, RLTrainer
 
 
@@ -27,8 +28,13 @@ def main() -> None:
         config = tomllib.load(f)
 
     model = config["model"]
-    env_id = config["env"]["id"]
-    env_args = config["env"].get("args", {})
+    env_config = normalize_v1_config_aliases(
+        config["env"],
+        args_key="args",
+        global_harness=config.get("harness"),
+    )
+    env_id = env_config["id"]
+    env_args = env_config.get("args", {})
     env = vf.load_environment(env_id=env_id, **env_args)
     rl_config = RLConfig(**config["trainer"].get("args", {}))
     trainer = RLTrainer(model=model, env=env, args=rl_config)

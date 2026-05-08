@@ -289,7 +289,8 @@ handlers.
 
 Eval and RL TOML own the outer run: model, endpoint, sampling, rollout count,
 and trainer/eval settings. v1 config owns taskset and harness behavior inside
-the environment package.
+the environment package. Put taskset and harness config next to the environment
+entry; a top-level `[harness]` table acts as the default for every environment.
 
 The recommended loader takes one `config` object and routes its `taskset` and
 `harness` sections:
@@ -303,25 +304,25 @@ def load_environment(config=None):
     )
 ```
 
-Eval config passes that object through `env_args.config`:
+Eval config can put that object beside the `[[eval]]` entry:
 
 ```toml
 model = "openai/gpt-5.4-mini"
 num_examples = 5
 rollouts_per_example = 3
 
+[harness]
+max_turns = 4
+
 [[eval]]
 env_id = "my-v1-env"
 sampling_args = { max_tokens = 4096 }
 
-[eval.env_args.config.harness]
-max_turns = 4
-
-[eval.env_args.config.taskset.scoring.exact_answer]
+[eval.taskset.scoring.exact_answer]
 weight = 0.5
 ```
 
-RL and Hosted Training config uses the same inner shape under `args.config`:
+RL and Hosted Training config uses the same aliases under each `[[env]]`:
 
 ```toml
 model = "Qwen/Qwen3-30B-A3B-Instruct-2507"
@@ -332,13 +333,13 @@ rollouts_per_example = 8
 [sampling]
 max_tokens = 4096
 
+[harness]
+max_turns = 8
+
 [[env]]
 id = "primeintellect/my-v1-env"
 
-[env.args.config.harness]
-max_turns = 8
-
-[env.args.config.taskset.toolsets.search]
+[env.taskset.toolsets.search]
 tools = ["my_env.tools:search"]
 bindings = { "search.index" = "objects.index" }
 ```
@@ -346,7 +347,7 @@ bindings = { "search.index" = "objects.index" }
 Callable config uses `fn = "module:callable"` when metadata is needed:
 
 ```toml
-[[env.args.config.taskset.rewards]]
+[[env.taskset.rewards]]
 fn = "my_env.signals:exact_answer"
 weight = 1.0
 priority = 0
@@ -360,14 +361,14 @@ For command harnesses, keep endpoint and tool registration under the requested
 `program.tools` interface:
 
 ```toml
-[env.args.config.harness.program]
+[env.harness.program]
 command = ["my-cli", "run", "--config", "/tmp/my-cli.json"]
 sandbox = true
 
-[env.args.config.harness.program.tools]
+[env.harness.program.tools]
 mcp = { fn = "my_env.cli:write_cli_config" }
 
-[env.args.config.harness.program.bindings]
+[env.harness.program.bindings]
 "write_cli_config.endpoint_config" = { fn = "my_env.cli:endpoint_config" }
 ```
 
