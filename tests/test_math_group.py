@@ -146,3 +146,24 @@ async def test_gsm8k_wrong_answer_scores_0(env_group, make_input):
     await env_group.env_map["gsm8k"].rubric.score_rollout(state)
 
     assert state["metrics"]["correct_answer"] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# EnvGroupRubric teardown must propagate to child rubrics
+# ---------------------------------------------------------------------------
+
+async def test_env_group_teardown_propagates_to_child_rubrics():
+    """EnvGroup.rubric.teardown() must shut down child MathRubric executors.
+
+    MathRubric spawns a ProcessPoolExecutor per instance. If EnvGroupRubric
+    does not propagate teardown to the child RubricGroups, those workers leak
+    when the EnvGroup is torn down.
+
+    Chain: EnvGroupRubric → RubricGroup.teardown() → MathRubric.teardown()
+    """
+    eg = load_environment()
+    await eg.rubric.teardown()
+    for env in eg.envs:
+        math_rubric = next(r for r in env.rubric.rubrics if hasattr(r, "executor"))
+        with pytest.raises(RuntimeError, match="shutdown"):
+            math_rubric.executor.submit(lambda: None)
