@@ -77,6 +77,7 @@ class SandboxEnv(vf.StatefulToolEnv):
         timeout_per_command_seconds: int = 30,
         environment_vars: dict[str, str] | None = None,
         team_id: str | None = None,
+        region: str | None = None,
         advanced_configs: AdvancedConfigs | None = None,
         labels: list[str] | None = None,
         max_retries: int = 5,
@@ -112,6 +113,7 @@ class SandboxEnv(vf.StatefulToolEnv):
             timeout_minutes=timeout_minutes,
             environment_vars=environment_vars,
             team_id=team_id,
+            region=region,
             advanced_configs=advanced_configs,
             labels=labels if labels else [],
         )

@@ -7,6 +7,22 @@ from datasets import Dataset
 from verifiers.envs.sandbox_env import SandboxEnv
 
 
+def test_region_threads_to_create_request():
+    """Region passed to SandboxEnv must reach CreateSandboxRequest unchanged."""
+    mock_dataset = Dataset.from_dict({"question": ["mock question"], "info": [{}]})
+    with patch("verifiers.envs.sandbox_env.CreateSandboxRequest") as mock_request:
+        SandboxEnv(dataset=mock_dataset, region="eu-west", max_retries=1)
+    assert mock_request.call_args.kwargs["region"] == "eu-west"
+
+
+def test_region_defaults_to_none():
+    """Omitting region must produce CreateSandboxRequest(region=None) for back-compat."""
+    mock_dataset = Dataset.from_dict({"question": ["mock question"], "info": [{}]})
+    with patch("verifiers.envs.sandbox_env.CreateSandboxRequest") as mock_request:
+        SandboxEnv(dataset=mock_dataset, max_retries=1)
+    assert mock_request.call_args.kwargs["region"] is None
+
+
 @pytest.fixture
 def sandbox_env():
     """Fixture to create a SandboxEnv instance with mocked dataset."""
