@@ -5,6 +5,7 @@ import hmac
 import inspect
 import json
 import logging
+import secrets
 import time
 import uuid
 from typing import Any, cast
@@ -33,6 +34,7 @@ logger = logging.getLogger(__name__)
 
 
 KEEPALIVE_INTERVAL_SECONDS = 10.0
+DEFAULT_CLIENT_MAX_SIZE_BYTES = 16 * 1024 * 1024
 
 
 class StreamInterrupted(InfraError):
@@ -65,7 +67,7 @@ class InterceptionServer:
 
     def __init__(self, port: int, secret: str | None = None):
         self.port = port
-        self.secret = secret or None  # treat empty string as no secret
+        self.secret = secret or secrets.token_urlsafe(32)
         self._app: Any = None
         self._runner: Any = None
         self._site: Any = None
@@ -81,7 +83,7 @@ class InterceptionServer:
             if self._app is not None:
                 return
 
-            app = web.Application()
+            app = web.Application(client_max_size=DEFAULT_CLIENT_MAX_SIZE_BYTES)
             app.router.add_post(
                 "/rollout/{rollout_id}/v1/chat/completions",
                 self._handle_request,
@@ -208,11 +210,16 @@ class InterceptionServer:
         if rollout_id in self.active_rollouts:
             del self.active_rollouts[rollout_id]
 
+    def _authorized(self, request: Any) -> bool:
+        auth = request.headers.get("Authorization", "")
+        api_key = request.headers.get("x-api-key", "")
+        return hmac.compare_digest(
+            auth, f"Bearer {self.secret}"
+        ) or hmac.compare_digest(api_key, self.secret)
+
     async def _handle_request(self, request: Any) -> Any:
-        if self.secret:
-            auth = request.headers.get("Authorization", "")
-            if not hmac.compare_digest(auth, f"Bearer {self.secret}"):
-                return web.json_response({"error": "Unauthorized"}, status=401)
+        if not self._authorized(request):
+            return web.json_response({"error": "Unauthorized"}, status=401)
 
         rollout_id = request.match_info["rollout_id"]
         context = self.active_rollouts.get(rollout_id)
@@ -247,7 +254,11 @@ class InterceptionServer:
             "stream": is_streaming,
             "chunk_queue": chunk_queue,
             "response_future": asyncio.Future(),
-            "headers": {k.lower(): v for k, v in request.headers.items()},
+            "headers": {
+                k.lower(): v
+                for k, v in request.headers.items()
+                if k.lower() not in {"authorization", "x-api-key"}
+            },
         }
 
         self.intercepts[request_id] = intercept
@@ -278,10 +289,8 @@ class InterceptionServer:
             return web.json_response(response_dict)
 
     async def _handle_tool_request(self, request: Any) -> Any:
-        if self.secret:
-            auth = request.headers.get("Authorization", "")
-            if not hmac.compare_digest(auth, f"Bearer {self.secret}"):
-                return web.json_response({"error": "Unauthorized"}, status=401)
+        if not self._authorized(request):
+            return web.json_response({"error": "Unauthorized"}, status=401)
 
         rollout_id = request.match_info["rollout_id"]
         context = self.active_rollouts.get(rollout_id)
@@ -311,10 +320,8 @@ class InterceptionServer:
         return web.json_response({"result": result})
 
     async def _handle_tools_list_request(self, request: Any) -> Any:
-        if self.secret:
-            auth = request.headers.get("Authorization", "")
-            if not hmac.compare_digest(auth, f"Bearer {self.secret}"):
-                return web.json_response({"error": "Unauthorized"}, status=401)
+        if not self._authorized(request):
+            return web.json_response({"error": "Unauthorized"}, status=401)
 
         rollout_id = request.match_info["rollout_id"]
         context = self.active_rollouts.get(rollout_id)
@@ -329,10 +336,8 @@ class InterceptionServer:
         return web.json_response({"tools": tools})
 
     async def _handle_user_request(self, request: Any) -> Any:
-        if self.secret:
-            auth = request.headers.get("Authorization", "")
-            if not hmac.compare_digest(auth, f"Bearer {self.secret}"):
-                return web.json_response({"error": "Unauthorized"}, status=401)
+        if not self._authorized(request):
+            return web.json_response({"error": "Unauthorized"}, status=401)
 
         rollout_id = request.match_info["rollout_id"]
         context = self.active_rollouts.get(rollout_id)
@@ -360,10 +365,8 @@ class InterceptionServer:
         return web.json_response({"messages": messages})
 
     async def _handle_stop_request(self, request: Any) -> Any:
-        if self.secret:
-            auth = request.headers.get("Authorization", "")
-            if not hmac.compare_digest(auth, f"Bearer {self.secret}"):
-                return web.json_response({"error": "Unauthorized"}, status=401)
+        if not self._authorized(request):
+            return web.json_response({"error": "Unauthorized"}, status=401)
 
         rollout_id = request.match_info["rollout_id"]
         context = self.active_rollouts.get(rollout_id)

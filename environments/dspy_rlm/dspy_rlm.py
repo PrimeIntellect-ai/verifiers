@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from typing import Any
 
-import verifiers as vf
+import verifiers.v1 as vf
 from verifiers.utils.data_utils import load_example_dataset
 
 
-async def run_dspy_rlm_program(task: Mapping[str, Any], state: Any):
+async def run_dspy_rlm_program(task: vf.Task, state: vf.State) -> vf.State:
     import dspy
 
     endpoint_config = state.get_endpoint_config(api="chat")
@@ -29,20 +28,12 @@ async def run_dspy_rlm_program(task: Mapping[str, Any], state: Any):
     return state
 
 
-def config_section(config: object | None, name: str) -> object | None:
-    if config is None:
-        return None
-    if isinstance(config, Mapping):
-        return config.get(name)
-    return getattr(config, name, None)
-
-
 def load_rows(split: str, num_examples: int):
     n = num_examples if num_examples > 0 else None
     return load_example_dataset("gsm8k", split=split, n=n)
 
 
-def task_question(task: Mapping[str, Any]) -> str:
+def task_question(task: vf.Task) -> str:
     question = task.get("question")
     if question is not None:
         return str(question)
@@ -54,7 +45,7 @@ def task_question(task: Mapping[str, Any]) -> str:
     return ""
 
 
-def completion_text(state: Mapping[str, Any]) -> str:
+def completion_text(state: vf.State) -> str:
     agent_result = state.get("agent_result")
     if agent_result is not None:
         return str(agent_result)
@@ -94,7 +85,7 @@ def answers_match(agent_answer: str, answer: str) -> float:
     return 1.0 if abs(parsed_agent_answer - parsed_answer) < 0.01 else 0.0
 
 
-def answer_reward(task: Mapping[str, Any], state: Mapping[str, Any]) -> float:
+def answer_reward(task: vf.Task, state: vf.State) -> float:
     """Check if the agent's final output contains the correct answer."""
     agent_answer = extract_dspy_answer(completion_text(state))
     if not agent_answer:
@@ -105,7 +96,7 @@ def answer_reward(task: Mapping[str, Any], state: Mapping[str, Any]) -> float:
 def load_taskset(
     num_train_examples: int = 50,
     num_eval_examples: int = 20,
-    config: object | None = None,
+    config: vf.TasksetConfig | None = None,
 ) -> vf.Taskset:
     return vf.Taskset(
         source=lambda: load_rows("train", num_train_examples),
@@ -116,21 +107,22 @@ def load_taskset(
     )
 
 
-def load_harness(config: object | None = None) -> vf.Harness:
+def load_harness(config: vf.HarnessConfig | None = None) -> vf.Harness:
     return vf.Harness(program=run_dspy_rlm_program, config=config)
 
 
 def load_environment(
     num_train_examples: int = 50,
     num_eval_examples: int = 20,
-    config: object | None = None,
+    config: vf.EnvConfig | None = None,
 ) -> vf.Env:
     """Load the DSPy RLM V1 taskset/harness example environment."""
+    config = config or vf.EnvConfig()
     return vf.Env(
         taskset=load_taskset(
             num_train_examples=num_train_examples,
             num_eval_examples=num_eval_examples,
-            config=config_section(config, "taskset"),
+            config=config.taskset,
         ),
-        harness=load_harness(config_section(config, "harness")),
+        harness=load_harness(config.harness),
     )

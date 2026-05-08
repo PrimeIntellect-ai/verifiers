@@ -225,26 +225,21 @@ class SWERebenchV2TaskSet(SandboxTaskSet):
 
     def __init__(
         self,
-        language: str | None = None,
         dataset_name: str = DATASET_NAME,
         split: str = "train",
-        filter_repos: list[str] | None = None,
         filter_fn: str | None = None,
         ds_num_proc: int | None = None,
         ds_keep_in_memory: bool = True,
         timeout_minutes: int | None = None,
     ):
-        self.language = language
         self.dataset_name = dataset_name
         self.split = split
-        self.filter_repos = filter_repos
         self.ds_num_proc = ds_num_proc
         self.ds_keep_in_memory = ds_keep_in_memory
         self.timeout_minutes = timeout_minutes
-        suffix = f"-{language}" if language else ""
         super().__init__(
             dataset=self._build_dataset,
-            name=f"swe/swerebench-v2{suffix}",
+            name="swe/swerebench-v2",
             filter_fn=filter_fn,
         )
 
@@ -260,12 +255,6 @@ class SWERebenchV2TaskSet(SandboxTaskSet):
             keep_in_memory=self.ds_keep_in_memory,
             num_proc=self.ds_num_proc,
         )
-        if self.language:
-            lang = self.language
-            dataset = dataset.filter(lambda x: x.get("language") == lang, **_kw)
-        if self.filter_repos:
-            filter_set = frozenset(self.filter_repos)
-            dataset = dataset.filter(lambda x: x.get("repo") not in filter_set, **_kw)
         # Row-level dicts (``install_config``, ``meta``) have variable
         # sub-schemas; Arrow can't infer a consistent struct type across
         # batches, so pre-serialize them to JSON strings. Same trick as

@@ -1,13 +1,12 @@
 [project]
 name = "mcp-search-env"
-description = "MCP Search Environment Example"
-tags = ["train", "eval"]
-version = "0.1.0"
+description = "v1 MCP search environment example"
+tags = ["eval", "mcp", "v1", "tool-use"]
+version = "0.2.0"
 requires-python = ">=3.11"
 dependencies = [
-    "verifiers>=0.1.8.post2",
+    "verifiers>=0.1.14",
     "mcp>=1.0.0",
-    "openai",
 ]
 
 [build-system]
@@ -15,10 +14,8 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build]
-include = [
-    "docs/**",
-    "mcp_search_env.py",
-    "mcp_search_v1.py",
-    "mcp_server.py",
-    "pyproject.toml",
-]
+include = ["mcp_search_env.py", "mcp_server.py", "pyproject.toml"]
+
+[tool.verifiers.eval]
+num_examples = 5
+rollouts_per_example = 3

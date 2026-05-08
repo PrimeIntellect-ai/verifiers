@@ -34,7 +34,9 @@ Verifiers: Environments for LLM Reinforcement Learning
 
 ## News & Updates
 
-- [04/17/26] v0.1.12 is released, featuring a new composable Task/Agent/Environment architecture, upstreamed opencode and RLM harnesses/tasksets, major `RLMEnv` improvements (context dropping, prompt builder, hardened transport), multi-worker env server support, expanded `vf-tui` capabilities, and richer eval configuration.
+- [05/07/26] v0.1.14 is released, featuring the v1 Taskset/Harness API, shared eval and training config shape, model-family starter configs, OpenAI Responses and renderer-backed clients, per-turn timing, GEPA prompt artifacts, Lean guard markers, and release/infrastructure hardening.
+- [04/28/26] v0.1.13.dev8 is released, featuring per-rollout wall-clock timeouts for `MultiTurnEnv`, CLI timeout config, sandbox timeout propagation, and smaller `CliAgentEnv` and RLM fixes.
+- [04/17/26] v0.1.12 is released, featuring upstreamed opencode and RLM harnesses/tasksets, major `RLMEnv` improvements (context dropping, prompt builder, hardened transport), multi-worker env server support, expanded `vf-tui` capabilities, and richer eval configuration.
 - [03/12/26] v0.1.11 is released, featuring a unified client stack, major `RLMEnv` and env server reliability improvements, a substantially refined eval TUI, new pass@k and ablation sweep support, and bundled opencode environments.
 - [02/10/26] v0.1.10 is released, featuring OpenEnv and BrowserEnv integrations, resumed evals, improved rollout and token tracking, safer sandbox lifecycle behavior, refreshed workspace setup, and opencode harbor improvements.
 - [01/08/26] v0.1.9 is released, featuring a number of new experimental environment class types, monitor rubrics for automatic metric collection, improved workspace setup flow, improved error handling, bug fixes, and a documentation overhaul.
@@ -129,8 +131,8 @@ def load_environment(dataset_name: str = 'gsm8k') -> vf.Environment:
     return env
 ```
 
-For composable environments with reusable tasksets, toolsets, custom programs,
-or custom harnesses, use the v1 BYO Harness path:
+For new environments with reusable tasksets, toolsets, custom programs, or
+custom harnesses, use the v1 Taskset/Harness path:
 ```python
 # my_env.py
 import verifiers.v1 as vf
@@ -234,7 +236,7 @@ prime eval run primeintellect/math-python
 
 **[Environments](docs/environments.md)** — Create datasets, rubrics, and custom multi-turn interaction protocols.
 
-**[BYO Harness](docs/byo-harness.md)** — Build composable v1 taskset/harness environments with custom tools, sandboxes, users, and custom programs.
+**[BYO Harness](docs/byo-harness.md)** — Build v1 Taskset/Harness environments with custom tools, sandboxes, users, and custom programs.
 
 **[Evaluation](docs/evaluation.md)** - Evaluate models using your environments.
 

@@ -577,11 +577,12 @@ def filter_inputs(
     return filtered_inputs
 
 
-def to_col_order(list_of_dicts: list[Mapping[str, float]]) -> dict[str, list[float]]:
-    """Convert a list of mappings to a dictionary of lists, ordered by the keys of the first mapping."""
-    if not list_of_dicts:
-        return {}
-    return {k: [m[k] for m in list_of_dicts] for k in list_of_dicts[0].keys()}
+def to_col_order(
+    list_of_dicts: list[Mapping[str, float]],
+) -> dict[str, list[float | None]]:
+    """Convert a list of mappings to a dictionary of lists."""
+    keys = sorted({key for mapping in list_of_dicts for key in mapping})
+    return {key: [mapping.get(key) for mapping in list_of_dicts] for key in keys}
 
 
 def output_env_id(output: Mapping[str, Any]) -> str:
@@ -638,9 +639,17 @@ def print_rewards(results: GenerateOutputs):
     metrics_col = to_col_order(metrics)
     for k in metrics_col.keys():
         v = metrics_col[k]
-        print(f"{k}: avg - {sum(v) / len(v):.3f}, std - {np.std(v):.3f}")
+        present_values = [value for value in v if value is not None]
+        print(
+            f"{k}: avg - {sum(present_values) / len(present_values):.3f}, "
+            f"std - {np.std(present_values):.3f}"
+        )
         for i in range(r):
-            trials = [round(v[i + (j * r)], 3) for j in range(n)]
+            trials = [
+                round(value, 3)
+                for j in range(n)
+                if (value := v[i + (j * r)]) is not None
+            ]
             out = f"r{i + 1}: {trials}"
             print(out)
 
