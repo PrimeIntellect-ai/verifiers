@@ -46,6 +46,8 @@ def test_renderer_client_honors_configured_renderer_name():
         size=1,
         tool_parser=None,
         reasoning_parser=None,
+        preserve_all_thinking=False,
+        preserve_thinking_between_tool_calls=False,
     )
 
 
@@ -75,6 +77,8 @@ def test_renderer_client_uses_renderer_model_name_override():
         size=1,
         tool_parser=None,
         reasoning_parser=None,
+        preserve_all_thinking=False,
+        preserve_thinking_between_tool_calls=False,
     )
 
 

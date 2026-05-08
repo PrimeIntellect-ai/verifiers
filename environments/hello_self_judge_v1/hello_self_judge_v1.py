@@ -154,6 +154,14 @@ TASKS: list[dict[str, object]] = [
 ]
 
 
+class SelfJudgeTasksetConfig(vf.TasksetConfig):
+    num_examples: int = -1
+
+
+class SelfJudgeHarnessConfig(vf.HarnessConfig):
+    max_turns: int = 8
+
+
 async def bash(command: str, sandbox, state) -> str:
     """Run a bash command in the rollout sandbox and return stdout/stderr."""
     result = await sandbox.execute(command, timeout=120, working_dir="/tmp")
@@ -330,9 +338,14 @@ def load_bash_toolset(config=None) -> vf.Toolset:
     )
 
 
-def load_taskset(num_examples: int = -1, config=None) -> vf.Taskset:
+def load_taskset(
+    num_examples: int | None = None,
+    config: vf.TasksetConfig | None = None,
+) -> vf.Taskset:
+    config = SelfJudgeTasksetConfig(config, num_examples=num_examples)
+
     def load_rows():
-        return source(num_examples=num_examples)
+        return source(num_examples=config.num_examples)
 
     return vf.Taskset(
         source=load_rows,
@@ -345,34 +358,34 @@ def load_taskset(num_examples: int = -1, config=None) -> vf.Taskset:
     )
 
 
-def load_harness(max_turns: int = 8, config=None) -> vf.Harness:
-    return vf.Harness(
-        max_turns=max_turns,
-        config=config,
-    )
+def load_harness(
+    max_turns: int | None = None,
+    config: vf.HarnessConfig | None = None,
+) -> vf.Harness:
+    config = SelfJudgeHarnessConfig(config, max_turns=max_turns)
+    return vf.Harness(max_turns=config.max_turns, config=config)
 
 
 def load_environment(
     num_examples: int = -1,
     max_turns: int = 8,
-    config=None,
+    config: vf.EnvConfig | None = None,
 ) -> vf.Env:
+    config = vf.EnvConfig(
+        config,
+        taskset=SelfJudgeTasksetConfig(num_examples=num_examples),
+        harness=SelfJudgeHarnessConfig(max_turns=max_turns),
+    )
     return vf.Env(
-        taskset=load_taskset(
-            num_examples=num_examples,
-            config=getattr(config, "taskset", None),
-        ),
-        harness=load_harness(
-            max_turns=max_turns,
-            config=getattr(config, "harness", None),
-        ),
+        taskset=load_taskset(config=config.taskset),
+        harness=load_harness(config=config.harness),
     )
 
 
 def load_v1_environment(
     num_examples: int = -1,
     max_turns: int = 8,
-    config=None,
+    config: vf.EnvConfig | None = None,
 ) -> vf.Env:
     return load_environment(
         num_examples=num_examples,

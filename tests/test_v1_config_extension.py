@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import sys
 import types
 from collections.abc import Mapping
@@ -10,6 +11,7 @@ import pytest
 import verifiers as vf
 from verifiers.v1 import (
     Env,
+    EnvConfig,
     Harness,
     HarnessConfig,
     State,
@@ -1023,6 +1025,405 @@ def test_config_schema_is_visible_from_primary_types() -> None:
     assert "program" in HarnessConfig.schema_text()
     assert "image" in vf.SandboxConfig.schema_text()
     assert "bindings" in vf.ToolsetConfig.schema_text()
+
+
+def test_env_config_normalizes_mapping_config_to_attributes() -> None:
+    config = EnvConfig(
+        {
+            "taskset": {"taskset_id": "dict"},
+            "harness": {"model": "configured-model"},
+        }
+    )
+
+    assert config.taskset == {"taskset_id": "dict"}
+    assert config.harness == {"model": "configured-model"}
+
+
+def test_env_config_rejects_unknown_top_level_sections() -> None:
+    with pytest.raises(ValueError):
+        EnvConfig({"taskset": {}, "math": {"taskset": {}}})
+
+
+def test_env_config_requires_child_sections_to_be_configs() -> None:
+    with pytest.raises(ValueError):
+        EnvConfig({"taskset": 1})
+
+
+def test_env_config_merges_child_config_defaults_with_nested_sections() -> None:
+    class LocalTasksetConfig(TasksetConfig):
+        split: str = "train"
+
+    child_config = LocalTasksetConfig({"split": "nested"}, split=None)
+    config = EnvConfig(
+        {
+            "taskset": {"split": "nested"},
+            "harness": {"max_turns": 3},
+        },
+        taskset=LocalTasksetConfig(split="default"),
+        harness=HarnessConfig(max_turns=10),
+    )
+    default_config = EnvConfig(
+        {"taskset": {}},
+        taskset=LocalTasksetConfig(split="kwarg"),
+    )
+
+    assert child_config.split == "nested"
+    assert isinstance(config.taskset, LocalTasksetConfig)
+    assert config.taskset.split == "nested"
+    assert isinstance(config.harness, HarnessConfig)
+    assert config.harness.max_turns == 3
+    assert isinstance(default_config.taskset, LocalTasksetConfig)
+    assert default_config.taskset.split == "kwarg"
+
+
+def test_load_environment_coerces_typed_env_config_arg(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_name = "typed_env_config"
+    module = types.ModuleType(module_name)
+    seen: dict[str, object] = {}
+
+    def load_environment(split: str = "train", config: EnvConfig | None = None) -> Env:
+        seen["split"] = split
+        seen["config"] = config
+        config = config or EnvConfig()
+        return Env(
+            taskset=Taskset(source=source_loader, config=config.taskset),
+            harness=Harness(config=config.harness),
+        )
+
+    module.load_environment = load_environment
+    monkeypatch.setitem(sys.modules, module_name, module)
+
+    env = vf.load_environment(
+        "typed-env-config",
+        split="test",
+        config={
+            "taskset": {"taskset_id": "typed"},
+            "harness": {"model": "typed-model"},
+        },
+    )
+
+    assert seen["split"] == "test"
+    assert isinstance(seen["config"], EnvConfig)
+    assert env.taskset.config.taskset_id == "typed"
+    assert env.harness.config.model == "typed-model"
+    assert env.env_args == {
+        "split": "test",
+        "config": {
+            "taskset": {"taskset_id": "typed"},
+            "harness": {"model": "typed-model"},
+        },
+    }
+
+
+def test_load_environment_leaves_untyped_config_arg_as_kwargs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_name = "untyped_env_config"
+    module = types.ModuleType(module_name)
+    seen: dict[str, object] = {}
+
+    def load_environment(split: str = "train", config=None) -> Env:
+        seen["split"] = split
+        seen["config"] = config
+        return Env(taskset=Taskset(source=source_loader))
+
+    module.load_environment = load_environment
+    monkeypatch.setitem(sys.modules, module_name, module)
+
+    vf.load_environment(
+        "untyped-env-config",
+        split="test",
+        config={"taskset": {"taskset_id": "raw"}},
+    )
+
+    assert seen["split"] == "test"
+    assert seen["config"] == {"taskset": {"taskset_id": "raw"}}
+
+
+def test_config_objects_project_to_base_config_fields() -> None:
+    class LocalHarnessConfig(HarnessConfig):
+        toolset: object | None = None
+
+    config = LocalHarnessConfig({"model": "parent", "toolset": {"show": ["search"]}})
+    harness_config = HarnessConfig(config)
+
+    assert config.toolset == {"show": ["search"]}
+    assert harness_config.model == "parent"
+    assert not hasattr(harness_config, "toolset")
+
+
+def test_unset_base_config_defaults_do_not_override_child_defaults() -> None:
+    class LocalHarnessConfig(HarnessConfig):
+        max_turns: int = 4
+
+    default_config = LocalHarnessConfig(HarnessConfig())
+    explicit_config = LocalHarnessConfig(HarnessConfig(max_turns=10))
+
+    assert default_config.max_turns == 4
+    assert explicit_config.max_turns == 10
+
+
+def test_config_field_name_is_allowed_in_typed_configs() -> None:
+    class LocalTasksetConfig(TasksetConfig):
+        config: dict[str, object] | None = None
+
+    loaded_config = LocalTasksetConfig.from_config({"config": {"mode": "loaded"}})
+    direct_config = LocalTasksetConfig(config={"mode": "direct"})
+    merged_config = LocalTasksetConfig(
+        {"taskset_id": "local"},
+        config={"mode": "merged"},
+    )
+
+    assert loaded_config.config == {"mode": "loaded"}
+    assert direct_config.config == {"mode": "direct"}
+    assert merged_config.taskset_id == "local"
+    assert merged_config.config == {"mode": "merged"}
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    [
+        "environments.dspy_flights.dspy_flights",
+        "environments.hello_group_reward_v1.hello_group_reward_v1",
+        "environments.hello_parallel_sandbox_v1.hello_parallel_sandbox_v1",
+        "environments.hello_rlm_v1.hello_rlm_v1",
+        "environments.hello_self_judge_v1.hello_self_judge_v1",
+        "environments.hello_subagent_v1.hello_subagent_v1",
+        "environments.nested_harness_v1.nested_harness_v1",
+    ],
+)
+def test_reference_v1_loaders_preserve_mapping_config_sections(
+    module_name: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = importlib.import_module(module_name)
+    env_id = module_name.rsplit(".", 1)[-1]
+    monkeypatch.setitem(sys.modules, env_id, module)
+
+    env = vf.load_environment(
+        env_id,
+        config={
+            "taskset": {"taskset_id": "from-env-args"},
+            "harness": {"model": "configured-model"},
+        },
+    )
+
+    assert env.taskset.config.taskset_id == "from-env-args"
+    assert env.harness.config.model == "configured-model"
+
+
+def test_reference_v1_harness_loaders_preserve_child_defaults() -> None:
+    group_reward = importlib.import_module(
+        "environments.hello_group_reward_v1.hello_group_reward_v1"
+    )
+    parallel_sandbox = importlib.import_module(
+        "environments.hello_parallel_sandbox_v1.hello_parallel_sandbox_v1"
+    )
+    self_judge = importlib.import_module(
+        "environments.hello_self_judge_v1.hello_self_judge_v1"
+    )
+
+    assert group_reward.load_harness().config.max_turns == 1
+    assert parallel_sandbox.load_harness().config.max_turns == 4
+    assert self_judge.load_harness().config.max_turns == 8
+
+
+def test_bfcl_v1_loader_preserves_mapping_config_sections(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = importlib.import_module("environments.bfcl_v3.bfcl_v3")
+    seen: dict[str, object] = {}
+
+    def fake_taskset(config: object = None, **kwargs: object) -> Taskset:
+        _ = kwargs
+        seen["taskset_config"] = config
+        return Taskset(source=source_loader, config=config)
+
+    def fake_harness(config: object = None, **kwargs: object) -> Harness:
+        _ = kwargs
+        seen["harness_config"] = config
+        return Harness(config=config)
+
+    monkeypatch.setattr(module, "load_taskset", fake_taskset)
+    monkeypatch.setattr(module, "load_harness", fake_harness)
+
+    env = module.load_v1_environment(
+        config=EnvConfig(
+            taskset={"taskset_id": "bfcl-env-args"},
+            harness={"model": "bfcl-model"},
+        )
+    )
+
+    assert env.taskset.config.taskset_id == "bfcl-env-args"
+    assert env.harness.config.model == "bfcl-model"
+    assert isinstance(seen["taskset_config"], module.BFCLTasksetConfig)
+    assert isinstance(seen["harness_config"], module.BFCLHarnessConfig)
+
+
+def test_tau2_loader_forwards_mapping_harness_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_tau2_import_stubs(monkeypatch)
+    module = importlib.import_module("environments.tau2_bench_v1.tau2_bench_v1")
+    seen: dict[str, object] = {}
+
+    def fake_taskset(config: object = None) -> Taskset:
+        seen["taskset_config"] = config
+        return Taskset(source=source_loader)
+
+    monkeypatch.setattr(module, "load_taskset", fake_taskset)
+
+    env = module.load_v1_environment(
+        config=EnvConfig(
+            taskset={"max_turns": 7},
+            harness={"model": "configured-model", "max_turns": 3},
+        )
+    )
+
+    assert type(env.harness) is Harness
+    assert env.harness.config.model == "configured-model"
+    assert env.harness.config.max_turns == 3
+    assert isinstance(seen["taskset_config"], module.Tau2TasksetConfig)
+    assert seen["taskset_config"].max_turns == 7
+
+
+def install_tau2_import_stubs(monkeypatch: pytest.MonkeyPatch) -> None:
+    modules = [
+        "tau2",
+        "tau2.agent",
+        "tau2.agent.llm_agent",
+        "tau2.config",
+        "tau2.data_model",
+        "tau2.data_model.message",
+        "tau2.data_model.simulation",
+        "tau2.data_model.tasks",
+        "tau2.environment",
+        "tau2.environment.environment",
+        "tau2.evaluator",
+        "tau2.evaluator.evaluator",
+        "tau2.orchestrator",
+        "tau2.orchestrator.orchestrator",
+        "tau2.registry",
+        "tau2.run",
+        "tau2.user",
+        "tau2.user.user_simulator",
+        "tau2.utils",
+        "tau2.utils.utils",
+    ]
+    for module_name in modules:
+        monkeypatch.setitem(sys.modules, module_name, types.ModuleType(module_name))
+
+    llm_agent = sys.modules["tau2.agent.llm_agent"]
+    llm_agent.AGENT_INSTRUCTION = "agent"
+    llm_agent.SYSTEM_PROMPT = "{agent_instruction} {domain_policy}"
+    llm_agent.LLMAgent = type("LLMAgent", (), {})
+    llm_agent.is_valid_agent_history_message = lambda message: True
+
+    config = sys.modules["tau2.config"]
+    config.DEFAULT_LLM_ARGS_AGENT = {}
+    config.DEFAULT_LLM_ARGS_USER = {}
+    config.DEFAULT_MAX_ERRORS = 10
+    config.DEFAULT_MAX_STEPS = 20
+
+    message = sys.modules["tau2.data_model.message"]
+    for name in (
+        "AssistantMessage",
+        "Message",
+        "MultiToolMessage",
+        "ToolCall",
+        "ToolMessage",
+        "UserMessage",
+    ):
+        setattr(message, name, type(name, (), {}))
+
+    simulation = sys.modules["tau2.data_model.simulation"]
+    simulation.SimulationRun = type("SimulationRun", (), {})
+    simulation.TerminationReason = type(
+        "TerminationReason",
+        (),
+        {
+            "AGENT_ERROR": "agent_error",
+            "AGENT_STOP": "agent_stop",
+            "MAX_STEPS": "max_steps",
+            "TOO_MANY_ERRORS": "too_many_errors",
+            "USER_STOP": "user_stop",
+        },
+    )
+
+    tasks = sys.modules["tau2.data_model.tasks"]
+    tasks.Task = type("Task", (), {})
+
+    environment = sys.modules["tau2.environment.environment"]
+    environment.Environment = type("Environment", (), {})
+
+    evaluator = sys.modules["tau2.evaluator.evaluator"]
+    evaluator.EvaluationType = type("EvaluationType", (), {"ALL": "all"})
+    evaluator.evaluate_simulation = lambda **kwargs: None
+
+    orchestrator = sys.modules["tau2.orchestrator.orchestrator"]
+    orchestrator.DEFAULT_FIRST_AGENT_MESSAGE = object()
+    orchestrator.Role = type(
+        "Role", (), {"AGENT": "agent", "ENV": "env", "USER": "user"}
+    )
+
+    registry_module = sys.modules["tau2.registry"]
+    registry_module.registry = type(
+        "Registry", (), {"get_env_constructor": lambda *args: None}
+    )()
+
+    run = sys.modules["tau2.run"]
+    run.load_tasks = lambda *args, **kwargs: []
+
+    user_simulator = sys.modules["tau2.user.user_simulator"]
+    user_simulator.UserSimulator = type("UserSimulator", (), {})
+    user_simulator.is_valid_user_history_message = lambda message: True
+
+    utils = sys.modules["tau2.utils.utils"]
+    utils.DATA_DIR = "unused"
+    utils.format_time = lambda value: str(value)
+    utils.get_now = lambda: "now"
+
+
+def test_self_judge_loader_projects_shortcuts_to_child_configs() -> None:
+    module = importlib.import_module(
+        "environments.hello_self_judge_v1.hello_self_judge_v1"
+    )
+
+    taskset = module.load_taskset(num_examples=2)
+    harness = module.load_harness(max_turns=3)
+    shortcut_env = module.load_environment(num_examples=2, max_turns=3)
+    override_env = module.load_environment(
+        num_examples=2,
+        max_turns=3,
+        config=EnvConfig(
+            taskset={"num_examples": 1},
+            harness={"max_turns": 5},
+        ),
+    )
+
+    assert len(taskset.rows()) == 2
+    assert harness.config.max_turns == 3
+    assert len(shortcut_env.taskset.rows()) == 2
+    assert shortcut_env.harness.config.max_turns == 3
+    assert len(override_env.taskset.rows()) == 1
+    assert override_env.harness.config.max_turns == 5
+
+
+def test_subagent_loader_keeps_child_harness_internal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = importlib.import_module("environments.hello_subagent_v1.hello_subagent_v1")
+    monkeypatch.setitem(sys.modules, "hello_subagent_v1", module)
+
+    env = vf.load_environment(
+        "hello-subagent-v1", config={"harness": {"model": "parent"}}
+    )
+
+    assert env.harness.config.model == "parent"
+    child_harness = env.harness.toolsets[0].bindings["ask_subagent.harness"]
+    assert child_harness.config.model is None
 
 
 def test_nested_configs_validate_and_feed_runtime_objects() -> None:

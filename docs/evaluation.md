@@ -92,7 +92,7 @@ The same key works in TOML configs as a top-level entry of an `[[eval]]` table:
 
 ```toml
 [[eval]]
-env_id = "my-env"
+id = "my-env"
 timeout = 600
 ```
 
@@ -338,17 +338,17 @@ model = "openai/gpt-4.1-mini"
 num_examples = 50
 
 [[eval]]
-env_id = "gsm8k"
+id = "gsm8k"
 num_examples = 100  # overrides global default
 rollouts_per_example = 5
 
 [[eval]]
-env_id = "alphabet-sort"
+id = "alphabet-sort"
 # Uses global num_examples (50)
 rollouts_per_example = 3
 
 [[eval]]
-env_id = "math-python"
+id = "math-python"
 # Uses global defaults and built-in defaults for unspecified values
 ```
 
@@ -356,42 +356,47 @@ A minimal config requires only a single `[[eval]]` section:
 
 ```toml
 [[eval]]
-env_id = "gsm8k"
+id = "gsm8k"
 ```
 
-Each `[[eval]]` section must contain an `env_id` field. All other fields are optional:
+Each `[[eval]]` section must contain an `id` field. `env_id` is accepted as a
+legacy alias and normalizes to the same internal field. All other fields are
+optional:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `env_id` | string | **Required.** Environment module name |
-| `env_args` | table | Arguments passed to `load_environment()` |
+| `id` | string | **Required.** Environment module name |
+| `args` | table | Arguments passed to `load_environment()` |
+| `taskset` | table | v1 taskset config passed through `config.taskset` |
+| `harness` | table | v1 harness config passed through `config.harness` |
 | `num_examples` | integer | Number of dataset examples to evaluate |
 | `rollouts_per_example` | integer | Rollouts per example |
 | `extra_env_kwargs` | table | Arguments passed to environment constructor |
 | `model` | string | Model to evaluate |
 | `endpoint_id` | string | Endpoint registry id (requires TOML `endpoints_path`) |
 
-Example with `env_args`:
+Example with environment args:
 
 ```toml
 [[eval]]
-env_id = "math-python"
+id = "math-python"
 num_examples = 50
 
-[eval.env_args]
+[eval.args]
 difficulty = "hard"
 split = "test"
 ```
 
-For v1 BYO Harness environments, put taskset/harness config beside each eval.
-A top-level `[harness]` table is used by every `[[eval]]`:
+For v1 BYO Harness environments, pass taskset/harness config through sibling
+`taskset` and `harness` sections. A top-level `[harness]` table is used by
+every `[[eval]]`:
 
 ```toml
 [harness]
 max_turns = 4
 
 [[eval]]
-env_id = "my-v1-env"
+id = "my-v1-env"
 sampling_args = { max_tokens = 4096 }
 
 [eval.taskset.scoring.exact_answer]
@@ -413,23 +418,23 @@ num_examples = 50
 # Sweep temperature × difficulty → 6 eval configs
 # split is fixed across all combinations
 [[ablation]]
-env_id = "my-env"
-env_args = {split = "test"}
+id = "my-env"
+args = {split = "test"}
 
 [ablation.sweep]
 temperature = [0.0, 0.5, 1.0]
 
-[ablation.sweep.env_args]
+[ablation.sweep.args]
 difficulty = ["easy", "hard"]
 ```
 
-- **Fixed fields** in the `[[ablation]]` block (like `env_id`) apply to all expanded configs
+- **Fixed fields** in the `[[ablation]]` block (like `id`) apply to all expanded configs
 - **`[ablation.sweep]`** keys are lists of values crossed as a cartesian product
-- **`[ablation.sweep.env_args]`** keys are swept and merged into the `env_args` dict
-- **Fixed `env_args`** can be set alongside swept ones (e.g. `env_args = {split = "test"}` keeps `split` fixed while sweeping other env args). The same key cannot appear in both fixed and swept env_args.
+- **`[ablation.sweep.args]`** keys are swept and merged into environment args
+- **Fixed `args`** can be set alongside swept ones (e.g. `args = {split = "test"}` keeps `split` fixed while sweeping other env args). The same key cannot appear in both fixed and swept args.
 - Multiple `[[ablation]]` blocks are independent (no cross-product between blocks)
 - `[[ablation]]` and `[[eval]]` blocks can coexist in the same config file
-- `env_id` can be a fixed field or a sweep key (e.g. `env_id = ["env-a", "env-b"]`), but note that all swept envs must accept the same `env_args` — use separate `[[ablation]]` blocks for envs with different argument schemas
+- `id` can be a fixed field or a sweep key (e.g. `id = ["env-a", "env-b"]`), but note that all swept envs must accept the same `args` — use separate `[[ablation]]` blocks for envs with different argument schemas
 
 Use `--abbreviated-summary` (`-A`) to get a compact summary focused on settings and stats, which is useful when comparing many ablation runs.
 

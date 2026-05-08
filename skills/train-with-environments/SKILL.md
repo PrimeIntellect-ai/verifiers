@@ -53,6 +53,25 @@ prime env push my-env --visibility PRIVATE
 ```
 4. For hosted RL and shared workflows, prefer Hub IDs after push (for example `owner/my-env` in config `[[env]].id`).
 
+## RL TOML Environment Sections
+1. Use the same environment config shape for Hosted Training and `prime-rl`.
+2. Put normal `load_environment(...)` named args in `[env.args]`.
+3. Put v1 taskset config in `[env.taskset]` and v1 harness config in `[env.harness]`.
+4. Keep model, endpoint, sampling, rollout count, and trainer controls outside the environment sections unless configuring a nested or auxiliary harness model.
+```toml
+[[env]]
+id = "owner/my-env"
+
+[env.args]
+split = "train"
+
+[env.taskset]
+num_examples = 1000
+
+[env.harness]
+max_turns = 8
+```
+
 ## Hyperparameter Rules Of Thumb
 1. Use `rollouts_per_example` and `batch_size` together.
 2. Treat `batch_size` as total rollout samples per step, not number of groups.

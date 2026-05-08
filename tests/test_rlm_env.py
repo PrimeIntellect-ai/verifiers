@@ -1282,6 +1282,9 @@ class TestRootToolSerialization:
         payload = {"value": 123}
         mock_request = MagicMock()
         mock_request.match_info = {"rollout_id": rollout_id}
+        mock_request.headers = {
+            "Authorization": f"Bearer {env._interception_secret}",
+        }
         mock_request.json = AsyncMock(
             return_value={
                 "tool_name": "echo_tool",

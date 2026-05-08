@@ -1,7 +1,7 @@
 # Verifiers v1
 
-`verifiers.v1` is the composable environment API for building eval and training
-environments from two primary objects:
+`verifiers.v1` is the current Taskset/Harness environment API for building eval
+and training environments from two primary objects:
 
 - a `Taskset`, which defines what is being attempted;
 - a `Harness`, which defines how a model attempts it.
@@ -145,13 +145,13 @@ async def contains_answer(task, state) -> float:
     return float(task["answer"] in str(state.get("completion") or ""))
 
 
-def load_taskset(config=None):
+def load_taskset(config: vf.TasksetConfig | None = None):
     return vf.Taskset(source=source, rewards=[contains_answer], config=config)
 
 
-def load_environment(config=None):
-    config = config or {}
-    return vf.Env(taskset=load_taskset(config.get("taskset")))
+def load_environment(config: vf.EnvConfig | None = None):
+    config = config or vf.EnvConfig()
+    return vf.Env(taskset=load_taskset(config=config.taskset))
 ```
 
 Standalone harness use is the same runner without the `Env` adapter:
@@ -195,12 +195,18 @@ loader.
 
 ```python
 from datasets import load_dataset
+import verifiers.v1 as vf
 
 
-def load_taskset(config=None):
-    config = config or {}
-    dataset_name = config.get("dataset_name", "gsm8k")
-    split = config.get("split", "train")
+class GSM8KTasksetConfig(vf.TasksetConfig):
+    dataset_name: str = "gsm8k"
+    split: str = "train"
+
+
+def load_taskset(config: vf.TasksetConfig | None = None):
+    config = GSM8KTasksetConfig(config)
+    dataset_name = config.dataset_name
+    split = config.split
 
     def source():
         dataset = load_dataset(dataset_name, "main", split=split)
@@ -211,7 +217,7 @@ def load_taskset(config=None):
                 "answer": row["answer"],
             }
 
-    return vf.Taskset(source=source)
+    return vf.Taskset(source=source, config=config)
 ```
 
 `eval_source` is optional. If it is omitted, `get_eval_dataset()` uses the same
@@ -1101,32 +1107,33 @@ recommended loader shape is:
 import verifiers.v1 as vf
 
 
-def load_taskset(config=None):
+def load_taskset(config: vf.TasksetConfig | None = None):
     return vf.Taskset(source=source, rewards=[exact], config=config)
 
 
-def load_harness(config=None):
+def load_harness(config: vf.HarnessConfig | None = None):
     return vf.Harness(config=config)
 
 
-def load_environment(config=None):
-    config = config or {}
+def load_environment(config: vf.EnvConfig | None = None):
+    config = config or vf.EnvConfig()
     return vf.Env(
-        taskset=load_taskset(config.get("taskset")),
-        harness=load_harness(config.get("harness")),
+        taskset=load_taskset(config=config.taskset),
+        harness=load_harness(config=config.harness),
     )
 ```
 
 If the base harness is enough, omit `load_harness`:
 
 ```python
-def load_environment(config=None):
-    config = config or {}
-    return vf.Env(taskset=load_taskset(config.get("taskset")))
+def load_environment(config: vf.EnvConfig | None = None):
+    config = config or vf.EnvConfig()
+    return vf.Env(taskset=load_taskset(config=config.taskset))
 ```
 
-With that loader, eval TOML can put v1 config beside the eval entry. A
-top-level `[harness]` table is used by every `[[eval]]`:
+With that loader, eval TOML routes named environment args through `args` and v1
+config through the `taskset`/`harness` sections. A top-level `[harness]` table
+is used by every `[[eval]]`:
 
 ```toml
 # configs/eval/my-v1-env.toml
@@ -1141,11 +1148,55 @@ max_turns = 4
 env_id = "my-v1-env"
 sampling_args = { max_tokens = 4096, reasoning_effort = "medium" }
 
+[eval.args]
+split = "test"
+
 [eval.taskset.scoring.exact_answer]
 weight = 0.5
 ```
 
-RL and Hosted Training TOML uses the same aliases under each `[[env]]`:
+For concise named args, pass typed child config objects as defaults. Explicit
+nested sections win over those defaults.
+
+```python
+class MyTasksetConfig(vf.TasksetConfig):
+    split: str = "train"
+
+
+def load_taskset(
+    split: str | None = None,
+    config: vf.TasksetConfig | None = None,
+):
+    config = MyTasksetConfig(config, split=split)
+    ...
+
+
+def load_harness(
+    max_turns: int | None = None,
+    config: vf.HarnessConfig | None = None,
+):
+    config = vf.HarnessConfig(config, max_turns=max_turns)
+    ...
+
+
+def load_environment(
+    config: vf.EnvConfig | None = None,
+    split: str = "train",
+    max_turns: int = 10,
+):
+    config = vf.EnvConfig(
+        config,
+        taskset=MyTasksetConfig(split=split),
+        harness=vf.HarnessConfig(max_turns=max_turns),
+    )
+    return vf.Env(
+        taskset=load_taskset(config=config.taskset),
+        harness=load_harness(config=config.harness),
+    )
+```
+
+RL and Hosted Training TOML uses the same split under `env`; the top-level
+`[harness]` table is shared by every `[[env]]`:
 
 ```toml
 # configs/rl/my-v1-env.toml
@@ -1162,6 +1213,9 @@ max_turns = 8
 
 [[env]]
 id = "primeintellect/my-v1-env"
+
+[env.args]
+split = "train"
 
 [env.taskset.scoring.exact_answer]
 weight = 1.0
@@ -1399,8 +1453,8 @@ taskset_config = vf.TasksetConfig.from_toml("local.toml", "taskset")
 harness_config = vf.HarnessConfig.from_toml("local.toml", "harness")
 
 env = vf.Env(
-    taskset=load_taskset(taskset_config),
-    harness=load_harness(harness_config),
+    taskset=load_taskset(config=taskset_config),
+    harness=load_harness(config=harness_config),
 )
 ```
 
@@ -1422,7 +1476,7 @@ class WikiTaskset(vf.Taskset):
     config_type = WikiTasksetConfig
 
     def __init__(self, config):
-        config = self.config_type.model_validate(config)
+        config = self.config_type(config)
 
         def load_db():
             return open_db(config.db_path)
@@ -1525,7 +1579,7 @@ Reference implementations live beside their existing environments:
 - `environments/wiki_search/wiki_search_v1.py`
 - `environments/math_python/math_python_v1.py`
 - `environments/mcp_search_env/mcp_search_v1.py`
-- `environments/opencode_harbor/opencode_harbor_v1.py`
+- `environments/opencode_harbor/opencode_harbor.py`
 - `environments/tau2_bench_v1/tau2_bench_v1.py`
 - `environments/nested_harness_v1/nested_harness_v1.py`
 - `environments/hello_subagent_v1/hello_subagent_v1.py`

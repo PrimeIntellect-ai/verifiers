@@ -958,12 +958,56 @@ Provider-agnostic tool definition. Environments define tools using this type; ea
 
 ## Configuration Types
 
+### v1 Config
+
+```python
+class Config(BaseModel):
+    def __init__(self, config: object | None = None, /, **data: object): ...
+
+    @classmethod
+    def from_config(cls, config: object | None = None, /, **data: object) -> Self: ...
+
+    @classmethod
+    def from_toml(
+        cls, path: str | Path, section: str | Iterable[str] | None = None
+    ) -> Self: ...
+
+class EnvConfig(Config):
+    taskset: object | None = None
+    harness: object | None = None
+
+class TasksetConfig(Config):
+    taskset_id: str | None = None
+    system_prompt: object | None = None
+    source: object | None = None
+    eval_source: object | None = None
+    user: object | None = None
+
+class HarnessConfig(Config):
+    program: object | None = None
+    system_prompt: object | None = None
+    sandbox: SandboxConfig | None = None
+    model: str | None = None
+    sampling_args: dict[str, object] = {}
+    max_turns: int = 10
+```
+
+`EnvConfig` is the typed v1 loader envelope. TOML `[env.taskset]` and
+`[env.harness]` sections flow to `config.taskset` and `config.harness`;
+environment-specific named args flow through `[env.args]`.
+
+`Config` subclasses accept a positional source config plus direct keyword
+overrides. The source object is positional-only so subclasses can define a real
+field named `config`.
+
 ### ClientConfig
 
 ```python
 class ClientConfig(BaseModel):
     client_idx: int = 0
     client_type: ClientType = "openai_chat_completions"
+    preserve_all_thinking: bool = False
+    preserve_thinking_between_tool_calls: bool = False
     api_key_var: str = "PRIME_API_KEY"
     api_base_url: str = "https://api.pinference.ai/api/v1"
     endpoint_configs: list[EndpointClientConfig] = []
@@ -979,6 +1023,8 @@ class ClientConfig(BaseModel):
 `extra_headers_from_state` maps HTTP header names to state field names. For each inference request, the header value is dynamically read from the rollout state dict. For example, `{"X-Session-ID": "example_id"}` adds a `X-Session-ID` header with the value of `state["example_id"]`, enabling sticky routing at the inference router level.
 
 `client_type` selects which `Client` implementation to instantiate (see [Client Classes](#client-classes)). Use `endpoint_configs` for multi-endpoint round-robin. In grouped scoring mode, groups are distributed round-robin across endpoint configs.
+
+`preserve_all_thinking` and `preserve_thinking_between_tool_calls` are forwarded to the underlying renderer when `client_type == "renderer"`. They control whether past-assistant `reasoning_content` is re-emitted on subsequent renders — `preserve_all_thinking` keeps every past-assistant turn's thinking, and `preserve_thinking_between_tool_calls` keeps thinking only inside the in-flight assistant→tool→…→assistant block after the most recent user turn (when that block contains at least one tool response). Both default to `False` (template default applies).
 
 When `api_key_var` is `"PRIME_API_KEY"` (the default), credentials are loaded with the following precedence:
 - **API key**: `PRIME_API_KEY` env var > `~/.prime/config.json` > `"EMPTY"`

@@ -1,8 +1,8 @@
 # BYO Harness
 
-BYO Harness is the `verifiers.v1` authoring path for environments that need a
-clean separation between the task being attempted and the way a model attempts
-it.
+BYO Harness is the preferred `verifiers.v1` Taskset/Harness authoring path for
+new environments that need a clean separation between the task being attempted
+and the way a model attempts it.
 
 Use this path when you want to bring your own harness: a tool loop, CLI program,
 third-party Python program, sandboxed program, user simulator, MCP server, or
@@ -43,13 +43,13 @@ async def contains_answer(task, state) -> float:
     return float(task["answer"] in str(state.get("completion") or ""))
 
 
-def load_taskset(config=None):
+def load_taskset(config: vf.TasksetConfig | None = None):
     return vf.Taskset(source=source, rewards=[contains_answer], config=config)
 
 
-def load_environment(config=None):
-    config = config or {}
-    return vf.Env(taskset=load_taskset(config.get("taskset")))
+def load_environment(config: vf.EnvConfig | None = None):
+    config = config or vf.EnvConfig()
+    return vf.Env(taskset=load_taskset(config=config.taskset))
 ```
 
 ## Tasksets
@@ -60,12 +60,18 @@ zero-argument loader so imports and constructors stay cheap.
 
 ```python
 from datasets import load_dataset
+import verifiers.v1 as vf
 
 
-def load_taskset(config=None):
-    config = config or {}
-    dataset_name = config.get("dataset_name", "gsm8k")
-    split = config.get("split", "train")
+class GSM8KTasksetConfig(vf.TasksetConfig):
+    dataset_name: str = "gsm8k"
+    split: str = "train"
+
+
+def load_taskset(config: vf.TasksetConfig | None = None):
+    config = GSM8KTasksetConfig(config)
+    dataset_name = config.dataset_name
+    split = config.split
 
     def source():
         dataset = load_dataset(dataset_name, "main", split=split)
@@ -76,7 +82,7 @@ def load_taskset(config=None):
                 "answer": row["answer"],
             }
 
-    return vf.Taskset(source=source)
+    return vf.Taskset(source=source, config=config)
 ```
 
 Source rows are JSON-serializable mappings. Config is resolved before source
@@ -171,18 +177,18 @@ Create a harness when rollout behavior is no longer just "call the model with
 the resolved taskset tools."
 
 ```python
-def load_harness(config=None):
+def load_harness(config: vf.HarnessConfig | None = None):
     return vf.Harness(
         program={"fn": "my_env.program:run"},
         config=config,
     )
 
 
-def load_environment(config=None):
-    config = config or {}
+def load_environment(config: vf.EnvConfig | None = None):
+    config = config or vf.EnvConfig()
     return vf.Env(
-        taskset=load_taskset(config.get("taskset")),
-        harness=load_harness(config.get("harness")),
+        taskset=load_taskset(config=config.taskset),
+        harness=load_harness(config=config.harness),
     )
 ```
 
@@ -296,15 +302,17 @@ The recommended loader takes one `config` object and routes its `taskset` and
 `harness` sections:
 
 ```python
-def load_environment(config=None):
-    config = config or {}
+def load_environment(config: vf.EnvConfig | None = None):
+    config = config or vf.EnvConfig()
     return vf.Env(
-        taskset=load_taskset(config.get("taskset")),
-        harness=load_harness(config.get("harness")),
+        taskset=load_taskset(config=config.taskset),
+        harness=load_harness(config=config.harness),
     )
 ```
 
-Eval config can put that object beside the `[[eval]]` entry:
+Eval config passes named environment args through `args` and v1 config through
+the `taskset`/`harness` sections. A top-level `[harness]` table is used by
+every `[[eval]]`:
 
 ```toml
 model = "openai/gpt-5.4-mini"
@@ -322,7 +330,49 @@ sampling_args = { max_tokens = 4096 }
 weight = 0.5
 ```
 
-RL and Hosted Training config uses the same aliases under each `[[env]]`:
+For concise v0-style named args, pass typed child config objects as defaults.
+Explicit `taskset`/`harness` sections stay the most specific source and override
+those defaults.
+
+```python
+class MyTasksetConfig(vf.TasksetConfig):
+    split: str = "train"
+
+
+def load_taskset(
+    split: str | None = None,
+    config: vf.TasksetConfig | None = None,
+):
+    config = MyTasksetConfig(config, split=split)
+    ...
+
+
+def load_harness(
+    max_turns: int | None = None,
+    config: vf.HarnessConfig | None = None,
+):
+    config = vf.HarnessConfig(config, max_turns=max_turns)
+    ...
+
+
+def load_environment(
+    config: vf.EnvConfig | None = None,
+    split: str = "train",
+    max_turns: int = 10,
+):
+    config = vf.EnvConfig(
+        config,
+        taskset=MyTasksetConfig(split=split),
+        harness=vf.HarnessConfig(max_turns=max_turns),
+    )
+    return vf.Env(
+        taskset=load_taskset(config=config.taskset),
+        harness=load_harness(config=config.harness),
+    )
+```
+
+RL and Hosted Training config uses the same shape under `env`; the top-level
+`[harness]` table is shared by every `[[env]]`:
 
 ```toml
 model = "Qwen/Qwen3-30B-A3B-Instruct-2507"
@@ -338,6 +388,9 @@ max_turns = 8
 
 [[env]]
 id = "primeintellect/my-v1-env"
+
+[env.args]
+arg1 = "non-th-arg"
 
 [env.taskset.toolsets.search]
 tools = ["my_env.tools:search"]

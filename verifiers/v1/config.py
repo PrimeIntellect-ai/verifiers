@@ -20,6 +20,24 @@ except ModuleNotFoundError:
 class Config(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True, extra="forbid")
 
+    def __init__(self, config: object | None = None, /, **data: object):
+        super().__init__(**type(self)._merge_config_data(config, data))
+
+    @classmethod
+    def from_config(cls, config: object | None = None, /, **data: object) -> Self:
+        return cls(**cls._merge_config_data(config, data))
+
+    @classmethod
+    def _merge_config_data(
+        cls, config: object | None, data: dict[str, object]
+    ) -> dict[str, object]:
+        data = omit_none(data)
+        if config is not None:
+            base = config_data(config, cls)
+            base.update(data)
+            data = base
+        return data
+
     @classmethod
     def from_toml(
         cls, path: str | Path, section: str | Iterable[str] | None = None
@@ -32,7 +50,7 @@ class Config(BaseModel):
                 if not isinstance(data, Mapping):
                     raise TypeError(f"TOML section {section!r} does not exist.")
                 data = data[key]
-        return cls.model_validate(data)
+        return cls.from_config(data)
 
     @classmethod
     def schema_text(cls) -> str:
@@ -42,6 +60,26 @@ class Config(BaseModel):
                 f"- {name}: {annotation_text(field.annotation)} = {default_text(field)}"
             )
         return "\n".join(lines)
+
+
+def config_data(value: object, target: type[Config] | None = None) -> dict[str, object]:
+    if value is None:
+        data: dict[str, object] = {}
+    elif isinstance(value, Config):
+        data = value.model_dump(exclude_none=True, exclude_unset=True)
+        if target is not None:
+            data = {
+                key: item for key, item in data.items() if key in target.model_fields
+            }
+    elif isinstance(value, Mapping):
+        data = string_mapping(cast(Mapping[object, object], value))
+    else:
+        raise TypeError("Config must be a mapping or Config object.")
+    return data
+
+
+def omit_none(data: Mapping[str, object]) -> dict[str, object]:
+    return {key: value for key, value in data.items() if value is not None}
 
 
 class SandboxConfig(Config):
@@ -166,6 +204,48 @@ class HarnessConfig(Config):
     max_turns: int = 10
 
 
+class EnvConfig(Config):
+    taskset: object | None = None
+    harness: object | None = None
+
+    @field_validator("taskset", "harness")
+    @classmethod
+    def validate_child_config(cls, value: object) -> object:
+        if value is not None:
+            try:
+                config_data(value)
+            except TypeError as exc:
+                raise ValueError(str(exc)) from exc
+        return value
+
+    @classmethod
+    def _merge_config_data(
+        cls, config: object | None, data: dict[str, object]
+    ) -> dict[str, object]:
+        data = omit_none(data)
+        if config is None:
+            return data
+        base = config_data(config, cls)
+        for section in ("taskset", "harness"):
+            default = data.get(section)
+            override = base.pop(section, None)
+            if default is None:
+                if override is not None:
+                    data[section] = override
+                continue
+            if override is not None:
+                data[section] = merge_child_config(default, override)
+        base.update(data)
+        return base
+
+
+def merge_child_config(default: object, override: object) -> object:
+    merged = deep_merge(config_data(default), config_data(override))
+    if isinstance(default, Config):
+        return type(default)(merged)
+    return merged
+
+
 def merge_config_value(value: object, config: object) -> object:
     if config is None:
         return value
@@ -199,7 +279,7 @@ def sandbox_config_mapping(value: object | None) -> dict[str, object] | None:
         prefer = mapping.get("prefer")
         if prefer is not None and prefer != "program":
             raise ValueError("sandbox.prefer must be 'program'.")
-        return SandboxConfig.model_validate(mapping).model_dump(exclude_none=True)
+        return SandboxConfig.from_config(mapping).model_dump(exclude_none=True)
     raise TypeError("Sandbox config must be a mapping.")
 
 

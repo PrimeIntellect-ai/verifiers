@@ -64,7 +64,7 @@ class HarborTaskset(Taskset):
         config: HarborTasksetConfig | Mapping[str, object] | None = None,
         **kwargs: Any,
     ):
-        self.config = type(self).config_type.model_validate(config or {})
+        self.config = type(self).config_type.from_config(config)
         self.tasks = merge_config_value(tasks, self.config.tasks)
         self.task_names = list(
             task_names

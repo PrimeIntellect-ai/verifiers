@@ -1,10 +1,12 @@
 import importlib
 import inspect
 import logging
-from typing import Callable
+from types import UnionType
+from typing import Callable, Union, get_args, get_origin, get_type_hints
 
 from verifiers.envs.environment import Environment
 from verifiers.utils.config_utils import MissingKeyError
+from verifiers.v1.config import EnvConfig
 
 
 def load_environment(env_id: str, **env_args) -> Environment:
@@ -67,7 +69,8 @@ def load_environment(env_id: str, **env_args) -> Environment:
             if default_values:
                 logger.info(f"Using default args: {', '.join(default_values)}")
 
-        env_instance: Environment = env_load_func(**env_args)
+        call_env_args = coerce_typed_env_config(env_load_func, sig, env_args)
+        env_instance: Environment = env_load_func(**call_env_args)
         env_instance.env_id = env_instance.env_id or env_id
         env_instance.env_args = env_instance.env_args or env_args
 
@@ -89,3 +92,51 @@ def load_environment(env_id: str, **env_args) -> Environment:
             f"Failed to load environment {env_id} with args {env_args}: {str(e)}"
         )
         raise RuntimeError(f"Failed to load environment '{env_id}': {str(e)}") from e
+
+
+def coerce_typed_env_config(
+    env_load_func: Callable[..., Environment],
+    sig: inspect.Signature,
+    env_args: dict,
+) -> dict:
+    if "config" not in env_args:
+        return env_args
+    config_type = env_config_annotation(env_load_func, sig)
+    if config_type is None:
+        return env_args
+
+    config = env_args["config"]
+    if config is None or isinstance(config, config_type):
+        return env_args
+
+    call_env_args = dict(env_args)
+    call_env_args["config"] = config_type.from_config(config)
+    return call_env_args
+
+
+def env_config_annotation(
+    env_load_func: Callable[..., Environment],
+    sig: inspect.Signature,
+) -> type[EnvConfig] | None:
+    if "config" not in sig.parameters:
+        return None
+    try:
+        annotation = get_type_hints(env_load_func).get("config")
+    except Exception:
+        annotation = sig.parameters["config"].annotation
+    return env_config_type(annotation)
+
+
+def env_config_type(annotation: object) -> type[EnvConfig] | None:
+    if annotation is inspect.Parameter.empty:
+        return None
+    origin = get_origin(annotation)
+    if origin in (Union, UnionType):
+        for arg in get_args(annotation):
+            config_type = env_config_type(arg)
+            if config_type is not None:
+                return config_type
+        return None
+    if isinstance(annotation, type) and issubclass(annotation, EnvConfig):
+        return annotation
+    return None

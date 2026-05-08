@@ -116,11 +116,11 @@ async def command_env(
     if isinstance(endpoint_base_url, str):
         api_key = endpoint_api_key(runtime)
         endpoint_root_url = state.get("endpoint_root_url")
-        env.setdefault("OPENAI_BASE_URL", endpoint_base_url)
-        env.setdefault("OPENAI_API_KEY", api_key)
+        env["OPENAI_BASE_URL"] = endpoint_base_url
+        env["OPENAI_API_KEY"] = api_key
         if isinstance(endpoint_root_url, str):
-            env.setdefault("ANTHROPIC_BASE_URL", endpoint_root_url)
-            env.setdefault("ANTHROPIC_API_KEY", api_key)
+            env["ANTHROPIC_BASE_URL"] = endpoint_root_url
+            env["ANTHROPIC_API_KEY"] = api_key
     raw_env = program.get("env", {})
     if not isinstance(raw_env, Mapping):
         raise TypeError("program.env must be a mapping.")

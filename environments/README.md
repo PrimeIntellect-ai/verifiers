@@ -46,7 +46,12 @@ This folder contains installable example environments that showcase common usage
   - **rlm_secrets**: Puzzle environment testing RLM functionality including root-level tools, sub-LLM tool use, and file operations.
   - **hello_rlm_v1**: v1 sandboxed RLM-style CLI program with endpoint interception and metrics collection.
 
-- **HarborEnv / CliAgentEnv (CLI agent sandboxes)**
+- **V1 Taskset/Harness**
+  - **dspy_rlm**: DSPy RLM harness on GSM8K through `vf.Env`; DSPy uses the V1 interception endpoint from rollout state.
+  - **openai_agents_env**: OpenAI Agents SDK harness with a calculator tool on GSM8K through `vf.Env`.
+  - **langchain_deep_agents_env**: LangChain Deep Agents SDK harness (`create_deep_agent`) with a calculator tool on GSM8K through `vf.Env`.
+
+- **HarborEnv / CliAgentEnv (agent sandboxes)**
   - **opencode_harbor**: Runs the OpenCode CLI agent on Harbor tasks with API interception via Prime Tunnel.
   - **terminus_harbor**: Runs the Terminus agent on Harbor tasks with API interception via Prime Tunnel.
   - **hello_mcp_harbor**: Smallest runnable `HarborEnv` exercising framework-managed MCP server lifecycle (FastMCP `get_secret` server + OpenCode agent).
@@ -89,8 +94,8 @@ This folder contains installable example environments that showcase common usage
 - **CLI agent sandboxes**: `opencode_harbor`, `terminus_harbor`, `hello_mcp_harbor`
 - **MCP integration**: `mcp_search_env`, `hello_mcp_harbor`
 - **RLM (recursive LLM)**: `rlm_secrets`
-- **Taskset/Harness v1**: `reverse_text`, `alphabet_sort`, `wiki_search`, `math_python`, `mcp_search_env`, and `opencode_harbor` via `v1=True`; plus `bfcl_v3`, `hello_subagent_v1`, `nested_harness_v1`, `hello_self_judge_v1`, `hello_parallel_sandbox_v1`, `hello_group_reward_v1`, `hello_rlm_v1`, `rlm_swe_v1`, `dspy_flights`, and `tau2-bench-v1`
-  - `opencode_harbor` now uses the packaged `vf.HarborTaskset` + `vf.OpenCode` boundary for the v1 path. These reusable implementations live under `verifiers.v1.packages` and are re-exported from `verifiers.v1`.
+- **Taskset/Harness v1**: use this pattern for new environments that need reusable tasksets, reusable harnesses, framework programs, endpoint interception, or sandboxed Python/command programs. Examples include `dspy_rlm`, `openai_agents_env`, `langchain_deep_agents_env`, `reverse_text`, `alphabet_sort`, `wiki_search`, `math_python`, `mcp_search_env`, `opencode_harbor`, `bfcl_v3`, `hello_subagent_v1`, `nested_harness_v1`, `hello_self_judge_v1`, `hello_parallel_sandbox_v1`, `hello_group_reward_v1`, `hello_rlm_v1`, `rlm_swe_v1`, `dspy_flights`, and `tau2-bench-v1`.
+  - `opencode_harbor` uses the packaged `vf.HarborTaskset` + `vf.OpenCode` boundary. These reusable implementations live under `verifiers.v1.packages` and are re-exported from `verifiers.v1`.
 - **Environment and rubric composition**: `math_group`, `math_python`, `wiki_search`
 - **Procedural datasets**: `reasoning_gym_env`
 - **Multimodal**: `mmmu`

@@ -1,0 +1,46 @@
+# Qwen3.5 MoE advanced starter for longer-horizon, mixed-environment training.
+model = "Qwen/Qwen3.5-35B-A3B"
+
+max_steps = 500
+batch_size = 512
+rollouts_per_example = 16
+max_async_level = 4
+oversampling_factor = 2.0
+
+[sampling]
+max_tokens = 4096
+temperature = 0.7
+
+[[env]]
+id = "primeintellect/wiki-search"
+
+[[env]]
+id = "primeintellect/wordle"
+
+[eval]
+interval = 25
+num_examples = 64
+rollouts_per_example = 1
+eval_base_model = true
+
+[[eval.env]]
+id = "primeintellect/wiki-search"
+
+[[eval.env]]
+id = "primeintellect/wordle"
+
+[val]
+interval = 10
+num_examples = 64
+rollouts_per_example = 1
+
+[buffer]
+online_difficulty_filtering = true
+easy_threshold = 0.8
+hard_threshold = 0.2
+easy_fraction = 0.0
+hard_fraction = 0.0
+env_ratios = [0.5, 0.5]
+seed = 42
+
+# Hosted Training docs: https://docs.primeintellect.ai/hosted-training

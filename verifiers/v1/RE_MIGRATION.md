@@ -16,7 +16,7 @@ Use these references in this repository while porting:
 - `environments/hello_subagent_v1/hello_subagent_v1.py`: nested harness calls.
 - `environments/hello_parallel_sandbox_v1/hello_parallel_sandbox_v1.py`: shared
   sandbox-backed tools across child harnesses.
-- `environments/opencode_harbor/opencode_harbor_v1.py`: sandbox CLI harness.
+- `environments/opencode_harbor/opencode_harbor.py`: sandbox CLI harness.
 
 ## Quick Pattern Map
 
@@ -37,7 +37,7 @@ and scoring logic.
 | `mcp_atlas` | `Sandbox Service Toolsets` below | task-local service sandbox plus callable schema tools |
 | helper-agent or self-judge envs | `environments/hello_subagent_v1/hello_subagent_v1.py` | direct `child_harness.run(child_task)` from a tool/update/reward |
 | shared sandbox helper-agent envs | `environments/hello_parallel_sandbox_v1/hello_parallel_sandbox_v1.py` | borrowed sandbox/model state across child harnesses |
-| Harbor/OpenCode task directories | `environments/opencode_harbor/opencode_harbor_v1.py` | `HarborTaskset` plus `OpenCode` harness |
+| Harbor/OpenCode task directories | `environments/opencode_harbor/opencode_harbor.py` | `HarborTaskset` plus `OpenCode` harness |
 | Pi Coding Agent task directories | `Sandbox CLI Harnesses` below | `HarborTaskset` or custom taskset plus `Pi` harness |
 | `terminal_bench_2`, `general_agent`, `nl2repobench`, RLM task-directory packages | `Task-Directory Command Harnesses` below | sandbox command program with task-owned uploads and artifacts |
 | `scicode`, `livecodebench`, `code_env` | `Code Verification And Post-Rollout Checks` below | update runs verification, reward reads serializable result |
@@ -52,7 +52,7 @@ Every migrated package should expose:
 import verifiers.v1 as vf
 
 
-def load_taskset(config=None) -> vf.Taskset:
+def load_taskset(config: vf.TasksetConfig | None = None) -> vf.Taskset:
     return vf.Taskset(
         source=load_rows,
         system_prompt=SYSTEM_PROMPT,
@@ -63,22 +63,24 @@ def load_taskset(config=None) -> vf.Taskset:
     )
 
 
-def load_harness(config=None) -> vf.Harness:
+def load_harness(config: vf.HarnessConfig | None = None) -> vf.Harness:
     return vf.Harness(config=config)
 
 
-def load_v1_environment(config=None) -> vf.Env:
+def load_v1_environment(config: vf.EnvConfig | None = None) -> vf.Env:
+    config = config or vf.EnvConfig()
     return vf.Env(
-        taskset=load_taskset(getattr(config, "taskset", None)),
-        harness=load_harness(getattr(config, "harness", None)),
+        taskset=load_taskset(config=config.taskset),
+        harness=load_harness(config=config.harness),
     )
 ```
 
 If the base harness is enough, omit `load_harness`:
 
 ```python
-def load_v1_environment(config=None) -> vf.Env:
-    return vf.Env(taskset=load_taskset(getattr(config, "taskset", None)))
+def load_v1_environment(config: vf.EnvConfig | None = None) -> vf.Env:
+    config = config or vf.EnvConfig()
+    return vf.Env(taskset=load_taskset(config=config.taskset))
 ```
 
 Rows should be plain serializable task data:
@@ -158,12 +160,13 @@ async def exact(task, state) -> float:
     return float(str(task["answer"]).strip() in completion_text(state))
 
 
-def load_taskset(config=None):
+def load_taskset(config: vf.TasksetConfig | None = None):
     return vf.Taskset(source=source, rewards=[exact], config=config)
 
 
-def load_v1_environment(config=None):
-    return vf.Env(taskset=load_taskset(getattr(config, "taskset", None)))
+def load_v1_environment(config: vf.EnvConfig | None = None):
+    config = config or vf.EnvConfig()
+    return vf.Env(taskset=load_taskset(config=config.taskset))
 ```
 
 Gotchas:
@@ -222,7 +225,7 @@ def load_toolset(config=None):
     )
 
 
-def load_taskset(config=None):
+def load_taskset(config: vf.TasksetConfig | None = None):
     return vf.Taskset(
         source=source,
         toolsets=[load_toolset()],
@@ -533,7 +536,7 @@ Migration:
 The packaged implementations live under `verifiers.v1.packages` while the v1
 API stabilizes, and are re-exported from `verifiers.v1` for normal use.
 
-Reference: `environments/opencode_harbor/opencode_harbor_v1.py`.
+Reference: `environments/opencode_harbor/opencode_harbor.py`.
 
 Example:
 
@@ -643,11 +646,17 @@ Migration:
 Example:
 
 ```python
+class SuiteConfig(vf.Config):
+    math: object | None = None
+    graph: object | None = None
+
+
 def load_environment(config=None):
+    config = SuiteConfig(config)
     return vf.EnvGroup(
         [
-            load_math_environment(getattr(config, "math", None)),
-            load_graph_environment(getattr(config, "graph", None)),
+            load_math_environment(config.math),
+            load_graph_environment(config.graph),
         ]
     )
 ```
