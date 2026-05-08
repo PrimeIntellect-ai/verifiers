@@ -136,3 +136,27 @@ def test_print_results_includes_usage(capsys, make_metadata, make_output):
     assert "Usage:" in captured.out
     assert "input_tokens (avg): 8.000" in captured.out
     assert "output_tokens (avg): 3.000" in captured.out
+
+
+def test_print_results_handles_heterogeneous_metrics(
+    capsys, make_metadata, make_output
+):
+    from verifiers.utils.eval_utils import print_results
+
+    outputs = [
+        make_output(example_id=0, reward=1.0, metrics={"rlm_turns": 3.0}),
+        make_output(
+            example_id=1,
+            reward=0.0,
+            metrics={"rlm_compactions_count": 1.0, "rlm_turns": 2.0},
+        ),
+    ]
+    metadata = make_metadata(num_examples=2, rollouts_per_example=1)
+
+    results = GenerateOutputs(outputs=outputs, metadata=metadata)
+    print_results(results)
+    captured = capsys.readouterr()
+
+    assert "rlm_compactions_count: avg - 1.000" in captured.out
+    assert "r1: [1.0]" in captured.out
+    assert "rlm_turns: avg - 2.500" in captured.out

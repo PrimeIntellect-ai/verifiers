@@ -815,7 +815,7 @@ class CUAMode:
 
     # ==================== Lifecycle Methods ====================
 
-    async def setup_state(self, state: vf.State, **kwargs: Any) -> None:
+    async def setup_state(self, state: vf.State, **kwargs: Any) -> vf.State:
         """Create a browser session (and sandbox if in sandbox mode)."""
         if self._execution_mode == "local":
             # Local mode: create session via HTTP
@@ -883,6 +883,7 @@ class CUAMode:
                 # Wrap all other exceptions in BrowserSandboxError
                 # This ensures cleanup_session is called via stop_errors mechanism
                 raise vf.BrowserSandboxError(e)
+        return state
 
     def update_tool_args(
         self,

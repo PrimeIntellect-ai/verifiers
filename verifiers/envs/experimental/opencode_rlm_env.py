@@ -246,12 +246,15 @@ class OpenCodeRLMEnv(OpenCodeEnv):
         env["RLM_SUB_TIMEOUT"] = str(self.sub_timeout_ms)
         return env
 
-    async def setup_state(self, state: State) -> None:
-        await super().setup_state(state)
+    async def setup_state(self, state: State) -> State:
+        setup_state = await super().setup_state(state)
+        if setup_state is not None:
+            state = setup_state
         state.setdefault("sub_llm_turns", 0)
         state.setdefault("sub_llm_prompt_tokens", 0)
         state.setdefault("sub_llm_completion_tokens", 0)
         state.setdefault("_sub_llm_tasks", set())
+        return state
 
     @staticmethod
     def _is_sub_llm_request(intercept: dict[str, Any]) -> bool:

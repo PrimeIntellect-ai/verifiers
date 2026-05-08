@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 
 
 KEEPALIVE_INTERVAL_SECONDS = 10.0
+DEFAULT_CLIENT_MAX_SIZE_BYTES = 16 * 1024 * 1024
 
 
 class StreamInterrupted(InfraError):
@@ -82,7 +83,7 @@ class InterceptionServer:
             if self._app is not None:
                 return
 
-            app = web.Application()
+            app = web.Application(client_max_size=DEFAULT_CLIENT_MAX_SIZE_BYTES)
             app.router.add_post(
                 "/rollout/{rollout_id}/v1/chat/completions",
                 self._handle_request,

@@ -2378,7 +2378,7 @@ class RLMEnv(vf.StatefulToolEnv):
         sandbox_timeout_minutes: int = 60,
         sandbox_environment_vars: dict[str, str] | None = None,
         sandbox_labels: list[str] | None = None,
-        sandbox_client_max_workers: int = 50,
+        sandbox_client_max_workers: int | None = None,
         sandbox_client_max_connections: int = 100,
         sandbox_client_max_keepalive_connections: int = 50,
         sandbox_transfer_max_retries: int = 3,
@@ -3476,9 +3476,11 @@ class RLMEnv(vf.StatefulToolEnv):
         }
         return state
 
-    async def setup_state(self, state: State, **kwargs) -> None:
+    async def setup_state(self, state: State, **kwargs) -> State:
         """Setup worker, filesystem context, and interception for sub-LLM calls."""
-        await vf.StatefulToolEnv.setup_state(self, state, **kwargs)
+        setup_state = await vf.StatefulToolEnv.setup_state(self, state, **kwargs)
+        if setup_state is not None:
+            state = setup_state
 
         rollout_id = f"rlm_{uuid.uuid4().hex[:8]}"
         state["rollout_id"] = rollout_id
@@ -3544,6 +3546,7 @@ class RLMEnv(vf.StatefulToolEnv):
             state["_observable_messages"] = []
 
             _ensure_rlm_metric_state(state)
+            return state
         except Exception:
             # Best-effort cleanup to avoid leaking tunnels/sandboxes on setup failure.
             if rollout_id in self.active_rollouts:
