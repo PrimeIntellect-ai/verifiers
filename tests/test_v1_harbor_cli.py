@@ -83,12 +83,35 @@ def test_harbor_taskset_constructs_env_with_opencode(tmp_path: Path) -> None:
 
 
 def test_packaged_harbor_and_opencode_imports_are_reexported() -> None:
-    from verifiers.v1.packages.harnesses import OpenCode, Pi
+    from verifiers.v1.packages.harnesses import OpenCode, OpenCodeConfig, Pi
     from verifiers.v1.packages.tasksets import HarborTaskset
 
     assert vf.OpenCode is OpenCode
+    assert vf.OpenCodeConfig is OpenCodeConfig
     assert vf.Pi is Pi
     assert vf.HarborTaskset is HarborTaskset
+
+
+def test_opencode_config_owns_opencode_harness_fields() -> None:
+    harness = vf.OpenCode(
+        config=vf.OpenCodeConfig(
+            agent_workdir="/workspace",
+            disabled_tools=["webfetch"],
+            system_prompt=None,
+            max_turns=2,
+        )
+    )
+    program = cast(dict[str, object], harness.program)
+    command = cast(list[object], program["command"])
+    mcp_setup = cast(dict[str, object], program["tools"])["mcp"]
+
+    assert harness.config.agent_workdir == "/workspace"
+    assert harness.config.disabled_tools == ["webfetch"]
+    assert harness.config.system_prompt is None
+    assert harness.config.max_turns == 2
+    assert "/workspace" in cast(str, command[2])
+    assert '"webfetch": false' in cast(str, mcp_setup)
+    assert "/opencode/system.txt" not in cast(dict[str, object], program["files"])
 
 
 def test_pi_harness_writes_intercepted_model_and_mcp_config() -> None:

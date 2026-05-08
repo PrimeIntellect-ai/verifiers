@@ -5,9 +5,7 @@ from pathlib import Path
 import verifiers.v1 as vf
 
 _TASKS_DIR = Path(__file__).parent / "tasks"
-_SYSTEM_PROMPT_PATH = Path(__file__).parent / "prompt.txt"
 
-DEFAULT_DISABLED_TOOLS = ("webfetch", "question")
 TERMINAL_BENCH_SAMPLE_TASKS = [
     "build-cython-ext",
     "chess-best-move",
@@ -20,13 +18,6 @@ TERMINAL_BENCH_SAMPLE_TASKS = [
     "regex-log",
     "sqlite-with-gcov",
 ]
-
-
-class OpenCodeHarborHarnessConfig(vf.HarnessConfig):
-    agent_workdir: str = "/app"
-    system_prompt_path: str | None = None
-    disabled_tools: list[str] | None = None
-    max_turns: int = 4
 
 
 def load_taskset(
@@ -46,17 +37,10 @@ def load_taskset(
     scope: str | None = None,
     env: dict[str, object] | None = None,
 ) -> vf.HarborTaskset:
-    config = vf.HarborTasksetConfig(config)
-    tasks_root = tasks if tasks is not None else config.tasks or _TASKS_DIR
-    selected_task_names = task_names if task_names is not None else config.task_names
-    selected_task_names = _dataset_task_names(
-        dataset=dataset,
-        tasks_root=tasks_root,
-        task_names=selected_task_names,
-    )
-    return vf.HarborTaskset(
-        tasks=tasks_root,
-        task_names=selected_task_names,
+    config = vf.HarborTasksetConfig(
+        config,
+        tasks=str(tasks) if tasks is not None else None,
+        task_names=task_names,
         docker_image=docker_image,
         cpu_cores=cpu_cores,
         memory_gb=memory_gb,
@@ -68,36 +52,24 @@ def load_taskset(
         task_dir=task_dir,
         scope=scope,
         env=env,
+    )
+    tasks_root = tasks if tasks is not None else config.tasks or _TASKS_DIR
+    selected_task_names = _dataset_task_names(
+        dataset=dataset,
+        tasks_root=tasks_root,
+        task_names=config.task_names,
+    )
+    return vf.HarborTaskset(
+        tasks=tasks_root,
+        task_names=selected_task_names,
         config=config,
     )
 
 
 def load_harness(
     config: vf.HarnessConfig | None = None,
-    agent_workdir: str | None = None,
-    system_prompt_path: str | Path | None = None,
-    disabled_tools: list[str] | tuple[str, ...] | None = None,
-    max_turns: int | None = None,
 ) -> vf.OpenCode:
-    config = OpenCodeHarborHarnessConfig(
-        config,
-        agent_workdir=agent_workdir,
-        system_prompt_path=str(system_prompt_path)
-        if system_prompt_path is not None
-        else None,
-        disabled_tools=list(disabled_tools) if disabled_tools is not None else None,
-        max_turns=max_turns,
-    )
-    system_prompt = config.system_prompt
-    if system_prompt is None and config.system_prompt_path is not None:
-        system_prompt = Path(config.system_prompt_path).read_text()
-    return vf.OpenCode(
-        agent_workdir=config.agent_workdir,
-        system_prompt=system_prompt,
-        disabled_tools=config.disabled_tools,
-        max_turns=config.max_turns,
-        config=config,
-    )
+    return vf.OpenCode(config=config)
 
 
 def load_environment(
@@ -116,10 +88,6 @@ def load_environment(
     task_dir: str | None = None,
     scope: str | None = None,
     env: dict[str, object] | None = None,
-    agent_workdir: str | None = None,
-    system_prompt_path: str | Path | None = _SYSTEM_PROMPT_PATH,
-    disabled_tools: list[str] | tuple[str, ...] | None = DEFAULT_DISABLED_TOOLS,
-    max_turns: int | None = 4,
 ) -> vf.Env:
     config = vf.EnvConfig(
         config,
@@ -137,14 +105,6 @@ def load_environment(
             task_dir=task_dir,
             scope=scope,
             env=env,
-        ),
-        harness=OpenCodeHarborHarnessConfig(
-            agent_workdir=agent_workdir,
-            system_prompt_path=str(system_prompt_path)
-            if system_prompt_path is not None
-            else None,
-            disabled_tools=list(disabled_tools) if disabled_tools is not None else None,
-            max_turns=max_turns,
         ),
     )
     return vf.Env(

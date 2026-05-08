@@ -35,6 +35,8 @@ def test_load_environment_uses_v1_taskset_and_harness() -> None:
     assert isinstance(env, vf.Env)
     assert isinstance(env.taskset, vf.HarborTaskset)
     assert isinstance(env.harness, vf.OpenCode)
+    assert isinstance(env.harness.config, vf.OpenCodeConfig)
+    assert not hasattr(module, "OpenCodeHarborHarnessConfig")
     assert Path(env.taskset.tasks) == Path(module.__file__).parent / "tasks"
     assert env.harness.config.max_turns == 4
 
@@ -62,6 +64,7 @@ def test_load_environment_accepts_v1_taskset_and_harness_config(
     assert Path(env.taskset.tasks) == tmp_path
     assert env.taskset.task_names == ["task-a"]
     assert env.taskset.cpu_cores == 1.5
+    assert env.harness.config.agent_workdir == "/workspace"
     assert env.harness.config.max_turns == 2
 
     program = cast(dict[str, object], env.harness.program)
