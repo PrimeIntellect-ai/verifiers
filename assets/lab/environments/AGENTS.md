@@ -911,6 +911,7 @@ Newer and more experimental environment classes include:
     )
     ```
 - **V1 `vf.Env` / `vf.Taskset` / `vf.Harness`** — preferred taskset/harness pattern for composing task data and program execution without subclassing. Use this for new environments that need reusable tasksets, reusable harnesses, config-driven metrics, rewards, toolsets, users, endpoint interception, or sandboxed Python/command programs. `vf.Taskset` owns train/eval rows, prompt shaping, setup/update/reward hooks, and toolsets. `vf.Harness` owns the framework program, endpoint proxy, model controls, sandbox options, and runtime hooks. `vf.Env` wires them into the standard evaluation and training surface.
+- **`SWEDebugEnv`** — no-agent debugger for SWE-style `SandboxTaskSet` instances. It creates the task sandbox, optionally runs `taskset.setup(state)`, performs one debug step (`none`, `gold_patch`, `command`, or `script`), and optionally runs the task tests and scorer. It records setup, sandbox creation, gold patch, debug command, and test timings in state for validation and timing investigations.
 - **`HarborEnv`** — loads Harbor-format agent benchmark tasks
 - **`RLMEnv`** — implements [Recursive Language Models](https://alexzhang13.github.io/blog/2025/rlm/) for unbounded context processing via REPL-based decomposition and recursive sub-LLM calls
 - **`OpenCodeEnv`** — runs [OpenCode](https://opencode.ai) CLI agents inside sandboxes with API call interception
