@@ -25,6 +25,13 @@ v1 environments are composed from:
 The smallest v1 environment only needs a taskset. If no harness is passed,
 `vf.Env` uses the base endpoint-backed harness.
 
+Keep the boundary strict: if a tool defines the task's action space,
+observations, success condition, or domain state, put it on the `Taskset`.
+Harnesses should own only execution adapters and framework-specific mechanics.
+For example, a Wikispeedia taskset owns `click_link` and `go_back`; a
+LangChain, OpenAI Agents, CLI, or base harness should consume those tools from
+runtime state instead of constructing its own copy.
+
 ```python
 import verifiers.v1 as vf
 
@@ -157,6 +164,26 @@ taskset = vf.Taskset(source=source, toolsets=[toolset])
 Bindings inject hidden arguments that the model does not see. Common binding
 roots are `task.*`, `state.*`, and `tools.*`. Tool and user callables can also
 bind `objects.*` from their own private dependency factories.
+
+Custom harness programs can adapt taskset-owned tools through `state.get_tools()`.
+That keeps the same taskset reusable across the base harness, a third-party
+agent framework, and CLI or sandbox harnesses:
+
+```python
+async def run_agent_framework(task: vf.Task, state: vf.State) -> vf.State:
+    tools = state.get_tools()
+    agent_tools = [tools[name] for name in ("search", "lookup") if name in tools]
+    result = await framework_agent(task["prompt"], tools=agent_tools)
+    state["completion"] = [{"role": "assistant", "content": result}]
+    return state
+```
+
+Wrap the returned callables only at the framework boundary when a library
+requires its own tool object type.
+
+If the harness has to know domain-specific tool internals, the taskset/harness
+boundary is probably in the wrong place. Move the toolset and hidden bindings
+back to the taskset, then let the harness adapt the resolved callables.
 
 MCP servers are also tools:
 
