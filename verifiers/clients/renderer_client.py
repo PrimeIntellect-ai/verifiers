@@ -394,19 +394,6 @@ class RendererClient(
     ] = {}
     _shared_pools_lock: ClassVar[threading.Lock] = threading.Lock()
 
-    # Cache of ``max_model_len`` per (api_base_url, model). Fixed at server
-    # startup, so cache forever per process. See
-    # ``_get_max_model_len`` for why this is needed.
-    # TODO(vllm-upstream): Drop once vLLM patches
-    # ``vllm/entrypoints/serve/disagg/serving.py::ServingTokens.serve_tokens``
-    # to apply ``get_max_tokens()`` like
-    # ``vllm/entrypoints/openai/chat_completion/serving.py`` does at L284.
-    # Once that lands, ``/inference/v1/generate`` will default ``max_tokens``
-    # to ``max_model_len - prompt_len`` server-side and this cache + the
-    # fallback in ``get_native_response`` become dead code.
-    _max_model_len_cache: ClassVar[dict[tuple[str, str], int]] = {}
-    _max_model_len_lock: ClassVar[asyncio.Lock | None] = None
-
     def __init__(
         self,
         config: ClientConfig,
@@ -474,63 +461,6 @@ class RendererClient(
 
         return self._shared_pools[cache_key]
 
-    async def _get_max_model_len(self, model: str) -> int | None:
-        """Fetch ``max_model_len`` for ``model`` from vLLM's ``/v1/models``.
-
-        ``vllm.SamplingParams.max_tokens`` defaults to ``16``.
-        ``/v1/chat/completions`` masks this server-side via
-        ``get_max_tokens(max_model_len, request.max_tokens, prompt_len, ...)``
-        so callers that omit ``max_tokens`` get the full remaining context.
-        ``/inference/v1/generate`` (the endpoint this client talks to) is a
-        thin pass-through that hands ``SamplingParams`` to the engine
-        verbatim, so the 16-token default leaks through and silently caps
-        every generation at 16 tokens — long enough to start a tool-call
-        envelope but not long enough to close one, producing reward 0 on
-        any tool-using rollout.
-
-        Until vLLM applies the same defaulting in ``serve_tokens``, query
-        ``max_model_len`` once per (server, model) and cache forever.
-        Returns ``None`` if the server doesn't surface ``max_model_len``
-        in ``/v1/models``; the caller falls back to the original behaviour
-        (no client-side default) in that case.
-        """
-        base = str(self.client.base_url).rstrip("/")
-        key = (base, model)
-        cached = self._max_model_len_cache.get(key)
-        if cached is not None:
-            return cached
-
-        if RendererClient._max_model_len_lock is None:
-            RendererClient._max_model_len_lock = asyncio.Lock()
-        async with RendererClient._max_model_len_lock:
-            cached = self._max_model_len_cache.get(key)
-            if cached is not None:
-                return cached
-            try:
-                resp = await self.client.get(
-                    "/models",
-                    cast_to=cast(Any, dict[str, Any]),
-                )
-            except Exception as exc:
-                self.logger.warning(
-                    "RendererClient: failed to fetch max_model_len from /v1/models "
-                    "(%s); generations will use vLLM's SamplingParams default of 16 "
-                    "tokens unless caller sets max_tokens. Set "
-                    "max_completion_tokens explicitly to avoid silent truncation.",
-                    exc,
-                )
-                return None
-
-            for entry in (resp or {}).get("data", []) or []:
-                if not isinstance(entry, dict) or entry.get("id") != model:
-                    continue
-                mml = entry.get("max_model_len")
-                if isinstance(mml, int) and mml > 0:
-                    self._max_model_len_cache[key] = mml
-                    return mml
-                break
-            return None
-
     # ── Type conversions ────────────────────────────────────────────
 
     async def to_native_prompt(
@@ -590,19 +520,6 @@ class RendererClient(
             state=kwargs.get("state"),
             tools=tools,
         )
-
-        # /inference/v1/generate hands SamplingParams to the engine verbatim
-        # and skips the get_max_tokens() defaulting that /v1/chat/completions
-        # applies. Replicate that defaulting here so caller-omitted max_tokens
-        # doesn't silently fall to vLLM's 16-token SamplingParams default.
-        # TODO(vllm-upstream): Drop once vLLM patches serve_tokens
-        # (vllm/entrypoints/serve/disagg/serving.py) to call get_max_tokens().
-        if "max_tokens" not in sampling_params:
-            max_model_len = await self._get_max_model_len(model)
-            if max_model_len is not None:
-                sampling_params["max_tokens"] = max(
-                    1, max_model_len - len(prompt_ids)
-                )
 
         return await generate(
             client=self.client,
