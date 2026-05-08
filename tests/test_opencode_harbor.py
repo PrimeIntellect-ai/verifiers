@@ -39,6 +39,13 @@ def test_load_environment_uses_v1_taskset_and_harness() -> None:
     assert not hasattr(module, "OpenCodeHarborHarnessConfig")
     assert Path(env.taskset.tasks) == Path(module.__file__).parent / "tasks"
     assert env.harness.config.max_turns == 4
+    assert env.harness.config.disabled_tools == ["webfetch", "question"]
+
+    program = cast(dict[str, object], env.harness.program)
+    mcp_setup = cast(dict[str, object], program["tools"])["mcp"]
+    assert '"webfetch": false' in cast(str, mcp_setup)
+    assert '"question": false' in cast(str, mcp_setup)
+    assert '"read": false' not in cast(str, mcp_setup)
 
 
 def test_load_environment_accepts_v1_taskset_and_harness_config(

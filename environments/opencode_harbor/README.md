@@ -48,6 +48,9 @@ disabled_tools = ["webfetch", "question"]
 agent_workdir = "/app"
 ```
 
+By default, this environment uses `vf.OpenCode` with only `webfetch` and
+`question` disabled. Set `env.harness.disabled_tools` to override that list.
+
 ### Metrics
 Summarize key metrics your rubric emits and how they’re interpreted.
 
