@@ -1576,7 +1576,7 @@ Reference implementations live beside their existing environments:
 - `environments/alphabet_sort/alphabet_sort_v1.py`
 - `environments/wiki_search/wiki_search_v1.py`
 - `environments/math_python/math_python_v1.py`
-- `environments/mcp_search_env/mcp_search_v1.py`
+- `environments/mcp_search_env/mcp_search_env.py`
 - `environments/opencode_harbor/opencode_harbor.py`
 - `environments/tau2_bench_v1/tau2_bench_v1.py`
 - `environments/nested_harness_v1/nested_harness_v1.py`

@@ -11,7 +11,7 @@ Use these references in this repository while porting:
   tools.
 - `environments/bfcl_v3/bfcl_v3.py`: task-local dynamic tool schemas.
 - `environments/alphabet_sort/alphabet_sort_v1.py`: user function.
-- `environments/mcp_search_env/mcp_search_v1.py`: MCP tools.
+- `environments/mcp_search_env/mcp_search_env.py`: MCP tools.
 - `tau2-bench-v1` (`environments/tau2_bench_v1/tau2_bench_v1.py`): task-owned user simulator.
 - `environments/hello_subagent_v1/hello_subagent_v1.py`: nested harness calls.
 - `environments/hello_parallel_sandbox_v1/hello_parallel_sandbox_v1.py`: shared
@@ -33,7 +33,7 @@ and scoring logic.
 | `bfcl_v3` | `environments/bfcl_v3/bfcl_v3.py` | task-local dynamic tool schemas |
 | `alphabet_sort` | `environments/alphabet_sort/alphabet_sort_v1.py` | taskset user simulator |
 | `tau2-bench-v1` | `environments/tau2_bench_v1/tau2_bench_v1.py` | task-owned user simulator with task/state-dependent sessions |
-| MCP-backed search/tool evals | `environments/mcp_search_env/mcp_search_v1.py` | stdio MCP toolset |
+| MCP-backed search/tool evals | `environments/mcp_search_env/mcp_search_env.py` | stdio MCP toolset |
 | `mcp_atlas` | `Sandbox Service Toolsets` below | task-local service sandbox plus callable schema tools |
 | helper-agent or self-judge envs | `environments/hello_subagent_v1/hello_subagent_v1.py` | direct `child_harness.run(child_task)` from a tool/update/reward |
 | shared sandbox helper-agent envs | `environments/hello_parallel_sandbox_v1/hello_parallel_sandbox_v1.py` | borrowed sandbox/model state across child harnesses |
@@ -442,7 +442,7 @@ Migration:
 3. Use `program={"command": [...], "sandbox": True, "tools": "mcp"}` for
    sandbox command harnesses that should consume resolved toolsets through MCP.
 
-Reference: `environments/mcp_search_env/mcp_search_v1.py`.
+Reference: `environments/mcp_search_env/mcp_search_env.py`.
 
 Example:
 

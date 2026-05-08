@@ -14,8 +14,6 @@ LOAD_TIMEOUT = 300  # 5 minutes for loading an environment (may download dataset
 EVAL_TIMEOUT = 600  # 10 minutes for running vf-eval with -n 1 -r 1
 
 SKIPPED_ENVS = [
-    # Requires EXA_API_KEY environment variable
-    "mcp_search_env",
     # Requires fix for completion dataset setup
     # uv run pytest tests/test_envs.py -vv -k continuation_quality
     #
