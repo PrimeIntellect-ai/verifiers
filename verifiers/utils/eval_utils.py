@@ -819,11 +819,10 @@ async def run_evaluation(
         log_level(logging.CRITICAL) if not config.disable_env_server else nullcontext()
     )
     env_kwargs = dict(config.env_args)
-    child_config = normalize_env_config_sections(
-        {"taskset": config.taskset, "harness": config.harness}
-    )
     child_config = {
-        key: child_config[key] for key in ("taskset", "harness") if key in child_config
+        key: value
+        for key, value in (("taskset", config.taskset), ("harness", config.harness))
+        if value
     }
     if child_config:
         env_kwargs["config"] = child_config
