@@ -210,7 +210,7 @@ def load_v1_environment(
     sandbox_gpu_count: int = 0,
     sandbox_timeout_minutes: int = 60,
     sandbox_timeout_per_command_seconds: int = 60,
-    sandbox_client_max_workers: int = 50,
+    sandbox_client_max_workers: int | None = None,
     **kwargs,
 ) -> vf.Env:
     _ = max_startup_wait_seconds, sandbox_client_max_workers

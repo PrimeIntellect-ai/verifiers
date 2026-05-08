@@ -14,7 +14,7 @@ class BrowserMode(Protocol):
         """Register mode-specific tools with the environment."""
         ...
 
-    async def setup_state(self, state: vf.State, **kwargs: Any) -> None:
+    async def setup_state(self, state: vf.State, **kwargs: Any) -> vf.State:
         """Create session and initialize state for this mode. Mutate state in place."""
         ...
 

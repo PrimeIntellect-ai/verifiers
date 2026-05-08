@@ -70,6 +70,18 @@ def test_serialize_intercept_response_passthrough_native_chat_completion():
     assert len(payload["choices"]) == 1
 
 
+def test_interception_server_authorizes_bearer_and_x_api_key():
+    server = InterceptionServer(port=0, secret="test-secret")
+    request = MagicMock()
+
+    request.headers = {"Authorization": "Bearer test-secret"}
+    assert server._authorized(request)
+    request.headers = {"x-api-key": "test-secret"}
+    assert server._authorized(request)
+    request.headers = {}
+    assert not server._authorized(request)
+
+
 def test_set_rollout_error_attaches_stream_interrupted_to_state():
     server = InterceptionServer(port=0)
     state: dict = {}

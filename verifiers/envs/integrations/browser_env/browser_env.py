@@ -172,10 +172,13 @@ class BrowserEnv(vf.StatefulToolEnv):
         else:
             logger.info("BrowserEnv initialized in CUA mode")
 
-    async def setup_state(self, state: vf.State, **kwargs: Any) -> None:
+    async def setup_state(self, state: vf.State, **kwargs: Any) -> vf.State:
         """Delegate session creation to the mode strategy."""
-        await self._mode_impl.setup_state(state, **kwargs)
-        await super().setup_state(state, **kwargs)
+        state = await self._mode_impl.setup_state(state, **kwargs)
+        setup_state = await super().setup_state(state, **kwargs)
+        if setup_state is not None:
+            state = setup_state
+        return state
 
     def update_tool_args(
         self,

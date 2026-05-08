@@ -102,6 +102,11 @@ class TestCliAgentEnv:
         env_vars = await env.build_env_vars(state)
 
         assert env_vars["OPENAI_BASE_URL"] == "https://test.trycloudflare.com/v1"
+        assert env_vars["OPENAI_API_KEY"] == env._require_interception_server().secret
+        assert env_vars["ANTHROPIC_BASE_URL"] == "https://test.trycloudflare.com"
+        assert (
+            env_vars["ANTHROPIC_API_KEY"] == env._require_interception_server().secret
+        )
         assert env_vars["OPENAI_MODEL"] == "gpt-4"
         assert env_vars["CUSTOM_VAR"] == "value"
 

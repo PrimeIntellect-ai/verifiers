@@ -7,16 +7,14 @@ import random
 import shlex
 from importlib.abc import Traversable
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable
+from typing import Callable
 
 from verifiers.envs.experimental.composable import Harness
 from verifiers.envs.experimental.utils.git_checkout_cache import (
     resolve_git_checkout,
     validate_git_checkout,
 )
-
-if TYPE_CHECKING:
-    from verifiers.types import State
+from verifiers.types import Messages, State, SystemMessage, TrajectoryStep
 
 DEFAULT_RLM_REPO_URL = "github.com/PrimeIntellect-ai/rlm-harness.git"
 DEFAULT_RLM_REF = "main"
@@ -30,6 +28,54 @@ DEFAULT_RLM_LOCAL_CHECKOUT_CACHE_ROOT = (
     Path.home() / ".cache" / "verifiers" / "rlm-checkouts"
 )
 _REQUIRED_CHECKOUT_FILES = ("install.sh", "pyproject.toml")
+
+COMPACTION_BOUNDARY_MARKER = "--- context compacted ---"
+
+
+def render_completion_with_branches(trajectory: list[TrajectoryStep]) -> Messages:
+    """Render the full conversation across rlm compaction branches.
+
+    Each rlm turn linearly appends to the prior prompt + completion, so a
+    step's "new" content is the suffix of its prompt past the accumulated
+    conversation, plus its own completion. Compaction resets the message
+    list to ``[system, user(framing+summary)]`` — detected here as a step
+    whose prompt is shorter than the accumulated conversation. When that
+    happens, a synthetic system marker is inserted before the post-reset
+    branch so the boundary is visible.
+
+    Returns the full conversation including the original prompt. Callers
+    are responsible for slicing off ``state["prompt"]`` if they want only
+    the completion portion.
+    """
+    if not trajectory:
+        return []
+
+    first = trajectory[0]
+    prev_full: Messages = list(first["prompt"]) + list(first["completion"])
+    accumulated: Messages = list(prev_full)
+
+    for step in trajectory[1:]:
+        prompt = list(step["prompt"])
+        completion = list(step["completion"])
+        if len(prompt) >= len(prev_full):
+            new_tail = prompt[len(prev_full) :] + completion
+        else:
+            marker = SystemMessage(content=COMPACTION_BOUNDARY_MARKER)
+            new_tail = [marker] + prompt + completion
+        accumulated.extend(new_tail)
+        prev_full = prompt + completion
+
+    return accumulated
+
+
+def render_rlm_completion(state: State) -> None:
+    """Adapter wiring ``render_completion_with_branches`` onto a rollout state.
+
+    Walks ``state["trajectory"]`` for the full conversation, then assigns
+    everything past ``state["prompt"]`` to ``state["completion"]``.
+    """
+    full = render_completion_with_branches(state["trajectory"])
+    state["completion"] = full[len(state["prompt"]) :]
 
 
 def resolve_local_checkout(
@@ -203,6 +249,7 @@ def rlm_harness(
         tool_names=tool_names,
         environment_vars=env_vars_for_rollout,
         keep_trajectory_step=keep_trajectory_step,
+        render_completion=render_rlm_completion,
     )
 
 
