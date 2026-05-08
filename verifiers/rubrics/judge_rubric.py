@@ -95,7 +95,14 @@ class JudgeRubric(Rubric):
                 messages=[{"role": "user", "content": judge_prompt}],
                 **judge_args,
             )
-            judge_response = str(judge_response.choices[0].message.content)
+            content = judge_response.choices[0].message.content
+            if content is None:
+                raise RuntimeError(
+                    f"Judge model returned None content. "
+                    f"This usually means the model returned tool_calls or a refusal. "
+                    f"Model: {self.judge_model}"
+                )
+            judge_response = str(content)
         except RateLimitError as e:
             self.logger.warning(
                 f"Rate limit exceeded when calling judge model '{self.judge_model}'. "
