@@ -9,10 +9,6 @@ from typing import Any
 import verifiers as vf
 from datasets import load_dataset
 from verifiers.envs.experimental.composable import SandboxSpec, SandboxTaskSet
-from verifiers.envs.experimental.composable.tasksets.swe._filters import (
-    combine_filter_fns,
-    deprecated_filter_repos_filter_fn,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +80,6 @@ class OpenSWETaskSet(SandboxTaskSet):
         self,
         dataset_name: str = "GAIR/OpenSWE",
         config: str = "openswe_oss",
-        filter_repos: list[str] | None = None,
         filter_fn: str | None = None,
         ds_num_proc: int | None = None,
         ds_keep_in_memory: bool = True,
@@ -103,10 +98,6 @@ class OpenSWETaskSet(SandboxTaskSet):
         self.ds_num_proc = ds_num_proc
         self.ds_keep_in_memory = ds_keep_in_memory
         self.timeout_minutes = timeout_minutes
-        filter_fn = combine_filter_fns(
-            deprecated_filter_repos_filter_fn(filter_repos),
-            filter_fn,
-        )
         super().__init__(
             dataset=self._build_dataset,
             name="swe/openswe",

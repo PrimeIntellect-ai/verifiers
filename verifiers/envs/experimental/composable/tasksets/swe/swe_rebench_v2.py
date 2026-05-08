@@ -40,11 +40,6 @@ from verifiers.envs.experimental.composable import SandboxSpec, SandboxTaskSet
 from verifiers.envs.experimental.composable.tasksets.swe import (
     swe_rebench_v2_log_parsers as _lp,
 )
-from verifiers.envs.experimental.composable.tasksets.swe._filters import (
-    combine_filter_fns,
-    deprecated_filter_repos_filter_fn,
-    deprecated_swerebench_language_filter_fn,
-)
 from verifiers.envs.experimental.composable.tasksets.swe._test_patch import (
     revert_and_reapply_test_patch,
 )
@@ -230,30 +225,21 @@ class SWERebenchV2TaskSet(SandboxTaskSet):
 
     def __init__(
         self,
-        language: str | None = None,
         dataset_name: str = DATASET_NAME,
         split: str = "train",
-        filter_repos: list[str] | None = None,
         filter_fn: str | None = None,
         ds_num_proc: int | None = None,
         ds_keep_in_memory: bool = True,
         timeout_minutes: int | None = None,
     ):
-        self.language = language
         self.dataset_name = dataset_name
         self.split = split
         self.ds_num_proc = ds_num_proc
         self.ds_keep_in_memory = ds_keep_in_memory
         self.timeout_minutes = timeout_minutes
-        suffix = f"-{language}" if language else ""
-        filter_fn = combine_filter_fns(
-            deprecated_swerebench_language_filter_fn(language),
-            deprecated_filter_repos_filter_fn(filter_repos),
-            filter_fn,
-        )
         super().__init__(
             dataset=self._build_dataset,
-            name=f"swe/swerebench-v2{suffix}",
+            name="swe/swerebench-v2",
             filter_fn=filter_fn,
         )
 

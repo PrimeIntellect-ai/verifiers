@@ -11,10 +11,6 @@ from typing import Any
 
 import verifiers as vf
 from verifiers.envs.experimental.composable import SandboxSpec, SandboxTaskSet
-from verifiers.envs.experimental.composable.tasksets.swe._filters import (
-    combine_filter_fns,
-    deprecated_filter_repos_filter_fn,
-)
 
 # swebench's __init__.py calls logging.basicConfig() at import time (via
 # build_dataset), which hijacks the root logger with an INFO-level
@@ -355,7 +351,6 @@ class SWEBenchTaskSet(SandboxTaskSet):
         self,
         dataset_name: str = "princeton-nlp/SWE-bench_Verified",
         skip_install: bool = True,
-        filter_repos: list[str] | None = None,
         filter_fn: str | None = None,
         ds_num_proc: int | None = None,
         ds_keep_in_memory: bool = True,
@@ -374,10 +369,6 @@ class SWEBenchTaskSet(SandboxTaskSet):
         self.ds_num_proc = ds_num_proc
         self.ds_keep_in_memory = ds_keep_in_memory
         self.timeout_minutes = timeout_minutes
-        filter_fn = combine_filter_fns(
-            deprecated_filter_repos_filter_fn(filter_repos),
-            filter_fn,
-        )
         super().__init__(
             dataset=self._build_dataset,
             name="swe/swebench",

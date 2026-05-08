@@ -8,10 +8,6 @@ from typing import Any
 
 import verifiers as vf
 from verifiers.envs.experimental.composable import SandboxSpec, SandboxTaskSet
-from verifiers.envs.experimental.composable.tasksets.swe._filters import (
-    combine_filter_fns,
-    deprecated_filter_repos_filter_fn,
-)
 
 from .log_parser import decolor_dict_keys, parse_log_fn
 
@@ -183,7 +179,6 @@ class R2EGymTaskSet(SandboxTaskSet):
         dataset_name: str = "R2E-Gym/R2E-Gym-Subset",
         repo_path: str = "/testbed",
         alt_path: str = "/root",
-        filter_repos: list[str] | None = None,
         filter_fn: str | None = None,
         ds_num_proc: int | None = None,
         ds_keep_in_memory: bool = True,
@@ -214,10 +209,6 @@ class R2EGymTaskSet(SandboxTaskSet):
         self.ds_keep_in_memory = ds_keep_in_memory
         self.timeout_minutes = timeout_minutes
         self.hide_tests_from_agent = hide_tests_from_agent
-        filter_fn = combine_filter_fns(
-            deprecated_filter_repos_filter_fn(filter_repos),
-            filter_fn,
-        )
         super().__init__(
             dataset=self._build_dataset,
             name="swe/r2e",
