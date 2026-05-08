@@ -1,6 +1,10 @@
-# Composable Task / Agent Architecture
+# Legacy Composable Task / Agent Architecture
 
-Separates **what to solve** (the task) from **how to solve it** (the agent) by reusing the battle-tested `CliAgentEnv` and delegating task-specific behavior to a `TaskSet`.
+This is the legacy experimental taskset/harness stack. New environments should
+use the `verifiers.v1` `Taskset` / `Harness` format (`vf.Env`, `vf.Taskset`,
+and `vf.Harness`) instead.
+
+This stack separates **what to solve** (the task) from **how to solve it** (the agent) by reusing the battle-tested `CliAgentEnv` and delegating task-specific behavior to a `TaskSet`.
 
 ## Core concepts
 
