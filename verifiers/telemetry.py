@@ -462,10 +462,11 @@ class _Telemetry:
 
         status = "on" if self.api_key else "off"
         stderr = "on" if self.stderr_enabled else "off"
-        _safe_stderr(
-            f"VF_TELEMETRY_INIT datadog={status} stderr={stderr} "
-            f"service={self.service_name!r}"
-        )
+        if self.stderr_enabled:
+            _safe_stderr(
+                f"VF_TELEMETRY_INIT datadog={status} stderr={stderr} "
+                f"service={self.service_name!r}"
+            )
 
         atexit.register(self.flush)
 
@@ -488,7 +489,7 @@ class _Telemetry:
                 self._queue.append(entry)
                 should_flush = len(self._queue) >= self._max_batch
             if should_flush:
-                self.flush()
+                self._flush_async()
             else:
                 self._schedule_flush()
 
@@ -504,6 +505,21 @@ class _Telemetry:
         if not self.api_key:
             return
         self._post(batch)
+
+    def _flush_async(self) -> None:
+        """Flush in a background thread to avoid blocking the event loop."""
+        with self._lock:
+            if not self._queue:
+                return
+            batch = list(self._queue)
+            self._queue.clear()
+            if self._flush_timer is not None:
+                self._flush_timer.cancel()
+                self._flush_timer = None
+        if not self.api_key:
+            return
+        t = threading.Thread(target=self._post, args=(batch,), daemon=True)
+        t.start()
 
     # -- private helpers --
 
