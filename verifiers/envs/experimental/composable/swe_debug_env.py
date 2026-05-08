@@ -211,7 +211,11 @@ class SWEDebugEnv(SandboxMixin, vf.MultiTurnEnv):
             state["sandbox_id"],
             command,
             working_dir=self._workdir(state),
-            timeout=self.debug_timeout or self.test_timeout,
+            timeout=(
+                self.debug_timeout
+                if self.debug_timeout is not None
+                else self.test_timeout
+            ),
         )
         state["debug_run_s"] = time.perf_counter() - t0
         state["debug_exit_code"] = result.exit_code
