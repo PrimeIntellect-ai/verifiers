@@ -337,7 +337,7 @@ class OpenEnvEnv(vf.MultiTurnEnv):
                         f"message {msg_idx}: `content` cannot be null."
                     )
 
-    async def setup_state(self, state: vf.State) -> None:
+    async def setup_state(self, state: vf.State) -> vf.State:
         try:
             server = await self._create_server()
             state["openenv_server"] = server
@@ -365,7 +365,7 @@ class OpenEnvEnv(vf.MultiTurnEnv):
                 result = await self._invoke(cast(Any, mcp_client).reset, seed=seed)
                 state["openenv_done"] = bool(result.done)
                 state["prompt"] = self._require_prompt_messages(state)
-                return
+                return state
 
             client = GenericEnvClient(base_url=server.base_url)
             await self._invoke(cast(Any, client).connect)
@@ -373,6 +373,7 @@ class OpenEnvEnv(vf.MultiTurnEnv):
             result = await self._invoke(cast(Any, client).reset, seed=seed)
             state["openenv_done"] = bool(result.done)
             state["prompt"] = self._require_prompt_messages(state)
+            return state
         except Exception:
             await self._cleanup_openenv_state(state)
             raise
