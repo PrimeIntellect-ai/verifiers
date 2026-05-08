@@ -1,4 +1,5 @@
 """Tests for the math_group environment rubric behaviour."""
+
 import os
 import sys
 
@@ -18,6 +19,7 @@ from math_group import load_environment  # noqa: E402
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture(scope="module")
 async def env_group():
     """Load the math_group EnvGroup once per module; teardown rubric executors after."""
@@ -30,6 +32,7 @@ async def env_group():
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_state(make_input, completion: str, answer: str) -> vf.State:
     state = vf.State(
@@ -53,6 +56,7 @@ def _make_state(make_input, completion: str, answer: str) -> vf.State:
 # math sub-env: equivalent LaTeX forms must score 1.0
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.parametrize(
     "completion,answer",
     [
@@ -72,7 +76,9 @@ def _make_state(make_input, completion: str, answer: str) -> vf.State:
         r"0.75==\frac{3}{4}",
     ],
 )
-async def test_math_env_equivalent_forms_score_1(env_group, make_input, completion, answer):
+async def test_math_env_equivalent_forms_score_1(
+    env_group, make_input, completion, answer
+):
     """Equivalent answers must receive full credit from the math sub-env rubric.
 
     MathRubric uses math_verify under the hood, so symbolic equivalence is
@@ -87,6 +93,7 @@ async def test_math_env_equivalent_forms_score_1(env_group, make_input, completi
 # ---------------------------------------------------------------------------
 # gsm8k sub-env: same behaviour required
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.parametrize(
     "completion,answer",
@@ -103,7 +110,9 @@ async def test_math_env_equivalent_forms_score_1(env_group, make_input, completi
         r"0.75==\frac{3}{4}",
     ],
 )
-async def test_gsm8k_env_equivalent_forms_score_1(env_group, make_input, completion, answer):
+async def test_gsm8k_env_equivalent_forms_score_1(
+    env_group, make_input, completion, answer
+):
     """gsm8k sub-env rubric must also accept equivalent LaTeX representations."""
     state = _make_state(make_input, completion, answer)
     await env_group.env_map["gsm8k"].rubric.score_rollout(state)
@@ -114,6 +123,7 @@ async def test_gsm8k_env_equivalent_forms_score_1(env_group, make_input, complet
 # ---------------------------------------------------------------------------
 # Format reward contributes to state["reward"] for the math sub-env
 # ---------------------------------------------------------------------------
+
 
 async def test_math_format_reward_adds_to_total(env_group, make_input):
     """A correctly boxed answer must earn the 0.2 format bonus on top of the 1.0 answer score.
@@ -131,6 +141,7 @@ async def test_math_format_reward_adds_to_total(env_group, make_input):
 # ---------------------------------------------------------------------------
 # Regression: wrong answers must still score 0
 # ---------------------------------------------------------------------------
+
 
 async def test_wrong_answer_scores_0(env_group, make_input):
     """A clearly wrong answer must score 0 — math-awareness must not over-accept."""
@@ -151,6 +162,7 @@ async def test_gsm8k_wrong_answer_scores_0(env_group, make_input):
 # ---------------------------------------------------------------------------
 # EnvGroupRubric teardown must propagate to child rubrics
 # ---------------------------------------------------------------------------
+
 
 async def test_env_group_teardown_propagates_to_child_rubrics():
     """EnvGroup.rubric.teardown() must shut down child MathRubric executors.
