@@ -129,6 +129,32 @@ async def test_rlm_swe_run_tests_quotes_env_values():
     assert command.endswith("/bin/bash run_tests.sh > test_output.txt 2>&1")
 
 
+def test_rlm_swe_get_env_vars_uses_configured_repo_path():
+    taskset = rlm_swe_v1.load_taskset(repo_path="/workspace/repo")
+
+    path = taskset.get_env_vars()["PATH"]
+
+    assert "/workspace/repo/.venv/bin" in path
+    assert "/testbed/.venv/bin" not in path
+
+
+def test_rlm_swe_reward_rejects_pytest_summary_without_nodeid():
+    taskset = rlm_swe_v1.load_taskset()
+    test_output = """
+=========================== short test summary info ============================
+PASSED tests/test_example.py
+"""
+
+    reward = taskset.calculate_reward(
+        test_output,
+        {"expected_output_json": '{"test_fix": "PASSED"}'},
+    )
+    parsed = rlm_swe_v1.parse_log_pytest(test_output)
+
+    assert reward == 0.0
+    assert "" not in parsed
+
+
 def fake_r2e_dataset() -> Dataset:
     return Dataset.from_list(
         [

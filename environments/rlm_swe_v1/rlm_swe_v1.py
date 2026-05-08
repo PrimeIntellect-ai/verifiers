@@ -144,7 +144,7 @@ class R2ESWETaskset(vf.Taskset):
     def get_env_vars(self) -> dict[str, str]:
         return {
             "PATH": (
-                "/opt/miniconda3/bin:/testbed/.venv/bin:/root/.local/bin:"
+                f"/opt/miniconda3/bin:{self.repo_path}/.venv/bin:/root/.local/bin:"
                 "/root/.cargo/bin:/go/bin:/usr/local/go/bin:/usr/local/cargo:"
                 "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
             ),
@@ -298,11 +298,11 @@ class R2ESWETaskset(vf.Taskset):
         expected = {
             key.split(" - ")[0]: expected[key] for key in sorted(expected.keys())
         }
+        if any(not key for key in parsed):
+            return 0.0
         if len(parsed) != len(expected):
             return 0.0
         for key in parsed:
-            if not key:
-                continue
             if key not in expected or parsed[key] != expected[key]:
                 return 0.0
         return 1.0
@@ -367,11 +367,11 @@ def parse_log_pytest(log: str | None) -> dict[str, str]:
     test_status_map = {}
     for line in log.split("short test summary info", 1)[1].strip().splitlines():
         if "PASSED" in line:
-            test_name = ".".join(line.split("::")[1:])
-            test_status_map[test_name] = "PASSED"
+            test_name = ".".join(line.split("::")[1:]) if "::" in line else line
+            test_status_map[test_name.split(" - ")[0]] = "PASSED"
         elif "FAILED" in line:
-            test_name = ".".join(line.split("::")[1:]).split(" - ")[0]
-            test_status_map[test_name] = "FAILED"
+            test_name = ".".join(line.split("::")[1:]) if "::" in line else line
+            test_status_map[test_name.split(" - ")[0]] = "FAILED"
         elif "ERROR" in line:
             test_name = ".".join(line.split("::")[1:]) if "::" in line else line
             test_status_map[test_name.split(" - ")[0]] = "ERROR"
