@@ -722,15 +722,18 @@ class Environment(ABC):
             example_id=input.get("example_id", ""),
             trajectory_id="",
         )
+        # Stash the rollout span on the env instance so rollout() can pick it
+        # up right after init_state and attach it to state *before* any child
+        # spans (setup, turns) are created.  We use an instance attr instead of
+        # threading it through `input` because init_state deep-copies `input`
+        # which would break span objects.
+        self._bt_pending_rollout_span = bt_span
         state = await self.rollout(
             input,
             client,
             model,
             sampling_args,
         )
-        # Store the rollout span on state so child methods can attach sub-spans
-        if bt_span is not None and "_bt_span" not in state:
-            state["_bt_span"] = bt_span
 
         bt_score = _bt.scoring_started(
             bt_span, trajectory_id=state.get("trajectory_id", "")

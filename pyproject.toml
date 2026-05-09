@@ -233,6 +233,12 @@ invalid-method-override = "ignore"
 invalid-assignment = "ignore"
 not-iterable = "ignore"
 
+[[tool.ty.overrides]]
+include = ["verifiers/braintrust_tracing.py"]
+
+[tool.ty.overrides.rules]
+unresolved-import = "ignore"
+
 [tool.coverage.run]
 source = ["verifiers"]
 omit = [
