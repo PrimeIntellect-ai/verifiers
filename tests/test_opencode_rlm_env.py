@@ -151,7 +151,10 @@ class TestOpenCodeConfig:
 class TestRunCommand:
     def test_run_command_installs_jq(self):
         env = build_env()
-        assert "apt-get install -y curl git unzip jq" in env.run_command
+        assert (
+            "apt-get -o Acquire::Retries=3 install -y curl git unzip jq"
+            in env.run_command
+        )
 
     def test_run_command_installs_bun(self):
         env = build_env()

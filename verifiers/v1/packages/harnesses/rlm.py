@@ -116,7 +116,8 @@ class RLM(CLIHarness):
             },
             dirs=dirs,
             setup=[
-                "apt-get update && apt-get install -y --no-install-recommends "
+                "apt-get -o Acquire::Retries=3 update && "
+                "apt-get -o Acquire::Retries=3 install -y --no-install-recommends "
                 "ca-certificates curl git && rm -rf /var/lib/apt/lists/*",
                 build_install_command(),
             ],

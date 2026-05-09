@@ -20,9 +20,13 @@ def test_rlm_harness_builds_sandbox_program_without_eager_checkout():
     program = as_mapping(harness.program)
     program_env = as_mapping(program["env"])
     artifacts = as_mapping(program["artifacts"])
+    setup = program["setup"]
 
     assert isinstance(harness, vf.CLIHarness)
     assert program["sandbox"] is not False
+    assert isinstance(setup, list)
+    assert "apt-get -o Acquire::Retries=3 update" in setup[0]
+    assert "apt-get -o Acquire::Retries=3 install" in setup[0]
     assert "RLM_MODEL" in program_env
     assert "rlm_metrics" in artifacts
 

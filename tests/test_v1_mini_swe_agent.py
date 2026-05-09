@@ -40,6 +40,8 @@ def test_mini_swe_agent_builds_sandbox_program():
     assert isinstance(harness, vf.CLIHarness)
     assert program["sandbox"] is not False
     assert "OPENAI_MODEL" in cast(dict[str, object], program["env"])
+    assert "apt-get -o Acquire::Retries=3 update" in cast(str, program["setup"])
+    assert "apt-get -o Acquire::Retries=3 install" in cast(str, program["setup"])
     assert "/mini-swe-agent/prompt.txt" in cast(dict[str, object], program["files"])
     assert "/mini-swe-agent/system.txt" in cast(dict[str, object], program["files"])
     assert "mini_swe_agent_log" in cast(dict[str, object], program["artifacts"])

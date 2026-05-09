@@ -104,17 +104,23 @@ def test_opencode_config_owns_opencode_harness_fields() -> None:
     program = cast(dict[str, object], harness.program)
     command = cast(list[object], program["command"])
     mcp_setup = cast(dict[str, object], program["tools"])["mcp"]
+    setup = cast(str, program["setup"])
 
     assert harness.config.agent_workdir == "/workspace"
     assert harness.config.disabled_tools == ["webfetch"]
     assert harness.config.system_prompt is None
     assert harness.config.max_turns == 2
+    assert "apt-get -o Acquire::Retries=3 update" in setup
+    assert "apt-get -o Acquire::Retries=3 install" in setup
     assert "/workspace" in cast(str, command[2])
     assert '"webfetch": false' in cast(str, mcp_setup)
     assert "/opencode/system.txt" not in cast(dict[str, object], program["files"])
 
 
 def test_pi_harness_writes_intercepted_model_and_mcp_config() -> None:
+    harness = vf.Pi()
+    program = cast(dict[str, object], harness.program)
+    setup = cast(str, program["setup"])
     models = json.loads(
         pi_models_json(
             {
@@ -127,6 +133,8 @@ def test_pi_harness_writes_intercepted_model_and_mcp_config() -> None:
     )
     mcp = json.loads(pi_mcp_json())
 
+    assert "apt-get -o Acquire::Retries=3 update" in setup
+    assert "apt-get -o Acquire::Retries=3 install" in setup
     provider = models["providers"]["verifiers"]
     assert provider["baseUrl"] == "http://127.0.0.1:1/rollout/key/v1"
     assert provider["api"] == "openai-completions"

@@ -264,7 +264,9 @@ class MultiSWETaskSet(SandboxTaskSet):
         commands = [
             f"test -d {shlex.quote(repo_path)}",
             "test -f /home/fix-run.sh",
-            "command -v patch || (apt-get update && apt-get install -y patch)",
+            # Acquire::Retries=3: harden against transient archive.ubuntu.com CDN
+            # mirror-sync mismatches mid-rollout (launchpad bug #1876035).
+            "command -v patch || (apt-get -o Acquire::Retries=3 update && apt-get -o Acquire::Retries=3 install -y patch)",
             "rm -f /home/fix.patch /home/test_output.txt /home/create_fix_patch.sh",
         ]
         for command in commands:

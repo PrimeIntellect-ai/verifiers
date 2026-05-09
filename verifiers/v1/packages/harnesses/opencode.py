@@ -153,14 +153,16 @@ def build_install_script(
     install_ripgrep: bool = True,
 ) -> str:
     rg_install = (
-        "apt-get install -y -qq ripgrep > /dev/null 2>&1 || true"
+        "apt-get -o Acquire::Retries=3 install -y -qq ripgrep > /dev/null 2>&1 || true"
         if install_ripgrep
         else ""
     )
     sha256_check = f'echo "{release_sha256}  /tmp/opencode.tar.gz" | sha256sum -c -'
+    # Acquire::Retries=3 mitigates transient archive.ubuntu.com CDN sync
+    # mismatches that fail fresh-sandbox apt-get calls mid-rollout.
     return f"""\
 set -e
-apt-get update -qq && apt-get install -y -qq curl tar ca-certificates > /dev/null 2>&1
+apt-get -o Acquire::Retries=3 update -qq && apt-get -o Acquire::Retries=3 install -y -qq curl tar ca-certificates > /dev/null 2>&1
 {rg_install}
 
 OPENCODE_RELEASE_REPO={shlex.quote(release_repo)}

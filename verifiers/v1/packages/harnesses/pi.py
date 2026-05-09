@@ -87,7 +87,7 @@ class Pi(CLIHarness):
 def build_pi_install_script(package: str = DEFAULT_PI_PACKAGE) -> str:
     return f"""\
 set -e
-apt-get update -qq && apt-get install -y -qq curl ca-certificates nodejs npm > /dev/null 2>&1
+apt-get -o Acquire::Retries=3 update -qq && apt-get -o Acquire::Retries=3 install -y -qq curl ca-certificates nodejs npm > /dev/null 2>&1
 npm install -g {shlex.quote(package)}
 """
 
