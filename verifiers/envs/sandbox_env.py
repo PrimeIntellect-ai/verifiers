@@ -85,7 +85,7 @@ class SandboxEnv(vf.StatefulToolEnv):
         max_backoff_seconds: float = 30.0,
         jitter: float = 1e-3,
         stop_errors: list[type[Exception]] | None = None,
-        sandbox_client_max_workers: int = 50,
+        sandbox_client_max_workers: int | None = None,
         sandbox_client_max_connections: int = 100,
         sandbox_client_max_keepalive_connections: int = 50,
         **kwargs,
@@ -239,7 +239,10 @@ class SandboxEnv(vf.StatefulToolEnv):
             "ready_wait_time": 0.0,
             "command_execution_times": [],
         }
-        return await super().setup_state(state, **kwargs)
+        setup_state = await super().setup_state(state, **kwargs)
+        if setup_state is not None:
+            state = setup_state
+        return state
 
     def update_tool_args(
         self,

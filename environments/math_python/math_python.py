@@ -15,9 +15,30 @@ def load_environment(
     sandbox_gpu_count: int = 0,
     sandbox_timeout_minutes: int = 60,
     sandbox_timeout_per_command_seconds: int = 60,
-    sandbox_client_max_workers: int = 50,
+    sandbox_client_max_workers: int | None = None,
+    v1: bool = False,
     **kwargs,
 ):
+    if v1:
+        from math_python_v1 import load_v1_environment
+
+        return load_v1_environment(
+            dataset_name=dataset_name,
+            dataset_split=dataset_split,
+            num_train_examples=num_train_examples,
+            max_turns=max_turns,
+            max_startup_wait_seconds=max_startup_wait_seconds,
+            pip_install_packages=pip_install_packages,
+            sandbox_cpu_cores=sandbox_cpu_cores,
+            sandbox_memory_gb=sandbox_memory_gb,
+            sandbox_disk_size_gb=sandbox_disk_size_gb,
+            sandbox_gpu_count=sandbox_gpu_count,
+            sandbox_timeout_minutes=sandbox_timeout_minutes,
+            sandbox_timeout_per_command_seconds=sandbox_timeout_per_command_seconds,
+            sandbox_client_max_workers=sandbox_client_max_workers,
+            **kwargs,
+        )
+
     def build_dataset():
         return load_example_dataset(dataset_name, dataset_split, n=num_train_examples)
 

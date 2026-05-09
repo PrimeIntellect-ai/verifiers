@@ -247,7 +247,9 @@ class OpenCodeRLMEnv(OpenCodeEnv):
         return env
 
     async def setup_state(self, state: State) -> State:
-        state = await super().setup_state(state)
+        setup_state = await super().setup_state(state)
+        if setup_state is not None:
+            state = setup_state
         state.setdefault("sub_llm_turns", 0)
         state.setdefault("sub_llm_prompt_tokens", 0)
         state.setdefault("sub_llm_completion_tokens", 0)

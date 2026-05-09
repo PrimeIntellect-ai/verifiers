@@ -17,6 +17,7 @@ Run structured, interactive ideation that turns ambiguous research goals into co
 1. Clarify objective, model family, budget, and timeline.
 2. Map objective to workflow levers:
 - environment creation or migration
+- v1 Taskset + Harness composition for BYO Harness, toolsets, sandboxed programs, or LLM-free replay
 - benchmark/eval design
 - GEPA prompt optimization
 - RL training

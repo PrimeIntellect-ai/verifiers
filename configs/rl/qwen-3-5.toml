@@ -1,0 +1,30 @@
+# Qwen3.5 dense models. Uncomment exactly one model.
+# model = "Qwen/Qwen3.5-0.8B"
+# model = "Qwen/Qwen3.5-2B"
+model = "Qwen/Qwen3.5-4B"
+# model = "Qwen/Qwen3.5-9B"
+
+max_steps = 100
+batch_size = 128
+rollouts_per_example = 8
+
+[sampling]
+max_tokens = 1024
+
+# Start with one environment. Uncomment more [[env]] blocks for multi-env training.
+[[env]]
+id = "primeintellect/reverse-text"
+
+# [[env]]
+# id = "primeintellect/wordle"
+
+# [[env]]
+# id = "primeintellect/wiki-search"
+
+# [[env]]
+# id = "primeintellect/dspy-flights"
+
+# [[env]]
+# id = "primeintellect/opencode-harbor"
+
+# Hosted Training docs: https://docs.primeintellect.ai/hosted-training

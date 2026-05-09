@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
     from verifiers.envs.experimental.composable.task import SandboxSpec
+    from verifiers.types import State, TrajectoryStep
 
 
 @dataclass
@@ -88,7 +89,48 @@ class Harness:
         ``ComposableEnv`` auto-registers a ``ToolMonitorRubric`` that
         counts calls to each named tool (plus a total) from the
         assistant messages the harness emits into the trajectory.
-        Example: ``["ipython", "summarize"]`` for the RLM harness.
+        Example: ``["ipython"]`` for the RLM harness.
+    environment_vars:
+        Callable taking the per-rollout ``State`` and returning the
+        env-var dict for that rollout. Merged by ``ComposableEnv``
+        between the caller-supplied ``environment_vars=`` and the
+        taskset's ``get_env_vars()``: harness wins over caller, taskset
+        wins over harness. Always a function (even for static dicts:
+        return the same dict regardless of ``state``) so the merge
+        path is uniform; the per-rollout ``state`` is what enables
+        seeded draws / prompt-conditional config without touching env
+        infrastructure.
+    post_install_uploads:
+        Optional mapping from sandbox path → file content. Uploaded via
+        the single-file upload path (same as instruction / system
+        prompt) AFTER ``install_script`` finishes. General post-install
+        hook for layering small harness-computed assets onto a fully
+        installed agent; for large directories use
+        ``upload_dir_mapping`` instead. Not tied to any specific
+        feature — left as a generic extension point.
+    post_install_script:
+        Optional shell snippet run AFTER ``post_install_uploads`` land in
+        the sandbox. General post-install wiring hook (e.g.
+        ``chmod +x`` on uploaded files, symlinks, anything that needs
+        the uploads in place first). Failure is fatal, same as
+        ``install_script``. Not tied to any specific feature — left as
+        a generic extension point.
+    keep_trajectory_step:
+        Optional per-step filter. Called once per intercepted API
+        response with ``(step, state, request_headers)``; return
+        ``True`` to keep, ``False`` to drop. ``None`` (default) keeps
+        every step. Use this to elide nested-agent traffic from the
+        trajectory the trainer sees — e.g. rlm_harness uses it to drop
+        sub-agent calls (``X-RLM-Depth`` header > 0) so only the
+        parent agent's turns contribute to the policy gradient.
+    render_completion:
+        Optional renderer for ``state["completion"]``. Called with the
+        per-rollout ``State``; mutates ``state["completion"]`` in place.
+        ``None`` (default) falls back to ``MultiTurnEnv.render_completion``
+        which renders only the last trajectory step. Use this for
+        harnesses that compact context mid-rollout — e.g. rlm_harness
+        uses it to render pre-compaction branches that would otherwise
+        be invisible.
     """
 
     install_script: str | None = None
@@ -107,6 +149,13 @@ class Harness:
     metrics_key: str | None = None
     metrics_keys: list[str] | None = None
     tool_names: list[str] | None = None
+    environment_vars: Callable[[State], dict[str, str]] | None = None
+    post_install_uploads: dict[str, str] | None = None
+    post_install_script: str | None = None
+    keep_trajectory_step: (
+        Callable[[TrajectoryStep, State, dict[str, str]], bool] | None
+    ) = None
+    render_completion: Callable[[State], None] | None = None
 
     def get_effective_upload_dir_mapping(self) -> dict[str, str] | None:
         """Return the merged upload mapping (skills_path + upload_dir_mapping)."""

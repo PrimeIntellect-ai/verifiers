@@ -119,7 +119,7 @@ class TestSavingMetadata:
             rollouts_per_example=2,
             sampling_args={"temperature": 0.7},
             date="2025-01-01",
-            time_ms=1000.0,
+            time=1.0,
             avg_reward=0.5,
             avg_metrics={"num_turns": 1.0},
             usage={"input_tokens": 12.0, "output_tokens": 7.0},
@@ -138,7 +138,7 @@ class TestSavingMetadata:
         assert result["rollouts_per_example"] == 2
         assert result["sampling_args"] == {"temperature": 0.7}
         assert result["date"] == "2025-01-01"
-        assert result["time_ms"] == 1000.0
+        assert result["time"] == 1.0
         assert result["avg_reward"] == 0.5
         assert result["avg_metrics"] == {"num_turns": 1.0}
         assert result["usage"] == {"input_tokens": 12.0, "output_tokens": 7.0}
@@ -426,10 +426,10 @@ class TestLoadOutputs:
         outputs_path = results_path / "results.jsonl"
 
         valid_outputs = [
-            {"example_id": 0, "task": "task-0"},
-            {"example_id": 1, "task": "task-1"},
+            {"example_id": 0, "label": "row-0"},
+            {"example_id": 1, "label": "row-1"},
         ]
-        partial_trailing_line = '{"example_id": 2, "task": "task-2"'
+        partial_trailing_line = '{"example_id": 2, "label": "row-2"'
         lines = [json.dumps(output) for output in valid_outputs]
         outputs_path.write_text(
             "\n".join(lines + [partial_trailing_line]) + "\n", encoding="utf-8"
@@ -446,8 +446,8 @@ class TestLoadOutputs:
         results_path.mkdir()
         outputs_path = results_path / "results.jsonl"
 
-        malformed_non_trailing_line = '{"example_id": 0, "task": "broken"'
-        valid_line = json.dumps({"example_id": 1, "task": "task-1"})
+        malformed_non_trailing_line = '{"example_id": 0, "label": "broken"'
+        valid_line = json.dumps({"example_id": 1, "label": "row-1"})
         outputs_path.write_text(
             "\n".join([malformed_non_trailing_line, valid_line]) + "\n",
             encoding="utf-8",
@@ -464,17 +464,17 @@ class TestSaveNewOutputs:
         outputs_path = results_path / "results.jsonl"
 
         existing_outputs = [
-            {"example_id": 0, "task": "task-0"},
-            {"example_id": 1, "task": "task-1"},
+            {"example_id": 0, "label": "row-0"},
+            {"example_id": 1, "label": "row-1"},
         ]
-        malformed_trailing_line = '{"example_id": 2, "task": "task-2"'
+        malformed_trailing_line = '{"example_id": 2, "label": "row-2"'
         lines = [json.dumps(output) for output in existing_outputs]
         outputs_path.write_text(
             "\n".join(lines + [malformed_trailing_line]), encoding="utf-8"
         )
 
         save_new_outputs(
-            [{"example_id": 3, "task": "task-3"}],
+            [{"example_id": 3, "label": "row-3"}],
             results_path,
         )
 

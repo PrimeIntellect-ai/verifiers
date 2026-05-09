@@ -13,14 +13,14 @@ from __future__ import annotations
 
 import json
 import shlex
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 # ── Defaults ─────────────────────────────────────────────────────────────
 
 DEFAULT_RELEASE_REPO = "PrimeIntellect-ai/opencode"
-DEFAULT_RELEASE_VERSION = "1.1.63-rl1"
+DEFAULT_RELEASE_VERSION = "1.1.63-rl2"
 DEFAULT_RELEASE_SHA256 = (
-    "17104d601b8bf6fd03dd46a6de055b422414b9ada524fe085b09683f455ccac1"
+    "47f4102796da50769e27d2c9ea6a9cf7941f76898390cb497278cab39c4b6ed4"
 )
 DEFAULT_SYSTEM_PROMPT = (Path(__file__).parent / "prompt.txt").read_text()
 
@@ -113,7 +113,7 @@ def build_opencode_config(
                 "name": provider_display_name or provider_key,
                 "options": {
                     "baseURL": "$OPENAI_BASE_URL",
-                    "apiKey": "intercepted",
+                    "apiKey": "${OPENAI_API_KEY:-intercepted}",
                     "timeout": provider_timeout_ms,
                 },
                 "models": {
@@ -173,6 +173,8 @@ def build_opencode_run_command(
         provider_timeout_ms=provider_timeout_ms,
     )
 
+    log_dir = str(PurePosixPath(log_path).parent)
+
     script = f"""\
 set -eo pipefail
 
@@ -180,16 +182,38 @@ export PATH="$HOME/.opencode/bin:$PATH"
 export OPENCODE_DISABLE_FILETIME_CHECK=true
 export ALLOW_GIT={"1" if allow_git else "0"}
 
-mkdir -p ~/.config/opencode /logs/agent {agent_workdir}
+# ComposableEnv exports AGENT_WORKDIR from taskset.get_workdir(info) for each
+# rollout. Prefer that runtime value; agent_workdir is only the static fallback
+# for direct callers that do not run through ComposableEnv.
+OPENCODE_WORKDIR="${{AGENT_WORKDIR:-}}"
+if [[ -z "$OPENCODE_WORKDIR" ]]; then
+    OPENCODE_WORKDIR={shlex.quote(agent_workdir)}
+fi
+
+# OpenCode follows XDG spec — config is read from
+# $XDG_CONFIG_HOME/opencode/opencode.json (default $HOME/.config). Some
+# sandbox images (e.g. SWE-rebench-V2's swerebenchv2/* images) override
+# XDG_CONFIG_HOME to a non-default path like /workspace/.config; writing
+# only to ~/.config/opencode would silently miss it and the binary would
+# fall back to its bundled "opencode" provider (free hosted Cloudflare
+# tier), which rate-limits under load and silently blocks the agent.
+OPENCODE_CONFIG_DIR="${{XDG_CONFIG_HOME:-$HOME/.config}}/opencode"
+mkdir -p "$OPENCODE_CONFIG_DIR" {shlex.quote(log_dir)} "$OPENCODE_WORKDIR"
+
+# Ensure OPENAI_MODEL has provider/model format for opencode AI SDK config.
+# LoRA adapter names (e.g. "rft-abc123") lack a slash, causing empty modelID.
+if [[ "$OPENAI_MODEL" != *"/"* ]]; then
+    export OPENAI_MODEL="vllm/$OPENAI_MODEL"
+fi
 
 SCHEMA_DOLLAR='$'
 
-cat > ~/.config/opencode/opencode.json << EOFCONFIG
+cat > "$OPENCODE_CONFIG_DIR/opencode.json" << EOFCONFIG
 {config_json}
 EOFCONFIG
 
-cd {agent_workdir}
-cat {prompt_path} | opencode run 2>&1 | tee {log_path}
+cd "$OPENCODE_WORKDIR"
+cat {shlex.quote(prompt_path)} | opencode run 2>&1 | tee {shlex.quote(log_path)}
 """
     return f"bash -lc {shlex.quote(script)}"
 

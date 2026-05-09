@@ -7,7 +7,7 @@ from verifiers.types import ClientConfig
 from verifiers.utils.eval_utils import load_endpoints
 
 
-def test_load_endpoints_python_registry_normalizes_to_lists(tmp_path: Path):
+def test_load_endpoints_rejects_python_registry_path(tmp_path: Path):
     registry_path = tmp_path / "endpoints.py"
     registry_path.write_text(
         "ENDPOINTS = {\n"
@@ -16,36 +16,19 @@ def test_load_endpoints_python_registry_normalizes_to_lists(tmp_path: Path):
         encoding="utf-8",
     )
 
-    endpoints = load_endpoints(str(registry_path))
-
-    assert set(endpoints.keys()) == {"gpt-4.1-mini"}
-    assert len(endpoints["gpt-4.1-mini"]) == 1
-    endpoint = endpoints["gpt-4.1-mini"][0]
-    assert endpoint["model"] == "gpt-4.1-mini"
-    assert endpoint["url"] == "https://api.openai.com/v1"
-    assert endpoint["key"] == "OPENAI_API_KEY"
-
-
-def test_load_endpoints_python_registry_preserves_api_client_type(tmp_path: Path):
-    registry_path = tmp_path / "endpoints.py"
-    registry_path.write_text(
-        "ENDPOINTS = {\n"
-        '    "haiku": {"model": "claude-haiku-4-5", "url": "https://api.anthropic.com", "key": "ANTHROPIC_API_KEY", "type": "anthropic_messages"},\n'
-        "}\n",
-        encoding="utf-8",
-    )
-
-    endpoints = load_endpoints(str(registry_path))
-
-    assert endpoints["haiku"][0]["api_client_type"] == "anthropic_messages"
+    with pytest.raises(ValueError, match="Python endpoint registries"):
+        load_endpoints(str(registry_path))
 
 
 def test_load_endpoints_rejects_deprecated_client_type_field(tmp_path: Path):
-    registry_path = tmp_path / "endpoints.py"
+    registry_path = tmp_path / "endpoints.toml"
     registry_path.write_text(
-        "ENDPOINTS = {\n"
-        '    "haiku": {"model": "claude-haiku-4-5", "url": "https://api.anthropic.com", "key": "ANTHROPIC_API_KEY", "client_type": "anthropic_messages"},\n'
-        "}\n",
+        "[[endpoint]]\n"
+        'endpoint_id = "haiku"\n'
+        'model = "claude-haiku-4-5"\n'
+        'url = "https://api.anthropic.com"\n'
+        'key = "ANTHROPIC_API_KEY"\n'
+        'client_type = "anthropic_messages"\n',
         encoding="utf-8",
     )
 
@@ -149,27 +132,9 @@ def test_load_endpoints_toml_rejects_conflicting_key_fields(tmp_path: Path):
     assert endpoints == {}
 
 
-def test_load_endpoints_python_registry_supports_list_variants(tmp_path: Path):
-    registry_path = tmp_path / "endpoints.py"
-    registry_path.write_text(
-        "ENDPOINTS = {\n"
-        '    "gpt-5-mini": [\n'
-        '        {"model": "gpt-5-mini", "url": "https://a.example/v1", "key": "A_KEY"},\n'
-        '        {"model": "gpt-5-mini", "url": "https://b.example/v1", "key": "A_KEY"},\n'
-        "    ]\n"
-        "}\n",
-        encoding="utf-8",
-    )
-
-    endpoints = load_endpoints(str(registry_path))
-
-    assert set(endpoints.keys()) == {"gpt-5-mini"}
-    assert len(endpoints["gpt-5-mini"]) == 2
-    assert endpoints["gpt-5-mini"][0]["url"] == "https://a.example/v1"
-    assert endpoints["gpt-5-mini"][1]["url"] == "https://b.example/v1"
-
-
-def test_load_endpoints_directory_prefers_toml_then_python(tmp_path: Path):
+def test_load_endpoints_directory_uses_toml_and_warns_on_ignored_python(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+):
     python_registry = tmp_path / "endpoints.py"
     toml_registry = tmp_path / "endpoints.toml"
 
@@ -190,10 +155,11 @@ def test_load_endpoints_directory_prefers_toml_then_python(tmp_path: Path):
 
     endpoints = load_endpoints(str(tmp_path))
     assert set(endpoints.keys()) == {"from-toml"}
+    assert "Ignoring deprecated Python endpoint registry" in capsys.readouterr().err
 
     toml_registry.unlink()
-    endpoints = load_endpoints(str(tmp_path))
-    assert set(endpoints.keys()) == {"from-py"}
+    with pytest.raises(ValueError, match="Python endpoint registries"):
+        load_endpoints(str(tmp_path))
 
 
 def test_qwen3_vl_endpoint_ids_map_to_vl_models():
@@ -224,6 +190,23 @@ def test_load_endpoints_toml_accepts_type_shorthand(tmp_path: Path):
     endpoints = load_endpoints(str(registry_path))
 
     assert endpoints["haiku"][0]["api_client_type"] == "anthropic_messages"
+
+
+def test_load_endpoints_toml_accepts_openai_responses_type(tmp_path: Path):
+    registry_path = tmp_path / "endpoints.toml"
+    registry_path.write_text(
+        "[[endpoint]]\n"
+        'endpoint_id = "gpt-responses"\n'
+        'model = "gpt-5.2"\n'
+        'url = "https://api.openai.com/v1"\n'
+        'key = "OPENAI_API_KEY"\n'
+        'type = "openai_responses"\n',
+        encoding="utf-8",
+    )
+
+    endpoints = load_endpoints(str(registry_path))
+
+    assert endpoints["gpt-responses"][0]["api_client_type"] == "openai_responses"
 
 
 def test_load_endpoints_toml_accepts_headers_table(tmp_path: Path):
@@ -278,21 +261,6 @@ def test_load_endpoints_toml_rejects_headers_and_extra_headers_together(
     endpoints = load_endpoints(str(registry_path))
 
     assert endpoints == {}
-
-
-def test_load_endpoints_python_registry_accepts_headers_dict(tmp_path: Path):
-    registry_path = tmp_path / "endpoints.py"
-    registry_path.write_text(
-        "ENDPOINTS = {\n"
-        '    "p": {"model": "m", "url": "https://x/v1", "key": "K", '
-        '"headers": {"X-Foo": "bar"}},\n'
-        "}\n",
-        encoding="utf-8",
-    )
-
-    endpoints = load_endpoints(str(registry_path))
-
-    assert endpoints["p"][0]["extra_headers"] == {"X-Foo": "bar"}
 
 
 def test_load_endpoints_malformed_headers_string_falls_back_to_empty_registry(

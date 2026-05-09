@@ -142,6 +142,47 @@ def build_extra_headers(raw: dict[str, Any]) -> dict[str, str]:
     return {**eval_headers_table, **eval_headers_from_list}
 
 
+def build_extra_headers_from_state(raw: dict[str, Any]) -> dict[str, str]:
+    """Build the header-name → state-key map for `ClientConfig.extra_headers_from_state`.
+
+    Reads a TOML table (`headers_from_state = { "X-Session-ID" = "trajectory_id" }`)
+    and/or a repeatable list (`--header-from-state "X-Session-ID: trajectory_id"`).
+    The CLI list wins on key collisions with the table.
+    """
+    table: dict[str, str] = {}
+    raw_table = raw.get("headers_from_state")
+    if raw_table is not None:
+        table = _validate_extra_headers_value(raw_table)
+
+    raw_list = raw.get("header_from_state")
+    if raw_list is None:
+        raw_list = []
+    if not isinstance(raw_list, list):
+        raise ValueError(
+            "'header_from_state' must be a list of 'Name: state_key' strings"
+        )
+
+    from_list: dict[str, str] = {}
+    for entry in raw_list:
+        if not isinstance(entry, str):
+            raise ValueError(
+                f"Each 'header_from_state' entry must be a string 'Name: state_key', got: {entry!r}"
+            )
+        if ":" not in entry:
+            raise ValueError(
+                f"--header-from-state must be 'Name: state_key', got: {entry!r}"
+            )
+        key, value = entry.split(":", 1)
+        key, value = key.strip(), value.strip()
+        if not key:
+            raise ValueError("--header-from-state name cannot be empty")
+        if not value:
+            raise ValueError("--header-from-state state_key cannot be empty")
+        from_list[key] = value
+
+    return {**table, **from_list}
+
+
 def get_env_eval_defaults(env_id: str) -> dict[str, Any]:
     """Get eval config defaults from the environment module's pyproject.toml.
 
@@ -238,7 +279,7 @@ def build_parser() -> argparse.ArgumentParser:
         "-e",
         type=str,
         default=DEFAULT_ENDPOINTS_PATH,
-        help="Path to API endpoints registry (.toml preferred, .py supported)",
+        help="Path to API endpoints TOML registry",
     )
     parser.add_argument(
         "--model",
@@ -251,12 +292,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--api-client-type",
         type=str,
         default=None,
-        help="Which client type to use ('openai_completions', 'openai_chat_completions', 'openai_chat_completions_token', 'anthropic_messages')",
+        help="Which client type to use ('openai_completions', 'openai_chat_completions', 'openai_chat_completions_token', 'openai_responses', 'renderer', 'anthropic_messages', 'nemorl_chat_completions')",
         choices=[
             "openai_completions",
             "openai_chat_completions",
             "openai_chat_completions_token",
+            "openai_responses",
+            "renderer",
             "anthropic_messages",
+            "nemorl_chat_completions",
         ],
     )
     parser.add_argument(
@@ -278,6 +322,16 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         default=None,
         help="Extra HTTP header to pass to inference API. 'Name: Value'. Repeatable.",
+    )
+    parser.add_argument(
+        "--header-from-state",
+        action="append",
+        default=None,
+        help=(
+            "Per-request HTTP header whose value is read from the rollout state. "
+            "'Name: state_key' (e.g. 'X-Session-ID: trajectory_id'). Repeatable. "
+            "Defaults to X-Session-ID=example_id if unset."
+        ),
     )
     parser.add_argument(
         "--num-examples",
@@ -390,6 +444,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=json.loads,
         default={},
         help='Extra environment as JSON object (e.g., \'{"key": "value", "num": 42}\'). Passed to environment constructor.',
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=None,
+        help="Per-rollout wall-clock timeout in seconds. Overrides timeout_seconds in --extra-env-kwargs.",
     )
     parser.add_argument(
         "--fullscreen",
@@ -508,10 +568,6 @@ def main(argv: list[str] | None = None):
                 f"Using rollouts_per_example={rollouts_per_example} from {source}"
             )
 
-        # Resolve model and endpoint config
-        endpoints_path = raw.get("endpoints_path", DEFAULT_ENDPOINTS_PATH)
-        endpoints = load_endpoints(endpoints_path)
-
         raw_endpoint_id = raw.get("endpoint_id")
         raw_model_field = raw.get("model")
         if raw_endpoint_id is not None and raw_model_field is not None:
@@ -522,6 +578,7 @@ def main(argv: list[str] | None = None):
             raise ValueError("'endpoint_id' must be a string when provided.")
         if isinstance(raw_endpoint_id, str) and not raw_endpoint_id:
             raise ValueError("'endpoint_id' must be a non-empty string when provided.")
+        endpoints_path = raw.get("endpoints_path", DEFAULT_ENDPOINTS_PATH)
         resolved_endpoints_file = resolve_endpoints_file(str(endpoints_path))
         if raw_endpoint_id is not None and (
             resolved_endpoints_file is None or resolved_endpoints_file.suffix != ".toml"
@@ -551,6 +608,10 @@ def main(argv: list[str] | None = None):
         api_key_override = raw_api_key_var is not None
         api_base_url_override = raw_api_base_url is not None
         client_type_override = raw_client_type is not None
+        direct_endpoint_config = (
+            raw_endpoint_id is None and api_key_override and api_base_url_override
+        )
+        endpoints = {} if direct_endpoint_config else load_endpoints(endpoints_path)
         endpoint_group: list[Endpoint] | None = None
         resolved_endpoint_id: str | None = None
 
@@ -639,6 +700,12 @@ def main(argv: list[str] | None = None):
         )
         # Build headers: registry < [[eval]] headers table < header list / --header
         eval_headers_merged = build_extra_headers(raw)
+        # Default X-Session-ID → example_id for sticky DP-aware routing;
+        # user-supplied headers_from_state / --header-from-state override.
+        eval_headers_from_state = {
+            "X-Session-ID": "example_id",
+            **build_extra_headers_from_state(raw),
+        }
 
         registry_headers_base: dict[str, str] = {}
         if endpoint_group is not None:
@@ -683,7 +750,7 @@ def main(argv: list[str] | None = None):
             api_base_url=primary_api_base_url,
             endpoint_configs=endpoint_configs,
             extra_headers=merged_headers,
-            extra_headers_from_state={"X-Session-ID": "example_id"},
+            extra_headers_from_state=eval_headers_from_state,
         )
 
         # Backward-compatible TOML field: resume_path
@@ -721,12 +788,16 @@ def main(argv: list[str] | None = None):
         else:
             raise ValueError(f"Invalid value for --resume: {resume_arg!r}")
 
+        extra_env_kwargs = dict(raw.get("extra_env_kwargs", {}))
+        if raw.get("timeout") is not None:
+            extra_env_kwargs["timeout_seconds"] = raw["timeout"]
+
         return EvalConfig(
             env_id=env_id,
             env_args=raw.get("env_args", {}),
             env_dir_path=raw.get("env_dir_path", DEFAULT_ENV_DIR_PATH),
             output_dir=raw.get("output_dir"),
-            extra_env_kwargs=raw.get("extra_env_kwargs", {}),
+            extra_env_kwargs=extra_env_kwargs,
             endpoint_id=resolved_endpoint_id,
             model=model,
             client_config=client_config,

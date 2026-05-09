@@ -44,14 +44,33 @@ This folder contains installable example environments that showcase common usage
 
 - **RLMEnv (Recursive Language Model)**
   - **rlm_secrets**: Puzzle environment testing RLM functionality including root-level tools, sub-LLM tool use, and file operations.
+  - **hello_rlm_v1**: v1 sandboxed RLM-style CLI program with endpoint interception and metrics collection.
 
-- **HarborEnv / CliAgentEnv (CLI agent sandboxes)**
+- **V1 Taskset/Harness**
+  - **dspy_rlm**: DSPy RLM harness on GSM8K through `vf.Env`; DSPy uses the V1 interception endpoint from rollout state.
+  - **openai_agents_env**: OpenAI Agents SDK harness with a calculator tool on GSM8K through `vf.Env`.
+  - **langchain_deep_agents_wikispeedia**: LangChain Deep Agents harness on Wikispeedia navigation, where tool use is load-bearing.
+
+- **HarborEnv / CliAgentEnv (agent sandboxes)**
   - **opencode_harbor**: Runs the OpenCode CLI agent on Harbor tasks with API interception via Prime Tunnel.
   - **terminus_harbor**: Runs the Terminus agent on Harbor tasks with API interception via Prime Tunnel.
+  - **hello_mcp_harbor**: Smallest runnable `HarborEnv` exercising framework-managed MCP server lifecycle (FastMCP `get_secret` server + OpenCode agent).
+
+- **Taskset/Harness v1**
+  - **bfcl_v3**: BFCL v3 function-calling eval using task-local dynamic tool schemas and v1 rewards.
+  - **dspy_flights**: Sandboxed DSPy flight-support `program.fn` entrypoint installed from its package `pyproject.toml` and configured against the v1 interception endpoint.
+  - **hello_group_reward_v1**: Deterministic v1 reference for group updates, metrics, rewards, advantages, and cleanup.
+  - **tau2_bench_v1**: `tau2-bench-v1` τ²-bench taskset/user/tool pattern on the v1 harness runtime.
 
 ### Composition
 - **EnvGroup**
   - **math_group**: Groups two `SingleTurnEnv` tasks (GSM8K + Math) into one environment with shared interface.
+
+- **Nested harnesses**
+  - **hello_subagent_v1**: Minimal parent/child harness hand-off through a tool.
+  - **nested_harness_v1**: v1 example showing a tool that calls a child `Harness` as its own rollout scope.
+  - **hello_self_judge_v1**: v1 example where a judge harness shares model, endpoint, trajectory, and sandbox evidence from the answer rollout.
+  - **hello_parallel_sandbox_v1**: v1 example where parallel child harnesses share a sandbox-backed tool across update and reward stages.
 
 - **RubricGroup**
   - **math_python**: `ToolRubric` (tool adherence) + `MathRubric` (answer correctness).
@@ -72,9 +91,11 @@ This folder contains installable example environments that showcase common usage
 - **Custom MultiTurnEnv**: `alphabet_sort`, `doublecheck`, `sentence_repeater`, `wordle`
 - **GymEnv integration**: `gem_wordle`
 - **OpenEnv integration (gym + MCP)**: `openenv_textarena`, `openenv_echo`
-- **CLI agent sandboxes**: `opencode_harbor`, `terminus_harbor`
-- **MCP integration**: `mcp_search_env`
+- **CLI agent sandboxes**: `opencode_harbor`, `terminus_harbor`, `hello_mcp_harbor`
+- **MCP integration**: `mcp_search_env`, `hello_mcp_harbor`
 - **RLM (recursive LLM)**: `rlm_secrets`
+- **Taskset/Harness v1**: use this pattern for new environments that need reusable tasksets, reusable harnesses, framework programs, endpoint interception, or sandboxed Python/command programs. Examples include `dspy_rlm`, `openai_agents_env`, `langchain_deep_agents_wikispeedia`, `reverse_text`, `alphabet_sort`, `wiki_search`, `math_python`, `mcp_search_env`, `opencode_harbor`, `bfcl_v3`, `hello_subagent_v1`, `nested_harness_v1`, `hello_self_judge_v1`, `hello_parallel_sandbox_v1`, `hello_group_reward_v1`, `hello_rlm_v1`, `rlm_swe_v1`, `dspy_flights`, and `tau2-bench-v1`.
+  - `opencode_harbor` uses the packaged `vf.HarborTaskset` + `vf.OpenCode` boundary. These reusable implementations live under `verifiers.v1.packages` and are re-exported from `verifiers.v1`.
 - **Environment and rubric composition**: `math_group`, `math_python`, `wiki_search`
 - **Procedural datasets**: `reasoning_gym_env`
 - **Multimodal**: `mmmu`

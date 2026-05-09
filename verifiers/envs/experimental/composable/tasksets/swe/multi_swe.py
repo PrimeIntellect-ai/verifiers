@@ -177,20 +177,29 @@ class MultiSWETaskSet(SandboxTaskSet):
         self,
         dataset_name: str = "PrimeIntellect/Multi-SWE-RL",
         split: str = "train",
-        exclude_langs: tuple[str, ...] = ("c", "cpp"),
-        filter_repos: list[str] | None = None,
-        ds_num_proc: int | None = 8,
+        filter_fn: str | None = None,
+        ds_num_proc: int | None = None,
         ds_keep_in_memory: bool = True,
-        timeout_minutes: int = 60,
+        timeout_minutes: int | None = None,
     ):
+        """
+        Args:
+            filter_fn: Optional Python expression string forwarded to
+                :class:`TaskSet` — see its docstring. Applied to
+                post-``_process_example`` rows, so predicates see the
+                ``{"question", "info", "answer", ...}`` shape (e.g.
+                ``"lambda x: x['info']['language'] == 'python'"``).
+        """
         self.dataset_name = dataset_name
         self.split = split
-        self.exclude_langs = tuple(exclude_langs)
-        self.filter_repos = filter_repos
         self.ds_num_proc = ds_num_proc
         self.ds_keep_in_memory = ds_keep_in_memory
         self.timeout_minutes = timeout_minutes
-        super().__init__(dataset=self._build_dataset(), name="swe/multiswe")
+        super().__init__(
+            dataset=self._build_dataset,
+            name="swe/multiswe",
+            filter_fn=filter_fn,
+        )
 
     def _build_dataset(self) -> Any:
         from datasets import load_dataset
@@ -206,12 +215,6 @@ class MultiSWETaskSet(SandboxTaskSet):
             keep_in_memory=self.ds_keep_in_memory,
             num_proc=self.ds_num_proc,
         )
-        if self.exclude_langs:
-            excluded = frozenset(self.exclude_langs)
-            dataset = dataset.filter(lambda x: x.get("lang") not in excluded, **_kw)
-        if self.filter_repos:
-            filter_set = frozenset(self.filter_repos)
-            dataset = dataset.filter(lambda x: x.get("repo") not in filter_set, **_kw)
         # Use num_proc=1 for map: the output nests original rows inside an "info" dict,
         # and multiprocess map re-infers types per shard. Shards where all list columns
         # (e.g. skipped_tests) are empty get List(null) instead of List(string), causing
@@ -384,16 +387,21 @@ class MultiSWETaskSet(SandboxTaskSet):
         return MultiSWERubric(self)
 
     async def validate_instance(self, state) -> bool:
-        """Apply gold patch, run tests, and check if reward > 0."""
+        """Apply gold patch, run tests, and check if reward > 0.
+
+        Exceptions propagate to the caller (``TaskSet.validate``) so
+        ``CommandTimeoutError`` / ``vf.InfraError`` / gold-apply failures
+        can be classified by their type instead of being flattened into
+        ``test_failed``. Agent rollouts use the rubric (not this method),
+        which keeps its own try/except so a transient failure still scores
+        0 rather than crashing the rollout.
+        """
         sandbox_client = state["sandbox_client"]
         sandbox_id = state["sandbox_id"]
-        try:
-            await self._apply_gold_patch(sandbox_client, sandbox_id, state)
-            test_output = await self._run_tests(
-                sandbox_client, sandbox_id, state, state.get("test_timeout", 900)
-            )
-            state["test_output"] = test_output
-            info = state.get("info") or {}
-            return float(self._calculate_reward(state.get("test_output", ""), info)) > 0
-        except Exception:
-            return False
+        await self._apply_gold_patch(sandbox_client, sandbox_id, state)
+        test_output = await self._run_tests(
+            sandbox_client, sandbox_id, state, state.get("test_timeout", 900)
+        )
+        state["test_output"] = test_output
+        info = state.get("info") or {}
+        return float(self._calculate_reward(state.get("test_output", ""), info)) > 0

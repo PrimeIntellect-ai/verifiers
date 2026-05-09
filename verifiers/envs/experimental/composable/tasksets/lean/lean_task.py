@@ -15,6 +15,22 @@ Usage::
 
     # Use with any agent
     env = ComposableEnv(task=prover_v1, agent=react_agent)
+
+Reward-hacking guard
+--------------------
+
+The starter proof file wraps the theorem signature in marker comments::
+
+    -- lean-guard: begin protected
+    theorem foo (x : ℝ) : x = x := by
+    -- lean-guard: end protected
+      sorry
+
+``LeanRubric`` re-reads the file post-rollout and refuses to award reward if
+the protected region was modified, defeating the trivial "rewrite the
+statement to ``True := trivial``" cheat.  The marker convention matches
+``hallerite/lean-guard`` (the OpenCode plugin) so both layers agree on what
+"protected" means.
 """
 
 from __future__ import annotations
@@ -28,6 +44,9 @@ from verifiers.envs.experimental.composable import SandboxSpec, SandboxTaskSet
 DEFAULT_DOCKER_IMAGE = "cmkkc4gtv000mapvd5jegz3yz/lean-tactic:mathlib-v4.27.0-v3"
 LEAN_PROJECT_PATH = "/workspace/mathlib4"
 PROOF_FILE_PATH = "/tmp/proof.lean"
+
+LEAN_GUARD_BEGIN_MARKER = "-- lean-guard: begin protected"
+LEAN_GUARD_END_MARKER = "-- lean-guard: end protected"
 
 LEAN_SYSTEM_PROMPT = """\
 You are a Lean 4 theorem prover.
@@ -53,7 +72,11 @@ If you have not compiled, you are not done.
 Rules:
 - No `sorry` or `admit` in the final proof
 - Use Lean 4 / Mathlib syntax
-- Each response must contain EXACTLY ONE tool call\
+- Each response must contain EXACTLY ONE tool call
+- The lines wrapped by `-- lean-guard: begin protected` and \
+`-- lean-guard: end protected` are the locked theorem signature. \
+DO NOT modify them, the markers, or anything between them. \
+Only edit the lines BELOW `-- lean-guard: end protected` (the proof body).\
 """
 
 
@@ -137,35 +160,95 @@ def _build_preamble(
     return preamble
 
 
+def _normalize_signature(stmt: str) -> str:
+    """Canonicalize a Lean theorem statement to end with `:= by`.
+
+    Strips trailing ``sorry``/``admit`` placeholders and any trailing
+    ``by`` / ``:=`` tokens, then re-appends `` := by`` so the result
+    is uniformly shaped regardless of the input dataset's convention
+    (``:= sorry``, ``:= by sorry``, ``:= by\\n  sorry``, etc.).
+    """
+    s = stmt.rstrip()
+    s = re.sub(r"\s*\b(?:sorry|admit)\b\s*$", "", s)
+    s = re.sub(r"\s*\bby\b\s*$", "", s)
+    s = re.sub(r"\s*:=\s*$", "", s)
+    return s.rstrip() + " := by"
+
+
+def _split_imports_and_signature(stmt: str) -> tuple[str, str]:
+    """Split a self-contained statement into ``(imports_block, signature)``.
+
+    ``formal_statement`` fields occasionally contain their own ``import``
+    preamble.  We split at the first ``theorem``/``lemma``/``example``
+    keyword so the signature can be wrapped independently of imports.
+    """
+    decl_match = re.search(
+        r"^(?:theorem|lemma|example)\s",
+        stmt,
+        flags=re.MULTILINE,
+    )
+    if not decl_match:
+        return "", stmt
+    return stmt[: decl_match.start()].rstrip(), stmt[decl_match.start() :]
+
+
+def _wrap_with_lean_guard(signature: str) -> str:
+    """Wrap a normalized ``... := by`` signature with lean-guard markers."""
+    return f"{LEAN_GUARD_BEGIN_MARKER}\n{signature}\n{LEAN_GUARD_END_MARKER}\n  sorry\n"
+
+
+def _extract_protected_region(content: str) -> str | None:
+    """Return the text from the begin marker through the end-of-end-line.
+
+    Returns ``None`` if either marker is missing or out of order.
+    Mirrors the substring extracted by ``hallerite/lean-guard``'s plugin
+    so the two implementations agree on what "protected" means.
+    """
+    begin = content.find(LEAN_GUARD_BEGIN_MARKER)
+    if begin == -1:
+        return None
+    end = content.find(LEAN_GUARD_END_MARKER, begin)
+    if end == -1:
+        return None
+    end_of_end_line = content.find("\n", end)
+    if end_of_end_line == -1:
+        protected_end = len(content)
+    else:
+        protected_end = end_of_end_line + 1
+    return content[begin:protected_end]
+
+
 def _build_starter_file(info: dict) -> str:
-    """Build the proof file: imports + header + formal_statement + sorry."""
+    """Build the proof file: imports + header + protected signature + sorry."""
     stmt = info.get("formal_statement", "")
+
     if stmt.strip().startswith("import "):
-        # Self-contained statement, use as-is
-        if not re.search(r"\bsorry\b", stmt):
-            if stmt.rstrip().endswith(":= by"):
-                stmt += "\n  sorry"
-            elif stmt.rstrip().endswith(":="):
-                stmt += " sorry"
-            else:
-                stmt += " := by\n  sorry"
-        return stmt + "\n"
+        imports_block, signature_raw = _split_imports_and_signature(stmt)
+        preamble = imports_block
+    else:
+        imports_str = info.get("imports", "import Mathlib")
+        header = info.get("header", "")
+        normalize = info.get("_normalize_mathlib_imports", False)
+        preamble = _build_preamble(imports_str, header, normalize)
+        signature_raw = stmt
 
-    imports_str = info.get("imports", "import Mathlib")
-    header = info.get("header", "")
-    normalize = info.get("_normalize_mathlib_imports", False)
-    preamble = _build_preamble(imports_str, header, normalize)
+    signature = _normalize_signature(signature_raw)
+    wrapped = _wrap_with_lean_guard(signature)
 
-    # Ensure statement ends with sorry
-    if not re.search(r"\bsorry\b", stmt):
-        if stmt.rstrip().endswith(":= by"):
-            stmt += "\n  sorry"
-        elif stmt.rstrip().endswith(":="):
-            stmt += " sorry"
-        else:
-            stmt += " := by\n  sorry"
+    if preamble:
+        return preamble.rstrip() + "\n\n" + wrapped
+    return wrapped
 
-    return preamble + "\n\n" + stmt + "\n"
+
+def _expected_protected_region(info: dict) -> str:
+    """Compute the protected region for a task instance from its ``info`` dict.
+
+    Re-runs ``_build_starter_file`` so the rubric and the setup step share
+    the exact same wrapping logic — no separate state plumbing needed.
+    """
+    starter = _build_starter_file(info)
+    region = _extract_protected_region(starter)
+    return region or ""
 
 
 # ---------------------------------------------------------------------------
@@ -174,7 +257,12 @@ def _build_starter_file(info: dict) -> str:
 
 
 class LeanRubric(vf.Rubric):
-    """Scores Lean tasks by compiling the proof in the sandbox."""
+    """Scores Lean tasks by compiling the proof in the sandbox.
+
+    Before compiling, verifies the lean-guard protected region in
+    ``/tmp/proof.lean`` matches the original starter; tampering yields
+    ``reward=0`` and sets ``state["lean_tampered"]=True``.
+    """
 
     def __init__(self, taskset: "LeanTaskSet", **kwargs):
         super().__init__(**kwargs)
@@ -187,6 +275,29 @@ class LeanRubric(vf.Rubric):
         if not sandbox_client or not sandbox_id:
             return 0.0
         timeout = state.get("test_timeout", 900)
+
+        info = state.get("info") or {}
+        expected_region = _expected_protected_region(info)
+        if expected_region:
+            try:
+                cat_result = await sandbox_client.execute_command(
+                    sandbox_id,
+                    f"cat {self.taskset.proof_file_path}",
+                    timeout=10,
+                )
+                current_content = cat_result.stdout or ""
+            except Exception:
+                state["lean_tampered"] = True
+                state["lean_compiled"] = False
+                return 0.0
+
+            actual_region = _extract_protected_region(current_content)
+            if actual_region != expected_region:
+                state["lean_tampered"] = True
+                state["lean_compiled"] = False
+                return 0.0
+            state["lean_tampered"] = False
+
         try:
             cmd = f"cd {self.taskset.lean_project_path} && lake env lean {self.taskset.proof_file_path} 2>&1; echo EXIT_CODE:$?"
             result = await sandbox_client.execute_command(
@@ -237,6 +348,7 @@ class LeanTaskSet(SandboxTaskSet):
         preset: str = "deepseek-prover-v1",
         dataset_name: str | None = None,
         dataset_split: str | None = None,
+        filter_fn: str | None = None,
         docker_image: str = DEFAULT_DOCKER_IMAGE,
         lean_project_path: str = LEAN_PROJECT_PATH,
         proof_file_path: str = PROOF_FILE_PATH,
@@ -251,7 +363,7 @@ class LeanTaskSet(SandboxTaskSet):
         self.proof_file_path = proof_file_path
         self.compile_timeout = compile_timeout
         dataset = self._build_dataset(preset, dataset_name, dataset_split)
-        super().__init__(dataset=dataset, name=f"lean/{preset}")
+        super().__init__(dataset=dataset, name=f"lean/{preset}", filter_fn=filter_fn)
 
     def _build_dataset(
         self, preset: str, dataset_name: str | None, dataset_split: str | None

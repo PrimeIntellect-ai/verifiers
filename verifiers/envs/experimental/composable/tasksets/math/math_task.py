@@ -40,6 +40,7 @@ class MathTaskSet(SandboxTaskSet):
         dataset_name: str = DEFAULT_DATASET,
         dataset_subset: str | None = DEFAULT_SUBSET,
         dataset_split: str = DEFAULT_SPLIT,
+        filter_fn: str | None = None,
         question_key: str = "question",
         answer_key: str = "answer",
         instruction_prompt: str = DEFAULT_INSTRUCTION,
@@ -80,7 +81,9 @@ class MathTaskSet(SandboxTaskSet):
             min_avg_reward,
             max_avg_reward,
         )
-        super().__init__(dataset=dataset, name=f"math/{dataset_name}")
+        super().__init__(
+            dataset=dataset, name=f"math/{dataset_name}", filter_fn=filter_fn
+        )
 
     def _build_dataset(
         self,
@@ -133,7 +136,6 @@ class MathTaskSet(SandboxTaskSet):
             cpu_cores=1,
             memory_gb=2,
             disk_size_gb=4,
-            timeout_minutes=60,
         )
 
     def get_rubric(self):

@@ -57,6 +57,15 @@ url = "https://api.example/v1"
 key = "OPENAI_API_KEY"
 headers = { "X-Custom-Header" = "value" }
 ```
+8. Endpoint entries support `api_client_type` when the provider is not OpenAI Chat Completions compatible. Use `openai_responses` for Responses-compatible endpoints and `anthropic_messages` for Anthropic Messages endpoints:
+```toml
+[[endpoint]]
+endpoint_id = "gpt-responses"
+model = "gpt-5.4-mini"
+url = "https://api.openai.com/v1"
+key = "OPENAI_API_KEY"
+api_client_type = "openai_responses"
+```
 
 ## Publish Gate Before Large Runs
 1. After smoke tests pass and results look stable, proactively suggest pushing the environment to Hub before large eval sweeps or RL work.
@@ -91,34 +100,38 @@ prime eval run my-env -a '{"difficulty":"hard"}'
 ```bash
 prime eval run my-env -x '{"max_turns":20}'
 ```
-3. Save extra state columns:
+3. Bound per-rollout wall-clock time (use the dedicated `--timeout` flag; wins over `-x` and TOML `[eval.extra_env_kwargs]`):
+```bash
+prime eval run my-env --timeout 600
+```
+4. Save extra state columns:
 ```bash
 prime eval run my-env -s -C "judge_response,parsed_answer"
 ```
-4. Resume interrupted runs:
+5. Resume interrupted runs:
 ```bash
 prime eval run my-env -n 1000 -s --resume
 ```
-5. Save results to a custom output directory:
+6. Save results to a custom output directory:
 ```bash
 prime eval run my-env -s -o /path/to/output
 ```
-6. Run multi-environment TOML suites:
+7. Run multi-environment TOML suites:
 ```bash
 prime eval run configs/eval/my-benchmark.toml
 ```
-7. Pass extra HTTP headers via CLI (repeatable):
+8. Pass extra HTTP headers via CLI (repeatable):
 ```bash
 prime eval run my-env -m my-proxy --header "X-Custom-Header: value"
 ```
-8. Set headers in `[[eval]]` TOML configs as a table or list (merge order: registry row < `headers` table < `header` list / `--header`):
+9. Set headers in `[[eval]]` TOML configs as a table or list (merge order: registry row < `headers` table < `header` list / `--header`):
 ```toml
 [[eval]]
 env_id = "my-env"
 headers = { "X-Custom-Header" = "value" }
 header = ["X-Another: val"]
 ```
-9. Run ablation sweeps using `[[ablation]]` blocks in TOML configs:
+10. Run ablation sweeps using `[[ablation]]` blocks in TOML configs:
 ```toml
 [[ablation]]
 env_id = "my-env"
@@ -126,7 +139,7 @@ env_id = "my-env"
 [ablation.sweep]
 temperature = [0.0, 0.5, 1.0]
 
-[ablation.sweep.env_args]
+[ablation.sweep.args]
 difficulty = ["easy", "hard"]
 ```
 This generates the cartesian product (6 configs in this example). Use `--abbreviated-summary` (`-A`) for compact ablation results.

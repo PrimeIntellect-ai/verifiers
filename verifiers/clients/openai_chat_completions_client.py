@@ -76,12 +76,14 @@ def handle_openai_overlong_prompt(func):
             context_length_phrases = [
                 "this model's maximum context length is",
                 "is longer than the model's context length",
+                "is longer than the maximum model length",
                 "exceeds the model's context length",
                 "exceed the configured limit",
                 "exceeds the configured limit",
                 "exceeded model",
                 "prompt_too_long",
                 "context length",
+                "maximum model length",
             ]
             if any(phrase in error_text for phrase in context_length_phrases):
                 raise OverlongPromptError from e

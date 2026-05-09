@@ -351,18 +351,29 @@ class SWEBenchTaskSet(SandboxTaskSet):
         self,
         dataset_name: str = "princeton-nlp/SWE-bench_Verified",
         skip_install: bool = True,
-        filter_repos: list[str] | None = None,
-        ds_num_proc: int | None = 8,
+        filter_fn: str | None = None,
+        ds_num_proc: int | None = None,
         ds_keep_in_memory: bool = True,
-        timeout_minutes: int = 60,
+        timeout_minutes: int | None = None,
     ):
+        """
+        Args:
+            filter_fn: Optional Python expression string forwarded to
+                :class:`TaskSet` — see its docstring. Applied to
+                post-``_process_example`` rows, so predicates see the
+                ``{"question", "info", "answer", ...}`` shape (e.g.
+                ``"lambda x: x['info']['repo'] == 'django/django'"``).
+        """
         self.dataset_name = dataset_name
         self.skip_install = skip_install
-        self.filter_repos = filter_repos
         self.ds_num_proc = ds_num_proc
         self.ds_keep_in_memory = ds_keep_in_memory
         self.timeout_minutes = timeout_minutes
-        super().__init__(dataset=self._build_dataset(), name="swe/swebench")
+        super().__init__(
+            dataset=self._build_dataset,
+            name="swe/swebench",
+            filter_fn=filter_fn,
+        )
 
     def _build_dataset(self) -> Any:
         from datasets import load_dataset
@@ -379,12 +390,6 @@ class SWEBenchTaskSet(SandboxTaskSet):
             keep_in_memory=self.ds_keep_in_memory,
             num_proc=self.ds_num_proc,
         )
-        if self.filter_repos:
-            filter_set = set(self.filter_repos)
-            dataset = dataset.filter(
-                lambda x: filter_set.isdisjoint((x.get("repo"), x.get("repo_name"))),
-                **_kw,
-            )
         return dataset.map(_process_example, remove_columns=dataset.column_names, **_kw)
 
     def get_instruction(self, info: dict) -> str:
@@ -406,11 +411,14 @@ class SWEBenchTaskSet(SandboxTaskSet):
     async def setup(self, state) -> None:
         sandbox_client = state["sandbox_client"]
         sandbox_id = state["sandbox_id"]
-        results = await sandbox_client.execute_command(
-            sandbox_id, "ln -s /opt/miniconda3/envs/testbed /root/.venv"
-        )
-        if results.exit_code != 0:
-            raise RuntimeError(f"Setup failed: exit_code={results.exit_code}")
+        for target in ("/testbed/.venv", "/root/.venv"):
+            results = await sandbox_client.execute_command(
+                sandbox_id, f"ln -s /opt/miniconda3/envs/testbed {target}"
+            )
+            if results.exit_code != 0:
+                raise RuntimeError(
+                    f"Setup failed: exit_code={results.exit_code} target={target}"
+                )
 
     async def _run_tests(
         self,
@@ -632,16 +640,21 @@ class SWEBenchTaskSet(SandboxTaskSet):
         return SWEBenchRubric(self)
 
     async def validate_instance(self, state) -> bool:
-        """Apply gold patch, run tests, and check if reward > 0."""
+        """Apply gold patch, run tests, and check if reward > 0.
+
+        Exceptions propagate to the caller (``TaskSet.validate``) so
+        ``CommandTimeoutError`` / ``vf.InfraError`` / gold-apply failures
+        can be classified by their type instead of being flattened into
+        ``test_failed``. Agent rollouts use the rubric (not this method),
+        which keeps its own try/except so a transient failure still scores
+        0 rather than crashing the rollout.
+        """
         sandbox_client = state["sandbox_client"]
         sandbox_id = state["sandbox_id"]
-        try:
-            await self._apply_gold_patch(sandbox_client, sandbox_id, state)
-            test_output = await self._run_tests(
-                sandbox_client, sandbox_id, state, state.get("test_timeout", 900)
-            )
-            state["test_output"] = test_output
-            info = state.get("info") or {}
-            return float(self._calculate_reward(state.get("test_output", ""), info)) > 0
-        except Exception:
-            return False
+        await self._apply_gold_patch(sandbox_client, sandbox_id, state)
+        test_output = await self._run_tests(
+            sandbox_client, sandbox_id, state, state.get("test_timeout", 900)
+        )
+        state["test_output"] = test_output
+        info = state.get("info") or {}
+        return float(self._calculate_reward(state.get("test_output", ""), info)) > 0

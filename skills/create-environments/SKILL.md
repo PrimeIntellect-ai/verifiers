@@ -42,7 +42,7 @@ prime env install math-python --from-repo
 - `ToolEnv` or `MCPEnv` for stateless tools.
 - `StatefulToolEnv` for per-rollout resources.
 - `CliAgentEnv` for running agent binaries in sandboxes with API interception. Override `get_sandbox_resources(state)` for per-instance resources, `build_env_vars(state)` for custom env vars.
-- `ComposableEnv` (with `TaskSet`/`SandboxTaskSet` + `Harness`) for separating *what to solve* from *how to solve it*. Define a `TaskSet` (dataset, instructions, sandbox spec, rubric) and a `Harness` (install script, run command, system prompt), wire them together with zero subclassing. Use `SandboxTaskSet` when tasks need sandboxes with per-instance images/resources.
+- V1 `vf.Env` with `vf.Taskset`/`vf.Harness` for the current taskset/harness environment pattern that separates the task collection from the rollout runner. Use this for new taskset/harness work that needs config-driven metrics, rewards, toolsets, user functions, endpoint interception, or sandboxed Python/command programs. Framework programs should build clients from `state.get_endpoint_config(api="chat")`.
 3. Implement `load_environment(...) -> vf.Environment` with explicit arguments.
 4. Add `pyproject.toml` defaults in `[tool.verifiers.eval]` only when stable.
 

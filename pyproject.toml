@@ -38,7 +38,7 @@ dependencies = [
     "openai>=1.108.1",
     "openai-agents>=0.0.7",
     "prime-tunnel>=0.1.6",
-    "prime-sandboxes>=0.2.20",
+    "prime-sandboxes>=0.2.21",
     "pydantic>=2.11.9",
     "requests",
     "rich",
@@ -52,7 +52,8 @@ dependencies = [
     "msgpack>=1.1.2",
     "aiolimiter>=1.2.1",
     "setproctitle>=1.3.0",
-    "regex<2026.4.4",  # 2026.4.4 missing cp312/cp313 wheels
+    "regex<2026.4.4",
+    "httpx>=0.27.0",
 ]
 
 [dependency-groups]
@@ -73,6 +74,7 @@ dev = [
     "aiohttp>=3.9.0",
     "python-dotenv>=1.0.0",
     "nltk",
+    "renderers>=0.1.6",
 ]
 
 [project.optional-dependencies]
@@ -91,6 +93,9 @@ browser = [
     "aiohttp>=3.9.0",
     "python-dotenv>=1.0.0",
 ]
+renderers = [
+    "renderers>=0.1.6",
+]
 rl = [
     "torch>=2.8.0,<2.9.0",
     "transformers>=4.56.2",
@@ -107,6 +112,24 @@ rl = [
 [tool.uv]
 preview = true
 required-version = ">=0.11.1"
+
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+default = true
+exclude-newer = "7 days"
+
+[tool.uv.exclude-newer-package]
+# PrimeIntellect-published on PyPI (trusted publisher)
+prime-tunnel = false
+prime-sandboxes = false
+renderers = false
+
+[tool.uv.sources]
+# Pinned to renderers main until the next PyPI release lands; drop after.
+# fe67f9f = renderers main: PR #4 squash-merge — construction-time
+# preserve_*_thinking flags on create_renderer / create_renderer_pool.
+renderers = { git = "https://github.com/PrimeIntellect-ai/renderers.git", rev = "fe67f9f" }
 
 [tool.uv.extra-build-dependencies]
 flash-attn = [{ requirement = "torch", match-runtime = true }]
@@ -170,6 +193,7 @@ addopts = [
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "integration: marks tests as integration tests",
+    "prime_sandbox: marks tests that provision real Prime sandbox or tunnel resources",
     "unit: marks tests as unit tests",
     "asyncio: marks tests as async tests",
     "parsers: marks tests for parser components",
@@ -195,7 +219,7 @@ unknown-argument = "warn"
 redundant-cast = "ignore"
 
 [tool.ty.src]
-exclude = ["environments"]
+exclude = ["environments", "verifiers/v1/sketch.py"]
 
 [[tool.ty.overrides]]
 include = ["verifiers/envs/experimental/composable/tasksets/**"]

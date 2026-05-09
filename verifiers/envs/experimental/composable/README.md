@@ -1,6 +1,10 @@
-# Composable Task / Agent Architecture
+# Legacy Composable Task / Agent Architecture
 
-Separates **what to solve** (the task) from **how to solve it** (the agent) by reusing the battle-tested `CliAgentEnv` and delegating task-specific behavior to a `TaskSet`.
+This is the legacy experimental taskset/harness stack. New environments should
+use the `verifiers.v1` `Taskset` / `Harness` format (`vf.Env`, `vf.Taskset`,
+and `vf.Harness`) instead.
+
+This stack separates **what to solve** (the task) from **how to solve it** (the agent) by reusing the battle-tested `CliAgentEnv` and delegating task-specific behavior to a `TaskSet`.
 
 ## Core concepts
 
@@ -40,8 +44,14 @@ task.sandbox_spec.image                    # per-instance docker image
 small = taskset.take(100)
 filtered = taskset.filter(lambda ex: ...)
 
-# Validate gold solutions
-results = await taskset.take(10).validate(concurrency=5)
+# Validate gold solutions (streaming JSONL + tqdm + crash-safe resume)
+results = await taskset.validate(
+    concurrency=50,
+    out_path="outputs/validate.jsonl",
+    max_retries=2,       # retry on vf.InfraError
+    sandbox_client_max_workers=100,  # optional sandbox client worker cap override
+    resume=True,         # skip indices already in out_path
+)
 
 # Run with an agent
 harness = opencode_harness(system_prompt="You are a coding agent...")
@@ -164,7 +174,7 @@ ComposableEnv subclasses `CliAgentEnv` without modifying it. It overrides these 
 - **`post_sandbox_setup(state)`** — runs task setup, uploads instruction + system prompt, installs agent
 - **`post_rollout(state)`** — collects agent logs (scoring is done by the rubric)
 
-Everything else — tunnel, HTTP interception, background job polling, streaming, TITO caching — is inherited from `CliAgentEnv` unchanged.
+Everything else — tunnel, HTTP interception, background job polling, and streaming — is inherited from `CliAgentEnv` unchanged.
 
 ## Limitations and future work
 

@@ -6,6 +6,7 @@
       "pages": [
         "overview",
         "environments",
+        "byo-harness",
         "evaluation",
         "training",
         "development",

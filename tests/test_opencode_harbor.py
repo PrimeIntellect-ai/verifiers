@@ -1,10 +1,15 @@
+from __future__ import annotations
+
 import importlib.util
-import json
-import subprocess
 from pathlib import Path
+from typing import Any, cast
+
+import pytest
+
+import verifiers.v1 as vf
 
 
-def _load_opencode_module():
+def _load_opencode_module() -> Any:
     module_path = (
         Path(__file__).resolve().parent.parent
         / "environments"
@@ -22,36 +27,74 @@ def _load_opencode_module():
     return module
 
 
-def test_opencode_config_renders_valid_json_after_shell_expansion():
+def test_load_environment_uses_v1_taskset_and_harness() -> None:
     module = _load_opencode_module()
-    run_command = module._build_run_command(
-        "/app",
-        disabled_tools=["webfetch", "question"],
-        has_system_prompt=True,
+
+    env = module.load_environment()
+
+    assert isinstance(env, vf.Env)
+    assert isinstance(env.taskset, vf.HarborTaskset)
+    assert isinstance(env.harness, vf.OpenCode)
+    assert isinstance(env.harness.config, vf.OpenCodeConfig)
+    assert not hasattr(module, "OpenCodeHarborHarnessConfig")
+    assert Path(env.taskset.tasks) == Path(module.__file__).parent / "tasks"
+    assert env.harness.config.max_turns == 4
+    assert env.harness.config.disabled_tools == ["webfetch", "question"]
+
+    program = cast(dict[str, object], env.harness.program)
+    mcp_setup = cast(dict[str, object], program["tools"])["mcp"]
+    assert '"webfetch": false' in cast(str, mcp_setup)
+    assert '"question": false' in cast(str, mcp_setup)
+    assert '"read": false' not in cast(str, mcp_setup)
+
+
+def test_load_environment_accepts_v1_taskset_and_harness_config(
+    tmp_path: Path,
+) -> None:
+    module = _load_opencode_module()
+
+    env = module.load_environment(
+        config=vf.EnvConfig(
+            taskset={
+                "tasks": str(tmp_path),
+                "task_names": ["task-a"],
+                "cpu_cores": 1.5,
+            },
+            harness={
+                "agent_workdir": "/workspace",
+                "disabled_tools": ["webfetch"],
+                "max_turns": 2,
+            },
+        )
     )
 
-    prefix = "cat > ~/.config/opencode/opencode.json << EOFCONFIG\n"
-    suffix = "\nEOFCONFIG"
-    config_block = run_command.split(prefix, 1)[1].split(suffix, 1)[0]
+    assert Path(env.taskset.tasks) == tmp_path
+    assert env.taskset.task_names == ["task-a"]
+    assert env.taskset.cpu_cores == 1.5
+    assert env.harness.config.agent_workdir == "/workspace"
+    assert env.harness.config.max_turns == 2
 
-    script = f"""OPENAI_BASE_URL=https://example.invalid SCHEMA_DOLLAR='$' bash -lc 'cat <<EOFCONFIG
-{config_block}
-EOFCONFIG'"""
-    rendered = subprocess.run(
-        script,
-        shell=True,
-        executable="/bin/bash",
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout
+    program = cast(dict[str, object], env.harness.program)
+    command = cast(list[object], program["command"])
+    mcp_setup = cast(dict[str, object], program["tools"])["mcp"]
+    assert "/workspace" in cast(str, command[2])
+    assert '"webfetch": false' in cast(str, mcp_setup)
+    assert '"question": false' not in cast(str, mcp_setup)
 
-    config = json.loads(rendered)
-    assert config["$schema"] == "https://opencode.ai/config.json"
-    assert config["provider"]["intercepted"]["options"]["baseURL"] == (
-        "https://example.invalid"
-    )
-    assert "agent" in config
-    assert config["agent"]["build"]["prompt"] == "{file:/opencode/prompt.txt}"
-    assert config["agent"]["build"]["tools"]["webfetch"] is False
-    assert config["agent"]["build"]["tools"]["question"] is False
+
+def test_dataset_shortcuts_select_task_names() -> None:
+    module = _load_opencode_module()
+
+    env = module.load_environment(dataset="terminal-bench-sample")
+
+    assert env.taskset.task_names == module.TERMINAL_BENCH_SAMPLE_TASKS
+
+
+def test_dataset_rejects_explicit_task_names() -> None:
+    module = _load_opencode_module()
+
+    with pytest.raises(ValueError, match="dataset.*task_names"):
+        module.load_environment(
+            dataset="terminal-bench-sample",
+            task_names=["hello-world"],
+        )

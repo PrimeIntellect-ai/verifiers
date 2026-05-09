@@ -23,10 +23,12 @@ Key features:
 import asyncio
 import base64
 import contextvars
+import hmac
 import json
 import logging
 import os
 import re
+import secrets
 import shlex
 import shutil
 import sys
@@ -553,6 +555,7 @@ def _build_python_worker_script_template() -> str:
             "        answer = json.load(f)",
             "",
             'ROOT_TOOL_URL = os.environ.get("RLM_ROOT_TOOL_URL", "")',
+            'ROOT_TOOL_HEADERS = {"Authorization": "Bearer " + os.environ.get("RLM_INTERCEPTION_SECRET", "")}',
             'ROOT_TOOL_NAMES_RAW = os.environ.get("RLM_ROOT_TOOL_NAMES", "[]")',
             "try:",
             "    ROOT_TOOL_NAMES = json.loads(ROOT_TOOL_NAMES_RAW)",
@@ -572,6 +575,7 @@ def _build_python_worker_script_template() -> str:
             "    resp = requests.post(",
             "        ROOT_TOOL_URL,",
             "        json=payload,",
+            "        headers=ROOT_TOOL_HEADERS,",
             "        timeout=SUB_LLM_TIMEOUT,",
             "    )",
             "    resp.raise_for_status()",
@@ -700,6 +704,7 @@ _RLM_BASH_TOOL_HELPER_SCRIPT = textwrap.dedent(
     import urllib.request
 
     ROOT_TOOL_URL = os.environ.get("RLM_ROOT_TOOL_URL", "")
+    ROOT_TOOL_SECRET = os.environ.get("RLM_INTERCEPTION_SECRET", "")
     ROOT_TOOL_USER_AGENT = os.environ.get(
         "RLM_ROOT_TOOL_USER_AGENT", "python-requests/2.32.3"
     )
@@ -731,6 +736,7 @@ _RLM_BASH_TOOL_HELPER_SCRIPT = textwrap.dedent(
                 "Content-Type": "application/json",
                 "Accept": "application/json",
                 "User-Agent": ROOT_TOOL_USER_AGENT,
+                "Authorization": f"Bearer {ROOT_TOOL_SECRET}",
             },
             method="POST",
         )
@@ -2372,7 +2378,7 @@ class RLMEnv(vf.StatefulToolEnv):
         sandbox_timeout_minutes: int = 60,
         sandbox_environment_vars: dict[str, str] | None = None,
         sandbox_labels: list[str] | None = None,
-        sandbox_client_max_workers: int = 50,
+        sandbox_client_max_workers: int | None = None,
         sandbox_client_max_connections: int = 100,
         sandbox_client_max_keepalive_connections: int = 50,
         sandbox_transfer_max_retries: int = 3,
@@ -2408,6 +2414,7 @@ class RLMEnv(vf.StatefulToolEnv):
         self.custom_system_prompt = system_prompt
         self.interception_port = 0
         self._interception_url_override: str | None = None
+        self._interception_secret = secrets.token_urlsafe(32)
         self.pip_install_packages = pip_install_packages
         self.max_startup_wait_seconds = max_startup_wait_seconds
         self.include_sub_llm_in_trajectory = include_sub_llm_in_trajectory
@@ -2617,6 +2624,7 @@ class RLMEnv(vf.StatefulToolEnv):
         return {
             "RLM_INTERCEPTION_URL": state.get("interception_url", ""),
             "RLM_ROOT_TOOL_URL": state.get("root_tool_url", ""),
+            "RLM_INTERCEPTION_SECRET": self._interception_secret,
             "RLM_ROOT_TOOL_NAMES": json.dumps(self.root_tool_names),
             "RLM_SUB_LLM_TIMEOUT": str(self.sub_llm_timeout),
         }
@@ -3232,6 +3240,10 @@ class RLMEnv(vf.StatefulToolEnv):
 
     async def _handle_root_tool_request(self, request: Any) -> Any:
         """Handle root tool requests from worker."""
+        auth = request.headers.get("Authorization", "")
+        if not hmac.compare_digest(auth, f"Bearer {self._interception_secret}"):
+            return web.json_response({"error": "Unauthorized"}, status=401)
+
         rollout_id = request.match_info["rollout_id"]
         context = self.active_rollouts.get(rollout_id)
         if not context:
@@ -3316,6 +3328,10 @@ class RLMEnv(vf.StatefulToolEnv):
 
     async def _handle_sub_llm_request(self, request: Any) -> Any:
         """Handle sub-LLM requests from worker code."""
+        auth = request.headers.get("Authorization", "")
+        if not hmac.compare_digest(auth, f"Bearer {self._interception_secret}"):
+            return web.json_response({"error": "Unauthorized"}, status=401)
+
         rollout_id = request.match_info["rollout_id"]
         context = self.active_rollouts.get(rollout_id)
         if not context:
@@ -3462,7 +3478,9 @@ class RLMEnv(vf.StatefulToolEnv):
 
     async def setup_state(self, state: State, **kwargs) -> State:
         """Setup worker, filesystem context, and interception for sub-LLM calls."""
-        state = await vf.StatefulToolEnv.setup_state(self, state, **kwargs)
+        setup_state = await vf.StatefulToolEnv.setup_state(self, state, **kwargs)
+        if setup_state is not None:
+            state = setup_state
 
         rollout_id = f"rlm_{uuid.uuid4().hex[:8]}"
         state["rollout_id"] = rollout_id
@@ -3471,7 +3489,7 @@ class RLMEnv(vf.StatefulToolEnv):
 
         try:
             # 1. Setup interception and register rollout
-            state = await self._setup_interception_and_register(state, rollout_id)
+            await self._setup_interception_and_register(state, rollout_id)
 
             # 2. Create rollout directories
             self._executor.create_rollout_dirs(state)
@@ -3528,7 +3546,6 @@ class RLMEnv(vf.StatefulToolEnv):
             state["_observable_messages"] = []
 
             _ensure_rlm_metric_state(state)
-
             return state
         except Exception:
             # Best-effort cleanup to avoid leaking tunnels/sandboxes on setup failure.
