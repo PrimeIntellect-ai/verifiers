@@ -777,16 +777,35 @@ class Environment(ABC):
             example_id=example_id,
             group_size=len(group_inputs),
         )
-        rollout_tasks = [
-            self.rollout(
-                input,
-                client,
-                model,
-                sampling_args,
+
+        async def _traced_rollout(ri: RolloutInput) -> State:
+            """Wrap a single rollout with its own Braintrust span."""
+            r_t0 = time.monotonic()
+            bt_rollout = _bt.start_child_span(
+                bt_group,
+                name="rollout",
+                span_type="task",
+                input={"example_id": _bt._safe(ri.get("example_id", ""))},
+                metadata={"env_id": self.env_id, "model": model},
             )
-            for input in group_inputs
-        ]
-        group_states = await asyncio.gather(*rollout_tasks)
+            _bt._pending_rollout_span.set(bt_rollout)
+            st = await self.rollout(ri, client, model, sampling_args)
+            usage = self.get_state_usage(st) or {}
+            _bt.rollout_completed(
+                bt_rollout,
+                reward=st.get("reward"),
+                num_turns=len(st.get("trajectory", [])),
+                duration_s=time.monotonic() - r_t0,
+                stop_condition=st.get("stop_condition", ""),
+                error=repr(st["error"])[:500] if st.get("error") else "",
+                input_tokens=float(usage.get("input_tokens", 0)),
+                output_tokens=float(usage.get("output_tokens", 0)),
+            )
+            return st
+
+        group_states = await asyncio.gather(
+            *[_traced_rollout(inp) for inp in group_inputs]
+        )
 
         start_scoring = time.time()
         for state in group_states:
