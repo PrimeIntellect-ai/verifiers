@@ -94,8 +94,9 @@ class MultiTurnEnv(vf.Environment):
         """Check if env_response signaled termination via final_env_response."""
         return state.get("final_env_response") is not None
 
-    async def setup_state(self, state: State) -> None:
+    async def setup_state(self, state: State) -> State | None:
         """Override to add environment-specific state fields. Mutate state in place."""
+        return state
 
     async def get_prompt_messages(self, state: State) -> Messages:
         """Override for rollouts with non-linear message sequences."""
@@ -125,15 +126,19 @@ class MultiTurnEnv(vf.Environment):
         prompt_messages = state["prompt"]
         state["completion"] = full_conversation[len(prompt_messages) :]
 
+    @vf.cleanup(priority=100)
+    async def render_state(self, state: State) -> None:
+        """Render core rollout fields before user cleanup handlers run."""
+        state["timing"].generation.end = time.time()
+        await self.render_completion(state)
+
     async def add_trajectory_step(self, state: State, trajectory_step: TrajectoryStep):
         """Override to set intermediate rewards, advantages, or extra metadata."""
         state["trajectory"].append(trajectory_step)
 
     async def _finalize_rollout(self, state: State) -> None:
-        """Finalize rollout: render timing/completion and run cleanup handlers exactly once."""
-        await self._cleanup(state)
-        state["timing"].generation.end = time.time()
-        await self.render_completion(state)
+        """Finalize rollout state and run cleanup handlers exactly once."""
+        await self.cleanup(state)
 
     async def add_model_response(
         self,
@@ -171,15 +176,17 @@ class MultiTurnEnv(vf.Environment):
         state = await self.init_state(input, client, model, sampling_args)
 
         async def rollout_loop() -> None:
+            nonlocal state
             state["timing"].generation.start = time.time()
             state["timing"].setup.start = time.time()
             try:
-                await self.setup_state(state)
+                setup_state = await self.setup_state(state)
+                if setup_state is not None:
+                    state = setup_state
             except vf.Error as e:
                 state["error"] = e
             finally:
                 state["timing"].setup.end = time.time()
-            # checks all @vf.stop methods, runs all @vf.cleanup methods if any are True
             while not await self.is_completed(state):
                 try:
                     timing = state["timing"]

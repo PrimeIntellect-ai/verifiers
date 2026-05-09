@@ -18,6 +18,9 @@ jobs:
   test:
     name: Verifiers
     runs-on: ubuntu-latest
+    env:
+      PRIME_API_KEY: ${{ secrets.PRIME_API_KEY }}
+      PRIME_TEAM_ID: ${{ secrets.PRIME_TEAM_ID }}
     strategy:
       fail-fast: false
       matrix:
@@ -42,9 +45,19 @@ jobs:
 
       - name: Run tests
         run: |
-          uv run pytest tests/ -v --ignore=tests/test_envs.py --cov=verifiers --cov-report=xml --cov-report=term
+          uv run pytest tests/ -v --ignore=tests/test_envs.py -m "not prime_sandbox" --cov=verifiers --cov-report=xml --cov-report=term
+
+      - name: Run Prime sandbox tests
+        env:
+          PRIME_API_KEY: ${{ secrets.PRIME_API_KEY }}
+          PRIME_TEAM_ID: ${{ secrets.PRIME_TEAM_ID }}
+        run: |
+          test -n "$PRIME_API_KEY"
+          test -n "$PRIME_TEAM_ID"
+          uv run pytest tests/test_v1_runtime_lifecycle.py -v -m prime_sandbox --cov=verifiers --cov-append --cov-report=xml --cov-report=term
   test-envs:
     name: Environments
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:

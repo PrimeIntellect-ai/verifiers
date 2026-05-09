@@ -32,6 +32,76 @@ class TestMultiTurnEnv:
         assert env.timeout_seconds is None
 
     @pytest.mark.asyncio
+    async def test_setup_state_supports_in_place_and_returned_state(
+        self, mock_client, sample_chat_dataset, make_input
+    ):
+        """setup_state may mutate state in place or return the prepared state."""
+
+        class InPlaceSetupEnv(MultiTurnEnv):
+            async def setup_state(self, state):  # type: ignore[override]
+                state["setup_marker"] = "in-place"
+
+            async def env_response(self, messages, state, **kwargs):  # type: ignore[override]
+                return [{"role": "user", "content": "Continue"}]
+
+        class ChainedSuperSetupEnv(MultiTurnEnv):
+            async def setup_state(self, state):  # type: ignore[override]
+                prepared_state = await super().setup_state(state)
+                prepared_state["setup_marker"] = "super"
+                return prepared_state
+
+            async def env_response(self, messages, state, **kwargs):  # type: ignore[override]
+                return [{"role": "user", "content": "Continue"}]
+
+        class ReplacingSetupEnv(MultiTurnEnv):
+            async def setup_state(self, state):  # type: ignore[override]
+                replacement_state = State(state)
+                replacement_state["setup_marker"] = "replaced"
+                return replacement_state
+
+            async def env_response(self, messages, state, **kwargs):  # type: ignore[override]
+                return [{"role": "user", "content": "Continue"}]
+
+        mock_client.set_default_response("Done")
+        env_kwargs = {
+            "client": mock_client,
+            "model": "test-model",
+            "dataset": sample_chat_dataset,
+            "parser": Parser(),
+            "rubric": Rubric(),
+            "max_turns": 1,
+        }
+
+        in_place_state = await InPlaceSetupEnv(**env_kwargs).rollout(
+            input=make_input(
+                prompt=[{"role": "user", "content": "Start conversation"}],
+                answer="target_answer",
+            ),
+            client=mock_client,
+            model="test-model",
+        )
+        super_state = await ChainedSuperSetupEnv(**env_kwargs).rollout(
+            input=make_input(
+                prompt=[{"role": "user", "content": "Start conversation"}],
+                answer="target_answer",
+            ),
+            client=mock_client,
+            model="test-model",
+        )
+        replaced_state = await ReplacingSetupEnv(**env_kwargs).rollout(
+            input=make_input(
+                prompt=[{"role": "user", "content": "Start conversation"}],
+                answer="target_answer",
+            ),
+            client=mock_client,
+            model="test-model",
+        )
+
+        assert in_place_state["setup_marker"] == "in-place"
+        assert super_state["setup_marker"] == "super"
+        assert replaced_state["setup_marker"] == "replaced"
+
+    @pytest.mark.asyncio
     async def test_basic_multiturn_rollout(self, mock_multiturn_env, make_input):
         """Test basic multi-turn conversation that completes normally."""
         # Configure mock to return responses that lead to completion
@@ -244,7 +314,6 @@ class TestMultiTurnEnv:
             input=make_input(
                 prompt=prompt,
                 answer="test_answer",
-                task="test_task",
                 info={"extra": "data"},
             ),
             client=mock_multiturn_env.client,
@@ -254,7 +323,6 @@ class TestMultiTurnEnv:
         # Check all state fields are initialized
         assert state["prompt"] == prompt
         assert state["answer"] == "test_answer"
-        assert state["task"] == "test_task"
         assert state["info"] == {"extra": "data"}
         assert state["example_id"] == 0
         assert "trajectory" in state

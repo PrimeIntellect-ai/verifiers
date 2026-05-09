@@ -193,7 +193,15 @@ if [[ -z "$OPENCODE_WORKDIR" ]]; then
     OPENCODE_WORKDIR={shlex.quote(agent_workdir)}
 fi
 
-mkdir -p ~/.config/opencode {shlex.quote(log_dir)} "$OPENCODE_WORKDIR"
+# OpenCode follows XDG spec — config is read from
+# $XDG_CONFIG_HOME/opencode/opencode.json (default $HOME/.config). Some
+# sandbox images (e.g. SWE-rebench-V2's swerebenchv2/* images) override
+# XDG_CONFIG_HOME to a non-default path like /workspace/.config; writing
+# only to ~/.config/opencode would silently miss it and the binary would
+# fall back to its bundled "opencode" provider (free hosted Cloudflare
+# tier), which rate-limits under load and silently blocks the agent.
+OPENCODE_CONFIG_DIR="${{XDG_CONFIG_HOME:-$HOME/.config}}/opencode"
+mkdir -p "$OPENCODE_CONFIG_DIR" {shlex.quote(log_dir)} "$OPENCODE_WORKDIR"
 
 # Ensure OPENAI_MODEL has provider/model format for opencode AI SDK config.
 # LoRA adapter names (e.g. "rft-abc123") lack a slash, causing empty modelID.
@@ -203,7 +211,7 @@ fi
 
 SCHEMA_DOLLAR='$'
 
-cat > ~/.config/opencode/opencode.json << EOFCONFIG
+cat > "$OPENCODE_CONFIG_DIR/opencode.json" << EOFCONFIG
 {config_json}
 EOFCONFIG
 

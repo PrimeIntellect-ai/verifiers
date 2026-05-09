@@ -292,7 +292,8 @@ class TestSetupState:
             OpenCodeRLMEnv.__bases__[0],
             "setup_state",
             new_callable=AsyncMock,
-        ):
+        ) as setup_state:
+            setup_state.return_value = None
             await env.setup_state(state)
         assert state["sub_llm_turns"] == 0
         assert state["sub_llm_prompt_tokens"] == 0
@@ -307,7 +308,8 @@ class TestSetupState:
             OpenCodeRLMEnv.__bases__[0],
             "setup_state",
             new_callable=AsyncMock,
-        ):
+        ) as setup_state:
+            setup_state.return_value = None
             await env.setup_state(state)
         assert state["sub_llm_turns"] == 3
 

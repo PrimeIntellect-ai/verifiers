@@ -46,6 +46,8 @@ def test_renderer_client_honors_configured_renderer_name():
         size=1,
         tool_parser=None,
         reasoning_parser=None,
+        preserve_all_thinking=False,
+        preserve_thinking_between_tool_calls=False,
     )
 
 
@@ -75,6 +77,8 @@ def test_renderer_client_uses_renderer_model_name_override():
         size=1,
         tool_parser=None,
         reasoning_parser=None,
+        preserve_all_thinking=False,
+        preserve_thinking_between_tool_calls=False,
     )
 
 
@@ -152,16 +156,15 @@ async def test_renderer_client_rejects_empty_dict_native_response():
 
 
 @pytest.mark.asyncio
-async def test_from_native_response_propagates_id_model_created():
-    """vLLM /generate returns id/model/created at the top of the response;
-    completions_request must thread them through so Response.id, .model,
-    and .created don't fall back to empty defaults.
+async def test_from_native_response_uses_request_id_and_token_lengths():
+    """vLLM's /inference/v1/generate returns ``request_id`` (not ``id``) and
+    no ``usage``/``model``/``created``. ``Response.id`` should pick up
+    ``request_id``; usage is reconstructed from token-list lengths;
+    model/created are unused metadata.
     """
     client = object.__new__(RendererClient)
     response_dict = {
-        "id": "resp-42",
-        "model": "Qwen/Qwen3-8B",
-        "created": 1700000000,
+        "request_id": "resp-42",
         "content": "ok",
         "reasoning_content": None,
         "tool_calls": None,
@@ -169,14 +172,14 @@ async def test_from_native_response_propagates_id_model_created():
         "prompt_ids": [1, 2, 3],
         "completion_ids": [4, 5],
         "completion_logprobs": [-0.1, -0.2],
-        "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
         "routed_experts": None,
     }
 
     response = await client.from_native_response(response_dict)
     assert response.id == "resp-42"
-    assert response.model == "Qwen/Qwen3-8B"
-    assert response.created == 1700000000
+    assert response.usage.prompt_tokens == 3
+    assert response.usage.completion_tokens == 2
+    assert response.usage.total_tokens == 5
 
 
 class _BridgeRenderer:

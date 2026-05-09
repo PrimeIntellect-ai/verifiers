@@ -1,7 +1,7 @@
 """Tier-1 end-to-end tests for the renderer → RendererClient → Environment path.
 
 Exercises the full TITO wire protocol with a scripted stand-in for vLLM:
-messages → Renderer.render_ids → /v1/generate → Renderer.parse_response → trajectory.
+messages → Renderer.render_ids → /inference/v1/generate → Renderer.parse_response → trajectory.
 
 Asserts the four load-bearing invariants:
 
@@ -109,43 +109,38 @@ def tokenizer_and_renderer(model_family):
 
 
 class ScriptedVLLM:
-    """Fake ``AsyncOpenAI``-compatible client serving canned /generate responses.
-
-    Each call to ``post("/generate", body=...)`` pops the next scripted
-    completion and echoes the caller's ``prompt_token_ids`` back (matching the
-    vLLM contract — vLLM never rewrites text-only prompts).
+    """Fake ``AsyncOpenAI``-compatible client serving canned
+    /inference/v1/generate responses (vllm 0.20 wire shape).
     """
 
     def __init__(self, completions: list[list[int]]):
         self._completions = list(completions)
         self.requests: list[dict[str, Any]] = []
+        self.base_url = "http://fake-host:8000/v1"
 
-    async def post(self, path: str, *, cast_to=None, body=None):
-        assert path == "/generate", f"unexpected endpoint {path!r}"
+    async def post(self, path: str, *, cast_to=None, body=None, options=None):
+        assert path.endswith("/inference/v1/generate"), f"unexpected endpoint {path!r}"
         assert body is not None
         self.requests.append(body)
 
         assert self._completions, "ScriptedVLLM ran out of canned completions"
         completion_ids = self._completions.pop(0)
-        prompt_ids = list(body["prompt_token_ids"])
 
         return {
-            "id": f"resp-{len(self.requests)}",
-            "model": body.get("model", "test-model"),
-            "prompt_token_ids": prompt_ids,
+            "request_id": f"resp-{len(self.requests)}",
             "choices": [
                 {
                     "index": 0,
                     "token_ids": list(completion_ids),
-                    "logprobs": [-0.1] * len(completion_ids),
+                    "logprobs": {
+                        "content": [
+                            {"token": f"token_id:{tid}", "logprob": -0.1}
+                            for tid in completion_ids
+                        ]
+                    },
                     "finish_reason": "stop",
                 }
             ],
-            "usage": {
-                "prompt_tokens": len(prompt_ids),
-                "completion_tokens": len(completion_ids),
-                "total_tokens": len(prompt_ids) + len(completion_ids),
-            },
         }
 
     async def close(self):
@@ -254,7 +249,7 @@ async def test_reverse_text_single_turn(tokenizer_and_renderer, model_family):
             "prompt": input_messages,
             "answer": "olleh",
             "example_id": 0,
-            "task": "reverse-text",
+            "info": {"env_id": "reverse-text"},
         },
         client=client,
         model=model_name,
@@ -263,7 +258,7 @@ async def test_reverse_text_single_turn(tokenizer_and_renderer, model_family):
 
     # --- Invariant 1: vLLM saw exactly what the renderer produced --------
     assert len(scripted.requests) == 1
-    sent_prompt_ids = scripted.requests[0]["prompt_token_ids"]
+    sent_prompt_ids = scripted.requests[0]["token_ids"]
 
     expected_prompt_ids = renderer.render_ids(
         input_messages,
@@ -361,7 +356,7 @@ async def test_alphabet_sort_multi_turn(tokenizer_and_renderer, model_family):
         input={
             "prompt": [{"role": "user", "content": turn1_prompt}],
             "example_id": 0,
-            "task": "alphabet-sort",
+            "info": {"env_id": "alphabet-sort"},
         },
         client=client,
         model=model_name,
@@ -391,7 +386,7 @@ async def test_alphabet_sort_multi_turn(tokenizer_and_renderer, model_family):
             expected = renderer.render_ids(
                 step_prompt_dicts, add_generation_prompt=True
             )
-            assert scripted.requests[turn_idx]["prompt_token_ids"] == expected, (
+            assert scripted.requests[turn_idx]["token_ids"] == expected, (
                 f"turn {turn_idx}: client sent prompt_ids that don't match "
                 f"render_ids(step['prompt']) for {model_name}. "
                 f"Re-render path diverged."

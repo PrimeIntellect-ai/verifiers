@@ -33,7 +33,24 @@ def load_environment(
     corpus_dataset: str = "willcb/rare-wiki-pages",
     corpus_split: str = "train",
     chroma_db_dir: str = CHROMA_DB_DIR,
+    v1: bool = False,
 ) -> vf.Environment:
+    if v1:
+        from wiki_search_v1 import load_v1_environment
+
+        return load_v1_environment(
+            max_turns=max_turns,
+            judge_model=judge_model,
+            judge_base_url=judge_base_url,
+            judge_api_key_var=judge_api_key_var,
+            embed_model=embed_model,
+            embed_base_url=embed_base_url,
+            embed_api_key_var=embed_api_key_var,
+            corpus_dataset=corpus_dataset,
+            corpus_split=corpus_split,
+            chroma_db_dir=chroma_db_dir,
+        )
+
     # lazy corpus loading and chroma initialization
     _corpus_state: dict = {
         "loaded": False,

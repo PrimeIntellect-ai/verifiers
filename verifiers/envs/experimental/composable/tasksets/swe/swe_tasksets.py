@@ -94,8 +94,8 @@ def make_swelego_real_taskset(**kwargs: Any) -> TaskSet:
 def make_swerebench_v2_taskset(**kwargs: Any) -> TaskSet:
     """SWE-rebench-V2 TaskSet (nebius/SWE-rebench-V2, 32k rows, 20 languages).
 
-    Pass ``language=<one of the 20 language labels>`` to filter to a single
-    language; omit for the full cross-language mix.
+    Use ``filter_fn`` to filter rows, for example
+    ``"lambda x: x['info']['language'] == 'python'"`` for one language.
     """
     from verifiers.envs.experimental.composable.tasksets.swe.swe_rebench_v2 import (
         SWERebenchV2TaskSet,

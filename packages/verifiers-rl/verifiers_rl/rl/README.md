@@ -32,6 +32,8 @@ uv sync --extra rl
   - `[inference].gpus` (int; number of GPUs for vLLM)
   - `[trainer].gpus` (int; number of GPUs for training)
 - Optional `*.args` tables forward keyword arguments to their respective CLIs:
+  - `[env.args]` → passed as named args to `load_environment(...)`
+  - `[env.taskset]` / `[env.harness]` → passed through `config.taskset` / `config.harness`
   - `[inference.args]` → forwarded to `vf-vllm` (keys converted to `--kebab-case` flags)
   - `[trainer.args]` → mapped to `RLConfig` (see Configuration below)
 
@@ -64,7 +66,7 @@ max_tokens = 512
 max_seq_len = 2048
 ```
 
-See more examples under `configs/rl/` (e.g., `reverse-text.toml`, `alphabet-sort.toml`).
+See more examples under `configs/local/vf-rl/`.
 
 ### Running with `vf-rl`
 

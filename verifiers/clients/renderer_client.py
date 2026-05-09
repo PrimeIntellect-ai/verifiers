@@ -27,7 +27,7 @@ from renderers import (
 )
 from renderers import ToolCall as RendererToolCall
 from renderers import ToolCallFunction
-from renderers.client import completions_request
+from renderers.client import generate
 
 from verifiers.clients.client import Client
 from verifiers.clients.openai_chat_completions_client import (
@@ -125,10 +125,14 @@ def _normalize_for_comparison(value: Any, _key: str | None = None) -> Any:
     if hasattr(value, "model_dump"):
         return _normalize_for_comparison(value.model_dump(exclude_none=True))
     if isinstance(value, Mapping):
+        # Treat content="" as equivalent to content=None (absent): tool-call-only
+        # assistant messages get serialized either way depending on the upstream
+        # pipeline (e.g., reasoning parsers strip text content to "" while other
+        # paths leave it as None), and the prefix-match must be unaffected.
         return {
             str(k): _normalize_for_comparison(v, _key=str(k))
             for k, v in value.items()
-            if v is not None
+            if v is not None and not (str(k) == "content" and v == "")
         }
     if isinstance(value, list):
         return [_normalize_for_comparison(v) for v in value]
@@ -378,10 +382,15 @@ class RendererClient(
     """
 
     # Cache key is (renderer_model_name, renderer_name, tool_parser,
-    # reasoning_parser, pool_size) so that different parser configs or pool
-    # sizes for the same model don't collide.
+    # reasoning_parser, pool_size, preserve_all_thinking,
+    # preserve_thinking_between_tool_calls) so that different parser configs,
+    # pool sizes, or preserve-thinking bindings for the same model don't
+    # collide.
     _shared_pools: ClassVar[
-        dict[tuple[str, str, str | None, str | None, int], RendererPool]
+        dict[
+            tuple[str, str, str | None, str | None, int, bool, bool],
+            RendererPool,
+        ]
     ] = {}
     _shared_pools_lock: ClassVar[threading.Lock] = threading.Lock()
 
@@ -420,12 +429,22 @@ class RendererClient(
         reasoning_parser = (
             self._config.reasoning_parser if self._config is not None else None
         )
+        preserve_all_thinking = (
+            self._config.preserve_all_thinking if self._config is not None else False
+        )
+        preserve_thinking_between_tool_calls = (
+            self._config.preserve_thinking_between_tool_calls
+            if self._config is not None
+            else False
+        )
         cache_key = (
             renderer_model,
             renderer_name,
             tool_parser,
             reasoning_parser,
             self._pool_size,
+            preserve_all_thinking,
+            preserve_thinking_between_tool_calls,
         )
 
         with self._shared_pools_lock:
@@ -436,6 +455,8 @@ class RendererClient(
                     size=self._pool_size,
                     tool_parser=tool_parser,
                     reasoning_parser=reasoning_parser,
+                    preserve_all_thinking=preserve_all_thinking,
+                    preserve_thinking_between_tool_calls=preserve_thinking_between_tool_calls,
                 )
 
         return self._shared_pools[cache_key]
@@ -471,8 +492,24 @@ class RendererClient(
         renderer = self._get_renderer_or_pool(model)
 
         args = dict(sampling_args)
-        if "max_tokens" in args:
-            args["max_completion_tokens"] = args.pop("max_tokens")
+        sampling_params: dict[str, Any] = dict(args.pop("extra_body", None) or {})
+        for key in (
+            "temperature",
+            "top_p",
+            "top_k",
+            "min_p",
+            "seed",
+            "n",
+            "repetition_penalty",
+            "min_tokens",
+        ):
+            if args.get(key) is not None:
+                sampling_params[key] = args[key]
+        max_tokens = args.get("max_tokens") or args.get("max_completion_tokens")
+        if max_tokens is not None:
+            sampling_params["max_tokens"] = max_tokens
+        if args.get("prompt_logprobs"):
+            sampling_params["prompt_logprobs"] = 1
 
         prompt_ids = await _get_incremental_prompt_ids(
             renderer=renderer,
@@ -481,14 +518,18 @@ class RendererClient(
             tools=tools,
         )
 
-        return await completions_request(
+        return await generate(
             client=self.client,
             renderer=renderer,
             messages=prompt,
             model=model,
-            tools=tools,
             prompt_ids=prompt_ids,
-            **args,
+            tools=tools,
+            sampling_params=sampling_params,
+            cache_salt=args.get("cache_salt")
+            or sampling_params.pop("cache_salt", None),
+            priority=args.get("priority") or sampling_params.pop("priority", None),
+            extra_headers=args.get("extra_headers"),
         )
 
     async def raise_from_native_response(self, response: dict[str, Any]) -> None:
@@ -504,7 +545,7 @@ class RendererClient(
             )
 
     async def from_native_response(self, response: dict[str, Any]) -> Response:
-        """Parse the completions_request result dict into a verifiers Response."""
+        """Parse the generate() result dict into a verifiers Response."""
         content = response.get("content", "")
         reasoning_content = response.get("reasoning_content")
         finish_reason = _parse_finish_reason(response.get("finish_reason"))
@@ -538,20 +579,18 @@ class RendererClient(
             routed_experts=response.get("routed_experts"),
         )
 
-        usage_data = response.get("usage") or {}
+        # /inference/v1/generate doesn't return usage; reconstruct from tokens.
         usage = Usage(
-            prompt_tokens=usage_data.get("prompt_tokens", len(prompt_ids)),
+            prompt_tokens=len(prompt_ids),
             reasoning_tokens=0,
-            completion_tokens=usage_data.get("completion_tokens", len(completion_ids)),
-            total_tokens=usage_data.get(
-                "total_tokens", len(prompt_ids) + len(completion_ids)
-            ),
+            completion_tokens=len(completion_ids),
+            total_tokens=len(prompt_ids) + len(completion_ids),
         )
 
         return Response(
-            id=response.get("id", ""),
-            created=response.get("created", 0),
-            model=response.get("model", ""),
+            id=response.get("request_id", ""),
+            created=0,
+            model="",
             usage=usage,
             message=ResponseMessage(
                 content=content,

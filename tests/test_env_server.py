@@ -49,7 +49,7 @@ def make_rollout_request() -> RunRolloutRequest:
     return RunRolloutRequest(
         input=RolloutInput(
             example_id=0,
-            task="test",
+            env_id="test",
             prompt=[UserMessage(content="test")],
         ),
         client_config=ClientConfig(),

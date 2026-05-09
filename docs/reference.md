@@ -6,6 +6,7 @@
 - [Data Types](#data-types)
 - [Classes](#classes)
   - [Environment Classes](#environment-classes)
+  - [v1 Taskset/Harness Classes](#v1-tasksetharness-classes)
   - [Parser Classes](#parser-classes)
   - [Rubric Classes](#rubric-classes)
 - [Client Classes](#client-classes)
@@ -97,7 +98,7 @@ Selects which `Client` implementation to use. Set via `ClientConfig.client_type`
 
 ```python
 class State(dict):
-    INPUT_FIELDS = ["prompt", "answer", "task", "info", "example_id"]
+    INPUT_FIELDS = ["prompt", "answer", "info", "example_id"]
 ```
 
 A `dict` subclass that tracks rollout information. Accessing keys in `INPUT_FIELDS` automatically forwards to the nested `input` object.
@@ -134,7 +135,6 @@ A `dict` subclass that tracks rollout information. Accessing keys in `INPUT_FIEL
 class RolloutInput(TypedDict):
     prompt: Messages        # Required
     example_id: int         # Required
-    task: str               # Required
     answer: str             # Optional
     info: Info              # Optional
 ```
@@ -145,7 +145,6 @@ class RolloutInput(TypedDict):
 class RolloutOutput(dict):
     # Required fields
     example_id: int
-    task: str
     prompt: Messages | None
     completion: Messages | None
     reward: float
@@ -517,16 +516,261 @@ class OpenEnvEnv(MultiTurnEnv):
 
 OpenEnv integration that runs OpenEnv projects in Prime Sandboxes using a prebuilt image manifest (`.build.json`), supports both gym and MCP contracts, and requires a `prompt_renderer` to convert observations into chat messages.
 
+#### SWEDebugEnv
+
+```python
+class SWEDebugEnv(SandboxMixin, MultiTurnEnv):
+    def __init__(
+        self,
+        taskset: SandboxTaskSet,
+        dataset: Any = None,
+        *,
+        run_setup: bool = True,
+        debug_step: Literal["none", "gold_patch", "command", "script"] = "gold_patch",
+        run_tests: bool = True,
+        debug_command: str | None = None,
+        debug_script: str | None = None,
+        debug_script_path: str | None = None,
+        debug_timeout: int | None = None,
+        test_timeout: int = 900,
+        cpu_cores: int | None = None,
+        memory_gb: int | None = None,
+        disk_size_gb: int | None = None,
+        labels: list[str] | None = None,
+        timeout_seconds: float = 1800.0,
+        output_tail_chars: int = 2000,
+        **sandbox_kwargs,
+    ): ...
+```
+
+No-agent debugger for SWE-style `SandboxTaskSet` instances. It creates the task sandbox, optionally runs task setup, runs one debug step (`none`, `gold_patch`, `command`, or `script`), and optionally runs tests and scores the result.
+
 #### EnvGroup
 
 ```python
 env_group = vf.EnvGroup(
     envs=[env1, env2, env3],
-    names=["math", "code", "qa"]  # optional
+    env_names=["math", "code", "qa"]  # optional
 )
 ```
 
-Combines multiple environments for mixed-task training.
+Combines multiple environments for mixed-task training. Combined datasets use
+`info["env_id"]` as internal routing metadata; it is not a top-level input,
+state, or output field.
+
+---
+
+### v1 Taskset/Harness Classes
+
+The v1 API is exposed as `verifiers.v1` and documented in
+[BYO Harness](byo-harness.md). Its core unit is:
+
+```python
+state = await harness.run(task, state=None)
+```
+
+`Taskset` and `Env` package that runner for datasets, evals, and training.
+
+#### Task
+
+```python
+class Task(dict):
+    def freeze(self) -> Task: ...
+```
+
+Immutable, JSON-serializable input data. A task is usually created by a
+`Taskset`, but can be run directly through a standalone `Harness`.
+
+Common top-level fields:
+
+| Field | Description |
+|-------|-------------|
+| `prompt` | User/developer/tool messages for the rollout. Must not contain system messages. |
+| `system_prompt` | Per-task system messages or string. |
+| `answer` | Reference answer or target data. Stays on task, not state. |
+| `info` | Serializable metadata. |
+| `max_turns` | Per-task base-loop turn limit. |
+| `tools` | Tool visibility: `{"show": [...]}` or `{"hide": [...]}`. |
+| `toolsets` | Toolset visibility or rollout-local toolset config. |
+| `sandbox` | Per-task sandbox overrides for sandboxed programs. |
+| `program` | Task-owned files, dirs, env, setup, artifacts, bindings, and command args. |
+
+`task.runtime` is not public schema. Runtime metadata belongs on `State`.
+
+#### State
+
+```python
+class State(dict):
+    @classmethod
+    def for_task(task: Mapping[str, Any], ...) -> State: ...
+    def stop(self, condition: str = "state_done") -> None: ...
+    def get_model(self) -> str: ...
+    def get_client(api: str = "chat_completions", *, sync: bool = False) -> object: ...
+    def get_endpoint_config(api: str = "chat_completions") -> dict[str, str]: ...
+    def get_tools() -> dict[str, Callable[..., Awaitable[object]]]: ...
+    def get_max_turns(default: int) -> int: ...
+    def finalize() -> State: ...
+```
+
+Mutable rollout output. State starts from a task and accumulates trajectory,
+completion, metrics, reward, timing, artifacts, errors, and user-defined
+serializable fields.
+
+Framework-managed fields such as `is_completed`, `stop_condition`,
+`is_truncated`, and `error` cannot be written directly. Use `state.stop(...)` or
+raise `vf.Error` subclasses.
+
+`State.for_task(...)` can borrow selected active runtime handles from another
+state:
+
+```python
+child_state = state.for_task(child_task, borrow=["model", "sandbox"], tools="bash")
+child_state = await child_harness.run(child_task, child_state)
+```
+
+Borrowed handles are process-local and stripped before state crosses the
+serialization boundary.
+
+#### Taskset
+
+```python
+class Taskset:
+    def __init__(
+        source=None,
+        eval_source=None,
+        taskset_id: str | None = None,
+        system_prompt=None,
+        user=None,
+        toolsets=(),
+        stops=(),
+        setups=(),
+        updates=(),
+        metrics=(),
+        rewards=(),
+        advantages=(),
+        cleanups=(),
+        config: TasksetConfig | Mapping[str, object] | None = None,
+    ): ...
+
+    def rows() -> list[dict[str, Any]]: ...
+    def eval_rows() -> list[dict[str, Any]]: ...
+    def task(row: Mapping[str, Any]) -> Task: ...
+    def to_task(value: Mapping[str, Any] | Task | str) -> Task: ...
+    async def init_group(task: Task, num_rollouts: int) -> tuple[list[Task], list[State]]: ...
+    def get_dataset() -> Dataset: ...
+    def get_eval_dataset() -> Dataset: ...
+```
+
+Packages task rows and task-owned behavior. `source` and `eval_source` may be
+iterables or zero-argument loaders. Loaders should close over resolved config
+instead of accepting runtime kwargs.
+
+#### Harness
+
+```python
+class Harness:
+    def __init__(
+        program=None,
+        system_prompt=None,
+        user=None,
+        sandbox=None,
+        client=None,
+        model: str | None = None,
+        sampling_args: SamplingArgs | None = None,
+        max_turns: int | None = None,
+        toolsets=None,
+        stops=None,
+        setups=None,
+        updates=None,
+        metrics=None,
+        rewards=None,
+        advantages=None,
+        cleanups=None,
+        config: HarnessConfig | Mapping[str, object] | None = None,
+    ): ...
+
+    async def run(task: Task | Mapping[str, Any], state: State | None = None) -> State: ...
+    async def score_group(tasks: list[Task], states: list[State]) -> list[State]: ...
+    async def cleanup_group(tasks: list[Task], states: list[State]) -> None: ...
+    async def teardown() -> None: ...
+```
+
+Runs one task. All model calls go through the v1 interception endpoint so
+trajectory capture, sampling args, tool forwarding, and protocol translation use
+one path across local Python, sandboxed Python, command programs, and the base
+tool loop.
+
+`program` forms:
+
+| Form | Meaning |
+|------|---------|
+| `None` | Default endpoint-backed tool loop. |
+| callable | In-process Python program with `task, state`. |
+| `{"base": true, ...}` | Explicit default loop, usually with sandbox options. |
+| `{"fn": "pkg.module:run", ...}` | Importable Python program. |
+| `{"command": ["cmd", "arg"], ...}` | Local or sandboxed command. |
+
+Sandboxed `program.fn` refs resolve their owning local package from the resolved
+module root: single-file modules use `pyproject.toml` in the same directory as
+the module file, and package modules use `pyproject.toml` inside the package
+directory. v1 uploads and installs that package in the program sandbox. Package
+dependencies come from normal `[project.dependencies]`.
+
+#### Env
+
+```python
+class Env(vf.Environment):
+    def __init__(taskset: Taskset, harness: Harness | None = None): ...
+```
+
+Adapter that makes a v1 taskset/harness pair usable by eval and training
+workers. If `harness` is omitted, `Env` uses the base `Harness`.
+
+#### Toolset And MCPTool
+
+```python
+class Toolset:
+    def __init__(
+        tools=(),
+        show=None,
+        hide=None,
+        bindings=None,
+        objects=None,
+        write: bool = False,
+        scope: Literal["rollout", "group", "global"] = "rollout",
+        sandbox=None,
+        stops=(),
+        setups=(),
+        updates=(),
+        metrics=(),
+        rewards=(),
+        advantages=(),
+        cleanups=(),
+        config: ToolsetConfig | Mapping[str, object] | None = None,
+    ): ...
+
+class MCPTool:
+    def __init__(command: str, args=None, env=None, cwd: str | None = None): ...
+```
+
+Toolsets package callable tools, MCP servers, private dependency factories, and
+hidden bindings. `objects.*` bindings are private to the owning toolset/user and
+are not directly accessible from state.
+
+#### v1 Config Models
+
+```python
+TasksetConfig.from_toml(path, section=None)
+HarnessConfig.from_toml(path, section=None)
+ToolsetConfig(...)
+SandboxConfig(...)
+UserConfig(...)
+MCPToolConfig(...)
+```
+
+v1 config models are Pydantic models. Constructors accept config objects or
+plain mappings; TOML config uses `"module:object"` refs for Python callables and
+loaders. Unknown fields fail validation.
 
 ---
 
@@ -626,7 +870,6 @@ def my_reward(
     prompt: Messages | None = None,
     state: State | None = None,
     parser: Parser | None = None,  # if rubric has parser
-    task: str = "",
     info: Info | None = None,
     **kwargs
 ) -> float:
@@ -750,12 +993,56 @@ Provider-agnostic tool definition. Environments define tools using this type; ea
 
 ## Configuration Types
 
+### v1 Config
+
+```python
+class Config(BaseModel):
+    def __init__(self, config: object | None = None, /, **data: object): ...
+
+    @classmethod
+    def from_config(cls, config: object | None = None, /, **data: object) -> Self: ...
+
+    @classmethod
+    def from_toml(
+        cls, path: str | Path, section: str | Iterable[str] | None = None
+    ) -> Self: ...
+
+class EnvConfig(Config):
+    taskset: object | None = None
+    harness: object | None = None
+
+class TasksetConfig(Config):
+    taskset_id: str | None = None
+    system_prompt: object | None = None
+    source: object | None = None
+    eval_source: object | None = None
+    user: object | None = None
+
+class HarnessConfig(Config):
+    program: object | None = None
+    system_prompt: object | None = None
+    sandbox: SandboxConfig | None = None
+    model: str | None = None
+    sampling_args: dict[str, object] = {}
+    max_turns: int = 10
+```
+
+`EnvConfig` is the typed v1 loader envelope. TOML `[env.taskset]` and
+`[env.harness]` sections flow to `config.taskset` and `config.harness`;
+environment-specific named args flow through `[env.args]`.
+
+`Config` subclasses accept a positional source config plus direct keyword
+overrides. The source object is positional-only so subclasses can define a real
+field named `config`.
+
 ### ClientConfig
 
 ```python
 class ClientConfig(BaseModel):
     client_idx: int = 0
     client_type: ClientType = "openai_chat_completions"
+    preserve_all_thinking: bool = False
+    preserve_thinking_between_tool_calls: bool = False
     api_key_var: str = "PRIME_API_KEY"
     api_base_url: str = "https://api.pinference.ai/api/v1"
     endpoint_configs: list[EndpointClientConfig] = []
@@ -771,6 +1058,8 @@ class ClientConfig(BaseModel):
 `extra_headers_from_state` maps HTTP header names to state field names. For each inference request, the header value is dynamically read from the rollout state dict. For example, `{"X-Session-ID": "example_id"}` adds a `X-Session-ID` header with the value of `state["example_id"]`, enabling sticky routing at the inference router level.
 
 `client_type` selects which `Client` implementation to instantiate (see [Client Classes](#client-classes)). Use `endpoint_configs` for multi-endpoint round-robin. In grouped scoring mode, groups are distributed round-robin across endpoint configs.
+
+`preserve_all_thinking` and `preserve_thinking_between_tool_calls` are forwarded to the underlying renderer when `client_type == "renderer"`. They control whether past-assistant `reasoning_content` is re-emitted on subsequent renders — `preserve_all_thinking` keeps every past-assistant turn's thinking, and `preserve_thinking_between_tool_calls` keeps thinking only inside the in-flight assistant→tool→…→assistant block after the most recent user turn (when that block contains at least one tool response). Both default to `False` (template default applies).
 
 When `api_key_var` is `"PRIME_API_KEY"` (the default), credentials are loaded with the following precedence:
 - **API key**: `PRIME_API_KEY` env var > `~/.prime/config.json` > `"EMPTY"`

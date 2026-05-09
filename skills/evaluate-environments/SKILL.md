@@ -57,6 +57,15 @@ url = "https://api.example/v1"
 key = "OPENAI_API_KEY"
 headers = { "X-Custom-Header" = "value" }
 ```
+8. Endpoint entries support `api_client_type` when the provider is not OpenAI Chat Completions compatible. Use `openai_responses` for Responses-compatible endpoints and `anthropic_messages` for Anthropic Messages endpoints:
+```toml
+[[endpoint]]
+endpoint_id = "gpt-responses"
+model = "gpt-5.4-mini"
+url = "https://api.openai.com/v1"
+key = "OPENAI_API_KEY"
+api_client_type = "openai_responses"
+```
 
 ## Publish Gate Before Large Runs
 1. After smoke tests pass and results look stable, proactively suggest pushing the environment to Hub before large eval sweeps or RL work.
@@ -130,7 +139,7 @@ env_id = "my-env"
 [ablation.sweep]
 temperature = [0.0, 0.5, 1.0]
 
-[ablation.sweep.env_args]
+[ablation.sweep.args]
 difficulty = ["easy", "hard"]
 ```
 This generates the cartesian product (6 configs in this example). Use `--abbreviated-summary` (`-A`) for compact ablation results.

@@ -65,8 +65,10 @@ from verifiers.types import (
     State,
     TokenUsage,
     Tool,
+    flatten_task_input,
 )
 from verifiers.utils.async_utils import (
+    maybe_call_with_named_args,
     maybe_retry,
     maybe_semaphore,
     with_sem,
@@ -209,6 +211,14 @@ class Environment(ABC):
 
         self.__post_init__()
 
+    @property
+    def requires_group_rollouts(self) -> bool:
+        return self.rubric.has_group_rewards
+
+    @property
+    def provides_advantages(self) -> bool:
+        return self.rubric.has_advantages
+
     @staticmethod
     def _normalize_tool_defs(
         tools: list[Tool] | list[dict[str, Any]] | None,
@@ -249,13 +259,11 @@ class Environment(ABC):
 
         def _sync_teardown():
             try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    asyncio.create_task(self._teardown())
-                else:
-                    loop.run_until_complete(self._teardown())
+                loop = asyncio.get_running_loop()
             except RuntimeError:
                 asyncio.run(self._teardown())
+            else:
+                loop.create_task(self._teardown())
 
         atexit.register(_sync_teardown)
         signal.signal(
@@ -344,18 +352,6 @@ class Environment(ABC):
                 )
         return dataset
 
-    def _ensure_task(self, dataset: Dataset, map_kwargs: dict = {}) -> Dataset:
-        """Ensure task column exists, set to env_id."""
-        if "task" not in dataset.column_names:
-            task_value = self.env_id or "default"
-
-            def add_task(example):
-                example["task"] = task_value
-                return example
-
-            dataset = dataset.map(add_task, **map_kwargs)
-        return dataset
-
     def _format_dataset(
         self,
         dataset: Dataset,
@@ -366,23 +362,25 @@ class Environment(ABC):
         map_kwargs: dict = {},
     ) -> Dataset:
         """
-        Format dataset by creating example_id and prompt columns, and setting task column.
+        Format dataset by creating example_id and prompt columns.
         """
+        if "env_id" in dataset.column_names:
+            dataset = dataset.remove_columns(["env_id"])
         dataset = self._ensure_example_id(dataset)
         dataset = self._ensure_prompt(
             dataset, system_prompt, few_shot, question_key, answer_key, map_kwargs
         )
-        dataset = self._ensure_task(dataset, map_kwargs)
         return dataset
 
     def _format_completion_dataset(
         self, dataset: Dataset, map_kwargs: dict = {}
     ) -> Dataset:
         """
-        Format dataset by creating example_id and prompt columns, and setting task column.
+        Format dataset by creating example_id.
         """
+        if "env_id" in dataset.column_names:
+            dataset = dataset.remove_columns(["env_id"])
         dataset = self._ensure_example_id(dataset)
-        dataset = self._ensure_task(dataset, map_kwargs)
         return dataset
 
     def _format_dataset_source(self, dataset: Dataset) -> Dataset:
@@ -565,17 +563,18 @@ class Environment(ABC):
         Environment-agnostic - just stores the data.
 
         Creates State with input fields in "input" RolloutInput for structured access,
-        but State's forwarding behavior allows backward-compatible direct access.
+        while State's forwarding behavior keeps direct access ergonomic.
         """
         state_input = cast(RolloutInput, deepcopy(input))
         if "info" in state_input and isinstance(state_input["info"], str):
             state_input["info"] = json.loads(state_input["info"])
-        if "task" not in state_input:
-            state_input["task"] = self.env_id or "default"
+        state_task = flatten_task_input(state_input)
+        state_input = cast(RolloutInput, state_task)
         state = State(input=state_input)
+        state["task"] = state_task
 
         # Convert prompt to Pydantic messages
-        raw_prompt = input.get("prompt")
+        raw_prompt = state_input.get("prompt")
         if isinstance(raw_prompt, (str, list)):
             state["prompt"] = normalize_messages(raw_prompt, field_name="input.prompt")
 
@@ -626,12 +625,23 @@ class Environment(ABC):
         """
         pass
 
-    async def _cleanup(self, state: State):
+    async def cleanup(
+        self,
+        state: State,
+        task: object | None = None,
+        resources: object | None = None,
+    ):
         """
-        Clean up rollout resources.
+        Finalize rollout state and clean up rollout-local resources.
         """
         for handler in self._cleanup_handlers:
-            await handler(state)
+            await maybe_call_with_named_args(
+                handler,
+                task=task,
+                state=state,
+                env=self,
+                resources=resources,
+            )
 
     async def _teardown(self):
         """
@@ -641,8 +651,13 @@ class Environment(ABC):
         for handler in self._teardown_handlers:
             await handler()
 
-    async def _render_stop(self, state: State, condition) -> bool:
-        if await condition(state):
+    async def _render_stop(self, state: State, condition, **kwargs) -> bool:
+        if await maybe_call_with_named_args(
+            condition,
+            state=state,
+            env=self,
+            **kwargs,
+        ):
             state["is_completed"] = True
             state["is_truncated"] = state.get("is_truncated", False) or any(
                 step.get("is_truncated", False) for step in state.get("trajectory", [])
@@ -657,11 +672,69 @@ class Environment(ABC):
 
     @final
     async def is_completed(self, state: State, **kwargs) -> bool:
-        """Check all stop conditions. Sets state.is_completed=True if any condition is met."""
+        """Check stop conditions and render stop fields when one fires."""
         for condition in self._stop_conditions:
-            if await self._render_stop(state, condition):
+            if await self._render_stop(state, condition, **kwargs):
                 return True
         return False
+
+    async def _run_rollout_state(
+        self,
+        input: RolloutInput,
+        client: Client,
+        model: str,
+        sampling_args: SamplingArgs,
+    ) -> State:
+        state = await self.rollout(
+            input,
+            client,
+            model,
+            sampling_args,
+        )
+
+        state["timing"].scoring.start = time.time()
+        if self.score_rollouts:
+            await self.rubric.score_rollout(state)
+        else:
+            await self.rubric.dummy_score_rollout(state)
+        state["timing"].scoring.end = time.time()
+
+        await self.rubric.cleanup(state)
+        return state
+
+    async def _run_group_states(
+        self,
+        group_inputs: list[RolloutInput],
+        client: Client,
+        model: str,
+        sampling_args: SamplingArgs,
+    ) -> list[State]:
+        rollout_tasks = [
+            self.rollout(
+                input,
+                client,
+                model,
+                sampling_args,
+            )
+            for input in group_inputs
+        ]
+        group_states = await asyncio.gather(*rollout_tasks)
+
+        start_scoring = time.time()
+        for state in group_states:
+            state["timing"].scoring.start = start_scoring
+        if self.score_rollouts:
+            await self.rubric.score_group(group_states)
+        else:
+            await self.rubric.dummy_score_group(group_states)
+        end_scoring = time.time()
+        for state in group_states:
+            state["timing"].scoring.end = end_scoring
+
+        for state in group_states:
+            await self.rubric.cleanup(state)
+
+        return group_states
 
     @final
     async def run_rollout(
@@ -698,23 +771,12 @@ class Environment(ABC):
         resolved_client = resolve_client(client)
 
         async def run_rollout_attempt() -> State:
-            state = await self.rollout(
+            return await self._run_rollout_state(
                 input,
                 resolved_client,
                 model,
                 sampling_args,
             )
-
-            state["timing"].scoring.start = time.time()
-            if self.score_rollouts:
-                await self.rubric.score_rollout(state)
-            else:
-                await self.rubric.dummy_score_rollout(state)
-            state["timing"].scoring.end = time.time()
-
-            await self.rubric.cleanup(state)
-
-            return state
 
         state = await maybe_retry(run_rollout_attempt, max_retries=max_retries)()
         output = state_to_output(state, state_columns or [])
@@ -756,32 +818,12 @@ class Environment(ABC):
         resolved_client = resolve_client(client)
 
         async def run_group_attempt() -> list[State]:
-            rollout_tasks = [
-                self.rollout(
-                    input,
-                    resolved_client,
-                    model,
-                    sampling_args,
-                )
-                for input in group_inputs
-            ]
-            group_states = await asyncio.gather(*rollout_tasks)
-
-            start_scoring = time.time()
-            for state in group_states:
-                state["timing"].scoring.start = start_scoring
-            if self.score_rollouts:
-                await self.rubric.score_group(group_states)
-            else:
-                await self.rubric.dummy_score_group(group_states)
-            end_scoring = time.time()
-            for state in group_states:
-                state["timing"].scoring.end = end_scoring
-
-            for state in group_states:
-                await self.rubric.cleanup(state)
-
-            return group_states
+            return await self._run_group_states(
+                group_inputs,
+                resolved_client,
+                model,
+                sampling_args,
+            )
 
         group_states = await maybe_retry(run_group_attempt, max_retries=max_retries)()
         outputs = [

@@ -185,7 +185,6 @@ class SWESmithTaskSet(SandboxTaskSet):
         language: str = "py",
         dataset_name: str | None = None,
         split: str = "train",
-        filter_repos: list[str] | None = None,
         filter_fn: str | None = None,
         ds_num_proc: int | None = None,
         ds_keep_in_memory: bool = True,
@@ -199,7 +198,6 @@ class SWESmithTaskSet(SandboxTaskSet):
         self.language = language
         self.dataset_name = dataset_name or LANGUAGE_TO_DATASET[language]
         self.split = split
-        self.filter_repos = filter_repos
         self.ds_num_proc = ds_num_proc
         self.ds_keep_in_memory = ds_keep_in_memory
         self.timeout_minutes = timeout_minutes
@@ -235,10 +233,6 @@ class SWESmithTaskSet(SandboxTaskSet):
                 return False
 
         dataset = dataset.filter(_has_profile, **_kw)
-
-        if self.filter_repos:
-            filter_set = frozenset(self.filter_repos)
-            dataset = dataset.filter(lambda x: x.get("repo") not in filter_set, **_kw)
 
         return dataset.map(_process_example, remove_columns=dataset.column_names, **_kw)
 

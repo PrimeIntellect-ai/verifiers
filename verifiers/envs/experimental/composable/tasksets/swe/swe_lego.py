@@ -193,7 +193,6 @@ class SWELegoTaskSet(SandboxTaskSet):
         self,
         dataset_name: str = "PrimeIntellect/SWE-Lego-Real-Data",
         split: str = "resolved",
-        filter_repos: list[str] | None = None,
         filter_fn: str | None = None,
         ds_num_proc: int | None = None,
         ds_keep_in_memory: bool = True,
@@ -209,7 +208,6 @@ class SWELegoTaskSet(SandboxTaskSet):
         """
         self.dataset_name = dataset_name
         self.split = split
-        self.filter_repos = filter_repos
         self.ds_num_proc = ds_num_proc
         self.ds_keep_in_memory = ds_keep_in_memory
         self.timeout_minutes = timeout_minutes
@@ -231,9 +229,6 @@ class SWELegoTaskSet(SandboxTaskSet):
             keep_in_memory=self.ds_keep_in_memory,
             num_proc=self.ds_num_proc,
         )
-        if self.filter_repos:
-            filter_set = frozenset(self.filter_repos)
-            dataset = dataset.filter(lambda x: x.get("repo") not in filter_set, **_kw)
         # Some datasets (e.g. Real-Data) have struct columns with variable sub-keys
         # (e.g. install_config.JUPYTER_PLATFORM_DIRS). Arrow can't infer a consistent
         # schema across batches, so pre-serialize them to JSON strings.
