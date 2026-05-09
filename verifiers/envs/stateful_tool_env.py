@@ -161,7 +161,9 @@ class StatefulToolEnv(vf.ToolEnv):
                 tool_name, tool_args, messages, state, **kwargs
             )
             try:
-                tool_message = await self.call_tool(tool_name, tool_args, tool_call_id)
+                tool_message = await self.call_tool(
+                    tool_name, tool_args, tool_call_id, state=state
+                )
                 tool_messages.append(tool_message)
             except Exception as e:
                 if self._should_stop_for_error(e):
