@@ -86,7 +86,9 @@ from verifiers.utils.save_utils import (
     state_to_output,
     validate_resume_metadata,
 )
-from verifiers.utils.usage_utils import StateUsageTracker
+from verifiers.utils.usage_utils import StateUsageTracker, extract_usage_tokens
+
+import verifiers.envs.experimental.braintrust_tracing.braintrust_tracing as _bt
 
 _MESSAGE_TYPE_UNSET = object()
 
@@ -539,13 +541,45 @@ class Environment(ABC):
 
         self._get_usage_tracker(state, create_if_missing=True)
 
-        response = await client.get_response(
-            prompt=prompt,
+        bt_parent = state.get("_bt_turn_span") or state.get("_bt_span")
+        bt_span = _bt.model_request_span(
+            bt_parent,
             model=model,
-            tools=tool_defs,
-            sampling_args=sampling_args,
-            state=state,
+            turn_index=len(state.get("trajectory", [])),
+            messages=prompt,
         )
+        t0 = time.monotonic()
+        error_msg = ""
+        response = None
+        try:
+            response = await client.get_response(
+                prompt=prompt,
+                model=model,
+                tools=tool_defs,
+                sampling_args=sampling_args,
+                state=state,
+            )
+        except Exception as exc:
+            error_msg = repr(exc)[:500]
+            raise
+        except BaseException as exc:
+            error_msg = repr(exc)[:500]
+            raise
+        finally:
+            dur = time.monotonic() - t0
+            input_tok, output_tok = 0.0, 0.0
+            if not error_msg and response is not None:
+                input_tok, output_tok = (
+                    float(v) for v in extract_usage_tokens(response)
+                )
+            _bt.model_request_completed(
+                bt_span,
+                duration_s=dur,
+                input_tokens=input_tok,
+                output_tokens=output_tok,
+                response=response if not error_msg else None,
+                error=error_msg,
+            )
         self.increment_state_usage_from_response(state, response)
 
         return response
@@ -685,6 +719,17 @@ class Environment(ABC):
         model: str,
         sampling_args: SamplingArgs,
     ) -> State:
+        t0 = time.monotonic()
+        bt_span = _bt.rollout_started(
+            env_id=self.env_id,
+            model=model,
+            example_id=input.get("example_id", ""),
+            trajectory_id="",
+        )
+        # Pass the rollout span to rollout() via a coroutine-local context var.
+        # We cannot thread it through `input` (deep-copied by init_state) or
+        # store it on `self` (shared across concurrent rollouts).
+        _bt._pending_rollout_span.set(bt_span)
         state = await self.rollout(
             input,
             client,
@@ -692,14 +737,33 @@ class Environment(ABC):
             sampling_args,
         )
 
+        bt_score = _bt.scoring_started(
+            bt_span, trajectory_id=state.get("trajectory_id", "")
+        )
         state["timing"].scoring.start = time.time()
         if self.score_rollouts:
             await self.rubric.score_rollout(state)
         else:
             await self.rubric.dummy_score_rollout(state)
         state["timing"].scoring.end = time.time()
+        scoring_dur = state["timing"].scoring.end - state["timing"].scoring.start
+        _bt.scoring_completed(
+            bt_score, duration_s=scoring_dur, reward=state.get("reward")
+        )
 
         await self.rubric.cleanup(state)
+
+        usage = self.get_state_usage(state) or {}
+        _bt.rollout_completed(
+            bt_span,
+            reward=state.get("reward"),
+            num_turns=len(state.get("trajectory", [])),
+            duration_s=time.monotonic() - t0,
+            stop_condition=state.get("stop_condition", ""),
+            error=repr(state["error"])[:500] if state.get("error") else "",
+            input_tokens=float(usage.get("input_tokens", 0)),
+            output_tokens=float(usage.get("output_tokens", 0)),
+        )
         return state
 
     async def _run_group_states(
@@ -709,16 +773,36 @@ class Environment(ABC):
         model: str,
         sampling_args: SamplingArgs,
     ) -> list[State]:
-        rollout_tasks = [
-            self.rollout(
-                input,
-                client,
-                model,
-                sampling_args,
+        t0 = time.monotonic()
+        example_id = group_inputs[0].get("example_id", "") if group_inputs else ""
+        bt_group = _bt.group_started(
+            env_id=self.env_id,
+            model=model,
+            example_id=example_id,
+            group_size=len(group_inputs),
+        )
+
+        bt_rollout_spans: list[object] = []
+        rollout_start_times: list[float] = []
+
+        async def _traced_rollout(ri: RolloutInput) -> State:
+            """Wrap a single rollout with its own Braintrust span."""
+            r_t0 = time.monotonic()
+            bt_rollout = _bt.start_child_span(
+                bt_group,
+                name="rollout",
+                span_type="task",
+                input={"example_id": _bt._safe(ri.get("example_id", ""))},
+                metadata={"env_id": self.env_id, "model": model},
             )
-            for input in group_inputs
-        ]
-        group_states = await asyncio.gather(*rollout_tasks)
+            bt_rollout_spans.append(bt_rollout)
+            rollout_start_times.append(r_t0)
+            _bt._pending_rollout_span.set(bt_rollout)
+            return await self.rollout(ri, client, model, sampling_args)
+
+        group_states = await asyncio.gather(
+            *[_traced_rollout(inp) for inp in group_inputs]
+        )
 
         start_scoring = time.time()
         for state in group_states:
@@ -734,6 +818,29 @@ class Environment(ABC):
         for state in group_states:
             await self.rubric.cleanup(state)
 
+        now = time.monotonic()
+        for st, bt_rollout, r_t0 in zip(
+            group_states, bt_rollout_spans, rollout_start_times
+        ):
+            usage = self.get_state_usage(st) or {}
+            _bt.rollout_completed(
+                bt_rollout,
+                reward=st.get("reward"),
+                num_turns=len(st.get("trajectory", [])),
+                duration_s=now - r_t0,
+                stop_condition=st.get("stop_condition", ""),
+                error=repr(st["error"])[:500] if st.get("error") else "",
+                input_tokens=float(usage.get("input_tokens", 0)),
+                output_tokens=float(usage.get("output_tokens", 0)),
+            )
+
+        rewards = [s.get("reward") for s in group_states if s.get("reward") is not None]
+        _bt.group_completed(
+            bt_group,
+            duration_s=time.monotonic() - t0,
+            avg_reward=sum(rewards) / len(rewards) if rewards else None,
+            group_size=len(group_inputs),
+        )
         return group_states
 
     @final
@@ -990,6 +1097,11 @@ class Environment(ABC):
             assert single_client is not None
             return single_client
 
+        if _bt.enabled():
+            run_tags = _bt.set_run_tags()
+            if run_tags:
+                logging.getLogger(__name__).info("Braintrust run tag: %s", run_tags[0])
+
         try:
             if self.env_client is None and endpoint_client_configs:
                 for endpoint_config in endpoint_client_configs:
@@ -1119,6 +1231,8 @@ class Environment(ABC):
 
             return results
         finally:
+            _bt.clear_run_tags()
+            _bt.flush()
             if pbar is not None:
                 pbar.close()
             if local_endpoint_clients:

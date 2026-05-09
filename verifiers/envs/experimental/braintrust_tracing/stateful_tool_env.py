@@ -4,6 +4,7 @@ from abc import abstractmethod
 from typing import Callable, cast
 
 import verifiers as vf
+from verifiers.envs.experimental.braintrust_tracing.tool_env import ToolEnv
 from verifiers.types import Tool, ToolMessage
 from verifiers.utils.tool_utils import convert_func_to_tool_def
 
@@ -39,7 +40,7 @@ def filter_signature(func, args_to_skip):
     return wrapper
 
 
-class StatefulToolEnv(vf.ToolEnv):
+class StatefulToolEnv(ToolEnv):
     def __init__(
         self,
         tools: list[Callable] | None = None,
@@ -161,7 +162,9 @@ class StatefulToolEnv(vf.ToolEnv):
                 tool_name, tool_args, messages, state, **kwargs
             )
             try:
-                tool_message = await self.call_tool(tool_name, tool_args, tool_call_id)
+                tool_message = await self.call_tool(
+                    tool_name, tool_args, tool_call_id, state=state
+                )
                 tool_messages.append(tool_message)
             except Exception as e:
                 if self._should_stop_for_error(e):

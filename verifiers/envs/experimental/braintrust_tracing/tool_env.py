@@ -1,7 +1,10 @@
 import json
+import time
 from typing import Callable, cast
 
 import verifiers as vf
+import verifiers.envs.experimental.braintrust_tracing.braintrust_tracing as _bt
+from verifiers.envs.experimental.braintrust_tracing.multiturn_env import MultiTurnEnv
 from verifiers.types import AssistantMessage, Messages, ToolCall, ToolMessage
 from verifiers.utils.async_utils import maybe_await
 from verifiers.utils.tool_utils import (
@@ -71,7 +74,7 @@ class ToolMonitorRubric(vf.Rubric):
         return tool_call_count_func
 
 
-class ToolEnv(vf.MultiTurnEnv):
+class ToolEnv(MultiTurnEnv):
     def __init__(
         self,
         tools: list[Callable] | None = None,
@@ -133,14 +136,39 @@ class ToolEnv(vf.MultiTurnEnv):
         self, tool_name: str, tool_args: dict, tool_call_id: str, **kwargs
     ) -> ToolMessage:
         """Call a tool based on JSON command."""
-        tool_func = self.tool_map[tool_name]
-        result = await maybe_await(tool_func, **tool_args)
-        content = result if is_valid_tool_content_parts(result) else str(result)
-        return ToolMessage(
-            role="tool",
-            content=content,
-            tool_call_id=tool_call_id,
+        state = kwargs.get("state")
+        bt_parent = (
+            (state.get("_bt_turn_span") or state.get("_bt_span")) if state else None
         )
+        bt_span = _bt.tool_call_started(
+            bt_parent,
+            tool_name=tool_name,
+            tool_call_id=tool_call_id,
+            tool_args=tool_args,
+        )
+        t0 = time.monotonic()
+        err_msg = ""
+        result_content = None
+        try:
+            tool_func = self.tool_map[tool_name]
+            result = await maybe_await(tool_func, **tool_args)
+            content = result if is_valid_tool_content_parts(result) else str(result)
+            result_content = content
+            return ToolMessage(
+                role="tool",
+                content=content,
+                tool_call_id=tool_call_id,
+            )
+        except Exception as exc:
+            err_msg = repr(exc)[:500]
+            raise
+        finally:
+            _bt.tool_call_completed(
+                bt_span,
+                duration_s=time.monotonic() - t0,
+                result=result_content if not err_msg else None,
+                error=err_msg,
+            )
 
     async def env_response(
         self, messages: vf.Messages, state: vf.State, **kwargs
@@ -166,7 +194,9 @@ class ToolEnv(vf.MultiTurnEnv):
                 continue  # skip tool call below
 
             try:
-                tool_message = await self.call_tool(tool_name, tool_args, tool_call_id)
+                tool_message = await self.call_tool(
+                    tool_name, tool_args, tool_call_id, state=state
+                )
                 tool_messages.append(tool_message)
             except Exception as e:
                 if self._should_stop_for_error(e):

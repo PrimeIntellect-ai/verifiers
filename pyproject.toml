@@ -234,7 +234,7 @@ invalid-assignment = "ignore"
 not-iterable = "ignore"
 
 [[tool.ty.overrides]]
-include = ["verifiers/braintrust_tracing.py"]
+include = ["verifiers/envs/experimental/braintrust_tracing/**"]
 
 [tool.ty.overrides.rules]
 unresolved-import = "ignore"
