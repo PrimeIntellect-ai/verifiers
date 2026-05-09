@@ -782,10 +782,10 @@ class Environment(ABC):
             group_size=len(group_inputs),
         )
 
-        bt_rollout_spans: list[object] = []
-        rollout_start_times: list[float] = []
+        bt_rollout_spans: list[object] = [None] * len(group_inputs)
+        rollout_start_times: list[float] = [0.0] * len(group_inputs)
 
-        async def _traced_rollout(ri: RolloutInput) -> State:
+        async def _traced_rollout(idx: int, ri: RolloutInput) -> State:
             """Wrap a single rollout with its own Braintrust span."""
             r_t0 = time.monotonic()
             bt_rollout = _bt.start_child_span(
@@ -795,13 +795,13 @@ class Environment(ABC):
                 input={"example_id": _bt._safe(ri.get("example_id", ""))},
                 metadata={"env_id": self.env_id, "model": model},
             )
-            bt_rollout_spans.append(bt_rollout)
-            rollout_start_times.append(r_t0)
+            bt_rollout_spans[idx] = bt_rollout
+            rollout_start_times[idx] = r_t0
             _bt._pending_rollout_span.set(bt_rollout)
             return await self.rollout(ri, client, model, sampling_args)
 
         group_states = await asyncio.gather(
-            *[_traced_rollout(inp) for inp in group_inputs]
+            *[_traced_rollout(i, inp) for i, inp in enumerate(group_inputs)]
         )
 
         start_scoring = time.time()
