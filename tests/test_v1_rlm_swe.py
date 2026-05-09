@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, cast
 
 import pytest
 from datasets import Dataset
@@ -10,14 +10,21 @@ import verifiers.v1 as vf
 from environments.rlm_swe_v1 import rlm_swe_v1
 
 
+def as_mapping(value: object) -> Mapping[str, object]:
+    assert isinstance(value, Mapping)
+    return value
+
+
 def test_rlm_harness_builds_sandbox_program_without_eager_checkout():
     harness = vf.RLM(local_checkout="/tmp/does-not-need-to-exist-yet")
-    program = cast(dict[str, Any], harness.program)
+    program = as_mapping(harness.program)
+    program_env = as_mapping(program["env"])
+    artifacts = as_mapping(program["artifacts"])
 
     assert isinstance(harness, vf.CLIHarness)
     assert program["sandbox"] is not False
-    assert "RLM_MODEL" in cast(dict[str, object], program["env"])
-    assert "rlm_metrics" in cast(dict[str, object], program["artifacts"])
+    assert "RLM_MODEL" in program_env
+    assert "rlm_metrics" in artifacts
 
 
 def test_rlm_harness_can_upload_skills(tmp_path: Path):
@@ -26,9 +33,10 @@ def test_rlm_harness_can_upload_skills(tmp_path: Path):
     (skills / "edit" / "SKILL.md").write_text("---\nname: edit\n---\n")
 
     harness = vf.RLM(local_checkout="/tmp/checkout", skills=skills)
-    program = cast(dict[str, Any], harness.program)
+    program = as_mapping(harness.program)
+    dirs = as_mapping(program["dirs"])
 
-    assert cast(dict[str, object], program["dirs"])["/rlm/skills"] == skills
+    assert dirs["/rlm/skills"] == skills
 
 
 def test_rlm_swe_environment_uses_v1_r2e_taskset(monkeypatch):
@@ -49,7 +57,8 @@ def test_rlm_swe_environment_uses_v1_r2e_taskset(monkeypatch):
         rlm_env={"CALLER": "1", "PATH": "/caller/bin"},
     )
     task = next(iter(env.taskset))
-    program = cast(dict[str, Any], env.harness.program)
+    program = as_mapping(env.harness.program)
+    program_env = as_mapping(program["env"])
 
     assert isinstance(env, vf.Env)
     assert isinstance(env.taskset, rlm_swe_v1.R2ESWETaskset)
@@ -63,10 +72,11 @@ def test_rlm_swe_environment_uses_v1_r2e_taskset(monkeypatch):
     assert task["sandbox"]["workdir"] == "/testbed"
     assert task["sandbox"]["timeout_minutes"] == 30
     assert task["program"]["env"] == {"AGENT_WORKDIR": "/testbed"}
-    assert program["env"]["PATH"] == "/task/bin"
-    assert program["env"]["CUSTOM"] == "1"
-    assert program["env"]["CALLER"] == "1"
-    assert program["env"]["RLM_TOOLS"] == "bash,edit"
+    assert program_env["PATH"] == "/caller/bin"
+    assert program_env["CUSTOM"] == "1"
+    assert program_env["CALLER"] == "1"
+    assert program_env["PAGER"] == "cat"
+    assert program_env["RLM_TOOLS"] == "bash,edit"
 
 
 def test_rlm_swe_taskset_hooks_are_registered_with_runtime():
@@ -95,15 +105,13 @@ async def test_rlm_swe_taskset_setup_and_reward(monkeypatch):
     sandbox = FakeSandbox()
     calls: dict[str, object] = {}
 
-    async def fake_setup_sandbox(
-        sandbox_arg: object, state_arg: dict[str, Any]
-    ) -> None:
+    async def fake_setup_sandbox(sandbox_arg: object, state_arg: vf.State) -> None:
         calls["setup_sandbox"] = sandbox_arg
         calls["setup_state"] = state_arg
 
     async def fake_run_tests(
         sandbox_arg: object,
-        state_arg: dict[str, Any],
+        state_arg: vf.State,
         test_timeout: int,
     ) -> str:
         calls["run_tests"] = (sandbox_arg, state_arg, test_timeout)

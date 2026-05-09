@@ -547,7 +547,7 @@ def load_environment(
         ),
     )
     taskset = load_taskset(config=config.taskset)
-    merged_rlm_env = {**dict(rlm_env or {}), **taskset.get_env_vars()}
+    merged_rlm_env = {**taskset.get_env_vars(), **dict(rlm_env or {})}
     rlm_kwargs = {
         key: value
         for key, value in {
