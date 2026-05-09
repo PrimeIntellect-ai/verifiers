@@ -37,6 +37,8 @@ SKIPPED_ENV_LOADING_ENVS = [
     # Skip generic load checks here and cover via dedicated OpenEnv tests.
     "openenv_echo",
     "openenv_textarena",
+    # R2E-Gym pulls a full image-backed SWE taskset; cover it with dedicated v1 tests.
+    "rlm_swe_v1",
 ]
 
 
@@ -120,7 +122,7 @@ def test_env(env_dir: Path, tmp_path_factory: pytest.TempPathFactory):
     if env_dir.name in SKIPPED_ENVS:
         pytest.skip(f"Skipping {env_dir.name}")
     if env_dir.name in SKIPPED_ENV_LOADING_ENVS:
-        pytest.skip(f"Skipping slow OpenEnv smoke test for {env_dir.name}")
+        pytest.skip(f"Skipping dedicated-runtime smoke test for {env_dir.name}")
     tmp_venv_dir = tmp_path_factory.mktemp(f"venv_{env_dir.name}")
     repo_root = Path(__file__).parent.parent
     cmd = (

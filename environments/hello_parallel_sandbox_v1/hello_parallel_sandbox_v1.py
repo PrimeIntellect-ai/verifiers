@@ -76,6 +76,52 @@ TASKS: list[dict[str, object]] = [
             "and runtime joined by hyphens."
         ),
     },
+    {
+        "task_id": "uppercase-token",
+        "answer": "SANDBOX",
+        "instruction": "Create `/tmp/answer.txt` containing `sandbox` in uppercase.",
+    },
+    {
+        "task_id": "lowercase-token",
+        "answer": "runtime",
+        "instruction": "Create `/tmp/answer.txt` containing `RUNTIME` in lowercase.",
+    },
+    {
+        "task_id": "count-letters",
+        "answer": "9",
+        "instruction": (
+            "Create `/tmp/answer.txt` containing the number of letters in `verifiers`."
+        ),
+    },
+    {
+        "task_id": "repeat-prefix",
+        "answer": "v1-v1-v1",
+        "instruction": (
+            "Create `/tmp/answer.txt` containing `v1` repeated three times, "
+            "joined by hyphens."
+        ),
+    },
+    {
+        "task_id": "basename",
+        "answer": "answer.txt",
+        "instruction": (
+            "Create `/tmp/answer.txt` containing the basename of the path "
+            "`/tmp/answer.txt`."
+        ),
+    },
+    {
+        "task_id": "math-sum",
+        "answer": "42",
+        "instruction": "Create `/tmp/answer.txt` containing the sum of 19 and 23.",
+    },
+    {
+        "task_id": "sorted-words",
+        "answer": "alpha,beta,gamma",
+        "instruction": (
+            "Create `/tmp/answer.txt` containing alpha, beta, and gamma in "
+            "alphabetical order, separated by commas and no spaces."
+        ),
+    },
 ]
 
 

@@ -35,18 +35,28 @@ async def exact_answer(task, state) -> float:
     return float(completion_text(state.get("completion")).strip() == task["answer"])
 
 
+NAME_GROUPS = [
+    ["world"],
+    ["prime", "verifiers"],
+    ["taskset", "harness", "runtime"],
+    ["sandbox"],
+    ["alpha", "beta"],
+    ["delta", "epsilon", "zeta"],
+    ["tools", "users"],
+    ["group", "reward", "advantage"],
+    ["mcp", "search"],
+    ["open", "superintelligence", "stack"],
+]
+
+
 def source():
     return [
         {
-            "names": ["world"],
-            "prompt": [{"role": "user", "content": "Names: world"}],
-            "answer": "hello world",
-        },
-        {
-            "names": ["prime", "verifiers"],
-            "prompt": [{"role": "user", "content": "Names: prime, verifiers"}],
-            "answer": "hello prime, hello verifiers",
-        },
+            "names": names,
+            "prompt": [{"role": "user", "content": f"Names: {', '.join(names)}"}],
+            "answer": ", ".join(f"hello {name}" for name in names),
+        }
+        for names in NAME_GROUPS
     ]
 
 

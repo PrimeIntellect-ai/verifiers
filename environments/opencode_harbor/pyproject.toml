@@ -20,7 +20,7 @@ build-backend = "hatchling.build"
 include = ["opencode_harbor.py", "pyproject.toml", "tasks/**/*"]
 
 [tool.verifiers.eval]
-num_examples = 5
+num_examples = 10
 rollouts_per_example = 3
 
 [tool.ruff]
