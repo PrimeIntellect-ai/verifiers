@@ -563,8 +563,7 @@ class Environment(ABC):
             error_msg = repr(exc)[:500]
             raise
         except BaseException as exc:
-            if not error_msg:
-                error_msg = repr(exc)[:500]
+            error_msg = repr(exc)[:500]
             raise
         finally:
             dur = time.monotonic() - t0
