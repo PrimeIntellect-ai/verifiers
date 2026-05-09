@@ -561,6 +561,10 @@ class Environment(ABC):
         except Exception as exc:
             error_msg = repr(exc)[:500]
             raise
+        except BaseException as exc:
+            if not error_msg:
+                error_msg = repr(exc)[:500]
+            raise
         finally:
             dur = time.monotonic() - t0
             input_tok, output_tok = 0.0, 0.0
@@ -778,6 +782,9 @@ class Environment(ABC):
             group_size=len(group_inputs),
         )
 
+        bt_rollout_spans: list[object] = []
+        rollout_start_times: list[float] = []
+
         async def _traced_rollout(ri: RolloutInput) -> State:
             """Wrap a single rollout with its own Braintrust span."""
             r_t0 = time.monotonic()
@@ -788,20 +795,10 @@ class Environment(ABC):
                 input={"example_id": _bt._safe(ri.get("example_id", ""))},
                 metadata={"env_id": self.env_id, "model": model},
             )
+            bt_rollout_spans.append(bt_rollout)
+            rollout_start_times.append(r_t0)
             _bt._pending_rollout_span.set(bt_rollout)
-            st = await self.rollout(ri, client, model, sampling_args)
-            usage = self.get_state_usage(st) or {}
-            _bt.rollout_completed(
-                bt_rollout,
-                reward=st.get("reward"),
-                num_turns=len(st.get("trajectory", [])),
-                duration_s=time.monotonic() - r_t0,
-                stop_condition=st.get("stop_condition", ""),
-                error=repr(st["error"])[:500] if st.get("error") else "",
-                input_tokens=float(usage.get("input_tokens", 0)),
-                output_tokens=float(usage.get("output_tokens", 0)),
-            )
-            return st
+            return await self.rollout(ri, client, model, sampling_args)
 
         group_states = await asyncio.gather(
             *[_traced_rollout(inp) for inp in group_inputs]
@@ -820,6 +817,22 @@ class Environment(ABC):
 
         for state in group_states:
             await self.rubric.cleanup(state)
+
+        now = time.monotonic()
+        for st, bt_rollout, r_t0 in zip(
+            group_states, bt_rollout_spans, rollout_start_times
+        ):
+            usage = self.get_state_usage(st) or {}
+            _bt.rollout_completed(
+                bt_rollout,
+                reward=st.get("reward"),
+                num_turns=len(st.get("trajectory", [])),
+                duration_s=now - r_t0,
+                stop_condition=st.get("stop_condition", ""),
+                error=repr(st["error"])[:500] if st.get("error") else "",
+                input_tokens=float(usage.get("input_tokens", 0)),
+                output_tokens=float(usage.get("output_tokens", 0)),
+            )
 
         rewards = [s.get("reward") for s in group_states if s.get("reward") is not None]
         _bt.group_completed(
