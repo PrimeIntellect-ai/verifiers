@@ -35,6 +35,8 @@ import logging
 import os
 import sys
 import threading
+import time
+import uuid
 from typing import Any
 
 _log = logging.getLogger(__name__)
@@ -52,6 +54,10 @@ _LOCK = threading.Lock()
 _pending_rollout_span: contextvars.ContextVar[Any] = contextvars.ContextVar(
     "_pending_rollout_span", default=None
 )
+
+# Run-level tags: a list of string tags applied to every root span during
+# the current eval run.  Set via set_run_tags() at the start of generate().
+_run_tags: list[str] = []
 
 
 def _get() -> _Tracing:
@@ -83,6 +89,33 @@ def flush() -> None:
         pass
 
 
+def set_run_tags(tags: list[str] | None = None) -> list[str]:
+    """Set tags for the current eval run.
+
+    If *tags* is ``None`` a unique tag is auto-generated from the current
+    timestamp (``run-<epoch>-<short_uuid>``).  Returns the active tag list
+    so callers can inspect or log it.
+    """
+    global _run_tags  # noqa: PLW0603
+    if tags is not None:
+        _run_tags = list(tags)
+    else:
+        short_id = uuid.uuid4().hex[:8]
+        _run_tags = [f"run-{int(time.time())}-{short_id}"]
+    return _run_tags
+
+
+def get_run_tags() -> list[str]:
+    """Return the currently active run tags (empty list when unset)."""
+    return list(_run_tags)
+
+
+def clear_run_tags() -> None:
+    """Clear run tags (called after generate completes)."""
+    global _run_tags  # noqa: PLW0603
+    _run_tags = []
+
+
 # -- Span lifecycle helpers ------------------------------------------------
 # These return an opaque span object (or None when disabled).  Callers store
 # the span and later call end_span() when the phase completes.
@@ -100,16 +133,19 @@ def start_rollout_span(
         inst = _get()
         if not inst.enabled or inst._logger is None:
             return None
-        span = inst._logger.start_span(
-            name="rollout",
-            span_attributes={"type": "task"},
-            input={"example_id": _safe(example_id)},
-            metadata={
+        kwargs: dict[str, Any] = {
+            "name": "rollout",
+            "span_attributes": {"type": "task"},
+            "input": {"example_id": _safe(example_id)},
+            "metadata": {
                 "env_id": env_id,
                 "model": model,
                 "trajectory_id": trajectory_id,
             },
-        )
+        }
+        if _run_tags:
+            kwargs["tags"] = list(_run_tags)
+        span = inst._logger.start_span(**kwargs)
         return span
     except Exception:
         return None
@@ -445,12 +481,15 @@ def group_started(
         inst = _get()
         if not inst.enabled or inst._logger is None:
             return None
-        return inst._logger.start_span(
-            name="group",
-            span_attributes={"type": "task"},
-            input={"example_id": _safe(example_id), "group_size": group_size},
-            metadata={"env_id": env_id, "model": model},
-        )
+        kwargs: dict[str, Any] = {
+            "name": "group",
+            "span_attributes": {"type": "task"},
+            "input": {"example_id": _safe(example_id), "group_size": group_size},
+            "metadata": {"env_id": env_id, "model": model},
+        }
+        if _run_tags:
+            kwargs["tags"] = list(_run_tags)
+        return inst._logger.start_span(**kwargs)
     except Exception:
         return None
 
@@ -489,12 +528,15 @@ def generate_started(
         inst = _get()
         if not inst.enabled or inst._logger is None:
             return None
-        return inst._logger.start_span(
-            name="generate",
-            span_attributes={"type": "eval"},
-            input={"num_inputs": num_inputs},
-            metadata={"env_id": env_id, "model": model},
-        )
+        kwargs: dict[str, Any] = {
+            "name": "generate",
+            "span_attributes": {"type": "eval"},
+            "input": {"num_inputs": num_inputs},
+            "metadata": {"env_id": env_id, "model": model},
+        }
+        if _run_tags:
+            kwargs["tags"] = list(_run_tags)
+        return inst._logger.start_span(**kwargs)
     except Exception:
         return None
 
