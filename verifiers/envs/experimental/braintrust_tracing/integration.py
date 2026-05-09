@@ -30,7 +30,7 @@ _PATCH_MARKER = "__verifiers_bt_patched__"
 
 
 def _is_patched(cls: type) -> bool:
-    return getattr(cls, _PATCH_MARKER, False)
+    return cls.__dict__.get(_PATCH_MARKER, False)
 
 
 def _mark_patched(cls: type) -> None:
@@ -49,8 +49,6 @@ def _patch_environment() -> None:
         return
 
     _orig_get_model_response = Environment.get_model_response
-    _orig_run_rollout_state = Environment._run_rollout_state
-    _orig_run_group_states = Environment._run_group_states
 
     async def _traced_get_model_response(
         self: Any,
@@ -402,8 +400,6 @@ def _patch_tool_env() -> None:
             )
 
     # Also patch env_response to pass state= to call_tool
-    _orig_env_response = ToolEnv.env_response
-
     async def _traced_env_response(
         self: Any,
         messages: Any,
