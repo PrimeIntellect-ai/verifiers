@@ -47,6 +47,16 @@ class StreamInterrupted(InfraError):
     """
 
 
+class InterceptionError(InfraError):
+    """Raised when a non-streaming intercepted request cannot be fulfilled.
+
+    Distinct from ``StreamInterrupted`` so rubrics / metrics can tell the
+    two shapes apart: a streaming cut leaves the agent with a truncated
+    SSE body; a non-streaming failure returns HTTP 500 to the agent's
+    OpenAI client and the agent sees a normal API error.
+    """
+
+
 def protocol_from_path(path: str) -> str:
     if path.endswith("/v1/messages"):
         return "anthropic_messages"
@@ -276,7 +286,14 @@ class InterceptionServer:
                 return web.json_response({"error": "Rollout cancelled"}, status=499)
             except Exception as e:
                 logger.debug(
-                    f"[{rollout_id}] Rollout error surfaced in non-streaming request: {type(e).__name__}: {e}"
+                    f"[{rollout_id}] Rollout error surfaced in non-streaming "
+                    f"request: {type(e).__name__}: {e}"
+                )
+                self._set_rollout_error(
+                    rollout_id,
+                    InterceptionError(
+                        f"intercepted request failed: {type(e).__name__}: {e}"
+                    ),
                 )
                 return web.json_response({"error": str(e)}, status=500)
 
@@ -481,9 +498,17 @@ class InterceptionServer:
 
         try:
             await response_future
-        except BaseException as e:
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
             logger.debug(
                 f"[{rollout_id}] Rollout error surfaced in stream: {type(e).__name__}: {e}"
+            )
+            self._set_rollout_error(
+                rollout_id,
+                StreamInterrupted(
+                    f"streaming response_future failed: {type(e).__name__}: {e}"
+                ),
             )
 
         # Surface any write_eof failure so a tail truncation becomes a
