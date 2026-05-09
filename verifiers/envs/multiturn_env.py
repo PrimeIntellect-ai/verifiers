@@ -5,6 +5,7 @@ from abc import abstractmethod
 from typing import final
 
 import verifiers as vf
+import verifiers.braintrust_tracing as _bt
 from verifiers.clients import Client
 from verifiers.types import (
     Messages,
@@ -174,11 +175,21 @@ class MultiTurnEnv(vf.Environment):
         sampling_args: SamplingArgs | None = None,
     ) -> State:
         state = await self.init_state(input, client, model, sampling_args)
+        _env_id = getattr(self, "env_id", "")
+
+        # The parent rollout span is created by _run_rollout_state; attach it
+        # here so child spans (setup, turns) nest correctly.
+        bt_rollout = state.get("_bt_span")
 
         async def rollout_loop() -> None:
-            nonlocal state
+            nonlocal state, bt_rollout
             state["timing"].generation.start = time.time()
             state["timing"].setup.start = time.time()
+            bt_setup = _bt.setup_started(
+                bt_rollout,
+                env_id=_env_id,
+                trajectory_id=state.get("trajectory_id", ""),
+            )
             try:
                 setup_state = await self.setup_state(state)
                 if setup_state is not None:
@@ -187,7 +198,24 @@ class MultiTurnEnv(vf.Environment):
                 state["error"] = e
             finally:
                 state["timing"].setup.end = time.time()
+                _bt.setup_completed(
+                    bt_setup,
+                    duration_s=state["timing"].setup.end - state["timing"].setup.start,
+                    error=repr(state["error"])[:500] if state.get("error") else "",
+                )
             while not await self.is_completed(state):
+                turn_t0 = time.monotonic()
+                turn_idx = len(state["trajectory"])
+                bt_turn = _bt.turn_started(
+                    bt_rollout,
+                    turn_index=turn_idx,
+                    trajectory_id=state.get("trajectory_id", ""),
+                )
+                # Store on state so get_model_response can nest under this turn
+                state["_bt_turn_span"] = bt_turn
+                turn_err = ""
+                env_dur: float | None = None
+                model_dur: float | None = None
                 try:
                     timing = state["timing"]
                     start_time = time.time()
@@ -198,6 +226,7 @@ class MultiTurnEnv(vf.Environment):
                         timing.env.spans.append(
                             TimeSpan(start=start_time, end=end_time)
                         )
+                        env_dur = end_time - start_time
 
                     prompt_messages = maybe_normalize_messages(
                         prompt_messages, field_name="prompt_messages"
@@ -208,19 +237,32 @@ class MultiTurnEnv(vf.Environment):
                     start_time = time.time()
                     response = await self.get_model_response(state, prompt_messages)
                     end_time = time.time()
+                    model_dur = end_time - start_time
                     timing.model.spans.append(TimeSpan(start=start_time, end=end_time))
                     await self.add_model_response(state, prompt_messages, response)
                 except vf.Error as e:
+                    turn_err = repr(e)[:500]
                     if isinstance(e, vf.OverlongPromptError):
                         state["prompt_too_long"] = True
                         state["is_truncated"] = True
                     else:
                         state["error"] = e
+                finally:
+                    _bt.turn_completed(
+                        bt_turn,
+                        duration_s=time.monotonic() - turn_t0,
+                        model_duration_s=model_dur,
+                        env_duration_s=env_dur,
+                        is_truncated=state.get("is_truncated", False),
+                        error=turn_err,
+                    )
+                    state.pop("_bt_turn_span", None)
 
         try:
             await asyncio.wait_for(rollout_loop(), timeout=self.timeout_seconds)
         except asyncio.TimeoutError:
             self.mark_timed_out(state)
+            _bt.timeout_triggered(bt_rollout, timeout_seconds=self.timeout_seconds)
         finally:
             await self._finalize_rollout(state)
         return state

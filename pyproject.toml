@@ -96,6 +96,9 @@ browser = [
 renderers = [
     "renderers>=0.1.6",
 ]
+braintrust = [
+    "braintrust>=0.0.160",
+]
 rl = [
     "torch>=2.8.0,<2.9.0",
     "transformers>=4.56.2",
