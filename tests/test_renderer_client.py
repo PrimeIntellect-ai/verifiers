@@ -141,6 +141,57 @@ def test_attach_tool_call_names_unknown_tool_call_id_left_unset():
 
 
 @pytest.mark.asyncio
+async def test_to_native_tool_returns_openai_envelope():
+    """``RendererClient.to_native_tool`` must wrap each ``Tool`` in the
+    OpenAI envelope (``{"type": "function", "function": {...}}``) — the
+    same shape ``OpenAIChatCompletionsClient`` sends server-side under
+    TITO/MITO. Modern function-calling models (Qwen3 family, GLM, Kimi)
+    saw the envelope at training time, so the renderer client's prompt
+    must match. Regression for the bare-form bug where rollout-mode
+    tool envs produced uniformly zero rewards because the model never
+    emitted ``<tool_call>`` blocks under an out-of-distribution prompt.
+    """
+    from verifiers.types import Tool
+
+    client = object.__new__(RendererClient)
+    tool = Tool(
+        name="get_weather",
+        description="Get the weather for a city",
+        parameters={
+            "type": "object",
+            "properties": {"city": {"type": "string"}},
+            "required": ["city"],
+        },
+    )
+
+    native = await client.to_native_tool(tool)
+    assert native["type"] == "function"
+    assert native["function"]["name"] == "get_weather"
+    assert native["function"]["description"] == "Get the weather for a city"
+    assert native["function"]["parameters"]["required"] == ["city"]
+    assert "strict" not in native["function"]
+
+
+@pytest.mark.asyncio
+async def test_to_native_tool_propagates_strict_flag():
+    """When ``Tool.strict`` is set the envelope must carry it through —
+    OpenAI's strict-schema enforcement only kicks in on the inner function
+    object, never the envelope itself."""
+    from verifiers.types import Tool
+
+    client = object.__new__(RendererClient)
+    tool = Tool(
+        name="get_weather",
+        description="Get the weather for a city",
+        parameters={"type": "object", "properties": {}},
+        strict=True,
+    )
+
+    native = await client.to_native_tool(tool)
+    assert native["function"]["strict"] is True
+
+
+@pytest.mark.asyncio
 async def test_renderer_client_accepts_dict_native_response_with_content():
     client = object.__new__(RendererClient)
 

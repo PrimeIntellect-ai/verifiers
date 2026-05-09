@@ -472,11 +472,14 @@ class RendererClient(
         )
 
     async def to_native_tool(self, tool: Tool) -> ToolSpec:
-        return ToolSpec(
-            name=tool.name,
-            description=tool.description or "",
-            parameters=tool.parameters or {},
-        )
+        function: dict[str, Any] = {
+            "name": tool.name,
+            "description": tool.description,
+            "parameters": tool.parameters,
+        }
+        if tool.strict is not None:
+            function["strict"] = tool.strict
+        return cast(ToolSpec, {"type": "function", "function": function})
 
     # ── Core request cycle ──────────────────────────────────────────
 
