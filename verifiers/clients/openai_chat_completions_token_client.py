@@ -115,7 +115,18 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
             return await super().get_native_response(
                 prompt, model, sampling_args, tools, extra_headers=extra_headers
             )
-        prompt_ids = await self.get_prompt_ids(state, prompt, tools)
+        # The bridge tokenize calls inside get_prompt_ids must run under the
+        # same chat-template config as the engine's actual generation,
+        # otherwise the bridge tokens won't line up with what vLLM streamed
+        # (e.g. GLM-5.1's `clear_thinking` flag changes the rendering of past
+        # assistants — and of the dummy assistant we use for the bridge —
+        # which can break the bridge prefix property).
+        chat_template_kwargs = (sampling_args.get("extra_body", {}) or {}).get(
+            "chat_template_kwargs"
+        ) or {}
+        prompt_ids = await self.get_prompt_ids(
+            state, prompt, tools, chat_template_kwargs=chat_template_kwargs
+        )
         if prompt_ids is None:
             # Reaching this branch means we have a non-empty trajectory but
             # could not stitch — surface it loudly so ops catches regressions.
@@ -148,6 +159,7 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
         state: State,
         prompt_messages: OpenAIChatMessages,
         oai_tools: list[OpenAITool] | None,
+        chat_template_kwargs: dict | None = None,
     ) -> list[int] | None:
         """
         Build prompt_ids for the next turn by stitching engine tokens with
@@ -266,9 +278,16 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
             if tc_id:
                 tool_call_ids.append(tc_id)
 
+        # GLM-5.1's chat template only renders `<think>{rc}</think>` for an
+        # assistant when `reasoning_content` ends up *defined*. The cascade
+        # that defines it from position (`idx > last_user_index`) flips when
+        # env_messages ends in a user message, breaking the bridge prefix
+        # property. Setting reasoning_content="" forces branch 1 of the
+        # cascade so the dummy renders identically across env-tail shapes.
         if tool_call_ids:
             dummy_assistant: OpenAIChatMessage = ChatCompletionAssistantMessageParam(
                 role="assistant",
+                reasoning_content="",  # type: ignore[typeddict-unknown-key]
                 tool_calls=[
                     ChatCompletionMessageFunctionToolCallParam(
                         id=tc_id,
@@ -280,20 +299,31 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
             )
         else:
             dummy_assistant: OpenAIChatMessage = ChatCompletionAssistantMessageParam(
-                role="assistant", content="x"
+                role="assistant",
+                reasoning_content="",  # type: ignore[typeddict-unknown-key]
+                content="x",
             )
+
+        # Forward the rollout's chat_template_kwargs so the bridge is
+        # rendered under the same template config as the engine's stream.
+        forwarded_ctk = (
+            {"chat_template_kwargs": dict(chat_template_kwargs)}
+            if chat_template_kwargs
+            else {}
+        )
 
         try:
             bridge_full_ids = await self.tokenize(
                 messages=[dummy_assistant] + env_messages,
                 tools=oai_tools,
                 model=state["model"],
+                extra_kwargs=dict(forwarded_ctk),
             )
             bridge_base_ids = await self.tokenize(
                 messages=[dummy_assistant],
                 tools=oai_tools,
                 model=state["model"],
-                extra_kwargs=dict(add_generation_prompt=False),
+                extra_kwargs=dict(add_generation_prompt=False, **forwarded_ctk),
             )
         except Exception:
             self.logger.debug("TITO: bridge tokenization failed, falling back to MITO")
