@@ -121,9 +121,11 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
         # (e.g. GLM-5.1's `clear_thinking` flag changes the rendering of past
         # assistants — and of the dummy assistant we use for the bridge —
         # which can break the bridge prefix property).
-        chat_template_kwargs = (sampling_args.get("extra_body", {}) or {}).get(
-            "chat_template_kwargs"
-        ) or {}
+        # `extra_body` is guaranteed by normalize_sampling_args above;
+        # `chat_template_kwargs` is rollout-configured and may be absent.
+        chat_template_kwargs = sampling_args["extra_body"].get(
+            "chat_template_kwargs", {}
+        )
         prompt_ids = await self.get_prompt_ids(
             state, prompt, tools, chat_template_kwargs=chat_template_kwargs
         )
