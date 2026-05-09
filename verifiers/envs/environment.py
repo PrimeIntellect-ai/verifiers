@@ -722,12 +722,10 @@ class Environment(ABC):
             example_id=input.get("example_id", ""),
             trajectory_id="",
         )
-        # Stash the rollout span on the env instance so rollout() can pick it
-        # up right after init_state and attach it to state *before* any child
-        # spans (setup, turns) are created.  We use an instance attr instead of
-        # threading it through `input` because init_state deep-copies `input`
-        # which would break span objects.
-        self._bt_pending_rollout_span = bt_span
+        # Pass the rollout span to rollout() via a coroutine-local context var.
+        # We cannot thread it through `input` (deep-copied by init_state) or
+        # store it on `self` (shared across concurrent rollouts).
+        _bt._pending_rollout_span.set(bt_span)
         state = await self.rollout(
             input,
             client,

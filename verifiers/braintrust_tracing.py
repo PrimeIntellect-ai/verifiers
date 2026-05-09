@@ -30,6 +30,7 @@ code are swallowed so they never interfere with evaluation runs.
 
 from __future__ import annotations
 
+import contextvars
 import logging
 import os
 import sys
@@ -44,6 +45,13 @@ _log = logging.getLogger(__name__)
 
 _INSTANCE: _Tracing | None = None
 _LOCK = threading.Lock()
+
+# Coroutine-local storage for passing the rollout span from
+# _run_rollout_state → rollout() across the await boundary without
+# storing mutable state on the shared Environment instance.
+_pending_rollout_span: contextvars.ContextVar[Any] = contextvars.ContextVar(
+    "_pending_rollout_span", default=None
+)
 
 
 def _get() -> _Tracing:

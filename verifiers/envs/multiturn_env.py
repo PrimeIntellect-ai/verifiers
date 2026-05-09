@@ -177,13 +177,13 @@ class MultiTurnEnv(vf.Environment):
         state = await self.init_state(input, client, model, sampling_args)
         _env_id = getattr(self, "env_id", "")
 
-        # Pick up the rollout span stashed by _run_rollout_state and attach
-        # it to state so all child spans (setup, turns, model requests) nest
-        # under the rollout root.
-        bt_rollout = getattr(self, "_bt_pending_rollout_span", None)
+        # Pick up the rollout span from the coroutine-local context var
+        # (set by _run_rollout_state) and attach it to state so all child
+        # spans (setup, turns, model requests) nest under the rollout root.
+        bt_rollout = _bt._pending_rollout_span.get(None)
         if bt_rollout is not None:
             state["_bt_span"] = bt_rollout
-            self._bt_pending_rollout_span = None
+            _bt._pending_rollout_span.set(None)
 
         async def rollout_loop() -> None:
             nonlocal state, bt_rollout
