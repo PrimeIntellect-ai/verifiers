@@ -274,6 +274,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         gpu_count: int = 0,
         environment_vars: dict[str, str] | None = None,
         team_id: str | None = None,
+        region: str | None = None,
         advanced_configs: AdvancedConfigs | None = None,
         labels: list[str] | None = None,
         max_retries: int = 5,
@@ -319,6 +320,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         self.gpu_count = gpu_count
         self.environment_vars = environment_vars
         self.team_id = team_id
+        self.region = region
         self.advanced_configs = advanced_configs
         self.labels = labels
 
@@ -449,6 +451,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             timeout_minutes=resources["timeout_minutes"],
             environment_vars=env_vars,
             team_id=self.team_id,
+            region=self.region,
             advanced_configs=self.advanced_configs,
             labels=self.labels if self.labels else [],
         )
