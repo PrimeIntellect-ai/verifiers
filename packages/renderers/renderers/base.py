@@ -292,7 +292,7 @@ def _populate_registry():
         return
     from renderers.default import DefaultRenderer
     from renderers.deepseek_v3 import DeepSeekV3Renderer
-    from renderers.glm5 import GLM5Renderer, GLM51Renderer
+    from renderers.glm5 import GLM5Renderer, GLM51KeepThinkingRenderer, GLM51Renderer
     from renderers.glm45 import GLM45AirRenderer, GLM45Renderer
     from renderers.gpt_oss import GptOssRenderer
     from renderers.kimi_k2 import KimiK2Renderer
@@ -314,6 +314,7 @@ def _populate_registry():
             "qwen3.6": Qwen36Renderer,
             "glm5": GLM5Renderer,
             "glm5.1": GLM51Renderer,
+            "glm5.1-keep-thinking": GLM51KeepThinkingRenderer,
             "glm4.5": GLM45Renderer,
             "glm4.5-air": GLM45AirRenderer,
             "minimax-m2": MiniMaxM2Renderer,
@@ -333,6 +334,8 @@ def create_renderer_pool(
     *,
     tool_parser: str | None = None,
     reasoning_parser: str | None = None,
+    preserve_all_thinking: bool = False,
+    preserve_thinking_between_tool_calls: bool = False,
 ) -> RendererPool:
     """Create a RendererPool with *size* independent tokenizer copies.
 
@@ -355,6 +358,8 @@ def create_renderer_pool(
             renderer=renderer,
             tool_parser=tool_parser,
             reasoning_parser=reasoning_parser,
+            preserve_all_thinking=preserve_all_thinking,
+            preserve_thinking_between_tool_calls=preserve_thinking_between_tool_calls,
         )
 
     return RendererPool(factory, size=size)
@@ -366,6 +371,8 @@ def create_renderer(
     *,
     tool_parser: str | None = None,
     reasoning_parser: str | None = None,
+    preserve_all_thinking: bool = False,
+    preserve_thinking_between_tool_calls: bool = False,
 ) -> Renderer:
     """Create a Renderer by name, or auto-detect from the tokenizer's model name.
 

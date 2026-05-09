@@ -407,3 +407,11 @@ class GLM51Renderer(GLM5Renderer):
         spec = tool["function"] if "function" in tool else tool
         spec = {k: v for k, v in spec.items() if k not in ("defer_loading", "strict")}
         return json.dumps(spec, ensure_ascii=False)
+
+
+class GLM51KeepThinkingRenderer(GLM51Renderer):
+    """GLM51Renderer with keep_thinking=True hardcoded for the GLM-5.1 RLM training run."""
+
+    def __init__(self, tokenizer, **kwargs):
+        kwargs.setdefault("keep_thinking", True)
+        super().__init__(tokenizer, **kwargs)

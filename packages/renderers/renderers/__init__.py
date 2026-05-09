@@ -21,7 +21,7 @@ from renderers.base import (
 )
 from renderers.deepseek_v3 import DeepSeekV3Renderer
 from renderers.default import DefaultRenderer
-from renderers.glm5 import GLM5Renderer
+from renderers.glm5 import GLM5Renderer, GLM51KeepThinkingRenderer
 from renderers.glm45 import GLM45AirRenderer, GLM45Renderer
 from renderers.gpt_oss import GptOssRenderer
 from renderers.kimi_k2 import KimiK2Renderer
@@ -41,6 +41,7 @@ __all__ = [
     "GLM45AirRenderer",
     "GLM45Renderer",
     "GLM5Renderer",
+    "GLM51KeepThinkingRenderer",
     "GptOssRenderer",
     "KimiK2Renderer",
     "KimiK25Renderer",
