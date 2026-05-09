@@ -782,7 +782,7 @@ class Environment(ABC):
             group_size=len(group_inputs),
         )
 
-        bt_rollout_spans: list[object] = [None] * len(group_inputs)
+        bt_rollout_spans: list[object | None] = [None] * len(group_inputs)
         rollout_start_times: list[float] = [0.0] * len(group_inputs)
 
         async def _traced_rollout(idx: int, ri: RolloutInput) -> State:
