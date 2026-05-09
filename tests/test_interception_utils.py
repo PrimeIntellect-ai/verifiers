@@ -280,7 +280,7 @@ async def test_non_streaming_response_future_failure_surfaces_to_state(monkeypat
     request.json = AsyncMock(
         return_value={"stream": False, "messages": [], "model": "test"}
     )
-    request.headers = {}
+    request.headers = {"Authorization": f"Bearer {server.secret}"}
 
     def fake_json_response(data, status=200):
         return MagicMock(_body=data, status=status)
