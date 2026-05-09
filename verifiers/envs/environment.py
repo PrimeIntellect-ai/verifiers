@@ -550,6 +550,7 @@ class Environment(ABC):
         )
         t0 = time.monotonic()
         error_msg = ""
+        response = None
         try:
             response = await client.get_response(
                 prompt=prompt,
@@ -568,7 +569,7 @@ class Environment(ABC):
         finally:
             dur = time.monotonic() - t0
             input_tok, output_tok = 0.0, 0.0
-            if not error_msg:
+            if not error_msg and response is not None:
                 input_tok, output_tok = (
                     float(v) for v in extract_usage_tokens(response)
                 )
