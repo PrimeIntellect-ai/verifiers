@@ -1097,9 +1097,10 @@ class Environment(ABC):
             assert single_client is not None
             return single_client
 
-        run_tags = _bt.set_run_tags()
-        if run_tags:
-            logging.getLogger(__name__).info("Braintrust run tag: %s", run_tags[0])
+        if _bt.enabled():
+            run_tags = _bt.set_run_tags()
+            if run_tags:
+                logging.getLogger(__name__).info("Braintrust run tag: %s", run_tags[0])
 
         try:
             if self.env_client is None and endpoint_client_configs:

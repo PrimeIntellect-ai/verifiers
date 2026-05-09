@@ -55,9 +55,11 @@ _pending_rollout_span: contextvars.ContextVar[Any] = contextvars.ContextVar(
     "_pending_rollout_span", default=None
 )
 
-# Run-level tags: a list of string tags applied to every root span during
-# the current eval run.  Set via set_run_tags() at the start of generate().
-_run_tags: list[str] = []
+# Run-level tags: coroutine-local storage so concurrent generate() calls
+# each get their own tag set without overwriting each other.
+_run_tags: contextvars.ContextVar[list[str]] = contextvars.ContextVar(
+    "_run_tags", default=[]
+)
 
 
 def _get() -> _Tracing:
@@ -95,25 +97,27 @@ def set_run_tags(tags: list[str] | None = None) -> list[str]:
     If *tags* is ``None`` a unique tag is auto-generated from the current
     timestamp (``run-<epoch>-<short_uuid>``).  Returns the active tag list
     so callers can inspect or log it.
+
+    Uses a ``ContextVar`` so concurrent ``generate()`` calls each get their
+    own isolated tag set.
     """
-    global _run_tags  # noqa: PLW0603
     if tags is not None:
-        _run_tags = list(tags)
+        new_tags = list(tags)
     else:
         short_id = uuid.uuid4().hex[:8]
-        _run_tags = [f"run-{int(time.time())}-{short_id}"]
-    return _run_tags
+        new_tags = [f"run-{int(time.time())}-{short_id}"]
+    _run_tags.set(new_tags)
+    return new_tags
 
 
 def get_run_tags() -> list[str]:
     """Return the currently active run tags (empty list when unset)."""
-    return list(_run_tags)
+    return list(_run_tags.get())
 
 
 def clear_run_tags() -> None:
     """Clear run tags (called after generate completes)."""
-    global _run_tags  # noqa: PLW0603
-    _run_tags = []
+    _run_tags.set([])
 
 
 # -- Span lifecycle helpers ------------------------------------------------
@@ -143,8 +147,9 @@ def start_rollout_span(
                 "trajectory_id": trajectory_id,
             },
         }
-        if _run_tags:
-            kwargs["tags"] = list(_run_tags)
+        tags = _run_tags.get()
+        if tags:
+            kwargs["tags"] = list(tags)
         span = inst._logger.start_span(**kwargs)
         return span
     except Exception:
@@ -487,8 +492,9 @@ def group_started(
             "input": {"example_id": _safe(example_id), "group_size": group_size},
             "metadata": {"env_id": env_id, "model": model},
         }
-        if _run_tags:
-            kwargs["tags"] = list(_run_tags)
+        tags = _run_tags.get()
+        if tags:
+            kwargs["tags"] = list(tags)
         return inst._logger.start_span(**kwargs)
     except Exception:
         return None
@@ -534,8 +540,9 @@ def generate_started(
             "input": {"num_inputs": num_inputs},
             "metadata": {"env_id": env_id, "model": model},
         }
-        if _run_tags:
-            kwargs["tags"] = list(_run_tags)
+        tags = _run_tags.get()
+        if tags:
+            kwargs["tags"] = list(tags)
         return inst._logger.start_span(**kwargs)
     except Exception:
         return None
