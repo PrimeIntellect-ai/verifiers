@@ -181,6 +181,23 @@ PASSED tests/test_example.py
     assert "" not in parsed
 
 
+def test_rlm_swe_parse_log_pytest_uses_leading_status_token():
+    test_output = """
+=========================== short test summary info ============================
+FAILED tests/test_PASSED_handler.py::test_fix - AssertionError
+PASSED tests/test_failed_handler.py::test_other
+ERROR tests/test_failed_handler.py::test_error - setup failed
+"""
+
+    parsed = rlm_swe_v1.parse_log_pytest(test_output)
+
+    assert parsed == {
+        "test_fix": "FAILED",
+        "test_other": "PASSED",
+        "test_error": "ERROR",
+    }
+
+
 def fake_r2e_dataset() -> Dataset:
     return Dataset.from_list(
         [

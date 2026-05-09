@@ -366,15 +366,12 @@ def parse_log_pytest(log: str | None) -> dict[str, str]:
         return {}
     test_status_map = {}
     for line in log.split("short test summary info", 1)[1].strip().splitlines():
-        if "PASSED" in line:
-            test_name = ".".join(line.split("::")[1:]) if "::" in line else line
-            test_status_map[test_name.split(" - ")[0]] = "PASSED"
-        elif "FAILED" in line:
-            test_name = ".".join(line.split("::")[1:]) if "::" in line else line
-            test_status_map[test_name.split(" - ")[0]] = "FAILED"
-        elif "ERROR" in line:
-            test_name = ".".join(line.split("::")[1:]) if "::" in line else line
-            test_status_map[test_name.split(" - ")[0]] = "ERROR"
+        status, _, test_ref = line.strip().partition(" ")
+        if status in {"PASSED", "FAILED", "ERROR"}:
+            test_name = (
+                ".".join(test_ref.split("::")[1:]) if "::" in test_ref else test_ref
+            )
+            test_status_map[test_name.split(" - ")[0]] = status
     return test_status_map
 
 
