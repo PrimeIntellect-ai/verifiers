@@ -16,8 +16,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 STATIC_SOURCES = [
     (
-        "environments.mcp_search_env.mcp_search_v1",
-        "default_dataset",
+        "environments.mcp_search_env.mcp_search_env",
+        "source",
         "question",
     ),
     (
@@ -77,13 +77,14 @@ def test_static_v1_example_sources_have_at_least_ten_unique_problems() -> None:
         assert len(problems) >= 10, module_name
 
 
-def test_mcp_search_v1_bundles_at_least_ten_self_contained_docs() -> None:
+def test_mcp_search_env_bundles_at_least_ten_self_contained_records() -> None:
     module = importlib.import_module("environments.mcp_search_env.mcp_server")
-    documents = module.DOCUMENTS
+    records = module.RECORDS
 
-    assert len(documents) >= 10
-    for document in documents.values():
-        assert "Source:" in document["content"]
+    assert len(records) >= 10
+    for record in records.values():
+        assert record["title"]
+        assert record["summary"]
 
 
 def test_low_v1_eval_smoke_caps_are_at_least_ten_examples() -> None:
