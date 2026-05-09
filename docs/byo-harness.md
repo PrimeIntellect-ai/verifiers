@@ -211,6 +211,12 @@ receive callable tool handles by default, or can set
 `program={"sandbox": True, "tools": "callable"}` when the base loop is moved
 into a sandbox.
 
+For sandboxed `program.fn` refs, v1 resolves the owning local package from the
+resolved module root: single-file modules use `pyproject.toml` in the same
+directory as the module file, and package modules use `pyproject.toml` inside
+the package directory. v1 uploads that package and installs it in the program
+sandbox. Package dependencies are normal `[project.dependencies]`.
+
 Programs are also the right shape for LLM-free replay:
 
 ```python

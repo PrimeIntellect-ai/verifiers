@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shlex
 import sys
 import tempfile
 import urllib.request
@@ -24,11 +25,14 @@ from verifiers.v1.utils.mcp_proxy_utils import MCP_PROXY_CONFIG_PATH, MCP_PROXY_
 from verifiers.v1.utils.mcp_proxy_utils import proxy_command, proxy_source
 from verifiers.v1.utils.program_utils import command_env
 from verifiers.v1.utils.sandbox_program_utils import (
+    PACKAGE_ROOT,
     RUNNER_CONFIG_PATH,
+    SandboxPackage,
     TOOL_DEFS_BY_PROTOCOL_PATH,
     TOOL_DEFS_PATH,
     apply_internal_state_patch,
     runner_source,
+    sandbox_program_package,
     sandbox_runner_program,
 )
 from verifiers.v1.utils.sandbox_utils import (
@@ -856,6 +860,135 @@ def test_sandbox_base_program_uses_openai_tool_payloads() -> None:
     tool_payloads_by_protocol = json.loads(files[TOOL_DEFS_BY_PROTOCOL_PATH])
     assert tool_payloads_by_protocol["openai_responses"][0]["name"] == "echo_tool"
     assert tool_payloads_by_protocol["anthropic_messages"][0]["name"] == "echo_tool"
+
+
+def test_sandbox_fn_program_installs_local_package(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module_path = tmp_path / "local_program.py"
+    module_path.write_text("async def run(task, state): return state\n")
+    (tmp_path / "pyproject.toml").write_text(
+        """
+[project]
+name = "local-program"
+version = "0.1.0"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+""".strip()
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+    state = vf.State.for_task(task)
+    program = sandbox_runner_program(
+        program={"env": {"PYTHONPATH": "/custom"}},
+        task=task,
+        state=state,
+        mode="fn",
+        fn_ref="local_program:run",
+        max_turns=1,
+        tool_defs=[],
+    )
+
+    dirs = cast(dict[str, object], program["dirs"])
+    env = cast(dict[str, object], program["env"])
+    command = cast(list[str], program["command"])
+    setup = cast(list[str], program["setup"])
+    assert dirs[PACKAGE_ROOT] == tmp_path.resolve()
+    assert env["PYTHONPATH"] == "/custom"
+    assert "pip install" in setup[1]
+    assert shlex.quote(PACKAGE_ROOT) in setup[1]
+    assert command[2].endswith(" /tmp/vf_program_runner.py fn local_program:run")
+
+
+def test_sandbox_fn_program_resolves_local_module_package(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module_path = tmp_path / "standalone_program.py"
+    module_path.write_text("async def run(task, state): return state\n")
+    (tmp_path / "pyproject.toml").write_text(
+        """
+[project]
+name = "standalone-program"
+version = "0.1.0"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+""".strip()
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    package = sandbox_program_package(mode="fn", fn_ref="standalone_program:run")
+
+    assert package == SandboxPackage(local_root=tmp_path.resolve())
+
+
+def test_sandbox_fn_program_resolves_package_module_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package = tmp_path / "package_program"
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    (package / "worker.py").write_text("async def run(task, state): return state\n")
+    (package / "pyproject.toml").write_text(
+        """
+[project]
+name = "package-program"
+version = "0.1.0"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+""".strip()
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    package_root = sandbox_program_package(
+        mode="fn", fn_ref="package_program.worker:run"
+    )
+
+    assert package_root == SandboxPackage(local_root=package.resolve())
+
+
+def test_sandbox_fn_program_does_not_walk_to_parent_pyproject(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "nested_program.py").write_text("async def run(task, state): return state\n")
+    (tmp_path / "pyproject.toml").write_text(
+        """
+[project]
+name = "parent-program"
+version = "0.1.0"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+""".strip()
+    )
+    monkeypatch.syspath_prepend(str(src))
+
+    with pytest.raises(ValueError, match="beside the resolved environment module"):
+        sandbox_program_package(mode="fn", fn_ref="nested_program:run")
+
+
+def test_sandbox_fn_program_does_not_install_stdlib_packages() -> None:
+    assert sandbox_program_package(mode="fn", fn_ref="json:dumps") is None
+
+
+def test_sandbox_fn_program_requires_local_pyproject(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module_path = tmp_path / "unpackaged_program.py"
+    module_path.write_text("async def run(task, state): return state\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    with pytest.raises(ValueError, match="no pyproject.toml"):
+        sandbox_program_package(mode="fn", fn_ref="unpackaged_program:run")
 
 
 def test_sandbox_python_program_installs_runtime_client_deps() -> None:

@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+import importlib.machinery
+import importlib.util
 import json
 import shlex
+import sys
+import sysconfig
 from collections.abc import Mapping
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, cast
 
 from verifiers.utils.interception_utils import serialize_tool_defs
@@ -12,6 +18,7 @@ from ..state import State
 from ..task import Task
 from .sandbox_utils import (
     VF_STATE_INPUT_PATH_KEY,
+    python_package_install_command,
     python_runtime_command,
     python_runtime_setup_command,
     run_sandbox_command,
@@ -26,6 +33,7 @@ TOOL_DEFS_BY_PROTOCOL_PATH = "/tmp/vf_tool_defs_by_protocol.json"
 RUNNER_PATH = "/tmp/vf_program_runner.py"
 STATE_ARTIFACT = "__vf_state"
 PYTHON_PROGRAM_PACKAGES = ("openai", "anthropic", "requests")
+PACKAGE_ROOT = "/tmp/vf_program_package"
 
 
 def python_program_sandbox(sandbox_config: Mapping[str, object]) -> dict[str, object]:
@@ -126,6 +134,9 @@ def sandbox_runner_program(
     max_turns: int,
     tool_defs: object,
 ) -> dict[str, object]:
+    package = sandbox_program_package(mode=mode, fn_ref=fn_ref)
+    if package is not None:
+        program = sandbox_program_with_package(program, package)
     files = dict(cast(Mapping[str, object], program.get("files") or {}))
     files[TASK_PATH] = json.dumps(task)
     files[TOOL_DEFS_PATH] = json.dumps(
@@ -147,22 +158,131 @@ def sandbox_runner_program(
     artifacts = dict(cast(Mapping[str, object], program.get("artifacts") or {}))
     artifacts[STATE_ARTIFACT] = {"path": STATE_OUTPUT_PATH, "format": "json"}
     command = python_runtime_command(
-        RUNNER_PATH, *([mode] if fn_ref is None else [mode, fn_ref])
+        RUNNER_PATH,
+        *([mode] if fn_ref is None else [mode, fn_ref]),
     )
     setup = program.get("setup") or []
     if isinstance(setup, str):
         setup = [setup]
     if not isinstance(setup, list):
         setup = [setup]
+    package_setup = [] if package is None else [package.install_command]
     return {
         **dict(program),
         "files": files,
         "command": command,
         "env": dict(cast(Mapping[str, object], program.get("env") or {})),
-        "setup": [python_runtime_setup_command(), *setup],
+        "setup": [python_runtime_setup_command(), *package_setup, *setup],
         "artifacts": artifacts,
         VF_STATE_INPUT_PATH_KEY: STATE_INPUT_PATH,
     }
+
+
+@dataclass(frozen=True)
+class SandboxPackage:
+    local_root: Path
+    remote_root: str = PACKAGE_ROOT
+
+    @property
+    def install_command(self) -> str:
+        return python_package_install_command(shlex.quote(self.remote_root))
+
+
+def sandbox_program_package(*, mode: str, fn_ref: str | None) -> SandboxPackage | None:
+    if mode != "fn" or fn_ref is None:
+        return None
+    module_name, _, _ = fn_ref.partition(":")
+    if not module_name:
+        raise ValueError("program.fn must include a module path.")
+    spec = importlib.util.find_spec(module_name)
+    if spec is None:
+        raise ImportError(f"Cannot resolve program.fn module {module_name!r}.")
+    roots = package_roots_for_module(module_name, spec)
+    if not roots:
+        return None
+    if len(roots) != 1:
+        raise ValueError(
+            f"program.fn {fn_ref!r} resolved to multiple package roots: "
+            f"{sorted(str(root) for root in roots)}."
+        )
+    return SandboxPackage(local_root=next(iter(roots)))
+
+
+def sandbox_program_with_package(
+    program: Mapping[str, object], package: SandboxPackage
+) -> Mapping[str, object]:
+    merged = dict(program)
+    dirs = dict(cast(Mapping[str, object], merged.get("dirs") or {}))
+    if package.remote_root in dirs:
+        raise ValueError(
+            f"program.dirs already defines internal package path {package.remote_root!r}."
+        )
+    dirs[package.remote_root] = package.local_root
+    merged["dirs"] = dirs
+    return merged
+
+
+def package_roots_for_module(
+    module_name: str, spec: importlib.machinery.ModuleSpec
+) -> set[Path]:
+    roots = set()
+    for path in module_source_paths(spec):
+        if is_external_import_path(path):
+            continue
+        root = module_package_root(path)
+        if root is None:
+            raise ValueError(
+                f"Sandboxed program.fn {module_name!r} resolves to local source "
+                f"{path}, but no pyproject.toml was found beside the resolved "
+                "environment module or package."
+            )
+        roots.add(root)
+    return roots
+
+
+def module_source_paths(spec: importlib.machinery.ModuleSpec) -> list[Path]:
+    origin = spec.origin
+    if spec.submodule_search_locations:
+        return [Path(path).resolve() for path in spec.submodule_search_locations]
+    if origin in {None, "built-in", "frozen"}:
+        return []
+    return [Path(origin).resolve()]
+
+
+def module_package_root(path: Path) -> Path | None:
+    root = path if path.is_dir() else path.parent
+    if (root / "pyproject.toml").is_file():
+        return root
+    return None
+
+
+def is_external_import_path(path: Path) -> bool:
+    parts = set(path.parts)
+    if "site-packages" in parts or "dist-packages" in parts:
+        return True
+    for prefix in interpreter_prefixes():
+        try:
+            path.relative_to(prefix)
+        except ValueError:
+            continue
+        return True
+    return False
+
+
+def interpreter_prefixes() -> list[Path]:
+    prefixes: list[Path] = []
+    for key in ("stdlib", "platstdlib"):
+        value = sysconfig.get_path(key)
+        if value:
+            prefixes.append(Path(value).resolve())
+    for value in (sys.base_prefix, sys.base_exec_prefix):
+        if value:
+            prefixes.append(Path(value).resolve())
+    unique: list[Path] = []
+    for prefix in prefixes:
+        if prefix not in unique:
+            unique.append(prefix)
+    return unique
 
 
 def runner_source() -> str:

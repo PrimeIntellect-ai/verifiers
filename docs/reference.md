@@ -681,6 +681,12 @@ tool loop.
 | `{"fn": "pkg.module:run", ...}` | Importable Python program. |
 | `{"command": ["cmd", "arg"], ...}` | Local or sandboxed command. |
 
+Sandboxed `program.fn` refs resolve their owning local package from the resolved
+module root: single-file modules use `pyproject.toml` in the same directory as
+the module file, and package modules use `pyproject.toml` inside the package
+directory. v1 uploads and installs that package in the program sandbox. Package
+dependencies come from normal `[project.dependencies]`.
+
 #### Env
 
 ```python

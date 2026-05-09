@@ -11,6 +11,14 @@ from pydantic import BaseModel
 
 import verifiers.v1 as vf
 
+PROGRAM_SANDBOX = {
+    "image": "python:3.11-slim",
+    "network_access": True,
+    "timeout_minutes": 60,
+    "command_timeout": 900,
+    "install_timeout": 900,
+}
+
 
 class Date(BaseModel):
     # Somehow LLM is bad at specifying `datetime.datetime`, so
@@ -374,7 +382,8 @@ def load_taskset(config: vf.TasksetConfig | None = None):
 
 def load_harness(config: vf.HarnessConfig | None = None):
     return vf.Harness(
-        program={"fn": "dspy_flights:run_dspy_flight_program"},
+        program={"fn": "dspy_flights:run_dspy_flight_program", "sandbox": True},
+        sandbox=PROGRAM_SANDBOX,
         config=config,
     )
 

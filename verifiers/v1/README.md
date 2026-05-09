@@ -899,6 +899,13 @@ Sandboxed base and Python entrypoint programs use the callable interface by
 default. Set `program={"sandbox": True, "tools": "callable"}` when the config
 should make that interface explicit.
 
+When a sandboxed `program.fn` ref points at local source, v1 resolves the
+package from the module root: single-file modules use `pyproject.toml` in the
+same directory as the module file, and package modules use `pyproject.toml`
+inside the package directory. v1 uploads that package root and installs it in
+the program sandbox before running the entrypoint. Dependencies are normal
+package dependencies.
+
 Command programs do not have a universal Python call surface. If
 `program.tools` requests `mcp`, v1 materializes an MCP proxy for the resolved
 toolsets. Generic CLI programs usually need a setup command to add that MCP
