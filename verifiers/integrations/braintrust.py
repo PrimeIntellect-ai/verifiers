@@ -156,7 +156,7 @@ def _patch_submit(runtime: Any, bt: Any) -> None:
         traj = state.get("trajectory", [])
         step = traj[-1] if len(traj) > n_before else {}
         span.log(
-            input=prompt,
+            input=step.get("prompt"),
             output=step.get("completion") if isinstance(step, dict) else None,
             metrics=_tokens(state, n_before),
             metadata={"elapsed_s": round(time.monotonic() - t0, 3)},
