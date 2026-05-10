@@ -489,7 +489,8 @@ def model_name(state):
 
 
 def load_tool_defs(protocol):
-    defs = json.loads(open(TOOL_DEFS_BY_PROTOCOL_PATH).read())
+    with open(TOOL_DEFS_BY_PROTOCOL_PATH) as f:
+        defs = json.load(f)
     return defs.get(protocol) or []
 
 
@@ -687,7 +688,8 @@ async def create_model_message(state, messages, client):
 async def run_base(task, state, client):
     prompt_messages = [*(state.get("system_prompt") or []), *(state.get("prompt") or [])]
     messages = list(prompt_messages)
-    config = json.loads(open(RUNNER_CONFIG_PATH).read())
+    with open(RUNNER_CONFIG_PATH) as f:
+        config = json.load(f)
     max_turns = int(config["max_turns"])
     turn = 0
     while max_turns <= 0 or turn < max_turns:
@@ -733,8 +735,10 @@ async def run_base(task, state, client):
 
 async def main():
     mode = sys.argv[1]
-    task = json.loads(open(TASK_PATH).read())
-    state = json.loads(open(STATE_INPUT_PATH).read())
+    with open(TASK_PATH) as f:
+        task = json.load(f)
+    with open(STATE_INPUT_PATH) as f:
+        state = json.load(f)
     original_state = json.loads(json.dumps(state))
     client = Client(state)
     try:
