@@ -148,13 +148,13 @@ class MCPEnv(vf.ToolEnv):
         self,
         # MCPEnv is designed for global server processes, not per-rollout,
         # stateful server instances with mutable task-specific data.
-        mcp_servers: List[MCPServerConfig | dict] = [],
+        mcp_servers: List[MCPServerConfig | dict] | None = None,
         max_turns: int = 10,
         error_formatter: Callable[[Exception], str] = lambda e: f"Error: {str(e)}",
         **kwargs,
     ):
         self.mcp_servers: List[MCPServerConfig] = []
-        if mcp_servers:
+        if mcp_servers is not None:
             for server in mcp_servers:
                 if isinstance(server, MCPServerConfig):
                     self.mcp_servers.append(server)
