@@ -47,6 +47,9 @@ LAB_SKILLS = [
 AGENT_SKILLS_DIR_MAP: dict[str, str] = {
     "amp": ".agents/skills",
 }
+AGENT_USER_SKILLS_DIR_MAP: dict[str, str] = {
+    "amp": "~/.agents/skills",
+}
 AGENT_SKILL_NAME_MAP: dict[str, dict[str, str]] = {}
 SUPPORTED_AGENTS = ("codex", "claude", "cursor", "opencode", "amp")
 PRIME_SKILLS_DIR = ".prime/skills"
@@ -325,10 +328,13 @@ def run_setup(
         wget.download(AGENTS_MD_SRC, AGENTS_MD_DST)
         print(f"\nDownloaded {AGENTS_MD_DST} from https://github.com/{VERIFIERS_REPO}")
 
-        if os.path.exists(CLAUDE_MD_DST):
-            os.remove(CLAUDE_MD_DST)
-        wget.download(CLAUDE_MD_SRC, CLAUDE_MD_DST)
-        print(f"\nDownloaded {CLAUDE_MD_DST} from https://github.com/{VERIFIERS_REPO}")
+        if "claude" in selected_agents:
+            if os.path.exists(CLAUDE_MD_DST):
+                os.remove(CLAUDE_MD_DST)
+            wget.download(CLAUDE_MD_SRC, CLAUDE_MD_DST)
+            print(
+                f"\nDownloaded {CLAUDE_MD_DST} from https://github.com/{VERIFIERS_REPO}"
+            )
 
         if os.path.exists(ENVS_AGENTS_MD_DST):
             os.remove(ENVS_AGENTS_MD_DST)
@@ -519,6 +525,16 @@ def _prepare_agent_skill_dirs(agents: list[str]) -> None:
     prime_skills_dir = Path(PRIME_SKILLS_DIR)
     for agent in agents:
         skills_dir = _resolve_agent_skills_dir(agent)
+        user_conflicts = _collect_user_skill_conflicts(agent, prime_skills_dir)
+        if user_conflicts:
+            _remove_managed_skill_link(prime_skills_dir, skills_dir)
+
+        if _should_link_agent_skills_root(agent, skills_dir, user_conflicts):
+            skills_dir.parent.mkdir(parents=True, exist_ok=True)
+            _safe_link_or_copy_skill_dir(prime_skills_dir, skills_dir)
+            print(f"Prepared {skills_dir}")
+            continue
+
         skills_dir.mkdir(parents=True, exist_ok=True)
         for skill_name in LAB_SKILLS:
             source_skill_dir = prime_skills_dir / skill_name
@@ -526,8 +542,56 @@ def _prepare_agent_skill_dirs(agents: list[str]) -> None:
                 continue
             target_skill_name = _resolve_agent_skill_name(agent, skill_name)
             target_skill_dir = skills_dir / target_skill_name
+            user_skill_dir = _resolve_user_agent_skills_dir(agent) / target_skill_name
+            if _should_skip_project_skill_for_user_skill(
+                source_skill_dir, target_skill_dir, user_skill_dir
+            ):
+                print(
+                    f"Skipped {target_skill_dir} because user skill exists at {user_skill_dir}"
+                )
+                continue
             _safe_link_or_copy_skill_dir(source_skill_dir, target_skill_dir)
         print(f"Prepared {skills_dir}")
+
+
+def _collect_user_skill_conflicts(agent: str, prime_skills_dir: Path) -> set[str]:
+    user_skills_dir = _resolve_user_agent_skills_dir(agent)
+    conflicts: set[str] = set()
+    for skill_name in LAB_SKILLS:
+        source_skill_dir = prime_skills_dir / skill_name
+        if not source_skill_dir.exists():
+            continue
+        target_skill_name = _resolve_agent_skill_name(agent, skill_name)
+        user_skill_dir = user_skills_dir / target_skill_name
+        if user_skill_dir.exists() or user_skill_dir.is_symlink():
+            conflicts.add(target_skill_name)
+    return conflicts
+
+
+def _should_link_agent_skills_root(
+    agent: str, skills_dir: Path, user_conflicts: set[str]
+) -> bool:
+    if user_conflicts:
+        return False
+    if AGENT_SKILL_NAME_MAP.get(agent):
+        return False
+    return not (skills_dir.exists() or skills_dir.is_symlink())
+
+
+def _should_skip_project_skill_for_user_skill(
+    source: Path, target: Path, user_skill_dir: Path
+) -> bool:
+    if not (user_skill_dir.exists() or user_skill_dir.is_symlink()):
+        return False
+    if _same_path(target, user_skill_dir):
+        return False
+    _remove_managed_skill_link(source, target)
+    return True
+
+
+def _remove_managed_skill_link(source: Path, target: Path) -> None:
+    if target.is_symlink() and _same_path(target, source):
+        target.unlink()
 
 
 def _safe_link_or_copy_skill_dir(source: Path, target: Path) -> None:
@@ -549,8 +613,22 @@ def _resolve_agent_skills_dir(agent: str) -> Path:
     return Path(f".{agent}") / "skills"
 
 
+def _resolve_user_agent_skills_dir(agent: str) -> Path:
+    mapped_dir = AGENT_USER_SKILLS_DIR_MAP.get(agent)
+    if mapped_dir is not None:
+        return Path(mapped_dir).expanduser()
+    return Path.home() / f".{agent}" / "skills"
+
+
 def _resolve_agent_skill_name(agent: str, skill_name: str) -> str:
     return AGENT_SKILL_NAME_MAP.get(agent, {}).get(skill_name, skill_name)
+
+
+def _same_path(left: Path, right: Path) -> bool:
+    try:
+        return left.resolve(strict=False) == right.resolve(strict=False)
+    except OSError:
+        return False
 
 
 def _sync_lab_metadata(

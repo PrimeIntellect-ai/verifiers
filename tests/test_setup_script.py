@@ -18,6 +18,13 @@ def _fake_download_factory(downloaded: list[tuple[str, str]]):
     return _download
 
 
+def _isolate_home(tmp_path: Path, monkeypatch) -> Path:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    return home
+
+
 def test_dedupe_config_destinations_preserves_first_destination() -> None:
     configs = [
         ("repo-a", "configs/a.toml", "configs/out.toml"),
@@ -32,6 +39,7 @@ def test_run_setup_downloads_endpoints_toml_and_default_config_sets(
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
+    _isolate_home(tmp_path, monkeypatch)
 
     downloaded: list[tuple[str, str]] = []
     config_batches: list[list[tuple[str, str, str]]] = []
@@ -57,6 +65,7 @@ def test_run_setup_with_prime_rl_downloads_prime_configs_plus_shared_configs(
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
+    _isolate_home(tmp_path, monkeypatch)
 
     downloaded: list[tuple[str, str]] = []
     config_batches: list[list[tuple[str, str, str]]] = []
@@ -109,6 +118,7 @@ def test_prepare_agent_skill_dirs_materializes_skills_from_prime(
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
+    _isolate_home(tmp_path, monkeypatch)
     monkeypatch.setattr(setup, "LAB_SKILLS", ["create-environments", "brainstorm"])
 
     for skill_name in setup.LAB_SKILLS:
@@ -118,6 +128,9 @@ def test_prepare_agent_skill_dirs_materializes_skills_from_prime(
 
     setup._prepare_agent_skill_dirs(["codex"])
 
+    skills_dir = tmp_path / ".codex" / "skills"
+    if skills_dir.is_symlink():
+        assert skills_dir.resolve() == (tmp_path / ".prime" / "skills").resolve()
     for skill_name in setup.LAB_SKILLS:
         source = tmp_path / ".prime" / "skills" / skill_name
         target = tmp_path / ".codex" / "skills" / skill_name
@@ -131,6 +144,7 @@ def test_prepare_agent_skill_dirs_is_safe_with_existing_links(
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
+    _isolate_home(tmp_path, monkeypatch)
     monkeypatch.setattr(setup, "LAB_SKILLS", ["create-environments"])
 
     source = tmp_path / ".prime" / "skills" / "create-environments"
@@ -151,10 +165,94 @@ def test_prepare_agent_skill_dirs_is_safe_with_existing_links(
     assert (target / "SKILL.md").exists()
 
 
+def test_prepare_agent_skill_dirs_skips_user_scope_skills(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    home = _isolate_home(tmp_path, monkeypatch)
+    monkeypatch.setattr(setup, "LAB_SKILLS", ["brainstorm"])
+
+    source = tmp_path / ".prime" / "skills" / "brainstorm"
+    source.mkdir(parents=True, exist_ok=True)
+    (source / "SKILL.md").write_text("bundled brainstorm\n")
+
+    user_skill = home / ".codex" / "skills" / "brainstorm"
+    user_skill.mkdir(parents=True)
+    (user_skill / "SKILL.md").write_text("user brainstorm\n")
+
+    setup._prepare_agent_skill_dirs(["codex"])
+
+    target = tmp_path / ".codex" / "skills" / "brainstorm"
+    assert not target.exists()
+    assert not target.is_symlink()
+    assert (user_skill / "SKILL.md").read_text() == "user brainstorm\n"
+
+    output = capsys.readouterr().out
+    assert "Skipped .codex/skills/brainstorm because user skill exists" in output
+
+
+def test_prepare_agent_skill_dirs_removes_managed_link_when_user_skill_exists(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    home = _isolate_home(tmp_path, monkeypatch)
+    monkeypatch.setattr(setup, "LAB_SKILLS", ["brainstorm"])
+
+    source = tmp_path / ".prime" / "skills" / "brainstorm"
+    source.mkdir(parents=True, exist_ok=True)
+    (source / "SKILL.md").write_text("bundled brainstorm\n")
+
+    skills_dir = tmp_path / ".codex" / "skills"
+    skills_dir.parent.mkdir(parents=True, exist_ok=True)
+    skills_dir.symlink_to(
+        os.path.relpath(source.parent, start=skills_dir.parent),
+        target_is_directory=True,
+    )
+
+    user_skill = home / ".codex" / "skills" / "brainstorm"
+    user_skill.mkdir(parents=True)
+    (user_skill / "SKILL.md").write_text("user brainstorm\n")
+
+    setup._prepare_agent_skill_dirs(["codex"])
+
+    target = tmp_path / ".codex" / "skills" / "brainstorm"
+    assert skills_dir.exists()
+    assert not skills_dir.is_symlink()
+    assert not target.exists()
+    assert not target.is_symlink()
+    assert (user_skill / "SKILL.md").exists()
+
+
+def test_prepare_agent_skill_dirs_keeps_existing_project_skill_with_user_skill(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    home = _isolate_home(tmp_path, monkeypatch)
+    monkeypatch.setattr(setup, "LAB_SKILLS", ["brainstorm"])
+
+    source = tmp_path / ".prime" / "skills" / "brainstorm"
+    source.mkdir(parents=True, exist_ok=True)
+    (source / "SKILL.md").write_text("bundled brainstorm\n")
+
+    target = tmp_path / ".codex" / "skills" / "brainstorm"
+    target.mkdir(parents=True)
+    (target / "SKILL.md").write_text("project brainstorm\n")
+
+    user_skill = home / ".codex" / "skills" / "brainstorm"
+    user_skill.mkdir(parents=True)
+    (user_skill / "SKILL.md").write_text("user brainstorm\n")
+
+    setup._prepare_agent_skill_dirs(["codex"])
+
+    assert (target / "SKILL.md").read_text() == "project brainstorm\n"
+    assert (user_skill / "SKILL.md").read_text() == "user brainstorm\n"
+
+
 def test_prepare_agent_skill_dirs_uses_mapped_root_for_amp(
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
+    _isolate_home(tmp_path, monkeypatch)
     monkeypatch.setattr(setup, "LAB_SKILLS", ["create-environments"])
 
     source = tmp_path / ".prime" / "skills" / "create-environments"
@@ -163,6 +261,9 @@ def test_prepare_agent_skill_dirs_uses_mapped_root_for_amp(
 
     setup._prepare_agent_skill_dirs(["amp"])
 
+    skills_dir = tmp_path / ".agents" / "skills"
+    if skills_dir.is_symlink():
+        assert skills_dir.resolve() == (tmp_path / ".prime" / "skills").resolve()
     assert (
         tmp_path / ".agents" / "skills" / "create-environments" / "SKILL.md"
     ).exists()
@@ -173,6 +274,7 @@ def test_prepare_agent_skill_dirs_supports_skill_name_mapping(
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
+    _isolate_home(tmp_path, monkeypatch)
     monkeypatch.setattr(setup, "LAB_SKILLS", ["create-environments"])
     monkeypatch.setattr(
         setup,
@@ -194,8 +296,10 @@ def test_run_setup_prints_post_setup_call_to_action(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
     monkeypatch.chdir(tmp_path)
+    _isolate_home(tmp_path, monkeypatch)
 
-    monkeypatch.setattr(setup.wget, "download", _fake_download_factory([]))
+    downloaded: list[tuple[str, str]] = []
+    monkeypatch.setattr(setup.wget, "download", _fake_download_factory(downloaded))
     monkeypatch.setattr(setup, "download_configs", lambda *_: None)
     monkeypatch.setattr(setup, "sync_prime_skills", lambda: None)
 
@@ -218,10 +322,45 @@ def test_run_setup_prints_post_setup_call_to_action(
     assert "prime gepa run my-env -m openai/gpt-5-nano" in output
 
 
+def test_run_setup_does_not_write_claude_md_for_default_codex_agent(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _isolate_home(tmp_path, monkeypatch)
+
+    downloaded: list[tuple[str, str]] = []
+    monkeypatch.setattr(setup.wget, "download", _fake_download_factory(downloaded))
+    monkeypatch.setattr(setup, "download_configs", lambda *_: None)
+    monkeypatch.setattr(setup, "sync_prime_skills", lambda: None)
+
+    setup.run_setup(skip_install=True, no_interactive=True)
+
+    assert (setup.CLAUDE_MD_SRC, setup.CLAUDE_MD_DST) not in downloaded
+    assert not (tmp_path / "CLAUDE.md").exists()
+
+
+def test_run_setup_writes_claude_md_when_claude_agent_selected(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _isolate_home(tmp_path, monkeypatch)
+
+    downloaded: list[tuple[str, str]] = []
+    monkeypatch.setattr(setup.wget, "download", _fake_download_factory(downloaded))
+    monkeypatch.setattr(setup, "download_configs", lambda *_: None)
+    monkeypatch.setattr(setup, "sync_prime_skills", lambda: None)
+
+    setup.run_setup(skip_install=True, agents="claude", no_interactive=True)
+
+    assert (setup.CLAUDE_MD_SRC, setup.CLAUDE_MD_DST) in downloaded
+    assert (tmp_path / "CLAUDE.md").exists()
+
+
 def test_run_setup_prints_prime_rl_post_setup_call_to_action(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
     monkeypatch.chdir(tmp_path)
+    _isolate_home(tmp_path, monkeypatch)
 
     monkeypatch.setattr(setup.wget, "download", _fake_download_factory([]))
     monkeypatch.setattr(setup, "download_configs", lambda *_: None)
@@ -243,6 +382,7 @@ def test_run_setup_prints_prime_rl_post_setup_call_to_action(
 
 def test_run_setup_persists_lab_choices_metadata(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
+    _isolate_home(tmp_path, monkeypatch)
 
     monkeypatch.setattr(setup.wget, "download", _fake_download_factory([]))
     monkeypatch.setattr(setup, "download_configs", lambda *_: None)
@@ -270,6 +410,7 @@ def test_run_setup_persists_default_lab_choices_metadata(
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
+    _isolate_home(tmp_path, monkeypatch)
 
     monkeypatch.setattr(setup.wget, "download", _fake_download_factory([]))
     monkeypatch.setattr(setup, "download_configs", lambda *_: None)
