@@ -1,10 +1,11 @@
 import asyncio
 import functools
 import logging
+import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
 
-from prime_sandboxes import AsyncSandboxClient
+from prime_sandboxes import AsyncSandboxClient, CommandTimeoutError
 
 from verifiers.utils.thread_utils import (
     get_or_create_thread_attr,
@@ -73,6 +74,30 @@ class ThreadedAsyncSandboxClient:
             return await loop.run_in_executor(self.executor, run_in_thread)
 
         return wrapper
+
+    async def run_background_job(
+        self,
+        sandbox_id: str,
+        command: str,
+        timeout: int = 900,
+        working_dir: str | None = None,
+        env: dict[str, str] | None = None,
+        poll_interval: int = 3,
+    ) -> Any:
+        """Run a background job without occupying a worker while polling."""
+        job = await self.start_background_job(
+            sandbox_id,
+            command,
+            working_dir=working_dir,
+            env=env,
+        )
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            status = await self.get_background_job(sandbox_id, job)
+            if status.completed:
+                return status
+            await asyncio.sleep(poll_interval)
+        raise CommandTimeoutError(sandbox_id, command, timeout)
 
     def teardown(self, wait: bool = True) -> None:
         """Teardown the thread pool executor."""
