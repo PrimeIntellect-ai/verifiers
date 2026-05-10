@@ -85,11 +85,16 @@ OPENCODE_RELEASE_TAG="${{OPENCODE_RELEASE_VERSION#v}}"
 OPENCODE_RELEASE_URL="https://github.com/$OPENCODE_RELEASE_REPO/releases/download/v$OPENCODE_RELEASE_TAG/$OPENCODE_ASSET"
 
 mkdir -p "$HOME/.opencode/bin"
-curl -fsSL "$OPENCODE_RELEASE_URL" -o /tmp/opencode.tar.gz
-{sha256_check}
-tar -xzf /tmp/opencode.tar.gz -C /tmp
-install -m 755 /tmp/opencode "$HOME/.opencode/bin/opencode"
-echo "OpenCode installed successfully"
+if [ -x "$HOME/.opencode/bin/opencode" ]; then
+  echo "OpenCode already installed, skipping download"
+else
+  curl -fsSL "$OPENCODE_RELEASE_URL" -o /tmp/opencode.tar.gz
+  {sha256_check}
+  tar -xzf /tmp/opencode.tar.gz -C /tmp
+  install -m 755 /tmp/opencode "$HOME/.opencode/bin/opencode"
+  rm -f /tmp/opencode.tar.gz /tmp/opencode
+  echo "OpenCode installed successfully"
+fi
 """
 
 

@@ -105,18 +105,27 @@ curl -fsSL https://bun.sh/install | bash
 export PATH="$HOME/.bun/bin:$PATH"
 
 # Install opencode
-for install_attempt in 1 2 3; do
-    if {install_command}; then
-        break
-    fi
-    if [ "$install_attempt" -eq 3 ]; then
-        echo "OpenCode installation failed after 3 attempts" >&2
-        exit 1
-    fi
-    echo "OpenCode install attempt $install_attempt/3 failed, retrying in 5s..." >&2
-    sleep 5
-done
+if [ -x "$HOME/.opencode/bin/opencode" ]; then
+    echo "OpenCode already installed, skipping download"
+else
+    for install_attempt in 1 2 3; do
+        if {install_command}; then
+            break
+        fi
+        if [ "$install_attempt" -eq 3 ]; then
+            echo "OpenCode installation failed after 3 attempts" >&2
+            exit 1
+        fi
+        echo "OpenCode install attempt $install_attempt/3 failed, retrying in 5s..." >&2
+        sleep 5
+    done
+fi
 export PATH="$HOME/.opencode/bin:$PATH"
+
+if [ ! -x "$HOME/.opencode/bin/opencode" ]; then
+    echo "OpenCode binary not found after installation" >&2
+    exit 1
+fi
 
 # Install RLM plugin
 git clone --branch {plugin_branch} https://github.com/{plugin_repo}.git {plugin_install_path}
