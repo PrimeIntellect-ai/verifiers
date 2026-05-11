@@ -150,6 +150,26 @@ async def test_mle_bench_valid_submission_records_validator_output(monkeypatch):
     assert sandbox.calls[0]["working_dir"] == "/home"
 
 
+async def test_mle_bench_valid_submission_uses_configured_workdir(monkeypatch):
+    module = load_module(monkeypatch)
+    taskset = module.load_taskset(
+        competition_ids=["spaceship-titanic"],
+        workdir="/workspace",
+        submission_path="/workspace/submission/submission.csv",
+        validate_script="/workspace/validate_submission.sh",
+    )
+    task = vf.Task(list(taskset.source())[0])
+    state = vf.State.for_task(task)
+    sandbox = RecordingSandbox([Result(0, "Submission is valid.")])
+    state["_mle_bench_sandbox"] = sandbox
+
+    assert await module.valid_submission(task, state) == 1.0
+    assert sandbox.calls[0]["command"] == (
+        "/workspace/validate_submission.sh /workspace/submission/submission.csv"
+    )
+    assert sandbox.calls[0]["working_dir"] == "/workspace"
+
+
 async def test_mle_bench_invalid_submission_gets_zero_reward(monkeypatch):
     module = load_module(monkeypatch)
     taskset = module.load_taskset(competition_ids=["spaceship-titanic"])

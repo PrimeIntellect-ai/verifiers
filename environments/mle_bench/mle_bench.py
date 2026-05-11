@@ -138,6 +138,7 @@ def make_record(
         "competition_type": registry_data.get("competition_type"),
         "sample_submission": registry_data.get("sample_submission"),
         "answers": registry_data.get("answers"),
+        "workdir": workdir,
         "submission_path": submission_path,
         "validate_script": validate_script,
     }
@@ -285,10 +286,11 @@ async def valid_submission(task: vf.Task, state: vf.State) -> float:
     if sandbox is None:
         return 0.0
     info = task["info"]
+    workdir = str(info["workdir"])
     submission_path = str(info["submission_path"])
     validate_script = str(info["validate_script"])
     command = f"{shlex.quote(validate_script)} {shlex.quote(submission_path)}"
-    result = await sandbox.execute(command, timeout=300, working_dir=DEFAULT_WORKDIR)
+    result = await sandbox.execute(command, timeout=300, working_dir=workdir)
     state["validation_stdout"] = result.stdout or ""
     state["validation_stderr"] = result.stderr or ""
     state["validation_exit_code"] = result.exit_code
