@@ -35,6 +35,7 @@ async def parse_response_tokens(
     completion_mask = tokens.completion_mask
     completion_logprobs = tokens.completion_logprobs
     routed_experts = tokens.routed_experts
+    multi_modal_data = tokens.multi_modal_data
 
     if max_seq_len is not None:
         prompt_len = len(prompt_ids)
@@ -61,7 +62,7 @@ async def parse_response_tokens(
         overlong_prompt = False
         is_truncated = False
 
-    return TrajectoryStepTokens(
+    out = TrajectoryStepTokens(
         prompt_ids=prompt_ids,
         prompt_mask=prompt_mask,
         completion_ids=completion_ids,
@@ -71,3 +72,6 @@ async def parse_response_tokens(
         is_truncated=is_truncated,
         routed_experts=routed_experts,
     )
+    if multi_modal_data is not None:
+        out["multi_modal_data"] = multi_modal_data
+    return out

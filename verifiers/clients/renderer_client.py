@@ -20,9 +20,11 @@ from openai import AsyncOpenAI
 
 from renderers import Message as RendererMessage
 from renderers import (
+    RenderedTokens,
     Renderer,
     RendererPool,
     ToolSpec,
+    as_rendered_tokens,
     create_renderer_pool,
 )
 from renderers import ToolCall as RendererToolCall
@@ -295,6 +297,28 @@ def _step_token_ids(step: Any) -> tuple[list[int], list[int]] | None:
     return list(prompt_ids), list(completion_ids)
 
 
+def _step_multi_modal_data(step: Any):
+    """Recover the previous turn's ``MultiModalData`` for bridging.
+
+    Mirrors :func:`_step_token_ids`: prefer ``step.tokens.multi_modal_data``
+    (post-parse_response_tokens), fall back to ``step.response.message.tokens``.
+    Returns ``None`` when no multimodal sidecar was emitted (text-only
+    rollouts) — the bridge handles that branch transparently.
+    """
+    tokens = _get_value(step, "tokens")
+    if tokens is not None:
+        mm = _get_value(tokens, "multi_modal_data")
+        if mm is not None:
+            return mm
+
+    response = _get_value(step, "response")
+    message = _get_value(response, "message")
+    raw_tokens = _get_value(message, "tokens")
+    if raw_tokens is None:
+        return None
+    return _get_value(raw_tokens, "multi_modal_data")
+
+
 def _step_rendered_messages(step: Any) -> list[RendererMessage]:
     prompt = list(_get_value(step, "prompt", []) or [])
     completion = list(_get_value(step, "completion", []) or [])
@@ -309,7 +333,18 @@ async def _get_incremental_prompt_ids(
     prompt: list[RendererMessage],
     state: Any,
     tools: list[ToolSpec] | None,
-) -> list[int] | None:
+) -> "RenderedTokens | None":
+    """Return the bridged prompt for the next turn as ``RenderedTokens``.
+
+    Returns ``None`` when no prior trajectory step lines up with the new
+    prompt's prefix or the renderer's ``bridge_to_next_turn`` can't extend
+    — both cases fall back to a full re-render in :func:`generate`.
+
+    The result is always ``RenderedTokens`` (text-only renderers' raw
+    ``list[int]`` returns get normalized via :func:`as_rendered_tokens`)
+    so callers can unpack both ``token_ids`` and ``multi_modal_data``
+    uniformly.
+    """
     if not state:
         return None
 
@@ -342,6 +377,7 @@ async def _get_incremental_prompt_ids(
             continue
 
         previous_prompt_ids, previous_completion_ids = token_ids
+        previous_mm_data = _step_multi_modal_data(step)
         bridged = await _run_with_renderer(
             renderer,
             lambda r: r.bridge_to_next_turn(
@@ -349,10 +385,19 @@ async def _get_incremental_prompt_ids(
                 previous_completion_ids,
                 tail,
                 tools=tools,
+                # Carry forward earlier-turn images so the new prompt's
+                # ``mm_placeholders`` covers every ``<|image_pad|>`` run in
+                # the combined token sequence. Without this, vLLM sees
+                # placeholder counts that don't match the prompt and
+                # silently falls back to hash-cache lookup (or errors).
+                previous_multi_modal_data=previous_mm_data,
             ),
         )
         _record_bridge(success=bridged is not None)
-        return bridged
+        # Normalize text-only ``list[int]`` returns to RenderedTokens so
+        # the caller can read both ``token_ids`` and ``multi_modal_data``
+        # uniformly. Multimodal renderers already return RenderedTokens.
+        return as_rendered_tokens(bridged)
 
     return None
 
@@ -514,12 +559,21 @@ class RendererClient(
         if args.get("prompt_logprobs"):
             sampling_params["prompt_logprobs"] = 1
 
-        prompt_ids = await _get_incremental_prompt_ids(
+        bridged = await _get_incremental_prompt_ids(
             renderer=renderer,
             prompt=prompt,
             state=kwargs.get("state"),
             tools=tools,
         )
+        # ``bridged`` is RenderedTokens | None. Unpack token_ids + mm_data
+        # so multimodal renderers thread per-image features through to
+        # /inference/v1/generate without re-rendering the whole turn.
+        if bridged is not None:
+            prompt_ids = bridged.token_ids
+            multi_modal_data = bridged.multi_modal_data
+        else:
+            prompt_ids = None
+            multi_modal_data = None
 
         return await generate(
             client=self.client,
@@ -527,6 +581,7 @@ class RendererClient(
             messages=prompt,
             model=model,
             prompt_ids=prompt_ids,
+            multi_modal_data=multi_modal_data,
             tools=tools,
             sampling_params=sampling_params,
             cache_salt=args.get("cache_salt")
@@ -580,6 +635,7 @@ class RendererClient(
             completion_mask=[1] * len(completion_ids),
             completion_logprobs=completion_logprobs,
             routed_experts=response.get("routed_experts"),
+            multi_modal_data=response.get("multi_modal_data"),
         )
 
         # /inference/v1/generate doesn't return usage; reconstruct from tokens.

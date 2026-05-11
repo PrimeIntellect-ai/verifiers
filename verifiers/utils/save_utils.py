@@ -53,6 +53,15 @@ def is_json_serializable(value: object) -> bool:
 
     Returns True for JSON primitives, lists/dicts of primitives,
     Pydantic models, datetime/date, Path, and exceptions.
+
+    Also returns True for renderer multimodal sidecars (``MultiModalData``,
+    ``PlaceholderRange``) and torch tensors — these aren't JSON-native but
+    are transportable via the prime-rl msgpack encoder, and trajectories
+    carrying them are excluded from JSONL save at the orchestrator
+    boundary (orchestrator passes ``exclude_keys={"trajectory"}`` to
+    ``save_rollouts``). Without this accommodation, validating
+    ``state_columns=["trajectory"]`` rejects every rollout from the
+    renderer multimodal path.
     """
     if value is None:
         return True
@@ -66,6 +75,19 @@ def is_json_serializable(value: object) -> bool:
         )
     # Types that make_serializable can handle
     if isinstance(value, (BaseModel, datetime, date, Path, BaseException)):
+        return True
+    # Transport-only types: not JSON-native but survive msgpack via the
+    # prime-rl encoder. Detect by module to avoid a hard torch/renderers
+    # import dependency at this layer.
+    cls = type(value)
+    module = getattr(cls, "__module__", "") or ""
+    if module.startswith("torch"):
+        return True
+    if module.startswith("renderers.") or cls.__name__ in {
+        "MultiModalData",
+        "PlaceholderRange",
+        "RenderedTokens",
+    }:
         return True
     return False
 
@@ -263,6 +285,17 @@ def state_to_output(
     # add state columns (must be serializable)
     for col in state_columns or []:
         value = state.get(col)
+        if col == "trajectory":
+            # Renderer multimodal rollouts accumulate mm_data on every step
+            # (bridge_to_next_turn merges previous_multi_modal_data into the
+            # new turn). Each subsequent step's mm_data is a superset of the
+            # prior step's, so shipping mm_data on every step duplicates
+            # every image O(N²) bytes for an N-turn rollout. Only the last
+            # step's sidecar is read by the trainer — strip mm_data from
+            # earlier steps before transport. Bridge accesses mm_data only
+            # within the env-worker rollout loop, which has already
+            # finished by the time state_to_output runs.
+            value = _strip_intermediate_mm_data(value)
         if not is_json_serializable(value):
             raise ValueError(
                 f"state_columns value for '{col}' is not JSON-serializable: "
@@ -271,6 +304,31 @@ def state_to_output(
         output[col] = value
 
     return output
+
+
+def _strip_intermediate_mm_data(trajectory: object) -> object:
+    """Drop ``tokens.multi_modal_data`` from all but the last step.
+
+    Returns a new list of step dicts (with shallow-copied tokens for the
+    stripped entries) so the input state isn't mutated. Non-list inputs
+    and empty / single-step trajectories pass through unchanged.
+    """
+    if not isinstance(trajectory, list) or len(trajectory) <= 1:
+        return trajectory
+
+    out: list = []
+    last_idx = len(trajectory) - 1
+    for idx, step in enumerate(trajectory):
+        if idx == last_idx or not isinstance(step, Mapping):
+            out.append(step)
+            continue
+        tokens = step.get("tokens")
+        if isinstance(tokens, Mapping) and tokens.get("multi_modal_data") is not None:
+            new_tokens = {k: v for k, v in tokens.items() if k != "multi_modal_data"}
+            out.append({**step, "tokens": new_tokens})
+        else:
+            out.append(step)
+    return out
 
 
 def serialize_timing(timing: object) -> dict[str, Any]:
