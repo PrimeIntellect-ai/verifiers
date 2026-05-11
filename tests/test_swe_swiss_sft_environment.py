@@ -52,6 +52,23 @@ def test_parse_messages_accepts_list_and_json_string():
     assert swe_swiss.parse_messages(json.dumps(sample_messages())) == sample_messages()
 
 
+def test_parse_messages_skips_null_content():
+    swe_swiss = load_module()
+    messages = [
+        {"role": "system", "content": None},
+        {"role": "user", "content": "Fix this."},
+        {"role": "assistant", "content": "Done."},
+    ]
+
+    parsed = swe_swiss.parse_messages(messages)
+
+    assert parsed == [
+        {"role": "user", "content": "Fix this."},
+        {"role": "assistant", "content": "Done."},
+    ]
+    assert all(message["content"] != "None" for message in parsed)
+
+
 def test_row_to_example_uses_prompt_before_first_assistant():
     swe_swiss = load_module()
     row = sample_dataset()[0]

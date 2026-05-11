@@ -25,8 +25,8 @@ def parse_messages(raw_messages: Any) -> list[dict[str, str]]:
     for message in raw_messages:
         if not isinstance(message, dict):
             continue
-        role = str(message.get("role", "")).strip()
-        content = str(message.get("content", ""))
+        role = str(message.get("role") or "").strip()
+        content = str(message.get("content") or "")
         if role and content:
             messages.append({"role": role, "content": content})
     return messages
