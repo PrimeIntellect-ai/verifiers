@@ -388,6 +388,9 @@ class OpenCodeEnv(CliAgentEnv):
                 }
             },
             "model": "$OPENAI_MODEL",
+            # Keep title/summary sub-agents on the intercepted provider instead
+            # of falling back to OpenCode's hosted free small model.
+            "small_model": "$OPENAI_MODEL",
         }
 
         if disable_compaction:

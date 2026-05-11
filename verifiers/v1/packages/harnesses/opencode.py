@@ -218,6 +218,9 @@ def build_opencode_config(
             }
         },
         "model": "intercepted/model",
+        # Keep title/summary sub-agents on the intercepted provider instead
+        # of falling back to OpenCode's hosted free small model.
+        "small_model": "intercepted/model",
         "mcp": {
             "verifiers-tools": {
                 "type": "local",
