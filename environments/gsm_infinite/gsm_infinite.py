@@ -11,7 +11,7 @@ SYSTEM_PROMPT = (
 )
 
 DATASET_TEMPLATE = "InfiniAILab/gsm_infinite_{subset}_{context_length}"
-SYMBOLIC_DATASET_TEMPLATE = "InfiniAILab/gsm_infinite_symbolic_example_{context_length}"
+SYMBOLIC_DATASET_TEMPLATE = "InfiniAILab/gsm_infinite_symbolic_{context_length}"
 
 
 def dataset_name(subset: str = "medium", context_length: str = "0") -> str:

@@ -51,7 +51,11 @@ def test_dataset_name_and_split_validation():
     )
     assert (
         gsm_infinite.dataset_name("symbolic", "0")
-        == "InfiniAILab/gsm_infinite_symbolic_example_0"
+        == "InfiniAILab/gsm_infinite_symbolic_0"
+    )
+    assert (
+        gsm_infinite.dataset_name("symbolic", "8k")
+        == "InfiniAILab/gsm_infinite_symbolic_8k"
     )
     assert gsm_infinite.split_name(12) == "ops_12"
 
