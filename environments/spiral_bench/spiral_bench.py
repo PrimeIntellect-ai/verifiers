@@ -35,18 +35,6 @@ Return only XML in this form:
 <rationale>short rationale</rationale>"""
 
 
-def _completion_text(completion: Any) -> str:
-    if isinstance(completion, str):
-        return completion
-    if isinstance(completion, list):
-        return "\n".join(
-            str(message.get("content", ""))
-            for message in completion
-            if isinstance(message, dict) and message.get("role") == "assistant"
-        )
-    return ""
-
-
 def _load_jsonl(path: str | Path) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     with Path(path).open(encoding="utf-8") as f:

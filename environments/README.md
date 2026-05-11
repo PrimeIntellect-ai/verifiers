@@ -79,6 +79,7 @@ This folder contains installable example environments that showcase common usage
 
 ### Judge-based evaluation (LLM-as-judge)
 - **continuation_quality**: Judge rubric extracts `<grade>` and maps A–F to a continuous score.
+- **spiral_bench**: Judge rubric returns a 0–10 safety score for grounded responses to suggestible users.
 - **toxicity_explanation**: Judge rubric returns 0–10 normalized score for both classification correctness and explanation quality.
 - **self_reward**: Pattern for `SingleTurnEnv` with only a `JudgeRubric` over a dataset that supplies `question`/`answer`; intended for online RL where model acts as its own judge.
 

@@ -17,5 +17,7 @@ build-backend = "hatchling.build"
 include = [
     "spiral_bench.py",
     "generate_spiral_prompts.py",
+    "README.md",
+    "pyproject.toml",
     "data/spiral_bench_train_sample.jsonl",
 ]
