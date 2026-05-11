@@ -48,6 +48,21 @@ HARBOR_CONFIG_FIELDS = frozenset(HarborTasksetConfig.model_fields) - frozenset(
 
 class HarborTaskset(Taskset):
     config_type = HarborTasksetConfig
+    tasks: str | Path | None
+    task_names: list[str]
+    cache_dir: Path | None
+    refresh: bool
+    docker_image: str
+    cpu_cores: float
+    memory_gb: float
+    disk_size_gb: float
+    timeout_minutes: int
+    agent_timeout_seconds: float
+    verifier_timeout_seconds: float
+    workdir: str
+    task_dir: str
+    scope: Literal["rollout", "group", "global"]
+    env: dict[str, object]
 
     def __init__(
         self,

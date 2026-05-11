@@ -19,7 +19,7 @@ from .config import (
 )
 from .state import State
 from .task import Task
-from .toolset import merge_toolsets, normalize_toolset_collection
+from .toolset import Toolset, merge_toolsets, normalize_toolset_collection
 from .user import normalize_user
 from .utils.prompt_utils import normalize_system_prompt
 
@@ -37,6 +37,18 @@ TASKSET_HANDLER_FIELDS: tuple[tuple[str, CallableKind], ...] = (
 
 class Taskset:
     config_type: ClassVar[type[TasksetConfig]] = TasksetConfig
+    source: TasksetSource | None
+    eval_source: TasksetSource | None
+    taskset_id: str
+    toolsets: list[Toolset]
+    named_toolsets: dict[str, Toolset]
+    stops: list[Callable[..., object]]
+    setups: list[Callable[..., object]]
+    updates: list[Callable[..., object]]
+    metrics: list[Callable[..., object]]
+    rewards: list[Callable[..., object]]
+    advantages: list[Callable[..., object]]
+    cleanups: list[Callable[..., object]]
 
     def __init__(
         self,
@@ -60,15 +72,17 @@ class Taskset:
     ):
         self.config = type(self).config_type.from_config(config)
         config = self.config
-        source = source if source is not None else config.source
-        eval_source = eval_source if eval_source is not None else config.eval_source
+        source_value = source if source is not None else config.source
+        eval_source_value = (
+            eval_source if eval_source is not None else config.eval_source
+        )
         self.source = cast(
             TasksetSource | None,
-            resolve_config_object(source),
+            resolve_config_object(source_value),
         )
         self.eval_source = cast(
             TasksetSource | None,
-            resolve_config_object(eval_source),
+            resolve_config_object(eval_source_value),
         )
         resolved_taskset_id = (
             taskset_id if taskset_id is not None else config.taskset_id
