@@ -1,0 +1,20 @@
+[project]
+name = "eq-bench3"
+version = "0.1.0"
+description = "Synthetic EQ-Bench-style emotional intensity prompts with deterministic scoring."
+tags = ["emotional-intelligence", "single-turn", "train", "eval"]
+dependencies = [
+    "verifiers>=0.1.14",
+    "datasets",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = [
+    "eq_bench3.py",
+    "generate_eq_bench3_prompts.py",
+    "data/eq_bench3_train_sample.jsonl",
+]
