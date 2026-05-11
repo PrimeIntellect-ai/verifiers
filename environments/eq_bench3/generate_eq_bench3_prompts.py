@@ -98,6 +98,9 @@ def build_question(dialogue: str, target: str, emotions: list[str]) -> str:
 
 def generate_rows(num_examples: int, seed: int) -> list[dict[str, object]]:
     rng = random.Random(seed)
+    max_examples = len(SCENARIOS) * 2 * len(EMOTION_SETS) * len(SCENARIOS[0][2])
+    if num_examples > max_examples:
+        raise ValueError(f"num_examples must be <= {max_examples}")
     rows: list[dict[str, object]] = []
     seen: set[tuple[str, str, int, tuple[str, ...]]] = set()
     while len(rows) < num_examples:

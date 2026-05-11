@@ -12,6 +12,7 @@ This folder contains installable example environments that showcase common usage
 ### SingleTurnEnv (prompt → single response)
 - **gsm8k**: Classic QA with exact-match reward and optional response-format reward.
 - **reverse_text**: XML formatting with non-binary LCS reward + format reward.
+- **eq_bench3**: Synthetic EQ-Bench3-style emotional-intelligence prompts with JSON intensity scoring.
 - **continuation_quality**: Completion-style generation (`message_type="completion"`) judged for prose quality with `JudgeRubric`.
 - **mmmu**: Multimodal inputs (image + text) packed in chat content; single-turn boxed-answer check.
 

@@ -39,6 +39,17 @@ def test_eq_bench3_generator_is_deterministic_and_structured(tmp_path):
     assert output.read_text(encoding="utf-8").count("\n") == 8
 
 
+def test_eq_bench3_generator_rejects_too_many_examples():
+    generator = load_module(GENERATOR_PATH, "eq_bench3_generator_limit")
+
+    try:
+        generator.generate_rows(num_examples=97, seed=321)
+    except ValueError as exc:
+        assert "num_examples must be <= 96" in str(exc)
+    else:
+        raise AssertionError("Expected ValueError")
+
+
 def test_eq_bench3_sample_dataset_loads():
     eq_bench3 = load_module(ENV_PATH, "eq_bench3_env")
 
