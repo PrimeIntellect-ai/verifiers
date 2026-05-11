@@ -1,0 +1,27 @@
+[project]
+name = "mle-bench"
+version = "0.1.0"
+description = "MLE-Bench competition-submission environment"
+license = "Apache-2.0"
+tags = ["mle", "kaggle", "coding", "benchmark"]
+requires-python = ">=3.11"
+dependencies = [
+    "verifiers",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["mle_bench.py", "README.md", "pyproject.toml"]
+
+[project.entry-points."verifiers.environments"]
+mle-bench = "mle_bench:load_environment"
+
+[tool.verifiers.eval]
+num_examples = 7
+rollouts_per_example = 1
+
+[tool.uv.sources]
+verifiers = { path = "../..", editable = true }
