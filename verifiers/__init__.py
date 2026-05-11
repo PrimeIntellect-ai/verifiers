@@ -121,6 +121,7 @@ __all__ = [
     "GRPOConfig",
     "grpo_defaults",
     "lora_defaults",
+    "SynthDataBuilder",
 ]
 
 _LAZY_IMPORTS = {
@@ -154,6 +155,7 @@ _LAZY_IMPORTS = {
     "GRPOConfig": "verifiers_rl.rl.trainer:GRPOConfig",
     "grpo_defaults": "verifiers_rl.rl.trainer:grpo_defaults",
     "lora_defaults": "verifiers_rl.rl.trainer:lora_defaults",
+    "SynthDataBuilder": "verifiers.synth.builder:SynthDataBuilder",
     "MathRubric": "verifiers.rubrics.math_rubric:MathRubric",
     "SandboxEnv": "verifiers.envs.sandbox_env:SandboxEnv",
     "PythonEnv": "verifiers.envs.python_env:PythonEnv",
@@ -248,6 +250,7 @@ if TYPE_CHECKING:
     from .envs.tool_env import ToolEnv  # noqa: F401
     from .rubrics.judge_rubric import JudgeRubric  # noqa: F401
     from .rubrics.math_rubric import MathRubric  # noqa: F401
+    from .synth.builder import SynthDataBuilder  # noqa: F401
     from .utils.env_utils import load_environment  # noqa: F401
     from .v1 import (  # noqa: F401
         Env,
