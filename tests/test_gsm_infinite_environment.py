@@ -113,6 +113,10 @@ def test_extract_answer_uses_answer_prefix_without_greedy_fallback():
 
     assert gsm_infinite.extract_answer("work\nAnswer: 2. Therefore done") == "2"
     assert gsm_infinite.extract_answer("work\nANSWER: V670487.") == "V670487"
+    assert (
+        gsm_infinite.extract_answer("I think answer: 5 is wrong.\nFinal Answer: 10.")
+        == "10"
+    )
 
 
 def test_environment_loads_without_building_dataset():
@@ -123,3 +127,24 @@ def test_environment_loads_without_building_dataset():
     assert env.system_prompt == gsm_infinite.SYSTEM_PROMPT
     assert callable(env.dataset_source)
     assert callable(env.eval_dataset_source)
+
+
+def test_environment_preserves_explicit_zero_eval_operations(monkeypatch):
+    gsm_infinite = load_module()
+    calls = []
+
+    def fake_load_dataset(name, split):
+        calls.append(split)
+        return sample_dataset()
+
+    monkeypatch.setattr(gsm_infinite, "load_dataset", fake_load_dataset)
+    env = gsm_infinite.load_environment(
+        operations=2,
+        eval_operations=0,
+        num_train_examples=1,
+        num_eval_examples=1,
+    )
+
+    env.eval_dataset_source()
+
+    assert calls == ["ops_0"]

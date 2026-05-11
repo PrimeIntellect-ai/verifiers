@@ -30,8 +30,9 @@ def extract_answer(text: Any) -> str:
     if isinstance(text, list):
         return ", ".join(str(item) for item in text)
     text = str(text)
-    match = re.search(r"\banswer\s*:\s*([^\n]+)", text, flags=re.IGNORECASE)
-    if match is not None:
+    matches = list(re.finditer(r"\banswer\s*:\s*([^\n]+)", text, flags=re.IGNORECASE))
+    if matches:
+        match = matches[-1]
         answer = match.group(1).strip()
         leading_number = re.match(r"-?\d+(?:\.\d+)?", answer)
         if leading_number is not None:
@@ -123,9 +124,11 @@ def load_environment(
     num_eval_examples: int = -1,
     system_prompt: str = SYSTEM_PROMPT,
 ) -> vf.Environment:
-    eval_subset = eval_subset or subset
-    eval_context_length = eval_context_length or context_length
-    eval_operations = eval_operations or operations
+    eval_subset = eval_subset if eval_subset is not None else subset
+    eval_context_length = (
+        eval_context_length if eval_context_length is not None else context_length
+    )
+    eval_operations = eval_operations if eval_operations is not None else operations
 
     rubric = vf.Rubric(funcs=[exact_answer_reward], weights=[1.0])
     return vf.SingleTurnEnv(
