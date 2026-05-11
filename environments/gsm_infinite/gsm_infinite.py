@@ -30,17 +30,23 @@ def extract_answer(text: Any) -> str:
     if isinstance(text, list):
         return ", ".join(str(item) for item in text)
     text = str(text)
-    match = re.search(r"ANSWER:\s*([^\n]+)", text, flags=re.IGNORECASE)
-    if match is None:
-        match = re.search(r"Answer:\s*([^.\n]+)", text)
-    if match is None:
-        numbers = re.findall(r"-?\d+(?:\.\d+)?", text)
-        return numbers[-1] if numbers else text.strip()
-    return match.group(1).strip().rstrip(".")
+    match = re.search(r"\banswer\s*:\s*([^\n]+)", text, flags=re.IGNORECASE)
+    if match is not None:
+        answer = match.group(1).strip()
+        leading_number = re.match(r"-?\d+(?:\.\d+)?", answer)
+        if leading_number is not None:
+            suffix = answer[leading_number.end() :].strip()
+            if suffix == "" or suffix.startswith("."):
+                return leading_number.group(0)
+        return answer.rstrip(".")
+    numbers = re.findall(r"-?\d+(?:\.\d+)?", text)
+    return numbers[-1] if numbers else text.strip()
 
 
 def normalize_answer(text: Any) -> str:
-    return re.sub(r"\s+", " ", extract_answer(text)).strip().lower()
+    if isinstance(text, list):
+        text = ", ".join(str(item) for item in text)
+    return re.sub(r"\s+", " ", str(text)).strip().lower()
 
 
 def row_to_example(row: dict[str, Any]) -> dict[str, Any]:
@@ -101,7 +107,8 @@ def _completion_text(completion: Any) -> str:
 
 def exact_answer_reward(completion, answer, **kwargs) -> float:
     return float(
-        normalize_answer(_completion_text(completion)) == normalize_answer(answer)
+        normalize_answer(extract_answer(_completion_text(completion)))
+        == normalize_answer(answer)
     )
 
 

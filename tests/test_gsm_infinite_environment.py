@@ -99,6 +99,22 @@ def test_reward_accepts_answer_prefix_and_exact_value():
     assert gsm_infinite.exact_answer_reward(completion, "3") == 0.0
 
 
+def test_reward_preserves_multi_value_list_answers():
+    gsm_infinite = load_module()
+    completion = [{"role": "assistant", "content": "Reasoning...\nAnswer: 4, 9."}]
+
+    assert gsm_infinite.extract_answer(["4", "9"]) == "4, 9"
+    assert gsm_infinite.exact_answer_reward(completion, "4, 9") == 1.0
+    assert gsm_infinite.exact_answer_reward(completion, "9") == 0.0
+
+
+def test_extract_answer_uses_answer_prefix_without_greedy_fallback():
+    gsm_infinite = load_module()
+
+    assert gsm_infinite.extract_answer("work\nAnswer: 2. Therefore done") == "2"
+    assert gsm_infinite.extract_answer("work\nANSWER: V670487.") == "V670487"
+
+
 def test_environment_loads_without_building_dataset():
     gsm_infinite = load_module()
 
