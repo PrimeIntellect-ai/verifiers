@@ -17,22 +17,22 @@ from collections.abc import Mapping
 from typing import Any, ClassVar, cast
 
 from openai import AsyncOpenAI
-
 from renderers import Message as RendererMessage
 from renderers import (
     Renderer,
     RendererPool,
+    ToolCallFunction,
     ToolSpec,
     create_renderer_pool,
 )
 from renderers import ToolCall as RendererToolCall
-from renderers import ToolCallFunction
 from renderers.client import generate
 
 from verifiers.clients.client import Client
 from verifiers.clients.openai_chat_completions_client import (
     handle_openai_overlong_prompt,
 )
+from verifiers.clients.routed_experts import compose_split_routed_experts
 from verifiers.errors import EmptyModelResponseError
 from verifiers.types import (
     AssistantMessage,
@@ -572,6 +572,21 @@ class RendererClient(
         prompt_ids = response.get("prompt_ids", [])
         completion_ids = response.get("completion_ids", [])
         completion_logprobs = response.get("completion_logprobs", [])
+        if (
+            "prompt_routed_experts" in response
+            or "completion_routed_experts" in response
+        ):
+            prompt_routed_experts = response["prompt_routed_experts"]
+            completion_routed_experts = response["completion_routed_experts"]
+        else:
+            prompt_routed_experts = None
+            completion_routed_experts = None
+        routed_experts = compose_split_routed_experts(
+            prompt_routed_experts=prompt_routed_experts,
+            completion_routed_experts=completion_routed_experts,
+            prompt_len=len(prompt_ids),
+            completion_len=len(completion_ids),
+        )
 
         tokens = ResponseTokens(
             prompt_ids=prompt_ids,
@@ -579,7 +594,7 @@ class RendererClient(
             completion_ids=completion_ids,
             completion_mask=[1] * len(completion_ids),
             completion_logprobs=completion_logprobs,
-            routed_experts=response.get("routed_experts"),
+            routed_experts=routed_experts,
         )
 
         # /inference/v1/generate doesn't return usage; reconstruct from tokens.
