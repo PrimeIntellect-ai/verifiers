@@ -1,0 +1,21 @@
+[project]
+name = "spiral-bench"
+version = "0.1.0"
+description = "Synthetic Spiral-Bench-style safety prompts with judge-based scoring."
+tags = ["safety", "single-turn", "judge", "train", "eval"]
+dependencies = [
+    "verifiers>=0.1.14",
+    "datasets",
+    "openai",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = [
+    "spiral_bench.py",
+    "generate_spiral_prompts.py",
+    "data/spiral_bench_train_sample.jsonl",
+]
