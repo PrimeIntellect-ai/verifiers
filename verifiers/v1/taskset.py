@@ -11,6 +11,7 @@ from datasets import Dataset
 from verifiers.types import task_payload_from_info
 
 from .config import (
+    CallableKind,
     TasksetConfig,
     merge_config_callables,
     merge_config_value,
@@ -22,6 +23,17 @@ from .toolset import merge_toolsets, normalize_toolset_collection
 from .user import normalize_user
 from .utils.prompt_utils import normalize_system_prompt
 
+TasksetSource = Iterable[Mapping[str, Any]] | Callable[[], Iterable[Mapping[str, Any]]]
+TASKSET_HANDLER_FIELDS: tuple[tuple[str, CallableKind], ...] = (
+    ("stops", "stop"),
+    ("setups", "setup"),
+    ("updates", "update"),
+    ("metrics", "metric"),
+    ("rewards", "reward"),
+    ("advantages", "advantage"),
+    ("cleanups", "cleanup"),
+)
+
 
 class Taskset:
     config_type: ClassVar[type[TasksetConfig]] = TasksetConfig
@@ -29,12 +41,8 @@ class Taskset:
     def __init__(
         self,
         # Singleton fields.
-        source: Iterable[Mapping[str, Any]]
-        | Callable[[], Iterable[Mapping[str, Any]]]
-        | None = None,
-        eval_source: Iterable[Mapping[str, Any]]
-        | Callable[[], Iterable[Mapping[str, Any]]]
-        | None = None,
+        source: TasksetSource | None = None,
+        eval_source: TasksetSource | None = None,
         taskset_id: str | None = None,
         system_prompt: object | None = None,
         user: object | None = None,
@@ -51,64 +59,45 @@ class Taskset:
         config: TasksetConfig | Mapping[str, object] | None = None,
     ):
         self.config = type(self).config_type.from_config(config)
-        source_value = resolve_config_object(
-            merge_config_value(source, self.config.source)
-        )
+        config = self.config
         self.source = cast(
-            Iterable[Mapping[str, Any]]
-            | Callable[[], Iterable[Mapping[str, Any]]]
-            | None,
-            source_value,
-        )
-        eval_source_value = resolve_config_object(
-            merge_config_value(eval_source, self.config.eval_source)
+            TasksetSource | None,
+            resolve_config_object(merge_config_value(source, config.source)),
         )
         self.eval_source = cast(
-            Iterable[Mapping[str, Any]]
-            | Callable[[], Iterable[Mapping[str, Any]]]
-            | None,
-            eval_source_value,
+            TasksetSource | None,
+            resolve_config_object(merge_config_value(eval_source, config.eval_source)),
         )
-        resolved_taskset_id = merge_config_value(taskset_id, self.config.taskset_id)
+        resolved_taskset_id = merge_config_value(taskset_id, config.taskset_id)
         if resolved_taskset_id is not None and not isinstance(resolved_taskset_id, str):
             raise TypeError("taskset_id must be a string.")
         self.taskset_id = resolved_taskset_id or type(self).__name__
         self.system_prompt = normalize_system_prompt(
-            merge_config_value(system_prompt, self.config.system_prompt),
+            merge_config_value(system_prompt, config.system_prompt),
             field_name="taskset.system_prompt",
         )
-        self.user = normalize_user(merge_config_value(user, self.config.user))
-        self.toolsets, self.named_toolsets = merge_toolsets(
-            toolsets, self.config.toolsets
-        )
-        self.stops = cast(
-            list[Callable[..., object]],
-            merge_config_callables(stops, self.config.stops, "stop"),
-        )
-        self.setups = cast(
-            list[Callable[..., object]],
-            merge_config_callables(setups, self.config.setups, "setup"),
-        )
-        self.updates = cast(
-            list[Callable[..., object]],
-            merge_config_callables(updates, self.config.updates, "update"),
-        )
-        self.metrics = cast(
-            list[Callable[..., object]],
-            merge_config_callables(metrics, self.config.metrics, "metric"),
-        )
-        self.rewards = cast(
-            list[Callable[..., object]],
-            merge_config_callables(rewards, self.config.rewards, "reward"),
-        )
-        self.advantages = cast(
-            list[Callable[..., object]],
-            merge_config_callables(advantages, self.config.advantages, "advantage"),
-        )
-        self.cleanups = cast(
-            list[Callable[..., object]],
-            merge_config_callables(cleanups, self.config.cleanups, "cleanup"),
-        )
+        self.user = normalize_user(merge_config_value(user, config.user))
+        self.toolsets, self.named_toolsets = merge_toolsets(toolsets, config.toolsets)
+        handler_values = {
+            "stops": stops,
+            "setups": setups,
+            "updates": updates,
+            "metrics": metrics,
+            "rewards": rewards,
+            "advantages": advantages,
+            "cleanups": cleanups,
+        }
+        for field, kind in TASKSET_HANDLER_FIELDS:
+            setattr(
+                self,
+                field,
+                cast(
+                    list[Callable[..., object]],
+                    merge_config_callables(
+                        handler_values[field], getattr(config, field), kind
+                    ),
+                ),
+            )
         self._rows: list[dict[str, Any]] | None = None
         self._eval_rows: list[dict[str, Any]] | None = None
         self._dataset: Dataset | None = None
@@ -257,9 +246,7 @@ def dataset_info_with_task(task: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def rows_from_source(
-    source: Iterable[Mapping[str, Any]]
-    | Callable[[], Iterable[Mapping[str, Any]]]
-    | None,
+    source: TasksetSource | None,
 ) -> list[dict[str, Any]]:
     if source is None:
         return []

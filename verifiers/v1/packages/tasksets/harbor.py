@@ -9,23 +9,24 @@ import tarfile
 import tempfile
 from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from pydantic import Field
 
+from verifiers.decorators import reward
 from verifiers.utils.import_utils import load_toml
 
-from ...config import TasksetConfig, merge_config_value
+from ...config import TasksetConfig
 from ...taskset import Taskset
-from verifiers.decorators import reward
 
 logger = logging.getLogger(__name__)
+GB_SCALES = {"gb": 1.0, "g": 1.0, "mb": 1 / 1024, "m": 1 / 1024}
 
 
 class HarborTasksetConfig(TasksetConfig):
-    tasks: object | None = None
+    tasks: str | Path | None = None
     task_names: list[str] | None = None
-    cache_dir: str | None = None
+    cache_dir: str | Path | None = None
     refresh: bool = False
     docker_image: str = "python:3.11-slim"
     cpu_cores: float = 2.0
@@ -36,8 +37,13 @@ class HarborTasksetConfig(TasksetConfig):
     verifier_timeout_seconds: float = 900.0
     workdir: str = "/app"
     task_dir: str = "/task"
-    scope: str = "rollout"
+    scope: Literal["rollout", "group", "global"] = "rollout"
     env: dict[str, object] = Field(default_factory=dict)
+
+
+HARBOR_CONFIG_FIELDS = frozenset(HarborTasksetConfig.model_fields) - frozenset(
+    TasksetConfig.model_fields
+)
 
 
 class HarborTaskset(Taskset):
@@ -46,72 +52,29 @@ class HarborTaskset(Taskset):
     def __init__(
         self,
         tasks: str | Path | None = None,
-        task_names: Iterable[str] | None = None,
-        cache_dir: str | Path | None = None,
-        refresh: bool | None = None,
-        docker_image: str | None = None,
-        cpu_cores: float | None = None,
-        memory_gb: float | None = None,
-        disk_size_gb: float | None = None,
-        timeout_minutes: int | None = None,
-        agent_timeout_seconds: float | None = None,
-        verifier_timeout_seconds: float | None = None,
-        workdir: str | None = None,
-        task_dir: str | None = None,
-        scope: str | None = None,
-        env: Mapping[str, object] | None = None,
+        *,
         rewards: Iterable[Callable[..., object]] = (),
         config: HarborTasksetConfig | Mapping[str, object] | None = None,
         **kwargs: Any,
     ):
-        self.config = type(self).config_type.from_config(config)
-        self.tasks = merge_config_value(tasks, self.config.tasks)
-        self.task_names = list(
-            task_names
-            if task_names is not None
-            else self.config.task_names
-            if self.config.task_names is not None
-            else []
-        )
+        config_kwargs = {
+            key: kwargs.pop(key) for key in list(kwargs) if key in HARBOR_CONFIG_FIELDS
+        }
+        if tasks is not None:
+            config_kwargs["tasks"] = tasks
+        env = config_kwargs.pop("env", None)
+        self.config = type(self).config_type.from_config(config, **config_kwargs)
+        if env is not None:
+            if not isinstance(env, Mapping):
+                raise TypeError("HarborTaskset env must be a mapping.")
+            self.config.env = {**self.config.env, **dict(env)}
+        for field in HARBOR_CONFIG_FIELDS:
+            setattr(self, field, getattr(self.config, field))
+        self.task_names = list(self.task_names or [])
         self.cache_dir = (
-            Path(str(merge_config_value(cache_dir, self.config.cache_dir))).expanduser()
-            if merge_config_value(cache_dir, self.config.cache_dir)
-            else None
+            Path(str(self.cache_dir)).expanduser() if self.cache_dir else None
         )
-        self.refresh = bool(self.config.refresh if refresh is None else refresh)
-        self.docker_image = str(
-            docker_image if docker_image is not None else self.config.docker_image
-        )
-        self.cpu_cores = float(
-            cpu_cores if cpu_cores is not None else self.config.cpu_cores
-        )
-        self.memory_gb = float(
-            memory_gb if memory_gb is not None else self.config.memory_gb
-        )
-        self.disk_size_gb = float(
-            disk_size_gb if disk_size_gb is not None else self.config.disk_size_gb
-        )
-        self.timeout_minutes = int(
-            timeout_minutes
-            if timeout_minutes is not None
-            else self.config.timeout_minutes
-        )
-        self.agent_timeout_seconds = float(
-            agent_timeout_seconds
-            if agent_timeout_seconds is not None
-            else self.config.agent_timeout_seconds
-        )
-        self.verifier_timeout_seconds = float(
-            verifier_timeout_seconds
-            if verifier_timeout_seconds is not None
-            else self.config.verifier_timeout_seconds
-        )
-        self.workdir = workdir if workdir is not None else self.config.workdir
-        self.task_dir = task_dir if task_dir is not None else self.config.task_dir
-        self.scope = scope if scope is not None else self.config.scope
-        if self.scope not in {"rollout", "group", "global"}:
-            raise ValueError("HarborTaskset scope must be rollout, group, or global.")
-        self.env = {**self.config.env, **dict(env or {})}
+        self.env = dict(self.env)
         extra_rewards = list(rewards)
         super().__init__(
             source=self.load_rows,
@@ -122,7 +85,17 @@ class HarborTaskset(Taskset):
         )
 
     def load_rows(self) -> list[dict[str, Any]]:
-        root = self.resolve_tasks_root()
+        if self.tasks is None:
+            raise ValueError("HarborTaskset requires tasks=path_or_registry_id.")
+        root = Path(self.tasks).expanduser()
+        if not root.exists():
+            if not isinstance(self.tasks, str):
+                raise FileNotFoundError(f"Harbor tasks path not found: {root}")
+            root = download_harbor_dataset(
+                self.tasks,
+                cache_dir=self.cache_dir,
+                refresh=self.refresh,
+            )
         task_dirs = harbor_task_dirs(root, self.task_names)
         rows = [
             self.task_row(task_dir, index) for index, task_dir in enumerate(task_dirs)
@@ -130,23 +103,6 @@ class HarborTaskset(Taskset):
         if not rows:
             raise ValueError(f"No valid Harbor tasks found in {root}.")
         return rows
-
-    def resolve_tasks_root(self) -> Path:
-        if self.tasks is None:
-            raise ValueError("HarborTaskset requires tasks=path_or_registry_id.")
-        if isinstance(self.tasks, Path):
-            candidate = self.tasks.expanduser()
-        else:
-            candidate = Path(str(self.tasks)).expanduser()
-        if candidate.exists():
-            return candidate
-        if isinstance(self.tasks, str):
-            return download_harbor_dataset(
-                self.tasks,
-                cache_dir=self.cache_dir,
-                refresh=self.refresh,
-            )
-        raise FileNotFoundError(f"Harbor tasks path not found: {candidate}")
 
     def task_row(self, task_dir: Path, index: int) -> dict[str, Any]:
         task_toml_path = task_dir / "task.toml"
@@ -160,6 +116,10 @@ class HarborTaskset(Taskset):
         verifier_config = config.get("verifier", {}) or {}
         instruction = instruction_path.read_text().strip()
         task_remote_dir = self.task_dir.rstrip("/") or "/task"
+        docker_image = environment.get("docker_image")
+        cpus = environment.get("cpus")
+        agent_timeout = agent_config.get("timeout_sec")
+        verifier_timeout = verifier_config.get("timeout_sec")
         return {
             "example_id": index,
             "task_name": task_dir.name,
@@ -168,14 +128,16 @@ class HarborTaskset(Taskset):
             "task_dir": str(task_dir),
             "prompt": [{"role": "user", "content": instruction}],
             "sandbox": {
-                "image": environment.get("docker_image") or self.docker_image,
-                "cpu_cores": parse_number(environment.get("cpus"), self.cpu_cores),
+                "image": docker_image or self.docker_image,
+                "cpu_cores": float(cpus if cpus is not None else self.cpu_cores),
                 "memory_gb": parse_gb(environment.get("memory"), self.memory_gb),
                 "disk_size_gb": parse_gb(environment.get("storage"), self.disk_size_gb),
                 "timeout_minutes": self.timeout_minutes,
                 "command_timeout": int(
-                    parse_number(
-                        agent_config.get("timeout_sec"), self.agent_timeout_seconds
+                    float(
+                        agent_timeout
+                        if agent_timeout is not None
+                        else self.agent_timeout_seconds
                     )
                 ),
                 "workdir": self.workdir,
@@ -198,16 +160,17 @@ class HarborTaskset(Taskset):
                 "task_dir": str(task_dir),
                 "task_name": task_dir.name,
                 "config": config,
-                "docker_image": environment.get("docker_image"),
-                "test_timeout": parse_number(
-                    verifier_config.get("timeout_sec"),
-                    self.verifier_timeout_seconds,
+                "docker_image": docker_image,
+                "test_timeout": float(
+                    verifier_timeout
+                    if verifier_timeout is not None
+                    else self.verifier_timeout_seconds
                 ),
             },
             "info": {
                 "harbor": {
                     "task_name": task_dir.name,
-                    "docker_image": environment.get("docker_image"),
+                    "docker_image": docker_image,
                 }
             },
         }
@@ -221,21 +184,17 @@ def harbor_task_dirs(root: Path, task_names: Iterable[str] | None = None) -> lis
         return [root]
     if not root.exists():
         raise FileNotFoundError(f"Harbor tasks path not found: {root}")
-    tasks: list[Path] = []
-    for task_dir in sorted(root.iterdir()):
-        if not task_dir.is_dir():
-            continue
-        if selected and task_dir.name not in selected:
-            continue
-        if is_harbor_task_dir(task_dir):
-            tasks.append(task_dir)
-        else:
-            logger.warning("Skipping %s: missing task.toml or instruction.md", task_dir)
-    if selected:
-        found = {path.name for path in tasks}
-        missing = sorted(selected - found)
-        if missing:
-            raise ValueError(f"Requested Harbor tasks not found: {missing}.")
+    candidates = [
+        task_dir
+        for task_dir in sorted(root.iterdir())
+        if task_dir.is_dir() and (not selected or task_dir.name in selected)
+    ]
+    tasks = [task_dir for task_dir in candidates if is_harbor_task_dir(task_dir)]
+    for task_dir in [task_dir for task_dir in candidates if task_dir not in tasks]:
+        logger.warning("Skipping %s: missing task.toml or instruction.md", task_dir)
+    missing = sorted(selected - {path.name for path in tasks})
+    if missing:
+        raise ValueError(f"Requested Harbor tasks not found: {missing}.")
     return tasks
 
 
@@ -247,26 +206,13 @@ def is_harbor_task_dir(path: Path) -> bool:
     )
 
 
-def parse_number(value: object, default: float) -> float:
-    if value is None:
-        return default
-    return float(cast(Any, value))
-
-
 def parse_gb(value: object, default: float) -> float:
     if value is None:
         return default
-    if isinstance(value, int | float):
-        return float(value)
     text = str(value).strip().lower()
-    if text.endswith("gb"):
-        return float(text[:-2])
-    if text.endswith("g"):
-        return float(text[:-1])
-    if text.endswith("mb"):
-        return float(text[:-2]) / 1024
-    if text.endswith("m"):
-        return float(text[:-1]) / 1024
+    for suffix, scale in GB_SCALES.items():
+        if text.endswith(suffix):
+            return float(text.removesuffix(suffix)) * scale
     return float(text)
 
 
@@ -331,11 +277,12 @@ async def harbor_reward(task, state) -> float:
     client = AsyncSandboxClient()
     try:
         await upload_harbor_tests(client, sandbox_id, task_dir)
+        test_timeout = harbor.get("test_timeout")
         result = await client.execute_command(
             sandbox_id=sandbox_id,
             command="bash test.sh",
             working_dir="/tests",
-            timeout=int(parse_number(harbor.get("test_timeout"), 900)),
+            timeout=int(test_timeout if test_timeout is not None else 900),
         )
         state["harbor_tests"] = {
             "returncode": result.exit_code,
