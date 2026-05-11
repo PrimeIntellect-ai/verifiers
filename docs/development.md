@@ -298,7 +298,6 @@ prime eval tui                               # Browse evals in the tree browser
 | `prime lab setup` | Set up training workspace |
 | `prime eval tui` | Terminal UI for browsing evals and rollout details |
 | `prime rl run` | Launch Hosted Training |
-| `uv run prime-rl` | Launch prime-rl training |
 
 ### Project Guidelines
 

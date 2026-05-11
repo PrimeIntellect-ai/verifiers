@@ -46,7 +46,6 @@ configs/
 ├── rl/
 │   ├── qwen-3-5.toml
 │   ├── qwen-3-5-moe.toml
-│   ├── qwen-3-5-moe-advanced.toml
 │   ├── nemotron-3.toml
 │   └── llama-3.toml
 └── gepa/
@@ -143,14 +142,7 @@ To set up your workspace for training with `prime-rl`, run:
 prime lab setup --prime-rl
 ```
 
-This will clone and install the `prime-rl` trainer and its dependencies, and set up a default TOML config for training with the included `wiki-search` Environment on 8 GPUs.
-
-Then, you can start training with:
-```bash
-uv run prime-rl configs/prime-rl/wiki-search.toml
-```
-
-This will launch a tmux session with separate panes for the trainer, orchestrator, and inference server. For further configuration options, see the [prime-rl documentation](https://docs.primeintellect.ai/prime-rl). 
+This will clone and install the `prime-rl` trainer and its dependencies. For configuration files and launch commands, use the [prime-rl documentation](https://docs.primeintellect.ai/prime-rl).
 
 ## Prompt Optimization with `prime gepa run`
 

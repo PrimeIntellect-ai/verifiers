@@ -198,8 +198,9 @@ weight = 1.0
 
 ```bash
 prime env install my-env
-uv run prime-rl configs/rl/my-v1-env.toml
 ```
+
+For self-managed training launch commands, use the `prime-rl` documentation.
 
 To install the environment module into your project, do:
 ```bash
