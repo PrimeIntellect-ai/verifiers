@@ -20,11 +20,11 @@ from openai import AsyncOpenAI
 
 from renderers import Message as RendererMessage
 from renderers import (
+    MultimodalRenderer,
     RenderedTokens,
     Renderer,
     RendererPool,
     ToolSpec,
-    as_rendered_tokens,
     create_renderer_pool,
 )
 from renderers import ToolCall as RendererToolCall
@@ -339,11 +339,6 @@ async def _get_incremental_prompt_ids(
     Returns ``None`` when no prior trajectory step lines up with the new
     prompt's prefix or the renderer's ``bridge_to_next_turn`` can't extend
     — both cases fall back to a full re-render in :func:`generate`.
-
-    The result is always ``RenderedTokens`` (text-only renderers' raw
-    ``list[int]`` returns get normalized via :func:`as_rendered_tokens`)
-    so callers can unpack both ``token_ids`` and ``multi_modal_data``
-    uniformly.
     """
     if not state:
         return None
@@ -378,26 +373,36 @@ async def _get_incremental_prompt_ids(
 
         previous_prompt_ids, previous_completion_ids = token_ids
         previous_mm_data = _step_multi_modal_data(step)
-        bridged = await _run_with_renderer(
-            renderer,
-            lambda r: r.bridge_to_next_turn(
-                previous_prompt_ids,
-                previous_completion_ids,
-                tail,
-                tools=tools,
-                # Carry forward earlier-turn images so the new prompt's
-                # ``mm_placeholders`` covers every ``<|image_pad|>`` run in
-                # the combined token sequence. Without this, vLLM sees
-                # placeholder counts that don't match the prompt and
-                # silently falls back to hash-cache lookup (or errors).
-                previous_multi_modal_data=previous_mm_data,
-            ),
-        )
+        # Multimodal renderers' bridge accepts ``previous_multi_modal_data``
+        # so earlier-turn images carry forward into the new prompt's
+        # ``mm_placeholders``. Without that carry-forward, vLLM sees
+        # placeholder counts that don't match the combined token sequence
+        # and silently falls back to hash-cache lookup (or errors).
+        # Text-only renderers' bridge signature doesn't include that
+        # kwarg, so dispatch on the Protocol.
+        if isinstance(renderer, MultimodalRenderer):
+            bridged = await _run_with_renderer(
+                renderer,
+                lambda r: r.bridge_to_next_turn(
+                    previous_prompt_ids,
+                    previous_completion_ids,
+                    tail,
+                    tools=tools,
+                    previous_multi_modal_data=previous_mm_data,
+                ),
+            )
+        else:
+            bridged = await _run_with_renderer(
+                renderer,
+                lambda r: r.bridge_to_next_turn(
+                    previous_prompt_ids,
+                    previous_completion_ids,
+                    tail,
+                    tools=tools,
+                ),
+            )
         _record_bridge(success=bridged is not None)
-        # Normalize text-only ``list[int]`` returns to RenderedTokens so
-        # the caller can read both ``token_ids`` and ``multi_modal_data``
-        # uniformly. Multimodal renderers already return RenderedTokens.
-        return as_rendered_tokens(bridged)
+        return bridged
 
     return None
 

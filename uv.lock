@@ -4845,8 +4845,8 @@ wheels = [
 
 [[package]]
 name = "renderers"
-version = "0.1.8"
-source = { git = "https://github.com/PrimeIntellect-ai/renderers.git?rev=fe67f9f#fe67f9f16412074c3207ce69ba1763b97958a9db" }
+version = "0.1.7"
+source = { git = "https://github.com/PrimeIntellect-ai/renderers.git?branch=feat%2Fmultimodal-vlm#c220045bddb53eb1734be83bd53752068baf6b44" }
 dependencies = [
     { name = "jinja2" },
     { name = "numpy" },
@@ -6209,7 +6209,7 @@ requires-dist = [
     { name = "pyzmq", specifier = ">=27.1.0" },
     { name = "reasoning-gym", marker = "extra == 'rg'" },
     { name = "regex", specifier = "<2026.4.4" },
-    { name = "renderers", marker = "extra == 'renderers'", git = "https://github.com/PrimeIntellect-ai/renderers.git?rev=fe67f9f" },
+    { name = "renderers", marker = "extra == 'renderers'", git = "https://github.com/PrimeIntellect-ai/renderers.git?branch=feat%2Fmultimodal-vlm" },
     { name = "requests" },
     { name = "requests", marker = "extra == 'rl'" },
     { name = "rich" },
@@ -6242,7 +6242,7 @@ dev = [
     { name = "pytest-xdist", specifier = ">=3.8.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
     { name = "reasoning-gym" },
-    { name = "renderers", git = "https://github.com/PrimeIntellect-ai/renderers.git?rev=fe67f9f" },
+    { name = "renderers", git = "https://github.com/PrimeIntellect-ai/renderers.git?branch=feat%2Fmultimodal-vlm" },
     { name = "ruff" },
     { name = "stagehand", specifier = ">=3.0.0" },
     { name = "textarena" },

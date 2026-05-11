@@ -318,10 +318,11 @@ def _strip_intermediate_mm_data(trajectory: object) -> object:
 
     out: list = []
     last_idx = len(trajectory) - 1
-    for idx, step in enumerate(trajectory):
-        if idx == last_idx or not isinstance(step, Mapping):
-            out.append(step)
+    for idx, raw_step in enumerate(trajectory):
+        if idx == last_idx or not isinstance(raw_step, Mapping):
+            out.append(raw_step)
             continue
+        step = cast(Mapping[str, Any], raw_step)
         tokens = step.get("tokens")
         if isinstance(tokens, Mapping) and tokens.get("multi_modal_data") is not None:
             new_tokens = {k: v for k, v in tokens.items() if k != "multi_modal_data"}

@@ -79,8 +79,13 @@ def decode_tensor_payload(obj: Any, *, to_torch: bool = True):
             obj["shape"]
         )
         if to_torch:
-            import torch
+            # importlib (not ``import torch``) so static type checkers in
+            # downstream consumers without torch installed don't fail on
+            # unresolved-import. Torch is a soft runtime dep here: callers
+            # that pass ``to_torch=True`` are expected to have it.
+            import importlib
 
+            torch = importlib.import_module("torch")
             return torch.from_numpy(arr.copy())
         return arr.copy()
     # Already a tensor / ndarray — pass through.
