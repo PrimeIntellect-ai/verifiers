@@ -1,0 +1,11 @@
+[project]
+name = "kimi-k2-tool-sim"
+version = "0.1.0"
+description = "Deterministic Kimi-K2 style tool-use simulation environment"
+dependencies = [
+    "datasets",
+    "verifiers>=0.1.14",
+]
+
+[project.entry-points."verifiers.environments"]
+kimi-k2-tool-sim = "kimi_k2_tool_sim:load_environment"
