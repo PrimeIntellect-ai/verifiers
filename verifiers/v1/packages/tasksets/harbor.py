@@ -172,6 +172,7 @@ class HarborTaskset(Taskset):
                 "cpu_cores": parse_number(environment.get("cpus"), self.cpu_cores),
                 "memory_gb": parse_gb(environment.get("memory"), self.memory_gb),
                 "disk_size_gb": parse_gb(environment.get("storage"), self.disk_size_gb),
+                "network_access": bool(environment.get("allow_internet", True)),
                 "timeout_minutes": self.timeout_minutes,
                 "command_timeout": int(
                     parse_number(
@@ -282,8 +283,9 @@ def download_harbor_dataset(
         )
     root = cache_dir or Path.home() / ".cache" / "verifiers" / "harbor"
     dataset_dir = root / safe_dataset_dir_name(dataset_id)
+    task_root = dataset_dir / dataset_id.rsplit("/", 1)[-1]
     if dataset_dir.exists() and not refresh:
-        return dataset_dir
+        return task_root
     dataset_dir.parent.mkdir(parents=True, exist_ok=True)
     if harbor_bin is not None:
         command = [
@@ -308,7 +310,7 @@ def download_harbor_dataset(
     if refresh:
         command.append("--overwrite")
     subprocess.run(command, check=True)
-    return dataset_dir
+    return task_root
 
 
 def safe_dataset_dir_name(dataset_id: str) -> str:
