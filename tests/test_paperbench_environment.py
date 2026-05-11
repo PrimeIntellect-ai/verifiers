@@ -10,8 +10,8 @@ import verifiers.v1 as vf
 def load_module(monkeypatch):
     env_dir = Path(__file__).parents[1] / "environments" / "paperbench"
     monkeypatch.syspath_prepend(str(env_dir))
-    sys.modules.pop("paperbench", None)
-    return importlib.import_module("paperbench")
+    sys.modules.pop("paperbench_env", None)
+    return importlib.import_module("paperbench_env")
 
 
 class Result:

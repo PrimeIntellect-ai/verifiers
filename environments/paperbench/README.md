@@ -3,7 +3,7 @@
 V1 taskset/harness environment for PaperBench paper-reproduction submissions.
 
 ```python
-from paperbench import load_environment
+from paperbench_env import load_environment
 
 env = load_environment()
 ```

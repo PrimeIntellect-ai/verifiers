@@ -1,5 +1,5 @@
 [project]
-name = "paperbench"
+name = "paperbench-env"
 version = "0.1.0"
 description = "PaperBench reproduction-submission environment"
 license = "Apache-2.0"
@@ -14,10 +14,10 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build]
-include = ["paperbench.py", "README.md", "pyproject.toml"]
+include = ["paperbench_env.py", "README.md", "pyproject.toml"]
 
 [project.entry-points."verifiers.environments"]
-paperbench = "paperbench:load_environment"
+paperbench = "paperbench_env:load_environment"
 
 [tool.verifiers.eval]
 num_examples = 3
