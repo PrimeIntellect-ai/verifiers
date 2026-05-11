@@ -64,7 +64,7 @@ def row_to_example(row: dict[str, Any]) -> dict[str, Any]:
             f"Problem: {row.get('problem', '')}\nQuestion: {row.get('question', '')}"
         )
 
-    answer_source = row.get("answer_list", row.get("solution", ""))
+    answer_source = row.get("answer_list") or row.get("solution", "")
     return {
         "question": question,
         "answer": extract_answer(answer_source),

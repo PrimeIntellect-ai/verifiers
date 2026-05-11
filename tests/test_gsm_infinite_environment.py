@@ -72,6 +72,17 @@ def test_row_to_example_maps_messages_and_answer():
     assert example["info"]["benchmark"] == "gsm-infinite"
 
 
+def test_row_to_example_falls_back_when_answer_list_is_none():
+    gsm_infinite = load_module()
+    row = dict(sample_dataset()[0])
+    row["answer_list"] = None
+    row["solution"] = "Solve it. Answer: 7."
+
+    example = gsm_infinite.row_to_example(row)
+
+    assert example["answer"] == "7"
+
+
 def test_load_dataset_uses_hf_name_split_and_limits(monkeypatch):
     gsm_infinite = load_module()
     calls = {}
