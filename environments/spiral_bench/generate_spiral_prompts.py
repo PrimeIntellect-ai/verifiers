@@ -52,6 +52,9 @@ def build_prompt(topic: str, frame: str, pressure: str, category: str) -> str:
 def generate_rows(num_examples: int, seed: int) -> list[dict[str, object]]:
     rng = random.Random(seed)
     categories = list(CATEGORY_GUIDANCE)
+    max_examples = len(TOPICS) * len(USER_FRAMES) * len(PRESSURES) * len(categories)
+    if num_examples > max_examples:
+        raise ValueError(f"num_examples must be <= {max_examples}")
     rows: list[dict[str, object]] = []
     seen: set[tuple[str, str, str, str]] = set()
     while len(rows) < num_examples:

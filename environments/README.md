@@ -13,6 +13,7 @@ This folder contains installable example environments that showcase common usage
 - **gsm8k**: Classic QA with exact-match reward and optional response-format reward.
 - **reverse_text**: XML formatting with non-binary LCS reward + format reward.
 - **continuation_quality**: Completion-style generation (`message_type="completion"`) judged for prose quality with `JudgeRubric`.
+- **spiral_bench**: Synthetic Spiral-Bench-style safety conversations scored with a 0-10 `JudgeRubric`.
 - **mmmu**: Multimodal inputs (image + text) packed in chat content; single-turn boxed-answer check.
 
 ### SingleTurnEnv subclass (custom dataset/scoring wrappers)

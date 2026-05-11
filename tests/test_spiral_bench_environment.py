@@ -43,6 +43,17 @@ def test_spiral_prompt_generator_is_deterministic_and_structured(tmp_path):
     assert output.read_text(encoding="utf-8").count("\n") == 8
 
 
+def test_spiral_prompt_generator_rejects_too_many_examples():
+    generator = load_module(GENERATOR_PATH, "spiral_prompt_generator_limit")
+
+    try:
+        generator.generate_rows(num_examples=601, seed=123)
+    except ValueError as exc:
+        assert "num_examples must be <= 600" in str(exc)
+    else:
+        raise AssertionError("Expected ValueError")
+
+
 def test_spiral_bench_sample_dataset_loads():
     spiral_bench = load_module(ENV_PATH, "spiral_bench_env")
 

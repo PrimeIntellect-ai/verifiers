@@ -72,7 +72,8 @@ def load_environment(
         base_url=judge_base_url,
         api_key=os.getenv(judge_api_key_var, ""),
     )
-    parser = vf.XMLParser(fields=["score", "rationale"], answer_field="score")
+    parser = vf.Parser()
+    judge_parser = vf.XMLParser(fields=["score", "rationale"], answer_field="score")
     rubric = vf.JudgeRubric(
         judge_client=judge_client,
         judge_model=judge_model,
@@ -81,10 +82,8 @@ def load_environment(
     )
 
     async def spiral_reward(judge, prompt, completion, state) -> float:
-        question = prompt[-1]["content"] if prompt else state.get("question", "")
-        response = _completion_text(completion)
-        judge_response = await judge(question, response, None, state)
-        raw_score = parser.parse_answer(judge_response) or "0"
+        judge_response = await judge(prompt, completion, "", state)
+        raw_score = judge_parser.parse_answer(judge_response) or "0"
         try:
             score = float(raw_score.strip())
         except ValueError:
