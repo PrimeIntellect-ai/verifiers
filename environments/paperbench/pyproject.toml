@@ -1,0 +1,27 @@
+[project]
+name = "paperbench"
+version = "0.1.0"
+description = "PaperBench reproduction-submission environment"
+license = "Apache-2.0"
+tags = ["paperbench", "research", "coding", "benchmark"]
+requires-python = ">=3.11"
+dependencies = [
+    "verifiers",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["paperbench.py", "README.md", "pyproject.toml"]
+
+[project.entry-points."verifiers.environments"]
+paperbench = "paperbench:load_environment"
+
+[tool.verifiers.eval]
+num_examples = 3
+rollouts_per_example = 1
+
+[tool.uv.sources]
+verifiers = { path = "../..", editable = true }
