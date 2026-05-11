@@ -60,20 +60,24 @@ class Taskset:
     ):
         self.config = type(self).config_type.from_config(config)
         config = self.config
+        source = source if source is not None else config.source
+        eval_source = eval_source if eval_source is not None else config.eval_source
         self.source = cast(
             TasksetSource | None,
-            resolve_config_object(merge_config_value(source, config.source)),
+            resolve_config_object(source),
         )
         self.eval_source = cast(
             TasksetSource | None,
-            resolve_config_object(merge_config_value(eval_source, config.eval_source)),
+            resolve_config_object(eval_source),
         )
-        resolved_taskset_id = merge_config_value(taskset_id, config.taskset_id)
+        resolved_taskset_id = (
+            taskset_id if taskset_id is not None else config.taskset_id
+        )
         if resolved_taskset_id is not None and not isinstance(resolved_taskset_id, str):
             raise TypeError("taskset_id must be a string.")
         self.taskset_id = resolved_taskset_id or type(self).__name__
         self.system_prompt = normalize_system_prompt(
-            merge_config_value(system_prompt, config.system_prompt),
+            system_prompt if system_prompt is not None else config.system_prompt,
             field_name="taskset.system_prompt",
         )
         self.user = normalize_user(merge_config_value(user, config.user))
