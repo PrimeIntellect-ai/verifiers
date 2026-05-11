@@ -17,6 +17,15 @@ def load_environment(env_id: str, **env_args) -> Environment:
     try:
         module = importlib.import_module(module_name)
 
+        # Mirror verifiers' configured level onto the env's module logger so
+        # env code using logging.getLogger(__name__) emits at that level via
+        # the root JSON handler. Children (e.g. f"{module_name}.scoring")
+        # inherit. Root stays at default WARNING so third-party libs (httpx,
+        # httpcore, …) don't spam at DEBUG.
+        vf_level = logging.getLogger("verifiers").level
+        if vf_level:
+            logging.getLogger(module_name).setLevel(vf_level)
+
         if not hasattr(module, "load_environment"):
             raise AttributeError(
                 f"Module '{module_name}' does not have a 'load_environment' function. "
