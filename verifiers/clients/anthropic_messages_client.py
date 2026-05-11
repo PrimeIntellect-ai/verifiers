@@ -342,6 +342,20 @@ class AnthropicMessagesClient(
     ) -> AnthropicMessage:
         def normalize_sampling_args(sampling_args: SamplingArgs) -> dict:
             sampling_args = dict(sampling_args)
+            reasoning_effort = sampling_args.pop("reasoning_effort", None)
+            model_id = model.lower().replace(".", "-").replace("_", "-")
+            if reasoning_effort is not None and (
+                model_id.startswith("anthropic/") or model_id.startswith("claude-")
+            ):
+                output_config = dict(sampling_args.get("output_config") or {})
+                output_config["effort"] = reasoning_effort
+                sampling_args["output_config"] = output_config
+                if "thinking" not in sampling_args and (
+                    "4-7" in model_id or "4-6" in model_id
+                ):
+                    sampling_args["thinking"] = {"type": "adaptive"}
+            elif reasoning_effort is not None:
+                sampling_args["reasoning_effort"] = reasoning_effort
             max_tokens = sampling_args.pop("max_tokens", None)
             sampling_args.pop("n", None)
             sampling_args.pop("stop", None)
