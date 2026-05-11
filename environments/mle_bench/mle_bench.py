@@ -12,7 +12,6 @@ DEFAULT_IMAGE = "mlebench-env"
 DEFAULT_WORKDIR = "/home"
 DEFAULT_SUBMISSION_PATH = "/home/submission/submission.csv"
 DEFAULT_VALIDATE_SCRIPT = "/home/validate_submission.sh"
-DEFAULT_SUBMISSION_JSONL = "/home/submission/submissions.jsonl"
 
 LOW_COMPETITIONS = [
     "aerial-cactus-identification",
@@ -287,8 +286,14 @@ async def valid_submission(task: vf.Task, state: vf.State) -> float:
     state["validation_stdout"] = result.stdout or ""
     state["validation_stderr"] = result.stderr or ""
     state["validation_exit_code"] = result.exit_code
-    output = f"{result.stdout or ''}\n{result.stderr or ''}".lower()
-    return 1.0 if result.exit_code == 0 and "valid" in output else 0.0
+    return 1.0 if result.exit_code == 0 and validator_accepts(result.stdout) else 0.0
+
+
+def validator_accepts(stdout: str | None) -> bool:
+    for line in (stdout or "").splitlines():
+        if line.strip().lower() == "submission is valid.":
+            return True
+    return False
 
 
 def load_taskset(

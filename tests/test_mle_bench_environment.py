@@ -139,6 +139,26 @@ async def test_mle_bench_invalid_submission_gets_zero_reward(monkeypatch):
     assert state["validation_exit_code"] == 1
 
 
+async def test_mle_bench_invalid_stdout_does_not_match_valid(monkeypatch):
+    module = load_module(monkeypatch)
+    taskset = module.load_taskset(competition_ids=["spaceship-titanic"])
+    task = vf.Task(list(taskset.source())[0])
+    state = vf.State.for_task(task)
+    state["_mle_bench_sandbox"] = RecordingSandbox(
+        [Result(0, "Submission invalid! bad csv")]
+    )
+
+    assert await module.valid_submission(task, state) == 0.0
+
+
+def test_mle_bench_validator_accepts_exact_success_line(monkeypatch):
+    module = load_module(monkeypatch)
+
+    assert module.validator_accepts("Submission is valid.\n")
+    assert not module.validator_accepts("Submission invalid! bad csv")
+    assert not module.validator_accepts("not valid")
+
+
 async def test_mle_bench_submission_exists_metric(monkeypatch):
     module = load_module(monkeypatch)
     taskset = module.load_taskset(competition_ids=["spaceship-titanic"])
