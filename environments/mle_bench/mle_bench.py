@@ -52,12 +52,11 @@ BENCHMARK_INSTRUCTIONS = """\
 You are participating in MLE-Bench, an offline version of Kaggle competitions
 adapted to test machine-learning engineering agents.
 
-Read the competition-specific instructions in /home/data/description.md, inspect
-the dataset files in /home/data, train or construct a model, and write your final
-submission to /home/submission/submission.csv. The submission must be a CSV in
-the benchmark-required format. You may use /home/validate_submission.sh to check
-that the submission file is structurally valid, but the validator does not reveal
-the score.
+Read the competition-specific instructions, inspect the dataset files, train or
+construct a model, and write your final submission as a CSV in the
+benchmark-required format. You may use the provided validator to check that the
+submission file is structurally valid, but the validator does not reveal the
+score.
 
 Do not hand-label the test set, copy external solutions, or use information that
 would violate the benchmark rules. The final score is determined by the
@@ -105,12 +104,17 @@ def load_registry_competition(competition_id: str) -> Mapping[str, Any] | None:
 def build_prompt(
     competition_id: str,
     description: str,
+    workdir: str,
     submission_path: str,
     validate_script: str,
 ) -> str:
+    data_dir = f"{workdir.rstrip('/')}/data"
+    description_path = f"{data_dir}/description.md"
     return (
         f"Competition ID: {competition_id}\n\n"
         f"{BENCHMARK_INSTRUCTIONS}\n\n"
+        f"Competition instructions path: {description_path}\n"
+        f"Dataset directory: {data_dir}\n"
         f"Required submission path: {submission_path}\n"
         f"Validation command: {validate_script} {submission_path}\n\n"
         "Competition description:\n"
@@ -145,6 +149,7 @@ def make_record(
                 "content": build_prompt(
                     competition_id,
                     description,
+                    workdir,
                     submission_path,
                     validate_script,
                 ),
@@ -153,6 +158,7 @@ def make_record(
         "question": build_prompt(
             competition_id,
             description,
+            workdir,
             submission_path,
             validate_script,
         ),

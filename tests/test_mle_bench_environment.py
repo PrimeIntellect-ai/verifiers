@@ -48,6 +48,28 @@ def test_mle_bench_loads_low_split_without_registry(monkeypatch):
     assert "/home/submission/submission.csv" in rows[0]["prompt"][0]["content"]
 
 
+def test_mle_bench_prompt_uses_configured_paths(monkeypatch):
+    module = load_module(monkeypatch)
+    monkeypatch.setattr(module, "load_registry_competition", lambda _id: None)
+
+    row = module.make_record(
+        "custom-competition",
+        "dev",
+        "mlebench-env",
+        "/workspace",
+        "/workspace/out/final.csv",
+        "/workspace/tools/check.sh",
+    )
+    prompt = row["prompt"][0]["content"]
+
+    assert "/workspace/data/description.md" in prompt
+    assert "/workspace/data" in prompt
+    assert "/workspace/out/final.csv" in prompt
+    assert "/workspace/tools/check.sh /workspace/out/final.csv" in prompt
+    assert "/home/submission/submission.csv" not in prompt
+    assert "/home/validate_submission.sh" not in prompt
+
+
 def test_mle_bench_uses_registry_metadata_when_available(monkeypatch):
     module = load_module(monkeypatch)
 
