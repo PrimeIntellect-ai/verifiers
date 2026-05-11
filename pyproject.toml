@@ -46,7 +46,6 @@ dependencies = [
     "textual",
     "tomli; python_version < '3.11'",
     "typing_extensions; python_version < '3.12'",
-    "wget>=3.2",
     "gepa",
     "pyzmq>=27.1.0",
     "msgpack>=1.1.2",
@@ -148,7 +147,6 @@ vf-rl = "verifiers.scripts.rl:main"
 vf-train = "verifiers.scripts.train:main"
 vf-tui = "verifiers.scripts.tui:main"
 vf-vllm = "verifiers.scripts.vllm:main"
-prime-rl = "verifiers.scripts.prime_rl:main"
 
 # hatchling configuration
 [tool.hatch.version]
