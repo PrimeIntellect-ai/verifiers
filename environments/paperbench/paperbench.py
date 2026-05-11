@@ -173,7 +173,12 @@ class PaperBenchTaskset(vf.Taskset):
             source=self.load_rows,
             taskset_id=TASKSET_ID,
             system_prompt=BASE_INSTRUCTIONS,
-            metrics=[submission_dir_exists, git_repo_exists, readme_exists],
+            metrics=[
+                submission_dir_exists,
+                git_repo_exists,
+                readme_exists,
+                reproduce_script_exists,
+            ],
             rewards=[valid_submission_layout],
             config=config,
         )

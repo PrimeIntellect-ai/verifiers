@@ -47,6 +47,20 @@ def test_paperbench_loads_dev_split(monkeypatch):
     assert "/home/submission" in rows[0]["prompt"][0]["content"]
 
 
+def test_paperbench_taskset_exposes_layout_metrics(monkeypatch):
+    module = load_module(monkeypatch)
+
+    taskset = module.load_taskset()
+    metric_names = [metric.__name__ for metric in taskset.metrics]
+
+    assert metric_names == [
+        "submission_dir_exists",
+        "git_repo_exists",
+        "readme_exists",
+        "reproduce_script_exists",
+    ]
+
+
 def test_paperbench_full_mode_mentions_reproduce_script(monkeypatch):
     module = load_module(monkeypatch)
 
