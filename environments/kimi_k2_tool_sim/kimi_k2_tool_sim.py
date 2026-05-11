@@ -260,12 +260,12 @@ def tool_sequence_reward(completion: Any, answer: str, **kwargs: Any) -> float:
     for actual_call, expected_call in zip(actual_calls, expected_calls, strict=True):
         actual_arguments = actual_call.get("arguments", {})
         expected_arguments = expected_call.get("arguments", {})
-        if not isinstance(actual_arguments, dict) or not isinstance(
-            expected_arguments, dict
-        ):
+        if not isinstance(expected_arguments, dict):
+            continue
+        argument_total += len(expected_arguments)
+        if not isinstance(actual_arguments, dict):
             continue
         for key, expected_value in expected_arguments.items():
-            argument_total += 1
             if _normalize_value(actual_arguments.get(key, "")) == _normalize_value(
                 expected_value
             ):

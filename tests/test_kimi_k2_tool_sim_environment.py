@@ -59,6 +59,17 @@ def test_tool_sequence_reward_gives_partial_argument_credit():
     assert 0.0 < score < 1.0
 
 
+def test_tool_sequence_reward_counts_non_dict_arguments_as_misses():
+    dataset = kimi_k2_tool_sim.build_dataset(1)
+    expected = json.loads(dataset[0]["answer"])
+    expected["tool_calls"][1]["arguments"] = None
+    completion = json.dumps(expected)
+
+    score = kimi_k2_tool_sim.tool_sequence_reward(completion, dataset[0]["answer"])
+
+    assert score < 1.0
+
+
 def test_tool_sequence_reward_rejects_bad_json():
     dataset = kimi_k2_tool_sim.build_dataset(1)
 

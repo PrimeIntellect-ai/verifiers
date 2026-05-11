@@ -7,5 +7,12 @@ dependencies = [
     "verifiers>=0.1.14",
 ]
 
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["kimi_k2_tool_sim.py", "README.md", "pyproject.toml"]
+
 [project.entry-points."verifiers.environments"]
 kimi-k2-tool-sim = "kimi_k2_tool_sim:load_environment"
