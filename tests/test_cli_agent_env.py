@@ -3,12 +3,16 @@
 import asyncio
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from datasets import Dataset
 
 import verifiers as vf
+from verifiers.envs.experimental.cli_agent_env import CliAgentMonitorRubric
+from verifiers.types import RolloutTiming
+from verifiers.utils.save_utils import state_to_output
 from verifiers.utils.interception_utils import serialize_intercept_response
 
 
@@ -222,6 +226,163 @@ class TestCliAgentEnv:
         kwargs = mock_client.last_call_kwargs
         assert kwargs["tools"] is not None
         assert kwargs["tools"][0].name == "echo"
+
+
+@pytest.mark.asyncio
+async def test_cli_agent_final_log_formats_missing_first_model_call():
+    timing = RolloutTiming()
+    timing.generation.start = 100.0
+    timing.generation.end = 115.0
+    timing.setup.start = 100.0
+    timing.setup.end = 105.0
+    timing.scoring.start = 115.0
+    timing.scoring.end = 118.0
+    state = {
+        "rollout_id": "rollout_test",
+        "example_id": 2332,
+        "info": {"instance_id": "brazilian-utils__brutils-python-126"},
+        "sandbox_id": "sbx_test",
+        "trajectory": [],
+        "stop_condition": "agent_completed",
+        "agent_exit_code": 0,
+        "agent_start_time": 105.0,
+        "agent_end_time": 112.0,
+        "timing": timing,
+    }
+
+    rubric = CliAgentMonitorRubric()
+    rubric.logger = MagicMock()
+
+    await rubric.cleanup(state)
+
+    message = rubric.logger.info.call_args.args[0]
+    assert "setup_s=5.000" in message
+    assert "first_call_latency_s=n/a" in message
+    assert "agent_s=7.000" in message
+    assert "scoring_s=3.000" in message
+    assert "duration_s=18.000" in message
+
+
+@pytest.mark.asyncio
+async def test_cli_agent_failure_metrics_use_structured_failure():
+    rubric = CliAgentMonitorRubric()
+
+    assert (
+        await rubric.agent_error(
+            {
+                "failure": {
+                    "reason": "agent_poll_failed",
+                    "origin": "agent",
+                    "error_type": "AgentPollError",
+                    "root_error_type": "AgentPollError",
+                    "message": "poll failed",
+                    "logs": {},
+                }
+            }
+        )
+        == 1.0
+    )
+    assert (
+        await rubric.agent_error(
+            {
+                "failure": {
+                    "reason": "sandbox_timeout",
+                    "origin": "sandbox",
+                    "error_type": "SandboxError",
+                    "root_error_type": "SandboxError",
+                    "message": "timeout",
+                    "logs": {},
+                }
+            }
+        )
+        == 0.0
+    )
+    assert await rubric.agent_nonzero_exit({"agent_exit_code": 7}) == 1.0
+    assert await rubric.agent_nonzero_exit({"agent_exit_code": 0}) == 0.0
+    assert (
+        await rubric.agent_poll_failed(
+            {
+                "failure": {
+                    "reason": "agent_poll_failed",
+                    "origin": "agent",
+                    "error_type": "AgentPollError",
+                    "root_error_type": "AgentPollError",
+                    "message": "poll failed",
+                    "logs": {},
+                }
+            }
+        )
+        == 1.0
+    )
+
+
+def test_state_to_output_serializes_failure_and_preserves_error_fields():
+    state = vf.State(
+        input={"prompt": [], "example_id": 1, "task": "default", "info": {}}
+    )
+    state.update(
+        {
+            "example_id": 1,
+            "task": "default",
+            "prompt": [],
+            "completion": [],
+            "reward": 0.0,
+            "timing": RolloutTiming(),
+            "is_completed": True,
+            "is_truncated": False,
+            "stop_condition": "has_error",
+            "metrics": {},
+            "tool_defs": [],
+            "trajectory": [],
+            "error": vf.ModelError("model failed"),
+        }
+    )
+
+    output = state_to_output(state, state_columns=[])
+
+    assert output["error"]["error"] == "ModelError"
+    assert output["error_chain"] == "ModelError('model failed')"
+    assert output["long_error_chain"] == "ModelError"
+    assert output["failure"]["reason"] == "model_error"
+    assert output["failure"]["origin"] == "model"
+    assert output["failure"]["error_type"] == "ModelError"
+
+
+@pytest.mark.asyncio
+async def test_failure_log_collection_returns_bounded_tails(sample_dataset):
+    env = vf.CliAgentEnv(
+        run_command="python agent.py",
+        dataset=sample_dataset,
+        rubric=vf.Rubric(),
+    )
+    env.sandbox_client.get_background_job = AsyncMock(
+        return_value=SimpleNamespace(stdout="a" * 13000, stderr="err")
+    )
+    state = {"sandbox_id": "sbx", "background_job": object()}
+
+    logs = await env._collect_background_job_log_tails(state)
+
+    assert logs["agent_stdout"].endswith("a" * env.FAILURE_LOG_TAIL_CHARS)
+    assert logs["agent_stdout"].startswith("...<truncated ")
+    assert logs["agent_stderr"] == "err"
+
+
+@pytest.mark.asyncio
+async def test_failure_log_collection_suppresses_read_errors(sample_dataset):
+    env = vf.CliAgentEnv(
+        run_command="python agent.py",
+        dataset=sample_dataset,
+        rubric=vf.Rubric(),
+    )
+    env.logger = MagicMock()
+    env.get_failure_log_paths = lambda state: {"missing": "/tmp/missing.log"}
+    env.sandbox_client.execute_command = AsyncMock(side_effect=RuntimeError("boom"))
+    state = {"sandbox_id": "sbx"}
+
+    logs = await env.collect_failure_diagnostics(state)
+
+    assert logs == {}
+    env.logger.warning.assert_called()
 
 
 @pytest.mark.asyncio

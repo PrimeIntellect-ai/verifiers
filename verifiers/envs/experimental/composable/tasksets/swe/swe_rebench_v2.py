@@ -26,16 +26,19 @@ Workdir is ``/{repo-name}`` (second half of ``owner/repo``) — *not*
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
 import verifiers as vf
 from datasets import load_dataset
 from verifiers.envs.experimental.composable import SandboxSpec, SandboxTaskSet
+from verifiers.envs.experimental.sandbox_mixin import log_rollout_event
 
 from verifiers.envs.experimental.composable.tasksets.swe import (
     swe_rebench_v2_log_parsers as _lp,
@@ -48,6 +51,8 @@ logger = logging.getLogger(__name__)
 
 
 DATASET_NAME = "nebius/SWE-rebench-V2"
+PATCH_OUTPUT_LIMIT = 800
+PATCH_PREVIEW_LIMIT = 500
 
 
 # Broad PATH covering all known SWE-rebench-V2 language toolchains.
@@ -130,6 +135,43 @@ def _normalize_test_cmds(test_cmd: Any) -> list[str]:
     if not cmds:
         raise ValueError("install_config.test_cmd is empty")
     return cmds
+
+
+def _truncate_context(value: str | None, limit: int = PATCH_OUTPUT_LIMIT) -> str:
+    if not value:
+        return "<empty>"
+    if len(value) <= limit:
+        return value
+    return value[:limit] + f"... <truncated {len(value) - limit} chars>"
+
+
+def _patch_preview(patch: str) -> str:
+    return _truncate_context(patch, PATCH_PREVIEW_LIMIT)
+
+
+def _patch_failure_message(
+    label: str,
+    patch: str,
+    attempts: list[tuple[str, str, str, Any]],
+) -> str:
+    patch_bytes = patch.encode("utf-8")
+    lines = [
+        f"{label} apply failed",
+        f"patch_sha256={hashlib.sha256(patch_bytes).hexdigest()}",
+        f"patch_size={len(patch_bytes)}",
+        f"patch_preview={_patch_preview(patch)!r}",
+    ]
+    for name, command, workdir, result in attempts:
+        lines.extend(
+            [
+                f"{name}_command={command!r}",
+                f"{name}_working_dir={workdir!r}",
+                f"{name}_exit_code={getattr(result, 'exit_code', None)}",
+                f"{name}_stdout={_truncate_context(getattr(result, 'stdout', None))!r}",
+                f"{name}_stderr={_truncate_context(getattr(result, 'stderr', None))!r}",
+            ]
+        )
+    return "\n".join(lines)
 
 
 def _build_eval_script(test_cmds: list[str], workdir: str) -> str:
@@ -323,8 +365,19 @@ class SWERebenchV2TaskSet(SandboxTaskSet):
             "&& install -m 755 /tmp/ripgrep-${V}-x86_64-unknown-linux-musl/rg /usr/local/bin/rg; "
             "}"
         )
+        rg_start = time.perf_counter()
+        log_rollout_event(logger, "setup_step_started", state, step="ripgrep_install")
         result = await sandbox_client.execute_command(
             sandbox_id, rg_install, timeout=120
+        )
+        log_rollout_event(
+            logger,
+            "setup_step_finished",
+            state,
+            step="ripgrep_install",
+            status="ok" if result.exit_code == 0 else "error",
+            exit_code=result.exit_code,
+            elapsed_s=time.perf_counter() - rg_start,
         )
         if result.exit_code != 0:
             logger.warning(
@@ -335,7 +388,12 @@ class SWERebenchV2TaskSet(SandboxTaskSet):
         test_patch = (info or {}).get("test_patch") or ""
         if test_patch.strip():
             await self._apply_patch_file(
-                sandbox_client, sandbox_id, workdir, test_patch, "test_patch"
+                sandbox_client,
+                sandbox_id,
+                workdir,
+                test_patch,
+                "test_patch",
+                state=state,
             )
 
     async def _run_tests(
@@ -424,7 +482,12 @@ class SWERebenchV2TaskSet(SandboxTaskSet):
         workdir: str,
         patch: str,
         label: str,
+        state: dict | None = None,
     ) -> None:
+        context_state = state or {"sandbox_id": sandbox_id}
+        patch_start = time.perf_counter()
+        patch_succeeded = False
+        log_rollout_event(logger, "setup_step_started", context_state, step=label)
         with tempfile.NamedTemporaryFile(suffix=".patch", mode="w", delete=False) as f:
             f.write(patch)
             f.flush()
@@ -432,32 +495,89 @@ class SWERebenchV2TaskSet(SandboxTaskSet):
 
         remote_path = f"/tmp/{label}.patch"
         try:
-            await sandbox_client.upload_file(sandbox_id, remote_path, local_path)
-        finally:
-            Path(local_path).unlink(missing_ok=True)
+            try:
+                await sandbox_client.upload_file(sandbox_id, remote_path, local_path)
+            finally:
+                Path(local_path).unlink(missing_ok=True)
 
-        # Upstream eval.py uses ``git apply -v --3way --recount
-        # --ignore-space-change --whitespace=nowarn``. We follow the same
-        # flags; fall back to ``patch --fuzz=5`` if git apply rejects.
-        git_cmd = (
-            "git apply -v --3way --recount --ignore-space-change "
-            f"--whitespace=nowarn {remote_path}"
-        )
-        result = await sandbox_client.execute_command(
-            sandbox_id, git_cmd, working_dir=workdir, timeout=60
-        )
-        if result.exit_code != 0:
-            result = await sandbox_client.execute_command(
+            # Upstream eval.py uses ``git apply -v --3way --recount
+            # --ignore-space-change --whitespace=nowarn``. We follow the same
+            # flags; fall back to ``patch --fuzz=5`` if git apply rejects.
+            git_cmd = (
+                "git apply -v --3way --recount --ignore-space-change "
+                f"--whitespace=nowarn {remote_path}"
+            )
+            git_start = time.perf_counter()
+            log_rollout_event(
+                logger,
+                "setup_step_started",
+                context_state,
+                step=f"{label}_git_apply",
+                command=git_cmd,
+            )
+            git_result = await sandbox_client.execute_command(
+                sandbox_id, git_cmd, working_dir=workdir, timeout=60
+            )
+            log_rollout_event(
+                logger,
+                "setup_step_finished",
+                context_state,
+                step=f"{label}_git_apply",
+                status="ok" if git_result.exit_code == 0 else "error",
+                exit_code=git_result.exit_code,
+                elapsed_s=time.perf_counter() - git_start,
+            )
+            if git_result.exit_code == 0:
+                patch_succeeded = True
+                return
+
+            fallback_cmd = f"patch --fuzz=5 -p1 -i {remote_path}"
+            fallback_start = time.perf_counter()
+            log_rollout_event(
+                logger,
+                "setup_step_started",
+                context_state,
+                step=f"{label}_fallback_patch",
+                command=fallback_cmd,
+            )
+            fallback_result = await sandbox_client.execute_command(
                 sandbox_id,
-                f"patch --fuzz=5 -p1 -i {remote_path}",
+                fallback_cmd,
                 working_dir=workdir,
                 timeout=60,
             )
-            if result.exit_code != 0:
-                stderr = (result.stderr or "")[:500]
-                raise RuntimeError(
-                    f"{label} apply failed: exit_code={result.exit_code} stderr={stderr}"
+            log_rollout_event(
+                logger,
+                "setup_step_finished",
+                context_state,
+                step=f"{label}_fallback_patch",
+                status="ok" if fallback_result.exit_code == 0 else "error",
+                exit_code=fallback_result.exit_code,
+                elapsed_s=time.perf_counter() - fallback_start,
+            )
+            if fallback_result.exit_code == 0:
+                patch_succeeded = True
+                return
+
+            raise RuntimeError(
+                _patch_failure_message(
+                    label,
+                    patch,
+                    [
+                        ("git_apply", git_cmd, workdir, git_result),
+                        ("fallback_patch", fallback_cmd, workdir, fallback_result),
+                    ],
                 )
+            )
+        finally:
+            log_rollout_event(
+                logger,
+                "setup_step_finished",
+                context_state,
+                step=label,
+                status="ok" if patch_succeeded else "error",
+                elapsed_s=time.perf_counter() - patch_start,
+            )
 
     async def _apply_gold_patch(
         self, sandbox_client: Any, sandbox_id: str, state: dict
@@ -467,7 +587,9 @@ class SWERebenchV2TaskSet(SandboxTaskSet):
         if not patch or not patch.strip():
             raise RuntimeError("No gold patch in info['patch']")
         workdir = _repo_workdir(info["repo"])
-        await self._apply_patch_file(sandbox_client, sandbox_id, workdir, patch, "gold")
+        await self._apply_patch_file(
+            sandbox_client, sandbox_id, workdir, patch, "gold", state=state
+        )
 
     def get_rubric(self):
         return SWERebenchV2Rubric(self)
