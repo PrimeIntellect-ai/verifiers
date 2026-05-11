@@ -76,6 +76,28 @@ def test_mle_bench_uses_registry_metadata_when_available(monkeypatch):
     assert "Predict the label." in row["prompt"][0]["content"]
 
 
+def test_mle_bench_grading_submission_row(monkeypatch):
+    module = load_module(monkeypatch)
+    monkeypatch.setattr(module, "load_registry_competition", lambda _id: None)
+    row = module.make_record(
+        "spaceship-titanic",
+        "dev",
+        "mlebench-env",
+        "/home",
+        "/home/submission/submission.csv",
+        "/home/validate_submission.sh",
+    )
+
+    assert module.grading_submission_row(row) == {
+        "competition_id": "spaceship-titanic",
+        "submission_path": "/home/submission/submission.csv",
+    }
+    assert module.grading_submission_jsonl(row) == (
+        '{"competition_id": "spaceship-titanic", '
+        '"submission_path": "/home/submission/submission.csv"}\n'
+    )
+
+
 def test_mle_bench_split_ids_reject_unknown_split(monkeypatch):
     module = load_module(monkeypatch)
 
@@ -127,3 +149,17 @@ async def test_mle_bench_submission_exists_metric(monkeypatch):
 
     assert await module.submission_exists(task, state) == 1.0
     assert sandbox.calls[0]["command"] == "test -f /home/submission/submission.csv"
+
+
+async def test_mle_bench_sandbox_metrics(monkeypatch):
+    module = load_module(monkeypatch)
+    taskset = module.load_taskset(competition_ids=["spaceship-titanic"])
+    task = vf.Task(list(taskset.source())[0])
+    state = vf.State.for_task(task)
+    sandbox = RecordingSandbox([Result(0), Result(1)])
+    state["_mle_bench_sandbox"] = sandbox
+
+    assert await module.submission_nonempty(task, state) == 1.0
+    assert await module.validator_available(task, state) == 0.0
+    assert sandbox.calls[0]["command"] == "test -s /home/submission/submission.csv"
+    assert sandbox.calls[1]["command"] == "test -x /home/validate_submission.sh"

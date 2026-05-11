@@ -12,6 +12,7 @@ DEFAULT_IMAGE = "mlebench-env"
 DEFAULT_WORKDIR = "/home"
 DEFAULT_SUBMISSION_PATH = "/home/submission/submission.csv"
 DEFAULT_VALIDATE_SCRIPT = "/home/validate_submission.sh"
+DEFAULT_SUBMISSION_JSONL = "/home/submission/submissions.jsonl"
 
 LOW_COMPETITIONS = [
     "aerial-cactus-identification",
@@ -172,6 +173,20 @@ def make_record(
     }
 
 
+def grading_submission_row(task: Mapping[str, Any]) -> dict[str, str]:
+    info = task["info"]
+    return {
+        "competition_id": str(info["competition_id"]),
+        "submission_path": str(info["submission_path"]),
+    }
+
+
+def grading_submission_jsonl(task: Mapping[str, Any]) -> str:
+    import json
+
+    return json.dumps(grading_submission_row(task), sort_keys=True) + "\n"
+
+
 class MLEBenchTaskset(vf.Taskset):
     def __init__(
         self,
@@ -196,7 +211,7 @@ class MLEBenchTaskset(vf.Taskset):
             source=self.load_rows,
             taskset_id=TASKSET_ID,
             system_prompt=BENCHMARK_INSTRUCTIONS,
-            metrics=[submission_exists],
+            metrics=[submission_exists, submission_nonempty, validator_available],
             rewards=[valid_submission],
             config=config,
         )
@@ -231,6 +246,30 @@ async def submission_exists(task: vf.Task, state: vf.State) -> float:
     submission_path = str(task["info"]["submission_path"])
     result = await sandbox.execute(
         f"test -f {shlex.quote(submission_path)}",
+        timeout=30,
+    )
+    return 1.0 if result.exit_code == 0 else 0.0
+
+
+async def submission_nonempty(task: vf.Task, state: vf.State) -> float:
+    sandbox = state.get("_mle_bench_sandbox")
+    if sandbox is None:
+        return 0.0
+    submission_path = str(task["info"]["submission_path"])
+    result = await sandbox.execute(
+        f"test -s {shlex.quote(submission_path)}",
+        timeout=30,
+    )
+    return 1.0 if result.exit_code == 0 else 0.0
+
+
+async def validator_available(task: vf.Task, state: vf.State) -> float:
+    sandbox = state.get("_mle_bench_sandbox")
+    if sandbox is None:
+        return 0.0
+    validate_script = str(task["info"]["validate_script"])
+    result = await sandbox.execute(
+        f"test -x {shlex.quote(validate_script)}",
         timeout=30,
     )
     return 1.0 if result.exit_code == 0 else 0.0
