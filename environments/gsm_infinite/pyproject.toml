@@ -14,7 +14,10 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build]
-include = ["gsm_infinite.py", "pyproject.toml"]
+include = ["gsm_infinite.py", "README.md", "pyproject.toml"]
+
+[project.entry-points."verifiers.environments"]
+gsm-infinite = "gsm_infinite:load_environment"
 
 [tool.verifiers.eval]
 num_examples = 20
