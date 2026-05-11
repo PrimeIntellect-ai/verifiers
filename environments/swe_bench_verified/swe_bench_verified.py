@@ -117,6 +117,32 @@ def normalize_patch(patch: str) -> str:
     return "\n".join(lines) + ("\n" if lines else "")
 
 
+def patch_file_paths(patch: str) -> set[str]:
+    paths: set[str] = set()
+    for line in patch.replace("\r\n", "\n").splitlines():
+        if line.startswith("diff --git "):
+            parts = line.split()
+            if len(parts) >= 4:
+                paths.add(strip_diff_prefix(parts[3]))
+        elif line.startswith("+++ ") and not line.startswith("+++ /dev/null"):
+            paths.add(strip_diff_prefix(line[4:].strip()))
+    return {path for path in paths if path}
+
+
+def strip_diff_prefix(path: str) -> str:
+    if path.startswith("a/") or path.startswith("b/"):
+        return path[2:]
+    return path
+
+
+def official_submission(task: Mapping[str, Any], patch: str) -> dict[str, str]:
+    """Return the JSONL row shape expected by the official SWE-bench harness."""
+    return {
+        "instance_id": str(task["task_id"]),
+        "model_patch": normalize_patch(patch),
+    }
+
+
 async def exact_patch(task: vf.Task, state: vf.State) -> float:
     expected = normalize_patch(str(task["answer"]))
     actual = normalize_patch(extract_patch(state.get("completion")))
@@ -139,6 +165,14 @@ async def patch_line_count(task: vf.Task, state: vf.State) -> float:
 async def gold_patch_line_count(task: vf.Task, state: vf.State) -> float:
     patch = normalize_patch(str(task["answer"]))
     return float(len([line for line in patch.splitlines() if line]))
+
+
+async def changed_file_overlap(task: vf.Task, state: vf.State) -> float:
+    expected = patch_file_paths(str(task["answer"]))
+    actual = patch_file_paths(extract_patch(state.get("completion")))
+    if not expected or not actual:
+        return 0.0
+    return len(expected & actual) / len(expected | actual)
 
 
 def load_taskset(
@@ -176,7 +210,12 @@ def load_taskset(
         )
 
     rewards = []
-    metrics = [patch_similarity, patch_line_count, gold_patch_line_count]
+    metrics = [
+        patch_similarity,
+        changed_file_overlap,
+        patch_line_count,
+        gold_patch_line_count,
+    ]
     if exact_weight > 0:
         rewards.append(vf.reward(weight=exact_weight)(exact_patch))
     else:

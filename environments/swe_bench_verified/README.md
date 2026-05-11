@@ -19,3 +19,10 @@ without requiring per-instance Docker images. It is not a replacement for the
 official SWE-bench execution harness; `test_patch`, `FAIL_TO_PASS`, and
 `PASS_TO_PASS` are preserved in `task["info"]` so downstream harnesses can run
 execution-based validation when available.
+
+For handoff into the official harness, `official_submission(task, patch)` returns
+the expected JSONL row shape:
+
+```json
+{"instance_id": "astropy__astropy-12907", "model_patch": "diff --git ..."}
+```

@@ -103,6 +103,35 @@ def test_normalize_patch_ignores_index_lines(monkeypatch):
     assert module.normalize_patch(left) == module.normalize_patch(right)
 
 
+def test_patch_file_paths_reads_diff_headers_and_plus_files(monkeypatch):
+    module = load_module(monkeypatch)
+
+    patch = """diff --git a/src/a.py b/src/a.py
+index 123..456 100644
+--- a/src/a.py
++++ b/src/a.py
+@@ -1 +1 @@
+-old
++new
+diff --git a/src/b.py b/src/b.py
+--- a/src/b.py
++++ /dev/null
+"""
+
+    assert module.patch_file_paths(patch) == {"src/a.py", "src/b.py"}
+
+
+def test_official_submission_uses_swe_bench_jsonl_shape(monkeypatch):
+    module = load_module(monkeypatch)
+    row = module.build_record(fake_dataset()[0])
+
+    submission = module.official_submission(row, row["answer"])
+
+    assert submission["instance_id"] == "example__repo-1"
+    assert submission["model_patch"].startswith("diff --git")
+    assert "index " not in submission["model_patch"]
+
+
 async def test_exact_patch_reward_accepts_gold_patch(monkeypatch):
     module = load_module(monkeypatch)
     row = module.build_record(fake_dataset()[0])
@@ -114,6 +143,7 @@ async def test_exact_patch_reward_accepts_gold_patch(monkeypatch):
 
     assert await module.exact_patch(task, state) == 1.0
     assert await module.patch_similarity(task, state) == 1.0
+    assert await module.changed_file_overlap(task, state) == 1.0
 
 
 async def test_exact_patch_reward_rejects_wrong_patch(monkeypatch):
@@ -125,3 +155,4 @@ async def test_exact_patch_reward_rejects_wrong_patch(monkeypatch):
 
     assert await module.exact_patch(task, state) == 0.0
     assert await module.patch_similarity(task, state) < 1.0
+    assert await module.changed_file_overlap(task, state) == 0.0
