@@ -117,6 +117,8 @@ __all__ = [
     "get_model_and_tokenizer",
     "RLConfig",
     "RLTrainer",
+    "SFTConfig",
+    "SFTTrainer",
     "GRPOTrainer",
     "GRPOConfig",
     "grpo_defaults",
@@ -150,6 +152,8 @@ _LAZY_IMPORTS = {
     "get_model_and_tokenizer": "verifiers_rl.rl.trainer.utils:get_model_and_tokenizer",
     "RLConfig": "verifiers_rl.rl.trainer:RLConfig",
     "RLTrainer": "verifiers_rl.rl.trainer:RLTrainer",
+    "SFTConfig": "verifiers_rl.rl.trainer:SFTConfig",
+    "SFTTrainer": "verifiers_rl.rl.trainer:SFTTrainer",
     "GRPOTrainer": "verifiers_rl.rl.trainer:GRPOTrainer",
     "GRPOConfig": "verifiers_rl.rl.trainer:GRPOConfig",
     "grpo_defaults": "verifiers_rl.rl.trainer:grpo_defaults",
@@ -201,6 +205,8 @@ def __getattr__(name: str):
             "get_model_and_tokenizer",
             "RLConfig",
             "RLTrainer",
+            "SFTConfig",
+            "SFTTrainer",
             "GRPOTrainer",
             "GRPOConfig",
             "grpo_defaults",
@@ -276,6 +282,8 @@ if TYPE_CHECKING:
     # Optional verifiers-rl exports. Keep type-checking clean when extra is absent.
     RLConfig: Any
     RLTrainer: Any
+    SFTConfig: Any
+    SFTTrainer: Any
     GRPOTrainer: Any
     GRPOConfig: Any
     grpo_defaults: Any
