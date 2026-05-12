@@ -19,6 +19,7 @@ def _token_stride(shape: list[int]) -> int:
 
 def _validate_routed_experts(payload: RoutedExperts) -> RoutedExperts:
     assert payload.dtype == "int16"
+    assert len(payload.shape) == 3
     assert len(payload.data) == _shape_numel(payload.shape) * INT16_BYTES
     return payload
 

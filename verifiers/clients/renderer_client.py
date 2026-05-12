@@ -573,20 +573,17 @@ class RendererClient(
         completion_ids = response.get("completion_ids", [])
         completion_logprobs = response.get("completion_logprobs", [])
         if (
-            "prompt_routed_experts" in response
-            or "completion_routed_experts" in response
+            "prompt_routed_experts" not in response
+            and "completion_routed_experts" not in response
         ):
-            prompt_routed_experts = response["prompt_routed_experts"]
-            completion_routed_experts = response["completion_routed_experts"]
+            routed_experts = None
         else:
-            prompt_routed_experts = None
-            completion_routed_experts = None
-        routed_experts = compose_split_routed_experts(
-            prompt_routed_experts=prompt_routed_experts,
-            completion_routed_experts=completion_routed_experts,
-            prompt_len=len(prompt_ids),
-            completion_len=len(completion_ids),
-        )
+            routed_experts = compose_split_routed_experts(
+                prompt_routed_experts=response["prompt_routed_experts"],
+                completion_routed_experts=response["completion_routed_experts"],
+                prompt_len=len(prompt_ids),
+                completion_len=len(completion_ids),
+            )
 
         tokens = ResponseTokens(
             prompt_ids=prompt_ids,

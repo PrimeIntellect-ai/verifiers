@@ -457,22 +457,20 @@ class OpenAIChatCompletionsClient(
                 logprobs_content = response.choices[0].logprobs["content"]
                 completion_logprobs = [token["logprob"] for token in logprobs_content]
 
-            response_any = cast(Any, response)
-            choice_any = cast(Any, choice)
-            if hasattr(response_any, "prompt_routed_experts") or hasattr(
-                choice_any, "routed_experts"
+            response_extra = response.model_extra or {}
+            choice_extra = choice.model_extra or {}
+            if (
+                "prompt_routed_experts" not in response_extra
+                and "routed_experts" not in choice_extra
             ):
-                prompt_routed_experts = response_any.prompt_routed_experts
-                completion_routed_experts = choice_any.routed_experts
+                routed_experts = None
             else:
-                prompt_routed_experts = None
-                completion_routed_experts = None
-            routed_experts = compose_split_routed_experts(
-                prompt_routed_experts=prompt_routed_experts,
-                completion_routed_experts=completion_routed_experts,
-                prompt_len=len(prompt_ids),
-                completion_len=len(completion_ids),
-            )
+                routed_experts = compose_split_routed_experts(
+                    prompt_routed_experts=response_extra["prompt_routed_experts"],
+                    completion_routed_experts=choice_extra["routed_experts"],
+                    prompt_len=len(prompt_ids),
+                    completion_len=len(completion_ids),
+                )
             return ResponseTokens(
                 prompt_ids=prompt_ids,
                 prompt_mask=prompt_mask,
