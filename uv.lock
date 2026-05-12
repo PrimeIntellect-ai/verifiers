@@ -4846,7 +4846,7 @@ wheels = [
 [[package]]
 name = "renderers"
 version = "0.1.7"
-source = { git = "https://github.com/PrimeIntellect-ai/renderers.git?branch=feat%2Fmultimodal-vlm#c3feaa5fef8c4bfb02e8031c22aeeb77b6563e02" }
+source = { git = "https://github.com/PrimeIntellect-ai/renderers.git?branch=feat%2Fmultimodal-vlm#5353c9845596957e878051a01f2a129604b28e5c" }
 dependencies = [
     { name = "jinja2" },
     { name = "numpy" },
