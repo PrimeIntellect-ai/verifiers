@@ -622,7 +622,9 @@ def load_environment(
     environment_timeout: int = 600,
     system_prompt: str | None = SYSTEM_PROMPT,
 ) -> vf.Env:
-    vf.ensure_keys(["HF_TOKEN", "OPENAI_API_KEY"])
+    # HF_TOKEN required for private HuggingFace dataset + test archives.
+    # Model API key is handled by the verifiers runtime proxy — not required here.
+    vf.ensure_keys(["HF_TOKEN"])
     config = vf.EnvConfig(
         config,
         taskset=ProgramBenchTasksetConfig(

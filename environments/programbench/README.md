@@ -18,7 +18,8 @@
 ### Quickstart
 
 ```bash
-# Requires: HF_TOKEN (private dataset + test archives), OPENAI_API_KEY
+# Requires: HF_TOKEN (private dataset + test archives)
+# Model API key is handled by the verifiers runtime proxy.
 prime eval run programbench -m openai/gpt-4.1-mini -n 5 -r 1
 ```
 
