@@ -592,7 +592,7 @@ def normalize_openai_responses_input(raw_input: object) -> Messages:
             continue
         role = item.get("role")
         content = responses_content_text(item.get("content"))
-        if role == "system":
+        if role in {"system", "developer"}:
             messages.append(SystemMessage(content=content))
         elif role == "assistant":
             messages.append(AssistantMessage(content=content))

@@ -26,10 +26,17 @@ from .harness import Harness
 from .packages.harnesses import (
     CLIHarness,
     MiniSWEAgent,
+    NeMoGymHarness,
+    NeMoGymHarnessConfig,
     OpenCode,
     OpenCodeConfig,
     Pi,
     RLM,
+)
+from .packages.nemo_gym import (
+    infer_nemo_gym_agent_from_config,
+    resolve_nemo_gym_config_path,
+    resolve_nemo_gym_data_path,
 )
 from .utils.scoring_utils import (
     add_metric,
@@ -46,6 +53,8 @@ from .taskset import Taskset
 from .packages.tasksets import (
     HarborTaskset,
     HarborTasksetConfig,
+    NeMoGymTaskset,
+    NeMoGymTasksetConfig,
 )
 from .toolset import MCPTool, Toolset
 from .user import User
@@ -62,6 +71,10 @@ __all__ = [
     "MCPTool",
     "MCPToolConfig",
     "MiniSWEAgent",
+    "NeMoGymHarness",
+    "NeMoGymHarnessConfig",
+    "NeMoGymTaskset",
+    "NeMoGymTasksetConfig",
     "OpenCode",
     "OpenCodeConfig",
     "Pi",
@@ -90,4 +103,7 @@ __all__ = [
     "stop",
     "teardown",
     "update",
+    "infer_nemo_gym_agent_from_config",
+    "resolve_nemo_gym_config_path",
+    "resolve_nemo_gym_data_path",
 ]
