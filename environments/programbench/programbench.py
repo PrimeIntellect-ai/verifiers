@@ -24,16 +24,18 @@ import verifiers.v1 as vf
 
 logger = logging.getLogger(__name__)
 
-# Per-language public DockerHub images. Go/C/C++ use standard images + pytest installed
-# in setup(). Rust uses a custom image with pre-warmed cargo registry to avoid
-# 500MB+ crate downloads per rollout; build via docker/ when ready.
+# Unified toolchain image with all languages + pytest + tmux pre-installed.
+# Built from docker/Dockerfile and pushed to DockerHub. All languages use this image
+# so runtime apt-get installs are skipped and network_access=False is safe.
+TOOLCHAIN_IMAGE = "primeintellect/programbench-toolchain:latest"
+
 _LANGUAGE_IMAGES: dict[str, str] = {
-    "go": "golang:1.22-bookworm",
-    "c": "gcc:13-bookworm",
-    "cpp": "gcc:13-bookworm",
-    "rust": "rust:1.92",  # TODO: switch to primeintellect/programbench-toolchain:latest once pushed
+    "go": TOOLCHAIN_IMAGE,
+    "c": TOOLCHAIN_IMAGE,
+    "cpp": TOOLCHAIN_IMAGE,
+    "rust": TOOLCHAIN_IMAGE,
 }
-DEFAULT_IMAGE = "ubuntu:22.04"
+DEFAULT_IMAGE = TOOLCHAIN_IMAGE
 
 # Processed dataset with README, analysis artifacts, and test branch lists.
 # Built by scripts/preprocess_go_subset.py (and full pipeline for all 200 tasks).
@@ -95,6 +97,14 @@ class ProgramBenchTasksetConfig(vf.TasksetConfig):
     hide_tests_from_agent: bool = True
     ds_num_proc: int | None = None
     ds_keep_in_memory: bool = True
+    # Sandbox resource overrides (per-task, all languages)
+    cpu_cores: int | None = None
+    memory_gb: int | None = None
+    network_access: bool = False
+    # Per-language timeout overrides (seconds). None = use built-in defaults.
+    compile_timeout: int | None = None
+    test_timeout: int | None = None
+    sandbox_timeout_minutes: int | None = None
 
 
 class ProgramBenchTaskset(vf.Taskset):
@@ -110,6 +120,12 @@ class ProgramBenchTaskset(vf.Taskset):
         hide_tests_from_agent: bool | None = None,
         ds_num_proc: int | None = None,
         ds_keep_in_memory: bool | None = None,
+        cpu_cores: int | None = None,
+        memory_gb: int | None = None,
+        network_access: bool | None = None,
+        compile_timeout: int | None = None,
+        test_timeout: int | None = None,
+        sandbox_timeout_minutes: int | None = None,
         config: ProgramBenchTasksetConfig | Mapping[str, object] | None = None,
         **kwargs: Any,
     ):
@@ -141,6 +157,22 @@ class ProgramBenchTaskset(vf.Taskset):
             ds_keep_in_memory
             if ds_keep_in_memory is not None
             else config.ds_keep_in_memory
+        )
+        self.cpu_cores = cpu_cores if cpu_cores is not None else config.cpu_cores
+        self.memory_gb = memory_gb if memory_gb is not None else config.memory_gb
+        self.network_access = (
+            network_access if network_access is not None else config.network_access
+        )
+        self.compile_timeout = (
+            compile_timeout if compile_timeout is not None else config.compile_timeout
+        )
+        self.test_timeout = (
+            test_timeout if test_timeout is not None else config.test_timeout
+        )
+        self.sandbox_timeout_minutes = (
+            sandbox_timeout_minutes
+            if sandbox_timeout_minutes is not None
+            else config.sandbox_timeout_minutes
         )
         super().__init__(
             source=self.load_rows,
@@ -223,22 +255,22 @@ class ProgramBenchTaskset(vf.Taskset):
 
     def sandbox_config(self, info: dict) -> dict[str, object]:
         lang = info.get("language", "c")
-        timeout_min = _SANDBOX_TIMEOUT_MIN.get(lang, 20)
+        timeout_min = self.sandbox_timeout_minutes or _SANDBOX_TIMEOUT_MIN.get(lang, 20)
         # Prime Intellect sandbox API caps execute_command timeout at 900s.
         command_timeout = min(timeout_min * 60, 900)
         return {
             "image": _LANGUAGE_IMAGES.get(lang, DEFAULT_IMAGE),
-            "cpu_cores": 2,
-            "memory_gb": 6,
+            "cpu_cores": self.cpu_cores or 2,
+            "memory_gb": self.memory_gb or 6,
             "disk_size_gb": _DISK_GB.get(lang, 8),
             "gpu_count": 0,
             "workdir": SRC_DIR,
             "scope": "rollout",
             "timeout_minutes": timeout_min,
             "command_timeout": command_timeout,
-            # Paper §8.2: internet access is blocked at the infra level (not just by prompt)
-            # to prevent source-code lookup via git clone, cargo install, go get, etc.
-            "network_access": False,
+            # Paper §8.2: internet blocked at infra level to prevent source-code lookup.
+            # Requires primeintellect/programbench-toolchain image with tools pre-installed.
+            "network_access": self.network_access,
         }
 
     # ------------------------------------------------------------------
@@ -247,18 +279,31 @@ class ProgramBenchTaskset(vf.Taskset):
 
     @vf.setup(priority=250)
     async def setup_programbench_sandbox(self, task, state, sandbox=None) -> None:
+        import time
+
+        t0 = time.monotonic()
         if sandbox is None:
             raise RuntimeError("ProgramBench setup requires an active sandbox.")
         state["_pb_sandbox"] = sandbox
         state["sandbox_id"] = getattr(sandbox, "id", state.get("sandbox_id"))
 
         info = task["info"]
+        task_id = info["task_id"]
+        lang = info.get("language", "c")
+        image = _LANGUAGE_IMAGES.get(lang, DEFAULT_IMAGE)
+        logger.info(
+            "[%s] setup start lang=%s image=%s sandbox=%s",
+            task_id,
+            lang,
+            image,
+            state["sandbox_id"],
+        )
 
         mkdir_result = await sandbox.execute(
             f"mkdir -p {SRC_DIR} {TEST_DIR}", timeout=10
         )
         if mkdir_result.exit_code != 0:
-            logger.warning("[setup] mkdir failed exit=%s", mkdir_result.exit_code)
+            logger.warning("[%s] mkdir failed exit=%s", task_id, mkdir_result.exit_code)
 
         # Write a profile.d snippet so bash -l (used by mini-swe-agent) sees toolchain paths.
         # Docker ENV sets PATH in the container process env, but login shells re-source
@@ -275,36 +320,51 @@ class ProgramBenchTaskset(vf.Taskset):
         )
         if profile_result.exit_code != 0:
             logger.warning(
-                "[setup] profile.d write failed exit=%s", profile_result.exit_code
+                "[%s] profile.d write failed exit=%s", task_id, profile_result.exit_code
             )
 
-        # Install pytest and tmux. Standard language images (golang:1.22, gcc:13) have
-        # python3 but not pytest; ProgramBench tests also use tmux for TTY emulation.
-        # apt-get update is required since package lists aren't cached in the base image.
-        result = await sandbox.execute(
-            "apt-get update -qq 2>&1 | tail -1 && "
-            "apt-get install -y --no-install-recommends tmux python3-pip 2>&1 | tail -2 && "
-            "python3 -m pip install --quiet --break-system-packages --no-cache-dir pytest pytest-xdist 2>&1 | tail -2 && "
-            "python3 -c \"import pytest; print('pytest_ok', pytest.__version__)\"",
-            timeout=180,
+        # Check if pytest and tmux are already installed (pre-built in TOOLCHAIN_IMAGE).
+        # If present, skip apt-get entirely so network_access=False sandboxes work cleanly.
+        check = await sandbox.execute(
+            "command -v pytest && command -v tmux && python3 -c 'import pytest; print(pytest.__version__)'",
+            timeout=10,
         )
-        if result.exit_code != 0:
-            logger.warning(
-                "[setup] tooling install FAILED exit=%s out=%s",
-                result.exit_code,
-                (result.stdout or "")[-500:],
+        if check.exit_code == 0:
+            logger.info(
+                "[%s] tooling pre-installed (pytest %s) — skipping install",
+                task_id,
+                (check.stdout or "").strip().split("\n")[-1],
             )
         else:
-            logger.debug(
-                "[setup] tooling install ok: %s",
-                (result.stdout or "").strip().split("\n")[-1],
+            # Fallback: install at runtime (requires network_access=True or accessible mirrors).
+            logger.warning(
+                "[%s] tooling not pre-installed, attempting runtime install", task_id
             )
+            result = await sandbox.execute(
+                "apt-get update -qq 2>&1 | tail -1 && "
+                "apt-get install -y --no-install-recommends tmux python3-pip 2>&1 | tail -2 && "
+                "python3 -m pip install --quiet --break-system-packages --no-cache-dir pytest pytest-xdist 2>&1 | tail -2 && "
+                "python3 -c \"import pytest; print('pytest_ok', pytest.__version__)\"",
+                timeout=180,
+            )
+            if result.exit_code != 0:
+                logger.warning(
+                    "[%s] runtime tooling install FAILED exit=%s — tests will likely fail. "
+                    "Use primeintellect/programbench-toolchain image to avoid this.",
+                    task_id,
+                    result.exit_code,
+                )
+            else:
+                logger.info("[%s] runtime tooling install ok", task_id)
 
         # Upload binary from HuggingFace (best-effort; agent can still work from docs).
         await self._upload_binary(sandbox, info)
 
         # Download test archive and hide it from the agent until scoring.
         await self._setup_tests(sandbox, task, state, info)
+
+        elapsed = time.monotonic() - t0
+        logger.info("[%s] setup complete in %.1fs", task_id, elapsed)
 
     async def _hf_download(self, repo_id: str, filename: str) -> str:
         from huggingface_hub import hf_hub_download
@@ -475,7 +535,7 @@ class ProgramBenchTaskset(vf.Taskset):
         return False
 
     async def _compile(self, sandbox, state: dict, lang: str, task_id: str) -> bool:
-        compile_timeout = _COMPILE_TIMEOUT.get(lang, 120)
+        compile_timeout = self.compile_timeout or _COMPILE_TIMEOUT.get(lang, 120)
         compile_result = await sandbox.execute(
             f"cd {SRC_DIR} && chmod +x compile.sh && "
             "export PATH=/usr/local/cargo/bin:/root/.cargo/bin:/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin && "
@@ -526,7 +586,7 @@ class ProgramBenchTaskset(vf.Taskset):
                 ).stdout,
             )
             return 0, 0
-        test_timeout = _TEST_TIMEOUT.get(lang, 120)
+        test_timeout = self.test_timeout or _TEST_TIMEOUT.get(lang, 120)
         pytest_result = await sandbox.execute(
             f"cd {TEST_DIR} && python3 -m pytest {TEST_DIR} --tb=short -q "
             f"--junit-xml={TEST_DIR}/results.xml 2>&1",
@@ -673,6 +733,14 @@ def load_environment(
     hide_tests_from_agent: bool | None = None,
     ds_num_proc: int | None = None,
     ds_keep_in_memory: bool | None = None,
+    # Sandbox resources
+    cpu_cores: int | None = None,
+    memory_gb: int | None = None,
+    network_access: bool = False,
+    # Timeout overrides (seconds; None = per-language defaults)
+    compile_timeout: int | None = None,
+    test_timeout: int | None = None,
+    sandbox_timeout_minutes: int | None = None,
     # mini-SWE-agent harness
     max_turns: int | None = None,
     environment_timeout: int = 600,
@@ -705,6 +773,12 @@ def load_environment(
             ds_keep_in_memory=(
                 ds_keep_in_memory if ds_keep_in_memory is not None else True
             ),
+            cpu_cores=cpu_cores,
+            memory_gb=memory_gb,
+            network_access=network_access,
+            compile_timeout=compile_timeout,
+            test_timeout=test_timeout,
+            sandbox_timeout_minutes=sandbox_timeout_minutes,
         ),
     )
     taskset = load_taskset(config=config.taskset)
