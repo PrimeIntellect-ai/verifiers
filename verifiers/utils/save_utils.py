@@ -55,9 +55,9 @@ def is_json_serializable(value: object) -> bool:
     Pydantic models, datetime/date, Path, and exceptions.
 
     Note: renderer multimodal sidecars (``MultiModalData``,
-    ``PlaceholderRange``, torch tensors) intentionally return False
+    ``PlaceholderRange``, numpy arrays) intentionally return False
     here — they are not JSON-native and ``make_serializable`` has no
-    handler for them (it would stringify to ``"tensor(...)"`` garbage).
+    handler for them (it would stringify to ``"array(...)"`` garbage).
     They reach the trainer via msgpack with a custom encoder, and the
     JSONL save path excludes the carrying column (``trajectory``) at
     the orchestrator boundary, so this gate is bypassed for that
@@ -284,7 +284,7 @@ def state_to_output(
             # sample's images aren't in the final cumulative set — can
             # recover its window's images by unioning step-deltas.
             value = _delta_intermediate_mm_data(value)
-            # Trajectory may carry torch tensors / renderer dataclasses on
+            # Trajectory may carry numpy arrays / renderer dataclasses on
             # ``tokens.multi_modal_data`` — these are not JSON-native and
             # ``is_json_serializable`` would (correctly) reject them. They
             # are transported to the trainer via msgpack with a custom
