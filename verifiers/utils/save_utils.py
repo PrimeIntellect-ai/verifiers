@@ -54,14 +54,14 @@ def is_json_serializable(value: object) -> bool:
     Returns True for JSON primitives, lists/dicts of primitives,
     Pydantic models, datetime/date, Path, and exceptions.
 
-    Also returns True for renderer multimodal sidecars (``MultiModalData``,
-    ``PlaceholderRange``) and torch tensors — these aren't JSON-native but
-    are transportable via the prime-rl msgpack encoder, and trajectories
-    carrying them are excluded from JSONL save at the orchestrator
-    boundary (orchestrator passes ``exclude_keys={"trajectory"}`` to
-    ``save_rollouts``). Without this accommodation, validating
-    ``state_columns=["trajectory"]`` rejects every rollout from the
-    renderer multimodal path.
+    Note: renderer multimodal sidecars (``MultiModalData``,
+    ``PlaceholderRange``, torch tensors) intentionally return False
+    here — they are not JSON-native and ``make_serializable`` has no
+    handler for them (it would stringify to ``"tensor(...)"`` garbage).
+    They reach the trainer via msgpack with a custom encoder, and the
+    JSONL save path excludes the carrying column (``trajectory``) at
+    the orchestrator boundary, so this gate is bypassed for that
+    column in ``state_to_output``.
     """
     if value is None:
         return True
@@ -75,19 +75,6 @@ def is_json_serializable(value: object) -> bool:
         )
     # Types that make_serializable can handle
     if isinstance(value, (BaseModel, datetime, date, Path, BaseException)):
-        return True
-    # Transport-only types: not JSON-native but survive msgpack via the
-    # prime-rl encoder. Detect by module to avoid a hard torch/renderers
-    # import dependency at this layer.
-    cls = type(value)
-    module = getattr(cls, "__module__", "") or ""
-    if module.startswith("torch"):
-        return True
-    if module.startswith("renderers.") or cls.__name__ in {
-        "MultiModalData",
-        "PlaceholderRange",
-        "RenderedTokens",
-    }:
         return True
     return False
 
@@ -296,6 +283,15 @@ def state_to_output(
             # within the env-worker rollout loop, which has already
             # finished by the time state_to_output runs.
             value = _strip_intermediate_mm_data(value)
+            # Trajectory may carry torch tensors / renderer dataclasses on
+            # ``tokens.multi_modal_data`` — these are not JSON-native and
+            # ``is_json_serializable`` would (correctly) reject them. They
+            # are transported to the trainer via msgpack with a custom
+            # encoder, and the JSONL save path excludes ``trajectory`` at
+            # the orchestrator boundary, so the JSON gate doesn't apply
+            # here.
+            output[col] = value
+            continue
         if not is_json_serializable(value):
             raise ValueError(
                 f"state_columns value for '{col}' is not JSON-serializable: "
@@ -307,11 +303,17 @@ def state_to_output(
 
 
 def _strip_intermediate_mm_data(trajectory: object) -> object:
-    """Drop ``tokens.multi_modal_data`` from all but the last step.
+    """Drop ``multi_modal_data`` from all but the last step.
 
-    Returns a new list of step dicts (with shallow-copied tokens for the
-    stripped entries) so the input state isn't mutated. Non-list inputs
-    and empty / single-step trajectories pass through unchanged.
+    Strips two duplicated locations on each intermediate step:
+    - ``step["tokens"]["multi_modal_data"]`` (TypedDict sidecar)
+    - ``step["response"].message.tokens.multi_modal_data`` (Pydantic
+      ``ResponseTokens`` field; carries the same tensors and survives
+      msgpack transport via ``model_dump`` unless stripped)
+
+    Returns a new list of step dicts (with shallow copies for stripped
+    entries) so the input state isn't mutated. Non-list inputs and
+    empty / single-step trajectories pass through unchanged.
     """
     if not isinstance(trajectory, list) or len(trajectory) <= 1:
         return trajectory
@@ -323,12 +325,37 @@ def _strip_intermediate_mm_data(trajectory: object) -> object:
             out.append(raw_step)
             continue
         step = cast(Mapping[str, Any], raw_step)
+        new_step: dict[str, Any] = dict(step)
+        changed = False
+
         tokens = step.get("tokens")
         if isinstance(tokens, Mapping) and tokens.get("multi_modal_data") is not None:
-            new_tokens = {k: v for k, v in tokens.items() if k != "multi_modal_data"}
-            out.append({**step, "tokens": new_tokens})
-        else:
-            out.append(step)
+            new_step["tokens"] = {
+                k: v for k, v in tokens.items() if k != "multi_modal_data"
+            }
+            changed = True
+
+        response = step.get("response")
+        if response is not None:
+            message = getattr(response, "message", None)
+            if message is not None:
+                resp_tokens = getattr(message, "tokens", None)
+                if (
+                    resp_tokens is not None
+                    and getattr(resp_tokens, "multi_modal_data", None) is not None
+                ):
+                    stripped_tokens = resp_tokens.model_copy(
+                        update={"multi_modal_data": None}
+                    )
+                    stripped_message = message.model_copy(
+                        update={"tokens": stripped_tokens}
+                    )
+                    new_step["response"] = response.model_copy(
+                        update={"message": stripped_message}
+                    )
+                    changed = True
+
+        out.append(new_step if changed else step)
     return out
 
 

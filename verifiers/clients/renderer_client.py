@@ -26,6 +26,7 @@ from renderers import (
     RendererPool,
     ToolSpec,
     create_renderer_pool,
+    is_multimodal,
 )
 from renderers import ToolCall as RendererToolCall
 from renderers import ToolCallFunction
@@ -96,15 +97,15 @@ _DEFAULT_POOL_SIZE = 1
 # ── Helpers ─────────────────────────────────────────────────────────
 
 
-async def _run_with_renderer(renderer: Renderer | RendererPool, fn):
+async def _maybe_offload(renderer: Renderer | RendererPool, fn):
+    """Run sync renderer work on a thread iff ``renderer`` is a pool.
+
+    Pool methods can block on the internal queue/lock; we offload to keep
+    the event loop responsive. A bare ``Renderer`` runs inline.
+    """
     if isinstance(renderer, RendererPool):
-
-        def _work():
-            with renderer.checkout() as r:
-                return fn(r)
-
-        return await asyncio.to_thread(_work)
-    return fn(renderer)
+        return await asyncio.to_thread(fn)
+    return fn()
 
 
 def _get_value(obj: Any, key: str, default: Any = None) -> Any:
@@ -379,28 +380,25 @@ async def _get_incremental_prompt_ids(
         # placeholder counts that don't match the combined token sequence
         # and silently falls back to hash-cache lookup (or errors).
         # Text-only renderers' bridge signature doesn't include that
-        # kwarg, so dispatch on the Protocol.
-        if isinstance(renderer, MultimodalRenderer):
-            bridged = await _run_with_renderer(
-                renderer,
-                lambda r: r.bridge_to_next_turn(
-                    previous_prompt_ids,
-                    previous_completion_ids,
-                    tail,
-                    tools=tools,
-                    previous_multi_modal_data=previous_mm_data,
-                ),
+        # kwarg. ``is_multimodal`` is type-cached so this dispatch is a
+        # dict lookup, not a runtime_checkable Protocol walk.
+        if is_multimodal(renderer):
+            mm_renderer = cast(MultimodalRenderer, renderer)
+            bridge = lambda: mm_renderer.bridge_to_next_turn(  # noqa: E731
+                previous_prompt_ids,
+                previous_completion_ids,
+                tail,
+                tools=tools,
+                previous_multi_modal_data=previous_mm_data,
             )
         else:
-            bridged = await _run_with_renderer(
-                renderer,
-                lambda r: r.bridge_to_next_turn(
-                    previous_prompt_ids,
-                    previous_completion_ids,
-                    tail,
-                    tools=tools,
-                ),
+            bridge = lambda: renderer.bridge_to_next_turn(  # noqa: E731
+                previous_prompt_ids,
+                previous_completion_ids,
+                tail,
+                tools=tools,
             )
+        bridged = await _maybe_offload(renderer, bridge)
         _record_bridge(success=bridged is not None)
         return bridged
 
