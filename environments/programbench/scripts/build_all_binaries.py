@@ -92,6 +92,24 @@ def build_binary(
         rc2, o2 = run(f"go build -o {executable} ./...", cwd=str(src_dir), timeout=300)
         if rc2 == 0 and executable.exists():
             return True, build_log + o2
+        build_log += o2
+        # Fallback: find main packages in subdirectories (e.g. cmd/foo/main.go)
+        _, find_out = run(
+            'grep -rl "^package main$" --include="*.go" . 2>/dev/null',
+            cwd=str(src_dir),
+        )
+        for go_file in find_out.strip().split("\n")[:5]:
+            go_file = go_file.strip()
+            if not go_file:
+                continue
+            pkg_dir = src_dir / Path(go_file).parent
+            if not pkg_dir.is_dir():
+                continue
+            rc_pkg, o_pkg = run(
+                f"go build -o {executable} .", cwd=str(pkg_dir), timeout=300
+            )
+            if rc_pkg == 0 and executable.exists():
+                return True, build_log + o_pkg
 
     elif lang == "rust":
         rc2, o2 = run("cargo build --release", cwd=str(src_dir), timeout=600)
