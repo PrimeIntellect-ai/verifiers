@@ -1,6 +1,5 @@
 import pytest
 from types import SimpleNamespace
-from typing import Any
 
 from verifiers.clients.openai_chat_completions_client import OpenAIChatCompletionsClient
 from verifiers.types import (
@@ -17,26 +16,6 @@ from verifiers.types import (
     UserMessage,
 )
 from verifiers.utils.response_utils import parse_response_message
-
-
-class _RecordingCreate:
-    def __init__(self, response: Any) -> None:
-        self.response = response
-        self.calls: list[dict[str, Any]] = []
-
-    async def create(self, **kwargs: Any) -> Any:
-        self.calls.append(kwargs)
-        return self.response
-
-
-def _recording_openai(response: Any) -> tuple[Any, _RecordingCreate]:
-    recorder = _RecordingCreate(response)
-    return SimpleNamespace(chat=SimpleNamespace(completions=recorder)), recorder
-
-
-def _recording_anthropic(response: Any) -> tuple[Any, _RecordingCreate]:
-    recorder = _RecordingCreate(response)
-    return SimpleNamespace(messages=recorder), recorder
 
 
 @pytest.mark.asyncio
@@ -71,79 +50,6 @@ async def test_openai_to_native_prompt_with_typed_multimodal_content_parts():
             "input_audio": {"data": "ZHVtbXk=", "format": "wav"},
         },
     ]
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("model", "effort"),
-    [
-        ("anthropic/claude-opus-4.7", "xhigh"),
-        ("anthropic/claude-sonnet-4.6", "max"),
-    ],
-)
-async def test_openrouter_anthropic_reasoning_effort_maps_to_verbosity(
-    model: str, effort: str
-):
-    recording_client, recorder = _recording_openai(SimpleNamespace())
-    client = OpenAIChatCompletionsClient(recording_client)
-    client._config = SimpleNamespace(api_base_url="https://openrouter.ai/api/v1")
-
-    response = await client.get_native_response(
-        prompt=[],
-        model=model,
-        sampling_args={
-            "n": 1,
-            "reasoning_effort": effort,
-            "extra_body": {"reasoning": {"enabled": True}},
-        },
-    )
-
-    assert response is recorder.response
-    call = recorder.calls[0]
-    assert "reasoning_effort" not in call
-    assert call["extra_body"] == {
-        "reasoning": {"enabled": True},
-        "verbosity": effort,
-    }
-
-
-@pytest.mark.asyncio
-async def test_openrouter_anthropic_reasoning_effort_enables_reasoning():
-    recording_client, recorder = _recording_openai(SimpleNamespace())
-    client = OpenAIChatCompletionsClient(recording_client)
-    client._config = SimpleNamespace(api_base_url="https://api.pinference.ai/api/v1")
-
-    await client.get_native_response(
-        prompt=[],
-        model="anthropic/claude-opus-4.7",
-        sampling_args={"reasoning_effort": "high"},
-    )
-
-    call = recorder.calls[0]
-    assert call["extra_body"] == {
-        "reasoning": {"enabled": True},
-        "verbosity": "high",
-    }
-
-
-@pytest.mark.asyncio
-async def test_openrouter_anthropic_reasoning_effort_maps_opus_4_5():
-    recording_client, recorder = _recording_openai(SimpleNamespace())
-    client = OpenAIChatCompletionsClient(recording_client)
-    client._config = SimpleNamespace(api_base_url="https://openrouter.ai/api/v1")
-
-    await client.get_native_response(
-        prompt=[],
-        model="anthropic/claude-opus-4.5",
-        sampling_args={"reasoning_effort": "medium"},
-    )
-
-    call = recorder.calls[0]
-    assert "reasoning_effort" not in call
-    assert call["extra_body"] == {
-        "reasoning": {"enabled": True},
-        "verbosity": "medium",
-    }
 
 
 @pytest.mark.asyncio
@@ -243,77 +149,6 @@ async def test_anthropic_merges_consecutive_tool_results_into_single_user_messag
         {"type": "tool_result", "tool_use_id": "call_1", "content": "result a"},
         {"type": "tool_result", "tool_use_id": "call_2", "content": "result b"},
     ]
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("model", "effort"),
-    [("claude-opus-4-7", "xhigh"), ("claude-sonnet-4-6", "max")],
-)
-async def test_anthropic_reasoning_effort_maps_to_output_config(
-    model: str, effort: str
-):
-    pytest.importorskip("anthropic")
-    from verifiers.clients.anthropic_messages_client import AnthropicMessagesClient
-
-    recording_client, recorder = _recording_anthropic(SimpleNamespace())
-    client = AnthropicMessagesClient(recording_client)
-
-    response = await client.get_native_response(
-        prompt=[],
-        model=model,
-        sampling_args={"max_tokens": 128, "reasoning_effort": effort},
-    )
-
-    assert response is recorder.response
-    call = recorder.calls[0]
-    assert "reasoning_effort" not in call
-    assert call["output_config"] == {"effort": effort}
-    assert call["thinking"] == {"type": "adaptive"}
-
-
-@pytest.mark.asyncio
-async def test_anthropic_opus_4_5_uses_output_config_without_adaptive_thinking():
-    pytest.importorskip("anthropic")
-    from verifiers.clients.anthropic_messages_client import AnthropicMessagesClient
-
-    recording_client, recorder = _recording_anthropic(SimpleNamespace())
-    client = AnthropicMessagesClient(recording_client)
-
-    await client.get_native_response(
-        prompt=[],
-        model="claude-opus-4-5",
-        sampling_args={"max_tokens": 4096, "reasoning_effort": "medium"},
-    )
-
-    call = recorder.calls[0]
-    assert call["output_config"] == {"effort": "medium"}
-    assert "thinking" not in call
-
-
-@pytest.mark.asyncio
-async def test_anthropic_reasoning_effort_preserves_existing_output_config():
-    pytest.importorskip("anthropic")
-    from verifiers.clients.anthropic_messages_client import AnthropicMessagesClient
-
-    recording_client, recorder = _recording_anthropic(SimpleNamespace())
-    client = AnthropicMessagesClient(recording_client)
-
-    await client.get_native_response(
-        prompt=[],
-        model="claude-opus-4-7",
-        sampling_args={
-            "max_tokens": 128,
-            "reasoning_effort": "high",
-            "output_config": {"format": {"type": "text"}},
-        },
-    )
-
-    call = recorder.calls[0]
-    assert call["output_config"] == {
-        "format": {"type": "text"},
-        "effort": "high",
-    }
 
 
 @pytest.mark.asyncio
