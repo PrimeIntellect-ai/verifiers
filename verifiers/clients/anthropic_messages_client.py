@@ -50,6 +50,13 @@ from verifiers.types import (
 from verifiers.utils.client_utils import setup_anthropic_client
 
 
+ANTHROPIC_ADAPTIVE_THINKING_MODELS = {
+    "claude-opus-4-7",
+    "claude-opus-4-6",
+    "claude-sonnet-4-6",
+}
+
+
 def _handle_anthropic_overlong_prompt(func):
     """Decorator to handle overlong prompt errors from the Anthropic API."""
 
@@ -342,6 +349,20 @@ class AnthropicMessagesClient(
     ) -> AnthropicMessage:
         def normalize_sampling_args(sampling_args: SamplingArgs) -> dict:
             sampling_args = dict(sampling_args)
+            reasoning_effort = sampling_args.pop("reasoning_effort", None)
+            if reasoning_effort is not None:
+                model_id = (
+                    model.lower().split("/")[-1].replace(".", "-").replace("_", "-")
+                )
+                output_config = dict(sampling_args.get("output_config") or {})
+                output_config["effort"] = reasoning_effort
+                sampling_args["output_config"] = output_config
+                if "thinking" not in sampling_args and any(
+                    model_id == adaptive_model
+                    or model_id.startswith(f"{adaptive_model}-")
+                    for adaptive_model in ANTHROPIC_ADAPTIVE_THINKING_MODELS
+                ):
+                    sampling_args["thinking"] = {"type": "adaptive"}
             max_tokens = sampling_args.pop("max_tokens", None)
             sampling_args.pop("n", None)
             sampling_args.pop("stop", None)
