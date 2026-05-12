@@ -1,0 +1,29 @@
+[project]
+name = "programbench"
+description = "RLM agent reconstructs programs from compiled binaries (ProgramBench eval)"
+tags = ["programbench", "reverse-engineering", "multi-turn", "sandbox", "rlm", "eval"]
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "verifiers",
+    "datasets",
+    "huggingface-hub>=0.20",
+    "pydantic",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["programbench.py", "pyproject.toml", "README.md"]
+
+[project.entry-points."verifiers.environments"]
+programbench = "programbench:load_environment"
+
+[tool.verifiers.eval]
+num_examples = 5
+rollouts_per_example = 1
+
+[tool.uv.sources]
+verifiers = { path = "../..", editable = true }
