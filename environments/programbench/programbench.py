@@ -303,7 +303,7 @@ class ProgramBenchTaskset(vf.Taskset):
             local_archive = await asyncio.to_thread(
                 hf_hub_download,
                 repo_id="programbench/ProgramBench-Tests",
-                filename=f"{task_id}/tests/{branch}.tar.gz",
+                filename=f"{task_id}/tests/{branch.removesuffix('.tar.gz').removesuffix('.tar')}.tar.gz",
                 repo_type="dataset",
                 token=os.environ.get("HF_TOKEN"),
             )
