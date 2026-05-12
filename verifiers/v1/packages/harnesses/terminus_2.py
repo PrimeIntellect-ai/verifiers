@@ -16,7 +16,7 @@ DEFAULT_AGENT_WORKDIR = "/app"
 DEFAULT_INSTRUCTION_PATH = "/terminus_2/instruction.md"
 DEFAULT_SYSTEM_PROMPT_PATH = "/terminus_2/system_prompt.txt"
 DEFAULT_LOG_PATH = "/logs/agent/terminus_2.log"
-DEFAULT_HARBOR_PACKAGE = "harbor @ git+https://github.com/laude-institute/harbor.git"
+DEFAULT_HARBOR_PACKAGE = "harbor==0.6.6"
 DEFAULT_PYTHON_VERSION = "3.12"
 
 
@@ -66,7 +66,7 @@ class Terminus2(CLIHarness):
             ],
             sandbox=sandbox,
             files=files,
-            setup=build_terminus_2_install_script(python_version=python_version),
+            setup=build_terminus_2_install_script(),
             env={"OPENAI_MODEL": "runtime.model"},
             artifacts=artifacts,
             program=program,
@@ -76,17 +76,14 @@ class Terminus2(CLIHarness):
         )
 
 
-def build_terminus_2_install_script(
-    python_version: str = DEFAULT_PYTHON_VERSION,
-) -> str:
-    return f"""\
+def build_terminus_2_install_script() -> str:
+    return """\
 set -e
-apt-get -o Acquire::Retries=3 update -qq && apt-get -o Acquire::Retries=3 install -y -qq curl git ca-certificates > /dev/null 2>&1
+apt-get -o Acquire::Retries=3 update -qq
+apt-get -o Acquire::Retries=3 install -y -qq curl ca-certificates > /dev/null 2>&1
 if ! command -v uv >/dev/null 2>&1; then
   curl -LsSf https://astral.sh/uv/install.sh | sh
 fi
-export PATH="$HOME/.local/bin:$PATH"
-uv python install {shlex.quote(python_version)}
 """
 
 
@@ -119,7 +116,9 @@ export AGENT_WORKDIR="$TERMINUS_2_WORKDIR"
 
 mkdir -p {shlex.quote(log_dir)} "$TERMINUS_2_WORKDIR"
 cd "$TERMINUS_2_WORKDIR"
-uv run --quiet --python {shlex.quote(python_version)} --with {shlex.quote(harbor_package)} \
+uv --no-config run --no-project --quiet \
+  --python {shlex.quote(python_version)} \
+  --with {shlex.quote(harbor_package)} \
   python - <<'PY' 2>&1 | tee -a {shlex.quote(log_path)}
 {agent_script}
 PY
@@ -150,10 +149,9 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from harbor.agents.factory import AgentFactory
+from harbor.agents.terminus_2 import Terminus2
 from harbor.environments.base import BaseEnvironment, ExecResult
 from harbor.models.agent.context import AgentContext
-from harbor.models.agent.name import AgentName
 from harbor.models.environment_type import EnvironmentType
 from harbor.models.trial.paths import TrialPaths
 
@@ -237,8 +235,7 @@ async def main() -> None:
     logs_dir = Path({log_dir!r})
     instruction = Path({instruction_path!r}).read_text()
 {system_prompt_block}    env = LocalEnvironment(workdir=workdir, logs_dir=logs_dir)
-    agent = AgentFactory.create_agent_from_name(
-        AgentName("terminus-2"),
+    agent = Terminus2(
         logs_dir=logs_dir,
         model_name=os.environ.get("OPENAI_MODEL") or "openai/gpt-4",
         api_base=os.environ["OPENAI_BASE_URL"],
