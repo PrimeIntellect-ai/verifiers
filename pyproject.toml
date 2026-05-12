@@ -74,7 +74,7 @@ dev = [
     "aiohttp>=3.9.0",
     "python-dotenv>=1.0.0",
     "nltk",
-    "renderers>=0.1.8.dev0",
+    "renderers>=0.1.7",
 ]
 
 [project.optional-dependencies]
@@ -94,7 +94,7 @@ browser = [
     "python-dotenv>=1.0.0",
 ]
 renderers = [
-    "renderers>=0.1.8.dev0",
+    "renderers>=0.1.7",
 ]
 rl = [
     "torch>=2.8.0,<2.9.0",
