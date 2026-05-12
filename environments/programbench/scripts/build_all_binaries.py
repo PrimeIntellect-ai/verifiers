@@ -53,6 +53,9 @@ def run(
     full_env["PATH"] = (
         "/root/.cargo/bin:/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     )
+    full_env.setdefault(
+        "GOTOOLCHAIN", "local"
+    )  # prevent go from auto-downloading newer versions
     if env:
         full_env.update(env)
     proc = subprocess.run(
