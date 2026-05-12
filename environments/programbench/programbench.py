@@ -21,7 +21,6 @@ from typing import Any
 
 from datasets import load_dataset
 
-import verifiers
 import verifiers.v1 as vf
 
 logger = logging.getLogger(__name__)
@@ -51,6 +50,8 @@ TEST_DIR = "/workspace/tests"
 _DISK_GB: dict[str, int] = {"rust": 12, "go": 6, "c": 4, "cpp": 6}
 # Per-language compile timeout (seconds).
 _COMPILE_TIMEOUT: dict[str, int] = {"rust": 480, "go": 60, "c": 30, "cpp": 60}
+# Per-language pytest timeout (seconds). Rust integration tests can be slow.
+_TEST_TIMEOUT: dict[str, int] = {"rust": 600, "go": 120, "c": 60, "cpp": 120}
 # Per-language sandbox lifetime (minutes).
 _SANDBOX_TIMEOUT_MIN: dict[str, int] = {"rust": 45, "go": 20, "c": 20, "cpp": 20}
 
@@ -179,7 +180,6 @@ class ProgramBenchTaskset(vf.Taskset):
                 "_nm_output": row.get("nm_output", ""),
                 "_strings_output": row.get("strings_output", ""),
                 "_objdump_head": row.get("objdump_head", ""),
-                "_compile_hint": row.get("compile_hint", ""),
             }
             instruction = _build_instruction(info)
             sandbox = self.sandbox_config(info)
@@ -399,14 +399,25 @@ class ProgramBenchTaskset(vf.Taskset):
 
     async def _evaluate(self, sandbox, state, info: dict, lang: str) -> float:
         task_id = info["task_id"]
-        # Restore hidden test archive.
         await self._restore_tests(sandbox, state)
         if state.get("_pb_test_branch") is None:
             state["eval_error"] = "no_test_branch"
             return 0.0
+        if not await self._compile(sandbox, state, lang, task_id):
+            return 0.0
+        passed, total = await self._run_tests(sandbox, state, task_id, lang)
+        state["n_tests_passed"] = passed
+        state["n_tests_total"] = total
+        logger.info(
+            "[%s] scored %d/%d tests passed (reward=%.3f)",
+            task_id,
+            passed,
+            total,
+            passed / total if total > 0 else 0.0,
+        )
+        return passed / total if total > 0 else 0.0
 
-        # Compile. Prepend language toolchain paths so compile.sh works even if the
-        # agent omitted the PATH export (common with smaller models).
+    async def _compile(self, sandbox, state: dict, lang: str, task_id: str) -> bool:
         compile_timeout = _COMPILE_TIMEOUT.get(lang, 120)
         compile_result = await sandbox.execute(
             f"cd {SRC_DIR} && chmod +x compile.sh && "
@@ -416,7 +427,6 @@ class ProgramBenchTaskset(vf.Taskset):
         )
         state["compile_exit_code"] = compile_result.exit_code
         state["compile_log"] = (compile_result.stdout or "")[:3000]
-
         if compile_result.exit_code != 0:
             state["compile_success"] = False
             logger.debug(
@@ -425,26 +435,24 @@ class ProgramBenchTaskset(vf.Taskset):
                 compile_result.exit_code,
                 (compile_result.stdout or "")[-500:],
             )
-            return 0.0
-
-        # Verify executable exists.
+            return False
         check = await sandbox.execute(
             f"test -f {EXECUTABLE_PATH} && echo ok", timeout=10
         )
         if "ok" not in (check.stdout or ""):
             state["compile_success"] = False
             state["eval_error"] = "executable_not_produced"
-            return 0.0
+            return False
         state["compile_success"] = True
-
-        # Place executable in the archive root — tests use EXECUTABLE = "./executable"
-        # and expect it relative to their CWD, which is the extracted archive root.
         await sandbox.execute(
             f"cp {EXECUTABLE_PATH} {TEST_DIR}/executable && chmod +x {TEST_DIR}/executable",
             timeout=10,
         )
+        return True
 
-        # Discover test files (AI-generated tests land in eval/tests/ or similar).
+    async def _run_tests(
+        self, sandbox, state: dict, task_id: str, lang: str = "c"
+    ) -> tuple[int, int]:
         find_result = await sandbox.execute(
             f"find {TEST_DIR} -name 'test_*.py' -o -name '*_test.py' | head -20",
             timeout=10,
@@ -460,32 +468,18 @@ class ProgramBenchTaskset(vf.Taskset):
                     await sandbox.execute(f"find {TEST_DIR} | head -20", timeout=10)
                 ).stdout,
             )
-            return 0.0
-
-        # Run pytest from the archive root so ./executable resolves correctly.
+            return 0, 0
+        test_timeout = _TEST_TIMEOUT.get(lang, 120)
         pytest_result = await sandbox.execute(
             f"cd {TEST_DIR} && python3 -m pytest {TEST_DIR} --tb=short -q "
             f"--junit-xml={TEST_DIR}/results.xml 2>&1",
-            timeout=300,
+            timeout=test_timeout,
         )
         state["pytest_log"] = (pytest_result.stdout or "")[:4000]
-
-        # Parse JUnit XML.
         xml_result = await sandbox.execute(
             f"cat {TEST_DIR}/results.xml 2>/dev/null || echo '<empty/>'", timeout=10
         )
-        passed, total = _parse_junit_xml(xml_result.stdout or "")
-        state["n_tests_passed"] = passed
-        state["n_tests_total"] = total
-        logger.info(
-            "[%s] scored %d/%d tests passed (reward=%.3f)",
-            task_id,
-            passed,
-            total,
-            passed / total if total > 0 else 0.0,
-        )
-
-        return passed / total if total > 0 else 0.0
+        return _parse_junit_xml(xml_result.stdout or "")
 
     async def _restore_tests(self, sandbox, state) -> None:
         local_archive = state.pop("_pb_test_archive_local", None)
@@ -613,7 +607,7 @@ def load_environment(
     environment_timeout: int = 600,
     system_prompt: str | None = SYSTEM_PROMPT,
 ) -> vf.Env:
-    verifiers.ensure_keys(["HF_TOKEN"])
+    vf.ensure_keys(["HF_TOKEN", "OPENAI_API_KEY"])
     config = vf.EnvConfig(
         config,
         taskset=ProgramBenchTasksetConfig(

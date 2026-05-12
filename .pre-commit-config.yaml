@@ -27,3 +27,16 @@ repos:
         language: system
         pass_filenames: false
         stages: [pre-push]
+      - id: lint-agent
+        name: lint-agent
+        entry: bash -c 'SKILL="$(git rev-parse --show-toplevel)/../../Planning/.agents/skills/lint-agent/SKILL.md"; [ -f "$SKILL" ] || exit 0; for f in "$@"; do [ -f "$f" ] || continue; OUT=$(claude --print "$(cat $SKILL)" "$(cat $f)" 2>/dev/null); echo "$OUT"; echo "$OUT" | grep -q "^.*\[HIGH\]" && exit 1; done; exit 0' --
+        language: system
+        types_or: [python, pyi]
+        pass_filenames: true
+      - id: oo-agent
+        name: oo-agent
+        entry: bash -c '[ -n "$SKIP_OO_CHECK" ] && exit 0; SKILL="$(git rev-parse --show-toplevel)/../../Planning/.agents/skills/oo-agent/SKILL.md"; [ -f "$SKILL" ] || exit 0; for f in "$@"; do [ -f "$f" ] || continue; OUT=$(claude --print "$(cat $SKILL)" "$(cat $f)" 2>/dev/null); echo "$OUT"; echo "$OUT" | grep -q "^FAIL:" && exit 1; done; exit 0' --
+        language: system
+        types_or: [python, pyi]
+        files: ^environments/
+        pass_filenames: true
