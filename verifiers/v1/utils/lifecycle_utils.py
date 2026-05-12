@@ -20,7 +20,7 @@ def collect_handlers(
         if owner is None:
             continue
         for _, method in inspect.getmembers(owner, predicate=callable):
-            if getattr(method, attr, False):
+            if getattr(method, attr, False) is True:
                 handlers.append(cast(Callable[..., object], method))
     handlers.extend(extra)
     if stage is not None:

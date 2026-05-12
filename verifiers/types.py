@@ -191,6 +191,12 @@ class ResponseTokens(CustomBaseModel):
     completion_mask: list[int]
     completion_logprobs: list[float]
     routed_experts: RoutedExperts | None = None  # [seq_len, layers, topk]
+    # Renderer-emitted multimodal sidecar (renderers.base.MultiModalData)
+    # carrying processed pixel_values / placeholder ranges per modality.
+    # Populated by the renderer client when the rollout went through a
+    # multimodal-aware renderer; ``None`` otherwise. Stored as ``Any`` to
+    # avoid a hard import dependency on ``renderers`` at this layer.
+    multi_modal_data: Any | None = None
 
 
 FinishReason = Literal["stop", "length", "tool_calls"] | None
@@ -228,6 +234,11 @@ class TrajectoryStepTokens(TypedDict):
     overlong_prompt: bool
     is_truncated: bool
     routed_experts: RoutedExperts | None  # [seq_len, layers, topk]
+    # Renderer-emitted multimodal sidecar (renderers.base.MultiModalData)
+    # carrying processed pixel_values / placeholder ranges per modality.
+    # ``NotRequired`` because text-only rollouts (and non-renderer client
+    # types) never populate it.
+    multi_modal_data: NotRequired[Any]
 
 
 class TokenUsage(TypedDict):

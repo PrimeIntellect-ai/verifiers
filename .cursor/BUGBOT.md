@@ -1,5 +1,31 @@
 # BugBot Instructions
 
+## Releasable State
+
+Every PR should leave Verifiers in a releasable state. Treat the merge commit as something that could be built, packaged, and published immediately after CI passes.
+
+Request changes when a PR:
+
+- Leaves known failing tests, lint, type checks, packaging checks, or release workflows unresolved
+- Adds or weakens skips, xfails, broad exception handling, or CI conditionals to hide broken behavior
+- Requires manual cleanup, local-only files, unpublished artifacts, or untracked generated files before release
+- Leaves version metadata, release notes, package configuration, docs, or lockfiles inconsistent with the changed behavior
+
+If validation is limited by missing credentials or external services, the PR should state the exact limitation while still preserving the normal releasable checks for code, packaging, and docs.
+
+## Dependency Sources
+
+Do not accept new or modified dependency declarations that pin packages to GitHub sources. Verifiers dependency surfaces should resolve from package indexes or other stable release channels, not repository snapshots.
+
+Request changes for dependency specs such as:
+
+- `git+https://github.com/...`
+- `git@github.com:...`
+- `package @ https://github.com/...`
+- `[tool.uv.sources]` entries that point at GitHub repositories
+
+When a GitHub-only upstream is unavoidable for an environment or integration, ask the author to make an explicit release-path decision instead of pinning the GitHub source directly in Verifiers.
+
 ## Documentation Updates
 
 Any PR that adds or modifies core user-facing functionality as described in `docs/` must update the relevant documentation. This includes changes classes and APIs described in:

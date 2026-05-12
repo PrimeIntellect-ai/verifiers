@@ -963,7 +963,7 @@ class Runtime:
                     )
         for _, method in inspect.getmembers(toolset, predicate=callable):
             if any(
-                getattr(method, attr, False)
+                getattr(method, attr, False) is True
                 for attr in ("stop", "setup", "update", "cleanup")
             ):
                 add_target(
@@ -1216,7 +1216,7 @@ class Runtime:
                     continue
                 handlers.append(cast(Callable[..., object], handler))
             for _, method in inspect.getmembers(toolset, predicate=callable):
-                if not getattr(method, attr, False):
+                if getattr(method, attr, False) is not True:
                     continue
                 if (
                     stage is not None

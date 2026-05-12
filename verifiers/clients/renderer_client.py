@@ -19,11 +19,14 @@ from typing import Any, ClassVar, cast
 from openai import AsyncOpenAI
 from renderers import Message as RendererMessage
 from renderers import (
+    MultimodalRenderer,
+    RenderedTokens,
     Renderer,
     RendererPool,
     ToolCallFunction,
     ToolSpec,
     create_renderer_pool,
+    is_multimodal,
 )
 from renderers import ToolCall as RendererToolCall
 from renderers.client import generate
@@ -94,15 +97,15 @@ _DEFAULT_POOL_SIZE = 1
 # ── Helpers ─────────────────────────────────────────────────────────
 
 
-async def _run_with_renderer(renderer: Renderer | RendererPool, fn):
+async def _maybe_offload(renderer: Renderer | RendererPool, fn):
+    """Run sync renderer work on a thread iff ``renderer`` is a pool.
+
+    Pool methods can block on the internal queue/lock; we offload to keep
+    the event loop responsive. A bare ``Renderer`` runs inline.
+    """
     if isinstance(renderer, RendererPool):
-
-        def _work():
-            with renderer.checkout() as r:
-                return fn(r)
-
-        return await asyncio.to_thread(_work)
-    return fn(renderer)
+        return await asyncio.to_thread(fn)
+    return fn()
 
 
 def _get_value(obj: Any, key: str, default: Any = None) -> Any:
@@ -295,6 +298,28 @@ def _step_token_ids(step: Any) -> tuple[list[int], list[int]] | None:
     return list(prompt_ids), list(completion_ids)
 
 
+def _step_multi_modal_data(step: Any):
+    """Recover the previous turn's ``MultiModalData`` for bridging.
+
+    Mirrors :func:`_step_token_ids`: prefer ``step.tokens.multi_modal_data``
+    (post-parse_response_tokens), fall back to ``step.response.message.tokens``.
+    Returns ``None`` when no multimodal sidecar was emitted (text-only
+    rollouts) — the bridge handles that branch transparently.
+    """
+    tokens = _get_value(step, "tokens")
+    if tokens is not None:
+        mm = _get_value(tokens, "multi_modal_data")
+        if mm is not None:
+            return mm
+
+    response = _get_value(step, "response")
+    message = _get_value(response, "message")
+    raw_tokens = _get_value(message, "tokens")
+    if raw_tokens is None:
+        return None
+    return _get_value(raw_tokens, "multi_modal_data")
+
+
 def _step_rendered_messages(step: Any) -> list[RendererMessage]:
     prompt = list(_get_value(step, "prompt", []) or [])
     completion = list(_get_value(step, "completion", []) or [])
@@ -309,7 +334,13 @@ async def _get_incremental_prompt_ids(
     prompt: list[RendererMessage],
     state: Any,
     tools: list[ToolSpec] | None,
-) -> list[int] | None:
+) -> "RenderedTokens | None":
+    """Return the bridged prompt for the next turn as ``RenderedTokens``.
+
+    Returns ``None`` when no prior trajectory step lines up with the new
+    prompt's prefix or the renderer's ``bridge_to_next_turn`` can't extend
+    — both cases fall back to a full re-render in :func:`generate`.
+    """
     if not state:
         return None
 
@@ -342,15 +373,32 @@ async def _get_incremental_prompt_ids(
             continue
 
         previous_prompt_ids, previous_completion_ids = token_ids
-        bridged = await _run_with_renderer(
-            renderer,
-            lambda r: r.bridge_to_next_turn(
+        previous_mm_data = _step_multi_modal_data(step)
+        # Multimodal renderers' bridge accepts ``previous_multi_modal_data``
+        # so earlier-turn images carry forward into the new prompt's
+        # ``mm_placeholders``. Without that carry-forward, vLLM sees
+        # placeholder counts that don't match the combined token sequence
+        # and silently falls back to hash-cache lookup (or errors).
+        # Text-only renderers' bridge signature doesn't include that
+        # kwarg. ``is_multimodal`` is type-cached so this dispatch is a
+        # dict lookup, not a runtime_checkable Protocol walk.
+        if is_multimodal(renderer):
+            mm_renderer = cast(MultimodalRenderer, renderer)
+            bridge = lambda: mm_renderer.bridge_to_next_turn(  # noqa: E731
                 previous_prompt_ids,
                 previous_completion_ids,
                 tail,
                 tools=tools,
-            ),
-        )
+                previous_multi_modal_data=previous_mm_data,
+            )
+        else:
+            bridge = lambda: renderer.bridge_to_next_turn(  # noqa: E731
+                previous_prompt_ids,
+                previous_completion_ids,
+                tail,
+                tools=tools,
+            )
+        bridged = await _maybe_offload(renderer, bridge)
         _record_bridge(success=bridged is not None)
         return bridged
 
@@ -514,12 +562,21 @@ class RendererClient(
         if args.get("prompt_logprobs"):
             sampling_params["prompt_logprobs"] = 1
 
-        prompt_ids = await _get_incremental_prompt_ids(
+        bridged = await _get_incremental_prompt_ids(
             renderer=renderer,
             prompt=prompt,
             state=kwargs.get("state"),
             tools=tools,
         )
+        # ``bridged`` is RenderedTokens | None. Unpack token_ids + mm_data
+        # so multimodal renderers thread per-image features through to
+        # /inference/v1/generate without re-rendering the whole turn.
+        if bridged is not None:
+            prompt_ids = bridged.token_ids
+            multi_modal_data = bridged.multi_modal_data
+        else:
+            prompt_ids = None
+            multi_modal_data = None
 
         return await generate(
             client=self.client,
@@ -527,6 +584,7 @@ class RendererClient(
             messages=prompt,
             model=model,
             prompt_ids=prompt_ids,
+            multi_modal_data=multi_modal_data,
             tools=tools,
             sampling_params=sampling_params,
             cache_salt=args.get("cache_salt")
@@ -592,6 +650,7 @@ class RendererClient(
             completion_mask=[1] * len(completion_ids),
             completion_logprobs=completion_logprobs,
             routed_experts=routed_experts,
+            multi_modal_data=response.get("multi_modal_data"),
         )
 
         # /inference/v1/generate doesn't return usage; reconstruct from tokens.
