@@ -1037,6 +1037,79 @@ class TestDeltaIntermediateMmData:
         assert [p.offset for p in ts1_phs] == [10, 50]
         assert [p.offset for p in ts2_phs] == [8, 40]
 
+    def test_same_image_rendered_in_two_turns_uses_multiset_diff(self):
+        """Same image hash appearing N times must keep the right N-prior occurrences.
+
+        The renderer doesn't dedupe by hash: ``emit_image`` appends to
+        the parallel lists every time an image content part is rendered.
+        So if image A is shown in turn 1 *and* turn 3, the cumulative
+        ``mm_hashes`` is ``["A", "A"]`` with two distinct placeholder
+        offsets, and ``mm_items`` is ``[pixA, pixA]`` (literally the
+        same payload twice). Both placeholder runs need their own item
+        — set-based diff would drop both as "already seen" and orphan
+        the second placeholder. Multiset diff drops only the first.
+        """
+        from renderers.base import MultiModalData, PlaceholderRange
+
+        def step(hashes, offsets):
+            return {
+                "tokens": {
+                    "multi_modal_data": MultiModalData(
+                        mm_hashes={"image": list(hashes)},
+                        mm_placeholders={
+                            "image": [
+                                PlaceholderRange(offset=o, length=4) for o in offsets
+                            ]
+                        },
+                        mm_items={
+                            "image": [{"pixel_values": f"px-{h}"} for h in hashes]
+                        },
+                    )
+                }
+            }
+
+        # Turn 1: image A at offset 10. Cumulative ["A"].
+        # Turn 2: no image. Cumulative unchanged ["A"].
+        # Turn 3: image A re-rendered at offset 200. Cumulative ["A", "A"].
+        traj = [
+            step(["A"], offsets=[10]),
+            step(["A"], offsets=[10]),
+            step(["A", "A"], offsets=[10, 200]),
+        ]
+        out = _delta_intermediate_mm_data(traj)
+
+        # Step 0 keeps everything (no prior).
+        assert out[0]["tokens"]["multi_modal_data"].mm_hashes == {"image": ["A"]}
+        assert [
+            p.offset
+            for p in out[0]["tokens"]["multi_modal_data"].mm_placeholders["image"]
+        ] == [10]
+
+        # Step 1 introduced no new image (cumulative unchanged).
+        assert out[1]["tokens"]["multi_modal_data"].mm_hashes == {"image": []}
+
+        # Step 2: prior was ["A"], current is ["A", "A"]. Multiset budget
+        # consumes the first A; the *second* A (the new one at offset
+        # 200) survives the diff with its pixel_values intact. Set-based
+        # diff would have produced [].
+        step2_mm = out[2]["tokens"]["multi_modal_data"]
+        assert step2_mm.mm_hashes == {"image": ["A"]}
+        assert step2_mm.mm_items == {"image": [{"pixel_values": "px-A"}]}
+        assert [p.offset for p in step2_mm.mm_placeholders["image"]] == [200]
+
+        # End-to-end: assembling the single TrainingSample (no
+        # compaction) recovers both placeholder runs with matching
+        # pixel_values, so the trainer can satisfy both image-pad
+        # token runs in the prompt.
+        all_hashes: list[str] = []
+        all_phs: list[PlaceholderRange] = []
+        for s in out:
+            mm = s["tokens"]["multi_modal_data"]
+            all_hashes += mm.mm_hashes.get("image", [])
+            all_phs += mm.mm_placeholders.get("image", [])
+        assert all_hashes == ["A", "A"]
+        assert [p.offset for p in all_phs] == [10, 200]
+
     def test_image_reintroduction_after_compaction(self):
         """A hash dropped at compaction and re-rendered later is re-transmitted.
 

@@ -338,7 +338,7 @@ def _delta_intermediate_mm_data(trajectory: object) -> object:
         return trajectory
 
     out: list = []
-    prior_hashes: dict[str, set[str]] = {}
+    prior_hashes: dict[str, list[str]] = {}
 
     for idx, raw_step in enumerate(trajectory):
         if not isinstance(raw_step, Mapping):
@@ -411,23 +411,41 @@ def _delta_intermediate_mm_data(trajectory: object) -> object:
     return out
 
 
-def _read_mm_hashes(mm: object) -> dict[str, set[str]]:
-    """Per-modality set of ``mm_hashes`` from a ``MultiModalData``-like object."""
+def _read_mm_hashes(mm: object) -> dict[str, list[str]]:
+    """Per-modality list of ``mm_hashes`` from a ``MultiModalData``-like object.
+
+    Returns a list (not a set) so multiplicity is preserved: the same
+    image rendered N times appears N times in the list, with each
+    occurrence corresponding to a separate placeholder run in the token
+    stream. The diff uses multiset semantics so each prior occurrence
+    "consumes" one matching current occurrence and the *remaining*
+    current occurrences are kept as new.
+    """
     if mm is None:
         return {}
     hashes = getattr(mm, "mm_hashes", None)
     if not isinstance(hashes, dict):
         return {}
     return {
-        modality: set(hs) for modality, hs in hashes.items() if isinstance(hs, list)
+        modality: list(hs) for modality, hs in hashes.items() if isinstance(hs, list)
     }
 
 
-def _diff_mm_data(mm: object, prior_hashes: dict[str, set[str]]) -> object:
-    """Return ``mm`` with items whose hash appeared in ``prior_hashes`` removed.
+def _diff_mm_data(mm: object, prior_hashes: dict[str, list[str]]) -> object:
+    """Return ``mm`` with items the prior step already covered removed.
+
+    Uses **multiset** semantics: each prior-step occurrence of a given
+    hash consumes one matching current-step occurrence, and only the
+    *surplus* current occurrences are kept. Necessary because the
+    renderer doesn't dedupe by hash — if the same image is rendered in
+    two turns, cumulative ``mm_hashes`` contains the hash twice (each
+    with its own placeholder offset), and both occurrences need their
+    ``pixel_values`` to reach the trainer. Set-based diff would drop
+    both as "already seen" and leave the second placeholder run
+    orphaned.
 
     Returns the input unchanged if nothing is dropped (cheap fast-path
-    for steps that introduced no new images). Returns a new instance of
+    for steps that introduced no new items). Returns a new instance of
     the same class with the delta items otherwise. Mirrors the
     ``MultiModalData`` shape: three parallel per-modality lists
     (``mm_hashes``, ``mm_items``, ``mm_placeholders``) reindexed by the
@@ -456,8 +474,18 @@ def _diff_mm_data(mm: object, prior_hashes: dict[str, set[str]]) -> object:
             continue
         mod_items = items.get(modality) or []
         mod_placeholders = placeholders.get(modality) or []
-        prior_set = prior_hashes.get(modality, set())
-        keep_idx = [i for i, h in enumerate(mod_hashes) if h not in prior_set]
+        # Multiset budget: each prior occurrence of a hash can consume
+        # one matching current occurrence. Walk current left-to-right
+        # and keep an item only after the budget for its hash is gone.
+        remaining: dict[str, int] = {}
+        for h in prior_hashes.get(modality, []):
+            remaining[h] = remaining.get(h, 0) + 1
+        keep_idx: list[int] = []
+        for i, h in enumerate(mod_hashes):
+            if remaining.get(h, 0) > 0:
+                remaining[h] -= 1
+            else:
+                keep_idx.append(i)
         if len(keep_idx) != len(mod_hashes):
             any_dropped = True
         new_hashes[modality] = [mod_hashes[i] for i in keep_idx]
