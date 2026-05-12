@@ -209,6 +209,8 @@ class ProgramBenchTaskset(vf.Taskset):
     def sandbox_config(self, info: dict) -> dict[str, object]:
         lang = info.get("language", "c")
         timeout_min = _SANDBOX_TIMEOUT_MIN.get(lang, 20)
+        # Prime Intellect sandbox API caps execute_command timeout at 900s.
+        command_timeout = min(timeout_min * 60, 900)
         return {
             "image": _LANGUAGE_IMAGES.get(lang, DEFAULT_IMAGE),
             "cpu_cores": 2,
@@ -218,9 +220,7 @@ class ProgramBenchTaskset(vf.Taskset):
             "workdir": SRC_DIR,
             "scope": "rollout",
             "timeout_minutes": timeout_min,
-            # Override DEFAULT_CLI_SANDBOX command_timeout (900s) — mini-swe-agent
-            # + apt-get install + compile can take 15+ minutes.
-            "command_timeout": timeout_min * 60,
+            "command_timeout": command_timeout,
         }
 
     # ------------------------------------------------------------------
