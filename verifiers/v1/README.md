@@ -535,8 +535,8 @@ signature.
 Reusable CLI programs should be packaged as `Harness` subclasses. Package
 implementations live under `verifiers.v1.packages` while the v1 API stabilizes,
 and are re-exported from `verifiers.v1` for normal use. `CLIHarness` is the thin
-generic wrapper for command programs; `OpenCode`, `Pi`, `MiniSWEAgent`, and
-`RLM` are bundled leaf harnesses for common coding-agent CLIs.
+generic wrapper for command programs; `OpenCode`, `Pi`, `MiniSWEAgent`,
+`Terminus2`, and `RLM` are bundled leaf harnesses for common coding-agent CLIs.
 
 ```python
 import verifiers.v1 as vf
@@ -559,6 +559,8 @@ endpoint and, when tools are enabled, installs the Pi MCP adapter and writes a
 project `.mcp.json`. Neither side needs to know the other's private fields.
 `MiniSWEAgent` owns mini-swe-agent installation, config layering, endpoint env,
 and log/trajectory artifacts.
+`Terminus2` owns Harbor Terminus agent installation, endpoint env, and log
+artifacts.
 `RLM` follows the same boundary for recursive LLM runs: `HarborTaskset` owns
 the task directory and tests, while `RLM` owns RLM installation, optional skill
 upload to `/task/rlm-skills`, endpoint wiring, and trajectory filtering.

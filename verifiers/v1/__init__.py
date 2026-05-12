@@ -30,6 +30,7 @@ from .packages.harnesses import (
     OpenCodeConfig,
     Pi,
     RLM,
+    Terminus2,
 )
 from .utils.scoring_utils import (
     add_metric,
@@ -66,6 +67,7 @@ __all__ = [
     "OpenCodeConfig",
     "Pi",
     "RLM",
+    "Terminus2",
     "SandboxConfig",
     "State",
     "Task",

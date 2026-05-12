@@ -8,6 +8,11 @@ import pytest
 
 import verifiers.v1 as vf
 from verifiers.v1.packages.harnesses.pi import pi_mcp_json, pi_models_json
+from verifiers.v1.packages.harnesses.terminus_2 import (
+    Terminus2,
+    build_terminus_2_run_script,
+    terminus_2_agent_script,
+)
 from verifiers.v1.utils.program_utils import merge_task_program
 
 
@@ -89,6 +94,7 @@ def test_packaged_harbor_and_opencode_imports_are_reexported() -> None:
     assert vf.OpenCode is OpenCode
     assert vf.OpenCodeConfig is OpenCodeConfig
     assert vf.Pi is Pi
+    assert vf.Terminus2 is Terminus2
     assert vf.HarborTaskset is HarborTaskset
 
 
@@ -141,6 +147,56 @@ def test_pi_harness_writes_intercepted_model_and_mcp_config() -> None:
     assert provider["apiKey"] == "secret"
     assert provider["models"] == [{"id": "model", "name": "openai/gpt-5.4-mini"}]
     assert mcp["mcpServers"]["verifiers-tools"]["command"] == "python3"
+
+
+def test_terminus_2_harness_builds_sandbox_program() -> None:
+    harness = vf.Terminus2(
+        system_prompt="extra system prompt",
+        agent_workdir="/workspace",
+        max_turns=7,
+        python_version="3.12",
+    )
+    program = cast(dict[str, object], harness.program)
+    command = cast(list[object], program["command"])
+    setup = cast(str, program["setup"])
+    files = cast(dict[str, object], program["files"])
+    artifacts = cast(dict[str, object], program["artifacts"])
+
+    assert isinstance(harness, vf.CLIHarness)
+    assert "/terminus_2/instruction.md" in files
+    assert "/terminus_2/system_prompt.txt" in files
+    assert "uv python install 3.12" in setup
+    assert "apt-get -o Acquire::Retries=3 update" in setup
+    assert "apt-get -o Acquire::Retries=3 install" in setup
+    assert "terminus_2_log" in artifacts
+
+    run_script = cast(str, command[2])
+    assert "TERMINUS_2_WORKDIR=/workspace" in run_script
+    assert "uv run --quiet --python 3.12 --with" in run_script
+    assert "harbor @ git+https://github.com/laude-institute/harbor.git" in run_script
+    assert "AgentFactory.create_agent_from_name" in run_script
+    assert 'AgentName("terminus-2")' in run_script
+    assert "max_turns=7" in run_script
+
+
+def test_terminus_2_embeds_harbor_agent_script() -> None:
+    script = terminus_2_agent_script()
+
+    compile(script, "terminus_2_agent.py", "exec")
+    assert "AgentFactory.create_agent_from_name" in script
+    assert 'AgentName("terminus-2")' in script
+    assert 'api_base=os.environ["OPENAI_BASE_URL"]' in script
+    assert "max_turns=4" in script
+    assert "self.default_user = None" in script
+    assert "user: str | int | None = None" in script
+
+
+def test_terminus_2_run_script_threads_agent_max_turns() -> None:
+    run_script = build_terminus_2_run_script(max_turns=11)
+    script = terminus_2_agent_script(max_turns=None)
+
+    assert "max_turns=11" in run_script
+    assert "max_turns=None" in script
 
 
 def test_task_program_merges_into_command_program_without_collisions() -> None:

@@ -528,8 +528,8 @@ Use this for:
 Migration:
 
 1. Use `vf.HarborTaskset` for Harbor-format task directories.
-2. Use `vf.OpenCode()`, `vf.Pi()`, `vf.MiniSWEAgent()`, or `vf.RLM()` for the
-   command harness.
+2. Use `vf.OpenCode()`, `vf.Pi()`, `vf.MiniSWEAgent()`, `vf.Terminus2()`, or
+   `vf.RLM()` for the command harness.
 3. Put task-owned uploads and sandbox overrides on the taskset.
 4. Keep scoring as reward/metric functions on the taskset.
 
@@ -557,6 +557,8 @@ Gotchas:
   adapter setup, and log artifacts.
 - `MiniSWEAgent` owns mini-swe-agent installation, config layering, endpoint
   env, and log/trajectory artifacts.
+- `Terminus2` owns Harbor Terminus agent installation, endpoint env, and log
+  artifacts.
 - `RLM` owns RLM installation, optional `/task/rlm-skills` upload, endpoint
   wiring, and trajectory filtering.
 - `task.program` is the merge point for task-owned program files/env/setup.
