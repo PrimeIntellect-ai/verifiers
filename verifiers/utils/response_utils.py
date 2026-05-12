@@ -74,4 +74,8 @@ async def parse_response_tokens(
     )
     if multi_modal_data is not None:
         out["multi_modal_data"] = multi_modal_data
+        # Move (not copy) the sidecar to its canonical home on the parsed
+        # step. Leaving it on ``response.message.tokens`` too means every
+        # downstream pass (msgpack, save) has to dedupe the duplicate.
+        tokens.multi_modal_data = None
     return out

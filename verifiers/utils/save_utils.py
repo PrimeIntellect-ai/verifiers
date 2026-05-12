@@ -312,25 +312,19 @@ def _delta_intermediate_mm_data(trajectory: object) -> object:
     first, drop items whose ``mm_hash`` already appeared in the immediately
     prior step. The first step is left as-is (all items are new).
 
-    Properties:
-    - Each unique image's bytes travel exactly once across the trajectory
-      (no O(N²) duplication).
-    - Per-window ``TrainingSample`` assemblers — including compaction,
-      where a single rollout produces multiple samples and the
-      pre-compaction sample's images aren't in the final cumulative
-      set — can recover any window's images by unioning step-deltas in
-      that window.
-    - Placeholder ranges in each delta retain offsets relative to the
-      step's own cumulative token sequence; the per-window assembler is
-      responsible for shifting them into the window's local frame.
+    ``parse_response_tokens`` moves the sidecar onto ``step["tokens"]``
+    and clears the duplicate on ``response.message.tokens``, so only one
+    location needs rewriting here.
 
-    Rewrites two duplicated locations on each non-first step:
-    - ``step["tokens"]["multi_modal_data"]`` (TypedDict sidecar)
-    - ``step["response"].message.tokens.multi_modal_data`` (Pydantic
-      ``ResponseTokens`` field; carries the same dataclass and survives
-      msgpack transport via ``model_dump`` unless rewritten)
+    Each unique image's bytes travel exactly once across the trajectory
+    (no O(N²) duplication). Per-window ``TrainingSample`` assemblers —
+    including compaction, where a single rollout produces multiple
+    samples and the pre-compaction sample's images aren't in the final
+    cumulative set — recover any window's images by unioning the
+    step-deltas in that window. Placeholder offsets stay relative to the
+    step's own cumulative token sequence; the assembler shifts them.
 
-    Returns a new list of step dicts (with shallow copies for rewritten
+    Returns a new list of step dicts (shallow copies for rewritten
     entries) so the input state isn't mutated. Non-list inputs and
     empty / single-step trajectories pass through unchanged.
     """
@@ -345,28 +339,10 @@ def _delta_intermediate_mm_data(trajectory: object) -> object:
             out.append(raw_step)
             continue
         step = cast(Mapping[str, Any], raw_step)
-
-        # Capture this step's *original* cumulative hashes (from either
-        # the tokens sidecar or the response side — they should match)
-        # before any rewrite, so the next iteration's delta is computed
-        # against the true cumulative.
         tokens = step.get("tokens")
         step_mm = (
             tokens.get("multi_modal_data") if isinstance(tokens, Mapping) else None
         )
-        if step_mm is None:
-            response = step.get("response")
-            message = (
-                getattr(response, "message", None) if response is not None else None
-            )
-            resp_tokens = (
-                getattr(message, "tokens", None) if message is not None else None
-            )
-            step_mm = (
-                getattr(resp_tokens, "multi_modal_data", None)
-                if resp_tokens is not None
-                else None
-            )
         current_hashes = _read_mm_hashes(step_mm)
 
         if idx == 0:
@@ -374,39 +350,16 @@ def _delta_intermediate_mm_data(trajectory: object) -> object:
             prior_hashes = current_hashes
             continue
 
-        new_step: dict[str, Any] = dict(step)
-        changed = False
+        if isinstance(tokens, Mapping) and step_mm is not None:
+            delta = _diff_mm_data(step_mm, prior_hashes)
+            if delta is not step_mm:
+                new_step: dict[str, Any] = dict(step)
+                new_step["tokens"] = {**tokens, "multi_modal_data": delta}
+                out.append(new_step)
+                prior_hashes = current_hashes
+                continue
 
-        if isinstance(tokens, Mapping):
-            mm = tokens.get("multi_modal_data")
-            if mm is not None:
-                delta = _diff_mm_data(mm, prior_hashes)
-                if delta is not mm:
-                    new_step["tokens"] = {**tokens, "multi_modal_data": delta}
-                    changed = True
-
-        response = step.get("response")
-        if response is not None:
-            message = getattr(response, "message", None)
-            if message is not None:
-                resp_tokens = getattr(message, "tokens", None)
-                if resp_tokens is not None:
-                    resp_mm = getattr(resp_tokens, "multi_modal_data", None)
-                    if resp_mm is not None:
-                        resp_delta = _diff_mm_data(resp_mm, prior_hashes)
-                        if resp_delta is not resp_mm:
-                            stripped_tokens = resp_tokens.model_copy(
-                                update={"multi_modal_data": resp_delta}
-                            )
-                            stripped_message = message.model_copy(
-                                update={"tokens": stripped_tokens}
-                            )
-                            new_step["response"] = response.model_copy(
-                                update={"message": stripped_message}
-                            )
-                            changed = True
-
-        out.append(new_step if changed else step)
+        out.append(step)
         prior_hashes = current_hashes
     return out
 
