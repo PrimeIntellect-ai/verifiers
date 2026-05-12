@@ -146,10 +146,7 @@ class ZMQEnvClient(EnvClient):
         """Send a cancel signal (empty payload) to the server for a request."""
         try:
             await self.socket.send_multipart([request_id.encode(), b""])
-        except Exception:
-            # Best-effort cancel notification; transport/socket errors here are
-            # deliberately swallowed. Cancellation and interrupt signals still
-            # propagate (they are not `Exception` subclasses).
+        except BaseException:
             pass
 
     async def cancel_all_pending(
