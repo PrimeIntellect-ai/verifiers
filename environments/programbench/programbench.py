@@ -594,13 +594,16 @@ def load_harness(
     agent_workdir: str = SRC_DIR,
     max_turns: int | None = None,
     environment_timeout: int = 600,
+    agent_step_limit: int = 1000,
     system_prompt: str | None = None,
     **kwargs: Any,
 ) -> vf.MiniSWEAgent:
+    extra: list[str] = [f"agent.step_limit={agent_step_limit}"]
     return vf.MiniSWEAgent(
         agent_workdir=agent_workdir,
         max_turns=max_turns,
         environment_timeout=environment_timeout,
+        extra_config_specs=extra,
         system_prompt=system_prompt,
         config=config,
         **kwargs,
@@ -621,6 +624,7 @@ def load_environment(
     # mini-SWE-agent harness
     max_turns: int | None = None,
     environment_timeout: int = 600,
+    agent_step_limit: int = 1000,
     system_prompt: str | None = SYSTEM_PROMPT,
 ) -> vf.Env:
     # Verify HuggingFace auth is available (private dataset + test archives).
@@ -657,6 +661,7 @@ def load_environment(
         agent_workdir=SRC_DIR,
         max_turns=max_turns,
         environment_timeout=environment_timeout,
+        agent_step_limit=agent_step_limit,
         system_prompt=system_prompt,
     )
     return vf.Env(taskset=taskset, harness=harness)
