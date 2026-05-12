@@ -333,30 +333,45 @@ class ProgramBenchTaskset(vf.Taskset):
         test_branches = info.get("test_branches", [])
         if not test_branches:
             logger.warning("No test branches for task %s.", info["task_id"])
-            state["_pb_test_branch"] = None
+            state["_pb_test_archives"] = []
             return
 
-        branch = max(
-            test_branches
-        )  # most recent branch alphabetically; later branches have more tests
         task_id = info["task_id"]
 
-        try:
-            local_archive = await self._hf_download(
-                "programbench/ProgramBench-Tests",
-                f"{task_id}/tests/{branch.removesuffix('.tar.gz').removesuffix('.tar')}.tar.gz",
-            )
-        except Exception as exc:
-            logger.warning(
-                "Test archive download failed for %s/%s: %r", task_id, branch, exc
-            )
-            state["_pb_test_branch"] = None
+        # Download all branches concurrently — each is a separate oracle test suite.
+        # Paper §4 scores against all branches; we union them for maximum coverage.
+        async def _fetch(branch: str) -> tuple[str, str] | None:
+            stem = branch.removesuffix(".tar.gz").removesuffix(".tar")
+            try:
+                path = await self._hf_download(
+                    "programbench/ProgramBench-Tests",
+                    f"{task_id}/tests/{stem}.tar.gz",
+                )
+                return (stem, path)
+            except Exception as exc:
+                logger.warning(
+                    "Test archive download failed for %s/%s: %r", task_id, branch, exc
+                )
+                return None
+
+        results = await asyncio.gather(*[_fetch(b) for b in test_branches])
+        archives: list[tuple[str, str]] = [r for r in results if r is not None]
+
+        if not archives:
+            logger.warning("All test archive downloads failed for %s.", task_id)
+            state["_pb_test_archives"] = []
             return
 
+        logger.debug(
+            "[%s] downloaded %d/%d test branches",
+            task_id,
+            len(archives),
+            len(test_branches),
+        )
+
         if self.hide_tests_from_agent:
-            # Keep archive local and upload only at scoring time.
-            state["_pb_test_branch"] = branch
-            state["_pb_test_archive_local"] = local_archive
+            # Keep archives local; upload and extract at scoring time.
+            state["_pb_test_archives"] = archives
         else:
             # WARNING: exposes test files to the agent during the rollout.
             # Paper §3 prohibits this — use only for local debugging, never for eval.
@@ -365,18 +380,8 @@ class ProgramBenchTaskset(vf.Taskset):
                 "agent. This violates paper §3 and must not be used for evaluation.",
                 task_id,
             )
-            remote = f"{TEST_DIR}/tests.tar.gz"
-            try:
-                await sandbox.upload_file(remote, local_archive, timeout=60)
-                result = await sandbox.execute(
-                    f"tar -xzf {remote} -C {TEST_DIR} && rm {remote}", timeout=30
-                )
-                if result.exit_code != 0:
-                    raise RuntimeError(f"tar extract failed: exit={result.exit_code}")
-                state["_pb_test_branch"] = branch
-            except Exception as exc:
-                logger.warning("Test setup failed for %s/%s: %r", task_id, branch, exc)
-                state["_pb_test_branch"] = None
+            await self._extract_archives(sandbox, archives, task_id)
+            state["_pb_test_archives"] = archives
 
     # ------------------------------------------------------------------
     # Scoring
@@ -411,8 +416,8 @@ class ProgramBenchTaskset(vf.Taskset):
     async def _evaluate(self, sandbox, state, info: dict, lang: str) -> float:
         task_id = info["task_id"]
         await self._restore_tests(sandbox, state)
-        if state.get("_pb_test_branch") is None:
-            state["eval_error"] = "no_test_branch"
+        if not state.get("_pb_test_archives"):
+            state["eval_error"] = "no_test_archives"
             return 0.0
         if not await self._compile(sandbox, state, lang, task_id):
             return 0.0
@@ -497,21 +502,33 @@ class ProgramBenchTaskset(vf.Taskset):
         )
         return _parse_junit_xml(xml_result.stdout or "")
 
-    async def _restore_tests(self, sandbox, state) -> None:
-        local_archive = state.pop("_pb_test_archive_local", None)
-        if not local_archive:
-            return
-        remote = f"{TEST_DIR}/tests.tar.gz"
-        # Ensure TEST_DIR exists (may have been absent if sandbox was restarted).
+    async def _extract_archives(
+        self, sandbox, archives: list[tuple[str, str]], task_id: str
+    ) -> None:
         await sandbox.execute(f"mkdir -p {TEST_DIR}", timeout=10)
-        await sandbox.upload_file(remote, str(local_archive), timeout=120)
-        result = await sandbox.execute(
-            f"tar -xzf {remote} -C {TEST_DIR} && rm {remote}", timeout=60
-        )
-        if result.exit_code != 0:
-            raise RuntimeError(
-                f"Failed to extract test archive: exit_code={result.exit_code}"
+        for stem, local_path in archives:
+            # Each branch goes into its own subdirectory to avoid filename collisions.
+            branch_dir = f"{TEST_DIR}/{stem}"
+            remote = f"{branch_dir}.tar.gz"
+            await sandbox.execute(f"mkdir -p {branch_dir}", timeout=10)
+            await sandbox.upload_file(remote, str(local_path), timeout=120)
+            result = await sandbox.execute(
+                f"tar -xzf {remote} -C {branch_dir} && rm {remote}", timeout=60
             )
+            if result.exit_code != 0:
+                logger.warning(
+                    "[%s] failed to extract branch %s: exit=%s",
+                    task_id,
+                    stem,
+                    result.exit_code,
+                )
+
+    async def _restore_tests(self, sandbox, state) -> None:
+        archives: list[tuple[str, str]] = state.get("_pb_test_archives", [])
+        if not archives:
+            return
+        task_id = state.get("sandbox_id", "?")
+        await self._extract_archives(sandbox, archives, task_id)
 
     # ------------------------------------------------------------------
     # Cleanup
@@ -519,9 +536,8 @@ class ProgramBenchTaskset(vf.Taskset):
 
     @vf.cleanup(priority=100)
     async def cleanup_pb_state(self, task, state) -> None:
-        archive = state.pop("_pb_test_archive_local", None)
-        if isinstance(archive, str):
-            Path(archive).unlink(missing_ok=True)
+        for _stem, local_path in state.pop("_pb_test_archives", []):
+            Path(local_path).unlink(missing_ok=True)
         state.pop("_pb_sandbox", None)
 
 
