@@ -488,11 +488,13 @@ def _diff_mm_data(mm: object, prior_hashes: dict[str, list[str]]) -> object:
                 keep_idx.append(i)
         if len(keep_idx) != len(mod_hashes):
             any_dropped = True
+        # Trust the renderer's parallel-list invariant
+        # (``emit_image`` appends to all three together). If it's
+        # broken on input, indexing fails loudly here rather than
+        # silently producing mismatched output lists.
         new_hashes[modality] = [mod_hashes[i] for i in keep_idx]
-        new_items[modality] = [mod_items[i] for i in keep_idx if i < len(mod_items)]
-        new_placeholders[modality] = [
-            mod_placeholders[i] for i in keep_idx if i < len(mod_placeholders)
-        ]
+        new_items[modality] = [mod_items[i] for i in keep_idx]
+        new_placeholders[modality] = [mod_placeholders[i] for i in keep_idx]
 
     if not any_dropped:
         return mm

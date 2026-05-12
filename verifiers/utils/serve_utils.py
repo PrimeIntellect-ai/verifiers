@@ -1,6 +1,7 @@
 import dataclasses
 import logging
 import socket
+import sys
 from datetime import date, datetime
 from enum import Enum
 from pathlib import Path
@@ -51,9 +52,17 @@ def msgpack_encoder(obj):
         return obj.item()
     elif isinstance(obj, np.ndarray):
         return _encode_array_like(obj)
-    elif type(obj).__module__.startswith("torch"):
-        # Lazy: only import torch when a tensor actually shows up so
-        # text-only consumers don't pay for it.
+    elif (_torch := sys.modules.get("torch")) is not None and isinstance(
+        obj, _torch.Tensor
+    ):
+        # Read torch off ``sys.modules`` instead of importing: text-only
+        # consumers never load torch, so this branch stays cold for
+        # them. Any tensor reaching the encoder implies torch is
+        # already in the process (you can't construct one otherwise).
+        # ``isinstance`` is precise — the previous string-module check
+        # also matched non-tensor torch objects (``torch.dtype``,
+        # ``torch.device``, ``torchvision.*``) and crashed on
+        # ``.detach()``.
         arr = obj.detach().cpu().contiguous().numpy()
         return _encode_array_like(arr)
     elif hasattr(obj, "model_dump"):
