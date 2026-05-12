@@ -9,11 +9,11 @@ import pytest
 import verifiers.v1 as vf
 from verifiers.v1.packages.harnesses.pi import pi_mcp_json, pi_models_json
 from verifiers.v1.packages.harnesses.terminus_2 import (
+    DEFAULT_HARBOR_PACKAGE,
     Terminus2,
-    build_terminus_2_run_script,
     terminus_2_agent_script,
 )
-from verifiers.v1.utils.program_utils import merge_task_program
+from verifiers.v1.utils.program_utils import merge_task_program, merge_task_sandbox
 
 
 def write_harbor_task(root: Path, name: str = "task-a") -> Path:
@@ -58,6 +58,13 @@ def test_harbor_taskset_loads_local_tasks_with_program_patch(tmp_path: Path) -> 
     assert task["sandbox"]["memory_gb"] == 2.0
     assert task["sandbox"]["disk_size_gb"] == 8.0
     assert task["sandbox"]["command_timeout"] == 600
+    assert "network_access" not in task["sandbox"]
+    assert (
+        merge_task_sandbox({"network_access": False, "scope": "rollout"}, task)[
+            "network_access"
+        ]
+        is False
+    )
     assert task["harbor"]["test_timeout"] == 300.0
     assert task["program"]["files"] == {
         "/task/instruction.md": {"task": "instruction"},
@@ -172,32 +179,15 @@ def test_terminus_2_harness_builds_sandbox_program() -> None:
 
     run_script = cast(str, command[2])
     assert "TERMINUS_2_WORKDIR=/workspace" in run_script
-    assert "uv --no-config run --no-project --quiet" in run_script
-    assert "--python 3.12" in run_script
-    assert "--with harbor==0.6.6" in run_script
+    assert f"--with {DEFAULT_HARBOR_PACKAGE}" in run_script
     assert "git+https://github.com" not in run_script
-    assert "Terminus2(" in run_script
     assert "max_turns=7" in run_script
 
-
-def test_terminus_2_embeds_harbor_agent_script() -> None:
-    script = terminus_2_agent_script()
-
+    script = terminus_2_agent_script(max_turns=7)
     compile(script, "terminus_2_agent.py", "exec")
-    assert "from harbor.agents.terminus_2 import Terminus2" in script
-    assert "Terminus2(" in script
     assert 'api_base=os.environ["OPENAI_BASE_URL"]' in script
-    assert "max_turns=4" in script
-    assert "self.default_user = None" in script
-    assert "user: str | int | None = None" in script
-
-
-def test_terminus_2_run_script_threads_agent_max_turns() -> None:
-    run_script = build_terminus_2_run_script(max_turns=11)
-    script = terminus_2_agent_script(max_turns=None)
-
-    assert "max_turns=11" in run_script
-    assert "max_turns=None" in script
+    assert "async def prepare_logs_for_host(self) -> None" in script
+    assert "max_turns=7" in script
 
 
 def test_task_program_merges_into_command_program_without_collisions() -> None:

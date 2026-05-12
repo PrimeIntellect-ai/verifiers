@@ -160,6 +160,22 @@ class HarborTaskset(Taskset):
         verifier_config = config.get("verifier", {}) or {}
         instruction = instruction_path.read_text().strip()
         task_remote_dir = self.task_dir.rstrip("/") or "/task"
+        sandbox = {
+            "image": environment.get("docker_image") or self.docker_image,
+            "cpu_cores": parse_number(environment.get("cpus"), self.cpu_cores),
+            "memory_gb": parse_gb(environment.get("memory"), self.memory_gb),
+            "disk_size_gb": parse_gb(environment.get("storage"), self.disk_size_gb),
+            "timeout_minutes": self.timeout_minutes,
+            "command_timeout": int(
+                parse_number(
+                    agent_config.get("timeout_sec"), self.agent_timeout_seconds
+                )
+            ),
+            "workdir": self.workdir,
+            "scope": self.scope,
+        }
+        if "allow_internet" in environment:
+            sandbox["network_access"] = bool(environment["allow_internet"])
         return {
             "example_id": index,
             "task_name": task_dir.name,
@@ -167,21 +183,7 @@ class HarborTaskset(Taskset):
             "task_toml": task_toml_path.read_text(),
             "task_dir": str(task_dir),
             "prompt": [{"role": "user", "content": instruction}],
-            "sandbox": {
-                "image": environment.get("docker_image") or self.docker_image,
-                "cpu_cores": parse_number(environment.get("cpus"), self.cpu_cores),
-                "memory_gb": parse_gb(environment.get("memory"), self.memory_gb),
-                "disk_size_gb": parse_gb(environment.get("storage"), self.disk_size_gb),
-                "network_access": bool(environment.get("allow_internet", True)),
-                "timeout_minutes": self.timeout_minutes,
-                "command_timeout": int(
-                    parse_number(
-                        agent_config.get("timeout_sec"), self.agent_timeout_seconds
-                    )
-                ),
-                "workdir": self.workdir,
-                "scope": self.scope,
-            },
+            "sandbox": sandbox,
             "program": {
                 "files": {
                     f"{task_remote_dir}/instruction.md": {"task": "instruction"},

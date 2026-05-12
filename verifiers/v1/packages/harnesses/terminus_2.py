@@ -190,6 +190,9 @@ class LocalEnvironment(BaseEnvironment):
     async def stop(self, delete: bool):
         pass
 
+    async def prepare_logs_for_host(self) -> None:
+        pass
+
     async def upload_file(self, source_path, target_path):
         shutil.copy(source_path, target_path)
 
