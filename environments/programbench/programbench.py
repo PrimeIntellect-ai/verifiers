@@ -178,6 +178,8 @@ class ProgramBenchTaskset(vf.Taskset):
                 "_compile_hint": row.get("compile_hint", ""),
             }
             instruction = _build_instruction(info)
+            sandbox = self.sandbox_config(info)
+            command_timeout = int(sandbox.get("command_timeout", 900))
             rows.append(
                 {
                     "example_id": index,
@@ -187,7 +189,7 @@ class ProgramBenchTaskset(vf.Taskset):
                     "prompt": [{"role": "user", "content": instruction}],
                     "answer": "",
                     "info": info,
-                    "sandbox": self.sandbox_config(info),
+                    "sandbox": sandbox,
                     "program": {
                         "env": {
                             "AGENT_WORKDIR": SRC_DIR,
@@ -200,6 +202,8 @@ class ProgramBenchTaskset(vf.Taskset):
                             "GOPATH": "/root/go",
                             "PAGER": "cat",
                             "MANPAGER": "cat",
+                            # Let mini-swe-agent self-exit 60s before the API hard kill.
+                            "AGENT_TIMEOUT_SECONDS": str(max(60, command_timeout - 60)),
                         }
                     },
                 }
