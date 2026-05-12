@@ -51,64 +51,8 @@ RUN curl -fsSL https://sh.rustup.rs -o /tmp/rustup-init.sh && \
 # Pre-warm cargo registry with common ProgramBench dependencies.
 # We build both debug and release profiles so that all dep artifacts are cached.
 # The /tmp/warmup source tree is deleted afterwards; ~/.cargo/registry persists.
-RUN mkdir -p /tmp/warmup/src && \
-    cat > /tmp/warmup/Cargo.toml <<'EOF'
-[package]
-name = "warmup"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-clap = { version = "4", features = ["derive"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-anyhow = "1"
-tokio = { version = "1", features = ["full"] }
-regex = "1"
-thiserror = "1"
-
-[[bin]]
-name = "warmup"
-path = "src/main.rs"
-EOF
-    cat > /tmp/warmup/src/main.rs <<'EOF'
-use anyhow::Result;
-use clap::Parser;
-use regex::Regex;
-use serde::{Deserialize, Serialize};
-use serde_json::json;
-use thiserror::Error;
-
-#[derive(Parser)]
-struct Cli {
-    #[arg(short, long, default_value = "world")]
-    name: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct Greeting {
-    message: String,
-}
-
-#[derive(Debug, Error)]
-enum AppError {
-    #[error("invalid name: {0}")]
-    InvalidName(String),
-}
-
-#[tokio::main]
-async fn main() -> Result<()> {
-    let cli = Cli::parse();
-    let re = Regex::new(r"^\w+$")?;
-    if !re.is_match(&cli.name) {
-        return Err(AppError::InvalidName(cli.name).into());
-    }
-    let greeting = Greeting { message: format!("Hello, {}!", cli.name) };
-    println!("{}", json!(greeting));
-    Ok(())
-}
-EOF
-    cd /tmp/warmup && \
+COPY warmup/ /tmp/warmup/
+RUN cd /tmp/warmup && \
     /root/.cargo/bin/cargo build 2>&1 && \
     /root/.cargo/bin/cargo build --release 2>&1 && \
     cd / && rm -rf /tmp/warmup

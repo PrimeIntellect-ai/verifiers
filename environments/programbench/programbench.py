@@ -208,10 +208,12 @@ class ProgramBenchTaskset(vf.Taskset):
     def get_env_vars(self) -> dict[str, str]:
         return {
             "PATH": (
-                "/root/.cargo/bin:/usr/local/go/bin"
+                # /usr/local/cargo/bin: rust:latest (official image)
+                # /root/.cargo/bin: custom primeintellect image (rustup into /root)
+                "/usr/local/cargo/bin:/root/.cargo/bin:/usr/local/go/bin"
                 ":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
             ),
-            "CARGO_HOME": "/root/.cargo",
+            "CARGO_HOME": "/usr/local/cargo",
             "GOPATH": "/root/go",
             "PAGER": "cat",
             "MANPAGER": "cat",
@@ -361,7 +363,7 @@ class ProgramBenchTaskset(vf.Taskset):
         compile_timeout = _COMPILE_TIMEOUT.get(lang, 120)
         compile_result = await sandbox.execute(
             f"cd {SRC_DIR} && chmod +x compile.sh && "
-            "export PATH=/usr/local/go/bin:/root/.cargo/bin:/usr/local/bin:/usr/bin:/bin && "
+            "export PATH=/usr/local/cargo/bin:/root/.cargo/bin:/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin && "
             "bash compile.sh 2>&1",
             timeout=compile_timeout,
         )
