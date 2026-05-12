@@ -52,7 +52,7 @@ _DISK_GB: dict[str, int] = {"rust": 12, "go": 6, "c": 4, "cpp": 6}
 # Per-language compile timeout (seconds).
 _COMPILE_TIMEOUT: dict[str, int] = {"rust": 480, "go": 60, "c": 30, "cpp": 60}
 # Per-language sandbox lifetime (minutes).
-_SANDBOX_TIMEOUT_MIN: dict[str, int] = {"rust": 45, "go": 20, "c": 10, "cpp": 20}
+_SANDBOX_TIMEOUT_MIN: dict[str, int] = {"rust": 45, "go": 20, "c": 20, "cpp": 20}
 
 SYSTEM_PROMPT = f"""\
 You are a software reverse-engineering expert. Your task is to reconstruct complete, \
