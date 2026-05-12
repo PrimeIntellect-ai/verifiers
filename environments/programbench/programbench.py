@@ -188,7 +188,20 @@ class ProgramBenchTaskset(vf.Taskset):
                     "answer": "",
                     "info": info,
                     "sandbox": self.sandbox_config(info),
-                    "program": {"env": {"AGENT_WORKDIR": SRC_DIR}},
+                    "program": {
+                        "env": {
+                            "AGENT_WORKDIR": SRC_DIR,
+                            # Inject toolchain paths so mini-swe-agent inherits them.
+                            "PATH": (
+                                "/usr/local/go/bin:/usr/local/cargo/bin:/root/.cargo/bin"
+                                ":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+                            ),
+                            "CARGO_HOME": "/usr/local/cargo",
+                            "GOPATH": "/root/go",
+                            "PAGER": "cat",
+                            "MANPAGER": "cat",
+                        }
+                    },
                 }
             )
         return rows
@@ -204,20 +217,6 @@ class ProgramBenchTaskset(vf.Taskset):
             "workdir": SRC_DIR,
             "scope": "rollout",
             "timeout_minutes": _SANDBOX_TIMEOUT_MIN.get(lang, 20),
-        }
-
-    def get_env_vars(self) -> dict[str, str]:
-        return {
-            "PATH": (
-                # /usr/local/cargo/bin: rust:latest (official image)
-                # /root/.cargo/bin: custom primeintellect image (rustup into /root)
-                "/usr/local/cargo/bin:/root/.cargo/bin:/usr/local/go/bin"
-                ":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-            ),
-            "CARGO_HOME": "/usr/local/cargo",
-            "GOPATH": "/root/go",
-            "PAGER": "cat",
-            "MANPAGER": "cat",
         }
 
     # ------------------------------------------------------------------
