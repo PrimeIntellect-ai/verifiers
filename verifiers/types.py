@@ -172,13 +172,25 @@ class Usage(CustomBaseModel):
     total_tokens: int
 
 
+class RoutedExperts(CustomBaseModel):
+    dtype: Literal["int16"] = "int16"
+    shape: list[int]
+    data: bytes
+
+    @field_validator("shape")
+    @classmethod
+    def validate_shape(cls, value: list[int]) -> list[int]:
+        assert len(value) == 3
+        return value
+
+
 class ResponseTokens(CustomBaseModel):
     prompt_ids: list[int]
     prompt_mask: list[int]
     completion_ids: list[int]
     completion_mask: list[int]
     completion_logprobs: list[float]
-    routed_experts: list[list[list[int]]] | None = None  # [seq_len, layers, topk]
+    routed_experts: RoutedExperts | None = None  # [seq_len, layers, topk]
 
 
 FinishReason = Literal["stop", "length", "tool_calls"] | None
@@ -215,7 +227,7 @@ class TrajectoryStepTokens(TypedDict):
     completion_logprobs: list[float]
     overlong_prompt: bool
     is_truncated: bool
-    routed_experts: list[list[list[int]]] | None  # [seq_len, layers, topk]
+    routed_experts: RoutedExperts | None  # [seq_len, layers, topk]
 
 
 class TokenUsage(TypedDict):

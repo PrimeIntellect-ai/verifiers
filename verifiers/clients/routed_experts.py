@@ -1,40 +1,50 @@
 from __future__ import annotations
 
 import base64
-from dataclasses import dataclass
-from typing import Any, TypeAlias, cast
+from typing import Any, Mapping, cast
 
-import numpy as np
+from verifiers.types import RoutedExperts
 
-RoutedExperts: TypeAlias = list[list[list[int]]]
-
-
-@dataclass(frozen=True)
-class _DecodedRoutedExperts:
-    values: RoutedExperts
-    shape: tuple[int, int, int]
+INT16_BYTES = 2
 
 
-def _decode_routed_experts(raw: Any) -> _DecodedRoutedExperts:
-    if isinstance(raw, dict):
-        assert raw["encoding"] == "base64"
-        assert raw["dtype"] == "int16"
-        shape = tuple(raw["shape"])
-        assert len(shape) == 3
-        values = np.frombuffer(base64.b64decode(raw["data"]), dtype=np.int16).reshape(shape).tolist()
-        return _DecodedRoutedExperts(
-            values=cast(RoutedExperts, values),
-            shape=cast(tuple[int, int, int], shape),
-        )
+def _shape_numel(shape: list[int]) -> int:
+    seq_len, num_layers, topk = shape
+    return seq_len * num_layers * topk
 
-    routed_experts = cast(RoutedExperts, raw)
-    seq_len = len(routed_experts)
-    num_layers = len(routed_experts[0])
-    topk = len(routed_experts[0][0])
 
-    return _DecodedRoutedExperts(
-        values=routed_experts,
-        shape=(seq_len, num_layers, topk),
+def _token_stride(shape: list[int]) -> int:
+    return shape[1] * shape[2] * INT16_BYTES
+
+
+def _validate_routed_experts(payload: RoutedExperts) -> RoutedExperts:
+    assert payload.dtype == "int16"
+    assert len(payload.data) == _shape_numel(payload.shape) * INT16_BYTES
+    return payload
+
+
+def _decode_routed_experts(raw: Any) -> RoutedExperts:
+    if isinstance(raw, RoutedExperts):
+        return _validate_routed_experts(raw)
+
+    if hasattr(raw, "model_dump"):
+        raw = raw.model_dump(mode="python")
+
+    raw = cast(Mapping[str, Any], raw)
+    assert raw["encoding"] == "base64"
+    assert raw["dtype"] == "int16"
+    shape = [int(dim) for dim in raw["shape"]]
+    data = base64.b64decode(raw["data"])
+    return _validate_routed_experts(RoutedExperts(shape=shape, data=data))
+
+
+def slice_routed_experts(payload: RoutedExperts, end: int) -> RoutedExperts:
+    payload = _validate_routed_experts(payload)
+    assert 0 <= end <= payload.shape[0]
+    stride = _token_stride(payload.shape)
+    return RoutedExperts(
+        shape=[end, payload.shape[1], payload.shape[2]],
+        data=payload.data[: end * stride],
     )
 
 
@@ -45,17 +55,9 @@ def compose_split_routed_experts(
     prompt_len: int,
     completion_len: int,
 ) -> RoutedExperts | None:
-    """Compose split routed experts and align them to prompt + completion tokens.
+    """Compose split prompt/completion routing into compact int16 bytes."""
 
-    vLLM returns prompt routing at the response level and generated-token routing
-    on the choice. The final generated token has no routing decision because it
-    was not fed into another forward pass, so this appends one zero entry when a
-    completion exists.
-    """
-
-    has_prompt = prompt_routed_experts is not None
-    has_completion = completion_routed_experts is not None
-    if not has_prompt and not has_completion:
+    if prompt_routed_experts is None and completion_routed_experts is None:
         return None
 
     prompt = _decode_routed_experts(prompt_routed_experts)
@@ -63,16 +65,20 @@ def compose_split_routed_experts(
 
     expected_completion_routed_len = max(completion_len - 1, 0)
     if expected_completion_routed_len == 0:
-        completion_values = []
+        completion_data = b""
     else:
         completion = _decode_routed_experts(completion_routed_experts)
         assert completion.shape[1:] == prompt.shape[1:]
         assert completion.shape[0] == expected_completion_routed_len
-        completion_values = completion.values
+        completion_data = completion.data
 
     if completion_len == 0:
-        return prompt.values
+        return prompt
 
-    assert prompt.shape[1] > 0 and prompt.shape[2] > 0
-    zero_entry = [[0] * prompt.shape[2] for _ in range(prompt.shape[1])]
-    return prompt.values + completion_values + [zero_entry]
+    stride = _token_stride(prompt.shape)
+    return _validate_routed_experts(
+        RoutedExperts(
+            shape=[prompt_len + completion_len, prompt.shape[1], prompt.shape[2]],
+            data=prompt.data + completion_data + (b"\0" * stride),
+        )
+    )
