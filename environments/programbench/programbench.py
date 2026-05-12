@@ -57,7 +57,7 @@ _DISK_GB: dict[str, int] = {"rust": 12, "go": 6, "c": 4, "cpp": 6}
 # Per-language compile timeout (seconds).
 _COMPILE_TIMEOUT: dict[str, int] = {"rust": 480, "go": 60, "c": 30, "cpp": 60}
 # Per-language pytest timeout (seconds). Rust integration tests can be slow.
-_TEST_TIMEOUT: dict[str, int] = {"rust": 600, "go": 300, "c": 60, "cpp": 120}
+_TEST_TIMEOUT: dict[str, int] = {"rust": 600, "go": 300, "c": 120, "cpp": 300}
 # Per-language sandbox lifetime (minutes).
 _SANDBOX_TIMEOUT_MIN: dict[str, int] = {"rust": 45, "go": 20, "c": 20, "cpp": 20}
 
