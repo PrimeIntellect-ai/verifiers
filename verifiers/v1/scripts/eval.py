@@ -21,7 +21,7 @@ import logging
 import os
 import sys
 import tomllib
-from typing import Annotated, Any, get_args, get_origin
+from typing import Annotated, Any, cast, get_args, get_origin
 
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "true")
 
@@ -114,14 +114,20 @@ def _single_positional_check(fn: Any, fn_name: str) -> None:
 
 def _discover_taskset_config(module: Any) -> type[vf1.TasksetConfig]:
     _single_positional_check(module.load_taskset, "load_taskset")
-    return _resolved_config_annotation(module.load_taskset, vf1.TasksetConfig)
+    return cast(
+        type[vf1.TasksetConfig],
+        _resolved_config_annotation(module.load_taskset, vf1.TasksetConfig),
+    )
 
 
 def _discover_harness_config(module: Any) -> type[vf1.HarnessConfig]:
     if not hasattr(module, "load_harness"):
         return vf1.HarnessConfig
     _single_positional_check(module.load_harness, "load_harness")
-    return _resolved_config_annotation(module.load_harness, vf1.HarnessConfig)
+    return cast(
+        type[vf1.HarnessConfig],
+        _resolved_config_annotation(module.load_harness, vf1.HarnessConfig),
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -136,7 +142,7 @@ class _EvalConfigBase(BaseConfig):
     task: Annotated[
         str,
         tyro.conf.Positional,
-        tyro.conf.arg(help="Environment id (positional, required)."),
+        tyro.conf.arg(help="Environment id."),
     ]
 
     # Model / endpoint controls — mirror v0 vf-eval shape.
@@ -384,7 +390,7 @@ def main(argv: list[str] | None = None) -> None:
         harness_cls = _discover_harness_config(module)
 
     EvalConfigCls = _build_eval_config_cls(taskset_cls, harness_cls)
-    cfg = cli(EvalConfigCls, args=argv)
+    cfg: Any = cli(EvalConfigCls, args=argv)
 
     if cfg.disable_tui:
         setup_logging(get_log_level(cfg.verbose))
