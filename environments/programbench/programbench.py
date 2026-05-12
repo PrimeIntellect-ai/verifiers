@@ -387,6 +387,11 @@ class ProgramBenchTaskset(vf.Taskset):
     # Scoring
     # ------------------------------------------------------------------
 
+    @vf.metric(priority=-1)
+    async def resolved_binary(self, task, state) -> float:
+        """Binary 0/1 — primary paper metric (% Resolved). Logged but not used as RL signal."""
+        return 1.0 if state.get("resolved") else 0.0
+
     @vf.reward(weight=1.0)
     async def solved(self, task, state) -> float:
         task_id = task.get("info", {}).get("task_id", "?")

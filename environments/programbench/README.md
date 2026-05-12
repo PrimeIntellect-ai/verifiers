@@ -44,7 +44,8 @@ prime eval run programbench -m openai/gpt-4.1 -n 20 -r 1 \
 
 | Metric | Meaning |
 | ------ | ------- |
-| `reward` / `solved` | Fraction of hidden pytest tests passed (0–1) |
+| `reward` / `solved` | Fraction of hidden pytest tests passed (0–1) — RL training signal |
+| `resolved_binary` | 1 if all tests pass, 0 otherwise — primary paper metric (% Resolved) |
 | `compile_success` | Whether `compile.sh` produced an executable |
 | `compile_exit_code` | Exit code of the compile step |
 | `n_tests_passed` | Raw count of passing tests |
