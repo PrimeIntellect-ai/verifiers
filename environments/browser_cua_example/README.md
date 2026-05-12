@@ -32,14 +32,13 @@ uv pip install -e ./environments/browser_cua_example
 ```bash
 # Browserbase credentials
 export BROWSERBASE_API_KEY="your-api-key"
-export BROWSERBASE_PROJECT_ID="your-project-id"
+# Optional: export BROWSERBASE_PROJECT_ID="your-project-id"
 
-# API key for agent model
+# API key used by the CUA server's internal Stagehand session creation
 export OPENAI_API_KEY="your-openai-key"
 ```
 
-<!-- TODO: Update this section when MODEL_API_KEY support is added to CUA server -->
-Note: When running in manual server mode, ensure `OPENAI_API_KEY` is set in the terminal where the CUA server runs (Stagehand requires it internally).
+`OPENAI_API_KEY` must be available to the CUA server process itself. In the normal `prime eval run` flow, `BrowserEnv` forwards it into the sandbox automatically. If you run the server manually with `pnpm dev`, `docker run`, or `prime sandbox create`, you must inject `OPENAI_API_KEY` yourself into that server process.
 
 ## Usage
 
@@ -56,15 +55,17 @@ prime eval run browser-cua-example -m openai/gpt-4o-mini -a '{"use_prebuilt_imag
 prime eval run browser-cua-example -m openai/gpt-4o-mini -a '{"use_sandbox": false}'
 ```
 
-### Pre-built Docker Image (Default, Fastest)
+### Pre-built Prime Image (Default, Fastest)
 
-By default, CUA mode uses a pre-built Docker image (`deepdream19/cua-server:latest`) for fastest startup. The image includes the CUA server binary and all dependencies pre-installed:
+By default, if you do not override `prebuilt_image`, CUA mode uses the repo default `browserbase/cua-server:latest` for fastest startup. The image includes the CUA server binary and all dependencies pre-installed:
 
 ```bash
 prime eval run browser-cua-example -m gpt-4.1-mini -b https://api.openai.com/v1 -k OPENAI_API_KEY
 ```
 
 This is the recommended approach for production use. Startup is ~5-10 seconds compared to ~30-60 seconds with binary upload.
+
+The prebuilt image path still requires `OPENAI_API_KEY` in the rollout environment, because `BrowserEnv` forwards it to the sandboxed CUA server for Stagehand session creation.
 
 ### Binary Upload Mode (Custom Server)
 
@@ -112,8 +113,8 @@ prime eval run browser-cua-example -m gpt-4.1-mini -b https://api.openai.com/v1 
 | `max_turns` | `15` | Maximum conversation turns (recommended: 50 for complex tasks) |
 | `judge_model` | `"gpt-4o-mini"` | Model for task completion judging |
 | `use_sandbox` | `True` | Auto-deploy CUA server to sandbox |
-| `use_prebuilt_image` | `True` | Use pre-built Docker image (fastest startup) |
-| `prebuilt_image` | `"deepdream19/cua-server:latest"` | Docker image to use when `use_prebuilt_image=True` |
+| `use_prebuilt_image` | `True` | Use pre-built Prime image (fastest startup) |
+| `prebuilt_image` | `"browserbase/cua-server:latest"` | Prime image to use when `use_prebuilt_image=True` |
 | `server_url` | `"http://localhost:3000"` | CUA server URL (only used when `use_sandbox=False`) |
 | `viewport_width` | `1024` | Browser viewport width |
 | `viewport_height` | `768` | Browser viewport height |
@@ -127,20 +128,35 @@ prime eval run browser-cua-example -m gpt-4.1-mini -b https://api.openai.com/v1 
 | **Binary upload** | `use_prebuilt_image=false` | ~30-60s | Custom server version |
 | **Manual server** | `use_sandbox=false` | Instant | Local development |
 
-## Building a Custom Docker Image
+## Building a Custom Prime Image
 
 To build and push a custom CUA server image:
 
 ```bash
 cd assets/templates/browserbase/cua
-./build-and-push.sh                    # Push as :latest
-./build-and-push.sh v1.0.0             # Push with version tag
-DOCKERHUB_USER=myuser ./build-and-push.sh  # Use different Docker Hub user
+./build-and-push.sh bb-project-id-optional-20260326
+```
+
+The script prints the fully qualified Prime image ref when the build finishes, for example `your-user/cua-server:bb-project-id-optional-20260326` or `team-<team-id>/cua-server:bb-project-id-optional-20260326`, depending on your active Prime context.
+
+If you run the image directly outside `BrowserEnv`, include the OpenAI secret on sandbox creation:
+
+```bash
+prime sandbox create team-<team-id>/cua-server:bb-project-id-optional-20260326 \
+  --start-command "./cua-server-linux-x64" \
+  --env CUA_SERVER_PORT=3000 \
+  --secret OPENAI_API_KEY="$OPENAI_API_KEY"
 ```
 
 Then use your custom image:
 ```bash
-prime eval run browser-cua-example -m openai/gpt-4.1-mini -a '{"prebuilt_image": "myuser/cua-server:v1.0.0"}'
+prime eval run browser-cua-example -m openai/gpt-4.1-mini -a '{"prebuilt_image": "team-<team-id>/cua-server:bb-project-id-optional-20260326"}'
+```
+
+Use the versioned tag first for validation. Once you want to move `latest`, rerun the script from the same source revision:
+
+```bash
+./build-and-push.sh latest
 ```
 
 ## DOM vs CUA Mode Comparison

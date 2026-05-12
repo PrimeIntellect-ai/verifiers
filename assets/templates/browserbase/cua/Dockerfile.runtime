@@ -1,16 +1,25 @@
-# Dockerfile for pre-built CUA server runtime image
+# Dockerfile for the pre-built CUA server runtime image.
 #
-# This creates a minimal runtime image with the binary already included,
-# eliminating the need to upload files and install dependencies at runtime.
+# This uses a multi-stage build so Prime Images can build the SEA binary remotely
+# without requiring a prebuilt local dist/ directory.
 #
-# Build:
+# Build locally:
 #   docker build --platform linux/amd64 -f Dockerfile.runtime -t cua-server:local .
 #
-# Push to Docker Hub:
-#   docker tag cua-server:local deepdream19/cua-server:latest
-#   docker push deepdream19/cua-server:latest
-#
-# Note: Requires the binary to be built first via Dockerfile.build
+# Push to Prime Images:
+#   prime images push cua-server:latest --dockerfile Dockerfile.runtime --context .
+
+FROM --platform=linux/amd64 node:22-slim AS builder
+
+WORKDIR /app
+
+RUN npm install -g pnpm
+
+COPY package.json pnpm-lock.yaml* ./
+RUN pnpm install --frozen-lockfile 2>/dev/null || pnpm install
+
+COPY . .
+RUN pnpm build:binary
 
 FROM --platform=linux/amd64 node:22-slim
 
@@ -22,7 +31,7 @@ WORKDIR /app/cua-server
 RUN apt-get -o Acquire::Retries=3 update -qq && apt-get -o Acquire::Retries=3 install -y -qq curl && rm -rf /var/lib/apt/lists/*
 
 # Copy pre-built binary
-COPY dist/sea/cua-server-linux-x64 ./cua-server-linux-x64
+COPY --from=builder /app/dist/sea/cua-server-linux-x64 ./cua-server-linux-x64
 RUN chmod +x ./cua-server-linux-x64
 
 # Default environment variables
