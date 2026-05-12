@@ -152,7 +152,12 @@ class ToolEnv(vf.MultiTurnEnv):
             tool_call_id: str = tool_call.id
             try:
                 tool_name: str = tool_call.name
-                tool_args: dict = json.loads(tool_call.arguments)
+                parsed_args = json.loads(tool_call.arguments)
+                if not isinstance(parsed_args, dict):
+                    raise ValueError(
+                        f"Expected tool arguments to be a dict, got {type(parsed_args).__name__}: {parsed_args}"
+                    )
+                tool_args: dict = parsed_args
             except Exception as e:
                 if self._should_stop_for_error(e):
                     raise vf.ToolParseError from e
