@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass
 from typing import Any, TypeAlias, cast
+
+import numpy as np
 
 RoutedExperts: TypeAlias = list[list[list[int]]]
 
@@ -13,6 +16,17 @@ class _DecodedRoutedExperts:
 
 
 def _decode_routed_experts(raw: Any) -> _DecodedRoutedExperts:
+    if isinstance(raw, dict):
+        assert raw["encoding"] == "base64"
+        assert raw["dtype"] == "int16"
+        shape = tuple(raw["shape"])
+        assert len(shape) == 3
+        values = np.frombuffer(base64.b64decode(raw["data"]), dtype=np.int16).reshape(shape).tolist()
+        return _DecodedRoutedExperts(
+            values=cast(RoutedExperts, values),
+            shape=cast(tuple[int, int, int], shape),
+        )
+
     routed_experts = cast(RoutedExperts, raw)
     seq_len = len(routed_experts)
     num_layers = len(routed_experts[0])
