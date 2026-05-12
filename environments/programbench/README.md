@@ -51,3 +51,4 @@ prime eval run programbench -m openai/gpt-4.1 -n 20 -r 1 \
 | `n_tests_passed` | Raw count of passing tests |
 | `n_tests_total` | Total tests in the hidden suite |
 | `pytest_log` | Last 4KB of pytest output |
+| `eval_error` | Set to `binary_wrap_detected` if submitted executable matches reference binary hash |

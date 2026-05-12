@@ -66,8 +66,15 @@ The binary is execute-only: you cannot read or decompile it. Tools like strings,
 objdump, nm, hexdump, xxd, strace, and ltrace will fail or are prohibited. You must \
 infer the program's behavior by running it with different inputs.
 
-Your solution must not wrap or delegate to the original binary. It must be an \
-independent reimplementation.
+The following are strictly prohibited and will result in disqualification:
+- Internet access: no git clone, wget, curl to external hosts, or similar
+- Source code lookup via package managers: no `cargo install`, `go get`, `apt-get source`, \
+  `pip install` of the original project, or reading package manager caches such as \
+  ~/.cargo/registry/src/ or Go module cache
+- Wrapping or delegating to the original binary — your solution must be an independent \
+  reimplementation
+
+Note: this environment has no internet access. All toolchain dependencies are pre-installed.
 
 Your deliverables:
 1. Source code written to {SRC_DIR}/
@@ -229,6 +236,9 @@ class ProgramBenchTaskset(vf.Taskset):
             "scope": "rollout",
             "timeout_minutes": timeout_min,
             "command_timeout": command_timeout,
+            # Paper §8.2: internet access is blocked at the infra level (not just by prompt)
+            # to prevent source-code lookup via git clone, cargo install, go get, etc.
+            "network_access": False,
         }
 
     # ------------------------------------------------------------------
@@ -426,6 +436,8 @@ class ProgramBenchTaskset(vf.Taskset):
             return 0.0
         if not await self._compile(sandbox, state, lang, task_id):
             return 0.0
+        if await self._is_binary_wrap(sandbox, state, task_id):
+            return 0.0
         passed, total = await self._run_tests(sandbox, state, task_id, lang)
         state["n_tests_passed"] = passed
         state["n_tests_total"] = total
@@ -442,6 +454,25 @@ class ProgramBenchTaskset(vf.Taskset):
             state["resolved"],
         )
         return reward
+
+    async def _is_binary_wrap(self, sandbox, state: dict, task_id: str) -> bool:
+        """Return True (and flag state) if the submitted executable is a copy of the reference binary."""
+        result = await sandbox.execute(
+            f"sha256sum {BINARY_PATH} {EXECUTABLE_PATH} 2>/dev/null", timeout=10
+        )
+        lines = (result.stdout or "").strip().splitlines()
+        if len(lines) != 2:
+            return False
+        ref_hash = lines[0].split()[0]
+        sub_hash = lines[1].split()[0]
+        if ref_hash and ref_hash == sub_hash:
+            state["compile_success"] = False
+            state["eval_error"] = "binary_wrap_detected"
+            logger.warning(
+                "[%s] binary wrap detected — executable hash matches reference", task_id
+            )
+            return True
+        return False
 
     async def _compile(self, sandbox, state: dict, lang: str, task_id: str) -> bool:
         compile_timeout = _COMPILE_TIMEOUT.get(lang, 120)
