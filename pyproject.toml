@@ -74,7 +74,7 @@ dev = [
     "aiohttp>=3.9.0",
     "python-dotenv>=1.0.0",
     "nltk",
-    "renderers>=0.1.6",
+    "renderers>=0.1.7",
 ]
 
 [project.optional-dependencies]
@@ -94,7 +94,7 @@ browser = [
     "python-dotenv>=1.0.0",
 ]
 renderers = [
-    "renderers>=0.1.6",
+    "renderers>=0.1.7",
 ]
 rl = [
     "torch>=2.8.0,<2.9.0",
@@ -124,14 +124,6 @@ exclude-newer = "7 days"
 prime-tunnel = false
 prime-sandboxes = false
 renderers = false
-
-[tool.uv.sources]
-# Pinned to renderers feat/multimodal-vlm until that PR (#17) lands and
-# a new PyPI release is published. Provides RenderedTokens,
-# MultiModalData, PlaceholderRange, as_rendered_tokens, and the
-# `previous_multi_modal_data` kwarg on Renderer.bridge_to_next_turn
-# that this branch consumes. Drop after merge + release.
-renderers = { git = "https://github.com/PrimeIntellect-ai/renderers.git", branch = "feat/multimodal-vlm" }
 
 [tool.uv.extra-build-dependencies]
 flash-attn = [{ requirement = "torch", match-runtime = true }]

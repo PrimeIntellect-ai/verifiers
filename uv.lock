@@ -4846,7 +4846,7 @@ wheels = [
 [[package]]
 name = "renderers"
 version = "0.1.7"
-source = { git = "https://github.com/PrimeIntellect-ai/renderers.git?branch=feat%2Fmultimodal-vlm#5353c9845596957e878051a01f2a129604b28e5c" }
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jinja2" },
     { name = "numpy" },
@@ -4854,6 +4854,10 @@ dependencies = [
     { name = "openai-harmony" },
     { name = "tiktoken" },
     { name = "transformers" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/b1/5f/fdd86253f562ffdecbdb56cb8591961f0b82914a9abc4ebf43976befb891/renderers-0.1.7.tar.gz", hash = "sha256:d17ccbc3813dd0ee3a6f7d8794308bd4300eb2a80dbc01e83c8f47513e9614f0", size = 209731, upload-time = "2026-05-12T12:51:07.559Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f2/71/af973d6fb806cc0f7e9f4d7cab3ed7265745e596298c8eab2185260c6979/renderers-0.1.7-py3-none-any.whl", hash = "sha256:64b119d13952df983462d72882aa97f1c7075fc4a7409a6b6b85ee88d83dfa52", size = 97934, upload-time = "2026-05-12T12:51:06.534Z" },
 ]
 
 [[package]]
@@ -6209,7 +6213,7 @@ requires-dist = [
     { name = "pyzmq", specifier = ">=27.1.0" },
     { name = "reasoning-gym", marker = "extra == 'rg'" },
     { name = "regex", specifier = "<2026.4.4" },
-    { name = "renderers", marker = "extra == 'renderers'", git = "https://github.com/PrimeIntellect-ai/renderers.git?branch=feat%2Fmultimodal-vlm" },
+    { name = "renderers", marker = "extra == 'renderers'", specifier = ">=0.1.7" },
     { name = "requests" },
     { name = "requests", marker = "extra == 'rl'" },
     { name = "rich" },
@@ -6242,7 +6246,7 @@ dev = [
     { name = "pytest-xdist", specifier = ">=3.8.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
     { name = "reasoning-gym" },
-    { name = "renderers", git = "https://github.com/PrimeIntellect-ai/renderers.git?branch=feat%2Fmultimodal-vlm" },
+    { name = "renderers", specifier = ">=0.1.7" },
     { name = "ruff" },
     { name = "stagehand", specifier = ">=3.0.0" },
     { name = "textarena" },
