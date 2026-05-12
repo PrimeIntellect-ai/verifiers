@@ -208,6 +208,7 @@ class ProgramBenchTaskset(vf.Taskset):
 
     def sandbox_config(self, info: dict) -> dict[str, object]:
         lang = info.get("language", "c")
+        timeout_min = _SANDBOX_TIMEOUT_MIN.get(lang, 20)
         return {
             "image": _LANGUAGE_IMAGES.get(lang, DEFAULT_IMAGE),
             "cpu_cores": 2,
@@ -216,7 +217,10 @@ class ProgramBenchTaskset(vf.Taskset):
             "gpu_count": 0,
             "workdir": SRC_DIR,
             "scope": "rollout",
-            "timeout_minutes": _SANDBOX_TIMEOUT_MIN.get(lang, 20),
+            "timeout_minutes": timeout_min,
+            # Override DEFAULT_CLI_SANDBOX command_timeout (900s) — mini-swe-agent
+            # + apt-get install + compile can take 15+ minutes.
+            "command_timeout": timeout_min * 60,
         }
 
     # ------------------------------------------------------------------
@@ -349,9 +353,17 @@ class ProgramBenchTaskset(vf.Taskset):
 
     @vf.reward(weight=1.0)
     async def solved(self, task, state) -> float:
-        if state.get("error") is not None:
-            return 0.0
+        task_id = task.get("info", {}).get("task_id", "?")
+        has_error = state.get("error") is not None
         sandbox = state.get("_pb_sandbox")
+        logger.info(
+            "[%s] solved() called: has_error=%s, sandbox=%s",
+            task_id,
+            has_error,
+            type(sandbox).__name__,
+        )
+        if has_error:
+            return 0.0
         if sandbox is None:
             return 0.0
 
