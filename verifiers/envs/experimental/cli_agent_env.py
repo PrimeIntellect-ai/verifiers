@@ -402,7 +402,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
                 consecutive_read_errors += 1
                 if (
                     consecutive_read_errors
-                    > self.BACKGROUND_JOB_POLL_READ_ERROR_MAX_ATTEMPTS
+                    >= self.BACKGROUND_JOB_POLL_READ_ERROR_MAX_ATTEMPTS
                 ):
                     raise
                 self.logger.warning(
