@@ -5,7 +5,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     RUSTUP_HOME=/root/.rustup \
     GOPATH=/root/go \
     GOROOT=/usr/local/go \
-    GO_VERSION=1.22.5 \
+    GO_VERSION=1.26.3 \
     PATH="/root/.cargo/bin:/usr/local/go/bin:/root/go/bin:${PATH}"
 
 # System packages: C/C++ toolchain, analysis tools, Python, general utilities
