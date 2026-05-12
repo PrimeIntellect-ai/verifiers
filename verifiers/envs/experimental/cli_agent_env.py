@@ -158,6 +158,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         self.add_rubric(CliAgentMonitorRubric())
 
     TUNNEL_CHECK_INTERVAL = 60.0  # seconds between server-side liveness checks
+    BACKGROUND_JOB_POLL_READ_ERROR_MAX_ATTEMPTS = 3
 
     def init_interception(
         self,
@@ -387,6 +388,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         self, state: State, sandbox_id: str, background_job: BackgroundJob
     ) -> None:
         """Poll until background job completes, capturing output."""
+        consecutive_read_errors = 0
         while True:
             try:
                 status: BackgroundJobStatus = (
@@ -397,13 +399,22 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
             except Exception as e:
                 if not is_retryable_sandbox_read_error(e):
                     raise
+                consecutive_read_errors += 1
+                if (
+                    consecutive_read_errors
+                    > self.BACKGROUND_JOB_POLL_READ_ERROR_MAX_ATTEMPTS
+                ):
+                    raise
                 self.logger.warning(
                     "Background job poll failed with a transient sandbox read error; "
-                    "retrying: %s",
+                    "retrying (%s/%s): %s",
+                    consecutive_read_errors,
+                    self.BACKGROUND_JOB_POLL_READ_ERROR_MAX_ATTEMPTS,
                     e,
                 )
                 await asyncio.sleep(self.poll_interval)
                 continue
+            consecutive_read_errors = 0
             if status.completed:
                 state["agent_exit_code"] = status.exit_code
                 state["agent_stdout"] = status.stdout
