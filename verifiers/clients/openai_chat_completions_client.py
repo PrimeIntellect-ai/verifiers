@@ -258,15 +258,17 @@ class OpenAIChatCompletionsClient(
             elif self._config is not None:
                 api_base_url = self._config.api_base_url
             reasoning_effort = sampling_args.pop("reasoning_effort", None)
-            model_id = model.lower().replace(".", "-").replace("_", "-")
-            api_base_url = (api_base_url or "").lower()
+            model_id = model.lower().split("/")[-1].replace(".", "-").replace("_", "-")
+            is_anthropic_route = (
+                "openrouter.ai" in (api_base_url or "").lower()
+                or "pinference.ai" in (api_base_url or "").lower()
+            )
             if (
                 reasoning_effort is not None
-                and (
-                    model_id.startswith("anthropic/") or model_id.startswith("claude-")
-                )
-                and ("openrouter.ai" in api_base_url or "pinference.ai" in api_base_url)
+                and model_id.startswith("claude-")
+                and is_anthropic_route
             ):
+                # OpenRouter/Pinference route Anthropic reasoning_effort through extra_body.
                 extra_body = dict(sampling_args.get("extra_body") or {})
                 extra_body["verbosity"] = reasoning_effort
                 reasoning = dict(extra_body.get("reasoning") or {})

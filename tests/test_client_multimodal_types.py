@@ -127,6 +127,26 @@ async def test_openrouter_anthropic_reasoning_effort_enables_reasoning():
 
 
 @pytest.mark.asyncio
+async def test_openrouter_anthropic_reasoning_effort_maps_opus_4_5():
+    recording_client, recorder = _recording_openai(SimpleNamespace())
+    client = OpenAIChatCompletionsClient(recording_client)
+    client._config = SimpleNamespace(api_base_url="https://openrouter.ai/api/v1")
+
+    await client.get_native_response(
+        prompt=[],
+        model="anthropic/claude-opus-4.5",
+        sampling_args={"reasoning_effort": "medium"},
+    )
+
+    call = recorder.calls[0]
+    assert "reasoning_effort" not in call
+    assert call["extra_body"] == {
+        "reasoning": {"enabled": True},
+        "verbosity": "medium",
+    }
+
+
+@pytest.mark.asyncio
 async def test_anthropic_to_native_prompt_with_typed_multimodal_content_parts():
     pytest.importorskip("anthropic")
     from verifiers.clients.anthropic_messages_client import AnthropicMessagesClient
@@ -250,6 +270,25 @@ async def test_anthropic_reasoning_effort_maps_to_output_config(
     assert "reasoning_effort" not in call
     assert call["output_config"] == {"effort": effort}
     assert call["thinking"] == {"type": "adaptive"}
+
+
+@pytest.mark.asyncio
+async def test_anthropic_opus_4_5_uses_output_config_without_adaptive_thinking():
+    pytest.importorskip("anthropic")
+    from verifiers.clients.anthropic_messages_client import AnthropicMessagesClient
+
+    recording_client, recorder = _recording_anthropic(SimpleNamespace())
+    client = AnthropicMessagesClient(recording_client)
+
+    await client.get_native_response(
+        prompt=[],
+        model="claude-opus-4-5",
+        sampling_args={"max_tokens": 4096, "reasoning_effort": "medium"},
+    )
+
+    call = recorder.calls[0]
+    assert call["output_config"] == {"effort": "medium"}
+    assert "thinking" not in call
 
 
 @pytest.mark.asyncio
