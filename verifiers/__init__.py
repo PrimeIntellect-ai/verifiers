@@ -21,6 +21,12 @@ from .types import DatasetBuilder  # noqa # isort: skip
 from .parsers.parser import Parser  # noqa # isort: skip
 from .rubrics.rubric import Rubric  # noqa # isort: skip
 
+# Multi-agent support
+from .envs.actor import Actor  # noqa # isort: skip
+from .envs.protocol import Protocol  # noqa # isort: skip
+from .envs.multiagent_env import MultiAgentEnv  # noqa # isort: skip
+from .rubrics.multiagent_rubric import MultiAgentRubric  # noqa # isort: skip
+
 # main imports
 from .parsers.maybe_think_parser import MaybeThinkParser
 from .parsers.think_parser import ThinkParser
@@ -52,6 +58,11 @@ __all__ = [
     "JudgeRubric",
     "RubricGroup",
     "MathRubric",
+    "MultiAgentRubric",
+    # Multi-agent support
+    "Actor",
+    "Protocol",
+    "MultiAgentEnv",
     "TextArenaEnv",
     "ReasoningGymEnv",
     "GymEnv",
