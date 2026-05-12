@@ -178,11 +178,9 @@ class ProgramBenchTaskset(vf.Taskset):
                 "binary_hf_repo": row.get("binary_hf_repo", ""),
                 "binary_hf_filename": row.get("binary_hf_filename", ""),
                 "test_branches": row.get("test_branches", []),
+                # example_io holds expected I/O pairs — kept for internal reference only,
+                # never passed to the agent (ground truth).
                 "example_io": row.get("example_io", []),
-                # Retained for internal logging only — NOT included in the agent prompt.
-                "_nm_output": row.get("nm_output", ""),
-                "_strings_output": row.get("strings_output", ""),
-                "_objdump_head": row.get("objdump_head", ""),
             }
             instruction = _build_instruction(info)
             sandbox = self.sandbox_config(info)
@@ -359,6 +357,13 @@ class ProgramBenchTaskset(vf.Taskset):
             state["_pb_test_branch"] = branch
             state["_pb_test_archive_local"] = local_archive
         else:
+            # WARNING: exposes test files to the agent during the rollout.
+            # Paper §3 prohibits this — use only for local debugging, never for eval.
+            logger.warning(
+                "[%s] hide_tests_from_agent=False: test files will be visible to the "
+                "agent. This violates paper §3 and must not be used for evaluation.",
+                task_id,
+            )
             remote = f"{TEST_DIR}/tests.tar.gz"
             try:
                 await sandbox.upload_file(remote, local_archive, timeout=60)
