@@ -4,6 +4,7 @@ from typing import Callable, cast
 import verifiers as vf
 from verifiers.types import AssistantMessage, Messages, ToolCall, ToolMessage
 from verifiers.utils.async_utils import maybe_await
+from verifiers.utils.message_utils import normalize_messages
 from verifiers.utils.tool_utils import (
     convert_func_to_tool_def,
     is_valid_tool_content_parts,
@@ -40,6 +41,7 @@ class ToolMonitorRubric(vf.Rubric):
         """Count the total number of tool calls."""
         total = 0
         assert isinstance(completion, list)
+        completion = normalize_messages(completion)
         for msg in completion:
             if msg.role != "assistant" or not hasattr(msg, "tool_calls"):
                 continue
@@ -55,6 +57,7 @@ class ToolMonitorRubric(vf.Rubric):
             """Count calls to {tool_name} tool."""
             count = 0
             assert isinstance(completion, list)
+            completion = normalize_messages(completion)
             for msg in completion:
                 if not isinstance(msg, AssistantMessage):
                     continue

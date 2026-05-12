@@ -114,6 +114,7 @@ class Environment(ABC):
         max_seq_len: int | None = None,
         score_rollouts: bool = True,
         pass_threshold: float = 0.5,
+        state_columns: list[str] | None = None,
         **kwargs,
     ):
         if message_type is _MESSAGE_TYPE_UNSET:
@@ -148,6 +149,7 @@ class Environment(ABC):
         self.max_seq_len = max_seq_len
         self.map_kwargs = map_kwargs
 
+        self.state_columns: list[str] = state_columns or []
         self.set_score_rollouts(score_rollouts)
         self.pass_threshold = pass_threshold
 
