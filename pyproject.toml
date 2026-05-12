@@ -178,6 +178,7 @@ Issues = "https://github.com/primeintellect-ai/verifiers/issues"
 
 [tool.pytest.ini_options]
 minversion = "7.0"
+pythonpath = ["environments/verihop"]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
