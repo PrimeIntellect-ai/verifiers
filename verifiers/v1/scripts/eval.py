@@ -390,7 +390,7 @@ def main(argv: list[str] | None = None) -> None:
         harness_cls = _discover_harness_config(module)
 
     EvalConfigCls = _build_eval_config_cls(taskset_cls, harness_cls)
-    cfg: Any = cli(EvalConfigCls, args=argv)
+    cfg = cast(Any, cli(EvalConfigCls, args=argv))
 
     if cfg.disable_tui:
         setup_logging(get_log_level(cfg.verbose))
