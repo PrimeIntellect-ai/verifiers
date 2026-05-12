@@ -9,7 +9,9 @@ import pytest
 import verifiers.v1 as vf
 from verifiers.v1.packages.harnesses.pi import pi_mcp_json, pi_models_json
 from verifiers.v1.packages.harnesses.terminus_2 import (
+    DEFAULT_API_BASE_URL,
     DEFAULT_HARBOR_PACKAGE,
+    DEFAULT_MODEL_NAME,
     Terminus2,
     terminus_2_agent_script,
 )
@@ -168,6 +170,7 @@ def test_terminus_2_harness_builds_sandbox_program() -> None:
     setup = cast(str, program["setup"])
     files = cast(dict[str, object], program["files"])
     artifacts = cast(dict[str, object], program["artifacts"])
+    env = cast(dict[str, object], program.get("env", {}))
 
     assert isinstance(harness, vf.CLIHarness)
     assert "/terminus_2/instruction.md" in files
@@ -176,6 +179,7 @@ def test_terminus_2_harness_builds_sandbox_program() -> None:
     assert "apt-get -o Acquire::Retries=3 install" in setup
     assert "git" not in setup
     assert "terminus_2_log" in artifacts
+    assert "OPENAI_MODEL" not in env
 
     run_script = cast(str, command[2])
     assert "TERMINUS_2_WORKDIR=/workspace" in run_script
@@ -185,7 +189,10 @@ def test_terminus_2_harness_builds_sandbox_program() -> None:
 
     script = terminus_2_agent_script(max_turns=7)
     compile(script, "terminus_2_agent.py", "exec")
-    assert 'api_base=os.environ["OPENAI_BASE_URL"]' in script
+    assert DEFAULT_MODEL_NAME in script
+    assert DEFAULT_API_BASE_URL in script
+    assert "OPENAI_MODEL" not in script
+    assert "PRIME_API_KEY" in script
     assert "async def prepare_logs_for_host(self) -> None" in script
     assert "max_turns=7" in script
 

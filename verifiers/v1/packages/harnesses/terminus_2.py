@@ -18,6 +18,8 @@ DEFAULT_SYSTEM_PROMPT_PATH = "/terminus_2/system_prompt.txt"
 DEFAULT_LOG_PATH = "/logs/agent/terminus_2.log"
 DEFAULT_HARBOR_PACKAGE = "harbor==0.6.6"
 DEFAULT_PYTHON_VERSION = "3.12"
+DEFAULT_MODEL_NAME = "openai/gpt-4.1-mini"
+DEFAULT_API_BASE_URL = "https://api.pinference.ai/api/v1"
 
 
 class Terminus2(CLIHarness):
@@ -30,6 +32,8 @@ class Terminus2(CLIHarness):
         log_path: str = DEFAULT_LOG_PATH,
         harbor_package: str = DEFAULT_HARBOR_PACKAGE,
         python_version: str = DEFAULT_PYTHON_VERSION,
+        model_name: str = DEFAULT_MODEL_NAME,
+        api_base_url: str = DEFAULT_API_BASE_URL,
         system_prompt: object | None = None,
         sandbox: bool | Mapping[str, object] | SandboxConfig = True,
         program: Mapping[str, object] | None = None,
@@ -61,13 +65,14 @@ class Terminus2(CLIHarness):
                     log_path=log_path,
                     harbor_package=harbor_package,
                     python_version=python_version,
+                    model_name=model_name,
+                    api_base_url=api_base_url,
                     max_turns=max_turns,
                 ),
             ],
             sandbox=sandbox,
             files=files,
             setup=build_terminus_2_install_script(),
-            env={"OPENAI_MODEL": "runtime.model"},
             artifacts=artifacts,
             program=program,
             system_prompt=system_prompt,
@@ -95,6 +100,8 @@ def build_terminus_2_run_script(
     log_path: str = DEFAULT_LOG_PATH,
     harbor_package: str = DEFAULT_HARBOR_PACKAGE,
     python_version: str = DEFAULT_PYTHON_VERSION,
+    model_name: str = DEFAULT_MODEL_NAME,
+    api_base_url: str = DEFAULT_API_BASE_URL,
     max_turns: int | None = 4,
 ) -> str:
     log_dir = str(PurePosixPath(log_path).parent)
@@ -102,6 +109,8 @@ def build_terminus_2_run_script(
         instruction_path=instruction_path,
         system_prompt_path=system_prompt_path,
         log_dir=log_dir,
+        model_name=model_name,
+        api_base_url=api_base_url,
         max_turns=max_turns,
     )
     return f"""\
@@ -130,6 +139,8 @@ def terminus_2_agent_script(
     instruction_path: str = DEFAULT_INSTRUCTION_PATH,
     system_prompt_path: str | None = DEFAULT_SYSTEM_PROMPT_PATH,
     log_dir: str = "/logs/agent",
+    model_name: str = DEFAULT_MODEL_NAME,
+    api_base_url: str = DEFAULT_API_BASE_URL,
     max_turns: int | None = 4,
 ) -> str:
     system_prompt_block = ""
@@ -238,10 +249,13 @@ async def main() -> None:
     logs_dir = Path({log_dir!r})
     instruction = Path({instruction_path!r}).read_text()
 {system_prompt_block}    env = LocalEnvironment(workdir=workdir, logs_dir=logs_dir)
+    if "OPENAI_API_KEY" not in os.environ and "PRIME_API_KEY" in os.environ:
+        os.environ["OPENAI_API_KEY"] = os.environ["PRIME_API_KEY"]
+    api_base = os.environ.get("OPENAI_BASE_URL") or {api_base_url!r}
     agent = Terminus2(
         logs_dir=logs_dir,
-        model_name=os.environ.get("OPENAI_MODEL") or "openai/gpt-4",
-        api_base=os.environ["OPENAI_BASE_URL"],
+        model_name={model_name!r},
+        api_base=api_base,
         max_turns={max_turns!r},
     )
     await agent.setup(env)
@@ -254,9 +268,11 @@ asyncio.run(main())
 
 __all__ = [
     "DEFAULT_AGENT_WORKDIR",
+    "DEFAULT_API_BASE_URL",
     "DEFAULT_HARBOR_PACKAGE",
     "DEFAULT_INSTRUCTION_PATH",
     "DEFAULT_LOG_PATH",
+    "DEFAULT_MODEL_NAME",
     "DEFAULT_PYTHON_VERSION",
     "DEFAULT_SYSTEM_PROMPT_PATH",
     "Terminus2",
