@@ -104,8 +104,12 @@ class ProgramBenchTaskset(vf.Taskset):
         **kwargs: Any,
     ):
         config = ProgramBenchTasksetConfig(config)
-        self.dataset_name = dataset_name or config.dataset_name
-        self.dataset_split = dataset_split or config.dataset_split
+        self.dataset_name = (
+            dataset_name if dataset_name is not None else config.dataset_name
+        )
+        self.dataset_split = (
+            dataset_split if dataset_split is not None else config.dataset_split
+        )
         self.filter_language = (
             filter_language if filter_language is not None else config.filter_language
         )
@@ -240,12 +244,16 @@ class ProgramBenchTaskset(vf.Taskset):
 
         info = task["info"]
 
-        await sandbox.execute(f"mkdir -p {SRC_DIR} {TEST_DIR}", timeout=10)
+        mkdir_result = await sandbox.execute(
+            f"mkdir -p {SRC_DIR} {TEST_DIR}", timeout=10
+        )
+        if mkdir_result.exit_code != 0:
+            logger.warning("[setup] mkdir failed exit=%s", mkdir_result.exit_code)
 
         # Write a profile.d snippet so bash -l (used by mini-swe-agent) sees toolchain paths.
         # Docker ENV sets PATH in the container process env, but login shells re-source
         # /etc/profile which may not include language-specific toolchain directories.
-        await sandbox.execute(
+        profile_result = await sandbox.execute(
             "printf '%s\\n' "
             "'export PATH=/usr/local/go/bin:/usr/local/cargo/bin:/root/.cargo/bin:\"$PATH\"' "
             "'export CARGO_HOME=/usr/local/cargo' "
@@ -255,6 +263,10 @@ class ProgramBenchTaskset(vf.Taskset):
             "> /etc/profile.d/pb_toolchain.sh",
             timeout=10,
         )
+        if profile_result.exit_code != 0:
+            logger.warning(
+                "[setup] profile.d write failed exit=%s", profile_result.exit_code
+            )
 
         # Install pytest and tmux. Standard language images (golang:1.22, gcc:13) have
         # python3 but not pytest; ProgramBench tests also use tmux for TTY emulation.
@@ -284,6 +296,17 @@ class ProgramBenchTaskset(vf.Taskset):
         # Download test archive and hide it from the agent until scoring.
         await self._setup_tests(sandbox, task, state, info)
 
+    async def _hf_download(self, repo_id: str, filename: str) -> str:
+        from huggingface_hub import hf_hub_download
+
+        return await asyncio.to_thread(
+            hf_hub_download,
+            repo_id=repo_id,
+            filename=filename,
+            repo_type="dataset",
+            token=os.environ.get("HF_TOKEN"),
+        )
+
     async def _upload_binary(self, sandbox, info: dict) -> None:
         hf_repo = info.get("binary_hf_repo", "")
         hf_filename = info.get("binary_hf_filename", "")
@@ -293,15 +316,7 @@ class ProgramBenchTaskset(vf.Taskset):
             )
             return
         try:
-            from huggingface_hub import hf_hub_download
-
-            local_path = await asyncio.to_thread(
-                hf_hub_download,
-                repo_id=hf_repo,
-                filename=hf_filename,
-                repo_type="dataset",
-                token=os.environ.get("HF_TOKEN"),
-            )
+            local_path = await self._hf_download(hf_repo, hf_filename)
             await sandbox.upload_file(BINARY_PATH, local_path, timeout=60)
             # Execute-only: agent can run the binary but not read/decompile it.
             await sandbox.execute(f"chmod 111 {BINARY_PATH}", timeout=5)
@@ -323,14 +338,9 @@ class ProgramBenchTaskset(vf.Taskset):
         task_id = info["task_id"]
 
         try:
-            from huggingface_hub import hf_hub_download
-
-            local_archive = await asyncio.to_thread(
-                hf_hub_download,
-                repo_id="programbench/ProgramBench-Tests",
-                filename=f"{task_id}/tests/{branch.removesuffix('.tar.gz').removesuffix('.tar')}.tar.gz",
-                repo_type="dataset",
-                token=os.environ.get("HF_TOKEN"),
+            local_archive = await self._hf_download(
+                "programbench/ProgramBench-Tests",
+                f"{task_id}/tests/{branch.removesuffix('.tar.gz').removesuffix('.tar')}.tar.gz",
             )
         except Exception as exc:
             logger.warning(
@@ -339,17 +349,23 @@ class ProgramBenchTaskset(vf.Taskset):
             state["_pb_test_branch"] = None
             return
 
-        state["_pb_test_branch"] = branch
-
         if self.hide_tests_from_agent:
             # Keep archive local and upload only at scoring time.
+            state["_pb_test_branch"] = branch
             state["_pb_test_archive_local"] = local_archive
         else:
             remote = f"{TEST_DIR}/tests.tar.gz"
-            await sandbox.upload_file(remote, local_archive, timeout=60)
-            await sandbox.execute(
-                f"tar -xzf {remote} -C {TEST_DIR} && rm {remote}", timeout=30
-            )
+            try:
+                await sandbox.upload_file(remote, local_archive, timeout=60)
+                result = await sandbox.execute(
+                    f"tar -xzf {remote} -C {TEST_DIR} && rm {remote}", timeout=30
+                )
+                if result.exit_code != 0:
+                    raise RuntimeError(f"tar extract failed: exit={result.exit_code}")
+                state["_pb_test_branch"] = branch
+            except Exception as exc:
+                logger.warning("Test setup failed for %s/%s: %r", task_id, branch, exc)
+                state["_pb_test_branch"] = None
 
     # ------------------------------------------------------------------
     # Scoring
