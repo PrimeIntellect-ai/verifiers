@@ -234,6 +234,20 @@ class ProgramBenchTaskset(vf.Taskset):
 
         await sandbox.execute(f"mkdir -p {SRC_DIR} {TEST_DIR}", timeout=10)
 
+        # Write a profile.d snippet so bash -l (used by mini-swe-agent) sees toolchain paths.
+        # Docker ENV sets PATH in the container process env, but login shells re-source
+        # /etc/profile which may not include language-specific toolchain directories.
+        await sandbox.execute(
+            "printf '%s\\n' "
+            "'export PATH=/usr/local/go/bin:/usr/local/cargo/bin:/root/.cargo/bin:\"$PATH\"' "
+            "'export CARGO_HOME=/usr/local/cargo' "
+            "'export GOPATH=/root/go' "
+            "'export PAGER=cat' "
+            "'export MANPAGER=cat' "
+            "> /etc/profile.d/pb_toolchain.sh",
+            timeout=10,
+        )
+
         # Install pytest and tmux. Standard language images (golang:1.22, gcc:13) have
         # python3 but not pytest; ProgramBench tests also use tmux for TTY emulation.
         # apt-get update is required since package lists aren't cached in the base image.
