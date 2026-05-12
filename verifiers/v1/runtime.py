@@ -963,7 +963,7 @@ class Runtime:
                     )
         for _, method in inspect.getmembers(toolset, predicate=callable):
             if any(
-                getattr(method, attr, False)
+                getattr(method, attr, False) is True
                 for attr in ("stop", "setup", "update", "cleanup")
             ):
                 add_target(

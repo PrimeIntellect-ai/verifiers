@@ -202,6 +202,14 @@ def dynamic_toolset(task: Mapping[str, object]) -> Toolset:
     )
 
 
+class TruthyMarkerToolset(Toolset):
+    async def fake_handler(self, expected: str) -> None:
+        _ = expected
+
+
+TruthyMarkerToolset.fake_handler.update = "truthy"
+
+
 async def config_user(
     task: Mapping[str, object], state: dict[str, object]
 ) -> list[dict[str, str]]:
@@ -713,6 +721,23 @@ async def test_rollout_handlers_receive_bound_hidden_args() -> None:
     await harness.runtime.update_rollout(task, state)
 
     assert state["expected"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_toolset_bindings_ignore_truthy_handler_markers() -> None:
+    harness = Harness(
+        toolsets=[
+            TruthyMarkerToolset(
+                bindings={"fake_handler.expected": "task.answer"},
+            )
+        ]
+    )
+    task = Task(
+        {"prompt": [{"role": "user", "content": "hi"}], "answer": "ok"}
+    ).freeze()
+
+    with pytest.raises(ValueError, match="fake_handler.expected"):
+        await harness.setup_state(task, State.for_task(task))
 
 
 @pytest.mark.asyncio
