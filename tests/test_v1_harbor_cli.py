@@ -165,17 +165,18 @@ def test_terminus_2_harness_builds_sandbox_program() -> None:
     assert isinstance(harness, vf.CLIHarness)
     assert "/terminus_2/instruction.md" in files
     assert "/terminus_2/system_prompt.txt" in files
-    assert "uv python install 3.12" in setup
     assert "apt-get -o Acquire::Retries=3 update" in setup
     assert "apt-get -o Acquire::Retries=3 install" in setup
+    assert "git" not in setup
     assert "terminus_2_log" in artifacts
 
     run_script = cast(str, command[2])
     assert "TERMINUS_2_WORKDIR=/workspace" in run_script
-    assert "uv run --quiet --python 3.12 --with" in run_script
-    assert "harbor @ git+https://github.com/laude-institute/harbor.git" in run_script
-    assert "AgentFactory.create_agent_from_name" in run_script
-    assert 'AgentName("terminus-2")' in run_script
+    assert "uv --no-config run --no-project --quiet" in run_script
+    assert "--python 3.12" in run_script
+    assert "--with harbor==0.6.6" in run_script
+    assert "git+https://github.com" not in run_script
+    assert "Terminus2(" in run_script
     assert "max_turns=7" in run_script
 
 
@@ -183,8 +184,8 @@ def test_terminus_2_embeds_harbor_agent_script() -> None:
     script = terminus_2_agent_script()
 
     compile(script, "terminus_2_agent.py", "exec")
-    assert "AgentFactory.create_agent_from_name" in script
-    assert 'AgentName("terminus-2")' in script
+    assert "from harbor.agents.terminus_2 import Terminus2" in script
+    assert "Terminus2(" in script
     assert 'api_base=os.environ["OPENAI_BASE_URL"]' in script
     assert "max_turns=4" in script
     assert "self.default_user = None" in script
