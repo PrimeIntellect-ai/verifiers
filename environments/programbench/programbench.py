@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 from collections.abc import Mapping
 from pathlib import Path
@@ -27,7 +28,11 @@ logger = logging.getLogger(__name__)
 # Unified toolchain image with all languages + pytest + tmux pre-installed.
 # Built from docker/Dockerfile and pushed to DockerHub. All languages use this image
 # so runtime apt-get installs are skipped and network_access=False is safe.
-TOOLCHAIN_IMAGE = "primeintellect/programbench-toolchain:latest"
+# Override via PRIME_TOOLCHAIN_IMAGE env var to use a team-scoped image from
+# Prime's internal registry. Falls back to the public DockerHub image if unset.
+TOOLCHAIN_IMAGE = os.environ.get(
+    "PRIME_TOOLCHAIN_IMAGE", "primeintellect/programbench-toolchain:latest"
+)
 
 _LANGUAGE_IMAGES: dict[str, str] = {
     "go": TOOLCHAIN_IMAGE,
