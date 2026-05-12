@@ -50,6 +50,16 @@ LANG_MAP = {
     "Nix": "nix",
 }
 
+# Force language for repos where GitHub primary language is misleading
+# (dominated by docs, website, or multi-language monorepo artifacts)
+LANGUAGE_OVERRIDES: dict[str, str] = {
+    "blake3-team__blake3": "rust",
+    "cslarsen__jp2a": "c",
+    "facebookresearch__fasttext": "cpp",
+    "google__brotli": "c",
+    "halitechallenge__halite": "cpp",
+}
+
 DEFAULT_COMPILE_HINTS = {
     "go": "cd /workspace/src && go build -o /workspace/executable .",
     "rust": "cd /workspace/src && cargo build --release && cp target/release/$(basename $(ls -1 target/release/ | grep -vE '\\.(d|rlib|so|a|dylib|pdb)$' | head -1)) /workspace/executable",
@@ -105,6 +115,7 @@ COMPILE_HINT_OVERRIDES: dict[str, str] = {
     "zevv__duc": "cd /workspace/src && autoreconf -fi && ./configure && make -j$(nproc) && cp src/duc /workspace/executable",
     "tstack__lnav": "cd /workspace/src && autoreconf -fi && ./configure && make -j$(nproc) && cp src/lnav /workspace/executable",
     "tukaani-project__xz": "cd /workspace/src && autoreconf -fi && ./configure && make -j$(nproc) && cp src/xz/xz /workspace/executable",
+    "blake3-team__blake3": "cd /workspace/src && cargo build --release && cp target/release/b3sum /workspace/executable",
     # Rust projects with non-standard binary names
     "burntsushi__ripgrep": "cd /workspace/src && cargo build --release && cp target/release/rg /workspace/executable",
     "burntsushi__xsv": "cd /workspace/src && cargo build --release && cp target/release/xsv /workspace/executable",
@@ -219,8 +230,12 @@ def process_task(task_id: str, all_files: list[str], api: HfApi) -> dict | None:
         return None
 
     # Detect language
-    gh_lang = get_github_language(owner, repo)
-    lang = LANG_MAP.get(gh_lang, gh_lang.lower() if gh_lang != "Unknown" else "c")
+    repo_key_base = f"{owner}__{repo}"
+    if repo_key_base in LANGUAGE_OVERRIDES:
+        lang = LANGUAGE_OVERRIDES[repo_key_base]
+    else:
+        gh_lang = get_github_language(owner, repo)
+        lang = LANG_MAP.get(gh_lang, gh_lang.lower() if gh_lang != "Unknown" else "c")
     if lang not in ("go", "rust", "c", "cpp"):
         log.warning("Unsupported lang %s for %s — skipping", lang, task_id)
         return None
@@ -229,7 +244,7 @@ def process_task(task_id: str, all_files: list[str], api: HfApi) -> dict | None:
     readme = fetch_readme(owner, repo, commit)
 
     # Compile hint
-    repo_key = f"{owner}__{repo}"
+    repo_key = repo_key_base
     compile_hint = COMPILE_HINT_OVERRIDES.get(repo_key) or DEFAULT_COMPILE_HINTS.get(
         lang, "make"
     )
