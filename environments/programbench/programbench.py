@@ -1,8 +1,8 @@
-"""ProgramBench environment — RLM agent reconstructs programs from compiled binaries.
+"""ProgramBench environment — mini-SWE-agent reconstructs programs from compiled binaries.
 
-Each task provides a compiled binary + documentation. The agent writes source code
-and a compile.sh that produces a behaviorally equivalent executable, scored by
-running pytest test suites against it.
+Each task provides a compiled binary (execute-only, chmod 111) + documentation.
+The agent probes behavior by running the binary, then writes source code and a
+compile.sh that produces a behaviorally equivalent executable, scored by pytest tests.
 
 Usage::
 
@@ -60,8 +60,11 @@ compilable source code from a compiled binary and its documentation.
 
 You have access to:
 - The compiled binary at {BINARY_PATH} — run it to probe I/O behavior
-- Binary analysis (file type, exported symbols, strings) in the task description
-- Documentation from the original repository
+- Documentation from the original repository (in the task description)
+
+The binary is execute-only: you cannot read or decompile it. Tools like strings, \
+objdump, nm, hexdump, and xxd will fail with permission denied. You must infer the \
+program's behavior by running it with different inputs.
 
 Your deliverables:
 1. Source code written to {SRC_DIR}/
@@ -70,9 +73,6 @@ executable to {EXECUTABLE_PATH}
 
 The executable must reproduce the original binary's observable behavior (stdout, stderr, \
 exit codes) as closely as possible. Focus on the public interface first.
-
-Tools: bash (to explore, run the binary, compile), edit (to write source files).
-Working directory: {SRC_DIR}/
 """
 
 
@@ -165,16 +165,17 @@ class ProgramBenchTaskset(vf.Taskset):
                 "difficulty": row.get("difficulty"),
                 "readme": row.get("readme", ""),
                 "docs": row.get("docs", ""),
-                "strings_output": row.get("strings_output", ""),
-                "nm_output": row.get("nm_output", ""),
-                "objdump_head": row.get("objdump_head", ""),
                 "file_type": row.get("file_type", ""),
                 "binary_size": row.get("binary_size", 0),
                 "binary_hf_repo": row.get("binary_hf_repo", ""),
                 "binary_hf_filename": row.get("binary_hf_filename", ""),
                 "test_branches": row.get("test_branches", []),
-                "compile_hint": row.get("compile_hint", ""),
                 "example_io": row.get("example_io", []),
+                # Retained for internal logging only — NOT included in the agent prompt.
+                "_nm_output": row.get("nm_output", ""),
+                "_strings_output": row.get("strings_output", ""),
+                "_objdump_head": row.get("objdump_head", ""),
+                "_compile_hint": row.get("compile_hint", ""),
             }
             instruction = _build_instruction(info)
             rows.append(
@@ -281,7 +282,8 @@ class ProgramBenchTaskset(vf.Taskset):
                 token=os.environ.get("HF_TOKEN"),
             )
             await sandbox.upload_file(BINARY_PATH, local_path, timeout=60)
-            await sandbox.execute(f"chmod +x {BINARY_PATH}", timeout=5)
+            # Execute-only: agent can run the binary but not read/decompile it.
+            await sandbox.execute(f"chmod 111 {BINARY_PATH}", timeout=5)
         except Exception as exc:
             logger.warning(
                 "Binary upload failed for %s: %r — agent will work from docs only.",
@@ -474,64 +476,36 @@ class ProgramBenchTaskset(vf.Taskset):
 
 
 def _build_instruction(info: dict) -> str:
-    lang = info["language"]
     task_id = info["task_id"]
     parts: list[str] = [
         f"# Program Reconstruction: `{task_id}`",
-        f"**Language**: {lang}",
         "",
     ]
 
     if info.get("readme"):
         parts += ["## Documentation", info["readme"][:3000], ""]
 
-    if info.get("file_type") or info.get("binary_size"):
-        parts.append("## Binary")
-        if info.get("file_type"):
-            parts.append(f"Type: {info['file_type']}")
-        if info.get("binary_size"):
-            parts.append(f"Size: {info['binary_size']:,} bytes")
-        parts.append("")
+    if info.get("docs"):
+        parts += ["## Additional Docs", info["docs"][:2000], ""]
 
-    if info.get("nm_output"):
-        parts += ["## Exported Symbols", f"```\n{info['nm_output'][:2000]}\n```", ""]
-
-    if info.get("strings_output"):
-        parts += ["## Strings", f"```\n{info['strings_output'][:1500]}\n```", ""]
-
-    lang = info["language"]
-    path_exports = {
-        "go": "export PATH=/usr/local/go/bin:$PATH",
-        "rust": "export PATH=/root/.cargo/bin:$PATH",
-        "c": "",
-        "cpp": "",
-    }
-    path_line = path_exports.get(lang, "")
-
-    hint = info.get("compile_hint") or _default_compile_hint(lang)
-    compile_sh = "\n".join(filter(None, ["#!/bin/bash", "set -e", path_line, hint]))
+    parts.append("## Binary")
+    if info.get("file_type"):
+        parts.append(f"Type: {info['file_type']}")
+    if info.get("binary_size"):
+        parts.append(f"Size: {info['binary_size']:,} bytes")
+    parts += [
+        f"Located at: `{BINARY_PATH}` (execute-only — run it, do not decompile)",
+        "",
+    ]
 
     parts += [
-        "## compile.sh",
-        "Your compile.sh must look like this (adapt as needed):",
-        f"```bash\n{compile_sh}\n```",
-        "",
         "## Your task",
-        f"1. Run `{BINARY_PATH}` to understand the program's behavior.",
+        f"1. Run `{BINARY_PATH}` with various inputs to understand the program's behavior.",
         f"2. Write source code in `{SRC_DIR}/`.",
-        f"3. Write `{SRC_DIR}/compile.sh` — it must produce `{EXECUTABLE_PATH}`.",
-        "4. The executable will be tested against behavioral I/O tests.",
+        f"3. Write `{SRC_DIR}/compile.sh` — it must compile your source and produce `{EXECUTABLE_PATH}`.",
+        "4. Your executable will be scored against behavioral I/O tests.",
     ]
     return "\n".join(parts)
-
-
-def _default_compile_hint(lang: str) -> str:
-    return {
-        "go": "cd /workspace/src && go build -o /workspace/executable .",
-        "rust": "cd /workspace/src && cargo build --release && cp target/release/$(ls target/release/ | grep -v '\\.') /workspace/executable",
-        "c": "cd /workspace/src && gcc -O2 -o /workspace/executable *.c",
-        "cpp": "cd /workspace/src && g++ -O2 -o /workspace/executable *.cpp",
-    }.get(lang, "cd /workspace/src && make -o /workspace/executable")
 
 
 def _parse_junit_xml(xml: str) -> tuple[int, int]:
@@ -562,23 +536,25 @@ def load_taskset(
 
 def load_harness(
     config: vf.HarnessConfig | None = None,
-    workdir: str = SRC_DIR,
-    gh_token: str | None = None,
-    rlm_tools: tuple[str, ...] | list[str] | None = None,
-    **rlm_kwargs: Any,
-) -> vf.RLM:
-    token = gh_token or os.environ.get("GH_TOKEN")
-    tools = list(rlm_tools) if rlm_tools is not None else ["bash", "edit"]
-    return vf.RLM(
-        workdir=workdir, gh_token=token, rlm_tools=tools, config=config, **rlm_kwargs
+    agent_workdir: str = SRC_DIR,
+    max_turns: int | None = None,
+    environment_timeout: int = 120,
+    system_prompt: str | None = None,
+    **kwargs: Any,
+) -> vf.MiniSWEAgent:
+    return vf.MiniSWEAgent(
+        agent_workdir=agent_workdir,
+        max_turns=max_turns,
+        environment_timeout=environment_timeout,
+        system_prompt=system_prompt,
+        config=config,
+        **kwargs,
     )
 
 
 def load_environment(
     config: vf.EnvConfig | None = None,
-    # Dataset
-    # HF_TOKEN is required: processed dataset is private in PrimeIntellect org,
-    # and programbench/ProgramBench-Tests may require acceptance of dataset terms.
+    # Dataset — HF_TOKEN required (private PrimeIntellect dataset + test repo).
     dataset_name: str | None = None,
     dataset_split: str | None = None,
     filter_language: str | None = None,
@@ -587,19 +563,10 @@ def load_environment(
     hide_tests_from_agent: bool | None = None,
     ds_num_proc: int | None = None,
     ds_keep_in_memory: bool | None = None,
-    # Auth
-    gh_token: str | None = None,
-    # RLM harness pass-through
-    rlm_tools: list[str] | None = None,
-    rlm_repo_url: str | None = None,
-    rlm_ref: str | None = None,
-    rlm_max_turns: int | None = None,
-    rlm_exec_timeout: int | None = None,
-    rlm_max_depth: int | None = None,
-    append_to_system_prompt: str | None = None,
-    local_checkout: str | Path | None = None,
-    rlm_env: dict[str, object] | None = None,
-    skills: str | Path | None = None,
+    # mini-SWE-agent harness
+    max_turns: int | None = None,
+    environment_timeout: int = 120,
+    system_prompt: str | None = SYSTEM_PROMPT,
 ) -> vf.Env:
     verifiers.ensure_keys(["HF_TOKEN"])
     config = vf.EnvConfig(
@@ -620,27 +587,11 @@ def load_environment(
         ),
     )
     taskset = load_taskset(config=config.taskset)
-    merged_env = {**taskset.get_env_vars(), **dict(rlm_env or {})}
-    rlm_kwargs = {
-        k: v
-        for k, v in {
-            "rlm_repo_url": rlm_repo_url,
-            "rlm_ref": rlm_ref,
-            "rlm_max_turns": rlm_max_turns,
-            "rlm_exec_timeout": rlm_exec_timeout,
-            "rlm_max_depth": rlm_max_depth,
-            "append_to_system_prompt": append_to_system_prompt,
-            "local_checkout": local_checkout,
-            "rlm_env": merged_env,
-        }.items()
-        if v is not None
-    }
     harness = load_harness(
         config=config.harness,
-        workdir=SRC_DIR,
-        gh_token=gh_token,
-        rlm_tools=rlm_tools,
-        skills=skills,
-        **rlm_kwargs,
+        agent_workdir=SRC_DIR,
+        max_turns=max_turns,
+        environment_timeout=environment_timeout,
+        system_prompt=system_prompt,
     )
     return vf.Env(taskset=taskset, harness=harness)
