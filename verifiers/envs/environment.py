@@ -1071,8 +1071,54 @@ class Environment(ABC):
                         )
                         tasks[task] = i
 
-                for coro in asyncio.as_completed(tasks.keys()):
-                    result = await coro
+                task_list = list(tasks.keys())
+                for coro in asyncio.as_completed(task_list):
+                    try:
+                        result = await coro
+                    except Exception as e:
+                        # Sandbox/infra errors should not crash the whole eval.
+                        # Record 0-reward outputs for each rollout in the failed group.
+                        group_idx = tasks.get(coro)
+                        if group_idx is not None and not independent_scoring:
+                            failed_inputs = filtered_group_inputs[group_idx]
+                        elif group_idx is not None:
+                            failed_inputs = [filtered_inputs[group_idx]]
+                        else:
+                            failed_inputs = []
+                        self.logger.error(
+                            f"Group failed with {type(e).__name__}: {e}. "
+                            f"Recording {len(failed_inputs)} rollout(s) as error."
+                        )
+                        result = [
+                            RolloutOutput(
+                                example_id=inp["example_id"],
+                                prompt=inp.get("prompt"),
+                                completion=None,
+                                reward=0.0,
+                                timing=RolloutTiming(),
+                                is_completed=False,
+                                is_truncated=False,
+                                metrics={},
+                                error={"type": type(e).__name__, "message": str(e)},
+                            )
+                            for inp in failed_inputs
+                        ]
+                        if independent_scoring:
+                            result = (
+                                result[0]
+                                if result
+                                else RolloutOutput(
+                                    example_id=-1,
+                                    prompt=None,
+                                    completion=None,
+                                    reward=0.0,
+                                    timing=RolloutTiming(),
+                                    is_completed=False,
+                                    is_truncated=False,
+                                    metrics={},
+                                    error={"type": type(e).__name__, "message": str(e)},
+                                )
+                            )
 
                     # normalize: independent_scoring returns RolloutOutput, group returns list[RolloutOutput]
                     new_outputs = [result] if independent_scoring else result
