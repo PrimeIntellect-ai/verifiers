@@ -32,7 +32,7 @@ _LANGUAGE_IMAGES: dict[str, str] = {
     "go": "golang:1.22-bookworm",
     "c": "gcc:13-bookworm",
     "cpp": "gcc:13-bookworm",
-    "rust": "rust:latest",  # TODO: switch to primeintellect/programbench-toolchain:latest once pushed
+    "rust": "rust:1.92",  # TODO: switch to primeintellect/programbench-toolchain:latest once pushed
 }
 DEFAULT_IMAGE = "ubuntu:22.04"
 
@@ -64,8 +64,11 @@ You have access to:
 - Documentation from the original repository (in the task description)
 
 The binary is execute-only: you cannot read or decompile it. Tools like strings, \
-objdump, nm, hexdump, and xxd will fail with permission denied. You must infer the \
-program's behavior by running it with different inputs.
+objdump, nm, hexdump, xxd, strace, and ltrace will fail or are prohibited. You must \
+infer the program's behavior by running it with different inputs.
+
+Your solution must not wrap or delegate to the original binary. It must be an \
+independent reimplementation.
 
 Your deliverables:
 1. Source code written to {SRC_DIR}/
@@ -334,7 +337,9 @@ class ProgramBenchTaskset(vf.Taskset):
             state["_pb_test_branch"] = None
             return
 
-        branch = test_branches[0]
+        branch = max(
+            test_branches
+        )  # most recent branch alphabetically; later branches have more tests
         task_id = info["task_id"]
 
         try:
@@ -408,14 +413,19 @@ class ProgramBenchTaskset(vf.Taskset):
         passed, total = await self._run_tests(sandbox, state, task_id, lang)
         state["n_tests_passed"] = passed
         state["n_tests_total"] = total
+        reward = passed / total if total > 0 else 0.0
+        state["almost"] = reward >= 0.95
+        state["resolved"] = passed == total and total > 0
         logger.info(
-            "[%s] scored %d/%d tests passed (reward=%.3f)",
+            "[%s] scored %d/%d tests passed (reward=%.3f almost=%s resolved=%s)",
             task_id,
             passed,
             total,
-            passed / total if total > 0 else 0.0,
+            reward,
+            state["almost"],
+            state["resolved"],
         )
-        return passed / total if total > 0 else 0.0
+        return reward
 
     async def _compile(self, sandbox, state: dict, lang: str, task_id: str) -> bool:
         compile_timeout = _COMPILE_TIMEOUT.get(lang, 120)
