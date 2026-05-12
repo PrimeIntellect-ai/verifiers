@@ -40,6 +40,7 @@ dependencies = [
     "prime-tunnel>=0.1.6",
     "prime-sandboxes>=0.2.25",
     "pydantic>=2.11.9",
+    "pydantic-config",
     "requests",
     "rich",
     "tenacity>=8.5.0",
@@ -129,6 +130,7 @@ renderers = false
 # fe67f9f = renderers main: PR #4 squash-merge — construction-time
 # preserve_*_thinking flags on create_renderer / create_renderer_pool.
 renderers = { git = "https://github.com/PrimeIntellect-ai/renderers.git", rev = "fe67f9f" }
+pydantic-config = { git = "https://github.com/samsja/pydantic_config.git", branch = "main" }
 
 [tool.uv.extra-build-dependencies]
 flash-attn = [{ requirement = "torch", match-runtime = true }]
@@ -138,6 +140,7 @@ flash-attn = { FLASH_ATTENTION_SKIP_CUDA_BUILD = "TRUE" }
 
 [project.scripts]
 vf-eval = "verifiers.scripts.eval:main"
+vf-eval-v1 = "verifiers.v1.scripts.eval:main"
 vf-gepa = "verifiers.scripts.gepa:main"
 vf-init = "verifiers.scripts.init:main"
 vf-install = "verifiers.scripts.install:main"
