@@ -57,7 +57,7 @@ _DISK_GB: dict[str, int] = {"rust": 12, "go": 6, "c": 4, "cpp": 6}
 # Per-language compile timeout (seconds).
 _COMPILE_TIMEOUT: dict[str, int] = {"rust": 480, "go": 60, "c": 30, "cpp": 60}
 # Per-language pytest timeout (seconds). Rust integration tests can be slow.
-_TEST_TIMEOUT: dict[str, int] = {"rust": 600, "go": 120, "c": 60, "cpp": 120}
+_TEST_TIMEOUT: dict[str, int] = {"rust": 600, "go": 300, "c": 60, "cpp": 120}
 # Per-language sandbox lifetime (minutes).
 _SANDBOX_TIMEOUT_MIN: dict[str, int] = {"rust": 45, "go": 20, "c": 20, "cpp": 20}
 
@@ -523,7 +523,7 @@ class ProgramBenchTaskset(vf.Taskset):
     async def _is_binary_wrap(self, sandbox, state: dict, task_id: str) -> bool:
         """Return True (and flag state) if the submitted executable is a copy of the reference binary."""
         result = await sandbox.execute(
-            f"sha256sum {BINARY_PATH} {EXECUTABLE_PATH} 2>/dev/null", timeout=10
+            f"sha256sum {BINARY_PATH} {EXECUTABLE_PATH} 2>/dev/null", timeout=30
         )
         lines = (result.stdout or "").strip().splitlines()
         if len(lines) != 2:
