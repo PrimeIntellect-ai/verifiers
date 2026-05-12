@@ -20,6 +20,7 @@ from verifiers.envs.experimental.sandbox_mixin import (
     SandboxMixin,
     SandboxMonitorRubric,
     SandboxTimeouts,
+    is_retryable_sandbox_read_error,
 )
 from verifiers.types import (
     AssistantMessage,
@@ -387,9 +388,22 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
     ) -> None:
         """Poll until background job completes, capturing output."""
         while True:
-            status: BackgroundJobStatus = await self.sandbox_client.get_background_job(
-                sandbox_id, background_job, timeout=self.timeouts.poll
-            )
+            try:
+                status: BackgroundJobStatus = (
+                    await self.sandbox_client.get_background_job(
+                        sandbox_id, background_job, timeout=self.timeouts.poll
+                    )
+                )
+            except Exception as e:
+                if not is_retryable_sandbox_read_error(e):
+                    raise
+                self.logger.warning(
+                    "Background job poll failed with a transient sandbox read error; "
+                    "retrying: %s",
+                    e,
+                )
+                await asyncio.sleep(self.poll_interval)
+                continue
             if status.completed:
                 state["agent_exit_code"] = status.exit_code
                 state["agent_stdout"] = status.stdout
