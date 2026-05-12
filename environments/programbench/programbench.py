@@ -33,7 +33,7 @@ _LANGUAGE_IMAGES: dict[str, str] = {
     "go": "golang:1.22-bookworm",
     "c": "gcc:13-bookworm",
     "cpp": "gcc:13-bookworm",
-    "rust": "primeintellect/programbench-toolchain:latest",  # custom; falls back to rust:1.78
+    "rust": "rust:latest",  # TODO: switch to primeintellect/programbench-toolchain:latest once pushed
 }
 DEFAULT_IMAGE = "ubuntu:22.04"
 
