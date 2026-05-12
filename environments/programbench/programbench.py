@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import re
 from collections.abc import Mapping
 from pathlib import Path
@@ -300,12 +299,14 @@ class ProgramBenchTaskset(vf.Taskset):
     async def _hf_download(self, repo_id: str, filename: str) -> str:
         from huggingface_hub import hf_hub_download
 
+        # Pass token=None so huggingface_hub falls back to its own auth chain:
+        # HF_TOKEN env var → ~/.cache/huggingface/token → huggingface-cli login cache.
         return await asyncio.to_thread(
             hf_hub_download,
             repo_id=repo_id,
             filename=filename,
             repo_type="dataset",
-            token=os.environ.get("HF_TOKEN"),
+            token=None,
         )
 
     async def _upload_binary(self, sandbox, info: dict) -> None:
@@ -622,9 +623,17 @@ def load_environment(
     environment_timeout: int = 600,
     system_prompt: str | None = SYSTEM_PROMPT,
 ) -> vf.Env:
-    # HF_TOKEN required for private HuggingFace dataset + test archives.
-    # Model API key is handled by the verifiers runtime proxy — not required here.
-    vf.ensure_keys(["HF_TOKEN"])
+    # Verify HuggingFace auth is available (private dataset + test archives).
+    # Accepts HF_TOKEN env var or cached token from `huggingface-cli login`.
+    try:
+        from huggingface_hub import get_token
+
+        if not get_token():
+            raise RuntimeError(
+                "No HuggingFace token found. Set HF_TOKEN or run `huggingface-cli login`."
+            )
+    except ImportError:
+        pass  # huggingface_hub not installed yet; will fail at download time
     config = vf.EnvConfig(
         config,
         taskset=ProgramBenchTasksetConfig(
