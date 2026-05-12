@@ -275,14 +275,15 @@ def state_to_output(
         if col == "trajectory":
             # Renderer multimodal rollouts accumulate mm_data on every step
             # (bridge_to_next_turn merges previous_multi_modal_data into the
-            # new turn). Each subsequent step's mm_data is a superset of the
-            # prior step's, so shipping mm_data on every step duplicates
-            # every image O(N²) bytes for an N-turn rollout. Only the last
-            # step's sidecar is read by the trainer — strip mm_data from
-            # earlier steps before transport. Bridge accesses mm_data only
-            # within the env-worker rollout loop, which has already
-            # finished by the time state_to_output runs.
-            value = _strip_intermediate_mm_data(value)
+            # new turn). Naively shipping cumulative mm_data on every step
+            # duplicates every image O(N²) bytes for an N-turn rollout.
+            # Replace each step's cumulative mm_data with its delta against
+            # the prior step (items keyed by mm_hash) so any per-window
+            # TrainingSample assembler — including compaction, where a
+            # single rollout produces multiple samples and the pre-compaction
+            # sample's images aren't in the final cumulative set — can
+            # recover its window's images by unioning step-deltas.
+            value = _delta_intermediate_mm_data(value)
             # Trajectory may carry torch tensors / renderer dataclasses on
             # ``tokens.multi_modal_data`` — these are not JSON-native and
             # ``is_json_serializable`` would (correctly) reject them. They
@@ -302,16 +303,34 @@ def state_to_output(
     return output
 
 
-def _strip_intermediate_mm_data(trajectory: object) -> object:
-    """Drop ``multi_modal_data`` from all but the last step.
+def _delta_intermediate_mm_data(trajectory: object) -> object:
+    """Replace each step's cumulative ``multi_modal_data`` with its delta.
 
-    Strips two duplicated locations on each intermediate step:
+    The renderer's ``bridge_to_next_turn`` merges ``previous_multi_modal_data``
+    into the new turn, so each step carries the cumulative set of every
+    image rendered so far in the trajectory. For each step after the
+    first, drop items whose ``mm_hash`` already appeared in the immediately
+    prior step. The first step is left as-is (all items are new).
+
+    Properties:
+    - Each unique image's bytes travel exactly once across the trajectory
+      (no O(N²) duplication).
+    - Per-window ``TrainingSample`` assemblers — including compaction,
+      where a single rollout produces multiple samples and the
+      pre-compaction sample's images aren't in the final cumulative
+      set — can recover any window's images by unioning step-deltas in
+      that window.
+    - Placeholder ranges in each delta retain offsets relative to the
+      step's own cumulative token sequence; the per-window assembler is
+      responsible for shifting them into the window's local frame.
+
+    Rewrites two duplicated locations on each non-first step:
     - ``step["tokens"]["multi_modal_data"]`` (TypedDict sidecar)
     - ``step["response"].message.tokens.multi_modal_data`` (Pydantic
-      ``ResponseTokens`` field; carries the same tensors and survives
-      msgpack transport via ``model_dump`` unless stripped)
+      ``ResponseTokens`` field; carries the same dataclass and survives
+      msgpack transport via ``model_dump`` unless rewritten)
 
-    Returns a new list of step dicts (with shallow copies for stripped
+    Returns a new list of step dicts (with shallow copies for rewritten
     entries) so the input state isn't mutated. Non-list inputs and
     empty / single-step trajectories pass through unchanged.
     """
@@ -319,44 +338,146 @@ def _strip_intermediate_mm_data(trajectory: object) -> object:
         return trajectory
 
     out: list = []
-    last_idx = len(trajectory) - 1
+    prior_hashes: dict[str, set[str]] = {}
+
     for idx, raw_step in enumerate(trajectory):
-        if idx == last_idx or not isinstance(raw_step, Mapping):
+        if not isinstance(raw_step, Mapping):
             out.append(raw_step)
             continue
         step = cast(Mapping[str, Any], raw_step)
+
+        # Capture this step's *original* cumulative hashes (from either
+        # the tokens sidecar or the response side — they should match)
+        # before any rewrite, so the next iteration's delta is computed
+        # against the true cumulative.
+        tokens = step.get("tokens")
+        step_mm = (
+            tokens.get("multi_modal_data") if isinstance(tokens, Mapping) else None
+        )
+        if step_mm is None:
+            response = step.get("response")
+            message = (
+                getattr(response, "message", None) if response is not None else None
+            )
+            resp_tokens = (
+                getattr(message, "tokens", None) if message is not None else None
+            )
+            step_mm = (
+                getattr(resp_tokens, "multi_modal_data", None)
+                if resp_tokens is not None
+                else None
+            )
+        current_hashes = _read_mm_hashes(step_mm)
+
+        if idx == 0:
+            out.append(step)
+            prior_hashes = current_hashes
+            continue
+
         new_step: dict[str, Any] = dict(step)
         changed = False
 
-        tokens = step.get("tokens")
-        if isinstance(tokens, Mapping) and tokens.get("multi_modal_data") is not None:
-            new_step["tokens"] = {
-                k: v for k, v in tokens.items() if k != "multi_modal_data"
-            }
-            changed = True
+        if isinstance(tokens, Mapping):
+            mm = tokens.get("multi_modal_data")
+            if mm is not None:
+                delta = _diff_mm_data(mm, prior_hashes)
+                if delta is not mm:
+                    new_step["tokens"] = {**tokens, "multi_modal_data": delta}
+                    changed = True
 
         response = step.get("response")
         if response is not None:
             message = getattr(response, "message", None)
             if message is not None:
                 resp_tokens = getattr(message, "tokens", None)
-                if (
-                    resp_tokens is not None
-                    and getattr(resp_tokens, "multi_modal_data", None) is not None
-                ):
-                    stripped_tokens = resp_tokens.model_copy(
-                        update={"multi_modal_data": None}
-                    )
-                    stripped_message = message.model_copy(
-                        update={"tokens": stripped_tokens}
-                    )
-                    new_step["response"] = response.model_copy(
-                        update={"message": stripped_message}
-                    )
-                    changed = True
+                if resp_tokens is not None:
+                    resp_mm = getattr(resp_tokens, "multi_modal_data", None)
+                    if resp_mm is not None:
+                        resp_delta = _diff_mm_data(resp_mm, prior_hashes)
+                        if resp_delta is not resp_mm:
+                            stripped_tokens = resp_tokens.model_copy(
+                                update={"multi_modal_data": resp_delta}
+                            )
+                            stripped_message = message.model_copy(
+                                update={"tokens": stripped_tokens}
+                            )
+                            new_step["response"] = response.model_copy(
+                                update={"message": stripped_message}
+                            )
+                            changed = True
 
         out.append(new_step if changed else step)
+        prior_hashes = current_hashes
     return out
+
+
+def _read_mm_hashes(mm: object) -> dict[str, set[str]]:
+    """Per-modality set of ``mm_hashes`` from a ``MultiModalData``-like object."""
+    if mm is None:
+        return {}
+    hashes = getattr(mm, "mm_hashes", None)
+    if not isinstance(hashes, dict):
+        return {}
+    return {
+        modality: set(hs) for modality, hs in hashes.items() if isinstance(hs, list)
+    }
+
+
+def _diff_mm_data(mm: object, prior_hashes: dict[str, set[str]]) -> object:
+    """Return ``mm`` with items whose hash appeared in ``prior_hashes`` removed.
+
+    Returns the input unchanged if nothing is dropped (cheap fast-path
+    for steps that introduced no new images). Returns a new instance of
+    the same class with the delta items otherwise. Mirrors the
+    ``MultiModalData`` shape: three parallel per-modality lists
+    (``mm_hashes``, ``mm_items``, ``mm_placeholders``) reindexed by the
+    surviving item positions.
+    """
+    hashes = getattr(mm, "mm_hashes", None)
+    items = getattr(mm, "mm_items", None)
+    placeholders = getattr(mm, "mm_placeholders", None)
+    if (
+        not isinstance(hashes, dict)
+        or not isinstance(items, dict)
+        or not isinstance(placeholders, dict)
+    ):
+        return mm
+
+    new_hashes: dict[str, list[str]] = {}
+    new_items: dict[str, list[Any]] = {}
+    new_placeholders: dict[str, list[Any]] = {}
+    any_dropped = False
+
+    for modality, mod_hashes in hashes.items():
+        if not isinstance(mod_hashes, list):
+            new_hashes[modality] = mod_hashes
+            new_items[modality] = items.get(modality, [])
+            new_placeholders[modality] = placeholders.get(modality, [])
+            continue
+        mod_items = items.get(modality) or []
+        mod_placeholders = placeholders.get(modality) or []
+        prior_set = prior_hashes.get(modality, set())
+        keep_idx = [i for i, h in enumerate(mod_hashes) if h not in prior_set]
+        if len(keep_idx) != len(mod_hashes):
+            any_dropped = True
+        new_hashes[modality] = [mod_hashes[i] for i in keep_idx]
+        new_items[modality] = [mod_items[i] for i in keep_idx if i < len(mod_items)]
+        new_placeholders[modality] = [
+            mod_placeholders[i] for i in keep_idx if i < len(mod_placeholders)
+        ]
+
+    if not any_dropped:
+        return mm
+
+    cls = type(mm)
+    try:
+        return cls(
+            mm_hashes=new_hashes,
+            mm_placeholders=new_placeholders,
+            mm_items=new_items,
+        )
+    except TypeError:
+        return mm
 
 
 def serialize_timing(timing: object) -> dict[str, Any]:

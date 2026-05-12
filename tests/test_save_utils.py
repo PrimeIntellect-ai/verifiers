@@ -27,6 +27,7 @@ from verifiers.utils.metric_utils import (
 )
 from verifiers.utils.save_utils import (
     GenerateOutputsBuilder,
+    _delta_intermediate_mm_data,
     extract_usage_tokens,
     load_outputs,
     make_serializable,
@@ -897,3 +898,106 @@ class TestPassAtKMetric:
         )
         pass_at_k, _ = m.compute()
         assert pass_at_k["1"] == pytest.approx(0.5)
+
+
+class TestDeltaIntermediateMmData:
+    """Verify per-step delta encoding of trajectory mm_data sidecars.
+
+    Renderer bridge_to_next_turn emits cumulative mm_data on every
+    step. The transport-layer delta strips items whose mm_hash already
+    appeared in the prior step, so the per-window TrainingSample
+    assembler can recover its window's images by unioning step-deltas.
+    """
+
+    @staticmethod
+    def _mm(*hashes: str):
+        """Build a renderers.MultiModalData with one image item per hash."""
+        from renderers.base import MultiModalData, PlaceholderRange
+
+        return MultiModalData(
+            mm_hashes={"image": list(hashes)},
+            mm_placeholders={
+                "image": [
+                    PlaceholderRange(offset=i * 10, length=4)
+                    for i in range(len(hashes))
+                ]
+            },
+            mm_items={"image": [{"pixel_values": f"px-{h}"} for h in hashes]},
+        )
+
+    def _step(self, mm):
+        return {"tokens": {"multi_modal_data": mm}}
+
+    def test_none_and_single_step_passthrough(self):
+        assert _delta_intermediate_mm_data(None) is None
+        assert _delta_intermediate_mm_data([]) == []
+        only = [self._step(self._mm("A"))]
+        assert _delta_intermediate_mm_data(only) is only
+
+    def test_linear_extension_keeps_only_new_items_per_step(self):
+        traj = [
+            self._step(self._mm("A")),
+            self._step(self._mm("A", "B")),
+            self._step(self._mm("A", "B", "C")),
+        ]
+        out = _delta_intermediate_mm_data(traj)
+
+        assert out[0]["tokens"]["multi_modal_data"].mm_hashes == {"image": ["A"]}
+        assert out[1]["tokens"]["multi_modal_data"].mm_hashes == {"image": ["B"]}
+        assert out[2]["tokens"]["multi_modal_data"].mm_hashes == {"image": ["C"]}
+        # Items and placeholders are reindexed in lockstep with hashes.
+        assert out[1]["tokens"]["multi_modal_data"].mm_items["image"] == [
+            {"pixel_values": "px-B"}
+        ]
+        assert (
+            out[2]["tokens"]["multi_modal_data"].mm_placeholders["image"][0].offset
+            == 20
+        )
+
+    def test_compaction_unions_to_correct_per_window_sets(self):
+        # Step 1: pre-compaction. Step 2: compaction dropped A, B and
+        # introduced C (cumulative is now {C}, not {A, B, C}). Step 3:
+        # extends with D, cumulative {C, D}.
+        traj = [
+            self._step(self._mm("A", "B")),
+            self._step(self._mm("C")),
+            self._step(self._mm("C", "D")),
+        ]
+        out = _delta_intermediate_mm_data(traj)
+
+        # Each delta is computed against the prior step's cumulative.
+        assert out[0]["tokens"]["multi_modal_data"].mm_hashes == {"image": ["A", "B"]}
+        assert out[1]["tokens"]["multi_modal_data"].mm_hashes == {"image": ["C"]}
+        assert out[2]["tokens"]["multi_modal_data"].mm_hashes == {"image": ["D"]}
+
+        # Per-window assembler simulation: TrainingSample window [0, 1]
+        # (pre + compaction-step) unions to {A, B, C}; window [2]
+        # contributes {D}. Both windows recover their referenced images.
+        window_pre = {
+            h
+            for step in out[:2]
+            for h in step["tokens"]["multi_modal_data"].mm_hashes.get("image", [])
+        }
+        window_post = set(out[2]["tokens"]["multi_modal_data"].mm_hashes["image"])
+        assert window_pre == {"A", "B", "C"}
+        assert window_post == {"D"}
+
+    def test_steps_with_no_new_items_collapse_to_empty_delta(self):
+        # Step 2's cumulative equals step 1's — no new items.
+        traj = [
+            self._step(self._mm("A", "B")),
+            self._step(self._mm("A", "B")),
+            self._step(self._mm("A", "B", "C")),
+        ]
+        out = _delta_intermediate_mm_data(traj)
+
+        assert out[1]["tokens"]["multi_modal_data"].mm_hashes == {"image": []}
+        assert out[1]["tokens"]["multi_modal_data"].mm_items == {"image": []}
+        assert out[2]["tokens"]["multi_modal_data"].mm_hashes == {"image": ["C"]}
+
+    def test_non_mapping_steps_pass_through(self):
+        traj = [self._step(self._mm("A")), "not-a-dict", self._step(self._mm("A", "B"))]
+        out = _delta_intermediate_mm_data(traj)
+        assert out[1] == "not-a-dict"
+        # Delta of step 2 still computed against step 0 (last seen cumulative).
+        assert out[2]["tokens"]["multi_modal_data"].mm_hashes == {"image": ["B"]}
