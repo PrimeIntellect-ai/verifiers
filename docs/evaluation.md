@@ -388,10 +388,13 @@ split = "test"
 ```
 
 For v1 BYO Harness environments, pass taskset/harness config through sibling
-`taskset` and `harness` sections. A top-level `[harness]` table is used by
-every `[[eval]]`:
+`taskset` and `harness` sections. Top-level `[taskset]` and `[harness]` tables
+are used by every `[[eval]]`:
 
 ```toml
+[taskset]
+split = "test"
+
 [harness]
 max_turns = 4
 

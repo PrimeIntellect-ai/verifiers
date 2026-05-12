@@ -723,6 +723,9 @@ def test_load_toml_config_with_env_args():
 def test_load_toml_config_accepts_v1_taskset_and_harness_aliases():
     with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
         f.write(
+            "[taskset]\n"
+            'split = "test"\n'
+            "\n"
             "[harness]\n"
             "max_turns = 4\n"
             "[harness.sampling_args]\n"
@@ -744,11 +747,12 @@ def test_load_toml_config_accepts_v1_taskset_and_harness_aliases():
         result = load_toml_config(Path(f.name))
 
     assert result[0].get("env_args", {}) == {}
-    assert result[0]["taskset"] == {"tasks": "/tmp/tasks"}
+    assert result[0]["taskset"] == {"split": "test", "tasks": "/tmp/tasks"}
     assert result[0]["harness"] == {
         "max_turns": 8,
         "sampling_args": {"temperature": 0.2, "max_tokens": 128},
     }
+    assert result[1]["taskset"] == {"split": "test"}
     assert result[1]["harness"] == {
         "max_turns": 4,
         "sampling_args": {"temperature": 0.2},

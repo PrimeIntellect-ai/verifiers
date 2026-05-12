@@ -77,8 +77,8 @@ id = "primeintellect/reverse-text"
 ```
 
 For v1 BYO Harness environments, put taskset/harness config under
-`taskset` and `harness`. A top-level `[harness]` table is used by every
-`[[env]]`:
+`taskset` and `harness`. Top-level `[taskset]` and `[harness]` tables are used
+by every `[[env]]`:
 
 ```toml
 model = "Qwen/Qwen3-30B-A3B-Instruct-2507"
@@ -88,6 +88,9 @@ rollouts_per_example = 8
 
 [sampling]
 max_tokens = 4096
+
+[taskset]
+split = "train"
 
 [harness]
 max_turns = 8

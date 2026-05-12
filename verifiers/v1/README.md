@@ -1132,14 +1132,17 @@ def load_environment(config: vf.EnvConfig | None = None):
 ```
 
 With that loader, eval TOML routes named environment args through `args` and v1
-config through the `taskset`/`harness` sections. A top-level `[harness]` table
-is used by every `[[eval]]`:
+config through the `taskset`/`harness` sections. Top-level `[taskset]` and
+`[harness]` tables are used by every `[[eval]]`:
 
 ```toml
 # configs/eval/my-v1-env.toml
 model = "openai/gpt-5.4-mini"
 num_examples = 5
 rollouts_per_example = 3
+
+[taskset]
+split = "test"
 
 [harness]
 max_turns = 4
@@ -1195,8 +1198,8 @@ def load_environment(
     )
 ```
 
-RL and Hosted Training TOML uses the same split under `env`; the top-level
-`[harness]` table is shared by every `[[env]]`:
+RL and Hosted Training TOML uses the same split under `env`; top-level
+`[taskset]` and `[harness]` tables are shared by every `[[env]]`:
 
 ```toml
 # configs/rl/my-v1-env.toml
@@ -1207,6 +1210,9 @@ rollouts_per_example = 8
 
 [sampling]
 max_tokens = 4096
+
+[taskset]
+split = "train"
 
 [harness]
 max_turns = 8

@@ -296,7 +296,8 @@ handlers.
 Eval and RL TOML own the outer run: model, endpoint, sampling, rollout count,
 and trainer/eval settings. v1 config owns taskset and harness behavior inside
 the environment package. Put taskset and harness config next to the environment
-entry; a top-level `[harness]` table acts as the default for every environment.
+entry; top-level `[taskset]` and `[harness]` tables act as defaults for every
+environment.
 
 The recommended loader takes one `config` object and routes its `taskset` and
 `harness` sections:
@@ -311,13 +312,16 @@ def load_environment(config: vf.EnvConfig | None = None):
 ```
 
 Eval config passes named environment args through `args` and v1 config through
-the `taskset`/`harness` sections. A top-level `[harness]` table is used by
-every `[[eval]]`:
+the `taskset`/`harness` sections. Top-level `[taskset]` and `[harness]` tables
+are used by every `[[eval]]`:
 
 ```toml
 model = "openai/gpt-5.4-mini"
 num_examples = 5
 rollouts_per_example = 3
+
+[taskset]
+split = "test"
 
 [harness]
 max_turns = 4
@@ -371,8 +375,8 @@ def load_environment(
     )
 ```
 
-RL and Hosted Training config uses the same shape under `env`; the top-level
-`[harness]` table is shared by every `[[env]]`:
+RL and Hosted Training config uses the same shape under `env`; top-level
+`[taskset]` and `[harness]` tables are shared by every `[[env]]`:
 
 ```toml
 model = "Qwen/Qwen3-30B-A3B-Instruct-2507"
@@ -382,6 +386,9 @@ rollouts_per_example = 8
 
 [sampling]
 max_tokens = 4096
+
+[taskset]
+split = "train"
 
 [harness]
 max_turns = 8

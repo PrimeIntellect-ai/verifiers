@@ -7,7 +7,11 @@ except ImportError:
     import tomli as tomllib
 
 import verifiers as vf
-from verifiers.utils.env_config_utils import config_table, normalize_env_config_sections
+from verifiers.utils.env_config_utils import (
+    config_table,
+    merge_config_tables,
+    normalize_env_config_sections,
+)
 from verifiers_rl.rl.trainer import RLConfig, RLTrainer
 
 
@@ -29,7 +33,9 @@ def main() -> None:
 
     model = config["model"]
     env_config = normalize_env_config_sections(
-        config["env"], global_harness=config.get("harness")
+        config["env"],
+        global_taskset=config.get("taskset"),
+        global_harness=config.get("harness"),
     )
     env_id = env_config.get("id")
     if not isinstance(env_id, str) or not env_id:
@@ -39,7 +45,9 @@ def main() -> None:
         key: env_config[key] for key in ("taskset", "harness") if key in env_config
     }
     if child_config:
-        env_args["config"] = child_config
+        env_args["config"] = merge_config_tables(
+            env_args.get("config"), child_config, "env.args.config"
+        )
     env = vf.load_environment(env_id=env_id, **env_args)
     rl_config = RLConfig(**config["trainer"].get("args", {}))
     trainer = RLTrainer(model=model, env=env, args=rl_config)

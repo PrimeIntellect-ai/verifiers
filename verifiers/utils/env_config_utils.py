@@ -30,7 +30,10 @@ def merge_config_tables(base: object, overlay: object, field: str) -> dict[str, 
 
 
 def normalize_env_config_sections(
-    raw: Mapping[str, object], *, global_harness: object | None = None
+    raw: Mapping[str, object],
+    *,
+    global_taskset: object | None = None,
+    global_harness: object | None = None,
 ) -> dict[str, object]:
     config = dict(raw)
     env_args = config_table(config.pop("env_args", {}), "env_args")
@@ -44,14 +47,22 @@ def normalize_env_config_sections(
 
     legacy_config = config_table(env_args.pop("config", {}), "env_args.config")
     taskset = merge_config_tables(
-        legacy_config.get("taskset"), config.pop("taskset", None), "taskset"
+        merge_config_tables(
+            global_taskset, legacy_config.pop("taskset", None), "taskset"
+        ),
+        config.pop("taskset", None),
+        "taskset",
     )
     harness = merge_config_tables(
-        merge_config_tables(global_harness, legacy_config.get("harness"), "harness"),
+        merge_config_tables(
+            global_harness, legacy_config.pop("harness", None), "harness"
+        ),
         config.pop("harness", None),
         "harness",
     )
 
+    if legacy_config:
+        env_args["config"] = legacy_config
     if taskset:
         config["taskset"] = taskset
     if harness:

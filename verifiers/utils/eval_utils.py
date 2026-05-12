@@ -36,7 +36,11 @@ from verifiers.types import (
     _validate_extra_headers_value,
 )
 from verifiers.utils.async_utils import EventLoopLagMonitor
-from verifiers.utils.env_config_utils import config_table, normalize_env_config_sections
+from verifiers.utils.env_config_utils import (
+    config_table,
+    merge_config_tables,
+    normalize_env_config_sections,
+)
 from verifiers.utils.import_utils import load_toml
 from verifiers.utils.logging_utils import (
     log_level,
@@ -427,6 +431,7 @@ def load_toml_config(
     global_defaults = {
         k: v for k, v in raw_config.items() if k not in ("eval", "ablation")
     }
+    global_taskset = global_defaults.pop("taskset", None)
     global_harness = global_defaults.pop("harness", None)
 
     # valid fields mirror cli args, not evalconfig
@@ -504,7 +509,11 @@ def load_toml_config(
         if "model" in eval_config and "endpoint_id" not in eval_config:
             merged.pop("endpoint_id", None)
         merged_eval_list.append(
-            normalize_env_config_sections(merged, global_harness=global_harness)
+            normalize_env_config_sections(
+                merged,
+                global_taskset=global_taskset,
+                global_harness=global_harness,
+            )
         )
 
     # expand [[ablation]] blocks into eval configs
@@ -534,7 +543,11 @@ def load_toml_config(
                 f"Valid fields are: {sorted(valid_fields)}"
             )
         expanded = [
-            normalize_env_config_sections(config, global_harness=global_harness)
+            normalize_env_config_sections(
+                config,
+                global_taskset=global_taskset,
+                global_harness=global_harness,
+            )
             for config in _expand_ablation(ablation, global_defaults)
         ]
         merged_eval_list.extend(expanded)
@@ -825,7 +838,9 @@ async def run_evaluation(
         if value
     }
     if child_config:
-        env_kwargs["config"] = child_config
+        env_kwargs["config"] = merge_config_tables(
+            env_kwargs.get("config"), child_config, "env_args.config"
+        )
     with maybe_suppress_logs:
         vf_env = vf.load_environment(env_id=config.env_id, **env_kwargs)
 
