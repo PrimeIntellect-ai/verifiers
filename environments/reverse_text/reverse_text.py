@@ -11,12 +11,14 @@ def load_environment(
     v1: bool = False,
 ) -> vf.Environment:
     if v1:
-        from reverse_text_v1 import load_v1_environment
+        from reverse_text_v1 import ReverseTextTasksetConfig, load_v1_environment
 
         return load_v1_environment(
-            dataset_name=dataset_name,
-            dataset_split=dataset_split,
-            system_prompt=system_prompt,
+            ReverseTextTasksetConfig(
+                dataset_name=dataset_name,
+                dataset_split=dataset_split,
+                system_prompt=system_prompt,
+            )
         )
 
     def build_dataset():
