@@ -237,7 +237,7 @@ class HarborEnv(HarborMCPMixin, vf.CliAgentEnv):
             logger.info(f"Running Harbor tests for task {state.get('task')}")
             results = await self.run_background_job(
                 state,
-                "bash test.sh",
+                self.without_interception_env("bash test.sh"),
                 timeout=300,
                 working_dir="/tests",
                 poll_interval=5,
