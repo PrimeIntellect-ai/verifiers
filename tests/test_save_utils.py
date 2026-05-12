@@ -954,33 +954,111 @@ class TestDeltaIntermediateMmData:
             == 20
         )
 
-    def test_compaction_unions_to_correct_per_window_sets(self):
-        # Step 1: pre-compaction. Step 2: compaction dropped A, B and
-        # introduced C (cumulative is now {C}, not {A, B, C}). Step 3:
-        # extends with D, cumulative {C, D}.
+    def test_compaction_two_training_samples_assemble_correctly(self):
+        """Rollout with one compaction event → two TrainingSamples.
+
+        Models the prime-rl compaction flow: a single rollout produces
+        multiple ``TrainingSample`` objects, one per compaction window.
+        The pre-compaction sample's images are no longer in the
+        post-compaction step's cumulative ``mm_data`` — the previous
+        "keep last" strategy would have silently dropped them. With
+        delta encoding, each per-window assembler recovers exactly the
+        images its tokens reference: no leakage in either direction.
+        """
+        from renderers.base import MultiModalData, PlaceholderRange
+
+        def step(*hashes: str, offsets: list[int]):
+            return {
+                "tokens": {
+                    "multi_modal_data": MultiModalData(
+                        mm_hashes={"image": list(hashes)},
+                        mm_placeholders={
+                            "image": [
+                                PlaceholderRange(offset=o, length=4) for o in offsets
+                            ]
+                        },
+                        mm_items={
+                            "image": [{"pixel_values": f"px-{h}"} for h in hashes]
+                        },
+                    )
+                }
+            }
+
+        # Turn 1: image A. Cumulative {A}.
+        # Turn 2: image B. Cumulative {A, B}.
+        # ── compaction event: turns 1+2 summarized in text, images dropped ──
+        # Turn 3: image C. Cumulative {C} (offsets reset against the
+        #         post-compaction prompt).
+        # Turn 4: image D. Cumulative {C, D}.
         traj = [
-            self._step(self._mm("A", "B")),
-            self._step(self._mm("C")),
-            self._step(self._mm("C", "D")),
+            step("A", offsets=[10]),
+            step("A", "B", offsets=[10, 50]),
+            step("C", offsets=[8]),
+            step("C", "D", offsets=[8, 40]),
         ]
         out = _delta_intermediate_mm_data(traj)
 
-        # Each delta is computed against the prior step's cumulative.
-        assert out[0]["tokens"]["multi_modal_data"].mm_hashes == {"image": ["A", "B"]}
-        assert out[1]["tokens"]["multi_modal_data"].mm_hashes == {"image": ["C"]}
-        assert out[2]["tokens"]["multi_modal_data"].mm_hashes == {"image": ["D"]}
+        # Per-step deltas keep only what's new since the immediately prior step.
+        deltas = [s["tokens"]["multi_modal_data"].mm_hashes for s in out]
+        assert deltas == [
+            {"image": ["A"]},
+            {"image": ["B"]},
+            {"image": ["C"]},
+            {"image": ["D"]},
+        ]
 
-        # Per-window assembler simulation: TrainingSample window [0, 1]
-        # (pre + compaction-step) unions to {A, B, C}; window [2]
-        # contributes {D}. Both windows recover their referenced images.
-        window_pre = {
-            h
-            for step in out[:2]
-            for h in step["tokens"]["multi_modal_data"].mm_hashes.get("image", [])
-        }
-        window_post = set(out[2]["tokens"]["multi_modal_data"].mm_hashes["image"])
-        assert window_pre == {"A", "B", "C"}
-        assert window_post == {"D"}
+        def assemble(steps):
+            hashes: list[str] = []
+            items: list[dict] = []
+            placeholders: list[PlaceholderRange] = []
+            for s in steps:
+                mm = s["tokens"]["multi_modal_data"]
+                hashes += mm.mm_hashes.get("image", [])
+                items += mm.mm_items.get("image", [])
+                placeholders += mm.mm_placeholders.get("image", [])
+            return hashes, items, placeholders
+
+        ts1_hashes, ts1_items, ts1_phs = assemble(out[0:2])  # pre-compaction
+        ts2_hashes, ts2_items, ts2_phs = assemble(out[2:4])  # post-compaction
+
+        assert ts1_hashes == ["A", "B"]
+        assert ts2_hashes == ["C", "D"]
+        # The invariant the previous "keep last" broke: pre-compaction TS
+        # does not see post-compaction images, and vice versa.
+        assert set(ts1_hashes).isdisjoint(set(ts2_hashes))
+
+        # Items / placeholders are reindexed lock-step with hashes (no
+        # off-by-one or cross-contamination during reindex).
+        assert ts1_items == [{"pixel_values": "px-A"}, {"pixel_values": "px-B"}]
+        assert ts2_items == [{"pixel_values": "px-C"}, {"pixel_values": "px-D"}]
+
+        # Placeholder offsets travel verbatim per step; the assembler is
+        # responsible for shifting them into each window's local frame.
+        assert [p.offset for p in ts1_phs] == [10, 50]
+        assert [p.offset for p in ts2_phs] == [8, 40]
+
+    def test_image_reintroduction_after_compaction(self):
+        """A hash dropped at compaction and re-rendered later is re-transmitted.
+
+        The delta is computed against the *immediately prior step's*
+        cumulative, not a global seen-set. If image A appears in turn
+        1, is compacted away (step 2's cumulative is empty), and is
+        re-rendered in turn 3, A shows up in step 0's delta *and* step
+        2's delta — necessary so the post-compaction TrainingSample
+        also receives A's bytes.
+        """
+        traj = [
+            self._step(self._mm("A")),
+            self._step(self._mm()),
+            self._step(self._mm("A")),
+        ]
+        out = _delta_intermediate_mm_data(traj)
+
+        assert out[0]["tokens"]["multi_modal_data"].mm_hashes == {"image": ["A"]}
+        assert out[1]["tokens"]["multi_modal_data"].mm_hashes == {"image": []}
+        # A re-emerges in step 2's delta — its absence from step 1's
+        # cumulative means it counts as "new" again.
+        assert out[2]["tokens"]["multi_modal_data"].mm_hashes == {"image": ["A"]}
 
     def test_steps_with_no_new_items_collapse_to_empty_delta(self):
         # Step 2's cumulative equals step 1's — no new items.
