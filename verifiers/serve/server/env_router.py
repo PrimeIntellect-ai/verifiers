@@ -104,7 +104,7 @@ class EnvRouter:
         json_logging: bool = False,
         *,
         num_workers: int = 1,
-        worker_heartbeat_timeout: float = 30.0,
+        worker_heartbeat_timeout: float = 1800.0,
         stats_log_interval: float = 10.0,
         death_pipe: Connection | None = None,
     ):
