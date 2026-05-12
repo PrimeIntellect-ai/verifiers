@@ -33,6 +33,10 @@ def format_dataset(
     """
     Create `example_id` and `prompt` columns if not present.
     """
+    # Set a default writer_batch_size to prevent pyarrow offset overflow
+    # for datasets with large strings (e.g. serialized test cases).
+    map_kwargs = {**map_kwargs}
+    map_kwargs.setdefault("writer_batch_size", 200)
     # if "id" column is present and not int, rename it to "src_id"
     if "example_id" in dataset.column_names and not isinstance(
         dataset["example_id"][0], int
@@ -362,6 +366,7 @@ def load_example_dataset(
         preprocess_fn,
         num_proc=10,
         remove_columns=dataset.column_names,
+        writer_batch_size=200,
     )
     if "temp_answer" in dataset.column_names:
         dataset = dataset.rename_column("temp_answer", "answer")

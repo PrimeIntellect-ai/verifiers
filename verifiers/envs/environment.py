@@ -146,7 +146,11 @@ class Environment(ABC):
         self.env_id = env_id or ""
         self.env_args = env_args or {}
         self.max_seq_len = max_seq_len
-        self.map_kwargs = map_kwargs
+        # Copy to avoid mutating the shared default and set a default
+        # writer_batch_size to prevent pyarrow offset overflow for datasets
+        # with large strings (e.g. serialized test cases in coding datasets).
+        self.map_kwargs = {**map_kwargs}
+        self.map_kwargs.setdefault("writer_batch_size", 200)
 
         self.set_score_rollouts(score_rollouts)
         self.pass_threshold = pass_threshold
