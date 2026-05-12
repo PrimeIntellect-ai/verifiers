@@ -567,7 +567,7 @@ def load_harness(
     config: vf.HarnessConfig | None = None,
     agent_workdir: str = SRC_DIR,
     max_turns: int | None = None,
-    environment_timeout: int = 120,
+    environment_timeout: int = 600,
     system_prompt: str | None = None,
     **kwargs: Any,
 ) -> vf.MiniSWEAgent:
@@ -594,7 +594,7 @@ def load_environment(
     ds_keep_in_memory: bool | None = None,
     # mini-SWE-agent harness
     max_turns: int | None = None,
-    environment_timeout: int = 120,
+    environment_timeout: int = 600,
     system_prompt: str | None = SYSTEM_PROMPT,
 ) -> vf.Env:
     verifiers.ensure_keys(["HF_TOKEN"])
