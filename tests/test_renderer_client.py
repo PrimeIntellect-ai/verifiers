@@ -483,7 +483,7 @@ _TRUNCATED_ANCHOR_MODELS = [
         "auto",
         id="nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
     ),
-    pytest.param("openai/gpt-oss-20b", "gpt_oss", id="openai/gpt-oss-20b"),
+    pytest.param("openai/gpt-oss-20b", "gpt-oss", id="openai/gpt-oss-20b"),
 ]
 
 
