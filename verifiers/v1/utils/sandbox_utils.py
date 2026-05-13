@@ -262,12 +262,13 @@ async def run_sandbox_command(
             )
         argv = await command_argv(program, task, state, runtime)
         env = await command_env(program, task, state, runtime, include_base=False)
-        result = await lease.client.execute_command(
-            lease.id,
-            shlex.join(argv),
+        command = shlex.join(argv)
+        command_timeout = cast(int | None, sandbox_config.get("command_timeout"))
+        result = await lease.run_background_job(
+            command,
+            timeout=command_timeout,
             working_dir=workdir,
             env=env,
-            timeout=cast(int | None, sandbox_config.get("command_timeout")),
         )
         state["command"] = {
             "argv": argv,
