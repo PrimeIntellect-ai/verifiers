@@ -6,9 +6,9 @@ through `vf.load_environment`; legacy v0 `vf.Environment`-style envs are
 not supported here — use `vf-eval` for those.
 
 Examples:
-    vf-eval-v1 --task reverse-text --help
-    vf-eval-v1 --task reverse-text --harness opencode --help
-    vf-eval-v1 --task reverse-text --taskset.dataset-split train --num-examples 1
+    vf-eval-v1 --taskset reverse-text --help
+    vf-eval-v1 --taskset reverse-text --harness opencode --help
+    vf-eval-v1 --taskset reverse-text --taskset-config.dataset-split train
     vf-eval-v1 @ configs/eval/my-run.toml
 """
 
@@ -28,11 +28,11 @@ import tyro
 from pydantic import Field, create_model
 from pydantic_config import BaseConfig, cli
 
-import verifiers.v1 as vf1
+import verifiers.v1 as vf
 from verifiers.types import ClientConfig, GenerateOutputs
 
 # --------------------------------------------------------------------------- #
-# Env package discovery.
+# Env / harness module discovery.
 # --------------------------------------------------------------------------- #
 
 
@@ -84,28 +84,22 @@ def _check_load_signature(fn: Any, fn_name: str) -> None:
         )
 
 
-def _discover_taskset_config(module: Any) -> type[vf1.TasksetConfig]:
+def _discover_taskset_config(module: Any) -> type[vf.TasksetConfig]:
     _check_load_signature(module.load_taskset, "load_taskset")
     return cast(
-        type[vf1.TasksetConfig],
-        _config_annotation(module.load_taskset, vf1.TasksetConfig),
+        type[vf.TasksetConfig],
+        _config_annotation(module.load_taskset, vf.TasksetConfig),
     )
 
 
-def _discover_harness_config(module: Any) -> type[vf1.HarnessConfig]:
+def _discover_harness_config(module: Any) -> type[vf.HarnessConfig]:
     if not hasattr(module, "load_harness"):
-        return vf1.HarnessConfig
+        return vf.HarnessConfig
     _check_load_signature(module.load_harness, "load_harness")
     return cast(
-        type[vf1.HarnessConfig],
-        _config_annotation(module.load_harness, vf1.HarnessConfig),
+        type[vf.HarnessConfig],
+        _config_annotation(module.load_harness, vf.HarnessConfig),
     )
-
-
-# --------------------------------------------------------------------------- #
-# Named harness registry. `--harness <name>` swaps the env's default harness.
-# Module paths (containing a dot) are imported directly.
-# --------------------------------------------------------------------------- #
 
 
 HARNESS_REGISTRY: dict[str, str] = {
@@ -129,34 +123,48 @@ def _resolve_harness_module(name: str) -> Any:
 
 
 # --------------------------------------------------------------------------- #
-# Top-level config: only task, harness, model, rollout controls.
-# `taskset` and `harness` sub-sections are typed dynamically per env/harness.
+# Top-level config. Pydantic-config owns required-field validation. The
+# nested env-specific configs live under `taskset_config` / `harness_config`
+# so they do not collide with the `--taskset` / `--harness` selector flags.
 # --------------------------------------------------------------------------- #
 
 
 class _EvalConfigBase(BaseConfig):
     """vf-eval-v1: evaluate a v1 environment via load_taskset + load_harness."""
 
-    task: Annotated[str, tyro.conf.arg(help="Env package id.")]
+    taskset: Annotated[
+        str, tyro.conf.arg(help="Env package id (resolves load_taskset).")
+    ]
+    harness: str | None = Field(
+        default=None,
+        description=(
+            "Harness package name from the registry (base / opencode / rlm / pi / "
+            "mini-swe), or a Python module path. Defaults to the env's own "
+            "load_harness when present, else base."
+        ),
+    )
     model: str = Field(default="openai/gpt-4.1-mini", description="Model id.")
     num_examples: int = Field(default=5, description="Examples to evaluate.")
     rollouts_per_example: int = Field(default=3, description="Rollouts per example.")
 
 
 def _build_eval_config_cls(
-    taskset_cls: type[vf1.TasksetConfig],
-    harness_cls: type[vf1.HarnessConfig],
+    taskset_cls: type[vf.TasksetConfig],
+    harness_cls: type[vf.HarnessConfig],
 ) -> type[BaseConfig]:
     return create_model(
         "EvalConfigV1",
         __base__=_EvalConfigBase,
-        taskset=(taskset_cls, Field(default_factory=taskset_cls)),
-        harness=(harness_cls, Field(default_factory=harness_cls)),
+        taskset_config=(taskset_cls, Field(default_factory=taskset_cls)),
+        harness_config=(harness_cls, Field(default_factory=harness_cls)),
     )
 
 
 # --------------------------------------------------------------------------- #
-# Argv pre-scan: extract `--task` and `--harness <name>` before tyro parses.
+# Argv pre-scan: peek `--taskset` / `--harness` so we can resolve the right
+# config types before tyro builds the help. We do NOT strip the flags — tyro
+# still parses them and emits standard "missing required" / "unrecognized
+# argument" errors.
 # --------------------------------------------------------------------------- #
 
 
@@ -168,46 +176,20 @@ def _load_toml(path: str) -> dict[str, Any]:
         return {}
 
 
-def _peek_task(argv: list[str]) -> str | None:
+def _peek_flag(argv: list[str], flag: str) -> str | None:
+    long = f"--{flag}"
+    long_eq = f"--{flag}="
     for i, a in enumerate(argv):
-        if a == "--task" and i + 1 < len(argv):
+        if a == long and i + 1 < len(argv) and not argv[i + 1].startswith("-"):
             return argv[i + 1]
-        if a.startswith("--task="):
+        if a.startswith(long_eq):
             return a.split("=", 1)[1]
     for i, a in enumerate(argv):
         if a == "@" and i + 1 < len(argv):
             data = _load_toml(argv[i + 1])
-            if "task" in data:
-                return str(data["task"])
+            if isinstance(data.get(flag), str):
+                return cast(str, data[flag])
     return None
-
-
-def _extract_harness_selector(argv: list[str]) -> tuple[str | None, list[str]]:
-    """Pop `--harness <name>` from argv, leaving nested `--harness.<field>`."""
-    out: list[str] = []
-    selector: str | None = None
-    i = 0
-    while i < len(argv):
-        a = argv[i]
-        if a == "--harness" and i + 1 < len(argv) and not argv[i + 1].startswith("-"):
-            selector = argv[i + 1]
-            i += 2
-            continue
-        if a.startswith("--harness=") and "." not in a.split("=", 1)[0]:
-            selector = a.split("=", 1)[1]
-            i += 1
-            continue
-        out.append(a)
-        i += 1
-    if selector is None:
-        for i, a in enumerate(argv):
-            if a == "@" and i + 1 < len(argv):
-                data = _load_toml(argv[i + 1])
-                harness = data.get("harness")
-                if isinstance(harness, str):
-                    selector = harness
-                    break
-    return selector, out
 
 
 # --------------------------------------------------------------------------- #
@@ -215,18 +197,18 @@ def _extract_harness_selector(argv: list[str]) -> tuple[str | None, list[str]]:
 # --------------------------------------------------------------------------- #
 
 
-def _build_env(env_module: Any, harness_module: Any, cfg: Any) -> vf1.Env:
-    taskset = env_module.load_taskset(cfg.taskset)
-    harness = harness_module.load_harness(cfg.harness)
-    if not isinstance(taskset, vf1.Taskset):
+def _build_env(env_module: Any, harness_module: Any, cfg: Any) -> vf.Env:
+    taskset = env_module.load_taskset(cfg.taskset_config)
+    harness = harness_module.load_harness(cfg.harness_config)
+    if not isinstance(taskset, vf.Taskset):
         raise SystemExit(
             f"{env_module.__name__}.load_taskset must return a vf.Taskset."
         )
-    if not isinstance(harness, vf1.Harness):
+    if not isinstance(harness, vf.Harness):
         raise SystemExit(
             f"{harness_module.__name__}.load_harness must return a vf.Harness."
         )
-    return vf1.Env(taskset=taskset, harness=harness)
+    return vf.Env(taskset=taskset, harness=harness)
 
 
 def _summarize(outputs: GenerateOutputs) -> None:
@@ -258,15 +240,17 @@ def main(argv: list[str] | None = None) -> None:
     if argv is None:
         argv = sys.argv[1:]
 
-    harness_selector, argv = _extract_harness_selector(argv)
+    # Peek the selectors so we know which config types to use when building
+    # the dynamic EvalConfig. Tyro still owns parsing/validation.
+    taskset_selector = _peek_flag(argv, "taskset")
+    harness_selector = _peek_flag(argv, "harness")
 
-    task = _peek_task(argv)
-    if task is None:
-        env_module = None
-        taskset_cls: type[vf1.TasksetConfig] = vf1.TasksetConfig
-    else:
-        env_module = _import_env_module(task)
+    if taskset_selector is not None:
+        env_module = _import_env_module(taskset_selector)
         taskset_cls = _discover_taskset_config(env_module)
+    else:
+        env_module = None
+        taskset_cls = vf.TasksetConfig
 
     if harness_selector is not None:
         harness_module = _resolve_harness_module(harness_selector)
@@ -279,9 +263,10 @@ def main(argv: list[str] | None = None) -> None:
     EvalConfigCls = _build_eval_config_cls(taskset_cls, harness_cls)
     cfg = cast(Any, cli(EvalConfigCls, args=argv))
 
-    resolved_task = cfg.task
-    if env_module is None or resolved_task != task:
-        env_module = _import_env_module(resolved_task)
+    if env_module is None or cfg.taskset != taskset_selector:
+        env_module = _import_env_module(cfg.taskset)
+    if cfg.harness is not None and cfg.harness != harness_selector:
+        harness_module = _resolve_harness_module(cfg.harness)
 
     asyncio.run(_run(env_module, harness_module, cfg))
 
