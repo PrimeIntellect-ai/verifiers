@@ -296,3 +296,8 @@ cat > ~/.config/opencode/opencode.json << EOFCONFIG
 {config_json}
 EOFCONFIG
 """
+
+
+def load_harness(config: OpenCodeConfig | None = None) -> OpenCode:
+    """Build an OpenCode harness from a single positional config."""
+    return OpenCode(config=config)

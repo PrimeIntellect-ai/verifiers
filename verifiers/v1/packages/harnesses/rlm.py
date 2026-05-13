@@ -8,6 +8,8 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
+from pydantic import Field
+
 from verifiers.envs.experimental.utils.git_checkout_cache import (
     resolve_git_checkout,
     validate_git_checkout,
@@ -263,3 +265,25 @@ def draw_threshold(state: Mapping[str, Any], lo: int, hi: int) -> int:
     prompt = json.dumps(state.get("prompt"), sort_keys=True, default=str)
     digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
     return random.Random(int(digest[:16], 16)).randint(lo, hi)
+
+
+class RLMConfig(HarnessConfig):
+    """Config for the RLM (Recursive Language Model) CLI harness."""
+
+    workdir: str = "/workspace"
+    rlm_max_turns: int = DEFAULT_RLM_MAX_TURNS
+    rlm_exec_timeout: int = DEFAULT_RLM_EXEC_TIMEOUT
+    rlm_max_depth: int = DEFAULT_RLM_MAX_DEPTH
+    rlm_tools: list[str] = Field(default_factory=lambda: ["ipython"])
+
+
+def load_harness(config: RLMConfig | None = None) -> RLM:
+    cfg = config or RLMConfig()
+    return RLM(
+        workdir=cfg.workdir,
+        rlm_max_turns=cfg.rlm_max_turns,
+        rlm_exec_timeout=cfg.rlm_exec_timeout,
+        rlm_max_depth=cfg.rlm_max_depth,
+        rlm_tools=list(cfg.rlm_tools),
+        config=cfg,
+    )

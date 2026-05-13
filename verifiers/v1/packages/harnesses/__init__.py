@@ -1,8 +1,20 @@
+from .base import BaseHarnessConfig
 from .cli import CLIHarness
 from .configs import OpenCodeConfig
-from .mini_swe_agent import MiniSWEAgent
+from .mini_swe_agent import MiniSWEAgent, MiniSWEConfig
 from .opencode import OpenCode
-from .pi import Pi
-from .rlm import RLM
+from .pi import Pi, PiConfig
+from .rlm import RLM, RLMConfig
 
-__all__ = ["CLIHarness", "MiniSWEAgent", "OpenCode", "OpenCodeConfig", "Pi", "RLM"]
+__all__ = [
+    "BaseHarnessConfig",
+    "CLIHarness",
+    "MiniSWEAgent",
+    "MiniSWEConfig",
+    "OpenCode",
+    "OpenCodeConfig",
+    "Pi",
+    "PiConfig",
+    "RLM",
+    "RLMConfig",
+]

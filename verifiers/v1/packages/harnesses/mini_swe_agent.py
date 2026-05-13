@@ -6,7 +6,7 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from .cli import CLIHarness
-from ...config import SandboxConfig
+from ...config import HarnessConfig, SandboxConfig
 from ...utils.prompt_utils import (
     state_system_prompt_text,
     task_text as task_instruction_text,
@@ -245,3 +245,23 @@ timeout --kill-after=30s "${{AGENT_TIMEOUT_SECONDS:-3600}}" {shlex.quote(mini_bi
   "${{CONFIG_ARGS[@]}}" 2>&1 | tee -a {shlex.quote(log_path)}
 """
     return f"bash -lc {shlex.quote(script)}"
+
+
+class MiniSWEConfig(HarnessConfig):
+    """Config for the mini-swe-agent CLI harness."""
+
+    agent_workdir: str = DEFAULT_AGENT_WORKDIR
+    config_spec: str = DEFAULT_CONFIG_SPEC
+    model_class: str = DEFAULT_MODEL_CLASS
+    environment_timeout: int = DEFAULT_ENVIRONMENT_TIMEOUT
+
+
+def load_harness(config: MiniSWEConfig | None = None) -> MiniSWEAgent:
+    cfg = config or MiniSWEConfig()
+    return MiniSWEAgent(
+        agent_workdir=cfg.agent_workdir,
+        config_spec=cfg.config_spec,
+        model_class=cfg.model_class,
+        environment_timeout=cfg.environment_timeout,
+        config=cfg,
+    )

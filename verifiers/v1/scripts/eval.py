@@ -131,6 +131,35 @@ def _discover_harness_config(module: Any) -> type[vf1.HarnessConfig]:
 
 
 # --------------------------------------------------------------------------- #
+# Named harness registry. `--harness <name>` swaps the env's default
+# `load_harness` for the package addressed by `<name>`. Arbitrary module paths
+# (containing a dot) are imported directly.
+# --------------------------------------------------------------------------- #
+
+
+HARNESS_REGISTRY: dict[str, str] = {
+    "base": "verifiers.v1.packages.harnesses.base",
+    "opencode": "verifiers.v1.packages.harnesses.opencode",
+    "rlm": "verifiers.v1.packages.harnesses.rlm",
+    "pi": "verifiers.v1.packages.harnesses.pi",
+    "mini-swe": "verifiers.v1.packages.harnesses.mini_swe_agent",
+}
+
+
+def _resolve_harness_module(name: str) -> Any:
+    target = HARNESS_REGISTRY.get(name, name)
+    try:
+        module = importlib.import_module(target)
+    except ImportError as e:
+        raise SystemExit(
+            f"could not import harness {name!r} (resolved to {target!r}): {e}"
+        ) from e
+    if not hasattr(module, "load_harness"):
+        raise SystemExit(f"harness module {target!r} does not expose `load_harness`.")
+    return module
+
+
+# --------------------------------------------------------------------------- #
 # Top-level EvalConfig built dynamically per env so `--taskset.*` and
 # `--harness.*` flags reflect the env's concrete config types.
 # --------------------------------------------------------------------------- #
@@ -247,6 +276,40 @@ def _peek_task_from_argv(argv: list[str]) -> str | None:
     return None
 
 
+def _extract_harness_selector(argv: list[str]) -> tuple[str | None, list[str]]:
+    """Pop `--harness <name>` / `--harness=<name>` from argv.
+
+    Distinguishes the package-selector form (`--harness opencode`, where the
+    next token has no leading `--`) from nested-config form (`--harness.field`,
+    which we leave for tyro). Returns (selector or None, filtered_argv).
+    """
+    out: list[str] = []
+    selector: str | None = None
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--harness" and i + 1 < len(argv) and not argv[i + 1].startswith("-"):
+            selector = argv[i + 1]
+            i += 2
+            continue
+        if a.startswith("--harness=") and "." not in a.split("=", 1)[0]:
+            selector = a.split("=", 1)[1]
+            i += 1
+            continue
+        out.append(a)
+        i += 1
+    # Also peek a `harness = "..."` key from any @ TOML.
+    if selector is None:
+        for i, a in enumerate(argv):
+            if a == "@" and i + 1 < len(argv):
+                data = _load_toml(argv[i + 1])
+                harness = data.get("harness")
+                if isinstance(harness, str):
+                    selector = harness
+                    break
+    return selector, out
+
+
 def _resolve_task(argv: list[str]) -> str:
     task = _peek_task_from_argv(argv) or _peek_task_from_toml(argv)
     if task is None:
@@ -291,20 +354,17 @@ def _build_client_config(cfg: Any) -> tuple[str, ClientConfig]:
     )
 
 
-def _build_env(module: Any, cfg: Any) -> vf1.Env:
-    taskset = module.load_taskset(cfg.taskset)
-    if hasattr(module, "load_harness"):
-        harness = module.load_harness(cfg.harness)
-    else:
-        harness = vf1.Harness(config=cfg.harness)
+def _build_env(env_module: Any, harness_module: Any, cfg: Any) -> vf1.Env:
+    taskset = env_module.load_taskset(cfg.taskset)
+    harness = harness_module.load_harness(cfg.harness)
     if not isinstance(taskset, vf1.Taskset):
         raise SystemExit(
-            f"{module.__name__}.load_taskset must return a vf.Taskset "
+            f"{env_module.__name__}.load_taskset must return a vf.Taskset "
             f"(got {type(taskset).__name__})."
         )
     if not isinstance(harness, vf1.Harness):
         raise SystemExit(
-            f"{module.__name__}.load_harness must return a vf.Harness "
+            f"{harness_module.__name__}.load_harness must return a vf.Harness "
             f"(got {type(harness).__name__})."
         )
     return vf1.Env(taskset=taskset, harness=harness)
@@ -327,8 +387,8 @@ def _install_env_cache_override(target_env_id: str, env: vf1.Env) -> None:
     vf.load_environment = _override  # type: ignore[assignment]
 
 
-async def _run(env_id: str, module: Any, cfg: Any) -> None:
-    env = _build_env(module, cfg)
+async def _run(env_id: str, env_module: Any, harness_module: Any, cfg: Any) -> None:
+    env = _build_env(env_module, harness_module, cfg)
 
     model, client_config = _build_client_config(cfg)
     sampling_args = merge_sampling_args(
@@ -377,17 +437,29 @@ def main(argv: list[str] | None = None) -> None:
     if argv is None:
         argv = sys.argv[1:]
 
-    # If the user only asked for --help with no env, we still need *some*
-    # config class. Use vf.TasksetConfig / vf.HarnessConfig as fallbacks.
+    # Pop `--harness <name>` so it does not collide with the nested
+    # `--harness.<field>` flags tyro will generate from the chosen config.
+    harness_selector, argv = _extract_harness_selector(argv)
+
+    # Resolve env task (positional) so we can import the env module and
+    # discover its taskset config type before tyro takes over.
     task = _peek_task_from_argv(argv) or _peek_task_from_toml(argv)
     if task is None:
-        module = None
+        env_module = None
         taskset_cls: type[vf1.TasksetConfig] = vf1.TasksetConfig
-        harness_cls: type[vf1.HarnessConfig] = vf1.HarnessConfig
     else:
-        module = _import_env_module(task)
-        taskset_cls = _discover_taskset_config(module)
-        harness_cls = _discover_harness_config(module)
+        env_module = _import_env_module(task)
+        taskset_cls = _discover_taskset_config(env_module)
+
+    # Resolve harness module: registry/explicit selector wins; otherwise use
+    # the env's own load_harness; otherwise fall back to base.
+    if harness_selector is not None:
+        harness_module = _resolve_harness_module(harness_selector)
+    elif env_module is not None and hasattr(env_module, "load_harness"):
+        harness_module = env_module
+    else:
+        harness_module = importlib.import_module(HARNESS_REGISTRY["base"])
+    harness_cls = _discover_harness_config(harness_module)
 
     EvalConfigCls = _build_eval_config_cls(taskset_cls, harness_cls)
     cfg = cast(Any, cli(EvalConfigCls, args=argv))
@@ -396,10 +468,10 @@ def main(argv: list[str] | None = None) -> None:
         setup_logging(get_log_level(cfg.verbose))
 
     resolved_task = cfg.task
-    if module is None or resolved_task != task:
-        module = _import_env_module(resolved_task)
+    if env_module is None or resolved_task != task:
+        env_module = _import_env_module(resolved_task)
 
-    asyncio.run(_run(resolved_task, module, cfg))
+    asyncio.run(_run(resolved_task, env_module, harness_module, cfg))
 
 
 if __name__ == "__main__":

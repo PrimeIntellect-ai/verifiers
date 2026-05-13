@@ -7,7 +7,7 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from .cli import CLIHarness
-from ...config import SandboxConfig
+from ...config import HarnessConfig, SandboxConfig
 from ...state import State
 from ...utils.mcp_proxy_utils import proxy_command
 from ...utils.prompt_utils import (
@@ -210,3 +210,19 @@ def pi_mcp_json() -> str:
         }
     }
     return json.dumps(config, indent=2)
+
+
+class PiConfig(HarnessConfig):
+    """Config for the Pi Coding Agent CLI harness."""
+
+    agent_workdir: str = DEFAULT_PI_WORKDIR
+    install_mcp_adapter: bool = True
+
+
+def load_harness(config: PiConfig | None = None) -> Pi:
+    cfg = config or PiConfig()
+    return Pi(
+        agent_workdir=cfg.agent_workdir,
+        install_mcp_adapter=cfg.install_mcp_adapter,
+        config=cfg,
+    )
