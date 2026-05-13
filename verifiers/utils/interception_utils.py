@@ -27,7 +27,7 @@ from openai.types.chat.chat_completion_chunk import (
     Choice as ChunkChoice,
 )
 
-from verifiers.errors import InfraError, OverlongPromptError
+from verifiers.errors import InfraError
 from verifiers.types import Response, Tool
 from verifiers.utils.logging_utils import print_time, truncate
 
@@ -295,8 +295,6 @@ class InterceptionServer:
                 response = await response_future
             except asyncio.CancelledError:
                 return web.json_response({"error": "Rollout cancelled"}, status=499)
-            except OverlongPromptError as e:
-                return web.json_response({"error": str(e)}, status=500)
             except Exception as e:
                 logger.debug(
                     f"[{rollout_id}] Rollout error surfaced in non-streaming "
@@ -513,8 +511,6 @@ class InterceptionServer:
             await response_future
         except asyncio.CancelledError:
             raise
-        except OverlongPromptError:
-            pass
         except Exception as e:
             logger.debug(
                 f"[{rollout_id}] Rollout error surfaced in stream: {type(e).__name__}: {e}"
