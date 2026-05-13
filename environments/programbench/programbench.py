@@ -128,6 +128,7 @@ class ProgramBenchTasksetConfig(vf.TasksetConfig):
     dataset_split: str = "train"
     filter_language: str | None = None
     filter_difficulty: str | None = None
+    filter_task_ids: list[str] | None = None
     max_tasks: int | None = None
     hide_tests_from_agent: bool = True
     ds_num_proc: int | None = None
@@ -153,6 +154,7 @@ class ProgramBenchTaskset(vf.Taskset):
         dataset_split: str | None = None,
         filter_language: str | None = None,
         filter_difficulty: str | None = None,
+        filter_task_ids: list[str] | None = None,
         max_tasks: int | None = None,
         hide_tests_from_agent: bool | None = None,
         ds_num_proc: int | None = None,
@@ -181,6 +183,9 @@ class ProgramBenchTaskset(vf.Taskset):
             filter_difficulty
             if filter_difficulty is not None
             else config.filter_difficulty
+        )
+        self.filter_task_ids = (
+            filter_task_ids if filter_task_ids is not None else config.filter_task_ids
         )
         self.max_tasks = max_tasks if max_tasks is not None else config.max_tasks
         self.hide_tests_from_agent = (
@@ -241,6 +246,9 @@ class ProgramBenchTaskset(vf.Taskset):
             dataset = dataset.filter(
                 lambda x: x.get("difficulty") == self.filter_difficulty
             )
+        if self.filter_task_ids:
+            task_id_set = set(self.filter_task_ids)
+            dataset = dataset.filter(lambda x: x.get("task_id") in task_id_set)
         if self.max_tasks:
             dataset = dataset.select(range(min(self.max_tasks, len(dataset))))
 
@@ -289,7 +297,7 @@ class ProgramBenchTaskset(vf.Taskset):
                             "GOPATH": "/root/go",
                             "PAGER": "cat",
                             "MANPAGER": "cat",
-                            # Let mini-swe-agent self-exit 60s before the API hard kill.
+                            # Let mini-swe-agent self-exit 60s before the sandbox timeout.
                             "AGENT_TIMEOUT_SECONDS": str(max(60, command_timeout - 60)),
                         }
                     },
@@ -300,8 +308,9 @@ class ProgramBenchTaskset(vf.Taskset):
     def sandbox_config(self, info: dict) -> dict[str, object]:
         lang = info.get("language", "c")
         timeout_min = self.sandbox_timeout_minutes or _SANDBOX_TIMEOUT_MIN.get(lang, 20)
-        # Prime Intellect sandbox API caps execute_command timeout at 900s.
-        command_timeout = min(timeout_min * 60, 900)
+        # command_timeout controls the mini-swe-agent execution budget (run_background_job).
+        # compile/test use separate per-call timeouts in _compile()/_run_tests().
+        command_timeout = timeout_min * 60
         return {
             "image": _LANGUAGE_IMAGES.get(lang, DEFAULT_IMAGE),
             "cpu_cores": self.cpu_cores or 2,
@@ -581,7 +590,7 @@ class ProgramBenchTaskset(vf.Taskset):
 
     async def _compile(self, sandbox, state: dict, lang: str, task_id: str) -> bool:
         compile_timeout = self.compile_timeout or _COMPILE_TIMEOUT.get(lang, 120)
-        compile_result = await sandbox.execute(
+        compile_result = await sandbox.run_background_job(
             f"cd {SRC_DIR} && chmod +x compile.sh && "
             "export PATH=/usr/local/cargo/bin:/root/.cargo/bin:/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin && "
             "bash compile.sh 2>&1",
@@ -638,7 +647,7 @@ class ProgramBenchTaskset(vf.Taskset):
             # First retry: enable worker restart recovery (paper §4); subsequent: serial.
             extra_flags = "--max-worker-restart=4" if attempt == 1 else ""
             flags = f"{extra_flags} " if extra_flags else ""
-            pytest_result = await sandbox.execute(
+            pytest_result = await sandbox.run_background_job(
                 f"cd {TEST_DIR} && python3 -m pytest {TEST_DIR} --tb=short -q "
                 f"{flags}--junit-xml={TEST_DIR}/results.xml 2>&1",
                 timeout=test_timeout,
