@@ -383,8 +383,13 @@ def _program_tools_setup_handler(
 
 
 async def create_sandbox(client: object, sandbox_config: Mapping[str, object]) -> str:
+    import os
+
     from prime_sandboxes import CreateSandboxRequest
 
+    team_id = (
+        str(sandbox_config.get("team_id") or "") or os.getenv("PRIME_TEAM_ID") or None
+    )
     request = CreateSandboxRequest(
         name=f"vf-v1-{uuid.uuid4().hex[:8]}",
         docker_image=str(sandbox_config.get("image") or "python:3.11-slim"),
@@ -395,6 +400,7 @@ async def create_sandbox(client: object, sandbox_config: Mapping[str, object]) -
         gpu_count=int_config(sandbox_config, "gpu_count", 0),
         network_access=bool(sandbox_config.get("network_access", True)),
         timeout_minutes=int_config(sandbox_config, "timeout_minutes", 60),
+        team_id=team_id,
     )
     sandbox = await cast(Any, client).create(request)
     sandbox_id = str(sandbox.id)
