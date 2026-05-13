@@ -6,10 +6,10 @@ through `vf.load_environment`; legacy v0 `vf.Environment`-style envs are
 not supported here — use `vf-eval` for those.
 
 Examples:
-    vf-eval-v1 reverse-text --help
-    vf-eval-v1 reverse-text --harness-id opencode --help
-    vf-eval-v1 reverse-text --taskset.dataset-split train -n 1 -r 1
-    vf-eval-v1 reverse-text @ configs/eval/my-run.toml
+    vf-eval-v1 --taskset-id reverse-text --help
+    vf-eval-v1 --taskset-id reverse-text --harness-id opencode --help
+    vf-eval-v1 --taskset-id reverse-text --taskset.dataset-split train -n 1 -r 1
+    vf-eval-v1 --taskset-id reverse-text @ configs/eval/my-run.toml
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ from verifiers.types import ClientConfig, GenerateOutputs
 class AbstractEvalConfig(BaseConfig):
     """vf-eval-v1: evaluate a v1 environment via load_taskset + load_harness."""
 
-    taskset_id: Annotated[str, tyro.conf.Positional] = Field(
+    taskset_id: str = Field(
         description="Taskset package name (resolves load_taskset).",
     )
     harness_id: str | None = Field(
@@ -70,9 +70,9 @@ def build_eval_config_cls(
 
 
 # --------------------------------------------------------------------------- #
-# Argv pre-scan: peek the taskset positional and --harness-id flag so we can
-# discover the concrete config types before tyro builds the schema. Tyro
-# still owns parsing/validation.
+# Argv pre-scan: peek --taskset-id and --harness-id so we can discover the
+# concrete config types before tyro builds the schema. Tyro still owns
+# parsing/validation.
 # --------------------------------------------------------------------------- #
 
 
@@ -82,19 +82,6 @@ def _load_toml(path: str) -> dict[str, Any]:
             return tomllib.load(f)
     except (OSError, ValueError):
         return {}
-
-
-def _peek_positional(argv: list[str]) -> str | None:
-    i = 0
-    while i < len(argv):
-        a = argv[i]
-        if a == "@":
-            i += 2
-            continue
-        if not a.startswith("-"):
-            return a
-        i += 1
-    return None
 
 
 def _peek_flag(argv: list[str], flag: str) -> str | None:
@@ -118,43 +105,27 @@ def _peek_flag(argv: list[str], flag: str) -> str | None:
 # --------------------------------------------------------------------------- #
 
 
-def _resolve_harness_id(cfg: Any) -> str:
-    """Pick the harness package: explicit --harness-id, else the env's own
-    load_harness, else base."""
-    if cfg.harness_id is not None:
-        return cast(str, cfg.harness_id)
-    env_module = vf.import_taskset_module(cfg.taskset_id)
-    if hasattr(env_module, "load_harness"):
-        return cast(str, cfg.taskset_id)
-    return "base"
-
-
-def _summarize(outputs: GenerateOutputs) -> None:
-    rewards = [o["reward"] for o in outputs["outputs"] if o["reward"] is not None]
-    if not rewards:
-        print("no rewards recorded")
-        return
-    mean = sum(rewards) / len(rewards)
-    print(f"\nrollouts: {len(rewards)}    mean reward: {mean:.4f}")
-
-
 async def run(config: Any) -> None:
     taskset = vf.load_taskset(config.taskset_id, config.taskset)
-    harness = vf.load_harness(_resolve_harness_id(config), config.harness)
+    harness = vf.load_harness(config.harness_id, config.harness)
     env = vf.Env(taskset=taskset, harness=harness)
 
-    client_config = ClientConfig(
-        client_type="openai_chat_completions",
-        api_base_url="https://api.pinference.ai/api/v1",
-        api_key_var="PRIME_API_KEY",
-    )
     outputs = await env.evaluate(
-        client=client_config,
+        client=ClientConfig(),
         model=config.model,
         num_examples=config.num_examples,
         rollouts_per_example=config.rollouts_per_example,
     )
-    _summarize(outputs)
+
+    def summarize_outputs(outputs: GenerateOutputs) -> None:
+        rewards = [o["reward"] for o in outputs["outputs"] if o["reward"] is not None]
+        if not rewards:
+            print("no rewards recorded")
+            return
+        mean = sum(rewards) / len(rewards)
+        print(f"\nrollouts: {len(rewards)}    mean reward: {mean:.4f}")
+
+    summarize_outputs(outputs)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -163,7 +134,7 @@ def main(argv: list[str] | None = None) -> None:
 
     # Peek the selectors so we know which config types to use when building
     # the dynamic EvalConfig. Tyro still owns parsing/validation.
-    taskset_id = _peek_positional(argv)
+    taskset_id = _peek_flag(argv, "taskset-id")
     harness_id = _peek_flag(argv, "harness-id")
 
     if taskset_id is not None:
@@ -181,6 +152,11 @@ def main(argv: list[str] | None = None) -> None:
 
     EvalConfig = build_eval_config_cls(taskset_cls, harness_cls)
     config = cast(Any, cli(EvalConfig, args=argv))
+
+    # Fall back to the env's own load_harness, else base, when --harness-id
+    # was not explicitly set.
+    if config.harness_id is None:
+        config.harness_id = fallback_harness or "base"
 
     asyncio.run(run(config))
 
