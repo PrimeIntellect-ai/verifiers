@@ -141,9 +141,6 @@ class _EvalConfigBase(BaseConfig):
     model: str = Field(default="openai/gpt-4.1-mini", description="Model id.")
     num_examples: int = Field(default=5, description="Examples to evaluate.")
     rollouts_per_example: int = Field(default=3, description="Rollouts per example.")
-    max_concurrent: int = Field(default=32, description="Max concurrent rollouts.")
-    max_tokens: int | None = Field(default=None, description="Max output tokens.")
-    temperature: float | None = Field(default=None, description="Sampling temp.")
 
 
 def _build_eval_config_cls(
@@ -243,11 +240,6 @@ def _summarize(outputs: GenerateOutputs) -> None:
 
 async def _run(env_module: Any, harness_module: Any, cfg: Any) -> None:
     env = _build_env(env_module, harness_module, cfg)
-    sampling_args: dict[str, Any] = {}
-    if cfg.max_tokens is not None:
-        sampling_args["max_tokens"] = cfg.max_tokens
-    if cfg.temperature is not None:
-        sampling_args["temperature"] = cfg.temperature
     client_config = ClientConfig(
         client_type="openai_chat_completions",
         api_base_url="https://api.pinference.ai/api/v1",
@@ -256,10 +248,8 @@ async def _run(env_module: Any, harness_module: Any, cfg: Any) -> None:
     outputs = await env.evaluate(
         client=client_config,
         model=cfg.model,
-        sampling_args=sampling_args,
         num_examples=cfg.num_examples,
         rollouts_per_example=cfg.rollouts_per_example,
-        max_concurrent=cfg.max_concurrent,
     )
     _summarize(outputs)
 
