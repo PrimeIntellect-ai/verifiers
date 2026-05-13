@@ -6,6 +6,9 @@ from typing import Literal, cast
 
 from verifiers.utils.async_utils import maybe_call_with_named_args
 
+from ..state import State
+from ..task import Task
+
 LifecycleStage = Literal["rollout", "group"]
 
 
@@ -94,3 +97,18 @@ def expected_args_text(expected: set[str]) -> str:
     if expected == {"tasks", "states"}:
         return "tasks and states"
     return " and ".join(sorted(expected))
+
+
+async def state_done(task: Task, state: State) -> bool:
+    _ = task
+    return bool(state.get("done"))
+
+
+def handler_collection_attr(attr: str) -> str:
+    return {
+        "stop": "stops",
+        "setup": "setups",
+        "update": "updates",
+        "cleanup": "cleanups",
+        "teardown": "teardowns",
+    }.get(attr, attr)

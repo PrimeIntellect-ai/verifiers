@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any, cast
+from typing import cast
 
 from ..state import State
 
@@ -45,7 +45,7 @@ def has_borrowed_trajectory(state: Mapping[str, object]) -> bool:
     return isinstance(cast(Mapping[str, object], resolved).get("trajectory"), Mapping)
 
 
-def completion_from_trajectory(steps: Sequence[Mapping[str, object]]) -> list[Any]:
+def completion_from_trajectory(steps: Sequence[Mapping[str, object]]) -> list[object]:
     if not steps:
         return []
     first_prompt = message_list(steps[0], "prompt")
@@ -58,8 +58,8 @@ def completion_from_trajectory(steps: Sequence[Mapping[str, object]]) -> list[An
 
 
 def merge_existing_completion(
-    trajectory_completion: list[Any], existing: object
-) -> list[Any]:
+    trajectory_completion: list[object], existing: object
+) -> list[object]:
     if not isinstance(existing, list):
         return trajectory_completion
     if existing[: len(trajectory_completion)] == trajectory_completion:
@@ -67,7 +67,7 @@ def merge_existing_completion(
     return trajectory_completion
 
 
-def message_list(step: object, field: str) -> list[Any]:
+def message_list(step: object, field: str) -> list[object]:
     if not isinstance(step, Mapping):
         raise TypeError("trajectory steps must be mappings.")
     value = cast(Mapping[str, object], step).get(field)

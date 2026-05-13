@@ -67,7 +67,8 @@ def load_child_harness():
 def load_toolset():
     return vf.Toolset(
         tools=[ask_subagent],
-        bindings={"ask_subagent.harness": load_child_harness()},
+        objects={"harness": load_child_harness},
+        bindings={"ask_subagent.harness": "objects.harness"},
         scope="rollout",
     )
 

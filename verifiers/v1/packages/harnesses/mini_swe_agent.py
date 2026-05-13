@@ -3,10 +3,12 @@ from __future__ import annotations
 import shlex
 from collections.abc import Mapping
 from pathlib import PurePosixPath
-from typing import Any
 
-from .cli import CLIHarness
+from typing_extensions import Unpack
+
+from .cli import CLIHarness, CLIHarnessKwargs
 from ...config import SandboxConfig
+from ...types import PromptInput
 from ...utils.prompt_utils import (
     state_system_prompt_text,
     task_text as task_instruction_text,
@@ -53,11 +55,11 @@ class MiniSWEAgent(CLIHarness):
         environment_timeout: int = DEFAULT_ENVIRONMENT_TIMEOUT,
         extra_config_specs: list[str] | None = None,
         install_python: bool = True,
-        system_prompt: object | None = None,
+        system_prompt: PromptInput | None = None,
         sandbox: bool | Mapping[str, object] | SandboxConfig = True,
         program: Mapping[str, object] | None = None,
         max_turns: int | None = 4,
-        **kwargs: Any,
+        **kwargs: Unpack[CLIHarnessKwargs],
     ):
         files: dict[str, object] = {
             instruction_path: task_instruction_text,

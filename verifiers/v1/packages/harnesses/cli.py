@@ -5,9 +5,11 @@ from typing import cast
 
 from verifiers.clients import Client
 from verifiers.types import ClientConfig, SamplingArgs
+from typing_extensions import NotRequired, TypedDict
 
 from ...config import HarnessConfig, SandboxConfig, sandbox_config_mapping
 from ...harness import Harness
+from ...types import ConfigMap, Handler, PromptInput
 from ...utils.program_utils import program_list_items
 
 
@@ -19,6 +21,21 @@ DEFAULT_CLI_SANDBOX = {
     "command_timeout": 900,
     "network_access": True,
 }
+
+
+class CLIHarnessKwargs(TypedDict):
+    user: NotRequired[Handler | str | ConfigMap | None]
+    client: NotRequired[Client | ClientConfig | None]
+    model: NotRequired[str | None]
+    sampling_args: NotRequired[SamplingArgs | None]
+    toolsets: NotRequired[object | None]
+    stops: NotRequired[list[Callable[..., object]] | None]
+    setups: NotRequired[list[Callable[..., object]] | None]
+    updates: NotRequired[list[Callable[..., object]] | None]
+    metrics: NotRequired[list[Callable[..., object]] | None]
+    rewards: NotRequired[list[Callable[..., object]] | None]
+    advantages: NotRequired[list[Callable[..., object]] | None]
+    cleanups: NotRequired[list[Callable[..., object]] | None]
 
 
 class CLIHarness(Harness):
@@ -35,8 +52,8 @@ class CLIHarness(Harness):
         artifacts: Mapping[str, object] | None = None,
         tools: object | None = None,
         program: Mapping[str, object] | None = None,
-        system_prompt: object | None = None,
-        user: object | None = None,
+        system_prompt: PromptInput | None = None,
+        user: Handler | str | ConfigMap | None = None,
         client: Client | ClientConfig | None = None,
         model: str | None = None,
         sampling_args: SamplingArgs | None = None,

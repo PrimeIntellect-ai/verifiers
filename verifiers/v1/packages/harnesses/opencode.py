@@ -4,9 +4,10 @@ import json
 import shlex
 from collections.abc import Mapping
 from pathlib import PurePosixPath
-from typing import Any
 
-from .cli import CLIHarness
+from typing_extensions import Unpack
+
+from .cli import CLIHarness, CLIHarnessKwargs
 from .configs import (
     OPENCODE_DEFAULT_AGENT_WORKDIR,
     OPENCODE_DEFAULT_DISABLED_TOOLS,
@@ -20,6 +21,7 @@ from .configs import (
     OpenCodeConfig,
 )
 from ...config import SandboxConfig
+from ...types import PromptInput
 from ...utils.mcp_proxy_utils import proxy_command
 from ...utils.prompt_utils import (
     state_system_prompt_text,
@@ -36,7 +38,12 @@ DEFAULT_LOG_PATH = OPENCODE_DEFAULT_LOG_PATH
 DEFAULT_SYSTEM_PROMPT = OPENCODE_DEFAULT_SYSTEM_PROMPT
 DEFAULT_DISABLED_TOOLS = list(OPENCODE_DEFAULT_DISABLED_TOOLS)
 
-_UNSET: object = object()
+
+class _Unset:
+    pass
+
+
+_UNSET = _Unset()
 
 
 class OpenCode(CLIHarness):
@@ -49,7 +56,7 @@ class OpenCode(CLIHarness):
         instruction_path: str | None = None,
         system_prompt_path: str | None = None,
         log_path: str | None = None,
-        system_prompt: object | None = _UNSET,
+        system_prompt: PromptInput | None | _Unset = _UNSET,
         disabled_tools: list[str] | None = None,
         allow_git: bool | None = None,
         disable_compaction: bool | None = None,
@@ -62,7 +69,7 @@ class OpenCode(CLIHarness):
         program: Mapping[str, object] | None = None,
         max_turns: int | None = None,
         config: OpenCodeConfig | Mapping[str, object] | None = None,
-        **kwargs: Any,
+        **kwargs: Unpack[CLIHarnessKwargs],
     ):
         config_data: dict[str, object] = {
             "agent_workdir": agent_workdir,

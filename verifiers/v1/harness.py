@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
-from typing import Any, ClassVar, cast
+from collections.abc import Mapping
+from typing import ClassVar, cast
 
-from verifiers.clients import Client
-from verifiers.decorators import update
+from verifiers.decorators import metric, update
 from verifiers.errors import Error, OverlongPromptError
 from verifiers.types import (
-    ClientConfig,
     MessageContent,
     Messages,
     SamplingArgs,
@@ -23,11 +21,12 @@ from .config import (
     HarnessConfig,
     SandboxConfig,
     import_config_ref,
-    merge_config_callables,
+    merge_config_handler_map,
     merge_config_value,
     resolve_config_object,
     sandbox_config_mapping,
 )
+from .types import ConfigMap, Handler, ModelClient, ProgramMap, PromptInput
 from .utils.endpoint_utils import (
     Endpoint,
     assistant_completion_from_messages,
@@ -72,25 +71,25 @@ class Harness:
     def __init__(
         self,
         # Singleton fields.
-        program: Callable[..., object] | Mapping[str, object] | None = None,
-        system_prompt: object | None = None,
-        user: object | None = None,
-        sandbox: Mapping[str, object] | SandboxConfig | None = None,
-        client: Client | ClientConfig | None = None,
+        program: Handler | ProgramMap | None = None,
+        system_prompt: PromptInput | None = None,
+        user: Handler | str | ConfigMap | None = None,
+        sandbox: ConfigMap | SandboxConfig | None = None,
+        client: ModelClient | None = None,
         model: str | None = None,
         sampling_args: SamplingArgs | None = None,
         max_turns: int | None = None,
         # Collection fields.
         toolsets: object | None = None,
-        stops: list[Callable[..., object]] | None = None,
-        setups: list[Callable[..., object]] | None = None,
-        updates: list[Callable[..., object]] | None = None,
-        metrics: list[Callable[..., object]] | None = None,
-        rewards: list[Callable[..., object]] | None = None,
-        advantages: list[Callable[..., object]] | None = None,
-        cleanups: list[Callable[..., object]] | None = None,
+        stops: list[Handler] | None = None,
+        setups: list[Handler] | None = None,
+        updates: list[Handler] | None = None,
+        metrics: list[Handler] | None = None,
+        rewards: list[Handler] | None = None,
+        advantages: list[Handler] | None = None,
+        cleanups: list[Handler] | None = None,
         # Config.
-        config: HarnessConfig | Mapping[str, object] | None = None,
+        config: HarnessConfig | ConfigMap | None = None,
     ):
         self.config = type(self).config_type.from_config(config)
         if max_turns is not None:
@@ -98,12 +97,13 @@ class Harness:
         program_value = resolve_config_object(
             merge_config_value(program, self.config.program)
         )
-        self.program = cast(
-            Callable[..., object] | Mapping[str, object] | None, program_value
+        self.program = cast(Handler | ProgramMap | None, program_value)
+        system_prompt_value = cast(
+            PromptInput | None,
+            merge_config_value(system_prompt, self.config.system_prompt),
         )
         self.system_prompt = normalize_system_prompt(
-            merge_config_value(system_prompt, self.config.system_prompt),
-            field_name="harness.system_prompt",
+            system_prompt_value, field_name="harness.system_prompt"
         )
         self.system_prompt_merge = self.config.system_prompt_merge
         self.user = normalize_user(merge_config_value(user, self.config.user))
@@ -111,7 +111,7 @@ class Harness:
             merge_config_value(sandbox, self.config.sandbox)
         )
         self.client = cast(
-            Client | ClientConfig | None,
+            ModelClient | None,
             resolve_config_object(merge_config_value(client, self.config.client)),
         )
         self.model = cast(str | None, merge_config_value(model, self.config.model))
@@ -122,40 +122,29 @@ class Harness:
         self.toolsets, self.named_toolsets = merge_toolsets(
             toolsets or (), self.config.toolsets
         )
-        self.stops = cast(
-            list[Callable[..., object]],
-            merge_config_callables(stops or (), self.config.stops, "stop"),
+        handlers = merge_config_handler_map(
+            {
+                "stop": stops or (),
+                "setup": setups or (),
+                "update": updates or (),
+                "metric": [num_turns, *(metrics or [])],
+                "reward": rewards or (),
+                "advantage": advantages or (),
+                "cleanup": cleanups or (),
+            },
+            self.config,
         )
-        self.setups = cast(
-            list[Callable[..., object]],
-            merge_config_callables(setups or (), self.config.setups, "setup"),
-        )
-        self.updates = cast(
-            list[Callable[..., object]],
-            merge_config_callables(updates or (), self.config.updates, "update"),
-        )
-        self.metrics = cast(
-            list[Callable[..., object]],
-            merge_config_callables(metrics or (), self.config.metrics, "metric"),
-        )
-        self.rewards = cast(
-            list[Callable[..., object]],
-            merge_config_callables(rewards or (), self.config.rewards, "reward"),
-        )
-        self.advantages = cast(
-            list[Callable[..., object]],
-            merge_config_callables(
-                advantages or (), self.config.advantages, "advantage"
-            ),
-        )
-        self.cleanups = cast(
-            list[Callable[..., object]],
-            merge_config_callables(cleanups or (), self.config.cleanups, "cleanup"),
-        )
+        self.stops = handlers["stop"]
+        self.setups = handlers["setup"]
+        self.updates = handlers["update"]
+        self.metrics = handlers["metric"]
+        self.rewards = handlers["reward"]
+        self.advantages = handlers["advantage"]
+        self.cleanups = handlers["cleanup"]
         keep_step_value = resolve_config_object(self.config.keep_trajectory_step)
         if keep_step_value is not None and not callable(keep_step_value):
             raise TypeError("keep_trajectory_step must be callable.")
-        self.keep_trajectory_step = cast(Callable[..., object] | None, keep_step_value)
+        self.keep_trajectory_step = cast(Handler | None, keep_step_value)
         self.taskset: object | None = None
         self.runtime = self.resolve_runtime()
         self.endpoint = Endpoint(use_tunnel=self.program_uses_sandbox())
@@ -165,19 +154,17 @@ class Harness:
     def config_schema(cls) -> str:
         return cls.config_type.schema_text()
 
-    def _add_handler(
-        self, handlers: list[Callable[..., object]], fn: Callable[..., object]
-    ) -> None:
+    def _add_handler(self, handlers: list[Handler], fn: Handler) -> None:
         handlers.append(fn)
         self.runtime = self.resolve_runtime()
 
-    def add_metric(self, fn: Callable[..., object]) -> None:
+    def add_metric(self, fn: Handler) -> None:
         self._add_handler(self.metrics, fn)
 
-    def add_reward(self, fn: Callable[..., object]) -> None:
+    def add_reward(self, fn: Handler) -> None:
         self._add_handler(self.rewards, fn)
 
-    def add_advantage(self, fn: Callable[..., object]) -> None:
+    def add_advantage(self, fn: Handler) -> None:
         self._add_handler(self.advantages, fn)
 
     def add_toolset(self, toolset: object) -> None:
@@ -189,16 +176,16 @@ class Harness:
         self.named_toolsets.update(named_toolsets)
         self.runtime = self.resolve_runtime()
 
-    def add_stop(self, fn: Callable[..., object]) -> None:
+    def add_stop(self, fn: Handler) -> None:
         self._add_handler(self.stops, fn)
 
-    def add_setup(self, fn: Callable[..., object]) -> None:
+    def add_setup(self, fn: Handler) -> None:
         self._add_handler(self.setups, fn)
 
-    def add_update(self, fn: Callable[..., object]) -> None:
+    def add_update(self, fn: Handler) -> None:
         self._add_handler(self.updates, fn)
 
-    def add_cleanup(self, fn: Callable[..., object]) -> None:
+    def add_cleanup(self, fn: Handler) -> None:
         self._add_handler(self.cleanups, fn)
 
     def attach_taskset(self, taskset: object) -> None:
@@ -212,7 +199,7 @@ class Harness:
         return Runtime(taskset=self.taskset, harness=self)
 
     async def run(
-        self, task: Task | Mapping[str, Any], state: State | None = None
+        self, task: Task | Mapping[str, object], state: State | None = None
     ) -> State:
         task = task if isinstance(task, Task) else Task(task).freeze()
         state = await self.init_state(task) if state is None else state
@@ -356,9 +343,7 @@ class Harness:
             raise RuntimeError("Resolved endpoint handle has no live endpoint.")
         return endpoint
 
-    def compile_program(
-        self, program: Callable[..., object] | Mapping[str, object] | None
-    ) -> Callable[..., object]:
+    def compile_program(self, program: Handler | ProgramMap | None) -> Handler:
         if program is None:
             return self.base_program
         if callable(program):
@@ -383,16 +368,14 @@ class Harness:
             fn = import_config_ref(fn_ref)
             if not callable(fn):
                 raise TypeError("program.fn did not resolve to a callable.")
-            return self.local_callable_program(cast(Callable[..., object], fn))
+            return self.local_callable_program(cast(Handler, fn))
         if kind == "command":
             sandbox_config = self.program_sandbox_config(program)
             validate_program_options(program, kind, sandbox_config)
             return self.command_program(cast(Mapping[str, object], program))
         raise AssertionError(f"Unhandled program kind: {kind}")
 
-    def local_callable_program(
-        self, fn: Callable[..., object]
-    ) -> Callable[..., object]:
+    def local_callable_program(self, fn: Handler) -> Handler:
         async def run(task: Task, state: State) -> object:
             await self.runtime.setup_rollout(task, state)
             return await maybe_call_with_named_args(fn, task=task, state=state)
@@ -479,7 +462,7 @@ class Harness:
                 return state
         return state
 
-    def command_program(self, program: Mapping[str, object]) -> Callable[..., object]:
+    def command_program(self, program: Mapping[str, object]) -> Handler:
         async def run(task: Task, state: State) -> State:
             runtime = self.runtime
             merged_program = merge_task_program(program, task, kind="command")
@@ -501,7 +484,7 @@ class Harness:
 
     def sandbox_base_program(
         self, program: Mapping[str, object], sandbox_config: Mapping[str, object]
-    ) -> Callable[..., object]:
+    ) -> Handler:
         async def run(task: Task, state: State) -> State:
             merged_program = merge_task_program(program, task, kind="base")
             return await run_sandbox_python_program(
@@ -524,7 +507,7 @@ class Harness:
         program: Mapping[str, object],
         sandbox_config: Mapping[str, object],
         fn_ref: str,
-    ) -> Callable[..., object]:
+    ) -> Handler:
         async def run(task: Task, state: State) -> State:
             merged_program = merge_task_program(program, task, kind="fn")
             return await run_sandbox_python_program(
@@ -596,3 +579,12 @@ class Harness:
         if program_kind(program) in {"base", "fn"}:
             config = python_program_sandbox(config)
         return config
+
+
+@metric
+async def num_turns(task: Task, state: State) -> float:
+    _ = task
+    trajectory = state.get("trajectory") or []
+    if not isinstance(trajectory, list):
+        raise TypeError("state.trajectory must be a list.")
+    return float(len(trajectory))

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import AsyncExitStack
-from typing import Any, cast
+from typing import cast
 
 from verifiers.errors import ToolError
 from verifiers.types import Tool
@@ -11,13 +11,13 @@ from ..toolset import MCPTool
 
 
 class MCPToolHandle:
-    def __init__(self, session: object, tool_def: Tool):
+    def __init__(self, session: MCPToolSession, tool_def: Tool):
         self.session = session
         self.name = tool_def.name
         self.tool_def = tool_def
 
     async def __call__(self, **kwargs: object) -> object:
-        result = await cast(Any, self.session).call_tool(self.name, dict(kwargs))
+        result = await self.session.call_tool(self.name, dict(kwargs))
         return mcp_result_value(result)
 
 
@@ -106,26 +106,29 @@ async def connect_mcp_tool(
 
 
 def mcp_tool_def(tool: object) -> Tool:
-    raw = cast(Any, tool)
-    schema = getattr(raw, "inputSchema", None) or getattr(raw, "input_schema", None)
-    if schema is None and hasattr(raw, "model_dump"):
-        dumped = raw.model_dump()
+    schema = getattr(tool, "inputSchema", None) or getattr(tool, "input_schema", None)
+    model_dump = getattr(tool, "model_dump", None)
+    if schema is None and callable(model_dump):
+        dumped = model_dump()
         schema = dumped.get("inputSchema") or dumped.get("input_schema")
     if not isinstance(schema, dict):
         schema = {"type": "object", "properties": {}}
+    name = getattr(tool, "name", None)
+    if not isinstance(name, str) or not name:
+        raise TypeError("MCP tools require a name.")
     return Tool(
-        name=str(raw.name),
-        description=str(getattr(raw, "description", "") or ""),
+        name=name,
+        description=str(getattr(tool, "description", "") or ""),
         parameters=cast(dict[str, object], schema),
         strict=None,
     )
 
 
 def mcp_result_value(result: object) -> object:
-    raw = cast(Any, result)
-    if bool(getattr(raw, "isError", False)):
-        raise ToolError(str(mcp_content_value(getattr(raw, "content", []))))
-    return mcp_content_value(getattr(raw, "content", []))
+    content = getattr(result, "content", [])
+    if bool(getattr(result, "isError", False)):
+        raise ToolError(str(mcp_content_value(content)))
+    return mcp_content_value(content)
 
 
 def mcp_content_value(content: object) -> object:

@@ -9,13 +9,14 @@ import sysconfig
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import cast
 
 from verifiers.utils.interception_utils import serialize_tool_defs
 
-from ..runtime import Runtime, serializable
+from ..runtime import Runtime
 from ..state import State
 from ..task import Task
+from .serialization_utils import serializable
 from .sandbox_utils import (
     VF_STATE_INPUT_PATH_KEY,
     python_package_install_command,
@@ -23,6 +24,7 @@ from .sandbox_utils import (
     python_runtime_setup_command,
     run_sandbox_command,
 )
+from .program_utils import program_list_items, program_option_mapping
 
 TASK_PATH = "/tmp/vf_task.json"
 STATE_INPUT_PATH = "/tmp/vf_state_in.json"
@@ -88,7 +90,7 @@ async def run_sandbox_python_program(
     output = state.get("artifacts", {}).pop(STATE_ARTIFACT, None)
     if not isinstance(output, Mapping):
         raise RuntimeError("Sandbox Python program did not return state.")
-    patch = dict(cast(Mapping[str, Any], output))
+    patch = dict(cast(Mapping[str, object], output))
     apply_internal_state_patch(state, patch, mode=mode)
     patch_artifacts = patch.pop("artifacts", None)
     if isinstance(patch_artifacts, Mapping):
@@ -101,7 +103,7 @@ async def run_sandbox_python_program(
 
 
 def apply_internal_state_patch(
-    state: State, patch: dict[str, Any], *, mode: str
+    state: State, patch: dict[str, object], *, mode: str
 ) -> None:
     for key in State.INTERNAL_KEYS:
         if key not in patch:
@@ -137,7 +139,7 @@ def sandbox_runner_program(
     package = sandbox_program_package(mode=mode, fn_ref=fn_ref)
     if package is not None:
         program = sandbox_program_with_package(program, package)
-    files = dict(cast(Mapping[str, object], program.get("files") or {}))
+    files = program_option_mapping(program.get("files"), "program.files")
     files[TASK_PATH] = json.dumps(task)
     files[TOOL_DEFS_PATH] = json.dumps(
         serializable(serialize_tool_defs(tool_defs or [], "openai_chat_completions"))
@@ -155,24 +157,23 @@ def sandbox_runner_program(
     )
     files[RUNNER_PATH] = runner_source()
     files[RUNNER_CONFIG_PATH] = json.dumps({"max_turns": max_turns})
-    artifacts = dict(cast(Mapping[str, object], program.get("artifacts") or {}))
+    artifacts = program_option_mapping(program.get("artifacts"), "program.artifacts")
     artifacts[STATE_ARTIFACT] = {"path": STATE_OUTPUT_PATH, "format": "json"}
     command = python_runtime_command(
         RUNNER_PATH,
         *([mode] if fn_ref is None else [mode, fn_ref]),
     )
-    setup = program.get("setup") or []
-    if isinstance(setup, str):
-        setup = [setup]
-    if not isinstance(setup, list):
-        setup = [setup]
     package_setup = [] if package is None else [package.install_command]
     return {
         **dict(program),
         "files": files,
         "command": command,
-        "env": dict(cast(Mapping[str, object], program.get("env") or {})),
-        "setup": [python_runtime_setup_command(), *package_setup, *setup],
+        "env": program_option_mapping(program.get("env"), "program.env"),
+        "setup": [
+            python_runtime_setup_command(),
+            *package_setup,
+            *program_list_items(program.get("setup"), "program.setup"),
+        ],
         "artifacts": artifacts,
         VF_STATE_INPUT_PATH_KEY: STATE_INPUT_PATH,
     }
@@ -212,7 +213,7 @@ def sandbox_program_with_package(
     program: Mapping[str, object], package: SandboxPackage
 ) -> Mapping[str, object]:
     merged = dict(program)
-    dirs = dict(cast(Mapping[str, object], merged.get("dirs") or {}))
+    dirs = program_option_mapping(merged.get("dirs"), "program.dirs")
     if package.remote_root in dirs:
         raise ValueError(
             f"program.dirs already defines internal package path {package.remote_root!r}."

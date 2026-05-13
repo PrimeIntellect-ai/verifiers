@@ -25,7 +25,7 @@ TranscriptMode = Literal["private", "append"]
 class ForTask(Protocol):
     def __call__(
         self,
-        task: Mapping[str, Any],
+        task: Mapping[str, object],
         *,
         borrow: BorrowTarget | Iterable[BorrowTarget] = (),
         tools: ToolTarget = (),
@@ -44,7 +44,7 @@ class _StateForTask:
         self, instance: State | None, owner: type[State]
     ) -> Callable[..., State]:
         def create(
-            task: Mapping[str, Any],
+            task: Mapping[str, object],
             *,
             borrow: BorrowTarget | Iterable[BorrowTarget] = (),
             tools: ToolTarget = (),
@@ -151,14 +151,14 @@ class State(VFState):
         self._set_completed(True)
         self._set_stop_condition(condition, overwrite=True)
 
-    def runtime_state(self) -> dict[str, Any]:
+    def runtime_state(self) -> dict[str, object]:
         raw_runtime = self.setdefault("runtime", {})
         if not isinstance(raw_runtime, dict):
             raise TypeError("state.runtime must be a mapping.")
-        return raw_runtime
+        return cast(dict[str, object], raw_runtime)
 
     def _runtime(self) -> Runtime:
-        from .runtime import load_runtime_from_state
+        from .utils.runtime_registry import load_runtime_from_state
 
         return load_runtime_from_state(self)
 
@@ -214,12 +214,12 @@ class State(VFState):
 
         return load_tools_from_state(self)
 
-    def _runtime_handles(self) -> dict[str, Any]:
+    def _runtime_handles(self) -> dict[str, object]:
         runtime = self.runtime_state()
         handles = runtime.setdefault("resolved", {})
         if not isinstance(handles, dict):
             raise TypeError("state.runtime.resolved must be a mapping.")
-        return handles
+        return cast(dict[str, object], handles)
 
     def _runtime_handle(self, name: str) -> dict[str, object]:
         runtime = self.runtime_state()
@@ -227,6 +227,7 @@ class State(VFState):
         if handles is not None:
             if not isinstance(handles, Mapping):
                 raise TypeError("state.runtime.resolved must be a mapping.")
+            handles = cast(Mapping[str, object], handles)
             existing = handles.get(name)
             if existing is not None:
                 if not isinstance(existing, Mapping):
@@ -319,7 +320,7 @@ def internal_key_error(key: str) -> str:
     return f"state[{key!r}] is framework-managed."
 
 
-def _state_for_task(cls: type[State], task: Mapping[str, Any]) -> State:
+def _state_for_task(cls: type[State], task: Mapping[str, object]) -> State:
     state = cls(
         {
             "task": dict(task),

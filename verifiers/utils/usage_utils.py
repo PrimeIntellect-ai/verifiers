@@ -1,6 +1,7 @@
 from collections.abc import Mapping
 import math
 from types import MappingProxyType
+from typing import cast
 
 from verifiers.types import TokenUsage
 
@@ -41,7 +42,13 @@ def _coerce_usage_int(value: object) -> int:
 
 
 def extract_usage_tokens(response: object) -> tuple[int, int]:
-    usage = getattr(response, "usage", None)
+    usage = (
+        cast(Mapping[str, object], response).get("usage")
+        if isinstance(response, Mapping)
+        else None
+    )
+    if usage is None:
+        usage = getattr(response, "usage", None)
     if usage is None:
         return 0, 0
 

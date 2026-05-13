@@ -7,7 +7,7 @@ import os
 import time
 import uuid
 from collections.abc import Callable, Mapping
-from typing import Any, Literal, cast
+from typing import Literal, Protocol, cast
 
 from anthropic import Anthropic, AsyncAnthropic
 from openai import AsyncOpenAI, OpenAI
@@ -48,6 +48,17 @@ EndpointApi = Literal[
     "openai_responses",
     "anthropic_messages",
 ]
+
+
+class TunnelHandle(Protocol):
+    is_running: bool
+    url: object
+
+    async def start(self) -> object: ...
+
+    async def check_registered(self) -> bool: ...
+
+    def sync_stop(self) -> object: ...
 
 
 def client_from_state(
@@ -144,7 +155,7 @@ class Endpoint:
             self.port, secret=secret or os.environ.get("ENDPOINT_SECRET")
         )
         self.secret = self.server.secret
-        self._tunnel: object | None = None
+        self._tunnel: TunnelHandle | None = None
         self._tunnel_lock = asyncio.Lock()
         self._tunnel_last_checked = 0.0
         self._rollout_queues: dict[str, asyncio.Queue[str]] = {}
@@ -236,12 +247,12 @@ class Endpoint:
         from prime_tunnel import Tunnel
 
         async with self._tunnel_lock:
-            tunnel = cast(Any, self._tunnel)
+            tunnel = self._tunnel
             if tunnel is not None and not tunnel.is_running:
                 tunnel.sync_stop()
                 self._tunnel = None
 
-            tunnel = cast(Any, self._tunnel)
+            tunnel = self._tunnel
             if tunnel is not None:
                 now = time.time()
                 if now - self._tunnel_last_checked > self.TUNNEL_CHECK_INTERVAL:
@@ -251,25 +262,25 @@ class Endpoint:
                         self._tunnel = None
 
             if self._tunnel is None:
-                tunnel = Tunnel(local_port=self.port)
+                tunnel = cast(TunnelHandle, Tunnel(local_port=self.port))
                 url = await tunnel.start()
                 self._tunnel = tunnel
                 self._tunnel_last_checked = time.time()
                 return str(url)
 
-            tunnel = cast(Any, self._tunnel)
+            tunnel = self._tunnel
             if tunnel.url is None:
                 raise TunnelError("Tunnel started but URL is unavailable.")
             return str(tunnel.url)
 
     async def check_tunnel(self) -> None:
-        tunnel = cast(Any, self._tunnel)
+        tunnel = self._tunnel
         if tunnel is not None and not tunnel.is_running:
             raise TunnelError("Tunnel process died during rollout.")
 
     async def teardown(self) -> None:
         async with self._tunnel_lock:
-            tunnel = cast(Any, self._tunnel)
+            tunnel = self._tunnel
             if tunnel is not None:
                 tunnel.sync_stop()
                 self._tunnel = None
@@ -628,13 +639,15 @@ def normalize_endpoint_tools(tools: object, protocol: str) -> list[Tool] | None:
             continue
         if not isinstance(raw_tool, dict):
             raise TypeError("Endpoint tool definitions must be dicts.")
-        raw_tool = cast(dict[str, Any], raw_tool)
+        raw_tool = cast(dict[str, object], raw_tool)
         if protocol == "anthropic_messages":
             normalized.append(
                 Tool(
                     name=str(raw_tool.get("name", "")),
                     description=str(raw_tool.get("description", "")),
-                    parameters=cast(dict[str, Any], raw_tool.get("input_schema") or {}),
+                    parameters=cast(
+                        dict[str, object], raw_tool.get("input_schema") or {}
+                    ),
                 )
             )
             continue
@@ -643,19 +656,22 @@ def normalize_endpoint_tools(tools: object, protocol: str) -> list[Tool] | None:
                 Tool(
                     name=str(raw_tool.get("name", "")),
                     description=str(raw_tool.get("description", "")),
-                    parameters=cast(dict[str, Any], raw_tool.get("parameters") or {}),
+                    parameters=cast(
+                        dict[str, object], raw_tool.get("parameters") or {}
+                    ),
                     strict=cast(bool | None, raw_tool.get("strict")),
                 )
             )
             continue
         function_payload = raw_tool.get("function")
         if raw_tool.get("type") == "function" and isinstance(function_payload, dict):
+            function_payload = cast(dict[str, object], function_payload)
             normalized.append(
                 Tool(
                     name=str(function_payload.get("name", "")),
                     description=str(function_payload.get("description", "")),
                     parameters=cast(
-                        dict[str, Any], function_payload.get("parameters") or {}
+                        dict[str, object], function_payload.get("parameters") or {}
                     ),
                     strict=cast(bool | None, function_payload.get("strict")),
                 )

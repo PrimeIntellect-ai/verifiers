@@ -18,6 +18,7 @@ from verifiers.clients import Client
 from verifiers.types import ClientConfig
 from verifiers.types import Response, ResponseMessage, ToolCall
 from verifiers.types import Tool
+from verifiers.types import Usage
 from verifiers.v1.runtime import Runtime
 from verifiers.v1.utils.endpoint_utils import endpoint_api_key
 from verifiers.v1.utils import mcp_utils
@@ -185,12 +186,15 @@ async def finish_tool(answer: str, state) -> str:
 
 
 def fake_response(
-    content: str | None = None, tool_calls: list[ToolCall] | None = None
+    content: str | None = None,
+    tool_calls: list[ToolCall] | None = None,
+    usage: Usage | None = None,
 ) -> Response:
     return Response(
         id="fake",
         created=0,
         model="fake",
+        usage=usage,
         message=ResponseMessage(
             role="assistant",
             content=content,
@@ -514,6 +518,33 @@ def test_model_client_default_keys_are_rollout_local() -> None:
 
     assert state_a["runtime"]["client_key"] != state_b["runtime"]["client_key"]
     assert len(runtime.model_clients) == 2
+
+
+@pytest.mark.asyncio
+async def test_v1_records_default_metrics_usage_and_timing() -> None:
+    usage = Usage(
+        prompt_tokens=11,
+        reasoning_tokens=0,
+        completion_tokens=7,
+        total_tokens=18,
+    )
+    harness = vf.Harness(
+        client=cast(
+            Client,
+            FakeModelClient([fake_response(content="ok", usage=usage)]),
+        ),
+        model="fake-model",
+    )
+    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+
+    state = await harness.run(task)
+
+    assert state["metrics"]["num_turns"] == 1.0
+    assert state["token_usage"] == {"input_tokens": 11.0, "output_tokens": 7.0}
+    assert state["usage"] == state["token_usage"]
+    assert state["timing"]["total"] > 0.0
+    assert state["timing"]["generation"]["duration"] > 0.0
+    assert state["timing"]["model"]["duration"] > 0.0
 
 
 def test_v1_state_does_not_copy_task_answer_to_top_level() -> None:

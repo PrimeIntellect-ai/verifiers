@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+import types
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -41,6 +43,67 @@ def test_rlm_harness_can_upload_skills(tmp_path: Path):
     dirs = as_mapping(program["dirs"])
 
     assert dirs["/rlm/skills"] == skills
+
+
+def test_rlm_harness_uploads_taskset_skills_by_default(tmp_path: Path):
+    skills = tmp_path / "taskset-skills"
+    skills.mkdir()
+    (skills / "SKILL.md").write_text("---\nname: taskset\n---\n")
+
+    class SkillTaskset(vf.Taskset):
+        def get_upload_dirs(self):
+            return {"skills": skills}
+
+    env = vf.Env(
+        taskset=SkillTaskset(source=[]),
+        harness=vf.RLM(local_checkout="/tmp/checkout"),
+    )
+    program = as_mapping(env.harness.program)
+    dirs = as_mapping(program["dirs"])
+
+    assert dirs["/rlm/skills"] == skills
+
+
+def test_taskset_discovers_sibling_skills_dir_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module_name = "skill_taskset_module"
+    module_file = tmp_path / f"{module_name}.py"
+    skills = tmp_path / "skills"
+    module_file.write_text("")
+    skills.mkdir()
+    (skills / "SKILL.md").write_text("---\nname: sibling\n---\n")
+    module = types.ModuleType(module_name)
+    module.__file__ = str(module_file)
+    module.__package__ = ""
+    monkeypatch.setitem(sys.modules, module_name, module)
+    skill_taskset_type = type(
+        "SkillTaskset", (vf.Taskset,), {"__module__": module_name}
+    )
+
+    taskset = skill_taskset_type(source=[])
+
+    assert taskset.get_upload_dirs() == {"skills": skills}
+
+
+def test_rlm_harness_explicit_skills_override_taskset_skills(tmp_path: Path):
+    taskset_skills = tmp_path / "taskset-skills"
+    explicit_skills = tmp_path / "explicit-skills"
+    taskset_skills.mkdir()
+    explicit_skills.mkdir()
+
+    class SkillTaskset(vf.Taskset):
+        def get_upload_dirs(self):
+            return {"skills": taskset_skills}
+
+    env = vf.Env(
+        taskset=SkillTaskset(source=[]),
+        harness=vf.RLM(local_checkout="/tmp/checkout", skills=explicit_skills),
+    )
+    program = as_mapping(env.harness.program)
+    dirs = as_mapping(program["dirs"])
+
+    assert dirs["/rlm/skills"] == explicit_skills
 
 
 def test_rlm_swe_environment_uses_v1_r2e_taskset(monkeypatch):

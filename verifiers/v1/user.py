@@ -6,6 +6,9 @@ from dataclasses import dataclass, field
 from typing import Literal, cast
 
 from .config import UserConfig, import_config_ref, resolve_config_object
+from .types import ObjectSpecs
+from .utils.binding_utils import BindingMap, normalize_binding_map
+from .utils.binding_utils import normalize_object_map
 from .utils.trajectory_utils import completion_from_trajectory
 
 UserScope = Literal["rollout", "group", "global"]
@@ -34,14 +37,16 @@ def state_transcript(
 class User:
     fn: Callable[..., object]
     scope: UserScope = "rollout"
-    bindings: Mapping[str, object] = field(default_factory=dict)
-    objects: Mapping[str, object] = field(default_factory=dict)
+    bindings: BindingMap = field(default_factory=dict)
+    objects: ObjectSpecs = field(default_factory=dict)
     sandbox: Mapping[str, object] | None = None
 
     def __post_init__(self) -> None:
         if self.scope not in {"rollout", "group", "global"}:
             raise ValueError("User scope must be 'rollout', 'group', or 'global'.")
-        bindings = dict(self.bindings)
+        bindings = normalize_binding_map(
+            self.bindings, "User bindings", key_style="arg"
+        )
         try:
             parameters = inspect.signature(self.fn).parameters
         except (TypeError, ValueError):
@@ -49,6 +54,9 @@ class User:
         if "transcript" in parameters:
             bindings.setdefault("transcript", state_transcript)
         object.__setattr__(self, "bindings", bindings)
+        object.__setattr__(
+            self, "objects", normalize_object_map(self.objects, "User objects")
+        )
 
 
 def normalize_user(value: object | None) -> User | None:

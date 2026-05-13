@@ -10,6 +10,7 @@ import pytest
 
 import verifiers as vf
 from verifiers.v1 import (
+    Config,
     Env,
     EnvConfig,
     Harness,
@@ -263,10 +264,17 @@ async def setup_aware_program(
 
 
 def config_toolset(prefix: str = "cfg") -> Toolset:
+    def prefix_value() -> str:
+        return prefix
+
     return Toolset(
         tools=[config_tool],
-        bindings={"config_tool.prefix": prefix},
+        bindings={"config_tool.prefix": prefix_value},
     )
+
+
+def load_another_harness_config() -> HarnessConfig:
+    return HarnessConfig(max_turns=6, rewards=[config_reward])
 
 
 ref_module = types.ModuleType(REF_MODULE)
@@ -293,6 +301,7 @@ setattr(ref_module, "config_user_with_bindings", config_user_with_bindings)
 setattr(ref_module, "sandbox_user", sandbox_user)
 setattr(ref_module, "config_program", config_program)
 setattr(ref_module, "setup_aware_program", setup_aware_program)
+setattr(ref_module, "load_another_harness_config", load_another_harness_config)
 sys.modules[REF_MODULE] = ref_module
 
 
@@ -462,7 +471,10 @@ def test_harness_config_extends_constructor_surface() -> None:
 
     assert harness.program is config_program
     assert harness.config.max_turns == 3
-    assert harness.metrics == [config_metric]
+    assert [metric.__name__ for metric in harness.metrics] == [
+        "num_turns",
+        "config_metric",
+    ]
     assert harness.rewards == [config_reward]
     assert harness.advantages == [config_advantage]
     assert harness.setups == [config_setup]
@@ -480,6 +492,14 @@ def test_harness_owns_default_render_completion_update() -> None:
         getattr(handler, "__self__", None) is harness
         and getattr(handler, "__name__", "") == "render_completion"
         for handler in harness.runtime.rollout_update
+    )
+
+
+def test_harness_owns_default_num_turns_metric() -> None:
+    harness = Harness(program=config_program)
+
+    assert any(
+        signal["name"] == "num_turns" for signal in harness.runtime.rollout_signals
     )
 
 
@@ -604,7 +624,9 @@ def test_toolsets_config_accepts_addressable_map_and_fn_tables() -> None:
 
     assert set(taskset.named_toolsets) == {"direct", "configured"}
     assert taskset.toolsets[0].tools == (direct_tool,)
-    assert taskset.toolsets[1].bindings == {"config_tool.prefix": "from_config"}
+    prefix = taskset.toolsets[1].bindings["config_tool.prefix"]
+    assert callable(prefix)
+    assert prefix() == "from_config"
 
 
 @pytest.mark.asyncio
@@ -693,6 +715,21 @@ async def test_tool_bindings_inject_owner_private_objects() -> None:
     state = await harness.setup_state(task, State.for_task(task))
 
     assert await state.get_tools()["object_tool"](value="alpha") == "alpha"
+
+
+def test_binding_strings_must_be_framework_paths() -> None:
+    with pytest.raises(ValueError, match="Binding string sources"):
+        Toolset(tools=[config_tool], bindings={"config_tool.prefix": "literal"})
+
+
+def test_binding_sources_reject_direct_objects() -> None:
+    with pytest.raises(TypeError, match="framework path or callable"):
+        Toolset(tools=[config_tool], bindings={"config_tool.prefix": object()})
+
+
+def test_toolset_binding_keys_must_target_callable_args() -> None:
+    with pytest.raises(ValueError, match="callable.arg"):
+        Toolset(tools=[config_tool], bindings={"prefix": "task.answer"})
 
 
 @pytest.mark.asyncio
@@ -1076,6 +1113,67 @@ def test_env_config_merges_child_config_defaults_with_nested_sections() -> None:
     assert default_config.taskset.split == "kwarg"
 
 
+def test_env_config_args_supplies_typed_top_level_args() -> None:
+    class LocalArgsConfig(Config):
+        split: str = "train"
+        max_turns: int = 4
+
+    config = EnvConfig(
+        {"args": {"max_turns": 7}},
+        args=LocalArgsConfig(split="args"),
+    )
+
+    assert isinstance(config.args, LocalArgsConfig)
+    assert config.args.split == "args"
+    assert config.args.max_turns == 7
+
+
+def test_env_config_args_accepts_arbitrary_user_args() -> None:
+    config = EnvConfig(args={"k1": "v1", "k2": "v2"})
+
+    assert config.args == {"k1": "v1", "k2": "v2"}
+
+
+def test_env_config_harness_section_extends_imported_config() -> None:
+    config = EnvConfig(
+        {
+            "harness": {
+                "config": ref("load_another_harness_config"),
+                "rewards": [{"fn": ref("updated_reward"), "weight": 0}],
+            }
+        }
+    )
+    harness = Harness(config=config.harness)
+
+    assert harness.config.max_turns == 6
+    assert [reward.__name__ for reward in harness.rewards] == [
+        "config_reward",
+        "updated_reward",
+    ]
+    assert getattr(harness.rewards[1], "reward_weight") == 0.0
+
+
+def test_harness_config_normalizes_program_mapping() -> None:
+    config = HarnessConfig(
+        program={
+            "command": ["echo", "ok"],
+            "sandbox": {"packages": "numpy"},
+            "tools": {"mcp": True},
+        }
+    )
+
+    assert config.program == {
+        "command": ["echo", "ok"],
+        "sandbox": {"packages": ["numpy"]},
+        "tools": {"mcp": True},
+    }
+
+
+def test_harness_config_rejects_unknown_program_tool_interface() -> None:
+    with pytest.raises(ValueError, match="unknown tool interface"):
+        HarnessConfig(program={"command": ["echo"], "tools": {"ptc": True}})
+
+
 def test_load_environment_coerces_typed_env_config_arg(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1165,21 +1263,12 @@ def test_unset_base_config_defaults_do_not_override_child_defaults() -> None:
     assert explicit_config.max_turns == 10
 
 
-def test_config_field_name_is_allowed_in_typed_configs() -> None:
+def test_config_field_name_is_reserved_for_config_refs() -> None:
     class LocalTasksetConfig(TasksetConfig):
         config: dict[str, object] | None = None
 
-    loaded_config = LocalTasksetConfig.from_config({"config": {"mode": "loaded"}})
-    direct_config = LocalTasksetConfig(config={"mode": "direct"})
-    merged_config = LocalTasksetConfig(
-        {"taskset_id": "local"},
-        config={"mode": "merged"},
-    )
-
-    assert loaded_config.config == {"mode": "loaded"}
-    assert direct_config.config == {"mode": "direct"}
-    assert merged_config.taskset_id == "local"
-    assert merged_config.config == {"mode": "merged"}
+    with pytest.raises(TypeError, match="reserves the 'config' field"):
+        LocalTasksetConfig.from_config({"config": {"mode": "loaded"}})
 
 
 @pytest.mark.parametrize(
@@ -1422,7 +1511,9 @@ def test_subagent_loader_keeps_child_harness_internal(
     )
 
     assert env.harness.config.model == "parent"
-    child_harness = env.harness.toolsets[0].bindings["ask_subagent.harness"]
+    toolset = env.harness.toolsets[0]
+    assert toolset.bindings["ask_subagent.harness"] == "objects.harness"
+    child_harness = toolset.objects["harness"]()
     assert child_harness.config.model is None
 
 
@@ -1499,9 +1590,9 @@ def test_configs_load_from_toml_sections(tmp_path) -> None:
     assert taskset.source is source_loader
     assert getattr(taskset.rewards[0], "__name__") == "config_reward"
     assert getattr(taskset.rewards[0], "reward_weight") == 0.5
-    assert taskset.named_toolsets["configured"].bindings == {
-        "config_tool.prefix": "toml"
-    }
+    prefix = taskset.named_toolsets["configured"].bindings["config_tool.prefix"]
+    assert callable(prefix)
+    assert prefix() == "toml"
     assert harness.program == {"fn": ref("config_program")}
     assert callable(harness._program)
     assert harness.config.max_turns == 7

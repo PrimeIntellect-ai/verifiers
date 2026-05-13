@@ -164,6 +164,8 @@ taskset = vf.Taskset(source=source, toolsets=[toolset])
 Bindings inject hidden arguments that the model does not see. Common binding
 roots are `task.*`, `state.*`, and `tools.*`. Tool and user callables can also
 bind `objects.*` from their own private dependency factories.
+String binding sources are always framework paths. Use a callable source for
+literal string values so misspelled paths fail during setup.
 
 Custom harness programs can adapt taskset-owned tools through `state.get_tools()`.
 That keeps the same taskset reusable across the base harness, a third-party
@@ -236,7 +238,9 @@ Sandbox command programs can request the resolved tools as an MCP server with
 `program={"command": [...], "sandbox": True, "tools": "mcp"}`. Python programs
 receive callable tool handles by default, or can set
 `program={"sandbox": True, "tools": "callable"}` when the base loop is moved
-into a sandbox.
+into a sandbox. `program.tools` supports only the generic `callable` and `mcp`
+interfaces. Harness-specific tool carriers, such as RLM skill uploads, should
+live on the taskset upload directory contract or the harness config.
 
 For sandboxed `program.fn` refs, v1 resolves the owning local package from the
 resolved module root: single-file modules use `pyproject.toml` in the same
@@ -283,6 +287,10 @@ def load_environment():
 `HarborTaskset` owns Harbor task loading, sandbox overrides, task uploads, and
 test scoring. CLI harnesses own CLI installation/config/run behavior and work
 with any taskset that supplies a prompt.
+Tasksets can expose package-owned upload directories with `get_upload_dirs()`.
+The base `Taskset` discovers a sibling `skills/` directory by default, and
+`RLM` uploads that directory to `/rlm/skills` unless `skills=` is passed
+explicitly to the harness.
 
 ## Setup, Updates, Signals, And Cleanup
 
@@ -361,28 +369,27 @@ max_turns = 4
 weight = 0.5
 ```
 
-For concise v0-style named args, pass typed child config objects as defaults.
-Explicit `taskset`/`harness` sections stay the most specific source and override
-those defaults.
+For concise named args, define one typed args object and pass it as `args`.
+`EnvConfig.args` is intentionally user-defined; environment packages decide how
+those args flow into taskset and harness construction.
 
 ```python
+class MyEnvArgsConfig(vf.Config):
+    split: str = "train"
+    max_turns: int = 10
+
+
 class MyTasksetConfig(vf.TasksetConfig):
     split: str = "train"
 
 
-def load_taskset(
-    split: str | None = None,
-    config: vf.TasksetConfig | None = None,
-):
-    config = MyTasksetConfig(config, split=split)
+def load_taskset(config: vf.TasksetConfig | None = None):
+    config = MyTasksetConfig(config)
     ...
 
 
-def load_harness(
-    max_turns: int | None = None,
-    config: vf.HarnessConfig | None = None,
-):
-    config = vf.HarnessConfig(config, max_turns=max_turns)
+def load_harness(config: vf.HarnessConfig | None = None):
+    config = vf.HarnessConfig(config)
     ...
 
 
@@ -393,12 +400,16 @@ def load_environment(
 ):
     config = vf.EnvConfig(
         config,
-        taskset=MyTasksetConfig(split=split),
-        harness=vf.HarnessConfig(max_turns=max_turns),
+        args=MyEnvArgsConfig(split=split, max_turns=max_turns),
     )
+    args = MyEnvArgsConfig(config.args)
     return vf.Env(
-        taskset=load_taskset(config=config.taskset),
-        harness=load_harness(config=config.harness),
+        taskset=load_taskset(
+            config=MyTasksetConfig(config.taskset, split=args.split)
+        ),
+        harness=load_harness(
+            config=vf.HarnessConfig(config.harness, max_turns=args.max_turns)
+        ),
     )
 ```
 
@@ -425,6 +436,18 @@ max_turns = 8
 [env.taskset.toolsets.search]
 tools = ["my_env.tools:search"]
 bindings = { "search.index" = "objects.index" }
+```
+
+Taskset and harness sections can import a base config with `config` and then
+overlay local fields. Collection fields extend the imported config.
+
+```toml
+[env.harness]
+config = "my_env.configs:load_another_harness_config"
+
+[[env.harness.rewards]]
+fn = "my_env.rewards:new_reward_func"
+weight = 0
 ```
 
 Callable config uses `fn = "module:callable"` when metadata is needed:

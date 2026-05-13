@@ -4,21 +4,22 @@ import asyncio
 import os
 import shlex
 from collections.abc import Mapping
-from typing import Any, Callable, cast
+from typing import Callable, cast
 
 from verifiers.errors import InfraError
 from verifiers.utils.async_utils import maybe_call_with_named_args
 
 from ..config import resolve_config_object, string_mapping
-from ..runtime import (
-    Runtime,
-    _read_path,
+from .binding_utils import (
     binding_key_parts,
-    binding_source_root,
     function_name,
-    validate_binding_source_root,
+    normalize_binding_map,
+    read_path,
+    validate_binding_source,
     validate_bound_arg,
+    validate_callable_source,
 )
+from ..runtime import Runtime
 from ..state import State
 from ..task import Task
 from .mcp_proxy_utils import ProgramToolType, validate_program_tool_types
@@ -147,21 +148,21 @@ async def resolve_program_value(
     if isinstance(value, str):
         root, separator, tail = value.partition(".")
         if separator and root == "task":
-            return _read_path(task, tail)
+            return read_path(task, tail)
         if separator and root == "state":
-            return _read_path(state, tail)
+            return read_path(state, tail)
         if separator and root == "runtime":
-            return _read_path(state.get("runtime", {}), tail)
+            return read_path(state.get("runtime", {}), tail)
     if isinstance(value, Mapping):
         if len(value) != 1:
             raise ValueError("Program value mappings must have exactly one root.")
         root, path = next(iter(value.items()))
         if root == "task":
-            return _read_path(task, str(path))
+            return read_path(task, str(path))
         if root == "state":
-            return _read_path(state, str(path))
+            return read_path(state, str(path))
         if root == "runtime":
-            return _read_path(state.get("runtime", {}), str(path))
+            return read_path(state.get("runtime", {}), str(path))
         raise ValueError(f"Unknown program value root {root!r}.")
     return value
 
@@ -171,11 +172,7 @@ def program_value_callable(value: object) -> Callable[..., object] | None:
         return cast(Callable[..., object], value)
     if isinstance(value, Mapping) and "fn" in value:
         spec = cast(Mapping[str, object], value)
-        unknown = set(spec) - {"fn"}
-        if unknown:
-            raise ValueError(
-                f"Program callable value has unknown keys: {sorted(unknown)}."
-            )
+        validate_callable_source(spec, "Program callable value")
         fn = resolve_config_object(spec["fn"])
         if not callable(fn):
             raise TypeError("Program callable value requires callable fn.")
@@ -192,9 +189,9 @@ async def program_binding_kwargs(
 ) -> dict[str, object]:
     if program is None:
         return {}
-    raw_bindings = program.get("bindings") or {}
-    if not isinstance(raw_bindings, Mapping):
-        raise TypeError("program.bindings must be a mapping.")
+    raw_bindings = normalize_binding_map(
+        program.get("bindings"), "program.bindings", allow_objects=False
+    )
     if not raw_bindings:
         return {}
     name = function_name(fn)
@@ -204,10 +201,9 @@ async def program_binding_kwargs(
         if target_name != name:
             continue
         validate_bound_arg(fn, arg_name, f"Program binding {binding_key!r}")
-        source_root = binding_source_root(source)
-        validate_binding_source_root(source_root, f"Program binding {binding_key!r}")
-        if source_root == "objects":
-            raise ValueError("program.bindings cannot use objects.* sources.")
+        validate_binding_source(
+            source, f"Program binding {binding_key!r}", allow_objects=False
+        )
         if arg_name in kwargs:
             raise ValueError(f"Program binding arg {arg_name!r} is defined twice.")
         kwargs[arg_name] = await runtime.resolve_binding(source, task, state)
@@ -215,9 +211,9 @@ async def program_binding_kwargs(
 
 
 def validate_program_bindings(program: Mapping[str, object]) -> None:
-    raw_bindings = program.get("bindings") or {}
-    if not isinstance(raw_bindings, Mapping):
-        raise TypeError("program.bindings must be a mapping.")
+    raw_bindings = normalize_binding_map(
+        program.get("bindings"), "program.bindings", allow_objects=False
+    )
     if not raw_bindings:
         return
     targets = program_binding_targets(program)
@@ -235,10 +231,9 @@ def validate_program_bindings(program: Mapping[str, object]) -> None:
                 "owned by the same program."
             )
         validate_bound_arg(fn, arg_name, f"Program binding {binding_key!r}")
-        source_root = binding_source_root(source)
-        validate_binding_source_root(source_root, f"Program binding {binding_key!r}")
-        if source_root == "objects":
-            raise ValueError("program.bindings cannot use objects.* sources.")
+        validate_binding_source(
+            source, f"Program binding {binding_key!r}", allow_objects=False
+        )
 
 
 def program_binding_targets(
@@ -291,12 +286,20 @@ def program_setup_callable_names(program: Mapping[str, object]) -> set[str]:
 
 def float_config(config: Mapping[str, object], key: str, default: float) -> float:
     value = config.get(key)
-    return default if value is None else float(cast(Any, value))
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, int | float | str):
+        raise TypeError(f"{key} must be numeric.")
+    return float(value)
 
 
 def int_config(config: Mapping[str, object], key: str, default: int) -> int:
     value = config.get(key)
-    return default if value is None else int(cast(Any, value))
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, int | float | str):
+        raise TypeError(f"{key} must be numeric.")
+    return int(value)
 
 
 def endpoint_api_key(runtime: Runtime) -> str:
@@ -391,8 +394,8 @@ def merge_task_program(
         merged[key] = merge_program_mapping_option(
             program.get(key), task_program.get(key), key
         )
-    merged["bindings"] = merge_program_mapping_option(
-        program.get("bindings"), task_program.get("bindings"), "bindings"
+    merged["bindings"] = merge_program_bindings(
+        program.get("bindings"), task_program.get("bindings")
     )
     merged["setup"] = [
         *program_list_items(program.get("setup"), "program.setup"),
@@ -428,6 +431,24 @@ def merge_program_mapping_option(
             f"program.{key} and task.program.{key} define the same keys: {duplicate}."
         )
     return {**program_mapping, **task_mapping}
+
+
+def merge_program_bindings(
+    program_value: object, task_value: object
+) -> dict[str, object]:
+    program_bindings = normalize_binding_map(
+        program_value, "program.bindings", allow_objects=False
+    )
+    task_bindings = normalize_binding_map(
+        task_value, "task.program.bindings", allow_objects=False
+    )
+    duplicate = sorted(set(program_bindings) & set(task_bindings))
+    if duplicate:
+        raise ValueError(
+            "program.bindings and task.program.bindings define the same keys: "
+            f"{duplicate}."
+        )
+    return {**program_bindings, **task_bindings}
 
 
 def program_option_mapping(value: object, field_name: str) -> dict[str, object]:

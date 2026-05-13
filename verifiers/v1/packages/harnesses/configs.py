@@ -3,6 +3,7 @@ from __future__ import annotations
 from pydantic import Field
 
 from ...config import HarnessConfig
+from ...types import ConfigData, ConfigSource, PromptInput
 
 OPENCODE_DEFAULT_RELEASE_REPO = "PrimeIntellect-ai/opencode"
 OPENCODE_DEFAULT_RELEASE_VERSION = "1.1.63-rl2"
@@ -46,8 +47,8 @@ OPENCODE_DEFAULT_DISABLED_TOOLS = (
 class OpenCodeConfig(HarnessConfig):
     @classmethod
     def _merge_config_data(
-        cls, config: object | None, data: dict[str, object]
-    ) -> dict[str, object]:
+        cls, config: ConfigSource | None, data: ConfigData
+    ) -> ConfigData:
         system_prompt_disabled = (
             data.get("system_prompt") is None and "system_prompt" in data
         ) or (isinstance(config, OpenCodeConfig) and config.system_prompt is None)
@@ -60,7 +61,7 @@ class OpenCodeConfig(HarnessConfig):
     instruction_path: str = OPENCODE_DEFAULT_INSTRUCTION_PATH
     system_prompt_path: str = OPENCODE_DEFAULT_SYSTEM_PROMPT_PATH
     log_path: str = OPENCODE_DEFAULT_LOG_PATH
-    system_prompt: object | None = OPENCODE_DEFAULT_SYSTEM_PROMPT
+    system_prompt: PromptInput | None = OPENCODE_DEFAULT_SYSTEM_PROMPT
     disabled_tools: list[str] = Field(
         default_factory=lambda: list(OPENCODE_DEFAULT_DISABLED_TOOLS)
     )

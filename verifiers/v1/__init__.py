@@ -16,6 +16,7 @@ from .config import (
     EnvConfig,
     HarnessConfig,
     MCPToolConfig,
+    ProgramConfig,
     SandboxConfig,
     TasksetConfig,
     ToolsetConfig,
@@ -42,7 +43,7 @@ from .utils.scoring_utils import (
 )
 from .state import State
 from .task import Task
-from .taskset import Taskset
+from .taskset import Taskset, discover_sibling_dir
 from .packages.tasksets import (
     HarborTaskset,
     HarborTasksetConfig,
@@ -65,6 +66,7 @@ __all__ = [
     "OpenCode",
     "OpenCodeConfig",
     "Pi",
+    "ProgramConfig",
     "RLM",
     "SandboxConfig",
     "State",
@@ -82,6 +84,7 @@ __all__ = [
     "build_signals",
     "cleanup",
     "collect_signals",
+    "discover_sibling_dir",
     "metric",
     "reward",
     "score_group",

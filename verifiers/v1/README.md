@@ -561,7 +561,11 @@ project `.mcp.json`. Neither side needs to know the other's private fields.
 and log/trajectory artifacts.
 `RLM` follows the same boundary for recursive LLM runs: `HarborTaskset` owns
 the task directory and tests, while `RLM` owns RLM installation, optional skill
-upload to `/task/rlm-skills`, endpoint wiring, and trajectory filtering.
+upload to `/rlm/skills`, endpoint wiring, and trajectory filtering.
+Tasksets can expose package-owned upload directories with `get_upload_dirs()`.
+The base `Taskset` discovers a sibling `skills/` directory by default, and
+`RLM` uploads that directory to `/rlm/skills` unless `skills=` is passed
+explicitly to the harness.
 
 ## State Helpers
 
@@ -710,6 +714,10 @@ hidden argument needs task or state data, bind it with a callable source instead
 of an object factory. Updates, cleanup, metrics, and rewards should read
 serializable task/state data or call resolved tools through `state.get_tools()`
 instead of reaching into toolset dependencies directly.
+
+String binding sources are always framework paths such as `task.answer` or
+`objects.index`. Bind literal strings with a callable source so typos in binding
+paths fail early instead of silently becoming constants.
 
 Tasks can select toolsets and tools for one rollout:
 
@@ -898,6 +906,9 @@ async def program(task, state):
 Sandboxed base and Python entrypoint programs use the callable interface by
 default. Set `program={"sandbox": True, "tools": "callable"}` when the config
 should make that interface explicit.
+`program.tools` supports only the generic `callable` and `mcp` interfaces.
+Harness-specific tool carriers, such as RLM skill uploads, should live on the
+taskset upload directory contract or the harness config.
 
 When a sandboxed `program.fn` ref points at local source, v1 resolves the
 package from the module root: single-file modules use `pyproject.toml` in the
@@ -1161,27 +1172,27 @@ max_turns = 4
 weight = 0.5
 ```
 
-For concise named args, pass typed child config objects as defaults. Explicit
-nested sections win over those defaults.
+For concise named args, define one typed args object and pass it as `args`.
+`EnvConfig.args` is intentionally user-defined; environment packages decide how
+those args flow into taskset and harness construction.
 
 ```python
+class MyEnvArgsConfig(vf.Config):
+    split: str = "train"
+    max_turns: int = 10
+
+
 class MyTasksetConfig(vf.TasksetConfig):
     split: str = "train"
 
 
-def load_taskset(
-    split: str | None = None,
-    config: vf.TasksetConfig | None = None,
-):
-    config = MyTasksetConfig(config, split=split)
+def load_taskset(config: vf.TasksetConfig | None = None):
+    config = MyTasksetConfig(config)
     ...
 
 
-def load_harness(
-    max_turns: int | None = None,
-    config: vf.HarnessConfig | None = None,
-):
-    config = vf.HarnessConfig(config, max_turns=max_turns)
+def load_harness(config: vf.HarnessConfig | None = None):
+    config = vf.HarnessConfig(config)
     ...
 
 
@@ -1192,12 +1203,16 @@ def load_environment(
 ):
     config = vf.EnvConfig(
         config,
-        taskset=MyTasksetConfig(split=split),
-        harness=vf.HarnessConfig(max_turns=max_turns),
+        args=MyEnvArgsConfig(split=split, max_turns=max_turns),
     )
+    args = MyEnvArgsConfig(config.args)
     return vf.Env(
-        taskset=load_taskset(config=config.taskset),
-        harness=load_harness(config=config.harness),
+        taskset=load_taskset(
+            config=MyTasksetConfig(config.taskset, split=args.split)
+        ),
+        harness=load_harness(
+            config=vf.HarnessConfig(config.harness, max_turns=args.max_turns)
+        ),
     )
 ```
 
@@ -1224,6 +1239,18 @@ max_turns = 8
 
 [env.taskset.scoring.exact_answer]
 weight = 1.0
+```
+
+Taskset and harness sections can import a base config with `config` and then
+overlay local fields. Collection fields extend the imported config.
+
+```toml
+[env.harness]
+config = "my_env.configs:load_another_harness_config"
+
+[[env.harness.rewards]]
+fn = "my_env.rewards:new_reward_func"
+weight = 0
 ```
 
 The outer runner owns model, endpoint, client, sampling, rollout count, and
@@ -1383,6 +1410,11 @@ mcp = true
 [env.harness.program.files]
 "/task/instruction.md" = "task.instruction"
 ```
+
+`program.tools` is deliberately limited to `callable` and `mcp`.
+Harness-specific tool carriers belong on the harness or taskset contract; for
+example, RLM reads `Taskset.get_upload_dirs()["skills"]` and uploads it to
+`/rlm/skills`.
 
 `program.setup` prepares the process. `program.tools.mcp` registers resolved
 tool or endpoint config after the interception endpoint is live and before the

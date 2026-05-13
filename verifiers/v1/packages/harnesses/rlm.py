@@ -4,9 +4,12 @@ import hashlib
 import json
 import random
 import shlex
+from importlib.abc import Traversable
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any
+from typing import cast
+
+from typing_extensions import Unpack
 
 from verifiers.envs.experimental.utils.git_checkout_cache import (
     resolve_git_checkout,
@@ -17,7 +20,7 @@ from ...config import HarnessConfig, SandboxConfig
 from ...state import State
 from ...task import Task
 from ...utils.prompt_utils import task_text
-from .cli import CLIHarness
+from .cli import CLIHarness, CLIHarnessKwargs
 
 DEFAULT_RLM_REPO_URL = "github.com/PrimeIntellect-ai/rlm-harness.git"
 DEFAULT_RLM_REF = "main"
@@ -32,6 +35,7 @@ DEFAULT_RLM_LOCAL_CHECKOUT_CACHE_ROOT = (
     Path.home() / ".cache" / "verifiers" / "rlm-checkouts"
 )
 REQUIRED_RLM_CHECKOUT_FILES = ("install.sh", "pyproject.toml")
+ProgramDir = str | Path | Traversable
 
 
 class RLM(CLIHarness):
@@ -56,7 +60,7 @@ class RLM(CLIHarness):
         sandbox: bool | Mapping[str, object] | SandboxConfig = True,
         program: Mapping[str, object] | None = None,
         config: HarnessConfig | Mapping[str, object] | None = None,
-        **kwargs: Any,
+        **kwargs: Unpack[CLIHarnessKwargs],
     ):
         harness_config = HarnessConfig.from_config(config)
         if (
@@ -107,6 +111,7 @@ class RLM(CLIHarness):
         }
         if skills is not None:
             dirs[DEFAULT_RLM_SKILLS_PATH] = Path(skills)
+        self._explicit_skills = skills is not None
         super().__init__(
             command=["bash", "-lc", build_run_script(instruction_path, workdir)],
             sandbox=sandbox_config,
@@ -139,6 +144,34 @@ class RLM(CLIHarness):
             config=harness_config,
             **kwargs,
         )
+
+    def attach_taskset(self, taskset: object) -> None:
+        if not self._explicit_skills:
+            upload_dirs_fn = getattr(taskset, "get_upload_dirs", None)
+            upload_dirs = upload_dirs_fn() if callable(upload_dirs_fn) else {}
+            if not isinstance(upload_dirs, Mapping):
+                raise TypeError("Taskset.get_upload_dirs() must return a mapping.")
+            skills = upload_dirs.get("skills")
+            self.set_program_dir(
+                DEFAULT_RLM_SKILLS_PATH,
+                cast(ProgramDir | None, skills),
+            )
+        super().attach_taskset(taskset)
+        self._program = self.compile_program(self.program)
+
+    def set_program_dir(
+        self, remote_path: str, local_source: ProgramDir | None
+    ) -> None:
+        if not isinstance(self.program, Mapping):
+            raise TypeError("RLM program must be a mapping.")
+        program = dict(cast(Mapping[str, object], self.program))
+        dirs = dict(cast(Mapping[str, object], program.get("dirs") or {}))
+        if local_source is None:
+            dirs.pop(remote_path, None)
+        else:
+            dirs[remote_path] = local_source
+        program["dirs"] = dirs
+        self.program = program
 
 
 def build_install_command() -> str:
@@ -204,14 +237,19 @@ def keep_only_parent_rlm_steps(
     return str(headers.get("x-rlm-depth", "0")) == "0"
 
 
-def rlm_metric(state: Mapping[str, Any], key: str) -> float:
+def rlm_metric(state: Mapping[str, object], key: str) -> float:
     artifacts = state.get("artifacts")
     if not isinstance(artifacts, Mapping):
         return 0.0
+    artifacts = cast(Mapping[str, object], artifacts)
     metrics = artifacts.get("rlm_metrics")
     if not isinstance(metrics, Mapping):
         return 0.0
-    return float(metrics.get(key, 0.0) or 0.0)
+    metrics = cast(Mapping[str, object], metrics)
+    value = metrics.get(key, 0.0)
+    if isinstance(value, bool) or not isinstance(value, int | float | str):
+        return 0.0
+    return float(value or 0.0)
 
 
 async def rlm_sub_llm_call_count(task: Task, state: State) -> float:
@@ -259,7 +297,7 @@ def build_summarize_resolver(
     raise ValueError("summarize_at_tokens must be int, (lo, hi), or None")
 
 
-def draw_threshold(state: Mapping[str, Any], lo: int, hi: int) -> int:
+def draw_threshold(state: Mapping[str, object], lo: int, hi: int) -> int:
     prompt = json.dumps(state.get("prompt"), sort_keys=True, default=str)
     digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
     return random.Random(int(digest[:16], 16)).randint(lo, hi)

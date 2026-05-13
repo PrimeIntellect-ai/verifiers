@@ -4,11 +4,13 @@ import json
 import shlex
 from collections.abc import Mapping
 from pathlib import PurePosixPath
-from typing import Any
 
-from .cli import CLIHarness
+from typing_extensions import Unpack
+
+from .cli import CLIHarness, CLIHarnessKwargs
 from ...config import SandboxConfig
 from ...state import State
+from ...types import PromptInput
 from ...utils.mcp_proxy_utils import proxy_command
 from ...utils.prompt_utils import (
     state_system_prompt_text,
@@ -31,13 +33,13 @@ class Pi(CLIHarness):
         instruction_path: str = DEFAULT_INSTRUCTION_PATH,
         system_prompt_path: str = DEFAULT_SYSTEM_PROMPT_PATH,
         log_path: str = DEFAULT_LOG_PATH,
-        system_prompt: object | None = DEFAULT_SYSTEM_PROMPT,
+        system_prompt: PromptInput | None = DEFAULT_SYSTEM_PROMPT,
         package: str = DEFAULT_PI_PACKAGE,
         install_mcp_adapter: bool = True,
         sandbox: bool | Mapping[str, object] | SandboxConfig = True,
         program: Mapping[str, object] | None = None,
         max_turns: int | None = 4,
-        **kwargs: Any,
+        **kwargs: Unpack[CLIHarnessKwargs],
     ):
         files: dict[str, object] = {
             instruction_path: task_instruction_text,

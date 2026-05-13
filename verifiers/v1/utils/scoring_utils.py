@@ -11,10 +11,11 @@ from collections.abc import (
     MutableSequence,
     Sequence,
 )
-from typing import Any, Literal, cast
+from typing import Literal, cast
 
 from verifiers.utils.async_utils import maybe_await
 
+from .binding_utils import function_name
 from .timing_utils import record_scoring_timing
 
 SignalKind = Literal["metric", "reward", "advantage"]
@@ -78,16 +79,16 @@ def add_advantage(
 
 async def score_rollout(
     signals: Iterable[SignalRecord],
-    task: Mapping[str, Any],
-    state: dict[str, Any],
+    task: Mapping[str, object],
+    state: dict[str, object],
     resolve_kwargs: Callable[
-        [Callable[..., object], Mapping[str, Any], dict[str, Any]],
+        [Callable[..., object], Mapping[str, object], dict[str, object]],
         Awaitable[dict[str, object]],
     ]
     | None = None,
-) -> dict[str, Any]:
+) -> dict[str, object]:
     start_time = time.time()
-    reward = float(state.get("reward", 0.0) or 0.0)
+    reward = float_value(state.get("reward"), 0.0)
     metrics = dict(cast(dict[str, float], state.get("metrics") or {}))
     for signal in sorted(signals, key=signal_sort_key):
         if signal["stage"] != "rollout":
@@ -109,11 +110,11 @@ async def score_rollout(
 
 async def score_group(
     signals: Iterable[SignalRecord],
-    tasks: list[Mapping[str, Any]],
-    states: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
+    tasks: list[Mapping[str, object]],
+    states: list[dict[str, object]],
+) -> list[dict[str, object]]:
     start_time = time.time()
-    rewards = [float(state.get("reward", 0.0) or 0.0) for state in states]
+    rewards = [float_value(state.get("reward"), 0.0) for state in states]
     advantage_signals: list[SignalRecord] = []
     for signal in sorted(signals, key=signal_sort_key):
         if signal["stage"] != "group":
@@ -271,8 +272,8 @@ def validate_signal(signal: SignalRecord) -> None:
 
 async def call_rollout_signal(
     signal: SignalRecord,
-    task: Mapping[str, Any],
-    state: dict[str, Any],
+    task: Mapping[str, object],
+    state: dict[str, object],
     extra_kwargs: Mapping[str, object] | None = None,
 ) -> float:
     value = await maybe_await(
@@ -286,8 +287,8 @@ async def call_rollout_signal(
 
 async def call_group_signal(
     signal: SignalRecord,
-    tasks: list[Mapping[str, Any]],
-    states: list[dict[str, Any]],
+    tasks: list[Mapping[str, object]],
+    states: list[dict[str, object]],
 ) -> list[float]:
     value = await maybe_await(
         cast(Callable[..., object], signal["fn"]), tasks=tasks, states=states
@@ -357,17 +358,23 @@ def bool_config(config: Mapping[str, object], key: str, default: bool) -> bool:
     return value
 
 
-def apply_advantage_to_trajectory(state: dict[str, Any], advantage: float) -> None:
-    for step in state.get("trajectory", []):
-        if isinstance(step, dict) and step.get("advantage") is None:
-            step["advantage"] = advantage
+def float_value(value: object, default: float = 0.0) -> float:
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, int | float | str):
+        return default
+    return float(value or 0.0)
 
 
-def function_name(fn: Callable[..., object]) -> str:
-    name = getattr(fn, "__name__", None)
-    if not isinstance(name, str) or not name:
-        raise ValueError("Signal functions require a stable __name__.")
-    return name
+def apply_advantage_to_trajectory(state: dict[str, object], advantage: float) -> None:
+    trajectory = state.get("trajectory", [])
+    if not isinstance(trajectory, list):
+        return
+    for step in trajectory:
+        if isinstance(step, dict):
+            step = cast(dict[str, object], step)
+            if step.get("advantage") is None:
+                step["advantage"] = advantage
 
 
 def signal_sort_key(signal: SignalRecord) -> tuple[int, str, str, str]:

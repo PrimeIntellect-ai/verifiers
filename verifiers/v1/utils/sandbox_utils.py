@@ -11,7 +11,7 @@ import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from importlib.abc import Traversable
 from pathlib import Path
-from typing import Any, cast
+from typing import Protocol, cast
 
 from verifiers.errors import SandboxError
 from verifiers.utils.async_utils import maybe_call_with_named_args
@@ -19,7 +19,8 @@ from verifiers.utils.async_utils import maybe_call_with_named_args
 from .artifact_utils import artifact_format, artifact_key, artifact_optional
 from .artifact_utils import artifact_path
 from .program_utils import command_argv, command_env, float_config, int_config
-from .program_utils import program_tools_setup, resolve_program_value
+from .program_utils import program_option_mapping, program_tools_setup
+from .program_utils import resolve_program_value
 from .program_utils import validate_program_bindings
 from ..runtime import Runtime
 from ..state import State
@@ -28,10 +29,79 @@ from ..task import Task
 VF_STATE_INPUT_PATH_KEY = "_vf_state_input_path"
 
 
+class SandboxRecord(Protocol):
+    id: object
+
+
+class SandboxCommandResult(Protocol):
+    exit_code: int
+    stdout: str | None
+    stderr: str | None
+
+
+class SandboxClient(Protocol):
+    async def create(self, request: object) -> SandboxRecord: ...
+
+    async def wait_for_creation(self, sandbox_id: str) -> object: ...
+
+    async def delete(self, sandbox_id: str) -> object: ...
+
+    async def aclose(self) -> object: ...
+
+    async def execute_command(
+        self,
+        sandbox_id: str,
+        command: str,
+        *,
+        timeout: int | None = None,
+        working_dir: str | None = None,
+        env: Mapping[str, str] | None = None,
+    ) -> SandboxCommandResult: ...
+
+    async def upload_bytes(
+        self,
+        sandbox_id: str,
+        file_path: str,
+        file_bytes: bytes,
+        *,
+        filename: str | None = None,
+    ) -> object: ...
+
+    async def upload_file(
+        self,
+        sandbox_id: str,
+        file_path: str,
+        local_file_path: str,
+        *,
+        timeout: int | None = None,
+    ) -> object: ...
+
+    async def download_file(
+        self,
+        sandbox_id: str,
+        file_path: str,
+        local_file_path: str,
+        *,
+        timeout: int | None = None,
+    ) -> object: ...
+
+    async def read_file(self, sandbox_id: str, path: str) -> object: ...
+
+    async def run_background_job(
+        self,
+        sandbox_id: str,
+        command: str,
+        *,
+        timeout: int | None = None,
+        working_dir: str | None = None,
+        env: Mapping[str, str] | None = None,
+    ) -> SandboxCommandResult: ...
+
+
 class SandboxLease:
     def __init__(
         self,
-        client: object,
+        client: SandboxClient,
         sandbox_id: str,
         scope: str,
         key: str,
@@ -49,7 +119,7 @@ class SandboxLease:
         timeout: int | None = None,
         working_dir: str | None = None,
         env: Mapping[str, str] | None = None,
-    ) -> object:
+    ) -> SandboxCommandResult:
         result = await maybe_call_with_named_args(
             getattr(self.client, "execute_command"),
             sandbox_id=self.id,
@@ -58,7 +128,7 @@ class SandboxLease:
             working_dir=working_dir,
             env=env,
         )
-        return result
+        return cast(SandboxCommandResult, result)
 
     async def upload_bytes(
         self, path: str, content: bytes, filename: str | None = None
@@ -106,7 +176,7 @@ class SandboxLease:
         timeout: int | None = None,
         working_dir: str | None = None,
         env: Mapping[str, str] | None = None,
-    ) -> object:
+    ) -> SandboxCommandResult:
         return await maybe_call_with_named_args(
             getattr(self.client, "run_background_job"),
             sandbox_id=self.id,
@@ -121,7 +191,7 @@ class SandboxLease:
             return
         self.deleted = True
         try:
-            await cast(Any, self.client).delete(self.id)
+            await self.client.delete(self.id)
         finally:
             aclose = getattr(self.client, "aclose", None)
             if callable(aclose):
@@ -143,7 +213,7 @@ class SandboxHandle:
         timeout: int | None = None,
         working_dir: str | None = None,
         env: Mapping[str, str] | None = None,
-    ) -> object:
+    ) -> SandboxCommandResult:
         result = await self.lease.execute(
             command=command,
             timeout=timeout,
@@ -201,7 +271,7 @@ async def create_sandbox_lease(
     from prime_sandboxes import AsyncSandboxClient
 
     scope = sandbox_scope(sandbox_config)
-    client = AsyncSandboxClient()
+    client = cast(SandboxClient, AsyncSandboxClient())
     try:
         sandbox_id = await create_sandbox(client, sandbox_config)
     except BaseException:
@@ -381,7 +451,9 @@ def _program_tools_setup_handler(
     return handler
 
 
-async def create_sandbox(client: object, sandbox_config: Mapping[str, object]) -> str:
+async def create_sandbox(
+    client: SandboxClient, sandbox_config: Mapping[str, object]
+) -> str:
     from prime_sandboxes import CreateSandboxRequest
 
     request = CreateSandboxRequest(
@@ -395,12 +467,12 @@ async def create_sandbox(client: object, sandbox_config: Mapping[str, object]) -
         network_access=bool(sandbox_config.get("network_access", True)),
         timeout_minutes=int_config(sandbox_config, "timeout_minutes", 60),
     )
-    sandbox = await cast(Any, client).create(request)
+    sandbox = await client.create(request)
     sandbox_id = str(sandbox.id)
     try:
-        await cast(Any, client).wait_for_creation(sandbox_id)
+        await client.wait_for_creation(sandbox_id)
     except BaseException:
-        await cast(Any, client).delete(sandbox_id)
+        await client.delete(sandbox_id)
         raise
     return sandbox_id
 
@@ -415,12 +487,9 @@ async def setup_sandbox(
         if not isinstance(packages, list):
             raise TypeError("sandbox.packages must be a list or string.")
         package_args = " ".join(shlex.quote(str(package)) for package in packages)
-        result = cast(
-            Any,
-            await handle.execute(
-                python_package_install_command(package_args),
-                timeout=int_config(sandbox_config, "install_timeout", 300),
-            ),
+        result = await handle.execute(
+            python_package_install_command(package_args),
+            timeout=int_config(sandbox_config, "install_timeout", 300),
         )
         if result.exit_code:
             raise SandboxError(f"Sandbox package install failed: {result.stderr}")
@@ -430,11 +499,8 @@ async def setup_sandbox(
     if not isinstance(commands, list):
         raise TypeError("sandbox.setup_commands must be a list or string.")
     for command in commands:
-        result = cast(
-            Any,
-            await handle.execute(
-                str(command), timeout=int_config(sandbox_config, "setup_timeout", 300)
-            ),
+        result = await handle.execute(
+            str(command), timeout=int_config(sandbox_config, "setup_timeout", 300)
         )
         if result.exit_code:
             raise SandboxError(f"Sandbox setup command failed: {result.stderr}")
@@ -504,9 +570,8 @@ def attach_sandbox_ref(state: State, lease: SandboxLease) -> None:
 
 
 def record_tool_sandbox_command(
-    state: State, lease: SandboxLease, command: str, result: object
+    state: State, lease: SandboxLease, command: str, result: SandboxCommandResult
 ) -> None:
-    result = cast(Any, result)
     command_record = {
         "command": command,
         "returncode": result.exit_code,
@@ -555,19 +620,15 @@ def sandbox_owner_key(owner: object) -> str:
 
 
 async def upload_program_files(
-    client: object,
+    client: SandboxClient,
     sandbox_id: str,
     program: Mapping[str, object],
     task: Task,
     state: State,
     runtime: Runtime,
 ) -> None:
-    files = program.get("files", {})
-    if not isinstance(files, Mapping):
-        raise TypeError("program.files must be a mapping.")
+    files = program_option_mapping(program.get("files"), "program.files")
     for path, source in files.items():
-        if not isinstance(path, str):
-            raise TypeError("program.files keys must be strings.")
         content = await resolve_program_value(source, task, state, runtime, program)
         if not isinstance(content, str):
             content = str(content)
@@ -581,19 +642,15 @@ async def upload_program_files(
 
 
 async def upload_program_dirs(
-    client: object,
+    client: SandboxClient,
     sandbox_id: str,
     program: Mapping[str, object],
     task: Task,
     state: State,
     runtime: Runtime,
 ) -> None:
-    dirs = program.get("dirs", {})
-    if not isinstance(dirs, Mapping):
-        raise TypeError("program.dirs must be a mapping.")
+    dirs = program_option_mapping(program.get("dirs"), "program.dirs")
     for path, source in dirs.items():
-        if not isinstance(path, str):
-            raise TypeError("program.dirs keys must be strings.")
         local_source = await resolve_program_value(
             source, task, state, runtime, program
         )
@@ -601,7 +658,7 @@ async def upload_program_dirs(
 
 
 async def upload_program_dir(
-    client: object, sandbox_id: str, remote_path: str, local_source: object
+    client: SandboxClient, sandbox_id: str, remote_path: str, local_source: object
 ) -> None:
     if isinstance(local_source, str):
         local_source = Path(local_source)
@@ -610,7 +667,12 @@ async def upload_program_dir(
     remote_tar = f"/tmp/_vf_upload_{remote_path.strip('/').replace('/', '_')}.tar.gz"
     tmp_path = await asyncio.to_thread(build_dir_archive, local_source, remote_path)
     try:
-        await cast(Any, client).upload_file(sandbox_id, remote_tar, str(tmp_path))
+        await maybe_call_with_named_args(
+            getattr(client, "upload_file"),
+            sandbox_id=sandbox_id,
+            file_path=remote_tar,
+            local_file_path=str(tmp_path),
+        )
         result = await maybe_call_with_named_args(
             getattr(client, "execute_command"),
             sandbox_id=sandbox_id,
@@ -657,7 +719,7 @@ def upload_tar_filter(tarinfo: tarfile.TarInfo) -> tarfile.TarInfo | None:
 
 
 async def run_program_setup(
-    client: object,
+    client: SandboxClient,
     sandbox_id: str,
     program: Mapping[str, object],
     task: Task,
@@ -677,7 +739,7 @@ async def run_program_setup(
 
 
 async def upload_state_input(
-    client: object,
+    client: SandboxClient,
     sandbox_id: str,
     program: Mapping[str, object],
     task: Task,
@@ -700,7 +762,7 @@ async def upload_state_input(
 
 
 async def run_program_commands(
-    client: object,
+    client: SandboxClient,
     sandbox_id: str,
     program: Mapping[str, object],
     task: Task,
@@ -730,7 +792,7 @@ async def run_program_commands(
 
 
 async def run_program_items(
-    client: object,
+    client: SandboxClient,
     sandbox_id: str,
     program: Mapping[str, object],
     task: Task,
@@ -756,15 +818,11 @@ async def run_program_items(
 async def collect_sandbox_artifacts(
     client: object, sandbox_id: str, program: Mapping[str, object], state: State
 ) -> None:
-    artifacts = program.get("artifacts", {})
-    if not isinstance(artifacts, Mapping):
-        raise TypeError("program.artifacts must be a mapping.")
+    artifacts = program_option_mapping(program.get("artifacts"), "program.artifacts")
     if not artifacts:
         return
     state.setdefault("artifacts", {})
     for name, spec in artifacts.items():
-        if not isinstance(name, str):
-            raise TypeError("program.artifacts keys must be strings.")
         if not isinstance(spec, Mapping):
             raise TypeError("program.artifacts values must be mappings.")
         spec = cast(Mapping[str, object], spec)

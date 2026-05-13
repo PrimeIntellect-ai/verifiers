@@ -6,12 +6,14 @@ from typing import Literal, cast
 from verifiers.types import MessageContent, Messages, SystemMessage
 from verifiers.utils.message_utils import normalize_messages
 
+from ..types import PromptInput
+
 
 SystemPromptMerge = Literal["reject", "concat", "task", "taskset", "harness"]
 
 
 def normalize_prompt(
-    value: object, field_name: str = "prompt"
+    value: PromptInput | None, field_name: str = "prompt"
 ) -> list[dict[str, object]]:
     messages = normalize_messages(cast(Messages, value or []), field_name=field_name)
     for message in messages:
@@ -24,7 +26,7 @@ def normalize_prompt(
 
 
 def normalize_system_prompt(
-    value: object, field_name: str = "system_prompt"
+    value: PromptInput | None, field_name: str = "system_prompt"
 ) -> list[dict[str, object]]:
     if value is None:
         return []
@@ -45,7 +47,8 @@ def resolve_system_prompt(
     merge: str,
 ) -> list[dict[str, object]]:
     task_system_prompt = normalize_system_prompt(
-        task.get("system_prompt"), field_name="task.system_prompt"
+        cast(PromptInput | None, task.get("system_prompt")),
+        field_name="task.system_prompt",
     )
     sources = [
         ("harness", harness_system_prompt),

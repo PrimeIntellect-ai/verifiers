@@ -4,15 +4,15 @@ import asyncio
 import glob
 import inspect
 import json
+import time
 import uuid
-import weakref
 from contextlib import AsyncExitStack
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
-from typing import Any, cast, get_args
+from typing import TYPE_CHECKING, cast, get_args
 
 from verifiers.clients import Client, resolve_client
 from verifiers.types import Messages, Response, Tool
-from verifiers.types import ClientConfig, ClientType
+from verifiers.types import ClientConfig, ClientType, SamplingArgs
 from verifiers.utils.client_utils import resolve_client_config
 from verifiers.utils.async_utils import maybe_call_with_named_args
 from verifiers.utils.message_utils import normalize_messages
@@ -20,18 +20,38 @@ from verifiers.utils.response_utils import parse_response_message, parse_respons
 from verifiers.utils.tool_utils import convert_func_to_tool_def
 
 from .config import resolve_config_object
+from .utils.binding_utils import (
+    binding_key_parts,
+    binding_object_name,
+    binding_source_root,
+    function_name,
+    read_path,
+    same_callable,
+    validate_binding_source,
+    validate_bound_arg,
+    validate_callable_source,
+)
 from .utils.lifecycle_utils import (
     collect_handlers,
+    handler_collection_attr,
     run_handlers,
     sort_handlers,
+    state_done,
     unique_handlers,
     validate_handler_args,
 )
+from .utils.object_utils import close_object, resolve_object_factory
+from .utils.runtime_registry import load_runtime, register_runtime, unregister_runtime
 from .utils.scoring_utils import SignalRecord, build_signals, collect_signals
 from .utils.scoring_utils import score_group as score_group_signals
 from .utils.scoring_utils import score_rollout as score_rollout_signals
+from .utils.serialization_utils import serializable
+from .utils.timing_utils import record_model_timing
 from .utils.artifact_utils import artifact_format, artifact_key, artifact_optional
 from .utils.artifact_utils import artifact_path
+from .utils.tool_utils import schema_callable, string_list, tool_visible
+from .utils.tool_utils import toolset_object_scope
+from .utils.usage_utils import record_response_usage
 from .state import State
 from .task import Task
 from .toolset import (
@@ -44,9 +64,8 @@ from .toolset import (
 )
 from .user import User
 
-_RUNTIME_REGISTRY: weakref.WeakValueDictionary[str, Runtime] = (
-    weakref.WeakValueDictionary()
-)
+if TYPE_CHECKING:
+    from .utils.sandbox_utils import SandboxLease
 
 
 class BorrowedTool:
@@ -69,7 +88,7 @@ class BorrowedTool:
 class Runtime:
     def __init__(self, taskset: object | None = None, harness: object | None = None):
         self.runtime_id = uuid.uuid4().hex
-        _RUNTIME_REGISTRY[self.runtime_id] = self
+        register_runtime(self.runtime_id, self)
         self.taskset = taskset
         self.harness = harness
         self.toolsets = self._collect_toolsets()
@@ -79,7 +98,7 @@ class Runtime:
         self.user_objects: dict[tuple[int, str, str], object] = {}
         self.model_clients: dict[str, Client] = {}
         self.owned_model_clients: set[str] = set()
-        self.sandbox_leases: dict[tuple[str, str], object] = {}
+        self.sandbox_leases: dict[tuple[str, str], SandboxLease] = {}
         self.sandbox_lock = asyncio.Lock()
         self.mcp_exit_stacks: dict[str, AsyncExitStack] = {}
         self.mcp_tools: dict[str, dict[str, object]] = {}
@@ -173,7 +192,7 @@ class Runtime:
         self.register_trajectory(state)
 
     def register_tool_handle(self, state: State, names: Sequence[str]) -> str:
-        task = Task(cast(Mapping[str, Any], state["task"])).freeze()
+        task = Task(cast(Mapping[str, object], state["task"])).freeze()
         available = self.all_exposed_tools(state)
         unknown = sorted(set(names) - set(available))
         if unknown:
@@ -333,7 +352,7 @@ class Runtime:
             raise RuntimeError("Harness has no model for intercepted requests.")
         return model
 
-    def sampling_args(self, state: State) -> dict[str, Any]:
+    def sampling_args(self, state: State) -> SamplingArgs:
         sampling = state.get("runtime", {}).get("sampling_args") or {}
         if not sampling:
             handle = self.resolved_handle(state, "model")
@@ -341,7 +360,7 @@ class Runtime:
                 sampling = handle.get("sampling_args") or {}
         if not isinstance(sampling, Mapping):
             raise TypeError("state.runtime.sampling_args must be a mapping.")
-        return dict(cast(Mapping[str, Any], sampling))
+        return cast(SamplingArgs, dict(cast(Mapping[str, object], sampling)))
 
     def tool_defs(self, state: State) -> list[Tool] | None:
         defs: list[Tool] = []
@@ -362,9 +381,7 @@ class Runtime:
             kwargs["sandbox"] = await self.resolve_user_sandbox(user, task, state)
         for name, source in user.bindings.items():
             validate_bound_arg(user.fn, name, f"User binding {name!r}")
-            validate_binding_source_root(
-                binding_source_root(source), f"User binding {name!r}"
-            )
+            validate_binding_source(source, f"User binding {name!r}")
             kwargs[name] = await self.resolve_user_binding(
                 user, source, task, state, transcript
             )
@@ -597,6 +614,7 @@ class Runtime:
         extras: dict[str, object] | None = None,
     ) -> Response:
         client = self.model_client(state)
+        request_start = time.time()
         response = await client.get_response(
             prompt=prompt,
             model=self.model(state),
@@ -604,6 +622,9 @@ class Runtime:
             sampling_args=self.sampling_args(state),
             state=state,
         )
+        request_end = time.time()
+        record_model_timing(state, request_start, request_end)
+        record_response_usage(state, response)
         completion = await parse_response_message(response)
         tokens = await parse_response_tokens(response)
         is_truncated = response.message.is_truncated or (
@@ -695,8 +716,8 @@ class Runtime:
         await self.update_group(tasks, states)
         await score_group_signals(
             self.group_signals,
-            cast(list[Mapping[str, Any]], tasks),
-            cast(list[dict[str, Any]], states),
+            cast(list[Mapping[str, object]], tasks),
+            cast(list[dict[str, object]], states),
         )
         return states
 
@@ -757,7 +778,7 @@ class Runtime:
         self.tool_handles.clear()
         await self.close_all_mcp_tools()
         await self.release_all_model_clients()
-        _RUNTIME_REGISTRY.pop(self.runtime_id, None)
+        unregister_runtime(self.runtime_id)
 
     async def run_rollout_handlers(
         self,
@@ -781,8 +802,8 @@ class Runtime:
     async def binding_kwargs(
         self,
         fn: Callable[..., object],
-        task: Mapping[str, Any],
-        state: dict[str, Any],
+        task: Mapping[str, object],
+        state: dict[str, object],
     ) -> dict[str, object]:
         name = function_name(fn)
         kwargs: dict[str, object] = {}
@@ -808,18 +829,14 @@ class Runtime:
             return await self._resolve_path(source, task, state)
         if isinstance(source, Mapping) and "fn" in source:
             spec = cast(Mapping[str, object], source)
-            unknown = set(spec) - {"fn"}
-            if unknown:
-                raise ValueError(
-                    f"Callable binding source has unknown keys: {sorted(unknown)}."
-                )
+            validate_callable_source(spec, "Callable binding source")
             fn = resolve_config_object(spec["fn"])
             if not callable(fn):
                 raise TypeError("Callable binding source requires callable fn.")
             return await maybe_call_with_named_args(fn, task=task, state=state)
         if callable(source):
             return await maybe_call_with_named_args(source, task=task, state=state)
-        return source
+        raise TypeError("Binding sources must be framework paths or callables.")
 
     async def resolve_tool_binding(
         self, toolset: Toolset | None, source: object, task: Task, state: State
@@ -834,7 +851,7 @@ class Runtime:
                 name, _, rest = tail.partition(".")
                 value = await self._resolve_toolset_object(toolset, name, task, state)
                 if rest:
-                    return _read_path(value, rest)
+                    return read_path(value, rest)
                 return value
         return await self.resolve_binding(source, task, state)
 
@@ -855,7 +872,7 @@ class Runtime:
                 else:
                     raise KeyError(f"Unknown user object {name!r}.")
                 if rest:
-                    return _read_path(value, rest)
+                    return read_path(value, rest)
                 return value
         if callable(source):
             return await maybe_call_with_named_args(
@@ -902,7 +919,7 @@ class Runtime:
             for name, source in user.bindings.items():
                 validate_bound_arg(user.fn, name, f"User binding {name!r}")
                 source_root = binding_source_root(source)
-                validate_binding_source_root(source_root, f"User binding {name!r}")
+                validate_binding_source(source, f"User binding {name!r}")
                 if source_root == "objects":
                     object_name = binding_object_name(source)
                     if object_name not in user.objects:
@@ -924,7 +941,7 @@ class Runtime:
             target_kind, fn = target
             validate_bound_arg(fn, arg_name, f"Binding {binding_key!r}")
             source_root = binding_source_root(source)
-            validate_binding_source_root(source_root, f"Binding {binding_key!r}")
+            validate_binding_source(source, f"Binding {binding_key!r}")
             if source_root == "objects" and target_kind != "tool":
                 raise ValueError(
                     f"Binding {binding_key!r} uses objects.*, which is only valid "
@@ -973,7 +990,7 @@ class Runtime:
                 )
         return targets
 
-    def _task_toolsets_config(self, task: Mapping[str, Any]) -> Mapping[str, object]:
+    def _task_toolsets_config(self, task: Mapping[str, object]) -> Mapping[str, object]:
         raw_toolsets = task.get("toolsets")
         if raw_toolsets is None:
             return {}
@@ -1037,7 +1054,7 @@ class Runtime:
         return [*self._static_toolsets_for_state(state), *self._rollout_toolsets(state)]
 
     def _static_toolsets_for_state(self, state: State) -> list[Toolset]:
-        task = cast(Mapping[str, Any], state.get("task") or {})
+        task = cast(Mapping[str, object], state.get("task") or {})
         selected = self._selected_toolset_names(task)
         ids_to_names = {
             id(toolset): name for name, toolset in self.named_toolsets.items()
@@ -1050,7 +1067,7 @@ class Runtime:
             active.append(toolset)
         return active
 
-    def _selected_toolset_names(self, task: Mapping[str, Any]) -> set[str]:
+    def _selected_toolset_names(self, task: Mapping[str, object]) -> set[str]:
         names = set(self.named_toolsets)
         config = self._task_toolsets_config(task)
         show = config.get("show")
@@ -1260,7 +1277,7 @@ class Runtime:
                 raise ValueError(f"Unsupported artifact format: {format_name!r}")
         key = artifact_key(spec_map)
         if key is not None:
-            data = cast(Mapping[str, Any], data)[key]
+            data = cast(Mapping[str, object], data)[key]
         return data
 
     async def _resolve_path(self, path: str, task: Task, state: State) -> object:
@@ -1285,9 +1302,9 @@ class Runtime:
         else:
             raise ValueError(f"Unknown binding root {root!r}.")
         if separator and root not in {"objects", "tools"}:
-            return _read_path(value, tail)
+            return read_path(value, tail)
         if tail:
-            return _read_path(value, tail)
+            return read_path(value, tail)
         return value
 
     async def _resolve_toolset_object(
@@ -1366,7 +1383,7 @@ class Runtime:
                 raise RuntimeError(
                     "Toolset sandbox='program' requires an active program sandbox."
                 )
-            return SandboxHandle(cast(Any, lease), state)
+            return SandboxHandle(lease, state)
         if not isinstance(sandbox, Mapping):
             raise TypeError("Toolset sandbox must be a mapping.")
         sandbox_config = cast(Mapping[str, object], sandbox)
@@ -1376,7 +1393,7 @@ class Runtime:
                 raise ValueError("Toolset sandbox.prefer must be 'program'.")
             lease = self._active_program_sandbox_lease(state)
             if lease is not None:
-                return SandboxHandle(cast(Any, lease), state)
+                return SandboxHandle(lease, state)
         scope = sandbox_scope(sandbox_config)
         key = (self.scope_key(scope, state), tool_sandbox_key(toolset))
         async with self.sandbox_lock:
@@ -1384,9 +1401,9 @@ class Runtime:
             if lease is None:
                 lease = await create_tool_sandbox_lease(toolset)
                 self.sandbox_leases[key] = lease
-        return SandboxHandle(cast(Any, lease), state)
+        return SandboxHandle(lease, state)
 
-    def _active_program_sandbox_lease(self, state: State) -> object | None:
+    def _active_program_sandbox_lease(self, state: State) -> SandboxLease | None:
         sandbox_handle = self.resolved_handle(state, "sandbox")
         if sandbox_handle is not None:
             return self._sandbox_lease_from_handle(sandbox_handle, "sandbox")
@@ -1409,7 +1426,7 @@ class Runtime:
 
     async def resolve_program_sandbox(
         self, sandbox_config: Mapping[str, object], task: Task, state: State
-    ) -> Any:
+    ) -> SandboxLease:
         from .utils.sandbox_utils import (
             create_sandbox_lease,
             program_sandbox_key,
@@ -1432,7 +1449,7 @@ class Runtime:
 
     def _sandbox_lease_from_handle(
         self, handle: Mapping[str, object], name: str
-    ) -> object:
+    ) -> SandboxLease:
         runtime = self.handle_runtime(handle, name)
         lease_key = handle.get("lease_key")
         if (
@@ -1471,7 +1488,7 @@ class Runtime:
             if lease is None:
                 lease = await create_scoped_sandbox_lease(user, key[1])
                 self.sandbox_leases[key] = lease
-        return SandboxHandle(cast(Any, lease), state)
+        return SandboxHandle(lease, state)
 
     async def release_sandboxes(self, scope: str, state: State) -> None:
         scope_key = self.scope_key(scope, state)
@@ -1522,7 +1539,7 @@ class Runtime:
             scope_key, _ = key
             if scope_key != "global":
                 continue
-            attach_sandbox_ref(state, cast(Any, lease))
+            attach_sandbox_ref(state, lease)
 
     def sandbox_owners(self, state: State | None = None) -> list[object]:
         owners: list[object] = [*self.toolsets]
@@ -1731,201 +1748,3 @@ class Runtime:
     def mcp_scope_key(self, toolset: Toolset, state: State) -> str:
         scope = toolset_object_scope(toolset)
         return f"{scope}:{self.scope_key(scope, state)}:{id(toolset)}"
-
-
-def tool_visible(toolset: Toolset, name: str) -> bool:
-    if toolset.show is not None and name not in toolset.show:
-        return False
-    if toolset.hide is not None and name in toolset.hide:
-        return False
-    return True
-
-
-def toolset_object_scope(toolset: Toolset) -> str:
-    if toolset.scope is not None:
-        return toolset.scope
-    return "rollout" if toolset.write else "global"
-
-
-async def state_done(task: Task, state: State) -> bool:
-    _ = task
-    return bool(state.get("done"))
-
-
-def handler_collection_attr(attr: str) -> str:
-    return {
-        "stop": "stops",
-        "setup": "setups",
-        "update": "updates",
-        "cleanup": "cleanups",
-        "teardown": "teardowns",
-    }.get(attr, attr)
-
-
-def _read_path(value: object, path: str) -> object:
-    if not path:
-        return value
-    current = value
-    for part in path.split("."):
-        if isinstance(current, Mapping):
-            current = cast(Mapping[str, object], current)[part]
-        elif isinstance(current, list):
-            current = current[int(part)]
-        else:
-            current = getattr(current, part)
-    return current
-
-
-def string_list(value: object, field: str) -> list[str]:
-    if isinstance(value, str):
-        return [value]
-    if not isinstance(value, Sequence) or isinstance(value, bytes):
-        raise TypeError(f"{field} must be a string or list of strings.")
-    result = [str(item) for item in value]
-    if len(result) != len(set(result)):
-        raise ValueError(f"{field} contains duplicate names.")
-    return result
-
-
-def schema_callable(
-    tool: object, signature: inspect.Signature
-) -> Callable[..., object]:
-    def call_for_schema(**kwargs: object) -> None:
-        _ = kwargs
-        return None
-
-    call_for_schema.__name__ = tool_name(tool)
-    call_for_schema.__doc__ = getattr(tool, "__doc__", None)
-    setattr(call_for_schema, "__signature__", signature)
-    return call_for_schema
-
-
-def function_name(fn: Callable[..., object]) -> str:
-    name = getattr(fn, "__name__", None)
-    if not isinstance(name, str) or not name:
-        raise ValueError("Callable bindings require a stable __name__.")
-    return name
-
-
-def binding_key_parts(key: object) -> tuple[str, str]:
-    if not isinstance(key, str):
-        raise TypeError("Binding keys must be strings.")
-    target, separator, arg_name = key.partition(".")
-    if separator != "." or not target or not arg_name or "." in arg_name:
-        raise ValueError(f"Binding key {key!r} must be 'callable.arg'.")
-    return target, arg_name
-
-
-def binding_source_root(source: object) -> str | None:
-    if not isinstance(source, str):
-        return None
-    root, _, _ = source.partition(".")
-    return root
-
-
-def validate_binding_source_root(root: str | None, context: str) -> None:
-    if root is None:
-        return
-    if root not in {"task", "state", "runtime", "objects", "tools"}:
-        raise ValueError(
-            f"{context} source root must be task, state, runtime, objects, or tools."
-        )
-
-
-def binding_object_name(source: object) -> str:
-    if not isinstance(source, str):
-        raise TypeError("Object binding source must be a string.")
-    root, separator, tail = source.partition(".")
-    if root != "objects" or not separator:
-        raise ValueError("Object binding source must be 'objects.name'.")
-    name, _, _ = tail.partition(".")
-    if not name:
-        raise ValueError("Object binding source must be 'objects.name'.")
-    return name
-
-
-def validate_bound_arg(
-    fn: Callable[..., object] | object, arg_name: str, context: str
-) -> None:
-    if arg_name in {"task", "state", "runtime"}:
-        raise ValueError(f"{context} cannot bind reserved arg {arg_name!r}.")
-    if not callable(fn):
-        raise TypeError(f"{context} target is not callable.")
-    try:
-        signature = inspect.signature(fn)
-    except (TypeError, ValueError) as exc:
-        raise TypeError(f"{context} target signature cannot be inspected.") from exc
-    if arg_name not in signature.parameters:
-        name = (
-            getattr(fn, "__name__", None)
-            or getattr(fn, "name", None)
-            or type(fn).__name__
-        )
-        raise TypeError(
-            f"{context} targets {name!r}, but {name!r} does not declare "
-            f"arg {arg_name!r}."
-        )
-
-
-def same_callable(left: Callable[..., object], right: Callable[..., object]) -> bool:
-    if left is right:
-        return True
-    left_self = getattr(left, "__self__", None)
-    right_self = getattr(right, "__self__", None)
-    left_func = getattr(left, "__func__", None)
-    right_func = getattr(right, "__func__", None)
-    return left_self is right_self and left_func is not None and left_func is right_func
-
-
-def serializable(value: object) -> object:
-    model_dump = getattr(value, "model_dump", None)
-    if callable(model_dump):
-        return model_dump(exclude_none=True)
-    if isinstance(value, list):
-        return [serializable(item) for item in value]
-    if isinstance(value, tuple):
-        return [serializable(item) for item in value]
-    if isinstance(value, Mapping):
-        return {str(key): serializable(item) for key, item in value.items()}
-    return value
-
-
-async def close_object(obj: object) -> None:
-    for name in ("aclose", "close", "delete", "teardown"):
-        fn = getattr(obj, name, None)
-        if callable(fn):
-            await maybe_call_with_named_args(fn)
-            return
-
-
-async def resolve_object_factory(spec: object, context: str) -> object:
-    if not callable(spec):
-        return spec
-    try:
-        signature = inspect.signature(spec)
-    except (TypeError, ValueError) as exc:
-        raise TypeError(f"{context} factory signature cannot be inspected.") from exc
-    if signature.parameters:
-        raise TypeError(f"{context} factory must accept no arguments.")
-    value = cast(Callable[[], object], spec)()
-    if inspect.isawaitable(value):
-        return await cast(Awaitable[object], value)
-    return value
-
-
-def load_runtime(runtime_id: str) -> Runtime:
-    runtime = _RUNTIME_REGISTRY.get(runtime_id)
-    if runtime is None:
-        raise RuntimeError(f"No live v1 runtime registered for id {runtime_id!r}.")
-    return runtime
-
-
-def load_runtime_from_state(state: Mapping[str, object]) -> Runtime:
-    runtime_state = state.get("runtime")
-    if not isinstance(runtime_state, Mapping):
-        raise RuntimeError("State has no runtime metadata.")
-    runtime_state = cast(Mapping[str, object], runtime_state)
-    runtime_id = runtime_state.get("runtime_id")
-    if not isinstance(runtime_id, str) or not runtime_id:
-        raise RuntimeError("State has no live runtime id.")
-    return load_runtime(runtime_id)

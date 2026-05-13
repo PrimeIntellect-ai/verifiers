@@ -9,14 +9,16 @@ import tarfile
 import tempfile
 from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
-from typing import Any, cast
+from typing import cast
 
 from pydantic import Field
+from typing_extensions import Unpack
 
 from verifiers.utils.import_utils import load_toml
 
 from ...config import TasksetConfig, merge_config_value
-from ...taskset import Taskset
+from ...taskset import Taskset, TasksetKwargs
+from ...utils.sandbox_utils import SandboxClient
 from verifiers.decorators import reward
 
 logger = logging.getLogger(__name__)
@@ -62,7 +64,7 @@ class HarborTaskset(Taskset):
         env: Mapping[str, object] | None = None,
         rewards: Iterable[Callable[..., object]] = (),
         config: HarborTasksetConfig | Mapping[str, object] | None = None,
-        **kwargs: Any,
+        **kwargs: Unpack[TasksetKwargs],
     ):
         self.config = type(self).config_type.from_config(config)
         self.tasks = merge_config_value(tasks, self.config.tasks)
@@ -121,7 +123,7 @@ class HarborTaskset(Taskset):
             **kwargs,
         )
 
-    def load_rows(self) -> list[dict[str, Any]]:
+    def load_rows(self) -> list[dict[str, object]]:
         root = self.resolve_tasks_root()
         task_dirs = harbor_task_dirs(root, self.task_names)
         rows = [
@@ -148,7 +150,7 @@ class HarborTaskset(Taskset):
             )
         raise FileNotFoundError(f"Harbor tasks path not found: {candidate}")
 
-    def task_row(self, task_dir: Path, index: int) -> dict[str, Any]:
+    def task_row(self, task_dir: Path, index: int) -> dict[str, object]:
         task_toml_path = task_dir / "task.toml"
         instruction_path = task_dir / "instruction.md"
         with task_toml_path.open("rb") as f:
@@ -251,7 +253,9 @@ def is_harbor_task_dir(path: Path) -> bool:
 def parse_number(value: object, default: float) -> float:
     if value is None:
         return default
-    return float(cast(Any, value))
+    if isinstance(value, bool) or not isinstance(value, int | float | str):
+        raise TypeError("Expected a numeric value.")
+    return float(value)
 
 
 def parse_gb(value: object, default: float) -> float:
@@ -330,7 +334,7 @@ async def harbor_reward(task, state) -> float:
     task_dir = Path(str(harbor["task_dir"]))
     from prime_sandboxes import AsyncSandboxClient
 
-    client = AsyncSandboxClient()
+    client = cast(SandboxClient, AsyncSandboxClient())
     try:
         await upload_harbor_tests(client, sandbox_id, task_dir)
         result = await client.execute_command(
@@ -361,15 +365,16 @@ async def harbor_reward(task, state) -> float:
     return parse_reward_text(str(reward_result.stdout or "").strip())
 
 
-async def upload_harbor_tests(client: object, sandbox_id: str, task_dir: Path) -> None:
+async def upload_harbor_tests(
+    client: SandboxClient, sandbox_id: str, task_dir: Path
+) -> None:
     with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp_file:
         tar_path = Path(tmp_file.name)
     try:
         await build_harbor_tests_archive(task_dir, tar_path)
         remote_tar = "/tmp/harbor_tests.tar.gz"
-        sandbox_client = cast(Any, client)
-        await sandbox_client.upload_file(sandbox_id, remote_tar, str(tar_path))
-        await sandbox_client.execute_command(
+        await client.upload_file(sandbox_id, remote_tar, str(tar_path))
+        await client.execute_command(
             sandbox_id=sandbox_id,
             command=(
                 f"mkdir -p /oracle /tests /logs/verifier && "
