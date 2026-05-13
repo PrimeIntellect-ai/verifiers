@@ -47,7 +47,9 @@ class OpenAICompletionsClient(
     async def close(self) -> None:
         await self.client.close()
 
-    async def to_native_prompt(self, messages: Messages) -> tuple[OpenAITextMessages, dict]:
+    async def to_native_prompt(
+        self, messages: Messages
+    ) -> tuple[OpenAITextMessages, dict]:
         parts: list[str] = []
         for message in messages:
             content = message.content
@@ -100,7 +102,9 @@ class OpenAICompletionsClient(
         if response.choices is None:
             raise EmptyModelResponseError("Model returned no response choices")
         if not len(response.choices) == 1:
-            raise InvalidModelResponseError(f"Model returned {len(response.choices)} choices, expected 1")
+            raise InvalidModelResponseError(
+                f"Model returned {len(response.choices)} choices, expected 1"
+            )
         if not response.choices[0].text:
             raise EmptyModelResponseError("Model returned no content")
 
@@ -111,11 +115,15 @@ class OpenAICompletionsClient(
                 return None
             prompt_tokens = get_usage_field(usage, "prompt_tokens")
             completion_tokens = get_usage_field(usage, "completion_tokens")
-            if not isinstance(prompt_tokens, int) or not isinstance(completion_tokens, int):
+            if not isinstance(prompt_tokens, int) or not isinstance(
+                completion_tokens, int
+            ):
                 prompt_tokens = get_usage_field(usage, "input_tokens")
                 completion_tokens = get_usage_field(usage, "output_tokens")
             total_tokens = get_usage_field(usage, "total_tokens")
-            if not isinstance(prompt_tokens, int) or not isinstance(completion_tokens, int):
+            if not isinstance(prompt_tokens, int) or not isinstance(
+                completion_tokens, int
+            ):
                 return None
             if not isinstance(total_tokens, int):
                 total_tokens = prompt_tokens + completion_tokens
@@ -157,7 +165,9 @@ class OpenAICompletionsClient(
                 return None
             prompt_mask = [0] * len(prompt_ids)
             completion_mask = [1] * len(completion_ids)
-            completion_logprobs = getattr(response.choices[0].logprobs, "token_logprobs")
+            completion_logprobs = getattr(
+                response.choices[0].logprobs, "token_logprobs"
+            )
             if completion_logprobs is None:
                 return None
             choice_extra = response.choices[0].model_extra or {}
