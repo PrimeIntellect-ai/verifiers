@@ -33,7 +33,7 @@ from openai.types.chat.chat_completion_user_message_param import (
 from openai.types.shared_params import FunctionDefinition
 
 from verifiers.clients.client import Client
-from verifiers.clients.routed_experts import compose_routed_experts
+from verifiers.clients.routed_experts import decode_routed_experts
 from verifiers.errors import (
     EmptyModelResponseError,
     InvalidModelResponseError,
@@ -158,9 +158,7 @@ class OpenAIChatCompletionsClient(
     async def close(self) -> None:
         await self.client.close()
 
-    async def to_native_prompt(
-        self, messages: Messages
-    ) -> tuple[OpenAIChatMessages, dict]:
+    async def to_native_prompt(self, messages: Messages) -> tuple[OpenAIChatMessages, dict]:
         def normalize_content_part(part: Any) -> dict[str, Any]:
             if isinstance(part, Mapping):
                 return dict(part)
@@ -175,18 +173,12 @@ class OpenAIChatCompletionsClient(
 
         def from_chat_message(message: Message) -> OpenAIChatMessage:
             if isinstance(message, SystemMessage):
-                return ChatCompletionSystemMessageParam(
-                    role="system", content=normalize_content(message.content)
-                )
+                return ChatCompletionSystemMessageParam(role="system", content=normalize_content(message.content))
             elif isinstance(message, UserMessage):
-                return ChatCompletionUserMessageParam(
-                    role="user", content=normalize_content(message.content)
-                )
+                return ChatCompletionUserMessageParam(role="user", content=normalize_content(message.content))
             elif isinstance(message, AssistantMessage):
                 if message.tool_calls is not None:
-                    oai_tool_calls: (
-                        list[ChatCompletionMessageFunctionToolCallParam] | None
-                    ) = [
+                    oai_tool_calls: list[ChatCompletionMessageFunctionToolCallParam] | None = [
                         ChatCompletionMessageFunctionToolCallParam(
                             type="function",
                             id=tool_call.id,
@@ -212,9 +204,7 @@ class OpenAIChatCompletionsClient(
                     content=cast(Any, normalize_content(message.content)),
                 )
             elif isinstance(message, TextMessage):
-                return ChatCompletionUserMessageParam(
-                    role="user", content=message.content
-                )
+                return ChatCompletionUserMessageParam(role="user", content=message.content)
             else:
                 raise ValueError(f"Invalid chat message: {message}")
 
@@ -258,14 +248,9 @@ class OpenAIChatCompletionsClient(
             reasoning_effort = sampling_args.pop("reasoning_effort", None)
             model_id = model.lower().split("/")[-1].replace(".", "-").replace("_", "-")
             is_anthropic_route = (
-                "openrouter.ai" in (api_base_url or "").lower()
-                or "pinference.ai" in (api_base_url or "").lower()
+                "openrouter.ai" in (api_base_url or "").lower() or "pinference.ai" in (api_base_url or "").lower()
             )
-            if (
-                reasoning_effort is not None
-                and model_id.startswith("claude-")
-                and is_anthropic_route
-            ):
+            if reasoning_effort is not None and model_id.startswith("claude-") and is_anthropic_route:
                 # OpenRouter/Pinference route Anthropic reasoning_effort through extra_body.
                 extra_body = dict(sampling_args.get("extra_body") or {})
                 extra_body["verbosity"] = reasoning_effort
@@ -324,17 +309,13 @@ class OpenAIChatCompletionsClient(
         if response.choices is None:
             raise EmptyModelResponseError("Model returned no response choices")
         if not len(response.choices) == 1:
-            raise InvalidModelResponseError(
-                f"Model returned {len(response.choices)} choices, expected 1"
-            )
+            raise InvalidModelResponseError(f"Model returned {len(response.choices)} choices, expected 1")
         message = response.choices[0].message
         has_content = bool(content_to_text(getattr(message, "content", None)))
         has_tool_calls = bool(getattr(message, "tool_calls", None))
         has_reasoning = bool(parse_reasoning_content(message))
         if not (has_content or has_tool_calls or has_reasoning):
-            raise EmptyModelResponseError(
-                "Model returned no content, reasoning, and did not call any tools"
-            )
+            raise EmptyModelResponseError("Model returned no content, reasoning, and did not call any tools")
 
     async def from_native_response(self, response: OpenAIChatResponse) -> Response:
         def parse_single_tool_call(tool_call: Any) -> ToolCall | None:
@@ -353,11 +334,7 @@ class OpenAIChatCompletionsClient(
                 else:
                     name = tool_call.get("name")
                     arguments = tool_call.get("arguments")
-                if (
-                    isinstance(tool_call_id, str)
-                    and isinstance(name, str)
-                    and isinstance(arguments, str)
-                ):
+                if isinstance(tool_call_id, str) and isinstance(name, str) and isinstance(arguments, str):
                     return ToolCall(
                         id=tool_call_id,
                         name=name,
@@ -367,15 +344,9 @@ class OpenAIChatCompletionsClient(
 
             function_obj = getattr(tool_call, "function", None)
             name = getattr(function_obj, "name", None) if function_obj else None
-            arguments = (
-                getattr(function_obj, "arguments", None) if function_obj else None
-            )
+            arguments = getattr(function_obj, "arguments", None) if function_obj else None
             tool_call_id = getattr(tool_call, "id", None)
-            if (
-                isinstance(tool_call_id, str)
-                and isinstance(name, str)
-                and isinstance(arguments, str)
-            ):
+            if isinstance(tool_call_id, str) and isinstance(name, str) and isinstance(arguments, str):
                 return ToolCall(
                     id=tool_call_id,
                     name=name,
@@ -410,15 +381,11 @@ class OpenAIChatCompletionsClient(
                 return None
             prompt_tokens = get_usage_field(usage, "prompt_tokens")
             completion_tokens = get_usage_field(usage, "completion_tokens")
-            if not isinstance(prompt_tokens, int) or not isinstance(
-                completion_tokens, int
-            ):
+            if not isinstance(prompt_tokens, int) or not isinstance(completion_tokens, int):
                 prompt_tokens = get_usage_field(usage, "input_tokens")
                 completion_tokens = get_usage_field(usage, "output_tokens")
             total_tokens = get_usage_field(usage, "total_tokens")
-            if not isinstance(prompt_tokens, int) or not isinstance(
-                completion_tokens, int
-            ):
+            if not isinstance(prompt_tokens, int) or not isinstance(completion_tokens, int):
                 return None
             if not isinstance(total_tokens, int):
                 total_tokens = prompt_tokens + completion_tokens
@@ -455,8 +422,7 @@ class OpenAIChatCompletionsClient(
             if response.choices[0].logprobs is None:
                 return None
             has_logprobs_obj = (
-                hasattr(response.choices[0].logprobs, "content")
-                and response.choices[0].logprobs.content is not None
+                hasattr(response.choices[0].logprobs, "content") and response.choices[0].logprobs.content is not None
             )
             has_logprobs_dict = (
                 isinstance(response.choices[0].logprobs, dict)
@@ -482,14 +448,8 @@ class OpenAIChatCompletionsClient(
                 logprobs_content = response.choices[0].logprobs["content"]
                 completion_logprobs = [token["logprob"] for token in logprobs_content]
 
-            response_extra = response.model_extra or {}
             choice_extra = choice.model_extra or {}
-            routed_experts = compose_routed_experts(
-                prompt_routed_experts=response_extra.get("prompt_routed_experts"),
-                completion_routed_experts=choice_extra.get("routed_experts"),
-                prompt_len=len(prompt_ids),
-                completion_len=len(completion_ids),
-            )
+            routed_experts = decode_routed_experts(choice_extra.get("routed_experts"))
             return ResponseTokens(
                 prompt_ids=prompt_ids,
                 prompt_mask=prompt_mask,

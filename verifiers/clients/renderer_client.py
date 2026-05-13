@@ -33,7 +33,7 @@ from verifiers.clients.client import Client
 from verifiers.clients.openai_chat_completions_client import (
     handle_openai_overlong_prompt,
 )
-from verifiers.clients.routed_experts import compose_routed_experts
+from verifiers.clients.routed_experts import decode_routed_experts
 from verifiers.errors import EmptyModelResponseError
 from verifiers.types import (
     AssistantMessage,
@@ -144,11 +144,7 @@ def _normalize_content(content: Any) -> Any:
     """Convert Pydantic content parts to plain dicts."""
     if isinstance(content, list):
         return [
-            dict(p)
-            if isinstance(p, Mapping)
-            else cast(dict, p.model_dump())
-            if hasattr(p, "model_dump")
-            else p
+            dict(p) if isinstance(p, Mapping) else cast(dict, p.model_dump()) if hasattr(p, "model_dump") else p
             for p in content
         ]
     return content
@@ -157,9 +153,7 @@ def _normalize_content(content: Any) -> Any:
 def _to_renderer_message(message: Message) -> RendererMessage:
     """Convert a verifiers Message (Pydantic model) to a renderer Message (TypedDict)."""
     if isinstance(message, SystemMessage):
-        return RendererMessage(
-            role="system", content=_normalize_content(message.content)
-        )
+        return RendererMessage(role="system", content=_normalize_content(message.content))
     elif isinstance(message, UserMessage):
         return RendererMessage(role="user", content=_normalize_content(message.content))
     elif isinstance(message, AssistantMessage):
@@ -232,11 +226,7 @@ def _coerce_renderer_message(message: Any) -> RendererMessage:
     if isinstance(message, Mapping):
         return cast(
             RendererMessage,
-            {
-                str(k): _normalize_content(v)
-                for k, v in message.items()
-                if v is not None
-            },
+            {str(k): _normalize_content(v) for k, v in message.items() if v is not None},
         )
     return _to_renderer_message(cast(Message, message))
 
@@ -321,9 +311,7 @@ def _step_multi_modal_data(step: Any):
 def _step_rendered_messages(step: Any) -> list[RendererMessage]:
     prompt = list(_get_value(step, "prompt", []) or [])
     completion = list(_get_value(step, "completion", []) or [])
-    return _attach_tool_call_names(
-        [_coerce_renderer_message(message) for message in prompt + completion]
-    )
+    return _attach_tool_call_names([_coerce_renderer_message(message) for message in prompt + completion])
 
 
 async def _get_incremental_prompt_ids(
@@ -415,9 +403,7 @@ def _parse_finish_reason(raw: str | None) -> FinishReason:
             return None
 
 
-class RendererClient(
-    Client[AsyncOpenAI, list[RendererMessage], dict[str, Any], ToolSpec]
-):
+class RendererClient(Client[AsyncOpenAI, list[RendererMessage], dict[str, Any], ToolSpec]):
     """Client that tokenizes prompts client-side via a Renderer.
 
     First turn: Renderer renders messages → sends token IDs to vLLM /v1/generate.
@@ -472,16 +458,10 @@ class RendererClient(
             else model
         )
         tool_parser = self._config.tool_parser if self._config is not None else None
-        reasoning_parser = (
-            self._config.reasoning_parser if self._config is not None else None
-        )
-        preserve_all_thinking = (
-            self._config.preserve_all_thinking if self._config is not None else False
-        )
+        reasoning_parser = self._config.reasoning_parser if self._config is not None else None
+        preserve_all_thinking = self._config.preserve_all_thinking if self._config is not None else False
         preserve_thinking_between_tool_calls = (
-            self._config.preserve_thinking_between_tool_calls
-            if self._config is not None
-            else False
+            self._config.preserve_thinking_between_tool_calls if self._config is not None else False
         )
         cache_key = (
             renderer_model,
@@ -509,9 +489,7 @@ class RendererClient(
 
     # ── Type conversions ────────────────────────────────────────────
 
-    async def to_native_prompt(
-        self, messages: Messages
-    ) -> tuple[list[RendererMessage], dict]:
+    async def to_native_prompt(self, messages: Messages) -> tuple[list[RendererMessage], dict]:
         return (
             _attach_tool_call_names([_to_renderer_message(m) for m in messages]),
             {},
@@ -585,8 +563,7 @@ class RendererClient(
             multi_modal_data=multi_modal_data,
             tools=tools,
             sampling_params=sampling_params,
-            cache_salt=args.get("cache_salt")
-            or sampling_params.pop("cache_salt", None),
+            cache_salt=args.get("cache_salt") or sampling_params.pop("cache_salt", None),
             priority=args.get("priority") or sampling_params.pop("priority", None),
             extra_headers=args.get("extra_headers"),
         )
@@ -599,9 +576,7 @@ class RendererClient(
         has_tool_calls = bool(response.get("tool_calls"))
         has_reasoning = bool(response.get("reasoning_content"))
         if not (has_content or has_tool_calls or has_reasoning):
-            raise EmptyModelResponseError(
-                "Model returned no content, reasoning, and did not call any tools"
-            )
+            raise EmptyModelResponseError("Model returned no content, reasoning, and did not call any tools")
 
     async def from_native_response(self, response: dict[str, Any]) -> Response:
         """Parse the generate() result dict into a verifiers Response."""
@@ -629,12 +604,7 @@ class RendererClient(
         completion_ids = response.get("completion_ids", [])
         completion_logprobs = response.get("completion_logprobs", [])
 
-        routed_experts = compose_routed_experts(
-            prompt_routed_experts=response.get("prompt_routed_experts"),
-            completion_routed_experts=response.get("routed_experts"),
-            prompt_len=len(prompt_ids),
-            completion_len=len(completion_ids),
-        )
+        routed_experts = decode_routed_experts(response.get("routed_experts"))
 
         tokens = ResponseTokens(
             prompt_ids=prompt_ids,
