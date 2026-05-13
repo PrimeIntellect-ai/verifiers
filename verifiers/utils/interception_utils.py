@@ -305,20 +305,23 @@ class InterceptionServer:
                 response = await response_future
             except asyncio.CancelledError:
                 return web.json_response({"error": "Rollout cancelled"}, status=499)
+            except OverlongPromptError as e:
+                logger.debug(
+                    f"[{rollout_id}] Overlong prompt in non-streaming request: {e}"
+                )
+                self._mark_rollout_prompt_too_long(rollout_id)
+                return web.json_response({"error": str(e)}, status=500)
             except Exception as e:
                 logger.debug(
                     f"[{rollout_id}] Rollout error surfaced in non-streaming "
                     f"request: {type(e).__name__}: {e}"
                 )
-                if isinstance(e, OverlongPromptError):
-                    self._mark_rollout_prompt_too_long(rollout_id)
-                else:
-                    self._set_rollout_error(
-                        rollout_id,
-                        InterceptionError(
-                            f"intercepted request failed: {type(e).__name__}: {e}"
-                        ),
-                    )
+                self._set_rollout_error(
+                    rollout_id,
+                    InterceptionError(
+                        f"intercepted request failed: {type(e).__name__}: {e}"
+                    ),
+                )
                 return web.json_response({"error": str(e)}, status=500)
 
             response_dict = serialize_intercept_response(
@@ -524,19 +527,19 @@ class InterceptionServer:
             await response_future
         except asyncio.CancelledError:
             raise
+        except OverlongPromptError as e:
+            logger.debug(f"[{rollout_id}] Overlong prompt in stream: {e}")
+            self._mark_rollout_prompt_too_long(rollout_id)
         except Exception as e:
             logger.debug(
                 f"[{rollout_id}] Rollout error surfaced in stream: {type(e).__name__}: {e}"
             )
-            if isinstance(e, OverlongPromptError):
-                self._mark_rollout_prompt_too_long(rollout_id)
-            else:
-                self._set_rollout_error(
-                    rollout_id,
-                    StreamInterrupted(
-                        f"streaming response_future failed: {type(e).__name__}: {e}"
-                    ),
-                )
+            self._set_rollout_error(
+                rollout_id,
+                StreamInterrupted(
+                    f"streaming response_future failed: {type(e).__name__}: {e}"
+                ),
+            )
 
         # Surface any write_eof failure so a tail truncation becomes a
         # reschedulable error instead of a silent zero-turn completion.
