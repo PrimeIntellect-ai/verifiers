@@ -109,6 +109,7 @@ class FakeSandboxClient:
     created: list[str] = []
     deleted: list[str] = []
     commands: list[tuple[str, str]] = []
+    background_jobs: list[tuple[str, str, int | None, str | None]] = []
     uploads: list[tuple[str, str, bytes]] = []
 
     @classmethod
@@ -116,6 +117,7 @@ class FakeSandboxClient:
         cls.created = []
         cls.deleted = []
         cls.commands = []
+        cls.background_jobs = []
         cls.uploads = []
 
     async def create(self, request: FakeCreateSandboxRequest) -> FakeSandboxResult:
@@ -133,6 +135,17 @@ class FakeSandboxClient:
         sandbox_id = str(kwargs.get("sandbox_id") or args[0])
         command = str(kwargs.get("command") or args[1])
         type(self).commands.append((sandbox_id, command))
+        return FakeCommandResult()
+
+    async def run_background_job(
+        self, *args: object, **kwargs: object
+    ) -> FakeCommandResult:
+        sandbox_id = str(kwargs.get("sandbox_id") or args[0])
+        command = str(kwargs.get("command") or args[1])
+        timeout = cast(int | None, kwargs.get("timeout"))
+        working_dir = cast(str | None, kwargs.get("working_dir"))
+        type(self).commands.append((sandbox_id, command))
+        type(self).background_jobs.append((sandbox_id, command, timeout, working_dir))
         return FakeCommandResult()
 
     async def upload_bytes(self, *args: object, **kwargs: object) -> None:
@@ -1191,6 +1204,26 @@ async def test_sandbox_state_input_upload_runs_after_rollout_setup(
         if path == "/tmp/vf_state_in.json"
     }
     assert uploads["/tmp/vf_state_in.json"]["state_input_setup"] is True
+
+
+@pytest.mark.asyncio
+async def test_task_command_uses_background_job(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sandboxes(monkeypatch)
+    install_fake_endpoint_tunnel(monkeypatch)
+
+    harness = vf.CLIHarness(command=["sleep", "120"], sandbox=True)
+    task = vf.Task(
+        {
+            "prompt": [{"role": "user", "content": "hi"}],
+            "sandbox": {"command_timeout": 120},
+        }
+    ).freeze()
+
+    await harness.run(task)
+
+    assert ("sbx-1", "sleep 120", 120, "/app") in FakeSandboxClient.background_jobs
 
 
 @pytest.mark.asyncio
