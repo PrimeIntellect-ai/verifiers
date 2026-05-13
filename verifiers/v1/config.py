@@ -23,6 +23,8 @@ try:
 except ModuleNotFoundError:
     import tomli as tomllib
 
+from verifiers.types import ClientConfig
+
 
 class Config(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True, extra="forbid")
@@ -136,6 +138,15 @@ class UserConfig(Config):
     objects: dict[str, object] = Field(default_factory=dict)
     sandbox: SandboxConfig | None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_bare(cls, data: object) -> object:
+        if isinstance(data, cls):
+            return data
+        if isinstance(data, str):
+            return {"fn": data}
+        return data
+
 
 class ToolsetConfig(Config):
     tools: object = Field(default_factory=list)
@@ -235,8 +246,8 @@ class TasksetConfig(Config):
     source: object | None = None
     eval_source: object | None = None
     taskset_id: str | None = None
-    system_prompt: object | None = None
-    user: object | None = None
+    system_prompt: str | list[dict[str, str]] | None = None
+    user: UserConfig | None = None
 
     # Collection fields are merged/extended from code and config.
     toolsets: object = Field(default_factory=list)
@@ -255,14 +266,14 @@ class HarnessConfig(Config):
 
     # Singleton fields describe one logical value owned by the harness.
     program: object | None = None
-    system_prompt: object | None = None
+    system_prompt: str | list[dict[str, str]] | None = None
     system_prompt_merge: str = "reject"
     sandbox: SandboxConfig | None = None
-    client: object | None = None
+    client: ClientConfig | None = None
     model: str | None = None
     sampling_args: dict[str, object] = Field(default_factory=dict)
     keep_trajectory_step: object | None = None
-    user: object | None = None
+    user: UserConfig | None = None
 
     # Collection fields are merged/extended from code and config.
     toolsets: object = Field(default_factory=list)
@@ -492,9 +503,11 @@ def resolve_config_object(value: object) -> object:
 
 
 def import_config_ref(ref: str) -> object:
-    module_name, separator, attr_path = ref.partition(":")
-    if not separator or not module_name or not attr_path:
-        raise ValueError(f"Config ref {ref!r} must use 'module:object'.")
+    """Import a config ref and return the underlying callable."""
+    parts = ref.partition(":")
+    if not all(parts):
+        raise ValueError(f"Config ref {ref!r} must use 'module.submodule:object'.")
+    module_name, _, attr_path = parts
     obj: object = importlib.import_module(module_name)
     for part in attr_path.split("."):
         obj = getattr(obj, part)

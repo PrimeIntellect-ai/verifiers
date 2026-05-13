@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import pytest
 
+from verifiers.types import ClientConfig
 from verifiers.v1.config import (
     CallableConfig,
     HarnessConfig,
@@ -21,6 +22,7 @@ from verifiers.v1.config import (
     RewardConfig,
     SignalConfig,
     TasksetConfig,
+    UserConfig,
     callable_config_item,
 )
 
@@ -201,3 +203,44 @@ def test_import_fn_raises_when_target_not_callable() -> None:
     spec = CallableConfig(fn=f"{__name__}:_not_callable")
     with pytest.raises(TypeError, match="expected a callable"):
         spec.import_fn()
+
+
+# --------------------------------------------------------------------------- #
+# Tightened singleton fields on TasksetConfig / HarnessConfig: system_prompt,
+# user, client (HarnessConfig only).
+# --------------------------------------------------------------------------- #
+
+
+def test_harness_config_system_prompt_accepts_string() -> None:
+    cfg = HarnessConfig(system_prompt="be concise")
+    assert cfg.system_prompt == "be concise"
+
+
+def test_harness_config_system_prompt_accepts_message_list() -> None:
+    cfg = HarnessConfig(system_prompt=[{"role": "system", "content": "hi"}])
+    assert cfg.system_prompt == [{"role": "system", "content": "hi"}]
+
+
+def test_taskset_config_system_prompt_accepts_string() -> None:
+    cfg = TasksetConfig(system_prompt="answer briefly")
+    assert cfg.system_prompt == "answer briefly"
+
+
+def test_harness_config_user_coerces_dict_to_user_config() -> None:
+    cfg = HarnessConfig(user={"fn": "pkg.mod:user_fn", "scope": "group"})
+    assert isinstance(cfg.user, UserConfig)
+    assert cfg.user.scope == "group"
+
+
+def test_taskset_config_user_coerces_bare_string_to_user_config() -> None:
+    cfg = TasksetConfig(user="pkg.mod:user_fn")
+    assert isinstance(cfg.user, UserConfig)
+    assert cfg.user.fn == "pkg.mod:user_fn"
+
+
+def test_harness_config_client_coerces_dict_to_client_config() -> None:
+    cfg = HarnessConfig(
+        client={"api_base_url": "https://api.openai.com/v1", "api_key_var": "X"}
+    )
+    assert isinstance(cfg.client, ClientConfig)
+    assert cfg.client.api_base_url == "https://api.openai.com/v1"
