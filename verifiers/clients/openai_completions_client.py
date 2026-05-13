@@ -9,6 +9,7 @@ from verifiers.clients.openai_chat_completions_client import (
     get_usage_field,
     handle_openai_overlong_prompt,
 )
+from verifiers.clients.routed_experts import compose_routed_experts
 from verifiers.errors import (
     EmptyModelResponseError,
     InvalidModelResponseError,
@@ -170,12 +171,21 @@ class OpenAICompletionsClient(
             )
             if completion_logprobs is None:
                 return None
+            response_extra = response.model_extra or {}
+            choice_extra = response.choices[0].model_extra or {}
+            routed_experts = compose_routed_experts(
+                prompt_routed_experts=response_extra.get("prompt_routed_experts"),
+                completion_routed_experts=choice_extra.get("routed_experts"),
+                prompt_len=len(prompt_ids),
+                completion_len=len(completion_ids),
+            )
             return ResponseTokens(
                 prompt_ids=prompt_ids,
                 prompt_mask=prompt_mask,
                 completion_ids=completion_ids,
                 completion_mask=completion_mask,
                 completion_logprobs=completion_logprobs,
+                routed_experts=routed_experts,
             )
 
         return Response(
