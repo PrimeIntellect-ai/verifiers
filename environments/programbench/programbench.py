@@ -308,11 +308,9 @@ class ProgramBenchTaskset(vf.Taskset):
     def sandbox_config(self, info: dict) -> dict[str, object]:
         lang = info.get("language", "c")
         timeout_min = self.sandbox_timeout_minutes or _SANDBOX_TIMEOUT_MIN.get(lang, 20)
-        # command_timeout controls the mini-swe-agent execute_command budget.
-        # The sandbox API hard-caps execute_command at 900s (PR #1364 will lift this
-        # by switching to run_background_job; until then keep the cap).
+        # command_timeout is the mini-swe-agent run_background_job budget (PR #1364).
         # compile/test use separate per-call timeouts via run_background_job.
-        command_timeout = min(timeout_min * 60, 900)
+        command_timeout = timeout_min * 60
         return {
             "image": _LANGUAGE_IMAGES.get(lang, DEFAULT_IMAGE),
             "cpu_cores": self.cpu_cores or 2,
