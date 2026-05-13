@@ -182,24 +182,6 @@ class InterceptionServer:
             return
         state["error"] = error
 
-    def _mark_rollout_prompt_too_long(self, rollout_id: str) -> None:
-        """Mark the rollout as stopped because the prompt exceeded context.
-
-        Mirrors ``MultiTurnEnv.rollout_loop``'s handling of
-        ``OverlongPromptError``: this is an expected stop condition, not
-        an infrastructure failure, so we must not also set
-        ``state["error"]`` (which would surface a spurious error in
-        rubrics and metrics).
-        """
-        context = self.active_rollouts.get(rollout_id)
-        if context is None:
-            return
-        state = context.get("state")
-        if state is None:
-            return
-        state["prompt_too_long"] = True
-        state["is_truncated"] = True
-
     def register_rollout(
         self,
         rollout_id: str,
@@ -306,10 +288,6 @@ class InterceptionServer:
             except asyncio.CancelledError:
                 return web.json_response({"error": "Rollout cancelled"}, status=499)
             except OverlongPromptError as e:
-                logger.debug(
-                    f"[{rollout_id}] Overlong prompt in non-streaming request: {e}"
-                )
-                self._mark_rollout_prompt_too_long(rollout_id)
                 return web.json_response({"error": str(e)}, status=500)
             except Exception as e:
                 logger.debug(
@@ -527,9 +505,8 @@ class InterceptionServer:
             await response_future
         except asyncio.CancelledError:
             raise
-        except OverlongPromptError as e:
-            logger.debug(f"[{rollout_id}] Overlong prompt in stream: {e}")
-            self._mark_rollout_prompt_too_long(rollout_id)
+        except OverlongPromptError:
+            pass
         except Exception as e:
             logger.debug(
                 f"[{rollout_id}] Rollout error surfaced in stream: {type(e).__name__}: {e}"

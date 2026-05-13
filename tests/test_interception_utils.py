@@ -265,14 +265,17 @@ async def test_keepalive_write_failure_surfaces_to_state(monkeypatch):
     assert "ConnectionResetError" in msg
 
 
-async def test_non_streaming_overlong_prompt_surfaces_as_stop_condition(monkeypatch):
-    """``OverlongPromptError`` is an expected stop condition the multi-turn
-    rollout loop translates into ``state['prompt_too_long']``. The interception
-    handler must not also wrap it as ``state['error']`` — otherwise the
-    rollout reports both ``stop=prompt_too_long`` and a spurious
-    ``InterceptionError`` in metrics."""
+async def test_non_streaming_overlong_prompt_does_not_clobber_state(monkeypatch):
+    """``OverlongPromptError`` is an expected stop condition that
+    ``MultiTurnEnv.rollout_loop`` translates into
+    ``state['prompt_too_long']`` / ``state['is_truncated']`` from the
+    re-raised exception. The HTTP handler runs in parallel; it must not
+    wrap the same error as ``state['error']`` (which would surface a
+    spurious ``InterceptionError`` in metrics) nor disturb the rollout
+    loop's signal."""
     server = InterceptionServer(port=0)
-    state: dict = {}
+    # Simulate the state the rollout loop has already written.
+    state: dict = {"prompt_too_long": True, "is_truncated": True}
     server.register_rollout("r1", state=state)
 
     request = MagicMock()
@@ -309,12 +312,13 @@ async def test_non_streaming_overlong_prompt_surfaces_as_stop_condition(monkeypa
     assert state.get("is_truncated") is True
 
 
-async def test_streaming_overlong_prompt_surfaces_as_stop_condition(monkeypatch):
-    """Same as the non-streaming variant: ``OverlongPromptError`` raised on
-    the streaming response_future must mark the rollout as
-    ``prompt_too_long`` instead of becoming a ``StreamInterrupted`` error."""
+async def test_streaming_overlong_prompt_does_not_clobber_state(monkeypatch):
+    """Same as the non-streaming variant: an ``OverlongPromptError``
+    raised on the streaming ``response_future`` must not become a
+    ``StreamInterrupted`` on ``state['error']`` nor disturb the rollout
+    loop's ``prompt_too_long`` / ``is_truncated`` signal."""
     server = InterceptionServer(port=0)
-    state: dict = {}
+    state: dict = {"prompt_too_long": True, "is_truncated": True}
     server.register_rollout("r1", state=state)
 
     writes: list[bytes] = []
