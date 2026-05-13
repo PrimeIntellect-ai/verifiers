@@ -78,6 +78,23 @@ EndpointApi = Literal[
 EndpointClient: TypeAlias = AsyncOpenAI | OpenAI | AsyncAnthropic | Anthropic
 MessageType = Literal["chat", "completion"]  # deprecated
 
+# Wire-shape selector shared between RendererClient and
+# OpenAIChatCompletionsTokenClient. Picks which inference-server surface the
+# client targets at request-build time. Same flag drives both clients so a
+# single `ClientConfig.renderer_transport` setting routes consistently.
+#
+# - "prime_vllm_generate" (default): vLLM's TITO surface. For RendererClient
+#   that's POST /v1/chat/completions with a renderer-flavored request body.
+#   For OpenAIChatCompletionsTokenClient that's POST
+#   /v1/chat/completions/tokens with `tokens=prompt_ids` and bridge
+#   tokenization via the server's /tokenize route.
+# - "dynamo_chat_nvext": Dynamo's standard chat-completions route with
+#   pre-tokenized prompt carried in `nvext.token_data`. Server-side token
+#   IDs come back via `nvext.engine_data.completion_token_ids` (PR #8119
+#   canonical channel). Bridge tokenization runs locally via the
+#   transformers fast tokenizer; no /tokenize HTTP round-trip.
+RendererTransport = Literal["prime_vllm_generate", "dynamo_chat_nvext"]
+
 
 # Provider-agnostic message + response types
 class CustomBaseModel(BaseModel):
@@ -1269,6 +1286,8 @@ class ClientConfig(BaseModel):
     Drives the renderer pool when ``client_type == "renderer"``. Defaults
     to ``None`` so non-renderer clients aren't forced to declare it; the
     renderer client treats ``None`` as ``AutoRendererConfig()``."""
+    renderer: str = "auto"
+    renderer_transport: RendererTransport = "prime_vllm_generate"
     renderer_model_name: str | None = None
     """Override the tokenizer model name used to instantiate the renderer
     pool. Defaults to the model used in API requests."""
