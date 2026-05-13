@@ -319,7 +319,7 @@ class InterceptionServer:
                 self._set_rollout_error(
                     rollout_id,
                     InterceptionError(
-                        f"intercepted request failed: {type(e).__name__}: {e}"
+                        f"Intercepted request failed: {type(e).__name__}: {e}"
                     ),
                 )
                 return web.json_response({"error": str(e)}, status=500)
@@ -457,7 +457,7 @@ class InterceptionServer:
             )
             self._set_rollout_error(
                 rollout_id,
-                StreamInterrupted(f"prepare failed: {type(e).__name__}: {e}"),
+                StreamInterrupted(f"Prepare failed: {type(e).__name__}: {e}"),
             )
             return response
         # Reuse one get() task across keepalive cycles; asyncio.wait_for on
@@ -484,7 +484,7 @@ class InterceptionServer:
                         self._set_rollout_error(
                             rollout_id,
                             StreamInterrupted(
-                                f"keepalive write failed after {print_time(waited_s)}: "
+                                f"Keepalive write failed after {print_time(waited_s)}: "
                                 f"{type(e).__name__}: {e}"
                             ),
                         )
@@ -514,7 +514,7 @@ class InterceptionServer:
             self._set_rollout_error(
                 rollout_id,
                 StreamInterrupted(
-                    f"stream write failed after {print_time(waited_s)}: "
+                    f"Stream write failed after {print_time(waited_s)}: "
                     f"{type(e).__name__}: {e}"
                 ),
             )
@@ -537,7 +537,7 @@ class InterceptionServer:
             self._set_rollout_error(
                 rollout_id,
                 StreamInterrupted(
-                    f"streaming response_future failed: {type(e).__name__}: {e}"
+                    f"Streaming response_future failed: {type(e).__name__}: {e}"
                 ),
             )
 
@@ -554,7 +554,7 @@ class InterceptionServer:
             self._set_rollout_error(
                 rollout_id,
                 StreamInterrupted(
-                    f"write_eof failed after {print_time(waited_s)}: "
+                    f"Write_eof failed after {print_time(waited_s)}: "
                     f"{type(e).__name__}: {e}"
                 ),
             )

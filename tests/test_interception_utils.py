@@ -261,7 +261,7 @@ async def test_keepalive_write_failure_surfaces_to_state(monkeypatch):
 
     assert isinstance(state["error"], StreamInterrupted)
     msg = str(state["error"])
-    assert "keepalive write failed" in msg
+    assert "Keepalive write failed" in msg
     assert "ConnectionResetError" in msg
 
 
@@ -390,6 +390,6 @@ async def test_non_streaming_response_future_failure_surfaces_to_state(monkeypat
         f"expected InterceptionError, got {type(state.get('error'))}"
     )
     msg = str(state["error"])
-    assert "intercepted request failed" in msg
+    assert "Intercepted request failed" in msg
     assert "RuntimeError" in msg
     assert "vLLM raised" in msg
