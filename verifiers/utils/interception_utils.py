@@ -535,7 +535,7 @@ class InterceptionServer:
             self._set_rollout_error(
                 rollout_id,
                 StreamInterrupted(
-                    f"Write_eof failed after {print_time(waited_s)}: "
+                    f"Write EOF failed after {print_time(waited_s)}: "
                     f"{type(e).__name__}: {e}"
                 ),
             )
