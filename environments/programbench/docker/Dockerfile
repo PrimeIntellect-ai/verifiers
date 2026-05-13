@@ -59,26 +59,17 @@ RUN cd /tmp/warmup && \
     cd / && rm -rf /tmp/warmup
 
 # Pre-install mini-swe-agent so the harness can run with network_access=False.
-# Mirrors the directory layout expected by build_mini_swe_agent_install_script:
-#   /opt/mini-swe-agent/prefix/bin/mini   — entry-point wrapper
-#   /opt/mini-swe-agent/prefix/python     — path to the python interpreter
-#   /opt/mini-swe-agent/prefix/site-packages/  — installed wheel
-# The framework's install script checks for /opt/mini-swe-agent/prefix/bin/mini
-# and skips the download when it exists.
+# We install system-wide (no --target) to use pre-built binary wheels and avoid
+# source compilation overhead. The framework's install script skips the download
+# loop when /opt/mini-swe-agent/prefix/bin/mini already exists.
+# site-packages is left as a stub dir; Python finds the modules via the system path.
 ARG MINI_SWE_AGENT_VERSION=2.2.8
-ARG MINI_SWE_AGENT_SHA256=694df4de1337e665e3cd82e99f93374f573bf52b8e7c362ac5d8045ad9f7c37c
-RUN set -e && \
-    WHEEL_FILE="mini_swe_agent-${MINI_SWE_AGENT_VERSION}-py3-none-any.whl" && \
-    WHEEL_URL="https://files.pythonhosted.org/packages/py3/m/mini-swe-agent/${WHEEL_FILE}" && \
+RUN pip3 install --no-cache-dir "mini-swe-agent==${MINI_SWE_AGENT_VERSION}" && \
     mkdir -p /opt/mini-swe-agent/prefix/bin \
              /opt/mini-swe-agent/prefix/site-packages \
              /opt/mini-swe-agent/uv-site-packages \
              /logs/agent \
              /mini-swe-agent && \
-    curl -fsSL "${WHEEL_URL}" -o "/tmp/${WHEEL_FILE}" && \
-    echo "${MINI_SWE_AGENT_SHA256}  /tmp/${WHEEL_FILE}" | sha256sum -c - && \
-    pip3 install --quiet --no-cache-dir --target /opt/mini-swe-agent/prefix/site-packages "/tmp/${WHEEL_FILE}" && \
-    rm "/tmp/${WHEEL_FILE}" && \
     command -v python3 > /opt/mini-swe-agent/prefix/python && \
     printf '#!/usr/bin/env sh\nexport PYTHONPATH=/opt/mini-swe-agent/prefix/site-packages:${PYTHONPATH:-}\nexec "$(cat /opt/mini-swe-agent/prefix/python)" -m minisweagent.run.mini "$@"\n' \
         > /opt/mini-swe-agent/prefix/bin/mini && \
