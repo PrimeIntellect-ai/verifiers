@@ -6,7 +6,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     GOPATH=/root/go \
     GOROOT=/usr/local/go \
     GO_VERSION=1.21.0 \
-    PATH="/root/.cargo/bin:/usr/local/go/bin:/root/go/bin:/root/.ghcup/bin:/root/.cabal/bin:${PATH}"
+    PATH="/root/.cargo/bin:/usr/local/go/bin:/root/go/bin:/root/.ghcup/bin:${PATH}"
 
 # System packages: C/C++ toolchain, analysis tools, Python, general utilities
 RUN apt-get update && \
@@ -70,7 +70,7 @@ RUN mkdir -p /root/.ghcup/bin && \
     /root/.ghcup/bin/ghcup set ghc 9.6.7 && \
     /root/.ghcup/bin/ghcup install cabal 3.14.2.0 && \
     /root/.ghcup/bin/ghcup set cabal 3.14.2.0 && \
-    /root/.cabal/bin/cabal update
+    /root/.ghcup/bin/cabal update
 
 # Pre-warm cargo registry with common ProgramBench dependencies.
 # We build both debug and release profiles so that all dep artifacts are cached.
