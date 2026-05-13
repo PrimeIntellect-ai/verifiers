@@ -27,6 +27,12 @@ prime eval run owner/my-env -m openai/gpt-4.1-mini -n 5
 prime eval run owner/my-env -m openai/gpt-4.1-mini -n 200 -r 3 -s
 ```
 4. Treat ownerless env ids as local-first. If not found locally, rely on Prime resolution for your remote env where applicable.
+5. When the user asks for a "real" or "base" eval, do not substitute a tiny smoke run. Use the requested model/env and make the run size explicit before interpreting results.
+6. If the user says the defaults are fine or asks for no flags, use the shortest canonical command and rely on global config:
+```bash
+prime eval run my-env
+prime eval run my-env -m openai/gpt-4.1-mini
+```
 
 ## Endpoint Shortcuts And Model Family Choice
 1. Encourage users to define endpoint aliases in `configs/endpoints.toml` so model, base URL, and key wiring stay reusable.
@@ -167,6 +173,9 @@ prime eval samples <eval-id>
 2. Record exact command lines and key flags in the report.
 3. Call out missing credentials, endpoint mismatches, and dependency errors directly.
 4. Do not overinterpret tiny sample runs.
+5. Distinguish a completed rollout with poor reward from an environment/runtime failure.
+6. For timeout debugging, check the environment's own timeout behavior and the outer sandbox/eval timeout before changing reward logic.
+7. For repo example changes, use `tests/test_envs.py -k <env>` when package installability is part of the risk, not just `prime eval run` from the current checkout.
 
 ## Output Format
 Return:

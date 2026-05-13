@@ -46,6 +46,36 @@ prime env install math-python --from-repo
 3. Implement `load_environment(...) -> vf.Environment` with explicit arguments.
 4. Add `pyproject.toml` defaults in `[tool.verifiers.eval]` only when stable.
 
+### V1 Taskset/Harness Shape
+1. Put task data, task-owned tools, user behavior, metrics, rewards, and task-specific configuration on the `Taskset`.
+2. Use the base `vf.Harness` unless the harness owns a reusable execution adapter such as a CLI, framework program, sandboxed program, or nested harness flow.
+3. Avoid one-off harness classes whose only purpose is to hold task behavior. That behavior belongs behind the taskset.
+4. Keep small example environments direct. Do not add private helper layers, duplicate loader paths, or optional knobs unless they clarify a real reusable boundary.
+5. Use the current config shape consistently:
+```toml
+[[env]]
+id = "owner/my-env"
+
+[env.args]
+split = "train"
+
+[env.taskset]
+num_examples = 100
+
+[env.harness]
+max_turns = 8
+```
+6. In code, normalize config at the loader boundary and pass child configs directly:
+```python
+def load_environment(config: vf.EnvConfig | None = None) -> vf.Env:
+    config = config or vf.EnvConfig()
+    return vf.Env(
+        taskset=load_taskset(config.taskset),
+        harness=load_harness(config.harness),
+    )
+```
+7. If concise env-level named args are useful, map them explicitly into `vf.EnvConfig(...)` once in `load_environment`; do not thread loose kwargs through taskset and harness internals.
+
 ### 2. Port From Another Library, Project, or Paper
 1. Create a strict source-to-target mapping before coding:
 - dataset rows and splits
@@ -84,6 +114,10 @@ prime eval run my-env -m openai/gpt-4.1-mini -n 50 -r 1 -s
 If multi-turn or tool-heavy, also run with higher rollouts:
 ```bash
 prime eval run my-env -m openai/gpt-4.1-mini -n 30 -r 3 -s
+```
+For repo example environments, also use the package-install path when packaging or dependencies changed:
+```bash
+uv run pytest tests/test_envs.py -k my_env -vv
 ```
 
 ## Publish Gate Before Large Evals Or Training
