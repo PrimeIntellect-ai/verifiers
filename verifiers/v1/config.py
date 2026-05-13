@@ -5,9 +5,16 @@ import importlib
 import inspect
 from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import Any, Callable, Literal, cast
+from typing import Annotated, Any, Callable, Literal, cast
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 from pydantic_core import PydanticUndefined
 from typing_extensions import Self
 
@@ -159,6 +166,67 @@ class ToolsetConfig(Config):
         return self
 
 
+def validate_import_ref(import_ref: str) -> str:
+    module_name, separator, attr_path = import_ref.partition(":")
+    if not separator or not module_name or not attr_path:
+        raise ValueError(
+            f"Import ref {import_ref!r} must use 'module:object' (e.g. 'pkg.mod:fn')."
+        )
+    return import_ref
+
+
+ImportRef = Annotated[str, AfterValidator(validate_import_ref)]
+"""A ``module.submodule:object`` import ref. Validated at config-construction
+time; only imported when the config is materialized into a
+callable."""
+
+
+class CallableConfig(Config):
+    """Typed config spec for a callable contributed via TOML or dict.
+
+    ``fn`` is an import ref (``"pkg.mod:obj"``). Raw callables are not
+    valid here — pass them as constructor args or define them as
+    decorated class methods on a Taskset/Harness subclass. Bare-string
+    list entries are auto-promoted to ``{"fn": "..."}``.
+    """
+
+    fn: ImportRef
+    priority: int = 0
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_bare(cls, data: object) -> object:
+        if isinstance(data, cls):
+            return data
+        if isinstance(data, str):
+            return {"fn": data}
+        return data
+
+    def import_fn(self) -> Callable[..., object]:
+        """Import ``self.fn`` and return the underlying callable.
+
+        Raises ``TypeError`` if the imported object is not callable, and
+        ``ModuleNotFoundError`` / ``AttributeError`` if the ref does not
+        resolve (the validator only checks the ref's *shape*, not whether
+        the target module/attribute exists).
+        """
+        obj = import_config_ref(self.fn)
+        if not callable(obj):
+            raise TypeError(
+                f"Import ref {self.fn!r} resolved to {type(obj).__name__}, "
+                f"expected a callable."
+            )
+        return cast(Callable[..., object], obj)
+
+
+class SignalConfig(CallableConfig):
+    stage: Literal["rollout", "group"] = "rollout"
+
+
+class RewardConfig(SignalConfig):
+    weight: float = 1.0
+
+
 class TasksetConfig(Config):
     # Singleton fields describe one logical value owned by the taskset.
     source: object | None = None
@@ -169,13 +237,13 @@ class TasksetConfig(Config):
 
     # Collection fields are merged/extended from code and config.
     toolsets: object = Field(default_factory=list)
-    stops: list[object] = Field(default_factory=list)
-    setups: list[object] = Field(default_factory=list)
-    updates: list[object] = Field(default_factory=list)
-    metrics: list[object] = Field(default_factory=list)
-    rewards: list[object] = Field(default_factory=list)
-    advantages: list[object] = Field(default_factory=list)
-    cleanups: list[object] = Field(default_factory=list)
+    stops: list[CallableConfig] = Field(default_factory=list)
+    setups: list[CallableConfig] = Field(default_factory=list)
+    updates: list[SignalConfig] = Field(default_factory=list)
+    metrics: list[SignalConfig] = Field(default_factory=list)
+    rewards: list[RewardConfig] = Field(default_factory=list)
+    advantages: list[CallableConfig] = Field(default_factory=list)
+    cleanups: list[SignalConfig] = Field(default_factory=list)
     scoring: dict[str, dict[str, object]] = Field(default_factory=dict)
 
 
@@ -193,13 +261,13 @@ class HarnessConfig(Config):
 
     # Collection fields are merged/extended from code and config.
     toolsets: object = Field(default_factory=list)
-    stops: list[object] = Field(default_factory=list)
-    setups: list[object] = Field(default_factory=list)
-    updates: list[object] = Field(default_factory=list)
-    metrics: list[object] = Field(default_factory=list)
-    rewards: list[object] = Field(default_factory=list)
-    advantages: list[object] = Field(default_factory=list)
-    cleanups: list[object] = Field(default_factory=list)
+    stops: list[CallableConfig] = Field(default_factory=list)
+    setups: list[CallableConfig] = Field(default_factory=list)
+    updates: list[SignalConfig] = Field(default_factory=list)
+    metrics: list[SignalConfig] = Field(default_factory=list)
+    rewards: list[RewardConfig] = Field(default_factory=list)
+    advantages: list[CallableConfig] = Field(default_factory=list)
+    cleanups: list[SignalConfig] = Field(default_factory=list)
     scoring: dict[str, dict[str, object]] = Field(default_factory=dict)
     max_turns: int = 10
 
@@ -313,12 +381,29 @@ def config_callables(value: object, kind: CallableKind) -> list[Callable[..., ob
 
 
 def callable_config_item(value: object, kind: CallableKind) -> Callable[..., object]:
+    if isinstance(value, CallableConfig):
+        return _resolve_callable_config(value, kind)
     value = resolve_config_object(value)
     if isinstance(value, Mapping):
         return callable_from_mapping(cast(Mapping[str, object], value), kind)
     if not callable(value):
         raise TypeError(f"{kind} config entries must resolve to callables.")
     return cast(Callable[..., object], value)
+
+
+def _resolve_callable_config(
+    spec: CallableConfig, kind: CallableKind
+) -> Callable[..., object]:
+    fn = spec.import_fn()
+    explicit = spec.model_fields_set
+    metadata: dict[str, object] = {}
+    if "priority" in explicit:
+        metadata["priority"] = spec.priority
+    if isinstance(spec, SignalConfig) and "stage" in explicit:
+        metadata["stage"] = spec.stage
+    if isinstance(spec, RewardConfig) and "weight" in explicit:
+        metadata["weight"] = spec.weight
+    return configured_callable(cast(Callable[..., object], fn), kind, metadata)
 
 
 def callable_from_mapping(

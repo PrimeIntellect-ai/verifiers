@@ -18,8 +18,9 @@ import argparse
 import asyncio
 import os
 import sys
-import tomllib
 from typing import Annotated, Any, cast
+
+import tomllib
 
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "true")
 
@@ -46,6 +47,7 @@ class EvalConfig(BaseConfig):
         default=None,
         description="Harness package name (resolves load_harness).",
     )
+
     model: Annotated[str, tyro.conf.arg(aliases=["-m"])] = Field(
         default="openai/gpt-4.1-mini", description="Model id."
     )
