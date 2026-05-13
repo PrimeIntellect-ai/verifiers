@@ -1,7 +1,7 @@
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
-from verifiers.errors import InfraError
+from verifiers.errors import InfraError, OverlongPromptError
 from verifiers.types import (
     Response,
     ResponseMessage,
@@ -263,6 +263,90 @@ async def test_keepalive_write_failure_surfaces_to_state(monkeypatch):
     msg = str(state["error"])
     assert "keepalive write failed" in msg
     assert "ConnectionResetError" in msg
+
+
+async def test_non_streaming_overlong_prompt_surfaces_as_stop_condition(monkeypatch):
+    """``OverlongPromptError`` is an expected stop condition the multi-turn
+    rollout loop translates into ``state['prompt_too_long']``. The interception
+    handler must not also wrap it as ``state['error']`` — otherwise the
+    rollout reports both ``stop=prompt_too_long`` and a spurious
+    ``InterceptionError`` in metrics."""
+    server = InterceptionServer(port=0)
+    state: dict = {}
+    server.register_rollout("r1", state=state)
+
+    request = MagicMock()
+    request.match_info = {"rollout_id": "r1"}
+    request.json = AsyncMock(
+        return_value={"stream": False, "messages": [], "model": "test"}
+    )
+    request.headers = {"Authorization": f"Bearer {server.secret}"}
+
+    def fake_json_response(data, status=200):
+        return MagicMock(_body=data, status=status)
+
+    monkeypatch.setattr(interception_utils.web, "json_response", fake_json_response)
+
+    handler_task = asyncio.create_task(server._handle_request(request))
+
+    for _ in range(50):
+        if server.intercepts:
+            break
+        await asyncio.sleep(0.01)
+    assert server.intercepts, "handler did not register intercept"
+    intercept = next(iter(server.intercepts.values()))
+    interception_utils.deliver_response(
+        intercept, None, error=OverlongPromptError("ctx exceeded")
+    )
+
+    response = await handler_task
+
+    assert response.status == 500
+    assert state.get("error") is None, (
+        f"OverlongPromptError must not surface as state['error']; got {state.get('error')!r}"
+    )
+    assert state.get("prompt_too_long") is True
+    assert state.get("is_truncated") is True
+
+
+async def test_streaming_overlong_prompt_surfaces_as_stop_condition(monkeypatch):
+    """Same as the non-streaming variant: ``OverlongPromptError`` raised on
+    the streaming response_future must mark the rollout as
+    ``prompt_too_long`` instead of becoming a ``StreamInterrupted`` error."""
+    server = InterceptionServer(port=0)
+    state: dict = {}
+    server.register_rollout("r1", state=state)
+
+    writes: list[bytes] = []
+
+    async def fake_write(data: bytes) -> None:
+        writes.append(data)
+
+    fake_response = MagicMock()
+    fake_response.prepare = AsyncMock()
+    fake_response.write = AsyncMock(side_effect=fake_write)
+    fake_response.write_eof = AsyncMock()
+    monkeypatch.setattr(
+        interception_utils.web, "StreamResponse", lambda **_: fake_response
+    )
+
+    chunk_queue: asyncio.Queue = asyncio.Queue()
+    await chunk_queue.put(None)
+
+    response_future: asyncio.Future = asyncio.Future()
+    response_future.set_exception(OverlongPromptError("ctx exceeded"))
+    intercept = {
+        "chunk_queue": chunk_queue,
+        "response_future": response_future,
+    }
+
+    await server._handle_streaming_response(MagicMock(), "r1", intercept)
+
+    assert state.get("error") is None, (
+        f"OverlongPromptError must not surface as state['error']; got {state.get('error')!r}"
+    )
+    assert state.get("prompt_too_long") is True
+    assert state.get("is_truncated") is True
 
 
 async def test_non_streaming_response_future_failure_surfaces_to_state(monkeypatch):

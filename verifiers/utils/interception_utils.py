@@ -27,7 +27,7 @@ from openai.types.chat.chat_completion_chunk import (
     Choice as ChunkChoice,
 )
 
-from verifiers.errors import InfraError
+from verifiers.errors import InfraError, OverlongPromptError
 from verifiers.types import Response, Tool
 from verifiers.utils.logging_utils import print_time, truncate
 
@@ -182,6 +182,24 @@ class InterceptionServer:
             return
         state["error"] = error
 
+    def _mark_rollout_prompt_too_long(self, rollout_id: str) -> None:
+        """Mark the rollout as stopped because the prompt exceeded context.
+
+        Mirrors ``MultiTurnEnv.rollout_loop``'s handling of
+        ``OverlongPromptError``: this is an expected stop condition, not
+        an infrastructure failure, so we must not also set
+        ``state["error"]`` (which would surface a spurious error in
+        rubrics and metrics).
+        """
+        context = self.active_rollouts.get(rollout_id)
+        if context is None:
+            return
+        state = context.get("state")
+        if state is None:
+            return
+        state["prompt_too_long"] = True
+        state["is_truncated"] = True
+
     def register_rollout(
         self,
         rollout_id: str,
@@ -292,12 +310,15 @@ class InterceptionServer:
                     f"[{rollout_id}] Rollout error surfaced in non-streaming "
                     f"request: {type(e).__name__}: {e}"
                 )
-                self._set_rollout_error(
-                    rollout_id,
-                    InterceptionError(
-                        f"intercepted request failed: {type(e).__name__}: {e}"
-                    ),
-                )
+                if isinstance(e, OverlongPromptError):
+                    self._mark_rollout_prompt_too_long(rollout_id)
+                else:
+                    self._set_rollout_error(
+                        rollout_id,
+                        InterceptionError(
+                            f"intercepted request failed: {type(e).__name__}: {e}"
+                        ),
+                    )
                 return web.json_response({"error": str(e)}, status=500)
 
             response_dict = serialize_intercept_response(
@@ -507,12 +528,15 @@ class InterceptionServer:
             logger.debug(
                 f"[{rollout_id}] Rollout error surfaced in stream: {type(e).__name__}: {e}"
             )
-            self._set_rollout_error(
-                rollout_id,
-                StreamInterrupted(
-                    f"streaming response_future failed: {type(e).__name__}: {e}"
-                ),
-            )
+            if isinstance(e, OverlongPromptError):
+                self._mark_rollout_prompt_too_long(rollout_id)
+            else:
+                self._set_rollout_error(
+                    rollout_id,
+                    StreamInterrupted(
+                        f"streaming response_future failed: {type(e).__name__}: {e}"
+                    ),
+                )
 
         # Surface any write_eof failure so a tail truncation becomes a
         # reschedulable error instead of a silent zero-turn completion.
