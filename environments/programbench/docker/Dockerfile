@@ -6,7 +6,11 @@ ENV DEBIAN_FRONTEND=noninteractive \
     GOPATH=/root/go \
     GOROOT=/usr/local/go \
     GO_VERSION=1.21.0 \
-    PATH="/root/.cargo/bin:/usr/local/go/bin:/root/go/bin:${PATH}"
+    BOOTSTRAP_HASKELL_NONINTERACTIVE=1 \
+    BOOTSTRAP_HASKELL_INSTALL_NO_STACK=1 \
+    BOOTSTRAP_HASKELL_INSTALL_NO_STACK_HOOK=1 \
+    GHCUP_USE_XDG_DIRS=0 \
+    PATH="/root/.cargo/bin:/usr/local/go/bin:/root/go/bin:/root/.ghcup/bin:/root/.cabal/bin:${PATH}"
 
 # System packages: C/C++ toolchain, analysis tools, Python, general utilities
 RUN apt-get update && \
@@ -30,6 +34,17 @@ RUN apt-get update && \
         ca-certificates \
         pkg-config \
         libssl-dev \
+        autoconf \
+        autoconf-archive \
+        libtool \
+        libtool-bin \
+        libncurses-dev \
+        libncurses5-dev \
+        libpng-dev \
+        libjpeg-dev \
+        zlib1g-dev \
+        openjdk-11-jdk \
+        maven \
     && rm -rf /var/lib/apt/lists/*
 
 # Python tooling
@@ -48,6 +63,16 @@ RUN curl -fsSL https://sh.rustup.rs -o /tmp/rustup-init.sh && \
     sh /tmp/rustup-init.sh -y --default-toolchain 1.92.0 --profile minimal --no-modify-path && \
     rm /tmp/rustup-init.sh && \
     /root/.cargo/bin/rustup component add rustfmt clippy
+
+# Haskell via GHCup (GHC 9.6.7 + cabal 3.14)
+RUN curl -fsSL https://get-ghcup.haskell.org -o /tmp/ghcup-init.sh && \
+    sh /tmp/ghcup-init.sh && \
+    rm /tmp/ghcup-init.sh && \
+    /root/.ghcup/bin/ghcup install ghc 9.6.7 && \
+    /root/.ghcup/bin/ghcup set ghc 9.6.7 && \
+    /root/.ghcup/bin/ghcup install cabal 3.14.2.0 && \
+    /root/.ghcup/bin/ghcup set cabal 3.14.2.0 && \
+    /root/.cabal/bin/cabal update
 
 # Pre-warm cargo registry with common ProgramBench dependencies.
 # We build both debug and release profiles so that all dep artifacts are cached.

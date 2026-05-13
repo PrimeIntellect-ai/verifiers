@@ -39,6 +39,8 @@ _LANGUAGE_IMAGES: dict[str, str] = {
     "c": TOOLCHAIN_IMAGE,
     "cpp": TOOLCHAIN_IMAGE,
     "rust": TOOLCHAIN_IMAGE,
+    "haskell": TOOLCHAIN_IMAGE,
+    "java": TOOLCHAIN_IMAGE,
 }
 DEFAULT_IMAGE = TOOLCHAIN_IMAGE
 
@@ -53,13 +55,41 @@ EXECUTABLE_PATH = "/workspace/executable"
 TEST_DIR = "/workspace/tests"
 
 # Per-language disk (GB): Rust needs cargo cache headroom even with warmed image.
-_DISK_GB: dict[str, int] = {"rust": 12, "go": 6, "c": 4, "cpp": 6}
+_DISK_GB: dict[str, int] = {
+    "rust": 12,
+    "go": 6,
+    "c": 4,
+    "cpp": 6,
+    "haskell": 12,
+    "java": 8,
+}
 # Per-language compile timeout (seconds).
-_COMPILE_TIMEOUT: dict[str, int] = {"rust": 480, "go": 60, "c": 30, "cpp": 60}
+_COMPILE_TIMEOUT: dict[str, int] = {
+    "rust": 480,
+    "go": 60,
+    "c": 30,
+    "cpp": 60,
+    "haskell": 600,
+    "java": 120,
+}
 # Pytest timeout matching paper's eval/run.sh limit (container.py: 3600s).
-_TEST_TIMEOUT: dict[str, int] = {"rust": 3600, "go": 3600, "c": 3600, "cpp": 3600}
+_TEST_TIMEOUT: dict[str, int] = {
+    "rust": 3600,
+    "go": 3600,
+    "c": 3600,
+    "cpp": 3600,
+    "haskell": 3600,
+    "java": 3600,
+}
 # Per-language sandbox lifetime (minutes). Paper specifies 6-hour wall clock (§4).
-_SANDBOX_TIMEOUT_MIN: dict[str, int] = {"rust": 360, "go": 360, "c": 360, "cpp": 360}
+_SANDBOX_TIMEOUT_MIN: dict[str, int] = {
+    "rust": 360,
+    "go": 360,
+    "c": 360,
+    "cpp": 360,
+    "haskell": 360,
+    "java": 360,
+}
 
 SYSTEM_PROMPT = f"""\
 You are a software reverse-engineering expert. Your task is to reconstruct complete, \
@@ -227,6 +257,9 @@ class ProgramBenchTaskset(vf.Taskset):
                 "binary_hf_repo": row.get("binary_hf_repo", ""),
                 "binary_hf_filename": row.get("binary_hf_filename", ""),
                 "test_branches": row.get("test_branches", []),
+                "test_hf_repo": row.get(
+                    "test_hf_repo", "programbench/ProgramBench-Tests"
+                ),
                 # example_io holds expected I/O pairs — kept for internal reference only,
                 # never passed to the agent (ground truth).
                 "example_io": row.get("example_io", []),
@@ -418,6 +451,7 @@ class ProgramBenchTaskset(vf.Taskset):
             return
 
         task_id = info["task_id"]
+        test_hf_repo = info.get("test_hf_repo", "programbench/ProgramBench-Tests")
 
         # Download all branches concurrently — each is a separate oracle test suite.
         # Paper §4 scores against all branches; we union them for maximum coverage.
@@ -425,7 +459,7 @@ class ProgramBenchTaskset(vf.Taskset):
             stem = branch.removesuffix(".tar.gz").removesuffix(".tar")
             try:
                 path = await self._hf_download(
-                    "programbench/ProgramBench-Tests",
+                    test_hf_repo,
                     f"{task_id}/tests/{stem}.tar.gz",
                 )
                 return (stem, path)
