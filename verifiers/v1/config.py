@@ -4,7 +4,14 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import ClassVar, Literal, cast
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SkipValidation,
+    field_validator,
+    model_validator,
+)
 from typing_extensions import Self
 
 from .types import (
@@ -245,6 +252,7 @@ class TasksetConfig(Config):
     taskset_id: str | None = None
     system_prompt: PromptInput | None = None
     user: Handler | str | ConfigMap | None = None
+    bindings: Bindings = Field(default_factory=dict)
 
     # Collection fields are merged/extended from code and config.
     toolsets: ToolsetSpecs | None = Field(default_factory=list)
@@ -256,6 +264,11 @@ class TasksetConfig(Config):
     advantages: list[CallableConfigEntry] = Field(default_factory=list)
     cleanups: list[CallableConfigEntry] = Field(default_factory=list)
     scoring: dict[str, dict[str, object]] = Field(default_factory=dict)
+
+    @field_validator("bindings", mode="before")
+    @classmethod
+    def validate_bindings(cls, value: object) -> Bindings:
+        return normalize_binding_map(value, "taskset.bindings", allow_objects=False)
 
 
 class HarnessConfig(Config):
@@ -271,6 +284,7 @@ class HarnessConfig(Config):
     sampling_args: dict[str, object] = Field(default_factory=dict)
     keep_trajectory_step: Handler | str | None = None
     user: Handler | str | ConfigMap | None = None
+    bindings: Bindings = Field(default_factory=dict)
 
     # Collection fields are merged/extended from code and config.
     toolsets: ToolsetSpecs | None = Field(default_factory=list)
@@ -295,11 +309,16 @@ class HarnessConfig(Config):
             ).model_dump(exclude_none=True, exclude_defaults=True)
         raise TypeError("program must be a callable, import ref, or mapping.")
 
+    @field_validator("bindings", mode="before")
+    @classmethod
+    def validate_bindings(cls, value: object) -> Bindings:
+        return normalize_binding_map(value, "harness.bindings", allow_objects=False)
+
 
 class EnvConfig(Config):
-    args: BaseModel | ConfigMap | None = None
-    taskset: BaseModel | ConfigMap | None = None
-    harness: BaseModel | ConfigMap | None = None
+    args: SkipValidation[BaseModel | ConfigMap] | None = None
+    taskset: SkipValidation[BaseModel | ConfigMap] | None = None
+    harness: SkipValidation[BaseModel | ConfigMap] | None = None
 
     @field_validator("args")
     @classmethod

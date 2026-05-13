@@ -160,6 +160,31 @@ async def update_from_binding(
     state["expected"] = expected
 
 
+@vf.update(stage="group")
+async def group_update_from_binding(
+    tasks: list[Mapping[str, object]], states: list[dict[str, object]], expected: str
+) -> None:
+    _ = tasks
+    for state in states:
+        state["group_expected"] = expected
+
+
+@vf.reward
+async def reward_from_binding(
+    task: Mapping[str, object], state: dict[str, object], expected: str
+) -> float:
+    _ = state
+    return float(task.get("answer") == expected)
+
+
+@vf.reward(stage="group")
+async def group_reward_from_binding(
+    tasks: list[Mapping[str, object]], states: list[dict[str, object]], expected: str
+) -> list[float]:
+    _ = tasks
+    return [float(state.get("answer") == expected) for state in states]
+
+
 async def colliding_tool(value: str, token: str) -> str:
     return f"{token}:{value}"
 
@@ -418,16 +443,21 @@ def test_env_capabilities_follow_group_lifecycle_handlers() -> None:
     assert not group_cleanup_env.provides_advantages
 
 
-def test_group_lifecycle_handlers_reject_extra_args() -> None:
+@pytest.mark.asyncio
+async def test_group_lifecycle_handlers_require_bound_extra_args() -> None:
     @vf.update(stage="group")
     async def bad_group_update(tasks, states, extra) -> None:
         _ = tasks, states, extra
 
-    with pytest.raises(ValueError, match="exactly tasks and states"):
-        Env(
-            taskset=Taskset(source=source_loader, updates=[bad_group_update]),
-            harness=Harness(program=config_program),
-        )
+    env = Env(
+        taskset=Taskset(source=source_loader, updates=[bad_group_update]),
+        harness=Harness(program=config_program),
+    )
+    task = Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+    state = State.for_task(task)
+
+    with pytest.raises(TypeError, match="extra"):
+        await env.harness.runtime.update_group([task], [state])
 
 
 def test_env_capabilities_follow_custom_taskset_init_group() -> None:
@@ -750,6 +780,89 @@ async def test_rollout_handlers_receive_bound_hidden_args() -> None:
     await harness.runtime.update_rollout(task, state)
 
     assert state["expected"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_harness_handlers_receive_bound_hidden_args() -> None:
+    harness = Harness(
+        updates=[update_from_binding],
+        bindings={"update_from_binding.expected": "task.answer"},
+    )
+    task = Task(
+        {"prompt": [{"role": "user", "content": "hi"}], "answer": "ok"}
+    ).freeze()
+    state = await harness.setup_state(task, State.for_task(task))
+
+    await harness.runtime.update_rollout(task, state)
+
+    assert state["expected"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_taskset_handlers_receive_bound_hidden_args() -> None:
+    taskset = Taskset(
+        updates=[update_from_binding],
+        bindings={"update_from_binding.expected": "task.answer"},
+    )
+    harness = Harness()
+    harness.attach_taskset(taskset)
+    task = Task(
+        {"prompt": [{"role": "user", "content": "hi"}], "answer": "ok"}
+    ).freeze()
+    state = await harness.setup_state(task, State.for_task(task))
+
+    await harness.runtime.update_rollout(task, state)
+
+    assert state["expected"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_group_handlers_receive_bound_hidden_args() -> None:
+    harness = Harness(
+        updates=[group_update_from_binding],
+        bindings={"group_update_from_binding.expected": "tasks.0.answer"},
+    )
+    task = Task(
+        {"prompt": [{"role": "user", "content": "hi"}], "answer": "ok"}
+    ).freeze()
+    state = State.for_task(task)
+
+    await harness.runtime.update_group([task], [state])
+
+    assert state["group_expected"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_signals_receive_bound_hidden_args() -> None:
+    harness = Harness(
+        rewards=[reward_from_binding],
+        bindings={"reward_from_binding.expected": "task.answer"},
+    )
+    task = Task(
+        {"prompt": [{"role": "user", "content": "hi"}], "answer": "ok"}
+    ).freeze()
+    state = await harness.setup_state(task, State.for_task(task))
+
+    await harness.runtime.score_rollout(task, state)
+
+    assert state["reward"] == 1.0
+    assert state["metrics"]["reward_from_binding"] == 1.0
+
+
+@pytest.mark.asyncio
+async def test_group_signals_receive_bound_hidden_args() -> None:
+    harness = Harness(
+        rewards=[group_reward_from_binding],
+        bindings={"group_reward_from_binding.expected": "states.0.answer"},
+    )
+    task = Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+    state = State.for_task(task)
+    state["answer"] = "ok"
+
+    await harness.runtime.score_group([task], [state])
+
+    assert state["reward"] == 1.0
+    assert state["metrics"]["group_reward_from_binding"] == 1.0
 
 
 @pytest.mark.asyncio

@@ -112,6 +112,11 @@ async def score_group(
     signals: Iterable[SignalRecord],
     tasks: list[Mapping[str, object]],
     states: list[dict[str, object]],
+    resolve_kwargs: Callable[
+        [Callable[..., object], list[Mapping[str, object]], list[dict[str, object]]],
+        Awaitable[dict[str, object]],
+    ]
+    | None = None,
 ) -> list[dict[str, object]]:
     start_time = time.time()
     rewards = [float_value(state.get("reward"), 0.0) for state in states]
@@ -122,7 +127,12 @@ async def score_group(
         if signal["kind"] == "advantage":
             advantage_signals.append(signal)
             continue
-        values = await call_group_signal(signal, tasks, states)
+        extra_kwargs: dict[str, object] = {}
+        if resolve_kwargs is not None:
+            extra_kwargs = await resolve_kwargs(
+                cast(Callable[..., object], signal["fn"]), tasks, states
+            )
+        values = await call_group_signal(signal, tasks, states, extra_kwargs)
         for index, value in enumerate(values):
             metrics = dict(cast(dict[str, float], states[index].get("metrics") or {}))
             metrics[cast(str, signal["name"])] = value
@@ -131,7 +141,12 @@ async def score_group(
                 rewards[index] += value * cast(float, signal["weight"])
     advantages: list[float] | None = None
     for signal in advantage_signals:
-        advantages = await call_group_signal(signal, tasks, states)
+        extra_kwargs = {}
+        if resolve_kwargs is not None:
+            extra_kwargs = await resolve_kwargs(
+                cast(Callable[..., object], signal["fn"]), tasks, states
+            )
+        advantages = await call_group_signal(signal, tasks, states, extra_kwargs)
     for index, state in enumerate(states):
         state["reward"] = rewards[index]
         if advantages is not None:
@@ -264,9 +279,9 @@ def validate_signal(signal: SignalRecord) -> None:
                 f"Rollout signal {signal['name']!r} must accept task and state."
             )
     if signal["stage"] == "group":
-        if names != {"tasks", "states"}:
+        if not {"tasks", "states"}.issubset(names):
             raise ValueError(
-                f"Group signal {signal['name']!r} must accept exactly tasks and states."
+                f"Group signal {signal['name']!r} must accept tasks and states."
             )
 
 
@@ -289,9 +304,13 @@ async def call_group_signal(
     signal: SignalRecord,
     tasks: list[Mapping[str, object]],
     states: list[dict[str, object]],
+    extra_kwargs: Mapping[str, object] | None = None,
 ) -> list[float]:
     value = await maybe_await(
-        cast(Callable[..., object], signal["fn"]), tasks=tasks, states=states
+        cast(Callable[..., object], signal["fn"]),
+        tasks=tasks,
+        states=states,
+        **dict(extra_kwargs or {}),
     )
     name = cast(str, signal["name"])
     if not isinstance(value, Sequence) or isinstance(value, str | bytes):

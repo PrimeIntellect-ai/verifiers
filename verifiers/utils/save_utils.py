@@ -15,6 +15,7 @@ from verifiers.types import (
     ErrorInfo,
     GenerateMetadata,
     GenerateOutputs,
+    Response,
     RolloutOutput,
     SamplingArgs,
     State,
@@ -90,52 +91,90 @@ def make_serializable(value: object) -> str | int | float | bool | list | dict |
         return str(value)
 
 
-def extract_usage_tokens(response: object) -> tuple[int, int]:
+def extract_usage_tokens(response: Response) -> tuple[int, int]:
+    if not isinstance(response, Response):
+        raise TypeError("extract_usage_tokens expects a vf.Response.")
     return extract_usage_tokens_from_response(response)
 
 
-def _coerce_token_usage(value: object) -> TokenUsage | None:
+def _token_count(value: object, context: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise TypeError(f"{context} must be a number.")
+    if value < 0:
+        raise ValueError(f"{context} must be non-negative.")
+    return float(value)
+
+
+def _token_usage_from_mapping(value: object, context: str) -> TokenUsage | None:
+    if value is None:
+        return None
     if not isinstance(value, Mapping):
+        raise TypeError(f"{context} must be a mapping.")
+    mapping_value = cast(Mapping[str, object], value)
+    if "input_tokens" not in mapping_value and "output_tokens" not in mapping_value:
         return None
-    mapping_value = cast(Mapping[str, Any], value)
-    try:
-        # Accept current and legacy key names
-        input_raw = mapping_value.get("input_tokens")
-        if input_raw is None:
-            input_raw = mapping_value.get("prefill_tokens")
-        output_raw = mapping_value.get("output_tokens")
-        if output_raw is None:
-            output_raw = mapping_value.get("decode_tokens")
-        input_tokens = float(0.0 if input_raw is None else input_raw)
-        output_tokens = float(0.0 if output_raw is None else output_raw)
-    except (TypeError, ValueError):
+    if "input_tokens" not in mapping_value or "output_tokens" not in mapping_value:
+        raise KeyError(f"{context} requires input_tokens and output_tokens.")
+    usage = TokenUsage(
+        input_tokens=_token_count(
+            mapping_value["input_tokens"], f"{context}.input_tokens"
+        ),
+        output_tokens=_token_count(
+            mapping_value["output_tokens"], f"{context}.output_tokens"
+        ),
+    )
+    for key in ("final_input_tokens", "final_output_tokens"):
+        if key in mapping_value and mapping_value[key] is not None:
+            usage[key] = _token_count(mapping_value[key], f"{context}.{key}")
+    return usage
+
+
+def _token_usage_from_trajectory(trajectory: object) -> TokenUsage | None:
+    if not isinstance(trajectory, list):
         return None
-    return {
-        "input_tokens": input_tokens,
-        "output_tokens": output_tokens,
-    }
+    input_tokens = 0
+    output_tokens = 0
+    usage_seen = False
+    for index, step in enumerate(trajectory):
+        if not isinstance(step, Mapping):
+            raise TypeError(f"state.trajectory[{index}] must be a mapping.")
+        step_mapping = cast(Mapping[str, object], step)
+        response = step_mapping.get("response")
+        if response is None or not isinstance(response, Response):
+            continue
+        if response.usage is None:
+            continue
+        usage_seen = True
+        step_input_tokens, step_output_tokens = extract_usage_tokens(response)
+        input_tokens += step_input_tokens
+        output_tokens += step_output_tokens
+    if not usage_seen:
+        return None
+    return TokenUsage(
+        input_tokens=float(input_tokens),
+        output_tokens=float(output_tokens),
+    )
 
 
 def _extract_state_token_usage(state: State) -> TokenUsage | None:
     tracker = state.get("usage_tracker")
     if isinstance(tracker, StateUsageTracker):
         usage = tracker.snapshot()
-        coerced = _coerce_token_usage(usage)
-        if coerced is not None:
-            return coerced
-        # Tracker exists but has not seen usage yet. Avoid falling through to
-        # state["usage"], which is a zeroed live tracker view.
-        token_usage = _coerce_token_usage(state.get("token_usage"))
+        if usage is not None:
+            return usage
+        token_usage = _token_usage_from_mapping(
+            state.get("token_usage"), "state.token_usage"
+        )
         if token_usage is not None:
             return token_usage
         return None
 
     for key in ("token_usage", "usage"):
-        usage = _coerce_token_usage(state.get(key))
+        usage = _token_usage_from_mapping(state.get(key), f"state.{key}")
         if usage is not None:
             return usage
 
-    return None
+    return _token_usage_from_trajectory(state.get("trajectory"))
 
 
 def get_hf_hub_dataset_name(outputs: GenerateOutputs) -> str:
@@ -185,26 +224,6 @@ def state_to_output(
         tool_defs=state.get("tool_defs"),
     )
     usage = _extract_state_token_usage(state)
-    if usage is None:
-        # Legacy fallback for states that do not use state-level usage tracking.
-        trajectory = state.get("trajectory", [])
-        input_tokens = 0
-        output_tokens = 0
-        usage_seen = False
-        for step in trajectory:
-            response = step.get("response")
-            if response is None:
-                continue
-            if getattr(response, "usage", None) is not None:
-                usage_seen = True
-            step_input_tokens, step_output_tokens = extract_usage_tokens(response)
-            input_tokens += step_input_tokens
-            output_tokens += step_output_tokens
-        if usage_seen:
-            usage = {
-                "input_tokens": float(input_tokens),
-                "output_tokens": float(output_tokens),
-            }
     if usage is not None:
         token_usage: dict[str, float] = {
             "input_tokens": usage.get("input_tokens", 0.0),
@@ -212,7 +231,7 @@ def state_to_output(
         }
         # Add context token metrics from trajectory
         trajectory = state.get("trajectory", [])
-        if trajectory:
+        if isinstance(trajectory, list):
             from verifiers.utils.usage_utils import compute_context_token_metrics
 
             token_usage.update(compute_context_token_metrics(trajectory))

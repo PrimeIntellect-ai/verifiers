@@ -27,6 +27,7 @@ from .config import (
     sandbox_config_mapping,
 )
 from .types import ConfigMap, Handler, ModelClient, ProgramMap, PromptInput
+from .utils.binding_utils import BindingMap, normalize_binding_map
 from .utils.endpoint_utils import (
     Endpoint,
     assistant_completion_from_messages,
@@ -74,6 +75,7 @@ class Harness:
         program: Handler | ProgramMap | None = None,
         system_prompt: PromptInput | None = None,
         user: Handler | str | ConfigMap | None = None,
+        bindings: BindingMap | None = None,
         sandbox: ConfigMap | SandboxConfig | None = None,
         client: ModelClient | None = None,
         model: str | None = None,
@@ -107,6 +109,10 @@ class Harness:
         )
         self.system_prompt_merge = self.config.system_prompt_merge
         self.user = normalize_user(merge_config_value(user, self.config.user))
+        self.bindings = {
+            **self.config.bindings,
+            **normalize_binding_map(bindings, "Harness bindings", allow_objects=False),
+        }
         self.sandbox = sandbox_config_mapping(
             merge_config_value(sandbox, self.config.sandbox)
         )

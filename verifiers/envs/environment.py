@@ -467,7 +467,7 @@ class Environment(ABC):
 
     @final
     def increment_state_usage_from_response(
-        self, state: State, response: object
+        self, state: State, response: Response
     ) -> None:
         tracker = self._get_usage_tracker(state, create_if_missing=True)
         assert tracker is not None

@@ -45,10 +45,6 @@ def validate_handler_args(
     for handler in handlers:
         names = set(inspect.signature(handler).parameters)
         name = str(getattr(handler, "__name__", type(handler).__name__))
-        if stage == "group" and names != expected:
-            raise ValueError(
-                f"group {attr} handler {name!r} must accept exactly {expected_text}."
-            )
         if not expected.issubset(names):
             raise ValueError(
                 f"{stage} {attr} handler {name!r} must accept {expected_text}."

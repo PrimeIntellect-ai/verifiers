@@ -43,7 +43,7 @@ class Toolset:
     def __init__(
         self,
         # Tool surface.
-        tools: ToolSpecs | Iterable[object] = (),
+        tools: ToolSpecs | Iterable[object] | None = (),
         show: Iterable[str] | None = None,
         hide: Iterable[str] | None = None,
         # Local dependencies and runtime policy.
@@ -62,10 +62,11 @@ class Toolset:
         config: ToolsetConfig | ConfigMap | None = None,
     ):
         config_map = toolset_config_mapping(config)
+        tool_values = tool_items(tools)
         config_bindings: BindingMap = {}
         config_objects: ObjectSpecs = {}
         if config_map:
-            tools = [*tools, *tool_items(config_map.get("tools"))]
+            tool_values.extend(tool_items(config_map.get("tools")))
             show = show if show is not None else string_items(config_map.get("show"))
             hide = hide if hide is not None else string_items(config_map.get("hide"))
             config_bindings = normalize_binding_map(
@@ -109,7 +110,7 @@ class Toolset:
             ]
         if show is not None and hide is not None:
             raise ValueError("Toolset accepts show or hide, not both.")
-        object.__setattr__(self, "tools", tuple(tool_item(tool) for tool in tools))
+        object.__setattr__(self, "tools", tuple(tool_values))
         object.__setattr__(self, "show", tuple(show) if show is not None else None)
         object.__setattr__(self, "hide", tuple(hide) if hide is not None else None)
         object.__setattr__(

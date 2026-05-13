@@ -6,14 +6,16 @@ from typing import Literal, TypeAlias, cast
 
 from ..types import Objects
 
-BindingRoot: TypeAlias = Literal["task", "state", "runtime", "objects", "tools"]
+BindingRoot: TypeAlias = Literal[
+    "task", "state", "tasks", "states", "runtime", "objects", "tools"
+]
 CallableBindingSource: TypeAlias = Callable[..., object] | Mapping[str, object]
 BindingSource: TypeAlias = str | CallableBindingSource
 BindingMap: TypeAlias = Mapping[str, BindingSource]
 Bindings: TypeAlias = dict[str, BindingSource]
 
 VALID_BINDING_ROOTS: frozenset[str] = frozenset(
-    {"task", "state", "runtime", "objects", "tools"}
+    {"task", "state", "tasks", "states", "runtime", "objects", "tools"}
 )
 
 
@@ -118,8 +120,8 @@ def binding_source_root(source: object) -> BindingRoot | None:
     if root in VALID_BINDING_ROOTS:
         return cast(BindingRoot, root)
     raise ValueError(
-        "Binding string sources must start with task, state, runtime, objects, "
-        f"or tools; got {source!r}."
+        "Binding string sources must start with task, state, tasks, states, "
+        f"runtime, objects, or tools; got {source!r}."
     )
 
 

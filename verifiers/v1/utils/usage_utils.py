@@ -1,20 +1,15 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
-from typing import cast
-
-from verifiers.utils.usage_utils import extract_usage_tokens
+from verifiers.types import Response
+from verifiers.utils.usage_utils import usage_tokens
 
 from ..state import State
 
 
-def record_response_usage(state: State, response: object) -> None:
-    if getattr(response, "usage", None) is None and not (
-        isinstance(response, Mapping)
-        and cast(Mapping[str, object], response).get("usage") is not None
-    ):
+def record_response_usage(state: State, response: Response) -> None:
+    if response.usage is None:
         return
-    input_tokens, output_tokens = extract_usage_tokens(response)
+    input_tokens, output_tokens = usage_tokens(response.usage)
     usage = state.setdefault("token_usage", {"input_tokens": 0.0, "output_tokens": 0.0})
     if not isinstance(usage, dict):
         raise TypeError("state.token_usage must be a mapping.")

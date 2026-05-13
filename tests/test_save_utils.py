@@ -15,7 +15,7 @@ import pytest
 from openai import OpenAI
 from pydantic import BaseModel
 
-from verifiers.types import ClientConfig
+from verifiers.types import ClientConfig, Response, ResponseMessage, Usage
 from verifiers.utils.metric_utils import (
     EnvMetrics,
     ErrorRateMetric,
@@ -46,6 +46,26 @@ class SimpleModel(BaseModel):
 class NestedModel(BaseModel):
     inner: SimpleModel
     tags: list[str]
+
+
+def make_response(prompt_tokens: int, completion_tokens: int) -> Response:
+    return Response(
+        id="test",
+        created=0,
+        model="test",
+        usage=Usage(
+            prompt_tokens=prompt_tokens,
+            reasoning_tokens=0,
+            completion_tokens=completion_tokens,
+            total_tokens=prompt_tokens + completion_tokens,
+        ),
+        message=ResponseMessage(
+            role="assistant",
+            content="",
+            finish_reason="stop",
+            is_truncated=False,
+        ),
+    )
 
 
 class TestSerialization:
@@ -171,41 +191,14 @@ class TestSavingMetadata:
 
 class TestSavingResults:
     def test_extract_usage_tokens_prompt_completion(self):
-        response = type(
-            "Response",
-            (),
-            {
-                "usage": {
-                    "prompt_tokens": 10,
-                    "completion_tokens": 5,
-                    "input_tokens": 999,
-                    "output_tokens": 999,
-                }
-            },
-        )()
+        response = make_response(prompt_tokens=10, completion_tokens=5)
         input_tokens, output_tokens = extract_usage_tokens(response)
         assert input_tokens == 10
         assert output_tokens == 5
 
-    def test_extract_usage_tokens_input_output(self):
-        response = type(
-            "Response",
-            (),
-            {"usage": {"input_tokens": 8, "output_tokens": 3}},
-        )()
-        input_tokens, output_tokens = extract_usage_tokens(response)
-        assert input_tokens == 8
-        assert output_tokens == 3
-
-    def test_extract_usage_tokens_invalid_values(self):
-        response = type(
-            "Response",
-            (),
-            {"usage": {"prompt_tokens": "bad", "completion_tokens": object()}},
-        )()
-        input_tokens, output_tokens = extract_usage_tokens(response)
-        assert input_tokens == 0
-        assert output_tokens == 0
+    def test_extract_usage_tokens_rejects_untyped_response(self):
+        with pytest.raises(TypeError, match="vf.Response"):
+            extract_usage_tokens({"usage": {"prompt_tokens": 10}})
 
     def test_state_with_tracker_and_no_usage_does_not_emit_token_usage(
         self, make_state

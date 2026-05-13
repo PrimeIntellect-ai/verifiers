@@ -6,21 +6,22 @@ import inspect
 import json
 import time
 import uuid
-from contextlib import AsyncExitStack
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
+from contextlib import AsyncExitStack
 from typing import TYPE_CHECKING, cast, get_args
 
 from verifiers.clients import Client, resolve_client
 from verifiers.types import Messages, Response, Tool
 from verifiers.types import ClientConfig, ClientType, SamplingArgs
-from verifiers.utils.client_utils import resolve_client_config
 from verifiers.utils.async_utils import maybe_call_with_named_args
+from verifiers.utils.client_utils import resolve_client_config
 from verifiers.utils.message_utils import normalize_messages
 from verifiers.utils.response_utils import parse_response_message, parse_response_tokens
 from verifiers.utils.tool_utils import convert_func_to_tool_def
 
 from .config import resolve_config_object
 from .utils.binding_utils import (
+    BindingSource,
     binding_key_parts,
     binding_object_name,
     binding_source_root,
@@ -66,6 +67,8 @@ from .user import User
 
 if TYPE_CHECKING:
     from .utils.sandbox_utils import SandboxLease
+
+BindingEntry = tuple[str, BindingSource, Toolset | None]
 
 
 class BorrowedTool:
@@ -700,7 +703,7 @@ class Runtime:
             "update",
         )
         validate_handler_args(handlers, {"tasks", "states"}, "update", "group")
-        await run_handlers(handlers, tasks=tasks, states=states)
+        await self.run_group_handlers(handlers, tasks=tasks, states=states)
         return states
 
     async def score_rollout(self, task: Task, state: State) -> State:
@@ -718,6 +721,7 @@ class Runtime:
             self.group_signals,
             cast(list[Mapping[str, object]], tasks),
             cast(list[dict[str, object]], states),
+            resolve_kwargs=self.group_binding_kwargs,
         )
         return states
 
@@ -743,7 +747,7 @@ class Runtime:
                 *self._group_handlers("cleanup", states, stage="group"),
             ]
         )
-        await run_handlers(handlers, tasks=tasks, states=states)
+        await self.run_group_handlers(handlers, tasks=tasks, states=states)
         for state in states:
             await self.release_objects("group", state)
             await self.release_user_objects("group", state)
@@ -799,6 +803,29 @@ class Runtime:
                 handler, task=task, state=state, **kwargs, **extra_kwargs
             )
 
+    async def run_group_handlers(
+        self,
+        handlers: Iterable[Callable[..., object]],
+        tasks: list[Task],
+        states: list[State],
+        **kwargs: object,
+    ) -> None:
+        for handler in handlers:
+            extra_kwargs = await self.group_binding_kwargs(
+                handler,
+                cast(list[Mapping[str, object]], tasks),
+                cast(list[dict[str, object]], states),
+            )
+            duplicate = set(kwargs) & set(extra_kwargs)
+            if duplicate:
+                raise ValueError(
+                    f"Group handler {function_name(handler)!r} received duplicate "
+                    f"bound args: {sorted(duplicate)}."
+                )
+            await maybe_call_with_named_args(
+                handler, tasks=tasks, states=states, **kwargs, **extra_kwargs
+            )
+
     async def binding_kwargs(
         self,
         fn: Callable[..., object],
@@ -807,19 +834,57 @@ class Runtime:
     ) -> dict[str, object]:
         name = function_name(fn)
         kwargs: dict[str, object] = {}
-        for binding_key, source in self.bindings_for_callable(
+        for binding_key, source, owner in self._binding_entries_for_callable(
             fn, cast(State, state)
-        ).items():
+        ):
             prefix, arg_name = binding_key_parts(binding_key)
             if prefix != name:
                 continue
             validate_bound_arg(fn, arg_name, f"Binding {binding_key!r}")
-            kwargs[arg_name] = await self.resolve_binding(
-                source, cast(Task, task), cast(State, state)
+            if arg_name in kwargs:
+                raise ValueError(f"Binding arg {arg_name!r} is defined twice.")
+            kwargs[arg_name] = await self.resolve_owner_binding(
+                owner, source, cast(Task, task), cast(State, state)
             )
         return kwargs
 
-    async def resolve_binding(self, source: object, task: Task, state: State) -> object:
+    async def group_binding_kwargs(
+        self,
+        fn: Callable[..., object],
+        tasks: list[Mapping[str, object]],
+        states: list[dict[str, object]],
+    ) -> dict[str, object]:
+        if not states:
+            return {}
+        state = cast(State, states[0])
+        name = function_name(fn)
+        kwargs: dict[str, object] = {}
+        for binding_key, source, owner in self._binding_entries_for_callable(fn, state):
+            prefix, arg_name = binding_key_parts(binding_key)
+            if prefix != name:
+                continue
+            validate_bound_arg(fn, arg_name, f"Binding {binding_key!r}")
+            if arg_name in kwargs:
+                raise ValueError(f"Binding arg {arg_name!r} is defined twice.")
+            kwargs[arg_name] = await self.resolve_group_binding(
+                owner,
+                source,
+                cast(list[Task], tasks),
+                cast(list[State], states),
+                state,
+            )
+        return kwargs
+
+    async def resolve_owner_binding(
+        self, owner: Toolset | None, source: BindingSource, task: Task, state: State
+    ) -> object:
+        if isinstance(owner, Toolset):
+            return await self.resolve_tool_binding(owner, source, task, state)
+        return await self.resolve_binding(source, task, state)
+
+    async def resolve_binding(
+        self, source: BindingSource, task: Task, state: State
+    ) -> object:
         if isinstance(source, str):
             if binding_source_root(source) == "objects":
                 raise ValueError(
@@ -838,8 +903,52 @@ class Runtime:
             return await maybe_call_with_named_args(source, task=task, state=state)
         raise TypeError("Binding sources must be framework paths or callables.")
 
+    async def resolve_group_binding(
+        self,
+        owner: Toolset | None,
+        source: BindingSource,
+        tasks: list[Task],
+        states: list[State],
+        state: State,
+    ) -> object:
+        if isinstance(source, str):
+            root, separator, tail = source.partition(".")
+            if root == "tasks":
+                return read_path(tasks, tail) if separator else tasks
+            if root == "states":
+                return read_path(states, tail) if separator else states
+            if root in {"task", "state", "tools"}:
+                raise ValueError("Group handler bindings must use tasks or states.")
+            if root == "runtime":
+                runtime = state.get("runtime", {})
+                return read_path(runtime, tail) if separator else runtime
+            if root == "objects":
+                if not isinstance(owner, Toolset):
+                    raise ValueError(
+                        "objects.* group bindings require a Toolset owner."
+                    )
+                if toolset_object_scope(owner) == "rollout":
+                    raise ValueError(
+                        "objects.* group bindings require a group or global Toolset scope."
+                    )
+                if not separator:
+                    raise ValueError("objects binding sources must name an object.")
+                name, _, rest = tail.partition(".")
+                value = await self._resolve_toolset_object(owner, name, tasks[0], state)
+                return read_path(value, rest) if rest else value
+        if isinstance(source, Mapping) and "fn" in source:
+            spec = cast(Mapping[str, object], source)
+            validate_callable_source(spec, "Callable binding source")
+            fn = resolve_config_object(spec["fn"])
+            if not callable(fn):
+                raise TypeError("Callable binding source requires callable fn.")
+            return await maybe_call_with_named_args(fn, tasks=tasks, states=states)
+        if callable(source):
+            return await maybe_call_with_named_args(source, tasks=tasks, states=states)
+        raise TypeError("Binding sources must be framework paths or callables.")
+
     async def resolve_tool_binding(
-        self, toolset: Toolset | None, source: object, task: Task, state: State
+        self, toolset: Toolset | None, source: BindingSource, task: Task, state: State
     ) -> object:
         if isinstance(source, str):
             root, separator, tail = source.partition(".")
@@ -858,7 +967,7 @@ class Runtime:
     async def resolve_user_binding(
         self,
         user: User,
-        source: object,
+        source: BindingSource,
         task: Task,
         state: State,
         transcript: Sequence[object] | None = None,
@@ -912,6 +1021,8 @@ class Runtime:
         self.rollout_toolsets[key] = await self._task_toolset_additions(task, state)
 
     def validate_bindings(self, state: State) -> None:
+        for owner in (self.taskset, self.harness):
+            self._validate_owner_bindings(owner)
         for toolset in iter_toolsets(self.active_toolsets(state)):
             self._validate_toolset_bindings(toolset)
         user = self._resolve_user()
@@ -927,6 +1038,23 @@ class Runtime:
                             f"User binding {name!r} references unknown User object "
                             f"{object_name!r}."
                         )
+
+    def _validate_owner_bindings(self, owner: object | None) -> None:
+        if owner is None:
+            return
+        targets = self._owner_binding_targets(owner)
+        for binding_key, source in self._owner_bindings(owner).items():
+            target_name, arg_name = binding_key_parts(binding_key)
+            target = targets.get(target_name)
+            if target is None:
+                raise ValueError(
+                    f"Binding {binding_key!r} does not match a Taskset/Harness "
+                    "callable."
+                )
+            validate_bound_arg(target[1], arg_name, f"Binding {binding_key!r}")
+            validate_binding_source(
+                source, f"Binding {binding_key!r}", allow_objects=False
+            )
 
     def _validate_toolset_bindings(self, toolset: Toolset) -> None:
         targets = self._toolset_binding_targets(toolset)
@@ -954,6 +1082,95 @@ class Runtime:
                         f"Binding {binding_key!r} references unknown Toolset object "
                         f"{object_name!r}."
                     )
+
+    def _owner_binding_targets(
+        self, owner: object
+    ) -> dict[str, tuple[str, Callable[..., object]]]:
+        targets: dict[str, tuple[str, Callable[..., object]]] = {}
+
+        def add_target(kind: str, fn: Callable[..., object]) -> None:
+            name = function_name(fn)
+            existing = targets.get(name)
+            if existing is not None and not same_callable(existing[1], fn):
+                raise ValueError(
+                    f"Taskset/Harness binding target {name!r} is defined twice."
+                )
+            targets[name] = (kind, fn)
+
+        collection_kinds = {
+            "stops": "stop",
+            "setups": "setup",
+            "updates": "update",
+            "metrics": "metric",
+            "rewards": "reward",
+            "advantages": "advantage",
+            "cleanups": "cleanup",
+        }
+        for attr, kind in collection_kinds.items():
+            for fn in getattr(owner, attr, ()):
+                if callable(fn):
+                    add_target(kind, cast(Callable[..., object], fn))
+        for _, method in inspect.getmembers(owner, predicate=callable):
+            for kind in (
+                "stop",
+                "setup",
+                "update",
+                "metric",
+                "reward",
+                "advantage",
+                "cleanup",
+            ):
+                if getattr(method, kind, False):
+                    add_target(kind, cast(Callable[..., object], method))
+        return targets
+
+    def _owner_bindings(self, owner: object | None) -> Mapping[str, BindingSource]:
+        if owner is None:
+            return {}
+        bindings = getattr(owner, "bindings", {})
+        if not isinstance(bindings, Mapping):
+            raise TypeError("Taskset/Harness bindings must be a mapping.")
+        return cast(Mapping[str, BindingSource], bindings)
+
+    def _binding_entries_for_callable(
+        self, fn: Callable[..., object], state: State
+    ) -> list[BindingEntry]:
+        target_name = function_name(fn)
+        entries: list[BindingEntry] = []
+        for owner in (self.taskset, self.harness):
+            if owner is None:
+                continue
+            target = self._owner_binding_targets(owner).get(target_name)
+            if target is None or not same_callable(target[1], fn):
+                continue
+            self._extend_binding_entries(
+                entries, self._owner_bindings(owner), target_name
+            )
+        for toolset in iter_toolsets(self.active_toolsets(state)):
+            target = self._toolset_binding_targets(toolset).get(target_name)
+            if target is None or not same_callable(target[1], fn):
+                continue
+            self._extend_binding_entries(
+                entries, toolset.bindings, target_name, toolset
+            )
+        return entries
+
+    def _extend_binding_entries(
+        self,
+        entries: list[BindingEntry],
+        bindings: Mapping[str, BindingSource],
+        target_name: str,
+        owner: Toolset | None = None,
+    ) -> None:
+        existing = {key for key, _, _ in entries}
+        for binding_key, source in bindings.items():
+            prefix, _ = binding_key_parts(binding_key)
+            if prefix != target_name:
+                continue
+            if binding_key in existing:
+                raise ValueError(f"Binding {binding_key!r} is defined twice.")
+            existing.add(binding_key)
+            entries.append((binding_key, source, owner))
 
     def _toolset_binding_targets(
         self, toolset: Toolset
@@ -1154,33 +1371,6 @@ class Runtime:
 
     def tool_owner(self, name: str, state: State) -> Toolset | None:
         return self._tool_owners_for(self.active_toolsets(state)).get(name)
-
-    def bindings_for_state(self, state: State) -> dict[str, object]:
-        bindings: dict[str, object] = {}
-        for toolset in iter_toolsets(self.active_toolsets(state)):
-            for key, value in toolset.bindings.items():
-                if key in bindings:
-                    raise ValueError(f"Tool binding {key!r} is defined twice.")
-                bindings[key] = value
-        return bindings
-
-    def bindings_for_callable(
-        self, fn: Callable[..., object], state: State
-    ) -> dict[str, object]:
-        bindings: dict[str, object] = {}
-        for toolset in iter_toolsets(self.active_toolsets(state)):
-            targets = self._toolset_binding_targets(toolset)
-            target = targets.get(function_name(fn))
-            if target is None or not same_callable(target[1], fn):
-                continue
-            for key, value in toolset.bindings.items():
-                target_name, _ = binding_key_parts(key)
-                if target_name != function_name(fn):
-                    continue
-                if key in bindings:
-                    raise ValueError(f"Binding {key!r} is defined twice.")
-                bindings[key] = value
-        return bindings
 
     def _owner_signals(self, owner: object | None) -> list[SignalRecord]:
         if owner is None:

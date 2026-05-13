@@ -19,6 +19,7 @@ from .config import (
     merge_config_value,
     resolve_config_object,
 )
+from .utils.binding_utils import BindingMap, normalize_binding_map
 from .types import ConfigMap, Handler, PromptInput, TaskRow, TaskRowsSource
 from .state import State
 from .task import Task
@@ -37,6 +38,7 @@ class TasksetKwargs(TypedDict):
     taskset_id: NotRequired[str | None]
     system_prompt: NotRequired[PromptInput | None]
     user: NotRequired[Handler | str | ConfigMap | None]
+    bindings: NotRequired[BindingMap | None]
     toolsets: NotRequired[Iterable[object]]
     stops: NotRequired[Iterable[Handler]]
     setups: NotRequired[Iterable[Handler]]
@@ -58,6 +60,7 @@ class Taskset:
         taskset_id: str | None = None,
         system_prompt: PromptInput | None = None,
         user: Handler | str | ConfigMap | None = None,
+        bindings: BindingMap | None = None,
         # Collection fields.
         toolsets: Iterable[object] = (),
         stops: Iterable[Handler] = (),
@@ -97,6 +100,10 @@ class Taskset:
             system_prompt_value, field_name="taskset.system_prompt"
         )
         self.user = normalize_user(merge_config_value(user, self.config.user))
+        self.bindings = {
+            **self.config.bindings,
+            **normalize_binding_map(bindings, "Taskset bindings", allow_objects=False),
+        }
         self.toolsets, self.named_toolsets = merge_toolsets(
             toolsets, self.config.toolsets
         )
