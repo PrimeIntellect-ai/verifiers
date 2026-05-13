@@ -177,8 +177,7 @@ def validate_import_ref(import_ref: str) -> str:
 
 ImportRef = Annotated[str, AfterValidator(validate_import_ref)]
 """A ``module.submodule:object`` import ref. Validated at config-construction
-time; only imported when the config is materialized into a
-callable."""
+time; only imported when the config is materialized into a callable."""
 
 
 class CallableConfig(Config):
@@ -223,6 +222,10 @@ class SignalConfig(CallableConfig):
     stage: Literal["rollout", "group"] = "rollout"
 
 
+class MetricConfig(SignalConfig):
+    weight: float = 1.0
+
+
 class RewardConfig(SignalConfig):
     weight: float = 1.0
 
@@ -240,7 +243,7 @@ class TasksetConfig(Config):
     stops: list[CallableConfig] = Field(default_factory=list)
     setups: list[CallableConfig] = Field(default_factory=list)
     updates: list[SignalConfig] = Field(default_factory=list)
-    metrics: list[SignalConfig] = Field(default_factory=list)
+    metrics: list[MetricConfig] = Field(default_factory=list)
     rewards: list[RewardConfig] = Field(default_factory=list)
     advantages: list[CallableConfig] = Field(default_factory=list)
     cleanups: list[SignalConfig] = Field(default_factory=list)
@@ -248,6 +251,8 @@ class TasksetConfig(Config):
 
 
 class HarnessConfig(Config):
+    """Configures a harness."""
+
     # Singleton fields describe one logical value owned by the harness.
     program: object | None = None
     system_prompt: object | None = None

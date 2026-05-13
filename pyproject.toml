@@ -220,7 +220,7 @@ unknown-argument = "warn"
 redundant-cast = "ignore"
 
 [tool.ty.src]
-exclude = ["environments", "verifiers/v1/sketch.py"]
+exclude = ["environments", "verifiers/v1/sketch.py", "verifiers/v1/tests"]
 
 [[tool.ty.overrides]]
 include = ["verifiers/envs/experimental/composable/tasksets/**"]
