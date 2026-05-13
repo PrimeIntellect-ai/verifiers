@@ -56,8 +56,8 @@ TEST_DIR = "/workspace/tests"
 _DISK_GB: dict[str, int] = {"rust": 12, "go": 6, "c": 4, "cpp": 6}
 # Per-language compile timeout (seconds).
 _COMPILE_TIMEOUT: dict[str, int] = {"rust": 480, "go": 60, "c": 30, "cpp": 60}
-# Per-language pytest timeout (seconds). Rust integration tests can be slow.
-_TEST_TIMEOUT: dict[str, int] = {"rust": 600, "go": 300, "c": 120, "cpp": 300}
+# Pytest timeout matching paper's eval/run.sh limit (container.py: 3600s).
+_TEST_TIMEOUT: dict[str, int] = {"rust": 3600, "go": 3600, "c": 3600, "cpp": 3600}
 # Per-language sandbox lifetime (minutes).
 _SANDBOX_TIMEOUT_MIN: dict[str, int] = {"rust": 45, "go": 20, "c": 20, "cpp": 20}
 
