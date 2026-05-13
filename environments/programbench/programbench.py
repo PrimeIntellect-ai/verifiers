@@ -58,8 +58,8 @@ _DISK_GB: dict[str, int] = {"rust": 12, "go": 6, "c": 4, "cpp": 6}
 _COMPILE_TIMEOUT: dict[str, int] = {"rust": 480, "go": 60, "c": 30, "cpp": 60}
 # Pytest timeout matching paper's eval/run.sh limit (container.py: 3600s).
 _TEST_TIMEOUT: dict[str, int] = {"rust": 3600, "go": 3600, "c": 3600, "cpp": 3600}
-# Per-language sandbox lifetime (minutes).
-_SANDBOX_TIMEOUT_MIN: dict[str, int] = {"rust": 45, "go": 20, "c": 20, "cpp": 20}
+# Per-language sandbox lifetime (minutes). Paper specifies 6-hour wall clock (§4).
+_SANDBOX_TIMEOUT_MIN: dict[str, int] = {"rust": 360, "go": 360, "c": 360, "cpp": 360}
 
 SYSTEM_PROMPT = f"""\
 You are a software reverse-engineering expert. Your task is to reconstruct complete, \
@@ -110,6 +110,8 @@ class ProgramBenchTasksetConfig(vf.TasksetConfig):
     compile_timeout: int | None = None
     test_timeout: int | None = None
     sandbox_timeout_minutes: int | None = None
+    # Retry pytest up to N times per task, keep best result (paper §4 retry logic).
+    test_retries: int = 3
 
 
 class ProgramBenchTaskset(vf.Taskset):
@@ -131,6 +133,7 @@ class ProgramBenchTaskset(vf.Taskset):
         compile_timeout: int | None = None,
         test_timeout: int | None = None,
         sandbox_timeout_minutes: int | None = None,
+        test_retries: int | None = None,
         config: ProgramBenchTasksetConfig | Mapping[str, object] | None = None,
         **kwargs: Any,
     ):
@@ -178,6 +181,9 @@ class ProgramBenchTaskset(vf.Taskset):
             sandbox_timeout_minutes
             if sandbox_timeout_minutes is not None
             else config.sandbox_timeout_minutes
+        )
+        self.test_retries = (
+            test_retries if test_retries is not None else config.test_retries
         )
         super().__init__(
             source=self.load_rows,
@@ -591,17 +597,29 @@ class ProgramBenchTaskset(vf.Taskset):
                 ).stdout,
             )
             return 0, 0
-        test_timeout = self.test_timeout or _TEST_TIMEOUT.get(lang, 120)
-        pytest_result = await sandbox.execute(
-            f"cd {TEST_DIR} && python3 -m pytest {TEST_DIR} --tb=short -q "
-            f"--junit-xml={TEST_DIR}/results.xml 2>&1",
-            timeout=test_timeout,
-        )
-        state["pytest_log"] = (pytest_result.stdout or "")[:4000]
-        xml_result = await sandbox.execute(
-            f"cat {TEST_DIR}/results.xml 2>/dev/null || echo '<empty/>'", timeout=10
-        )
-        return _parse_junit_xml(xml_result.stdout or "")
+        test_timeout = self.test_timeout or _TEST_TIMEOUT.get(lang, 3600)
+        max_retries = max(1, self.test_retries)
+        best_passed, best_total = 0, 0
+        for attempt in range(max_retries):
+            # First retry: enable worker restart recovery (paper §4); subsequent: serial.
+            extra_flags = "--max-worker-restart=4" if attempt == 1 else ""
+            flags = f"{extra_flags} " if extra_flags else ""
+            pytest_result = await sandbox.execute(
+                f"cd {TEST_DIR} && python3 -m pytest {TEST_DIR} --tb=short -q "
+                f"{flags}--junit-xml={TEST_DIR}/results.xml 2>&1",
+                timeout=test_timeout,
+            )
+            state[f"pytest_log_attempt{attempt}"] = (pytest_result.stdout or "")[:4000]
+            xml_result = await sandbox.execute(
+                f"cat {TEST_DIR}/results.xml 2>/dev/null || echo '<empty/>'", timeout=10
+            )
+            passed, total = _parse_junit_xml(xml_result.stdout or "")
+            if passed > best_passed or (passed == best_passed and total > best_total):
+                best_passed, best_total = passed, total
+                state["pytest_log"] = state[f"pytest_log_attempt{attempt}"]
+            if passed == total and total > 0:
+                break
+        return best_passed, best_total
 
     async def _extract_archives(
         self, sandbox, archives: list[tuple[str, str]], task_id: str

@@ -139,6 +139,10 @@ fi
     quoted_uv_site_packages_dir = shlex.quote(DEFAULT_UV_SITE_PACKAGES_DIR)
     return f"""\
 set -e
+if test -x {quoted_prefix_dir}/bin/mini; then
+  echo "mini-swe-agent pre-installed — skipping download"
+  exit 0
+fi
 {install_tools}
 rm -rf {quoted_prefix_dir}
 mkdir -p {quoted_install_dir} {quoted_prefix_dir}/bin {quoted_site_packages_dir} {quoted_uv_site_packages_dir} {shlex.quote(DEFAULT_LOG_DIR)} /mini-swe-agent
