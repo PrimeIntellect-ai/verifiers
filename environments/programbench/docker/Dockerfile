@@ -6,10 +6,6 @@ ENV DEBIAN_FRONTEND=noninteractive \
     GOPATH=/root/go \
     GOROOT=/usr/local/go \
     GO_VERSION=1.21.0 \
-    BOOTSTRAP_HASKELL_NONINTERACTIVE=1 \
-    BOOTSTRAP_HASKELL_INSTALL_NO_STACK=1 \
-    BOOTSTRAP_HASKELL_INSTALL_NO_STACK_HOOK=1 \
-    GHCUP_USE_XDG_DIRS=0 \
     PATH="/root/.cargo/bin:/usr/local/go/bin:/root/go/bin:/root/.ghcup/bin:/root/.cabal/bin:${PATH}"
 
 # System packages: C/C++ toolchain, analysis tools, Python, general utilities
@@ -64,10 +60,12 @@ RUN curl -fsSL https://sh.rustup.rs -o /tmp/rustup-init.sh && \
     rm /tmp/rustup-init.sh && \
     /root/.cargo/bin/rustup component add rustfmt clippy
 
-# Haskell via GHCup (GHC 9.6.7 + cabal 3.14)
-RUN curl -fsSL https://get-ghcup.haskell.org -o /tmp/ghcup-init.sh && \
-    sh /tmp/ghcup-init.sh && \
-    rm /tmp/ghcup-init.sh && \
+# Haskell via GHCup (GHC 9.6.7 + cabal 3.14). Download ghcup binary directly
+# to avoid the bootstrap-script prompt machinery and XDG path confusion.
+RUN mkdir -p /root/.ghcup/bin && \
+    curl -fsSL "https://downloads.haskell.org/~ghcup/x86_64-linux-ghcup" \
+        -o /root/.ghcup/bin/ghcup && \
+    chmod +x /root/.ghcup/bin/ghcup && \
     /root/.ghcup/bin/ghcup install ghc 9.6.7 && \
     /root/.ghcup/bin/ghcup set ghc 9.6.7 && \
     /root/.ghcup/bin/ghcup install cabal 3.14.2.0 && \
