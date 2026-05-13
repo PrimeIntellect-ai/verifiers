@@ -15,13 +15,10 @@ Examples:
 from __future__ import annotations
 
 import asyncio
-import importlib
-import inspect
 import os
 import sys
-from typing import Annotated, Any, cast, get_args, get_origin
-
 import tomllib
+from typing import Annotated, Any, cast
 
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "true")
 
@@ -33,104 +30,12 @@ import verifiers.v1 as vf
 from verifiers.types import ClientConfig, GenerateOutputs
 
 # --------------------------------------------------------------------------- #
-# Env / harness module discovery.
+# Top-level config. Pydantic-config owns validation; nested env- and
+# harness-specific configs are typed dynamically per package.
 # --------------------------------------------------------------------------- #
 
 
-def _import_env_module(env_id: str) -> Any:
-    """Import an env package, preferring the `*_v1` module when present."""
-    base = env_id.replace("-", "_").split("/")[-1]
-    last_err: Exception | None = None
-    for module_name in (base, f"{base}_v1"):
-        try:
-            module = importlib.import_module(module_name)
-        except ImportError as e:
-            last_err = e
-            continue
-        if hasattr(module, "load_taskset"):
-            return module
-        last_err = AttributeError(f"{module_name!r} has no `load_taskset`")
-    raise SystemExit(f"could not load env {env_id!r}: {last_err}")
-
-
-def _config_type_from_annotation(annotation: Any, fallback: type) -> type:
-    if annotation is inspect.Parameter.empty or annotation is None:
-        return fallback
-    if get_origin(annotation) is None:
-        return annotation if isinstance(annotation, type) else fallback
-    for arg in get_args(annotation):
-        if arg is type(None):
-            continue
-        if isinstance(arg, type):
-            return arg
-    return fallback
-
-
-def _config_annotation(fn: Any, fallback: type) -> type:
-    try:
-        hints = inspect.get_annotations(fn, eval_str=True)
-    except Exception:
-        hints = {}
-    return _config_type_from_annotation(
-        hints.get("config", inspect.Parameter.empty), fallback
-    )
-
-
-def _check_load_signature(fn: Any, fn_name: str) -> None:
-    params = list(inspect.signature(fn).parameters.values())
-    if len(params) != 1 or params[0].name != "config":
-        raise SystemExit(
-            f"{fn.__module__}.{fn_name} must take exactly one positional "
-            f"`config` argument (got {[p.name for p in params]})."
-        )
-
-
-def _discover_taskset_config(module: Any) -> type[vf.TasksetConfig]:
-    _check_load_signature(module.load_taskset, "load_taskset")
-    return cast(
-        type[vf.TasksetConfig],
-        _config_annotation(module.load_taskset, vf.TasksetConfig),
-    )
-
-
-def _discover_harness_config(module: Any) -> type[vf.HarnessConfig]:
-    if not hasattr(module, "load_harness"):
-        return vf.HarnessConfig
-    _check_load_signature(module.load_harness, "load_harness")
-    return cast(
-        type[vf.HarnessConfig],
-        _config_annotation(module.load_harness, vf.HarnessConfig),
-    )
-
-
-HARNESS_REGISTRY: dict[str, str] = {
-    "base": "verifiers.v1.packages.harnesses.base",
-    "opencode": "verifiers.v1.packages.harnesses.opencode",
-    "rlm": "verifiers.v1.packages.harnesses.rlm",
-    "pi": "verifiers.v1.packages.harnesses.pi",
-    "mini-swe": "verifiers.v1.packages.harnesses.mini_swe_agent",
-}
-
-
-def _resolve_harness_module(name: str) -> Any:
-    target = HARNESS_REGISTRY.get(name, name)
-    try:
-        module = importlib.import_module(target)
-    except ImportError as e:
-        raise SystemExit(f"could not import harness {name!r}: {e}") from e
-    if not hasattr(module, "load_harness"):
-        raise SystemExit(f"harness module {target!r} exposes no `load_harness`.")
-    return module
-
-
-# --------------------------------------------------------------------------- #
-# Top-level config. Pydantic-config owns required-field validation. The
-# nested env-specific configs live under `taskset_config` / `harness_config`
-# so they do not collide with the `--taskset` / `--harness` selector flags.
-# --------------------------------------------------------------------------- #
-
-
-class _EvalConfigBase(BaseConfig):
+class AbstractEvalConfig(BaseConfig):
     """vf-eval-v1: evaluate a v1 environment via load_taskset + load_harness."""
 
     taskset_id: Annotated[str, tyro.conf.Positional] = Field(
@@ -138,11 +43,7 @@ class _EvalConfigBase(BaseConfig):
     )
     harness_id: str | None = Field(
         default=None,
-        description=(
-            "Harness package name from the registry (base / opencode / rlm / pi / "
-            "mini-swe), or a Python module path. Defaults to the env's own "
-            "load_harness when present, else base."
-        ),
+        description="Harness package name (resolves load_harness).",
     )
     model: Annotated[str, tyro.conf.arg(aliases=["-m"])] = Field(
         default="openai/gpt-4.1-mini", description="Model id."
@@ -155,23 +56,22 @@ class _EvalConfigBase(BaseConfig):
     )
 
 
-def _build_eval_config_cls(
+def build_eval_config_cls(
     taskset_cls: type[vf.TasksetConfig],
     harness_cls: type[vf.HarnessConfig],
 ) -> type[BaseConfig]:
     return create_model(
-        "EvalConfigV1",
-        __base__=_EvalConfigBase,
+        "EvalConfig",
+        __base__=AbstractEvalConfig,
         taskset=(taskset_cls, Field(default_factory=taskset_cls)),
         harness=(harness_cls, Field(default_factory=harness_cls)),
     )
 
 
 # --------------------------------------------------------------------------- #
-# Argv pre-scan: peek `--taskset` / `--harness` so we can resolve the right
-# config types before tyro builds the help. We do NOT strip the flags — tyro
-# still parses them and emits standard "missing required" / "unrecognized
-# argument" errors.
+# Argv pre-scan: peek the taskset positional and --harness-id flag so we can
+# discover the concrete config types before tyro builds the schema. Tyro
+# still owns parsing/validation.
 # --------------------------------------------------------------------------- #
 
 
@@ -184,7 +84,6 @@ def _load_toml(path: str) -> dict[str, Any]:
 
 
 def _peek_positional(argv: list[str]) -> str | None:
-    """Return the first positional token in argv, ignoring `@ <toml>` pairs."""
     i = 0
     while i < len(argv):
         a = argv[i]
@@ -218,18 +117,15 @@ def _peek_flag(argv: list[str], flag: str) -> str | None:
 # --------------------------------------------------------------------------- #
 
 
-def _build_env(env_module: Any, harness_module: Any, cfg: Any) -> vf.Env:
-    taskset = env_module.load_taskset(cfg.taskset)
-    harness = harness_module.load_harness(cfg.harness)
-    if not isinstance(taskset, vf.Taskset):
-        raise SystemExit(
-            f"{env_module.__name__}.load_taskset must return a vf.Taskset."
-        )
-    if not isinstance(harness, vf.Harness):
-        raise SystemExit(
-            f"{harness_module.__name__}.load_harness must return a vf.Harness."
-        )
-    return vf.Env(taskset=taskset, harness=harness)
+def _resolve_harness_id(cfg: Any) -> str:
+    """Pick the harness package: explicit --harness-id, else the env's own
+    load_harness, else base."""
+    if cfg.harness_id is not None:
+        return cast(str, cfg.harness_id)
+    env_module = vf.import_taskset_module(cfg.taskset_id)
+    if hasattr(env_module, "load_harness"):
+        return cast(str, cfg.taskset_id)
+    return "base"
 
 
 def _summarize(outputs: GenerateOutputs) -> None:
@@ -241,8 +137,11 @@ def _summarize(outputs: GenerateOutputs) -> None:
     print(f"\nrollouts: {len(rewards)}    mean reward: {mean:.4f}")
 
 
-async def _run(env_module: Any, harness_module: Any, cfg: Any) -> None:
-    env = _build_env(env_module, harness_module, cfg)
+async def _run(cfg: Any) -> None:
+    taskset = vf.load_taskset(cfg.taskset_id, cfg.taskset)
+    harness = vf.load_harness(_resolve_harness_id(cfg), cfg.harness)
+    env = vf.Env(taskset=taskset, harness=harness)
+
     client_config = ClientConfig(
         client_type="openai_chat_completions",
         api_base_url="https://api.pinference.ai/api/v1",
@@ -263,35 +162,26 @@ def main(argv: list[str] | None = None) -> None:
 
     # Peek the selectors so we know which config types to use when building
     # the dynamic EvalConfig. Tyro still owns parsing/validation.
-    # `taskset_id` is a tyro positional, so its value is the first non-flag
-    # argv token; `harness_id` is still a named flag.
-    taskset_selector = _peek_positional(argv)
-    harness_selector = _peek_flag(argv, "harness-id")
+    taskset_id = _peek_positional(argv)
+    harness_id = _peek_flag(argv, "harness-id")
 
-    if taskset_selector is not None:
-        env_module = _import_env_module(taskset_selector)
-        taskset_cls = _discover_taskset_config(env_module)
+    if taskset_id is not None:
+        taskset_cls = vf.get_taskset_config_cls(vf.import_taskset_module(taskset_id))
     else:
-        env_module = None
         taskset_cls = vf.TasksetConfig
 
-    if harness_selector is not None:
-        harness_module = _resolve_harness_module(harness_selector)
-    elif env_module is not None and hasattr(env_module, "load_harness"):
-        harness_module = env_module
+    fallback_harness = taskset_id if harness_id is None else harness_id
+    if fallback_harness is not None:
+        harness_cls = vf.get_harness_config_cls(
+            vf.resolve_harness_module(fallback_harness)
+        )
     else:
-        harness_module = importlib.import_module(HARNESS_REGISTRY["base"])
-    harness_cls = _discover_harness_config(harness_module)
+        harness_cls = vf.HarnessConfig
 
-    EvalConfigCls = _build_eval_config_cls(taskset_cls, harness_cls)
+    EvalConfigCls = build_eval_config_cls(taskset_cls, harness_cls)
     cfg = cast(Any, cli(EvalConfigCls, args=argv))
 
-    if env_module is None or cfg.taskset_id != taskset_selector:
-        env_module = _import_env_module(cfg.taskset_id)
-    if cfg.harness_id is not None and cfg.harness_id != harness_selector:
-        harness_module = _resolve_harness_module(cfg.harness_id)
-
-    asyncio.run(_run(env_module, harness_module, cfg))
+    asyncio.run(_run(cfg))
 
 
 if __name__ == "__main__":

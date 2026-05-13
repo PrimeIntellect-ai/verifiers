@@ -23,6 +23,15 @@ from .config import (
 )
 from .env import Env
 from .harness import Harness
+from .loader import (
+    HARNESS_REGISTRY,
+    get_harness_config_cls,
+    get_taskset_config_cls,
+    import_taskset_module,
+    load_harness,
+    load_taskset,
+    resolve_harness_module,
+)
 from .packages.harnesses import (
     CLIHarness,
     MiniSWEAgent,
@@ -54,11 +63,18 @@ __all__ = [
     "Config",
     "Env",
     "EnvConfig",
+    "HARNESS_REGISTRY",
     "Harness",
     "HarnessConfig",
     "HarborTaskset",
     "HarborTasksetConfig",
     "CLIHarness",
+    "get_harness_config_cls",
+    "get_taskset_config_cls",
+    "import_taskset_module",
+    "load_harness",
+    "load_taskset",
+    "resolve_harness_module",
     "MCPTool",
     "MCPToolConfig",
     "MiniSWEAgent",
