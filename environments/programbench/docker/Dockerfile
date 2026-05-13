@@ -43,9 +43,9 @@ RUN curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" -o /tmp/go
     tar -C /usr/local -xzf /tmp/go.tar.gz && \
     rm /tmp/go.tar.gz
 
-# Rust via rustup (stable, no default toolchain prompt)
+# Rust via rustup (paper spec: 1.92.0)
 RUN curl -fsSL https://sh.rustup.rs -o /tmp/rustup-init.sh && \
-    sh /tmp/rustup-init.sh -y --default-toolchain stable --profile minimal --no-modify-path && \
+    sh /tmp/rustup-init.sh -y --default-toolchain 1.92.0 --profile minimal --no-modify-path && \
     rm /tmp/rustup-init.sh && \
     /root/.cargo/bin/rustup component add rustfmt clippy
 
