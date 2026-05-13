@@ -1,6 +1,7 @@
 from collections.abc import Mapping
 from typing import Any, Optional, cast
 
+import httpx
 from openai import AsyncOpenAI, BaseModel
 from openai.types.chat import (
     ChatCompletion,
@@ -20,6 +21,20 @@ from verifiers.clients.openai_chat_completions_client import (
     handle_openai_overlong_prompt,
 )
 from verifiers.types import SamplingArgs, State
+
+
+TTT_CONTROL_KEYS = {
+    "ttt_enabled",
+    "ttt_learner_url",
+    "ttt_window_seq_len",
+    "ttt_train_prompt_lora",
+    "ttt_train_completion_lora",
+    "ttt_require_exact_token_ids",
+    "ttt_completion_lora_trains_initial_prompt",
+    "ttt_prompt_lora_trains_environment_responses",
+    "ttt_cache_salt_includes_adapter",
+    "ttt_request_timeout_s",
+}
 
 
 def _has_multimodal_content(messages) -> bool:
@@ -101,6 +116,8 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
         sampling_args = normalize_sampling_args(sampling_args)
         state = cast(State, kwargs.pop("state"))
         extra_headers = kwargs.pop("extra_headers", None)
+        ttt_options = self._pop_ttt_options(sampling_args)
+        ttt_enabled = bool(ttt_options.get("ttt_enabled"))
         # Use standard /chat/completions for: (1) first turn (no prior tokens
         # to stitch), or (2) conversations that contain multimodal content in
         # any turn.  vLLM ≤0.16's /tokenize doesn't run the multimodal
@@ -111,14 +128,58 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
         has_multimodal = _has_multimodal_content(prompt) or any(
             _has_multimodal_content(step["prompt"]) for step in state["trajectory"]
         )
-        if len(state["trajectory"]) == 0 or has_multimodal:
+        if has_multimodal:
+            if ttt_enabled and ttt_options.get("ttt_require_exact_token_ids", True):
+                raise ValueError("TTT online LoRA requires exact token ids; multimodal token fallback is unsupported.")
             return await super().get_native_response(
                 prompt, model, sampling_args, tools, extra_headers=extra_headers
             )
-        prompt_ids = await self.get_prompt_ids(state, prompt, tools)
+        # The bridge tokenize calls inside get_prompt_ids must run under the
+        # same chat-template config as the engine's actual generation,
+        # otherwise the bridge tokens won't line up with what vLLM streamed
+        # (e.g. GLM-5.1's `clear_thinking` flag changes the rendering of past
+        # assistants — and of the dummy assistant we use for the bridge —
+        # which can break the bridge prefix property).
+        # `extra_body` is guaranteed by normalize_sampling_args above;
+        # `chat_template_kwargs` is rollout-configured and may be absent.
+        chat_template_kwargs = sampling_args["extra_body"].get(
+            "chat_template_kwargs", {}
+        )
+        if len(state["trajectory"]) == 0 and not ttt_enabled:
+            return await super().get_native_response(
+                prompt, model, sampling_args, tools, extra_headers=extra_headers
+            )
+
+        if len(state["trajectory"]) == 0:
+            prompt_ids = await self.tokenize(
+                messages=prompt,
+                tools=tools,
+                model=state["model"],
+                extra_kwargs={"chat_template_kwargs": dict(chat_template_kwargs)}
+                if chat_template_kwargs
+                else None,
+            )
+            new_prompt_ids = list(prompt_ids)
+        elif ttt_enabled:
+            prompt_match = await self.get_prompt_ids_with_new_tokens(
+                state, prompt, tools, chat_template_kwargs=chat_template_kwargs
+            )
+            if prompt_match is None:
+                prompt_ids = None
+                new_prompt_ids = []
+            else:
+                prompt_ids, new_prompt_ids = prompt_match
+        else:
+            prompt_ids = await self.get_prompt_ids(
+                state, prompt, tools, chat_template_kwargs=chat_template_kwargs
+            )
+            new_prompt_ids = []
+
         if prompt_ids is None:
             # Reaching this branch means we have a non-empty trajectory but
             # could not stitch — surface it loudly so ops catches regressions.
+            if ttt_enabled and ttt_options.get("ttt_require_exact_token_ids", True):
+                raise ValueError("TTT online LoRA could not stitch exact prompt token ids.")
             self.logger.warning(
                 f"TITO fell back to MITO on turn {len(state['trajectory']) + 1}"
             )
@@ -126,29 +187,100 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
                 prompt, model, sampling_args, tools, extra_headers=extra_headers
             )
 
+        generation_prompt_ids = prompt_ids
+        if ttt_enabled:
+            window_seq_len = int(ttt_options.get("ttt_window_seq_len") or 0)
+            max_completion_tokens = int(sampling_args.get("max_completion_tokens") or 0)
+            prompt_window = max(window_seq_len - max_completion_tokens, 1) if max_completion_tokens else window_seq_len
+            if prompt_window > 0 and len(generation_prompt_ids) > prompt_window:
+                generation_prompt_ids = generation_prompt_ids[-prompt_window:]
+
+        adapter_name = model
+        ttt_prepare: dict[str, Any] | None = None
+        if ttt_enabled:
+            ttt_prepare = await self._ttt_prepare_turn(
+                state=state,
+                model=model,
+                prompt_ids=generation_prompt_ids,
+                new_prompt_ids=new_prompt_ids,
+                options=ttt_options,
+            )
+            adapter_name = str(ttt_prepare["adapter_name"])
+
         extra_body = sampling_args.pop("extra_body", {})
+        if ttt_enabled and ttt_options.get("ttt_cache_salt_includes_adapter", True):
+            salt = extra_body.get("cache_salt")
+            adapter_salt = adapter_name
+            extra_body["cache_salt"] = f"{salt}:ttt:{adapter_salt}" if salt is not None else f"ttt:{adapter_salt}"
         body = dict(
-            model=model,
+            model=adapter_name,
             messages=prompt,
             tools=tools,
-            tokens=prompt_ids,
+            tokens=generation_prompt_ids,
             **sampling_args,
             **extra_body,
         )
 
-        return await self.client.post(
+        response = await self.client.post(
             "/chat/completions/tokens",
             body=body,
             cast_to=ChatCompletion,
             options={"headers": extra_headers} if extra_headers else {},
         )
+        if ttt_enabled:
+            await self._ttt_complete_turn(
+                state=state,
+                model=model,
+                response=response,
+                prepare=ttt_prepare or {},
+                options=ttt_options,
+            )
+        return response
+
+    def _pop_ttt_options(self, sampling_args: dict[str, Any]) -> dict[str, Any]:
+        extra_body = dict(sampling_args.get("extra_body") or {})
+        options: dict[str, Any] = {}
+        for key in TTT_CONTROL_KEYS:
+            if key in extra_body:
+                options[key] = extra_body.pop(key)
+        sampling_args["extra_body"] = extra_body
+        return options
+
+    async def get_prompt_ids_with_new_tokens(
+        self,
+        state: State,
+        prompt_messages: OpenAIChatMessages,
+        oai_tools: list[OpenAITool] | None,
+        chat_template_kwargs: dict | None = None,
+    ) -> tuple[list[int], list[int]] | None:
+        stitched = await self._get_prompt_ids_and_bridge(
+            state, prompt_messages, oai_tools, chat_template_kwargs=chat_template_kwargs
+        )
+        if stitched is None:
+            return None
+        return stitched[0], stitched[1]
 
     async def get_prompt_ids(
         self,
         state: State,
         prompt_messages: OpenAIChatMessages,
         oai_tools: list[OpenAITool] | None,
+        chat_template_kwargs: dict | None = None,
     ) -> list[int] | None:
+        stitched = await self._get_prompt_ids_and_bridge(
+            state, prompt_messages, oai_tools, chat_template_kwargs=chat_template_kwargs
+        )
+        if stitched is None:
+            return None
+        return stitched[0]
+
+    async def _get_prompt_ids_and_bridge(
+        self,
+        state: State,
+        prompt_messages: OpenAIChatMessages,
+        oai_tools: list[OpenAITool] | None,
+        chat_template_kwargs: dict | None = None,
+    ) -> tuple[list[int], list[int], int] | None:
         """
         Build prompt_ids for the next turn by stitching engine tokens with
         bridge tokens for the environment response.
@@ -266,9 +398,16 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
             if tc_id:
                 tool_call_ids.append(tc_id)
 
+        # GLM-5.1's chat template only renders `<think>{rc}</think>` for an
+        # assistant when `reasoning_content` ends up *defined*. The cascade
+        # that defines it from position (`idx > last_user_index`) flips when
+        # env_messages ends in a user message, breaking the bridge prefix
+        # property. Setting reasoning_content="" forces branch 1 of the
+        # cascade so the dummy renders identically across env-tail shapes.
         if tool_call_ids:
             dummy_assistant: OpenAIChatMessage = ChatCompletionAssistantMessageParam(
                 role="assistant",
+                reasoning_content="",  # type: ignore[typeddict-unknown-key]
                 tool_calls=[
                     ChatCompletionMessageFunctionToolCallParam(
                         id=tc_id,
@@ -280,20 +419,31 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
             )
         else:
             dummy_assistant: OpenAIChatMessage = ChatCompletionAssistantMessageParam(
-                role="assistant", content="x"
+                role="assistant",
+                reasoning_content="",  # type: ignore[typeddict-unknown-key]
+                content="x",
             )
+
+        # Forward the rollout's chat_template_kwargs so the bridge is
+        # rendered under the same template config as the engine's stream.
+        forwarded_ctk = (
+            {"chat_template_kwargs": dict(chat_template_kwargs)}
+            if chat_template_kwargs
+            else {}
+        )
 
         try:
             bridge_full_ids = await self.tokenize(
                 messages=[dummy_assistant] + env_messages,
                 tools=oai_tools,
                 model=state["model"],
+                extra_kwargs=dict(forwarded_ctk),
             )
             bridge_base_ids = await self.tokenize(
                 messages=[dummy_assistant],
                 tools=oai_tools,
                 model=state["model"],
-                extra_kwargs=dict(add_generation_prompt=False),
+                extra_kwargs=dict(add_generation_prompt=False, **forwarded_ctk),
             )
         except Exception:
             self.logger.debug("TITO: bridge tokenization failed, falling back to MITO")
@@ -328,7 +478,113 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
         if bridge_ids and bridge_ids[0] == stop_token_id:
             bridge_ids = bridge_ids[1:]
 
-        return prev_turn_ids + list(bridge_ids)
+        return prev_turn_ids + list(bridge_ids), list(bridge_ids), prefix_len
+
+    async def _ttt_prepare_turn(
+        self,
+        state: State,
+        model: str,
+        prompt_ids: list[int],
+        new_prompt_ids: list[int],
+        options: dict[str, Any],
+    ) -> dict[str, Any]:
+        learner_url = str(options.get("ttt_learner_url") or "").rstrip("/")
+        if not learner_url:
+            raise ValueError("ttt_learner_url must be set when ttt_enabled=true.")
+        turn_idx = len(state["trajectory"])
+        session_id = str(state.get("trajectory_id"))
+        token_role = "completion_initial_prompt" if turn_idx == 0 else "prompt_environment"
+        train_ids = list(new_prompt_ids)
+        if token_role == "completion_initial_prompt" and (
+            not options.get("ttt_train_completion_lora", True)
+            or not options.get("ttt_completion_lora_trains_initial_prompt", True)
+        ):
+            train_ids = []
+        if token_role == "prompt_environment" and (
+            not options.get("ttt_train_prompt_lora", True)
+            or not options.get("ttt_prompt_lora_trains_environment_responses", True)
+        ):
+            train_ids = []
+        payload = {
+            "session_id": session_id,
+            "turn_idx": turn_idx,
+            "model": model,
+            "prompt_ids": prompt_ids,
+            "new_prompt_ids": train_ids,
+            "token_role": token_role,
+        }
+        timeout = float(options.get("ttt_request_timeout_s") or 120.0)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.post(f"{learner_url}/prepare_turn", json=payload)
+            response.raise_for_status()
+            prepared = cast(dict[str, Any], response.json())
+        prepared["prompt_ids"] = list(prompt_ids)
+        prepared["new_prompt_ids"] = list(new_prompt_ids)
+        return prepared
+
+    async def _ttt_complete_turn(
+        self,
+        state: State,
+        model: str,
+        response: Any,
+        prepare: dict[str, Any],
+        options: dict[str, Any],
+    ) -> None:
+        learner_url = str(options.get("ttt_learner_url") or "").rstrip("/")
+        if not learner_url:
+            raise ValueError("ttt_learner_url must be set when ttt_enabled=true.")
+        raw_completion_ids = getattr(response.choices[0], "token_ids", None)
+        if raw_completion_ids is None and options.get("ttt_require_exact_token_ids", True):
+            raise ValueError("TTT online LoRA requires exact completion token ids, but the response omitted them.")
+        completion_ids = list(raw_completion_ids or [])
+        completion_logprobs = self._extract_completion_logprobs(response)
+        completion_train_ids = completion_ids if options.get("ttt_train_completion_lora", True) else []
+        payload = {
+            "session_id": str(state.get("trajectory_id")),
+            "turn_idx": len(state["trajectory"]),
+            "model": model,
+            "completion_ids": completion_train_ids,
+            "completion_logprobs": completion_logprobs,
+            "prepare_version": prepare.get("version"),
+        }
+        timeout = float(options.get("ttt_request_timeout_s") or 120.0)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            http_response = await client.post(f"{learner_url}/complete_turn", json=payload)
+            http_response.raise_for_status()
+            complete = cast(dict[str, Any], http_response.json())
+
+        trace = state.setdefault("ttt_trace", [])
+        entry = {
+            "turn_idx": len(state["trajectory"]),
+            "session_id": str(state.get("trajectory_id")),
+            "model": model,
+            "adapter_name": prepare.get("adapter_name"),
+            "adapter_path": prepare.get("adapter_path"),
+            "base_step": prepare.get("base_step"),
+            "prompt_token_count": prepare.get("trained_token_count", 0),
+            "prompt_token_role": prepare.get("token_role"),
+            "prompt_ids": list(prepare.get("prompt_ids") or []),
+            "new_prompt_ids": list(prepare.get("new_prompt_ids") or []),
+            "completion_token_count": len(completion_ids),
+            "completion_ids": completion_ids,
+            "completion_logprobs": completion_logprobs,
+            "prepare": prepare,
+            "complete": complete,
+        }
+        trace.append(entry)
+        if isinstance(complete.get("final_prompt_adapter"), dict):
+            state["ttt_final_prompt_adapter"] = complete["final_prompt_adapter"]
+
+    def _extract_completion_logprobs(self, response: Any) -> list[float]:
+        choice = response.choices[0]
+        logprobs = getattr(choice, "logprobs", None)
+        if logprobs is None:
+            return []
+        if hasattr(logprobs, "content") and logprobs.content is not None:
+            return [float(token.logprob) for token in logprobs.content]
+        if isinstance(logprobs, dict) and logprobs.get("content") is not None:
+            return [float(token["logprob"]) for token in logprobs["content"]]
+        return []
 
     async def tokenize(
         self,
