@@ -469,8 +469,54 @@ class OpenAIChatCompletionsClient(
                 case _:
                     return None
 
+        def _graft_engine_data(response: OpenAIChatResponse) -> None:
+            """Graft ``nvext.engine_data.*`` onto top-level response fields.
+
+            Dynamo's vLLM/SGLang backends emit engine-side token IDs and
+            per-token logprobs under ``response.nvext.engine_data`` when the
+            client opts in via ``nvext.extra_fields=["engine_data"]`` (PR
+            #8119). Older vLLM-native paths set
+            ``response.choices[0].token_ids`` / ``response.prompt_token_ids``
+            directly. This helper bridges the gap: if ``engine_data`` is
+            present and the top-level fields are missing, copy them across.
+            The rest of ``parse_tokens`` then reads via the standard openai
+            SDK attribute path regardless of backend.
+            """
+            nvext = getattr(response, "nvext", None)
+            if nvext is None and hasattr(response, "model_dump"):
+                nvext = response.model_dump().get("nvext")
+            if not isinstance(nvext, dict):
+                return
+            engine_data = nvext.get("engine_data")
+            if not isinstance(engine_data, dict):
+                return
+            choice = response.choices[0]
+            if (
+                getattr(choice, "token_ids", None) is None
+                and engine_data.get("completion_token_ids") is not None
+            ):
+                try:
+                    choice.token_ids = list(engine_data["completion_token_ids"])
+                except Exception:
+                    object.__setattr__(
+                        choice, "token_ids", list(engine_data["completion_token_ids"])
+                    )
+            if (
+                getattr(response, "prompt_token_ids", None) is None
+                and engine_data.get("prompt_token_ids") is not None
+            ):
+                try:
+                    response.prompt_token_ids = list(engine_data["prompt_token_ids"])
+                except Exception:
+                    object.__setattr__(
+                        response,
+                        "prompt_token_ids",
+                        list(engine_data["prompt_token_ids"]),
+                    )
+
         def parse_tokens(response: OpenAIChatResponse) -> ResponseTokens | None:
             assert len(response.choices) == 1, "Response should always have one choice"
+            _graft_engine_data(response)
             choice = response.choices[0]
             if not hasattr(choice, "token_ids"):
                 return None
