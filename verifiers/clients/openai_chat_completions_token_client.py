@@ -18,10 +18,14 @@ from verifiers.clients.openai_chat_completions_client import (
     OpenAITool,
     handle_openai_overlong_prompt,
 )
-from verifiers.types import SamplingArgs, State
+from verifiers.types import RendererTransport, SamplingArgs, State
 from verifiers.utils.client_utils import (
     post_chat_completion_with_routed_experts_sidecar,
 )
+
+# Sentinel for the default (legacy vLLM) transport. Lets callers route
+# around the legacy /tokenize body shape without changing the signature.
+_DEFAULT_TRANSPORT: RendererTransport = "prime_vllm_generate"
 
 
 def _has_multimodal_content(messages) -> bool:
@@ -51,7 +55,25 @@ class TokenizeResponse(BaseModel):
 
 
 class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
-    """Wrapper for custom vLLM route /v1/chat/completions/tokens via AsyncOpenAI client."""
+    """Token-in / token-out chat client.
+
+    Two transports share this class, selected via
+    ``ClientConfig.renderer_transport``:
+
+    * ``prime_vllm_generate`` (default): vLLM's TITO surface.
+      Posts to ``/v1/chat/completions/tokens`` with ``tokens=prompt_ids``
+      and uses the server's ``/tokenize`` endpoint for bridge tokens.
+      Requires vLLM ``>=0.20``.
+
+    * ``dynamo_chat_nvext``: Dynamo's standard ``/v1/chat/completions``
+      route with ``nvext.token_data=prompt_ids``. Server-side response
+      token IDs come back via ``response.nvext.engine_data.*``
+      (`OpenAIChatCompletionsClient.from_native_response` grafts them
+      onto the OpenAI-shaped response). Bridge tokens are computed
+      locally via the model's HuggingFace fast tokenizer — no
+      ``/tokenize`` HTTP round-trip — since Dynamo doesn't expose vLLM's
+      token routes.
+    """
 
     @property
     def token_client(self) -> AsyncOpenAI:
@@ -60,6 +82,38 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
         if base_url.endswith("/v1"):
             base_url = base_url[:-3]
         return self.client.with_options(base_url=base_url)
+
+    @property
+    def renderer_transport(self) -> RendererTransport:
+        """Wire-shape selector. ``ClientConfig.renderer_transport`` if set,
+        else the default vLLM TITO surface. Mirrors the same field used by
+        ``RendererClient`` so backend selection stays in one place."""
+        return cast(
+            RendererTransport,
+            getattr(self._config, "renderer_transport", _DEFAULT_TRANSPORT)
+            if self._config is not None
+            else _DEFAULT_TRANSPORT,
+        )
+
+    def _get_local_tokenizer(self, model: str):
+        """Lazy, per-model HF fast tokenizer for the ``dynamo_chat_nvext``
+        transport. Bridge tokens are stitched locally — no ``/tokenize``
+        round-trip. Cached so we pay the ``AutoTokenizer.from_pretrained``
+        cost once.
+        """
+        cache: dict[str, Any] = self.__dict__.setdefault("_tokenizer_cache", {})
+        if model in cache:
+            return cache[model]
+        try:
+            from transformers import AutoTokenizer  # type: ignore[import-not-found]
+        except ImportError as exc:  # pragma: no cover - dependency surface
+            raise ImportError(
+                "OpenAIChatCompletionsTokenClient with "
+                "renderer_transport='dynamo_chat_nvext' requires "
+                "`transformers`. Install with `pip install transformers`."
+            ) from exc
+        cache[model] = AutoTokenizer.from_pretrained(model)
+        return cache[model]
 
     @handle_openai_overlong_prompt
     async def get_native_response(
@@ -75,12 +129,49 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
             if "max_tokens" in sampling_args:
                 sampling_args["max_completion_tokens"] = sampling_args.pop("max_tokens")
             sampling_args["logprobs"] = True
-            extra_body = dict(return_token_ids=True)
-            if "extra_body" in sampling_args:
-                sampling_args["extra_body"] = {
-                    **sampling_args["extra_body"],
-                    **extra_body,
+
+            # Transport-specific opt-ins. Both transports get response-side
+            # token IDs, just via different fields:
+            #
+            #   * prime_vllm_generate (vLLM): `extra_body.return_token_ids=True`
+            #     tells vLLM to set the non-standard `choices[0].token_ids` and
+            #     `response.prompt_token_ids` fields. `parse_tokens` reads them
+            #     directly.
+            #
+            #   * dynamo_chat_nvext: `nvext.extra_fields=["engine_data"]`
+            #     tells Dynamo's response builder to emit `response.nvext`
+            #     `engine_data.{completion_token_ids, completion_logprobs,
+            #     prompt_token_ids}` (PR #8119 channel mirrored to vLLM in
+            #     ai-dynamo/dynamo `rl-sdk-2`). `from_native_response` grafts
+            #     this onto the OpenAI-shaped response so `parse_tokens`
+            #     works unmodified. `return_token_ids` is dropped because
+            #     Dynamo's strict validator rejects it.
+            if self.renderer_transport == "dynamo_chat_nvext":
+                extra_body: dict[str, Any] = {
+                    "nvext": {"extra_fields": ["engine_data"]}
                 }
+            else:
+                extra_body = {"return_token_ids": True}
+
+            if "extra_body" in sampling_args:
+                merged = {**sampling_args["extra_body"]}
+                # Merge nvext.extra_fields cumulatively rather than overwriting,
+                # so caller-provided extra_fields (e.g. "timing", "worker_id")
+                # coexist with our "engine_data" opt-in.
+                if "nvext" in merged and "nvext" in extra_body:
+                    base = dict(merged.get("nvext") or {})
+                    inc = dict(extra_body.get("nvext") or {})
+                    base_ef = list(base.get("extra_fields") or [])
+                    inc_ef = list(inc.get("extra_fields") or [])
+                    merged_ef = list(dict.fromkeys(base_ef + inc_ef))
+                    merged_nvext = {**base, **inc, "extra_fields": merged_ef}
+                    merged["nvext"] = merged_nvext
+                    sampling_args["extra_body"] = {
+                        **{k: v for k, v in extra_body.items() if k != "nvext"},
+                        **merged,
+                    }
+                else:
+                    sampling_args["extra_body"] = {**merged, **extra_body}
             else:
                 sampling_args["extra_body"] = extra_body
             return {k: v for k, v in sampling_args.items() if v is not None}
@@ -126,6 +217,16 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
                 prompt, model, sampling_args, tools, extra_headers=extra_headers
             )
 
+        if self.renderer_transport == "dynamo_chat_nvext":
+            return await self._post_dynamo_chat_nvext(
+                prompt=prompt,
+                prompt_ids=prompt_ids,
+                model=model,
+                tools=tools,
+                sampling_args=sampling_args,
+                extra_headers=extra_headers,
+            )
+
         extra_body = sampling_args.pop("extra_body", {})
         body = {
             "model": model,
@@ -141,6 +242,86 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
             "/chat/completions/tokens",
             body=body,
             extra_headers=extra_headers,
+        )
+
+    async def _post_dynamo_chat_nvext(
+        self,
+        prompt: OpenAIChatMessages,
+        prompt_ids: list[int],
+        model: str,
+        tools: list[OpenAITool] | None,
+        sampling_args: dict,
+        extra_headers: Mapping[str, str] | None,
+    ) -> OpenAIChatResponse:
+        """Post stitched ``prompt_ids`` to Dynamo's chat-completions route.
+
+        The engine sees ``nvext.token_data`` and skips its own tokenization,
+        so the placeholder ``messages`` value stays small regardless of
+        trajectory length. Response token IDs come back via
+        ``response.nvext.engine_data.completion_token_ids`` and are grafted
+        onto ``choices[0].token_ids`` by
+        ``OpenAIChatCompletionsClient.from_native_response`` so the rest of
+        the pipeline reads them via the standard openai SDK attribute path.
+        """
+        extra_body = dict(sampling_args.pop("extra_body", {}) or {})
+
+        # nvext.token_data is the canonical pre-tokenized-prompt channel.
+        # Merge with caller-provided nvext (extra_fields etc.) rather than
+        # overwriting it. normalize_sampling_args already injected
+        # extra_fields=["engine_data"] into extra_body.nvext, so this just
+        # adds token_data to that same dict.
+        caller_nvext = dict(extra_body.pop("nvext", None) or {})
+        caller_nvext["token_data"] = prompt_ids
+        nvext = caller_nvext
+
+        body: dict[str, Any] = {
+            "model": model,
+            "messages": prompt,  # placeholder; engine ignores when token_data present
+            "stream": False,
+            "nvext": nvext,
+        }
+        if tools:
+            body["tools"] = tools
+
+        # Sampling params that Dynamo's chat-completions surface accepts
+        # directly. Anything else stays in extra_body and rides as an
+        # unrecognized passthrough field (validate.rs PASSTHROUGH_EXTRA_FIELDS).
+        promotable = (
+            "max_completion_tokens",
+            "max_tokens",
+            "temperature",
+            "top_p",
+            "top_k",
+            "min_p",
+            "seed",
+            "n",
+            "repetition_penalty",
+            "min_tokens",
+            "logprobs",
+            "top_logprobs",
+            "stop",
+        )
+        for key in promotable:
+            value = sampling_args.get(key, extra_body.get(key))
+            if value is not None and key not in body:
+                body[key] = value
+
+        # Remaining extra_body keys (cache_salt, stop_token_ids,
+        # bad_words_token_ids, ...) pass through unchanged. The dynamo
+        # frontend's PASSTHROUGH_EXTRA_FIELDS allowlist accepts these
+        # without rejection; unknown keys are silently ignored.
+        passthrough = {
+            k: v
+            for k, v in extra_body.items()
+            if k not in promotable and v is not None and k not in body
+        }
+        body.update(passthrough)
+
+        return await self.client.post(
+            "/chat/completions",
+            body=body,
+            cast_to=ChatCompletion,
+            options={"headers": extra_headers} if extra_headers else {},
         )
 
     async def get_prompt_ids(
@@ -176,6 +357,15 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
                 # prefix-match equality is unaffected.
                 if normalized.get("content") == "":
                     normalized["content"] = None
+                # Drop None-valued keys so model_dump's exhaustive view (which
+                # carries e.g. thinking_blocks=None on AssistantMessage) is
+                # equivalent to to_native_prompt's slimmer view (which omits
+                # the field entirely). Without this, vf.Message-shaped input
+                # (what MultiTurnEnv produces after maybe_normalize_messages)
+                # never matches the to_native_prompt-normalized step messages,
+                # which breaks the prefix match and forces TITO to fall back
+                # to MITO every turn-2+.
+                normalized = {k: v for k, v in normalized.items() if v is not None}
                 return normalized
             if isinstance(value, list):
                 return [normalize_for_comparison(item) for item in value]
@@ -369,9 +559,28 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
         extra_kwargs: dict | None = None,
         **kwargs,
     ) -> list[int]:
-        """Tokenize messages using the vLLM /tokenize API."""
+        """Tokenize messages for bridge-token computation.
+
+        Dispatched by ``renderer_transport``:
+
+        * ``prime_vllm_generate`` (default): POST to vLLM's ``/tokenize`` route.
+        * ``dynamo_chat_nvext``: local HF fast-tokenizer call. Dynamo doesn't
+          expose ``/tokenize``; running locally also saves two HTTP RTTs per
+          turn (the bridge computes both ``add_generation_prompt=True`` and
+          ``False`` views). The HF Rust encode releases the GIL so the
+          ``asyncio.to_thread`` wrap gives the event loop real parallelism.
+        """
         if extra_kwargs is None:
             extra_kwargs = {}
+
+        if self.renderer_transport == "dynamo_chat_nvext":
+            return await self._local_tokenize(
+                messages=messages,
+                tools=tools,
+                model=model,
+                extra_kwargs=extra_kwargs,
+            )
+
         if isinstance(messages, str):
             body = dict(
                 model=model,
@@ -392,3 +601,44 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
                 "/tokenize", body=body, cast_to=TokenizeResponse
             )
         return tokenize_response.tokens
+
+    async def _local_tokenize(
+        self,
+        messages: str | OpenAIChatMessages,
+        tools: list[OpenAITool] | None,
+        model: str,
+        extra_kwargs: dict,
+    ) -> list[int]:
+        """Local in-process tokenization for the ``dynamo_chat_nvext`` transport.
+
+        Bridge tokenization under TITO calls this twice per turn (once for
+        ``add_generation_prompt=True`` and once for ``False``). Both runs
+        execute in a worker thread so the event loop stays free; HF fast
+        tokenizers release the GIL during the Rust encode pass.
+        """
+        import asyncio
+
+        tokenizer = self._get_local_tokenizer(model)
+        add_generation_prompt = bool(extra_kwargs.get("add_generation_prompt", True))
+        chat_template_kwargs = dict(extra_kwargs.get("chat_template_kwargs") or {})
+
+        if isinstance(messages, str):
+            def _encode_text() -> list[int]:
+                return list(tokenizer.encode(messages, add_special_tokens=False))
+            return await asyncio.to_thread(_encode_text)
+
+        def _encode_chat() -> list[int]:
+            ids = tokenizer.apply_chat_template(
+                messages,
+                tools=tools,
+                add_generation_prompt=add_generation_prompt,
+                tokenize=True,
+                **chat_template_kwargs,
+            )
+            if hasattr(ids, "input_ids"):
+                ids = ids.input_ids
+            if ids and isinstance(ids[0], list):
+                ids = ids[0]
+            return [int(t) for t in ids]
+
+        return await asyncio.to_thread(_encode_chat)
