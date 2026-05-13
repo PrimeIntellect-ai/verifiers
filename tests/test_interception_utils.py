@@ -353,6 +353,67 @@ async def test_streaming_overlong_prompt_does_not_clobber_state(monkeypatch):
     assert state.get("is_truncated") is True
 
 
+async def test_write_eof_failure_after_prompt_too_long_does_not_set_error(
+    monkeypatch,
+):
+    """After the rollout loop has finalized the rollout with
+    ``state['prompt_too_long'] = True``, a tail-end ``write_eof`` failure
+    (e.g. the agent already closed the transport after receiving
+    ``data: [DONE]``) must NOT re-introduce a ``StreamInterrupted`` on
+    ``state['error']`` — that would re-create the dual-signal problem
+    (``stop=prompt_too_long`` + spurious error) the PR is fixing."""
+    server = InterceptionServer(port=0)
+    state: dict = {"prompt_too_long": True, "is_truncated": True}
+    server.register_rollout("r1", state=state)
+
+    writes: list[bytes] = []
+
+    async def fake_write(data: bytes) -> None:
+        writes.append(data)
+
+    fake_response = MagicMock()
+    fake_response.prepare = AsyncMock()
+    fake_response.write = AsyncMock(side_effect=fake_write)
+    fake_response.write_eof = AsyncMock(
+        side_effect=ConnectionResetError("agent closed transport")
+    )
+    monkeypatch.setattr(
+        interception_utils.web, "StreamResponse", lambda **_: fake_response
+    )
+
+    chunk_queue: asyncio.Queue = asyncio.Queue()
+    await chunk_queue.put(None)
+
+    response_future: asyncio.Future = asyncio.Future()
+    response_future.set_exception(OverlongPromptError("ctx exceeded"))
+    intercept = {
+        "chunk_queue": chunk_queue,
+        "response_future": response_future,
+    }
+
+    await server._handle_streaming_response(MagicMock(), "r1", intercept)
+
+    fake_response.write_eof.assert_awaited()
+    assert state.get("error") is None, (
+        "write_eof failure after prompt_too_long must not attach an error; "
+        f"got {state.get('error')!r}"
+    )
+    assert state.get("prompt_too_long") is True
+
+
+def test_set_rollout_error_skips_when_prompt_too_long():
+    """Direct unit test for the guard in ``_set_rollout_error``: once
+    the rollout loop has set ``state['prompt_too_long']``, the
+    interception server must not attach a tail-end infra error."""
+    server = InterceptionServer(port=0)
+    state: dict = {"prompt_too_long": True}
+    server.register_rollout("r1", state=state)
+
+    server._set_rollout_error("r1", StreamInterrupted("late tail failure"))
+
+    assert state.get("error") is None
+
+
 async def test_non_streaming_response_future_failure_surfaces_to_state(monkeypatch):
     """Non-streaming counterpart: if the model call fails and
     ``deliver_response`` sets the future's exception, the non-streaming

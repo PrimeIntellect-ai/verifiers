@@ -173,12 +173,20 @@ class InterceptionServer:
         """Attach `error` to the rollout's state if one is registered and
         unset. First error wins — later failures (e.g. the downstream
         `response_future` raising too) should not clobber the original cause.
+
+        Also skip when the rollout loop has already finalized via a clean
+        stop condition (e.g. ``state["prompt_too_long"]`` from an
+        ``OverlongPromptError``). Tail-end failures that happen after
+        that — e.g. ``write_eof`` to an agent that has already exited —
+        are consequences of the termination, not new infra problems, and
+        must not be surfaced as a spurious ``InterceptionError`` /
+        ``StreamInterrupted`` alongside the real stop signal.
         """
         context = self.active_rollouts.get(rollout_id)
         if context is None:
             return
         state = context.get("state")
-        if state is None or state.get("error"):
+        if state is None or state.get("error") or state.get("prompt_too_long"):
             return
         state["error"] = error
 
