@@ -17,8 +17,9 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
-import tomllib
 from typing import Annotated, Any, cast
+
+import tomllib
 
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "true")
 
@@ -137,9 +138,9 @@ def _summarize(outputs: GenerateOutputs) -> None:
     print(f"\nrollouts: {len(rewards)}    mean reward: {mean:.4f}")
 
 
-async def _run(cfg: Any) -> None:
-    taskset = vf.load_taskset(cfg.taskset_id, cfg.taskset)
-    harness = vf.load_harness(_resolve_harness_id(cfg), cfg.harness)
+async def run(config: Any) -> None:
+    taskset = vf.load_taskset(config.taskset_id, config.taskset)
+    harness = vf.load_harness(_resolve_harness_id(config), config.harness)
     env = vf.Env(taskset=taskset, harness=harness)
 
     client_config = ClientConfig(
@@ -149,9 +150,9 @@ async def _run(cfg: Any) -> None:
     )
     outputs = await env.evaluate(
         client=client_config,
-        model=cfg.model,
-        num_examples=cfg.num_examples,
-        rollouts_per_example=cfg.rollouts_per_example,
+        model=config.model,
+        num_examples=config.num_examples,
+        rollouts_per_example=config.rollouts_per_example,
     )
     _summarize(outputs)
 
@@ -178,10 +179,10 @@ def main(argv: list[str] | None = None) -> None:
     else:
         harness_cls = vf.HarnessConfig
 
-    EvalConfigCls = build_eval_config_cls(taskset_cls, harness_cls)
-    cfg = cast(Any, cli(EvalConfigCls, args=argv))
+    EvalConfig = build_eval_config_cls(taskset_cls, harness_cls)
+    config = cast(Any, cli(EvalConfig, args=argv))
 
-    asyncio.run(_run(cfg))
+    asyncio.run(run(config))
 
 
 if __name__ == "__main__":
