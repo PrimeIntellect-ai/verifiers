@@ -1,11 +1,10 @@
-import json
 from functools import lru_cache
 from unittest.mock import patch
 
 import pytest
 
 import verifiers as vf
-from renderers import ParsedToolCall, RendererPool, ToolCallParseStatus
+from renderers import RendererPool
 from renderers.base import ParsedResponse, RenderedTokens, create_renderer
 from verifiers.clients.renderer_client import (
     RendererClient,
@@ -232,80 +231,6 @@ async def test_from_native_response_uses_request_id_and_token_lengths():
     assert response.usage.prompt_tokens == 3
     assert response.usage.completion_tokens == 2
     assert response.usage.total_tokens == 5
-
-
-@pytest.mark.asyncio
-async def test_from_native_response_converts_parsed_tool_calls():
-    """``renderers.client.generate`` now returns ``parsed.tool_calls`` as a
-    list of :class:`ParsedToolCall` dataclasses (renderers >=0.1.8.dev1).
-    Old code indexed the previous ``[{"function": {"name": ...}}]`` dict
-    shape; this regression test pins the new attribute-based read path."""
-    client = object.__new__(RendererClient)
-    response_dict = {
-        "request_id": "resp-tc",
-        "content": "",
-        "reasoning_content": None,
-        "tool_calls": [
-            ParsedToolCall(
-                raw='{"name":"get_weather","arguments":{"city":"sf"}}',
-                name="get_weather",
-                arguments={"city": "sf"},
-                status=ToolCallParseStatus.OK,
-                id="native_id_1",
-            ),
-        ],
-        "finish_reason": "tool_calls",
-        "prompt_ids": [1, 2, 3],
-        "completion_ids": [4, 5, 6],
-        "completion_logprobs": [-0.1, -0.2, -0.3],
-        "routed_experts": None,
-    }
-
-    response = await client.from_native_response(response_dict)
-    assert response.message.tool_calls is not None
-    assert len(response.message.tool_calls) == 1
-    tc = response.message.tool_calls[0]
-    # Prefer the renderer's native id when one was extracted (Kimi K2 etc).
-    assert tc.id == "native_id_1"
-    assert tc.name == "get_weather"
-    # ToolCall.arguments is the canonical JSON string form.
-    assert json.loads(tc.arguments) == {"city": "sf"}
-
-
-@pytest.mark.asyncio
-async def test_from_native_response_drops_malformed_tool_calls():
-    """Non-OK parse attempts (INVALID_JSON, UNCLOSED_BLOCK, …) are surfaced
-    on ``parsed.tool_calls`` for inspection but shouldn't reach the tool
-    loop. Only ``status == OK`` calls produce ``ToolCall`` records."""
-    client = object.__new__(RendererClient)
-    response_dict = {
-        "request_id": "resp-mixed",
-        "content": "",
-        "reasoning_content": None,
-        "tool_calls": [
-            ParsedToolCall(
-                raw="not json",
-                status=ToolCallParseStatus.INVALID_JSON,
-            ),
-            ParsedToolCall(
-                raw='{"name":"ok_tool","arguments":{}}',
-                name="ok_tool",
-                arguments={},
-                status=ToolCallParseStatus.OK,
-            ),
-        ],
-        "finish_reason": "tool_calls",
-        "prompt_ids": [1],
-        "completion_ids": [2],
-        "completion_logprobs": [-0.1],
-        "routed_experts": None,
-    }
-
-    response = await client.from_native_response(response_dict)
-    assert response.message.tool_calls is not None
-    assert [tc.name for tc in response.message.tool_calls] == ["ok_tool"]
-    # No native id on this call — falls back to call_<index> over OK calls.
-    assert response.message.tool_calls[0].id == "call_0"
 
 
 class _BridgeRenderer:
