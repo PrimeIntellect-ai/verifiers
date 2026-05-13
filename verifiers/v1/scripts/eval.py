@@ -14,12 +14,12 @@ Examples:
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import os
 import sys
-from typing import Annotated, Any, cast
-
 import tomllib
+from typing import Annotated, Any, cast
 
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "true")
 
@@ -36,7 +36,7 @@ from verifiers.types import ClientConfig, GenerateOutputs
 # --------------------------------------------------------------------------- #
 
 
-class AbstractEvalConfig(BaseConfig):
+class EvalConfig(BaseConfig):
     """vf-eval-v1: evaluate a v1 environment via load_taskset + load_harness."""
 
     taskset_id: str = Field(
@@ -62,42 +62,40 @@ def build_eval_config_cls(
     harness_cls: type[vf.HarnessConfig],
 ) -> type[BaseConfig]:
     return create_model(
-        "EvalConfig",
-        __base__=AbstractEvalConfig,
+        "ResolvedEvalConfig",
+        __base__=EvalConfig,
         taskset=(taskset_cls, Field(default_factory=taskset_cls)),
         harness=(harness_cls, Field(default_factory=harness_cls)),
     )
 
 
 # --------------------------------------------------------------------------- #
-# Argv pre-scan: peek --taskset-id and --harness-id so we can discover the
-# concrete config types before tyro builds the schema. Tyro still owns
-# parsing/validation.
+# Selector pre-resolution: argparse for the lightweight first pass (ignores
+# unknown args via parse_known_args), plus a peek into any `@ file.toml`.
+# The full pydantic-config parse runs afterwards once we know which concrete
+# config types to plug into the dynamic EvalConfig.
 # --------------------------------------------------------------------------- #
 
 
-def _load_toml(path: str) -> dict[str, Any]:
-    try:
-        with open(path, "rb") as f:
-            return tomllib.load(f)
-    except (OSError, ValueError):
-        return {}
+def _resolve_selectors(argv: list[str]) -> tuple[str | None, str | None]:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--taskset-id")
+    parser.add_argument("--harness-id")
+    known, _ = parser.parse_known_args(argv)
+    taskset_id, harness_id = known.taskset_id, known.harness_id
 
-
-def _peek_flag(argv: list[str], flag: str) -> str | None:
-    long = f"--{flag}"
-    long_eq = f"--{flag}="
-    for i, a in enumerate(argv):
-        if a == long and i + 1 < len(argv) and not argv[i + 1].startswith("-"):
-            return argv[i + 1]
-        if a.startswith(long_eq):
-            return a.split("=", 1)[1]
     for i, a in enumerate(argv):
         if a == "@" and i + 1 < len(argv):
-            data = _load_toml(argv[i + 1])
-            if isinstance(data.get(flag), str):
-                return cast(str, data[flag])
-    return None
+            try:
+                with open(argv[i + 1], "rb") as f:
+                    data = tomllib.load(f)
+            except (OSError, ValueError):
+                continue
+            if taskset_id is None and isinstance(data.get("taskset_id"), str):
+                taskset_id = data["taskset_id"]
+            if harness_id is None and isinstance(data.get("harness_id"), str):
+                harness_id = data["harness_id"]
+    return taskset_id, harness_id
 
 
 # --------------------------------------------------------------------------- #
@@ -132,10 +130,9 @@ def main(argv: list[str] | None = None) -> None:
     if argv is None:
         argv = sys.argv[1:]
 
-    # Peek the selectors so we know which config types to use when building
-    # the dynamic EvalConfig. Tyro still owns parsing/validation.
-    taskset_id = _peek_flag(argv, "taskset-id")
-    harness_id = _peek_flag(argv, "harness-id")
+    # Resolve --taskset-id / --harness-id first so we know which concrete
+    # config types to plug into the dynamic EvalConfig.
+    taskset_id, harness_id = _resolve_selectors(argv)
 
     if taskset_id is not None:
         taskset_cls = vf.get_taskset_config_cls(vf.import_taskset_module(taskset_id))
@@ -150,8 +147,8 @@ def main(argv: list[str] | None = None) -> None:
     else:
         harness_cls = vf.HarnessConfig
 
-    EvalConfig = build_eval_config_cls(taskset_cls, harness_cls)
-    config = cast(Any, cli(EvalConfig, args=argv))
+    ResolvedEvalConfig = build_eval_config_cls(taskset_cls, harness_cls)
+    config = cast(Any, cli(ResolvedEvalConfig, args=argv))
 
     # Fall back to the env's own load_harness, else base, when --harness-id
     # was not explicitly set.
