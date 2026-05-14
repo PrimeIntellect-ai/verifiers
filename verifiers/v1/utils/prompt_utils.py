@@ -1,8 +1,8 @@
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Literal, cast
 
 from verifiers.types import MessageContent, Messages, SystemMessage
-from verifiers.utils.message_utils import normalize_messages
+from verifiers.utils.message_utils import MessageLike, get_messages, normalize_messages
 from ..types import ConfigData, ConfigMap, PromptInput
 
 
@@ -92,9 +92,34 @@ def task_text(
     return messages_text(task.get("prompt", []))
 
 
+def task_question_text(task: ConfigMap) -> str:
+    question = task.get("question")
+    if question is not None:
+        return str(question)
+    prompt = task.get("prompt")
+    if isinstance(prompt, list) and prompt:
+        messages = get_messages(cast(Sequence[MessageLike], prompt))
+        return content_text(messages[-1].content) if messages else ""
+    return ""
+
+
 def state_system_prompt_text(task: ConfigMap, state: ConfigMap) -> str:
     _ = task
     return messages_text(state.get("system_prompt", []))
+
+
+def state_result_text(state: ConfigMap, *, result_key: str = "agent_result") -> str:
+    result = state.get(result_key)
+    if result is not None:
+        return str(result)
+    completion = state.get("completion")
+    if not isinstance(completion, list):
+        return ""
+    completion_messages = cast(Sequence[MessageLike], completion)
+    messages = get_messages(completion_messages, role="assistant") or get_messages(
+        completion_messages
+    )
+    return content_text(messages[-1].content) if messages else ""
 
 
 def messages_text(messages: object) -> str:

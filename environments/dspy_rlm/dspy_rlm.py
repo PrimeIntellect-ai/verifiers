@@ -2,6 +2,7 @@ import re
 
 import verifiers as vf
 from verifiers.utils.data_utils import load_example_dataset
+from verifiers.v1.utils.prompt_utils import state_result_text, task_question_text
 
 
 async def run_dspy_rlm_program(task: vf.Task, state: vf.State) -> vf.State:
@@ -17,7 +18,7 @@ async def run_dspy_rlm_program(task: vf.Task, state: vf.State) -> vf.State:
 
     with dspy.context(lm=lm):
         rlm = dspy.RLM("query -> answer", max_iterations=10)
-        result = await rlm.aforward(query=task_question(task))
+        result = await rlm.aforward(query=task_question_text(task))
 
     final_output = str(result.answer)
     state["agent_result"] = final_output
@@ -28,16 +29,6 @@ async def run_dspy_rlm_program(task: vf.Task, state: vf.State) -> vf.State:
 def load_rows(split: str, num_examples: int):
     n = num_examples if num_examples > 0 else None
     return load_example_dataset("gsm8k", split=split, n=n)
-
-
-def task_question(task: vf.Task) -> str:
-    question = task.get("question")
-    if question is not None:
-        return str(question)
-    prompt = task.get("prompt")
-    if isinstance(prompt, list) and prompt:
-        return str(vf.get_messages(prompt)[-1].content or "")
-    return ""
 
 
 def extract_dspy_answer(text: str) -> str:
@@ -69,17 +60,7 @@ def answers_match(agent_answer: str, answer: str) -> float:
 
 def answer_reward(task: vf.Task, state: vf.State) -> float:
     """Check if the agent's final output contains the correct answer."""
-    result = state.get("agent_result")
-    if result is not None:
-        text = str(result)
-    else:
-        completion = state.get("completion")
-        messages = []
-        if isinstance(completion, list):
-            messages = vf.get_messages(completion, role="assistant") or vf.get_messages(
-                completion
-            )
-        text = str(messages[-1].content or "") if messages else ""
+    text = state_result_text(state)
     agent_answer = extract_dspy_answer(text)
     if not agent_answer:
         return 0.0
