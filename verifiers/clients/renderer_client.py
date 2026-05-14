@@ -603,15 +603,17 @@ class RendererClient(
             multi_modal_data = None
             prompt_attribution = None
 
-        # ``renderers.client.generate`` discovers the engine's context-length
-        # cap on its own (via ``GET /v1/models``, cached) and raises
-        # ``renderers.OverlongPromptError`` on pre-flight overflow. Rebadge
-        # that into the verifiers-native ``OverlongPromptError`` so the
-        # ``MultiTurnEnv.prompt_too_long`` stop condition picks it up via
-        # the ``vf.Error`` hierarchy. The ``@handle_openai_overlong_prompt``
-        # decorator still handles the fallback case (cap unknown → engine
-        # 4xx → vf.OverlongPromptError) for engines whose ``/v1/models``
-        # doesn't expose ``max_model_len``.
+        # Thread renderer_transport from ClientConfig into generate() so the
+        # renderer client works against Dynamo's /v1/chat/completions surface
+        # as well as vLLM's /inference/v1/generate. setup_clients auto-picks
+        # "dynamo_chat_nvext" when client_config.backend == "dynamo".
+        # ``renderers.client.generate`` raises ``renderers.OverlongPromptError``
+        # on pre-flight overflow; rebadge to verifiers-native so MultiTurnEnv stops.
+        transport = (
+            self._config.renderer_transport
+            if self._config is not None
+            else "prime_vllm_generate"
+        )
         try:
             return await generate(
                 client=self.client,
@@ -623,6 +625,7 @@ class RendererClient(
                 prompt_attribution=prompt_attribution,
                 tools=tools,
                 sampling_params=sampling_params,
+                transport=transport,
                 cache_salt=args.get("cache_salt")
                 or sampling_params.pop("cache_salt", None),
                 priority=args.get("priority") or sampling_params.pop("priority", None),
