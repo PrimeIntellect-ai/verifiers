@@ -15,7 +15,7 @@ description = "Echo Environment for OpenEnv - simple test environment that echoe
 requires-python = ">=3.10"
 dependencies = [
     # Core OpenEnv dependencies (required for server functionality)
-    "openenv-core[core]==0.2.1",
+    "openenv-core>=0.3.0",
     "fastapi>=0.115.0",
     "pydantic>=2.0.0",
     "uvicorn>=0.24.0",

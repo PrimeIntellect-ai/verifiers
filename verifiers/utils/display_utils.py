@@ -108,7 +108,7 @@ class DisplayLogHandler(logging.Handler):
             pass
 
 
-class _FDToLogger(threading.Thread):
+class FDToLogger(threading.Thread):
     """Background reader that forwards a file descriptor's output to a logger."""
 
     def __init__(
@@ -175,8 +175,8 @@ class BaseDisplay:
         self._old_stdout_fd: int | None = None
         self._old_stderr_fd: int | None = None
         self._console_file: io.TextIOWrapper | None = None
-        self._stdout_thread: _FDToLogger | None = None
-        self._stderr_thread: _FDToLogger | None = None
+        self._stdout_thread: FDToLogger | None = None
+        self._stderr_thread: FDToLogger | None = None
         self._key_listener_thread: threading.Thread | None = None
         self._key_listener_stop: threading.Event | None = None
 
@@ -265,13 +265,13 @@ class BaseDisplay:
         os.close(stdout_w)
         os.dup2(stderr_w, 2)
         os.close(stderr_w)
-        self._stdout_thread = _FDToLogger(
+        self._stdout_thread = FDToLogger(
             stdout_r,
             logger.getChild("stdout"),
             logging.INFO,
             getattr(self._old_stdout, "encoding", None),
         )
-        self._stderr_thread = _FDToLogger(
+        self._stderr_thread = FDToLogger(
             stderr_r,
             logger.getChild("stderr"),
             logging.ERROR,

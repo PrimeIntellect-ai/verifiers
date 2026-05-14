@@ -3208,7 +3208,7 @@ def parse_log_ocaml(log: str) -> dict[str, str]:
     return results
 
 
-class _OcamlDuneLogParser:
+class OcamlDuneLogParser:
     running_re = re.compile(r"^Running\[(?P<id>\d+)\]:\s+\((?P<command>.+)\)$")
     output_re = re.compile(r"^Output\[(?P<id>\d+)]:")
     fail_tokens = ("FAIL", "ERROR", "EXCEPTION", "CRASH", "FATAL")
@@ -3266,7 +3266,7 @@ class _OcamlDuneLogParser:
 
 def parse_log_ocaml_v2(log: str) -> dict[str, str]:
     """Parse dune test logs and return {test_binary: status}."""
-    parser = _OcamlDuneLogParser()
+    parser = OcamlDuneLogParser()
     for raw_line in log.splitlines():
         parser.handle_line(raw_line)
     return parser.finalize()

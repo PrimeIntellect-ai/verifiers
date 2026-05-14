@@ -1,27 +1,24 @@
-from __future__ import annotations
-
 import importlib
 import importlib.resources as resources
 import json
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable
 from importlib.abc import Traversable
 from pathlib import Path
 from typing import cast
+from ..types import ConfigData, ConfigMap
 
 
-def dataset_info_with_task(task: Mapping[str, object]) -> dict[str, object]:
+def dataset_info_with_task(task: ConfigMap) -> ConfigData:
     return {"task": json.dumps(task)}
 
 
 def rows_from_source(
-    source: Iterable[Mapping[str, object]]
-    | Callable[[], Iterable[Mapping[str, object]]]
-    | None,
-) -> list[dict[str, object]]:
+    source: Iterable[ConfigMap] | Callable[[], Iterable[ConfigMap]] | None,
+) -> list[ConfigData]:
     if source is None:
         return []
     if callable(source):
-        source_loader = cast(Callable[[], Iterable[Mapping[str, object]]], source)
+        source_loader = cast(Callable[[], Iterable[ConfigMap]], source)
         return [dict(row) for row in source_loader()]
     return [dict(row) for row in source]
 

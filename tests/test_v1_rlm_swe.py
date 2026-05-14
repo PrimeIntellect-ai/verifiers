@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import sys
 import types
 from collections.abc import Mapping
@@ -24,13 +22,33 @@ def test_rlm_harness_builds_sandbox_program_without_eager_checkout():
     artifacts = as_mapping(program["artifacts"])
     setup = program["setup"]
 
-    assert isinstance(harness, vf.CLIHarness)
+    assert isinstance(harness, vf.Harness)
     assert program["sandbox"] is not False
     assert isinstance(setup, list)
     assert "apt-get -o Acquire::Retries=3 update" in setup[0]
     assert "apt-get -o Acquire::Retries=3 install" in setup[0]
     assert "RLM_MODEL" in program_env
     assert "rlm_metrics" in artifacts
+
+
+def test_rlm_harness_accepts_typed_config_surface():
+    harness = vf.RLM(
+        config=vf.RLMConfig(
+            local_checkout="/tmp/checkout",
+            rlm_tools=["bash", "edit"],
+            rlm_max_turns=7,
+            rlm_exec_timeout=11,
+            env_vars={"CUSTOM": "1"},
+        )
+    )
+    program = as_mapping(harness.program)
+    program_env = as_mapping(program["env"])
+
+    assert harness.config.rlm_tools == ["bash", "edit"]
+    assert program_env["RLM_TOOLS"] == "bash,edit"
+    assert program_env["RLM_MAX_TURNS"] == "7"
+    assert program_env["RLM_EXEC_TIMEOUT"] == "11"
+    assert program_env["CUSTOM"] == "1"
 
 
 def test_rlm_harness_can_upload_skills(tmp_path: Path):
@@ -117,11 +135,17 @@ def test_rlm_swe_environment_uses_v1_r2e_taskset(monkeypatch):
     monkeypatch.setattr(rlm_swe_v1, "load_dataset", fake_load_dataset)
 
     env = rlm_swe_v1.load_environment(
-        dataset_name="fake-r2e",
-        local_checkout="/tmp/checkout",
-        timeout_minutes=30,
-        env={"CUSTOM": "1", "PATH": "/task/bin"},
-        rlm_env={"CALLER": "1", "PATH": "/caller/bin"},
+        config=vf.EnvConfig(
+            taskset=rlm_swe_v1.RlmSweTasksetConfig(
+                dataset_name="fake-r2e",
+                timeout_minutes=30,
+                env={"CUSTOM": "1", "PATH": "/task/bin"},
+            ),
+            harness=vf.RLMConfig(
+                local_checkout="/tmp/checkout",
+                env_vars={"CALLER": "1", "PATH": "/caller/bin"},
+            ),
+        ),
     )
     task = next(iter(env.taskset))
     program = as_mapping(env.harness.program)
@@ -166,7 +190,9 @@ async def test_rlm_swe_taskset_setup_and_reward(monkeypatch):
     monkeypatch.setattr(
         rlm_swe_v1, "load_dataset", lambda *args, **kwargs: fake_r2e_dataset()
     )
-    taskset = rlm_swe_v1.load_taskset(timeout_minutes=30)
+    taskset = rlm_swe_v1.load_taskset(
+        config=rlm_swe_v1.RlmSweTasksetConfig(timeout_minutes=30)
+    )
     task = next(iter(taskset))
     state = vf.State.for_task(task)
     sandbox = FakeSandbox()
@@ -207,8 +233,10 @@ PASSED tests/test_example.py::test_fix
 @pytest.mark.asyncio
 async def test_rlm_swe_run_tests_quotes_env_values():
     taskset = rlm_swe_v1.load_taskset(
-        hide_tests_from_agent=False,
-        env={"SAFE": "two words; $(echo nope)", "QUOTE": "it's ok"},
+        config=rlm_swe_v1.RlmSweTasksetConfig(
+            hide_tests_from_agent=False,
+            env={"SAFE": "two words; $(echo nope)", "QUOTE": "it's ok"},
+        )
     )
     sandbox = RecordingSandbox()
 
@@ -223,7 +251,9 @@ async def test_rlm_swe_run_tests_quotes_env_values():
 
 
 def test_rlm_swe_get_env_vars_uses_configured_repo_path():
-    taskset = rlm_swe_v1.load_taskset(repo_path="/workspace/repo")
+    taskset = rlm_swe_v1.load_taskset(
+        config=rlm_swe_v1.RlmSweTasksetConfig(repo_path="/workspace/repo")
+    )
 
     path = taskset.get_env_vars()["PATH"]
 

@@ -1,11 +1,10 @@
-from __future__ import annotations
-
 import functools
 import inspect
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Iterable, Mapping
 from typing import Literal, TypeAlias, cast
 
 from .config_utils import resolve_config_object
+from ..types import ConfigMap, Handler
 
 CallableKind: TypeAlias = Literal[
     "stop", "setup", "update", "metric", "reward", "advantage", "cleanup", "teardown"
@@ -24,17 +23,17 @@ CALLABLE_KIND_FIELDS: dict[CallableKind, str] = {
 
 
 def merge_config_callables(
-    values: Iterable[Callable[..., object]],
+    values: Iterable[Handler],
     config: object,
     kind: CallableKind,
-) -> list[Callable[..., object]]:
+) -> list[Handler]:
     return [*config_callables(values, kind), *config_callables(config, kind)]
 
 
 def merge_config_handler_map(
-    values: Mapping[CallableKind, Iterable[Callable[..., object]]],
+    values: dict[CallableKind, Iterable[Handler]],
     config: object,
-) -> dict[CallableKind, list[Callable[..., object]]]:
+) -> dict[CallableKind, list[Handler]]:
     return {
         kind: merge_config_callables(
             constructor_values, getattr(config, CALLABLE_KIND_FIELDS[kind]), kind
@@ -43,7 +42,7 @@ def merge_config_handler_map(
     }
 
 
-def config_callables(value: object, kind: CallableKind) -> list[Callable[..., object]]:
+def config_callables(value: object, kind: CallableKind) -> list[Handler]:
     if value is None:
         return []
     if isinstance(value, str):
@@ -55,18 +54,16 @@ def config_callables(value: object, kind: CallableKind) -> list[Callable[..., ob
     return [callable_config_item(value, kind)]
 
 
-def callable_config_item(value: object, kind: CallableKind) -> Callable[..., object]:
+def callable_config_item(value: object, kind: CallableKind) -> Handler:
     value = resolve_config_object(value)
     if isinstance(value, Mapping):
-        return callable_from_mapping(cast(Mapping[str, object], value), kind)
+        return callable_from_mapping(cast(ConfigMap, value), kind)
     if not callable(value):
         raise TypeError(f"{kind} config entries must resolve to callables.")
-    return cast(Callable[..., object], value)
+    return cast(Handler, value)
 
 
-def callable_from_mapping(
-    spec: Mapping[str, object], kind: CallableKind
-) -> Callable[..., object]:
+def callable_from_mapping(spec: ConfigMap, kind: CallableKind) -> Handler:
     allowed = callable_config_keys(kind)
     unknown = set(spec) - allowed
     if unknown:
@@ -79,7 +76,7 @@ def callable_from_mapping(
     if not callable(fn):
         raise TypeError(f"{kind} callable config requires callable fn.")
     metadata = {key: spec[key] for key in spec if key not in {"fn", "skip"}}
-    return configured_callable(cast(Callable[..., object], fn), kind, metadata)
+    return configured_callable(cast(Handler, fn), kind, metadata)
 
 
 def callable_config_keys(kind: CallableKind) -> set[str]:
@@ -92,10 +89,10 @@ def callable_config_keys(kind: CallableKind) -> set[str]:
 
 
 def configured_callable(
-    fn: Callable[..., object],
+    fn: Handler,
     kind: CallableKind,
-    metadata: Mapping[str, object],
-) -> Callable[..., object]:
+    metadata: ConfigMap,
+) -> Handler:
     if not metadata:
         return fn
 
@@ -123,4 +120,4 @@ def configured_callable(
         if not isinstance(weight, int | float) or isinstance(weight, bool):
             raise TypeError("reward weight must be numeric.")
         setattr(wrapper, "reward_weight", float(weight))
-    return cast(Callable[..., object], wrapper)
+    return cast(Handler, wrapper)

@@ -34,8 +34,6 @@ harnesses that need a per-instance workdir while still using a static
 ``run_command``.
 """
 
-from __future__ import annotations
-
 import asyncio
 import importlib.resources as resources
 import json

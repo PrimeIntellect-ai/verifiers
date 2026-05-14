@@ -1,13 +1,14 @@
-from __future__ import annotations
-
+import inspect
 import json
-import logging
+import os
 import re
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Iterable, Mapping
+from importlib.resources import files
 from pathlib import Path
 from typing import cast
 
@@ -20,12 +21,38 @@ from ...config import TasksetConfig, merge_config_value
 from ...taskset import Taskset, TasksetKwargs
 from ...utils.sandbox_utils import SandboxClient
 from verifiers.decorators import reward
+from ...types import ConfigData, Handler, ProgramOptionMap
 
-logger = logging.getLogger(__name__)
+TASKS_SUBDIR = "tasks"
+
+
+def _resolve_caller_package() -> str | None:
+    for frame_info in inspect.stack()[1:]:
+        package = frame_info.frame.f_globals.get("__package__")
+        if not isinstance(package, str) or not package:
+            package = frame_info.frame.f_globals.get("__name__")
+        if not isinstance(package, str) or not package or package == "__main__":
+            continue
+        if package.startswith("verifiers"):
+            continue
+        return package
+    return None
+
+
+def _bundle_tasks_root(module_name: str) -> Path:
+    try:
+        tasks = cast(os.PathLike[str], files(module_name) / TASKS_SUBDIR)
+        return Path(os.fspath(tasks))
+    except TypeError as exc:
+        module = sys.modules.get(module_name)
+        module_file = getattr(module, "__file__", None)
+        if not isinstance(module_file, str):
+            raise exc
+        return Path(module_file).resolve().parent / TASKS_SUBDIR
 
 
 class HarborTasksetConfig(TasksetConfig):
-    tasks: object | None = None
+    dataset: str | None = None
     task_names: list[str] | None = None
     cache_dir: str | None = None
     refresh: bool = False
@@ -39,7 +66,7 @@ class HarborTasksetConfig(TasksetConfig):
     workdir: str = "/app"
     task_dir: str = "/task"
     scope: str = "rollout"
-    env: dict[str, object] = Field(default_factory=dict)
+    env: ConfigData = Field(default_factory=dict)
 
 
 class HarborTaskset(Taskset):
@@ -47,7 +74,7 @@ class HarborTaskset(Taskset):
 
     def __init__(
         self,
-        tasks: str | Path | None = None,
+        dataset: str | None = None,
         task_names: Iterable[str] | None = None,
         cache_dir: str | Path | None = None,
         refresh: bool | None = None,
@@ -61,13 +88,19 @@ class HarborTaskset(Taskset):
         workdir: str | None = None,
         task_dir: str | None = None,
         scope: str | None = None,
-        env: Mapping[str, object] | None = None,
-        rewards: Iterable[Callable[..., object]] = (),
-        config: HarborTasksetConfig | Mapping[str, object] | None = None,
+        env: ProgramOptionMap | None = None,
+        rewards: Iterable[Handler] = (),
+        config: HarborTasksetConfig | None = None,
         **kwargs: Unpack[TasksetKwargs],
     ):
         self.config = type(self).config_type.from_config(config)
-        self.tasks = merge_config_value(tasks, self.config.tasks)
+        dataset_value = merge_config_value(dataset, self.config.dataset)
+        if dataset_value is not None and not isinstance(dataset_value, str):
+            raise TypeError("HarborTaskset dataset must be a string.")
+        self.dataset = dataset_value
+        self._bundle_package = (
+            _resolve_caller_package() if self.dataset is None else None
+        )
         self.task_names = list(
             task_names
             if task_names is not None
@@ -75,10 +108,9 @@ class HarborTaskset(Taskset):
             if self.config.task_names is not None
             else []
         )
+        cache_dir_value = merge_config_value(cache_dir, self.config.cache_dir)
         self.cache_dir = (
-            Path(str(merge_config_value(cache_dir, self.config.cache_dir))).expanduser()
-            if merge_config_value(cache_dir, self.config.cache_dir)
-            else None
+            Path(str(cache_dir_value)).expanduser() if cache_dir_value else None
         )
         self.refresh = bool(self.config.refresh if refresh is None else refresh)
         self.docker_image = str(
@@ -123,7 +155,7 @@ class HarborTaskset(Taskset):
             **kwargs,
         )
 
-    def load_rows(self) -> list[dict[str, object]]:
+    def load_rows(self) -> list[ConfigData]:
         root = self.resolve_tasks_root()
         task_dirs = harbor_task_dirs(root, self.task_names)
         rows = [
@@ -134,23 +166,28 @@ class HarborTaskset(Taskset):
         return rows
 
     def resolve_tasks_root(self) -> Path:
-        if self.tasks is None:
-            raise ValueError("HarborTaskset requires tasks=path_or_registry_id.")
-        if isinstance(self.tasks, Path):
-            candidate = self.tasks.expanduser()
-        else:
-            candidate = Path(str(self.tasks)).expanduser()
-        if candidate.exists():
-            return candidate
-        if isinstance(self.tasks, str):
+        if self.dataset is not None:
             return download_harbor_dataset(
-                self.tasks,
+                self.dataset,
                 cache_dir=self.cache_dir,
                 refresh=self.refresh,
             )
-        raise FileNotFoundError(f"Harbor tasks path not found: {candidate}")
+        if self._bundle_package is None:
+            raise RuntimeError(
+                "HarborTaskset() without a dataset must be constructed from inside "
+                "an installed Python package. Pass dataset='...' to fetch from "
+                "Harbor Hub, or construct it from a packaged environment."
+            )
+        root = _bundle_tasks_root(self._bundle_package)
+        if not root.exists():
+            raise FileNotFoundError(
+                "HarborTaskset() without a dataset requires "
+                f"{self._bundle_package}/{TASKS_SUBDIR}/ to contain Harbor task "
+                f"directories. Not found: {root}"
+            )
+        return root
 
-    def task_row(self, task_dir: Path, index: int) -> dict[str, object]:
+    def task_row(self, task_dir: Path, index: int) -> ConfigData:
         task_toml_path = task_dir / "task.toml"
         instruction_path = task_dir / "instruction.md"
         with task_toml_path.open("rb") as f:
@@ -218,22 +255,21 @@ class HarborTaskset(Taskset):
 
 def harbor_task_dirs(root: Path, task_names: Iterable[str] | None = None) -> list[Path]:
     selected = set(task_names or [])
-    if is_harbor_task_dir(root):
-        if selected and root.name not in selected:
-            return []
-        return [root]
     if not root.exists():
         raise FileNotFoundError(f"Harbor tasks path not found: {root}")
     tasks: list[Path] = []
     for task_dir in sorted(root.iterdir()):
         if not task_dir.is_dir():
-            continue
-        if selected and task_dir.name not in selected:
-            continue
-        if is_harbor_task_dir(task_dir):
+            raise ValueError(
+                f"Harbor tasks root {root} contains non-directory entry {task_dir}."
+            )
+        if not is_harbor_task_dir(task_dir):
+            raise ValueError(
+                f"Malformed Harbor task {task_dir}: missing task.toml or "
+                "instruction.md."
+            )
+        if not selected or task_dir.name in selected:
             tasks.append(task_dir)
-        else:
-            logger.warning("Skipping %s: missing task.toml or instruction.md", task_dir)
     if selected:
         found = {path.name for path in tasks}
         missing = sorted(selected - found)
@@ -282,8 +318,8 @@ def download_harbor_dataset(
     uvx_bin = shutil.which("uvx")
     if harbor_bin is None and uvx_bin is None:
         raise FileNotFoundError(
-            f"{dataset_id!r} is not a local path and the Harbor CLI is not installed. "
-            "Install Harbor, install uvx, or pass a local Harbor task directory."
+            f"Harbor dataset {dataset_id!r} requires the Harbor CLI or uvx. "
+            "Install Harbor or uvx before using Harbor Hub datasets."
         )
     root = cache_dir or Path.home() / ".cache" / "verifiers" / "harbor"
     dataset_dir = root / safe_dataset_dir_name(dataset_id)

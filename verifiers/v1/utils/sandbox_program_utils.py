@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import importlib.machinery
 import importlib.util
 import json
@@ -25,6 +23,7 @@ from .sandbox_utils import (
     run_sandbox_command,
 )
 from .program_utils import program_list_items, program_option_mapping
+from ..types import ConfigData, ConfigMap
 
 TASK_PATH = "/tmp/vf_task.json"
 STATE_INPUT_PATH = "/tmp/vf_state_in.json"
@@ -38,7 +37,7 @@ PYTHON_PROGRAM_PACKAGES = ("openai", "anthropic", "requests")
 PACKAGE_ROOT = "/tmp/vf_program_package"
 
 
-def python_program_sandbox(sandbox_config: Mapping[str, object]) -> dict[str, object]:
+def python_program_sandbox(sandbox_config: ConfigMap) -> ConfigData:
     config = dict(sandbox_config)
     raw_packages = config.get("packages") or []
     if isinstance(raw_packages, str):
@@ -67,8 +66,8 @@ def is_python_package(requirement: str, package: str) -> bool:
 
 
 async def run_sandbox_python_program(
-    program: Mapping[str, object],
-    sandbox_config: Mapping[str, object],
+    program: ConfigMap,
+    sandbox_config: ConfigMap,
     task: Task,
     state: State,
     runtime: Runtime,
@@ -90,7 +89,7 @@ async def run_sandbox_python_program(
     output = state.get("artifacts", {}).pop(STATE_ARTIFACT, None)
     if not isinstance(output, Mapping):
         raise RuntimeError("Sandbox Python program did not return state.")
-    patch = dict(cast(Mapping[str, object], output))
+    patch = dict(cast(ConfigMap, output))
     apply_internal_state_patch(state, patch, mode=mode)
     patch_artifacts = patch.pop("artifacts", None)
     if isinstance(patch_artifacts, Mapping):
@@ -102,9 +101,7 @@ async def run_sandbox_python_program(
     return state
 
 
-def apply_internal_state_patch(
-    state: State, patch: dict[str, object], *, mode: str
-) -> None:
+def apply_internal_state_patch(state: State, patch: ConfigData, *, mode: str) -> None:
     for key in State.INTERNAL_KEYS:
         if key not in patch:
             continue
@@ -128,14 +125,14 @@ def apply_internal_state_patch(
 
 
 def sandbox_runner_program(
-    program: Mapping[str, object],
+    program: ConfigMap,
     task: Task,
     state: State,
     mode: str,
     fn_ref: str | None,
     max_turns: int,
     tool_defs: object,
-) -> dict[str, object]:
+) -> ConfigData:
     package = sandbox_program_package(mode=mode, fn_ref=fn_ref)
     if package is not None:
         program = sandbox_program_with_package(program, package)
@@ -210,8 +207,8 @@ def sandbox_program_package(*, mode: str, fn_ref: str | None) -> SandboxPackage 
 
 
 def sandbox_program_with_package(
-    program: Mapping[str, object], package: SandboxPackage
-) -> Mapping[str, object]:
+    program: ConfigMap, package: SandboxPackage
+) -> ConfigMap:
     merged = dict(program)
     dirs = program_option_mapping(merged.get("dirs"), "program.dirs")
     if package.remote_root in dirs:
@@ -288,8 +285,6 @@ def interpreter_prefixes() -> list[Path]:
 
 def runner_source() -> str:
     return r"""
-from __future__ import annotations
-
 import asyncio
 import importlib
 import inspect

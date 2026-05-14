@@ -1,8 +1,9 @@
-from __future__ import annotations
-
+import importlib
 import json
 from pathlib import Path
+from types import ModuleType
 from typing import cast
+from uuid import uuid4
 
 import pytest
 
@@ -38,10 +39,38 @@ timeout_sec = 300
     return task_dir
 
 
-def test_harbor_taskset_loads_local_tasks_with_program_patch(tmp_path: Path) -> None:
-    write_harbor_task(tmp_path)
+def write_harbor_package(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ModuleType:
+    package_name = f"harbor_pkg_{uuid4().hex}"
+    package_dir = tmp_path / package_name
+    tasks_root = package_dir / "tasks"
+    tasks_root.mkdir(parents=True)
+    (package_dir / "__init__.py").write_text(
+        """
+import verifiers.v1 as vf
 
-    taskset = vf.HarborTaskset(tasks=tmp_path)
+
+def load_taskset(**kwargs):
+    return vf.HarborTaskset(**kwargs)
+
+
+def load_env():
+    return vf.Env(taskset=vf.HarborTaskset(), harness=vf.OpenCode())
+""".lstrip()
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    importlib.invalidate_caches()
+    module = importlib.import_module(package_name)
+    setattr(module, "tasks_root", tasks_root)
+    return module
+
+
+def test_harbor_taskset_loads_package_tasks_with_program_patch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package = write_harbor_package(tmp_path, monkeypatch)
+    write_harbor_task(cast(Path, getattr(package, "tasks_root")))
+
+    taskset = getattr(package, "load_taskset")()
     task = next(iter(taskset))
 
     assert task["taskset_id"] == "harbor"
@@ -62,18 +91,27 @@ def test_harbor_taskset_loads_local_tasks_with_program_patch(tmp_path: Path) -> 
     assert task["program"]["env"]["AGENT_WORKDIR"] == "/app"
 
 
-def test_harbor_taskset_accepts_single_task_dir(tmp_path: Path) -> None:
-    task_dir = write_harbor_task(tmp_path, "only-task")
+def test_harbor_taskset_rejects_malformed_package_task(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package = write_harbor_package(tmp_path, monkeypatch)
+    bad_task = cast(Path, getattr(package, "tasks_root")) / "bad-task"
+    bad_task.mkdir()
+    (bad_task / "task.toml").write_text('version = "1.0"')
 
-    taskset = vf.HarborTaskset(tasks=task_dir)
+    taskset = getattr(package, "load_taskset")()
 
-    assert [task["task_name"] for task in taskset] == ["only-task"]
+    with pytest.raises(ValueError, match="Malformed Harbor task"):
+        list(taskset)
 
 
-def test_harbor_taskset_constructs_env_with_opencode(tmp_path: Path) -> None:
-    write_harbor_task(tmp_path)
+def test_harbor_taskset_constructs_env_with_opencode(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package = write_harbor_package(tmp_path, monkeypatch)
+    write_harbor_task(cast(Path, getattr(package, "tasks_root")))
 
-    env = vf.Env(taskset=vf.HarborTaskset(tasks=tmp_path), harness=vf.OpenCode())
+    env = getattr(package, "load_env")()
 
     row = env.get_dataset()[0]
     task = env.taskset.to_task(row)
@@ -103,7 +141,7 @@ def test_opencode_config_owns_opencode_harness_fields() -> None:
     )
     program = cast(dict[str, object], harness.program)
     command = cast(list[object], program["command"])
-    mcp_setup = cast(dict[str, object], program["tools"])["mcp"]
+    mcp_setup = cast(dict[str, object], program["channels"])["mcp"]
     setup = cast(str, program["setup"])
 
     assert harness.config.agent_workdir == "/workspace"
@@ -144,15 +182,18 @@ def test_pi_harness_writes_intercepted_model_and_mcp_config() -> None:
 
 
 def test_task_program_merges_into_command_program_without_collisions() -> None:
-    harness = vf.CLIHarness(
-        command=["tool"],
-        sandbox=True,
-        files={"/harness.txt": "harness"},
-        setup="echo harness",
-        tools={"mcp": "echo harness tools"},
-        env={"HARNESS": "1"},
-        artifacts={"log": {"path": "/logs/harness.log", "format": "text"}},
-        program={"args": ["--base"]},
+    harness = vf.Harness(
+        program={
+            "command": ["tool"],
+            "sandbox": True,
+            "files": {"/harness.txt": "harness"},
+            "setup": "echo harness",
+            "channels": {"mcp": "echo harness tools"},
+            "env": {"HARNESS": "1"},
+            "artifacts": {"log": {"path": "/logs/harness.log", "format": "text"}},
+            "args": ["--base"],
+        },
+        sandbox={"image": "python:3.11-slim"},
     )
     task = vf.Task(
         {
@@ -176,7 +217,7 @@ def test_task_program_merges_into_command_program_without_collisions() -> None:
         "/task/instruction.md": "task",
     }
     assert program["setup"] == ["echo harness", "echo task"]
-    assert program["tools"] == {"mcp": "echo harness tools"}
+    assert program["channels"] == {"mcp": "echo harness tools"}
     assert program["env"] == {"HARNESS": "1", "TASK": "1"}
     assert program["args"] == ["--base", "--task"]
     assert program["artifacts"] == {
@@ -186,7 +227,10 @@ def test_task_program_merges_into_command_program_without_collisions() -> None:
 
 
 def test_task_program_rejects_harness_owned_keys() -> None:
-    harness = vf.CLIHarness(command=["tool"], sandbox=True)
+    harness = vf.Harness(
+        program={"command": ["tool"], "sandbox": True},
+        sandbox={"image": "python:3.11-slim"},
+    )
     task = vf.Task({"prompt": [], "program": {"command": ["other"]}}).freeze()
 
     with pytest.raises(ValueError, match="task.program can only define"):
@@ -196,8 +240,13 @@ def test_task_program_rejects_harness_owned_keys() -> None:
 
 
 def test_task_program_rejects_colliding_upload_paths() -> None:
-    harness = vf.CLIHarness(
-        command=["tool"], sandbox=True, files={"/task/instruction.md": "harness"}
+    harness = vf.Harness(
+        program={
+            "command": ["tool"],
+            "sandbox": True,
+            "files": {"/task/instruction.md": "harness"},
+        },
+        sandbox={"image": "python:3.11-slim"},
     )
     task = vf.Task(
         {"prompt": [], "program": {"files": {"/task/instruction.md": "task"}}}

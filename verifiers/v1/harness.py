@@ -1,7 +1,5 @@
-from __future__ import annotations
-
 from collections.abc import Mapping
-from typing import ClassVar, cast
+from typing import TYPE_CHECKING, ClassVar, cast
 
 from verifiers.decorators import metric, update
 from verifiers.errors import Error, OverlongPromptError
@@ -26,7 +24,6 @@ from .config import (
     resolve_config_object,
     sandbox_config_mapping,
 )
-from .types import ConfigMap, Handler, ModelClient, ProgramMap, PromptInput
 from .utils.binding_utils import BindingMap, normalize_binding_map
 from .utils.endpoint_utils import (
     Endpoint,
@@ -38,7 +35,7 @@ from .utils.mcp_proxy_utils import (
     proxy_program,
     proxy_sandbox,
 )
-from .utils.program_utils import endpoint_api_key, program_tool_types, run_local_command
+from .utils.program_utils import endpoint_api_key, program_channels, run_local_command
 from .utils.program_utils import (
     merge_task_program,
     merge_task_sandbox,
@@ -62,8 +59,12 @@ from .utils.tool_utils import tool_error_content
 from .utils.trajectory_utils import has_borrowed_trajectory, sync_trajectory
 from .state import State
 from .task import Task
-from .toolset import merge_toolsets, normalize_toolset_collection
+from .toolset import ToolsetCollection, merge_toolsets, normalize_toolset_collection
 from .user import normalize_user
+from .types import ConfigData, ConfigMap, Handler, ModelClient, ProgramMap, PromptInput
+
+if TYPE_CHECKING:
+    from .taskset import Taskset
 
 
 class Harness:
@@ -82,7 +83,7 @@ class Harness:
         sampling_args: SamplingArgs | None = None,
         max_turns: int | None = None,
         # Collection fields.
-        toolsets: object | None = None,
+        toolsets: ToolsetCollection | None = None,
         stops: list[Handler] | None = None,
         setups: list[Handler] | None = None,
         updates: list[Handler] | None = None,
@@ -91,7 +92,7 @@ class Harness:
         advantages: list[Handler] | None = None,
         cleanups: list[Handler] | None = None,
         # Config.
-        config: HarnessConfig | ConfigMap | None = None,
+        config: HarnessConfig | None = None,
     ):
         self.config = type(self).config_type.from_config(config)
         if max_turns is not None:
@@ -151,7 +152,7 @@ class Harness:
         if keep_step_value is not None and not callable(keep_step_value):
             raise TypeError("keep_trajectory_step must be callable.")
         self.keep_trajectory_step = cast(Handler | None, keep_step_value)
-        self.taskset: object | None = None
+        self.taskset: "Taskset | None" = None
         self.runtime = self.resolve_runtime()
         self.endpoint = Endpoint(use_tunnel=self.program_uses_sandbox())
         self._program = self.compile_program(self.program)
@@ -194,19 +195,15 @@ class Harness:
     def add_cleanup(self, fn: Handler) -> None:
         self._add_handler(self.cleanups, fn)
 
-    def attach_taskset(self, taskset: object) -> None:
+    def attach_taskset(self, taskset: "Taskset") -> None:
         self.taskset = taskset
-        attach_harness = getattr(taskset, "attach_harness", None)
-        if callable(attach_harness):
-            attach_harness(self)
+        taskset.attach_harness(self)
         self.runtime = self.resolve_runtime()
 
     def resolve_runtime(self) -> Runtime:
         return Runtime(taskset=self.taskset, harness=self)
 
-    async def run(
-        self, task: Task | Mapping[str, object], state: State | None = None
-    ) -> State:
+    async def run(self, task: Task | ConfigMap, state: State | None = None) -> State:
         task = task if isinstance(task, Task) else Task(task).freeze()
         state = await self.init_state(task) if state is None else state
         timing_recorded = False
@@ -275,7 +272,7 @@ class Harness:
         sync_trajectory(state)
 
     async def setup_state(self, task: Task, state: State) -> State:
-        explicit_runtime = dict(cast(Mapping[str, object], state.get("runtime") or {}))
+        explicit_runtime = dict(cast(ConfigMap, state.get("runtime") or {}))
         task_controls = {
             key: task[key] for key in ("max_turns", "tools") if key in task
         }
@@ -298,7 +295,7 @@ class Harness:
         if self.sampling_args:
             sampling_args = dict(self.sampling_args)
             sampling_args.update(
-                cast(Mapping[str, object], state["runtime"].get("sampling_args") or {})
+                cast(ConfigMap, state["runtime"].get("sampling_args") or {})
             )
             state["runtime"]["sampling_args"] = sampling_args
         self.resolve_system_prompt(task, state)
@@ -378,7 +375,7 @@ class Harness:
         if kind == "command":
             sandbox_config = self.program_sandbox_config(program)
             validate_program_options(program, kind, sandbox_config)
-            return self.command_program(cast(Mapping[str, object], program))
+            return self.command_program(cast(ConfigMap, program))
         raise AssertionError(f"Unhandled program kind: {kind}")
 
     def local_callable_program(self, fn: Handler) -> Handler:
@@ -405,7 +402,7 @@ class Harness:
             message.model_dump(exclude_none=True) for message in messages
         ]
 
-        def sync_completion() -> list[dict[str, object]]:
+        def sync_completion() -> list[ConfigData]:
             rendered_messages = [
                 message.model_dump(exclude_none=True) for message in messages
             ]
@@ -449,8 +446,8 @@ class Harness:
                 content: MessageContent
                 try:
                     name = tool_call.name
-                    result = await callable_tools[name](
-                        **json_args(tool_call.arguments)
+                    result = await maybe_call_with_named_args(
+                        callable_tools[name], **json_args(tool_call.arguments)
                     )
                     content = (
                         cast(MessageContent, result)
@@ -468,7 +465,7 @@ class Harness:
                 return state
         return state
 
-    def command_program(self, program: Mapping[str, object]) -> Handler:
+    def command_program(self, program: ConfigMap) -> Handler:
         async def run(task: Task, state: State) -> State:
             runtime = self.runtime
             merged_program = merge_task_program(program, task, kind="command")
@@ -489,7 +486,7 @@ class Harness:
         return run
 
     def sandbox_base_program(
-        self, program: Mapping[str, object], sandbox_config: Mapping[str, object]
+        self, program: ConfigMap, sandbox_config: ConfigMap
     ) -> Handler:
         async def run(task: Task, state: State) -> State:
             merged_program = merge_task_program(program, task, kind="base")
@@ -510,8 +507,8 @@ class Harness:
 
     def sandbox_fn_program(
         self,
-        program: Mapping[str, object],
-        sandbox_config: Mapping[str, object],
+        program: ConfigMap,
+        sandbox_config: ConfigMap,
         fn_ref: str,
     ) -> Handler:
         async def run(task: Task, state: State) -> State:
@@ -534,14 +531,9 @@ class Harness:
     def program_uses_sandbox(self) -> bool:
         if not isinstance(self.program, Mapping):
             return False
-        return (
-            self.program_sandbox_config(cast(Mapping[str, object], self.program))
-            is not None
-        )
+        return self.program_sandbox_config(cast(ConfigMap, self.program)) is not None
 
-    def program_sandbox_config(
-        self, program: Mapping[str, object]
-    ) -> Mapping[str, object] | None:
+    def program_sandbox_config(self, program: ConfigMap) -> ConfigMap | None:
         sandbox = program.get("sandbox")
         if sandbox is None or sandbox is False:
             return None
@@ -550,22 +542,20 @@ class Harness:
                 raise ValueError("program.sandbox=true requires Harness.sandbox.")
             if not isinstance(self.sandbox, Mapping):
                 raise TypeError("Harness.sandbox must be a mapping.")
-            sandbox_config = cast(Mapping[str, object], self.sandbox)
+            sandbox_config = cast(ConfigMap, self.sandbox)
             validate_program_sandbox_scope(sandbox_config)
             return sandbox_config
         if not isinstance(sandbox, Mapping | SandboxConfig):
             raise TypeError("program.sandbox must be true, false, or a mapping.")
         sandbox_config = {}
         if self.sandbox is not None:
-            sandbox_config.update(cast(Mapping[str, object], self.sandbox))
+            sandbox_config.update(cast(ConfigMap, self.sandbox))
         sandbox_config.update(sandbox_config_mapping(sandbox) or {})
         validate_program_sandbox_scope(sandbox_config)
         return sandbox_config
 
-    def prepare_sandbox_program(
-        self, program: Mapping[str, object], state: State
-    ) -> Mapping[str, object]:
-        if "mcp" in program_tool_types(program):
+    def prepare_sandbox_program(self, program: ConfigMap, state: State) -> ConfigMap:
+        if "mcp" in program_channels(program):
             endpoint_root_url = state.get("endpoint_root_url")
             if not isinstance(endpoint_root_url, str):
                 raise RuntimeError("MCP program tools require an active endpoint.")
@@ -577,10 +567,10 @@ class Harness:
         return program
 
     def prepare_sandbox_config(
-        self, sandbox_config: Mapping[str, object], program: Mapping[str, object]
-    ) -> Mapping[str, object]:
+        self, sandbox_config: ConfigMap, program: ConfigMap
+    ) -> ConfigMap:
         config = dict(sandbox_config)
-        if "mcp" in program_tool_types(program):
+        if "mcp" in program_channels(program):
             config = proxy_sandbox(config)
         if program_kind(program) in {"base", "fn"}:
             config = python_program_sandbox(config)

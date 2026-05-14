@@ -9,8 +9,6 @@ Usage::
     harness = opencode_harness(system_prompt="You are a coding agent...")
 """
 
-from __future__ import annotations
-
 import json
 import shlex
 from pathlib import Path, PurePosixPath

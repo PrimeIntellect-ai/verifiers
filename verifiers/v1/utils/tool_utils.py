@@ -1,19 +1,16 @@
-from __future__ import annotations
-
 import inspect
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Sequence
 from typing import cast
 
 from verifiers.v1.state import State
 from verifiers.v1.task import Task
 from verifiers.v1.toolset import Toolset, tool_name
+from ..types import ConfigMap, Handler
 
 
-def load_tools_from_state(
-    state: State,
-) -> dict[str, Callable[..., Awaitable[object]]]:
+def load_tools_from_state(state: State) -> dict[str, Handler]:
     runtime = state._runtime()
-    task = Task(cast(Mapping[str, object], state["task"])).freeze()
+    task = Task(cast(ConfigMap, state["task"])).freeze()
     return runtime.tool_calls(task, state)
 
 
@@ -46,9 +43,7 @@ def string_list(value: object, field: str) -> list[str]:
     return result
 
 
-def schema_callable(
-    tool: object, signature: inspect.Signature
-) -> Callable[..., object]:
+def schema_callable(tool: object, signature: inspect.Signature) -> Handler:
     def call_for_schema(**kwargs: object) -> None:
         _ = kwargs
         return None

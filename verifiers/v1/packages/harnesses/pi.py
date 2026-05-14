@@ -1,21 +1,19 @@
-from __future__ import annotations
-
 import json
 import shlex
-from collections.abc import Mapping
 from pathlib import PurePosixPath
 
 from typing_extensions import Unpack
 
-from .cli import CLIHarness, CLIHarnessKwargs
+from .command import HarnessKwargs, command_program, command_sandbox
 from ...config import SandboxConfig
+from ...harness import Harness
 from ...state import State
-from ...types import PromptInput
 from ...utils.mcp_proxy_utils import proxy_command
 from ...utils.prompt_utils import (
     state_system_prompt_text,
     task_text as task_instruction_text,
 )
+from ...types import ConfigMap, ProgramMap, ProgramOptionMap, ProgramValue, PromptInput
 
 DEFAULT_PI_PACKAGE = "@mariozechner/pi-coding-agent"
 DEFAULT_PI_WORKDIR = "/app"
@@ -25,7 +23,7 @@ DEFAULT_LOG_PATH = "/logs/agent/pi.txt"
 DEFAULT_SYSTEM_PROMPT = "Complete the user's task using the available tools."
 
 
-class Pi(CLIHarness):
+class Pi(Harness):
     def __init__(
         self,
         *,
@@ -36,50 +34,54 @@ class Pi(CLIHarness):
         system_prompt: PromptInput | None = DEFAULT_SYSTEM_PROMPT,
         package: str = DEFAULT_PI_PACKAGE,
         install_mcp_adapter: bool = True,
-        sandbox: bool | Mapping[str, object] | SandboxConfig = True,
-        program: Mapping[str, object] | None = None,
+        sandbox: bool | ConfigMap | SandboxConfig = True,
+        program: ProgramMap | None = None,
         max_turns: int | None = 4,
-        **kwargs: Unpack[CLIHarnessKwargs],
+        **kwargs: Unpack[HarnessKwargs],
     ):
-        files: dict[str, object] = {
+        files: dict[str, ProgramValue] = {
             instruction_path: task_instruction_text,
         }
         if system_prompt is not None:
             files[system_prompt_path] = state_system_prompt_text
-        artifacts = {
+        artifacts: ProgramOptionMap = {
             "pi_log": {
                 "path": log_path,
                 "format": "text",
                 "optional": True,
             }
         }
+        command = [
+            "bash",
+            "-lc",
+            build_pi_run_script(
+                agent_workdir=agent_workdir,
+                instruction_path=instruction_path,
+                system_prompt_path=system_prompt_path
+                if system_prompt is not None
+                else None,
+                log_path=log_path,
+            ),
+        ]
         super().__init__(
-            command=[
-                "bash",
-                "-lc",
-                build_pi_run_script(
-                    agent_workdir=agent_workdir,
-                    instruction_path=instruction_path,
-                    system_prompt_path=system_prompt_path
-                    if system_prompt is not None
-                    else None,
-                    log_path=log_path,
-                ),
-            ],
-            sandbox=sandbox,
-            files=files,
-            setup=build_pi_install_script(package=package),
-            tools={
-                "mcp": build_pi_mcp_setup(
-                    agent_workdir=agent_workdir,
-                    install_mcp_adapter=install_mcp_adapter,
-                )
-            }
-            if install_mcp_adapter
-            else None,
-            bindings={"setup_pi.endpoint_config": pi_endpoint_config},
-            artifacts=artifacts,
-            program=program,
+            program=command_program(
+                command=command,
+                sandbox=sandbox,
+                files=files,
+                setup=build_pi_install_script(package=package),
+                channels={
+                    "mcp": build_pi_mcp_setup(
+                        agent_workdir=agent_workdir,
+                        install_mcp_adapter=install_mcp_adapter,
+                    )
+                }
+                if install_mcp_adapter
+                else None,
+                bindings={"setup_pi.endpoint_config": pi_endpoint_config},
+                artifacts=artifacts,
+                program=program,
+            ),
+            sandbox=command_sandbox(sandbox),
             system_prompt=system_prompt,
             max_turns=max_turns,
             **kwargs,
@@ -112,7 +114,7 @@ def build_pi_mcp_setup(
 def build_pi_mcp_setup_script(
     *,
     agent_workdir: str,
-    endpoint_config: Mapping[str, object],
+    endpoint_config: ConfigMap,
     install_mcp_adapter: bool,
 ) -> str:
     models_json = pi_models_json(endpoint_config)
@@ -175,7 +177,7 @@ def pi_endpoint_config(state: State) -> dict[str, str]:
     return state.get_endpoint_config(api="chat")
 
 
-def pi_models_json(endpoint_config: Mapping[str, object]) -> str:
+def pi_models_json(endpoint_config: ConfigMap) -> str:
     api = str(endpoint_config.get("api_client_type") or "openai_chat_completions")
     api_name = {
         "openai_chat_completions": "openai-completions",

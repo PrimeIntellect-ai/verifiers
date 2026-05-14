@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import ClassVar, Literal, cast
@@ -17,15 +15,16 @@ from typing_extensions import Self
 from .types import (
     CallableConfigEntry,
     ConfigData,
+    ConfigInputMap,
     ConfigMap,
     ConfigSource,
     Handler,
     ModelClient,
-    ObjectSpecs,
+    Objects,
     ProgramCommand,
     ProgramOptionMap,
     ProgramSetup,
-    ProgramTools,
+    ProgramChannels,
     ProgramValue,
     PromptInput,
     TaskSource,
@@ -55,7 +54,7 @@ from .utils.config_utils import (
     resolve_config_object as resolve_config_object,
     string_mapping as string_mapping,
 )
-from .utils.mcp_proxy_utils import validate_program_tool_types
+from .utils.mcp_proxy_utils import validate_program_channels
 
 try:
     import tomllib
@@ -171,13 +170,13 @@ class ProgramConfig(Config):
     bindings: Bindings = Field(default_factory=dict)
     env: ProgramOptionMap = Field(default_factory=dict)
     artifacts: ProgramOptionMap = Field(default_factory=dict)
-    tools: ProgramTools | None = None
+    channels: ProgramChannels | None = None
     args: list[ProgramValue] = Field(default_factory=list)
 
-    @field_validator("tools")
+    @field_validator("channels")
     @classmethod
-    def validate_tools(cls, value: object) -> object:
-        validate_program_tool_types(value)
+    def validate_channels(cls, value: object) -> object:
+        validate_program_channels(value)
         return value
 
     @field_validator("bindings", mode="before")
@@ -190,7 +189,7 @@ class UserConfig(Config):
     fn: Handler | str
     scope: Literal["rollout", "group", "global"] = "rollout"
     bindings: Bindings = Field(default_factory=dict)
-    objects: ObjectSpecs = Field(default_factory=dict)
+    objects: Objects = Field(default_factory=dict)
     sandbox: SandboxConfig | None = None
 
     @field_validator("bindings", mode="before")
@@ -200,7 +199,7 @@ class UserConfig(Config):
 
     @field_validator("objects", mode="before")
     @classmethod
-    def validate_objects(cls, value: object) -> ObjectSpecs:
+    def validate_objects(cls, value: object) -> Objects:
         return normalize_object_map(value, "user.objects")
 
 
@@ -209,7 +208,7 @@ class ToolsetConfig(Config):
     show: list[str] | None = None
     hide: list[str] | None = None
     bindings: Bindings = Field(default_factory=dict)
-    objects: ObjectSpecs = Field(default_factory=dict)
+    objects: Objects = Field(default_factory=dict)
     write: bool = False
     scope: Literal["rollout", "group", "global"] | None = None
     sandbox: SandboxConfig | Literal["program"] | None = None
@@ -233,11 +232,11 @@ class ToolsetConfig(Config):
 
     @field_validator("objects", mode="before")
     @classmethod
-    def validate_objects(cls, value: object) -> ObjectSpecs:
+    def validate_objects(cls, value: object) -> Objects:
         return normalize_object_map(value, "toolset.objects")
 
     @model_validator(mode="after")
-    def validate_visibility(self) -> ToolsetConfig:
+    def validate_visibility(self) -> "ToolsetConfig":
         if self.show is not None and self.hide is not None:
             raise ValueError("Toolset accepts show or hide, not both.")
         return self
@@ -253,6 +252,7 @@ class TasksetConfig(Config):
     system_prompt: PromptInput | None = None
     user: Handler | str | ConfigMap | None = None
     bindings: Bindings = Field(default_factory=dict)
+    objects: Objects = Field(default_factory=dict)
 
     # Collection fields are merged/extended from code and config.
     toolsets: ToolsetSpecs | None = Field(default_factory=list)
@@ -263,12 +263,17 @@ class TasksetConfig(Config):
     rewards: list[CallableConfigEntry] = Field(default_factory=list)
     advantages: list[CallableConfigEntry] = Field(default_factory=list)
     cleanups: list[CallableConfigEntry] = Field(default_factory=list)
-    scoring: dict[str, dict[str, object]] = Field(default_factory=dict)
+    scoring: dict[str, ConfigData] = Field(default_factory=dict)
 
     @field_validator("bindings", mode="before")
     @classmethod
     def validate_bindings(cls, value: object) -> Bindings:
-        return normalize_binding_map(value, "taskset.bindings", allow_objects=False)
+        return normalize_binding_map(value, "taskset.bindings")
+
+    @field_validator("objects", mode="before")
+    @classmethod
+    def validate_objects(cls, value: object) -> Objects:
+        return normalize_object_map(value, "taskset.objects")
 
 
 class HarnessConfig(Config):
@@ -281,7 +286,7 @@ class HarnessConfig(Config):
     sandbox: SandboxConfig | None = None
     client: ModelClient | ConfigMap | str | None = None
     model: str | None = None
-    sampling_args: dict[str, object] = Field(default_factory=dict)
+    sampling_args: ConfigData = Field(default_factory=dict)
     keep_trajectory_step: Handler | str | None = None
     user: Handler | str | ConfigMap | None = None
     bindings: Bindings = Field(default_factory=dict)
@@ -295,7 +300,7 @@ class HarnessConfig(Config):
     rewards: list[CallableConfigEntry] = Field(default_factory=list)
     advantages: list[CallableConfigEntry] = Field(default_factory=list)
     cleanups: list[CallableConfigEntry] = Field(default_factory=list)
-    scoring: dict[str, dict[str, object]] = Field(default_factory=dict)
+    scoring: dict[str, ConfigData] = Field(default_factory=dict)
     max_turns: int = 10
 
     @field_validator("program", mode="before")
@@ -305,7 +310,7 @@ class HarnessConfig(Config):
             return value
         if isinstance(value, Mapping):
             return ProgramConfig.from_config(
-                string_mapping(cast(Mapping[object, object], value))
+                string_mapping(cast(ConfigInputMap, value))
             ).model_dump(exclude_none=True, exclude_defaults=True)
         raise TypeError("program must be a callable, import ref, or mapping.")
 
@@ -361,13 +366,13 @@ class EnvConfig(Config):
         return base
 
 
-def sandbox_config_mapping(value: object | None) -> dict[str, object] | None:
+def sandbox_config_mapping(value: object | None) -> ConfigData | None:
     if value is None:
         return None
     if isinstance(value, SandboxConfig):
         return value.model_dump(exclude_none=True)
     if isinstance(value, Mapping):
-        mapping = cast(Mapping[str, object], value)
+        mapping = cast(ConfigMap, value)
         prefer = mapping.get("prefer")
         if prefer is not None and prefer != "program":
             raise ValueError("sandbox.prefer must be 'program'.")

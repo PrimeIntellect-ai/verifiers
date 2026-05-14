@@ -1,8 +1,10 @@
-from __future__ import annotations
-
 import importlib.util
 from pathlib import Path
 from types import ModuleType
+
+import pytest
+
+import verifiers.v1 as vf
 
 
 def load_bfcl_module() -> ModuleType:
@@ -53,3 +55,33 @@ def test_bfcl_row_preserves_hinted_holdout_functions() -> None:
     assert row["function_with_hints"] == [{"name": "hinted"}]
     assert row["missed_function"] == {"1": [{"name": "plain_holdout"}]}
     assert row["missed_function_with_hints"] == {"1": [{"name": "hinted_holdout"}]}
+
+
+def test_bfcl_public_loader_is_v1_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    bfcl = load_bfcl_module()
+    seen: dict[str, object] = {}
+
+    def fake_taskset(config: object = None) -> vf.Taskset:
+        seen["taskset_config"] = config
+        return vf.Taskset(source=[], config=config)
+
+    def fake_harness(config: object = None) -> vf.Harness:
+        seen["harness_config"] = config
+        return vf.Harness(config=config)
+
+    monkeypatch.setattr(bfcl, "load_taskset", fake_taskset)
+    monkeypatch.setattr(bfcl, "load_harness", fake_harness)
+
+    env = bfcl.load_environment(
+        config=vf.EnvConfig(),
+        test_category="simple_python",
+        examples_per_category=0,
+    )
+
+    assert isinstance(env, vf.Env)
+    assert isinstance(seen["taskset_config"], bfcl.BFCLTasksetConfig)
+    assert isinstance(seen["harness_config"], bfcl.BFCLHarnessConfig)
+    assert seen["taskset_config"].test_category == "simple_python"
+    assert seen["taskset_config"].examples_per_category == 0
+    assert seen["harness_config"].test_category == "simple_python"
+    assert not hasattr(bfcl, "load_v1_environment")

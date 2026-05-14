@@ -8,8 +8,6 @@ Usage::
     task = MathTaskSet("hendrycks/math")
 """
 
-from __future__ import annotations
-
 import logging
 
 from verifiers.envs.experimental.composable import SandboxSpec, SandboxTaskSet

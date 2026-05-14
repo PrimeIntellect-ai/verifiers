@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import difflib
 import json
 import logging
@@ -8,7 +6,7 @@ import re
 
 from datasets import Dataset, load_dataset
 
-import verifiers.v1 as vf
+import verifiers as vf
 
 logger = logging.getLogger(__name__)
 
@@ -206,7 +204,7 @@ def score_response(
 
 
 def eval_turn(
-    completion: list[dict],
+    completion: list[vf.ConfigData],
     turn_num: int,
     state: dict,
     similarity_power: int,
@@ -217,7 +215,8 @@ def eval_turn(
         return 0.0
     expected = ground_truths[turn_num - 1]
     assistant_msgs = [
-        str(m.get("content") or "") for m in completion if m.get("role") == "assistant"
+        str(message.content or "")
+        for message in vf.get_messages(completion, role="assistant")
     ]
     if len(assistant_msgs) < turn_num:
         return 0.0
@@ -269,7 +268,7 @@ def weighted_reward_factory(similarity_power: int, power_per_turn: bool):
 
 
 async def alphabet_user(task, state, transcript) -> list[dict[str, str]]:
-    assistant_count = len([m for m in transcript if m.get("role") == "assistant"])
+    assistant_count = len(vf.get_messages(transcript, role="assistant"))
     follow_ups = state["info"]["follow_ups"]
     if assistant_count <= 0 or assistant_count > len(follow_ups):
         return []

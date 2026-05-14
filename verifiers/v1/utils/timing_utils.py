@@ -1,8 +1,6 @@
-from __future__ import annotations
-
 import time
-from collections.abc import MutableMapping
 from typing import cast
+from ..types import ConfigData, MutableConfigMap
 
 
 def span_record(start: float = 0.0, end: float = 0.0) -> dict[str, float]:
@@ -13,11 +11,11 @@ def span_record(start: float = 0.0, end: float = 0.0) -> dict[str, float]:
     }
 
 
-def spans_record() -> dict[str, object]:
+def spans_record() -> ConfigData:
     return {"spans": [], "duration": 0.0}
 
 
-def timing_record(start_time: float | None = None) -> dict[str, object]:
+def timing_record(start_time: float | None = None) -> ConfigData:
     start = time.time() if start_time is None else start_time
     return {
         "start_time": start,
@@ -31,11 +29,11 @@ def timing_record(start_time: float | None = None) -> dict[str, object]:
     }
 
 
-def ensure_timing(state: MutableMapping[str, object]) -> dict[str, object]:
+def ensure_timing(state: MutableConfigMap) -> ConfigData:
     timing = state.setdefault("timing", timing_record())
     if not isinstance(timing, dict):
         raise TypeError("state.timing must be a mapping.")
-    timing = cast(dict[str, object], timing)
+    timing = cast(ConfigData, timing)
     if "generation_ms" in timing or "total_ms" in timing:
         start = _float_value(timing.get("start_time"), time.time())
         elapsed = (
@@ -50,7 +48,7 @@ def ensure_timing(state: MutableMapping[str, object]) -> dict[str, object]:
     return timing
 
 
-def record_generation_timing(state: MutableMapping[str, object]) -> None:
+def record_generation_timing(state: MutableConfigMap) -> None:
     timing = ensure_timing(state)
     start_time = _float_value(timing.get("start_time"), time.time())
     end_time = time.time()
@@ -58,9 +56,7 @@ def record_generation_timing(state: MutableMapping[str, object]) -> None:
     _set_total(timing, end_time)
 
 
-def record_scoring_timing(
-    state: MutableMapping[str, object], start_time: float
-) -> None:
+def record_scoring_timing(state: MutableConfigMap, start_time: float) -> None:
     timing = ensure_timing(state)
     end_time = time.time()
     _set_span(timing, "scoring", start_time, end_time)
@@ -68,28 +64,28 @@ def record_scoring_timing(
 
 
 def record_model_timing(
-    state: MutableMapping[str, object], start_time: float, end_time: float
+    state: MutableConfigMap, start_time: float, end_time: float
 ) -> None:
     timing = ensure_timing(state)
     spans = timing.setdefault("model", spans_record())
     if not isinstance(spans, dict):
         raise TypeError("state.timing.model must be a mapping.")
-    spans = cast(dict[str, object], spans)
+    spans = cast(ConfigData, spans)
     span_list = spans.setdefault("spans", [])
     if not isinstance(span_list, list):
         raise TypeError("state.timing.model.spans must be a list.")
-    span_list = cast(list[object], span_list)
+    span_list = cast(list[dict[str, float]], span_list)
     span_list.append(span_record(start_time, end_time))
     spans["duration"] = _duration(spans) + max(0.0, end_time - start_time)
 
 
 def _set_span(
-    timing: MutableMapping[str, object], key: str, start_time: float, end_time: float
+    timing: MutableConfigMap, key: str, start_time: float, end_time: float
 ) -> None:
     timing[key] = span_record(start_time, end_time)
 
 
-def _set_total(timing: MutableMapping[str, object], end_time: float) -> None:
+def _set_total(timing: MutableConfigMap, end_time: float) -> None:
     start_time = _float_value(timing.get("start_time"), end_time)
     total = max(0.0, end_time - start_time)
     timing["total"] = total
@@ -110,7 +106,7 @@ def _set_total(timing: MutableMapping[str, object], end_time: float) -> None:
 def _duration(value: object) -> float:
     if not isinstance(value, dict):
         return 0.0
-    mapping = cast(dict[str, object], value)
+    mapping = cast(ConfigData, value)
     duration = mapping.get("duration", 0.0)
     return _float_value(duration, 0.0)
 

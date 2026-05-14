@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import asyncio
 import json
 import shlex
@@ -1099,20 +1097,20 @@ def test_sandbox_program_patch_cannot_set_lifecycle_fields() -> None:
     assert state["error"] == {"message": "handled"}
 
 
-def test_program_tools_mcp_injects_proxy_into_sandbox_program() -> None:
+def test_program_channels_mcp_injects_proxy_into_sandbox_program() -> None:
     harness = vf.Harness(
-        program={"sandbox": True, "command": ["true"], "tools": "mcp"},
+        program={"sandbox": True, "command": ["true"], "channels": "mcp"},
         sandbox={"image": "python:3.11-slim"},
     )
     state = vf.State.for_task(vf.Task({}).freeze())
     state["endpoint_root_url"] = "http://127.0.0.1:1/rollout/test"
 
     program = harness.prepare_sandbox_program(
-        {"sandbox": True, "command": ["true"], "tools": "mcp"}, state
+        {"sandbox": True, "command": ["true"], "channels": "mcp"}, state
     )
     sandbox = harness.prepare_sandbox_config(
         {"image": "python:3.11-slim"},
-        {"sandbox": True, "command": ["true"], "tools": "mcp"},
+        {"sandbox": True, "command": ["true"], "channels": "mcp"},
     )
 
     files = cast(dict[str, str], program["files"])
@@ -1130,29 +1128,34 @@ def test_program_tools_mcp_injects_proxy_into_sandbox_program() -> None:
     assert "requests" in packages
 
 
-def test_program_tools_mcp_requires_sandbox_command() -> None:
+def test_program_channels_mcp_requires_sandbox_command() -> None:
     with pytest.raises(ValueError, match="requires program.sandbox"):
-        vf.Harness(program={"command": ["true"], "tools": "mcp"})
+        vf.Harness(program={"command": ["true"], "channels": "mcp"})
 
 
-def test_program_tools_callable_rejects_command_programs() -> None:
-    with pytest.raises(ValueError, match="program.tools='callable'"):
-        vf.Harness(program={"command": ["true"], "tools": "callable"})
+def test_program_channels_callable_rejects_command_programs() -> None:
+    with pytest.raises(ValueError, match="program.channels='callable'"):
+        vf.Harness(program={"command": ["true"], "channels": "callable"})
 
 
 @pytest.mark.asyncio
-async def test_program_tools_mcp_setup_uses_bindings_after_setup_before_command(
+async def test_program_channels_mcp_setup_uses_bindings_after_setup_before_command(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     install_fake_sandboxes(monkeypatch)
     install_fake_endpoint_tunnel(monkeypatch)
 
-    harness = vf.CLIHarness(
-        command=["python", "-c", "print('ok')"],
-        sandbox=True,
-        setup="echo setup",
-        tools={"mcp": configure_cli_endpoint},
-        bindings={"configure_cli_endpoint.endpoint_config": endpoint_config_binding},
+    harness = vf.Harness(
+        program={
+            "command": ["python", "-c", "print('ok')"],
+            "sandbox": True,
+            "setup": "echo setup",
+            "channels": {"mcp": configure_cli_endpoint},
+            "bindings": {
+                "configure_cli_endpoint.endpoint_config": endpoint_config_binding
+            },
+        },
+        sandbox={"image": "python:3.11-slim"},
         model="bound-model",
     )
     task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
@@ -1173,10 +1176,13 @@ async def test_rollout_setup_receives_program_sandbox_before_program_setup(
     install_fake_sandboxes(monkeypatch)
     install_fake_endpoint_tunnel(monkeypatch)
 
-    harness = vf.CLIHarness(
-        command=["true"],
-        sandbox=True,
-        setup="echo program-setup",
+    harness = vf.Harness(
+        program={
+            "command": ["true"],
+            "sandbox": True,
+            "setup": "echo program-setup",
+        },
+        sandbox={"image": "python:3.11-slim"},
         setups=[early_sandbox_lifecycle_setup, sandbox_lifecycle_setup],
     )
     task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
@@ -1225,21 +1231,24 @@ async def test_sandbox_state_input_upload_runs_after_rollout_setup(
 
 
 @pytest.mark.asyncio
-async def test_program_tools_mcp_setup_accepts_config_ref_mappings(
+async def test_program_channels_mcp_setup_accepts_config_ref_mappings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     install_fake_sandboxes(monkeypatch)
     install_fake_endpoint_tunnel(monkeypatch)
 
-    harness = vf.CLIHarness(
-        command=["true"],
-        sandbox=True,
-        tools={"mcp": [{"fn": program_ref("configure_cli_endpoint_ref")}]},
-        bindings={
-            "configure_cli_endpoint_ref.endpoint_config": {
-                "fn": program_ref("endpoint_config_binding_ref")
-            }
+    harness = vf.Harness(
+        program={
+            "command": ["true"],
+            "sandbox": True,
+            "channels": {"mcp": [{"fn": program_ref("configure_cli_endpoint_ref")}]},
+            "bindings": {
+                "configure_cli_endpoint_ref.endpoint_config": {
+                    "fn": program_ref("endpoint_config_binding_ref")
+                }
+            },
         },
+        sandbox={"image": "python:3.11-slim"},
         model="toml-model",
     )
     task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
@@ -1252,22 +1261,28 @@ async def test_program_tools_mcp_setup_accepts_config_ref_mappings(
 
 def test_program_bindings_must_match_owned_callables() -> None:
     with pytest.raises(ValueError, match="does not match a callable"):
-        vf.CLIHarness(
-            command=["true"],
-            sandbox=True,
-            bindings={"missing.value": "task.value"},
+        vf.Harness(
+            program={
+                "command": ["true"],
+                "sandbox": True,
+                "bindings": {"missing.value": "task.value"},
+            },
+            sandbox={"image": "python:3.11-slim"},
         )
 
 
 def test_program_setup_is_not_a_binding_target() -> None:
     with pytest.raises(ValueError, match="setup callables cannot use"):
-        vf.CLIHarness(
-            command=["true"],
-            sandbox=True,
-            setup=configure_cli_endpoint,
-            bindings={
-                "configure_cli_endpoint.endpoint_config": endpoint_config_binding
+        vf.Harness(
+            program={
+                "command": ["true"],
+                "sandbox": True,
+                "setup": configure_cli_endpoint,
+                "bindings": {
+                    "configure_cli_endpoint.endpoint_config": endpoint_config_binding
+                },
             },
+            sandbox={"image": "python:3.11-slim"},
         )
 
 
@@ -1334,7 +1349,7 @@ async def test_real_sandbox_base_program_calls_host_callable_tool() -> None:
     harness = vf.Harness(
         client=cast(Client, client),
         model="fake",
-        program={"sandbox": True, "tools": "callable"},
+        program={"sandbox": True, "channels": "callable"},
         sandbox={
             "image": "python:3.11-slim",
             "scope": "group",
@@ -1377,7 +1392,7 @@ async def test_real_sandbox_command_program_uses_mcp_tool_proxy() -> None:
         program={
             "sandbox": True,
             "command": ["python", "/tmp/call_mcp.py"],
-            "tools": "mcp",
+            "channels": "mcp",
             "files": {"/tmp/call_mcp.py": REAL_MCP_PROXY_SCRIPT},
         },
         sandbox={

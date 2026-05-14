@@ -1,20 +1,20 @@
-from __future__ import annotations
-
 from collections.abc import Mapping
 from copy import deepcopy
-from typing import Any, cast
 
 from .config import sandbox_config_mapping
 from .utils.task_freeze_utils import assert_serializable, freeze_value
 from .utils.prompt_utils import normalize_prompt, normalize_system_prompt
+from .types import ConfigMap, JsonValue
 
 
 class Task(dict):
-    def __init__(self, row: Mapping[str, object] | None = None):
+    _vf_state_contract = "v1"
+
+    def __init__(self, row: ConfigMap | None = None):
         super().__init__(deepcopy(dict(row or {})))
         self._frozen = False
 
-    def freeze(self) -> Task:
+    def freeze(self) -> "Task":
         if "runtime" in self:
             raise TypeError(
                 "task.runtime is not supported; use top-level task fields or state.runtime."
@@ -75,17 +75,17 @@ class Task(dict):
         self._raise_if_frozen()
         return super().pop(key, default)
 
-    def popitem(self) -> tuple[str, object]:
-        self._raise_if_frozen()
-        return super().popitem()
+    def popitem(self) -> tuple[str, JsonValue]:
+        raise TypeError("Task.popitem() is not supported.")
 
     def clear(self) -> None:
         self._raise_if_frozen()
         super().clear()
 
-    def __ior__(self, value: Any, /) -> Task:
+    def __ior__(self, value: object, /) -> "Task":
         self._raise_if_frozen()
-        return cast(Task, dict.__ior__(self, value))
+        self.update(value)
+        return self
 
     def _raise_if_frozen(self) -> None:
         if self._frozen:

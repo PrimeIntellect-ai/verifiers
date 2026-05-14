@@ -1,9 +1,9 @@
-from __future__ import annotations
+from pathlib import Path
 
 from pydantic import Field
 
 from ...config import HarnessConfig
-from ...types import ConfigData, ConfigSource, PromptInput
+from ...types import ConfigData, ConfigSource, ProgramValue, PromptInput
 
 OPENCODE_DEFAULT_RELEASE_REPO = "PrimeIntellect-ai/opencode"
 OPENCODE_DEFAULT_RELEASE_VERSION = "1.1.63-rl2"
@@ -42,6 +42,15 @@ OPENCODE_DEFAULT_DISABLED_TOOLS = (
     "codesearch",
     "skill",
 )
+RLM_DEFAULT_REPO_URL = "github.com/PrimeIntellect-ai/rlm-harness.git"
+RLM_DEFAULT_REPO_REF = "main"
+RLM_DEFAULT_MAX_TURNS = 100
+RLM_DEFAULT_EXEC_TIMEOUT = 300
+RLM_DEFAULT_MAX_DEPTH = 0
+RLM_DEFAULT_INSTRUCTION_PATH = "/rlm/instruction.txt"
+RLM_DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH = "/rlm/append_to_system_prompt.txt"
+RLM_DEFAULT_WORKDIR = "/workspace"
+RLM_DEFAULT_TOOLS = ("ipython",)
 
 
 class OpenCodeConfig(HarnessConfig):
@@ -73,3 +82,21 @@ class OpenCodeConfig(HarnessConfig):
     install_ripgrep: bool = True
     provider_timeout_ms: int = 3_600_000
     max_turns: int = 4
+
+
+class RLMConfig(HarnessConfig):
+    workdir: str = RLM_DEFAULT_WORKDIR
+    instruction_path: str = RLM_DEFAULT_INSTRUCTION_PATH
+    rlm_repo_url: str = RLM_DEFAULT_REPO_URL
+    rlm_repo_ref: str = RLM_DEFAULT_REPO_REF
+    rlm_max_turns: int = RLM_DEFAULT_MAX_TURNS
+    rlm_exec_timeout: int = RLM_DEFAULT_EXEC_TIMEOUT
+    rlm_max_depth: int = RLM_DEFAULT_MAX_DEPTH
+    summarize_at_tokens: int | tuple[int, int] | list[int] | None = None
+    include_sub_rlm_trajectories: bool = False
+    append_to_system_prompt: str = ""
+    local_checkout: str | Path | None = None
+    gh_token: str | None = None
+    rlm_tools: list[str] = Field(default_factory=lambda: list(RLM_DEFAULT_TOOLS))
+    env_vars: dict[str, ProgramValue] = Field(default_factory=dict)
+    skills: str | Path | None = None

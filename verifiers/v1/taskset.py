@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import json
 import uuid
 import weakref
@@ -7,7 +5,7 @@ from importlib.abc import Traversable
 from collections.abc import Iterable, Mapping
 from copy import deepcopy
 from pathlib import Path
-from typing import ClassVar, cast
+from typing import TYPE_CHECKING, ClassVar, cast
 
 from datasets import Dataset
 from verifiers.types import task_payload_from_info
@@ -19,15 +17,30 @@ from .config import (
     merge_config_value,
     resolve_config_object,
 )
-from .utils.binding_utils import BindingMap, normalize_binding_map
-from .types import ConfigMap, Handler, PromptInput, TaskRow, TaskRowsSource
+from .utils.binding_utils import (
+    BindingMap,
+    normalize_binding_map,
+    normalize_object_map,
+)
 from .state import State
 from .task import Task
-from .toolset import merge_toolsets, normalize_toolset_collection
+from .toolset import ToolsetCollection, merge_toolsets, normalize_toolset_collection
 from .user import normalize_user
 from .utils.prompt_utils import normalize_system_prompt
 from .utils.taskset_utils import dataset_info_with_task, discover_sibling_dir
 from .utils.taskset_utils import rows_from_source
+from .types import (
+    ConfigData,
+    ConfigMap,
+    Handler,
+    Objects,
+    PromptInput,
+    TaskRow,
+    TaskRowsSource,
+)
+
+if TYPE_CHECKING:
+    from .harness import Harness
 
 
 TaskSourceValue = TaskRowsSource | None
@@ -39,7 +52,8 @@ class TasksetKwargs(TypedDict):
     system_prompt: NotRequired[PromptInput | None]
     user: NotRequired[Handler | str | ConfigMap | None]
     bindings: NotRequired[BindingMap | None]
-    toolsets: NotRequired[Iterable[object]]
+    objects: NotRequired[Objects | None]
+    toolsets: NotRequired[ToolsetCollection]
     stops: NotRequired[Iterable[Handler]]
     setups: NotRequired[Iterable[Handler]]
     updates: NotRequired[Iterable[Handler]]
@@ -61,8 +75,9 @@ class Taskset:
         system_prompt: PromptInput | None = None,
         user: Handler | str | ConfigMap | None = None,
         bindings: BindingMap | None = None,
+        objects: Objects | None = None,
         # Collection fields.
-        toolsets: Iterable[object] = (),
+        toolsets: ToolsetCollection | None = None,
         stops: Iterable[Handler] = (),
         setups: Iterable[Handler] = (),
         updates: Iterable[Handler] = (),
@@ -71,7 +86,7 @@ class Taskset:
         advantages: Iterable[Handler] = (),
         cleanups: Iterable[Handler] = (),
         # Config.
-        config: TasksetConfig | ConfigMap | None = None,
+        config: TasksetConfig | None = None,
     ):
         self.config = type(self).config_type.from_config(config)
         source_value = resolve_config_object(
@@ -102,10 +117,17 @@ class Taskset:
         self.user = normalize_user(merge_config_value(user, self.config.user))
         self.bindings = {
             **self.config.bindings,
-            **normalize_binding_map(bindings, "Taskset bindings", allow_objects=False),
+            **normalize_binding_map(bindings, "Taskset bindings"),
+        }
+        self.objects = {
+            **{
+                str(key): resolve_config_object(item)
+                for key, item in self.config.objects.items()
+            },
+            **normalize_object_map(objects, "Taskset objects"),
         }
         self.toolsets, self.named_toolsets = merge_toolsets(
-            toolsets, self.config.toolsets
+            toolsets or (), self.config.toolsets
         )
         handlers = merge_config_handler_map(
             {
@@ -126,11 +148,11 @@ class Taskset:
         self.rewards = handlers["reward"]
         self.advantages = handlers["advantage"]
         self.cleanups = handlers["cleanup"]
-        self._rows: list[dict[str, object]] | None = None
-        self._eval_rows: list[dict[str, object]] | None = None
+        self._rows: list[ConfigData] | None = None
+        self._eval_rows: list[ConfigData] | None = None
         self._dataset: Dataset | None = None
         self._eval_dataset: Dataset | None = None
-        self._attached_harnesses: weakref.WeakSet[object] = weakref.WeakSet()
+        self._attached_harnesses: weakref.WeakSet["Harness"] = weakref.WeakSet()
 
     @classmethod
     def config_schema(cls) -> str:
@@ -170,7 +192,7 @@ class Taskset:
     def add_cleanup(self, fn: Handler) -> None:
         self._add_handler(self.cleanups, fn)
 
-    def attach_harness(self, harness: object) -> None:
+    def attach_harness(self, harness: "Harness") -> None:
         self._attached_harnesses.add(harness)
 
     def get_skills_dir(self) -> Traversable | Path | None:
@@ -182,23 +204,21 @@ class Taskset:
 
     def _refresh_attached_harnesses(self) -> None:
         for harness in list(self._attached_harnesses):
-            resolve_runtime = getattr(harness, "resolve_runtime", None)
-            if callable(resolve_runtime):
-                setattr(harness, "runtime", resolve_runtime())
+            harness.runtime = harness.resolve_runtime()
 
-    def rows(self) -> list[dict[str, object]]:
+    def rows(self) -> list[ConfigData]:
         if self._rows is None:
             self._rows = rows_from_source(self.source)
         return self._rows
 
-    def eval_rows(self) -> list[dict[str, object]]:
+    def eval_rows(self) -> list[ConfigData]:
         if self.eval_source is None:
             return self.rows()
         if self._eval_rows is None:
             self._eval_rows = rows_from_source(self.eval_source)
         return self._eval_rows
 
-    def task(self, row: Mapping[str, object]) -> Task:
+    def task(self, row: ConfigMap) -> Task:
         task = Task(row)
         task["taskset_id"] = self.taskset_id
         task_id = task.get("task_id")
@@ -209,7 +229,7 @@ class Taskset:
         task["task_id"] = str(task_id if task_id is not None else uuid.uuid4().hex)
         return task.freeze()
 
-    def to_task(self, value: Mapping[str, object] | Task | str) -> Task:
+    def to_task(self, value: ConfigMap | Task | str) -> Task:
         if isinstance(value, Task):
             return value
         if isinstance(value, str):
@@ -253,7 +273,7 @@ class Taskset:
     def __len__(self) -> int:
         return len(self.rows())
 
-    def _dataset_row(self, row: TaskRow, index: int) -> dict[str, object]:
+    def _dataset_row(self, row: TaskRow, index: int) -> ConfigData:
         normalized = deepcopy(dict(row))
         normalized.setdefault("example_id", index)
         if "prompt" not in normalized:
@@ -264,7 +284,7 @@ class Taskset:
                 else []
             )
         task_payload = dict(self.task(normalized))
-        dataset_row: dict[str, object] = {
+        dataset_row: ConfigData = {
             "prompt": task_payload["prompt"],
             "example_id": normalized["example_id"],
             "info": dataset_info_with_task(task_payload),

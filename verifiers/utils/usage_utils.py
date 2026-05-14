@@ -4,7 +4,7 @@ from types import MappingProxyType
 from verifiers.types import Response, TokenUsage, Usage
 
 
-def extract_usage_tokens(response: Response) -> tuple[int, int]:
+def response_usage_tokens(response: Response) -> tuple[int, int]:
     usage = response.usage
     if usage is None:
         return 0, 0
@@ -53,7 +53,7 @@ class StateUsageTracker:
     def increment_from_response(self, response: Response) -> None:
         if response.usage is None:
             return
-        input_tokens, output_tokens = extract_usage_tokens(response)
+        input_tokens, output_tokens = response_usage_tokens(response)
         self.increment(input_tokens, output_tokens, mark_seen=True)
 
     def snapshot(self) -> TokenUsage | None:
@@ -94,7 +94,7 @@ def compute_context_token_metrics(
         response = step.get("response")
         if not isinstance(response, Response) or response.usage is None:
             continue
-        prompt_tokens, completion_tokens = extract_usage_tokens(response)
+        prompt_tokens, completion_tokens = response_usage_tokens(response)
         last_step_total = prompt_tokens + completion_tokens
         found = True
         break
@@ -108,7 +108,7 @@ def compute_context_token_metrics(
         response = step.get("response")
         if not isinstance(response, Response) or response.usage is None:
             continue
-        _, completion_tokens = extract_usage_tokens(response)
+        _, completion_tokens = response_usage_tokens(response)
         total_completion += completion_tokens
 
     return {

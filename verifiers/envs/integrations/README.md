@@ -7,7 +7,7 @@ Integrations with third-party environment libraries, which may require additiona
 | `TextArenaEnv` | `ta` | `uv add 'verifiers[ta]'` |
 | `ReasoningGymEnv` | `rg` | `uv add 'verifiers[rg]'` |
 | `BrowserEnv` | `browser` | `uv add 'verifiers[browser]'` |
-| `OpenEnvEnv` | `openenv` | `uv add 'verifiers[openenv]'` |
+| `OpenEnvEnv` | none | `uv add verifiers` |
 
 ## TextArenaEnv
 
@@ -137,7 +137,9 @@ Locally, export these in your shell. On the [Environments Hub](https://app.prime
 
 Drop-in adapter for [OpenEnv](https://github.com/meta-pytorch/OpenEnv) environments. Always runs in Prime Sandboxes and uses OpenEnv's schema to choose between simulation (step/reset) and MCP tool-calling.
 
-Current verifiers integration targets the released `openenv-core==0.2.1` contract.
+The Verifiers adapter uses OpenEnv's public async clients. The bundled OpenEnv
+project under `proj/` declares its own server dependencies for the sandbox
+image.
 
 ### Quick Start
 
@@ -162,33 +164,33 @@ uv run vf-build my-openenv
 ```
 
 ```python
-# environments/my_openenv/my_openenv.py
-from typing import Any
 import verifiers as vf
-from verifiers.envs.integrations.openenv_env import OpenEnvEnv
+from verifiers.types import Messages, UserMessage
 
-def render_prompt(observation: Any) -> list[dict[str, str]]:
-    if not isinstance(observation, dict):
-        raise RuntimeError("Expected dict observation")
-    prompt = observation.get("prompt")
-    if isinstance(prompt, str) and prompt.strip():
-        return [{"role": "user", "content": prompt}]
-    raise RuntimeError("Observation did not include a renderable prompt")
+
+class OpenEnvPromptRenderer:
+    def __call__(self, observation: object) -> Messages:
+        if isinstance(observation, dict):
+            prompt = observation.get("prompt")
+            if isinstance(prompt, str) and prompt.strip():
+                return [UserMessage(content=prompt)]
+        raise RuntimeError("Observation did not include a renderable prompt")
+
 
 def load_environment(
     num_train_examples: int = 100,
     num_eval_examples: int = 50,
     seed: int = 0,
 ) -> vf.Environment:
-    return OpenEnvEnv(
-        prompt_renderer=render_prompt,
+    return vf.OpenEnvEnv(
+        prompt_renderer=OpenEnvPromptRenderer(),
         num_train_examples=num_train_examples,
         num_eval_examples=num_eval_examples,
         seed=seed,
     )
 ```
 
-Define a `prompt_renderer` function that converts each OpenEnv observation into a non-empty chat message list for the model prompt.
+Define a prompt renderer that converts each OpenEnv observation into a non-empty chat message list for the model prompt.
 
 ### Upstream-Matching Examples
 

@@ -11,6 +11,8 @@ This guide walks through building environments in Verifiers, from simple single-
 ## Table of Contents
 
 - [Your First Environment](#your-first-environment)
+- [V1 Shared Dependencies](#v1-shared-dependencies)
+- [V1 Message Access](#v1-message-access)
 - [Datasets](#datasets)
   - [Building the Prompt](#building-the-prompt)
   - [Evaluation Datasets](#evaluation-datasets)
@@ -20,13 +22,13 @@ This guide walks through building environments in Verifiers, from simple single-
   - [Multiple Reward Functions](#multiple-reward-functions)
   - [Execution Order and State](#execution-order-and-state)
   - [Group-Based Reward Functions](#group-based-reward-functions)
-  - [Shared Objects](#shared-objects)
+  - [Shared Objects (v0 Rubrics)](#shared-objects-v0-rubrics)
   - [Rubric Groups](#rubric-groups)
   - [Metrics and Monitor Rubrics](#metrics-and-monitor-rubrics)
 - [Tool Environments](#tool-environments)
   - [MCP Tool Environments](#mcp-tool-environments)
   - [Stateful Tool Environments](#stateful-tool-environments)
-- [Custom Multi-Turn Environments](#custom-multi-turn-environments)
+- [Custom Multi-Turn Environments (v0)](#custom-multi-turn-environments-v0)
   - [The Rollout Loop](#the-rollout-loop)
   - [Stop Conditions](#stop-conditions)
   - [Error Handling](#error-handling)
@@ -75,6 +77,65 @@ When running this environment, each row in the dataset becomes a **rollout**:
 3. The reward function scores the result
 
 In `SingleTurnEnv`, the simplest environment type, just a single model response occurs per rollout. More complex environment types will allow us to add tool use or other custom interaction protocols.
+
+## V1 Shared Dependencies
+
+In v1 taskset/harness environments, shared dependencies live on the taskset and
+are injected into named lifecycle or scoring functions through bindings:
+
+```python
+import re
+import verifiers as vf
+
+
+class AnswerExtractor:
+    def __init__(self):
+        self.pattern = re.compile(r"<answer>(.*?)</answer>", re.DOTALL)
+
+    def __call__(self, completion: list[dict[str, object]]) -> str:
+        message = vf.get_messages(completion, role="assistant")[-1]
+        text = str(message.content or "")
+        match = self.pattern.search(text)
+        return "" if match is None else match.group(1).strip()
+
+
+@vf.reward
+async def exact(task, state, extract_answer) -> float:
+    response = extract_answer(state.get("completion") or [])
+    return float(response == task["answer"])
+
+
+def load_environment(config: vf.EnvConfig) -> vf.Env:
+    return vf.Env(
+        taskset=vf.Taskset(
+            source=source,
+            rewards=[exact],
+            objects={"extract_answer": AnswerExtractor},
+            bindings={"exact.extract_answer": "objects.extract_answer"},
+            config=config.taskset,
+        )
+    )
+```
+
+`objects` values are instances or zero-argument factories. Factories are lazy
+and resolve once per taskset runtime. Bindings keep the reward signature explicit
+without moving shared dependencies into global state.
+
+## V1 Message Access
+
+v1 exposes one transcript selector on `verifiers.v1`:
+
+```python
+message = vf.get_messages(state["completion"], role="assistant")[-1]
+response = str(message.content or "")
+
+assistant_turns = len(vf.get_messages(state["completion"], role="assistant"))
+```
+
+Use `vf.get_messages(...)` to get the transcript as typed message objects,
+optionally filtered by role. Index or slice the returned list with ordinary
+Python. The helper does not parse answers; task-specific extraction belongs in
+ordinary Python or a taskset-bound object.
 
 ## Datasets
 
@@ -277,9 +338,12 @@ async def diversity_bonus(completions) -> list[float]:
 rubric = vf.Rubric(funcs=[correct_answer, diversity_bonus])
 ```
 
-### Shared Objects
+### Shared Objects (v0 Rubrics)
 
-Beyond rollout data, reward functions can request static objects that live within the Rubric class. These are stored in the Rubric's `class_objects` dictionary, and can be added after initialization via `add_class_object()`:
+In v0 rubric environments, reward functions can request static helper objects
+that live within the Rubric class. These are stored in the Rubric's
+`class_objects` dictionary, and can be added after initialization via
+`add_class_object()`:
 
 ```python
 rubric = vf.Rubric(funcs=[my_reward_func])
@@ -290,23 +354,13 @@ async def my_reward_func(completion, my_helper) -> float:
     return await my_helper.score(completion)
 ```
 
-Two common types of shared objects are **parsers** and **judges**.
+For new v1 taskset/harness environments, prefer taskset-owned `objects` and
+`bindings` as shown in [V1 Shared Dependencies](#v1-shared-dependencies).
 
-Parsers encapsulate logic for extracting structured content from model responses. When passed to a rubric, the parser is automatically available to reward functions:
-
-```python
-parser = vf.XMLParser(["reasoning", "answer"])
-rubric = vf.Rubric(funcs=[my_reward_func], parser=parser)
-
-async def my_reward_func(completion, parser) -> float:
-    parsed = parser.parse_answer(completion)
-    # parsed.reasoning, parsed.answer available
-    ...
-```
-
-Parsers can also be passed to environments, where they are often used during rollouts to validate or extract content. This allows parsing logic to be shared between the environment's interaction loop and the rubric's reward functions.
-
-Judges are used for tasks where deterministic evaluation is impractical, and an LLM is used to score responses. **JudgeRubric** is a built-in class which stores an LLM client inside the rubric, and provides a `judge` callable to reward functions for scoring responses:
+Judges are used for tasks where deterministic evaluation is impractical, and an
+LLM is used to score responses. **JudgeRubric** is a built-in v0 class which
+stores an LLM client inside the rubric, and provides a `judge` callable to reward
+functions for scoring responses:
 
 ```python
 judge_rubric = vf.JudgeRubric(
@@ -517,7 +571,7 @@ Labels are passed to the Prime Sandboxes API and can be used for organizing, fil
 
 Stateful environments often define methods decorated with `@vf.cleanup` (called after each rollout) or `@vf.teardown` (called once at environment shutdown) for resource management. These decorators, along with `@vf.stop` for custom stop conditions (boolean functions checked after each turn), are powerful tools for rollout lifecycle control in custom `MultiTurnEnv` subclasses.
 
-## Custom Multi-Turn Environments
+## Custom Multi-Turn Environments (v0)
 
 For interaction patterns beyond tool calling—games, simulations, or other custom protocols—`MultiTurnEnv` can be subclassed directly, exposing full control over the rollout loop's behavior.
 
@@ -537,26 +591,39 @@ The `env_response` method is an abstract method that must be overridden by all `
 
 ```python
 class MyGameEnv(vf.MultiTurnEnv):
+    def __init__(self, dataset, rubric, extract_action):
+        super().__init__(dataset=dataset, rubric=rubric)
+        self.extract_action = extract_action
+
     async def env_response(self, messages: vf.Messages, state: vf.State) -> vf.Messages:
         """Generate the environment's response after each model turn."""
-        parsed = self.parser.parse(messages)
-        action = parsed.action
+        action = self.extract_action(messages)
         feedback = process_action(action)
         return [{"role": "user", "content": feedback}]
 
 
-async def correct_action(parser, completion, answer) -> float:
-    parsed = parser.parse(completion)
-    return 1.0 if parsed.action == answer else 0.0
+class ActionExtractor:
+    def __call__(self, messages: vf.Messages) -> str:
+        text = messages[-1]["content"] if messages else ""
+        return str(text).strip()
+
+
+async def correct_action(extract_action, completion, answer) -> float:
+    return 1.0 if extract_action(completion) == answer else 0.0
 
 
 def load_environment():
-    parser = vf.XMLParser(fields=["action"])
-    rubric = vf.Rubric(funcs=[correct_action], parser=parser)
-    return MyGameEnv(dataset=dataset, rubric=rubric, parser=parser)
+    extract_action = ActionExtractor()
+    rubric = vf.Rubric(funcs=[correct_action])
+    rubric.add_class_object("extract_action", extract_action)
+    return MyGameEnv(dataset=dataset, rubric=rubric, extract_action=extract_action)
 ```
 
-`env_response` receives the full conversation history thus far (and `state`) and returns a list of _new_ messages to append. When a parser is passed to the environment, it becomes available as `self.parser`. Passing the same parser to the rubric makes it available to reward functions by name. For tool environments, `env_response` typically executes tool calls and returns results. For games or other custom protocols, this might involve parsing structured output (as above) and returning state updates or feedback.
+`env_response` receives the full conversation history thus far (and `state`) and
+returns a list of _new_ messages to append. For tool environments,
+`env_response` typically executes tool calls and returns results. For games or
+other custom protocols, this might involve extracting structured output and
+returning state updates or feedback.
 
 Several other methods can optionally be overridden for more control in complex custom environments:
 
@@ -893,7 +960,7 @@ Supported third-party environment integrations include:
 - **`BrowserEnv`** — unified browser automation via [Browserbase](https://browserbase.com) with DOM and CUA modes
 - **`OpenEnvEnv`** — wraps OpenEnv gym and MCP contracts using Prime Sandboxes with prebuilt images referenced from `.build.json`
 
-These require additional dependencies installed via extras (e.g., `uv add 'verifiers[ta]'` for TextArena, `uv add 'verifiers[browser]'` for BrowserEnv, `uv add 'verifiers[openenv]'` for OpenEnvEnv). For OpenEnv environments, build the bundled project image with `prime env build <env-id>` before evaluation or training.
+These require additional dependencies installed via extras (e.g., `uv add 'verifiers[ta]'` for TextArena, `uv add 'verifiers[browser]'` for BrowserEnv). OpenEnvEnv uses the base Verifiers install; the bundled OpenEnv project under `proj/` owns its server dependencies and must be built with `uv run vf-build <env-id>` before evaluation or training.
 
 Newer and more experimental environment classes include:
 

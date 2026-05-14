@@ -1,8 +1,6 @@
-from __future__ import annotations
-
 from collections.abc import Iterable, Mapping
 from copy import deepcopy
-from typing import Any, SupportsIndex
+from typing import SupportsIndex
 
 from verifiers.types import assert_json_serializable
 
@@ -38,7 +36,7 @@ class FrozenDict(dict):
     def clear(self) -> None:
         raise TypeError("Frozen task mappings are immutable.")
 
-    def __ior__(self, value: object) -> FrozenDict:
+    def __ior__(self, value: object) -> "FrozenDict":
         raise TypeError("Frozen task mappings are immutable.")
 
 
@@ -70,10 +68,10 @@ class FrozenList(list):
     def clear(self) -> None:
         raise TypeError("Frozen task lists are immutable.")
 
-    def __iadd__(self, values: Iterable[Any]) -> FrozenList:
+    def __iadd__(self, values: Iterable[object]) -> "FrozenList":
         raise TypeError("Frozen task lists are immutable.")
 
-    def __imul__(self, value: SupportsIndex) -> FrozenList:
+    def __imul__(self, value: SupportsIndex) -> "FrozenList":
         raise TypeError("Frozen task lists are immutable.")
 
     def sort(self, *args: object, **kwargs: object) -> None:

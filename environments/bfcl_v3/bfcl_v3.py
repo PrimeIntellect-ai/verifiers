@@ -1,21 +1,28 @@
-from __future__ import annotations
-
 import json
 import re
 from collections.abc import Mapping, Sequence
-from typing import Any, cast
+from typing import cast
 
-import verifiers as vf0
-import verifiers.v1 as vf
-from verifiers.types import AssistantMessage, MessageContent, Messages, Tool, ToolCall
-from verifiers.utils.eval_utils import quiet_datasets
-from verifiers.utils.message_utils import normalize_messages
+import verifiers as vf
+from verifiers.types import (
+    AssistantMessage,
+    MessageContent,
+    Messages,
+    Tool,
+    ToolCall,
+    ToolMessage,
+    UserMessage,
+)
+from verifiers.utils.message_utils import message_role, normalize_messages
 
 from verifiers.v1.utils.endpoint_utils import assistant_completion_from_messages
 from verifiers.v1.utils.json_utils import json_args
+from verifiers.v1.types import ConfigMap
 
 BFCL_TOOLSET_REF = "bfcl_v3:load_bfcl_toolset"
 _BFCL_PATCHED = False
+BFCLRawMessage = str | ConfigMap
+BFCLRawTurn = str | ConfigMap | Sequence[BFCLRawMessage] | None
 
 
 class BFCLTasksetConfig(vf.TasksetConfig):
@@ -77,7 +84,7 @@ def bfcl_tool_defs(functions: object) -> list[Tool]:
             Tool(
                 name=str(function["name"]),
                 description=str(function.get("description") or ""),
-                parameters=dict(cast(Mapping[str, object], function["parameters"])),
+                parameters=dict(cast(ConfigMap, function["parameters"])),
                 strict=False,
             )
         )
@@ -92,12 +99,14 @@ class BFCLSchemaTool:
         self.tool_def = tool_def
 
     async def __call__(self, state: vf.State, **arguments: object) -> str:
-        calls = cast(list[object], state.setdefault("bfcl_executed_tool_calls", []))
+        calls = cast(
+            list[vf.ConfigData], state.setdefault("bfcl_executed_tool_calls", [])
+        )
         calls.append({self.name: arguments})
         return "recorded"
 
 
-def load_bfcl_toolset(task: Mapping[str, object]) -> vf.Toolset:
+def load_bfcl_toolset(task: ConfigMap) -> vf.Toolset:
     return vf.Toolset(
         tools=[
             BFCLSchemaTool(tool_def)
@@ -106,15 +115,15 @@ def load_bfcl_toolset(task: Mapping[str, object]) -> vf.Toolset:
     )
 
 
-def bfcl_functions(task: Mapping[str, object]) -> object:
+def bfcl_functions(task: ConfigMap) -> object:
     return task.get("function_with_hints") or task["function"]
 
 
-def bfcl_missed_function(task: Mapping[str, object]) -> Mapping[str, object]:
+def bfcl_missed_function(task: ConfigMap) -> ConfigMap:
     value = task.get("missed_function_with_hints") or task.get("missed_function") or {}
     if not isinstance(value, Mapping):
         raise TypeError("BFCL missed_function must be a mapping.")
-    return cast(Mapping[str, object], value)
+    return cast(ConfigMap, value)
 
 
 def build_source(test_category: str, examples_per_category: int = -1):
@@ -148,13 +157,13 @@ def build_source(test_category: str, examples_per_category: int = -1):
                 test_category,
                 entry,
                 hinted_entry,
-                cast(Mapping[str, object] | None, ground_truth),
+                cast(ConfigMap | None, ground_truth),
             )
             if is_multi_turn(test_category):
                 max_steps = maximum_step_limit()
                 row["max_steps_per_turn"] = max_steps
                 row["max_turns"] = (
-                    len(cast(Sequence[object], row["question"])) * max_steps
+                    len(cast(Sequence[BFCLRawTurn], row["question"])) * max_steps
                 )
             else:
                 row["max_turns"] = 1
@@ -167,15 +176,15 @@ def build_source(test_category: str, examples_per_category: int = -1):
 
 def bfcl_row(
     test_category: str,
-    entry: Mapping[str, object],
-    hinted_entry: Mapping[str, object],
-    ground_truth: Mapping[str, object] | None,
-) -> dict[str, object]:
-    question = cast(list[object], entry["question"])
+    entry: ConfigMap,
+    hinted_entry: ConfigMap,
+    ground_truth: ConfigMap | None,
+) -> vf.ConfigData:
+    question = cast(list[BFCLRawTurn], entry["question"])
     first_turn_system_prompt, first_turn_prompt = split_system_prompt(
         normalize_turn(question[0])
     )
-    row: dict[str, object] = {
+    row: vf.ConfigData = {
         "task_id": str(entry["id"]),
         "id": str(entry["id"]),
         "category": test_category,
@@ -205,20 +214,20 @@ def bfcl_row(
     return row
 
 
-def normalize_turn(value: object) -> list[dict[str, object]]:
+def normalize_turn(value: object) -> list[vf.ConfigData]:
     if value is None:
         return []
     if isinstance(value, str):
         return [{"role": "user", "content": value}]
     if isinstance(value, Mapping):
-        return [dict(cast(Mapping[str, object], value))]
+        return [dict(cast(ConfigMap, value))]
     if isinstance(value, Sequence):
         messages = []
         for item in value:
             if isinstance(item, str):
                 messages.append({"role": "user", "content": item})
             elif isinstance(item, Mapping):
-                messages.append(dict(cast(Mapping[str, object], item)))
+                messages.append(dict(cast(ConfigMap, item)))
             else:
                 raise TypeError(f"Unsupported BFCL message item: {type(item).__name__}")
         return messages
@@ -226,8 +235,8 @@ def normalize_turn(value: object) -> list[dict[str, object]]:
 
 
 def split_system_prompt(
-    messages: Sequence[Mapping[str, object]],
-) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    messages: Sequence[ConfigMap],
+) -> tuple[list[vf.ConfigData], list[vf.ConfigData]]:
     system_prompt = []
     prompt = []
     for message in messages:
@@ -243,33 +252,21 @@ def maximum_step_limit() -> int:
     return cast(int, MAXIMUM_STEP_LIMIT)
 
 
-def model_name(state: Mapping[str, object]) -> str:
+def model_name(state: ConfigMap) -> str:
     runtime = state.get("runtime") or {}
     if isinstance(runtime, Mapping):
-        runtime_map = cast(Mapping[str, object], runtime)
+        runtime_map = cast(ConfigMap, runtime)
         model = runtime_map.get("model")
         if isinstance(model, str) and model:
             return model
     return "unknown"
 
 
-def assistant_tool_calls(state: Mapping[str, object]) -> list[ToolCall]:
+def assistant_tool_calls(state: ConfigMap) -> list[ToolCall]:
     completion = state.get("completion") or []
     if not isinstance(completion, Sequence):
         return []
-    for message in reversed(completion):
-        if message_role(message) != "assistant":
-            continue
-        return parse_tool_calls(message)
-    return []
-
-
-def message_role(message: object) -> str | None:
-    if isinstance(message, Mapping):
-        message_map = cast(Mapping[str, object], message)
-        role = message_map.get("role")
-        return str(role) if role is not None else None
-    return getattr(message, "role", None)
+    return parse_tool_calls(vf.get_messages(completion, role="assistant")[-1])
 
 
 def parse_tool_calls(message: object) -> list[ToolCall]:
@@ -277,7 +274,7 @@ def parse_tool_calls(message: object) -> list[ToolCall]:
         return list(message.tool_calls or [])
     raw_tool_calls: object
     if isinstance(message, Mapping):
-        message_map = cast(Mapping[str, object], message)
+        message_map = cast(ConfigMap, message)
         raw_tool_calls = message_map.get("tool_calls") or []
     else:
         raw_tool_calls = getattr(message, "tool_calls", []) or []
@@ -290,10 +287,10 @@ def parse_tool_calls(message: object) -> list[ToolCall]:
             continue
         if not isinstance(raw_call, Mapping):
             continue
-        raw_call = cast(Mapping[str, object], raw_call)
+        raw_call = cast(ConfigMap, raw_call)
         function = raw_call.get("function")
         if isinstance(function, Mapping):
-            function_map = cast(Mapping[str, object], function)
+            function_map = cast(ConfigMap, function)
             name = str(function_map.get("name") or "")
             arguments = function_map.get("arguments") or "{}"
         else:
@@ -313,7 +310,7 @@ def parse_tool_calls(message: object) -> list[ToolCall]:
     return calls
 
 
-def convert_to_gorilla(tool_calls: list[ToolCall]) -> list[dict[str, object]]:
+def convert_to_gorilla(tool_calls: list[ToolCall]) -> list[vf.ConfigData]:
     decoded_output = []
     for tool_call in tool_calls:
         decoded_output.append({tool_call.name: json_args(tool_call.arguments)})
@@ -334,7 +331,7 @@ def json_clone(value: object) -> object:
 
 
 @vf.reward(weight=1.0)
-async def bfcl_reward(task: Mapping[str, object], state: vf.State) -> float:
+async def bfcl_reward(task: ConfigMap, state: vf.State) -> float:
     patch_bfcl_eval()
     from bfcl_eval.utils import is_multi_turn, is_relevance_or_irrelevance
 
@@ -346,7 +343,7 @@ async def bfcl_reward(task: Mapping[str, object], state: vf.State) -> float:
     return ast_reward(task, state)
 
 
-def relevance_reward(task: Mapping[str, object], state: Mapping[str, object]) -> float:
+def relevance_reward(task: ConfigMap, state: ConfigMap) -> float:
     patch_bfcl_eval()
     from bfcl_eval.utils import is_empty_output
 
@@ -361,7 +358,7 @@ def relevance_reward(task: Mapping[str, object], state: Mapping[str, object]) ->
     return float(contain_func_call)
 
 
-def ast_reward(task: Mapping[str, object], state: Mapping[str, object]) -> float:
+def ast_reward(task: ConfigMap, state: ConfigMap) -> float:
     patch_bfcl_eval()
     from bfcl_eval.constants.enums import Language
     from bfcl_eval.eval_checker.ast_eval.ast_checker import ast_checker
@@ -397,7 +394,7 @@ def ast_reward(task: Mapping[str, object], state: Mapping[str, object]) -> float
     return float(bool(checker_result["valid"]))
 
 
-def multi_turn_reward(task: Mapping[str, object], state: Mapping[str, object]) -> float:
+def multi_turn_reward(task: ConfigMap, state: ConfigMap) -> float:
     patch_bfcl_eval()
     from bfcl_eval.eval_checker.multi_turn_eval.multi_turn_checker import (
         multi_turn_checker,
@@ -468,7 +465,7 @@ async def bfcl_multi_turn_program(
     ]
     prompt_messages = [message.model_dump(exclude_none=True) for message in messages]
 
-    def sync_completion() -> list[dict[str, object]]:
+    def sync_completion() -> list[vf.ConfigData]:
         rendered_messages = [
             message.model_dump(exclude_none=True) for message in messages
         ]
@@ -479,10 +476,10 @@ async def bfcl_multi_turn_program(
 
     category = str(task["category"])
     tool_defs = bfcl_tool_defs(bfcl_functions(task))
-    next_prompts = list(cast(Sequence[object], task["question"]))[1:]
+    next_prompts = list(cast(Sequence[list[vf.ConfigData]], task["question"]))[1:]
     holdout_function = bfcl_missed_function(task)
-    initial_config = cast(dict[Any, Any], json_clone(task.get("initial_config") or {}))
-    involved_classes = cast(list[Any], json_clone(task["involved_classes"]))
+    initial_config = cast(vf.ConfigData, json_clone(task.get("initial_config") or {}))
+    involved_classes = cast(list[str], json_clone(task["involved_classes"]))
     max_steps_per_turn = int(task.get("max_steps_per_turn") or maximum_step_limit())
     turn_idx = 0
     steps_per_turn = 0
@@ -533,7 +530,7 @@ async def bfcl_multi_turn_program(
             )
             for execution_result, tool_call in zip(execution_results, tool_calls):
                 messages.append(
-                    vf0.ToolMessage(
+                    ToolMessage(
                         tool_call_id=tool_call.id,
                         content=cast(MessageContent, execution_result),
                     )
@@ -556,7 +553,7 @@ async def bfcl_multi_turn_program(
             if next_prompt:
                 raise ValueError("BFCL holdout turns must not include user messages.")
             messages.append(
-                vf0.UserMessage(content=DEFAULT_USER_PROMPT_FOR_ADDITIONAL_FUNCTION_FC)
+                UserMessage(content=DEFAULT_USER_PROMPT_FOR_ADDITIONAL_FUNCTION_FC)
             )
         else:
             messages.extend(normalize_messages(cast(Messages, next_prompt)))
@@ -604,10 +601,11 @@ def load_harness(
     return vf.Harness(config=config)
 
 
-def load_v1_environment(
+def load_environment(
+    config: vf.EnvConfig,
+    *,
     test_category: str = "simple_python",
     examples_per_category: int = -1,
-    config: vf.EnvConfig | None = None,
 ) -> vf.Env:
     config = vf.EnvConfig(
         config,
@@ -621,27 +619,3 @@ def load_v1_environment(
         taskset=load_taskset(config=config.taskset),
         harness=load_harness(config=config.harness),
     )
-
-
-def load_environment(
-    test_categories: list[str] | None = None,
-    examples_per_category: int = -1,
-    **kwargs: object,
-) -> vf0.Environment:
-    patch_bfcl_eval()
-    from bfcl_eval.utils import parse_test_category_argument
-
-    categories = parse_test_category_argument(test_categories or ["all"])
-    with quiet_datasets():
-        envs = cast(
-            list[vf0.Environment],
-            [
-                load_v1_environment(
-                    test_category=category,
-                    examples_per_category=examples_per_category,
-                    config=kwargs.get("config"),
-                )
-                for category in categories
-            ],
-        )
-    return vf0.EnvGroup(envs=envs, env_names=categories)

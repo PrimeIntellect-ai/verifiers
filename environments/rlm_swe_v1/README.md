@@ -3,9 +3,23 @@
 v1 RLM coding environment using the R2E-Gym SWE taskset and `vf.RLM` harness.
 
 ```python
-from rlm_swe_v1 import load_environment
+import verifiers as vf
 
-env = load_environment()
+env = vf.load_environment("rlm-swe-v1")
+```
+
+Tune the taskset and harness through typed v1 config objects:
+
+```python
+import verifiers as vf
+from rlm_swe_v1 import RlmSweTasksetConfig, load_environment
+
+env = load_environment(
+    config=vf.EnvConfig(
+        taskset=RlmSweTasksetConfig(timeout_minutes=90),
+        harness=vf.RLMConfig(rlm_repo_ref="main", rlm_tools=["bash", "edit"]),
+    )
+)
 ```
 
 The taskset is fully implemented in this environment package on the v1 stack.

@@ -1,9 +1,8 @@
-from __future__ import annotations
-
 from typing import cast
 
 import pytest
 
+import verifiers.v1 as vf
 from verifiers.clients import Client
 from verifiers.types import RolloutInput
 
@@ -12,7 +11,7 @@ from environments.hello_group_reward_v1.hello_group_reward_v1 import load_enviro
 
 @pytest.mark.asyncio
 async def test_hello_group_reward_v1_scores_full_group_lifecycle() -> None:
-    env = load_environment(num_examples=1)
+    env = load_environment(num_examples=1, config=vf.EnvConfig())
     assert env.requires_group_rollouts
     assert env.provides_advantages
 

@@ -1,20 +1,19 @@
-from __future__ import annotations
-
 import asyncio
 import json
 import os
 import shutil
 import subprocess
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from copy import deepcopy
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, cast
+from typing import cast
 
 import verifiers as core_vf
-import verifiers.v1 as vf
+import verifiers as vf
 from verifiers.types import Tool
+from verifiers.v1.types import ConfigMap
 
 from tau2.agent.llm_agent import AGENT_INSTRUCTION, SYSTEM_PROMPT, LLMAgent
 from tau2.agent.llm_agent import is_valid_agent_history_message
@@ -64,7 +63,7 @@ def download_tau2_data() -> None:
             shutil.rmtree(temp_dir)
 
 
-def tau_msg_to_vf_dict(message: Message) -> dict[str, object]:
+def tau_msg_to_vf_dict(message: Message) -> vf.ConfigData:
     if isinstance(message, AssistantMessage):
         if message.tool_calls:
             return core_vf.AssistantMessage(
@@ -93,11 +92,11 @@ def tau_msg_to_vf_dict(message: Message) -> dict[str, object]:
     raise ValueError(f"Unknown tau2 message type: {type(message)}")
 
 
-def dump_tau_message(message: Message) -> dict[str, object]:
-    return cast(dict[str, object], message.model_dump(mode="json", exclude_none=True))
+def dump_tau_message(message: Message) -> vf.ConfigData:
+    return cast(vf.ConfigData, message.model_dump(mode="json", exclude_none=True))
 
 
-def load_tau_message(payload: Mapping[str, object]) -> Message:
+def load_tau_message(payload: ConfigMap) -> Message:
     role = payload.get("role")
     if role == "assistant":
         return AssistantMessage.model_validate(payload)
@@ -114,9 +113,9 @@ class Tau2Session:
     def __init__(
         self,
         domain: str,
-        task_payload: Mapping[str, object],
+        task_payload: ConfigMap,
         user_model: str,
-        user_args: Mapping[str, object],
+        user_args: ConfigMap,
         max_steps: int,
         max_errors: int,
     ):
@@ -127,7 +126,7 @@ class Tau2Session:
         self.max_steps = max_steps
         self.max_errors = max_errors
         self.ready = False
-        self.initial_prompt_messages: list[dict[str, object]] = []
+        self.initial_prompt_messages: list[vf.ConfigData] = []
         self.recorded_assistant_messages = 0
         self.pending_agent_tool_calls: list[ToolCall] = []
         self.num_assistant_tool_calls = 0
@@ -268,11 +267,11 @@ class Tau2Session:
 
     async def record_assistant_from_state(self, state: vf.State) -> None:
         completion = state.get("completion") or []
-        assistant_messages = [
-            message
-            for message in completion
-            if isinstance(message, Mapping) and message.get("role") == "assistant"
-        ]
+        assistant_messages = (
+            vf.get_messages(completion, role="assistant")
+            if isinstance(completion, list)
+            else []
+        )
         for message in assistant_messages[self.recorded_assistant_messages :]:
             assistant_message = assistant_from_openai_message(message)
             self.agent_state.messages.append(assistant_message)
@@ -299,7 +298,7 @@ class Tau2Session:
         self.render_state(state)
 
     async def call_agent_tool(
-        self, name: str, arguments: Mapping[str, object], state: vf.State
+        self, name: str, arguments: ConfigMap, state: vf.State
     ) -> str:
         await self.record_assistant_from_state(state)
         tool_call = self.pop_pending_tool_call(name, arguments)
@@ -315,9 +314,7 @@ class Tau2Session:
         self.render_state(state)
         return tool_message.content or ""
 
-    def pop_pending_tool_call(
-        self, name: str, arguments: Mapping[str, object]
-    ) -> ToolCall:
+    def pop_pending_tool_call(self, name: str, arguments: ConfigMap) -> ToolCall:
         for index, tool_call in enumerate(self.pending_agent_tool_calls):
             if tool_call.name == name:
                 return self.pending_agent_tool_calls.pop(index)
@@ -328,7 +325,7 @@ class Tau2Session:
             requestor="assistant",
         )
 
-    async def user_messages(self, state: vf.State) -> list[dict[str, object]]:
+    async def user_messages(self, state: vf.State) -> list[vf.ConfigData]:
         await self.record_assistant_from_state(state)
         if self.done:
             self.render_state(state)
@@ -337,8 +334,8 @@ class Tau2Session:
         self.render_state(state)
         return messages
 
-    async def advance_until_agent(self, state: vf.State) -> list[dict[str, object]]:
-        messages: list[dict[str, object]] = []
+    async def advance_until_agent(self, state: vf.State) -> list[vf.ConfigData]:
+        messages: list[vf.ConfigData] = []
         while not (self.done or self.to_role == Role.AGENT):
             if self.to_role == Role.USER:
                 user_message, self.user_state = await asyncio.to_thread(
@@ -429,7 +426,7 @@ class Tau2Session:
 
 def make_tau2_setup(
     session_factory: Callable[..., Tau2Session],
-) -> Callable[..., object]:
+) -> vf.Handler:
     @vf.setup(priority=100)
     async def tau2_setup(task: vf.Task, state: vf.State) -> None:
         runtime = state.runtime_state()
@@ -449,37 +446,28 @@ def make_tau2_setup(
     return tau2_setup
 
 
-def assistant_from_openai_message(message: Mapping[str, object]) -> AssistantMessage:
+def assistant_from_openai_message(message: vf.AssistantMessage) -> AssistantMessage:
     tool_calls = []
-    for raw_tool_call in cast(list[object], message.get("tool_calls") or []):
-        if isinstance(raw_tool_call, str):
-            raw_tool_call = json.loads(raw_tool_call)
-        if not isinstance(raw_tool_call, Mapping):
-            raise TypeError("tau2 tool calls must be mappings.")
-        function = raw_tool_call.get("function") or {}
-        if function is not None and not isinstance(function, Mapping):
-            raise TypeError("tau2 tool call function payload must be a mapping.")
-        function = cast(Mapping[str, object], function)
-        arguments = function.get("arguments", raw_tool_call.get("arguments", "{}"))
+    for raw_tool_call in message.tool_calls or []:
+        arguments = raw_tool_call.arguments
         if isinstance(arguments, str):
             parsed_arguments = json.loads(arguments or "{}")
         else:
             parsed_arguments = arguments
-        name = function.get("name") or raw_tool_call.get("name") or ""
         tool_calls.append(
             ToolCall(
-                id=str(raw_tool_call.get("id") or f"call_{uuid.uuid4().hex[:8]}"),
-                name=str(name),
-                arguments=cast(dict[str, object], parsed_arguments),
+                id=raw_tool_call.id or f"call_{uuid.uuid4().hex[:8]}",
+                name=raw_tool_call.name,
+                arguments=cast(vf.ConfigData, parsed_arguments),
                 requestor="assistant",
             )
         )
-    content = message.get("content")
+    content = message.content
     return AssistantMessage(
         role="assistant",
         content=content if isinstance(content, str) and content else None,
         tool_calls=tool_calls or None,
-        raw_data=dict(message),
+        raw_data=message.model_dump(exclude_none=True),
     )
 
 
@@ -516,7 +504,7 @@ def source(domain: str, max_turns: int):
 def load_session_factory(
     domain: str,
     user_model: str,
-    user_args: Mapping[str, object],
+    user_args: ConfigMap,
     max_steps: int,
     max_errors: int,
 ) -> Callable[..., Tau2Session]:
@@ -531,7 +519,7 @@ def load_session_factory(
             task_info = json.loads(task_info)
         session = Tau2Session(
             domain=domain,
-            task_payload=cast(Mapping[str, object], task_info),
+            task_payload=cast(ConfigMap, task_info),
             user_model=user_model,
             user_args=user_args,
             max_steps=max_steps,
@@ -543,17 +531,17 @@ def load_session_factory(
     return load_session
 
 
-def make_tau2_tool(name: str, schema: Mapping[str, object]) -> Callable[..., object]:
+def make_tau2_tool(name: str, schema: ConfigMap) -> vf.Handler:
     async def tool(session: Tau2Session, state, **arguments) -> str:
         return await session.call_agent_tool(name, arguments, state)
 
-    function_schema = cast(Mapping[str, object], schema["function"])
+    function_schema = cast(ConfigMap, schema["function"])
     tool.__name__ = name
     tool.__doc__ = str(function_schema.get("description") or "")
     tool.tool_def = Tool(
         name=name,
         description=str(function_schema.get("description") or ""),
-        parameters=cast(dict[str, Any], function_schema.get("parameters") or {}),
+        parameters=cast(vf.ConfigData, function_schema.get("parameters") or {}),
         strict=False,
     )
     return tool
@@ -562,7 +550,7 @@ def make_tau2_tool(name: str, schema: Mapping[str, object]) -> Callable[..., obj
 def load_toolset(
     domain: str = "telecom",
     user_model: str = DEFAULT_USER_MODEL,
-    user_args: Mapping[str, object] = DEFAULT_LLM_ARGS_USER,
+    user_args: ConfigMap = DEFAULT_LLM_ARGS_USER,
     user_base_url: str = DEFAULT_USER_BASE_URL,
     user_api_key_var: str = DEFAULT_USER_API_KEY_VAR,
     max_steps: int = DEFAULT_MAX_STEPS,
@@ -575,7 +563,7 @@ def load_toolset(
     schemas = [tool.openai_schema for tool in environment.get_tools()]
     tools = [
         make_tau2_tool(
-            str(cast(Mapping[str, object], schema["function"])["name"]),
+            str(cast(ConfigMap, schema["function"])["name"]),
             schema,
         )
         for schema in schemas
@@ -597,8 +585,8 @@ def load_toolset(
 
 
 def tau2_user_args(
-    user_args: Mapping[str, object], user_base_url: str, user_api_key_var: str
-) -> dict[str, object]:
+    user_args: ConfigMap, user_base_url: str, user_api_key_var: str
+) -> vf.ConfigData:
     return {
         **dict(user_args),
         "api_base": user_base_url,
@@ -606,17 +594,17 @@ def tau2_user_args(
     }
 
 
-async def tau2_user(session: Tau2Session, state, transcript) -> list[dict[str, object]]:
+async def tau2_user(session: Tau2Session, state, transcript) -> list[vf.ConfigData]:
     _ = transcript
     return await session.user_messages(state)
 
 
 @vf.reward(weight=1.0)
 async def tau2_reward(task, state) -> float:
-    tau2_state = cast(Mapping[str, object], state["tau2"])
+    tau2_state = cast(ConfigMap, state["tau2"])
     messages = [
-        load_tau_message(cast(Mapping[str, object], message))
-        for message in cast(list[object], tau2_state["messages"])
+        load_tau_message(cast(ConfigMap, message))
+        for message in cast(list[ConfigMap], tau2_state["messages"])
     ]
     termination = tau2_state.get("termination_reason")
     if isinstance(termination, str):
@@ -680,7 +668,7 @@ async def tau2_num_user_tool_calls(task, state) -> float:
 class Tau2TasksetConfig(vf.TasksetConfig):
     domain: str = "telecom"
     user_model: str = DEFAULT_USER_MODEL
-    user_args: dict[str, object] | None = None
+    user_args: vf.ConfigData | None = None
     user_base_url: str = DEFAULT_USER_BASE_URL
     user_api_key_var: str = DEFAULT_USER_API_KEY_VAR
     max_steps: int = DEFAULT_MAX_STEPS
@@ -696,13 +684,13 @@ class Tau2Taskset(vf.Taskset):
         domain: str | None = None,
         *,
         user_model: str | None = None,
-        user_args: Mapping[str, object] | None = None,
+        user_args: ConfigMap | None = None,
         user_base_url: str | None = None,
         user_api_key_var: str | None = None,
         max_steps: int | None = None,
         max_errors: int | None = None,
         max_turns: int | None = None,
-        config: vf.TasksetConfig | Mapping[str, object] | None = None,
+        config: Tau2TasksetConfig | None = None,
     ):
         config = Tau2TasksetConfig(
             config,
@@ -762,13 +750,13 @@ def load_taskset(
     domain: str | None = None,
     *,
     user_model: str | None = None,
-    user_args: Mapping[str, object] | None = None,
+    user_args: ConfigMap | None = None,
     user_base_url: str | None = None,
     user_api_key_var: str | None = None,
     max_steps: int | None = None,
     max_errors: int | None = None,
     max_turns: int | None = None,
-    config: vf.TasksetConfig | Mapping[str, object] | None = None,
+    config: Tau2TasksetConfig | None = None,
 ) -> Tau2Taskset:
     return Tau2Taskset(
         domain=domain,
@@ -783,17 +771,17 @@ def load_taskset(
     )
 
 
-def load_v1_environment(
+def load_environment(
     domain: str = "telecom",
     *,
     user_model: str = DEFAULT_USER_MODEL,
-    user_args: Mapping[str, object] | None = None,
+    user_args: ConfigMap | None = None,
     user_base_url: str = DEFAULT_USER_BASE_URL,
     user_api_key_var: str = DEFAULT_USER_API_KEY_VAR,
     max_steps: int = DEFAULT_MAX_STEPS,
     max_errors: int = DEFAULT_MAX_ERRORS,
     max_turns: int = DEFAULT_MAX_STEPS,
-    config: vf.EnvConfig | None = None,
+    config: vf.EnvConfig,
 ) -> vf.Env:
     config = vf.EnvConfig(
         config,
@@ -808,32 +796,11 @@ def load_v1_environment(
             max_turns=max_turns,
         ),
     )
-    taskset = load_taskset(
-        config=config.taskset,
+    taskset_config = (
+        None if config.taskset is None else Tau2TasksetConfig(config.taskset)
     )
-    return vf.Env(taskset=taskset, harness=vf.Harness(config=config.harness))
-
-
-def load_environment(
-    domain: str = "telecom",
-    *,
-    user_model: str = DEFAULT_USER_MODEL,
-    user_args: Mapping[str, object] | None = None,
-    user_base_url: str = DEFAULT_USER_BASE_URL,
-    user_api_key_var: str = DEFAULT_USER_API_KEY_VAR,
-    max_steps: int = DEFAULT_MAX_STEPS,
-    max_errors: int = DEFAULT_MAX_ERRORS,
-    max_turns: int = DEFAULT_MAX_STEPS,
-    config: vf.EnvConfig | None = None,
-) -> vf.Env:
-    return load_v1_environment(
-        domain=domain,
-        user_model=user_model,
-        user_args=user_args,
-        user_base_url=user_base_url,
-        user_api_key_var=user_api_key_var,
-        max_steps=max_steps,
-        max_errors=max_errors,
-        max_turns=max_turns,
-        config=config,
+    harness_config = (
+        None if config.harness is None else vf.HarnessConfig(config.harness)
     )
+    taskset = load_taskset(config=taskset_config)
+    return vf.Env(taskset=taskset, harness=vf.Harness(config=harness_config))

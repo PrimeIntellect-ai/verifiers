@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import importlib
 import sys
 import types
@@ -603,8 +601,11 @@ async def test_group_update_config_runs_before_group_scoring() -> None:
 
 
 def test_lifecycle_fields_are_framework_managed() -> None:
+    assert vf.State is State
+
     task = Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
-    state = State.for_task(task)
+    state = vf.State.for_task(task)
+    assert state.uses_v1_contract is True
 
     for key, value in {
         "is_completed": True,
@@ -612,8 +613,7 @@ def test_lifecycle_fields_are_framework_managed() -> None:
         "is_truncated": True,
         "error": {"message": "boom"},
     }.items():
-        with pytest.raises(RuntimeError, match="framework-managed"):
-            State({key: value})
+        assert State({key: value})[key] == value
         with pytest.raises(RuntimeError, match="framework-managed"):
             state[key] = value
         with pytest.raises(RuntimeError, match="framework-managed"):
@@ -622,8 +622,16 @@ def test_lifecycle_fields_are_framework_managed() -> None:
             state.setdefault(key, value)
         with pytest.raises(RuntimeError, match="framework-managed"):
             state.pop(key)
+    state["user_field"] = "ok"
+    assert state.popitem() == ("user_field", "ok")
+
+    protected_only = State()._enable_v1_contract()
+    protected_only._set_completed(False)
+    protected_only._set_stop_condition(None, overwrite=True)
+    protected_only._set_truncated(False, overwrite=True)
+    protected_only._set_error(None)
     with pytest.raises(RuntimeError, match="framework-managed"):
-        state.popitem()
+        protected_only.popitem()
     with pytest.raises(RuntimeError, match="framework-managed"):
         state.clear()
 
@@ -1271,20 +1279,20 @@ def test_harness_config_normalizes_program_mapping() -> None:
         program={
             "command": ["echo", "ok"],
             "sandbox": {"packages": "numpy"},
-            "tools": {"mcp": True},
+            "channels": {"mcp": True},
         }
     )
 
     assert config.program == {
         "command": ["echo", "ok"],
         "sandbox": {"packages": ["numpy"]},
-        "tools": {"mcp": True},
+        "channels": {"mcp": True},
     }
 
 
 def test_harness_config_rejects_unknown_program_tool_interface() -> None:
-    with pytest.raises(ValueError, match="unknown tool interface"):
-        HarnessConfig(program={"command": ["echo"], "tools": {"ptc": True}})
+    with pytest.raises(ValueError, match="unknown channel"):
+        HarnessConfig(program={"command": ["echo"], "channels": {"ptc": True}})
 
 
 def test_load_environment_coerces_typed_env_config_arg(
@@ -1294,10 +1302,9 @@ def test_load_environment_coerces_typed_env_config_arg(
     module = types.ModuleType(module_name)
     seen: dict[str, object] = {}
 
-    def load_environment(split: str = "train", config: EnvConfig | None = None) -> Env:
+    def load_environment(split: str = "train", *, config: EnvConfig) -> Env:
         seen["split"] = split
         seen["config"] = config
-        config = config or EnvConfig()
         return Env(
             taskset=Taskset(source=source_loader, config=config.taskset),
             harness=Harness(config=config.harness),
@@ -1326,6 +1333,29 @@ def test_load_environment_coerces_typed_env_config_arg(
             "harness": {"model": "typed-model"},
         },
     }
+
+
+def test_load_environment_supplies_default_typed_env_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_name = "default_typed_env_config"
+    module = types.ModuleType(module_name)
+    seen: dict[str, object] = {}
+
+    def load_environment(config: EnvConfig) -> Env:
+        seen["config"] = config
+        return Env(
+            taskset=Taskset(source=source_loader, config=config.taskset),
+            harness=Harness(config=config.harness),
+        )
+
+    module.load_environment = load_environment
+    monkeypatch.setitem(sys.modules, module_name, module)
+
+    env = vf.load_environment("default-typed-env-config")
+
+    assert isinstance(seen["config"], EnvConfig)
+    assert env.env_args == {}
 
 
 def test_load_environment_leaves_untyped_config_arg_as_kwargs(
@@ -1432,7 +1462,7 @@ def test_reference_v1_harness_loaders_preserve_child_defaults() -> None:
     assert self_judge.load_harness().config.max_turns == 8
 
 
-def test_bfcl_v1_loader_preserves_mapping_config_sections(
+def test_bfcl_loader_preserves_mapping_config_sections(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     module = importlib.import_module("environments.bfcl_v3.bfcl_v3")
@@ -1451,7 +1481,7 @@ def test_bfcl_v1_loader_preserves_mapping_config_sections(
     monkeypatch.setattr(module, "load_taskset", fake_taskset)
     monkeypatch.setattr(module, "load_harness", fake_harness)
 
-    env = module.load_v1_environment(
+    env = module.load_environment(
         config=EnvConfig(
             taskset={"taskset_id": "bfcl-env-args"},
             harness={"model": "bfcl-model"},
@@ -1477,7 +1507,7 @@ def test_tau2_loader_forwards_mapping_harness_config(
 
     monkeypatch.setattr(module, "load_taskset", fake_taskset)
 
-    env = module.load_v1_environment(
+    env = module.load_environment(
         config=EnvConfig(
             taskset={"max_turns": 7},
             harness={"model": "configured-model", "max_turns": 3},
@@ -1595,7 +1625,11 @@ def test_self_judge_loader_projects_shortcuts_to_child_configs() -> None:
 
     taskset = module.load_taskset(num_examples=2)
     harness = module.load_harness(max_turns=3)
-    shortcut_env = module.load_environment(num_examples=2, max_turns=3)
+    shortcut_env = module.load_environment(
+        num_examples=2,
+        max_turns=3,
+        config=EnvConfig(),
+    )
     override_env = module.load_environment(
         num_examples=2,
         max_turns=3,

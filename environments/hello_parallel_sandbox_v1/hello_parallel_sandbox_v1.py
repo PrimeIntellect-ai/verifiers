@@ -1,13 +1,10 @@
-from __future__ import annotations
-
 import asyncio
 import json
-from collections.abc import Mapping
 
-import verifiers.v1 as vf
+import verifiers as vf
+from verifiers.v1.types import ConfigMap
 from verifiers.v1.utils.judge_utils import (
     clamp_float,
-    completion_text,
     parse_judge_json,
     truncate_command_record,
     truncate_text,
@@ -52,7 +49,7 @@ only:
 {"score": 0.0-1.0, "reason": "..."}
 """
 
-TASKS: list[dict[str, object]] = [
+TASKS: list[vf.ConfigData] = [
     {
         "task_id": "exact-token",
         "answer": "prime-v1-shared-sandbox",
@@ -156,7 +153,8 @@ async def bash(command: str, sandbox, state) -> str:
 
 @vf.update(priority=10)
 async def parallel_sandbox_audit(task, state) -> None:
-    response = completion_text(state.get("completion"))
+    message = vf.get_messages(state["completion"], role="assistant")[-1]
+    response = str(message.content or "")
     audit_specs = [
         (
             "file_audit",
@@ -197,14 +195,17 @@ async def parallel_sandbox_audit(task, state) -> None:
             for label, system_prompt, prompt in audit_specs
         )
     )
-    state["parallel_audits"] = [
-        {
-            "name": label,
-            "findings": completion_text(audit_state.get("completion")),
-            "trajectory_id": audit_state.get("trajectory_id"),
-        }
-        for label, audit_state in audit_states
-    ]
+    state["parallel_audits"] = []
+    for label, audit_state in audit_states:
+        message = vf.get_messages(audit_state["completion"], role="assistant")[-1]
+        findings = str(message.content or "")
+        state["parallel_audits"].append(
+            {
+                "name": label,
+                "findings": findings,
+                "trajectory_id": audit_state.get("trajectory_id"),
+            }
+        )
 
 
 @vf.reward(weight=1.0)
@@ -225,7 +226,8 @@ async def sandbox_stage_score(task, state) -> float:
         system_prompt=REWARD_JUDGE_SYSTEM_PROMPT,
         max_turns=2,
     ).run(judge_task, judge_state)
-    judge_text = completion_text(judge_state.get("completion"))
+    message = vf.get_messages(judge_state["completion"], role="assistant")[-1]
+    judge_text = str(message.content or "")
     parsed = parse_judge_json(judge_text)
     score = clamp_float(parsed.get("score", 0.0))
     state["reward_judge"] = {
@@ -258,7 +260,7 @@ async def update_audits(task, state) -> float:
     return float(len(audits) if isinstance(audits, list) else 0)
 
 
-def file_audit_prompt(task: Mapping[str, object], response: str) -> str:
+def file_audit_prompt(task: ConfigMap, response: str) -> str:
     return (
         "Task instruction:\n"
         f"{task['instruction']}\n\n"
@@ -279,7 +281,7 @@ def file_audit_prompt(task: Mapping[str, object], response: str) -> str:
     )
 
 
-def command_audit_prompt(task: Mapping[str, object]) -> str:
+def command_audit_prompt(task: ConfigMap) -> str:
     return (
         "Task instruction:\n"
         f"{task['instruction']}\n\n"
@@ -298,14 +300,16 @@ def command_audit_prompt(task: Mapping[str, object]) -> str:
     )
 
 
-def reward_prompt(task: Mapping[str, object], state: Mapping[str, object]) -> str:
+def reward_prompt(task: ConfigMap, state: ConfigMap) -> str:
+    message = vf.get_messages(state["completion"], role="assistant")[-1]
+    response = str(message.content or "")
     return (
         "Task instruction:\n"
         f"{task['instruction']}\n\n"
         "Expected answer text:\n"
         f"{task['answer']}\n\n"
         "Assistant final answer:\n"
-        f"{completion_text(state.get('completion'))}\n\n"
+        f"{response}\n\n"
         "Update-stage audit findings:\n"
         f"{json.dumps(state.get('parallel_audits', []), indent=2)}\n\n"
         "Call bash to inspect `/tmp/answer.txt` directly, then score whether "
@@ -360,7 +364,7 @@ def load_harness(
 ) -> vf.Harness:
     config = ParallelSandboxHarnessConfig(config, max_turns=max_turns)
     return vf.Harness(
-        program={"sandbox": True, "tools": "callable"},
+        program={"sandbox": True, "channels": "callable"},
         sandbox=PROGRAM_SANDBOX,
         max_turns=config.max_turns,
         config=config,
@@ -370,7 +374,8 @@ def load_harness(
 def load_environment(
     num_examples: int = -1,
     max_turns: int = 4,
-    config: vf.EnvConfig | None = None,
+    *,
+    config: vf.EnvConfig,
 ) -> vf.Env:
     config = vf.EnvConfig(
         config,
@@ -386,7 +391,8 @@ def load_environment(
 def load_v1_environment(
     num_examples: int = -1,
     max_turns: int = 4,
-    config: vf.EnvConfig | None = None,
+    *,
+    config: vf.EnvConfig,
 ) -> vf.Env:
     return load_environment(
         num_examples=num_examples,

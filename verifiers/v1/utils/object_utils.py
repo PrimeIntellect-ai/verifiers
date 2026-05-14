@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import inspect
 from collections.abc import Awaitable, Callable
 from typing import cast
@@ -18,13 +16,17 @@ async def close_object(obj: object) -> None:
 async def resolve_object_factory(spec: object, context: str) -> object:
     if not callable(spec):
         return spec
+    if not (
+        inspect.isfunction(spec) or inspect.ismethod(spec) or inspect.isclass(spec)
+    ):
+        return spec
     try:
         signature = inspect.signature(spec)
     except (TypeError, ValueError) as exc:
         raise TypeError(f"{context} factory signature cannot be inspected.") from exc
     if signature.parameters:
         raise TypeError(f"{context} factory must accept no arguments.")
-    value = cast(Callable[[], object], spec)()
+    value = cast(Callable[[], object | Awaitable[object]], spec)()
     if inspect.isawaitable(value):
         return await cast(Awaitable[object], value)
     return value

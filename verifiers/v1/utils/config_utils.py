@@ -1,14 +1,12 @@
-from __future__ import annotations
-
 import importlib
 import inspect
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from typing import cast
 
 from pydantic import BaseModel
 from pydantic_core import PydanticUndefined
+from ..types import ConfigData, ConfigFactory, ConfigInputMap, ConfigMap
 
-from ..types import ConfigData, ConfigMap
 
 CONFIG_REF_COLLECTION_FIELDS = {
     "stops",
@@ -32,7 +30,7 @@ def config_data(value: object, target: type[BaseModel] | None = None) -> ConfigD
                 key: item for key, item in data.items() if key in target.model_fields
             }
     elif isinstance(value, Mapping):
-        data = string_mapping(cast(Mapping[object, object], value))
+        data = string_mapping(cast(ConfigInputMap, value))
     else:
         raise TypeError("Config must be a mapping or config object.")
     return data
@@ -52,7 +50,7 @@ def merge_child_config(default: object, override: object) -> object:
 def expand_config_ref(value: object | None, target: type[BaseModel]) -> object | None:
     if not isinstance(value, Mapping):
         return value
-    data = string_mapping(cast(Mapping[object, object], value))
+    data = string_mapping(cast(ConfigInputMap, value))
     config_ref = data.pop("config", None)
     if config_ref is None:
         return data
@@ -65,13 +63,13 @@ def expand_config_ref_data(data: ConfigData, target: type[BaseModel]) -> ConfigD
     expanded = expand_config_ref(data, target)
     if not isinstance(expanded, dict):
         raise TypeError("config data must resolve to a mapping.")
-    return cast(dict[str, object], expanded)
+    return cast(ConfigData, expanded)
 
 
 def load_config_ref(config_ref: object) -> object:
     value = resolve_config_object(config_ref)
     if callable(value):
-        value = cast(Callable[[], object], value)()
+        value = cast(ConfigFactory, value)()
     if inspect.isawaitable(value):
         raise TypeError("config refs must resolve synchronously.")
     config_data(value)
@@ -90,8 +88,8 @@ def merge_config_ref_overlay(base: ConfigData, overlay: ConfigMap) -> ConfigData
             merged[key] = [*existing, *value]
         elif isinstance(existing, Mapping) and isinstance(value, Mapping):
             merged[key] = deep_merge(
-                string_mapping(cast(Mapping[object, object], existing)),
-                string_mapping(cast(Mapping[object, object], value)),
+                string_mapping(cast(ConfigInputMap, existing)),
+                string_mapping(cast(ConfigInputMap, value)),
             )
         else:
             merged[key] = value
@@ -117,7 +115,7 @@ def config_mapping(value: object) -> ConfigData | None:
     if isinstance(value, BaseModel):
         return value.model_dump(exclude_none=True)
     if isinstance(value, Mapping):
-        return string_mapping(cast(Mapping[object, object], value))
+        return string_mapping(cast(ConfigInputMap, value))
     return None
 
 
@@ -143,15 +141,15 @@ def deep_merge(base: ConfigData, overlay: ConfigMap) -> ConfigData:
         existing = merged.get(key)
         if isinstance(existing, Mapping) and isinstance(value, Mapping):
             merged[key] = deep_merge(
-                string_mapping(cast(Mapping[object, object], existing)),
-                string_mapping(cast(Mapping[object, object], value)),
+                string_mapping(cast(ConfigInputMap, existing)),
+                string_mapping(cast(ConfigInputMap, value)),
             )
         else:
             merged[key] = value
     return merged
 
 
-def string_mapping(value: Mapping[object, object]) -> ConfigData:
+def string_mapping(value: ConfigInputMap) -> ConfigData:
     result: ConfigData = {}
     for key, item in value.items():
         if not isinstance(key, str):

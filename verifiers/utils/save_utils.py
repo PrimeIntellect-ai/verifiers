@@ -40,9 +40,7 @@ from verifiers.utils.metric_utils import (
 from verifiers.utils.path_utils import get_results_path
 from verifiers.utils.usage_utils import (
     StateUsageTracker,
-)
-from verifiers.utils.usage_utils import (
-    extract_usage_tokens as extract_usage_tokens_from_response,
+    response_usage_tokens,
 )
 from verifiers.utils.version_utils import get_version_info
 
@@ -89,12 +87,6 @@ def make_serializable(value: object) -> str | int | float | bool | list | dict |
         return dict(value)
     else:
         return str(value)
-
-
-def extract_usage_tokens(response: Response) -> tuple[int, int]:
-    if not isinstance(response, Response):
-        raise TypeError("extract_usage_tokens expects a vf.Response.")
-    return extract_usage_tokens_from_response(response)
 
 
 def _token_count(value: object, context: str) -> float:
@@ -145,7 +137,7 @@ def _token_usage_from_trajectory(trajectory: object) -> TokenUsage | None:
         if response.usage is None:
             continue
         usage_seen = True
-        step_input_tokens, step_output_tokens = extract_usage_tokens(response)
+        step_input_tokens, step_output_tokens = response_usage_tokens(response)
         input_tokens += step_input_tokens
         output_tokens += step_output_tokens
     if not usage_seen:

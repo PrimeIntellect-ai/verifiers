@@ -1,22 +1,40 @@
-from __future__ import annotations
-
 import inspect
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping, Set
 from typing import Literal, TypeAlias, cast
+from ..types import ConfigMap, Handler, Objects
 
-from ..types import Objects
 
 BindingRoot: TypeAlias = Literal[
     "task", "state", "tasks", "states", "runtime", "objects", "tools"
 ]
-CallableBindingSource: TypeAlias = Callable[..., object] | Mapping[str, object]
+CallableBindingSource: TypeAlias = Handler | ConfigMap
 BindingSource: TypeAlias = str | CallableBindingSource
-BindingMap: TypeAlias = Mapping[str, BindingSource]
+BindingMap: TypeAlias = dict[str, BindingSource]
 Bindings: TypeAlias = dict[str, BindingSource]
 
 VALID_BINDING_ROOTS: frozenset[str] = frozenset(
     {"task", "state", "tasks", "states", "runtime", "objects", "tools"}
 )
+ROLLOUT_FRAMEWORK_ARGS: frozenset[str] = frozenset(
+    {
+        "answer",
+        "completion",
+        "error",
+        "example_id",
+        "info",
+        "metrics",
+        "prompt",
+        "question",
+        "reward",
+        "runtime",
+        "state",
+        "task",
+        "task_id",
+        "timing",
+        "trajectory",
+    }
+)
+GROUP_FRAMEWORK_ARGS: frozenset[str] = frozenset({"states", "tasks"})
 
 
 def normalize_binding_map(
@@ -46,7 +64,7 @@ def normalize_binding_map(
                 allow_objects=allow_objects,
             )
         if isinstance(source, Mapping):
-            normalized_source = cast(Mapping[str, object], source)
+            normalized_source = cast(ConfigMap, source)
         elif isinstance(source, str) or callable(source):
             normalized_source = source
         else:
@@ -86,10 +104,10 @@ def validate_binding_source(
     if root == "objects":
         binding_object_name(source)
     if isinstance(source, Mapping):
-        validate_callable_source(cast(Mapping[str, object], source), context)
+        validate_callable_source(cast(ConfigMap, source), context)
 
 
-def validate_callable_source(source: Mapping[str, object], context: str) -> None:
+def validate_callable_source(source: ConfigMap, context: str) -> None:
     if "fn" not in source:
         raise TypeError(f"{context} mapping sources must use an 'fn' key.")
     unknown = set(source) - {"fn"}
@@ -97,7 +115,7 @@ def validate_callable_source(source: Mapping[str, object], context: str) -> None
         raise ValueError(f"{context} has unknown keys: {sorted(unknown)}.")
 
 
-def function_name(fn: Callable[..., object]) -> str:
+def function_name(fn: Handler) -> str:
     name = getattr(fn, "__name__", None)
     if not isinstance(name, str) or not name:
         raise ValueError("Callable bindings require a stable __name__.")
@@ -147,8 +165,13 @@ def binding_object_name(source: object) -> str:
 
 
 def validate_bound_arg(
-    fn: Callable[..., object] | object, arg_name: str, context: str
+    fn: Handler | object,
+    arg_name: str,
+    context: str,
+    protected_args: Set[str] = frozenset(),
 ) -> None:
+    if arg_name in protected_args:
+        return
     if arg_name in {"task", "state", "runtime"}:
         raise ValueError(f"{context} cannot bind reserved arg {arg_name!r}.")
     if not callable(fn):
@@ -169,7 +192,7 @@ def validate_bound_arg(
         )
 
 
-def same_callable(left: Callable[..., object], right: Callable[..., object]) -> bool:
+def same_callable(left: Handler, right: Handler) -> bool:
     if left is right:
         return True
     left_self = getattr(left, "__self__", None)
@@ -185,7 +208,7 @@ def read_path(value: object, path: str) -> object:
         if not part:
             raise ValueError(f"Invalid empty path segment in {path!r}.")
         if isinstance(current, Mapping):
-            current = cast(Mapping[str, object], current)[part]
+            current = cast(ConfigMap, current)[part]
         elif isinstance(current, list):
             current = current[int(part)]
         else:

@@ -57,7 +57,7 @@ def test_wikispeedia_loads_as_v1_taskset_harness(
 ) -> None:
     module = load_module(monkeypatch)
 
-    env = module.load_environment(train_size=1, eval_size=1)
+    env = module.load_environment(config=vf.EnvConfig(), train_size=1, eval_size=1)
 
     assert isinstance(env, vf.Env)
     assert isinstance(env.taskset, vf.Taskset)
@@ -157,6 +157,7 @@ async def test_wikispeedia_tools_resolve_through_v1_runtime(
     wiki = make_small_wiki(module)
     monkeypatch.setattr(module, "load_wiki_graph", lambda cache_dir=None: wiki)
     env = module.load_environment(
+        config=vf.EnvConfig(),
         train_size=2,
         eval_size=1,
         min_path_length=1,

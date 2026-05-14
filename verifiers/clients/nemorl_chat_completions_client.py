@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from typing import Any, cast
 
 from verifiers.clients.openai_chat_completions_client import (

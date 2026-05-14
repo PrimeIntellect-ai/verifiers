@@ -27,14 +27,13 @@ from verifiers.utils.metric_utils import (
 )
 from verifiers.utils.save_utils import (
     GenerateOutputsBuilder,
-    extract_usage_tokens,
     load_outputs,
     make_serializable,
     save_new_outputs,
     states_to_outputs,
     validate_resume_metadata,
 )
-from verifiers.utils.usage_utils import StateUsageTracker
+from verifiers.utils.usage_utils import StateUsageTracker, response_usage_tokens
 
 
 # Test models for make_serializable tests
@@ -190,15 +189,11 @@ class TestSavingMetadata:
 
 
 class TestSavingResults:
-    def test_extract_usage_tokens_prompt_completion(self):
+    def test_response_usage_tokens_prompt_completion(self):
         response = make_response(prompt_tokens=10, completion_tokens=5)
-        input_tokens, output_tokens = extract_usage_tokens(response)
+        input_tokens, output_tokens = response_usage_tokens(response)
         assert input_tokens == 10
         assert output_tokens == 5
-
-    def test_extract_usage_tokens_rejects_untyped_response(self):
-        with pytest.raises(TypeError, match="vf.Response"):
-            extract_usage_tokens({"usage": {"prompt_tokens": 10}})
 
     def test_state_with_tracker_and_no_usage_does_not_emit_token_usage(
         self, make_state

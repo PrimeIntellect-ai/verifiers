@@ -17,8 +17,6 @@ Parametrized over five model families so each renderer's render/parse paths
 are exercised. Tokenizers come from the local HF cache; no network.
 """
 
-from __future__ import annotations
-
 import logging
 from typing import Any
 

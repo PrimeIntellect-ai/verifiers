@@ -12,8 +12,6 @@ intended for local ``vf-eval`` invocations, not for running untrusted
 inputs.
 """
 
-from __future__ import annotations
-
 import re
 from typing import Callable
 

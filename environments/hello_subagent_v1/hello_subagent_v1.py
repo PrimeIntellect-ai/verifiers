@@ -1,7 +1,4 @@
-from __future__ import annotations
-
-import verifiers.v1 as vf
-from verifiers.v1.utils.judge_utils import completion_text
+import verifiers as vf
 
 
 async def ask_subagent(name: str, harness, state) -> str:
@@ -20,7 +17,8 @@ async def ask_subagent(name: str, harness, state) -> str:
     ).freeze()
     child_state = state.for_task(task, borrow="model")
     child_state = await harness.run(task, child_state)
-    answer = completion_text(child_state.get("completion")).strip()
+    message = vf.get_messages(child_state["completion"], role="assistant")[-1]
+    answer = str(message.content or "").strip()
     state.setdefault("subagent_calls", []).append({"name": name, "answer": answer})
     return answer
 
@@ -32,7 +30,9 @@ async def subagent_calls(task, state) -> float:
 
 @vf.reward(weight=1.0)
 async def exact_answer(task, state) -> float:
-    return float(completion_text(state.get("completion")).strip() == task["answer"])
+    message = vf.get_messages(state["completion"], role="assistant")[-1]
+    answer = str(message.content or "").strip()
+    return float(answer == task["answer"])
 
 
 NAME_GROUPS = [
@@ -94,8 +94,7 @@ def load_harness(config: vf.HarnessConfig | None = None):
     )
 
 
-def load_environment(config: vf.EnvConfig | None = None):
-    config = config or vf.EnvConfig()
+def load_environment(config: vf.EnvConfig):
     return vf.Env(
         taskset=load_taskset(config=config.taskset),
         harness=load_harness(config=config.harness),
