@@ -384,7 +384,7 @@ def make_langchain_deep_agents_program(
         if isinstance(system_prompt_messages, list):
             state_system_prompt = "\n\n".join(
                 str(message.content or "")
-                for message in vf.get_messages(system_prompt_messages, role="system")
+                for message in vf.get_messages(system_prompt_messages)
             )
         agent = create_deep_agent(
             model=model,

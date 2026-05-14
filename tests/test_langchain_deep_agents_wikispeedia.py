@@ -249,6 +249,12 @@ async def test_wikispeedia_graph_recursion_limit_stops_rollout(
         async def ainvoke(self, payload, config=None):
             raise GraphRecursionError("recursion limit")
 
+    created_system_prompts = []
+
+    def fake_create_deep_agent(**kwargs):
+        created_system_prompts.append(kwargs["system_prompt"])
+        return FakeAgent()
+
     fake_deepagents = types.ModuleType("deepagents")
     fake_langchain_openai = types.ModuleType("langchain_openai")
     fake_langgraph = types.ModuleType("langgraph")
@@ -256,7 +262,7 @@ async def test_wikispeedia_graph_recursion_limit_stops_rollout(
     fake_langchain_core = types.ModuleType("langchain_core")
     fake_tools_module = types.ModuleType("langchain_core.tools")
 
-    fake_deepagents.create_deep_agent = lambda **kwargs: FakeAgent()
+    fake_deepagents.create_deep_agent = fake_create_deep_agent
     fake_langchain_openai.ChatOpenAI = FakeChatOpenAI
     fake_langgraph_errors.GraphRecursionError = GraphRecursionError
     fake_langgraph.errors = fake_langgraph_errors
@@ -277,12 +283,16 @@ async def test_wikispeedia_graph_recursion_limit_stops_rollout(
         {
             "info": {"source": "A"},
             "prompt": [{"role": "user", "content": "start"}],
-            "system_prompt": [{"role": "system", "content": "prompt"}],
+            "system_prompt": [
+                {"role": "user", "content": "first prompt chunk"},
+                {"role": "system", "content": "second prompt chunk"},
+            ],
         }
     )
 
     result = await program({}, state)
 
+    assert created_system_prompts == ["first prompt chunk\n\nsecond prompt chunk"]
     assert result["agent_timeout"] is True
     assert result["stop_reason"] == "agent_recursion_limit"
     assert result["agent_completion"] == []

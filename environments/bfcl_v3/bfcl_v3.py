@@ -608,17 +608,26 @@ def load_environment(
     config: vf.EnvConfig,
     *,
     test_category: str = "simple_python",
+    test_categories: list[str] | None = None,
     examples_per_category: int = -1,
-) -> vf.Env:
-    config = vf.EnvConfig(
-        config,
-        taskset=BFCLTasksetConfig(
-            test_category=test_category,
-            examples_per_category=examples_per_category,
-        ),
-        harness=BFCLHarnessConfig(test_category=test_category),
-    )
-    return vf.Env(
-        taskset=load_taskset(config=config.taskset),
-        harness=load_harness(config=config.harness),
-    )
+) -> vf.Env | vf.EnvGroup:
+    categories = [test_category] if test_categories is None else test_categories
+    envs: list[vf.Env] = []
+    for category in categories:
+        category_config = vf.EnvConfig(
+            config,
+            taskset=BFCLTasksetConfig(
+                test_category=category,
+                examples_per_category=examples_per_category,
+            ),
+            harness=BFCLHarnessConfig(test_category=category),
+        )
+        envs.append(
+            vf.Env(
+                taskset=load_taskset(config=category_config.taskset),
+                harness=load_harness(config=category_config.harness),
+            )
+        )
+    if test_categories is not None:
+        return vf.EnvGroup(envs=envs, env_names=categories)
+    return envs[0]
