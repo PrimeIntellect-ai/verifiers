@@ -37,11 +37,13 @@ prime eval run <env> -m openai/gpt-4.1-mini -n 5
 1. Reward correctness:
 - Prefer deterministic, explicit checks or LLM judges.
 - Flag best-effort keyword or style heuristics unless explicitly approved.
+- Verify the scoring semantics from code before treating a low reward as an implementation failure. Some environments intentionally complete with `0.0` reward when the model fails the task.
 2. Environment self-containment:
 - Flag any requirement for user-managed background services before `load_environment()`.
 - Require environment-managed lifecycle for sandboxes/sessions.
 3. v1 taskset/harness contracts:
 - Expect new taskset/harness environments to use the v1 `vf.Env` / `vf.Taskset` / `vf.Harness` format.
+- Expect tasksets to own task data, task-owned tools, user behavior, metrics, rewards, and task-specific config. Flag one-off harness classes that only wrap task behavior.
 - Verify `Task` data is serializable, `state` remains serializable at rollout boundaries, and model/client controls flow through runtime state rather than top-level dataset columns.
 - For V1 harness programs, verify framework clients consume `state.get_endpoint_config(api="chat")` rather than hardcoding an upstream LLM endpoint. For `CliAgentEnv` agents, verify sandboxed agent code consumes the injected interception endpoint; the proxy is what makes rollouts visible to the rubric.
 4. Migration fidelity:
@@ -51,6 +53,14 @@ prime eval run <env> -m openai/gpt-4.1-mini -n 5
 - Ensure required keys are validated in `load_environment()` with `vf.ensure_keys(...)`.
 6. Performance and scaling:
 - Identify obvious bottlenecks in dataset loading, rubric calls, or tool execution.
+7. Packaging and repo hygiene:
+- If an environment was renamed or moved, verify `pyproject.toml`, README/docs references, package include paths, tests, and generated AGENTS output were updated together.
+- Flag bytecode, coverage files, local eval outputs, and temporary build artifacts unless they are intentional release assets.
+
+## Config And Docs Surface
+1. Check that eval, GEPA, RL, and Hosted Training examples use the same public TOML shape where applicable.
+2. For v1 configs, prefer `[env.args]`, `[env.taskset]`, and `[env.harness]`; loader code should normalize at the boundary instead of spreading compatibility branches through examples.
+3. If docs changed public behavior, verify the relevant bundled skill was updated too.
 
 ## Findings Format
 Return findings first, sorted by severity:
