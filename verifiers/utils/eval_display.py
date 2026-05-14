@@ -399,14 +399,14 @@ class EvalDisplay(BaseDisplay):
             "input": format_numeric(usage.get("input_tokens", 0.0)),
             "output": format_numeric(usage.get("output_tokens", 0.0)),
         }
-        if cost is not None:
-            kv["cost"] = format_cost_usd(cost["total_usd"])
         inp = usage.get("final_input_tokens")
         out = usage.get("final_output_tokens")
         if inp is not None:
             kv["final_input"] = format_numeric(inp)
         if out is not None:
             kv["final_output"] = format_numeric(out)
+        if cost is not None:
+            kv["cost"] = format_cost_usd(cost["total_usd"])
         return make_aligned_row(
             make_kv_line(kv, section_label="usage"),
             Text(),

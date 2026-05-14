@@ -105,11 +105,19 @@ def test_tokens_row_includes_cost_when_available() -> None:
 
     rendered = render_plain(
         display._make_tokens_row(
-            {"input_tokens": 12.0, "output_tokens": 7.0},
+            {
+                "input_tokens": 12.0,
+                "output_tokens": 7.0,
+                "final_input_tokens": 10.0,
+                "final_output_tokens": 5.0,
+            },
             {"input_usd": 0.005, "output_usd": 0.0073, "total_usd": 0.0123},
         )
     )
 
     assert "input 12" in rendered
     assert "output 7" in rendered
+    assert "final_input 10" in rendered
+    assert "final_output 5" in rendered
     assert "cost $0.0123" in rendered
+    assert rendered.index("final_output 5") < rendered.index("cost $0.0123")
