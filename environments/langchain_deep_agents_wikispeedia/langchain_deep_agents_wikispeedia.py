@@ -1,4 +1,5 @@
 import asyncio
+import json
 from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from typing import Protocol, cast
 
@@ -303,6 +304,14 @@ def serialize_agent_completion(
                 )
                 if isinstance(tool_id, str) and isinstance(name, str):
                     call_names[tool_id] = name
+                arguments = tool_call_payload.get("arguments")
+                if not isinstance(arguments, str):
+                    args = tool_call_payload.get("args", {})
+                    try:
+                        arguments = json.dumps(args if args is not None else {})
+                    except (TypeError, ValueError):
+                        arguments = str(args)
+                    tool_call_payload["arguments"] = arguments
                 normalized_tool_calls.append(tool_call_payload)
             item["tool_calls"] = normalized_tool_calls
         name = payload.get("name")

@@ -299,7 +299,7 @@ async def test_wikispeedia_tool_metrics_use_agent_completion(
         {
             "role": "assistant",
             "content": "",
-            "tool_calls": [{"id": "call_1", "name": "click_link"}],
+            "tool_calls": [{"id": "call_1", "name": "click_link", "arguments": "{}"}],
         },
         {
             "role": "tool",
