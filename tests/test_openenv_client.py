@@ -73,6 +73,12 @@ class FakeMCPToolClient:
         self.closed = True
 
 
+class FakeCallToolAction:
+    def __init__(self, tool_name: str, arguments: dict[str, object]):
+        self.tool_name = tool_name
+        self.arguments = arguments
+
+
 def render_prompt(observation: Any, **kwargs: Any):
     assert isinstance(observation, dict)
     return [UserMessage(content=str(observation["prompt"]))]
@@ -116,6 +122,7 @@ async def test_openenv_uses_public_async_generic_client(monkeypatch):
 async def test_openenv_uses_public_async_mcp_client(monkeypatch):
     FakeMCPToolClient.instances.clear()
     monkeypatch.setattr(openenv_env, "MCPToolClient", FakeMCPToolClient)
+    monkeypatch.setattr(openenv_env, "CallToolAction", FakeCallToolAction)
     env = vf.OpenEnvEnv(
         num_train_examples=1,
         num_eval_examples=0,

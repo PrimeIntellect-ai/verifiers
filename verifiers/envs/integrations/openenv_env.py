@@ -9,9 +9,6 @@ from typing import Any, Callable, Iterable, cast
 import requests
 import tenacity as tc
 from datasets import Dataset
-from openenv.core.env_server.mcp_types import CallToolAction
-from openenv.core.generic_client import GenericEnvClient
-from openenv.core.mcp_client import MCPToolClient
 
 import verifiers as vf
 from verifiers.types import (
@@ -25,6 +22,24 @@ from verifiers.types import (
 from verifiers.utils.message_utils import from_raw_message
 from verifiers.utils.tool_utils import is_valid_tool_content_parts
 
+CallToolAction: type[Any] | None
+GenericEnvClient: type[Any] | None
+MCPToolClient: type[Any] | None
+try:
+    from openenv.core.env_server.mcp_types import (
+        CallToolAction as OpenEnvCallToolAction,
+    )
+    from openenv.core.generic_client import GenericEnvClient as OpenEnvGenericEnvClient
+    from openenv.core.mcp_client import MCPToolClient as OpenEnvMCPToolClient
+
+    CallToolAction = OpenEnvCallToolAction
+    GenericEnvClient = OpenEnvGenericEnvClient
+    MCPToolClient = OpenEnvMCPToolClient
+except ImportError:
+    CallToolAction = None
+    GenericEnvClient = None
+    MCPToolClient = None
+
 try:
     from prime_sandboxes import AsyncSandboxClient, CreateSandboxRequest
 except ImportError as e:
@@ -33,6 +48,31 @@ except ImportError as e:
     ) from e
 
 logger = logging.getLogger(__name__)
+
+
+def _missing_openenv(component: str) -> ImportError:
+    return ImportError(
+        f"OpenEnvEnv requires openenv-core for {component}. "
+        "Install the `openenv` extra, e.g. `uv add 'verifiers[openenv]'`."
+    )
+
+
+def _generic_client_class() -> type[Any]:
+    if GenericEnvClient is None:
+        raise _missing_openenv("gym rollouts")
+    return GenericEnvClient
+
+
+def _mcp_client_class() -> type[Any]:
+    if MCPToolClient is None:
+        raise _missing_openenv("MCP rollouts")
+    return MCPToolClient
+
+
+def _call_tool_action_class() -> type[Any]:
+    if CallToolAction is None:
+        raise _missing_openenv("MCP tool calls")
+    return CallToolAction
 
 
 @dataclass
@@ -249,7 +289,7 @@ class OpenEnvEnv(vf.MultiTurnEnv):
                 seed = int(info.get("seed", 0))
 
             if server.contract == "mcp":
-                mcp_client = MCPToolClient(base_url=server.base_url)
+                mcp_client = _mcp_client_class()(base_url=server.base_url)
                 await mcp_client.connect()
                 state["openenv_mcp_client"] = mcp_client
                 if self._mcp_tools is None:
@@ -266,7 +306,7 @@ class OpenEnvEnv(vf.MultiTurnEnv):
                 )
                 return state
 
-            client = GenericEnvClient(base_url=server.base_url)
+            client = _generic_client_class()(base_url=server.base_url)
             await client.connect()
             state["openenv_client"] = client
             result = await client.reset(seed=seed)
@@ -309,7 +349,7 @@ class OpenEnvEnv(vf.MultiTurnEnv):
         action_schema = state.get("openenv_action_schema") or self._action_schema or {}
         action = self._parse_action(raw_text, action_schema)
 
-        client = cast(GenericEnvClient, state["openenv_client"])
+        client = cast(Any, state["openenv_client"])
         result = await client.step(action)
 
         if state["trajectory"]:
@@ -335,7 +375,7 @@ class OpenEnvEnv(vf.MultiTurnEnv):
         if not tool_calls:
             return []
 
-        mcp_client = cast(MCPToolClient, state["openenv_mcp_client"])
+        mcp_client = cast(Any, state["openenv_mcp_client"])
         tool_messages: Messages = []
         total_reward = 0.0
         done = False
@@ -392,14 +432,18 @@ class OpenEnvEnv(vf.MultiTurnEnv):
 
     async def _cleanup_openenv_state(self, state: vf.State) -> None:
         client = state.pop("openenv_client", None)
-        if isinstance(client, GenericEnvClient):
+        generic_client_class = GenericEnvClient
+        if generic_client_class is not None and isinstance(
+            client, generic_client_class
+        ):
             try:
                 await client.close()
             except Exception:
                 pass
 
         mcp_client = state.pop("openenv_mcp_client", None)
-        if isinstance(mcp_client, MCPToolClient):
+        mcp_client_class = MCPToolClient
+        if mcp_client_class is not None and isinstance(mcp_client, mcp_client_class):
             try:
                 await mcp_client.close()
             except Exception:
@@ -635,16 +679,16 @@ class OpenEnvEnv(vf.MultiTurnEnv):
             "OpenEnv sandbox exposure did not provide a usable endpoint URL."
         )
 
-    async def _mcp_list_tools(self, client: MCPToolClient) -> list[Any]:
+    async def _mcp_list_tools(self, client: Any) -> list[Any]:
         tools = await client.list_tools()
         if not isinstance(tools, list) or not tools:
             raise RuntimeError("MCP tools/list returned no usable tools.")
         return tools
 
     async def _mcp_step_tool(
-        self, client: MCPToolClient, tool_name: str, arguments: dict[str, Any]
+        self, client: Any, tool_name: str, arguments: dict[str, Any]
     ) -> Any:
-        action = CallToolAction(tool_name=tool_name, arguments=arguments)
+        action = _call_tool_action_class()(tool_name=tool_name, arguments=arguments)
         return await client.step(action)
 
     def _extract_mcp_tool_content(self, observation: Any) -> Any:
