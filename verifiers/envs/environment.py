@@ -82,6 +82,7 @@ from verifiers.utils.save_utils import (
     save_new_outputs,
     save_outputs,
     state_to_output,
+    truncate_malformed_trailing_line,
     validate_resume_metadata,
 )
 from verifiers.utils.usage_utils import StateUsageTracker
@@ -1004,6 +1005,9 @@ class Environment(ABC):
                 )
                 on_log(f"Resuming evaluation from {results_path}")
                 outputs = load_outputs(results_path)
+                # Drop any partial trailing row left by a crashed prior write
+                # so subsequent appends start from a valid JSONL boundary.
+                truncate_malformed_trailing_line(results_path / "results.jsonl")
                 builder.add_outputs(outputs)
                 filtered_inputs = filter_inputs(
                     raw_inputs, outputs, rollouts_per_example

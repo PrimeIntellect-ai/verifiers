@@ -779,7 +779,7 @@ def _get_last_nonempty_line_bounds(file_obj: Any) -> tuple[int, bytes] | None:
     return line_start, file_obj.read(line_end - line_start)
 
 
-def _truncate_malformed_trailing_line(outputs_path: Path) -> None:
+def truncate_malformed_trailing_line(outputs_path: Path) -> None:
     """Drop a malformed trailing JSONL row so future appends stay valid."""
     if not outputs_path.exists() or not outputs_path.is_file():
         return
@@ -803,8 +803,6 @@ def _truncate_malformed_trailing_line(outputs_path: Path) -> None:
 
 def save_new_outputs(new_outputs: list[RolloutOutput], results_path: Path):
     """Saves new rollout outputs to disk (in append mode)."""
-    outputs_path = results_path / "results.jsonl"
-    _truncate_malformed_trailing_line(outputs_path)
     save_outputs(new_outputs, results_path, mode="a")
 
 
