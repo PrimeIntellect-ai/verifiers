@@ -22,5 +22,5 @@ include = ["tau2_bench_v1.py", "pyproject.toml"]
 allow-direct-references = true
 
 [tool.verifiers.eval]
-num_examples = 10
-rollouts_per_example = 1
+num_examples = 5
+rollouts_per_example = 3
