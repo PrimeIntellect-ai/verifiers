@@ -28,6 +28,7 @@ from verifiers.utils.metric_utils import (
 from verifiers.utils.save_utils import (
     GenerateOutputsBuilder,
     _delta_intermediate_mm_data,
+    _truncate_malformed_trailing_line,
     extract_usage_tokens,
     load_outputs,
     make_serializable,
@@ -474,6 +475,10 @@ class TestSaveNewOutputs:
             "\n".join(lines + [malformed_trailing_line]), encoding="utf-8"
         )
 
+        # New contract: callers (the resume path) explicitly invoke the
+        # truncate once before appending; `save_new_outputs` no longer
+        # self-heals on every call.
+        _truncate_malformed_trailing_line(outputs_path)
         save_new_outputs(
             [{"example_id": 3, "label": "row-3"}],
             results_path,

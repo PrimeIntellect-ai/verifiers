@@ -792,33 +792,16 @@ def _truncate_malformed_trailing_line(outputs_path: Path) -> None:
 
 
 def save_new_outputs(new_outputs: list[RolloutOutput], results_path: Path):
-    """Saves new rollout outputs to disk (in append mode)."""
-    outputs_path = results_path / "results.jsonl"
-    # Fast path: the file ends with a newline => previous append finished
-    # cleanly, no malformed trailing row to fix. We only fall back to the
-    # expensive backward-byte scan when the last byte isn't '\n', which only
-    # happens after a crashed write. The fast path is critical on networked
-    # filesystems (BeeGFS / NFS), where the byte-by-byte backward scan in
-    # `_truncate_malformed_trailing_line` is dominated by per-syscall latency
-    # and can take tens of seconds for a single large rollout payload.
-    needs_truncate = True
-    if outputs_path.exists() and outputs_path.is_file():
-        try:
-            with open(outputs_path, "rb") as f:
-                f.seek(0, 2)
-                if f.tell() == 0:
-                    needs_truncate = False
-                else:
-                    f.seek(-1, 2)
-                    if f.read(1) == b"\n":
-                        needs_truncate = False
-        except OSError:
-            # Fall back to the safe path if the cheap probe fails for any reason.
-            needs_truncate = True
-    else:
-        needs_truncate = False
-    if needs_truncate:
-        _truncate_malformed_trailing_line(outputs_path)
+    """Saves new rollout outputs to disk (in append mode).
+
+    Callers that resume from a results.jsonl that may have a partial trailing
+    row left behind by a crashed prior write must first call
+    `_truncate_malformed_trailing_line(results_path / "results.jsonl")` once
+    before the first append. We do not repeat that check on every append: the
+    backward-byte scan in `_truncate_malformed_trailing_line` does
+    O(last_line_length) syscalls and is catastrophic on networked filesystems
+    (BeeGFS / NFS).
+    """
     save_outputs(new_outputs, results_path, mode="a")
 
 
