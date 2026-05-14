@@ -12,6 +12,7 @@ Run reliable environment evaluations and produce actionable summaries, not raw l
 1. Use `prime eval run` as the default way to run evaluations.
 2. Do not add `--skip-upload` or other opt-out flags unless the user explicitly requests that deviation.
 3. Standard `prime eval run` runs save results automatically, keeping them available in the user's private Evaluations tab and locally in `prime eval tui`.
+4. For Prime Inference models with available pricing, eval output and saved metadata include estimated total-run USD cost automatically; no extra flags or API-key handling are needed.
 
 ## Core Loop
 1. Run a smoke evaluation first (do not require pre-install):
@@ -149,7 +150,8 @@ This generates the cartesian product (6 configs in this example). Use `--abbrevi
 ```bash
 prime eval tui
 ```
-2. Inspect platform-visible runs when needed:
+2. Check `metadata.json` for aggregate token usage and, when available, total-run `cost.input_usd`, `cost.output_usd`, and `cost.total_usd`.
+3. Inspect platform-visible runs when needed:
 ```bash
 prime eval list
 prime eval get <eval-id>

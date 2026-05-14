@@ -1,5 +1,7 @@
 import importlib
 import json
+import sys
+import types
 from pathlib import Path
 from types import ModuleType
 from typing import cast
@@ -9,6 +11,7 @@ import pytest
 
 import verifiers.v1 as vf
 from verifiers.v1.packages.harnesses.pi import pi_mcp_json, pi_models_json
+from verifiers.v1.packages.tasksets.harbor import harbor_reward
 from verifiers.v1.utils.program_utils import merge_task_program
 
 
@@ -118,6 +121,76 @@ def test_harbor_taskset_constructs_env_with_opencode(
     assert task["task_name"] == "task-a"
     assert isinstance(env.harness, vf.OpenCode)
     assert "task_dir" not in cast(dict[str, object], env.harness.program)
+
+
+class FakeHarborCommandResult:
+    def __init__(
+        self,
+        *,
+        exit_code: int = 0,
+        stdout: str = "",
+        stderr: str = "",
+    ):
+        self.exit_code = exit_code
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+class FakeHarborSandboxClient:
+    instances: list["FakeHarborSandboxClient"] = []
+
+    def __init__(self):
+        self.execute_commands: list[tuple[str, int | None, str | None]] = []
+        self.background_jobs: list[tuple[str, str, int | None, str | None]] = []
+        type(self).instances.append(self)
+
+    async def upload_file(self, *args: object, **kwargs: object) -> None:
+        _ = args, kwargs
+
+    async def execute_command(
+        self, *args: object, **kwargs: object
+    ) -> FakeHarborCommandResult:
+        command = str(kwargs.get("command") or args[1])
+        timeout = cast(int | None, kwargs.get("timeout"))
+        working_dir = cast(str | None, kwargs.get("working_dir"))
+        self.execute_commands.append((command, timeout, working_dir))
+        if "reward.txt" in command:
+            return FakeHarborCommandResult(stdout="1\n")
+        return FakeHarborCommandResult()
+
+    async def run_background_job(
+        self, *args: object, **kwargs: object
+    ) -> FakeHarborCommandResult:
+        sandbox_id = str(kwargs.get("sandbox_id") or args[0])
+        command = str(kwargs.get("command") or args[1])
+        timeout = cast(int | None, kwargs.get("timeout"))
+        working_dir = cast(str | None, kwargs.get("working_dir"))
+        self.background_jobs.append((sandbox_id, command, timeout, working_dir))
+        return FakeHarborCommandResult(stdout="tests passed")
+
+    async def aclose(self) -> None:
+        pass
+
+
+@pytest.mark.asyncio
+async def test_harbor_reward_uses_background_job_for_tests(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    task_dir = write_harbor_task(tmp_path)
+    fake_module = types.ModuleType("prime_sandboxes")
+    fake_module.AsyncSandboxClient = FakeHarborSandboxClient
+    monkeypatch.setitem(sys.modules, "prime_sandboxes", fake_module)
+    FakeHarborSandboxClient.instances = []
+
+    reward = await harbor_reward(
+        {"harbor": {"task_dir": str(task_dir), "test_timeout": 120}},
+        {"sandbox_id": "sbx-1"},
+    )
+
+    client = FakeHarborSandboxClient.instances[0]
+    assert reward == 1.0
+    assert client.background_jobs == [("sbx-1", "bash test.sh", 120, "/tests")]
+    assert ("bash test.sh", 120, "/tests") not in client.execute_commands
 
 
 def test_packaged_harbor_and_opencode_imports_are_reexported() -> None:

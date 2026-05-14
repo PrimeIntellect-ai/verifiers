@@ -217,6 +217,9 @@ def build_opencode_config(
     disable_compaction: bool,
     provider_timeout_ms: int,
 ) -> str:
+    agent_config: ConfigData = {
+        "title": {"disable": True},
+    }
     config: ConfigData = {
         "${SCHEMA_DOLLAR}schema": "https://opencode.ai/config.json",
         "provider": {
@@ -237,9 +240,10 @@ def build_opencode_config(
             }
         },
         "model": "intercepted/model",
-        # Keep title/summary sub-agents on the intercepted provider instead
-        # of falling back to OpenCode's hosted free small model.
+        # Keep the small-model pin to avoid falling back to the default small
+        # model and hitting rate limits; disable title calls below.
         "small_model": "intercepted/model",
+        "agent": agent_config,
         "mcp": {
             "verifiers-tools": {
                 "type": "local",
@@ -256,7 +260,7 @@ def build_opencode_config(
     if disabled_tools:
         build_config["tools"] = {tool: False for tool in disabled_tools}
     if build_config:
-        config["agent"] = {"build": build_config}
+        agent_config["build"] = build_config
     return json.dumps(config, indent=2)
 
 

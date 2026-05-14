@@ -4170,7 +4170,7 @@ wheels = [
 
 [[package]]
 name = "prime-sandboxes"
-version = "0.2.22"
+version = "0.2.25"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiofiles" },
@@ -4180,9 +4180,9 @@ dependencies = [
     { name = "pydantic" },
     { name = "tenacity" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/dc/a7/eb9cb01ce7fa812022ec7c2ffaeb379e1103e07f093a4b85e879b2d0143d/prime_sandboxes-0.2.22.tar.gz", hash = "sha256:7901adca4ff7fff1e7f08c06c4b76765cd90791965216655eb3a87d459588f5e", size = 64970, upload-time = "2026-04-22T18:32:12.973Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/7d/6d/a800c22973f99e4b9a57caa25aa1b54e54f022641b0576bfcfb064137153/prime_sandboxes-0.2.25.tar.gz", hash = "sha256:df4bf7965ccff953208b881fb743c8cde5280064a8c5a13eabeedded53dd366b", size = 66132, upload-time = "2026-05-11T23:45:19.993Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/90/b8/46bf98c06826fc26d982c53e10d9d4f086a4c322993a6c51188e5bd6fd30/prime_sandboxes-0.2.22-py3-none-any.whl", hash = "sha256:0a75bb02049c16b55aae7475cc4082e8559ffa6d65181b238077771a95b57855", size = 33182, upload-time = "2026-04-22T18:32:11.739Z" },
+    { url = "https://files.pythonhosted.org/packages/34/e8/2ddba24d992ef10b69eb311647443b11992fb2e9514e3a625b98b6a5da65/prime_sandboxes-0.2.25-py3-none-any.whl", hash = "sha256:c335eba6c817722365495ab3d3dfbe77f0a726d9a9f2fd3452ad44666811fbfc", size = 33621, upload-time = "2026-05-11T23:45:18.759Z" },
 ]
 
 [[package]]
@@ -5263,8 +5263,8 @@ wheels = [
 
 [[package]]
 name = "renderers"
-version = "0.1.8"
-source = { git = "https://github.com/PrimeIntellect-ai/renderers.git?rev=fe67f9f#fe67f9f16412074c3207ce69ba1763b97958a9db" }
+version = "0.1.8.dev0"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jinja2" },
     { name = "numpy" },
@@ -5272,6 +5272,10 @@ dependencies = [
     { name = "openai-harmony" },
     { name = "tiktoken" },
     { name = "transformers" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/50/de/a445036157af3367c6a962c13333427c83c08926934c541886eb87f9dcdf/renderers-0.1.8.dev0.tar.gz", hash = "sha256:71eef7bfa3d3f5849ba070d38cd89a1f6387ca7710824f2e50d8c05c9b1048b9", size = 210667, upload-time = "2026-05-12T17:48:45.352Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e7/33/936a38c7f20fbe096b751842ffc6ef254c9eb2223153aa860a122ce9a834/renderers-0.1.8.dev0-py3-none-any.whl", hash = "sha256:09bb35233f67599519c0ff6edfad469f0836a55a6b78e039cd8e7b5e527bdcb3", size = 98617, upload-time = "2026-05-12T17:48:44.222Z" },
 ]
 
 [[package]]
@@ -6679,14 +6683,14 @@ requires-dist = [
     { name = "openai-agents", specifier = ">=0.0.7" },
     { name = "openenv-core", marker = "extra == 'openenv'", specifier = ">=0.3.0" },
     { name = "peft", marker = "extra == 'rl'" },
-    { name = "prime-sandboxes", specifier = ">=0.2.21" },
+    { name = "prime-sandboxes", specifier = ">=0.2.25" },
     { name = "prime-tunnel", specifier = ">=0.1.6" },
     { name = "pydantic", specifier = ">=2.11.9" },
     { name = "python-dotenv", marker = "extra == 'browser'", specifier = ">=1.0.0" },
     { name = "pyzmq", specifier = ">=27.1.0" },
     { name = "reasoning-gym", marker = "extra == 'rg'" },
     { name = "regex", specifier = "<2026.4.4" },
-    { name = "renderers", marker = "extra == 'renderers'", git = "https://github.com/PrimeIntellect-ai/renderers.git?rev=fe67f9f" },
+    { name = "renderers", marker = "extra == 'renderers'", specifier = ">=0.1.8.dev0" },
     { name = "requests" },
     { name = "requests", marker = "extra == 'rl'" },
     { name = "rich" },
@@ -6717,7 +6721,7 @@ dev = [
     { name = "pytest-xdist", specifier = ">=3.8.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
     { name = "reasoning-gym" },
-    { name = "renderers", git = "https://github.com/PrimeIntellect-ai/renderers.git?rev=fe67f9f" },
+    { name = "renderers", specifier = ">=0.1.8.dev0" },
     { name = "ruff" },
     { name = "stagehand", specifier = ">=3.0.0" },
     { name = "textarena" },

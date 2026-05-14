@@ -190,6 +190,12 @@ class ResponseTokens(CustomBaseModel):
     completion_mask: list[int]
     completion_logprobs: list[float]
     routed_experts: list[list[list[int]]] | None = None  # [seq_len, layers, topk]
+    # Renderer-emitted multimodal sidecar (renderers.base.MultiModalData)
+    # carrying processed pixel_values / placeholder ranges per modality.
+    # Populated by the renderer client when the rollout went through a
+    # multimodal-aware renderer; ``None`` otherwise. Stored as ``Any`` to
+    # avoid a hard import dependency on ``renderers`` at this layer.
+    multi_modal_data: Any | None = None
 
 
 FinishReason = Literal["stop", "length", "tool_calls"] | None
@@ -227,6 +233,11 @@ class TrajectoryStepTokens(TypedDict):
     overlong_prompt: bool
     is_truncated: bool
     routed_experts: list[list[list[int]]] | None  # [seq_len, layers, topk]
+    # Renderer-emitted multimodal sidecar (renderers.base.MultiModalData)
+    # carrying processed pixel_values / placeholder ranges per modality.
+    # ``NotRequired`` because text-only rollouts (and non-renderer client
+    # types) never populate it.
+    multi_modal_data: NotRequired[Any]
 
 
 class TokenUsage(TypedDict):
@@ -234,6 +245,17 @@ class TokenUsage(TypedDict):
     output_tokens: float
     final_input_tokens: NotRequired[float]
     final_output_tokens: NotRequired[float]
+
+
+class ModelPricing(TypedDict):
+    input_usd_per_mtok: float
+    output_usd_per_mtok: float
+
+
+class EvalCost(TypedDict):
+    input_usd: float
+    output_usd: float
+    total_usd: float
 
 
 class VersionInfo(TypedDict):
@@ -930,6 +952,7 @@ class GenerateMetadata(TypedDict):
     pass_all_k: dict[str, float]
     pass_threshold: float
     usage: TokenUsage | None
+    cost: NotRequired[EvalCost]
     version_info: VersionInfo
     state_columns: list[str]
     path_to_save: Path

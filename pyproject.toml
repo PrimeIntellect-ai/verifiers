@@ -38,7 +38,7 @@ dependencies = [
     "openai>=1.108.1",
     "openai-agents>=0.0.7",
     "prime-tunnel>=0.1.6",
-    "prime-sandboxes>=0.2.21",
+    "prime-sandboxes>=0.2.25",
     "pydantic>=2.11.9",
     "requests",
     "rich",
@@ -72,7 +72,7 @@ dev = [
     "aiohttp>=3.9.0",
     "python-dotenv>=1.0.0",
     "nltk",
-    "renderers>=0.1.6",
+    "renderers>=0.1.8.dev0",
 ]
 policy = [
     "semgrep>=1.150.0",
@@ -95,7 +95,7 @@ openenv = [
     "openenv-core>=0.3.0",
 ]
 renderers = [
-    "renderers>=0.1.6",
+    "renderers>=0.1.8.dev0",
 ]
 rl = [
     "torch>=2.8.0,<2.9.0",
@@ -131,12 +131,6 @@ prime-tunnel = false
 prime-sandboxes = false
 renderers = false
 openenv-core = false
-
-[tool.uv.sources]
-# Pinned to renderers main until the next PyPI release lands; drop after.
-# fe67f9f = renderers main: PR #4 squash-merge — construction-time
-# preserve_*_thinking flags on create_renderer / create_renderer_pool.
-renderers = { git = "https://github.com/PrimeIntellect-ai/renderers.git", rev = "fe67f9f" }
 
 [tool.uv.extra-build-dependencies]
 flash-attn = [{ requirement = "torch", match-runtime = true }]

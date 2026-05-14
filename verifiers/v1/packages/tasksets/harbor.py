@@ -373,11 +373,12 @@ async def harbor_reward(task, state) -> float:
     client = cast(SandboxClient, AsyncSandboxClient())
     try:
         await upload_harbor_tests(client, sandbox_id, task_dir)
-        result = await client.execute_command(
+        test_timeout = int(parse_number(harbor.get("test_timeout"), 900))
+        result = await client.run_background_job(
             sandbox_id=sandbox_id,
             command="bash test.sh",
             working_dir="/tests",
-            timeout=int(parse_number(harbor.get("test_timeout"), 900)),
+            timeout=test_timeout,
         )
         state["harbor_tests"] = {
             "returncode": result.exit_code,

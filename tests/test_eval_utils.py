@@ -4,6 +4,8 @@ Covers:
 - print_results indexing with multiple rollouts per example
 """
 
+import pytest
+
 from verifiers.types import GenerateOutputs
 from verifiers.utils.save_utils import states_to_outputs
 
@@ -136,6 +138,55 @@ def test_print_results_includes_usage(capsys, make_metadata, make_output):
     assert "Usage:" in captured.out
     assert "input_tokens (avg): 8.000" in captured.out
     assert "output_tokens (avg): 3.000" in captured.out
+
+
+def test_attach_metadata_cost_uses_total_output_usage(make_metadata, make_output):
+    from verifiers.utils.eval_utils import _attach_metadata_cost
+
+    outputs = [
+        make_output(example_id=0, reward=1.0, metrics={"test_metric": 1.0}),
+        make_output(example_id=1, reward=0.0, metrics={"test_metric": 2.0}),
+    ]
+    outputs[0]["token_usage"] = {"input_tokens": 10.0, "output_tokens": 4.0}
+    outputs[1]["token_usage"] = {"input_tokens": 6.0, "output_tokens": 2.0}
+    metadata = make_metadata(
+        num_examples=2,
+        rollouts_per_example=1,
+        usage={"input_tokens": 8.0, "output_tokens": 3.0},
+    )
+
+    cost = _attach_metadata_cost(
+        metadata,
+        {"input_usd_per_mtok": 1.0, "output_usd_per_mtok": 5.0},
+        outputs,
+    )
+
+    assert cost == {
+        "input_usd": pytest.approx(0.000016),
+        "output_usd": pytest.approx(0.000030),
+        "total_usd": pytest.approx(0.000046),
+    }
+    assert metadata["cost"] == cost
+
+
+def test_print_results_labels_cost_as_all(capsys, make_metadata, make_output):
+    from verifiers.utils.eval_utils import print_results
+
+    outputs = [
+        make_output(example_id=0, reward=1.0, metrics={"test_metric": 1.0}),
+    ]
+    outputs[0]["token_usage"] = {"input_tokens": 10.0, "output_tokens": 4.0}
+    metadata = make_metadata(num_examples=1, rollouts_per_example=1, usage=None)
+    metadata["cost"] = {
+        "input_usd": 0.005,
+        "output_usd": 0.0073,
+        "total_usd": 0.0123,
+    }
+
+    print_results(GenerateOutputs(outputs=outputs, metadata=metadata))
+    captured = capsys.readouterr()
+
+    assert "cost (all): $0.0123" in captured.out
 
 
 def test_print_results_handles_heterogeneous_metrics(

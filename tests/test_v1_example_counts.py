@@ -55,14 +55,8 @@ STATIC_SOURCES = [
     ),
 ]
 
-EVAL_CONFIGS_WITH_FULL_POOLS = [
-    "hello_self_judge_v1",
-    "hello_parallel_sandbox_v1",
-    "hello_group_reward_v1",
-    "rlm_swe_v1",
-    "opencode_harbor",
-    "tau2_bench_v1",
-]
+DEFAULT_EVAL_NUM_EXAMPLES = 5
+DEFAULT_EVAL_ROLLOUTS_PER_EXAMPLE = 3
 
 
 def test_static_v1_example_sources_have_at_least_ten_unique_problems() -> None:
@@ -85,13 +79,19 @@ def test_mcp_search_env_bundles_at_least_ten_self_contained_records() -> None:
         assert record["summary"]
 
 
-def test_low_v1_eval_smoke_caps_are_at_least_ten_examples() -> None:
-    for env_name in EVAL_CONFIGS_WITH_FULL_POOLS:
-        pyproject = REPO_ROOT / "environments" / env_name / "pyproject.toml"
-        config = tomllib.loads(pyproject.read_text())
-        num_examples = config["tool"]["verifiers"]["eval"]["num_examples"]
+def test_environment_eval_configs_use_shared_smoke_defaults() -> None:
+    pyprojects = sorted((REPO_ROOT / "environments").glob("*/pyproject.toml"))
+    assert pyprojects
 
-        assert num_examples >= 10, env_name
+    for pyproject in pyprojects:
+        config = tomllib.loads(pyproject.read_text())
+        eval_config = config["tool"]["verifiers"]["eval"]
+
+        env_name = pyproject.parent.name
+        assert eval_config["num_examples"] == DEFAULT_EVAL_NUM_EXAMPLES, env_name
+        assert (
+            eval_config["rollouts_per_example"] == DEFAULT_EVAL_ROLLOUTS_PER_EXAMPLE
+        ), env_name
 
 
 def problem_text(row: Mapping[str, Any], key: str) -> str:

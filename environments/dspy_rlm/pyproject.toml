@@ -16,3 +16,7 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build]
 include = ["dspy_rlm.py", "pyproject.toml"]
+
+[tool.verifiers.eval]
+num_examples = 5
+rollouts_per_example = 3
