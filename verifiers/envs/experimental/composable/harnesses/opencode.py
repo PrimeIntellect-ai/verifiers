@@ -9,8 +9,6 @@ Usage::
     harness = opencode_harness(system_prompt="You are a coding agent...")
 """
 
-from __future__ import annotations
-
 import json
 import shlex
 from pathlib import Path, PurePosixPath
@@ -113,6 +111,9 @@ def build_opencode_config(
     provider_timeout_ms: int = 3_600_000,
 ) -> str:
     """Generate opencode.json config content."""
+    agent_config: dict[str, object] = {
+        "title": {"disable": True},
+    }
     config: dict = {
         "${SCHEMA_DOLLAR}schema": "https://opencode.ai/config.json",
         "provider": {
@@ -134,12 +135,10 @@ def build_opencode_config(
             }
         },
         "model": model_id,
-        # Without small_model, title/summary sub-agents fall through to
-        # opencode/gpt-5-nano (free hosted Cloudflare tier) and rate-limit
-        # under concurrent rollouts, which silently blocks the main agent
-        # before it issues any LLM call. See OpenCode provider.ts
-        # getSmallModel() priority chain. Pin to the same intercepted model.
+        # Keep the small-model pin to avoid falling back to the default small
+        # model and hitting rate limits; disable title calls below.
         "small_model": model_id,
+        "agent": agent_config,
     }
 
     if disable_compaction:
@@ -151,7 +150,7 @@ def build_opencode_config(
     if disabled_tools:
         agent_build["tools"] = {tool: False for tool in disabled_tools}
     if agent_build:
-        config["agent"] = {"build": agent_build}
+        agent_config["build"] = agent_build
 
     return json.dumps(config, indent=2)
 

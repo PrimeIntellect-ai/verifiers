@@ -1,16 +1,16 @@
-from __future__ import annotations
-
 import shlex
-from collections.abc import Mapping
 from pathlib import PurePosixPath
-from typing import Any
 
-from .cli import CLIHarness
+from typing_extensions import Unpack
+
+from .command import HarnessKwargs, command_program, command_sandbox
 from ...config import SandboxConfig
+from ...harness import Harness
 from ...utils.prompt_utils import (
     state_system_prompt_text,
     task_text as task_instruction_text,
 )
+from ...types import ConfigMap, ProgramMap, ProgramOptionMap, ProgramValue, PromptInput
 
 DEFAULT_AGENT_WORKDIR = "/app"
 DEFAULT_INSTRUCTION_PATH = "/terminus_2/instruction.md"
@@ -22,7 +22,7 @@ DEFAULT_MODEL_NAME = "openai/gpt-4.1-mini"
 DEFAULT_API_BASE_URL = "https://api.pinference.ai/api/v1"
 
 
-class Terminus2(CLIHarness):
+class Terminus2(Harness):
     def __init__(
         self,
         *,
@@ -34,47 +34,51 @@ class Terminus2(CLIHarness):
         python_version: str = DEFAULT_PYTHON_VERSION,
         model_name: str = DEFAULT_MODEL_NAME,
         api_base_url: str = DEFAULT_API_BASE_URL,
-        system_prompt: object | None = None,
-        sandbox: bool | Mapping[str, object] | SandboxConfig = True,
-        program: Mapping[str, object] | None = None,
+        system_prompt: PromptInput | None = None,
+        sandbox: bool | ConfigMap | SandboxConfig = True,
+        program: ProgramMap | None = None,
         max_turns: int | None = 4,
-        **kwargs: Any,
+        **kwargs: Unpack[HarnessKwargs],
     ):
-        files: dict[str, object] = {
+        files: dict[str, ProgramValue] = {
             instruction_path: task_instruction_text,
         }
         if system_prompt is not None:
             files[system_prompt_path] = state_system_prompt_text
-        artifacts = {
+        artifacts: ProgramOptionMap = {
             "terminus_2_log": {
                 "path": log_path,
                 "format": "text",
                 "optional": True,
             }
         }
+        command = [
+            "bash",
+            "-lc",
+            build_terminus_2_run_script(
+                agent_workdir=agent_workdir,
+                instruction_path=instruction_path,
+                system_prompt_path=system_prompt_path
+                if system_prompt is not None
+                else None,
+                log_path=log_path,
+                harbor_package=harbor_package,
+                python_version=python_version,
+                model_name=model_name,
+                api_base_url=api_base_url,
+                max_turns=max_turns,
+            ),
+        ]
         super().__init__(
-            command=[
-                "bash",
-                "-lc",
-                build_terminus_2_run_script(
-                    agent_workdir=agent_workdir,
-                    instruction_path=instruction_path,
-                    system_prompt_path=system_prompt_path
-                    if system_prompt is not None
-                    else None,
-                    log_path=log_path,
-                    harbor_package=harbor_package,
-                    python_version=python_version,
-                    model_name=model_name,
-                    api_base_url=api_base_url,
-                    max_turns=max_turns,
-                ),
-            ],
-            sandbox=sandbox,
-            files=files,
-            setup=build_terminus_2_install_script(),
-            artifacts=artifacts,
-            program=program,
+            program=command_program(
+                command=command,
+                sandbox=sandbox,
+                files=files,
+                setup=build_terminus_2_install_script(),
+                artifacts=artifacts,
+                program=program,
+            ),
+            sandbox=command_sandbox(sandbox),
             system_prompt=system_prompt,
             max_turns=max_turns,
             **kwargs,

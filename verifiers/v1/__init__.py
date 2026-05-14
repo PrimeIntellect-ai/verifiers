@@ -10,12 +10,23 @@ from verifiers.decorators import (
     teardown,
     update,
 )
+from verifiers.types import (
+    AssistantMessage,
+    Message,
+    Messages,
+    SystemMessage,
+    TextMessage,
+    ToolMessage,
+    UserMessage,
+)
+from verifiers.utils.message_utils import get_messages
 
 from .config import (
     Config,
     EnvConfig,
     HarnessConfig,
     MCPToolConfig,
+    ProgramConfig,
     SandboxConfig,
     TasksetConfig,
     ToolsetConfig,
@@ -24,12 +35,12 @@ from .config import (
 from .env import Env
 from .harness import Harness
 from .packages.harnesses import (
-    CLIHarness,
     MiniSWEAgent,
     OpenCode,
     OpenCodeConfig,
     Pi,
     RLM,
+    RLMConfig,
     Terminus2,
 )
 from .utils.scoring_utils import (
@@ -43,39 +54,65 @@ from .utils.scoring_utils import (
 )
 from .state import State
 from .task import Task
-from .taskset import Taskset
+from .taskset import Taskset, discover_sibling_dir
 from .packages.tasksets import (
     HarborTaskset,
     HarborTasksetConfig,
 )
 from .toolset import MCPTool, Toolset
+from .types import (
+    ConfigData,
+    ConfigMap,
+    GroupHandler,
+    Handler,
+    MutableConfigMap,
+    Objects,
+    TaskRow,
+    TaskRows,
+)
 from .user import User
 
 __all__ = [
+    "ConfigData",
     "Config",
+    "ConfigMap",
     "Env",
     "EnvConfig",
+    "AssistantMessage",
+    "GroupHandler",
     "Harness",
     "HarnessConfig",
     "HarborTaskset",
     "HarborTasksetConfig",
-    "CLIHarness",
+    "Handler",
+    "MutableConfigMap",
     "MCPTool",
     "MCPToolConfig",
+    "Message",
+    "Messages",
     "MiniSWEAgent",
     "OpenCode",
     "OpenCodeConfig",
+    "Objects",
     "Pi",
+    "ProgramConfig",
     "RLM",
+    "RLMConfig",
     "Terminus2",
     "SandboxConfig",
     "State",
     "Task",
+    "TaskRow",
+    "TaskRows",
     "Taskset",
     "TasksetConfig",
+    "SystemMessage",
+    "TextMessage",
     "Toolset",
     "ToolsetConfig",
+    "ToolMessage",
     "User",
+    "UserMessage",
     "UserConfig",
     "add_metric",
     "add_reward",
@@ -84,7 +121,9 @@ __all__ = [
     "build_signals",
     "cleanup",
     "collect_signals",
+    "discover_sibling_dir",
     "metric",
+    "get_messages",
     "reward",
     "score_group",
     "score_rollout",

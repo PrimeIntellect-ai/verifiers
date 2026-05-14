@@ -1,27 +1,28 @@
-from __future__ import annotations
-
 import asyncio
 import os
 import shlex
-from collections.abc import Mapping
-from typing import Any, Callable, cast
+from collections.abc import Mapping, Sequence
+from typing import cast
 
 from verifiers.errors import InfraError
 from verifiers.utils.async_utils import maybe_call_with_named_args
 
 from ..config import resolve_config_object, string_mapping
-from ..runtime import (
-    Runtime,
-    _read_path,
+from .binding_utils import (
     binding_key_parts,
-    binding_source_root,
     function_name,
-    validate_binding_source_root,
+    normalize_binding_map,
+    read_path,
+    validate_binding_source,
     validate_bound_arg,
+    validate_callable_source,
 )
+from ..runtime import Runtime
 from ..state import State
 from ..task import Task
-from .mcp_proxy_utils import ProgramToolType, validate_program_tool_types
+from .mcp_proxy_utils import validate_program_channels
+from ..types import ConfigData, ConfigInputMap, ConfigMap, Handler, ProgramChannel
+from ..types import ProgramValue
 
 PROGRAM_KIND_KEYS = {"base", "fn", "command"}
 PROGRAM_OPTION_KEYS = {
@@ -32,7 +33,7 @@ PROGRAM_OPTION_KEYS = {
     "bindings",
     "env",
     "artifacts",
-    "tools",
+    "channels",
 }
 PROGRAM_KEYS = PROGRAM_KIND_KEYS | PROGRAM_OPTION_KEYS | {"args"}
 SANDBOX_ONLY_PROGRAM_KEYS = {"files", "dirs", "setup", "artifacts"}
@@ -48,10 +49,10 @@ TASK_PROGRAM_KEYS = {
 
 
 async def run_local_command(
-    program: Mapping[str, object], task: Task, state: State, runtime: Runtime
+    program: ConfigMap, task: Task, state: State, runtime: Runtime
 ) -> State:
-    if "mcp" in program_tool_types(program):
-        raise ValueError("program.tools='mcp' requires sandbox command placement.")
+    if "mcp" in program_channels(program):
+        raise ValueError("program.channels='mcp' requires sandbox command placement.")
     validate_program_bindings(program)
     argv = await command_argv(program, task, state, runtime)
     env = await command_env(program, task, state, runtime, include_base=True)
@@ -80,12 +81,12 @@ async def run_local_command(
 
 
 async def command_argv(
-    program: Mapping[str, object], task: Task, state: State, runtime: Runtime
+    program: ConfigMap, task: Task, state: State, runtime: Runtime
 ) -> list[str]:
     command = program.get("command")
     if isinstance(command, str):
         argv = shlex.split(command)
-    elif isinstance(command, list):
+    elif isinstance(command, Sequence):
         argv = [
             str(await resolve_program_value(part, task, state, runtime, program))
             for part in command
@@ -105,7 +106,7 @@ async def command_argv(
 
 
 async def command_env(
-    program: Mapping[str, object],
+    program: ConfigMap,
     task: Task,
     state: State,
     runtime: Runtime,
@@ -138,7 +139,7 @@ async def resolve_program_value(
     task: Task,
     state: State,
     runtime: Runtime,
-    program: Mapping[str, object] | None = None,
+    program: ConfigMap | None = None,
 ) -> object:
     fn = program_value_callable(value)
     if fn is not None:
@@ -147,77 +148,72 @@ async def resolve_program_value(
     if isinstance(value, str):
         root, separator, tail = value.partition(".")
         if separator and root == "task":
-            return _read_path(task, tail)
+            return read_path(task, tail)
         if separator and root == "state":
-            return _read_path(state, tail)
+            return read_path(state, tail)
         if separator and root == "runtime":
-            return _read_path(state.get("runtime", {}), tail)
+            return read_path(state.get("runtime", {}), tail)
     if isinstance(value, Mapping):
         if len(value) != 1:
             raise ValueError("Program value mappings must have exactly one root.")
         root, path = next(iter(value.items()))
         if root == "task":
-            return _read_path(task, str(path))
+            return read_path(task, str(path))
         if root == "state":
-            return _read_path(state, str(path))
+            return read_path(state, str(path))
         if root == "runtime":
-            return _read_path(state.get("runtime", {}), str(path))
+            return read_path(state.get("runtime", {}), str(path))
         raise ValueError(f"Unknown program value root {root!r}.")
     return value
 
 
-def program_value_callable(value: object) -> Callable[..., object] | None:
+def program_value_callable(value: object) -> Handler | None:
     if callable(value):
-        return cast(Callable[..., object], value)
+        return cast(Handler, value)
     if isinstance(value, Mapping) and "fn" in value:
-        spec = cast(Mapping[str, object], value)
-        unknown = set(spec) - {"fn"}
-        if unknown:
-            raise ValueError(
-                f"Program callable value has unknown keys: {sorted(unknown)}."
-            )
+        spec = cast(ConfigMap, value)
+        validate_callable_source(spec, "Program callable value")
         fn = resolve_config_object(spec["fn"])
         if not callable(fn):
             raise TypeError("Program callable value requires callable fn.")
-        return cast(Callable[..., object], fn)
+        return cast(Handler, fn)
     return None
 
 
 async def program_binding_kwargs(
-    fn: Callable[..., object],
-    program: Mapping[str, object] | None,
+    fn: Handler,
+    program: ConfigMap | None,
     task: Task,
     state: State,
     runtime: Runtime,
-) -> dict[str, object]:
+) -> ConfigData:
     if program is None:
         return {}
-    raw_bindings = program.get("bindings") or {}
-    if not isinstance(raw_bindings, Mapping):
-        raise TypeError("program.bindings must be a mapping.")
+    raw_bindings = normalize_binding_map(
+        program.get("bindings"), "program.bindings", allow_objects=False
+    )
     if not raw_bindings:
         return {}
     name = function_name(fn)
-    kwargs: dict[str, object] = {}
+    kwargs: ConfigData = {}
     for binding_key, source in raw_bindings.items():
         target_name, arg_name = binding_key_parts(binding_key)
         if target_name != name:
             continue
         validate_bound_arg(fn, arg_name, f"Program binding {binding_key!r}")
-        source_root = binding_source_root(source)
-        validate_binding_source_root(source_root, f"Program binding {binding_key!r}")
-        if source_root == "objects":
-            raise ValueError("program.bindings cannot use objects.* sources.")
+        validate_binding_source(
+            source, f"Program binding {binding_key!r}", allow_objects=False
+        )
         if arg_name in kwargs:
             raise ValueError(f"Program binding arg {arg_name!r} is defined twice.")
         kwargs[arg_name] = await runtime.resolve_binding(source, task, state)
     return kwargs
 
 
-def validate_program_bindings(program: Mapping[str, object]) -> None:
-    raw_bindings = program.get("bindings") or {}
-    if not isinstance(raw_bindings, Mapping):
-        raise TypeError("program.bindings must be a mapping.")
+def validate_program_bindings(program: ConfigMap) -> None:
+    raw_bindings = normalize_binding_map(
+        program.get("bindings"), "program.bindings", allow_objects=False
+    )
     if not raw_bindings:
         return
     targets = program_binding_targets(program)
@@ -228,23 +224,22 @@ def validate_program_bindings(program: Mapping[str, object]) -> None:
             if target_name in program_setup_callable_names(program):
                 raise ValueError(
                     "program.setup callables cannot use program.bindings; move "
-                    "bound runtime setup under program.tools.<interface>."
+                    "bound runtime setup under program.channels.<channel>."
                 )
             raise ValueError(
                 f"Program binding {binding_key!r} does not match a callable "
                 "owned by the same program."
             )
         validate_bound_arg(fn, arg_name, f"Program binding {binding_key!r}")
-        source_root = binding_source_root(source)
-        validate_binding_source_root(source_root, f"Program binding {binding_key!r}")
-        if source_root == "objects":
-            raise ValueError("program.bindings cannot use objects.* sources.")
+        validate_binding_source(
+            source, f"Program binding {binding_key!r}", allow_objects=False
+        )
 
 
 def program_binding_targets(
-    program: Mapping[str, object],
-) -> dict[str, Callable[..., object]]:
-    targets: dict[str, Callable[..., object]] = {}
+    program: ConfigMap,
+) -> dict[str, Handler]:
+    targets: dict[str, Handler] = {}
 
     def add(value: object) -> None:
         fn = program_value_callable(value)
@@ -264,11 +259,11 @@ def program_binding_targets(
             add(value)
 
     command = program.get("command")
-    if isinstance(command, list):
+    if isinstance(command, Sequence) and not isinstance(command, str):
         for item in command:
             add(item)
     add_items(program.get("args"))
-    for _, item, _ in program_tools_setup(program):
+    for _, item, _ in program_channel_setup(program):
         add(item)
     for key in ("files", "dirs", "env"):
         value = program.get(key)
@@ -278,7 +273,7 @@ def program_binding_targets(
     return targets
 
 
-def program_setup_callable_names(program: Mapping[str, object]) -> set[str]:
+def program_setup_callable_names(program: ConfigMap) -> set[str]:
     names: set[str] = set()
     setup = program.get("setup")
     items = setup if isinstance(setup, list) else [setup]
@@ -289,14 +284,22 @@ def program_setup_callable_names(program: Mapping[str, object]) -> set[str]:
     return names
 
 
-def float_config(config: Mapping[str, object], key: str, default: float) -> float:
+def float_config(config: ConfigMap, key: str, default: float) -> float:
     value = config.get(key)
-    return default if value is None else float(cast(Any, value))
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, int | float | str):
+        raise TypeError(f"{key} must be numeric.")
+    return float(value)
 
 
-def int_config(config: Mapping[str, object], key: str, default: int) -> int:
+def int_config(config: ConfigMap, key: str, default: int) -> int:
     value = config.get(key)
-    return default if value is None else int(cast(Any, value))
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, int | float | str):
+        raise TypeError(f"{key} must be numeric.")
+    return int(value)
 
 
 def endpoint_api_key(runtime: Runtime) -> str:
@@ -306,11 +309,11 @@ def endpoint_api_key(runtime: Runtime) -> str:
     return str(secret or "intercepted")
 
 
-def program_tool_types(program: Mapping[str, object]) -> tuple[ProgramToolType, ...]:
-    return validate_program_tool_types(program.get("tools"))
+def program_channels(program: ConfigMap) -> tuple[ProgramChannel, ...]:
+    return validate_program_channels(program.get("channels"))
 
 
-def program_kind(program: Mapping[str, object]) -> str:
+def program_kind(program: ConfigMap) -> str:
     base = program.get("base", False)
     if not isinstance(base, bool):
         raise TypeError("program.base must be a boolean.")
@@ -333,9 +336,9 @@ def program_kind(program: Mapping[str, object]) -> str:
 
 
 def validate_program_options(
-    program: Mapping[str, object],
+    program: ConfigMap,
     kind: str,
-    sandbox_config: Mapping[str, object] | None,
+    sandbox_config: ConfigMap | None,
 ) -> None:
     unknown = sorted(set(program) - PROGRAM_KEYS)
     if unknown:
@@ -345,17 +348,17 @@ def validate_program_options(
         sandbox_only = sorted(set(program) & SANDBOX_ONLY_PROGRAM_KEYS)
         if sandbox_only:
             raise ValueError(f"Program keys {sandbox_only} require sandbox placement.")
-    tool_types = set(program_tool_types(program))
-    if "mcp" in tool_types:
+    channels = set(program_channels(program))
+    if "mcp" in channels:
         if kind != "command":
             raise ValueError(
-                "program.tools='mcp' is only supported for command programs."
+                "program.channels='mcp' is only supported for command programs."
             )
         if sandbox_config is None:
-            raise ValueError("program.tools='mcp' requires program.sandbox.")
-    if "callable" in tool_types and kind == "command":
+            raise ValueError("program.channels='mcp' requires program.sandbox.")
+    if "callable" in channels and kind == "command":
         raise ValueError(
-            "program.tools='callable' is only supported for base and fn programs."
+            "program.channels='callable' is only supported for base and fn programs."
         )
     if kind == "base" and sandbox_config is None:
         inert = sorted(set(program) & (PROGRAM_OPTION_KEYS - {"sandbox"}))
@@ -363,21 +366,19 @@ def validate_program_options(
             raise ValueError(f"Base program keys {inert} require sandbox placement.")
 
 
-def validate_program_sandbox_scope(sandbox_config: Mapping[str, object]) -> None:
+def validate_program_sandbox_scope(sandbox_config: ConfigMap) -> None:
     scope = str(sandbox_config.get("scope") or "rollout")
     if scope not in {"rollout", "group", "global"}:
         raise ValueError("program sandbox scope must be rollout, group, or global.")
 
 
-def merge_task_program(
-    program: Mapping[str, object], task: Mapping[str, object], *, kind: str
-) -> Mapping[str, object]:
+def merge_task_program(program: ConfigMap, task: ConfigMap, *, kind: str) -> ConfigMap:
     task_program = task.get("program")
     if task_program is None:
         return program
     if not isinstance(task_program, Mapping):
         raise TypeError("task.program must be a mapping.")
-    task_program = cast(Mapping[str, object], task_program)
+    task_program = cast(ConfigMap, task_program)
     unknown = sorted(set(task_program) - TASK_PROGRAM_KEYS)
     if unknown:
         raise ValueError(
@@ -391,8 +392,8 @@ def merge_task_program(
         merged[key] = merge_program_mapping_option(
             program.get(key), task_program.get(key), key
         )
-    merged["bindings"] = merge_program_mapping_option(
-        program.get("bindings"), task_program.get("bindings"), "bindings"
+    merged["bindings"] = merge_program_bindings(
+        program.get("bindings"), task_program.get("bindings")
     )
     merged["setup"] = [
         *program_list_items(program.get("setup"), "program.setup"),
@@ -406,20 +407,18 @@ def merge_task_program(
     return merged
 
 
-def merge_task_sandbox(
-    sandbox_config: Mapping[str, object], task: Mapping[str, object]
-) -> Mapping[str, object]:
+def merge_task_sandbox(sandbox_config: ConfigMap, task: ConfigMap) -> ConfigMap:
     config = dict(sandbox_config)
     task_sandbox = task.get("sandbox")
     if isinstance(task_sandbox, Mapping):
-        config.update(string_mapping(cast(Mapping[object, object], task_sandbox)))
+        config.update(string_mapping(cast(ConfigInputMap, task_sandbox)))
     validate_program_sandbox_scope(config)
     return config
 
 
 def merge_program_mapping_option(
     program_value: object, task_value: object, key: str
-) -> dict[str, object]:
+) -> ConfigData:
     program_mapping = program_option_mapping(program_value, f"program.{key}")
     task_mapping = program_option_mapping(task_value, f"task.program.{key}")
     duplicate = sorted(set(program_mapping) & set(task_mapping))
@@ -430,12 +429,28 @@ def merge_program_mapping_option(
     return {**program_mapping, **task_mapping}
 
 
-def program_option_mapping(value: object, field_name: str) -> dict[str, object]:
+def merge_program_bindings(program_value: object, task_value: object) -> ConfigData:
+    program_bindings = normalize_binding_map(
+        program_value, "program.bindings", allow_objects=False
+    )
+    task_bindings = normalize_binding_map(
+        task_value, "task.program.bindings", allow_objects=False
+    )
+    duplicate = sorted(set(program_bindings) & set(task_bindings))
+    if duplicate:
+        raise ValueError(
+            "program.bindings and task.program.bindings define the same keys: "
+            f"{duplicate}."
+        )
+    return {**program_bindings, **task_bindings}
+
+
+def program_option_mapping(value: object, field_name: str) -> ConfigData:
     if value is None:
         return {}
     if not isinstance(value, Mapping):
         raise TypeError(f"{field_name} must be a mapping.")
-    result: dict[str, object] = {}
+    result: ConfigData = {}
     for key, item in value.items():
         if not isinstance(key, str):
             raise TypeError(f"{field_name} keys must be strings.")
@@ -443,41 +458,43 @@ def program_option_mapping(value: object, field_name: str) -> dict[str, object]:
     return result
 
 
-def program_list_items(value: object, field_name: str) -> list[object]:
+def program_list_items(value: object, field_name: str) -> list[ProgramValue]:
     if value is None:
         return []
     if isinstance(value, str):
         return [value]
-    if not isinstance(value, list):
-        return [value]
-    return list(value)
+    if not isinstance(value, Sequence):
+        return [cast(ProgramValue, value)]
+    return [cast(ProgramValue, item) for item in value]
 
 
-def program_tools_setup(
-    program: Mapping[str, object],
-) -> list[tuple[ProgramToolType, object, int]]:
-    tools = program.get("tools")
-    if tools is None or isinstance(tools, str):
+def program_channel_setup(
+    program: ConfigMap,
+) -> list[tuple[ProgramChannel, ProgramValue, int]]:
+    channels = program.get("channels")
+    if channels is None or isinstance(channels, str):
         return []
-    if isinstance(tools, list):
-        result: list[tuple[ProgramToolType, object, int]] = []
-        for item in tools:
-            result.extend(program_tools_setup({"tools": item}))
+    if isinstance(channels, list):
+        result: list[tuple[ProgramChannel, ProgramValue, int]] = []
+        for item in channels:
+            result.extend(program_channel_setup({"channels": item}))
         return result
-    if not isinstance(tools, Mapping):
-        validate_program_tool_types(tools)
+    if not isinstance(channels, Mapping):
+        validate_program_channels(channels)
         return []
-    tool_types = validate_program_tool_types(tools)
-    tools_map = cast(Mapping[str, object], tools)
-    priority = cast(int, tools_map.get("priority", -100))
-    result = []
-    for tool_type in tool_types:
-        value = tools_map[tool_type]
+    channel_names = validate_program_channels(channels)
+    channels_map = cast(ConfigMap, channels)
+    priority = cast(int, channels_map.get("priority", -100))
+    result: list[tuple[ProgramChannel, ProgramValue, int]] = []
+    for channel in channel_names:
+        value = channels_map[channel]
         if value is None or value is True:
             continue
         if value is False:
-            raise ValueError("program.tools setup should be removed instead of false.")
+            raise ValueError(
+                "program.channels setup should be removed instead of false."
+            )
         items = value if isinstance(value, list) else [value]
         for item in items:
-            result.append((tool_type, item, priority))
+            result.append((channel, cast(ProgramValue, item), priority))
     return result

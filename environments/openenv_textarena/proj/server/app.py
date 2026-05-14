@@ -6,8 +6,6 @@
 
 """FastAPI application entrypoint for the TextArena environment."""
 
-from __future__ import annotations
-
 import os
 
 from openenv.core.env_server.http_server import create_app

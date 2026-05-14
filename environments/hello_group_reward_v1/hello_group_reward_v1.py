@@ -1,10 +1,8 @@
-from __future__ import annotations
-
 from collections.abc import Mapping
 from difflib import SequenceMatcher
 from statistics import mean
 
-import verifiers.v1 as vf
+import verifiers as vf
 
 
 SYSTEM_PROMPT = """\
@@ -28,7 +26,7 @@ def group_reward_task(
     near: str,
     partial: str,
     wrong: str,
-) -> dict[str, object]:
+) -> vf.ConfigData:
     return {
         "task_id": task_id,
         "question": question,
@@ -42,7 +40,7 @@ def group_reward_task(
     }
 
 
-TASKS: list[dict[str, object]] = [
+TASKS: list[vf.ConfigData] = [
     group_reward_task(
         "distributed-systems",
         "Describe v1 verifiers in one short phrase.",
@@ -340,7 +338,8 @@ def load_harness(
 
 def load_environment(
     num_examples: int = -1,
-    config: vf.EnvConfig | None = None,
+    *,
+    config: vf.EnvConfig,
 ) -> vf.Env:
     config = vf.EnvConfig(
         config,
@@ -354,6 +353,7 @@ def load_environment(
 
 def load_v1_environment(
     num_examples: int = -1,
-    config: vf.EnvConfig | None = None,
+    *,
+    config: vf.EnvConfig,
 ) -> vf.Env:
     return load_environment(num_examples=num_examples, config=config)

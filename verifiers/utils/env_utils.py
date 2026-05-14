@@ -69,7 +69,7 @@ def load_environment(env_id: str, **env_args) -> Environment:
             if default_values:
                 logger.info(f"Using default args: {', '.join(default_values)}")
 
-        call_env_args = coerce_typed_env_config(env_load_func, sig, env_args)
+        call_env_args = prepare_typed_env_config(env_load_func, sig, env_args)
         env_instance: Environment = env_load_func(**call_env_args)
         env_instance.env_id = env_instance.env_id or env_id
         env_instance.env_args = env_instance.env_args or env_args
@@ -94,19 +94,22 @@ def load_environment(env_id: str, **env_args) -> Environment:
         raise RuntimeError(f"Failed to load environment '{env_id}': {str(e)}") from e
 
 
-def coerce_typed_env_config(
+def prepare_typed_env_config(
     env_load_func: Callable[..., Environment],
     sig: inspect.Signature,
     env_args: dict,
 ) -> dict:
-    if "config" not in env_args:
-        return env_args
     config_type = env_config_annotation(env_load_func, sig)
     if config_type is None:
         return env_args
 
+    if "config" not in env_args:
+        call_env_args = dict(env_args)
+        call_env_args["config"] = config_type()
+        return call_env_args
+
     config = env_args["config"]
-    if config is None or isinstance(config, config_type):
+    if isinstance(config, config_type):
         return env_args
 
     call_env_args = dict(env_args)

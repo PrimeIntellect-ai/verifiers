@@ -135,7 +135,7 @@ For new environments with reusable tasksets, toolsets, custom programs, or
 custom harnesses, use the v1 Taskset/Harness path:
 ```python
 # my_env.py
-import verifiers.v1 as vf
+import verifiers as vf
 
 def source():
     yield {
@@ -151,8 +151,7 @@ async def contains_answer(task, state) -> float:
 def load_taskset(config: vf.TasksetConfig | None = None):
     return vf.Taskset(source=source, rewards=[contains_answer], config=config)
 
-def load_environment(config: vf.EnvConfig | None = None) -> vf.Env:
-    config = config or vf.EnvConfig()
+def load_environment(config: vf.EnvConfig) -> vf.Env:
     return vf.Env(taskset=load_taskset(config=config.taskset))
 ```
 If no harness is passed, `vf.Env` uses the base endpoint-backed harness. See
@@ -164,7 +163,7 @@ harness with:
 
 ```python
 env = vf.Env(
-    taskset=vf.HarborTaskset(tasks="/path/to/harbor/tasks"),
+    taskset=vf.HarborTaskset(),
     harness=vf.OpenCode(),
 )
 ```

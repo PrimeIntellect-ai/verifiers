@@ -1,7 +1,5 @@
 """Wikispeedia article graph: download, parse, and query the SNAP dataset."""
 
-from __future__ import annotations
-
 import logging
 import os
 import random
@@ -185,13 +183,13 @@ HumanStats = dict[str, float | int | None]
 WikiPair = tuple[str, str, int]
 
 
-def load_wiki_graph(cache_dir: str | Path | None = None) -> WikiGraph:
+def load_wiki_graph(cache_dir: str | Path | None = None) -> "WikiGraph":
     cache_key = str(Path(cache_dir).expanduser()) if cache_dir is not None else ""
     return cached_wiki_graph(cache_key)
 
 
 @lru_cache(maxsize=None)
-def cached_wiki_graph(cache_key: str) -> WikiGraph:
+def cached_wiki_graph(cache_key: str) -> "WikiGraph":
     cache_dir = Path(cache_key) if cache_key else None
     return WikiGraph.load(cache_dir=cache_dir)
 
@@ -278,7 +276,7 @@ class WikiGraph:
         self._name_lookup: dict[str, str] = {name.lower(): name for name in articles}
 
     @classmethod
-    def load(cls, cache_dir: Path | None = None) -> WikiGraph:
+    def load(cls, cache_dir: Path | None = None) -> "WikiGraph":
         cache_dir = cache_dir or DEFAULT_CACHE_DIR
         graph_dir, articles_dir = _ensure_data(cache_dir)
 

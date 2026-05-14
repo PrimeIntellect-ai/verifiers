@@ -24,8 +24,8 @@ include = [
 ]
 
 [tool.verifiers.eval]
-num_examples = 1
-rollouts_per_example = 1
+num_examples = 5
+rollouts_per_example = 3
 
 [tool.ruff]
 exclude = ["tasks/**", "mcp_server/**"]

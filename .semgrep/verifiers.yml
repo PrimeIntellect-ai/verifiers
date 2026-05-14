@@ -1,0 +1,84 @@
+rules:
+  - id: verifiers-no-future-annotations
+    languages: [python]
+    severity: ERROR
+    message: Do not use `from __future__ import annotations`; quote only the specific forward references that need it.
+    pattern: from __future__ import annotations
+
+  - id: verifiers-v1-config-param-one-type
+    languages: [python]
+    severity: ERROR
+    message: Public v1 `config` parameters must be one concrete config type or `None`; keep raw mappings at explicit config-loader boundaries.
+    paths:
+      include:
+        - /verifiers/v1/**/*.py
+        - /environments/**/*.py
+      exclude:
+        - /verifiers/v1/config.py
+        - /verifiers/v1/utils/**/*.py
+    patterns:
+      - pattern: |
+          def $FUNC(..., config: $ANNOT = None, ...):
+              ...
+      - metavariable-regex:
+          metavariable: $ANNOT
+          regex: "(Any|ConfigMap|Mapping\\[str, object\\]|dict\\[str, object\\]|.*\\|.*\\|.*)"
+
+  - id: verifiers-no-private-framework-classes
+    languages: [python]
+    severity: ERROR
+    message: Do not define leading-underscore classes in framework code; use a clear public name or a module-level value/function instead.
+    paths:
+      include:
+        - /verifiers/**/*.py
+    pattern-regex: "^\\s*class _[A-Za-z]"
+
+  - id: verifiers-no-raw-any-v1
+    languages: [python]
+    severity: ERROR
+    message: Do not use raw `Any` in v1 or environment code; use a precise type or a named boundary alias in verifiers.v1.types.
+    paths:
+      include:
+        - /verifiers/v1/**/*.py
+        - /environments/**/*.py
+      exclude:
+        - /verifiers/v1/types.py
+        - /environments/openenv_*/proj/**/*.py
+    pattern-regex: "\\bAny\\b"
+
+  - id: verifiers-no-raw-object-containers-v1
+    languages: [python]
+    severity: ERROR
+    message: Do not spell broad object containers in v1 or environment code; use the named boundary types ConfigMap, ConfigData, Handler, GroupHandler, Objects, TaskRow, ProgramMap, or a narrower type.
+    paths:
+      include:
+        - /verifiers/v1/**/*.py
+        - /environments/**/*.py
+      exclude:
+        - /verifiers/v1/types.py
+        - /verifiers/v1/utils/object_utils.py
+        - /verifiers/v1/utils/task_freeze_utils.py
+        - /environments/openenv_*/proj/**/*.py
+    pattern-regex: "(?x)(\\b(?:Mapping|MutableMapping|dict|list|Sequence|Iterable|Callable|Awaitable|tuple)\\[[^\\n\\]]*\\bobject\\b|\\bcast\\([^\\n)]*\\bobject\\b)"
+
+  - id: verifiers-no-raw-mapping-annotations-v1
+    languages: [python]
+    severity: ERROR
+    message: Do not use raw Mapping annotations in v1 or environment code; prefer dict or a named v1 boundary type. Keep Mapping only for isinstance checks or explicit aliases.
+    paths:
+      include:
+        - /verifiers/v1/**/*.py
+        - /environments/**/*.py
+      exclude:
+        - /verifiers/v1/types.py
+        - /environments/openenv_*/proj/**/*.py
+    pattern-regex: "\\b(?:Mapping|MutableMapping)\\["
+
+  - id: verifiers-get-messages-typed
+    languages: [python]
+    severity: ERROR
+    message: "`get_messages` must return typed `Message` objects, not raw dictionaries."
+    paths:
+      include:
+        - /verifiers/utils/message_utils.py
+    pattern-regex: "def\\s+get_messages\\b[\\s\\S]*?->\\s*list\\s*\\[\\s*dict\\b"

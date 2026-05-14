@@ -10,6 +10,7 @@ This guide covers setup, testing, and contributing to the verifiers package.
 - [Running Tests](#running-tests)
 - [Writing Tests](#writing-tests)
 - [Contributing](#contributing)
+- [Contributor Practices](#contributor-practices)
 - [Common Issues](#common-issues)
 - [Environment Development](#environment-development)
 - [Quick Reference](#quick-reference)
@@ -192,6 +193,40 @@ def test_with_mock(mock_client):
 - [ ] Pre-commit and pre-push hooks pass on latest commit/push
 - [ ] Added tests for new functionality
 - [ ] Updated documentation if needed
+
+## Contributor Practices
+
+### Public Surface
+
+Treat public config, docs, starter examples, skills, and generated agent
+guidance as one surface. If a behavior changes for users, update all matching
+surfaces in the same patch.
+
+For TOML config, keep one shape across eval, GEPA, RL, and Hosted Training.
+Normalize old or alternate inputs at the loader boundary, then keep examples on
+the current golden path.
+
+For v1 Taskset/Harness environments, put task data, task-owned tools, user
+behavior, metrics, rewards, and task-specific configuration on the `Taskset`.
+Use the base `vf.Harness` unless the harness owns a reusable execution adapter
+such as a CLI, framework program, sandboxed program, or nested harness flow.
+
+### Validation By Change Type
+
+- Core runtime or shared config parsing: run the focused unit tests plus `uv run pre-commit run --all-files`.
+- Example environment behavior: run the focused tests and a real `prime eval run` smoke when credentials and endpoint access are available.
+- Environment packaging: exercise `tests/test_envs.py` for the changed environment so a fresh venv installs the environment package and its dependencies.
+- Docs or generated agent guidance: run `uv run python scripts/sync.py` and include the regenerated files.
+- Release prep: verify the version source, release notes commit range, `uv build`, and final worktree status.
+- PR/CI follow-up: inspect the live review thread, check run, or log before patching, then rerun the smallest check that proves the fix.
+
+### Downstream Checks
+
+Before changing dependencies, optional extras, lockfiles, exported config fields,
+or upload/eval metadata, trace the consumers in `prime-cli`, `prime-rl`, Hosted
+Training, and public docs when they are in scope. Update the consumer or document
+the compatibility boundary rather than assuming transitive behavior remains
+safe.
 
 ## Common Issues
 

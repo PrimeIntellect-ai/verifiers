@@ -10,6 +10,9 @@ and training environments from two primary objects:
 `vf.Environment` worker API used by evals and trainers. For local experiments,
 `Harness` is runnable on its own with `await harness.run(task)`.
 
+For current environment authoring guidance, start with
+[`ENVIRONMENT_BEST_PRACTICES.md`](ENVIRONMENT_BEST_PRACTICES.md).
+
 The programming model is intentionally small: tasks and state are serializable
 data; everything else is a function, config value, or runtime-managed handle.
 
@@ -129,7 +132,7 @@ taskset and harness, then compose them.
 ## Minimal Environment
 
 ```python
-import verifiers.v1 as vf
+import verifiers as vf
 
 
 def source():
@@ -149,8 +152,7 @@ def load_taskset(config: vf.TasksetConfig | None = None):
     return vf.Taskset(source=source, rewards=[contains_answer], config=config)
 
 
-def load_environment(config: vf.EnvConfig | None = None):
-    config = config or vf.EnvConfig()
+def load_environment(config: vf.EnvConfig):
     return vf.Env(taskset=load_taskset(config=config.taskset))
 ```
 
@@ -195,7 +197,7 @@ loader.
 
 ```python
 from datasets import load_dataset
-import verifiers.v1 as vf
+import verifiers as vf
 
 
 class GSM8KTasksetConfig(vf.TasksetConfig):
@@ -262,8 +264,8 @@ controls; runtime metadata belongs on `state`.
 `task.program` is the taskset-to-harness merge point for command/program data
 that is task-owned but consumed by a harness. It can define only `files`,
 `dirs`, `setup`, `env`, `artifacts`, and command `args`. The harness still owns
-the program kind (`command`, `fn`, or base loop), sandbox placement, and tool
-interface. Duplicate file/env/artifact keys across harness and task fail fast.
+the program kind (`command`, `fn`, or base loop), sandbox placement, and program
+channel. Duplicate file/env/artifact keys across harness and task fail fast.
 
 Advanced callers may create a state for a new task while borrowing selected live
 resources from an existing state. The stored state remains serializable: borrowed
@@ -475,7 +477,7 @@ Sandboxed programs support:
   callable value;
 - `dirs`: remote path -> local path or importlib resource directory;
 - `setup`: commands contributed to the rollout setup queue;
-- `tools`: program-facing tool interfaces, optionally with late setup commands;
+- `channels`: program-facing tool channels, optionally with late setup commands;
 - `artifacts`: text/JSON files read back into `state["artifacts"]`.
 
 Program does not own lifecycle scoring. `updates`, `metrics`, `rewards`,
@@ -534,23 +536,22 @@ signature.
 
 Reusable CLI programs should be packaged as `Harness` subclasses. Package
 implementations live under `verifiers.v1.packages` while the v1 API stabilizes,
-and are re-exported from `verifiers.v1` for normal use. `CLIHarness` is the thin
-generic wrapper for command programs; `OpenCode`, `Pi`, `MiniSWEAgent`,
-`Terminus2`, and `RLM` are bundled leaf harnesses for common coding-agent CLIs.
+and are re-exported from `verifiers.v1` for normal use. `OpenCode`, `Pi`,
+`MiniSWEAgent`, `Terminus2`, and `RLM` are bundled `Harness` leaf wrappers for
+common coding-agent CLIs.
 
 ```python
-import verifiers.v1 as vf
+import verifiers as vf
 
 env = vf.Env(
-    taskset=vf.HarborTaskset(tasks="/path/to/harbor/tasks"),
+    taskset=vf.HarborTaskset(),
     harness=vf.OpenCode(),
 )
 ```
 
-`HarborTaskset` accepts either a local Harbor task directory/dataset directory
-or a Harbor dataset registry id such as `terminal-bench@2.0`. Registry ids use
-the Harbor CLI download path when available; local paths do not require Harbor
-to be installed. Harbor task rows contribute sandbox settings and
+`HarborTaskset()` loads Harbor-format task directories from the environment
+package's reserved `tasks/` directory. `HarborTaskset(dataset="owner/name")`
+fetches a Harbor Hub dataset. Harbor task rows contribute sandbox settings and
 `task.program` uploads for `/task/instruction.md` and `/task/task.toml`.
 `OpenCode` contributes the OpenCode install/setup, config generation, MCP tool
 proxy wiring, and log artifact collection. `Pi` follows the same pattern for
@@ -563,7 +564,13 @@ and log/trajectory artifacts.
 artifacts.
 `RLM` follows the same boundary for recursive LLM runs: `HarborTaskset` owns
 the task directory and tests, while `RLM` owns RLM installation, optional skill
-upload to `/task/rlm-skills`, endpoint wiring, and trajectory filtering.
+upload to `/rlm/skills`, endpoint wiring, and trajectory filtering.
+Use `RLMConfig` in `env.harness` for RLM-specific settings such as
+`rlm_repo_ref`, `rlm_tools`, `rlm_max_turns`, and `summarize_at_tokens`.
+Tasksets can expose package-owned upload directories with `get_upload_dirs()`.
+The base `Taskset` discovers a sibling `skills/` directory by default, and
+`RLM` uploads that directory to `/rlm/skills` unless `skills=` is passed
+explicitly to the harness.
 
 ## State Helpers
 
@@ -591,6 +598,12 @@ Available helpers:
 These helpers may use process-local handles while the rollout is active. Handles
 are not persistence mechanisms and are stripped before returned state crosses
 the rollout/group boundary.
+
+Message helpers are intentionally limited to transcript selection:
+`vf.get_messages(messages, role=None)` returns matching typed message objects. It
+does not parse answers or define a generic completion-text policy; index or
+slice the returned list with ordinary Python, read `message.content` explicitly,
+or bind a task-specific extractor on the taskset.
 
 ## Singletons And Collections
 
@@ -707,11 +720,14 @@ through state helpers. `sandbox` is reserved for tools owned by a sandboxed
 toolset.
 
 `objects.*` is intentionally owner-private. Object factories are named zero-arg
-loaders for private dependencies owned by the same `Toolset` or `User`. If a
-hidden argument needs task or state data, bind it with a callable source instead
-of an object factory. Updates, cleanup, metrics, and rewards should read
-serializable task/state data or call resolved tools through `state.get_tools()`
-instead of reaching into toolset dependencies directly.
+loaders for private dependencies owned by the same `Taskset`, `Toolset`, or
+`User`. If a hidden argument needs task or state data, bind it with a callable
+source instead of an object factory. Framework args such as `task`, `state`,
+`completion`, and `prompt` win over bindings when names collide.
+
+String binding sources are always framework paths such as `task.answer` or
+`objects.index`. Bind literal strings with a callable source so typos in binding
+paths fail early instead of silently becoming constants.
 
 Tasks can select toolsets and tools for one rollout:
 
@@ -873,11 +889,11 @@ index = "simplewiki"
 
 The runtime normalizes MCP tools into callable handles for Python programs and
 can also present the resolved toolsets as an MCP server for sandbox command
-programs. `program.tools` selects the program tool interface, not a concrete
+programs. `program.channels` selects the program tool channel, not a concrete
 tool name: it accepts `"callable"` or `"mcp"`, or a mapping whose keys are those
-interfaces.
+channels.
 Concrete tools such as `bash` belong to a `Toolset` and are then exposed through
-one of those interfaces.
+one of those channels.
 
 Programs can discover and call resolved tools through the interception endpoint:
 
@@ -897,9 +913,12 @@ async def program(task, state):
     return state
 ```
 
-Sandboxed base and Python entrypoint programs use the callable interface by
-default. Set `program={"sandbox": True, "tools": "callable"}` when the config
-should make that interface explicit.
+Sandboxed base and Python entrypoint programs use the callable channel by
+default. Set `program={"sandbox": True, "channels": "callable"}` when the config
+should make that channel explicit.
+`program.channels` supports only the generic `callable` and `mcp` channels.
+Harness-specific tool carriers, such as RLM skill uploads, should live on the
+taskset upload directory contract or the harness config.
 
 When a sandboxed `program.fn` ref points at local source, v1 resolves the
 package from the module root: single-file modules use `pyproject.toml` in the
@@ -909,12 +928,12 @@ the program sandbox before running the entrypoint. Dependencies are normal
 package dependencies.
 
 Command programs do not have a universal Python call surface. If
-`program.tools` requests `mcp`, v1 materializes an MCP proxy for the resolved
+`program.channels` requests `mcp`, v1 materializes an MCP proxy for the resolved
 toolsets. Generic CLI programs usually need a setup command to add that MCP
 server to their own config, so the golden path is to put that setup under the
 `mcp` key.
 
-The interface setup entry is a late rollout setup contribution that runs inside
+The channel setup entry is a late rollout setup contribution that runs inside
 the program sandbox before the command. It may be a shell string or callable;
 callables can request non-`task` / `state` args only through `program.bindings`.
 
@@ -935,21 +954,24 @@ EOF
 """
 
 
-harness = vf.CLIHarness(
-    command=["my-cli", "run", "/task/instruction.md"],
-    sandbox=True,
-    bindings={"write_cli_config.endpoint_config": endpoint_config},
-    tools={"mcp": write_cli_config},
+harness = vf.Harness(
+    program={
+        "command": ["my-cli", "run", "/task/instruction.md"],
+        "sandbox": True,
+        "bindings": {"write_cli_config.endpoint_config": endpoint_config},
+        "channels": {"mcp": write_cli_config},
+    },
+    sandbox={"image": "python:3.11-slim"},
 )
 ```
 
-`program.setup` is for installing or preparing the process. `program.tools.mcp`
+`program.setup` is for installing or preparing the process. `program.channels.mcp`
 is for registering resolved runtime surfaces such as MCP tools or intercepted
 model endpoints. Both participate in the same priority-ordered setup stage as
 `@vf.setup` handlers; built-in program uploads run early, `program.setup` runs
-before ordinary priority-0 setup handlers, and tool-interface setup runs late.
+before ordinary priority-0 setup handlers, and channel setup runs late.
 `program.setup` callables should only request `task` and `state`; use
-`program.tools.<interface>` when setup needs bound runtime values such as an
+`program.channels.<channel>` when setup needs bound runtime values such as an
 endpoint config.
 
 ## Package Dependencies
@@ -1014,9 +1036,10 @@ async def format_reward(task, state) -> float:
     return float("<answer>" in str(state.get("completion")))
 ```
 
-Rollout signals must accept `task, state`. Extra required arguments are only
-valid when a Toolset binding supplies them. Group signals are stricter because
-they run after rollout-local runtime handles are gone.
+Rollout signals can request framework args such as `task`, `state`,
+`completion`, and `prompt`. Extra required arguments are valid when a taskset or
+toolset binding supplies them. Group signals can request `tasks`, `states`, and
+bound hidden args.
 
 ### Group Signals
 
@@ -1034,9 +1057,8 @@ async def centered(tasks, states) -> list[float]:
     ...
 ```
 
-Group metrics/rewards/advantages must accept exactly `tasks, states` and return
-one float per state. v1 writes advantages only when an explicit advantage signal
-is configured.
+Group metrics/rewards/advantages must return one float per state. v1 writes
+advantages only when an explicit advantage signal is configured.
 
 `Env.requires_group_rollouts` is true when group-stage updates, signals,
 cleanup, or custom group setup are present. `Env.provides_advantages` is true
@@ -1081,15 +1103,14 @@ async def summarize_attempts(tasks, states):
     ...
 ```
 
-Rollout update receives `task, state`, plus any Toolset-bound hidden args.
-Group update receives exactly `tasks, states`.
+Rollout updates can request framework args and taskset/toolset-bound hidden
+args. Group updates can request `tasks`, `states`, and bound hidden args.
 
 ### Cleanup And Teardown
 
-`@vf.cleanup` runs after scoring for its stage. Rollout cleanup receives
-`task, state`, plus any Toolset-bound hidden args. Group cleanup receives
-exactly `tasks, states`. Cleanup is the user extension point for final state
-mutation and resource-related cleanup.
+`@vf.cleanup` runs after scoring for its stage. Cleanup functions can request
+their stage's framework args and taskset/toolset-bound hidden args. Cleanup is
+the user extension point for final state mutation and resource-related cleanup.
 
 ```python
 @vf.cleanup(stage="group")
@@ -1113,7 +1134,7 @@ Environment packages choose how to route runner config into v1 objects. The
 recommended loader shape is:
 
 ```python
-import verifiers.v1 as vf
+import verifiers as vf
 
 
 def load_taskset(config: vf.TasksetConfig | None = None):
@@ -1124,8 +1145,7 @@ def load_harness(config: vf.HarnessConfig | None = None):
     return vf.Harness(config=config)
 
 
-def load_environment(config: vf.EnvConfig | None = None):
-    config = config or vf.EnvConfig()
+def load_environment(config: vf.EnvConfig):
     return vf.Env(
         taskset=load_taskset(config=config.taskset),
         harness=load_harness(config=config.harness),
@@ -1135,8 +1155,7 @@ def load_environment(config: vf.EnvConfig | None = None):
 If the base harness is enough, omit `load_harness`:
 
 ```python
-def load_environment(config: vf.EnvConfig | None = None):
-    config = config or vf.EnvConfig()
+def load_environment(config: vf.EnvConfig):
     return vf.Env(taskset=load_taskset(config=config.taskset))
 ```
 
@@ -1163,43 +1182,47 @@ max_turns = 4
 weight = 0.5
 ```
 
-For concise named args, pass typed child config objects as defaults. Explicit
-nested sections win over those defaults.
+For concise named args, define one typed args object and pass it as `args`.
+`EnvConfig.args` is intentionally user-defined; environment packages decide how
+those args flow into taskset and harness construction.
 
 ```python
+class MyEnvArgsConfig(vf.Config):
+    split: str = "train"
+    max_turns: int = 10
+
+
 class MyTasksetConfig(vf.TasksetConfig):
     split: str = "train"
 
 
-def load_taskset(
-    split: str | None = None,
-    config: vf.TasksetConfig | None = None,
-):
-    config = MyTasksetConfig(config, split=split)
+def load_taskset(config: vf.TasksetConfig | None = None):
+    config = MyTasksetConfig(config)
     ...
 
 
-def load_harness(
-    max_turns: int | None = None,
-    config: vf.HarnessConfig | None = None,
-):
-    config = vf.HarnessConfig(config, max_turns=max_turns)
+def load_harness(config: vf.HarnessConfig | None = None):
+    config = vf.HarnessConfig(config)
     ...
 
 
 def load_environment(
-    config: vf.EnvConfig | None = None,
+    config: vf.EnvConfig,
     split: str = "train",
     max_turns: int = 10,
 ):
     config = vf.EnvConfig(
         config,
-        taskset=MyTasksetConfig(split=split),
-        harness=vf.HarnessConfig(max_turns=max_turns),
+        args=MyEnvArgsConfig(split=split, max_turns=max_turns),
     )
+    args = MyEnvArgsConfig(config.args)
     return vf.Env(
-        taskset=load_taskset(config=config.taskset),
-        harness=load_harness(config=config.harness),
+        taskset=load_taskset(
+            config=MyTasksetConfig(config.taskset, split=args.split)
+        ),
+        harness=load_harness(
+            config=vf.HarnessConfig(config.harness, max_turns=args.max_turns)
+        ),
     )
 ```
 
@@ -1226,6 +1249,18 @@ max_turns = 8
 
 [env.taskset.scoring.exact_answer]
 weight = 1.0
+```
+
+Taskset and harness sections can import a base config with `config` and then
+overlay local fields. Collection fields extend the imported config.
+
+```toml
+[env.harness]
+config = "my_env.configs:load_another_harness_config"
+
+[[env.harness.rewards]]
+fn = "my_env.rewards:new_reward_func"
+weight = 0
 ```
 
 The outer runner owns model, endpoint, client, sampling, rollout count, and
@@ -1368,7 +1403,7 @@ Python programs can be configured directly:
 [env.harness.program]
 fn = "my_env.programs:run_agent"
 sandbox = true
-tools = "callable"
+channels = "callable"
 ```
 
 Command programs use `command` and can receive the resolved tools as an MCP
@@ -1379,14 +1414,19 @@ server when they run in a sandbox:
 command = ["bash", "-lc", "my-cli run /task/instruction.md"]
 sandbox = true
 
-[env.harness.program.tools]
+[env.harness.program.channels]
 mcp = true
 
 [env.harness.program.files]
 "/task/instruction.md" = "task.instruction"
 ```
 
-`program.setup` prepares the process. `program.tools.mcp` registers resolved
+`program.channels` is deliberately limited to `callable` and `mcp`.
+Harness-specific tool carriers belong on the harness or taskset contract; for
+example, RLM reads `Taskset.get_upload_dirs()["skills"]` and uploads it to
+`/rlm/skills`.
+
+`program.setup` prepares the process. `program.channels.mcp` registers resolved
 tool or endpoint config after the interception endpoint is live and before the
 command runs:
 
@@ -1395,7 +1435,7 @@ command runs:
 command = ["my-cli", "run", "--config", "/tmp/my-cli.json"]
 sandbox = true
 
-[env.harness.program.tools]
+[env.harness.program.channels]
 mcp = { fn = "my_env.cli:write_cli_config" }
 
 [env.harness.program.bindings]
@@ -1432,9 +1472,13 @@ def openai_key(state):
     return state.get_endpoint_config(api="chat")["api_key"]
 
 
-vf.CLIHarness(
-    command=["my-cli", "run"],
-    env={"OPENAI_API_KEY": openai_key},
+vf.Harness(
+    program={
+        "command": ["my-cli", "run"],
+        "sandbox": True,
+        "env": {"OPENAI_API_KEY": openai_key},
+    },
+    sandbox={"image": "python:3.11-slim"},
 )
 ```
 

@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import asyncio
 import atexit
 import json
@@ -98,8 +96,8 @@ class Environment(ABC):
 
     def __init__(
         self,
-        dataset: Dataset | DatasetBuilder | None = None,
-        eval_dataset: Dataset | DatasetBuilder | None = None,
+        dataset: "Dataset | DatasetBuilder | None" = None,
+        eval_dataset: "Dataset | DatasetBuilder | None" = None,
         system_prompt: str | None = None,
         few_shot: Messages | None = None,
         parser: Parser | None = None,
@@ -157,8 +155,8 @@ class Environment(ABC):
 
         # Dataset sources (builders) and built datasets
         # Use get_dataset()/get_eval_dataset() for access; build_dataset() to trigger build
-        self.dataset: Dataset | None = None
-        self.eval_dataset: Dataset | None = None
+        self.dataset: "Dataset | None" = None
+        self.eval_dataset: "Dataset | None" = None
 
         if dataset is not None:
             if callable(dataset):
@@ -275,7 +273,7 @@ class Environment(ABC):
         )
         signal.signal(signal.SIGTERM, lambda _, __: (_sync_teardown(), exit(143)))
 
-    def _ensure_example_id(self, dataset: Dataset) -> Dataset:
+    def _ensure_example_id(self, dataset: "Dataset") -> "Dataset":
         """Ensure example_id column exists and is integer type."""
         if "example_id" in dataset.column_names and not isinstance(
             dataset["example_id"][0], int
@@ -287,13 +285,13 @@ class Environment(ABC):
 
     def _ensure_prompt(
         self,
-        dataset: Dataset,
+        dataset: "Dataset",
         system_prompt: str | None = None,
         few_shot: Messages | None = None,
         question_key: str = "question",
         answer_key: str = "answer",
         map_kwargs: dict = {},
-    ) -> Dataset:
+    ) -> "Dataset":
         """Ensure prompt column exists."""
         if "prompt" not in dataset.column_names:
 
@@ -354,13 +352,13 @@ class Environment(ABC):
 
     def _format_dataset(
         self,
-        dataset: Dataset,
+        dataset: "Dataset",
         system_prompt: str | None = None,
         few_shot: Messages | None = None,
         question_key: str = "question",
         answer_key: str = "answer",
         map_kwargs: dict = {},
-    ) -> Dataset:
+    ) -> "Dataset":
         """
         Format dataset by creating example_id and prompt columns.
         """
@@ -373,8 +371,8 @@ class Environment(ABC):
         return dataset
 
     def _format_completion_dataset(
-        self, dataset: Dataset, map_kwargs: dict = {}
-    ) -> Dataset:
+        self, dataset: "Dataset", map_kwargs: dict = {}
+    ) -> "Dataset":
         """
         Format dataset by creating example_id.
         """
@@ -383,7 +381,7 @@ class Environment(ABC):
         dataset = self._ensure_example_id(dataset)
         return dataset
 
-    def _format_dataset_source(self, dataset: Dataset) -> Dataset:
+    def _format_dataset_source(self, dataset: "Dataset") -> "Dataset":
         """Format a dataset as chat (messages); client maps to its format at request time."""
         return self._format_dataset(
             dataset,
@@ -392,7 +390,7 @@ class Environment(ABC):
             map_kwargs=self.map_kwargs,
         )
 
-    def build_dataset(self) -> Dataset | None:
+    def build_dataset(self) -> "Dataset | None":
         """Build and cache the training dataset from source if needed."""
         if self.dataset is not None:
             return self.dataset
@@ -402,7 +400,7 @@ class Environment(ABC):
         self.dataset = self._format_dataset_source(built)
         return self.dataset
 
-    def build_eval_dataset(self) -> Dataset | None:
+    def build_eval_dataset(self) -> "Dataset | None":
         """Build and cache the evaluation dataset from source if needed."""
         if self.eval_dataset is not None:
             return self.eval_dataset
@@ -413,7 +411,7 @@ class Environment(ABC):
         return self.eval_dataset
 
     @final
-    def get_dataset(self, n: int = -1, seed: int | None = None) -> Dataset:
+    def get_dataset(self, n: int = -1, seed: int | None = None) -> "Dataset":
         self.build_dataset()
         if self.dataset is None:
             raise ValueError("dataset is not set")
@@ -425,7 +423,7 @@ class Environment(ABC):
         return self.dataset
 
     @final
-    def get_eval_dataset(self, n: int = -1, seed: int | None = None) -> Dataset:
+    def get_eval_dataset(self, n: int = -1, seed: int | None = None) -> "Dataset":
         self.build_eval_dataset()
         if self.eval_dataset is None:
             self.logger.warning(
@@ -467,7 +465,7 @@ class Environment(ABC):
 
     @final
     def increment_state_usage_from_response(
-        self, state: State, response: object
+        self, state: State, response: Response
     ) -> None:
         tracker = self._get_usage_tracker(state, create_if_missing=True)
         assert tracker is not None
@@ -833,7 +831,7 @@ class Environment(ABC):
 
     async def generate(
         self,
-        inputs: Dataset | List[RolloutInput],
+        inputs: "Dataset | List[RolloutInput]",
         client: Client | ClientConfig,
         model: str,
         sampling_args: SamplingArgs | None = None,
@@ -1129,7 +1127,7 @@ class Environment(ABC):
 
     def generate_sync(
         self,
-        inputs: Dataset | List[RolloutInput],
+        inputs: "Dataset | List[RolloutInput]",
         client: Client | ClientConfig,
         **kwargs,
     ) -> GenerateOutputs:

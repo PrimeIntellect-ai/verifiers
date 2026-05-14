@@ -1,18 +1,17 @@
-from __future__ import annotations
-
 import json
 import logging
 import os
 import re
 import shlex
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import Any
+from typing import Protocol, cast
 
 from datasets import load_dataset
 from pydantic import Field
 
-import verifiers.v1 as vf
+import verifiers as vf
+from verifiers.v1.types import ConfigMap, ProgramOptionMap
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +31,38 @@ class RlmSweTasksetConfig(vf.TasksetConfig):
     ds_keep_in_memory: bool = True
     timeout_minutes: int | None = None
     hide_tests_from_agent: bool = True
-    env: dict[str, object] = Field(default_factory=dict)
+    env: vf.ConfigData = Field(default_factory=dict)
+
+
+class SandboxCommandResult(Protocol):
+    exit_code: int
+    stdout: str | None
+    stderr: str | None
+
+
+class R2ESandbox(Protocol):
+    id: str
+
+    async def execute(
+        self,
+        command: str,
+        working_dir: str | None = None,
+        timeout: int = 90,
+    ) -> SandboxCommandResult: ...
+
+    async def download_file(
+        self, remote_path: str, local_path: str, timeout: int = 300
+    ) -> None: ...
+
+    async def upload_file(
+        self, remote_path: str, local_path: str, timeout: int = 300
+    ) -> None: ...
+
+    async def upload_bytes(self, remote_path: str, data: bytes, name: str) -> None: ...
+
+    async def run_background_job(
+        self, command: str, timeout: int, working_dir: str
+    ) -> SandboxCommandResult: ...
 
 
 class R2ESWETaskset(vf.Taskset):
@@ -48,9 +78,8 @@ class R2ESWETaskset(vf.Taskset):
         ds_keep_in_memory: bool | None = None,
         timeout_minutes: int | None = None,
         hide_tests_from_agent: bool | None = None,
-        env: Mapping[str, object] | None = None,
-        config: RlmSweTasksetConfig | Mapping[str, object] | None = None,
-        **kwargs: Any,
+        env: ProgramOptionMap | None = None,
+        config: RlmSweTasksetConfig | None = None,
     ):
         config = RlmSweTasksetConfig(config)
         self.dataset_name = dataset_name or config.dataset_name
@@ -80,16 +109,15 @@ class R2ESWETaskset(vf.Taskset):
             source=self.load_rows,
             taskset_id="swe/r2e",
             config=config,
-            **kwargs,
         )
 
-    def load_rows(self) -> list[dict[str, Any]]:
-        rows: list[dict[str, Any]] = []
+    def load_rows(self) -> list[vf.ConfigData]:
+        rows: list[vf.ConfigData] = []
         for index, row in enumerate(self.load_dataset_rows()):
             row = dict(row)
             info = dict(row["info"])
             instruction = str(info["problem_statement"])
-            task_row: dict[str, Any] = {
+            task_row: vf.ConfigData = {
                 "example_id": index,
                 "task_id": info.get("instance_id") or index,
                 "question": row.get("question", instruction),
@@ -103,7 +131,7 @@ class R2ESWETaskset(vf.Taskset):
             rows.append(task_row)
         return rows
 
-    def load_dataset_rows(self):
+    def load_dataset_rows(self) -> Iterable[ConfigMap]:
         dataset_kwargs = dict(
             num_proc=self.ds_num_proc,
             keep_in_memory=self.ds_keep_in_memory,
@@ -121,14 +149,17 @@ class R2ESWETaskset(vf.Taskset):
                 lambda row: row.get("repo_name") not in filter_set,
                 **dataset_kwargs,
             )
-        return dataset.map(
-            process_r2e_example,
-            remove_columns=dataset.column_names,
-            **dataset_kwargs,
+        return cast(
+            Iterable[ConfigMap],
+            dataset.map(
+                process_r2e_example,
+                remove_columns=dataset.column_names,
+                **dataset_kwargs,
+            ),
         )
 
-    def sandbox_config(self, info: Mapping[str, object]) -> dict[str, object]:
-        config: dict[str, object] = {
+    def sandbox_config(self, info: ConfigMap) -> vf.ConfigData:
+        config: vf.ConfigData = {
             "image": f"{REGISTRY_PREFIX}/{info['docker_image']}",
             "cpu_cores": 4,
             "memory_gb": 4,
@@ -168,7 +199,9 @@ class R2ESWETaskset(vf.Taskset):
             state.setdefault("test_timeout", timeout_minutes * 60)
         await self.setup_sandbox(sandbox, state)
 
-    async def setup_sandbox(self, sandbox: Any, state: dict[str, Any]) -> None:
+    async def setup_sandbox(
+        self, sandbox: R2ESandbox, state: vf.MutableConfigMap
+    ) -> None:
         async def exec_checked(
             command: str, working_dir: str | None = None, timeout: int = 90
         ):
@@ -248,8 +281,8 @@ class R2ESWETaskset(vf.Taskset):
 
     async def run_tests(
         self,
-        sandbox: Any,
-        state: dict[str, Any],
+        sandbox: R2ESandbox,
+        state: vf.MutableConfigMap,
         test_timeout: int,
     ) -> str:
         local_archive_path = state.get("r2e_tests_archive_local_path")
@@ -288,7 +321,7 @@ class R2ESWETaskset(vf.Taskset):
         )
         return result.stdout or ""
 
-    def calculate_reward(self, test_output: str, info: Mapping[str, object]) -> float:
+    def calculate_reward(self, test_output: str, info: ConfigMap) -> float:
         parsed = parse_log_pytest(test_output)
         parsed = decolor_dict_keys(parsed)
         expected_raw = info["expected_output_json"]
@@ -307,7 +340,9 @@ class R2ESWETaskset(vf.Taskset):
                 return 0.0
         return 1.0
 
-    async def apply_gold_patch(self, sandbox: Any, state) -> None:
+    async def apply_gold_patch(
+        self, sandbox: R2ESandbox, state: vf.MutableConfigMap
+    ) -> None:
         info = state["info"]
         patch = extract_gold_patch(
             str(info["parsed_commit_content"]),
@@ -331,7 +366,7 @@ class R2ESWETaskset(vf.Taskset):
                 f"git apply failed: exit_code={result.exit_code} stderr={stderr}"
             )
 
-    async def validate_instance(self, state) -> bool:
+    async def validate_instance(self, state: vf.MutableConfigMap) -> bool:
         sandbox = state["_rlm_swe_sandbox"]
         await self.apply_gold_patch(sandbox, state)
         test_output = await self.run_tests(
@@ -350,7 +385,7 @@ class R2ESWETaskset(vf.Taskset):
         state.pop("_rlm_swe_sandbox", None)
 
 
-def process_r2e_example(row: Mapping[str, Any]) -> dict[str, Any]:
+def process_r2e_example(row: ConfigMap) -> vf.ConfigData:
     info = dict(row)
     info.setdefault("instance_id", row.get("commit_hash"))
     info.setdefault("repo", row.get("repo_name"))
@@ -375,7 +410,7 @@ def parse_log_pytest(log: str | None) -> dict[str, str]:
     return test_status_map
 
 
-def decolor_dict_keys(values: Mapping[str, str]) -> dict[str, str]:
+def decolor_dict_keys(values: dict[str, str]) -> dict[str, str]:
     return {re.sub(r"\u001b\[\d+m", "", key): value for key, value in values.items()}
 
 
@@ -454,120 +489,37 @@ def extract_gold_patch(
 
 
 def load_taskset(
-    config: RlmSweTasksetConfig | Mapping[str, object] | None = None,
-    dataset_name: str | None = None,
-    repo_path: str | None = None,
-    alt_path: str | None = None,
-    filter_repos: list[str] | None = None,
-    ds_num_proc: int | None = None,
-    ds_keep_in_memory: bool | None = None,
-    timeout_minutes: int | None = None,
-    hide_tests_from_agent: bool | None = None,
-    env: Mapping[str, object] | None = None,
+    config: RlmSweTasksetConfig | None = None,
 ) -> R2ESWETaskset:
-    return R2ESWETaskset(
-        dataset_name=dataset_name,
-        repo_path=repo_path,
-        alt_path=alt_path,
-        filter_repos=filter_repos,
-        ds_num_proc=ds_num_proc,
-        ds_keep_in_memory=ds_keep_in_memory,
-        timeout_minutes=timeout_minutes,
-        hide_tests_from_agent=hide_tests_from_agent,
-        env=env,
-        config=config,
-    )
+    return R2ESWETaskset(config=config)
 
 
 def load_harness(
-    config: vf.HarnessConfig | None = None,
-    workdir: str = DEFAULT_REPO_PATH,
-    gh_token: str | None = None,
-    rlm_tools: list[str] | None = None,
-    skills: str | Path | None = None,
-    **rlm_kwargs: Any,
+    config: vf.RLMConfig | None = None,
+    taskset: R2ESWETaskset | None = None,
 ) -> vf.RLM:
-    token = gh_token or os.environ.get("GH_TOKEN")
-    tools = list(rlm_tools if rlm_tools is not None else DEFAULT_RLM_TOOLS)
+    user_config = vf.RLMConfig(config)
+    config = vf.RLMConfig(
+        vf.RLMConfig(workdir=DEFAULT_REPO_PATH, rlm_tools=list(DEFAULT_RLM_TOOLS)),
+        **user_config.model_dump(exclude_unset=True, exclude_none=True),
+    )
+    if taskset is not None:
+        config = vf.RLMConfig(
+            config,
+            workdir=taskset.repo_path,
+            gh_token=config.gh_token or os.environ.get("GH_TOKEN"),
+            env_vars={**taskset.get_env_vars(), **config.env_vars},
+        )
     return vf.RLM(
-        workdir=workdir,
-        gh_token=token,
-        rlm_tools=tools,
-        skills=skills,
         config=config,
-        **rlm_kwargs,
     )
 
 
-def load_environment(
-    config: vf.EnvConfig | None = None,
-    dataset_name: str | None = None,
-    repo_path: str | None = None,
-    alt_path: str | None = None,
-    filter_repos: list[str] | None = None,
-    ds_num_proc: int | None = None,
-    ds_keep_in_memory: bool | None = None,
-    timeout_minutes: int | None = None,
-    hide_tests_from_agent: bool | None = None,
-    env: Mapping[str, object] | None = None,
-    instruction_path: str | None = None,
-    rlm_repo_url: str | None = None,
-    rlm_ref: str | None = None,
-    rlm_max_turns: int | None = None,
-    rlm_exec_timeout: int | None = None,
-    rlm_max_depth: int | None = None,
-    summarize_at_tokens: int | tuple[int, int] | list[int] | None = None,
-    include_sub_rlm_trajectories: bool | None = None,
-    append_to_system_prompt: str | None = None,
-    local_checkout: str | Path | None = None,
-    gh_token: str | None = None,
-    rlm_tools: list[str] | None = None,
-    rlm_env: dict[str, object] | None = None,
-    skills: str | Path | None = None,
-) -> vf.Env:
-    config = vf.EnvConfig(
-        config,
-        taskset=RlmSweTasksetConfig(
-            dataset_name=dataset_name or DEFAULT_DATASET_NAME,
-            repo_path=repo_path or DEFAULT_REPO_PATH,
-            alt_path=alt_path or DEFAULT_ALT_PATH,
-            filter_repos=filter_repos,
-            ds_num_proc=ds_num_proc,
-            ds_keep_in_memory=ds_keep_in_memory
-            if ds_keep_in_memory is not None
-            else True,
-            timeout_minutes=timeout_minutes,
-            hide_tests_from_agent=hide_tests_from_agent
-            if hide_tests_from_agent is not None
-            else True,
-            env=dict(env or {}),
-        ),
+def load_environment(config: vf.EnvConfig) -> vf.Env:
+    taskset_config = (
+        None if config.taskset is None else RlmSweTasksetConfig(config.taskset)
     )
-    taskset = load_taskset(config=config.taskset)
-    merged_rlm_env = {**taskset.get_env_vars(), **dict(rlm_env or {})}
-    rlm_kwargs = {
-        key: value
-        for key, value in {
-            "instruction_path": instruction_path,
-            "rlm_repo_url": rlm_repo_url,
-            "rlm_ref": rlm_ref,
-            "rlm_max_turns": rlm_max_turns,
-            "rlm_exec_timeout": rlm_exec_timeout,
-            "rlm_max_depth": rlm_max_depth,
-            "summarize_at_tokens": summarize_at_tokens,
-            "include_sub_rlm_trajectories": include_sub_rlm_trajectories,
-            "append_to_system_prompt": append_to_system_prompt,
-            "local_checkout": local_checkout,
-            "rlm_env": merged_rlm_env,
-        }.items()
-        if value is not None
-    }
-    harness = load_harness(
-        config=config.harness,
-        workdir=taskset.repo_path,
-        gh_token=gh_token,
-        rlm_tools=rlm_tools,
-        skills=skills,
-        **rlm_kwargs,
-    )
+    harness_config = None if config.harness is None else vf.RLMConfig(config.harness)
+    taskset = load_taskset(config=taskset_config)
+    harness = load_harness(config=harness_config, taskset=taskset)
     return vf.Env(taskset=taskset, harness=harness)

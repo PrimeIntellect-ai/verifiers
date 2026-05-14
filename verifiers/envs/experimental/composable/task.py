@@ -24,8 +24,6 @@ A **SandboxSpec** describes sandbox requirements (image, CPU, memory, etc.).
         async def evaluate(self, sandbox_client, sandbox_id, state) -> float: ...
 """
 
-from __future__ import annotations
-
 import importlib
 import importlib.resources as resources
 from dataclasses import dataclass
@@ -100,7 +98,7 @@ class Task:
     """
 
     def __init__(
-        self, taskset: TaskSet, prompt: Messages, info: dict, answer: str = ""
+        self, taskset: "TaskSet", prompt: Messages, info: dict, answer: str = ""
     ):
         self._taskset = taskset
         self.prompt = prompt
@@ -143,7 +141,7 @@ class TaskSet:
 
     def __init__(
         self,
-        dataset: Any | DatasetBuilder,
+        dataset: "Any | DatasetBuilder",
         name: str = "",
         filter_fn: str | None = None,
     ):
@@ -294,13 +292,13 @@ class TaskSet:
 
     # -- Combinators ---------------------------------------------------------
 
-    def filter(self, predicate: Callable[[dict], bool]) -> TaskSet:
+    def filter(self, predicate: Callable[[dict], bool]) -> "TaskSet":
         clone = object.__new__(type(self))
         clone.__dict__.update(self.__dict__)
         clone.dataset = self.dataset.filter(predicate)
         return clone
 
-    def take(self, n: int) -> TaskSet:
+    def take(self, n: int) -> "TaskSet":
         clone = object.__new__(type(self))
         clone.__dict__.update(self.__dict__)
         clone.dataset = self.dataset.select(range(min(n, len(self.dataset))))

@@ -5,7 +5,7 @@ import pytest
 
 import verifiers as vf
 from renderers import RendererPool
-from renderers.base import ParsedResponse, create_renderer
+from renderers.base import ParsedResponse, RenderedTokens, create_renderer
 from verifiers.clients.renderer_client import (
     RendererClient,
     _attach_tool_call_names,
@@ -280,11 +280,13 @@ class _BridgeRenderer:
             stop_idx = len(self.bridge_base) - 1
         trailing = list(self.bridge_base[stop_idx + 1 :])
         extension = list(self.bridge_full[len(self.bridge_base) :])
-        return (
-            list(previous_prompt_ids)
-            + list(previous_completion_ids)
-            + trailing
-            + extension
+        return RenderedTokens(
+            token_ids=(
+                list(previous_prompt_ids)
+                + list(previous_completion_ids)
+                + trailing
+                + extension
+            )
         )
 
     def parse_response(self, token_ids):
@@ -345,7 +347,8 @@ async def test_get_incremental_prompt_ids_matches_tool_tail_without_rerendering_
         renderer=renderer, prompt=prompt, state=state, tools=None
     )
 
-    assert result == [1, 2, 3, 99, 30, 40]
+    assert result is not None
+    assert result.token_ids == [1, 2, 3, 99, 30, 40]
     # The bridge stitches over the completion without re-rendering it —
     # one bridge call, zero render_ids calls (older diff-based bridges
     # called render_ids twice).
@@ -387,7 +390,8 @@ async def test_get_incremental_prompt_ids_accepts_tool_then_user_tail():
         renderer=renderer, prompt=prompt, state=state, tools=None
     )
 
-    assert result == [1, 2, 3, 99, 40, 50]
+    assert result is not None
+    assert result.token_ids == [1, 2, 3, 99, 40, 50]
 
 
 @pytest.mark.asyncio
@@ -446,7 +450,8 @@ async def test_get_incremental_prompt_ids_accepts_multimodal_tool_user_tail():
         renderer=renderer, prompt=prompt, state=state, tools=None
     )
 
-    assert result == [1, 2, 3, 99, 40, 50]
+    assert result is not None
+    assert result.token_ids == [1, 2, 3, 99, 40, 50]
 
 
 # ── Parity across real renderers: truncated most-recent step ──────────
@@ -478,7 +483,7 @@ _TRUNCATED_ANCHOR_MODELS = [
         "auto",
         id="nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
     ),
-    pytest.param("openai/gpt-oss-20b", "gpt_oss", id="openai/gpt-oss-20b"),
+    pytest.param("openai/gpt-oss-20b", "gpt-oss", id="openai/gpt-oss-20b"),
 ]
 
 
@@ -552,11 +557,12 @@ async def test_get_incremental_prompt_ids_bridges_over_truncated_step(
 
     prefix = list(prev_prompt_ids) + list(prev_completion_ids)
     assert result is not None, f"{model_id}: bridge returned None on truncated anchor"
-    assert result[: len(prefix)] == prefix, (
+    result_ids = result.token_ids
+    assert result_ids[: len(prefix)] == prefix, (
         f"{model_id}: bridge result does not prefix-preserve "
         f"prev_prompt + prev_completion"
     )
-    assert len(result) > len(prefix), (
+    assert len(result_ids) > len(prefix), (
         f"{model_id}: bridge produced no tail tokens for the new user turn"
     )
 

@@ -24,8 +24,6 @@ Workdir is ``/{repo-name}`` (second half of ``owner/repo``) — *not*
 ``/testbed`` — because upstream eval scripts cd to that path.
 """
 
-from __future__ import annotations
-
 import json
 import logging
 import re

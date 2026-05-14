@@ -1,8 +1,6 @@
-# Qwen3.5 dense models. Uncomment exactly one model.
-# model = "Qwen/Qwen3.5-0.8B"
-# model = "Qwen/Qwen3.5-2B"
-model = "Qwen/Qwen3.5-4B"
-# model = "Qwen/Qwen3.5-9B"
+# Llama 3.2 models. Uncomment exactly one model.
+model = "meta-llama/Llama-3.2-1B-Instruct"
+# model = "meta-llama/Llama-3.2-3B-Instruct"
 
 max_steps = 100
 batch_size = 128
@@ -26,5 +24,16 @@ id = "primeintellect/reverse-text"
 
 # [[env]]
 # id = "primeintellect/opencode-harbor"
+
+# Online evaluations during training. Uncomment to add [[eval.env]] blocks.
+
+# [eval]
+# interval = 20
+# num_examples = 64
+# rollouts_per_example = 1
+# eval_base_model = true
+
+# [[eval.env]]
+# id = "primeintellect/reverse-text"
 
 # Hosted Training docs: https://docs.primeintellect.ai/hosted-training

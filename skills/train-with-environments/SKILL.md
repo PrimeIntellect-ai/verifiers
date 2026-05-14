@@ -36,7 +36,7 @@ prime lab setup --prime-rl
 prime env install my-env
 prime eval run my-env -m openai/gpt-4.1-mini -n 20 -r 3 -s
 ```
-2. For v1 Taskset + Harness environments, verify the package still exposes `load_environment(...) -> vf.Environment`; trainers interact with the same environment boundary even when the implementation is BYO Harness internally.
+2. For v1 Taskset + Harness environments, verify the package exposes `load_environment(config: vf.EnvConfig) -> vf.Env`; trainers interact with the same environment boundary even when the implementation is BYO Harness internally.
 3. Confirm reward diversity exists at baseline.
 4. Start with conservative run length and inspect samples early.
 

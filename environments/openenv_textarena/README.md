@@ -19,7 +19,7 @@
 ### Task
 
 - **Type**: Multi-turn gym interaction.
-- **Parser**: Default `Parser` (no special formatting).
+- **Output format**: Game actions.
 - **Rubric overview**: `OpenEnvEpisodicSumRubric` sums per-step rewards; `MultiTurnMonitorRubric` tracks turn count.
 
 ### Quickstart
@@ -48,5 +48,4 @@ prime eval run openenv-textarena
 
 - Upstream TextArena app defaults to `TEXTARENA_ENV_ID=Wordle-v0`.
 - To use another game, set environment variables in the OpenEnv project/server config before building.
-- `openenv_textarena.py` defines `render_textarena_prompt()` and passes it via
-`prompt_renderer` so observations are rendered as useful game messages.
+- `openenv_textarena.py` defines `TextArenaPromptRenderer` and passes it via `prompt_renderer` so observations are rendered as useful game messages.

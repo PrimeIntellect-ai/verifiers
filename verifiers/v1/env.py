@@ -1,8 +1,5 @@
-from __future__ import annotations
-
 import asyncio
 import uuid
-from collections.abc import Mapping
 from typing import cast
 
 import verifiers as vf
@@ -13,6 +10,7 @@ from verifiers.types import RolloutInput, SamplingArgs
 from .harness import Harness
 from .state import State
 from .taskset import Taskset
+from .types import ConfigMap
 
 
 class Env(vf.Environment):
@@ -116,7 +114,7 @@ class Env(vf.Environment):
         return cast(list[vf.State], states)
 
     def apply_controls(
-        self, states: list[State], controls: Mapping[str, object] | None = None
+        self, states: list[State], controls: ConfigMap | None = None
     ) -> list[State]:
         if controls is None:
             return states
