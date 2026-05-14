@@ -769,7 +769,7 @@ def _get_last_nonempty_line_bounds(file_obj: Any) -> tuple[int, bytes] | None:
     return line_start, file_obj.read(line_end - line_start)
 
 
-def _truncate_malformed_trailing_line(outputs_path: Path) -> None:
+def truncate_malformed_trailing_line(outputs_path: Path) -> None:
     """Drop a malformed trailing JSONL row so future appends stay valid."""
     if not outputs_path.exists() or not outputs_path.is_file():
         return
@@ -792,16 +792,7 @@ def _truncate_malformed_trailing_line(outputs_path: Path) -> None:
 
 
 def save_new_outputs(new_outputs: list[RolloutOutput], results_path: Path):
-    """Saves new rollout outputs to disk (in append mode).
-
-    Callers that resume from a results.jsonl that may have a partial trailing
-    row left behind by a crashed prior write must first call
-    `_truncate_malformed_trailing_line(results_path / "results.jsonl")` once
-    before the first append. We do not repeat that check on every append: the
-    backward-byte scan in `_truncate_malformed_trailing_line` does
-    O(last_line_length) syscalls and is catastrophic on networked filesystems
-    (BeeGFS / NFS).
-    """
+    """Saves new rollout outputs to disk (in append mode)."""
     save_outputs(new_outputs, results_path, mode="a")
 
 

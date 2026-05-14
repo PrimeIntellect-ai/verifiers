@@ -84,9 +84,9 @@ from verifiers.utils.save_utils import (
     save_new_outputs,
     save_outputs,
     state_to_output,
+    truncate_malformed_trailing_line,
     validate_resume_metadata,
 )
-from verifiers.utils.save_utils import _truncate_malformed_trailing_line
 from verifiers.utils.usage_utils import StateUsageTracker
 
 _MESSAGE_TYPE_UNSET = object()
@@ -1007,10 +1007,9 @@ class Environment(ABC):
                 )
                 on_log(f"Resuming evaluation from {results_path}")
                 outputs = load_outputs(results_path)
-                # A crashed prior write may have left a partial trailing row.
-                # Drop it once now so subsequent appends in save_new_outputs
-                # don't have to scan the file on every save.
-                _truncate_malformed_trailing_line(results_path / "results.jsonl")
+                # Drop any partial trailing row left by a crashed prior write
+                # so subsequent appends start from a valid JSONL boundary.
+                truncate_malformed_trailing_line(results_path / "results.jsonl")
                 builder.add_outputs(outputs)
                 filtered_inputs = filter_inputs(
                     raw_inputs, outputs, rollouts_per_example
