@@ -33,7 +33,7 @@ from openai.types.chat.chat_completion_user_message_param import (
 from openai.types.shared_params import FunctionDefinition
 
 from verifiers.clients.client import Client
-from verifiers.clients.routed_experts import decode_routed_experts
+from verifiers.clients.routed_experts import parse_routed_experts
 from verifiers.errors import (
     EmptyModelResponseError,
     InvalidModelResponseError,
@@ -483,7 +483,7 @@ class OpenAIChatCompletionsClient(
                 completion_logprobs = [token["logprob"] for token in logprobs_content]
 
             choice_extra = choice.model_extra or {}
-            routed_experts = decode_routed_experts(choice_extra.get("routed_experts"))
+            routed_experts = parse_routed_experts(choice_extra.get("routed_experts"))
             return ResponseTokens(
                 prompt_ids=prompt_ids,
                 prompt_mask=prompt_mask,

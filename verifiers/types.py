@@ -183,13 +183,16 @@ class Usage(CustomBaseModel):
     total_tokens: int
 
 
+RoutedExperts: TypeAlias = str
+
+
 class ResponseTokens(CustomBaseModel):
     prompt_ids: list[int]
     prompt_mask: list[int]
     completion_ids: list[int]
     completion_mask: list[int]
     completion_logprobs: list[float]
-    routed_experts: list[list[list[int]]] | None = None  # [seq_len, layers, topk]
+    routed_experts: RoutedExperts | None = None  # base64 NumPy [seq_len, layers, topk]
     # Renderer-emitted multimodal sidecar (renderers.base.MultiModalData)
     # carrying processed pixel_values / placeholder ranges per modality.
     # Populated by the renderer client when the rollout went through a
@@ -232,7 +235,7 @@ class TrajectoryStepTokens(TypedDict):
     completion_logprobs: list[float]
     overlong_prompt: bool
     is_truncated: bool
-    routed_experts: list[list[list[int]]] | None  # [seq_len, layers, topk]
+    routed_experts: RoutedExperts | None  # base64 NumPy [seq_len, layers, topk]
     # Renderer-emitted multimodal sidecar (renderers.base.MultiModalData)
     # carrying processed pixel_values / placeholder ranges per modality.
     # ``NotRequired`` because text-only rollouts (and non-renderer client

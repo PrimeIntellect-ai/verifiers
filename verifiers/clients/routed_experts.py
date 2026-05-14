@@ -1,25 +1,9 @@
-from __future__ import annotations
+from typing import Any, cast
 
-import base64
-import io
-from typing import cast
-
-import numpy as np
-
-RoutedExpertsList = list[list[list[int]]]
+from verifiers.types import RoutedExperts
 
 
-def _load_routed_experts(payload: str) -> np.ndarray:
-    routed_experts = np.load(
-        io.BytesIO(base64.b64decode(payload)),
-        allow_pickle=False,
-    )
-    assert routed_experts.ndim == 3
-    return routed_experts.astype(np.int32, copy=False)
-
-
-def decode_routed_experts(payload: str | None) -> RoutedExpertsList | None:
-    if payload is None:
+def parse_routed_experts(raw: Any) -> RoutedExperts | None:
+    if raw is None:
         return None
-
-    return cast(RoutedExpertsList, _load_routed_experts(payload).tolist())
+    return cast(RoutedExperts, raw)

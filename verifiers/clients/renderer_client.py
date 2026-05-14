@@ -33,7 +33,7 @@ from verifiers.clients.client import Client
 from verifiers.clients.openai_chat_completions_client import (
     handle_openai_overlong_prompt,
 )
-from verifiers.clients.routed_experts import decode_routed_experts
+from verifiers.clients.routed_experts import parse_routed_experts
 from verifiers.errors import EmptyModelResponseError
 from verifiers.types import (
     AssistantMessage,
@@ -629,7 +629,7 @@ class RendererClient(
         completion_ids = response.get("completion_ids", [])
         completion_logprobs = response.get("completion_logprobs", [])
 
-        routed_experts = decode_routed_experts(response.get("routed_experts"))
+        routed_experts = parse_routed_experts(response.get("routed_experts"))
 
         tokens = ResponseTokens(
             prompt_ids=prompt_ids,
