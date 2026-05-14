@@ -24,7 +24,7 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 from rich.text import Text
 
-from verifiers.types import EvalConfig, GenerateOutputs, TokenUsage
+from verifiers.types import EvalConfig, EvalCost, GenerateOutputs, TokenUsage
 from verifiers.utils.display_utils import (
     BaseDisplay,
     format_numeric,
@@ -33,6 +33,7 @@ from verifiers.utils.display_utils import (
 )
 from verifiers.utils.display_utils import format_timing_rich
 from verifiers.utils.message_utils import format_messages
+from verifiers.utils.pricing_utils import format_cost_usd
 
 
 @dataclass
@@ -52,6 +53,7 @@ class EnvEvalState:
     reward: float = 0.0  # reward (rolling avg)
     metrics: dict[str, float] = field(default_factory=dict)  # metrics (rolling avg)
     usage: TokenUsage | None = None
+    cost: EvalCost | None = None
     avg_timing: dict[str, float] | None = None  # RolloutTiming fields + model, env
     error_rate: float = 0.0  # error rate (rolling avg)
 
@@ -243,6 +245,7 @@ class EvalDisplay(BaseDisplay):
         reward: float | None = None,
         metrics: dict[str, float] | None = None,
         usage: TokenUsage | None = None,
+        cost: EvalCost | None = None,
         avg_timing: dict[str, float] | None = None,
         error_rate: float | None = None,
         error: str | None = None,
@@ -278,6 +281,9 @@ class EvalDisplay(BaseDisplay):
 
         if usage is not None:
             env_state.usage = usage
+
+        if cost is not None:
+            env_state.cost = cost
 
         if avg_timing is not None:
             env_state.avg_timing = avg_timing
@@ -385,12 +391,16 @@ class EvalDisplay(BaseDisplay):
         text.append_text(rich_line)
         return text
 
-    def _make_tokens_row(self, usage: TokenUsage) -> Table:
+    def _make_tokens_row(
+        self, usage: TokenUsage, cost: EvalCost | None = None
+    ) -> Table:
         """Create a single usage line with section label."""
         kv: dict[str, object] = {
             "input": format_numeric(usage.get("input_tokens", 0.0)),
             "output": format_numeric(usage.get("output_tokens", 0.0)),
         }
+        if cost is not None:
+            kv["cost"] = format_cost_usd(cost["total_usd"])
         inp = usage.get("final_input_tokens")
         out = usage.get("final_output_tokens")
         if inp is not None:
@@ -500,7 +510,7 @@ class EvalDisplay(BaseDisplay):
             env_state.reward, env_state.metrics, env_state.error_rate
         )
         tokens_row = (
-            self._make_tokens_row(env_state.usage)
+            self._make_tokens_row(env_state.usage, env_state.cost)
             if env_state.usage is not None
             else None
         )
@@ -991,6 +1001,16 @@ class EvalDisplay(BaseDisplay):
         if show_usage:
             table.add_column("input", justify="center")
             table.add_column("output", justify="center")
+        show_cost = any(
+            env_state.cost is not None
+            or (
+                env_state.results is not None
+                and env_state.results["metadata"].get("cost") is not None
+            )
+            for env_state in self.state.envs.values()
+        )
+        if show_cost:
+            table.add_column("cost", justify="center")
         table.add_column("errors", justify="center")
         table.add_column("time", justify="center")
 
@@ -1013,14 +1033,19 @@ class EvalDisplay(BaseDisplay):
             reward = f"{env_state.reward:.3f}"
             input_tokens = None
             output_tokens = None
+            cost_usd = None
             usage = None
             if env_state.results is not None:
                 usage = env_state.results["metadata"].get("usage")
+                cost = env_state.results["metadata"].get("cost")
             else:
                 usage = env_state.usage
+                cost = env_state.cost
             if usage is not None:
                 input_tokens = format_numeric(usage.get("input_tokens", 0.0))
                 output_tokens = format_numeric(usage.get("output_tokens", 0.0))
+            if cost is not None:
+                cost_usd = format_cost_usd(cost["total_usd"])
 
             # error rate with color coding
             error_rate = env_state.error_rate
@@ -1038,6 +1063,8 @@ class EvalDisplay(BaseDisplay):
             row = [config.env_id, status, examples_str, rollouts_str, reward]
             if show_usage:
                 row.extend([input_tokens or "-", output_tokens or "-"])
+            if show_cost:
+                row.append(cost_usd or "-")
             row.extend([error_str, time_str])
             table.add_row(*row)
 

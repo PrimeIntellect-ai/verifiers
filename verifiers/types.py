@@ -236,6 +236,17 @@ class TokenUsage(TypedDict):
     final_output_tokens: NotRequired[float]
 
 
+class ModelPricing(TypedDict):
+    input_usd_per_mtok: float
+    output_usd_per_mtok: float
+
+
+class EvalCost(TypedDict):
+    input_usd: float
+    output_usd: float
+    total_usd: float
+
+
 class VersionInfo(TypedDict):
     vf_version: str
     vf_commit: str | None
@@ -531,6 +542,7 @@ class GenerateMetadata(TypedDict):
     pass_all_k: dict[str, float]
     pass_threshold: float
     usage: TokenUsage | None
+    cost: NotRequired[EvalCost]
     version_info: VersionInfo
     state_columns: list[str]
     path_to_save: Path

@@ -61,6 +61,7 @@ from textual.widgets._tree import TreeNode
 
 from verifiers.utils.display_utils import format_numeric, format_timing_line
 from verifiers.utils.logging_utils import print_time
+from verifiers.utils.pricing_utils import format_cost_usd
 
 AnimationLevel = Literal["none", "basic", "full"]
 TreeBinding = Binding | tuple[str, str] | tuple[str, str, str]
@@ -3252,6 +3253,7 @@ class ViewRunScreen(Screen):
         lines.append(progress)
 
         usage = meta.get("usage")
+        cost = meta.get("cost")
         sampling_args = meta.get("sampling_args", {})
         usage_items: List[Tuple[str, str]] = []
         if isinstance(usage, dict):
@@ -3261,6 +3263,10 @@ class ViewRunScreen(Screen):
                 usage_items.append(("Avg input tokens", format_numeric(input_tok)))
             if output_tok is not None:
                 usage_items.append(("Avg output tokens", format_numeric(output_tok)))
+        if isinstance(cost, dict):
+            total_usd = cost.get("total_usd")
+            if isinstance(total_usd, int | float):
+                usage_items.append(("Cost", format_cost_usd(float(total_usd))))
         max_tokens = sampling_args.get("max_tokens")
         if max_tokens not in (None, ""):
             usage_items.append(("Max tokens", str(max_tokens)))

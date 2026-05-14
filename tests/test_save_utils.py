@@ -128,6 +128,11 @@ class TestSavingMetadata:
             path_to_save=Path("/results/test"),
             tools=None,
         )
+        metadata["cost"] = {
+            "input_usd": 0.001,
+            "output_usd": 0.01,
+            "total_usd": 0.011,
+        }
 
         result = json.loads(json.dumps(metadata, default=make_serializable))
 
@@ -143,6 +148,11 @@ class TestSavingMetadata:
         assert result["avg_reward"] == 0.5
         assert result["avg_metrics"] == {"num_turns": 1.0}
         assert result["usage"] == {"input_tokens": 12.0, "output_tokens": 7.0}
+        assert result["cost"] == {
+            "input_usd": 0.001,
+            "output_usd": 0.01,
+            "total_usd": 0.011,
+        }
         assert result["state_columns"] == []
 
     def test_generate_outputs_builder_serializes_endpoint_configs_base_url(self):

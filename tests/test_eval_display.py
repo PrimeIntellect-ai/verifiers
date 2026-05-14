@@ -1,3 +1,5 @@
+from rich.console import Console
+
 from verifiers.types import ClientConfig, EvalConfig
 from verifiers.utils.eval_display import EvalDisplay
 
@@ -78,3 +80,36 @@ def test_format_client_target_uses_single_resolved_base_url() -> None:
     )
 
     assert EvalDisplay._format_client_target(config) == "http://localhost:8001/v1"
+
+
+def render_plain(renderable) -> str:
+    console = Console(width=100, record=True)
+    console.print(renderable)
+    return console.export_text()
+
+
+def test_tokens_row_omits_cost_when_unavailable() -> None:
+    display = EvalDisplay([make_config(max_concurrent=1)])
+
+    rendered = render_plain(
+        display._make_tokens_row({"input_tokens": 12.0, "output_tokens": 7.0})
+    )
+
+    assert "input 12" in rendered
+    assert "output 7" in rendered
+    assert "cost" not in rendered
+
+
+def test_tokens_row_includes_cost_when_available() -> None:
+    display = EvalDisplay([make_config(max_concurrent=1)])
+
+    rendered = render_plain(
+        display._make_tokens_row(
+            {"input_tokens": 12.0, "output_tokens": 7.0},
+            {"input_usd": 0.005, "output_usd": 0.0073, "total_usd": 0.0123},
+        )
+    )
+
+    assert "input 12" in rendered
+    assert "output 7" in rendered
+    assert "cost $0.0123" in rendered

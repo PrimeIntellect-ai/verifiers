@@ -20,14 +20,17 @@ from datasets.utils import logging as ds_logging
 
 import verifiers as vf
 from verifiers.types import (
+    ClientConfig,
     ClientType,
     Endpoint,
     Endpoints,
+    EvalCost,
     EvalConfig,
     EvalRunConfig,
     GenerateMetadata,
     GenerateOutputs,
     LogCallback,
+    ModelPricing,
     ProgressCallback,
     RolloutInput,
     RolloutOutput,
@@ -44,9 +47,78 @@ from verifiers.utils.logging_utils import (
     print_time,
 )
 from verifiers.utils.path_utils import get_eval_results_path
+from verifiers.utils.pricing_utils import (
+    compute_eval_cost,
+    fetch_prime_pricing,
+    format_cost_usd,
+    is_prime_inference_url,
+)
+from verifiers.utils.save_utils import save_metadata
 
 logger = logging.getLogger(__name__)
 FREEFORM_ABLATION_SWEEP_FIELDS = {"args", "env_args"}
+
+
+def _client_config_uses_prime_inference(config: ClientConfig) -> bool:
+    if config.endpoint_configs:
+        urls = [endpoint.api_base_url for endpoint in config.endpoint_configs]
+    else:
+        urls = [config.api_base_url]
+
+    return bool(urls) and all(is_prime_inference_url(url) for url in urls)
+
+
+async def _resolve_model_pricing(config: EvalConfig) -> ModelPricing | None:
+    if not _client_config_uses_prime_inference(config.client_config):
+        return None
+
+    pricing_by_model = await fetch_prime_pricing()
+    return pricing_by_model.get(config.model)
+
+
+def _attach_metadata_cost(
+    metadata: GenerateMetadata, model_pricing: ModelPricing | None
+) -> EvalCost | None:
+    cost = compute_eval_cost(metadata.get("usage"), model_pricing)
+    if cost is None:
+        metadata.pop("cost", None)
+        return None
+
+    metadata["cost"] = cost
+    return cost
+
+
+def _with_metadata_cost(
+    on_progress: ProgressCallback | list[ProgressCallback] | None,
+    model_pricing: ModelPricing | None,
+) -> ProgressCallback | list[ProgressCallback] | None:
+    if model_pricing is None:
+        return on_progress
+
+    def attach_cost(
+        all_outputs: list[RolloutOutput],
+        new_outputs: list[RolloutOutput],
+        metadata: GenerateMetadata,
+    ) -> None:
+        _attach_metadata_cost(metadata, model_pricing)
+
+    if on_progress is None:
+        return [attach_cost]
+
+    if isinstance(on_progress, list):
+        callbacks: list[ProgressCallback] = [attach_cost]
+        callbacks.extend(cast(list[ProgressCallback], on_progress))
+        return callbacks
+
+    def wrapped_progress(
+        all_outputs: list[RolloutOutput],
+        new_outputs: list[RolloutOutput],
+        metadata: GenerateMetadata,
+    ) -> None:
+        attach_cost(all_outputs, new_outputs, metadata)
+        on_progress(all_outputs, new_outputs, metadata)
+
+    return wrapped_progress
 
 
 def _coerce_endpoint(raw_endpoint: object, source: str) -> Endpoint:
@@ -753,6 +825,11 @@ def print_usage(results: GenerateOutputs):
         print(f"final_input_tokens (avg): {float(inp):.3f}")
     if out is not None:
         print(f"final_output_tokens (avg): {float(out):.3f}")
+    cost = results["metadata"].get("cost")
+    if isinstance(cost, Mapping):
+        total_usd = cost.get("total_usd")
+        if isinstance(total_usd, int | float):
+            print(f"cost: {format_cost_usd(float(total_usd))}")
 
 
 def print_results(results: GenerateOutputs, num_samples: int = 1):
@@ -833,6 +910,8 @@ async def run_evaluation(
         vf_env.set_kwargs(**config.extra_env_kwargs)
 
     results_path = config.resume_path or get_eval_results_path(config)
+    model_pricing = await _resolve_model_pricing(config)
+    on_progress = _with_metadata_cost(on_progress, model_pricing)
 
     try:
         if not config.disable_env_server:
@@ -921,6 +1000,10 @@ async def run_evaluation(
     finally:
         if not config.disable_env_server:
             await vf_env.stop_server()
+
+    if _attach_metadata_cost(outputs["metadata"], model_pricing) is not None:
+        if config.save_results:
+            await asyncio.to_thread(save_metadata, outputs["metadata"], results_path)
 
     return outputs
 
@@ -1068,6 +1151,7 @@ async def run_evaluations_tui(
                 metrics=metrics,
                 error_rate=metadata.get("avg_error"),
                 usage=metadata.get("usage"),
+                cost=metadata.get("cost"),
                 avg_timing=avg_timing,
             )
 
