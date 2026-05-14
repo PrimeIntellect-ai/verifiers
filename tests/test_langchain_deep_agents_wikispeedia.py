@@ -313,7 +313,6 @@ async def test_wikispeedia_tool_metrics_use_agent_completion(
         },
         {
             "role": "tool",
-            "name": "click_link",
             "tool_call_id": "call_1",
             "content": "'C' is not a valid link from 'A'.",
         },
