@@ -3,6 +3,7 @@ import inspect
 from pathlib import Path
 from typing import Any
 
+import pytest
 import verifiers.v1 as vf
 
 
@@ -59,13 +60,16 @@ def test_mcp_search_taskset_accepts_v1_taskset_config() -> None:
     assert all(row["max_turns"] == 3 for row in rows)
 
 
-def test_mcp_search_response_text_handles_missing_assistant() -> None:
+@pytest.mark.asyncio
+async def test_mcp_search_reward_handles_missing_assistant() -> None:
     module = _load_mcp_search_module()
 
-    assert module.response_text(vf.State({"completion": []})) == ""
+    task = vf.Task({"answer": "expected"})
+    assert await module.exact_title_reward(task, vf.State({"completion": []})) == 0.0
     assert (
-        module.response_text(
-            vf.State({"completion": [{"role": "user", "content": "no assistant"}]})
+        await module.exact_title_reward(
+            task,
+            vf.State({"completion": [{"role": "user", "content": "expected"}]}),
         )
-        == ""
+        == 0.0
     )

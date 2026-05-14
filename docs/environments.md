@@ -131,6 +131,15 @@ optionally filtered by role. Index or slice the returned list with ordinary
 Python. The helper does not parse answers; task-specific extraction belongs in
 ordinary Python or a taskset-bound object.
 
+Keep rollout-loop data manipulation explicit. A few lines that read
+`state["completion"]`, select messages, inspect task fields, or build a prompt
+should usually be written directly where they are used, not hidden behind a
+library helper or a one-off private function. Helpers are appropriate when the
+logic is reused in multiple places, when a taskset-bound object is part of the
+environment contract, or when complex behavior belongs in a named secondary
+module. Do not create buried `utils` imports just to avoid three clear lines in
+a reward, update, setup, or program function.
+
 ## Datasets
 
 Environments use the `datasets` library from Hugging Face for loading and manipulating datasets. Each row typically has a `prompt` column, containing a list of initial messages to send to the model. Additionally, there are optional columns for scoring:

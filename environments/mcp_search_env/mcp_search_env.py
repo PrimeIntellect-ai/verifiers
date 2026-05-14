@@ -122,17 +122,16 @@ def mcp_tool_from_config(config: vf.ConfigMap) -> vf.MCPTool:
     )
 
 
-def response_text(state: vf.State) -> str:
-    completion = state.get("completion") or []
-    if not isinstance(completion, list):
-        return ""
-    messages = vf.get_messages(completion, role="assistant")
-    return str(messages[-1].content or "") if messages else ""
-
-
 @vf.reward(weight=1.0)
 async def exact_title_reward(task: vf.Task, state: vf.State) -> float:
-    return float(str(task["answer"]).lower() in response_text(state).lower())
+    completion = state.get("completion") or []
+    messages = (
+        vf.get_messages(completion, role="assistant")
+        if isinstance(completion, list)
+        else []
+    )
+    response = str(messages[-1].content or "") if messages else ""
+    return float(str(task["answer"]).lower() in response.lower())
 
 
 def load_toolset(

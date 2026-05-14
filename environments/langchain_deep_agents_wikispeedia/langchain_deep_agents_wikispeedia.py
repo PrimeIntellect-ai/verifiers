@@ -6,7 +6,6 @@ from typing import Protocol, cast
 from datasets import Dataset
 
 import verifiers as vf
-from verifiers.v1.utils.prompt_utils import state_system_prompt_text
 from wiki_graph import WikiGraph, WikiPair, load_wiki_graph
 
 
@@ -380,10 +379,17 @@ def make_langchain_deep_agents_program(
         )
         runtime_tools = state.get_tools()
         nav_tools = langchain_navigation_tools(runtime_tools)
+        state_system_prompt = ""
+        system_prompt_messages = state.get("system_prompt")
+        if isinstance(system_prompt_messages, list):
+            state_system_prompt = "\n\n".join(
+                str(message.content or "")
+                for message in vf.get_messages(system_prompt_messages, role="system")
+            )
         agent = create_deep_agent(
             model=model,
             tools=nav_tools,
-            system_prompt=state_system_prompt_text(task, state) or SYSTEM_PROMPT,
+            system_prompt=state_system_prompt or SYSTEM_PROMPT,
         )
         prompt = str(cast(list[vf.ConfigData], state["prompt"])[-1]["content"])
         recursion_limit = state.get_max_turns(max_turns)

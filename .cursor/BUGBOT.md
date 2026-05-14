@@ -77,3 +77,13 @@ When these files change, verify and update any affected skill files:
 - `skills/brainstorm/SKILL.md`
 
 If workflow-relevant changes are detected without matching skill updates, request that the author update the impacted skills before merge.
+
+## Environment Rollout Logic
+
+Do not request library utilities solely because two or more environments contain similar message, state, or rollout-loop data manipulation. A few explicit lines inside an environment are often the clearest and most discoverable implementation.
+
+In particular, do not suggest moving small helpers for selecting messages, extracting text from `state`, or juggling rollout-local fields into hidden library modules. Buried helpers are not easily discoverable by end users, clutter the public API when promoted, and make the docs responsible for enumerating every three-line convenience function.
+
+Prefer explicit environment-local code unless the repeated logic is a framework contract, fixes a correctness bug at the boundary, or is already part of documented user-facing API. Do not ask authors to create one-off private helpers for simple rollout logic; if a few lines are used once, they should usually stay inline at the call site.
+
+Helpers are acceptable when the logic is reused in multiple places, is a taskset-bound object that forms part of the environment contract, or is complex enough to deserve a named secondary module. Excess reliance on buried rollout-loop helpers should be treated as non-idiomatic and a code smell.
