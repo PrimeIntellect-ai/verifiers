@@ -1,7 +1,6 @@
-from __future__ import annotations
-
 import asyncio
 import json
+import shlex
 import sys
 import tempfile
 import urllib.request
@@ -17,6 +16,7 @@ from verifiers.clients import Client
 from verifiers.types import ClientConfig
 from verifiers.types import Response, ResponseMessage, ToolCall
 from verifiers.types import Tool
+from verifiers.types import Usage
 from verifiers.v1.runtime import Runtime
 from verifiers.v1.utils.endpoint_utils import endpoint_api_key
 from verifiers.v1.utils import mcp_utils
@@ -24,11 +24,14 @@ from verifiers.v1.utils.mcp_proxy_utils import MCP_PROXY_CONFIG_PATH, MCP_PROXY_
 from verifiers.v1.utils.mcp_proxy_utils import proxy_command, proxy_source
 from verifiers.v1.utils.program_utils import command_env
 from verifiers.v1.utils.sandbox_program_utils import (
+    PACKAGE_ROOT,
     RUNNER_CONFIG_PATH,
+    SandboxPackage,
     TOOL_DEFS_BY_PROTOCOL_PATH,
     TOOL_DEFS_PATH,
     apply_internal_state_patch,
     runner_source,
+    sandbox_program_package,
     sandbox_runner_program,
 )
 from verifiers.v1.utils.sandbox_utils import (
@@ -105,6 +108,7 @@ class FakeSandboxClient:
     created: list[str] = []
     deleted: list[str] = []
     commands: list[tuple[str, str]] = []
+    background_jobs: list[tuple[str, str, int | None, str | None]] = []
     uploads: list[tuple[str, str, bytes]] = []
 
     @classmethod
@@ -112,6 +116,7 @@ class FakeSandboxClient:
         cls.created = []
         cls.deleted = []
         cls.commands = []
+        cls.background_jobs = []
         cls.uploads = []
 
     async def create(self, request: FakeCreateSandboxRequest) -> FakeSandboxResult:
@@ -129,6 +134,17 @@ class FakeSandboxClient:
         sandbox_id = str(kwargs.get("sandbox_id") or args[0])
         command = str(kwargs.get("command") or args[1])
         type(self).commands.append((sandbox_id, command))
+        return FakeCommandResult()
+
+    async def run_background_job(
+        self, *args: object, **kwargs: object
+    ) -> FakeCommandResult:
+        sandbox_id = str(kwargs.get("sandbox_id") or args[0])
+        command = str(kwargs.get("command") or args[1])
+        timeout = cast(int | None, kwargs.get("timeout"))
+        working_dir = cast(str | None, kwargs.get("working_dir"))
+        type(self).commands.append((sandbox_id, command))
+        type(self).background_jobs.append((sandbox_id, command, timeout, working_dir))
         return FakeCommandResult()
 
     async def upload_bytes(self, *args: object, **kwargs: object) -> None:
@@ -181,12 +197,15 @@ async def finish_tool(answer: str, state) -> str:
 
 
 def fake_response(
-    content: str | None = None, tool_calls: list[ToolCall] | None = None
+    content: str | None = None,
+    tool_calls: list[ToolCall] | None = None,
+    usage: Usage | None = None,
 ) -> Response:
     return Response(
         id="fake",
         created=0,
         model="fake",
+        usage=usage,
         message=ResponseMessage(
             role="assistant",
             content=content,
@@ -510,6 +529,33 @@ def test_model_client_default_keys_are_rollout_local() -> None:
 
     assert state_a["runtime"]["client_key"] != state_b["runtime"]["client_key"]
     assert len(runtime.model_clients) == 2
+
+
+@pytest.mark.asyncio
+async def test_v1_records_default_metrics_usage_and_timing() -> None:
+    usage = Usage(
+        prompt_tokens=11,
+        reasoning_tokens=0,
+        completion_tokens=7,
+        total_tokens=18,
+    )
+    harness = vf.Harness(
+        client=cast(
+            Client,
+            FakeModelClient([fake_response(content="ok", usage=usage)]),
+        ),
+        model="fake-model",
+    )
+    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+
+    state = await harness.run(task)
+
+    assert state["metrics"]["num_turns"] == 1.0
+    assert state["token_usage"] == {"input_tokens": 11.0, "output_tokens": 7.0}
+    assert state["usage"] == state["token_usage"]
+    assert state["timing"]["total"] > 0.0
+    assert state["timing"]["generation"]["duration"] > 0.0
+    assert state["timing"]["model"]["duration"] > 0.0
 
 
 def test_v1_state_does_not_copy_task_answer_to_top_level() -> None:
@@ -858,6 +904,135 @@ def test_sandbox_base_program_uses_openai_tool_payloads() -> None:
     assert tool_payloads_by_protocol["anthropic_messages"][0]["name"] == "echo_tool"
 
 
+def test_sandbox_fn_program_installs_local_package(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module_path = tmp_path / "local_program.py"
+    module_path.write_text("async def run(task, state): return state\n")
+    (tmp_path / "pyproject.toml").write_text(
+        """
+[project]
+name = "local-program"
+version = "0.1.0"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+""".strip()
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+    state = vf.State.for_task(task)
+    program = sandbox_runner_program(
+        program={"env": {"PYTHONPATH": "/custom"}},
+        task=task,
+        state=state,
+        mode="fn",
+        fn_ref="local_program:run",
+        max_turns=1,
+        tool_defs=[],
+    )
+
+    dirs = cast(dict[str, object], program["dirs"])
+    env = cast(dict[str, object], program["env"])
+    command = cast(list[str], program["command"])
+    setup = cast(list[str], program["setup"])
+    assert dirs[PACKAGE_ROOT] == tmp_path.resolve()
+    assert env["PYTHONPATH"] == "/custom"
+    assert "pip install" in setup[1]
+    assert shlex.quote(PACKAGE_ROOT) in setup[1]
+    assert command[2].endswith(" /tmp/vf_program_runner.py fn local_program:run")
+
+
+def test_sandbox_fn_program_resolves_local_module_package(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module_path = tmp_path / "standalone_program.py"
+    module_path.write_text("async def run(task, state): return state\n")
+    (tmp_path / "pyproject.toml").write_text(
+        """
+[project]
+name = "standalone-program"
+version = "0.1.0"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+""".strip()
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    package = sandbox_program_package(mode="fn", fn_ref="standalone_program:run")
+
+    assert package == SandboxPackage(local_root=tmp_path.resolve())
+
+
+def test_sandbox_fn_program_resolves_package_module_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package = tmp_path / "package_program"
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    (package / "worker.py").write_text("async def run(task, state): return state\n")
+    (package / "pyproject.toml").write_text(
+        """
+[project]
+name = "package-program"
+version = "0.1.0"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+""".strip()
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    package_root = sandbox_program_package(
+        mode="fn", fn_ref="package_program.worker:run"
+    )
+
+    assert package_root == SandboxPackage(local_root=package.resolve())
+
+
+def test_sandbox_fn_program_does_not_walk_to_parent_pyproject(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "nested_program.py").write_text("async def run(task, state): return state\n")
+    (tmp_path / "pyproject.toml").write_text(
+        """
+[project]
+name = "parent-program"
+version = "0.1.0"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+""".strip()
+    )
+    monkeypatch.syspath_prepend(str(src))
+
+    with pytest.raises(ValueError, match="beside the resolved environment module"):
+        sandbox_program_package(mode="fn", fn_ref="nested_program:run")
+
+
+def test_sandbox_fn_program_does_not_install_stdlib_packages() -> None:
+    assert sandbox_program_package(mode="fn", fn_ref="json:dumps") is None
+
+
+def test_sandbox_fn_program_requires_local_pyproject(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module_path = tmp_path / "unpackaged_program.py"
+    module_path.write_text("async def run(task, state): return state\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    with pytest.raises(ValueError, match="no pyproject.toml"):
+        sandbox_program_package(mode="fn", fn_ref="unpackaged_program:run")
+
+
 def test_sandbox_python_program_installs_runtime_client_deps() -> None:
     harness = vf.Harness(program={"sandbox": True}, sandbox={"packages": ["numpy"]})
 
@@ -935,20 +1110,20 @@ def test_sandbox_program_patch_cannot_set_lifecycle_fields() -> None:
     assert state["error"] == {"message": "handled"}
 
 
-def test_program_tools_mcp_injects_proxy_into_sandbox_program() -> None:
+def test_program_channels_mcp_injects_proxy_into_sandbox_program() -> None:
     harness = vf.Harness(
-        program={"sandbox": True, "command": ["true"], "tools": "mcp"},
+        program={"sandbox": True, "command": ["true"], "channels": "mcp"},
         sandbox={"image": "python:3.11-slim"},
     )
     state = vf.State.for_task(vf.Task({}).freeze())
     state["endpoint_root_url"] = "http://127.0.0.1:1/rollout/test"
 
     program = harness.prepare_sandbox_program(
-        {"sandbox": True, "command": ["true"], "tools": "mcp"}, state
+        {"sandbox": True, "command": ["true"], "channels": "mcp"}, state
     )
     sandbox = harness.prepare_sandbox_config(
         {"image": "python:3.11-slim"},
-        {"sandbox": True, "command": ["true"], "tools": "mcp"},
+        {"sandbox": True, "command": ["true"], "channels": "mcp"},
     )
 
     files = cast(dict[str, str], program["files"])
@@ -966,29 +1141,34 @@ def test_program_tools_mcp_injects_proxy_into_sandbox_program() -> None:
     assert "requests" in packages
 
 
-def test_program_tools_mcp_requires_sandbox_command() -> None:
+def test_program_channels_mcp_requires_sandbox_command() -> None:
     with pytest.raises(ValueError, match="requires program.sandbox"):
-        vf.Harness(program={"command": ["true"], "tools": "mcp"})
+        vf.Harness(program={"command": ["true"], "channels": "mcp"})
 
 
-def test_program_tools_callable_rejects_command_programs() -> None:
-    with pytest.raises(ValueError, match="program.tools='callable'"):
-        vf.Harness(program={"command": ["true"], "tools": "callable"})
+def test_program_channels_callable_rejects_command_programs() -> None:
+    with pytest.raises(ValueError, match="program.channels='callable'"):
+        vf.Harness(program={"command": ["true"], "channels": "callable"})
 
 
 @pytest.mark.asyncio
-async def test_program_tools_mcp_setup_uses_bindings_after_setup_before_command(
+async def test_program_channels_mcp_setup_uses_bindings_after_setup_before_command(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     install_fake_sandboxes(monkeypatch)
     install_fake_endpoint_tunnel(monkeypatch)
 
-    harness = vf.CLIHarness(
-        command=["python", "-c", "print('ok')"],
-        sandbox=True,
-        setup="echo setup",
-        tools={"mcp": configure_cli_endpoint},
-        bindings={"configure_cli_endpoint.endpoint_config": endpoint_config_binding},
+    harness = vf.Harness(
+        program={
+            "command": ["python", "-c", "print('ok')"],
+            "sandbox": True,
+            "setup": "echo setup",
+            "channels": {"mcp": configure_cli_endpoint},
+            "bindings": {
+                "configure_cli_endpoint.endpoint_config": endpoint_config_binding
+            },
+        },
+        sandbox={"image": "python:3.11-slim"},
         model="bound-model",
     )
     task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
@@ -1009,10 +1189,13 @@ async def test_rollout_setup_receives_program_sandbox_before_program_setup(
     install_fake_sandboxes(monkeypatch)
     install_fake_endpoint_tunnel(monkeypatch)
 
-    harness = vf.CLIHarness(
-        command=["true"],
-        sandbox=True,
-        setup="echo program-setup",
+    harness = vf.Harness(
+        program={
+            "command": ["true"],
+            "sandbox": True,
+            "setup": "echo program-setup",
+        },
+        sandbox={"image": "python:3.11-slim"},
         setups=[early_sandbox_lifecycle_setup, sandbox_lifecycle_setup],
     )
     task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
@@ -1061,21 +1244,47 @@ async def test_sandbox_state_input_upload_runs_after_rollout_setup(
 
 
 @pytest.mark.asyncio
-async def test_program_tools_mcp_setup_accepts_config_ref_mappings(
+async def test_task_command_uses_background_job(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     install_fake_sandboxes(monkeypatch)
     install_fake_endpoint_tunnel(monkeypatch)
 
-    harness = vf.CLIHarness(
-        command=["true"],
-        sandbox=True,
-        tools={"mcp": [{"fn": program_ref("configure_cli_endpoint_ref")}]},
-        bindings={
-            "configure_cli_endpoint_ref.endpoint_config": {
-                "fn": program_ref("endpoint_config_binding_ref")
-            }
+    harness = vf.Harness(
+        program={"command": ["sleep", "120"], "sandbox": True},
+        sandbox={"image": "python:3.11-slim", "workdir": "/app"},
+    )
+    task = vf.Task(
+        {
+            "prompt": [{"role": "user", "content": "hi"}],
+            "sandbox": {"command_timeout": 120},
+        }
+    ).freeze()
+
+    await harness.run(task)
+
+    assert ("sbx-1", "sleep 120", 120, "/app") in FakeSandboxClient.background_jobs
+
+
+@pytest.mark.asyncio
+async def test_program_channels_mcp_setup_accepts_config_ref_mappings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sandboxes(monkeypatch)
+    install_fake_endpoint_tunnel(monkeypatch)
+
+    harness = vf.Harness(
+        program={
+            "command": ["true"],
+            "sandbox": True,
+            "channels": {"mcp": [{"fn": program_ref("configure_cli_endpoint_ref")}]},
+            "bindings": {
+                "configure_cli_endpoint_ref.endpoint_config": {
+                    "fn": program_ref("endpoint_config_binding_ref")
+                }
+            },
         },
+        sandbox={"image": "python:3.11-slim"},
         model="toml-model",
     )
     task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
@@ -1088,22 +1297,28 @@ async def test_program_tools_mcp_setup_accepts_config_ref_mappings(
 
 def test_program_bindings_must_match_owned_callables() -> None:
     with pytest.raises(ValueError, match="does not match a callable"):
-        vf.CLIHarness(
-            command=["true"],
-            sandbox=True,
-            bindings={"missing.value": "task.value"},
+        vf.Harness(
+            program={
+                "command": ["true"],
+                "sandbox": True,
+                "bindings": {"missing.value": "task.value"},
+            },
+            sandbox={"image": "python:3.11-slim"},
         )
 
 
 def test_program_setup_is_not_a_binding_target() -> None:
     with pytest.raises(ValueError, match="setup callables cannot use"):
-        vf.CLIHarness(
-            command=["true"],
-            sandbox=True,
-            setup=configure_cli_endpoint,
-            bindings={
-                "configure_cli_endpoint.endpoint_config": endpoint_config_binding
+        vf.Harness(
+            program={
+                "command": ["true"],
+                "sandbox": True,
+                "setup": configure_cli_endpoint,
+                "bindings": {
+                    "configure_cli_endpoint.endpoint_config": endpoint_config_binding
+                },
             },
+            sandbox={"image": "python:3.11-slim"},
         )
 
 
@@ -1170,7 +1385,7 @@ async def test_real_sandbox_base_program_calls_host_callable_tool() -> None:
     harness = vf.Harness(
         client=cast(Client, client),
         model="fake",
-        program={"sandbox": True, "tools": "callable"},
+        program={"sandbox": True, "channels": "callable"},
         sandbox={
             "image": "python:3.11-slim",
             "scope": "group",
@@ -1213,7 +1428,7 @@ async def test_real_sandbox_command_program_uses_mcp_tool_proxy() -> None:
         program={
             "sandbox": True,
             "command": ["python", "/tmp/call_mcp.py"],
-            "tools": "mcp",
+            "channels": "mcp",
             "files": {"/tmp/call_mcp.py": REAL_MCP_PROXY_SCRIPT},
         },
         sandbox={

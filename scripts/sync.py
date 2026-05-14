@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """Compile AGENTS.md / CLAUDE.md files from modular docs sources."""
 
-from __future__ import annotations
-
 from pathlib import Path
 
 ROOT = Path(__file__).parent.parent

@@ -5,7 +5,7 @@ import pytest
 
 import verifiers as vf
 from renderers import RendererPool
-from renderers.base import ParsedResponse, create_renderer
+from renderers.base import ParsedResponse, RenderedTokens, create_renderer
 from verifiers.clients.renderer_client import (
     RendererClient,
     _attach_tool_call_names,
@@ -141,6 +141,57 @@ def test_attach_tool_call_names_unknown_tool_call_id_left_unset():
 
 
 @pytest.mark.asyncio
+async def test_to_native_tool_returns_openai_envelope():
+    """``RendererClient.to_native_tool`` must wrap each ``Tool`` in the
+    OpenAI envelope (``{"type": "function", "function": {...}}``) — the
+    same shape ``OpenAIChatCompletionsClient`` sends server-side under
+    TITO/MITO. Modern function-calling models (Qwen3 family, GLM, Kimi)
+    saw the envelope at training time, so the renderer client's prompt
+    must match. Regression for the bare-form bug where rollout-mode
+    tool envs produced uniformly zero rewards because the model never
+    emitted ``<tool_call>`` blocks under an out-of-distribution prompt.
+    """
+    from verifiers.types import Tool
+
+    client = object.__new__(RendererClient)
+    tool = Tool(
+        name="get_weather",
+        description="Get the weather for a city",
+        parameters={
+            "type": "object",
+            "properties": {"city": {"type": "string"}},
+            "required": ["city"],
+        },
+    )
+
+    native = await client.to_native_tool(tool)
+    assert native["type"] == "function"
+    assert native["function"]["name"] == "get_weather"
+    assert native["function"]["description"] == "Get the weather for a city"
+    assert native["function"]["parameters"]["required"] == ["city"]
+    assert "strict" not in native["function"]
+
+
+@pytest.mark.asyncio
+async def test_to_native_tool_propagates_strict_flag():
+    """When ``Tool.strict`` is set the envelope must carry it through —
+    OpenAI's strict-schema enforcement only kicks in on the inner function
+    object, never the envelope itself."""
+    from verifiers.types import Tool
+
+    client = object.__new__(RendererClient)
+    tool = Tool(
+        name="get_weather",
+        description="Get the weather for a city",
+        parameters={"type": "object", "properties": {}},
+        strict=True,
+    )
+
+    native = await client.to_native_tool(tool)
+    assert native["function"]["strict"] is True
+
+
+@pytest.mark.asyncio
 async def test_renderer_client_accepts_dict_native_response_with_content():
     client = object.__new__(RendererClient)
 
@@ -229,11 +280,13 @@ class _BridgeRenderer:
             stop_idx = len(self.bridge_base) - 1
         trailing = list(self.bridge_base[stop_idx + 1 :])
         extension = list(self.bridge_full[len(self.bridge_base) :])
-        return (
-            list(previous_prompt_ids)
-            + list(previous_completion_ids)
-            + trailing
-            + extension
+        return RenderedTokens(
+            token_ids=(
+                list(previous_prompt_ids)
+                + list(previous_completion_ids)
+                + trailing
+                + extension
+            )
         )
 
     def parse_response(self, token_ids):
@@ -294,7 +347,8 @@ async def test_get_incremental_prompt_ids_matches_tool_tail_without_rerendering_
         renderer=renderer, prompt=prompt, state=state, tools=None
     )
 
-    assert result == [1, 2, 3, 99, 30, 40]
+    assert result is not None
+    assert result.token_ids == [1, 2, 3, 99, 30, 40]
     # The bridge stitches over the completion without re-rendering it —
     # one bridge call, zero render_ids calls (older diff-based bridges
     # called render_ids twice).
@@ -336,7 +390,8 @@ async def test_get_incremental_prompt_ids_accepts_tool_then_user_tail():
         renderer=renderer, prompt=prompt, state=state, tools=None
     )
 
-    assert result == [1, 2, 3, 99, 40, 50]
+    assert result is not None
+    assert result.token_ids == [1, 2, 3, 99, 40, 50]
 
 
 @pytest.mark.asyncio
@@ -395,7 +450,8 @@ async def test_get_incremental_prompt_ids_accepts_multimodal_tool_user_tail():
         renderer=renderer, prompt=prompt, state=state, tools=None
     )
 
-    assert result == [1, 2, 3, 99, 40, 50]
+    assert result is not None
+    assert result.token_ids == [1, 2, 3, 99, 40, 50]
 
 
 # ── Parity across real renderers: truncated most-recent step ──────────
@@ -427,7 +483,7 @@ _TRUNCATED_ANCHOR_MODELS = [
         "auto",
         id="nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
     ),
-    pytest.param("openai/gpt-oss-20b", "gpt_oss", id="openai/gpt-oss-20b"),
+    pytest.param("openai/gpt-oss-20b", "gpt-oss", id="openai/gpt-oss-20b"),
 ]
 
 
@@ -501,11 +557,12 @@ async def test_get_incremental_prompt_ids_bridges_over_truncated_step(
 
     prefix = list(prev_prompt_ids) + list(prev_completion_ids)
     assert result is not None, f"{model_id}: bridge returned None on truncated anchor"
-    assert result[: len(prefix)] == prefix, (
+    result_ids = result.token_ids
+    assert result_ids[: len(prefix)] == prefix, (
         f"{model_id}: bridge result does not prefix-preserve "
         f"prev_prompt + prev_completion"
     )
-    assert len(result) > len(prefix), (
+    assert len(result_ids) > len(prefix), (
         f"{model_id}: bridge produced no tail tokens for the new user turn"
     )
 

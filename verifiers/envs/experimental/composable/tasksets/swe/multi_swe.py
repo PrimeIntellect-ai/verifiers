@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import logging
 import shlex
 import tempfile
@@ -177,8 +175,6 @@ class MultiSWETaskSet(SandboxTaskSet):
         self,
         dataset_name: str = "PrimeIntellect/Multi-SWE-RL",
         split: str = "train",
-        exclude_langs: tuple[str, ...] = ("c", "cpp"),
-        filter_repos: list[str] | None = None,
         filter_fn: str | None = None,
         ds_num_proc: int | None = None,
         ds_keep_in_memory: bool = True,
@@ -194,8 +190,6 @@ class MultiSWETaskSet(SandboxTaskSet):
         """
         self.dataset_name = dataset_name
         self.split = split
-        self.exclude_langs = tuple(exclude_langs)
-        self.filter_repos = filter_repos
         self.ds_num_proc = ds_num_proc
         self.ds_keep_in_memory = ds_keep_in_memory
         self.timeout_minutes = timeout_minutes
@@ -219,12 +213,6 @@ class MultiSWETaskSet(SandboxTaskSet):
             keep_in_memory=self.ds_keep_in_memory,
             num_proc=self.ds_num_proc,
         )
-        if self.exclude_langs:
-            excluded = frozenset(self.exclude_langs)
-            dataset = dataset.filter(lambda x: x.get("lang") not in excluded, **_kw)
-        if self.filter_repos:
-            filter_set = frozenset(self.filter_repos)
-            dataset = dataset.filter(lambda x: x.get("repo") not in filter_set, **_kw)
         # Use num_proc=1 for map: the output nests original rows inside an "info" dict,
         # and multiprocess map re-infers types per shard. Shards where all list columns
         # (e.g. skipped_tests) are empty get List(null) instead of List(string), causing
@@ -274,7 +262,9 @@ class MultiSWETaskSet(SandboxTaskSet):
         commands = [
             f"test -d {shlex.quote(repo_path)}",
             "test -f /home/fix-run.sh",
-            "command -v patch || (apt-get update && apt-get install -y patch)",
+            # Acquire::Retries=3: harden against transient archive.ubuntu.com CDN
+            # mirror-sync mismatches mid-rollout (launchpad bug #1876035).
+            "command -v patch || (apt-get -o Acquire::Retries=3 update && apt-get -o Acquire::Retries=3 install -y patch)",
             "rm -f /home/fix.patch /home/test_output.txt /home/create_fix_patch.sh",
         ]
         for command in commands:

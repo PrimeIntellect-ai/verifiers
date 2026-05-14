@@ -25,8 +25,15 @@ v1 environments are composed from:
 The smallest v1 environment only needs a taskset. If no harness is passed,
 `vf.Env` uses the base endpoint-backed harness.
 
+Keep the boundary strict: if a tool defines the task's action space,
+observations, success condition, or domain state, put it on the `Taskset`.
+Harnesses should own only execution adapters and framework-specific mechanics.
+For example, a Wikispeedia taskset owns `click_link` and `go_back`; a
+LangChain, OpenAI Agents, CLI, or base harness should consume those tools from
+runtime state instead of constructing its own copy.
+
 ```python
-import verifiers.v1 as vf
+import verifiers as vf
 
 
 def source():
@@ -47,8 +54,7 @@ def load_taskset(config: vf.TasksetConfig | None = None):
     return vf.Taskset(source=source, rewards=[contains_answer], config=config)
 
 
-def load_environment(config: vf.EnvConfig | None = None):
-    config = config or vf.EnvConfig()
+def load_environment(config: vf.EnvConfig):
     return vf.Env(taskset=load_taskset(config=config.taskset))
 ```
 
@@ -60,7 +66,7 @@ zero-argument loader so imports and constructors stay cheap.
 
 ```python
 from datasets import load_dataset
-import verifiers.v1 as vf
+import verifiers as vf
 
 
 class GSM8KTasksetConfig(vf.TasksetConfig):
@@ -92,6 +98,74 @@ runtime values into source.
 Do not use a top-level string `task` field for routing. v1 tasksets serialize
 the full task payload through `info["task"]` for worker compatibility, and
 environment routing uses `info["env_id"]`.
+
+## Shared Dependencies
+
+Shared dependencies live on the taskset and are injected into named lifecycle or
+scoring functions through bindings:
+
+```python
+import re
+import verifiers as vf
+
+
+class AnswerExtractor:
+    def __init__(self):
+        self.pattern = re.compile(r"<answer>(.*?)</answer>", re.DOTALL)
+
+    def __call__(self, completion: list[dict[str, object]]) -> str:
+        message = vf.get_messages(completion, role="assistant")[-1]
+        text = str(message.content or "")
+        match = self.pattern.search(text)
+        return "" if match is None else match.group(1).strip()
+
+
+@vf.reward
+async def exact(task, state, extract_answer) -> float:
+    response = extract_answer(state.get("completion") or [])
+    return float(response == task["answer"])
+
+
+def load_environment(config: vf.EnvConfig) -> vf.Env:
+    return vf.Env(
+        taskset=vf.Taskset(
+            source=source,
+            rewards=[exact],
+            objects={"extract_answer": AnswerExtractor},
+            bindings={"exact.extract_answer": "objects.extract_answer"},
+            config=config.taskset,
+        )
+    )
+```
+
+`objects` values are instances or zero-argument factories. Factories are lazy
+and resolve once per taskset runtime. Bindings keep the reward signature explicit
+without moving shared dependencies into global state.
+
+## Message Access
+
+Taskset/harness environments expose one transcript selector:
+
+```python
+messages = vf.get_messages(state.get("completion") or [], role="assistant")
+response = str(messages[-1].content or "") if messages else ""
+
+assistant_turns = len(vf.get_messages(state.get("completion") or [], role="assistant"))
+```
+
+Use `vf.get_messages(...)` to get the transcript as typed message objects,
+optionally filtered by role. Index or slice the returned list with ordinary
+Python. The helper does not parse answers; task-specific extraction belongs in
+ordinary Python or a taskset-bound object.
+
+Keep rollout-loop data manipulation explicit. A few lines that read
+`state["completion"]`, select messages, inspect task fields, or build a prompt
+should usually be written directly where they are used, not hidden behind a
+library helper or a one-off private function. Helpers are appropriate when the
+logic is reused in multiple places, when a taskset-bound object is part of the
+environment contract, or when complex behavior belongs in a named secondary
+module. Do not create buried `utils` imports just to avoid three clear lines in
+a reward, update, setup, or program function.
 
 ## Task Controls
 
@@ -134,7 +208,7 @@ the eval/training worker.
 
 Use `task.program` when a taskset owns files or environment variables that a
 reusable harness should consume. The taskset cannot change the harness command
-or tool interface; duplicate keys across the taskset and harness fail.
+or tool channel; duplicate keys across the taskset and harness fail.
 
 ## Toolsets
 
@@ -155,8 +229,30 @@ taskset = vf.Taskset(source=source, toolsets=[toolset])
 ```
 
 Bindings inject hidden arguments that the model does not see. Common binding
-roots are `task.*`, `state.*`, and `tools.*`. Tool and user callables can also
-bind `objects.*` from their own private dependency factories.
+roots are `task.*`, `state.*`, and `tools.*`. Tasksets, toolsets, and users can
+also bind `objects.*` from their own private dependency factories.
+String binding sources are always framework paths. Use a callable source for
+literal string values so misspelled paths fail during setup.
+
+Custom harness programs can adapt taskset-owned tools through `state.get_tools()`.
+That keeps the same taskset reusable across the base harness, a third-party
+agent framework, and CLI or sandbox harnesses:
+
+```python
+async def run_agent_framework(task: vf.Task, state: vf.State) -> vf.State:
+    tools = state.get_tools()
+    agent_tools = [tools[name] for name in ("search", "lookup") if name in tools]
+    result = await framework_agent(task["prompt"], tools=agent_tools)
+    state["completion"] = [{"role": "assistant", "content": result}]
+    return state
+```
+
+Wrap the returned callables only at the framework boundary when a library
+requires its own tool object type.
+
+If the harness has to know domain-specific tool internals, the taskset/harness
+boundary is probably in the wrong place. Move the toolset and hidden bindings
+back to the taskset, then let the harness adapt the resolved callables.
 
 MCP servers are also tools:
 
@@ -184,8 +280,7 @@ def load_harness(config: vf.HarnessConfig | None = None):
     )
 
 
-def load_environment(config: vf.EnvConfig | None = None):
-    config = config or vf.EnvConfig()
+def load_environment(config: vf.EnvConfig):
     return vf.Env(
         taskset=load_taskset(config=config.taskset),
         harness=load_harness(config=config.harness),
@@ -206,10 +301,18 @@ All model calls go through the v1 interception endpoint so trajectory capture,
 tool forwarding, and protocol translation share one path.
 
 Sandbox command programs can request the resolved tools as an MCP server with
-`program={"command": [...], "sandbox": True, "tools": "mcp"}`. Python programs
+`program={"command": [...], "sandbox": True, "channels": "mcp"}`. Python programs
 receive callable tool handles by default, or can set
-`program={"sandbox": True, "tools": "callable"}` when the base loop is moved
-into a sandbox.
+`program={"sandbox": True, "channels": "callable"}` when the base loop is moved
+into a sandbox. `program.channels` supports only the generic `callable` and `mcp`
+channels. Harness-specific tool carriers, such as RLM skill uploads, should
+live on the taskset upload directory contract or the harness config.
+
+For sandboxed `program.fn` refs, v1 resolves the owning local package from the
+resolved module root: single-file modules use `pyproject.toml` in the same
+directory as the module file, and package modules use `pyproject.toml` inside
+the package directory. v1 uploads that package and installs it in the program
+sandbox. Package dependencies are normal `[project.dependencies]`.
 
 Programs are also the right shape for LLM-free replay:
 
@@ -236,20 +339,29 @@ config surface; do not subclass `Env` just to bypass inference.
 
 Packaged CLI harnesses should use the same boundary. These implementations live
 under `verifiers.v1.packages` while the v1 surface stabilizes, and are
-re-exported through `verifiers.v1`. `CLIHarness` is the generic command wrapper;
-`OpenCode`, `Pi`, `MiniSWEAgent`, and `RLM` are bundled leaf wrappers:
+re-exported through `verifiers.v1`. `OpenCode`, `Pi`, `MiniSWEAgent`, and `RLM`
+are bundled `Harness` leaf wrappers for common command-line agents:
 
 ```python
 def load_environment():
     return vf.Env(
-        taskset=vf.HarborTaskset(tasks="/path/to/harbor/tasks"),
+        taskset=vf.HarborTaskset(),
         harness=vf.OpenCode(),
     )
 ```
 
-`HarborTaskset` owns Harbor task loading, sandbox overrides, task uploads, and
-test scoring. CLI harnesses own CLI installation/config/run behavior and work
-with any taskset that supplies a prompt.
+`HarborTaskset()` loads Harbor-format task directories from the environment
+package's reserved `tasks/` directory. `HarborTaskset(dataset="owner/name")`
+fetches a Harbor Hub dataset. The taskset owns Harbor task loading, sandbox
+overrides, task uploads, and test scoring. CLI harnesses own CLI
+installation/config/run behavior and work with any taskset that supplies a
+prompt.
+Tasksets can expose package-owned upload directories with `get_upload_dirs()`.
+The base `Taskset` discovers a sibling `skills/` directory by default, and
+`RLM` uploads that directory to `/rlm/skills` unless `skills=` is passed
+explicitly to the harness.
+Use `RLMConfig` in `env.harness` for RLM-specific settings such as
+`rlm_repo_ref`, `rlm_tools`, `rlm_max_turns`, and `summarize_at_tokens`.
 
 ## Setup, Updates, Signals, And Cleanup
 
@@ -275,14 +387,16 @@ async def best_of_n(tasks, states) -> list[float]:
     ...
 ```
 
-Rollout signals accept `task, state`, plus any Toolset-bound hidden args. Group
-signals accept exactly `tasks, states` and return one value per state. Setup
-functions use `@vf.setup` and run before the program body; update functions use
-`@vf.update` and run before scoring; cleanup functions use `@vf.cleanup` and run
-after scoring; teardown functions use `@vf.teardown`.
+Rollout signals can request framework args such as `task`, `state`,
+`completion`, and `prompt`, plus hidden args supplied by taskset or toolset
+bindings. Group signals can request `tasks`, `states`, and bound hidden args,
+and must return one value per state. Setup functions use `@vf.setup` and run
+before the program body; update functions use `@vf.update` and run before
+scoring; cleanup functions use `@vf.cleanup` and run after scoring; teardown
+functions use `@vf.teardown`.
 
 For sandbox command/Python programs, program files, directories, setup commands,
-state handoff, and tool-interface setup are framework setup contributions with
+state handoff, and channel setup are framework setup contributions with
 fixed priorities. User `@vf.setup(priority=...)` handlers can intentionally run
 before or after those built-ins without adding new lifecycle hooks.
 
@@ -301,8 +415,7 @@ The recommended loader takes one `config` object and routes its `taskset` and
 `harness` sections:
 
 ```python
-def load_environment(config: vf.EnvConfig | None = None):
-    config = config or vf.EnvConfig()
+def load_environment(config: vf.EnvConfig):
     return vf.Env(
         taskset=load_taskset(config=config.taskset),
         harness=load_harness(config=config.harness),
@@ -328,44 +441,47 @@ max_turns = 4
 weight = 0.5
 ```
 
-For concise v0-style named args, pass typed child config objects as defaults.
-Explicit `taskset`/`harness` sections stay the most specific source and override
-those defaults.
+For concise named args, define one typed args object and pass it as `args`.
+`EnvConfig.args` is intentionally user-defined; environment packages decide how
+those args flow into taskset and harness construction.
 
 ```python
+class MyEnvArgsConfig(vf.Config):
+    split: str = "train"
+    max_turns: int = 10
+
+
 class MyTasksetConfig(vf.TasksetConfig):
     split: str = "train"
 
 
-def load_taskset(
-    split: str | None = None,
-    config: vf.TasksetConfig | None = None,
-):
-    config = MyTasksetConfig(config, split=split)
+def load_taskset(config: vf.TasksetConfig | None = None):
+    config = MyTasksetConfig(config)
     ...
 
 
-def load_harness(
-    max_turns: int | None = None,
-    config: vf.HarnessConfig | None = None,
-):
-    config = vf.HarnessConfig(config, max_turns=max_turns)
+def load_harness(config: vf.HarnessConfig | None = None):
+    config = vf.HarnessConfig(config)
     ...
 
 
 def load_environment(
-    config: vf.EnvConfig | None = None,
+    config: vf.EnvConfig,
     split: str = "train",
     max_turns: int = 10,
 ):
     config = vf.EnvConfig(
         config,
-        taskset=MyTasksetConfig(split=split),
-        harness=vf.HarnessConfig(max_turns=max_turns),
+        args=MyEnvArgsConfig(split=split, max_turns=max_turns),
     )
+    args = MyEnvArgsConfig(config.args)
     return vf.Env(
-        taskset=load_taskset(config=config.taskset),
-        harness=load_harness(config=config.harness),
+        taskset=load_taskset(
+            config=MyTasksetConfig(config.taskset, split=args.split)
+        ),
+        harness=load_harness(
+            config=vf.HarnessConfig(config.harness, max_turns=args.max_turns)
+        ),
     )
 ```
 
@@ -394,6 +510,18 @@ tools = ["my_env.tools:search"]
 bindings = { "search.index" = "objects.index" }
 ```
 
+Taskset and harness sections can import a base config with `config` and then
+overlay local fields. Collection fields extend the imported config.
+
+```toml
+[env.harness]
+config = "my_env.configs:load_another_harness_config"
+
+[[env.harness.rewards]]
+fn = "my_env.rewards:new_reward_func"
+weight = 0
+```
+
 Callable config uses `fn = "module:callable"` when metadata is needed:
 
 ```toml
@@ -408,14 +536,14 @@ The callable name is always its Python function name. Use
 creating a new signal.
 
 For command harnesses, keep endpoint and tool registration under the requested
-`program.tools` interface:
+`program.channels` channel:
 
 ```toml
 [env.harness.program]
 command = ["my-cli", "run", "--config", "/tmp/my-cli.json"]
 sandbox = true
 
-[env.harness.program.tools]
+[env.harness.program.channels]
 mcp = { fn = "my_env.cli:write_cli_config" }
 
 [env.harness.program.bindings]

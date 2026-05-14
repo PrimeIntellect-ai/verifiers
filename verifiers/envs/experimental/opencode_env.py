@@ -54,20 +54,31 @@ DEFAULT_INSTALL_COMMAND = (
 DEFAULT_RUN_COMMAND_TEMPLATE = """\
 set -eo pipefail
 
-apt-get update && apt-get install -y curl
+# Acquire::Retries=3 mitigates transient archive.ubuntu.com CDN sync mismatches
+# that fail fresh-sandbox apt-get update mid-rollout (launchpad bug #1876035).
+apt-get -o Acquire::Retries=3 update && apt-get -o Acquire::Retries=3 install -y curl
 
-for install_attempt in 1 2 3; do
-    if {install_command}; then
-        break
-    fi
-    if [ "$install_attempt" -eq 3 ]; then
-        echo "OpenCode installation failed after 3 attempts" >&2
-        exit 1
-    fi
-    echo "OpenCode install attempt $install_attempt/3 failed, retrying in 5s..." >&2
-    sleep 5
-done
+if [ -x "$HOME/.opencode/bin/opencode" ]; then
+    echo "OpenCode already installed, skipping download"
+else
+    for install_attempt in 1 2 3; do
+        if {install_command}; then
+            break
+        fi
+        if [ "$install_attempt" -eq 3 ]; then
+            echo "OpenCode installation failed after 3 attempts" >&2
+            exit 1
+        fi
+        echo "OpenCode install attempt $install_attempt/3 failed, retrying in 5s..." >&2
+        sleep 5
+    done
+fi
 export PATH="$HOME/.opencode/bin:$PATH"
+
+if [ ! -x "$HOME/.opencode/bin/opencode" ]; then
+    echo "OpenCode binary not found after installation" >&2
+    exit 1
+fi
 
 mkdir -p ~/.config/opencode
 
@@ -351,6 +362,9 @@ class OpenCodeEnv(CliAgentEnv):
         enable_interleaved: bool = True,
     ) -> str:
         """Build OpenCode config."""
+        agent_config: dict[str, object] = {
+            "title": {"disable": True},
+        }
         config: dict = {
             "${SCHEMA_DOLLAR}schema": "https://opencode.ai/config.json",
             "provider": {
@@ -377,6 +391,10 @@ class OpenCodeEnv(CliAgentEnv):
                 }
             },
             "model": "$OPENAI_MODEL",
+            # Keep the small-model pin to avoid falling back to the default small
+            # model and hitting rate limits; disable title calls below.
+            "small_model": "$OPENAI_MODEL",
+            "agent": agent_config,
         }
 
         if disable_compaction:
@@ -388,7 +406,7 @@ class OpenCodeEnv(CliAgentEnv):
                 build_config["prompt"] = "{file:" + system_prompt_path + "}"
             if disabled_tools:
                 build_config["tools"] = {tool: False for tool in disabled_tools}
-            config["agent"] = {"build": build_config}
+            agent_config["build"] = build_config
 
         return json.dumps(config, indent=2)
 

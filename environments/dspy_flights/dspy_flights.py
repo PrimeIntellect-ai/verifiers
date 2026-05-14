@@ -1,15 +1,20 @@
-from __future__ import annotations
-
 import asyncio
 import functools
 import random
 import string
-from collections.abc import Callable, Mapping
-from typing import Any
+from collections.abc import Mapping
 
 from pydantic import BaseModel
 
-import verifiers.v1 as vf
+import verifiers as vf
+
+PROGRAM_SANDBOX = {
+    "image": "python:3.11-slim",
+    "network_access": True,
+    "timeout_minutes": 60,
+    "command_timeout": 900,
+    "install_timeout": 900,
+}
 
 
 class Date(BaseModel):
@@ -132,10 +137,10 @@ def source():
     def row(
         example_id: int,
         user_request: str,
-        expected: dict[str, object],
-        initial_itineraries: dict[str, dict[str, object]] | None = None,
-    ) -> dict[str, object]:
-        task: dict[str, object] = {
+        expected: vf.ConfigData,
+        initial_itineraries: dict[str, vf.ConfigData] | None = None,
+    ) -> vf.ConfigData:
+        task: vf.ConfigData = {
             "example_id": example_id,
             "user_request": user_request,
             "prompt": [{"role": "user", "content": user_request}],
@@ -183,6 +188,52 @@ def source():
                 "contains": "wheelchair assistance",
             },
         ),
+        row(
+            4,
+            ("my name is Adam and I need a vegetarian meal noted for my upcoming trip"),
+            {
+                "kind": "ticket",
+                "user": "Adam",
+                "contains": "vegetarian meal",
+            },
+        ),
+        row(
+            5,
+            "please cancel itinerary BO456 for Bob because his plans changed",
+            {"kind": "cancel", "confirmation_number": "BO456"},
+            {"BO456": itinerary("BO456", "Bob", "DA456").model_dump()},
+        ),
+        row(
+            6,
+            (
+                "please help me book a flight from SFO to JFK on 09/01/2025, "
+                "my name is Chelsie"
+            ),
+            {"kind": "book", "user": "Chelsie", "flight_id": "DA123"},
+        ),
+        row(
+            7,
+            (
+                "please help me book a flight from SFO to SNA on 10/01/2025, "
+                "my name is David"
+            ),
+            {"kind": "book", "user": "David", "flight_id": "DA456"},
+        ),
+        row(
+            8,
+            "cancel confirmation AD460 for Adam; he will rebook later",
+            {"kind": "cancel", "confirmation_number": "AD460"},
+            {"AD460": itinerary("AD460", "Adam", "DA460").model_dump()},
+        ),
+        row(
+            9,
+            "my name is Chelsie and I need to travel with a service animal",
+            {
+                "kind": "ticket",
+                "user": "Chelsie",
+                "contains": "service animal",
+            },
+        ),
     ]
 
 
@@ -198,7 +249,7 @@ def itinerary(confirmation_number: str, user_name: str, flight_id: str) -> Itine
 
 def build_airline_tools(
     task,
-) -> tuple[list[Callable[..., object]], dict[str, Mapping[str, BaseModel]]]:
+) -> tuple[list[vf.Handler], dict[str, dict[str, BaseModel]]]:
     users = user_database()
     flights = flight_database()
     itineraries = {
@@ -282,7 +333,7 @@ def build_airline_tools(
         )
         return ticket_id
 
-    tools: list[Callable[..., object]] = [
+    tools: list[vf.Handler] = [
         async_tool(fetch_flight_info),
         async_tool(fetch_itinerary),
         async_tool(pick_flight),
@@ -291,14 +342,14 @@ def build_airline_tools(
         async_tool(get_user_info),
         async_tool(file_ticket),
     ]
-    databases: dict[str, Mapping[str, BaseModel]] = {
+    databases: dict[str, dict[str, BaseModel]] = {
         "itinerary_database": itineraries,
         "ticket_database": tickets,
     }
     return tools, databases
 
 
-def async_tool(fn: Callable[..., object]) -> Callable[..., Any]:
+def async_tool(fn: vf.Handler) -> vf.Handler:
     @functools.wraps(fn)
     async def wrapped(*args: object, **kwargs: object) -> object:
         return await asyncio.to_thread(fn, *args, **kwargs)
@@ -306,7 +357,7 @@ def async_tool(fn: Callable[..., object]) -> Callable[..., Any]:
     return wrapped
 
 
-def dump_database(database: Mapping[str, BaseModel]) -> dict[str, dict[str, object]]:
+def dump_database(database: dict[str, BaseModel]) -> dict[str, vf.ConfigData]:
     return {key: value.model_dump() for key, value in database.items()}
 
 
@@ -374,13 +425,13 @@ def load_taskset(config: vf.TasksetConfig | None = None):
 
 def load_harness(config: vf.HarnessConfig | None = None):
     return vf.Harness(
-        program={"fn": "dspy_flights:run_dspy_flight_program"},
+        program={"fn": "dspy_flights:run_dspy_flight_program", "sandbox": True},
+        sandbox=PROGRAM_SANDBOX,
         config=config,
     )
 
 
-def load_environment(config: vf.EnvConfig | None = None):
-    config = config or vf.EnvConfig()
+def load_environment(config: vf.EnvConfig):
     return vf.Env(
         taskset=load_taskset(config=config.taskset),
         harness=load_harness(config=config.harness),

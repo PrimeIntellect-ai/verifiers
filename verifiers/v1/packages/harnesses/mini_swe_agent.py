@@ -1,16 +1,16 @@
-from __future__ import annotations
-
 import shlex
-from collections.abc import Mapping
 from pathlib import PurePosixPath
-from typing import Any
 
-from .cli import CLIHarness
+from typing_extensions import Unpack
+
+from .command import HarnessKwargs, command_program, command_sandbox
 from ...config import SandboxConfig
+from ...harness import Harness
 from ...utils.prompt_utils import (
     state_system_prompt_text,
     task_text as task_instruction_text,
 )
+from ...types import ConfigMap, ProgramMap, ProgramOptionMap, ProgramValue, PromptInput
 
 DEFAULT_INSTALL_DIR = "/opt/mini-swe-agent"
 DEFAULT_PREFIX_DIR = f"{DEFAULT_INSTALL_DIR}/prefix"
@@ -37,7 +37,7 @@ DEFAULT_MODEL_CLASS = "litellm_textbased"
 DEFAULT_ENVIRONMENT_TIMEOUT = 120
 
 
-class MiniSWEAgent(CLIHarness):
+class MiniSWEAgent(Harness):
     def __init__(
         self,
         *,
@@ -53,18 +53,18 @@ class MiniSWEAgent(CLIHarness):
         environment_timeout: int = DEFAULT_ENVIRONMENT_TIMEOUT,
         extra_config_specs: list[str] | None = None,
         install_python: bool = True,
-        system_prompt: object | None = None,
-        sandbox: bool | Mapping[str, object] | SandboxConfig = True,
-        program: Mapping[str, object] | None = None,
+        system_prompt: PromptInput | None = None,
+        sandbox: bool | ConfigMap | SandboxConfig = True,
+        program: ProgramMap | None = None,
         max_turns: int | None = 4,
-        **kwargs: Any,
+        **kwargs: Unpack[HarnessKwargs],
     ):
-        files: dict[str, object] = {
+        files: dict[str, ProgramValue] = {
             instruction_path: task_instruction_text,
         }
         if system_prompt is not None:
             files[system_prompt_path] = state_system_prompt_text
-        artifacts = {
+        artifacts: ProgramOptionMap = {
             "mini_swe_agent_log": {
                 "path": log_path,
                 "format": "text",
@@ -76,36 +76,40 @@ class MiniSWEAgent(CLIHarness):
                 "optional": True,
             },
         }
-        super().__init__(
-            command=[
-                "bash",
-                "-lc",
-                build_mini_swe_agent_run_script(
-                    agent_workdir=agent_workdir,
-                    instruction_path=instruction_path,
-                    system_prompt_path=system_prompt_path
-                    if system_prompt is not None
-                    else None,
-                    log_path=log_path,
-                    trajectory_path=trajectory_path,
-                    config_spec=config_spec,
-                    model_class=model_class,
-                    environment_timeout=environment_timeout,
-                    extra_config_specs=extra_config_specs,
-                ),
-            ],
-            sandbox=sandbox,
-            files=files,
-            setup=build_mini_swe_agent_install_script(
-                package_version=package_version,
-                package_sha256=package_sha256,
-                install_python=install_python,
+        command = [
+            "bash",
+            "-lc",
+            build_mini_swe_agent_run_script(
+                agent_workdir=agent_workdir,
+                instruction_path=instruction_path,
+                system_prompt_path=system_prompt_path
+                if system_prompt is not None
+                else None,
+                log_path=log_path,
+                trajectory_path=trajectory_path,
+                config_spec=config_spec,
+                model_class=model_class,
+                environment_timeout=environment_timeout,
+                extra_config_specs=extra_config_specs,
             ),
-            env={
-                "OPENAI_MODEL": "runtime.model",
-            },
-            artifacts=artifacts,
-            program=program,
+        ]
+        super().__init__(
+            program=command_program(
+                command=command,
+                sandbox=sandbox,
+                files=files,
+                setup=build_mini_swe_agent_install_script(
+                    package_version=package_version,
+                    package_sha256=package_sha256,
+                    install_python=install_python,
+                ),
+                env={
+                    "OPENAI_MODEL": "runtime.model",
+                },
+                artifacts=artifacts,
+                program=program,
+            ),
+            sandbox=command_sandbox(sandbox),
             system_prompt=system_prompt,
             max_turns=max_turns,
             **kwargs,
@@ -123,8 +127,8 @@ def build_mini_swe_agent_install_script(
         install_tools = """\
 export DEBIAN_FRONTEND=noninteractive
 if ! command -v python3 >/dev/null 2>&1 || ! python3 -m pip --version >/dev/null 2>&1; then
-  apt-get update -qq
-  apt-get install -y -qq python3 python3-pip ca-certificates
+  apt-get -o Acquire::Retries=3 update -qq
+  apt-get -o Acquire::Retries=3 install -y -qq python3 python3-pip ca-certificates
 fi
 """
 

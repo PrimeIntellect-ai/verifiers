@@ -15,7 +15,7 @@ import pytest
 from openai import OpenAI
 from pydantic import BaseModel
 
-from verifiers.types import ClientConfig
+from verifiers.types import ClientConfig, Response, ResponseMessage, Usage
 from verifiers.utils.metric_utils import (
     EnvMetrics,
     ErrorRateMetric,
@@ -27,14 +27,14 @@ from verifiers.utils.metric_utils import (
 )
 from verifiers.utils.save_utils import (
     GenerateOutputsBuilder,
-    extract_usage_tokens,
+    _delta_intermediate_mm_data,
     load_outputs,
     make_serializable,
     save_new_outputs,
     states_to_outputs,
     validate_resume_metadata,
 )
-from verifiers.utils.usage_utils import StateUsageTracker
+from verifiers.utils.usage_utils import StateUsageTracker, response_usage_tokens
 
 
 # Test models for make_serializable tests
@@ -46,6 +46,26 @@ class SimpleModel(BaseModel):
 class NestedModel(BaseModel):
     inner: SimpleModel
     tags: list[str]
+
+
+def make_response(prompt_tokens: int, completion_tokens: int) -> Response:
+    return Response(
+        id="test",
+        created=0,
+        model="test",
+        usage=Usage(
+            prompt_tokens=prompt_tokens,
+            reasoning_tokens=0,
+            completion_tokens=completion_tokens,
+            total_tokens=prompt_tokens + completion_tokens,
+        ),
+        message=ResponseMessage(
+            role="assistant",
+            content="",
+            finish_reason="stop",
+            is_truncated=False,
+        ),
+    )
 
 
 class TestSerialization:
@@ -127,6 +147,11 @@ class TestSavingMetadata:
             path_to_save=Path("/results/test"),
             tools=None,
         )
+        metadata["cost"] = {
+            "input_usd": 0.001,
+            "output_usd": 0.01,
+            "total_usd": 0.011,
+        }
 
         result = json.loads(json.dumps(metadata, default=make_serializable))
 
@@ -142,6 +167,11 @@ class TestSavingMetadata:
         assert result["avg_reward"] == 0.5
         assert result["avg_metrics"] == {"num_turns": 1.0}
         assert result["usage"] == {"input_tokens": 12.0, "output_tokens": 7.0}
+        assert result["cost"] == {
+            "input_usd": 0.001,
+            "output_usd": 0.01,
+            "total_usd": 0.011,
+        }
         assert result["state_columns"] == []
 
     def test_generate_outputs_builder_serializes_endpoint_configs_base_url(self):
@@ -170,42 +200,11 @@ class TestSavingMetadata:
 
 
 class TestSavingResults:
-    def test_extract_usage_tokens_prompt_completion(self):
-        response = type(
-            "Response",
-            (),
-            {
-                "usage": {
-                    "prompt_tokens": 10,
-                    "completion_tokens": 5,
-                    "input_tokens": 999,
-                    "output_tokens": 999,
-                }
-            },
-        )()
-        input_tokens, output_tokens = extract_usage_tokens(response)
+    def test_response_usage_tokens_prompt_completion(self):
+        response = make_response(prompt_tokens=10, completion_tokens=5)
+        input_tokens, output_tokens = response_usage_tokens(response)
         assert input_tokens == 10
         assert output_tokens == 5
-
-    def test_extract_usage_tokens_input_output(self):
-        response = type(
-            "Response",
-            (),
-            {"usage": {"input_tokens": 8, "output_tokens": 3}},
-        )()
-        input_tokens, output_tokens = extract_usage_tokens(response)
-        assert input_tokens == 8
-        assert output_tokens == 3
-
-    def test_extract_usage_tokens_invalid_values(self):
-        response = type(
-            "Response",
-            (),
-            {"usage": {"prompt_tokens": "bad", "completion_tokens": object()}},
-        )()
-        input_tokens, output_tokens = extract_usage_tokens(response)
-        assert input_tokens == 0
-        assert output_tokens == 0
 
     def test_state_with_tracker_and_no_usage_does_not_emit_token_usage(
         self, make_state
@@ -217,6 +216,22 @@ class TestSavingResults:
         state["trajectory"] = []
         output = states_to_outputs([state], state_columns=[])[0]
         assert "token_usage" not in output
+
+    def test_state_with_empty_tracker_falls_back_to_trajectory_usage(self, make_state):
+        state = make_state()
+        tracker = StateUsageTracker()
+        state["usage_tracker"] = tracker
+        state["usage"] = tracker.usage
+        state["trajectory"] = [{"response": make_response(10, 5)}]
+
+        output = states_to_outputs([state], state_columns=[])[0]
+
+        assert output["token_usage"] == {
+            "input_tokens": 10.0,
+            "output_tokens": 5.0,
+            "final_input_tokens": 10,
+            "final_output_tokens": 5,
+        }
 
     def test_states_to_outputs(self, make_state):
         states = [
@@ -897,3 +912,257 @@ class TestPassAtKMetric:
         )
         pass_at_k, _ = m.compute()
         assert pass_at_k["1"] == pytest.approx(0.5)
+
+
+class TestDeltaIntermediateMmData:
+    """Verify per-step delta encoding of trajectory mm_data sidecars.
+
+    Renderer bridge_to_next_turn emits cumulative mm_data on every
+    step. The transport-layer delta strips items whose mm_hash already
+    appeared in the prior step, so the per-window TrainingSample
+    assembler can recover its window's images by unioning step-deltas.
+    """
+
+    @staticmethod
+    def _mm(*hashes: str):
+        """Build a renderers.MultiModalData with one image item per hash."""
+        from renderers.base import MultiModalData, PlaceholderRange
+
+        return MultiModalData(
+            mm_hashes={"image": list(hashes)},
+            mm_placeholders={
+                "image": [
+                    PlaceholderRange(offset=i * 10, length=4)
+                    for i in range(len(hashes))
+                ]
+            },
+            mm_items={"image": [{"pixel_values": f"px-{h}"} for h in hashes]},
+        )
+
+    def _step(self, mm):
+        return {"tokens": {"multi_modal_data": mm}}
+
+    def test_none_and_single_step_passthrough(self):
+        assert _delta_intermediate_mm_data(None) is None
+        assert _delta_intermediate_mm_data([]) == []
+        only = [self._step(self._mm("A"))]
+        assert _delta_intermediate_mm_data(only) is only
+
+    def test_linear_extension_keeps_only_new_items_per_step(self):
+        traj = [
+            self._step(self._mm("A")),
+            self._step(self._mm("A", "B")),
+            self._step(self._mm("A", "B", "C")),
+        ]
+        out = _delta_intermediate_mm_data(traj)
+
+        assert out[0]["tokens"]["multi_modal_data"].mm_hashes == {"image": ["A"]}
+        assert out[1]["tokens"]["multi_modal_data"].mm_hashes == {"image": ["B"]}
+        assert out[2]["tokens"]["multi_modal_data"].mm_hashes == {"image": ["C"]}
+        # Items and placeholders are reindexed in lockstep with hashes.
+        assert out[1]["tokens"]["multi_modal_data"].mm_items["image"] == [
+            {"pixel_values": "px-B"}
+        ]
+        assert (
+            out[2]["tokens"]["multi_modal_data"].mm_placeholders["image"][0].offset
+            == 20
+        )
+
+    def test_compaction_two_training_samples_assemble_correctly(self):
+        """Rollout with one compaction event → two TrainingSamples.
+
+        Models the prime-rl compaction flow: a single rollout produces
+        multiple ``TrainingSample`` objects, one per compaction window.
+        The pre-compaction sample's images are no longer in the
+        post-compaction step's cumulative ``mm_data`` — the previous
+        "keep last" strategy would have silently dropped them. With
+        delta encoding, each per-window assembler recovers exactly the
+        images its tokens reference: no leakage in either direction.
+        """
+        from renderers.base import MultiModalData, PlaceholderRange
+
+        def step(*hashes: str, offsets: list[int]):
+            return {
+                "tokens": {
+                    "multi_modal_data": MultiModalData(
+                        mm_hashes={"image": list(hashes)},
+                        mm_placeholders={
+                            "image": [
+                                PlaceholderRange(offset=o, length=4) for o in offsets
+                            ]
+                        },
+                        mm_items={
+                            "image": [{"pixel_values": f"px-{h}"} for h in hashes]
+                        },
+                    )
+                }
+            }
+
+        # Turn 1: image A. Cumulative {A}.
+        # Turn 2: image B. Cumulative {A, B}.
+        # ── compaction event: turns 1+2 summarized in text, images dropped ──
+        # Turn 3: image C. Cumulative {C} (offsets reset against the
+        #         post-compaction prompt).
+        # Turn 4: image D. Cumulative {C, D}.
+        traj = [
+            step("A", offsets=[10]),
+            step("A", "B", offsets=[10, 50]),
+            step("C", offsets=[8]),
+            step("C", "D", offsets=[8, 40]),
+        ]
+        out = _delta_intermediate_mm_data(traj)
+
+        # Per-step deltas keep only what's new since the immediately prior step.
+        deltas = [s["tokens"]["multi_modal_data"].mm_hashes for s in out]
+        assert deltas == [
+            {"image": ["A"]},
+            {"image": ["B"]},
+            {"image": ["C"]},
+            {"image": ["D"]},
+        ]
+
+        def assemble(steps):
+            hashes: list[str] = []
+            items: list[dict] = []
+            placeholders: list[PlaceholderRange] = []
+            for s in steps:
+                mm = s["tokens"]["multi_modal_data"]
+                hashes += mm.mm_hashes.get("image", [])
+                items += mm.mm_items.get("image", [])
+                placeholders += mm.mm_placeholders.get("image", [])
+            return hashes, items, placeholders
+
+        ts1_hashes, ts1_items, ts1_phs = assemble(out[0:2])  # pre-compaction
+        ts2_hashes, ts2_items, ts2_phs = assemble(out[2:4])  # post-compaction
+
+        assert ts1_hashes == ["A", "B"]
+        assert ts2_hashes == ["C", "D"]
+        # The invariant the previous "keep last" broke: pre-compaction TS
+        # does not see post-compaction images, and vice versa.
+        assert set(ts1_hashes).isdisjoint(set(ts2_hashes))
+
+        # Items / placeholders are reindexed lock-step with hashes (no
+        # off-by-one or cross-contamination during reindex).
+        assert ts1_items == [{"pixel_values": "px-A"}, {"pixel_values": "px-B"}]
+        assert ts2_items == [{"pixel_values": "px-C"}, {"pixel_values": "px-D"}]
+
+        # Placeholder offsets travel verbatim per step; the assembler is
+        # responsible for shifting them into each window's local frame.
+        assert [p.offset for p in ts1_phs] == [10, 50]
+        assert [p.offset for p in ts2_phs] == [8, 40]
+
+    def test_same_image_rendered_in_two_turns_uses_multiset_diff(self):
+        """Same image hash appearing N times must keep the right N-prior occurrences.
+
+        The renderer doesn't dedupe by hash: ``emit_image`` appends to
+        the parallel lists every time an image content part is rendered.
+        So if image A is shown in turn 1 *and* turn 3, the cumulative
+        ``mm_hashes`` is ``["A", "A"]`` with two distinct placeholder
+        offsets, and ``mm_items`` is ``[pixA, pixA]`` (literally the
+        same payload twice). Both placeholder runs need their own item
+        — set-based diff would drop both as "already seen" and orphan
+        the second placeholder. Multiset diff drops only the first.
+        """
+        from renderers.base import MultiModalData, PlaceholderRange
+
+        def step(hashes, offsets):
+            return {
+                "tokens": {
+                    "multi_modal_data": MultiModalData(
+                        mm_hashes={"image": list(hashes)},
+                        mm_placeholders={
+                            "image": [
+                                PlaceholderRange(offset=o, length=4) for o in offsets
+                            ]
+                        },
+                        mm_items={
+                            "image": [{"pixel_values": f"px-{h}"} for h in hashes]
+                        },
+                    )
+                }
+            }
+
+        # Turn 1: image A at offset 10. Cumulative ["A"].
+        # Turn 2: no image. Cumulative unchanged ["A"].
+        # Turn 3: image A re-rendered at offset 200. Cumulative ["A", "A"].
+        traj = [
+            step(["A"], offsets=[10]),
+            step(["A"], offsets=[10]),
+            step(["A", "A"], offsets=[10, 200]),
+        ]
+        out = _delta_intermediate_mm_data(traj)
+
+        # Step 0 keeps everything (no prior).
+        assert out[0]["tokens"]["multi_modal_data"].mm_hashes == {"image": ["A"]}
+        assert [
+            p.offset
+            for p in out[0]["tokens"]["multi_modal_data"].mm_placeholders["image"]
+        ] == [10]
+
+        # Step 1 introduced no new image (cumulative unchanged).
+        assert out[1]["tokens"]["multi_modal_data"].mm_hashes == {"image": []}
+
+        # Step 2: prior was ["A"], current is ["A", "A"]. Multiset budget
+        # consumes the first A; the *second* A (the new one at offset
+        # 200) survives the diff with its pixel_values intact. Set-based
+        # diff would have produced [].
+        step2_mm = out[2]["tokens"]["multi_modal_data"]
+        assert step2_mm.mm_hashes == {"image": ["A"]}
+        assert step2_mm.mm_items == {"image": [{"pixel_values": "px-A"}]}
+        assert [p.offset for p in step2_mm.mm_placeholders["image"]] == [200]
+
+        # End-to-end: assembling the single TrainingSample (no
+        # compaction) recovers both placeholder runs with matching
+        # pixel_values, so the trainer can satisfy both image-pad
+        # token runs in the prompt.
+        all_hashes: list[str] = []
+        all_phs: list[PlaceholderRange] = []
+        for s in out:
+            mm = s["tokens"]["multi_modal_data"]
+            all_hashes += mm.mm_hashes.get("image", [])
+            all_phs += mm.mm_placeholders.get("image", [])
+        assert all_hashes == ["A", "A"]
+        assert [p.offset for p in all_phs] == [10, 200]
+
+    def test_image_reintroduction_after_compaction(self):
+        """A hash dropped at compaction and re-rendered later is re-transmitted.
+
+        The delta is computed against the *immediately prior step's*
+        cumulative, not a global seen-set. If image A appears in turn
+        1, is compacted away (step 2's cumulative is empty), and is
+        re-rendered in turn 3, A shows up in step 0's delta *and* step
+        2's delta — necessary so the post-compaction TrainingSample
+        also receives A's bytes.
+        """
+        traj = [
+            self._step(self._mm("A")),
+            self._step(self._mm()),
+            self._step(self._mm("A")),
+        ]
+        out = _delta_intermediate_mm_data(traj)
+
+        assert out[0]["tokens"]["multi_modal_data"].mm_hashes == {"image": ["A"]}
+        assert out[1]["tokens"]["multi_modal_data"].mm_hashes == {"image": []}
+        # A re-emerges in step 2's delta — its absence from step 1's
+        # cumulative means it counts as "new" again.
+        assert out[2]["tokens"]["multi_modal_data"].mm_hashes == {"image": ["A"]}
+
+    def test_steps_with_no_new_items_collapse_to_empty_delta(self):
+        # Step 2's cumulative equals step 1's — no new items.
+        traj = [
+            self._step(self._mm("A", "B")),
+            self._step(self._mm("A", "B")),
+            self._step(self._mm("A", "B", "C")),
+        ]
+        out = _delta_intermediate_mm_data(traj)
+
+        assert out[1]["tokens"]["multi_modal_data"].mm_hashes == {"image": []}
+        assert out[1]["tokens"]["multi_modal_data"].mm_items == {"image": []}
+        assert out[2]["tokens"]["multi_modal_data"].mm_hashes == {"image": ["C"]}
+
+    def test_non_mapping_steps_pass_through(self):
+        traj = [self._step(self._mm("A")), "not-a-dict", self._step(self._mm("A", "B"))]
+        out = _delta_intermediate_mm_data(traj)
+        assert out[1] == "not-a-dict"
+        # Delta of step 2 still computed against step 0 (last seen cumulative).
+        assert out[2]["tokens"]["multi_modal_data"].mm_hashes == {"image": ["B"]}

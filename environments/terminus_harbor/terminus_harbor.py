@@ -57,10 +57,13 @@ class TerminusHarborEnv(HarborEnv):
 
         sandbox_id = state["sandbox_id"]
 
-        # Install curl, git, uv, and Python
+        # Install curl, git, uv, and Python.
+        # Acquire::Retries=3 mitigates transient archive.ubuntu.com CDN sync
+        # mismatches that fail fresh-sandbox apt-get update mid-rollout
+        # (launchpad bug #1876035).
         await self.sandbox_client.execute_command(
             sandbox_id,
-            "apt-get update && apt-get install -y curl git 2>&1",
+            "apt-get -o Acquire::Retries=3 update && apt-get -o Acquire::Retries=3 install -y curl git 2>&1",
             working_dir=None,
             timeout=120,
         )

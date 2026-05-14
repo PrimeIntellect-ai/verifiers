@@ -169,7 +169,9 @@ async def test_get_native_response_falls_back_to_super_when_no_prefix_match(
     sentinel = {"source": "super"}
     calls: list[dict[str, Any]] = []
 
-    async def fake_get_prompt_ids(self, state, prompt_messages, oai_tools):  # noqa: ANN001
+    async def fake_get_prompt_ids(  # noqa: ANN001
+        self, state, prompt_messages, oai_tools, chat_template_kwargs=None
+    ):
         return None
 
     async def fake_super_get_native_response(  # noqa: ANN001
@@ -235,7 +237,9 @@ async def test_get_native_response_uses_token_route_when_prompt_ids_available(
     recording_client = _RecordingClient()
     client = OpenAIChatCompletionsTokenClient(recording_client)
 
-    async def fake_get_prompt_ids(self, state, prompt_messages, oai_tools):  # noqa: ANN001
+    async def fake_get_prompt_ids(  # noqa: ANN001
+        self, state, prompt_messages, oai_tools, chat_template_kwargs=None
+    ):
         return [10, 20]
 
     monkeypatch.setattr(

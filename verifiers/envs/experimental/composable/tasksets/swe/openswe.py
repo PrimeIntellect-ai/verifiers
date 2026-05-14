@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import logging
 import re
 import tempfile
@@ -80,7 +78,6 @@ class OpenSWETaskSet(SandboxTaskSet):
         self,
         dataset_name: str = "GAIR/OpenSWE",
         config: str = "openswe_oss",
-        filter_repos: list[str] | None = None,
         filter_fn: str | None = None,
         ds_num_proc: int | None = None,
         ds_keep_in_memory: bool = True,
@@ -96,7 +93,6 @@ class OpenSWETaskSet(SandboxTaskSet):
         """
         self.dataset_name = dataset_name
         self.config = config
-        self.filter_repos = filter_repos
         self.ds_num_proc = ds_num_proc
         self.ds_keep_in_memory = ds_keep_in_memory
         self.timeout_minutes = timeout_minutes
@@ -119,9 +115,6 @@ class OpenSWETaskSet(SandboxTaskSet):
             keep_in_memory=self.ds_keep_in_memory,
             num_proc=self.ds_num_proc,
         )
-        if self.filter_repos:
-            filter_set = frozenset(self.filter_repos)
-            dataset = dataset.filter(lambda x: x.get("repo") not in filter_set, **_kw)
         return dataset.map(_process_example, remove_columns=dataset.column_names, **_kw)
 
     def get_instruction(self, info: dict) -> str:

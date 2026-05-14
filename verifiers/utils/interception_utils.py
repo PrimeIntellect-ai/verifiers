@@ -5,6 +5,7 @@ import hmac
 import inspect
 import json
 import logging
+import os
 import secrets
 import time
 import uuid
@@ -33,7 +34,9 @@ from verifiers.utils.logging_utils import print_time, truncate
 logger = logging.getLogger(__name__)
 
 
-KEEPALIVE_INTERVAL_SECONDS = 10.0
+KEEPALIVE_INTERVAL_SECONDS = float(
+    os.environ.get("INTERCEPTION_SERVER_KEEPALIVE_INTERVAL_SECONDS", "3.0")
+)
 DEFAULT_CLIENT_MAX_SIZE_BYTES = 16 * 1024 * 1024
 
 
@@ -44,6 +47,16 @@ class StreamInterrupted(InfraError):
     the agent would observe a truncated (but syntactically valid) SSE stream,
     often exiting with code 0 and an empty trajectory — bypassing the
     non-zero-exit error capture in `CliAgentEnv.poll_job_completion`.
+    """
+
+
+class InterceptionError(InfraError):
+    """Raised when a non-streaming intercepted request cannot be fulfilled.
+
+    Distinct from ``StreamInterrupted`` so rubrics / metrics can tell the
+    two shapes apart: a streaming cut leaves the agent with a truncated
+    SSE body; a non-streaming failure returns HTTP 500 to the agent's
+    OpenAI client and the agent sees a normal API error.
     """
 
 
@@ -160,12 +173,20 @@ class InterceptionServer:
         """Attach `error` to the rollout's state if one is registered and
         unset. First error wins — later failures (e.g. the downstream
         `response_future` raising too) should not clobber the original cause.
+
+        Also skip when the rollout loop has already finalized via a clean
+        stop condition (e.g. ``state["prompt_too_long"]`` from an
+        ``OverlongPromptError``). Tail-end failures that happen after
+        that — e.g. ``write_eof`` to an agent that has already exited —
+        are consequences of the termination, not new infra problems, and
+        must not be surfaced as a spurious ``InterceptionError`` /
+        ``StreamInterrupted`` alongside the real stop signal.
         """
         context = self.active_rollouts.get(rollout_id)
         if context is None:
             return
         state = context.get("state")
-        if state is None or state.get("error"):
+        if state is None or state.get("error") or state.get("prompt_too_long"):
             return
         state["error"] = error
 
@@ -276,7 +297,14 @@ class InterceptionServer:
                 return web.json_response({"error": "Rollout cancelled"}, status=499)
             except Exception as e:
                 logger.debug(
-                    f"[{rollout_id}] Rollout error surfaced in non-streaming request: {type(e).__name__}: {e}"
+                    f"[{rollout_id}] Rollout error surfaced in non-streaming "
+                    f"request: {type(e).__name__}: {e}"
+                )
+                self._set_rollout_error(
+                    rollout_id,
+                    InterceptionError(
+                        f"Intercepted request failed: {type(e).__name__}: {e}"
+                    ),
                 )
                 return web.json_response({"error": str(e)}, status=500)
 
@@ -413,7 +441,7 @@ class InterceptionServer:
             )
             self._set_rollout_error(
                 rollout_id,
-                StreamInterrupted(f"prepare failed: {type(e).__name__}: {e}"),
+                StreamInterrupted(f"Prepare failed: {type(e).__name__}: {e}"),
             )
             return response
         # Reuse one get() task across keepalive cycles; asyncio.wait_for on
@@ -440,7 +468,7 @@ class InterceptionServer:
                         self._set_rollout_error(
                             rollout_id,
                             StreamInterrupted(
-                                f"keepalive write failed after {print_time(waited_s)}: "
+                                f"Keepalive write failed after {print_time(waited_s)}: "
                                 f"{type(e).__name__}: {e}"
                             ),
                         )
@@ -470,7 +498,7 @@ class InterceptionServer:
             self._set_rollout_error(
                 rollout_id,
                 StreamInterrupted(
-                    f"stream write failed after {print_time(waited_s)}: "
+                    f"Stream write failed after {print_time(waited_s)}: "
                     f"{type(e).__name__}: {e}"
                 ),
             )
@@ -481,9 +509,17 @@ class InterceptionServer:
 
         try:
             await response_future
-        except BaseException as e:
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
             logger.debug(
                 f"[{rollout_id}] Rollout error surfaced in stream: {type(e).__name__}: {e}"
+            )
+            self._set_rollout_error(
+                rollout_id,
+                StreamInterrupted(
+                    f"Streaming response_future failed: {type(e).__name__}: {e}"
+                ),
             )
 
         # Surface any write_eof failure so a tail truncation becomes a
@@ -499,7 +535,7 @@ class InterceptionServer:
             self._set_rollout_error(
                 rollout_id,
                 StreamInterrupted(
-                    f"write_eof failed after {print_time(waited_s)}: "
+                    f"Write EOF failed after {print_time(waited_s)}: "
                     f"{type(e).__name__}: {e}"
                 ),
             )

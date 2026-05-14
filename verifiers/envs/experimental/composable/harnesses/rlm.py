@@ -1,7 +1,5 @@
 """RLM agent harness: install script, run command, and harness factory."""
 
-from __future__ import annotations
-
 import hashlib
 import random
 import shlex

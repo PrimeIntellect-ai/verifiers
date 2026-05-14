@@ -193,6 +193,7 @@ class TrajectoryStepTokens(TypedDict):
     overlong_prompt: bool
     is_truncated: bool
     routed_experts: list[list[list[int]]] | None  # [seq_len, layers, topk] to enable router replay
+    multi_modal_data: NotRequired[Any]  # renderers.MultiModalData sidecar (pixel_values, placeholder ranges) — set only on multimodal rollouts
 ```
 
 Token-level data for training.
@@ -503,11 +504,11 @@ Persistent Python REPL in sandbox. Extends `SandboxEnv`.
 class OpenEnvEnv(MultiTurnEnv):
     def __init__(
         self,
-        openenv_project: str | Path,
+        openenv_project: str | Path | None = None,
         num_train_examples: int = 100,
         num_eval_examples: int = 50,
         seed: int = 0,
-        prompt_renderer: Callable[..., ChatMessages] | None = None,
+        prompt_renderer: Callable[..., Messages] | None = None,
         max_turns: int = -1,
         rubric: Rubric | None = None,
         **kwargs,
@@ -515,6 +516,35 @@ class OpenEnvEnv(MultiTurnEnv):
 ```
 
 OpenEnv integration that runs OpenEnv projects in Prime Sandboxes using a prebuilt image manifest (`.build.json`), supports both gym and MCP contracts, and requires a `prompt_renderer` to convert observations into chat messages.
+
+#### SWEDebugEnv
+
+```python
+class SWEDebugEnv(SandboxMixin, MultiTurnEnv):
+    def __init__(
+        self,
+        taskset: SandboxTaskSet,
+        dataset: Any = None,
+        *,
+        run_setup: bool = True,
+        debug_step: Literal["none", "gold_patch", "command", "script"] = "gold_patch",
+        run_tests: bool = True,
+        debug_command: str | None = None,
+        debug_script: str | None = None,
+        debug_script_path: str | None = None,
+        debug_timeout: int | None = None,
+        test_timeout: int = 900,
+        cpu_cores: int | None = None,
+        memory_gb: int | None = None,
+        disk_size_gb: int | None = None,
+        labels: list[str] | None = None,
+        timeout_seconds: float = 1800.0,
+        output_tail_chars: int = 2000,
+        **sandbox_kwargs,
+    ): ...
+```
+
+No-agent debugger for SWE-style `SandboxTaskSet` instances. It creates the task sandbox, optionally runs task setup, runs one debug step (`none`, `gold_patch`, `command`, or `script`), and optionally runs tests and scores the result.
 
 #### EnvGroup
 
@@ -681,6 +711,12 @@ tool loop.
 | `{"fn": "pkg.module:run", ...}` | Importable Python program. |
 | `{"command": ["cmd", "arg"], ...}` | Local or sandboxed command. |
 
+Sandboxed `program.fn` refs resolve their owning local package from the resolved
+module root: single-file modules use `pyproject.toml` in the same directory as
+the module file, and package modules use `pyproject.toml` inside the package
+directory. v1 uploads and installs that package in the program sandbox. Package
+dependencies come from normal `[project.dependencies]`.
+
 #### Env
 
 ```python
@@ -702,15 +738,13 @@ class Toolset:
         bindings=None,
         objects=None,
         write: bool = False,
-        scope: Literal["rollout", "group", "global"] = "rollout",
+        scope: Literal["rollout", "group", "global"] | None = None,
         sandbox=None,
         stops=(),
         setups=(),
         updates=(),
-        metrics=(),
-        rewards=(),
-        advantages=(),
         cleanups=(),
+        teardowns=(),
         config: ToolsetConfig | Mapping[str, object] | None = None,
     ): ...
 
@@ -718,9 +752,11 @@ class MCPTool:
     def __init__(command: str, args=None, env=None, cwd: str | None = None): ...
 ```
 
-Toolsets package callable tools, MCP servers, private dependency factories, and
-hidden bindings. `objects.*` bindings are private to the owning toolset/user and
-are not directly accessible from state.
+Toolsets package callable tools, MCP servers, private dependency factories,
+hidden bindings, and tool-owned lifecycle handlers. `objects.*` bindings are
+private to the owning toolset/user and are not directly accessible from state.
+String binding sources are framework paths; literal strings should be bound via
+callable sources.
 
 #### v1 Config Models
 
@@ -973,6 +1009,7 @@ class Config(BaseModel):
     ) -> Self: ...
 
 class EnvConfig(Config):
+    args: object | None = None
     taskset: object | None = None
     harness: object | None = None
 

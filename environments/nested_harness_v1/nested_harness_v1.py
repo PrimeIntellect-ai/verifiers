@@ -1,6 +1,4 @@
-from __future__ import annotations
-
-import verifiers.v1 as vf
+import verifiers as vf
 
 
 class NestedHarnessConfig(vf.HarnessConfig):
@@ -30,18 +28,30 @@ async def exact_answer(task, state) -> float:
     return float(state["answer"] == task["answer"])
 
 
+CHILD_PROMPT_GROUPS = [
+    ["hello"],
+    ["open", "source"],
+    ["taskset", "harness"],
+    ["runtime", "boundary"],
+    ["sandbox", "lease"],
+    ["toolset", "scope"],
+    ["group", "reward"],
+    ["endpoint", "proxy"],
+    ["cleanup", "signals"],
+    ["harbor", "tasks"],
+]
+
+
 def source():
     return [
         {
-            "prompt": "Ask a child harness to uppercase hello.",
-            "child_prompts": ["hello"],
-            "answer": "HELLO",
-        },
-        {
-            "prompt": "Ask two child harnesses to uppercase short words.",
-            "child_prompts": ["open", "source"],
-            "answer": "OPEN SOURCE",
-        },
+            "prompt": (
+                "Ask child harnesses to uppercase: " + ", ".join(child_prompts) + "."
+            ),
+            "child_prompts": child_prompts,
+            "answer": " ".join(prompt.upper() for prompt in child_prompts),
+        }
+        for child_prompts in CHILD_PROMPT_GROUPS
     ]
 
 
@@ -90,8 +100,7 @@ def load_harness(config: NestedHarnessConfig | None = None):
     )
 
 
-def load_environment(config: vf.EnvConfig | None = None):
-    config = config or vf.EnvConfig()
+def load_environment(config: vf.EnvConfig):
     return vf.Env(
         taskset=load_taskset(config=config.taskset),
         harness=load_harness(config=config.harness),

@@ -1,7 +1,4 @@
-from __future__ import annotations
-
-import verifiers.v1 as vf
-from verifiers.v1.utils.judge_utils import completion_text
+import verifiers as vf
 
 
 async def ask_subagent(name: str, harness, state) -> str:
@@ -20,7 +17,8 @@ async def ask_subagent(name: str, harness, state) -> str:
     ).freeze()
     child_state = state.for_task(task, borrow="model")
     child_state = await harness.run(task, child_state)
-    answer = completion_text(child_state.get("completion")).strip()
+    messages = vf.get_messages(child_state.get("completion") or [], role="assistant")
+    answer = str(messages[-1].content or "").strip() if messages else ""
     state.setdefault("subagent_calls", []).append({"name": name, "answer": answer})
     return answer
 
@@ -32,21 +30,33 @@ async def subagent_calls(task, state) -> float:
 
 @vf.reward(weight=1.0)
 async def exact_answer(task, state) -> float:
-    return float(completion_text(state.get("completion")).strip() == task["answer"])
+    messages = vf.get_messages(state.get("completion") or [], role="assistant")
+    answer = str(messages[-1].content or "").strip() if messages else ""
+    return float(answer == task["answer"])
+
+
+NAME_GROUPS = [
+    ["world"],
+    ["prime", "verifiers"],
+    ["taskset", "harness", "runtime"],
+    ["sandbox"],
+    ["alpha", "beta"],
+    ["delta", "epsilon", "zeta"],
+    ["tools", "users"],
+    ["group", "reward", "advantage"],
+    ["mcp", "search"],
+    ["open", "superintelligence", "stack"],
+]
 
 
 def source():
     return [
         {
-            "names": ["world"],
-            "prompt": [{"role": "user", "content": "Names: world"}],
-            "answer": "hello world",
-        },
-        {
-            "names": ["prime", "verifiers"],
-            "prompt": [{"role": "user", "content": "Names: prime, verifiers"}],
-            "answer": "hello prime, hello verifiers",
-        },
+            "names": names,
+            "prompt": [{"role": "user", "content": f"Names: {', '.join(names)}"}],
+            "answer": ", ".join(f"hello {name}" for name in names),
+        }
+        for names in NAME_GROUPS
     ]
 
 
@@ -57,7 +67,8 @@ def load_child_harness():
 def load_toolset():
     return vf.Toolset(
         tools=[ask_subagent],
-        bindings={"ask_subagent.harness": load_child_harness()},
+        objects={"harness": load_child_harness},
+        bindings={"ask_subagent.harness": "objects.harness"},
         scope="rollout",
     )
 
@@ -83,8 +94,7 @@ def load_harness(config: vf.HarnessConfig | None = None):
     )
 
 
-def load_environment(config: vf.EnvConfig | None = None):
-    config = config or vf.EnvConfig()
+def load_environment(config: vf.EnvConfig):
     return vf.Env(
         taskset=load_taskset(config=config.taskset),
         harness=load_harness(config=config.harness),

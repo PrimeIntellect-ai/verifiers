@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import asyncio
 import os
 from typing import cast
@@ -10,7 +8,7 @@ from chromadb.utils import embedding_functions
 from datasets import load_dataset
 from openai import AsyncOpenAI
 
-import verifiers.v1 as vf
+import verifiers as vf
 
 CHROMA_DB_DIR = ".chroma_db"
 _chroma_semaphore: asyncio.Semaphore | None = None
@@ -54,7 +52,7 @@ def load_wiki(
     embed_model: str,
     embed_base_url: str,
     embed_api_key_var: str,
-) -> dict[str, object]:
+) -> vf.ConfigData:
     page_id_to_title: dict[str, str] = {}
     page_id_to_content: dict[str, str] = {}
     corpus = load_dataset(corpus_dataset, split=corpus_split)
@@ -206,11 +204,8 @@ def judge_reward_factory(
     @vf.reward(weight=1.0)
     async def judge_reward_func(task, state) -> float:
         completion = state.get("completion") or []
-        response = ""
-        for message in reversed(completion):
-            if message.get("role") == "assistant":
-                response = str(message.get("content") or "")
-                break
+        messages = vf.get_messages(completion, role="assistant")
+        response = str(messages[-1].content or "") if messages else ""
         prompt = JUDGE_PROMPT.format(
             question=task["question"],
             answer=task["answer"],
@@ -242,7 +237,7 @@ def load_toolset(
     embed_api_key_var: str = "OPENAI_API_KEY",
     config=None,
 ):
-    def load_wiki_index() -> dict[str, object]:
+    def load_wiki_index() -> vf.ConfigData:
         return load_wiki(
             corpus_dataset=corpus_dataset,
             corpus_split=corpus_split,

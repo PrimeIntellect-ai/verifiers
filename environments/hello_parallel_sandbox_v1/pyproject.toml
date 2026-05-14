@@ -18,6 +18,6 @@ build-backend = "hatchling.build"
 include = ["hello_parallel_sandbox_v1.py", "README.md", "pyproject.toml"]
 
 [tool.verifiers.eval]
-num_examples = 3
-rollouts_per_example = 1
+num_examples = 5
+rollouts_per_example = 3
 max_tokens = 4096

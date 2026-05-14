@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import json
 import logging
 import re
@@ -351,7 +349,6 @@ class SWEBenchTaskSet(SandboxTaskSet):
         self,
         dataset_name: str = "princeton-nlp/SWE-bench_Verified",
         skip_install: bool = True,
-        filter_repos: list[str] | None = None,
         filter_fn: str | None = None,
         ds_num_proc: int | None = None,
         ds_keep_in_memory: bool = True,
@@ -367,7 +364,6 @@ class SWEBenchTaskSet(SandboxTaskSet):
         """
         self.dataset_name = dataset_name
         self.skip_install = skip_install
-        self.filter_repos = filter_repos
         self.ds_num_proc = ds_num_proc
         self.ds_keep_in_memory = ds_keep_in_memory
         self.timeout_minutes = timeout_minutes
@@ -392,12 +388,6 @@ class SWEBenchTaskSet(SandboxTaskSet):
             keep_in_memory=self.ds_keep_in_memory,
             num_proc=self.ds_num_proc,
         )
-        if self.filter_repos:
-            filter_set = set(self.filter_repos)
-            dataset = dataset.filter(
-                lambda x: filter_set.isdisjoint((x.get("repo"), x.get("repo_name"))),
-                **_kw,
-            )
         return dataset.map(_process_example, remove_columns=dataset.column_names, **_kw)
 
     def get_instruction(self, info: dict) -> str:

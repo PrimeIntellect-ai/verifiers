@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import json
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, cast, final
@@ -266,13 +264,13 @@ class EnvGroup(vf.Environment):
 
     def _format_dataset(
         self,
-        dataset: Dataset,
+        dataset: "Dataset",
         system_prompt: str | None = None,
         few_shot: Messages | None = None,
         question_key: str = "question",
         answer_key: str = "answer",
         map_kwargs: dict = {},
-    ) -> Dataset:
+    ) -> "Dataset":
         """Ensure unique example_ids across concatenated datasets."""
         # use parent's prompt handling
         dataset = self._ensure_prompt(
@@ -294,8 +292,8 @@ class EnvGroup(vf.Environment):
         return dataset
 
     def _format_completion_dataset(
-        self, dataset: Dataset, map_kwargs: dict = {}
-    ) -> Dataset:
+        self, dataset: "Dataset", map_kwargs: dict = {}
+    ) -> "Dataset":
         """Ensure unique example_ids across concatenated datasets."""
         # ensure unique example_ids across concatenated datasets
         if "example_id" in dataset.column_names:

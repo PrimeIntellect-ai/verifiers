@@ -1,7 +1,5 @@
 """mini-SWE-agent harness configuration."""
 
-from __future__ import annotations
-
 from pathlib import PurePosixPath
 import shlex
 
@@ -39,11 +37,14 @@ def build_mini_swe_agent_install_script(
     """Build the shell script that installs mini-SWE-agent."""
     install_tools = ""
     if install_python:
+        # Acquire::Retries=3 mitigates transient archive.ubuntu.com CDN sync
+        # mismatches that fail fresh-sandbox apt-get update mid-rollout. See
+        # launchpad bug #1876035.
         install_tools = """\
 export DEBIAN_FRONTEND=noninteractive
 if ! command -v python3 >/dev/null 2>&1 || ! python3 -m pip --version >/dev/null 2>&1; then
-  apt-get update -qq
-  apt-get install -y -qq python3 python3-pip ca-certificates
+  apt-get -o Acquire::Retries=3 update -qq
+  apt-get -o Acquire::Retries=3 install -y -qq python3 python3-pip ca-certificates
 fi
 """
 

@@ -35,11 +35,19 @@ Notes:
 
 | Arg | Type | Default | Description |
 | --- | ---- | ------- | ----------- |
-| `tasks` | str | bundled `tasks/` | Local Harbor task directory or dataset directory. |
 | `task_names` | list[str] | `null` | Explicit Harbor task names to run. |
-| `dataset` | str | `null` | `terminal-bench-sample` or `terminal-bench` task selection. |
-| `max_turns` | int | `4` | Harness turn cap. |
-| `disabled_tools` | list[str] | `["webfetch", "question"]` | OpenCode tools to disable. |
+| `dataset` | str | `null` | Harbor Hub dataset id. Defaults to bundled `tasks/`. |
+
+OpenCode settings belong under the v1 harness config:
+
+```toml
+[env.harness]
+max_turns = 4
+agent_workdir = "/app"
+```
+
+This environment does not set a custom disabled-tool list. It inherits the
+`vf.OpenCodeConfig` defaults.
 
 ### Metrics
 Summarize key metrics your rubric emits and how they’re interpreted.

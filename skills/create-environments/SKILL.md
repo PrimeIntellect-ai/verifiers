@@ -43,8 +43,46 @@ prime env install math-python --from-repo
 - `StatefulToolEnv` for per-rollout resources.
 - `CliAgentEnv` for running agent binaries in sandboxes with API interception. Override `get_sandbox_resources(state)` for per-instance resources, `build_env_vars(state)` for custom env vars.
 - V1 `vf.Env` with `vf.Taskset`/`vf.Harness` for the current taskset/harness environment pattern that separates the task collection from the rollout runner. Use this for new taskset/harness work that needs config-driven metrics, rewards, toolsets, user functions, endpoint interception, or sandboxed Python/command programs. Framework programs should build clients from `state.get_endpoint_config(api="chat")`.
-3. Implement `load_environment(...) -> vf.Environment` with explicit arguments.
-4. Add `pyproject.toml` defaults in `[tool.verifiers.eval]` only when stable.
+3. For v1, import `verifiers as vf` and implement `load_environment(config: vf.EnvConfig) -> vf.Env`. Treat `config` as required and typed; the loader is responsible for passing an `EnvConfig`.
+4. For v0 environments, keep the existing `vf.Environment` patterns and preserve v0 compatibility.
+5. Add `pyproject.toml` defaults in `[tool.verifiers.eval]` only when stable.
+
+### V1 Authoring Rules
+1. Keep v1 environment entrypoints tiny: `import verifiers as vf`, define `load_environment(config: vf.EnvConfig) -> vf.Env`, and wire `Taskset`/`Harness` constructors directly.
+2. Use `Taskset(objects=..., bindings=...)` for shared taskset dependencies such as extractors, clients, or format checkers. Do not introduce v1 Parser/Rubric wrappers; parsing is ordinary Python or a bound object.
+3. Use `vf.get_messages(state.get("completion") or [], role="assistant")` when reading state completions. The helper returns typed message objects and should not receive `None`.
+4. Use `program.channels` for v1 program protocol/channel selection. Do not use stale `program.tools` terminology.
+5. Avoid no-op `load_taskset`/`load_harness` wrappers. Add named helpers only when they encode real reusable wiring.
+
+### V1 Taskset/Harness Shape
+1. Put task data, task-owned tools, user behavior, metrics, rewards, and task-specific configuration on the `Taskset`.
+2. Use the base `vf.Harness` unless the harness owns a reusable execution adapter such as a CLI, framework program, sandboxed program, or nested harness flow.
+3. Avoid one-off harness classes whose only purpose is to hold task behavior. That behavior belongs behind the taskset.
+4. Keep small example environments direct. Do not add private helper layers, duplicate loader paths, or optional knobs unless they clarify a real reusable boundary.
+5. Use the current config shape consistently:
+```toml
+[[env]]
+id = "owner/my-env"
+
+[env.args]
+split = "train"
+
+[env.taskset]
+num_examples = 100
+
+[env.harness]
+max_turns = 8
+```
+6. In code, normalize config at the loader boundary and pass child configs directly:
+```python
+def load_environment(config: vf.EnvConfig | None = None) -> vf.Env:
+    config = config or vf.EnvConfig()
+    return vf.Env(
+        taskset=load_taskset(config.taskset),
+        harness=load_harness(config.harness),
+    )
+```
+7. If concise env-level named args are useful, map them explicitly into `vf.EnvConfig(...)` once in `load_environment`; do not thread loose kwargs through taskset and harness internals.
 
 ### 2. Port From Another Library, Project, or Paper
 1. Create a strict source-to-target mapping before coding:
@@ -84,6 +122,10 @@ prime eval run my-env -m openai/gpt-4.1-mini -n 50 -r 1 -s
 If multi-turn or tool-heavy, also run with higher rollouts:
 ```bash
 prime eval run my-env -m openai/gpt-4.1-mini -n 30 -r 3 -s
+```
+For repo example environments, also use the package-install path when packaging or dependencies changed:
+```bash
+uv run pytest tests/test_envs.py -k my_env -vv
 ```
 
 ## Publish Gate Before Large Evals Or Training
