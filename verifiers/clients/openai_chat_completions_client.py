@@ -1,9 +1,6 @@
-import base64
 import functools
 from collections.abc import Iterable, Mapping
 from typing import Any, TypeAlias, cast
-
-import numpy as np
 
 from openai import (
     AsyncOpenAI,
@@ -36,6 +33,7 @@ from openai.types.chat.chat_completion_user_message_param import (
 from openai.types.shared_params import FunctionDefinition
 
 from verifiers.clients.client import Client
+from verifiers.clients.routed_experts import compose_split_routed_experts
 from verifiers.errors import (
     EmptyModelResponseError,
     InvalidModelResponseError,
@@ -484,27 +482,20 @@ class OpenAIChatCompletionsClient(
                 logprobs_content = response.choices[0].logprobs["content"]
                 completion_logprobs = [token["logprob"] for token in logprobs_content]
 
-            has_routed_experts = (
-                isinstance(
-                    routed_experts := getattr(choice, "routed_experts", None), dict
-                )
-                and "data" in routed_experts
-                and "shape" in routed_experts
-            )
-            if has_routed_experts:
-                routed_experts = cast(dict[str, Any], routed_experts)
-                routed_experts = cast(
-                    list[list[list[int]]],
-                    (
-                        np.frombuffer(
-                            base64.b85decode(routed_experts["data"]), dtype=np.int32
-                        )
-                        .reshape(routed_experts["shape"])
-                        .tolist()
-                    ),
-                )  # [seq_len, layers, topk]
-            else:
+            response_extra = response.model_extra or {}
+            choice_extra = choice.model_extra or {}
+            if (
+                "prompt_routed_experts" not in response_extra
+                and "routed_experts" not in choice_extra
+            ):
                 routed_experts = None
+            else:
+                routed_experts = compose_split_routed_experts(
+                    prompt_routed_experts=response_extra["prompt_routed_experts"],
+                    completion_routed_experts=choice_extra["routed_experts"],
+                    prompt_len=len(prompt_ids),
+                    completion_len=len(completion_ids),
+                )
             return ResponseTokens(
                 prompt_ids=prompt_ids,
                 prompt_mask=prompt_mask,

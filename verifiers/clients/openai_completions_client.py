@@ -9,6 +9,7 @@ from verifiers.clients.openai_chat_completions_client import (
     get_usage_field,
     handle_openai_overlong_prompt,
 )
+from verifiers.clients.routed_experts import compose_split_routed_experts
 from verifiers.errors import (
     EmptyModelResponseError,
     InvalidModelResponseError,
@@ -82,8 +83,7 @@ class OpenAICompletionsClient(
     ) -> OpenAITextResponse:
         if tools:
             raise ValueError(
-                "Completions API does not support tools. "
-                "Use chat_completions or messages client_type instead."
+                "Completions API does not support tools. Use chat_completions or messages client_type instead."
             )
 
         def normalize_sampling_args(sampling_args: SamplingArgs):
@@ -170,12 +170,28 @@ class OpenAICompletionsClient(
             )
             if completion_logprobs is None:
                 return None
+            choice = response.choices[0]
+            response_extra = response.model_extra or {}
+            choice_extra = choice.model_extra or {}
+            if (
+                "prompt_routed_experts" not in response_extra
+                and "routed_experts" not in choice_extra
+            ):
+                routed_experts = None
+            else:
+                routed_experts = compose_split_routed_experts(
+                    prompt_routed_experts=response_extra["prompt_routed_experts"],
+                    completion_routed_experts=choice_extra["routed_experts"],
+                    prompt_len=len(prompt_ids),
+                    completion_len=len(completion_ids),
+                )
             return ResponseTokens(
                 prompt_ids=prompt_ids,
                 prompt_mask=prompt_mask,
                 completion_ids=completion_ids,
                 completion_mask=completion_mask,
                 completion_logprobs=completion_logprobs,
+                routed_experts=routed_experts,
             )
 
         return Response(
