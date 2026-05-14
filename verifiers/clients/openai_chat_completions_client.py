@@ -33,7 +33,6 @@ from openai.types.chat.chat_completion_user_message_param import (
 from openai.types.shared_params import FunctionDefinition
 
 from verifiers.clients.client import Client
-from verifiers.clients.routed_experts import parse_routed_experts
 from verifiers.errors import (
     EmptyModelResponseError,
     InvalidModelResponseError,
@@ -58,6 +57,7 @@ from verifiers.types import (
     UserMessage,
 )
 from verifiers.utils.client_utils import setup_openai_client
+from verifiers.utils.response_utils import parse_routed_experts
 
 
 def handle_openai_overlong_prompt(func):

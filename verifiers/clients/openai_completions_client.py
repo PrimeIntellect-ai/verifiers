@@ -9,7 +9,6 @@ from verifiers.clients.openai_chat_completions_client import (
     get_usage_field,
     handle_openai_overlong_prompt,
 )
-from verifiers.clients.routed_experts import parse_routed_experts
 from verifiers.errors import (
     EmptyModelResponseError,
     InvalidModelResponseError,
@@ -26,6 +25,7 @@ from verifiers.types import (
     Usage,
 )
 from verifiers.utils.client_utils import setup_openai_client
+from verifiers.utils.response_utils import parse_routed_experts
 
 OpenAITextMessages = str
 OpenAITextResponse = Completion
