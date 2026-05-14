@@ -1,5 +1,6 @@
 from collections.abc import Iterable, Mapping
 from pathlib import Path
+import sys
 from typing import ClassVar, Literal, cast
 
 from pydantic import (
@@ -56,9 +57,9 @@ from .utils.config_utils import (
 )
 from .utils.mcp_proxy_utils import validate_program_channels
 
-try:
+if sys.version_info >= (3, 11):
     import tomllib
-except ModuleNotFoundError:
+else:
     import tomli as tomllib
 
 

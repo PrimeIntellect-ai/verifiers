@@ -120,10 +120,10 @@ without moving shared dependencies into global state.
 v1 exposes one transcript selector on `verifiers.v1`:
 
 ```python
-message = vf.get_messages(state["completion"], role="assistant")[-1]
-response = str(message.content or "")
+messages = vf.get_messages(state.get("completion") or [], role="assistant")
+response = str(messages[-1].content or "") if messages else ""
 
-assistant_turns = len(vf.get_messages(state["completion"], role="assistant"))
+assistant_turns = len(vf.get_messages(state.get("completion") or [], role="assistant"))
 ```
 
 Use `vf.get_messages(...)` to get the transcript as typed message objects,

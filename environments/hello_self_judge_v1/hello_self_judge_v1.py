@@ -214,7 +214,7 @@ async def self_consistency_score(task, state) -> float:
         max_turns=1,
     ).run(judge_task, judge_state)
 
-    messages = vf.get_messages(judge_state["completion"], role="assistant")
+    messages = vf.get_messages(judge_state.get("completion") or [], role="assistant")
     judge_text = str(messages[-1].content or "") if messages else ""
     parsed = parse_judge_json(judge_text)
     score = clamp_float(parsed.get("score", 0.0))
@@ -228,7 +228,7 @@ async def self_consistency_score(task, state) -> float:
 
 @vf.update(priority=10)
 async def sandbox_judge(task, state) -> None:
-    messages = vf.get_messages(state["completion"], role="assistant")
+    messages = vf.get_messages(state.get("completion") or [], role="assistant")
     response = str(messages[-1].content or "") if messages else ""
     judge_task = vf.Task(
         {
@@ -254,7 +254,7 @@ async def sandbox_judge(task, state) -> None:
     ).run(judge_task, judge_state)
     judge_bash_outputs = state.get("bash_tool_outputs", [])[bash_output_start:]
 
-    messages = vf.get_messages(judge_state["completion"], role="assistant")
+    messages = vf.get_messages(judge_state.get("completion") or [], role="assistant")
     findings = str(messages[-1].content or "") if messages else ""
     state["update_judge"] = {
         "findings": findings,

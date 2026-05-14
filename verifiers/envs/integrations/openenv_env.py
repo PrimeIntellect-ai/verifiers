@@ -3,6 +3,7 @@ import inspect
 import json
 import logging
 from dataclasses import dataclass
+from importlib import import_module
 from pathlib import Path
 from typing import Any, Callable, Iterable, cast
 
@@ -22,23 +23,21 @@ from verifiers.types import (
 from verifiers.utils.message_utils import from_raw_message
 from verifiers.utils.tool_utils import is_valid_tool_content_parts
 
-CallToolAction: type[Any] | None
-GenericEnvClient: type[Any] | None
-MCPToolClient: type[Any] | None
-try:
-    from openenv.core.env_server.mcp_types import (
-        CallToolAction as OpenEnvCallToolAction,
-    )
-    from openenv.core.generic_client import GenericEnvClient as OpenEnvGenericEnvClient
-    from openenv.core.mcp_client import MCPToolClient as OpenEnvMCPToolClient
 
-    CallToolAction = OpenEnvCallToolAction
-    GenericEnvClient = OpenEnvGenericEnvClient
-    MCPToolClient = OpenEnvMCPToolClient
-except ImportError:
-    CallToolAction = None
-    GenericEnvClient = None
-    MCPToolClient = None
+def _optional_openenv_type(module_name: str, attr: str) -> type[Any] | None:
+    try:
+        return cast(type[Any], getattr(import_module(module_name), attr))
+    except ImportError:
+        return None
+
+
+CallToolAction = _optional_openenv_type(
+    "openenv.core.env_server.mcp_types", "CallToolAction"
+)
+GenericEnvClient = _optional_openenv_type(
+    "openenv.core.generic_client", "GenericEnvClient"
+)
+MCPToolClient = _optional_openenv_type("openenv.core.mcp_client", "MCPToolClient")
 
 try:
     from prime_sandboxes import AsyncSandboxClient, CreateSandboxRequest

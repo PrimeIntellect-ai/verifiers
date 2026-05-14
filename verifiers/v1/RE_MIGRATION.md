@@ -155,8 +155,8 @@ def source():
 
 @vf.reward(weight=1.0)
 async def exact(task, state) -> float:
-    message = vf.get_messages(state["completion"], role="assistant")[-1]
-    response = str(message.content or "")
+    messages = vf.get_messages(state.get("completion") or [], role="assistant")
+    response = str(messages[-1].content or "") if messages else ""
     return float(str(task["answer"]).strip() in response)
 
 
@@ -512,8 +512,8 @@ async def ask_child(question: str, harness, state) -> str:
     ).freeze()
     child_state = await harness.run(child_task)
     state.setdefault("child_answers", []).append(child_state["answer"])
-    message = vf.get_messages(child_state["completion"], role="assistant")[-1]
-    return str(message.content or "")
+    messages = vf.get_messages(child_state.get("completion") or [], role="assistant")
+    return str(messages[-1].content or "") if messages else ""
 
 
 def load_child_harness():

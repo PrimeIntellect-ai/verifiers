@@ -153,7 +153,7 @@ async def bash(command: str, sandbox, state) -> str:
 
 @vf.update(priority=10)
 async def parallel_sandbox_audit(task, state) -> None:
-    messages = vf.get_messages(state["completion"], role="assistant")
+    messages = vf.get_messages(state.get("completion") or [], role="assistant")
     response = str(messages[-1].content or "") if messages else ""
     audit_specs = [
         (
@@ -197,7 +197,9 @@ async def parallel_sandbox_audit(task, state) -> None:
     )
     state["parallel_audits"] = []
     for label, audit_state in audit_states:
-        messages = vf.get_messages(audit_state["completion"], role="assistant")
+        messages = vf.get_messages(
+            audit_state.get("completion") or [], role="assistant"
+        )
         findings = str(messages[-1].content or "") if messages else ""
         state["parallel_audits"].append(
             {
@@ -226,7 +228,7 @@ async def sandbox_stage_score(task, state) -> float:
         system_prompt=REWARD_JUDGE_SYSTEM_PROMPT,
         max_turns=2,
     ).run(judge_task, judge_state)
-    messages = vf.get_messages(judge_state["completion"], role="assistant")
+    messages = vf.get_messages(judge_state.get("completion") or [], role="assistant")
     judge_text = str(messages[-1].content or "") if messages else ""
     parsed = parse_judge_json(judge_text)
     score = clamp_float(parsed.get("score", 0.0))
@@ -301,7 +303,7 @@ def command_audit_prompt(task: ConfigMap) -> str:
 
 
 def reward_prompt(task: ConfigMap, state: ConfigMap) -> str:
-    messages = vf.get_messages(state["completion"], role="assistant")
+    messages = vf.get_messages(state.get("completion") or [], role="assistant")
     response = str(messages[-1].content or "") if messages else ""
     return (
         "Task instruction:\n"

@@ -32,3 +32,26 @@ async def test_math_python_empty_completion_scores_zero() -> None:
     module = load_env_module("math_python", "math_python_v1.py")
 
     assert await module.correct_answer({"answer": "4"}, {"completion": []}) == 0.0
+
+
+@pytest.mark.asyncio
+async def test_hello_subagent_missing_completion_scores_zero() -> None:
+    module = load_env_module("hello_subagent_v1", "hello_subagent_v1.py")
+
+    assert (
+        await module.exact_answer({"answer": "hello alice"}, {"completion": None})
+        == 0.0
+    )
+
+
+def test_hello_parallel_reward_prompt_allows_missing_completion() -> None:
+    module = load_env_module(
+        "hello_parallel_sandbox_v1", "hello_parallel_sandbox_v1.py"
+    )
+
+    prompt = module.reward_prompt(
+        {"instruction": "write an answer", "answer": "done"},
+        {"completion": None},
+    )
+
+    assert "Assistant final answer:\n\n" in prompt

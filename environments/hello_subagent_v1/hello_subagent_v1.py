@@ -17,7 +17,7 @@ async def ask_subagent(name: str, harness, state) -> str:
     ).freeze()
     child_state = state.for_task(task, borrow="model")
     child_state = await harness.run(task, child_state)
-    messages = vf.get_messages(child_state["completion"], role="assistant")
+    messages = vf.get_messages(child_state.get("completion") or [], role="assistant")
     answer = str(messages[-1].content or "").strip() if messages else ""
     state.setdefault("subagent_calls", []).append({"name": name, "answer": answer})
     return answer
@@ -30,7 +30,7 @@ async def subagent_calls(task, state) -> float:
 
 @vf.reward(weight=1.0)
 async def exact_answer(task, state) -> float:
-    messages = vf.get_messages(state["completion"], role="assistant")
+    messages = vf.get_messages(state.get("completion") or [], role="assistant")
     answer = str(messages[-1].content or "").strip() if messages else ""
     return float(answer == task["answer"])
 
