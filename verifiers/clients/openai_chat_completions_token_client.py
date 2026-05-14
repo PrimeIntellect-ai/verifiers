@@ -99,7 +99,7 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
             return {k: v for k, v in sampling_args.items() if v is not None}
 
         sampling_args = normalize_sampling_args(sampling_args)
-        state = cast(State, kwargs.pop("state"))
+        state = cast(State, kwargs.pop("state", None))
         extra_headers = kwargs.pop("extra_headers", None)
         # Use standard /chat/completions for: (1) first turn (no prior tokens
         # to stitch), or (2) conversations that contain multimodal content in

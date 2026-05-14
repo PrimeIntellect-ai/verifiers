@@ -50,6 +50,8 @@ def resolve_client(client_or_config: Client | ClientConfig) -> Client:
                 return AnthropicMessagesClient(client_or_config)
             case "nemorl_chat_completions":
                 return NeMoRLChatCompletionsClient(client_or_config)
+            case _:
+                raise ValueError(f"Unsupported client_type: {client_type!r}")
     else:
         raise ValueError(f"Unsupported client type: {type(client_or_config)}")
 
