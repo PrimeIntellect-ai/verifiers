@@ -1,6 +1,6 @@
 # Environments
 
-This guide walks through building environments in Verifiers, from simple single-turn tasks to complex multi-turn agents with tools. See [Overview](overview.md) for how to initialize a new environment template. For new taskset/harness environments, use the v1 `Taskset`/`Harness` format documented in [BYO Harness](byo-harness.md).
+This guide walks through building environments in Verifiers, from simple single-turn tasks to complex multi-turn agents with tools. See [Overview](overview.md) for how to initialize a new environment template. For reusable taskset/harness environments, see [BYO Harness](byo-harness.md).
 
 ## Table of Contents
 
@@ -273,7 +273,9 @@ rubric = vf.Rubric(funcs=[correct_answer, diversity_bonus])
 
 ### Shared Objects
 
-Beyond rollout data, reward functions can request static objects that live within the Rubric class. These are stored in the Rubric's `class_objects` dictionary, and can be added after initialization via `add_class_object()`:
+In rubric environments, reward functions can request static helper objects that
+live within the Rubric class. These are stored in the Rubric's `class_objects`
+dictionary, and can be added after initialization via `add_class_object()`:
 
 ```python
 rubric = vf.Rubric(funcs=[my_reward_func])
@@ -284,23 +286,13 @@ async def my_reward_func(completion, my_helper) -> float:
     return await my_helper.score(completion)
 ```
 
-Two common types of shared objects are **parsers** and **judges**.
+For taskset/harness environments, use taskset-owned `objects` and `bindings` as
+shown in [BYO Harness](byo-harness.md#shared-dependencies).
 
-Parsers encapsulate logic for extracting structured content from model responses. When passed to a rubric, the parser is automatically available to reward functions:
-
-```python
-parser = vf.XMLParser(["reasoning", "answer"])
-rubric = vf.Rubric(funcs=[my_reward_func], parser=parser)
-
-async def my_reward_func(completion, parser) -> float:
-    parsed = parser.parse_answer(completion)
-    # parsed.reasoning, parsed.answer available
-    ...
-```
-
-Parsers can also be passed to environments, where they are often used during rollouts to validate or extract content. This allows parsing logic to be shared between the environment's interaction loop and the rubric's reward functions.
-
-Judges are used for tasks where deterministic evaluation is impractical, and an LLM is used to score responses. **JudgeRubric** is a built-in class which stores an LLM client inside the rubric, and provides a `judge` callable to reward functions for scoring responses:
+Judges are used for tasks where deterministic evaluation is impractical, and an
+LLM is used to score responses. **JudgeRubric** stores an LLM client inside the
+rubric, and provides a `judge` callable to reward
+functions for scoring responses:
 
 ```python
 judge_rubric = vf.JudgeRubric(
@@ -531,26 +523,39 @@ The `env_response` method is an abstract method that must be overridden by all `
 
 ```python
 class MyGameEnv(vf.MultiTurnEnv):
+    def __init__(self, dataset, rubric, extract_action):
+        super().__init__(dataset=dataset, rubric=rubric)
+        self.extract_action = extract_action
+
     async def env_response(self, messages: vf.Messages, state: vf.State) -> vf.Messages:
         """Generate the environment's response after each model turn."""
-        parsed = self.parser.parse(messages)
-        action = parsed.action
+        action = self.extract_action(messages)
         feedback = process_action(action)
         return [{"role": "user", "content": feedback}]
 
 
-async def correct_action(parser, completion, answer) -> float:
-    parsed = parser.parse(completion)
-    return 1.0 if parsed.action == answer else 0.0
+class ActionExtractor:
+    def __call__(self, messages: vf.Messages) -> str:
+        text = messages[-1]["content"] if messages else ""
+        return str(text).strip()
+
+
+async def correct_action(extract_action, completion, answer) -> float:
+    return 1.0 if extract_action(completion) == answer else 0.0
 
 
 def load_environment():
-    parser = vf.XMLParser(fields=["action"])
-    rubric = vf.Rubric(funcs=[correct_action], parser=parser)
-    return MyGameEnv(dataset=dataset, rubric=rubric, parser=parser)
+    extract_action = ActionExtractor()
+    rubric = vf.Rubric(funcs=[correct_action])
+    rubric.add_class_object("extract_action", extract_action)
+    return MyGameEnv(dataset=dataset, rubric=rubric, extract_action=extract_action)
 ```
 
-`env_response` receives the full conversation history thus far (and `state`) and returns a list of _new_ messages to append. When a parser is passed to the environment, it becomes available as `self.parser`. Passing the same parser to the rubric makes it available to reward functions by name. For tool environments, `env_response` typically executes tool calls and returns results. For games or other custom protocols, this might involve parsing structured output (as above) and returning state updates or feedback.
+`env_response` receives the full conversation history thus far (and `state`) and
+returns a list of _new_ messages to append. For tool environments,
+`env_response` typically executes tool calls and returns results. For games or
+other custom protocols, this might involve extracting structured output and
+returning state updates or feedback.
 
 Several other methods can optionally be overridden for more control in complex custom environments:
 
@@ -887,7 +892,7 @@ Supported third-party environment integrations include:
 - **`BrowserEnv`** — unified browser automation via [Browserbase](https://browserbase.com) with DOM and CUA modes
 - **`OpenEnvEnv`** — wraps OpenEnv gym and MCP contracts using Prime Sandboxes with prebuilt images referenced from `.build.json`
 
-These require additional dependencies installed via extras (e.g., `uv add 'verifiers[ta]'` for TextArena, `uv add 'verifiers[browser]'` for BrowserEnv, `uv add 'verifiers[openenv]'` for OpenEnvEnv). For OpenEnv environments, build the bundled project image with `prime env build <env-id>` before evaluation or training.
+These require additional dependencies installed via extras (e.g., `uv add 'verifiers[ta]'` for TextArena, `uv add 'verifiers[browser]'` for BrowserEnv). OpenEnvEnv uses the base Verifiers install; the bundled OpenEnv project under `proj/` owns its server dependencies and must be built with `uv run vf-build <env-id>` before evaluation or training.
 
 Newer and more experimental environment classes include:
 
@@ -904,7 +909,7 @@ Newer and more experimental environment classes include:
         timeouts=SandboxTimeouts(read_file=30.0, extract=180.0, poll=120.0),
     )
     ```
-- **V1 `vf.Env` / `vf.Taskset` / `vf.Harness`** — preferred taskset/harness pattern for composing task data and program execution without subclassing. Use this for new environments that need reusable tasksets, reusable harnesses, config-driven metrics, rewards, toolsets, users, endpoint interception, or sandboxed Python/command programs. `vf.Taskset` owns train/eval rows, prompt shaping, setup/update/reward hooks, and toolsets. `vf.Harness` owns the framework program, endpoint proxy, model controls, sandbox options, and runtime hooks. `vf.Env` wires them into the standard evaluation and training surface.
+- **`vf.Env` / `vf.Taskset` / `vf.Harness`** — preferred taskset/harness pattern for composing task data and program execution without subclassing. Use this for environments that need reusable tasksets, reusable harnesses, config-driven metrics, rewards, toolsets, users, endpoint interception, or sandboxed Python/command programs. `vf.Taskset` owns train/eval rows, prompt shaping, setup/update/reward hooks, and toolsets. `vf.Harness` owns the framework program, endpoint proxy, model controls, sandbox options, and runtime hooks. `vf.Env` wires them into the standard evaluation and training surface.
 - **`SWEDebugEnv`** — no-agent debugger for SWE-style `SandboxTaskSet` instances. It creates the task sandbox, optionally runs `taskset.setup(state)`, performs one debug step (`none`, `gold_patch`, `command`, or `script`), and optionally runs the task tests and scorer. It records setup, sandbox creation, gold patch, debug command, and test timings in state for validation and timing investigations.
 - **`HarborEnv`** — loads Harbor-format agent benchmark tasks
 - **`RLMEnv`** — implements [Recursive Language Models](https://alexzhang13.github.io/blog/2025/rlm/) for unbounded context processing via REPL-based decomposition and recursive sub-LLM calls

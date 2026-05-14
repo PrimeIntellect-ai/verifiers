@@ -1,7 +1,5 @@
 """mini-SWE-agent harness configuration."""
 
-from __future__ import annotations
-
 from pathlib import PurePosixPath
 import shlex
 

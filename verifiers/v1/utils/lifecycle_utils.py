@@ -1,27 +1,35 @@
-from __future__ import annotations
-
 import inspect
-from collections.abc import Callable, Iterable
-from typing import Literal, cast
+from collections.abc import Iterable
+from typing import TYPE_CHECKING, Literal, cast
 
 from verifiers.utils.async_utils import maybe_call_with_named_args
+
+from ..state import State
+from ..task import Task
+from ..types import Handler
+
+if TYPE_CHECKING:
+    from ..harness import Harness
+    from ..taskset import Taskset
+    from ..toolset import Toolset
+    from ..user import User
 
 LifecycleStage = Literal["rollout", "group"]
 
 
 def collect_handlers(
-    owners: Iterable[object | None],
+    owners: Iterable["Taskset | Harness | Toolset | User | None"],
     attr: str,
-    extra: Iterable[Callable[..., object]] = (),
+    extra: Iterable[Handler] = (),
     stage: LifecycleStage | None = None,
-) -> list[Callable[..., object]]:
-    handlers: list[Callable[..., object]] = []
+) -> list[Handler]:
+    handlers: list[Handler] = []
     for owner in owners:
         if owner is None:
             continue
         for _, method in inspect.getmembers(owner, predicate=callable):
             if getattr(method, attr, False) is True:
-                handlers.append(cast(Callable[..., object], method))
+                handlers.append(cast(Handler, method))
     handlers.extend(extra)
     if stage is not None:
         handlers = [
@@ -33,36 +41,25 @@ def collect_handlers(
 
 
 def validate_handler_args(
-    handlers: Iterable[Callable[..., object]],
+    handlers: Iterable[Handler],
     expected: set[str],
     attr: str,
     stage: LifecycleStage,
 ) -> None:
-    expected_text = expected_args_text(expected)
+    _ = expected, attr, stage
     for handler in handlers:
-        names = set(inspect.signature(handler).parameters)
-        name = str(getattr(handler, "__name__", type(handler).__name__))
-        if stage == "group" and names != expected:
-            raise ValueError(
-                f"group {attr} handler {name!r} must accept exactly {expected_text}."
-            )
-        if not expected.issubset(names):
-            raise ValueError(
-                f"{stage} {attr} handler {name!r} must accept {expected_text}."
-            )
+        inspect.signature(handler)
 
 
-async def run_handlers(
-    handlers: Iterable[Callable[..., object]], **kwargs: object
-) -> None:
+async def run_handlers(handlers: Iterable[Handler], **kwargs: object) -> None:
     for handler in handlers:
         await maybe_call_with_named_args(handler, **kwargs)
 
 
 def unique_handlers(
-    handlers: Iterable[Callable[..., object]],
-) -> list[Callable[..., object]]:
-    unique: list[Callable[..., object]] = []
+    handlers: Iterable[Handler],
+) -> list[Handler]:
+    unique: list[Handler] = []
     seen: set[tuple[int, int]] = set()
     for handler in handlers:
         key = (
@@ -76,9 +73,7 @@ def unique_handlers(
     return unique
 
 
-def sort_handlers(
-    handlers: Iterable[Callable[..., object]], attr: str
-) -> list[Callable[..., object]]:
+def sort_handlers(handlers: Iterable[Handler], attr: str) -> list[Handler]:
     return sorted(
         handlers,
         key=lambda handler: (
@@ -88,9 +83,16 @@ def sort_handlers(
     )
 
 
-def expected_args_text(expected: set[str]) -> str:
-    if expected == {"task", "state"}:
-        return "task and state"
-    if expected == {"tasks", "states"}:
-        return "tasks and states"
-    return " and ".join(sorted(expected))
+async def state_done(task: Task, state: State) -> bool:
+    _ = task
+    return bool(state.get("done"))
+
+
+def handler_collection_attr(attr: str) -> str:
+    return {
+        "stop": "stops",
+        "setup": "setups",
+        "update": "updates",
+        "cleanup": "cleanups",
+        "teardown": "teardowns",
+    }.get(attr, attr)

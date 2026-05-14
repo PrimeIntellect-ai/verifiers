@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from collections.abc import Mapping
 from typing import Any, cast
 
@@ -99,13 +97,16 @@ def test_signal_name_collisions_hard_fail() -> None:
         collect_signals(taskset_signals, harness_signals)
 
 
-def test_group_signal_requires_plural_args_only() -> None:
+@pytest.mark.asyncio
+async def test_group_signal_reports_unresolved_required_args() -> None:
     @vf.metric(stage="group")
     async def bad_group_metric(task: dict, state: dict) -> float:
         return 0.0
 
-    with pytest.raises(ValueError, match="tasks and states"):
-        build_signals(metrics=[bad_group_metric])
+    signals = build_signals(metrics=[bad_group_metric])
+
+    with pytest.raises(TypeError, match="metric signal 'bad_group_metric'.*task"):
+        await score_group(signals, [{"answer": "a"}], [{"answer": "a"}])
 
 
 @pytest.mark.asyncio

@@ -27,7 +27,7 @@ and scoring logic.
 | research-environments package | v1 reference to copy | pattern |
 | --- | --- | --- |
 | `aime2024`, `aime2025`, `aime2026`, `gpqa`, `math500`, `mmlu_pro`, `simpleqa`, `simpleqa_verified` | `environments/reverse_text/reverse_text_v1.py` | serializable rows, base `Harness`, taskset reward |
-| `clbench`, `color_codeword`, `graphwalks`, `ifbench`, `ifeval`, `if_summarize_judge`, `patterned_needle_in_haystack`, `science_env`, `unscramble`, `verbatim_copy` | `environments/reverse_text/reverse_text_v1.py` | single-turn prompt taskset with parser or judge closed over by reward |
+| `clbench`, `color_codeword`, `graphwalks`, `ifbench`, `ifeval`, `if_summarize_judge`, `patterned_needle_in_haystack`, `science_env`, `unscramble`, `verbatim_copy` | `environments/reverse_text/reverse_text_v1.py` | single-turn prompt taskset with shared extractor or judge dependencies |
 | `math_env` with Python execution | `environments/math_python/math_python_v1.py` | sandbox-backed callable Python tool |
 | `browsecomp`, `ddbc`, `deepdive`, `hle` with tools, `wikispeedia` | `environments/wiki_search/wiki_search_v1.py` | callable `Toolset` with private dependencies and hidden bindings |
 | `bfcl_v3` | `environments/bfcl_v3/bfcl_v3.py` | task-local dynamic tool schemas |
@@ -41,7 +41,7 @@ and scoring logic.
 | Pi Coding Agent task directories | `Sandbox CLI Harnesses` below | `HarborTaskset` or custom taskset plus `Pi` harness |
 | `terminal_bench_2`, `general_agent`, `nl2repobench`, RLM task-directory packages | `Task-Directory Command Harnesses` below | sandbox command program with task-owned uploads and artifacts |
 | `scicode`, `livecodebench`, `code_env` | `Code Verification And Post-Rollout Checks` below | update runs verification, reward reads serializable result |
-| mixed benchmark suites | `Mixed Environment Suites` below | one v1 `Env` per taskset/harness pair, grouped with `EnvGroup` |
+| mixed benchmark suites | `Mixed Environment Suites` below | one v1 `Env` per taskset/harness pair, exposed through explicit loaders |
 | third-party agent libraries such as DSPy | `environments/dspy_flights/dspy_flights.py` | Python program using `state.get_endpoint_config(...)` or `state.get_client(...)` |
 
 ## General Migration Shape
@@ -49,7 +49,7 @@ and scoring logic.
 Every migrated package should expose:
 
 ```python
-import verifiers.v1 as vf
+import verifiers as vf
 
 
 def load_taskset(config: vf.TasksetConfig | None = None) -> vf.Taskset:
@@ -67,8 +67,7 @@ def load_harness(config: vf.HarnessConfig | None = None) -> vf.Harness:
     return vf.Harness(config=config)
 
 
-def load_v1_environment(config: vf.EnvConfig | None = None) -> vf.Env:
-    config = config or vf.EnvConfig()
+def load_environment(config: vf.EnvConfig) -> vf.Env:
     return vf.Env(
         taskset=load_taskset(config=config.taskset),
         harness=load_harness(config=config.harness),
@@ -78,8 +77,7 @@ def load_v1_environment(config: vf.EnvConfig | None = None) -> vf.Env:
 If the base harness is enough, omit `load_harness`:
 
 ```python
-def load_v1_environment(config: vf.EnvConfig | None = None) -> vf.Env:
-    config = config or vf.EnvConfig()
+def load_environment(config: vf.EnvConfig) -> vf.Env:
     return vf.Env(taskset=load_taskset(config=config.taskset))
 ```
 
@@ -142,7 +140,7 @@ Migration:
 Example:
 
 ```python
-import verifiers.v1 as vf
+import verifiers as vf
 
 
 def source():
@@ -157,15 +155,16 @@ def source():
 
 @vf.reward(weight=1.0)
 async def exact(task, state) -> float:
-    return float(str(task["answer"]).strip() in completion_text(state))
+    messages = vf.get_messages(state.get("completion") or [], role="assistant")
+    response = str(messages[-1].content or "") if messages else ""
+    return float(str(task["answer"]).strip() in response)
 
 
 def load_taskset(config: vf.TasksetConfig | None = None):
     return vf.Taskset(source=source, rewards=[exact], config=config)
 
 
-def load_v1_environment(config: vf.EnvConfig | None = None):
-    config = config or vf.EnvConfig()
+def load_environment(config: vf.EnvConfig):
     return vf.Env(taskset=load_taskset(config=config.taskset))
 ```
 
@@ -173,8 +172,28 @@ Gotchas:
 
 - Reference answers stay on `task`; do not expect `state["answer"]` to be the
   gold answer.
-- If a parser is needed, keep it as a normal Python object closed over by the
-  reward function.
+- Shared extraction or judging dependencies belong on `Taskset(objects=...)` and
+  enter reward signatures through `bindings`:
+
+```python
+class AnswerExtractor:
+    def __call__(self, completion: list[dict[str, object]]) -> str:
+        ...
+
+
+@vf.reward
+async def exact(task, state, extract_answer) -> float:
+    return float(extract_answer(state.get("completion") or []) == task["answer"])
+
+
+taskset = vf.Taskset(
+    source=source,
+    rewards=[exact],
+    objects={"extract_answer": AnswerExtractor},
+    bindings={"exact.extract_answer": "objects.extract_answer"},
+)
+```
+
 - Judge metrics are regular reward/metric functions. Instantiate judge clients
   inside a lazy factory or pass a client config through taskset config.
 
@@ -199,7 +218,7 @@ Migration:
 Example:
 
 ```python
-import verifiers.v1 as vf
+import verifiers as vf
 
 
 async def search(query: str, exa) -> str:
@@ -280,7 +299,7 @@ Example:
 ```python
 from verifiers.types import Tool
 
-import verifiers.v1 as vf
+import verifiers as vf
 
 
 class SchemaTool:
@@ -439,7 +458,7 @@ Migration:
 
 1. Wrap each server as `vf.MCPTool(command=..., args=[...])`.
 2. Put MCP tools in a taskset or harness toolset.
-3. Use `program={"command": [...], "sandbox": True, "tools": "mcp"}` for
+3. Use `program={"command": [...], "sandbox": True, "channels": "mcp"}` for
    sandbox command harnesses that should consume resolved toolsets through MCP.
 
 Reference: `environments/mcp_search_env/mcp_search_env.py`.
@@ -465,8 +484,8 @@ Gotchas:
 - Use task fields and bindings when the server needs task-specific arguments.
 - Callable tools and MCP tools can coexist in toolsets. Python programs receive
   callable handles; sandbox command programs can request an MCP server through
-  `program.tools`.
-- `program.tools` names the program-facing interface, not a concrete tool. Use
+  `program.channels`.
+- `program.channels` names the program-facing channel, not a concrete tool. Use
   `"callable"` or `"mcp"`; tools such as `bash` are regular Toolset entries.
 
 ## Nested Harness Calls
@@ -493,7 +512,8 @@ async def ask_child(question: str, harness, state) -> str:
     ).freeze()
     child_state = await harness.run(child_task)
     state.setdefault("child_answers", []).append(child_state["answer"])
-    return completion_text(child_state)
+    messages = vf.get_messages(child_state.get("completion") or [], role="assistant")
+    return str(messages[-1].content or "") if messages else ""
 
 
 def load_child_harness():
@@ -542,15 +562,18 @@ Example:
 
 ```python
 env = vf.Env(
-    taskset=vf.HarborTaskset(tasks="/path/to/harbor/tasks"),
+    taskset=vf.HarborTaskset(),
     harness=vf.OpenCode(),
 )
 ```
 
 Gotchas:
 
-- `HarborTaskset` owns task loading, per-task sandbox overrides, `/task`
-  uploads, and test scoring.
+- `HarborTaskset()` loads Harbor-format task directories from the environment
+  package's reserved `tasks/` directory. `HarborTaskset(dataset="owner/name")`
+  fetches a Harbor Hub dataset.
+- `HarborTaskset` owns task loading, per-task sandbox overrides, `/task` uploads,
+  and test scoring.
 - `OpenCode` owns OpenCode installation, config generation, MCP tool proxy
   wiring, and log artifacts.
 - `Pi` owns Pi installation, intercepted model config generation, optional MCP
@@ -560,7 +583,7 @@ Gotchas:
 - `RLM` owns RLM installation, optional `/task/rlm-skills` upload, endpoint
   wiring, and trajectory filtering.
 - `task.program` is the merge point for task-owned program files/env/setup.
-- Harness-owned CLI tool registration belongs in `program.tools.mcp`; it runs
+- Harness-owned CLI tool registration belongs in `program.channels.mcp`; it runs
   after ordinary setup and before the command.
 - Use group-scoped sandbox lifetime when scoring needs to inspect the sandbox.
 
@@ -604,7 +627,7 @@ harness = vf.Harness(
     program={
         "sandbox": True,
         "command": ["bash", "-lc", "solver run /task/instruction.md"],
-        "tools": "mcp",
+        "channels": "mcp",
         "files": {"/task/instruction.md": instruction},
         "dirs": {"/workspace/task": task_package},
         "setup": ["pip install -e /workspace/task"],
@@ -639,34 +662,30 @@ Use this for:
 Migration:
 
 1. Build one v1 `Env` per independently configurable taskset/harness pair.
-2. Combine those envs with `vf.EnvGroup`.
+2. Expose separate typed loaders for the v1 envs until a v1-native suite wrapper
+   exists.
 3. Keep category-specific rewards, tools, and harness settings inside each
    child env.
 
 Example:
 
 ```python
-class SuiteConfig(vf.Config):
-    math: object | None = None
-    graph: object | None = None
+def load_math_environment(config: vf.EnvConfig) -> vf.Env:
+    return vf.Env(...)
 
 
-def load_environment(config=None):
-    config = SuiteConfig(config)
-    return vf.EnvGroup(
-        [
-            load_math_environment(config.math),
-            load_graph_environment(config.graph),
-        ]
-    )
+def load_graph_environment(config: vf.EnvConfig) -> vf.Env:
+    return vf.Env(...)
 ```
 
 Gotchas:
 
-- Use `EnvGroup` when categories need different harnesses or scoring contracts.
+- Do not wrap v1 `Env` objects in the v0 `EnvGroup`; that creates a mixed
+  contract where rollout execution and scoring live on different stacks.
 - Use one `Taskset` with a `category` task field when categories share the same
   harness and lifecycle.
-- v1 env capability flags still flow through the child `Env` objects.
+- Keep explicit v0 and v1 loaders only when the migration is intentionally dual
+  stack.
 
 ## Code Verification And Post-Rollout Checks
 

@@ -68,7 +68,7 @@ class ErrorRateMetric(MeanMetric):
         return 1.0 if output.get("error") is not None else 0.0
 
 
-class _TokenUsageKeyMetric(MeanMetric):
+class TokenUsageKeyMetric(MeanMetric):
     """Mean of a specific key in token_usage (skips outputs without it)."""
 
     _key: str = ""
@@ -80,25 +80,25 @@ class _TokenUsageKeyMetric(MeanMetric):
         return None
 
 
-class InputTokensMetric(_TokenUsageKeyMetric):
+class InputTokensMetric(TokenUsageKeyMetric):
     """Mean input_tokens per output."""
 
     _key = "input_tokens"
 
 
-class OutputTokensMetric(_TokenUsageKeyMetric):
+class OutputTokensMetric(TokenUsageKeyMetric):
     """Mean output_tokens per output."""
 
     _key = "output_tokens"
 
 
-class FinalInputTokensMetric(_TokenUsageKeyMetric):
+class FinalInputTokensMetric(TokenUsageKeyMetric):
     """Mean final_input_tokens (non-completion context tokens) per output."""
 
     _key = "final_input_tokens"
 
 
-class FinalOutputTokensMetric(_TokenUsageKeyMetric):
+class FinalOutputTokensMetric(TokenUsageKeyMetric):
     """Mean final_output_tokens (completion context tokens) per output."""
 
     _key = "final_output_tokens"

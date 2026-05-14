@@ -1,6 +1,4 @@
-from __future__ import annotations
-
-import verifiers.v1 as vf
+import verifiers as vf
 
 
 class NestedHarnessConfig(vf.HarnessConfig):
@@ -102,8 +100,7 @@ def load_harness(config: NestedHarnessConfig | None = None):
     )
 
 
-def load_environment(config: vf.EnvConfig | None = None):
-    config = config or vf.EnvConfig()
+def load_environment(config: vf.EnvConfig):
     return vf.Env(
         taskset=load_taskset(config=config.taskset),
         harness=load_harness(config=config.harness),

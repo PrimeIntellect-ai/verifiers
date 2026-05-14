@@ -1,9 +1,6 @@
-from __future__ import annotations
-
 import re
-from collections.abc import Mapping
 
-import verifiers.v1 as vf
+import verifiers as vf
 from verifiers.utils.data_utils import load_example_dataset
 
 
@@ -19,8 +16,16 @@ async def run_dspy_rlm_program(task: vf.Task, state: vf.State) -> vf.State:
     )
 
     with dspy.context(lm=lm):
+        question = task.get("question")
+        if question is not None:
+            query = str(question)
+        else:
+            query = ""
+            prompt = task.get("prompt")
+            if isinstance(prompt, list) and prompt:
+                query = str(vf.get_messages(prompt)[-1].content or "")
         rlm = dspy.RLM("query -> answer", max_iterations=10)
-        result = await rlm.aforward(query=task_question(task))
+        result = await rlm.aforward(query=query)
 
     final_output = str(result.answer)
     state["agent_result"] = final_output
@@ -31,31 +36,6 @@ async def run_dspy_rlm_program(task: vf.Task, state: vf.State) -> vf.State:
 def load_rows(split: str, num_examples: int):
     n = num_examples if num_examples > 0 else None
     return load_example_dataset("gsm8k", split=split, n=n)
-
-
-def task_question(task: vf.Task) -> str:
-    question = task.get("question")
-    if question is not None:
-        return str(question)
-    prompt = task.get("prompt")
-    if isinstance(prompt, list) and prompt:
-        last_message = prompt[-1]
-        if isinstance(last_message, Mapping):
-            return str(last_message.get("content") or "")
-    return ""
-
-
-def completion_text(state: vf.State) -> str:
-    agent_result = state.get("agent_result")
-    if agent_result is not None:
-        return str(agent_result)
-    completion = state.get("completion")
-    if isinstance(completion, list) and completion:
-        last_message = completion[-1]
-        if isinstance(last_message, Mapping):
-            return str(last_message.get("content") or "")
-        return str(getattr(last_message, "content", last_message) or "")
-    return ""
 
 
 def extract_dspy_answer(text: str) -> str:
@@ -87,7 +67,18 @@ def answers_match(agent_answer: str, answer: str) -> float:
 
 def answer_reward(task: vf.Task, state: vf.State) -> float:
     """Check if the agent's final output contains the correct answer."""
-    agent_answer = extract_dspy_answer(completion_text(state))
+    result = state.get("agent_result")
+    if result is not None:
+        text = str(result)
+    else:
+        completion = state.get("completion")
+        messages = []
+        if isinstance(completion, list):
+            messages = vf.get_messages(completion, role="assistant") or vf.get_messages(
+                completion
+            )
+        text = str(messages[-1].content or "") if messages else ""
+    agent_answer = extract_dspy_answer(text)
     if not agent_answer:
         return 0.0
     return answers_match(agent_answer, str(task.get("answer", "")))
@@ -112,12 +103,11 @@ def load_harness(config: vf.HarnessConfig | None = None) -> vf.Harness:
 
 
 def load_environment(
+    config: vf.EnvConfig,
     num_train_examples: int = 50,
     num_eval_examples: int = 20,
-    config: vf.EnvConfig | None = None,
 ) -> vf.Env:
     """Load the DSPy RLM V1 taskset/harness example environment."""
-    config = config or vf.EnvConfig()
     return vf.Env(
         taskset=load_taskset(
             num_train_examples=num_train_examples,

@@ -44,7 +44,7 @@ This folder contains installable example environments that showcase common usage
 
 - **RLMEnv (Recursive Language Model)**
   - **rlm_secrets**: Puzzle environment testing RLM functionality including root-level tools, sub-LLM tool use, and file operations.
-  - **hello_rlm_v1**: v1 sandboxed RLM-style CLI program with endpoint interception and metrics collection.
+  - **hello_rlm_v1**: v1 `vf.RLM` harness example with endpoint interception and metrics collection.
 
 - **V1 Taskset/Harness**
   - **dspy_rlm**: DSPy RLM harness on GSM8K through `vf.Env`; DSPy uses the V1 interception endpoint from rollout state.

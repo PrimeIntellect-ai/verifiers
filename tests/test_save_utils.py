@@ -15,7 +15,7 @@ import pytest
 from openai import OpenAI
 from pydantic import BaseModel
 
-from verifiers.types import ClientConfig
+from verifiers.types import ClientConfig, Response, ResponseMessage, Usage
 from verifiers.utils.metric_utils import (
     EnvMetrics,
     ErrorRateMetric,
@@ -28,14 +28,13 @@ from verifiers.utils.metric_utils import (
 from verifiers.utils.save_utils import (
     GenerateOutputsBuilder,
     _delta_intermediate_mm_data,
-    extract_usage_tokens,
     load_outputs,
     make_serializable,
     save_new_outputs,
     states_to_outputs,
     validate_resume_metadata,
 )
-from verifiers.utils.usage_utils import StateUsageTracker
+from verifiers.utils.usage_utils import StateUsageTracker, response_usage_tokens
 
 
 # Test models for make_serializable tests
@@ -47,6 +46,26 @@ class SimpleModel(BaseModel):
 class NestedModel(BaseModel):
     inner: SimpleModel
     tags: list[str]
+
+
+def make_response(prompt_tokens: int, completion_tokens: int) -> Response:
+    return Response(
+        id="test",
+        created=0,
+        model="test",
+        usage=Usage(
+            prompt_tokens=prompt_tokens,
+            reasoning_tokens=0,
+            completion_tokens=completion_tokens,
+            total_tokens=prompt_tokens + completion_tokens,
+        ),
+        message=ResponseMessage(
+            role="assistant",
+            content="",
+            finish_reason="stop",
+            is_truncated=False,
+        ),
+    )
 
 
 class TestSerialization:
@@ -181,42 +200,11 @@ class TestSavingMetadata:
 
 
 class TestSavingResults:
-    def test_extract_usage_tokens_prompt_completion(self):
-        response = type(
-            "Response",
-            (),
-            {
-                "usage": {
-                    "prompt_tokens": 10,
-                    "completion_tokens": 5,
-                    "input_tokens": 999,
-                    "output_tokens": 999,
-                }
-            },
-        )()
-        input_tokens, output_tokens = extract_usage_tokens(response)
+    def test_response_usage_tokens_prompt_completion(self):
+        response = make_response(prompt_tokens=10, completion_tokens=5)
+        input_tokens, output_tokens = response_usage_tokens(response)
         assert input_tokens == 10
         assert output_tokens == 5
-
-    def test_extract_usage_tokens_input_output(self):
-        response = type(
-            "Response",
-            (),
-            {"usage": {"input_tokens": 8, "output_tokens": 3}},
-        )()
-        input_tokens, output_tokens = extract_usage_tokens(response)
-        assert input_tokens == 8
-        assert output_tokens == 3
-
-    def test_extract_usage_tokens_invalid_values(self):
-        response = type(
-            "Response",
-            (),
-            {"usage": {"prompt_tokens": "bad", "completion_tokens": object()}},
-        )()
-        input_tokens, output_tokens = extract_usage_tokens(response)
-        assert input_tokens == 0
-        assert output_tokens == 0
 
     def test_state_with_tracker_and_no_usage_does_not_emit_token_usage(
         self, make_state
@@ -228,6 +216,22 @@ class TestSavingResults:
         state["trajectory"] = []
         output = states_to_outputs([state], state_columns=[])[0]
         assert "token_usage" not in output
+
+    def test_state_with_empty_tracker_falls_back_to_trajectory_usage(self, make_state):
+        state = make_state()
+        tracker = StateUsageTracker()
+        state["usage_tracker"] = tracker
+        state["usage"] = tracker.usage
+        state["trajectory"] = [{"response": make_response(10, 5)}]
+
+        output = states_to_outputs([state], state_columns=[])[0]
+
+        assert output["token_usage"] == {
+            "input_tokens": 10.0,
+            "output_tokens": 5.0,
+            "final_input_tokens": 10,
+            "final_output_tokens": 5,
+        }
 
     def test_states_to_outputs(self, make_state):
         states = [

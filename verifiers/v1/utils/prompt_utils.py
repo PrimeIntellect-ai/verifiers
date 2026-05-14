@@ -1,18 +1,17 @@
-from __future__ import annotations
-
 from collections.abc import Mapping
 from typing import Literal, cast
 
 from verifiers.types import MessageContent, Messages, SystemMessage
 from verifiers.utils.message_utils import normalize_messages
+from ..types import ConfigData, ConfigMap, PromptInput
 
 
 SystemPromptMerge = Literal["reject", "concat", "task", "taskset", "harness"]
 
 
 def normalize_prompt(
-    value: object, field_name: str = "prompt"
-) -> list[dict[str, object]]:
+    value: PromptInput | None, field_name: str = "prompt"
+) -> list[ConfigData]:
     messages = normalize_messages(cast(Messages, value or []), field_name=field_name)
     for message in messages:
         if getattr(message, "role", None) == "system":
@@ -24,8 +23,8 @@ def normalize_prompt(
 
 
 def normalize_system_prompt(
-    value: object, field_name: str = "system_prompt"
-) -> list[dict[str, object]]:
+    value: PromptInput | None, field_name: str = "system_prompt"
+) -> list[ConfigData]:
     if value is None:
         return []
     if isinstance(value, str):
@@ -39,13 +38,14 @@ def normalize_system_prompt(
 
 def resolve_system_prompt(
     *,
-    task: Mapping[str, object],
-    taskset_system_prompt: list[dict[str, object]],
-    harness_system_prompt: list[dict[str, object]],
+    task: ConfigMap,
+    taskset_system_prompt: list[ConfigData],
+    harness_system_prompt: list[ConfigData],
     merge: str,
-) -> list[dict[str, object]]:
+) -> list[ConfigData]:
     task_system_prompt = normalize_system_prompt(
-        task.get("system_prompt"), field_name="task.system_prompt"
+        cast(PromptInput | None, task.get("system_prompt")),
+        field_name="task.system_prompt",
     )
     sources = [
         ("harness", harness_system_prompt),
@@ -74,13 +74,13 @@ def resolve_system_prompt(
     )
 
 
-def dump_messages(messages: Messages) -> list[dict[str, object]]:
+def dump_messages(messages: Messages) -> list[ConfigData]:
     return [message.model_dump(exclude_none=True) for message in messages]
 
 
 def task_text(
-    task: Mapping[str, object],
-    state: Mapping[str, object],
+    task: ConfigMap,
+    state: ConfigMap,
     *,
     keys: tuple[str, ...] = ("instruction",),
 ) -> str:
@@ -92,9 +92,7 @@ def task_text(
     return messages_text(task.get("prompt", []))
 
 
-def state_system_prompt_text(
-    task: Mapping[str, object], state: Mapping[str, object]
-) -> str:
+def state_system_prompt_text(task: ConfigMap, state: ConfigMap) -> str:
     _ = task
     return messages_text(state.get("system_prompt", []))
 
@@ -110,7 +108,7 @@ def messages_text(messages: object) -> str:
         if content is not None:
             parts.append(content_text(content))
         elif isinstance(message, Mapping):
-            item = cast(Mapping[str, object], message)
+            item = cast(ConfigMap, message)
             parts.append(content_text(item.get("content")))
         else:
             parts.append(str(message))
@@ -126,7 +124,7 @@ def content_text(content: MessageContent | object) -> str:
         text_parts: list[str] = []
         for part in content:
             if isinstance(part, Mapping):
-                item = cast(Mapping[str, object], part)
+                item = cast(ConfigMap, part)
                 text = item.get("text")
                 if isinstance(text, str):
                     text_parts.append(text)

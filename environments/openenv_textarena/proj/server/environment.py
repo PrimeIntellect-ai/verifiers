@@ -6,8 +6,6 @@
 
 """Server implementation for the generic TextArena environment."""
 
-from __future__ import annotations
-
 import sys
 from typing import Any, Dict, Iterable, List, Optional
 from uuid import uuid4

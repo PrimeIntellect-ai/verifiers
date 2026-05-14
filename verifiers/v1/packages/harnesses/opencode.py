@@ -1,12 +1,11 @@
-from __future__ import annotations
-
 import json
 import shlex
-from collections.abc import Mapping
 from pathlib import PurePosixPath
-from typing import Any
+from typing import cast
 
-from .cli import CLIHarness
+from typing_extensions import Unpack
+
+from .command import HarnessKwargs, command_program, command_sandbox
 from .configs import (
     OPENCODE_DEFAULT_AGENT_WORKDIR,
     OPENCODE_DEFAULT_DISABLED_TOOLS,
@@ -20,10 +19,19 @@ from .configs import (
     OpenCodeConfig,
 )
 from ...config import SandboxConfig
+from ...harness import Harness
 from ...utils.mcp_proxy_utils import proxy_command
 from ...utils.prompt_utils import (
     state_system_prompt_text,
     task_text as task_instruction_text,
+)
+from ...types import (
+    ConfigData,
+    ConfigMap,
+    ProgramCommand,
+    ProgramMap,
+    ProgramValue,
+    PromptInput,
 )
 
 DEFAULT_RELEASE_REPO = OPENCODE_DEFAULT_RELEASE_REPO
@@ -36,10 +44,15 @@ DEFAULT_LOG_PATH = OPENCODE_DEFAULT_LOG_PATH
 DEFAULT_SYSTEM_PROMPT = OPENCODE_DEFAULT_SYSTEM_PROMPT
 DEFAULT_DISABLED_TOOLS = list(OPENCODE_DEFAULT_DISABLED_TOOLS)
 
-_UNSET: object = object()
+
+class Unset:
+    pass
 
 
-class OpenCode(CLIHarness):
+UNSET = Unset()
+
+
+class OpenCode(Harness):
     config_type = OpenCodeConfig
 
     def __init__(
@@ -49,7 +62,7 @@ class OpenCode(CLIHarness):
         instruction_path: str | None = None,
         system_prompt_path: str | None = None,
         log_path: str | None = None,
-        system_prompt: object | None = _UNSET,
+        system_prompt: PromptInput | None | Unset = UNSET,
         disabled_tools: list[str] | None = None,
         allow_git: bool | None = None,
         disable_compaction: bool | None = None,
@@ -58,13 +71,13 @@ class OpenCode(CLIHarness):
         release_sha256: str | None = None,
         install_ripgrep: bool | None = None,
         provider_timeout_ms: int | None = None,
-        sandbox: bool | Mapping[str, object] | SandboxConfig | None = None,
-        program: Mapping[str, object] | None = None,
+        sandbox: bool | ConfigMap | SandboxConfig | None = None,
+        program: ProgramMap | None = None,
         max_turns: int | None = None,
-        config: OpenCodeConfig | Mapping[str, object] | None = None,
-        **kwargs: Any,
+        config: OpenCodeConfig | None = None,
+        **kwargs: Unpack[HarnessKwargs],
     ):
-        config_data: dict[str, object] = {
+        config_data: ConfigData = {
             "agent_workdir": agent_workdir,
             "instruction_path": instruction_path,
             "system_prompt_path": system_prompt_path,
@@ -79,22 +92,24 @@ class OpenCode(CLIHarness):
             "provider_timeout_ms": provider_timeout_ms,
             "max_turns": max_turns,
         }
-        if system_prompt is not _UNSET:
+        if system_prompt is not UNSET:
             config_data["system_prompt"] = system_prompt
         config = OpenCodeConfig.from_config(config, **config_data)
         if system_prompt is None:
             config.system_prompt = None
-        sandbox_config: bool | Mapping[str, object] | SandboxConfig
+        sandbox_config: bool | ConfigMap | SandboxConfig
         sandbox_config = (
             config.sandbox if sandbox is None and config.sandbox is not None else True
         )
         if sandbox is not None:
             sandbox_config = sandbox
-        files: dict[str, object] = {
-            config.instruction_path: task_instruction_text,
+        files: dict[str, ProgramValue] = {
+            config.instruction_path: cast(ProgramValue, task_instruction_text),
         }
         if config.system_prompt is not None:
-            files[config.system_prompt_path] = state_system_prompt_text
+            files[config.system_prompt_path] = cast(
+                ProgramValue, state_system_prompt_text
+            )
         artifacts = {
             "opencode_log": {
                 "path": config.log_path,
@@ -103,42 +118,46 @@ class OpenCode(CLIHarness):
             }
         }
         system_prompt_disabled = config.system_prompt is None
-        super().__init__(
-            command=[
-                "bash",
-                "-lc",
-                build_opencode_run_script(
-                    agent_workdir=config.agent_workdir,
-                    instruction_path=config.instruction_path,
-                    log_path=config.log_path,
-                    allow_git=config.allow_git,
-                ),
-            ],
-            sandbox=sandbox_config,
-            files=files,
-            setup=build_install_script(
-                release_repo=config.release_repo,
-                release_version=config.release_version,
-                release_sha256=config.release_sha256,
-                install_ripgrep=config.install_ripgrep,
+        command: ProgramCommand = [
+            "bash",
+            "-lc",
+            build_opencode_run_script(
+                agent_workdir=config.agent_workdir,
+                instruction_path=config.instruction_path,
+                log_path=config.log_path,
+                allow_git=config.allow_git,
             ),
-            tools={
-                "mcp": build_opencode_mcp_setup_script(
-                    agent_workdir=config.agent_workdir,
-                    system_prompt_path=config.system_prompt_path
-                    if config.system_prompt is not None
-                    else None,
-                    log_path=config.log_path,
-                    disabled_tools=config.disabled_tools,
-                    disable_compaction=config.disable_compaction,
-                    provider_timeout_ms=config.provider_timeout_ms,
-                )
-            },
-            artifacts=artifacts,
-            program=program,
+        ]
+        super().__init__(
+            program=command_program(
+                command=command,
+                sandbox=sandbox_config,
+                files=files,
+                setup=build_install_script(
+                    release_repo=config.release_repo,
+                    release_version=config.release_version,
+                    release_sha256=config.release_sha256,
+                    install_ripgrep=config.install_ripgrep,
+                ),
+                channels={
+                    "mcp": build_opencode_mcp_setup_script(
+                        agent_workdir=config.agent_workdir,
+                        system_prompt_path=config.system_prompt_path
+                        if config.system_prompt is not None
+                        else None,
+                        log_path=config.log_path,
+                        disabled_tools=config.disabled_tools,
+                        disable_compaction=config.disable_compaction,
+                        provider_timeout_ms=config.provider_timeout_ms,
+                    )
+                },
+                artifacts=artifacts,
+                program=program,
+            ),
+            sandbox=command_sandbox(sandbox_config),
             system_prompt=config.system_prompt,
             max_turns=config.max_turns,
-            config=config.model_dump(exclude_none=False),
+            config=config,
             **kwargs,
         )
         if system_prompt_disabled:
@@ -198,10 +217,10 @@ def build_opencode_config(
     disable_compaction: bool,
     provider_timeout_ms: int,
 ) -> str:
-    agent_config: dict[str, object] = {
+    agent_config: ConfigData = {
         "title": {"disable": True},
     }
-    config: dict[str, object] = {
+    config: ConfigData = {
         "${SCHEMA_DOLLAR}schema": "https://opencode.ai/config.json",
         "provider": {
             "intercepted": {
@@ -235,7 +254,7 @@ def build_opencode_config(
     }
     if disable_compaction:
         config["compaction"] = {"auto": False, "prune": False}
-    build_config: dict[str, object] = {}
+    build_config: ConfigData = {}
     if system_prompt_path is not None:
         build_config["prompt"] = "{file:" + system_prompt_path + "}"
     if disabled_tools:

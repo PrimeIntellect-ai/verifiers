@@ -68,12 +68,14 @@ dev = [
     "ipywidgets",
     "reasoning-gym",
     "textarena",
-    "openenv-core[core]==0.2.1",
     "stagehand>=3.0.0",
     "aiohttp>=3.9.0",
     "python-dotenv>=1.0.0",
     "nltk",
     "renderers>=0.1.8.dev0",
+]
+policy = [
+    "semgrep>=1.150.0",
 ]
 
 [project.optional-dependencies]
@@ -84,13 +86,13 @@ ta = [
     "textarena",
     "nltk",
 ]
-openenv = [
-    "openenv-core[core]==0.2.1",
-]
 browser = [
     "stagehand>=3.0.0",
     "aiohttp>=3.9.0",
     "python-dotenv>=1.0.0",
+]
+openenv = [
+    "openenv-core>=0.3.0",
 ]
 renderers = [
     "renderers>=0.1.8.dev0",
@@ -111,7 +113,12 @@ rl = [
 [tool.uv]
 preview = true
 required-version = ">=0.11.1"
-
+conflicts = [
+    [
+        { extra = "openenv" },
+        { group = "policy" },
+    ],
+]
 [[tool.uv.index]]
 name = "pypi"
 url = "https://pypi.org/simple"
@@ -123,12 +130,18 @@ exclude-newer = "7 days"
 prime-tunnel = false
 prime-sandboxes = false
 renderers = false
+openenv-core = false
 
 [tool.uv.extra-build-dependencies]
 flash-attn = [{ requirement = "torch", match-runtime = true }]
 
 [tool.uv.extra-build-variables]
 flash-attn = { FLASH_ATTENTION_SKIP_CUDA_BUILD = "TRUE" }
+
+[tool.ruff]
+exclude = [
+    ".semgrep",
+]
 
 [project.scripts]
 vf-eval = "verifiers.scripts.eval:main"

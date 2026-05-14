@@ -1,13 +1,11 @@
-from __future__ import annotations
-
 import json
 from collections.abc import Mapping
 from typing import cast
 
-import verifiers.v1 as vf
+import verifiers as vf
+from verifiers.v1.types import ConfigMap
 from verifiers.v1.utils.judge_utils import (
     clamp_float,
-    completion_text,
     parse_judge_json,
     truncate_command_record,
     truncate_text,
@@ -51,7 +49,7 @@ Use these criteria:
 """
 
 
-TASKS: list[dict[str, object]] = [
+TASKS: list[vf.ConfigData] = [
     {
         "task_id": "example-domains",
         "question": (
@@ -194,7 +192,7 @@ async def self_consistency_score(task, state) -> float:
     updated = state.get("update_judge")
     if not isinstance(updated, Mapping):
         return 0.0
-    updated = cast(Mapping[str, object], updated)
+    updated = cast(ConfigMap, updated)
     findings = str(updated.get("findings") or "")
     if not findings:
         return 0.0
@@ -216,7 +214,8 @@ async def self_consistency_score(task, state) -> float:
         max_turns=1,
     ).run(judge_task, judge_state)
 
-    judge_text = completion_text(judge_state.get("completion"))
+    messages = vf.get_messages(judge_state.get("completion") or [], role="assistant")
+    judge_text = str(messages[-1].content or "") if messages else ""
     parsed = parse_judge_json(judge_text)
     score = clamp_float(parsed.get("score", 0.0))
     state["judge"] = {
@@ -229,7 +228,8 @@ async def self_consistency_score(task, state) -> float:
 
 @vf.update(priority=10)
 async def sandbox_judge(task, state) -> None:
-    response = completion_text(state.get("completion"))
+    messages = vf.get_messages(state.get("completion") or [], role="assistant")
+    response = str(messages[-1].content or "") if messages else ""
     judge_task = vf.Task(
         {
             "prompt": [
@@ -254,15 +254,17 @@ async def sandbox_judge(task, state) -> None:
     ).run(judge_task, judge_state)
     judge_bash_outputs = state.get("bash_tool_outputs", [])[bash_output_start:]
 
+    messages = vf.get_messages(judge_state.get("completion") or [], role="assistant")
+    findings = str(messages[-1].content or "") if messages else ""
     state["update_judge"] = {
-        "findings": completion_text(judge_state.get("completion")),
+        "findings": findings,
         "trajectory_id": judge_state["trajectory_id"],
         "bash_calls": len(judge_bash_outputs),
     }
     state["sandbox_report"] = judge_bash_outputs
 
 
-def update_prompt(task: Mapping[str, object], response: str) -> str:
+def update_prompt(task: ConfigMap, response: str) -> str:
     return (
         "Task:\n"
         f"{task['question']}\n\n"
@@ -288,7 +290,7 @@ def update_prompt(task: Mapping[str, object], response: str) -> str:
     )
 
 
-def score_prompt(task: Mapping[str, object], findings: str) -> str:
+def score_prompt(task: ConfigMap, findings: str) -> str:
     return (
         "Task:\n"
         f"{task['question']}\n\n"
@@ -369,7 +371,8 @@ def load_harness(
 def load_environment(
     num_examples: int = -1,
     max_turns: int = 8,
-    config: vf.EnvConfig | None = None,
+    *,
+    config: vf.EnvConfig,
 ) -> vf.Env:
     config = vf.EnvConfig(
         config,
@@ -385,7 +388,8 @@ def load_environment(
 def load_v1_environment(
     num_examples: int = -1,
     max_turns: int = 8,
-    config: vf.EnvConfig | None = None,
+    *,
+    config: vf.EnvConfig,
 ) -> vf.Env:
     return load_environment(
         num_examples=num_examples,

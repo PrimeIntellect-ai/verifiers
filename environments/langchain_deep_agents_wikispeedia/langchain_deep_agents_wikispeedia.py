@@ -1,14 +1,17 @@
-from __future__ import annotations
-
 import asyncio
+import json
 from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
-from typing import cast
+from typing import Protocol, cast
 
 from datasets import Dataset
 
-import verifiers.v1 as vf
-from verifiers.v1.utils.prompt_utils import state_system_prompt_text
+import verifiers as vf
 from wiki_graph import WikiGraph, WikiPair, load_wiki_graph
+
+
+class AgentMessage(Protocol):
+    role: str
+    content: object
 
 
 def system_prompt(allow_go_back: bool = True) -> str:
@@ -129,18 +132,17 @@ async def agent_timeout(task: vf.Task, state: vf.State) -> float:
 
 def iter_tool_calls(state: vf.State) -> Iterator[str]:
     completion = state.get("completion") or []
-    for msg in completion:
-        if not isinstance(msg, Mapping):
-            continue
-        tool_calls = msg.get("tool_calls")
+    messages = (
+        vf.get_messages(completion, role="assistant")
+        if isinstance(completion, list)
+        else []
+    )
+    for msg in messages:
+        tool_calls = msg.tool_calls
         if not isinstance(tool_calls, list):
             continue
         for tool_call in tool_calls:
-            if not isinstance(tool_call, Mapping):
-                continue
-            name = tool_call.get("name")
-            if isinstance(name, str):
-                yield name
+            yield tool_call.name
 
 
 def count_tool_calls(state: vf.State, name: str | None = None) -> int:
@@ -189,25 +191,25 @@ async def total_tool_calls(task: vf.Task, state: vf.State) -> float:
 
 async def assistant_turns(task: vf.Task, state: vf.State) -> float:
     completion = state.get("completion") or []
-    count = sum(
-        1
-        for msg in completion
-        if isinstance(msg, Mapping) and msg.get("role") == "assistant"
+    return float(
+        len(vf.get_messages(completion, role="assistant"))
+        if isinstance(completion, list)
+        else 0
     )
-    return float(count)
 
 
 async def invalid_link_rate(task: vf.Task, state: vf.State) -> float:
     clicks = 0
     invalid = 0
     completion = state.get("completion") or []
-    for msg in completion:
-        if not isinstance(msg, Mapping):
-            continue
-        if msg.get("role") != "tool" or msg.get("name") != "click_link":
+    messages = (
+        vf.get_messages(completion, role="tool") if isinstance(completion, list) else []
+    )
+    for msg in messages:
+        if getattr(msg, "name", None) != "click_link":
             continue
         clicks += 1
-        content = msg.get("content", "")
+        content = msg.content
         if isinstance(content, str) and "is not a valid link" in content:
             invalid += 1
     return float(invalid / clicks) if clicks else 0.0
@@ -233,7 +235,7 @@ def build_dataset(
             f"Your mission: {source} >> {target}\n\n"
             f"Here is the starting article:\n\n{starting}"
         )
-        info: dict[str, object] = {
+        info: vf.ConfigData = {
             "source": source,
             "target": target,
             "shortest_path": dist,
@@ -254,7 +256,9 @@ def build_dataset(
     return Dataset.from_list(records)
 
 
-def serialize_agent_completion(messages: Sequence[object]) -> list[dict[str, object]]:
+def serialize_agent_completion(
+    messages: Sequence[AgentMessage | vf.ConfigMap],
+) -> list[vf.ConfigData]:
     role_aliases = {
         "human": "user",
         "ai": "assistant",
@@ -262,7 +266,7 @@ def serialize_agent_completion(messages: Sequence[object]) -> list[dict[str, obj
         "system": "system",
     }
     call_names: dict[str, str] = {}
-    serialized: list[dict[str, object]] = []
+    serialized: list[vf.ConfigData] = []
     for message in messages:
         if isinstance(message, Mapping):
             payload = dict(message)
@@ -282,7 +286,7 @@ def serialize_agent_completion(messages: Sequence[object]) -> list[dict[str, obj
             )
         raw_role = payload.get("role") or payload.get("type") or "assistant"
         role = role_aliases.get(str(raw_role), str(raw_role))
-        item: dict[str, object] = {
+        item: vf.ConfigData = {
             "role": role,
             "content": payload.get("content", ""),
         }
@@ -299,6 +303,14 @@ def serialize_agent_completion(messages: Sequence[object]) -> list[dict[str, obj
                 )
                 if isinstance(tool_id, str) and isinstance(name, str):
                     call_names[tool_id] = name
+                arguments = tool_call_payload.get("arguments")
+                if not isinstance(arguments, str):
+                    args = tool_call_payload.get("args", {})
+                    try:
+                        arguments = json.dumps(args if args is not None else {})
+                    except (TypeError, ValueError):
+                        arguments = str(args)
+                    tool_call_payload["arguments"] = arguments
                 normalized_tool_calls.append(tool_call_payload)
             item["tool_calls"] = normalized_tool_calls
         name = payload.get("name")
@@ -367,12 +379,19 @@ def make_langchain_deep_agents_program(
         )
         runtime_tools = state.get_tools()
         nav_tools = langchain_navigation_tools(runtime_tools)
+        state_system_prompt = ""
+        system_prompt_messages = state.get("system_prompt")
+        if isinstance(system_prompt_messages, list):
+            state_system_prompt = "\n\n".join(
+                str(message.content or "")
+                for message in vf.get_messages(system_prompt_messages)
+            )
         agent = create_deep_agent(
             model=model,
             tools=nav_tools,
-            system_prompt=state_system_prompt_text(task, state) or SYSTEM_PROMPT,
+            system_prompt=state_system_prompt or SYSTEM_PROMPT,
         )
-        prompt = str(cast(list[dict[str, object]], state["prompt"])[-1]["content"])
+        prompt = str(cast(list[vf.ConfigData], state["prompt"])[-1]["content"])
         recursion_limit = state.get_max_turns(max_turns)
         invoke_config = (
             {"recursion_limit": recursion_limit} if recursion_limit > 0 else None
@@ -504,6 +523,7 @@ def load_harness(
 
 
 def load_environment(
+    config: vf.EnvConfig,
     cache_dir: str | None = None,
     min_path_length: int = 3,
     max_path_length: int = 6,
@@ -517,10 +537,8 @@ def load_environment(
     timeout_seconds: float = 1200.0,
     efficiency_weight: float = 0.0,
     stratify_path_length: bool = True,
-    config: vf.EnvConfig | None = None,
 ) -> vf.Env:
     """Load the v1 Wikispeedia taskset with a LangChain Deep Agents harness."""
-    config = config or vf.EnvConfig()
 
     return vf.Env(
         taskset=load_taskset(

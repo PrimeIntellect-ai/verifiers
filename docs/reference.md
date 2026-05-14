@@ -504,11 +504,11 @@ Persistent Python REPL in sandbox. Extends `SandboxEnv`.
 class OpenEnvEnv(MultiTurnEnv):
     def __init__(
         self,
-        openenv_project: str | Path,
+        openenv_project: str | Path | None = None,
         num_train_examples: int = 100,
         num_eval_examples: int = 50,
         seed: int = 0,
-        prompt_renderer: Callable[..., ChatMessages] | None = None,
+        prompt_renderer: Callable[..., Messages] | None = None,
         max_turns: int = -1,
         rubric: Rubric | None = None,
         **kwargs,
@@ -738,15 +738,13 @@ class Toolset:
         bindings=None,
         objects=None,
         write: bool = False,
-        scope: Literal["rollout", "group", "global"] = "rollout",
+        scope: Literal["rollout", "group", "global"] | None = None,
         sandbox=None,
         stops=(),
         setups=(),
         updates=(),
-        metrics=(),
-        rewards=(),
-        advantages=(),
         cleanups=(),
+        teardowns=(),
         config: ToolsetConfig | Mapping[str, object] | None = None,
     ): ...
 
@@ -754,9 +752,11 @@ class MCPTool:
     def __init__(command: str, args=None, env=None, cwd: str | None = None): ...
 ```
 
-Toolsets package callable tools, MCP servers, private dependency factories, and
-hidden bindings. `objects.*` bindings are private to the owning toolset/user and
-are not directly accessible from state.
+Toolsets package callable tools, MCP servers, private dependency factories,
+hidden bindings, and tool-owned lifecycle handlers. `objects.*` bindings are
+private to the owning toolset/user and are not directly accessible from state.
+String binding sources are framework paths; literal strings should be bound via
+callable sources.
 
 #### v1 Config Models
 
@@ -1009,6 +1009,7 @@ class Config(BaseModel):
     ) -> Self: ...
 
 class EnvConfig(Config):
+    args: object | None = None
     taskset: object | None = None
     harness: object | None = None
 

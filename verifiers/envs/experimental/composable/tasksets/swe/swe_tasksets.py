@@ -6,8 +6,6 @@ r2e = make_r2e_taskset()
 bench = make_swebench_taskset()
 """
 
-from __future__ import annotations
-
 from typing import Any
 
 from verifiers.envs.experimental.composable import TaskSet

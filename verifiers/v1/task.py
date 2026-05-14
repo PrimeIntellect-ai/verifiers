@@ -1,21 +1,20 @@
-from __future__ import annotations
-
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from copy import deepcopy
-from typing import Any, SupportsIndex, cast
-
-from verifiers.types import assert_json_serializable
 
 from .config import sandbox_config_mapping
+from .utils.task_freeze_utils import assert_serializable, freeze_value
 from .utils.prompt_utils import normalize_prompt, normalize_system_prompt
+from .types import ConfigMap, JsonValue
 
 
 class Task(dict):
-    def __init__(self, row: Mapping[str, Any] | None = None):
+    _vf_state_contract = "v1"
+
+    def __init__(self, row: ConfigMap | None = None):
         super().__init__(deepcopy(dict(row or {})))
         self._frozen = False
 
-    def freeze(self) -> Task:
+    def freeze(self) -> "Task":
         if "runtime" in self:
             raise TypeError(
                 "task.runtime is not supported; use top-level task fields or state.runtime."
@@ -56,7 +55,7 @@ class Task(dict):
     def frozen(self) -> bool:
         return self._frozen
 
-    def __setitem__(self, key: str, value: Any) -> None:
+    def __setitem__(self, key: str, value: object) -> None:
         self._raise_if_frozen()
         super().__setitem__(key, value)
 
@@ -76,102 +75,18 @@ class Task(dict):
         self._raise_if_frozen()
         return super().pop(key, default)
 
-    def popitem(self) -> tuple[str, Any]:
-        self._raise_if_frozen()
-        return super().popitem()
+    def popitem(self) -> tuple[str, JsonValue]:
+        raise TypeError("Task.popitem() is not supported.")
 
     def clear(self) -> None:
         self._raise_if_frozen()
         super().clear()
 
-    def __ior__(self, value: Any, /) -> Task:
+    def __ior__(self, value: object, /) -> "Task":
         self._raise_if_frozen()
-        return cast(Task, dict.__ior__(self, value))
+        self.update(value)
+        return self
 
     def _raise_if_frozen(self) -> None:
         if self._frozen:
             raise TypeError("Task is immutable after freeze.")
-
-
-def assert_serializable(value: object) -> None:
-    assert_json_serializable(value)
-
-
-class FrozenDict(dict):
-    def __deepcopy__(self, memo: dict[int, object]) -> dict[object, object]:
-        return {
-            deepcopy(key, memo): deepcopy(value, memo) for key, value in self.items()
-        }
-
-    def __setitem__(self, key: str, value: Any) -> None:
-        raise TypeError("Frozen task mappings are immutable.")
-
-    def __delitem__(self, key: str) -> None:
-        raise TypeError("Frozen task mappings are immutable.")
-
-    def update(self, *args: object, **kwargs: object) -> None:
-        raise TypeError("Frozen task mappings are immutable.")
-
-    def setdefault(self, key: str, default: object = None) -> object:
-        raise TypeError("Frozen task mappings are immutable.")
-
-    def pop(self, key: str, default: object = None) -> object:
-        raise TypeError("Frozen task mappings are immutable.")
-
-    def popitem(self) -> tuple[object, object]:
-        raise TypeError("Frozen task mappings are immutable.")
-
-    def clear(self) -> None:
-        raise TypeError("Frozen task mappings are immutable.")
-
-    def __ior__(self, value: object) -> FrozenDict:
-        raise TypeError("Frozen task mappings are immutable.")
-
-
-class FrozenList(list):
-    def __deepcopy__(self, memo: dict[int, object]) -> list[object]:
-        return [deepcopy(value, memo) for value in self]
-
-    def __setitem__(self, key: object, value: Any) -> None:
-        raise TypeError("Frozen task lists are immutable.")
-
-    def __delitem__(self, key: object) -> None:
-        raise TypeError("Frozen task lists are immutable.")
-
-    def append(self, value: Any) -> None:
-        raise TypeError("Frozen task lists are immutable.")
-
-    def extend(self, values: object) -> None:
-        raise TypeError("Frozen task lists are immutable.")
-
-    def insert(self, index: SupportsIndex, object: Any, /) -> None:
-        raise TypeError("Frozen task lists are immutable.")
-
-    def pop(self, index: SupportsIndex = -1, /) -> object:
-        raise TypeError("Frozen task lists are immutable.")
-
-    def remove(self, value: Any) -> None:
-        raise TypeError("Frozen task lists are immutable.")
-
-    def clear(self) -> None:
-        raise TypeError("Frozen task lists are immutable.")
-
-    def __iadd__(self, values: Iterable[Any]) -> FrozenList:
-        raise TypeError("Frozen task lists are immutable.")
-
-    def __imul__(self, value: SupportsIndex) -> FrozenList:
-        raise TypeError("Frozen task lists are immutable.")
-
-    def sort(self, *args: object, **kwargs: object) -> None:
-        raise TypeError("Frozen task lists are immutable.")
-
-    def reverse(self) -> None:
-        raise TypeError("Frozen task lists are immutable.")
-
-
-def freeze_value(value: Any) -> Any:
-    if isinstance(value, Mapping):
-        return FrozenDict({key: freeze_value(item) for key, item in value.items()})
-    if isinstance(value, list):
-        return FrozenList(freeze_value(item) for item in value)
-    return value
