@@ -95,6 +95,9 @@ browser = [
 renderers = [
     "renderers>=0.1.8.dev0",
 ]
+braintrust = [
+    "braintrust>=0.0.160",
+]
 rl = [
     "torch>=2.8.0,<2.9.0",
     "transformers>=4.56.2",
@@ -221,6 +224,12 @@ unresolved-import = "ignore"
 invalid-method-override = "ignore"
 invalid-assignment = "ignore"
 not-iterable = "ignore"
+
+[[tool.ty.overrides]]
+include = ["verifiers/envs/experimental/braintrust_tracing/**"]
+
+[tool.ty.overrides.rules]
+unresolved-import = "ignore"
 
 [tool.coverage.run]
 source = ["verifiers"]

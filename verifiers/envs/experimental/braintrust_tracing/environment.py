@@ -1,0 +1,1505 @@
+from __future__ import annotations
+
+import asyncio
+import atexit
+import json
+import logging
+import multiprocessing as mp
+import signal
+import time
+import uuid
+import warnings
+from abc import ABC, abstractmethod
+from collections import defaultdict
+from collections.abc import Mapping
+from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
+from multiprocessing.connection import Connection
+from multiprocessing.process import BaseProcess
+from pathlib import Path
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Awaitable,
+    Callable,
+    List,
+    TypeVar,
+    cast,
+    final,
+)
+
+from verifiers.clients import Client, resolve_client
+from verifiers.decorators import discover_decorated
+from verifiers.serve import ZMQEnvClient
+from verifiers.utils.client_utils import (
+    resolve_client_config,
+    resolve_client_configs,
+)
+from verifiers.utils.eval_utils import filter_inputs
+from verifiers.utils.path_utils import is_valid_eval_results_path
+from verifiers.utils.serve_utils import get_free_port
+from verifiers.utils.thread_utils import scale_executors
+
+if TYPE_CHECKING:
+    from datasets import Dataset
+
+import verifiers as vf
+from verifiers.parsers.parser import Parser
+from verifiers.rubrics.rubric import Rubric
+from verifiers.serve import EnvClient
+from verifiers.types import (
+    ClientConfig,
+    DatasetBuilder,
+    GenerateMetadata,
+    GenerateOutputs,
+    LogCallback,
+    Messages,
+    MessageType,
+    ProgressCallback,
+    Response,
+    RolloutInput,
+    RolloutOutput,
+    RolloutTiming,
+    SamplingArgs,
+    StartCallback,
+    State,
+    TokenUsage,
+    Tool,
+    flatten_task_input,
+)
+from verifiers.utils.async_utils import (
+    maybe_call_with_named_args,
+    maybe_retry,
+    maybe_semaphore,
+    with_sem,
+)
+from verifiers.utils.error_utils import ErrorChain
+from verifiers.utils.message_utils import normalize_messages
+from verifiers.utils.save_utils import (
+    GenerateOutputsBuilder,
+    load_outputs,
+    make_dataset,
+    push_results_to_hf_hub,
+    save_metadata,
+    save_new_outputs,
+    save_outputs,
+    state_to_output,
+    validate_resume_metadata,
+)
+from verifiers.utils.usage_utils import StateUsageTracker, extract_usage_tokens
+
+import verifiers.envs.experimental.braintrust_tracing.braintrust_tracing as _bt
+
+_MESSAGE_TYPE_UNSET = object()
+
+
+class Environment(ABC):
+    """
+    Base class for all environments.
+    """
+
+    def __init__(
+        self,
+        dataset: Dataset | DatasetBuilder | None = None,
+        eval_dataset: Dataset | DatasetBuilder | None = None,
+        system_prompt: str | None = None,
+        few_shot: Messages | None = None,
+        parser: Parser | None = None,
+        rubric: Rubric | None = None,
+        sampling_args: SamplingArgs | None = None,
+        message_type: MessageType | object = _MESSAGE_TYPE_UNSET,
+        tool_defs: list[Tool] | None = None,
+        max_workers: int = 512,
+        env_id: str | None = None,
+        env_args: dict | None = None,
+        map_kwargs: dict = {},
+        max_seq_len: int | None = None,
+        score_rollouts: bool = True,
+        pass_threshold: float = 0.5,
+        **kwargs,
+    ):
+        if message_type is _MESSAGE_TYPE_UNSET:
+            resolved_message_type: MessageType = "chat"
+        else:
+            if message_type != "chat":
+                warnings.warn(
+                    "message_type is deprecated and will be removed",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+            resolved_message_type = cast(MessageType, message_type)
+        self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
+        self.message_type: MessageType = resolved_message_type
+        if "oai_tools" in kwargs:
+            raise ValueError(
+                "`oai_tools` is no longer supported. Use `tool_defs` with provider-agnostic "
+                "tool definitions: [{'name': ..., 'description': ..., 'parameters': {...}}]."
+            )
+        self.tool_defs: list[Tool] | None = self._normalize_tool_defs(tool_defs)
+        self.system_prompt = system_prompt
+        self.few_shot = few_shot
+        self.parser = parser or Parser()
+        self.rubric = rubric or Rubric()
+        if self.parser.__class__ != self.rubric.parser.__class__:
+            self.logger.warning(
+                "The parser and rubric parser are different. This may cause unexpected behavior."
+            )
+
+        self.env_id = env_id or ""
+        self.env_args = env_args or {}
+        self.max_seq_len = max_seq_len
+        self.map_kwargs = map_kwargs
+
+        self.set_score_rollouts(score_rollouts)
+        self.pass_threshold = pass_threshold
+
+        self.env_client: EnvClient | None = None
+        self.env_server_process: BaseProcess | None = None
+        self.death_pipe_writer: Connection | None = None
+
+        # Dataset sources (builders) and built datasets
+        # Use get_dataset()/get_eval_dataset() for access; build_dataset() to trigger build
+        self.dataset: Dataset | None = None
+        self.eval_dataset: Dataset | None = None
+
+        if dataset is not None:
+            if callable(dataset):
+                self.dataset_source: DatasetBuilder | None = cast(
+                    DatasetBuilder, dataset
+                )
+            else:
+                self.dataset_source = lambda ds=dataset: ds
+                self.build_dataset()  # Eagerly build for raw datasets (backwards compat)
+        else:
+            self.dataset_source = None
+
+        if eval_dataset is not None:
+            if callable(eval_dataset):
+                self.eval_dataset_source: DatasetBuilder | None = cast(
+                    DatasetBuilder, eval_dataset
+                )
+            else:
+                self.eval_dataset_source = lambda ds=eval_dataset: ds
+                self.build_eval_dataset()  # Eagerly build for raw datasets (backwards compat)
+        else:
+            self.eval_dataset_source = None
+
+        self.sampling_args = {"n": 1, "extra_body": {}}
+        if sampling_args is not None:
+            # merge extra_body if provided
+            cast(dict[str, Any], self.sampling_args["extra_body"]).update(
+                cast(dict[str, Any], sampling_args.get("extra_body", {}))
+            )
+            # copy other keys
+            for key, value in sampling_args.items():
+                if key != "extra_body":
+                    self.sampling_args[key] = value
+
+        self.max_workers = max_workers
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+
+        if (
+            self.dataset_source is None
+            and self.eval_dataset_source is None
+            and self.dataset is None
+            and self.eval_dataset is None
+        ):
+            raise ValueError("Either dataset or eval_dataset must be provided")
+        self.rollouts_per_example = None
+        self._stop_conditions: list[StopCondition] = []
+        self._cleanup_handlers: list[RolloutCleanup] = []
+        self._teardown_handlers: list[EnvironmentTeardown] = []
+
+        self.__post_init__()
+
+    @property
+    def requires_group_rollouts(self) -> bool:
+        return self.rubric.has_group_rewards
+
+    @property
+    def provides_advantages(self) -> bool:
+        return self.rubric.has_advantages
+
+    @staticmethod
+    def _normalize_tool_defs(
+        tools: list[Tool] | list[dict[str, Any]] | None,
+    ) -> list[Tool] | None:
+        """Normalize tools to provider-agnostic vf.Tool objects.
+
+        Accepts:
+        - vf.Tool objects
+        - vf.Tool-like dicts: {"name", "description", "parameters", "strict?"}
+        """
+        if tools is None:
+            return None
+
+        normalized: list[Tool] = []
+        for raw_tool in tools:
+            if isinstance(raw_tool, Tool):
+                normalized.append(raw_tool)
+                continue
+
+            if isinstance(raw_tool, dict):
+                if raw_tool.get("type") == "function" and isinstance(
+                    raw_tool.get("function"), dict
+                ):
+                    raise ValueError(
+                        "Legacy OpenAI tool schema is no longer supported. "
+                        "Use `tool_defs` entries in vf.Tool format: "
+                        "{'name': ..., 'description': ..., 'parameters': {...}}."
+                    )
+
+            normalized.append(Tool.model_validate(raw_tool))
+
+        return normalized
+
+    def __post_init__(self):
+        self._stop_conditions = discover_decorated(self, "stop")
+        self._cleanup_handlers = discover_decorated(self, "cleanup")
+        self._teardown_handlers = discover_decorated(self, "teardown")
+
+        def _sync_teardown():
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                asyncio.run(self._teardown())
+            else:
+                loop.create_task(self._teardown())
+
+        atexit.register(_sync_teardown)
+        signal.signal(
+            signal.SIGINT,
+            lambda sig, frame: (
+                _sync_teardown(),
+                signal.default_int_handler(sig, frame),
+            ),
+        )
+        signal.signal(signal.SIGTERM, lambda _, __: (_sync_teardown(), exit(143)))
+
+    def _ensure_example_id(self, dataset: Dataset) -> Dataset:
+        """Ensure example_id column exists and is integer type."""
+        if "example_id" in dataset.column_names and not isinstance(
+            dataset["example_id"][0], int
+        ):
+            dataset = dataset.rename_column("example_id", "src_id")
+        if "example_id" not in dataset.column_names:
+            dataset = dataset.add_column("example_id", range(len(dataset)))
+        return dataset
+
+    def _ensure_prompt(
+        self,
+        dataset: Dataset,
+        system_prompt: str | None = None,
+        few_shot: Messages | None = None,
+        question_key: str = "question",
+        answer_key: str = "answer",
+        map_kwargs: dict = {},
+    ) -> Dataset:
+        """Ensure prompt column exists."""
+        if "prompt" not in dataset.column_names:
+
+            def format_prompt_fn(prompt_str: str) -> Messages:
+                messages = []
+                if system_prompt:
+                    messages.append({"role": "system", "content": system_prompt})
+                if few_shot:
+                    messages.extend(few_shot)
+                messages.append({"role": "user", "content": prompt_str})
+                return messages
+
+            if answer_key == "answer":
+                dataset = dataset.map(
+                    lambda x: {
+                        "prompt": format_prompt_fn(x[question_key]),
+                    },
+                    **map_kwargs,
+                )
+            else:
+                dataset = dataset.map(
+                    lambda x: {
+                        "prompt": format_prompt_fn(x[question_key]),
+                        "answer": x[answer_key],
+                    },
+                    **map_kwargs,
+                )
+
+        else:
+            if system_prompt is not None:
+
+                def prepend_system_prompt(prompt: list[Any]) -> list[Any]:
+                    assert isinstance(prompt, list), (
+                        f"prompt must be a list of messages when system_prompt is provided, got {type(prompt)}"
+                    )
+                    # Check if a system message already exists (first message)
+                    first = prompt[0] if prompt else None
+                    first_role = (
+                        first.get("role")
+                        if isinstance(first, dict)
+                        else getattr(first, "role", None)
+                    )
+                    if first_role == "system":
+                        return prompt
+                    # Prepend as a plain dict so Arrow/HuggingFace can serialize.
+                    # Normalization to Pydantic happens later in init_state.
+                    return [{"role": "system", "content": system_prompt}, *prompt]
+
+                dataset = dataset.map(
+                    lambda x: {"prompt": prepend_system_prompt(x["prompt"])},
+                    **map_kwargs,
+                )
+            if few_shot is not None:
+                self.logger.warning(
+                    "Dataset already has a 'prompt' column, so the provided few_shot examples will be ignored."
+                )
+        return dataset
+
+    def _format_dataset(
+        self,
+        dataset: Dataset,
+        system_prompt: str | None = None,
+        few_shot: Messages | None = None,
+        question_key: str = "question",
+        answer_key: str = "answer",
+        map_kwargs: dict = {},
+    ) -> Dataset:
+        """
+        Format dataset by creating example_id and prompt columns.
+        """
+        if "env_id" in dataset.column_names:
+            dataset = dataset.remove_columns(["env_id"])
+        dataset = self._ensure_example_id(dataset)
+        dataset = self._ensure_prompt(
+            dataset, system_prompt, few_shot, question_key, answer_key, map_kwargs
+        )
+        return dataset
+
+    def _format_completion_dataset(
+        self, dataset: Dataset, map_kwargs: dict = {}
+    ) -> Dataset:
+        """
+        Format dataset by creating example_id.
+        """
+        if "env_id" in dataset.column_names:
+            dataset = dataset.remove_columns(["env_id"])
+        dataset = self._ensure_example_id(dataset)
+        return dataset
+
+    def _format_dataset_source(self, dataset: Dataset) -> Dataset:
+        """Format a dataset as chat (messages); client maps to its format at request time."""
+        return self._format_dataset(
+            dataset,
+            self.system_prompt,
+            self.few_shot,
+            map_kwargs=self.map_kwargs,
+        )
+
+    def build_dataset(self) -> Dataset | None:
+        """Build and cache the training dataset from source if needed."""
+        if self.dataset is not None:
+            return self.dataset
+        if self.dataset_source is None:
+            return None
+        built = self.dataset_source()
+        self.dataset = self._format_dataset_source(built)
+        return self.dataset
+
+    def build_eval_dataset(self) -> Dataset | None:
+        """Build and cache the evaluation dataset from source if needed."""
+        if self.eval_dataset is not None:
+            return self.eval_dataset
+        if self.eval_dataset_source is None:
+            return None
+        built = self.eval_dataset_source()
+        self.eval_dataset = self._format_dataset_source(built)
+        return self.eval_dataset
+
+    @final
+    def get_dataset(self, n: int = -1, seed: int | None = None) -> Dataset:
+        self.build_dataset()
+        if self.dataset is None:
+            raise ValueError("dataset is not set")
+        if seed is not None:
+            self.dataset = self.dataset.shuffle(seed=seed)
+        if n > 0:
+            n = min(n, len(self.dataset))
+            return self.dataset.select(range(n))
+        return self.dataset
+
+    @final
+    def get_eval_dataset(self, n: int = -1, seed: int | None = None) -> Dataset:
+        self.build_eval_dataset()
+        if self.eval_dataset is None:
+            self.logger.warning(
+                "eval_dataset is not set, falling back to train dataset"
+            )
+            return self.get_dataset(n, seed)
+        if seed is not None:
+            self.eval_dataset = self.eval_dataset.shuffle(seed=seed)
+        if n > 0:
+            n = min(n, len(self.eval_dataset))
+            return self.eval_dataset.select(range(n))
+        return self.eval_dataset
+
+    @final
+    def _get_usage_tracker(
+        self, state: State, create_if_missing: bool = True
+    ) -> StateUsageTracker | None:
+        tracker = state.get("usage_tracker")
+        if isinstance(tracker, StateUsageTracker):
+            return tracker
+        if not create_if_missing:
+            return None
+        tracker = StateUsageTracker()
+        state["usage_tracker"] = tracker
+        # Expose read-only usage in state for live inspection.
+        state["usage"] = tracker.usage
+        return tracker
+
+    @final
+    def increment_state_usage(
+        self,
+        state: State,
+        input_tokens: int | float = 0,
+        output_tokens: int | float = 0,
+    ) -> None:
+        tracker = self._get_usage_tracker(state, create_if_missing=True)
+        assert tracker is not None
+        tracker.increment(input_tokens, output_tokens)
+
+    @final
+    def increment_state_usage_from_response(
+        self, state: State, response: object
+    ) -> None:
+        tracker = self._get_usage_tracker(state, create_if_missing=True)
+        assert tracker is not None
+        tracker.increment_from_response(response)
+
+    @final
+    def get_state_usage(self, state: State) -> TokenUsage | None:
+        tracker = self._get_usage_tracker(state, create_if_missing=False)
+        if tracker is not None:
+            return tracker.snapshot()
+        usage = state.get("usage")
+        if isinstance(usage, Mapping):
+            try:
+                return {
+                    "input_tokens": float(usage.get("input_tokens", 0.0)),
+                    "output_tokens": float(usage.get("output_tokens", 0.0)),
+                }
+            except (TypeError, ValueError):
+                return None
+        return None
+
+    async def get_model_response(
+        self,
+        state: State,
+        prompt: Messages,
+        client: Client | None = None,
+        model: str | None = None,
+        tool_defs: list[Tool] | None = None,
+        sampling_args: SamplingArgs | None = None,
+    ) -> Response:
+        """
+        Get model response for a given prompt (chat or completion).
+
+        Uses the client abstraction layer to handle provider-specific API calls.
+        The vf.Client adapter handles prompt conversion, sampling arg normalization,
+        overlong prompt detection, and response parsing.
+        """
+
+        def resolve_optional_args(
+            client: Client | None,
+            model: str | None,
+            tool_defs: list[Tool] | None,
+            sampling_args: SamplingArgs | None,
+        ) -> tuple[Client, str, list[Tool] | None, SamplingArgs]:
+            """Resolve optional arguments, fallback to state or class defaults."""
+            client = client if client is not None else state["client"]
+            assert client is not None
+            model = model or state["model"]
+            assert model is not None
+            if tool_defs is None:
+                tool_defs = state.get("tool_defs")
+            if tool_defs is not None and not all(
+                isinstance(tool, Tool) for tool in tool_defs
+            ):
+                raise TypeError(
+                    "tool_defs must be a list of vf.Tool objects at runtime. "
+                    "Normalize tool dicts during state initialization."
+                )
+            if isinstance(tool_defs, list) and len(tool_defs) == 0:
+                tool_defs = None
+            sampling_args = cast(
+                SamplingArgs, sampling_args or state["sampling_args"] or {}
+            )
+            return client, model, tool_defs, sampling_args
+
+        client, model, tool_defs, sampling_args = resolve_optional_args(
+            client, model, tool_defs, sampling_args
+        )
+
+        self._get_usage_tracker(state, create_if_missing=True)
+
+        bt_parent = state.get("_bt_turn_span") or state.get("_bt_span")
+        bt_span = _bt.model_request_span(
+            bt_parent,
+            model=model,
+            turn_index=len(state.get("trajectory", [])),
+            messages=prompt,
+        )
+        t0 = time.monotonic()
+        error_msg = ""
+        response = None
+        try:
+            response = await client.get_response(
+                prompt=prompt,
+                model=model,
+                tools=tool_defs,
+                sampling_args=sampling_args,
+                state=state,
+            )
+        except Exception as exc:
+            error_msg = repr(exc)[:500]
+            raise
+        except BaseException as exc:
+            error_msg = repr(exc)[:500]
+            raise
+        finally:
+            dur = time.monotonic() - t0
+            input_tok, output_tok = 0.0, 0.0
+            if not error_msg and response is not None:
+                input_tok, output_tok = (
+                    float(v) for v in extract_usage_tokens(response)
+                )
+            _bt.model_request_completed(
+                bt_span,
+                duration_s=dur,
+                input_tokens=input_tok,
+                output_tokens=output_tok,
+                response=response if not error_msg else None,
+                error=error_msg,
+            )
+        self.increment_state_usage_from_response(state, response)
+
+        return response
+
+    @final
+    async def init_state(
+        self,
+        input: RolloutInput,
+        client: Client | ClientConfig,
+        model: str,
+        sampling_args: SamplingArgs | None = None,
+    ) -> State:
+        """
+        Create initial state from dataset row.
+        Environment-agnostic - just stores the data.
+
+        Creates State with input fields in "input" RolloutInput for structured access,
+        while State's forwarding behavior keeps direct access ergonomic.
+        """
+        state_input = cast(RolloutInput, deepcopy(input))
+        if "info" in state_input and isinstance(state_input["info"], str):
+            state_input["info"] = json.loads(state_input["info"])
+        state_task = flatten_task_input(state_input)
+        state_input = cast(RolloutInput, state_task)
+        state = State(input=state_input)
+        state["task"] = state_task
+
+        # Convert prompt to Pydantic messages
+        raw_prompt = state_input.get("prompt")
+        if isinstance(raw_prompt, (str, list)):
+            state["prompt"] = normalize_messages(raw_prompt, field_name="input.prompt")
+
+        state["client"] = resolve_client(client)
+        state["model"] = model
+        state["sampling_args"] = sampling_args
+        state["is_completed"] = False
+        state["is_truncated"] = False
+
+        # Resolve tool definitions
+        resolved_tool_defs: list[Tool] | list[dict[str, Any]] | None = None
+        info = state.get("info")
+        if isinstance(info, dict) and "oai_tools" in info:
+            raise ValueError(
+                "info['oai_tools'] is no longer supported. Use info['tool_defs'] with "
+                "provider-agnostic tool definitions: "
+                "[{'name': ..., 'description': ..., 'parameters': {...}}]."
+            )
+        if isinstance(info, dict) and "tool_defs" in info:
+            resolved_tool_defs = info["tool_defs"]
+        elif self.tool_defs is not None:
+            resolved_tool_defs = self.tool_defs
+        else:
+            resolved_tool_defs = []
+        state["tool_defs"] = self._normalize_tool_defs(resolved_tool_defs) or []
+
+        state["trajectory"] = []
+        state["completion"] = None
+        self._get_usage_tracker(state, create_if_missing=True)
+        state["trajectory_id"] = uuid.uuid4().hex
+        state["reward"] = None
+        state["metrics"] = None
+        state["error"] = None
+        state["final_env_response"] = None
+        state["timing"] = RolloutTiming()
+        return state
+
+    @abstractmethod
+    async def rollout(
+        self,
+        input: RolloutInput,
+        client: Client,
+        model: str,
+        sampling_args: SamplingArgs | None = None,
+    ) -> State:
+        """
+        Run a rollout for a given input.
+        """
+        pass
+
+    async def cleanup(
+        self,
+        state: State,
+        task: object | None = None,
+        resources: object | None = None,
+    ):
+        """
+        Finalize rollout state and clean up rollout-local resources.
+        """
+        for handler in self._cleanup_handlers:
+            await maybe_call_with_named_args(
+                handler,
+                task=task,
+                state=state,
+                env=self,
+                resources=resources,
+            )
+
+    async def _teardown(self):
+        """
+        Tear down environment resources.
+        """
+        await self.rubric.teardown()
+        for handler in self._teardown_handlers:
+            await handler()
+
+    async def _render_stop(self, state: State, condition, **kwargs) -> bool:
+        if await maybe_call_with_named_args(
+            condition,
+            state=state,
+            env=self,
+            **kwargs,
+        ):
+            state["is_completed"] = True
+            state["is_truncated"] = state.get("is_truncated", False) or any(
+                step.get("is_truncated", False) for step in state.get("trajectory", [])
+            )
+            state["stop_condition"] = condition.__name__
+            if state.get("stop_condition") == "has_error":
+                err = state["error"]
+                err_chain = ErrorChain(err)
+                self.logger.error(f"Aborted rollout due to {repr(err_chain)}")
+            return True
+        return False
+
+    @final
+    async def is_completed(self, state: State, **kwargs) -> bool:
+        """Check stop conditions and render stop fields when one fires."""
+        for condition in self._stop_conditions:
+            if await self._render_stop(state, condition, **kwargs):
+                return True
+        return False
+
+    async def _run_rollout_state(
+        self,
+        input: RolloutInput,
+        client: Client,
+        model: str,
+        sampling_args: SamplingArgs,
+    ) -> State:
+        t0 = time.monotonic()
+        bt_span = _bt.rollout_started(
+            env_id=self.env_id,
+            model=model,
+            example_id=input.get("example_id", ""),
+            trajectory_id="",
+        )
+        # Pass the rollout span to rollout() via a coroutine-local context var.
+        # We cannot thread it through `input` (deep-copied by init_state) or
+        # store it on `self` (shared across concurrent rollouts).
+        _bt._pending_rollout_span.set(bt_span)
+        state = await self.rollout(
+            input,
+            client,
+            model,
+            sampling_args,
+        )
+
+        bt_score = _bt.scoring_started(
+            bt_span, trajectory_id=state.get("trajectory_id", "")
+        )
+        state["timing"].scoring.start = time.time()
+        if self.score_rollouts:
+            await self.rubric.score_rollout(state)
+        else:
+            await self.rubric.dummy_score_rollout(state)
+        state["timing"].scoring.end = time.time()
+        scoring_dur = state["timing"].scoring.end - state["timing"].scoring.start
+        _bt.scoring_completed(
+            bt_score, duration_s=scoring_dur, reward=state.get("reward")
+        )
+
+        await self.rubric.cleanup(state)
+
+        usage = self.get_state_usage(state) or {}
+        _bt.rollout_completed(
+            bt_span,
+            reward=state.get("reward"),
+            num_turns=len(state.get("trajectory", [])),
+            duration_s=time.monotonic() - t0,
+            stop_condition=state.get("stop_condition", ""),
+            error=repr(state["error"])[:500] if state.get("error") else "",
+            input_tokens=float(usage.get("input_tokens", 0)),
+            output_tokens=float(usage.get("output_tokens", 0)),
+        )
+        return state
+
+    async def _run_group_states(
+        self,
+        group_inputs: list[RolloutInput],
+        client: Client,
+        model: str,
+        sampling_args: SamplingArgs,
+    ) -> list[State]:
+        t0 = time.monotonic()
+        example_id = group_inputs[0].get("example_id", "") if group_inputs else ""
+        bt_group = _bt.group_started(
+            env_id=self.env_id,
+            model=model,
+            example_id=example_id,
+            group_size=len(group_inputs),
+        )
+
+        bt_rollout_spans: list[object | None] = [None for _ in group_inputs]
+        rollout_start_times: list[float] = [0.0] * len(group_inputs)
+
+        async def _traced_rollout(idx: int, ri: RolloutInput) -> State:
+            """Wrap a single rollout with its own Braintrust span."""
+            r_t0 = time.monotonic()
+            bt_rollout = _bt.start_child_span(
+                bt_group,
+                name="rollout",
+                span_type="task",
+                input={"example_id": _bt._safe(ri.get("example_id", ""))},
+                metadata={"env_id": self.env_id, "model": model},
+            )
+            bt_rollout_spans[idx] = bt_rollout
+            rollout_start_times[idx] = r_t0
+            _bt._pending_rollout_span.set(bt_rollout)
+            return await self.rollout(ri, client, model, sampling_args)
+
+        group_states = await asyncio.gather(
+            *[_traced_rollout(i, inp) for i, inp in enumerate(group_inputs)]
+        )
+
+        start_scoring = time.time()
+        for state in group_states:
+            state["timing"].scoring.start = start_scoring
+        if self.score_rollouts:
+            await self.rubric.score_group(group_states)
+        else:
+            await self.rubric.dummy_score_group(group_states)
+        end_scoring = time.time()
+        for state in group_states:
+            state["timing"].scoring.end = end_scoring
+
+        for state in group_states:
+            await self.rubric.cleanup(state)
+
+        now = time.monotonic()
+        for st, bt_rollout, r_t0 in zip(
+            group_states, bt_rollout_spans, rollout_start_times
+        ):
+            usage = self.get_state_usage(st) or {}
+            _bt.rollout_completed(
+                bt_rollout,
+                reward=st.get("reward"),
+                num_turns=len(st.get("trajectory", [])),
+                duration_s=now - r_t0,
+                stop_condition=st.get("stop_condition", ""),
+                error=repr(st["error"])[:500] if st.get("error") else "",
+                input_tokens=float(usage.get("input_tokens", 0)),
+                output_tokens=float(usage.get("output_tokens", 0)),
+            )
+
+        rewards = [s.get("reward") for s in group_states if s.get("reward") is not None]
+        _bt.group_completed(
+            bt_group,
+            duration_s=time.monotonic() - t0,
+            avg_reward=sum(rewards) / len(rewards) if rewards else None,
+            group_size=len(group_inputs),
+        )
+        return group_states
+
+    @final
+    async def run_rollout(
+        self,
+        input: RolloutInput,
+        client: Client | ClientConfig,
+        model: str,
+        sampling_args: SamplingArgs,
+        max_retries: int = 0,
+        state_columns: list[str] | None = None,
+        env_client: EnvClient | None = None,
+    ) -> RolloutOutput:
+        """Generate and, optionally, score a rollout."""
+
+        resolved_client_config: ClientConfig | None = None
+        if isinstance(client, ClientConfig):
+            resolved_client_config = resolve_client_config(client)
+
+        env_client = env_client or self.env_client
+        if env_client is not None:  # in server mode
+            if resolved_client_config is None:
+                raise ValueError(
+                    f"client must be have type ClientConfig in server mode, got {type(client)}"
+                )
+            return await env_client.run_rollout(
+                input,
+                resolved_client_config,
+                model,
+                sampling_args,
+                max_retries,
+                state_columns,
+            )
+
+        resolved_client = resolve_client(client)
+
+        async def run_rollout_attempt() -> State:
+            return await self._run_rollout_state(
+                input,
+                resolved_client,
+                model,
+                sampling_args,
+            )
+
+        state = await maybe_retry(run_rollout_attempt, max_retries=max_retries)()
+        output = state_to_output(state, state_columns or [])
+        return output
+
+    @final
+    async def run_group(
+        self,
+        group_inputs: list[RolloutInput],
+        client: Client | ClientConfig,
+        model: str,
+        sampling_args: SamplingArgs,
+        max_retries: int = 0,
+        state_columns: list[str] | None = None,
+        env_client: EnvClient | None = None,
+        **kwargs,
+    ) -> list[RolloutOutput]:
+        """Generate and, optionally, score one group."""
+
+        resolved_client_config: ClientConfig | None = None
+        if isinstance(client, ClientConfig):
+            resolved_client_config = resolve_client_config(client)
+
+        env_client = env_client or self.env_client
+        if env_client is not None:  # in server mode
+            if resolved_client_config is None:
+                raise ValueError(
+                    f"client must be have type ClientConfig in server mode, got {type(client)}"
+                )
+            return await env_client.run_group(
+                group_inputs,
+                resolved_client_config,
+                model,
+                sampling_args,
+                max_retries,
+                state_columns,
+            )
+
+        resolved_client = resolve_client(client)
+
+        async def run_group_attempt() -> list[State]:
+            return await self._run_group_states(
+                group_inputs,
+                resolved_client,
+                model,
+                sampling_args,
+            )
+
+        group_states = await maybe_retry(run_group_attempt, max_retries=max_retries)()
+        outputs = [
+            state_to_output(state, state_columns or []) for state in group_states
+        ]
+        return outputs
+
+    async def generate(
+        self,
+        inputs: Dataset | List[RolloutInput],
+        client: Client | ClientConfig,
+        model: str,
+        sampling_args: SamplingArgs | None = None,
+        max_concurrent: int = -1,
+        results_path: Path | None = None,
+        state_columns: list[str] | None = None,
+        save_results: bool = False,
+        push_to_hf_hub: bool = False,
+        hf_hub_dataset_name: str | None = None,
+        independent_scoring: bool = False,
+        max_retries: int = 0,
+        on_start: StartCallback | None = None,
+        on_progress: ProgressCallback | list[ProgressCallback] | None = None,
+        on_log: LogCallback | None = None,
+    ) -> GenerateOutputs:
+        """
+        Generate rollouts for a set of inputs.
+
+        Args:
+            client: Can be a single AsyncOpenAI client or a ClientConfig.
+            on_progress: Progress callback(s). None uses the default tqdm progress bar.
+                A single callback replaces the default. A list of callbacks runs
+                alongside the default.
+        """
+        from datasets import Dataset
+        from tqdm import tqdm
+
+        pbar: tqdm | None = None
+
+        def default_on_start(
+            raw_inputs: list[RolloutInput],
+            filtered_inputs: list[RolloutInput] | list[list[RolloutInput]],
+        ) -> None:
+            """Initializes the progress bar from the raw inputs."""
+            nonlocal pbar
+
+            total_rollouts = len(raw_inputs)
+            total_groups = len(set([i["example_id"] for i in raw_inputs]))
+            rollouts_per_example = (
+                total_rollouts // total_groups if total_groups > 0 else 0
+            )
+
+            if (
+                isinstance(filtered_inputs, list)
+                and filtered_inputs
+                and isinstance(filtered_inputs[0], list)
+            ):
+                remaining_rollouts = sum(len(g) for g in filtered_inputs)
+            else:
+                remaining_rollouts = len(filtered_inputs)
+            saved_rollouts = total_rollouts - remaining_rollouts
+
+            if filtered_inputs:
+                if isinstance(filtered_inputs[0], list):
+                    pbar_total = total_groups
+                    pbar_initial = saved_rollouts // rollouts_per_example
+                    pbar_desc = f"Processing {total_groups} groups ({total_rollouts} total rollouts)"
+                else:
+                    pbar_total = total_rollouts
+                    pbar_initial = saved_rollouts
+                    pbar_desc = f"Processing {total_rollouts} rollouts"
+
+                pbar = tqdm(
+                    total=pbar_total,
+                    initial=pbar_initial,
+                    desc=pbar_desc,
+                    postfix=dict(reward="?"),
+                )
+
+        def default_on_progress(
+            all_outputs: list[RolloutOutput],
+            new_outputs: list[RolloutOutput],
+            new_metadata: GenerateMetadata,
+        ) -> None:
+            """Updates the progress bar from the new outputs."""
+            nonlocal pbar
+            if pbar is not None:
+                pbar.update(1)
+                pbar.set_postfix(reward=new_metadata.get("avg_reward"))
+
+        def default_on_log(message: str) -> None:
+            """Logs using the environment logger."""
+            self.logger.info(message)
+
+        on_start = on_start or cast(StartCallback, default_on_start)
+        extra_on_progress: list[ProgressCallback] = []
+        if isinstance(on_progress, list):
+            extra_on_progress = cast(list[ProgressCallback], on_progress)
+        elif on_progress is not None:
+            extra_on_progress = [on_progress]
+
+            def default_on_progress(*a, **kw):
+                None
+
+        on_log = on_log or cast(LogCallback, default_on_log)
+
+        if isinstance(inputs, Dataset):
+            raw_inputs = cast(list[RolloutInput], inputs.to_list())
+        elif isinstance(inputs, list):
+            raw_inputs = inputs
+
+        # set up semaphores
+        sem = await maybe_semaphore(max_concurrent)
+
+        # set up sampling args
+        default_sampling_args = deepcopy(self.sampling_args)
+        if sampling_args is not None:
+            default_sampling_args.update(sampling_args)
+        sampling_args = default_sampling_args
+
+        # initialize outputs builder
+        total_rollouts = len(raw_inputs)
+        num_examples = len(set([i["example_id"] for i in raw_inputs]))
+        rollouts_per_example = total_rollouts // num_examples if num_examples > 0 else 0
+        builder = GenerateOutputsBuilder(
+            env_id=self.env_id,
+            env_args=self.env_args,
+            model=model,
+            client=client,
+            num_examples=num_examples,
+            rollouts_per_example=rollouts_per_example,
+            state_columns=state_columns,
+            sampling_args=sampling_args,
+            results_path=results_path,
+            pass_threshold=self.pass_threshold,
+        )
+
+        single_client: Client | None = None
+        endpoint_client_configs: list[ClientConfig] = []
+        endpoint_client_idx = 0
+        if isinstance(client, ClientConfig):
+            endpoint_client_configs = resolve_client_configs(client)
+        else:
+            # Raw async-client path
+            single_client = client
+
+        local_endpoint_clients: list[Client] = []
+
+        def get_client_for_group() -> Client | ClientConfig:
+            """Get next client in round-robin order or return the single client."""
+            nonlocal endpoint_client_idx
+            if self.env_client is not None and endpoint_client_configs:
+                config = endpoint_client_configs[
+                    endpoint_client_idx % len(endpoint_client_configs)
+                ]
+                endpoint_client_idx += 1
+                return config
+            if local_endpoint_clients:
+                local_client = local_endpoint_clients[
+                    endpoint_client_idx % len(local_endpoint_clients)
+                ]
+                endpoint_client_idx += 1
+                return local_client
+            assert single_client is not None
+            return single_client
+
+        if _bt.enabled():
+            run_tags = _bt.set_run_tags()
+            if run_tags:
+                logging.getLogger(__name__).info("Braintrust run tag: %s", run_tags[0])
+
+        try:
+            if self.env_client is None and endpoint_client_configs:
+                for endpoint_config in endpoint_client_configs:
+                    local_endpoint_clients.append(resolve_client(endpoint_config))
+
+            # load existing results if available
+            if results_path is not None and is_valid_eval_results_path(results_path):
+                validate_resume_metadata(
+                    results_path=results_path,
+                    env_id=self.env_id,
+                    model=model,
+                    num_examples=num_examples,
+                    rollouts_per_example=rollouts_per_example,
+                )
+                on_log(f"Resuming evaluation from {results_path}")
+                outputs = load_outputs(results_path)
+                builder.add_outputs(outputs)
+                filtered_inputs = filter_inputs(
+                    raw_inputs, outputs, rollouts_per_example
+                )
+                if not filtered_inputs:
+                    on_log(
+                        "No remaining rollouts to evaluate, returning completed outputs"
+                    )
+                    return builder.build(sort_by_example_id=True)
+                on_log(
+                    f"Found {len(outputs)} completed rollout(s), {len(filtered_inputs)} remaining rollout(s)"
+                )
+            else:
+                filtered_inputs = raw_inputs
+
+            if save_results:
+                on_log(f"Saving results to {builder.results_path}")
+
+            tasks: dict[asyncio.Task, int] = {}
+            try:
+                # create tasks based on mode
+                if independent_scoring:
+                    on_start(raw_inputs, filtered_inputs)
+                    for i, rollout_input in enumerate(filtered_inputs):
+                        task = asyncio.create_task(
+                            with_sem(
+                                sem,
+                                self.run_rollout(
+                                    rollout_input,
+                                    get_client_for_group(),
+                                    model,
+                                    sampling_args,
+                                    max_retries=max_retries,
+                                    state_columns=state_columns,
+                                ),
+                            ),
+                        )
+                        tasks[task] = i
+                else:
+                    group_inputs: dict[int, list[RolloutInput]] = defaultdict(list)
+                    for rollout_input in filtered_inputs:
+                        example_id = rollout_input["example_id"]
+                        group_inputs[example_id].append(rollout_input)
+                    filtered_group_inputs = list(group_inputs.values())
+                    on_start(raw_inputs, filtered_group_inputs)
+
+                    for i, group_input in enumerate(filtered_group_inputs):
+                        # For grouped scoring, keep each group on one endpoint so
+                        # rollouts in the same group can benefit from shared KV cache.
+                        group_client = get_client_for_group()
+                        task = asyncio.create_task(
+                            with_sem(
+                                sem,
+                                self.run_group(
+                                    group_input,
+                                    group_client,
+                                    model,
+                                    sampling_args,
+                                    max_retries=max_retries,
+                                    state_columns=state_columns,
+                                ),
+                            ),
+                        )
+                        tasks[task] = i
+
+                for coro in asyncio.as_completed(tasks.keys()):
+                    result = await coro
+
+                    # normalize: independent_scoring returns RolloutOutput, group returns list[RolloutOutput]
+                    new_outputs = [result] if independent_scoring else result
+                    builder.add_outputs(new_outputs)
+                    metadata = builder.build_metadata()
+
+                    default_on_progress(builder.outputs, new_outputs, metadata)
+                    for cb in extra_on_progress:
+                        cb(builder.outputs, new_outputs, metadata)
+
+                    # incrementally save outputs (offloaded to thread to avoid blocking the event loop)
+                    if save_results:
+                        await asyncio.to_thread(
+                            save_new_outputs, new_outputs, builder.results_path
+                        )
+                        await asyncio.to_thread(
+                            save_metadata, metadata, builder.results_path
+                        )
+            finally:
+                # cancel all outstanding tasks and await their completion
+                pending = [task for task in tasks.keys() if not task.done()]
+                if pending:
+                    for task in pending:
+                        task.cancel()
+                    await asyncio.gather(*pending, return_exceptions=True)
+
+            # build final results (sorted by example_id for deterministic ordering)
+            results = builder.build(sort_by_example_id=True)
+
+            # save if requested
+            if save_results:
+                await asyncio.to_thread(
+                    save_outputs, results["outputs"], builder.results_path
+                )
+                await asyncio.to_thread(
+                    save_metadata, results["metadata"], builder.results_path
+                )
+                if push_to_hf_hub:
+                    push_results_to_hf_hub(results, hf_hub_dataset_name)
+                if on_log is not None:
+                    on_log(
+                        f"Saved final results to {results['metadata']['path_to_save']}"
+                    )
+
+            return results
+        finally:
+            _bt.clear_run_tags()
+            _bt.flush()
+            if pbar is not None:
+                pbar.close()
+            if local_endpoint_clients:
+                await asyncio.gather(
+                    *(client.close() for client in local_endpoint_clients),
+                    return_exceptions=True,
+                )
+
+    def generate_sync(
+        self,
+        inputs: Dataset | List[RolloutInput],
+        client: Client | ClientConfig,
+        **kwargs,
+    ) -> GenerateOutputs:
+        coro = self.generate(
+            inputs,
+            client=client,
+            **kwargs,
+        )
+        # check if we're in existing event loop (e.g. Jupyter)
+        try:
+            loop = asyncio.get_running_loop()
+            import nest_asyncio
+
+            nest_asyncio.apply()
+            return loop.run_until_complete(coro)
+        except RuntimeError:
+            pass
+
+        # script case: create new loop and executor
+        executor = ThreadPoolExecutor(max_workers=self.max_workers)
+        loop = asyncio.new_event_loop()
+        try:
+            loop.set_default_executor(executor)
+            asyncio.set_event_loop(loop)
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
+            asyncio.set_event_loop(None)
+            # shutdown the executor to prevent thread leaks
+            executor.shutdown(wait=False)
+
+    # evaluation
+    def _get_eval_inputs(
+        self, num_examples: int = -1, rollouts_per_example: int = 1
+    ) -> List[RolloutInput]:
+        # get_eval_dataset handles fallback to train dataset if no eval source exists
+        inputs = self.get_eval_dataset(n=num_examples)
+        assert inputs is not None, "No dataset found"
+        if rollouts_per_example > 1:
+            inputs = inputs.repeat(rollouts_per_example)
+        return inputs.to_list()
+
+    async def evaluate(
+        self,
+        client: Client | ClientConfig,
+        model: str,
+        sampling_args: SamplingArgs | None = None,
+        num_examples: int = -1,
+        rollouts_per_example: int = 1,
+        max_concurrent: int = -1,
+        results_path: Path | None = None,
+        state_columns: list[str] | None = None,
+        save_results: bool = False,
+        push_to_hf_hub: bool = False,
+        hf_hub_dataset_name: str | None = None,
+        independent_scoring: bool = False,
+        max_retries: int = 0,
+        on_start: StartCallback | None = None,
+        on_progress: ProgressCallback | list[ProgressCallback] | None = None,
+        on_log: LogCallback | None = None,
+        **kwargs,
+    ) -> GenerateOutputs:
+        """
+        Evaluate model on the Environment evaluation dataset.
+
+        Args:
+            on_progress: Progress callback(s). None uses the default tqdm progress bar.
+                A single callback replaces the default. A list of callbacks runs
+                alongside the default.
+        """
+        inputs = self._get_eval_inputs(num_examples, rollouts_per_example)
+        return await self.generate(
+            inputs,
+            client=client,
+            model=model,
+            sampling_args=sampling_args,
+            max_concurrent=max_concurrent,
+            results_path=results_path,
+            state_columns=state_columns,
+            save_results=save_results,
+            push_to_hf_hub=push_to_hf_hub,
+            hf_hub_dataset_name=hf_hub_dataset_name,
+            independent_scoring=independent_scoring,
+            max_retries=max_retries,
+            on_start=on_start,
+            on_progress=on_progress,
+            on_log=on_log,
+            **kwargs,
+        )
+
+    def evaluate_sync(
+        self,
+        client: Client | ClientConfig,
+        model: str,
+        sampling_args: SamplingArgs | None = None,
+        num_examples: int = -1,
+        rollouts_per_example: int = 1,
+        max_concurrent: int = -1,
+        results_path: Path | None = None,
+        state_columns: list[str] | None = None,
+        save_results: bool = False,
+        push_to_hf_hub: bool = False,
+        hf_hub_dataset_name: str | None = None,
+        independent_scoring: bool = False,
+        max_retries: int = 0,
+    ) -> GenerateOutputs:
+        """
+        Evaluate model on the Environment evaluation dataset synchronously.
+        """
+        inputs = self._get_eval_inputs(num_examples, rollouts_per_example)
+        return self.generate_sync(
+            inputs,
+            client=client,
+            model=model,
+            sampling_args=sampling_args,
+            max_concurrent=max_concurrent,
+            results_path=results_path,
+            state_columns=state_columns,
+            save_results=save_results,
+            push_to_hf_hub=push_to_hf_hub,
+            hf_hub_dataset_name=hf_hub_dataset_name,
+            independent_scoring=independent_scoring,
+            max_retries=max_retries,
+        )
+
+    # setters for use by trainers
+    def set_kwargs(self, **kwargs) -> None:
+        """
+        Set environment attributes, using setter methods when available.
+
+        For each kwarg, checks if a `set_{key}` method exists and calls it,
+        otherwise falls back to setattr. This ensures proper propagation for
+        attributes like `score_rollouts` in EnvGroup.
+        """
+        for key, value in kwargs.items():
+            setter_name = f"set_{key}"
+            setter = getattr(self, setter_name, None)
+            if setter is not None and callable(setter):
+                setter(value)
+            else:
+                setattr(self, key, value)
+
+    def add_rubric(self, rubric: Rubric) -> None:
+        if self.rubric is None:
+            self.rubric = rubric
+        elif isinstance(self.rubric, vf.RubricGroup):
+            self.rubric.rubrics.append(rubric)
+        else:
+            self.rubric = vf.RubricGroup(rubrics=[self.rubric, rubric])
+
+    def set_concurrency(self, concurrency: int) -> None:
+        """Set concurrency and scale all registered thread-pool executors.
+
+        Each executor applies its own scaling function to map concurrency
+        to max_workers (default 1:1).
+        """
+        self.concurrency = concurrency
+        scale_executors(concurrency=concurrency)
+
+    def set_max_seq_len(self, max_seq_len: int | None) -> None:
+        """Set the maximum sequence length for this environment."""
+        self.max_seq_len = max_seq_len
+
+    def set_score_rollouts(self, score_rollouts: bool) -> None:
+        """Set the score rollouts flag for this environment."""
+        self.score_rollouts = score_rollouts
+
+    async def start_server(
+        self,
+        address: str | None = None,
+        extra_env_kwargs: dict[str, Any] | None = None,
+        num_workers: int = 1,
+        # logging configs
+        log_level: str | None = None,
+        log_dir: str | None = None,
+        console_logging: bool = True,
+        # health check configs
+        health_check_interval: float = 1.0,  # 1s
+        startup_timeout: float = 600.0,  # 10m
+        recovery_timeout: float = 600.0,  # 10m
+    ) -> None:
+        """Start a ZMQ server process for this environment.
+
+        Spawns a :class:`ZMQEnvServer` (router + *num_workers* worker
+        processes, default 1).
+
+        .. warning::
+            This method is subject to change. External users should avoid
+            depending on it directly.
+        """
+        from verifiers.serve import ZMQEnvServer
+
+        address = address or f"tcp://127.0.0.1:{get_free_port()}"
+        extra_env_kwargs = extra_env_kwargs or {}
+
+        # Death pipe: parent keeps writer, children monitor reader.
+        # When the parent dies (even SIGKILL), the OS closes the writer end
+        # and children get EOF → clean shutdown.
+        death_pipe_reader, self.death_pipe_writer = mp.Pipe(duplex=False)
+
+        # Use spawn to avoid inheriting file descriptors (e.g. sockets) from
+        # the parent process, which has caused hangs when multiple env server
+        # subprocesses share the same fds.
+        ctx = mp.get_context("spawn")
+        self.env_server_process = ctx.Process(
+            target=ZMQEnvServer.run_server,
+            args=(
+                self.env_id,
+                self.env_args,
+                extra_env_kwargs,
+                log_level,
+                log_dir,
+                console_logging,
+            ),
+            kwargs=dict(
+                address=address,
+                num_workers=num_workers,
+                death_pipe=death_pipe_reader,
+            ),
+            daemon=False,
+        )
+        self.env_server_process.start()
+        # Close the reader in the parent — only children should hold it.
+        death_pipe_reader.close()
+        self.env_client = ZMQEnvClient(
+            address=address,
+            health_check_interval=health_check_interval,
+            startup_timeout=startup_timeout,
+            recovery_timeout=recovery_timeout,
+            name=self.env_id,
+        )
+        await self.env_client.wait_for_server_startup()
+
+    async def stop_server(self) -> None:
+        """Stop the ZMQ server process for this environment.
+
+        .. warning::
+            This method is subject to change. External users should avoid
+            depending on it directly.
+        """
+        if self.env_client is not None:
+            await self.env_client.close()
+            self.env_client = None
+        if self.death_pipe_writer is not None:
+            self.death_pipe_writer.close()
+            self.death_pipe_writer = None
+        if self.env_server_process is not None:
+            from verifiers.utils.process_utils import terminate_process
+
+            terminate_process(self.env_server_process)
+            self.env_server_process = None
+
+    make_dataset = staticmethod(make_dataset)
+
+
+_EnvT = TypeVar("_EnvT", bound=Environment)
+StopCondition = Callable[[State], Awaitable[bool]]
+RolloutCleanup = Callable[[State], Awaitable[None]]
+EnvironmentTeardown = Callable[[], Awaitable[None]]
