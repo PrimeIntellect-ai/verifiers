@@ -1072,7 +1072,16 @@ class Environment(ABC):
                         tasks[task] = i
 
                 for coro in asyncio.as_completed(tasks.keys()):
-                    result = await coro
+                    try:
+                        result = await coro
+                    except Exception as e:
+                        # Sandbox/infra errors must not crash the whole eval.
+                        # Skip the failed group; it will be retried on --resume.
+                        self.logger.error(
+                            f"Group eval failed with {type(e).__name__}: {e}. "
+                            "Skipping group — will retry on resume."
+                        )
+                        continue
 
                     # normalize: independent_scoring returns RolloutOutput, group returns list[RolloutOutput]
                     new_outputs = [result] if independent_scoring else result
