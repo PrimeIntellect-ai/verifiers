@@ -3266,7 +3266,7 @@ class ViewRunScreen(Screen):
         if isinstance(cost, dict):
             total_usd = cost.get("total_usd")
             if isinstance(total_usd, int | float):
-                usage_items.append(("Cost", format_cost_usd(float(total_usd))))
+                usage_items.append(("Cost (all)", format_cost_usd(float(total_usd))))
         max_tokens = sampling_args.get("max_tokens")
         if max_tokens not in (None, ""):
             usage_items.append(("Max tokens", str(max_tokens)))

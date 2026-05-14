@@ -119,5 +119,5 @@ def test_tokens_row_includes_cost_when_available() -> None:
     assert "output 7" in rendered
     assert "final_input 10" in rendered
     assert "final_output 5" in rendered
-    assert "cost $0.0123" in rendered
-    assert rendered.index("final_output 5") < rendered.index("cost $0.0123")
+    assert "cost (all) $0.0123" in rendered
+    assert rendered.index("final_output 5") < rendered.index("cost (all) $0.0123")

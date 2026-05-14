@@ -76,10 +76,33 @@ async def _resolve_model_pricing(config: EvalConfig) -> ModelPricing | None:
     return pricing_by_model.get(config.model)
 
 
+def _sum_output_usage(outputs: list[RolloutOutput]) -> TokenUsage | None:
+    input_tokens = 0.0
+    output_tokens = 0.0
+    usage_seen = False
+    for output in outputs:
+        token_usage = output.get("token_usage")
+        if not isinstance(token_usage, Mapping):
+            continue
+        try:
+            input_tokens += float(token_usage.get("input_tokens", 0.0))
+            output_tokens += float(token_usage.get("output_tokens", 0.0))
+        except (TypeError, ValueError):
+            return None
+        usage_seen = True
+
+    if not usage_seen:
+        return None
+
+    return TokenUsage(input_tokens=input_tokens, output_tokens=output_tokens)
+
+
 def _attach_metadata_cost(
-    metadata: GenerateMetadata, model_pricing: ModelPricing | None
+    metadata: GenerateMetadata,
+    model_pricing: ModelPricing | None,
+    outputs: list[RolloutOutput],
 ) -> EvalCost | None:
-    cost = compute_eval_cost(metadata.get("usage"), model_pricing)
+    cost = compute_eval_cost(_sum_output_usage(outputs), model_pricing)
     if cost is None:
         metadata.pop("cost", None)
         return None
@@ -100,7 +123,7 @@ def _with_metadata_cost(
         new_outputs: list[RolloutOutput],
         metadata: GenerateMetadata,
     ) -> None:
-        _attach_metadata_cost(metadata, model_pricing)
+        _attach_metadata_cost(metadata, model_pricing, all_outputs)
 
     if on_progress is None:
         return [attach_cost]
@@ -829,7 +852,7 @@ def print_usage(results: GenerateOutputs):
     if isinstance(cost, Mapping):
         total_usd = cost.get("total_usd")
         if isinstance(total_usd, int | float):
-            print(f"cost: {format_cost_usd(float(total_usd))}")
+            print(f"cost (all): {format_cost_usd(float(total_usd))}")
 
 
 def print_results(results: GenerateOutputs, num_samples: int = 1):
@@ -1001,7 +1024,10 @@ async def run_evaluation(
         if not config.disable_env_server:
             await vf_env.stop_server()
 
-    if _attach_metadata_cost(outputs["metadata"], model_pricing) is not None:
+    if (
+        _attach_metadata_cost(outputs["metadata"], model_pricing, outputs["outputs"])
+        is not None
+    ):
         if config.save_results:
             await asyncio.to_thread(save_metadata, outputs["metadata"], results_path)
 

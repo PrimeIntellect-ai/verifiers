@@ -406,7 +406,7 @@ class EvalDisplay(BaseDisplay):
         if out is not None:
             kv["final_output"] = format_numeric(out)
         if cost is not None:
-            kv["cost"] = format_cost_usd(cost["total_usd"])
+            kv["cost (all)"] = format_cost_usd(cost["total_usd"])
         return make_aligned_row(
             make_kv_line(kv, section_label="usage"),
             Text(),
@@ -1010,7 +1010,7 @@ class EvalDisplay(BaseDisplay):
             for env_state in self.state.envs.values()
         )
         if show_cost:
-            table.add_column("cost", justify="center")
+            table.add_column("cost (all)", justify="center")
         table.add_column("errors", justify="center")
         table.add_column("time", justify="center")
 
