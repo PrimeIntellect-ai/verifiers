@@ -99,6 +99,10 @@ Environments built with Verifiers are self-contained Python modules. To initiali
 ```bash
 prime env init my-env # creates a new template in ./environments/my_env
 ```
+Add an explicit harness loader when the environment owns harness behavior:
+```bash
+prime env init my-env --with-harness
+```
 For OpenEnv integration, use:
 ```bash
 prime env init my-openenv --openenv
@@ -116,7 +120,9 @@ environments/my_env/
 └── README.md           # Documentation
 ```
 
-Environment modules should expose a `load_environment` function which returns an instance of the Environment object, and which can accept custom arguments. For example: 
+Environment modules should expose a `load_environment` function which returns an
+environment object. For simple legacy environments, this can still be a direct
+constructor:
 ```python
 # my_env.py
 import verifiers as vf
@@ -148,7 +154,7 @@ def source():
 async def contains_answer(task, state) -> float:
     return float(task["answer"] in str(state.get("completion") or ""))
 
-def load_taskset(config: vf.TasksetConfig | None = None):
+def load_taskset(config: vf.TasksetConfig):
     return vf.Taskset(source=source, rewards=[contains_answer], config=config)
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
@@ -169,8 +175,8 @@ env = vf.Env(
 ```
 
 The same environment package is the unit used by evals and `prime-rl`. The
-trainer owns model, endpoint, sampling, and rollout count; v1-specific taskset
-and harness options stay under `env.taskset` and `env.harness`:
+trainer owns model, endpoint, sampling, and rollout count; v1-specific options
+stay on the taskset or harness config that owns them:
 
 ```toml
 # configs/rl/my-v1-env.toml
@@ -185,11 +191,11 @@ max_tokens = 4096
 [[env]]
 id = "my-env"
 
-[env.args]
-arg1 = "non-th-arg"
-
 [env.harness]
 max_turns = 1
+
+[env.taskset]
+split = "train"
 
 [env.taskset.scoring.contains_answer]
 weight = 1.0

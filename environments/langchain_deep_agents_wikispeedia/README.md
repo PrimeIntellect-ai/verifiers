@@ -35,23 +35,23 @@ Configure model and difficulty band:
 prime eval run langchain-deep-agents-wikispeedia \
   -m openai/gpt-4.1-mini \
   -n 20 -r 3 -t 4096 -T 0.7 \
-  -a '{"min_path_length": 4, "max_path_length": 6, "max_turns": 40}'
+  -a '{"config": {"taskset": {"min_path_length": 4, "max_path_length": 6, "max_turns": 40}}}'
 ```
 
 Disable `go_back` (force planning over backtracking):
 ```bash
 prime eval run langchain-deep-agents-wikispeedia \
   -m openai/gpt-4.1-mini -n 20 -r 3 \
-  -a '{"allow_go_back": false}'
+  -a '{"config": {"taskset": {"allow_go_back": false}}}'
 ```
 
 Notes:
 - The first run downloads ~5MB of SNAP data into `~/.cache/wikispeedia` (override with `cache_dir`).
 - Set `OPENAI_API_KEY` (or whatever the policy endpoint expects) for the agent.
 
-### Environment Arguments
+### Taskset Config
 
-| Arg | Type | Default | Description |
+| Field | Type | Default | Description |
 | --- | ---- | ------- | ----------- |
 | `cache_dir` | str \| None | `None` | SNAP cache directory (defaults to `~/.cache/wikispeedia`). |
 | `min_path_length` | int | `3` | Drop pairs with shortest path shorter than this. |
@@ -63,9 +63,15 @@ Notes:
 | `links_only` | bool | `False` | Render articles as just the link menu (ablation: tests whether the agent navigates from semantic content or link names alone). |
 | `allow_go_back` | bool | `True` | Expose the `go_back` tool. |
 | `max_turns` | int | `50` | Per-rollout turn cap. |
-| `timeout_seconds` | float | `1200.0` | Per-rollout wall-clock cap. |
 | `efficiency_weight` | float | `0.0` | If `> 0`, mix `path_efficiency` into the reward at this weight (a near-optimal route earns up to `1 + efficiency_weight`; a wanderer that reaches the target still earns `1`). Default `0.0` keeps reward as pure binary reachability. |
 | `stratify_path_length` | bool | `True` | Take equal counts at each shortest-path bucket inside `[min_path_length, max_path_length]`, capped at the smallest non-empty bucket. The SNAP graph's natural distribution heavily skews toward the lower end of any band (4-6 → 83% sp=4); without stratification the policy over-trains on the trivial floor. Set `False` to recover the natural distribution. |
+
+### Harness Config
+
+| Field | Type | Default | Description |
+| --- | ---- | ------- | ----------- |
+| `max_turns` | int | `50` | LangChain recursion limit fallback when runtime config does not provide one. |
+| `timeout_seconds` | float | `1200.0` | Per-rollout wall-clock cap. |
 
 ### Metrics
 | Metric | Meaning |

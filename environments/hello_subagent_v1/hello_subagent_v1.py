@@ -73,7 +73,7 @@ def load_toolset():
     )
 
 
-def load_taskset(config: vf.TasksetConfig | None = None):
+def load_taskset(config: vf.TasksetConfig):
     return vf.Taskset(
         source=source,
         system_prompt=(
@@ -86,7 +86,7 @@ def load_taskset(config: vf.TasksetConfig | None = None):
     )
 
 
-def load_harness(config: vf.HarnessConfig | None = None):
+def load_harness(config: vf.HarnessConfig):
     return vf.Harness(
         toolsets=[load_toolset()],
         metrics=[subagent_calls],

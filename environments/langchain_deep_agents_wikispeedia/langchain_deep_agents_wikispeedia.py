@@ -48,6 +48,39 @@ tools at that point and reply with a brief confirmation."""
 SYSTEM_PROMPT = system_prompt()
 
 
+class WikispeediaTasksetConfig(vf.TasksetConfig):
+    cache_dir: str | None = None
+    min_path_length: int = 3
+    max_path_length: int = 6
+    train_size: int = 50_000
+    eval_size: int = 1_000
+    eval_target_fraction: float = 0.1
+    split_seed: int = 0
+    links_only: bool = False
+    allow_go_back: bool = True
+    max_turns: int = 50
+    efficiency_weight: float = 0.0
+    stratify_path_length: bool = True
+
+
+class WikispeediaHarnessConfig(vf.HarnessConfig):
+    max_turns: int = 50
+    timeout_seconds: float = 1200.0
+
+
+class WikispeediaEnvConfig(vf.EnvConfig):
+    taskset: WikispeediaTasksetConfig
+    harness: WikispeediaHarnessConfig
+
+
+class WikispeediaTaskset(vf.Taskset):
+    config_type = WikispeediaTasksetConfig
+
+
+class WikispeediaHarness(vf.Harness):
+    config_type = WikispeediaHarnessConfig
+
+
 def format_article(wiki: WikiGraph, article: str, links_only: bool = False) -> str:
     links = wiki.get_links(article)
     links_str = ", ".join(links) if links else "(no outgoing links)"
@@ -438,52 +471,38 @@ def make_langchain_deep_agents_program(
     return run_langchain_deep_agents_wikispeedia_program
 
 
-def load_taskset(
-    cache_dir: str | None = None,
-    min_path_length: int = 3,
-    max_path_length: int = 6,
-    train_size: int = 50_000,
-    eval_size: int = 1_000,
-    eval_target_fraction: float = 0.1,
-    split_seed: int = 0,
-    links_only: bool = False,
-    allow_go_back: bool = True,
-    max_turns: int = 50,
-    efficiency_weight: float = 0.0,
-    stratify_path_length: bool = True,
-    config: vf.TasksetConfig | None = None,
-) -> vf.Taskset:
+def load_taskset(config: WikispeediaTasksetConfig) -> WikispeediaTaskset:
     pair_cache: dict[str, tuple[list[WikiPair], list[WikiPair]]] = {}
 
     def pairs() -> tuple[list[WikiPair], list[WikiPair]]:
         if "pairs" not in pair_cache:
-            pair_cache["pairs"] = load_wiki_graph(cache_dir).split_pairs(
-                train_size=train_size,
-                eval_size=eval_size,
-                min_dist=min_path_length,
-                max_dist=max_path_length,
-                eval_target_fraction=eval_target_fraction,
-                seed=split_seed,
-                stratify=stratify_path_length,
+            pair_cache["pairs"] = load_wiki_graph(config.cache_dir).split_pairs(
+                train_size=config.train_size,
+                eval_size=config.eval_size,
+                min_dist=config.min_path_length,
+                max_dist=config.max_path_length,
+                eval_target_fraction=config.eval_target_fraction,
+                seed=config.split_seed,
+                stratify=config.stratify_path_length,
             )
         return pair_cache["pairs"]
 
     def build_train() -> Dataset:
         train, _ = pairs()
         return build_dataset(
-            load_wiki_graph(cache_dir),
+            load_wiki_graph(config.cache_dir),
             train,
-            links_only=links_only,
-            max_turns=max_turns,
+            links_only=config.links_only,
+            max_turns=config.max_turns,
         )
 
     def build_eval() -> Dataset:
         _, eval_ = pairs()
         return build_dataset(
-            load_wiki_graph(cache_dir),
+            load_wiki_graph(config.cache_dir),
             eval_,
-            links_only=links_only,
-            max_turns=max_turns,
+            links_only=config.links_only,
+            max_turns=config.max_turns,
         )
 
     rewards = [reached_target]
@@ -499,81 +518,50 @@ def load_taskset(
             for name in sorted(DEEP_AGENT_TOOLS | WIKISPEEDIA_TOOLS)
         ],
     ]
-    if efficiency_weight > 0:
+    if config.efficiency_weight > 0:
 
         async def weighted_path_efficiency(task: vf.Task, state: vf.State) -> float:
             return await path_efficiency(task, state)
 
         weighted_path_efficiency.__name__ = "path_efficiency"
-        rewards.append(vf.reward(weight=efficiency_weight)(weighted_path_efficiency))
+        rewards.append(
+            vf.reward(weight=config.efficiency_weight)(weighted_path_efficiency)
+        )
     else:
         metrics.insert(0, path_efficiency)
 
-    return vf.Taskset(
+    return WikispeediaTaskset(
         source=build_train,
         eval_source=build_eval,
         taskset_id="langchain-deep-agents-wikispeedia",
-        system_prompt=system_prompt(allow_go_back=allow_go_back),
-        toolsets=[load_toolset(cache_dir=cache_dir, allow_go_back=allow_go_back)],
+        system_prompt=system_prompt(allow_go_back=config.allow_go_back),
+        toolsets=[
+            load_toolset(
+                cache_dir=config.cache_dir,
+                allow_go_back=config.allow_go_back,
+            )
+        ],
         rewards=rewards,
         metrics=metrics,
         config=config,
     )
 
 
-def load_harness(
-    max_turns: int = 50,
-    timeout_seconds: float = 1200.0,
-    config: vf.HarnessConfig | None = None,
-) -> vf.Harness:
-    return vf.Harness(
+def load_harness(config: WikispeediaHarnessConfig) -> WikispeediaHarness:
+    return WikispeediaHarness(
         program=make_langchain_deep_agents_program(
-            max_turns=max_turns,
-            timeout_seconds=timeout_seconds,
+            max_turns=config.max_turns,
+            timeout_seconds=config.timeout_seconds,
         ),
-        max_turns=max_turns,
         updates=[restore_agent_completion],
         config=config,
     )
 
 
-def load_environment(
-    config: vf.EnvConfig,
-    cache_dir: str | None = None,
-    min_path_length: int = 3,
-    max_path_length: int = 6,
-    train_size: int = 50_000,
-    eval_size: int = 1_000,
-    eval_target_fraction: float = 0.1,
-    split_seed: int = 0,
-    links_only: bool = False,
-    allow_go_back: bool = True,
-    max_turns: int = 50,
-    timeout_seconds: float = 1200.0,
-    efficiency_weight: float = 0.0,
-    stratify_path_length: bool = True,
-) -> vf.Env:
+def load_environment(config: WikispeediaEnvConfig) -> vf.Env:
     """Load the v1 Wikispeedia taskset with a LangChain Deep Agents harness."""
 
     return vf.Env(
-        taskset=load_taskset(
-            cache_dir=cache_dir,
-            min_path_length=min_path_length,
-            max_path_length=max_path_length,
-            train_size=train_size,
-            eval_size=eval_size,
-            eval_target_fraction=eval_target_fraction,
-            split_seed=split_seed,
-            links_only=links_only,
-            allow_go_back=allow_go_back,
-            max_turns=max_turns,
-            efficiency_weight=efficiency_weight,
-            stratify_path_length=stratify_path_length,
-            config=config.taskset,
-        ),
-        harness=load_harness(
-            max_turns=max_turns,
-            timeout_seconds=timeout_seconds,
-            config=config.harness,
-        ),
+        taskset=load_taskset(config=config.taskset),
+        harness=load_harness(config=config.harness),
     )

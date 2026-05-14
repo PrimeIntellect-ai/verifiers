@@ -28,7 +28,7 @@ def _load_opencode_module() -> Any:
 def test_load_environment_uses_v1_taskset_and_harness() -> None:
     module = _load_opencode_module()
 
-    env = module.load_environment(config=vf.EnvConfig())
+    env = module.load_environment(config=module.OpenCodeHarborEnvConfig())
 
     assert isinstance(env, vf.Env)
     assert isinstance(env.taskset, vf.HarborTaskset)
@@ -52,7 +52,7 @@ def test_load_environment_accepts_v1_taskset_and_harness_config() -> None:
     module = _load_opencode_module()
 
     env = module.load_environment(
-        config=vf.EnvConfig(
+        config=module.OpenCodeHarborEnvConfig(
             taskset={
                 "task_names": ["task-a"],
                 "cpu_cores": 1.5,

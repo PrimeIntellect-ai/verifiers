@@ -6,6 +6,16 @@ from verifiers.utils.data_utils import load_example_dataset
 ANSWER_RE = re.compile(r"^\s*ANSWER\s*:?\s*(.+?)\s*$", re.IGNORECASE)
 
 
+class OpenAIAgentsTasksetConfig(vf.TasksetConfig):
+    num_train_examples: int = 50
+    num_eval_examples: int = 20
+
+
+class OpenAIAgentsEnvConfig(vf.EnvConfig):
+    taskset: OpenAIAgentsTasksetConfig
+    harness: vf.HarnessConfig
+
+
 def calculate(expression: str) -> str:
     """Evaluate a math expression and return the result."""
     try:
@@ -103,35 +113,23 @@ def answer_reward(task: vf.Task, state: vf.State) -> float:
     return answers_match(agent_answer, str(task.get("answer", "")))
 
 
-def load_taskset(
-    num_train_examples: int = 50,
-    num_eval_examples: int = 20,
-    config: vf.TasksetConfig | None = None,
-) -> vf.Taskset:
+def load_taskset(config: OpenAIAgentsTasksetConfig) -> vf.Taskset:
     return vf.Taskset(
-        source=lambda: load_rows("train", num_train_examples),
-        eval_source=lambda: load_rows("test", num_eval_examples),
+        source=lambda: load_rows("train", config.num_train_examples),
+        eval_source=lambda: load_rows("test", config.num_eval_examples),
         taskset_id="gsm8k-openai-agents",
         rewards=[answer_reward],
         config=config,
     )
 
 
-def load_harness(config: vf.HarnessConfig | None = None) -> vf.Harness:
+def load_harness(config: vf.HarnessConfig) -> vf.Harness:
     return vf.Harness(program=run_openai_agents_program, config=config)
 
 
-def load_environment(
-    config: vf.EnvConfig,
-    num_train_examples: int = 50,
-    num_eval_examples: int = 20,
-) -> vf.Env:
+def load_environment(config: OpenAIAgentsEnvConfig) -> vf.Env:
     """Load the OpenAI Agents SDK V1 taskset/harness example environment."""
     return vf.Env(
-        taskset=load_taskset(
-            num_train_examples=num_train_examples,
-            num_eval_examples=num_eval_examples,
-            config=config.taskset,
-        ),
-        harness=load_harness(config.harness),
+        taskset=load_taskset(config=config.taskset),
+        harness=load_harness(config=config.harness),
     )

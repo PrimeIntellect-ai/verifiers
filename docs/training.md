@@ -90,11 +90,11 @@ max_tokens = 4096
 [[env]]
 id = "primeintellect/my-v1-env"
 
-[env.args]
-arg1 = "non-th-arg"
-
 [env.harness]
 max_turns = 8
+
+[env.taskset]
+split = "train"
 
 [env.taskset.toolsets.search]
 tools = ["my_env.tools:search"]

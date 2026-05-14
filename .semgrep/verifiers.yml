@@ -5,10 +5,19 @@ rules:
     message: Do not use `from __future__ import annotations`; quote only the specific forward references that need it.
     pattern: from __future__ import annotations
 
+  - id: verifiers-no-skip-validation
+    languages: [python]
+    severity: ERROR
+    message: SkipValidation hides type errors; use precise types and validators, or add a narrow nosemgrep waiver with a protocol-boundary rationale.
+    pattern-either:
+      - pattern: SkipValidation[$TYPE]
+      - pattern: $P.SkipValidation[$TYPE]
+      - pattern: from pydantic import SkipValidation
+
   - id: verifiers-v1-config-param-one-type
     languages: [python]
     severity: ERROR
-    message: Public v1 `config` parameters must be one concrete config type or `None`; keep raw mappings at explicit config-loader boundaries.
+    message: Public v1 `config` parameters must be one concrete config type; keep raw mappings at explicit config-loader boundaries.
     paths:
       include:
         - /verifiers/v1/**/*.py
@@ -23,6 +32,27 @@ rules:
       - metavariable-regex:
           metavariable: $ANNOT
           regex: "(Any|ConfigMap|Mapping\\[str, object\\]|dict\\[str, object\\]|.*\\|.*\\|.*)"
+
+  - id: verifiers-v1-loaders-require-config
+    languages: [python]
+    severity: ERROR
+    message: Public `load_taskset` and `load_harness` loaders must require one concrete config object; defaults are supplied by the typed EnvConfig.
+    paths:
+      include:
+        - /environments/**/*.py
+    pattern-either:
+      - pattern: |
+          def load_taskset(..., config: $CONFIG | None = None, ...):
+              ...
+      - pattern: |
+          def load_harness(..., config: $CONFIG | None = None, ...):
+              ...
+      - pattern: |
+          def load_taskset(..., config: Optional[$CONFIG] = None, ...):
+              ...
+      - pattern: |
+          def load_harness(..., config: Optional[$CONFIG] = None, ...):
+              ...
 
   - id: verifiers-no-private-framework-classes
     languages: [python]

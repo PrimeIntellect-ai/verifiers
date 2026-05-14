@@ -50,7 +50,7 @@ async def contains_answer(task, state) -> float:
     return float(task["answer"] in str(state.get("completion") or ""))
 
 
-def load_taskset(config: vf.TasksetConfig | None = None):
+def load_taskset(config: vf.TasksetConfig):
     return vf.Taskset(source=source, rewards=[contains_answer], config=config)
 
 
@@ -74,8 +74,7 @@ class GSM8KTasksetConfig(vf.TasksetConfig):
     split: str = "train"
 
 
-def load_taskset(config: vf.TasksetConfig | None = None):
-    config = GSM8KTasksetConfig(config)
+def load_taskset(config: GSM8KTasksetConfig):
     dataset_name = config.dataset_name
     split = config.split
 
@@ -273,7 +272,7 @@ Create a harness when rollout behavior is no longer just "call the model with
 the resolved taskset tools."
 
 ```python
-def load_harness(config: vf.HarnessConfig | None = None):
+def load_harness(config: vf.HarnessConfig):
     return vf.Harness(
         program={"fn": "my_env.program:run"},
         config=config,
@@ -423,8 +422,7 @@ def load_environment(config: vf.EnvConfig):
     )
 ```
 
-Eval config passes named environment args through `args` and v1 config through
-the `taskset`/`harness` sections:
+Eval config passes v1 config through the `taskset`/`harness` sections:
 
 ```toml
 model = "openai/gpt-5.4-mini"
@@ -442,47 +440,32 @@ max_turns = 4
 weight = 0.5
 ```
 
-For concise named args, define one typed args object and pass it as `args`.
-`EnvConfig.args` is intentionally user-defined; environment packages decide how
-those args flow into taskset and harness construction.
+For environment-specific settings, define leaf fields on the taskset or harness
+config that owns them. An `EnvConfig` subclass only fixes the concrete taskset
+and harness config types for the loader.
 
 ```python
-class MyEnvArgsConfig(vf.Config):
-    split: str = "train"
-    max_turns: int = 10
-
-
 class MyTasksetConfig(vf.TasksetConfig):
     split: str = "train"
 
 
-def load_taskset(config: vf.TasksetConfig | None = None):
-    config = MyTasksetConfig(config)
+class MyEnvConfig(vf.EnvConfig):
+    taskset: MyTasksetConfig
+    harness: vf.HarnessConfig
+
+
+def load_taskset(config: MyTasksetConfig):
     ...
 
 
-def load_harness(config: vf.HarnessConfig | None = None):
-    config = vf.HarnessConfig(config)
+def load_harness(config: vf.HarnessConfig):
     ...
 
 
-def load_environment(
-    config: vf.EnvConfig,
-    split: str = "train",
-    max_turns: int = 10,
-):
-    config = vf.EnvConfig(
-        config,
-        args=MyEnvArgsConfig(split=split, max_turns=max_turns),
-    )
-    args = MyEnvArgsConfig(config.args)
+def load_environment(config: MyEnvConfig):
     return vf.Env(
-        taskset=load_taskset(
-            config=MyTasksetConfig(config.taskset, split=args.split)
-        ),
-        harness=load_harness(
-            config=vf.HarnessConfig(config.harness, max_turns=args.max_turns)
-        ),
+        taskset=load_taskset(config=config.taskset),
+        harness=load_harness(config=config.harness),
     )
 ```
 
@@ -500,11 +483,11 @@ max_tokens = 4096
 [[env]]
 id = "primeintellect/my-v1-env"
 
-[env.args]
-arg1 = "non-th-arg"
-
 [env.harness]
 max_turns = 8
+
+[env.taskset]
+split = "train"
 
 [env.taskset.toolsets.search]
 tools = ["my_env.tools:search"]

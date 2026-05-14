@@ -139,6 +139,11 @@ class ParallelSandboxHarnessConfig(vf.HarnessConfig):
     max_turns: int = 4
 
 
+class ParallelSandboxEnvConfig(vf.EnvConfig):
+    taskset: ParallelSandboxTasksetConfig
+    harness: ParallelSandboxHarnessConfig
+
+
 async def bash(command: str, sandbox, state) -> str:
     """Run a bash command in the active program sandbox."""
     result = await sandbox.execute(command, timeout=120, working_dir="/tmp")
@@ -339,12 +344,7 @@ def source(num_examples: int = -1):
         }
 
 
-def load_taskset(
-    num_examples: int | None = None,
-    config: vf.TasksetConfig | None = None,
-) -> vf.Taskset:
-    config = ParallelSandboxTasksetConfig(config, num_examples=num_examples)
-
+def load_taskset(config: ParallelSandboxTasksetConfig) -> vf.Taskset:
     def load_rows():
         return source(num_examples=config.num_examples)
 
@@ -360,11 +360,7 @@ def load_taskset(
     )
 
 
-def load_harness(
-    max_turns: int | None = None,
-    config: vf.HarnessConfig | None = None,
-) -> vf.Harness:
-    config = ParallelSandboxHarnessConfig(config, max_turns=max_turns)
+def load_harness(config: ParallelSandboxHarnessConfig) -> vf.Harness:
     return vf.Harness(
         program={"sandbox": True, "channels": "callable"},
         sandbox=PROGRAM_SANDBOX,
@@ -373,31 +369,8 @@ def load_harness(
     )
 
 
-def load_environment(
-    num_examples: int = -1,
-    max_turns: int = 4,
-    *,
-    config: vf.EnvConfig,
-) -> vf.Env:
-    config = vf.EnvConfig(
-        config,
-        taskset=ParallelSandboxTasksetConfig(num_examples=num_examples),
-        harness=ParallelSandboxHarnessConfig(max_turns=max_turns),
-    )
+def load_environment(config: ParallelSandboxEnvConfig) -> vf.Env:
     return vf.Env(
         taskset=load_taskset(config=config.taskset),
         harness=load_harness(config=config.harness),
-    )
-
-
-def load_v1_environment(
-    num_examples: int = -1,
-    max_turns: int = 4,
-    *,
-    config: vf.EnvConfig,
-) -> vf.Env:
-    return load_environment(
-        num_examples=num_examples,
-        max_turns=max_turns,
-        config=config,
     )

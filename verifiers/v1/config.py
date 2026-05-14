@@ -7,10 +7,11 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
-    SkipValidation,
+    ValidationInfo,
     field_validator,
     model_validator,
 )
+from pydantic_core import PydanticUndefined
 from typing_extensions import Self
 
 from .types import (
@@ -66,6 +67,23 @@ else:
 class Config(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True, extra="forbid")
     supports_config_ref: ClassVar[bool] = False
+
+    @classmethod
+    def __pydantic_init_subclass__(cls, **kwargs: object) -> None:
+        super().__pydantic_init_subclass__(**kwargs)
+        changed = False
+        for field in cls.model_fields.values():
+            annotation = field.annotation
+            if (
+                field.is_required()
+                and isinstance(annotation, type)
+                and issubclass(annotation, Config)
+            ):
+                field.default = PydanticUndefined
+                field.default_factory = annotation
+                changed = True
+        if changed:
+            cls.model_rebuild(force=True)
 
     def __init__(self, config: ConfigSource | None = None, /, **data: object):
         super().__init__(**type(self)._merge_config_data(config, data))
@@ -322,47 +340,68 @@ class HarnessConfig(Config):
 
 
 class EnvConfig(Config):
-    args: SkipValidation[BaseModel | ConfigMap] | None = None
-    taskset: SkipValidation[BaseModel | ConfigMap] | None = None
-    harness: SkipValidation[BaseModel | ConfigMap] | None = None
+    taskset: TasksetConfig = Field(default_factory=TasksetConfig)
+    harness: HarnessConfig = Field(default_factory=HarnessConfig)
 
-    @field_validator("args")
     @classmethod
-    def validate_args(cls, value: object) -> object:
-        if value is not None:
-            try:
-                config_data(value)
-            except TypeError as exc:
-                raise ValueError(str(exc)) from exc
-        return value
+    def __pydantic_init_subclass__(cls, **kwargs: object) -> None:
+        super().__pydantic_init_subclass__(**kwargs)
+        extra_fields = set(cls.model_fields) - set(EnvConfig.model_fields)
+        if extra_fields:
+            raise TypeError(
+                f"{cls.__name__} defines unsupported root env config fields: "
+                f"{', '.join(sorted(extra_fields))}. Put env-specific settings on "
+                "a TasksetConfig or HarnessConfig instead."
+            )
+        for field_name, expected_type in (
+            ("taskset", TasksetConfig),
+            ("harness", HarnessConfig),
+        ):
+            annotation = cls.model_fields[field_name].annotation
+            if not (
+                isinstance(annotation, type) and issubclass(annotation, expected_type)
+            ):
+                raise TypeError(
+                    f"{cls.__name__}.{field_name} must be typed as a "
+                    f"{expected_type.__name__} subclass."
+                )
 
-    @field_validator("taskset", "harness")
+    @field_validator("taskset", "harness", mode="before")
     @classmethod
-    def validate_child_config(cls, value: object) -> object:
-        if value is not None:
-            try:
-                config_data(value)
-            except TypeError as exc:
-                raise ValueError(str(exc)) from exc
+    def validate_child_config(cls, value: object, info: ValidationInfo) -> object:
+        if value is None:
+            raise ValueError(
+                f"EnvConfig.{info.field_name} cannot be None. "
+                "Omit the section to use the default config."
+            )
+        try:
+            config_data(value)
+        except TypeError as exc:
+            raise ValueError(str(exc)) from exc
         return value
 
     @classmethod
     def _merge_config_data(
         cls, config: ConfigSource | None, data: ConfigData
     ) -> ConfigData:
-        data = omit_none(data)
+        data = dict(data)
         if config is None:
             return data
         base = config_data(config, cls)
-        for section in ("args", "taskset", "harness"):
+        for section in ("taskset", "harness"):
+            default_provided = section in data
+            override_provided = section in base
             default = data.get(section)
             override = base.pop(section, None)
-            if default is None:
-                if override is not None:
-                    data[section] = override
+            if default_provided:
+                if override_provided:
+                    if default is None or override is None:
+                        data[section] = None
+                    else:
+                        data[section] = merge_child_config(default, override)
                 continue
-            if override is not None:
-                data[section] = merge_child_config(default, override)
+            if override_provided:
+                data[section] = override
         base.update(data)
         return base
 

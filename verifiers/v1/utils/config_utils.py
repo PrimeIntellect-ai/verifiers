@@ -24,7 +24,7 @@ def config_data(value: object, target: type[BaseModel] | None = None) -> ConfigD
     if value is None:
         data: ConfigData = {}
     elif isinstance(value, BaseModel):
-        data = value.model_dump(exclude_none=True, exclude_unset=True)
+        data = model_config_data(value)
         if target is not None:
             data = {
                 key: item for key, item in data.items() if key in target.model_fields
@@ -34,6 +34,29 @@ def config_data(value: object, target: type[BaseModel] | None = None) -> ConfigD
     else:
         raise TypeError("Config must be a mapping or config object.")
     return data
+
+
+def model_config_data(value: BaseModel) -> ConfigData:
+    data: ConfigData = {}
+    for key in value.model_fields_set:
+        item = getattr(value, key)
+        if item is not None:
+            data[key] = config_dump_value(item)
+    return data
+
+
+def config_dump_value(value: object) -> object:
+    if isinstance(value, BaseModel):
+        return model_config_data(value)
+    if isinstance(value, Mapping):
+        return {
+            key: config_dump_value(item)
+            for key, item in string_mapping(cast(ConfigInputMap, value)).items()
+            if item is not None
+        }
+    if isinstance(value, list | tuple):
+        return [config_dump_value(item) for item in value]
+    return value
 
 
 def omit_none(data: ConfigMap) -> ConfigData:

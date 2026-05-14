@@ -52,6 +52,10 @@ Environments built with Verifiers are self-contained Python modules. To initiali
 ```bash
 prime env init my-env # creates a new template in ./environments/my_env
 ```
+Add an explicit harness loader when the environment owns harness behavior:
+```bash
+prime env init my-env --with-harness
+```
 
 This will create a new module called `my_env` with a basic environment template.
 ```
@@ -61,7 +65,9 @@ environments/my_env/
 └── README.md           # Documentation
 ```
 
-Environment modules should expose a `load_environment` function which returns an instance of the Environment object, and which can accept custom arguments. For example: 
+Environment modules should expose a `load_environment` function which returns an
+environment object. For simple legacy environments, this can still be a direct
+constructor:
 ```python
 # my_env.py
 import verifiers as vf
@@ -93,7 +99,7 @@ def source():
 async def contains_answer(task, state) -> float:
     return float(task["answer"] in str(state.get("completion") or ""))
 
-def load_taskset(config: vf.TasksetConfig | None = None):
+def load_taskset(config: vf.TasksetConfig):
     return vf.Taskset(source=source, rewards=[contains_answer], config=config)
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:

@@ -99,9 +99,9 @@ prime eval run configs/eval/my-benchmark.toml
 3. Make config files the default for benchmark sweeps, multi-model comparisons, and recurring reports.
 
 ## Common Evaluation Patterns
-1. Pass args to `load_environment()`:
+1. Override v1 taskset and harness config through explicit child sections:
 ```bash
-prime eval run my-env -a '{"difficulty":"hard"}'
+prime eval run my-env -a '{"config":{"taskset":{"difficulty":"hard"},"harness":{"max_turns":20}}}'
 ```
 2. Override constructor kwargs:
 ```bash
@@ -146,10 +146,10 @@ env_id = "my-env"
 [ablation.sweep]
 temperature = [0.0, 0.5, 1.0]
 
-[ablation.sweep.args]
+[ablation.sweep.taskset]
 difficulty = ["easy", "hard"]
 ```
-This generates the cartesian product (6 configs in this example). Use `--abbreviated-summary` (`-A`) for compact ablation results.
+This generates the cartesian product (6 configs in this example). Sweep v1 environment-owned settings under `taskset` or `harness`, not as root args. Use `--abbreviated-summary` (`-A`) for compact ablation results.
 
 ## Inspect Saved Results
 1. Browse locally saved runs:

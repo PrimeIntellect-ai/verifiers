@@ -26,7 +26,9 @@ def _load_mcp_search_module() -> Any:
 def test_mcp_search_env_is_v1_only() -> None:
     module = _load_mcp_search_module()
 
-    env = module.load_environment(config=vf.EnvConfig(), max_turns=4)
+    env = module.load_environment(
+        config=module.MCPSearchEnvConfig(taskset={"max_turns": 4})
+    )
 
     assert isinstance(env, vf.Env)
     assert isinstance(env.taskset, vf.Taskset)
@@ -40,7 +42,7 @@ def test_mcp_search_env_is_v1_only() -> None:
 def test_mcp_search_default_taskset_has_stable_non_doc_fixture() -> None:
     module = _load_mcp_search_module()
 
-    rows = module.load_taskset().rows()
+    rows = module.load_taskset(config=module.MCPSearchTasksetConfig()).rows()
 
     assert len(rows) >= 10
     assert len({row["answer"] for row in rows}) == len(rows)
@@ -52,7 +54,7 @@ def test_mcp_search_taskset_accepts_v1_taskset_config() -> None:
     module = _load_mcp_search_module()
 
     env = module.load_environment(
-        config=vf.EnvConfig(taskset={"max_turns": 3}),
+        config=module.MCPSearchEnvConfig(taskset={"max_turns": 3}),
     )
     rows = env.taskset.rows()
 
