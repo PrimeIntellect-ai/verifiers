@@ -33,6 +33,8 @@ def resolve_nemo_gym_config_path(
     if preferred.exists():
         return preferred
     configs = sorted(config_dir.glob("*.yaml"))
+    if not configs:
+        raise FileNotFoundError(f"No NeMo Gym configs found in: {config_dir}")
     if len(configs) == 1:
         return configs[0]
     raise ValueError(

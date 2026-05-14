@@ -28,6 +28,8 @@ DEFAULT_NEMO_GYM_MODEL_CONFIG = (
     "responses_api_models/openai_model/configs/openai_model.yaml"
 )
 PROXY_MODEL_NAME = "verifiers-nemo-gym-proxy"
+ROLLOUT_ID_HEADER = "x-verifiers-rollout-id"
+FORWARD_REQUEST_HEADERS_CONFIG_KEY = "forward_request_headers"
 
 
 class NeMoGymHarnessConfig(HarnessConfig):
@@ -60,7 +62,7 @@ class NeMoGymHarness(Harness):
 
     The default runner keeps one NeMo Gym server stack alive per harness instance.
     NeMo's OpenAI-compatible model server calls a stable local proxy, and that
-    proxy routes each model request into the active Verifiers rollout endpoint.
+    proxy routes each model request into the matching Verifiers rollout endpoint.
     """
 
     config_type = NeMoGymHarnessConfig
@@ -158,7 +160,7 @@ class PersistentNeMoGymRunner:
     """Run one NeMo Gym server stack and route model calls per rollout."""
 
     def __init__(self) -> None:
-        self._lock = asyncio.Lock()
+        self._lifecycle_lock = asyncio.Lock()
         self._helper: Any | None = None
         self._rollout_collector: Any | None = None
         self._proxy: NeMoGymModelProxy | None = None
@@ -175,27 +177,21 @@ class PersistentNeMoGymRunner:
         timeout_seconds: float | None,
         global_config: Mapping[str, object],
     ) -> Mapping[str, Any]:
-        async with self._lock:
+        async with self._lifecycle_lock:
             await self._ensure_started(
                 config_paths=config_paths,
                 global_config=global_config,
             )
-            if timeout_seconds is None:
-                return await self._run_once(
-                    row,
-                    server_name=server_name,
-                    agent_name=agent_name,
-                    endpoint_config=endpoint_config,
-                )
-            return await asyncio.wait_for(
-                self._run_once(
-                    row,
-                    server_name=server_name,
-                    agent_name=agent_name,
-                    endpoint_config=endpoint_config,
-                ),
-                timeout=timeout_seconds,
-            )
+
+        run_once = self._run_once(
+            row,
+            server_name=server_name,
+            agent_name=agent_name,
+            endpoint_config=endpoint_config,
+        )
+        if timeout_seconds is None:
+            return await run_once
+        return await asyncio.wait_for(run_once, timeout=timeout_seconds)
 
     async def _ensure_started(
         self, *, config_paths: Sequence[str], global_config: Mapping[str, object]
@@ -230,6 +226,7 @@ class PersistentNeMoGymRunner:
                 "NeMoGymHarness requires nemo-gym. Install with: uv add nemo-gym"
             ) from exc
 
+        _require_nemo_gym_header_support(RolloutCollectionHelper, nemo_server_utils)
         proxy = await self._ensure_proxy()
         config = build_nemo_gym_global_config(
             config_paths=config_paths,
@@ -285,13 +282,17 @@ class PersistentNeMoGymRunner:
             raise RuntimeError("NeMo Gym runner has not been started.")
 
         self._helper.poll()
-        async with self._proxy.activate(endpoint_config):
+        rollout_id = secrets.token_urlsafe(16)
+        async with self._proxy.activate(rollout_id, endpoint_config):
             request_row = prepare_nemo_gym_rollout_collection_row(
                 row,
                 server_name=server_name,
                 agent_name=agent_name,
             )
-            futures = self._rollout_collector.run_examples([request_row])
+            futures = self._rollout_collector.run_examples(
+                [request_row],
+                headers={ROLLOUT_ID_HEADER: rollout_id},
+            )
             try:
                 future = next(futures)
             except StopIteration as exc:
@@ -340,7 +341,7 @@ class NeMoGymModelProxy:
         self._site: web.TCPSite | None = None
         self._session: ClientSession | None = None
         self._lock = asyncio.Lock()
-        self._active_endpoint: dict[str, str] | None = None
+        self._endpoints_by_rollout_id: dict[str, dict[str, str]] = {}
 
     async def start(self) -> None:
         async with self._lock:
@@ -367,7 +368,7 @@ class NeMoGymModelProxy:
             self._runner = None
             self._site = None
             self._app = None
-            self._active_endpoint = None
+            self._endpoints_by_rollout_id.clear()
         if session is not None:
             await session.close()
         if runner is not None:
@@ -383,13 +384,13 @@ class NeMoGymModelProxy:
         }
 
     @contextlib.asynccontextmanager
-    async def activate(self, endpoint_config: Mapping[str, str]):
+    async def activate(self, rollout_id: str, endpoint_config: Mapping[str, str]):
         async with self._lock:
-            if self._active_endpoint is not None:
+            if rollout_id in self._endpoints_by_rollout_id:
                 raise RuntimeError(
-                    "NeMo Gym model proxy already has an active rollout."
+                    f"NeMo Gym model proxy already has rollout {rollout_id!r}."
                 )
-            self._active_endpoint = {
+            self._endpoints_by_rollout_id[rollout_id] = {
                 "base_url": str(endpoint_config["base_url"]),
                 "api_key": str(endpoint_config["api_key"]),
                 "model": str(endpoint_config["model"]),
@@ -398,12 +399,12 @@ class NeMoGymModelProxy:
             yield
         finally:
             async with self._lock:
-                self._active_endpoint = None
+                self._endpoints_by_rollout_id.pop(rollout_id, None)
 
     async def _handle_models(self, request: web.Request) -> web.Response:
         if not self._authorized(request):
             return web.json_response({"error": "Unauthorized"}, status=401)
-        endpoint = await self._current_endpoint()
+        endpoint = await self._endpoint_for_request(request)
         model = endpoint["model"] if endpoint is not None else PROXY_MODEL_NAME
         return web.json_response(
             {
@@ -422,9 +423,17 @@ class NeMoGymModelProxy:
     async def _handle_openai_request(self, request: web.Request) -> web.Response:
         if not self._authorized(request):
             return web.json_response({"error": "Unauthorized"}, status=401)
-        endpoint = await self._current_endpoint()
+        endpoint = await self._endpoint_for_request(request)
         if endpoint is None:
-            return web.json_response({"error": "No active rollout"}, status=503)
+            return web.json_response(
+                {
+                    "error": (
+                        f"Missing or unknown {ROLLOUT_ID_HEADER} for NeMo Gym "
+                        "model proxy request."
+                    )
+                },
+                status=409,
+            )
         session = self._session
         if session is None:
             return web.json_response({"error": "Proxy not started"}, status=503)
@@ -455,9 +464,18 @@ class NeMoGymModelProxy:
                 headers=self._response_headers(response.headers),
             )
 
-    async def _current_endpoint(self) -> dict[str, str] | None:
+    async def _endpoint_for_request(
+        self, request: web.Request
+    ) -> dict[str, str] | None:
+        rollout_id = request.headers.get(ROLLOUT_ID_HEADER)
         async with self._lock:
-            return dict(self._active_endpoint) if self._active_endpoint else None
+            if rollout_id:
+                endpoint = self._endpoints_by_rollout_id.get(rollout_id)
+                return dict(endpoint) if endpoint else None
+            if len(self._endpoints_by_rollout_id) == 1:
+                endpoint = next(iter(self._endpoints_by_rollout_id.values()))
+                return dict(endpoint)
+            return None
 
     def _authorized(self, request: web.Request) -> bool:
         auth = request.headers.get("Authorization", "")
@@ -474,6 +492,7 @@ class NeMoGymModelProxy:
                 "content-length",
                 "host",
                 "x-api-key",
+                ROLLOUT_ID_HEADER,
             }
         }
         headers["Authorization"] = f"Bearer {api_key}"
@@ -513,8 +532,54 @@ def build_nemo_gym_global_config(
     config["policy_base_url"] = str(endpoint_config["base_url"])
     config["policy_api_key"] = str(endpoint_config["api_key"])
     config["policy_model_name"] = str(endpoint_config["model"])
+    _ensure_forward_request_header(config)
     config.setdefault("head_server", {"host": "127.0.0.1", "port": get_free_port()})
     return config
+
+
+def _ensure_forward_request_header(
+    config: dict[str, object],
+    header: str = ROLLOUT_ID_HEADER,
+) -> None:
+    raw_headers = config.get(FORWARD_REQUEST_HEADERS_CONFIG_KEY)
+    if raw_headers is None:
+        config[FORWARD_REQUEST_HEADERS_CONFIG_KEY] = [header]
+        return
+    if isinstance(raw_headers, str):
+        headers = [raw_headers]
+    elif isinstance(raw_headers, Sequence):
+        headers = list(raw_headers)
+    else:
+        raise TypeError(
+            f"{FORWARD_REQUEST_HEADERS_CONFIG_KEY} must be a string or sequence."
+        )
+
+    normalized_headers = {str(value).strip().lower() for value in headers}
+    if header.lower() not in normalized_headers:
+        headers.append(header)
+    config[FORWARD_REQUEST_HEADERS_CONFIG_KEY] = headers
+
+
+def _require_nemo_gym_header_support(
+    rollout_collection_helper_cls: object,
+    server_utils_module: object,
+) -> None:
+    run_examples = getattr(rollout_collection_helper_cls, "run_examples", None)
+    parameters = (
+        inspect.signature(run_examples).parameters if callable(run_examples) else {}
+    )
+    supports_rollout_headers = "headers" in parameters
+    supports_forwarding = hasattr(
+        server_utils_module, "FORWARD_REQUEST_HEADERS_KEY_NAME"
+    )
+    if supports_rollout_headers and supports_forwarding:
+        return
+    raise RuntimeError(
+        "NeMoGymHarness requires a nemo-gym build with request header forwarding. "
+        "Install nemo-gym from a branch that supports "
+        "RolloutCollectionHelper.run_examples(headers=...) and "
+        "server_utils.forward_request_headers."
+    )
 
 
 def reset_nemo_gym_global_config(module: object) -> None:

@@ -60,7 +60,7 @@ This folder contains installable example environments that showcase common usage
   - **bfcl_v3**: BFCL v3 function-calling eval using task-local dynamic tool schemas and v1 rewards.
   - **dspy_flights**: Sandboxed DSPy flight-support `program.fn` entrypoint installed from its package `pyproject.toml` and configured against the v1 interception endpoint.
   - **hello_group_reward_v1**: Deterministic v1 reference for group updates, metrics, rewards, advantages, and cleanup.
-  - **nemo_gym_env**: Minimal v1 example that wraps a PyPI NeMo Gym task with `NeMoGymTaskset` and `NeMoGymHarness`.
+  - **nemo_gym_env**: Minimal v1 example that wraps a packaged NeMo Gym task with `NeMoGymTaskset` and `NeMoGymHarness`.
   - **tau2_bench_v1**: `tau2-bench-v1` τ²-bench taskset/user/tool pattern on the v1 harness runtime.
 
 ### Composition
@@ -97,7 +97,7 @@ This folder contains installable example environments that showcase common usage
 - **RLM (recursive LLM)**: `rlm_secrets`
 - **Taskset/Harness v1**: use this pattern for new environments that need reusable tasksets, reusable harnesses, framework programs, endpoint interception, or sandboxed Python/command programs. Examples include `dspy_rlm`, `openai_agents_env`, `langchain_deep_agents_wikispeedia`, `reverse_text`, `alphabet_sort`, `wiki_search`, `math_python`, `mcp_search_env`, `opencode_harbor`, `bfcl_v3`, `hello_subagent_v1`, `nested_harness_v1`, `hello_self_judge_v1`, `hello_parallel_sandbox_v1`, `hello_group_reward_v1`, `hello_rlm_v1`, `rlm_swe_v1`, `dspy_flights`, `nemo_gym_env`, and `tau2-bench-v1`.
   - `opencode_harbor` uses the packaged `vf.HarborTaskset` + `vf.OpenCode` boundary. These reusable implementations live under `verifiers.v1.packages` and are re-exported from `verifiers.v1`.
-  - `nemo_gym_env` uses the packaged `vf.NeMoGymTaskset` + `vf.NeMoGymHarness` boundary to run a PyPI NeMo Gym environment while preserving Verifiers rollout interception.
+  - `nemo_gym_env` uses the packaged `vf.NeMoGymTaskset` + `vf.NeMoGymHarness` boundary to run a NeMo Gym environment while preserving Verifiers rollout interception.
 - **Environment and rubric composition**: `math_group`, `math_python`, `wiki_search`
 - **Procedural datasets**: `reasoning_gym_env`
 - **Multimodal**: `mmmu`

@@ -33,11 +33,6 @@ from .packages.harnesses import (
     Pi,
     RLM,
 )
-from .packages.nemo_gym import (
-    infer_nemo_gym_agent_from_config,
-    resolve_nemo_gym_config_path,
-    resolve_nemo_gym_data_path,
-)
 from .utils.scoring_utils import (
     add_metric,
     add_reward,
@@ -103,7 +98,4 @@ __all__ = [
     "stop",
     "teardown",
     "update",
-    "infer_nemo_gym_agent_from_config",
-    "resolve_nemo_gym_config_path",
-    "resolve_nemo_gym_data_path",
 ]

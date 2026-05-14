@@ -2,7 +2,7 @@
 
 ### Overview
 - **Environment ID**: `nemo-gym-env`
-- **Short description**: Minimal v1 Verifiers environment that runs a PyPI NeMo Gym task through `NeMoGymTaskset` and `NeMoGymHarness`.
+- **Short description**: Minimal v1 Verifiers environment that runs a NeMo Gym task through `NeMoGymTaskset` and `NeMoGymHarness`.
 - **Tags**: nemo-gym, tool-use, v1, train, eval
 
 ### Datasets
@@ -15,7 +15,7 @@
 - **Rubric overview**: Reward and metrics are returned by the NeMo Gym resources server.
 
 ### How it works
-The taskset loads NeMo Gym JSONL rows from the installed `nemo-gym` package and stores each original row under `nemo_gym_row`. The harness starts the NeMo Gym stack once per env worker, exposes a stable local OpenAI-compatible model URL for NeMo Gym, and routes those model calls back through the active Verifiers rollout endpoint.
+The taskset loads NeMo Gym JSONL rows from the installed `nemo-gym` package and stores each original row under `nemo_gym_row`. The harness starts the NeMo Gym stack once per env worker, exposes a stable local OpenAI-compatible model URL for NeMo Gym, and routes those model calls back through the matching Verifiers rollout endpoint.
 
 ### Quickstart
 Run an evaluation with default settings:
