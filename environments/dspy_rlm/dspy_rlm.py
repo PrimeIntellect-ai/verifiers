@@ -79,7 +79,7 @@ def answer_reward(task: vf.Task, state: vf.State) -> float:
             messages = vf.get_messages(completion, role="assistant") or vf.get_messages(
                 completion
             )
-        text = str(messages[-1].content or "")
+        text = str(messages[-1].content or "") if messages else ""
     agent_answer = extract_dspy_answer(text)
     if not agent_answer:
         return 0.0

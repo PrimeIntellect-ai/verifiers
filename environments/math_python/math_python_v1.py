@@ -58,7 +58,8 @@ except BaseException:
 @vf.reward(weight=1.0)
 async def correct_answer(task, state) -> float:
     completion = state.get("completion") or []
-    response_text = str(vf.get_messages(completion, role="assistant")[-1].content or "")
+    messages = vf.get_messages(completion, role="assistant")
+    response_text = str(messages[-1].content or "") if messages else ""
     response = extract_boxed_answer(response_text)
     answer = str(task["answer"])
     if not response or len(response) > 50_000:

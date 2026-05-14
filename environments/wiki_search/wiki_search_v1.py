@@ -204,7 +204,8 @@ def judge_reward_factory(
     @vf.reward(weight=1.0)
     async def judge_reward_func(task, state) -> float:
         completion = state.get("completion") or []
-        response = str(vf.get_messages(completion, role="assistant")[-1].content or "")
+        messages = vf.get_messages(completion, role="assistant")
+        response = str(messages[-1].content or "") if messages else ""
         prompt = JUDGE_PROMPT.format(
             question=task["question"],
             answer=task["answer"],

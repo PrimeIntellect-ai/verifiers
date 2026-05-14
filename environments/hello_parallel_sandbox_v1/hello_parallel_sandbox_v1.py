@@ -153,8 +153,8 @@ async def bash(command: str, sandbox, state) -> str:
 
 @vf.update(priority=10)
 async def parallel_sandbox_audit(task, state) -> None:
-    message = vf.get_messages(state["completion"], role="assistant")[-1]
-    response = str(message.content or "")
+    messages = vf.get_messages(state["completion"], role="assistant")
+    response = str(messages[-1].content or "") if messages else ""
     audit_specs = [
         (
             "file_audit",
@@ -197,8 +197,8 @@ async def parallel_sandbox_audit(task, state) -> None:
     )
     state["parallel_audits"] = []
     for label, audit_state in audit_states:
-        message = vf.get_messages(audit_state["completion"], role="assistant")[-1]
-        findings = str(message.content or "")
+        messages = vf.get_messages(audit_state["completion"], role="assistant")
+        findings = str(messages[-1].content or "") if messages else ""
         state["parallel_audits"].append(
             {
                 "name": label,
@@ -226,8 +226,8 @@ async def sandbox_stage_score(task, state) -> float:
         system_prompt=REWARD_JUDGE_SYSTEM_PROMPT,
         max_turns=2,
     ).run(judge_task, judge_state)
-    message = vf.get_messages(judge_state["completion"], role="assistant")[-1]
-    judge_text = str(message.content or "")
+    messages = vf.get_messages(judge_state["completion"], role="assistant")
+    judge_text = str(messages[-1].content or "") if messages else ""
     parsed = parse_judge_json(judge_text)
     score = clamp_float(parsed.get("score", 0.0))
     state["reward_judge"] = {
@@ -301,8 +301,8 @@ def command_audit_prompt(task: ConfigMap) -> str:
 
 
 def reward_prompt(task: ConfigMap, state: ConfigMap) -> str:
-    message = vf.get_messages(state["completion"], role="assistant")[-1]
-    response = str(message.content or "")
+    messages = vf.get_messages(state["completion"], role="assistant")
+    response = str(messages[-1].content or "") if messages else ""
     return (
         "Task instruction:\n"
         f"{task['instruction']}\n\n"

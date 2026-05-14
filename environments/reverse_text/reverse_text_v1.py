@@ -11,7 +11,10 @@ class TagExtractor:
         self.pattern = re.compile(rf"<{tag}>(.*?)</{tag}>", re.DOTALL)
 
     def __call__(self, completion: list[vf.ConfigData]) -> str:
-        message = vf.get_messages(completion, role="assistant")[-1]
+        messages = vf.get_messages(completion, role="assistant")
+        if not messages:
+            return ""
+        message = messages[-1]
         match = self.pattern.search(str(message.content or ""))
         return match.group(1).strip() if match else ""
 

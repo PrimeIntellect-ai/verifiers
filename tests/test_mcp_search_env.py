@@ -57,3 +57,15 @@ def test_mcp_search_taskset_accepts_v1_taskset_config() -> None:
 
     assert env.taskset.config.max_turns == 3
     assert all(row["max_turns"] == 3 for row in rows)
+
+
+def test_mcp_search_response_text_handles_missing_assistant() -> None:
+    module = _load_mcp_search_module()
+
+    assert module.response_text(vf.State({"completion": []})) == ""
+    assert (
+        module.response_text(
+            vf.State({"completion": [{"role": "user", "content": "no assistant"}]})
+        )
+        == ""
+    )

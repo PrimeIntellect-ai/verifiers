@@ -266,7 +266,10 @@ def assistant_tool_calls(state: ConfigMap) -> list[ToolCall]:
     completion = state.get("completion") or []
     if not isinstance(completion, Sequence):
         return []
-    return parse_tool_calls(vf.get_messages(completion, role="assistant")[-1])
+    messages = vf.get_messages(completion, role="assistant")
+    if not messages:
+        return []
+    return parse_tool_calls(messages[-1])
 
 
 def parse_tool_calls(message: object) -> list[ToolCall]:

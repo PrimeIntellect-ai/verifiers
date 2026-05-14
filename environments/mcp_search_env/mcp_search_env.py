@@ -126,7 +126,8 @@ def response_text(state: vf.State) -> str:
     completion = state.get("completion") or []
     if not isinstance(completion, list):
         return ""
-    return str(vf.get_messages(completion, role="assistant")[-1].content or "")
+    messages = vf.get_messages(completion, role="assistant")
+    return str(messages[-1].content or "") if messages else ""
 
 
 @vf.reward(weight=1.0)

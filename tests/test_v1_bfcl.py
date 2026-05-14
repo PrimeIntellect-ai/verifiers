@@ -57,6 +57,18 @@ def test_bfcl_row_preserves_hinted_holdout_functions() -> None:
     assert row["missed_function_with_hints"] == {"1": [{"name": "hinted_holdout"}]}
 
 
+def test_bfcl_empty_completion_has_no_tool_calls() -> None:
+    bfcl = load_bfcl_module()
+
+    assert bfcl.assistant_tool_calls({"completion": []}) == []
+    assert (
+        bfcl.assistant_tool_calls(
+            {"completion": [{"role": "user", "content": "no assistant"}]}
+        )
+        == []
+    )
+
+
 def test_bfcl_public_loader_is_v1_only(monkeypatch: pytest.MonkeyPatch) -> None:
     bfcl = load_bfcl_module()
     seen: dict[str, object] = {}
