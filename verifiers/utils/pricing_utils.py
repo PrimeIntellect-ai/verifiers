@@ -128,10 +128,28 @@ def is_prime_inference_url(base_url: str) -> bool:
     return "pinference.ai" in base_url.lower()
 
 
+def compute_cost_usd(
+    usage: TokenUsage | None, pricing: ModelPricing | None
+) -> float | None:
+    if usage is None or pricing is None:
+        return None
+
+    input_tokens = _coerce_float(usage.get("input_tokens", 0.0))
+    output_tokens = _coerce_float(usage.get("output_tokens", 0.0))
+    if input_tokens is None or output_tokens is None:
+        return None
+
+    return (
+        input_tokens * pricing["input_usd_per_mtok"] / 1_000_000
+        + output_tokens * pricing["output_usd_per_mtok"] / 1_000_000
+    )
+
+
 def compute_eval_cost(
     usage: TokenUsage | None, pricing: ModelPricing | None
 ) -> EvalCost | None:
-    if usage is None or pricing is None:
+    total_usd = compute_cost_usd(usage, pricing)
+    if usage is None or pricing is None or total_usd is None:
         return None
 
     input_tokens = _coerce_float(usage.get("input_tokens", 0.0))
@@ -144,17 +162,8 @@ def compute_eval_cost(
     return {
         "input_usd": input_usd,
         "output_usd": output_usd,
-        "total_usd": input_usd + output_usd,
+        "total_usd": total_usd,
     }
-
-
-def compute_cost_usd(
-    usage: TokenUsage | None, pricing: ModelPricing | None
-) -> float | None:
-    cost = compute_eval_cost(usage, pricing)
-    if cost is None:
-        return None
-    return cost["total_usd"]
 
 
 def format_cost_usd(cost_usd: float) -> str:

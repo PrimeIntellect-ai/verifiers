@@ -225,6 +225,8 @@ The `--num-workers` flag controls how many worker processes the env server spawn
 
 When evaluating multiple environments, the display shows an overview panel at the top with a compact status line per environment, and a detail panel below with full progress, metrics, and logs for one environment at a time. Use the **left/right arrow keys** to switch between environments. The overview scrolls to keep the selected environment visible and is capped at half the terminal height.
 
+When an eval runs against a Prime Inference endpoint and the model id has pricing available from `prime inference models`, token usage rows also show the estimated USD cost. Cost appears after the final input/output token metrics in the live display and in the final summary. If pricing or token usage is unavailable, the cost field is omitted.
+
 ### Output and Saving
 
 | Flag | Short | Default | Description |
@@ -245,6 +247,8 @@ By default, results are saved to `./outputs/evals/{env_id}--{model}/{run_id}/`. 
 
 - `results.jsonl` — rollout outputs, one per line
 - `metadata.json` — evaluation configuration and aggregate metrics
+
+When Prime Inference pricing is available for the evaluated model, `metadata.json` includes a `cost` object with `input_usd`, `output_usd`, and `total_usd`. The field is omitted for unpriced models, third-party providers, unavailable pricing, or missing usage.
 
 ### Resuming Evaluations
 
