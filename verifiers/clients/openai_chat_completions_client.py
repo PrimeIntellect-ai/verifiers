@@ -470,49 +470,67 @@ class OpenAIChatCompletionsClient(
                     return None
 
         def _graft_engine_data(response: OpenAIChatResponse) -> None:
-            """Graft ``nvext.engine_data.*`` onto top-level response fields.
+            """Graft engine-side token IDs onto top-level response fields.
 
-            Dynamo's vLLM/SGLang backends emit engine-side token IDs and
-            per-token logprobs under ``response.nvext.engine_data`` when the
-            client opts in via ``nvext.extra_fields=["engine_data"]`` (PR
-            #8119). Older vLLM-native paths set
-            ``response.choices[0].token_ids`` / ``response.prompt_token_ids``
-            directly. This helper bridges the gap: if ``engine_data`` is
-            present and the top-level fields are missing, copy them across.
-            The rest of ``parse_tokens`` then reads via the standard openai
-            SDK attribute path regardless of backend.
+            Three coexisting wire shapes from dynamo's vLLM/SGLang backends:
+
+              1. ``response.nvext.engine_data.{completion_token_ids,
+                 completion_logprobs, prompt_token_ids}`` — PR #8119 channel
+                 (opt-in: ``nvext.extra_fields=["engine_data"]``).
+              2. ``response.nvext.completion_token_ids`` — top-level shape
+                 from rl-sdk-2 plan A4 (opt-in:
+                 ``nvext.extra_fields=["completion_token_ids"]``). No
+                 logprobs in this shape; logprobs ride the standard
+                 ``choices[0].logprobs.content[*].logprob`` channel.
+              3. Older vLLM-native paths set ``response.choices[0].token_ids``
+                 / ``response.prompt_token_ids`` directly (no grafting needed).
+
+            This helper bridges (1) and (2) onto the top-level fields the
+            rest of ``parse_tokens`` reads via the standard openai SDK
+            attribute path. ``engine_data`` wins when both are present (it
+            carries more — including logprobs + prompt_token_ids).
             """
             nvext = getattr(response, "nvext", None)
             if nvext is None and hasattr(response, "model_dump"):
                 nvext = response.model_dump().get("nvext")
             if not isinstance(nvext, dict):
                 return
-            engine_data = nvext.get("engine_data")
-            if not isinstance(engine_data, dict):
-                return
             choice = response.choices[0]
+
+            engine_data = nvext.get("engine_data")
+            completion_token_ids_top = nvext.get("completion_token_ids")
+            prompt_token_ids_top = nvext.get("prompt_token_ids")
+
+            # Prefer engine_data over top-level when both arrive: engine_data
+            # bundles logprobs + prompt_token_ids in one place.
+            completion_token_ids: list[int] | None = None
+            prompt_token_ids: list[int] | None = None
+            if isinstance(engine_data, dict):
+                if engine_data.get("completion_token_ids") is not None:
+                    completion_token_ids = list(engine_data["completion_token_ids"])
+                if engine_data.get("prompt_token_ids") is not None:
+                    prompt_token_ids = list(engine_data["prompt_token_ids"])
+            if completion_token_ids is None and completion_token_ids_top is not None:
+                completion_token_ids = list(completion_token_ids_top)
+            if prompt_token_ids is None and prompt_token_ids_top is not None:
+                prompt_token_ids = list(prompt_token_ids_top)
+
             if (
                 getattr(choice, "token_ids", None) is None
-                and engine_data.get("completion_token_ids") is not None
+                and completion_token_ids is not None
             ):
                 try:
-                    choice.token_ids = list(engine_data["completion_token_ids"])
+                    choice.token_ids = completion_token_ids
                 except Exception:
-                    object.__setattr__(
-                        choice, "token_ids", list(engine_data["completion_token_ids"])
-                    )
+                    object.__setattr__(choice, "token_ids", completion_token_ids)
             if (
                 getattr(response, "prompt_token_ids", None) is None
-                and engine_data.get("prompt_token_ids") is not None
+                and prompt_token_ids is not None
             ):
                 try:
-                    response.prompt_token_ids = list(engine_data["prompt_token_ids"])
+                    response.prompt_token_ids = prompt_token_ids
                 except Exception:
-                    object.__setattr__(
-                        response,
-                        "prompt_token_ids",
-                        list(engine_data["prompt_token_ids"]),
-                    )
+                    object.__setattr__(response, "prompt_token_ids", prompt_token_ids)
 
         def parse_tokens(response: OpenAIChatResponse) -> ResponseTokens | None:
             assert len(response.choices) == 1, "Response should always have one choice"
