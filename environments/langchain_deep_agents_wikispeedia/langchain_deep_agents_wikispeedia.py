@@ -202,11 +202,26 @@ async def invalid_link_rate(task: vf.Task, state: vf.State) -> float:
     clicks = 0
     invalid = 0
     completion = state.get("completion") or []
-    messages = (
-        vf.get_messages(completion, role="tool") if isinstance(completion, list) else []
-    )
-    for msg in messages:
-        if getattr(msg, "name", None) != "click_link":
+    if not isinstance(completion, list):
+        return 0.0
+
+    transcript = vf.get_messages(completion)
+    id_to_name: dict[str, str] = {}
+    for msg in transcript:
+        if msg.role == "assistant":
+            tool_calls = msg.tool_calls
+            if tool_calls:
+                for tc in tool_calls:
+                    id_to_name[tc.id] = tc.name
+
+    for msg in transcript:
+        if msg.role != "tool":
+            continue
+        tool_name = id_to_name.get(msg.tool_call_id)
+        if tool_name is None:
+            extra = msg.get("name")
+            tool_name = extra if isinstance(extra, str) else None
+        if tool_name != "click_link":
             continue
         clicks += 1
         content = msg.content
