@@ -82,7 +82,7 @@ async def parent_program(task, state):
     return state
 
 
-def load_taskset(config: vf.TasksetConfig | None = None):
+def load_taskset(config: vf.TasksetConfig):
     return vf.Taskset(
         source=source,
         rewards=[exact_answer],
@@ -90,8 +90,7 @@ def load_taskset(config: vf.TasksetConfig | None = None):
     )
 
 
-def load_harness(config: NestedHarnessConfig | None = None):
-    config = NestedHarnessConfig(config)
+def load_harness(config: NestedHarnessConfig):
     return vf.Harness(
         program=parent_program,
         toolsets=[load_toolset(config.toolset)],
@@ -103,5 +102,5 @@ def load_harness(config: NestedHarnessConfig | None = None):
 def load_environment(config: vf.EnvConfig):
     return vf.Env(
         taskset=load_taskset(config=config.taskset),
-        harness=load_harness(config=config.harness),
+        harness=load_harness(config=NestedHarnessConfig(config.harness)),
     )

@@ -693,14 +693,18 @@ environments/my_env/
 └── README.md          # documentation template
 ```
 
-The environment file must export a `load_environment()` function that returns a `vf.Environment`. Explicitly declare any arguments your environment accepts:
+The environment file exports a taskset-first v1 loader:
 
 ```python
 import verifiers as vf
 
-def load_environment(difficulty: str = "easy", num_examples: int = -1) -> vf.Environment:
-    # build dataset, rubric, etc.
-    return vf.SingleTurnEnv(dataset=dataset, rubric=rubric)
+
+def load_taskset(config: vf.TasksetConfig) -> vf.Taskset:
+    return vf.Taskset(source=source, rewards=[reward_fn], config=config)
+
+
+def load_environment(config: vf.EnvConfig) -> vf.Env:
+    return vf.Env(taskset=load_taskset(config=config.taskset))
 ```
 
 ### pyproject.toml

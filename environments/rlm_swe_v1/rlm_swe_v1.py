@@ -489,13 +489,13 @@ def extract_gold_patch(
 
 
 def load_taskset(
-    config: RlmSweTasksetConfig | None = None,
+    config: RlmSweTasksetConfig,
 ) -> R2ESWETaskset:
     return R2ESWETaskset(config=config)
 
 
 def load_harness(
-    config: vf.RLMConfig | None = None,
+    config: vf.RLMConfig,
     taskset: R2ESWETaskset | None = None,
 ) -> vf.RLM:
     user_config = vf.RLMConfig(config)
@@ -515,11 +515,12 @@ def load_harness(
     )
 
 
-def load_environment(config: vf.EnvConfig) -> vf.Env:
-    taskset_config = (
-        None if config.taskset is None else RlmSweTasksetConfig(config.taskset)
-    )
-    harness_config = None if config.harness is None else vf.RLMConfig(config.harness)
-    taskset = load_taskset(config=taskset_config)
-    harness = load_harness(config=harness_config, taskset=taskset)
+class RlmSweEnvConfig(vf.EnvConfig):
+    taskset: RlmSweTasksetConfig
+    harness: vf.RLMConfig
+
+
+def load_environment(config: RlmSweEnvConfig) -> vf.Env:
+    taskset = load_taskset(config=config.taskset)
+    harness = load_harness(config=config.harness, taskset=taskset)
     return vf.Env(taskset=taskset, harness=harness)

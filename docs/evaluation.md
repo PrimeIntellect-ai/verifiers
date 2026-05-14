@@ -68,7 +68,8 @@ The positional argument accepts two formats:
 
 Environment IDs are converted to Python module names (`my-env` → `my_env`) and imported. Modules must be installed (via `prime env install` or `uv pip install`).
 
-The `--env-args` flag passes arguments to your `load_environment()` function:
+For legacy or direct-constructor environments, the `--env-args` flag passes
+arguments to your `load_environment()` function:
 
 ```bash
 prime eval run my-env -a '{"difficulty": "hard", "num_examples": 100}'
@@ -371,15 +372,15 @@ optional:
 |-------|------|-------------|
 | `id` | string | **Required.** Environment module name |
 | `args` | table | Arguments passed to `load_environment()` |
-| `taskset` | table | v1 taskset config passed through `config.taskset` |
-| `harness` | table | v1 harness config passed through `config.harness` |
+| `taskset` | table | v1 taskset config passed through `EnvConfig.taskset` |
+| `harness` | table | v1 harness config passed through `EnvConfig.harness` |
 | `num_examples` | integer | Number of dataset examples to evaluate |
 | `rollouts_per_example` | integer | Rollouts per example |
 | `extra_env_kwargs` | table | Arguments passed to environment constructor |
 | `model` | string | Model to evaluate |
 | `endpoint_id` | string | Endpoint registry id (requires TOML `endpoints_path`) |
 
-Example with environment args:
+Example with legacy environment args:
 
 ```toml
 [[eval]]

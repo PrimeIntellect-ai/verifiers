@@ -746,6 +746,11 @@ class Tau2Taskset(vf.Taskset):
         )
 
 
+class Tau2EnvConfig(vf.EnvConfig):
+    taskset: Tau2TasksetConfig
+    harness: vf.HarnessConfig
+
+
 def load_taskset(
     domain: str | None = None,
     *,
@@ -756,7 +761,7 @@ def load_taskset(
     max_steps: int | None = None,
     max_errors: int | None = None,
     max_turns: int | None = None,
-    config: Tau2TasksetConfig | None = None,
+    config: Tau2TasksetConfig,
 ) -> Tau2Taskset:
     return Tau2Taskset(
         domain=domain,
@@ -772,35 +777,7 @@ def load_taskset(
 
 
 def load_environment(
-    domain: str = "telecom",
-    *,
-    user_model: str = DEFAULT_USER_MODEL,
-    user_args: ConfigMap | None = None,
-    user_base_url: str = DEFAULT_USER_BASE_URL,
-    user_api_key_var: str = DEFAULT_USER_API_KEY_VAR,
-    max_steps: int = DEFAULT_MAX_STEPS,
-    max_errors: int = DEFAULT_MAX_ERRORS,
-    max_turns: int = DEFAULT_MAX_STEPS,
-    config: vf.EnvConfig,
+    config: Tau2EnvConfig,
 ) -> vf.Env:
-    config = vf.EnvConfig(
-        config,
-        taskset=Tau2TasksetConfig(
-            domain=domain,
-            user_model=user_model,
-            user_args=dict(user_args) if user_args is not None else None,
-            user_base_url=user_base_url,
-            user_api_key_var=user_api_key_var,
-            max_steps=max_steps,
-            max_errors=max_errors,
-            max_turns=max_turns,
-        ),
-    )
-    taskset_config = (
-        None if config.taskset is None else Tau2TasksetConfig(config.taskset)
-    )
-    harness_config = (
-        None if config.harness is None else vf.HarnessConfig(config.harness)
-    )
-    taskset = load_taskset(config=taskset_config)
-    return vf.Env(taskset=taskset, harness=vf.Harness(config=harness_config))
+    taskset = load_taskset(config=config.taskset)
+    return vf.Env(taskset=taskset, harness=vf.Harness(config=config.harness))

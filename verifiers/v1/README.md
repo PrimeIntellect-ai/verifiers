@@ -148,7 +148,7 @@ async def contains_answer(task, state) -> float:
     return float(task["answer"] in str(state.get("completion") or ""))
 
 
-def load_taskset(config: vf.TasksetConfig | None = None):
+def load_taskset(config: vf.TasksetConfig):
     return vf.Taskset(source=source, rewards=[contains_answer], config=config)
 
 
@@ -205,8 +205,7 @@ class GSM8KTasksetConfig(vf.TasksetConfig):
     split: str = "train"
 
 
-def load_taskset(config: vf.TasksetConfig | None = None):
-    config = GSM8KTasksetConfig(config)
+def load_taskset(config: GSM8KTasksetConfig):
     dataset_name = config.dataset_name
     split = config.split
 
@@ -1135,11 +1134,11 @@ recommended loader shape is:
 import verifiers as vf
 
 
-def load_taskset(config: vf.TasksetConfig | None = None):
+def load_taskset(config: vf.TasksetConfig):
     return vf.Taskset(source=source, rewards=[exact], config=config)
 
 
-def load_harness(config: vf.HarnessConfig | None = None):
+def load_harness(config: vf.HarnessConfig):
     return vf.Harness(config=config)
 
 
@@ -1157,8 +1156,8 @@ def load_environment(config: vf.EnvConfig):
     return vf.Env(taskset=load_taskset(config=config.taskset))
 ```
 
-With that loader, eval TOML routes named environment args through `args` and v1
-config through the `taskset`/`harness` sections:
+With that loader, eval TOML routes v1 config through the `taskset`/`harness`
+sections:
 
 ```toml
 # configs/eval/my-v1-env.toml
@@ -1180,47 +1179,32 @@ max_turns = 4
 weight = 0.5
 ```
 
-For concise named args, define one typed args object and pass it as `args`.
-`EnvConfig.args` is intentionally user-defined; environment packages decide how
-those args flow into taskset and harness construction.
+For environment-specific settings, define leaf fields on the taskset or harness
+config that owns them. An `EnvConfig` subclass only fixes the concrete taskset
+and harness config types for the loader.
 
 ```python
-class MyEnvArgsConfig(vf.Config):
-    split: str = "train"
-    max_turns: int = 10
-
-
 class MyTasksetConfig(vf.TasksetConfig):
     split: str = "train"
 
 
-def load_taskset(config: vf.TasksetConfig | None = None):
-    config = MyTasksetConfig(config)
+class MyEnvConfig(vf.EnvConfig):
+    taskset: MyTasksetConfig
+    harness: vf.HarnessConfig
+
+
+def load_taskset(config: MyTasksetConfig):
     ...
 
 
-def load_harness(config: vf.HarnessConfig | None = None):
-    config = vf.HarnessConfig(config)
+def load_harness(config: vf.HarnessConfig):
     ...
 
 
-def load_environment(
-    config: vf.EnvConfig,
-    split: str = "train",
-    max_turns: int = 10,
-):
-    config = vf.EnvConfig(
-        config,
-        args=MyEnvArgsConfig(split=split, max_turns=max_turns),
-    )
-    args = MyEnvArgsConfig(config.args)
+def load_environment(config: MyEnvConfig):
     return vf.Env(
-        taskset=load_taskset(
-            config=MyTasksetConfig(config.taskset, split=args.split)
-        ),
-        harness=load_harness(
-            config=vf.HarnessConfig(config.harness, max_turns=args.max_turns)
-        ),
+        taskset=load_taskset(config=config.taskset),
+        harness=load_harness(config=config.harness),
     )
 ```
 
@@ -1239,11 +1223,11 @@ max_tokens = 4096
 [[env]]
 id = "primeintellect/my-v1-env"
 
-[env.args]
-split = "train"
-
 [env.harness]
 max_turns = 8
+
+[env.taskset]
+split = "train"
 
 [env.taskset.scoring.exact_answer]
 weight = 1.0

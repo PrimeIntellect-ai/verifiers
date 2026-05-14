@@ -59,7 +59,7 @@ prime eval run <env> -m openai/gpt-4.1-mini -n 5
 
 ## Config And Docs Surface
 1. Check that eval, GEPA, RL, and Hosted Training examples use the same public TOML shape where applicable.
-2. For v1 configs, prefer `[env.args]`, `[env.taskset]`, and `[env.harness]`; loader code should normalize at the boundary instead of spreading compatibility branches through examples.
+2. For v1 configs, route settings through `[env.taskset]` and `[env.harness]`; use a concrete `EnvConfig` subclass when the loader needs concrete child config types, and avoid root env config knobs.
 3. If docs changed public behavior, verify the relevant bundled skill was updated too.
 
 ## Findings Format

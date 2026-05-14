@@ -135,7 +135,7 @@ def test_rlm_swe_environment_uses_v1_r2e_taskset(monkeypatch):
     monkeypatch.setattr(rlm_swe_v1, "load_dataset", fake_load_dataset)
 
     env = rlm_swe_v1.load_environment(
-        config=vf.EnvConfig(
+        config=rlm_swe_v1.RlmSweEnvConfig(
             taskset=rlm_swe_v1.RlmSweTasksetConfig(
                 dataset_name="fake-r2e",
                 timeout_minutes=30,
@@ -171,7 +171,7 @@ def test_rlm_swe_environment_uses_v1_r2e_taskset(monkeypatch):
 
 
 def test_rlm_swe_taskset_hooks_are_registered_with_runtime():
-    taskset = rlm_swe_v1.load_taskset()
+    taskset = rlm_swe_v1.load_taskset(config=rlm_swe_v1.RlmSweTasksetConfig())
     env = vf.Env(taskset=taskset)
 
     setup_names = [handler.__name__ for handler in env.harness.runtime.rollout_setup]
@@ -262,7 +262,7 @@ def test_rlm_swe_get_env_vars_uses_configured_repo_path():
 
 
 def test_rlm_swe_reward_rejects_pytest_summary_without_nodeid():
-    taskset = rlm_swe_v1.load_taskset()
+    taskset = rlm_swe_v1.load_taskset(config=rlm_swe_v1.RlmSweTasksetConfig())
     test_output = """
 =========================== short test summary info ============================
 PASSED tests/test_example.py

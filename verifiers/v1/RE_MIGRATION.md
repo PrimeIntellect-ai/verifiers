@@ -52,7 +52,7 @@ Every migrated package should expose:
 import verifiers as vf
 
 
-def load_taskset(config: vf.TasksetConfig | None = None) -> vf.Taskset:
+def load_taskset(config: vf.TasksetConfig) -> vf.Taskset:
     return vf.Taskset(
         source=load_rows,
         system_prompt=SYSTEM_PROMPT,
@@ -63,7 +63,7 @@ def load_taskset(config: vf.TasksetConfig | None = None) -> vf.Taskset:
     )
 
 
-def load_harness(config: vf.HarnessConfig | None = None) -> vf.Harness:
+def load_harness(config: vf.HarnessConfig) -> vf.Harness:
     return vf.Harness(config=config)
 
 
@@ -160,7 +160,7 @@ async def exact(task, state) -> float:
     return float(str(task["answer"]).strip() in response)
 
 
-def load_taskset(config: vf.TasksetConfig | None = None):
+def load_taskset(config: vf.TasksetConfig):
     return vf.Taskset(source=source, rewards=[exact], config=config)
 
 
@@ -244,7 +244,7 @@ def load_toolset(config=None):
     )
 
 
-def load_taskset(config: vf.TasksetConfig | None = None):
+def load_taskset(config: vf.TasksetConfig):
     return vf.Taskset(
         source=source,
         toolsets=[load_toolset()],

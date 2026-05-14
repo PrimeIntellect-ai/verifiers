@@ -36,7 +36,7 @@ prime lab setup --prime-rl
 prime env install my-env
 prime eval run my-env -m openai/gpt-4.1-mini -n 20 -r 3 -s
 ```
-2. For v1 Taskset + Harness environments, verify the package exposes `load_environment(config: vf.EnvConfig) -> vf.Env`; trainers interact with the same environment boundary even when the implementation is BYO Harness internally.
+2. For v1 Taskset + Harness environments, verify the package exposes `load_environment(config: vf.EnvConfig) -> vf.Env`, or a concrete `EnvConfig` subclass when the loader needs concrete child config types; trainers interact with the same environment boundary even when the implementation is BYO Harness internally.
 3. Confirm reward diversity exists at baseline.
 4. Start with conservative run length and inspect samples early.
 
@@ -55,18 +55,16 @@ prime env push my-env --visibility PRIVATE
 
 ## RL TOML Environment Sections
 1. Use the same environment config shape for Hosted Training and `prime-rl`.
-2. Put normal `load_environment(...)` named args in `[env.args]`.
-3. Put v1 taskset config in `[env.taskset]` and v1 harness config in `[env.harness]`.
+2. Put task-owned v1 config in `[env.taskset]`.
+3. Put harness-owned v1 config in `[env.harness]`.
 4. Keep model, endpoint, sampling, rollout count, and trainer controls outside the environment sections unless configuring a nested or auxiliary harness model.
 ```toml
 [[env]]
 id = "owner/my-env"
 
-[env.args]
-split = "train"
-
 [env.taskset]
 num_examples = 1000
+split = "train"
 
 [env.harness]
 max_turns = 8

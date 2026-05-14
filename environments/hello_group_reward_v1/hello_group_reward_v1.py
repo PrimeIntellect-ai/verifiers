@@ -19,6 +19,11 @@ class GroupRewardHarnessConfig(vf.HarnessConfig):
     max_turns: int = 1
 
 
+class GroupRewardEnvConfig(vf.EnvConfig):
+    taskset: GroupRewardTasksetConfig
+    harness: GroupRewardHarnessConfig
+
+
 def group_reward_task(
     task_id: str,
     question: str,
@@ -303,12 +308,7 @@ def source(num_examples: int = -1):
         }
 
 
-def load_taskset(
-    num_examples: int | None = None,
-    config: vf.TasksetConfig | None = None,
-) -> GroupRewardTaskset:
-    config = GroupRewardTasksetConfig(config, num_examples=num_examples)
-
+def load_taskset(config: GroupRewardTasksetConfig) -> GroupRewardTaskset:
     def load_rows():
         return source(num_examples=config.num_examples)
 
@@ -324,11 +324,7 @@ def load_taskset(
     )
 
 
-def load_harness(
-    max_turns: int | None = None,
-    config: vf.HarnessConfig | None = None,
-) -> vf.Harness:
-    config = GroupRewardHarnessConfig(config, max_turns=max_turns)
+def load_harness(config: GroupRewardHarnessConfig) -> vf.Harness:
     return vf.Harness(
         program=candidate_program,
         max_turns=config.max_turns,
@@ -336,24 +332,8 @@ def load_harness(
     )
 
 
-def load_environment(
-    num_examples: int = -1,
-    *,
-    config: vf.EnvConfig,
-) -> vf.Env:
-    config = vf.EnvConfig(
-        config,
-        taskset=GroupRewardTasksetConfig(num_examples=num_examples),
-    )
+def load_environment(config: GroupRewardEnvConfig) -> vf.Env:
     return vf.Env(
         taskset=load_taskset(config=config.taskset),
         harness=load_harness(config=config.harness),
     )
-
-
-def load_v1_environment(
-    num_examples: int = -1,
-    *,
-    config: vf.EnvConfig,
-) -> vf.Env:
-    return load_environment(num_examples=num_examples, config=config)

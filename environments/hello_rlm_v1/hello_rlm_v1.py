@@ -52,7 +52,7 @@ def source():
     ]
 
 
-def load_taskset(config: vf.TasksetConfig | None = None):
+def load_taskset(config: vf.TasksetConfig):
     return vf.Taskset(
         source=source,
         rewards=[exact_answer],
@@ -60,13 +60,17 @@ def load_taskset(config: vf.TasksetConfig | None = None):
     )
 
 
-def load_harness(config: vf.RLMConfig | None = None):
+def load_harness(config: vf.RLMConfig):
     return vf.RLM(config=config)
 
 
-def load_environment(config: vf.EnvConfig):
-    harness_config = None if config.harness is None else vf.RLMConfig(config.harness)
+class HelloRLMEnvConfig(vf.EnvConfig):
+    taskset: vf.TasksetConfig
+    harness: vf.RLMConfig
+
+
+def load_environment(config: HelloRLMEnvConfig):
     return vf.Env(
         taskset=load_taskset(config=config.taskset),
-        harness=load_harness(config=harness_config),
+        harness=load_harness(config=config.harness),
     )
