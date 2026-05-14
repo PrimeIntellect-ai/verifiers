@@ -9,6 +9,7 @@ from uuid import uuid4
 
 import pytest
 
+import verifiers as root_vf
 import verifiers.v1 as vf
 from verifiers.v1.packages.harnesses.pi import pi_mcp_json, pi_models_json
 from verifiers.v1.packages.harnesses.terminus_2 import (
@@ -215,6 +216,7 @@ def test_packaged_harbor_and_opencode_imports_are_reexported() -> None:
     assert vf.OpenCodeConfig is OpenCodeConfig
     assert vf.Pi is Pi
     assert vf.Terminus2 is Terminus2
+    assert root_vf.Terminus2 is Terminus2
     assert vf.HarborTaskset is HarborTaskset
 
 
