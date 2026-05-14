@@ -9,10 +9,18 @@ from uuid import uuid4
 
 import pytest
 
+import verifiers as root_vf
 import verifiers.v1 as vf
 from verifiers.v1.packages.harnesses.pi import pi_mcp_json, pi_models_json
+from verifiers.v1.packages.harnesses.terminus_2 import (
+    DEFAULT_API_BASE_URL,
+    DEFAULT_HARBOR_PACKAGE,
+    DEFAULT_MODEL_NAME,
+    Terminus2,
+    terminus_2_agent_script,
+)
 from verifiers.v1.packages.tasksets.harbor import harbor_reward
-from verifiers.v1.utils.program_utils import merge_task_program
+from verifiers.v1.utils.program_utils import merge_task_program, merge_task_sandbox
 
 
 def write_harbor_task(root: Path, name: str = "task-a") -> Path:
@@ -85,6 +93,13 @@ def test_harbor_taskset_loads_package_tasks_with_program_patch(
     assert task["sandbox"]["memory_gb"] == 2.0
     assert task["sandbox"]["disk_size_gb"] == 8.0
     assert task["sandbox"]["command_timeout"] == 600
+    assert "network_access" not in task["sandbox"]
+    assert (
+        merge_task_sandbox({"network_access": False, "scope": "rollout"}, task)[
+            "network_access"
+        ]
+        is False
+    )
     assert task["harbor"]["test_timeout"] == 300.0
     assert task["program"]["files"] == {
         "/task/instruction.md": {"task": "instruction"},
@@ -200,6 +215,8 @@ def test_packaged_harbor_and_opencode_imports_are_reexported() -> None:
     assert vf.OpenCode is OpenCode
     assert vf.OpenCodeConfig is OpenCodeConfig
     assert vf.Pi is Pi
+    assert vf.Terminus2 is Terminus2
+    assert root_vf.Terminus2 is Terminus2
     assert vf.HarborTaskset is HarborTaskset
 
 
@@ -252,6 +269,45 @@ def test_pi_harness_writes_intercepted_model_and_mcp_config() -> None:
     assert provider["apiKey"] == "secret"
     assert provider["models"] == [{"id": "model", "name": "openai/gpt-5.4-mini"}]
     assert mcp["mcpServers"]["verifiers-tools"]["command"] == "python3"
+
+
+def test_terminus_2_harness_builds_sandbox_program() -> None:
+    harness = vf.Terminus2(
+        system_prompt="extra system prompt",
+        agent_workdir="/workspace",
+        max_turns=7,
+        python_version="3.12",
+    )
+    program = cast(dict[str, object], harness.program)
+    command = cast(list[object], program["command"])
+    setup = cast(str, program["setup"])
+    files = cast(dict[str, object], program["files"])
+    artifacts = cast(dict[str, object], program["artifacts"])
+    env = cast(dict[str, object], program.get("env", {}))
+
+    assert isinstance(harness, vf.Harness)
+    assert "/terminus_2/instruction.md" in files
+    assert "/terminus_2/system_prompt.txt" in files
+    assert "apt-get -o Acquire::Retries=3 update" in setup
+    assert "apt-get -o Acquire::Retries=3 install" in setup
+    assert "git" not in setup
+    assert "terminus_2_log" in artifacts
+    assert "OPENAI_MODEL" not in env
+
+    run_script = cast(str, command[2])
+    assert "TERMINUS_2_WORKDIR=/workspace" in run_script
+    assert f"--with {DEFAULT_HARBOR_PACKAGE}" in run_script
+    assert "git+https://github.com" not in run_script
+    assert "max_turns=7" in run_script
+
+    script = terminus_2_agent_script(max_turns=7)
+    compile(script, "terminus_2_agent.py", "exec")
+    assert DEFAULT_MODEL_NAME in script
+    assert DEFAULT_API_BASE_URL in script
+    assert "OPENAI_MODEL" not in script
+    assert "PRIME_API_KEY" in script
+    assert "async def prepare_logs_for_host(self) -> None" in script
+    assert "max_turns=7" in script
 
 
 def test_task_program_merges_into_command_program_without_collisions() -> None:

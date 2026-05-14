@@ -37,7 +37,9 @@ class Task(dict):
         if "sandbox" in self and not isinstance(self["sandbox"], Mapping):
             raise TypeError("task.sandbox must be a mapping.")
         if "sandbox" in self:
-            super().__setitem__("sandbox", sandbox_config_mapping(self["sandbox"]))
+            super().__setitem__(
+                "sandbox", sandbox_config_mapping(self["sandbox"], fill_defaults=False)
+            )
         if "program" in self and not isinstance(self["program"], Mapping):
             raise TypeError("task.program must be a mapping.")
         if "max_turns" in self and (

@@ -367,15 +367,20 @@ class EnvConfig(Config):
         return base
 
 
-def sandbox_config_mapping(value: object | None) -> ConfigData | None:
+def sandbox_config_mapping(
+    value: object | None, *, fill_defaults: bool = True
+) -> ConfigData | None:
     if value is None:
         return None
     if isinstance(value, SandboxConfig):
-        return value.model_dump(exclude_none=True)
+        return value.model_dump(exclude_none=True, exclude_unset=not fill_defaults)
     if isinstance(value, Mapping):
         mapping = cast(ConfigMap, value)
         prefer = mapping.get("prefer")
         if prefer is not None and prefer != "program":
             raise ValueError("sandbox.prefer must be 'program'.")
-        return SandboxConfig.from_config(mapping).model_dump(exclude_none=True)
+        sandbox = SandboxConfig.from_config(mapping).model_dump(exclude_none=True)
+        if fill_defaults:
+            return sandbox
+        return {key: sandbox[key] for key in mapping if key in sandbox}
     raise TypeError("Sandbox config must be a mapping.")

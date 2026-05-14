@@ -41,6 +41,7 @@ from .packages.harnesses import (
     Pi,
     RLM,
     RLMConfig,
+    Terminus2,
 )
 from .utils.scoring_utils import (
     add_metric,
@@ -97,6 +98,7 @@ __all__ = [
     "ProgramConfig",
     "RLM",
     "RLMConfig",
+    "Terminus2",
     "SandboxConfig",
     "State",
     "Task",

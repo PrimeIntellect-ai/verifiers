@@ -339,8 +339,9 @@ config surface; do not subclass `Env` just to bypass inference.
 
 Packaged CLI harnesses should use the same boundary. These implementations live
 under `verifiers.v1.packages` while the v1 surface stabilizes, and are
-re-exported through `verifiers.v1`. `OpenCode`, `Pi`, `MiniSWEAgent`, and `RLM`
-are bundled `Harness` leaf wrappers for common command-line agents:
+re-exported through `verifiers.v1`. `OpenCode`, `Pi`, `MiniSWEAgent`,
+`Terminus2`, and `RLM` are bundled `Harness` leaf wrappers for common
+command-line agents:
 
 ```python
 def load_environment():
