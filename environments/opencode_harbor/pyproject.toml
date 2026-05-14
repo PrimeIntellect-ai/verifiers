@@ -23,9 +23,5 @@ include = ["opencode_harbor.py", "pyproject.toml", "tasks/**/*"]
 num_examples = 5
 rollouts_per_example = 3
 
-[tool.verifiers.harness]
-max_turns = 4
-disabled_tools = ["webfetch", "question"]
-
 [tool.ruff]
 exclude = ["tasks/**"]

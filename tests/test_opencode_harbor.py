@@ -76,3 +76,10 @@ def test_load_environment_accepts_v1_taskset_and_harness_config() -> None:
     assert "/workspace" in cast(str, command[2])
     assert '"webfetch": false' in cast(str, mcp_setup)
     assert '"question": false' not in cast(str, mcp_setup)
+
+
+def test_pyproject_does_not_define_unsupported_harness_defaults() -> None:
+    module = _load_opencode_module()
+    pyproject = Path(module.__file__).parent / "pyproject.toml"
+
+    assert "[tool.verifiers.harness]" not in pyproject.read_text()

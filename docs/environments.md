@@ -1,12 +1,10 @@
 # Environments
 
-This guide walks through building environments in Verifiers, from simple single-turn tasks to complex multi-turn agents with tools. See [Overview](overview.md) for how to initialize a new environment template. For new taskset/harness environments, use the v1 `Taskset`/`Harness` format documented in [BYO Harness](byo-harness.md).
+This guide walks through building environments in Verifiers, from simple single-turn tasks to complex multi-turn agents with tools. See [Overview](overview.md) for how to initialize a new environment template. For reusable taskset/harness environments, see [BYO Harness](byo-harness.md).
 
 ## Table of Contents
 
 - [Your First Environment](#your-first-environment)
-- [V1 Shared Dependencies](#v1-shared-dependencies)
-- [V1 Message Access](#v1-message-access)
 - [Datasets](#datasets)
   - [Building the Prompt](#building-the-prompt)
   - [Evaluation Datasets](#evaluation-datasets)
@@ -16,13 +14,13 @@ This guide walks through building environments in Verifiers, from simple single-
   - [Multiple Reward Functions](#multiple-reward-functions)
   - [Execution Order and State](#execution-order-and-state)
   - [Group-Based Reward Functions](#group-based-reward-functions)
-  - [Shared Objects (v0 Rubrics)](#shared-objects-v0-rubrics)
+  - [Shared Objects](#shared-objects)
   - [Rubric Groups](#rubric-groups)
   - [Metrics and Monitor Rubrics](#metrics-and-monitor-rubrics)
 - [Tool Environments](#tool-environments)
   - [MCP Tool Environments](#mcp-tool-environments)
   - [Stateful Tool Environments](#stateful-tool-environments)
-- [Custom Multi-Turn Environments (v0)](#custom-multi-turn-environments-v0)
+- [Custom Multi-Turn Environments](#custom-multi-turn-environments)
   - [The Rollout Loop](#the-rollout-loop)
   - [Stop Conditions](#stop-conditions)
   - [Error Handling](#error-handling)
@@ -71,74 +69,6 @@ When running this environment, each row in the dataset becomes a **rollout**:
 3. The reward function scores the result
 
 In `SingleTurnEnv`, the simplest environment type, just a single model response occurs per rollout. More complex environment types will allow us to add tool use or other custom interaction protocols.
-
-## V1 Shared Dependencies
-
-In v1 taskset/harness environments, shared dependencies live on the taskset and
-are injected into named lifecycle or scoring functions through bindings:
-
-```python
-import re
-import verifiers as vf
-
-
-class AnswerExtractor:
-    def __init__(self):
-        self.pattern = re.compile(r"<answer>(.*?)</answer>", re.DOTALL)
-
-    def __call__(self, completion: list[dict[str, object]]) -> str:
-        message = vf.get_messages(completion, role="assistant")[-1]
-        text = str(message.content or "")
-        match = self.pattern.search(text)
-        return "" if match is None else match.group(1).strip()
-
-
-@vf.reward
-async def exact(task, state, extract_answer) -> float:
-    response = extract_answer(state.get("completion") or [])
-    return float(response == task["answer"])
-
-
-def load_environment(config: vf.EnvConfig) -> vf.Env:
-    return vf.Env(
-        taskset=vf.Taskset(
-            source=source,
-            rewards=[exact],
-            objects={"extract_answer": AnswerExtractor},
-            bindings={"exact.extract_answer": "objects.extract_answer"},
-            config=config.taskset,
-        )
-    )
-```
-
-`objects` values are instances or zero-argument factories. Factories are lazy
-and resolve once per taskset runtime. Bindings keep the reward signature explicit
-without moving shared dependencies into global state.
-
-## V1 Message Access
-
-v1 exposes one transcript selector on `verifiers.v1`:
-
-```python
-messages = vf.get_messages(state.get("completion") or [], role="assistant")
-response = str(messages[-1].content or "") if messages else ""
-
-assistant_turns = len(vf.get_messages(state.get("completion") or [], role="assistant"))
-```
-
-Use `vf.get_messages(...)` to get the transcript as typed message objects,
-optionally filtered by role. Index or slice the returned list with ordinary
-Python. The helper does not parse answers; task-specific extraction belongs in
-ordinary Python or a taskset-bound object.
-
-Keep rollout-loop data manipulation explicit. A few lines that read
-`state["completion"]`, select messages, inspect task fields, or build a prompt
-should usually be written directly where they are used, not hidden behind a
-library helper or a one-off private function. Helpers are appropriate when the
-logic is reused in multiple places, when a taskset-bound object is part of the
-environment contract, or when complex behavior belongs in a named secondary
-module. Do not create buried `utils` imports just to avoid three clear lines in
-a reward, update, setup, or program function.
 
 ## Datasets
 
@@ -341,12 +271,11 @@ async def diversity_bonus(completions) -> list[float]:
 rubric = vf.Rubric(funcs=[correct_answer, diversity_bonus])
 ```
 
-### Shared Objects (v0 Rubrics)
+### Shared Objects
 
-In v0 rubric environments, reward functions can request static helper objects
-that live within the Rubric class. These are stored in the Rubric's
-`class_objects` dictionary, and can be added after initialization via
-`add_class_object()`:
+In rubric environments, reward functions can request static helper objects that
+live within the Rubric class. These are stored in the Rubric's `class_objects`
+dictionary, and can be added after initialization via `add_class_object()`:
 
 ```python
 rubric = vf.Rubric(funcs=[my_reward_func])
@@ -357,12 +286,12 @@ async def my_reward_func(completion, my_helper) -> float:
     return await my_helper.score(completion)
 ```
 
-For new v1 taskset/harness environments, prefer taskset-owned `objects` and
-`bindings` as shown in [V1 Shared Dependencies](#v1-shared-dependencies).
+For taskset/harness environments, use taskset-owned `objects` and `bindings` as
+shown in [BYO Harness](byo-harness.md#shared-dependencies).
 
 Judges are used for tasks where deterministic evaluation is impractical, and an
-LLM is used to score responses. **JudgeRubric** is a built-in v0 class which
-stores an LLM client inside the rubric, and provides a `judge` callable to reward
+LLM is used to score responses. **JudgeRubric** stores an LLM client inside the
+rubric, and provides a `judge` callable to reward
 functions for scoring responses:
 
 ```python
@@ -574,7 +503,7 @@ Labels are passed to the Prime Sandboxes API and can be used for organizing, fil
 
 Stateful environments often define methods decorated with `@vf.cleanup` (called after each rollout) or `@vf.teardown` (called once at environment shutdown) for resource management. These decorators, along with `@vf.stop` for custom stop conditions (boolean functions checked after each turn), are powerful tools for rollout lifecycle control in custom `MultiTurnEnv` subclasses.
 
-## Custom Multi-Turn Environments (v0)
+## Custom Multi-Turn Environments
 
 For interaction patterns beyond tool calling—games, simulations, or other custom protocols—`MultiTurnEnv` can be subclassed directly, exposing full control over the rollout loop's behavior.
 
@@ -980,7 +909,7 @@ Newer and more experimental environment classes include:
         timeouts=SandboxTimeouts(read_file=30.0, extract=180.0, poll=120.0),
     )
     ```
-- **V1 `vf.Env` / `vf.Taskset` / `vf.Harness`** — preferred taskset/harness pattern for composing task data and program execution without subclassing. Use this for new environments that need reusable tasksets, reusable harnesses, config-driven metrics, rewards, toolsets, users, endpoint interception, or sandboxed Python/command programs. `vf.Taskset` owns train/eval rows, prompt shaping, setup/update/reward hooks, and toolsets. `vf.Harness` owns the framework program, endpoint proxy, model controls, sandbox options, and runtime hooks. `vf.Env` wires them into the standard evaluation and training surface.
+- **`vf.Env` / `vf.Taskset` / `vf.Harness`** — preferred taskset/harness pattern for composing task data and program execution without subclassing. Use this for environments that need reusable tasksets, reusable harnesses, config-driven metrics, rewards, toolsets, users, endpoint interception, or sandboxed Python/command programs. `vf.Taskset` owns train/eval rows, prompt shaping, setup/update/reward hooks, and toolsets. `vf.Harness` owns the framework program, endpoint proxy, model controls, sandbox options, and runtime hooks. `vf.Env` wires them into the standard evaluation and training surface.
 - **`SWEDebugEnv`** — no-agent debugger for SWE-style `SandboxTaskSet` instances. It creates the task sandbox, optionally runs `taskset.setup(state)`, performs one debug step (`none`, `gold_patch`, `command`, or `script`), and optionally runs the task tests and scorer. It records setup, sandbox creation, gold patch, debug command, and test timings in state for validation and timing investigations.
 - **`HarborEnv`** — loads Harbor-format agent benchmark tasks
 - **`RLMEnv`** — implements [Recursive Language Models](https://alexzhang13.github.io/blog/2025/rlm/) for unbounded context processing via REPL-based decomposition and recursive sub-LLM calls

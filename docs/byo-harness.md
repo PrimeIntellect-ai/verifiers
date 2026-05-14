@@ -99,6 +99,74 @@ Do not use a top-level string `task` field for routing. v1 tasksets serialize
 the full task payload through `info["task"]` for worker compatibility, and
 environment routing uses `info["env_id"]`.
 
+## Shared Dependencies
+
+Shared dependencies live on the taskset and are injected into named lifecycle or
+scoring functions through bindings:
+
+```python
+import re
+import verifiers as vf
+
+
+class AnswerExtractor:
+    def __init__(self):
+        self.pattern = re.compile(r"<answer>(.*?)</answer>", re.DOTALL)
+
+    def __call__(self, completion: list[dict[str, object]]) -> str:
+        message = vf.get_messages(completion, role="assistant")[-1]
+        text = str(message.content or "")
+        match = self.pattern.search(text)
+        return "" if match is None else match.group(1).strip()
+
+
+@vf.reward
+async def exact(task, state, extract_answer) -> float:
+    response = extract_answer(state.get("completion") or [])
+    return float(response == task["answer"])
+
+
+def load_environment(config: vf.EnvConfig) -> vf.Env:
+    return vf.Env(
+        taskset=vf.Taskset(
+            source=source,
+            rewards=[exact],
+            objects={"extract_answer": AnswerExtractor},
+            bindings={"exact.extract_answer": "objects.extract_answer"},
+            config=config.taskset,
+        )
+    )
+```
+
+`objects` values are instances or zero-argument factories. Factories are lazy
+and resolve once per taskset runtime. Bindings keep the reward signature explicit
+without moving shared dependencies into global state.
+
+## Message Access
+
+Taskset/harness environments expose one transcript selector:
+
+```python
+messages = vf.get_messages(state.get("completion") or [], role="assistant")
+response = str(messages[-1].content or "") if messages else ""
+
+assistant_turns = len(vf.get_messages(state.get("completion") or [], role="assistant"))
+```
+
+Use `vf.get_messages(...)` to get the transcript as typed message objects,
+optionally filtered by role. Index or slice the returned list with ordinary
+Python. The helper does not parse answers; task-specific extraction belongs in
+ordinary Python or a taskset-bound object.
+
+Keep rollout-loop data manipulation explicit. A few lines that read
+`state["completion"]`, select messages, inspect task fields, or build a prompt
+should usually be written directly where they are used, not hidden behind a
+library helper or a one-off private function. Helpers are appropriate when the
+logic is reused in multiple places, when a taskset-bound object is part of the
+environment contract, or when complex behavior belongs in a named secondary
+module. Do not create buried `utils` imports just to avoid three clear lines in
+a reward, update, setup, or program function.
+
 ## Task Controls
 
 Tasks can request rollout behavior through top-level serializable fields:
