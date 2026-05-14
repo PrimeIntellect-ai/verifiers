@@ -136,12 +136,6 @@ def normalize_nemo_gym_task_row(
     task_row["info"] = info
     return task_row
 
-
-def prompt_from_nemo_gym_row(row: Mapping[str, Any]) -> list[dict[str, Any]]:
-    prompt, _ = prompt_parts_from_nemo_gym_row(row)
-    return prompt
-
-
 def prompt_parts_from_nemo_gym_row(
     row: Mapping[str, Any],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:

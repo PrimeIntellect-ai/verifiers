@@ -908,7 +908,9 @@ def serialize_openai_responses_response(response: Response) -> dict[str, Any]:
             "input_tokens": response.usage.prompt_tokens,
             "input_tokens_details": {"cached_tokens": 0},
             "output_tokens": response.usage.completion_tokens,
-            "output_tokens_details": {"reasoning_tokens": 0},
+            "output_tokens_details": {
+                "reasoning_tokens": response.usage.reasoning_tokens
+            },
             "total_tokens": response.usage.total_tokens,
         }
     return {
