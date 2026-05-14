@@ -1,3 +1,4 @@
+from verifiers.clients.routed_experts import truncate_routed_experts
 from verifiers.types import (
     AssistantMessage,
     Messages,
@@ -48,11 +49,15 @@ async def parse_response_tokens(
             completion_ids = []
             completion_mask = []
             completion_logprobs = []
+            routed_experts = truncate_routed_experts(routed_experts, len(prompt_ids))
         elif prompt_len + completion_len > max_seq_len:
             is_truncated = True
             completion_ids = tokens.completion_ids[: max_seq_len - prompt_len]
             completion_mask = tokens.completion_mask[: max_seq_len - prompt_len]
             completion_logprobs = tokens.completion_logprobs[: max_seq_len - prompt_len]
+            routed_experts = truncate_routed_experts(
+                routed_experts, prompt_len + len(completion_ids)
+            )
         else:
             is_truncated = False
     else:

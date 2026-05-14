@@ -6,8 +6,11 @@ Covers:
 - Handling of missing token data
 """
 
+import base64
+from io import BytesIO
 from unittest.mock import MagicMock
 
+import numpy as np
 import pytest
 
 from verifiers.types import (
@@ -19,6 +22,17 @@ from verifiers.types import (
     TrajectoryStepTokens,
 )
 from verifiers.utils.response_utils import parse_response_tokens
+
+
+def _encode_routed_experts(seq_len: int) -> str:
+    array = np.arange(seq_len * 2 * 1, dtype=np.int16).reshape(seq_len, 2, 1)
+    buffer = BytesIO()
+    np.save(buffer, array, allow_pickle=False)
+    return base64.b64encode(buffer.getvalue()).decode("ascii")
+
+
+def _decode_routed_experts(payload: str) -> np.ndarray:
+    return np.load(BytesIO(base64.b64decode(payload)), allow_pickle=False)
 
 
 @pytest.mark.asyncio
@@ -98,6 +112,7 @@ async def test_parse_response_tokens_with_max_seq_len_truncates_completion():
                 completion_ids=[30, 40, 50],
                 completion_mask=[1, 1, 1],
                 completion_logprobs=[-0.5, -0.6, -0.7],
+                routed_experts=_encode_routed_experts(5),
             ),
         ),
     )
@@ -110,6 +125,7 @@ async def test_parse_response_tokens_with_max_seq_len_truncates_completion():
     assert tokens["prompt_mask"] == [0, 0]
     assert tokens["completion_mask"] == [1, 1]
     assert tokens["completion_logprobs"] == [-0.5, -0.6]
+    assert _decode_routed_experts(tokens["routed_experts"]).shape == (4, 2, 1)
     assert tokens["is_truncated"] is True
 
 
@@ -133,6 +149,7 @@ async def test_parse_response_tokens_with_overlong_prompt():
                 completion_ids=[5, 6],
                 completion_mask=[1, 1],
                 completion_logprobs=[-0.1, -0.2],
+                routed_experts=_encode_routed_experts(6),
             ),
         ),
     )
@@ -142,6 +159,7 @@ async def test_parse_response_tokens_with_overlong_prompt():
     assert tokens is not None
     assert tokens["prompt_ids"] == [1, 2, 3]
     assert tokens["completion_ids"] == []
+    assert _decode_routed_experts(tokens["routed_experts"]).shape == (3, 2, 1)
     assert tokens["overlong_prompt"] is True
     assert tokens["is_truncated"] is True
 
