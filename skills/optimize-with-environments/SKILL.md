@@ -52,9 +52,10 @@ prime gepa run configs/gepa/qwen-3-5.toml
 
 ## Output Artifacts
 Expect and inspect:
-1. `best_prompt.txt`
+1. `system_prompt.txt`
 2. `pareto_frontier.jsonl`
 3. `metadata.json`
+Load optimized prompts with `vf.SystemMessage.from_path("/path/to/system_prompt.txt")` so the saved prompt is used verbatim.
 
 ## Quality Rules
 1. Do not optimize on top of broken reward logic.
