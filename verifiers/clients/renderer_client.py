@@ -15,25 +15,25 @@ from collections.abc import Mapping
 from typing import Any, ClassVar, cast
 
 from openai import AsyncOpenAI
+
 from renderers import Message as RendererMessage
 from renderers import (
     MultimodalRenderer,
     RenderedTokens,
     Renderer,
     RendererPool,
-    ToolCallFunction,
     ToolSpec,
     create_renderer_pool,
     is_multimodal,
 )
 from renderers import ToolCall as RendererToolCall
+from renderers import ToolCallFunction
 from renderers.client import generate
 
 from verifiers.clients.client import Client
 from verifiers.clients.openai_chat_completions_client import (
     handle_openai_overlong_prompt,
 )
-from verifiers.clients.routed_experts import parse_routed_experts
 from verifiers.errors import EmptyModelResponseError
 from verifiers.types import (
     AssistantMessage,
@@ -629,15 +629,13 @@ class RendererClient(
         completion_ids = response.get("completion_ids", [])
         completion_logprobs = response.get("completion_logprobs", [])
 
-        routed_experts = parse_routed_experts(response.get("routed_experts"))
-
         tokens = ResponseTokens(
             prompt_ids=prompt_ids,
             prompt_mask=[0] * len(prompt_ids),
             completion_ids=completion_ids,
             completion_mask=[1] * len(completion_ids),
             completion_logprobs=completion_logprobs,
-            routed_experts=routed_experts,
+            routed_experts=response.get("routed_experts"),
             multi_modal_data=response.get("multi_modal_data"),
         )
 
