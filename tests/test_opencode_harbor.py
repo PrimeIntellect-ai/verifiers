@@ -38,6 +38,7 @@ def test_load_environment_uses_v1_taskset_and_harness() -> None:
     assert not hasattr(module, "TERMINAL_BENCH_SAMPLE_TASKS")
     assert env.taskset.resolve_tasks_root() == Path(module.__file__).parent / "tasks"
     assert env.harness.config.max_turns == 4
+    assert env.harness.config.disabled_tools == vf.OpenCodeConfig().disabled_tools
     assert "webfetch" in env.harness.config.disabled_tools
     assert "question" in env.harness.config.disabled_tools
 
