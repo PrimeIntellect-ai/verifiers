@@ -1,0 +1,42 @@
+# Qwen3.5/3.6 MoE models. Uncomment exactly one model.
+model = "Qwen/Qwen3.6-35B-A3B"
+# model = "Qwen/Qwen3.5-35B-A3B"
+# model = "Qwen/Qwen3.5-122B-A10B"
+# model = "Qwen/Qwen3.5-397B-A17B"
+
+max_steps = 100
+batch_size = 256
+rollouts_per_example = 8
+
+[sampling]
+max_tokens = 1024
+enable_thinking = false
+
+# Start with one environment. Uncomment more [[env]] blocks for multi-env training.
+[[env]]
+id = "primeintellect/reverse-text"
+
+# [[env]]
+# id = "primeintellect/wordle"
+
+# [[env]]
+# id = "primeintellect/wiki-search"
+
+# [[env]]
+# id = "primeintellect/dspy-flights"
+
+# [[env]]
+# id = "primeintellect/opencode-harbor"
+
+# Online evaluations during training. Uncomment to add [[eval.env]] blocks.
+
+# [eval]
+# interval = 20
+# num_examples = 64
+# rollouts_per_example = 1
+# eval_base_model = true
+
+# [[eval.env]]
+# id = "primeintellect/reverse-text"
+
+# Hosted Training docs: https://docs.primeintellect.ai/hosted-training
