@@ -392,15 +392,19 @@ split = "test"
 ```
 
 For v1 BYO Harness environments, pass taskset/harness config through sibling
-`taskset` and `harness` sections:
+`taskset` and `harness` sections. Top-level `[taskset]` and `[harness]` tables
+are used by every `[[eval]]`:
 
 ```toml
+[taskset]
+split = "test"
+
+[harness]
+max_turns = 4
+
 [[eval]]
 id = "my-v1-env"
 sampling_args = { max_tokens = 4096 }
-
-[eval.harness]
-max_turns = 4
 
 [eval.taskset.scoring.exact_answer]
 weight = 0.5

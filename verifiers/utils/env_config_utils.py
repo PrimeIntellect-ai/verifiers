@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from collections.abc import Mapping
 from typing import cast
 
@@ -9,10 +10,31 @@ def config_table(value: object, field: str) -> dict[str, object]:
         return {}
     if not isinstance(value, Mapping):
         raise ValueError(f"{field} must be a table.")
-    return dict(cast(Mapping[str, object], value))
+    result: dict[str, object] = {}
+    for key, item in cast(Mapping[object, object], value).items():
+        if not isinstance(key, str):
+            raise TypeError(f"{field} keys must be strings.")
+        result[key] = item
+    return result
 
 
-def normalize_env_config_sections(raw: Mapping[str, object]) -> dict[str, object]:
+def merge_config_tables(base: object, overlay: object, field: str) -> dict[str, object]:
+    merged = copy.deepcopy(config_table(base, field))
+    for key, value in config_table(overlay, field).items():
+        existing = merged.get(key)
+        if isinstance(existing, Mapping) and isinstance(value, Mapping):
+            merged[key] = merge_config_tables(existing, value, field)
+        else:
+            merged[key] = copy.deepcopy(value)
+    return merged
+
+
+def normalize_env_config_sections(
+    raw: Mapping[str, object],
+    *,
+    global_taskset: object | None = None,
+    global_harness: object | None = None,
+) -> dict[str, object]:
     config = dict(raw)
     env_args = config_table(config.pop("env_args", {}), "env_args")
     args = config_table(config.pop("args", {}), "args")
@@ -23,23 +45,28 @@ def normalize_env_config_sections(raw: Mapping[str, object]) -> dict[str, object
         )
     env_args = {**env_args, **args}
 
-    taskset = config.pop("taskset", None)
-    harness = config.pop("harness", None)
-    child_config: dict[str, object] = {}
-    if taskset is not None:
-        child_config["taskset"] = config_table(taskset, "taskset")
-    if harness is not None:
-        child_config["harness"] = config_table(harness, "harness")
+    legacy_config = config_table(env_args.pop("config", {}), "env_args.config")
+    taskset = merge_config_tables(
+        merge_config_tables(
+            global_taskset, legacy_config.pop("taskset", None), "taskset"
+        ),
+        config.pop("taskset", None),
+        "taskset",
+    )
+    harness = merge_config_tables(
+        merge_config_tables(
+            global_harness, legacy_config.pop("harness", None), "harness"
+        ),
+        config.pop("harness", None),
+        "harness",
+    )
 
-    if child_config:
-        existing_config = config_table(env_args.get("config", {}), "env_args.config")
-        overlap = set(existing_config) & set(child_config)
-        if overlap:
-            raise ValueError(
-                f"Environment config section(s) {overlap} appear in both config and top-level sections."
-            )
-        env_args["config"] = {**existing_config, **child_config}
-
+    if legacy_config:
+        env_args["config"] = legacy_config
+    if taskset:
+        config["taskset"] = taskset
+    if harness:
+        config["harness"] = harness
     if env_args:
         config["env_args"] = env_args
     return config

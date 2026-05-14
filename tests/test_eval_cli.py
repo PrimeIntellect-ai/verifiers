@@ -720,8 +720,47 @@ def test_load_toml_config_with_env_args():
         assert result[0]["env_args"]["max_examples"] == 100
 
 
+def test_load_toml_config_accepts_v1_taskset_and_harness_aliases():
+    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
+        f.write(
+            "[taskset]\n"
+            'split = "test"\n'
+            "\n"
+            "[harness]\n"
+            "max_turns = 4\n"
+            "[harness.sampling_args]\n"
+            "temperature = 0.2\n"
+            "\n"
+            "[[eval]]\n"
+            'env_id = "env1"\n'
+            "[eval.taskset]\n"
+            'tasks = "/tmp/tasks"\n'
+            "[eval.harness]\n"
+            "max_turns = 8\n"
+            "[eval.harness.sampling_args]\n"
+            "max_tokens = 128\n"
+            "\n"
+            "[[eval]]\n"
+            'env_id = "env2"\n'
+        )
+        f.flush()
+        result = load_toml_config(Path(f.name))
+
+    assert result[0].get("env_args", {}) == {}
+    assert result[0]["taskset"] == {"split": "test", "tasks": "/tmp/tasks"}
+    assert result[0]["harness"] == {
+        "max_turns": 8,
+        "sampling_args": {"temperature": 0.2, "max_tokens": 128},
+    }
+    assert result[1]["taskset"] == {"split": "test"}
+    assert result[1]["harness"] == {
+        "max_turns": 4,
+        "sampling_args": {"temperature": 0.2},
+    }
+
+
 def test_load_toml_config_with_args_taskset_harness():
-    """args/taskset/harness sections normalize into load_environment kwargs."""
+    """args/taskset/harness sections normalize into first-class eval config."""
     with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
         f.write(
             '[[eval]]\nenv_id = "env1"\n'
@@ -737,16 +776,30 @@ def test_load_toml_config_with_args_taskset_harness():
 
     assert len(result) == 1
     assert result[0]["env_id"] == "env1"
-    assert result[0]["env_args"] == {
-        "split": "train",
-        "config": {
-            "taskset": {"num_examples": 10},
-            "harness": {"max_turns": 5},
-        },
-    }
+    assert result[0]["env_args"] == {"split": "train"}
+    assert result[0]["taskset"] == {"num_examples": 10}
+    assert result[0]["harness"] == {"max_turns": 5}
     assert "args" not in result[0]
-    assert "taskset" not in result[0]
-    assert "harness" not in result[0]
+
+
+def test_cli_keeps_v1_aliases_out_of_env_args(monkeypatch, run_cli):
+    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
+        f.write(
+            "[harness]\n"
+            "max_turns = 4\n"
+            "\n"
+            "[[eval]]\n"
+            'env_id = "env1"\n'
+            "[eval.taskset]\n"
+            'tasks = "/tmp/tasks"\n'
+        )
+        f.flush()
+        captured = run_cli(monkeypatch, {"env_id_or_config": f.name})
+
+    config = captured["configs"][0]
+    assert config.env_args == {}
+    assert config.taskset == {"tasks": "/tmp/tasks"}
+    assert config.harness == {"max_turns": 4}
 
 
 def test_load_toml_config_missing_env_section():
