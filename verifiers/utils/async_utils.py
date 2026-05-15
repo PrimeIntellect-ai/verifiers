@@ -158,6 +158,7 @@ def maybe_retry(
         vf.InvalidModelResponseError,
     ),
     terminal_error_types: tuple[type[Exception], ...] = (),
+    on_terminal: Callable[[T, Exception], T] | None = None,
 ) -> Callable[..., Coroutine[Any, Any, T]]:
     """
     Return retry-wrapped function if max_retries > 0, else return func unchanged.
@@ -222,6 +223,8 @@ def maybe_retry(
         terminal_error = find_error_in_state(result, terminal_error_types)
         if terminal_error is not None:
             log_terminal(terminal_error)
+            if on_terminal is not None:
+                return on_terminal(result, terminal_error)
             return result
         if max_retries > 0:
             retry_error = find_error_in_state(result, retry_error_types)
