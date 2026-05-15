@@ -8,6 +8,7 @@ import os
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field
+from datetime import datetime
 from io import StringIO
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, cast
@@ -65,6 +66,90 @@ from verifiers.utils.pricing_utils import format_cost_usd
 
 AnimationLevel = Literal["none", "basic", "full"]
 TreeBinding = Binding | tuple[str, str] | tuple[str, str, str]
+QUIT_BINDINGS = (
+    Binding("q", "quit", "Quit"),
+    Binding("ctrl+c", "quit", "Quit", show=False, priority=True),
+)
+COPY_MODAL_BINDINGS = (
+    *QUIT_BINDINGS,
+    Binding("escape", "close", "Back (esc/b)"),
+    Binding("b,backspace", "close", show=False),
+)
+PRIME_BACKGROUND = "#050506"
+PRIME_SURFACE = "#0d0d10"
+PRIME_PANEL = "#151518"
+PRIME_FOREGROUND = "#f4f4f5"
+PRIME_PRIMARY = "#7f70c7"
+PRIME_SECONDARY = "#737373"
+PRIME_SUCCESS = "#85ed75"
+PRIME_WARNING = "#f3bc56"
+PRIME_ERROR = "#de3b3b"
+PRIME_ORANGE = "#ff4f00"
+PRIME_MINT = "#5ee9b5"
+PRIME_NEUTRAL = "#d4d4d8"
+
+LAB_EMPTY_EVAL_MESSAGE = """No completed evals found
+
+01 Create a Lab workspace
+   prime lab setup
+
+02 Save eval runs
+   prime eval run <environment> --save-results
+
+03 Viewer search paths
+   outputs/evals
+   environments/*/outputs/evals"""
+
+
+def _lab_topbar(title: str) -> ComposeResult:
+    title_text = Text.assemble(
+        ("L A B", f"bold {PRIME_PRIMARY}"), ("  ", "dim"), (title, "bold")
+    )
+    workspace_text = Text.assemble(
+        ("✓", f"bold {PRIME_SUCCESS}"),
+        " ",
+        ("local", "dim"),
+        (" · ", "dim"),
+        (_compact_path(Path.cwd()), "dim"),
+    )
+    logo_text = Text.assemble(("PRIME", "bold white"), (" Intellect", "italic white"))
+    with Horizontal(id="topbar"):
+        yield Static(title_text, id="topbar-title", markup=False)
+        yield Static(workspace_text, id="workspace-path", markup=False)
+        yield Static(logo_text, id="topbar-logo", markup=False)
+
+
+def _statusbar_text(parts: Tuple[Tuple[str, str, str | None], ...]) -> Text:
+    text = Text.assemble(
+        ("✓", f"bold {PRIME_SUCCESS}"),
+        (" local", PRIME_NEUTRAL),
+        (" · ", "dim"),
+        (_compact_path(Path.cwd()), "dim"),
+    )
+    for label, value, style in parts:
+        text.append(" · ", style="dim")
+        text.append(f"{label} ", style="dim")
+        text.append(value, style=style or PRIME_NEUTRAL)
+    return text
+
+
+def _compact_path(path: Path) -> str:
+    resolved = path.expanduser().resolve()
+    home = Path.home().resolve()
+    try:
+        relative = resolved.relative_to(home)
+    except ValueError:
+        parts = resolved.parts
+        if len(parts) <= 3:
+            return str(resolved)
+        return f".../{'/'.join(parts[-2:])}"
+    home_path = f"~/{relative}" if str(relative) != "." else "~"
+    if len(home_path) <= 44:
+        return home_path
+    parts = relative.parts
+    if len(parts) <= 2:
+        return f"~/{relative}"
+    return f"~/.../{'/'.join(parts[-2:])}"
 
 
 def _binding_key(binding: TreeBinding) -> str:
@@ -294,112 +379,12 @@ def discover_results(
     return discovered
 
 
-class LazyRunResults:
-    """Lazy loader for results.jsonl with optional metadata count."""
+class LazyLineFile:
+    """Lazy line reader with offsets for random access."""
 
-    def __init__(self, run: RunInfo):
-        self._path = run.path / "results.jsonl"
-        self._fh = self._path.open("r", encoding="utf-8")
+    def __init__(self, path: Path, *, errors: str = "strict"):
+        self._fh = path.open("r", encoding="utf-8", errors=errors)
         self._offsets: List[int] = []
-        self._cache: Dict[int, Dict[str, Any]] = {}
-        self._eof = False
-        self._count_hint: Optional[int] = None
-        self._count: Optional[int] = None
-
-        meta = run.load_metadata()
-        num_examples = meta.get("num_examples")
-        rollouts_per_example = meta.get("rollouts_per_example")
-        if isinstance(num_examples, int) and num_examples >= 0:
-            if isinstance(rollouts_per_example, int) and rollouts_per_example >= 0:
-                self._count_hint = num_examples * rollouts_per_example
-            else:
-                self._count_hint = num_examples
-
-    def close(self) -> None:
-        if not self._fh.closed:
-            self._fh.close()
-
-    def _read_next_line(self) -> Optional[str]:
-        if self._eof:
-            return None
-        pos = self._fh.tell()
-        line = self._fh.readline()
-        if not line:
-            self._eof = True
-            self._count = len(self._offsets)
-            return None
-        self._offsets.append(pos)
-        return line
-
-    def _ensure_index(self, index: int) -> bool:
-        if index < 0:
-            return False
-        while len(self._offsets) <= index and not self._eof:
-            line = self._read_next_line()
-            if line is None:
-                break
-        return index < len(self._offsets)
-
-    def _ensure_count(self) -> int:
-        if self._count is not None:
-            return self._count
-        while not self._eof:
-            line = self._read_next_line()
-            if line is None:
-                break
-        self._count = len(self._offsets)
-        return self._count
-
-    def get(self, index: int) -> Dict[str, Any]:
-        if index in self._cache:
-            return self._cache[index]
-        if not self._ensure_index(index):
-            return {}
-        pos = self._fh.tell()
-        try:
-            self._fh.seek(self._offsets[index])
-            line = self._fh.readline()
-            try:
-                data = json.loads(line)
-            except json.JSONDecodeError:
-                data = {}
-        finally:
-            self._fh.seek(pos)
-        self._cache[index] = data
-        return data
-
-    def __getitem__(self, index: int) -> Dict[str, Any]:
-        return self.get(index)
-
-    def __len__(self) -> int:
-        return self._ensure_count()
-
-    def __bool__(self) -> bool:
-        if self._count is not None:
-            return self._count > 0
-        if self._offsets:
-            return True
-        if self._eof:
-            return False
-        line = self._read_next_line()
-        return line is not None
-
-    def count_hint(self) -> Optional[int]:
-        if self._count is not None:
-            return self._count
-        return self._count_hint
-
-
-class LazyLogFile:
-    """Lazy loader for log files with line-level random access."""
-
-    MAX_DISPLAY_LINES = 10_000
-
-    def __init__(self, path: Path):
-        self._path = path
-        self._fh = path.open("r", encoding="utf-8", errors="replace")
-        self._offsets: List[int] = []
-        self._cache: Dict[int, str] = {}
         self._eof = False
         self._count: Optional[int] = None
 
@@ -423,32 +408,26 @@ class LazyLogFile:
         if index < 0:
             return False
         while len(self._offsets) <= index and not self._eof:
-            if self._read_next_line() is None:
-                break
+            self._read_next_line()
         return index < len(self._offsets)
 
     def _ensure_count(self) -> int:
         if self._count is not None:
             return self._count
         while not self._eof:
-            if self._read_next_line() is None:
-                break
+            self._read_next_line()
         self._count = len(self._offsets)
         return self._count
 
-    def get_line(self, index: int) -> str:
-        if index in self._cache:
-            return self._cache[index]
+    def _line_at(self, index: int) -> str:
         if not self._ensure_index(index):
             return ""
         pos = self._fh.tell()
         try:
             self._fh.seek(self._offsets[index])
-            line = self._fh.readline().rstrip("\n\r")
+            return self._fh.readline()
         finally:
             self._fh.seek(pos)
-        self._cache[index] = line
-        return line
 
     def __len__(self) -> int:
         return self._ensure_count()
@@ -463,16 +442,71 @@ class LazyLogFile:
         return self._read_next_line() is not None
 
 
+class LazyRunResults(LazyLineFile):
+    """Lazy loader for results.jsonl with optional metadata count."""
+
+    def __init__(self, run: RunInfo):
+        super().__init__(run.path / "results.jsonl")
+        self._cache: Dict[int, Dict[str, Any]] = {}
+        self._count_hint: Optional[int] = None
+
+        meta = run.load_metadata()
+        num_examples = meta.get("num_examples")
+        rollouts_per_example = meta.get("rollouts_per_example")
+        if isinstance(num_examples, int) and num_examples >= 0:
+            if isinstance(rollouts_per_example, int) and rollouts_per_example >= 0:
+                self._count_hint = num_examples * rollouts_per_example
+            else:
+                self._count_hint = num_examples
+
+    def get(self, index: int) -> Dict[str, Any]:
+        if index in self._cache:
+            return self._cache[index]
+        line = self._line_at(index)
+        if not line:
+            return {}
+        try:
+            data = json.loads(line)
+        except json.JSONDecodeError:
+            data = {}
+        self._cache[index] = data
+        return data
+
+    def __getitem__(self, index: int) -> Dict[str, Any]:
+        return self.get(index)
+
+    def count_hint(self) -> Optional[int]:
+        if self._count is not None:
+            return self._count
+        return self._count_hint
+
+
+class LazyLogFile(LazyLineFile):
+    """Lazy loader for log files with line-level random access."""
+
+    MAX_DISPLAY_LINES = 10_000
+
+    def __init__(self, path: Path):
+        super().__init__(path, errors="replace")
+        self._cache: Dict[int, str] = {}
+
+    def get_line(self, index: int) -> str:
+        if index in self._cache:
+            return self._cache[index]
+        self._cache[index] = self._line_at(index).rstrip("\n\r")
+        return self._cache[index]
+
+
 # ----------------------------
 # Log styling helpers
 # ----------------------------
 
 _LOG_LEVEL_STYLES: Dict[str, str] = {
-    "DEBUG": "dim blue",
-    "INFO": "bold green",
-    "WARNING": "bold yellow",
-    "ERROR": "bold red",
-    "CRITICAL": "bold red reverse",
+    "DEBUG": f"dim {PRIME_SECONDARY}",
+    "INFO": f"bold {PRIME_SUCCESS}",
+    "WARNING": f"bold {PRIME_WARNING}",
+    "ERROR": f"bold {PRIME_ERROR}",
+    "CRITICAL": f"bold {PRIME_ERROR} reverse",
 }
 
 
@@ -511,7 +545,7 @@ def _append_styled_log_line(log_text: Text, line: str) -> None:
     level_style = _LOG_LEVEL_STYLES.get(level, "dim")
     log_text.append(timestamp, style="bold dim")
     log_text.append(" - ", style="dim")
-    log_text.append(source, style="dim cyan")
+    log_text.append(source, style=f"dim {PRIME_MINT}")
     log_text.append(" - ", style="dim")
     log_text.append(level, style=level_style)
     log_text.append(message, style="dim")
@@ -740,10 +774,10 @@ def _format_message_preview(message: Any) -> str:
 def _reward_style(value: Any) -> str:
     if isinstance(value, (int, float)):
         if value >= 0.9:
-            return "bold green"
+            return f"bold {PRIME_SUCCESS}"
         if value >= 0.5:
-            return "bold yellow"
-        return "bold red"
+            return f"bold {PRIME_WARNING}"
+        return f"bold {PRIME_ERROR}"
     return "bold"
 
 
@@ -948,14 +982,14 @@ def _varying_run_setting_keys(
 
 def _reward_bucket_counts(values: List[float]) -> List[Tuple[str, int, str]]:
     bucket_counts = [
-        ("<0", 0, "bold red"),
-        ("=0", 0, "bold red"),
-        ("0-<0.25", 0, "red"),
-        ("0.25-<0.5", 0, "yellow"),
-        ("0.5-<0.75", 0, "yellow"),
-        ("0.75-<1", 0, "green"),
-        ("=1", 0, "bold green"),
-        (">1", 0, "bold green"),
+        ("<0", 0, f"bold {PRIME_ERROR}"),
+        ("=0", 0, f"bold {PRIME_ERROR}"),
+        ("0-<0.25", 0, PRIME_ERROR),
+        ("0.25-<0.5", 0, PRIME_WARNING),
+        ("0.5-<0.75", 0, PRIME_WARNING),
+        ("0.75-<1", 0, PRIME_SUCCESS),
+        ("=1", 0, f"bold {PRIME_SUCCESS}"),
+        (">1", 0, f"bold {PRIME_SUCCESS}"),
     ]
 
     for reward in values:
@@ -986,21 +1020,21 @@ def _reward_bucket_counts(values: List[float]) -> List[Tuple[str, int, str]]:
     ]
 
 
-# Gradient from red (low) through yellow (mid) to green (high).
+# Gradient from Prime red through amber to lab green.
 _METRIC_BUCKET_STYLES: Tuple[str, ...] = (
-    "bold red",
-    "red",
-    "yellow",
-    "yellow",
-    "green",
-    "bold green",
+    f"bold {PRIME_ERROR}",
+    PRIME_ERROR,
+    PRIME_WARNING,
+    PRIME_WARNING,
+    PRIME_SUCCESS,
+    f"bold {PRIME_SUCCESS}",
 )
 
 
 def _metric_bucket_counts(values: List[float]) -> List[Tuple[str, int, str]]:
     """Adaptive bucketing for arbitrary numeric metrics.
 
-    Splits the value range into 6 equal-width buckets with a red→green gradient.
+    Splits the value range into 6 equal-width buckets.
     """
     if not values:
         return []
@@ -1008,9 +1042,8 @@ def _metric_bucket_counts(values: List[float]) -> List[Tuple[str, int, str]]:
     hi = max(values)
     n_buckets = len(_METRIC_BUCKET_STYLES)
     if lo == hi:
-        # All values identical — single bucket.
         label = _format_compact_metric(lo)
-        return [(label, len(values), "bold green")]
+        return [(label, len(values), f"bold {PRIME_SUCCESS}")]
     step = (hi - lo) / n_buckets
     buckets: List[Tuple[str, int, str]] = []
     for i in range(n_buckets):
@@ -1032,12 +1065,12 @@ def _metric_bucket_counts(values: List[float]) -> List[Tuple[str, int, str]]:
 
 
 _COMPARE_ALIAS_PALETTE: Tuple[str, ...] = (
-    "#61afef",
-    "#98c379",
-    "#e5c07b",
-    "#c678dd",
-    "#56b6c2",
-    "#e06c75",
+    PRIME_PRIMARY,
+    PRIME_MINT,
+    PRIME_WARNING,
+    PRIME_ERROR,
+    PRIME_ORANGE,
+    PRIME_SECONDARY,
 )
 
 
@@ -1357,7 +1390,7 @@ def _build_metric_summary_table(metric_summaries: List[MetricSummary]) -> Table 
     )
     table.add_column(
         "Metric",
-        style="bold cyan",
+        style=f"bold {PRIME_MINT}",
         ratio=1,
         min_width=min(max(metric_width, 28), 38),
         no_wrap=True,
@@ -1391,8 +1424,6 @@ def _build_metric_summary_table(metric_summaries: List[MetricSummary]) -> Table 
 # Custom Panel Widget
 # ----------------------------
 class Panel(Container):
-    """A rounded panel container."""
-
     pass
 
 
@@ -1457,7 +1488,6 @@ class LogScrollPane(VerticalScroll):
 class SearchHit:
     column: str
     line_index: int
-    line_text: str
     section_index: int = 0
     nested_index: int = -1  # -1 = parent body, 0+ = nested section index
 
@@ -1488,6 +1518,62 @@ class RolloutCopyItem:
     body: str
 
 
+class ItemCopyScreen(ModalScreen[None]):
+    """Shared copy behavior for read-only preview modals."""
+
+    default_title = "Copy"
+    preview_id = ""
+    status_id = ""
+
+    def __init__(
+        self,
+        items: List[RolloutCopyItem],
+        *,
+        start_key: Optional[str] = None,
+        title: Optional[str] = None,
+    ):
+        super().__init__()
+        self._items = items
+        self._title = title or self.default_title
+        self._current_idx = next(
+            (i for i, item in enumerate(items) if item.key == start_key),
+            0,
+        )
+        self._last_copied_selection = ""
+
+    @on(TextArea.SelectionChanged)
+    def _on_selection_changed(self, event: TextArea.SelectionChanged) -> None:
+        if event.text_area.id != self.preview_id:
+            return
+        selected = event.text_area.selected_text or ""
+        if selected and selected != self._last_copied_selection:
+            self._copy_text(selected, "selection")
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+    def action_copy(self) -> None:
+        if not self._items:
+            return
+        item = self._items[self._current_idx]
+        preview = self.query_one(f"#{self.preview_id}", TextArea)
+        selected = preview.selected_text or ""
+        copied_text = selected or item.body
+        if not copied_text:
+            self.query_one(f"#{self.status_id}", Label).update(
+                Text("Nothing to copy.", style="dim")
+            )
+            return
+        self._copy_text(copied_text, "selection" if selected else item.label.lower())
+
+    def _copy_text(self, text: str, label: str) -> None:
+        self.app.copy_to_clipboard(text)
+        self._last_copied_selection = text
+        self.query_one(f"#{self.status_id}", Label).update(
+            Text(f"Copied {label} ({len(text):,} chars).", style="dim")
+        )
+
+
 def _stylize_matches(text: Text, pattern: re.Pattern, style: str) -> Text:
     plain = text.plain
     for match in pattern.finditer(plain):
@@ -1499,8 +1585,19 @@ def _sorted_runs(runs: List[RunInfo]) -> List[RunInfo]:
     return sorted(runs, key=lambda run: run.run_id)
 
 
-def _format_run_datetime(meta: Dict[str, Any]) -> str:
-    return f"{meta.get('date', '')} {meta.get('time', '')}".strip()
+def _format_run_datetime(meta: Dict[str, Any], run_path: Path | None = None) -> str:
+    parts = [
+        value.strip()
+        for value in (meta.get("date"), meta.get("time"))
+        if isinstance(value, str) and value.strip()
+    ]
+    if parts:
+        return " ".join(parts)
+    if run_path is not None:
+        return datetime.fromtimestamp(run_path.stat().st_mtime).strftime(
+            "%Y-%m-%d %H:%M"
+        )
+    return ""
 
 
 def _text_to_plain(text: Text) -> str:
@@ -1714,40 +1811,15 @@ class MathInlineMixin:
         return Content("".join(parts), spans=spans)
 
 
-class MathParagraph(MathInlineMixin, MarkdownParagraph):
-    pass
-
-
-class MathH1(MathInlineMixin, MarkdownH1):
-    pass
-
-
-class MathH2(MathInlineMixin, MarkdownH2):
-    pass
-
-
-class MathH3(MathInlineMixin, MarkdownH3):
-    pass
-
-
-class MathH4(MathInlineMixin, MarkdownH4):
-    pass
-
-
-class MathH5(MathInlineMixin, MarkdownH5):
-    pass
-
-
-class MathH6(MathInlineMixin, MarkdownH6):
-    pass
-
-
-class MathTH(MathInlineMixin, MarkdownTH):
-    pass
-
-
-class MathTD(MathInlineMixin, MarkdownTD):
-    pass
+MathParagraph = type("MathParagraph", (MathInlineMixin, MarkdownParagraph), {})
+MathH1 = type("MathH1", (MathInlineMixin, MarkdownH1), {})
+MathH2 = type("MathH2", (MathInlineMixin, MarkdownH2), {})
+MathH3 = type("MathH3", (MathInlineMixin, MarkdownH3), {})
+MathH4 = type("MathH4", (MathInlineMixin, MarkdownH4), {})
+MathH5 = type("MathH5", (MathInlineMixin, MarkdownH5), {})
+MathH6 = type("MathH6", (MathInlineMixin, MarkdownH6), {})
+MathTH = type("MathTH", (MathInlineMixin, MarkdownTH), {})
+MathTD = type("MathTD", (MathInlineMixin, MarkdownTD), {})
 
 
 class MathDisplayBlock(MarkdownBlock):
@@ -1801,13 +1873,12 @@ class CompareRunsScreen(Screen):
     """Dedicated comparison view for runs, optionally across models."""
 
     BINDINGS = [
-        Binding("q", "quit", "Quit"),
+        *QUIT_BINDINGS,
         Binding("b,backspace", "back", "Back"),
         Binding("left", "cursor_left", "←"),
         Binding("right", "cursor_right", "→"),
         Binding("enter", "cursor_select", "Select"),
         Binding("c", "copy", "Copy"),
-        Binding("ctrl+c", "copy", show=False),
     ]
 
     def __init__(self, env_id: str, model: Optional[str], runs: List[RunInfo]):
@@ -1826,9 +1897,10 @@ class CompareRunsScreen(Screen):
         self._available_metrics: List[str] = ["reward"]
 
     def compose(self) -> ComposeResult:
-        with Container():
+        with Container(id="view-container"):
+            yield from _lab_topbar("Comparison")
             yield Panel(
-                Label(Text("Run Comparison", style="bold"), classes="title"),
+                Label(Text("Outcome groups", style="bold"), classes="column-header"),
                 Static("", id="compare-subtitle", classes="subtitle", markup=False),
                 Select[str](
                     [("reward", "reward")],
@@ -1845,13 +1917,24 @@ class CompareRunsScreen(Screen):
                 ),
                 classes="compare-panel",
             )
+            yield Static(
+                _statusbar_text(
+                    (("runs", f"{len(self.runs):,}", None),),
+                ),
+                id="statusbar",
+                markup=False,
+            )
         yield Footer()
 
     def on_mount(self) -> None:
         subtitle = Text()
+        subtitle.append("environment ", style="bold dim")
+        subtitle.append(self.env_id)
+        subtitle.append("   ")
+        subtitle.append("model ", style="bold dim")
         subtitle.append(self.model or "all models", style="bold")
         subtitle.append("\n")
-        subtitle.append(f"{self.env_id}   {len(self.runs)} runs", style="dim")
+        subtitle.append(f"{len(self.runs):,} runs", style="dim")
         self.query_one("#compare-subtitle", Static).update(subtitle)
         self.query_one("#compare-header", Static).update(
             Text("Loading comparison…", style="dim")
@@ -2099,8 +2182,8 @@ class CompareRunsScreen(Screen):
         if share <= 0:
             return "dim"
         if positive:
-            return "bold green" if share >= 0.5 else "green"
-        return "bold red" if share >= 0.5 else "red"
+            return f"bold {PRIME_SUCCESS}" if share >= 0.5 else PRIME_SUCCESS
+        return f"bold {PRIME_ERROR}" if share >= 0.5 else PRIME_ERROR
 
     def _build_mix_bar_from_buckets(
         self, buckets: List[Tuple[str, int, str]], total: int, width: int = 18
@@ -2363,7 +2446,7 @@ class CompareRunsScreen(Screen):
                 "unique prompts", justify="right", width=8, header_style="bold dim"
             )
         avg_label = f"avg\n{metric_key}"
-        avg_style = "bold reverse" if highlight_metric else "bold #e5c07b"
+        avg_style = "bold reverse" if highlight_metric else f"bold {PRIME_WARNING}"
         table.add_column(
             avg_label,
             justify="right",
@@ -2376,7 +2459,7 @@ class CompareRunsScreen(Screen):
                 col0_hdr,
                 justify="right",
                 width=minmax_content_w,
-                header_style="bold red",
+                header_style=f"bold {PRIME_ERROR}",
             )
         if show("=1"):
             col1_hdr = "=1" if is_reward else "max"
@@ -2384,7 +2467,7 @@ class CompareRunsScreen(Screen):
                 col1_hdr,
                 justify="right",
                 width=minmax_content_w,
-                header_style="bold green",
+                header_style=f"bold {PRIME_SUCCESS}",
             )
         if show("mix"):
             table.add_column("mix", width=20, header_style="bold dim")
@@ -2471,7 +2554,7 @@ class CompareRunsScreen(Screen):
                     row_cells.append(
                         Text(
                             _format_compact_metric(v_min) if v_min is not None else "—",
-                            style="red" if v_min is not None else "dim",
+                            style=PRIME_ERROR if v_min is not None else "dim",
                         )
                     )
             if show("=1"):
@@ -2489,7 +2572,7 @@ class CompareRunsScreen(Screen):
                     row_cells.append(
                         Text(
                             _format_compact_metric(v_max) if v_max is not None else "—",
-                            style="green" if v_max is not None else "dim",
+                            style=PRIME_SUCCESS if v_max is not None else "dim",
                         )
                     )
             if show("mix"):
@@ -2590,31 +2673,43 @@ class BrowseRunsScreen(Screen):
     """Single-screen browser for environments, models, and runs."""
 
     BINDINGS = [
-        Binding("q", "quit", "Quit"),
+        *QUIT_BINDINGS,
         Binding("enter", "enter_selected", "Open/toggle", priority=True),
         Binding("tab", "focus_next_pane", "Next pane"),
         Binding("shift+tab", "focus_prev_pane", show=False),
         Binding("v", "compare_selected", "Compare"),
         Binding("c", "copy", "Copy"),
-        Binding("ctrl+c", "copy", show=False),
     ]
 
     def __init__(self, index: Dict[str, Dict[str, List[RunInfo]]]):
         super().__init__()
         self.index = index
         self._run_overview_cache: Dict[Path, RunOverviewStats] = {}
-        self._click_selected_node: object | None = None
 
     def compose(self) -> ComposeResult:
-        with Container():
+        model_count = sum(len(models) for models in self.index.values())
+        run_count = sum(
+            len(runs) for models in self.index.values() for runs in models.values()
+        )
+        with Container(id="lab-shell"):
+            yield from _lab_topbar("Evaluations")
             with Horizontal(classes="browser-columns"):
                 yield Panel(
-                    Label(Text("Eval Browser", style="bold"), classes="title"),
-                    RunBrowserTree("Completed evals", id="run-browser-tree"),
+                    Label(Text("Evaluations", style="bold"), classes="column-header"),
+                    Static(
+                        (
+                            f"{len(self.index):,} environments   "
+                            f"{model_count:,} models   {run_count:,} runs"
+                        ),
+                        id="section-subtitle",
+                        classes="subtitle",
+                        markup=False,
+                    ),
+                    RunBrowserTree("Evaluations", id="run-browser-tree"),
                     classes="browser-tree-panel",
                 )
                 yield Panel(
-                    Label(Text("Selection Details", style="bold"), classes="title"),
+                    Label(Text("Inspector", style="bold"), classes="column-header"),
                     VerticalScroll(
                         Static("", id="run-browser-details", markup=False),
                         id="run-browser-details-scroll",
@@ -2622,6 +2717,17 @@ class BrowseRunsScreen(Screen):
                     ),
                     classes="browser-details-panel",
                 )
+            yield Static(
+                _statusbar_text(
+                    (
+                        ("environments", f"{len(self.index):,}", None),
+                        ("models", f"{model_count:,}", None),
+                        ("runs", f"{run_count:,}", None),
+                    ),
+                ),
+                id="statusbar",
+                markup=False,
+            )
         yield Footer()
 
     def on_mount(self) -> None:
@@ -2634,8 +2740,10 @@ class BrowseRunsScreen(Screen):
         tree.focus()
 
         if first_run_node is None:
-            self.query_one("#run-browser-details", Static).update(
-                Text("No completed evals found", style="dim")
+            self.call_after_refresh(
+                lambda: self.query_one("#run-browser-details", Static).update(
+                    LAB_EMPTY_EVAL_MESSAGE
+                )
             )
             return
 
@@ -2811,15 +2919,12 @@ class BrowseRunsScreen(Screen):
 
     @on(Tree.NodeSelected, "#run-browser-tree")
     def on_tree_selected(self, event: Tree.NodeSelected) -> None:
-        """Click: first click selects, second click enters rollout view."""
+        """Click rows with the same behavior as enter/right-arrow navigation."""
         payload = event.node.data
         if not isinstance(payload, BrowserNodeData):
             return
         if payload.kind == "run" and payload.run is not None:
-            if self._click_selected_node is event.node:
-                self.app.push_screen(ViewRunScreen(payload.run))
-            else:
-                self._click_selected_node = event.node
+            self.app.push_screen(ViewRunScreen(payload.run))
             return
         if event.node.allow_expand:
             event.node.toggle()
@@ -2990,12 +3095,7 @@ class BrowseRunsScreen(Screen):
                         ]
                     )
 
-            items.extend(
-                [
-                    Text(""),
-                    Text("Press v to open compare mode for these runs", style="dim"),
-                ]
-            )
+            items.extend([Text("")])
 
         return Group(*items)
 
@@ -3015,7 +3115,7 @@ class BrowseRunsScreen(Screen):
         summary.append(f"{run.env_id}   {run.model}", style="dim")
 
         summary_parts: List[Tuple[str, str, Optional[str]]] = []
-        created = _format_run_datetime(meta)
+        created = _format_run_datetime(meta, run.path)
         if created:
             summary_parts.append(("created", created, None))
         avg_reward = _numeric_reward(meta.get("avg_reward"))
@@ -3095,7 +3195,7 @@ class ViewRunScreen(Screen):
     COMPACT_LAYOUT_WIDTH = 150
 
     BINDINGS = [
-        Binding("q", "quit", "Quit"),
+        *QUIT_BINDINGS,
         Binding("b,backspace", "back", "Back"),
         Binding("p", "prev_record", "Prev rollout"),
         Binding("n", "next_record", "Next rollout"),
@@ -3112,11 +3212,11 @@ class ViewRunScreen(Screen):
         Binding("s", "search", "Search"),
         Binding("m", "toggle_markdown_math", "Toggle markdown"),
         Binding("c", "copy", "Copy"),
-        Binding("ctrl+c", "copy", show=False),
     ]
 
-    def check_action(self, action: str, parameters: tuple) -> bool | None:
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         """Dynamically show/hide footer bindings based on view mode."""
+        del parameters
         mode = getattr(self, "_view_mode", "rollouts")
         hide_in_logs = (
             "expand_all",
@@ -3165,6 +3265,7 @@ class ViewRunScreen(Screen):
             else []
         )
         with Container(id="view-container"):
+            yield from _lab_topbar("Eval Run")
             with Panel(classes="metadata-panel"):
                 with Horizontal(classes="metadata-layout"):
                     yield Static("", id="metadata-summary", markup=False)
@@ -3183,7 +3284,11 @@ class ViewRunScreen(Screen):
                     yield Static(
                         "", id="history-summary", classes="subtitle", markup=False
                     )
-                    yield VerticalScroll(*completion_sections, id="completion-scroll")
+                    yield VerticalScroll(
+                        *completion_sections,
+                        id="completion-scroll",
+                        classes="surface-scroll",
+                    )
                 with Panel(id="logs-panel", classes="logs-panel"):
                     yield Label(
                         Text("Logs", style="bold"),
@@ -3193,7 +3298,7 @@ class ViewRunScreen(Screen):
                     yield Static(
                         "", id="logs-tab-bar", classes="subtitle", markup=False
                     )
-                    yield LogScrollPane(id="logs-scroll")
+                    yield LogScrollPane(id="logs-scroll", classes="surface-scroll")
                 with Panel(id="details-panel", classes="details-panel"):
                     yield Label(Text("Details", style="bold"), classes="column-header")
                     with TabbedContent(initial="details-task", id="details-tabs"):
@@ -3217,38 +3322,37 @@ class ViewRunScreen(Screen):
                                 Static("", id="info-content", markup=False),
                                 classes="details-scroll surface-scroll",
                             )
+            yield Static(
+                _statusbar_text(
+                    (("run", self.run.run_id, "bold"),),
+                ),
+                id="statusbar",
+                markup=False,
+            )
         yield Footer()
 
     def _build_header_summary_text(self) -> Text:
         meta = self.run.load_metadata()
         lines: List[Text] = []
 
-        lines.append(Text("Run Summary", style="bold dim"))
+        lines.append(Text("Rollout", style="bold dim"))
 
         identity = Text()
-        identity.append("Environment: ", style="bold")
-        identity.append(str(self.run.env_id))
+        identity.append(self.run.run_id, style="bold")
         identity.append("   ")
-        identity.append("Model: ", style="bold")
-        identity.append(str(self.run.model))
-        identity.append("   ")
-        identity.append("Run ID: ", style="bold")
-        identity.append(str(self.run.run_id))
+        identity.append(self._record_progress_label(), style="dim")
         lines.append(identity)
 
         progress = Text()
-        progress.append("Record: ", style="bold")
-        progress.append(self._record_progress_label())
-        progress.append("   ")
-        progress.append("Examples: ", style="bold")
+        progress.append("examples ", style="bold")
         progress.append(str(meta.get("num_examples", "")))
         progress.append("   ")
-        progress.append("Rollouts/ex: ", style="bold")
+        progress.append("rollouts/ex ", style="bold")
         progress.append(str(meta.get("rollouts_per_example", "")))
-        date_text = f"{str(meta.get('date', ''))} {str(meta.get('time', ''))}".strip()
+        date_text = _format_run_datetime(meta, self.run.path)
         if date_text:
             progress.append("   ")
-            progress.append("Date: ", style="bold")
+            progress.append("created ", style="bold")
             progress.append(date_text)
         lines.append(progress)
 
@@ -3260,19 +3364,19 @@ class ViewRunScreen(Screen):
             input_tok = usage.get("input_tokens")
             output_tok = usage.get("output_tokens")
             if input_tok is not None:
-                usage_items.append(("Avg input tokens", format_numeric(input_tok)))
+                usage_items.append(("avg input", format_numeric(input_tok)))
             if output_tok is not None:
-                usage_items.append(("Avg output tokens", format_numeric(output_tok)))
+                usage_items.append(("avg output", format_numeric(output_tok)))
         if isinstance(cost, dict):
             total_usd = cost.get("total_usd")
             if isinstance(total_usd, int | float):
-                usage_items.append(("Cost (all)", format_cost_usd(float(total_usd))))
+                usage_items.append(("cost", format_cost_usd(float(total_usd))))
         max_tokens = sampling_args.get("max_tokens")
         if max_tokens not in (None, ""):
-            usage_items.append(("Max tokens", str(max_tokens)))
+            usage_items.append(("max tokens", str(max_tokens)))
         temperature = sampling_args.get("temperature")
         if temperature not in (None, ""):
-            usage_items.append(("Temperature", str(temperature)))
+            usage_items.append(("temperature", str(temperature)))
 
         if usage_items:
             usage_line = Text()
@@ -3408,6 +3512,48 @@ class ViewRunScreen(Screen):
 
     def on_resize(self, event: events.Resize) -> None:
         self._update_responsive_layout(event.size.width)
+
+    def on_click(self, event: events.Click) -> None:
+        if event.button != 1:
+            return
+
+        if (
+            self._view_mode == "logs"
+            and getattr(event.widget, "id", None) == "logs-tab-bar"
+        ):
+            cursor = 0
+            for idx, label in enumerate(self._log_tab_labels()):
+                cursor += 2 if idx else 0
+                width = len(label) + 2
+                if cursor <= event.x < cursor + width:
+                    self._active_log_tab = idx
+                    self._populate_logs_view()
+                    self.query_one("#logs-scroll", LogScrollPane).focus()
+                    event.stop()
+                    return
+                cursor += width
+
+        if (
+            event.widget is None
+            or event.widget.__class__.__name__ == "CollapsibleTitle"
+        ):
+            return
+
+        node: DOMNode | None = event.widget
+        while node is not None:
+            if isinstance(node, Collapsible) and node.has_class("history-section"):
+                title_widget = next(iter(node.children), None)
+                if (
+                    isinstance(title_widget, Widget)
+                    and event.screen_y is not None
+                    and event.screen_y == title_widget.region.y
+                ):
+                    node.collapsed = not node.collapsed
+                    if title_widget.can_focus:
+                        title_widget.focus()
+                    event.stop()
+                return
+            node = node.parent
 
     def on_unmount(self) -> None:
         self.records.close()
@@ -3556,8 +3702,8 @@ class ViewRunScreen(Screen):
         error = record.get("error")
         if error is not None:
             completion_text.append("\n\n")
-            completion_text.append("error: ", style="bold red")
-            completion_text.append(str(error), style="red")
+            completion_text.append("error: ", style=f"bold {PRIME_ERROR}")
+            completion_text.append(str(error), style=PRIME_ERROR)
 
         self._prompt_text = prompt_text.plain
         self._completion_text = completion_text.plain
@@ -3638,25 +3784,21 @@ class ViewRunScreen(Screen):
         self.refresh_bindings()
 
     def _cycle_log_tab(self, delta: int) -> None:
-        num_tabs = self._log_tab_count()
+        num_tabs = len(self._log_tab_labels())
         if num_tabs < 2:
             return
         self._active_log_tab = (self._active_log_tab + delta) % num_tabs
         self._populate_logs_view()
 
-    def _log_tab_count(self) -> int:
-        """Number of log tabs: 'all' + individual files if 2+ files, else just 1."""
-        if len(self._log_files) >= 2:
-            return len(self._log_files) + 1  # "all" tab + individual files
-        return len(self._log_files)  # 0 or 1
+    def _log_tab_labels(self) -> List[str]:
+        prefix = ["all"] if len(self._log_files) >= 2 else []
+        return prefix + [_log_tab_label(path) for path in self._log_files]
 
     def _build_log_tab_bar(self) -> Text:
-        num_tabs = self._log_tab_count()
-        if num_tabs <= 1:
+        labels = self._log_tab_labels()
+        if len(labels) <= 1:
             return Text()
         text = Text()
-        # Tab 0 = "all", tabs 1+ = individual files
-        labels = ["all"] + [_log_tab_label(p) for p in self._log_files]
         for i, label in enumerate(labels):
             if i > 0:
                 text.append("  ")
@@ -4819,105 +4961,114 @@ class ViewRunScreen(Screen):
 class VerifiersTUI(App):
     """Textual-based TUI for viewing verifiers eval results."""
 
-    # Custom dark theme with a modern color palette
-    ENABLE_COMMAND_PALETTE = False  # Disable command palette for cleaner UI
+    ENABLE_COMMAND_PALETTE = False
 
-    # Define custom dark theme
-    BLACK_WARM_THEME = Theme(
-        name="black-warm",
-        primary="#d4a373",  # Warm tan/beige
-        secondary="#808080",  # Gray
-        accent="#c9ada7",  # Muted rose
-        warning="#ffa500",  # Orange
-        error="#ff6b6b",  # Soft red
-        success="#98c379",  # Soft green
-        background="#141414",
-        surface="#141414",
-        panel="#141414",
-        foreground="#ffffff",
+    PRIME_LAB_THEME = Theme(
+        name="prime-lab",
+        primary=PRIME_PRIMARY,
+        secondary=PRIME_SECONDARY,
+        accent=PRIME_MINT,
+        warning=PRIME_WARNING,
+        error=PRIME_ERROR,
+        success=PRIME_SUCCESS,
+        background=PRIME_BACKGROUND,
+        surface=PRIME_SURFACE,
+        panel=PRIME_PANEL,
+        foreground=PRIME_FOREGROUND,
         dark=True,
     )
 
-    # Define custom light theme with matching warm tones
-    WHITE_WARM_THEME = Theme(
-        name="white-warm",
-        primary="#8b6f47",  # Darker warm brown (darker than dark theme for contrast)
-        secondary="#606060",  # Medium gray
-        accent="#a08b87",  # Muted warm brown-rose
-        warning="#ff8c00",  # Dark orange
-        error="#dc143c",  # Crimson
-        success="#6b8e23",  # Olive green
-        background="#f5f5f5",  # Light warm grey
-        surface="#f5f5f5",  # Light warm grey
-        panel="#f5f5f5",  # Light warm grey
-        foreground="#1a1a1a",  # Near black
-        dark=False,
-    )
-
-    BINDINGS = [
-        ("q", "quit", "Quit"),
-        ("d", "toggle_dark", "Toggle dark mode"),
-    ]
+    BINDINGS = QUIT_BINDINGS
 
     CSS = """
-    /* Clean black theme */
     Screen {
         layout: vertical;
         background: $background;
+        color: $foreground;
     }
-    
+
+    Container {
+        background: $background;
+    }
+
+    #lab-shell,
+    #view-container {
+        layout: vertical;
+        height: 100%;
+    }
+
+    #topbar {
+        height: 2;
+        padding: 0 1;
+        border-bottom: solid $primary;
+        background: $background;
+        layout: horizontal;
+    }
+
+    #topbar-title {
+        width: auto;
+        min-width: 14;
+        content-align: left middle;
+    }
+
+    #workspace-path {
+        width: 1fr;
+        content-align: center middle;
+        color: $text-muted;
+    }
+
+    #topbar-logo {
+        width: auto;
+        content-align: right middle;
+    }
+
     Panel {
         border: round $primary;
-        padding: 1 2;
-        margin: 0 0 1 0;
-        background: $panel;
+        padding: 0 1;
+        margin: 0;
+        background: $surface;
     }
-    
-    Label {
-        color: $text;
+
+    Panel:focus-within {
+        background-tint: $foreground 3%;
     }
-    
+
+    Label,
     Static {
-        color: $text;
+        color: $foreground;
     }
-    
-    .title {
-        text-style: bold;
-        color: $text;
-        margin-bottom: 1;
-    }
-    
+
     .subtitle {
         color: $text-muted;
         margin-bottom: 1;
     }
 
-    .copy-hint {
-        color: $text-muted;
-        margin-bottom: 0;
-    }
-
-    
     OptionList {
         height: auto;
         max-height: 20;
         background: $surface;
-        color: $text;
+        color: $foreground;
     }
-    
+
     OptionList > .option-list--option-highlighted {
         background: $primary 20%;
+        color: $foreground;
+        text-style: bold;
     }
-    
-    #view-container {
-        layout: vertical;
-        height: 100%;
+
+    Input,
+    Select,
+    TextArea {
+        background: $surface;
+        color: $foreground;
+        border: solid $primary 70%;
     }
-    
+
     .metadata-panel {
         height: auto;
-        min-height: 6;
-        max-height: 8;
+        min-height: 5;
+        max-height: 7;
+        margin: 1 0 0 0;
     }
 
     .metadata-layout {
@@ -4933,20 +5084,20 @@ class VerifiersTUI(App):
     #metadata-metrics {
         width: 1.5fr;
         padding: 0 1;
-        color: $text;
     }
 
     #metadata-reward {
         width: 1fr;
         padding: 0 1;
-        text-align: left;
     }
-    
-    .view-columns {
+
+    .view-columns,
+    .browser-columns {
         height: 1fr;
         layout: horizontal;
+        margin: 0;
     }
-    
+
     .rollouts-panel {
         width: 34;
         height: 100%;
@@ -4956,61 +5107,28 @@ class VerifiersTUI(App):
     #rollout-list {
         height: 1fr;
         max-height: 100%;
-        background: $surface;
     }
 
-    .history-panel {
+    .history-panel,
+    .logs-panel {
         width: 1fr;
         height: 100%;
         layout: vertical;
     }
 
     .logs-panel {
-        width: 1fr;
-        height: 100%;
-        layout: vertical;
         display: none;
     }
 
-    #logs-scroll {
-        layout: vertical;
-        height: 1fr;
-        background: $surface;
-        padding: 0 1;
-        scrollbar-size-vertical: 2;
-        scrollbar-color: $primary 40%;
-        scrollbar-color-hover: $primary 70%;
-        scrollbar-color-active: $accent;
-        scrollbar-background: $surface;
-        scrollbar-background-hover: $surface;
-        scrollbar-background-active: $surface;
-        scrollbar-corner-color: $panel;
-    }
-
-    #logs-scroll:focus {
+    .surface-scroll:focus,
+    #run-browser-tree:focus {
         background-tint: $foreground 4%;
     }
 
     .column-header {
-        height: auto;
         margin-bottom: 0;
         text-align: left;
         text-style: bold;
-    }
-    
-    #completion-scroll {
-        layout: vertical;
-        height: 1fr;
-        background: $surface;
-        padding: 0 1;
-        scrollbar-size-vertical: 2;
-        scrollbar-color: $primary 40%;
-        scrollbar-color-hover: $primary 70%;
-        scrollbar-color-active: $accent;
-        scrollbar-background: $surface;
-        scrollbar-background-hover: $surface;
-        scrollbar-background-active: $surface;
-        scrollbar-corner-color: $panel;
     }
 
     .history-section {
@@ -5025,12 +5143,12 @@ class VerifiersTUI(App):
 
     .history-section.just-expanded > CollapsibleTitle {
         background: $primary 18%;
-        color: $text;
+        color: $foreground;
     }
 
     .history-section.expand-settle > CollapsibleTitle {
         background: $primary 10%;
-        color: $text;
+        color: $foreground;
     }
 
     .history-section > CollapsibleTitle {
@@ -5039,40 +5157,40 @@ class VerifiersTUI(App):
     }
 
     .history-section > CollapsibleTitle:hover {
-        background: $primary 12%;
-        color: $text;
+        background: $secondary 12%;
+        color: $foreground;
     }
 
     .history-section > CollapsibleTitle:focus {
-        background: $primary 28%;
-        color: $text;
+        background: $secondary 24%;
+        color: $foreground;
     }
 
     .assistant-section {
-        background: $success 6%;
-        border: round $success;
+        background: #5ee9b5 2%;
+        border: round #5ee9b5 65%;
     }
 
     .assistant-section > CollapsibleTitle {
-        color: $success;
+        color: #5ee9b5;
     }
 
     .tool-section {
-        background: $warning 6%;
-        border: round $warning;
+        background: #737373 3%;
+        border: round #737373 70%;
     }
 
     .tool-section > CollapsibleTitle {
-        color: $warning;
+        color: #d4d4d8;
     }
 
     .prompt-section {
-        background: $secondary 4%;
-        border: round $secondary;
+        background: $primary 3%;
+        border: round $primary 70%;
     }
 
     .prompt-section > CollapsibleTitle {
-        color: $secondary;
+        color: $primary;
     }
 
     .prompt-section .section-body {
@@ -5080,12 +5198,12 @@ class VerifiersTUI(App):
     }
 
     .tool-call-section {
-        background: $accent 8%;
-        border: round $accent;
+        background: #737373 3%;
+        border: round #737373 70%;
     }
 
     .tool-call-section > CollapsibleTitle {
-        color: $accent;
+        color: #d4d4d8;
     }
 
     .nested-section {
@@ -5094,16 +5212,12 @@ class VerifiersTUI(App):
 
     .section-body {
         padding: 0 1 0 1;
-        color: $text;
+        color: $foreground;
     }
 
     .details-panel {
         width: 38;
         height: 1fr;
-    }
-
-    .details-scroll:focus {
-        background-tint: $foreground 4%;
     }
 
     #details-tabs {
@@ -5122,7 +5236,7 @@ class VerifiersTUI(App):
     }
 
     #details-tabs Tab.-active {
-        color: $text;
+        color: $foreground;
     }
 
     #details-tabs ContentSwitcher {
@@ -5138,12 +5252,18 @@ class VerifiersTUI(App):
         height: 1fr;
         background: $surface;
         padding: 0 1;
-        scrollbar-color: $secondary;
-        scrollbar-background: $panel;
+        scrollbar-size-vertical: 2;
+        scrollbar-color: $primary 40%;
+        scrollbar-color-hover: $primary 70%;
+        scrollbar-color-active: $accent;
+        scrollbar-background: $surface;
+        scrollbar-background-hover: $surface;
+        scrollbar-background-active: $surface;
         scrollbar-corner-color: $panel;
     }
 
-    #run-browser-details-scroll {
+    #run-browser-details-scroll,
+    #compare-scroll {
         padding: 0 1 0 2;
         scrollbar-size-vertical: 2;
         scrollbar-gutter: stable;
@@ -5153,23 +5273,9 @@ class VerifiersTUI(App):
         margin-right: 8;
     }
 
-    #compare-scroll {
-        padding: 0 1 0 2;
-        scrollbar-size-vertical: 2;
-        scrollbar-gutter: stable;
-    }
-
-    #compare-content {
-        margin-right: 8;
-    }
-
-    .browser-columns {
-        height: 1fr;
-        layout: horizontal;
-    }
-
     .browser-tree-panel {
-        width: 56;
+        width: 2fr;
+        min-width: 42;
         height: 1fr;
         layout: vertical;
     }
@@ -5177,40 +5283,38 @@ class VerifiersTUI(App):
     #run-browser-tree {
         height: 1fr;
         background: $surface;
-        color: $text;
+        color: $foreground;
         overflow-x: hidden;
-    }
-
-    #run-browser-tree:focus {
-        background-tint: $foreground 4%;
     }
 
     .browser-details-panel {
         height: 1fr;
-        width: 1fr;
-    }
-
-    #run-browser-details-scroll:focus {
-        background-tint: $foreground 4%;
+        width: 1.35fr;
+        min-width: 36;
     }
 
     .compare-panel {
         height: 1fr;
+        margin: 1 0 0 0;
+    }
+
+    #statusbar {
+        height: 1;
+        padding: 0 1;
+        background: $surface;
+        border-top: solid $primary;
     }
 
     Footer {
         background: $panel;
+        color: $foreground;
     }
-    
-    .modal-header {
-        height: auto;
-    }
-    
+
     .modal-columns {
         height: 1fr;
         layout: horizontal;
     }
-    
+
     .modal-panel {
         width: 50%;
         height: 100%;
@@ -5222,21 +5326,9 @@ class VerifiersTUI(App):
         layout: vertical;
     }
 
-    .search-input {
-        background: $surface;
-        color: $text;
-    }
-
-    .copy-targets {
-        height: 1fr;
-        background: $surface;
-        color: $text;
-    }
-
+    .copy-targets,
     .copy-textarea {
         height: 1fr;
-        background: $surface;
-        color: $text;
     }
 
     """
@@ -5246,30 +5338,16 @@ class VerifiersTUI(App):
         self.index = index
 
     def on_mount(self) -> None:
-        # Register both custom themes
-        self.register_theme(self.BLACK_WARM_THEME)
-        self.register_theme(self.WHITE_WARM_THEME)
-        # Start with dark theme
-        self.theme = "black-warm"
+        self.register_theme(self.PRIME_LAB_THEME)
+        self.theme = "prime-lab"
         self.push_screen(BrowseRunsScreen(self.index))
-
-    async def action_quit(self) -> None:
-        """Quit the application."""
-        self.exit()
-
-    def action_toggle_dark(self) -> None:
-        """Toggle between dark and light themes."""
-        # Toggle between our custom dark and light themes
-        if self.theme == "black-warm":
-            self.theme = "white-warm"
-        else:
-            self.theme = "black-warm"
 
 
 class SearchScreen(ModalScreen[Optional[SearchResult]]):
     """Modal screen for searching prompt/completion text."""
 
     BINDINGS = [
+        *QUIT_BINDINGS,
         Binding("escape", "close", "Close"),
         Binding("enter", "select", "Select"),
     ]
@@ -5296,11 +5374,9 @@ class SearchScreen(ModalScreen[Optional[SearchResult]]):
 
     def compose(self) -> ComposeResult:
         with Container():
-            with Panel(classes="modal-header"):
+            with Panel():
                 yield Label(Text("Search (regex, case-insensitive)", style="bold"))
-                yield Input(
-                    placeholder="regex...", id="search-input", classes="search-input"
-                )
+                yield Input(placeholder="regex...", id="search-input")
                 yield Label("", id="search-error", classes="subtitle")
 
             with Horizontal(classes="modal-columns"):
@@ -5408,7 +5484,7 @@ class SearchScreen(ModalScreen[Optional[SearchResult]]):
         try:
             compiled = re.compile(pattern, re.IGNORECASE)
         except re.error as exc:
-            error_label.update(Text(f"Invalid regex: {exc}", style="red"))
+            error_label.update(Text(f"Invalid regex: {exc}", style=PRIME_ERROR))
             labels["prompt"].update(Text("Prompt results", style="bold"))
             labels["completion"].update(Text("Completion results", style="bold"))
             self._active_column = None
@@ -5426,7 +5502,6 @@ class SearchScreen(ModalScreen[Optional[SearchResult]]):
                     SearchHit(
                         column=column,
                         line_index=line_index,
-                        line_text=line,
                         section_index=section_index,
                         nested_index=nested_index,
                     )
@@ -5506,40 +5581,21 @@ class SearchScreen(ModalScreen[Optional[SearchResult]]):
         return hits[cursor]
 
 
-class RolloutCopyScreen(ModalScreen[None]):
+class RolloutCopyScreen(ItemCopyScreen):
     """Modal screen for copying rollout viewer sections."""
 
+    default_title = "Copy Rollout"
+    preview_id = "rollout-copy-preview"
+    status_id = "rollout-copy-status"
+
     BINDINGS = [
-        Binding("q", "quit", "Quit"),
-        Binding("escape", "close", "Back (esc/b)"),
-        Binding("b,backspace", "close", show=False),
+        *COPY_MODAL_BINDINGS,
         Binding("c", "copy", "Copy"),
     ]
 
-    async def action_quit(self) -> None:
-        self.app.exit()
-
-    def __init__(
-        self,
-        items: List[RolloutCopyItem],
-        *,
-        start_key: Optional[str] = None,
-        title: str = "Copy Rollout",
-    ):
-        super().__init__()
-        self._items = items
-        self._title = title
-        self._current_idx = 0
-        if start_key:
-            for i, item in enumerate(items):
-                if item.key == start_key:
-                    self._current_idx = i
-                    break
-        self._last_copied_selection = ""
-
     def compose(self) -> ComposeResult:
         with Container():
-            with Panel(classes="modal-header"):
+            with Panel():
                 yield Label(Text(self._title, style="bold"))
                 yield Label("", id="rollout-copy-status", classes="subtitle")
 
@@ -5580,18 +5636,6 @@ class RolloutCopyScreen(ModalScreen[None]):
             self._sync_preview()
         self.query_one("#rollout-copy-preview", TextArea).focus()
 
-    @on(TextArea.SelectionChanged)
-    def _on_selection_changed(self, event: TextArea.SelectionChanged) -> None:
-        if event.text_area.id != "rollout-copy-preview":
-            return
-        selected = event.text_area.selected_text or ""
-        if selected and selected != self._last_copied_selection:
-            self.app.copy_to_clipboard(selected)
-            self._last_copied_selection = selected
-            self.query_one("#rollout-copy-status", Label).update(
-                Text(f"Copied selection ({len(selected):,} chars).", style="dim")
-            )
-
     def on_key(self, event: events.Key) -> None:
         # Only intercept arrow keys when the OptionList has focus;
         # let all keys pass through to the TextArea normally.
@@ -5616,28 +5660,6 @@ class RolloutCopyScreen(ModalScreen[None]):
         ).highlighted = self._current_idx
         self._sync_preview()
 
-    def action_close(self) -> None:
-        self.dismiss(None)
-
-    def action_copy(self) -> None:
-        if not self._items:
-            return
-        item = self._items[self._current_idx]
-        preview = self.query_one("#rollout-copy-preview", TextArea)
-        selected = preview.selected_text or ""
-        copied_text = selected or item.body
-        if not copied_text:
-            self.query_one("#rollout-copy-status", Label).update(
-                Text("Nothing to copy.", style="dim")
-            )
-            return
-        self.app.copy_to_clipboard(copied_text)
-        self._last_copied_selection = copied_text
-        label = "selection" if selected else item.label.lower()
-        self.query_one("#rollout-copy-status", Label).update(
-            Text(f"Copied {label} ({len(copied_text):,} chars).", style="dim")
-        )
-
     def _sync_preview(self) -> None:
         if not self._items:
             return
@@ -5648,42 +5670,22 @@ class RolloutCopyScreen(ModalScreen[None]):
         self.query_one("#rollout-copy-preview", TextArea).load_text(item.body)
 
 
-class CompactCopyScreen(ModalScreen[None]):
+class CompactCopyScreen(ItemCopyScreen):
     """Compact copy screen with section tabs above a preview area."""
 
+    preview_id = "compact-copy-preview"
+    status_id = "compact-copy-status"
+
     BINDINGS = [
-        Binding("q", "quit", "Quit"),
-        Binding("escape", "close", "Back (esc/b)"),
-        Binding("b,backspace", "close", show=False),
+        *COPY_MODAL_BINDINGS,
         Binding("tab", "next_section", "Next section"),
         Binding("shift+tab", "prev_section", "Prev section"),
         Binding("c", "copy", "Copy"),
     ]
 
-    async def action_quit(self) -> None:
-        self.app.exit()
-
-    def __init__(
-        self,
-        items: List[RolloutCopyItem],
-        *,
-        start_key: Optional[str] = None,
-        title: str = "Copy",
-    ):
-        super().__init__()
-        self._items = items
-        self._title = title
-        self._current_idx = 0
-        if start_key:
-            for i, item in enumerate(items):
-                if item.key == start_key:
-                    self._current_idx = i
-                    break
-        self._last_copied_selection = ""
-
     def compose(self) -> ComposeResult:
         with Container():
-            with Panel(classes="modal-header"):
+            with Panel():
                 yield Label(Text(self._title, style="bold"))
                 yield Label("", id="compact-copy-status", classes="subtitle")
             with Panel(classes="compact-copy-body"):
@@ -5697,21 +5699,6 @@ class CompactCopyScreen(ModalScreen[None]):
     def on_mount(self) -> None:
         self._sync()
         self.query_one("#compact-copy-preview", TextArea).focus()
-
-    @on(TextArea.SelectionChanged)
-    def _on_selection_changed(self, event: TextArea.SelectionChanged) -> None:
-        if event.text_area.id != "compact-copy-preview":
-            return
-        selected = event.text_area.selected_text or ""
-        if selected and selected != self._last_copied_selection:
-            self.app.copy_to_clipboard(selected)
-            self._last_copied_selection = selected
-            self.query_one("#compact-copy-status", Label).update(
-                Text(f"Copied selection ({len(selected):,} chars).", style="dim")
-            )
-
-    def action_close(self) -> None:
-        self.dismiss(None)
 
     def on_key(self, event: events.Key) -> None:
         if event.key in ("tab", "shift+tab", "backtab"):
@@ -5732,190 +5719,12 @@ class CompactCopyScreen(ModalScreen[None]):
             self._current_idx = (self._current_idx + 1) % len(self._items)
             self._sync()
 
-    def action_copy(self) -> None:
-        if not self._items:
-            return
-        item = self._items[self._current_idx]
-        preview = self.query_one("#compact-copy-preview", TextArea)
-        selected = preview.selected_text or ""
-        copied_text = selected or item.body
-        if not copied_text:
-            self.query_one("#compact-copy-status", Label).update(
-                Text("Nothing to copy.", style="dim")
-            )
-            return
-        self.app.copy_to_clipboard(copied_text)
-        self._last_copied_selection = copied_text
-        label = "selection" if selected else item.label.lower()
-        self.query_one("#compact-copy-status", Label).update(
-            Text(f"Copied {label} ({len(copied_text):,} chars).", style="dim")
-        )
-
     def _sync(self) -> None:
         if not self._items:
             return
         item = self._items[self._current_idx]
         preview = self.query_one("#compact-copy-preview", TextArea)
         preview.load_text(item.body)
-
-
-class CopyScreen(ModalScreen[None]):
-    """Modal screen for selecting and copying prompt/completion text."""
-
-    BINDINGS = [
-        Binding("q", "quit", "Quit"),
-        Binding("escape", "close", "Back (esc/b)"),
-        Binding("b,backspace", "close", show=False),
-        Binding("tab", "cycle_column", "Next column"),
-        Binding("shift+tab", "cycle_column", "Prev column"),
-        Binding("c", "copy", "Copy"),
-    ]
-
-    async def action_quit(self) -> None:
-        self.app.exit()
-
-    def __init__(
-        self,
-        prompt_text: str,
-        completion_text: str,
-        start_column: str,
-        *,
-        prompt_label: str = "Prompt",
-        completion_label: str = "Completion",
-        title: str = "Copy Mode",
-    ):
-        super().__init__()
-        self._prompt_text = prompt_text
-        self._completion_text = completion_text
-        self._prompt_label = prompt_label
-        self._completion_label = completion_label
-        self._title = title
-        self._active_column = (
-            start_column if start_column in ("prompt", "completion") else "completion"
-        )
-        self._last_copied_selection = ""
-
-    def compose(self) -> ComposeResult:
-        with Container():
-            with Panel(classes="modal-header"):
-                yield Label(Text(self._title, style="bold"))
-                yield Label(
-                    Text(
-                        "Highlight text to auto-copy. Tab switches columns, c copies the active column.",
-                        style="dim",
-                    ),
-                    id="copy-hint",
-                    classes="copy-hint",
-                )
-                yield Label("", id="copy-status", classes="subtitle")
-
-            with Horizontal(classes="modal-columns"):
-                with Panel(classes="modal-panel"):
-                    yield Label(
-                        Text(self._prompt_label, style="bold"),
-                        id="copy-prompt-label",
-                    )
-                    prompt_area = TextArea(
-                        self._prompt_text,
-                        id="copy-prompt",
-                        classes="copy-textarea",
-                    )
-                    prompt_area.read_only = True
-                    yield prompt_area
-                with Panel(classes="modal-panel"):
-                    yield Label(
-                        Text(self._completion_label, style="bold"),
-                        id="copy-completion-label",
-                    )
-                    completion_area = TextArea(
-                        self._completion_text,
-                        id="copy-completion",
-                        classes="copy-textarea",
-                    )
-                    completion_area.read_only = True
-                    yield completion_area
-        yield Footer()
-
-    def on_mount(self) -> None:
-        self._refresh_ui(focus_text_area=True)
-
-    @on(TextArea.SelectionChanged)
-    def _on_selection_changed(self, event: TextArea.SelectionChanged) -> None:
-        if event.text_area is self._active_text_area():
-            selected = event.text_area.selected_text or ""
-            if selected and selected != self._last_copied_selection:
-                self.app.copy_to_clipboard(selected)
-                self._last_copied_selection = selected
-                self.query_one("#copy-status", Label).update(
-                    Text(f"Copied selection ({len(selected)} chars).", style="dim")
-                )
-            self._refresh_ui()
-
-    def action_close(self) -> None:
-        self.dismiss(None)
-
-    def on_key(self, event) -> None:
-        if event.key in ("tab", "shift+tab", "backtab"):
-            self.action_cycle_column()
-            event.prevent_default()
-            event.stop()
-
-    def action_cycle_column(self) -> None:
-        self._active_column = (
-            "completion" if self._active_column == "prompt" else "prompt"
-        )
-        self._refresh_ui(focus_text_area=True)
-
-    def action_copy(self) -> None:
-        text_area = self._active_text_area()
-        selected = text_area.selected_text or ""
-        if not selected:
-            selected = text_area.text
-            copied_label = "full column"
-        else:
-            copied_label = "selection"
-        if selected:
-            self.app.copy_to_clipboard(selected)
-            self._last_copied_selection = selected
-        self.query_one("#copy-status", Label).update(
-            Text(f"Copied {copied_label} ({len(selected)} chars).", style="dim")
-            if selected
-            else Text()
-        )
-        self._refresh_ui()
-
-    def _active_text_area(self) -> TextArea:
-        if self._active_column == "prompt":
-            return self.query_one("#copy-prompt", TextArea)
-        return self.query_one("#copy-completion", TextArea)
-
-    def _refresh_ui(self, *, focus_text_area: bool = False) -> None:
-        prompt_label = self.query_one("#copy-prompt-label", Label)
-        completion_label = self.query_one("#copy-completion-label", Label)
-        if self._active_column == "prompt":
-            prompt_label.update(Text(f"{self._prompt_label} (active)", style="bold"))
-            completion_label.update(Text(self._completion_label, style="bold"))
-        else:
-            prompt_label.update(Text(self._prompt_label, style="bold"))
-            completion_label.update(
-                Text(f"{self._completion_label} (active)", style="bold")
-            )
-        text_area = self._active_text_area()
-        if focus_text_area:
-            text_area.focus()
-        selected = text_area.selected_text or ""
-        if selected:
-            count = len(selected)
-            unit = "char" if count == 1 else "chars"
-            copy_text = f"c: copy selection ({count} {unit})"
-        else:
-            active_label = (
-                self._prompt_label
-                if self._active_column == "prompt"
-                else self._completion_label
-            ).lower()
-            copy_text = f"c: copy {active_label}"
-        self.query_one("#copy-hint", Label).update(Text(copy_text, style="dim"))
 
 
 def main() -> None:

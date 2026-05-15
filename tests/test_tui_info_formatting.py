@@ -6,16 +6,20 @@ from rich.console import Console
 from rich.text import Text
 from textual.app import App
 from textual.containers import VerticalScroll
-from textual.widgets import Label, OptionList, Static, TextArea, Tree
+from textual.widgets import Collapsible, Label, OptionList, Static, TextArea, Tree
 
 from verifiers.scripts.tui import (
     BrowseRunsScreen,
     CompareRunsScreen,
-    CopyScreen,
     LazyRunResults,
     MathDisplayBlock,
     MathMarkdown,
     MathParagraph,
+    PRIME_ERROR,
+    PRIME_MINT,
+    PRIME_PRIMARY,
+    PRIME_SUCCESS,
+    PRIME_WARNING,
     RolloutCopyScreen,
     RunBrowserTree,
     RunInfo,
@@ -24,6 +28,7 @@ from verifiers.scripts.tui import (
     _build_reward_distribution_table,
     _compute_run_overview_stats,
     _extract_numeric_metric_values,
+    _format_run_datetime,
     _varying_run_setting_keys,
     format_info_for_details,
     make_math_parser,
@@ -43,6 +48,43 @@ def _render_to_text(renderable: object, width: int = 180) -> str:
     return buffer.getvalue()
 
 
+def _plain(value: object) -> str:
+    return value.plain if isinstance(value, Text) else str(value)
+
+
+def _make_run(
+    tmp_path,
+    *,
+    metadata: dict | None = None,
+    records: list[dict] | None = None,
+    logs: dict[str, str] | None = None,
+    env_id: str = "demo-env",
+    model: str = "openai/gpt-5",
+    run_id: str = "run-1",
+    dirname: str = "demo-run",
+) -> RunInfo:
+    run_dir = tmp_path / dirname
+    run_dir.mkdir()
+    (run_dir / "metadata.json").write_text(
+        json.dumps(metadata or {}),
+        encoding="utf-8",
+    )
+    (run_dir / "results.jsonl").write_text(
+        "\n".join(json.dumps(record) for record in (records or [{}])) + "\n",
+        encoding="utf-8",
+    )
+    for name, body in (logs or {}).items():
+        (run_dir / name).write_text(body, encoding="utf-8")
+    return RunInfo(env_id=env_id, model=model, run_id=run_id, path=run_dir)
+
+
+def _index(*runs: RunInfo) -> dict[str, dict[str, list[RunInfo]]]:
+    index: dict[str, dict[str, list[RunInfo]]] = {}
+    for run in runs:
+        index.setdefault(run.env_id, {}).setdefault(run.model, []).append(run)
+    return index
+
+
 class ViewRunHarness(App[None]):
     def __init__(self, screen: ViewRunScreen):
         super().__init__()
@@ -55,29 +97,11 @@ class ViewRunHarness(App[None]):
 def test_lazy_run_results_counts_actual_file_length_when_metadata_is_stale(
     tmp_path,
 ) -> None:
-    run_dir = tmp_path / "demo-run"
-    run_dir.mkdir()
-    (run_dir / "metadata.json").write_text(
-        json.dumps({"num_examples": 3, "rollouts_per_example": 1}),
-        encoding="utf-8",
-    )
-    (run_dir / "results.jsonl").write_text(
-        "\n".join(
-            [
-                json.dumps({"reward": 0.1}),
-                json.dumps({"reward": 0.2}),
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-
     records = LazyRunResults(
-        RunInfo(
-            env_id="demo-env",
-            model="openai/gpt-5",
-            run_id="run-1",
-            path=run_dir,
+        _make_run(
+            tmp_path,
+            metadata={"num_examples": 3, "rollouts_per_example": 1},
+            records=[{"reward": 0.1}, {"reward": 0.2}],
         )
     )
 
@@ -129,20 +153,14 @@ def test_format_info_for_details_handles_non_serializable_data() -> None:
 
 
 def test_view_run_screen_info_details_include_saved_state_columns(tmp_path) -> None:
-    run_dir = tmp_path / "demo-run"
-    run_dir.mkdir()
-    (run_dir / "metadata.json").write_text(
-        json.dumps(
-            {
-                "num_examples": 1,
-                "rollouts_per_example": 1,
-                "state_columns": ["judge_response", "attempt_count"],
-            }
-        ),
-        encoding="utf-8",
-    )
-    (run_dir / "results.jsonl").write_text(
-        json.dumps(
+    run = _make_run(
+        tmp_path,
+        metadata={
+            "num_examples": 1,
+            "rollouts_per_example": 1,
+            "state_columns": ["judge_response", "attempt_count"],
+        },
+        records=[
             {
                 "reward": 0.75,
                 "info": {"trace": "ok"},
@@ -151,19 +169,10 @@ def test_view_run_screen_info_details_include_saved_state_columns(tmp_path) -> N
                 "prompt": [{"role": "user", "content": "Solve it"}],
                 "completion": [{"role": "assistant", "content": "Done"}],
             }
-        )
-        + "\n",
-        encoding="utf-8",
+        ],
     )
 
-    screen = ViewRunScreen(
-        RunInfo(
-            env_id="demo-env",
-            model="openai/gpt-5",
-            run_id="run-1",
-            path=run_dir,
-        )
-    )
+    screen = ViewRunScreen(run)
 
     rendered = screen._build_info_text(screen.records[0]).plain.rstrip()
 
@@ -238,50 +247,29 @@ g(x) &= \frac{1}{1 + e^{-x}}
 
 
 def test_build_run_details_includes_rollout_metric_stats(tmp_path) -> None:
-    run_dir = tmp_path / "demo-run"
-    run_dir.mkdir()
-    (run_dir / "metadata.json").write_text(
-        json.dumps(
+    run = _make_run(
+        tmp_path,
+        metadata={
+            "avg_reward": 0.75,
+            "num_examples": 2,
+            "rollouts_per_example": 1,
+        },
+        records=[
             {
-                "avg_reward": 0.75,
-                "num_examples": 2,
-                "rollouts_per_example": 1,
-            }
-        ),
-        encoding="utf-8",
-    )
-    (run_dir / "results.jsonl").write_text(
-        "\n".join(
-            [
-                json.dumps(
-                    {
-                        "reward": 0.5,
-                        "metrics": {
-                            "sub_llm_completion_tokens": 877,
-                            "sub_llm_call_count": 2,
-                        },
-                    }
-                ),
-                json.dumps(
-                    {
-                        "reward": 1.0,
-                        "metrics": {
-                            "sub_llm_completion_tokens": 56519,
-                            "sub_llm_call_count": 4,
-                        },
-                    }
-                ),
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-
-    run = RunInfo(
-        env_id="demo-env",
-        model="openai/gpt-5",
-        run_id="run-1",
-        path=run_dir,
+                "reward": 0.5,
+                "metrics": {
+                    "sub_llm_completion_tokens": 877,
+                    "sub_llm_call_count": 2,
+                },
+            },
+            {
+                "reward": 1.0,
+                "metrics": {
+                    "sub_llm_completion_tokens": 56519,
+                    "sub_llm_call_count": 4,
+                },
+            },
+        ],
     )
 
     rendered = _render_to_text(
@@ -298,6 +286,15 @@ def test_build_run_details_includes_rollout_metric_stats(tmp_path) -> None:
     assert "56,519" in rendered
     assert "sub llm call count" in rendered
     assert "Distribution" in rendered
+
+
+def test_run_datetime_ignores_numeric_duration_time(tmp_path) -> None:
+    rendered = _format_run_datetime(
+        {"time": 6.562098979949951}, _make_run(tmp_path).path
+    )
+
+    assert rendered
+    assert "6.562" not in rendered
 
 
 def test_reward_distribution_uses_exact_zero_and_one_buckets() -> None:
@@ -317,38 +314,18 @@ def test_reward_distribution_uses_exact_zero_and_one_buckets() -> None:
 
 
 def test_build_run_details_includes_run_settings(tmp_path) -> None:
-    run_dir = tmp_path / "demo-run"
-    run_dir.mkdir()
-    (run_dir / "metadata.json").write_text(
-        json.dumps(
-            {
-                "base_url": "https://api.example/v1",
-                "num_examples": 12,
-                "rollouts_per_example": 4,
-                "pass_threshold": 0.7,
-                "sampling_args": {
-                    "temperature": 0.2,
-                    "max_tokens": 512,
-                },
-                "env_args": {
-                    "difficulty": "hard",
-                    "split": "validation",
-                },
-                "state_columns": ["judge_response"],
-            }
-        ),
-        encoding="utf-8",
-    )
-    (run_dir / "results.jsonl").write_text(
-        json.dumps({"reward": 1.0, "metrics": {}}) + "\n",
-        encoding="utf-8",
-    )
-
-    run = RunInfo(
-        env_id="demo-env",
-        model="openai/gpt-5",
-        run_id="run-1",
-        path=run_dir,
+    run = _make_run(
+        tmp_path,
+        metadata={
+            "base_url": "https://api.example/v1",
+            "num_examples": 12,
+            "rollouts_per_example": 4,
+            "pass_threshold": 0.7,
+            "sampling_args": {"temperature": 0.2, "max_tokens": 512},
+            "env_args": {"difficulty": "hard", "split": "validation"},
+            "state_columns": ["judge_response"],
+        },
+        records=[{"reward": 1.0, "metrics": {}}],
     )
 
     rendered = _render_to_text(
@@ -369,51 +346,31 @@ def test_build_run_details_includes_run_settings(tmp_path) -> None:
 
 
 def test_model_details_include_setting_variations(tmp_path) -> None:
-    first_run_dir = tmp_path / "run-a"
-    first_run_dir.mkdir()
-    (first_run_dir / "metadata.json").write_text(
-        json.dumps(
-            {
-                "avg_reward": 0.25,
-                "sampling_args": {"temperature": 0.2},
-                "env_args": {"split": "train"},
-            }
-        ),
-        encoding="utf-8",
-    )
-    (first_run_dir / "results.jsonl").write_text("{}\n", encoding="utf-8")
-
-    second_run_dir = tmp_path / "run-b"
-    second_run_dir.mkdir()
-    (second_run_dir / "metadata.json").write_text(
-        json.dumps(
-            {
-                "avg_reward": 0.75,
-                "sampling_args": {"temperature": 0.8},
-                "env_args": {"split": "validation"},
-            }
-        ),
-        encoding="utf-8",
-    )
-    (second_run_dir / "results.jsonl").write_text("{}\n", encoding="utf-8")
-
-    first_run = RunInfo(
-        env_id="demo-env",
-        model="openai/gpt-5",
+    first_run = _make_run(
+        tmp_path,
+        dirname="run-a",
         run_id="run-1",
-        path=first_run_dir,
+        metadata={
+            "avg_reward": 0.25,
+            "sampling_args": {"temperature": 0.2},
+            "env_args": {"split": "train"},
+        },
     )
-    second_run = RunInfo(
-        env_id="demo-env",
-        model="openai/gpt-5",
+    second_run = _make_run(
+        tmp_path,
+        dirname="run-b",
         run_id="run-2",
-        path=second_run_dir,
+        metadata={
+            "avg_reward": 0.75,
+            "sampling_args": {"temperature": 0.8},
+            "env_args": {"split": "validation"},
+        },
     )
 
     rendered = _render_to_text(
-        BrowseRunsScreen(
-            {"demo-env": {"openai/gpt-5": [first_run, second_run]}}
-        )._build_model_details("demo-env", "openai/gpt-5")
+        BrowseRunsScreen(_index(first_run, second_run))._build_model_details(
+            "demo-env", "openai/gpt-5"
+        )
     )
 
     assert "Setting variations" in rendered
@@ -426,63 +383,27 @@ def test_model_details_include_setting_variations(tmp_path) -> None:
 
 
 def test_compare_runs_screen_renders_settings_and_reward_buckets(tmp_path) -> None:
-    first_run_dir = tmp_path / "run-a"
-    first_run_dir.mkdir()
-    (first_run_dir / "metadata.json").write_text(
-        json.dumps(
-            {
-                "avg_reward": 0.25,
-                "sampling_args": {"temperature": 0.2, "max_tokens": 256},
-                "env_args": {"split": "train"},
-            }
-        ),
-        encoding="utf-8",
-    )
-    (first_run_dir / "results.jsonl").write_text(
-        "\n".join(
-            [
-                json.dumps({"reward": 0.0, "metrics": {}}),
-                json.dumps({"reward": 0.5, "metrics": {}}),
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-
-    second_run_dir = tmp_path / "run-b"
-    second_run_dir.mkdir()
-    (second_run_dir / "metadata.json").write_text(
-        json.dumps(
-            {
-                "avg_reward": 0.75,
-                "sampling_args": {"temperature": 0.8, "max_tokens": 512},
-                "env_args": {"split": "validation"},
-            }
-        ),
-        encoding="utf-8",
-    )
-    (second_run_dir / "results.jsonl").write_text(
-        "\n".join(
-            [
-                json.dumps({"reward": 1.0, "metrics": {}}),
-                json.dumps({"reward": 1.0, "metrics": {}}),
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-
-    first_run = RunInfo(
-        env_id="demo-env",
-        model="openai/gpt-5",
+    first_run = _make_run(
+        tmp_path,
+        dirname="run-a",
         run_id="run-1",
-        path=first_run_dir,
+        metadata={
+            "avg_reward": 0.25,
+            "sampling_args": {"temperature": 0.2, "max_tokens": 256},
+            "env_args": {"split": "train"},
+        },
+        records=[{"reward": 0.0, "metrics": {}}, {"reward": 0.5, "metrics": {}}],
     )
-    second_run = RunInfo(
-        env_id="demo-env",
-        model="openai/gpt-5",
+    second_run = _make_run(
+        tmp_path,
+        dirname="run-b",
         run_id="run-2",
-        path=second_run_dir,
+        metadata={
+            "avg_reward": 0.75,
+            "sampling_args": {"temperature": 0.8, "max_tokens": 512},
+            "env_args": {"split": "validation"},
+        },
+        records=[{"reward": 1.0, "metrics": {}}, {"reward": 1.0, "metrics": {}}],
     )
     screen = CompareRunsScreen(
         "demo-env",
@@ -518,45 +439,9 @@ def test_compare_runs_screen_renders_settings_and_reward_buckets(tmp_path) -> No
     assert "100%" in rendered
 
 
-def test_copy_screen_uses_custom_labels() -> None:
-    copy_screen = CopyScreen(
-        "run-1 reward 0.75",
-        "details text",
-        "completion",
-        prompt_label="Selection",
-        completion_label="Details",
-        title="Copy Details",
-    )
-
-    assert copy_screen._prompt_label == "Selection"
-    assert copy_screen._completion_label == "Details"
-    assert copy_screen._title == "Copy Details"
-    assert copy_screen._prompt_text == "run-1 reward 0.75"
-    assert copy_screen._completion_text == "details text"
-
-
-def test_copy_screen_defaults_invalid_start_column_to_completion() -> None:
-    copy_screen = CopyScreen("prompt text", "completion text", "sideways")
-
-    assert copy_screen._active_column == "completion"
-
-
 def test_populate_tree_includes_run_reward_in_label(tmp_path) -> None:
-    run_dir = tmp_path / "demo-run"
-    run_dir.mkdir()
-    (run_dir / "metadata.json").write_text(
-        json.dumps({"avg_reward": 0.75}),
-        encoding="utf-8",
-    )
-    (run_dir / "results.jsonl").write_text("{}\n", encoding="utf-8")
-
-    run = RunInfo(
-        env_id="demo-env",
-        model="openai/gpt-5",
-        run_id="run-1",
-        path=run_dir,
-    )
-    screen = BrowseRunsScreen({"demo-env": {"openai/gpt-5": [run]}})
+    run = _make_run(tmp_path, metadata={"avg_reward": 0.75})
+    screen = BrowseRunsScreen(_index(run))
     tree = Tree("Completed evals")
 
     first_run_node = screen._populate_tree(tree)
@@ -566,32 +451,82 @@ def test_populate_tree_includes_run_reward_in_label(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_browse_screen_uses_prime_lab_shell(tmp_path) -> None:
+    run = _make_run(tmp_path, metadata={"avg_reward": 0.75})
+
+    async with VerifiersTUI(_index(run)).run_test() as pilot:
+        await pilot.pause()
+        shell_text = "\n".join(
+            _plain(widget.content)
+            for widget in (
+                pilot.app.screen.query_one("#topbar-title", Static),
+                pilot.app.screen.query_one("#workspace-path", Static),
+                pilot.app.screen.query_one("#topbar-logo", Static),
+                pilot.app.screen.query_one("#section-subtitle", Static),
+                pilot.app.screen.query_one("#statusbar", Static),
+            )
+        )
+
+    assert "L A B" in shell_text
+    assert "Evaluations" in shell_text
+    assert "✓ local" in shell_text
+    assert "verifiers" in shell_text
+    assert "PRIME Intellect" in shell_text
+    assert "environments 1" in shell_text
+    assert "models 1" in shell_text
+    assert "runs 1" in shell_text
+
+
+@pytest.mark.asyncio
+async def test_empty_browse_screen_points_to_prime_lab_setup() -> None:
+    async with VerifiersTUI({}).run_test() as pilot:
+        await pilot.pause()
+
+        details = pilot.app.screen.query_one("#run-browser-details", Static)
+        text = _plain(details.content)
+
+        assert "No completed evals found" in text
+        assert "prime lab setup" in text
+        assert "prime eval run <environment> --save-results" in text
+
+
+@pytest.mark.asyncio
+async def test_tui_uses_prime_lab_theme(tmp_path) -> None:
+    run = _make_run(tmp_path, metadata={"avg_reward": 0.75})
+
+    async with VerifiersTUI(_index(run)).run_test() as pilot:
+        await pilot.pause()
+
+        assert pilot.app.theme == "prime-lab"
+        assert PRIME_PRIMARY == "#7f70c7"
+        assert PRIME_SUCCESS == "#85ed75"
+        assert PRIME_WARNING == "#f3bc56"
+        assert PRIME_ERROR == "#de3b3b"
+        assert PRIME_MINT == "#5ee9b5"
+
+
+@pytest.mark.asyncio
+async def test_ctrl_c_quits_tui(tmp_path) -> None:
+    run = _make_run(tmp_path, metadata={"avg_reward": 0.75})
+
+    async with VerifiersTUI(_index(run)).run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("ctrl+c")
+        await pilot.pause()
+
+        assert pilot.app.return_code == 0
+
+
+@pytest.mark.asyncio
 async def test_browse_run_screen_moves_browser_shortcuts_to_footer(tmp_path) -> None:
-    run_dir = tmp_path / "demo-run"
-    run_dir.mkdir()
-    (run_dir / "metadata.json").write_text(
-        json.dumps({"avg_reward": 0.75}),
-        encoding="utf-8",
-    )
-    (run_dir / "results.jsonl").write_text("{}\n", encoding="utf-8")
+    run = _make_run(tmp_path, metadata={"avg_reward": 0.75})
 
-    run = RunInfo(
-        env_id="demo-env",
-        model="openai/gpt-5",
-        run_id="run-1",
-        path=run_dir,
-    )
-
-    async with VerifiersTUI({"demo-env": {"openai/gpt-5": [run]}}).run_test() as pilot:
+    async with VerifiersTUI(_index(run)).run_test() as pilot:
         await pilot.pause()
 
         tree = pilot.app.screen.query_one("#run-browser-tree", RunBrowserTree)
         bindings = {binding.key: binding for binding in tree.BINDINGS}
-        labels = [
-            label.content.plain
-            for label in pilot.app.screen.query(Label)
-            if isinstance(label.content, Text)
-        ]
+        labels = [_plain(label.content) for label in pilot.app.screen.query(Label)]
 
         assert bindings["left"].show is True
         assert bindings["left"].description == "Parent folder"
@@ -612,22 +547,9 @@ async def test_browse_run_screen_moves_browser_shortcuts_to_footer(tmp_path) -> 
 async def test_browse_run_screen_offsets_details_content_from_scrollbar(
     tmp_path,
 ) -> None:
-    run_dir = tmp_path / "demo-run"
-    run_dir.mkdir()
-    (run_dir / "metadata.json").write_text(
-        json.dumps({"avg_reward": 0.75}),
-        encoding="utf-8",
-    )
-    (run_dir / "results.jsonl").write_text("{}\n", encoding="utf-8")
+    run = _make_run(tmp_path, metadata={"avg_reward": 0.75})
 
-    run = RunInfo(
-        env_id="demo-env",
-        model="openai/gpt-5",
-        run_id="run-1",
-        path=run_dir,
-    )
-
-    async with VerifiersTUI({"demo-env": {"openai/gpt-5": [run]}}).run_test() as pilot:
+    async with VerifiersTUI(_index(run)).run_test() as pilot:
         await pilot.pause()
 
         scroll = pilot.app.screen.query_one(
@@ -645,22 +567,9 @@ async def test_browse_run_screen_offsets_details_content_from_scrollbar(
 async def test_browse_run_screen_highlights_details_pane_when_focused(
     tmp_path,
 ) -> None:
-    run_dir = tmp_path / "demo-run"
-    run_dir.mkdir()
-    (run_dir / "metadata.json").write_text(
-        json.dumps({"avg_reward": 0.75}),
-        encoding="utf-8",
-    )
-    (run_dir / "results.jsonl").write_text("{}\n", encoding="utf-8")
+    run = _make_run(tmp_path, metadata={"avg_reward": 0.75})
 
-    run = RunInfo(
-        env_id="demo-env",
-        model="openai/gpt-5",
-        run_id="run-1",
-        path=run_dir,
-    )
-
-    async with VerifiersTUI({"demo-env": {"openai/gpt-5": [run]}}).run_test() as pilot:
+    async with VerifiersTUI(_index(run)).run_test() as pilot:
         await pilot.pause()
 
         tree = pilot.app.screen.query_one("#run-browser-tree", RunBrowserTree)
@@ -682,38 +591,20 @@ async def test_browse_run_screen_highlights_details_pane_when_focused(
 
 @pytest.mark.asyncio
 async def test_browse_run_screen_opens_compare_mode_for_model(tmp_path) -> None:
-    first_run_dir = tmp_path / "run-a"
-    first_run_dir.mkdir()
-    (first_run_dir / "metadata.json").write_text(
-        json.dumps({"avg_reward": 0.25, "sampling_args": {"temperature": 0.2}}),
-        encoding="utf-8",
-    )
-    (first_run_dir / "results.jsonl").write_text("{}\n", encoding="utf-8")
-
-    second_run_dir = tmp_path / "run-b"
-    second_run_dir.mkdir()
-    (second_run_dir / "metadata.json").write_text(
-        json.dumps({"avg_reward": 0.75, "sampling_args": {"temperature": 0.8}}),
-        encoding="utf-8",
-    )
-    (second_run_dir / "results.jsonl").write_text("{}\n", encoding="utf-8")
-
-    first_run = RunInfo(
-        env_id="demo-env",
-        model="openai/gpt-5",
+    first_run = _make_run(
+        tmp_path,
+        dirname="run-a",
         run_id="run-1",
-        path=first_run_dir,
+        metadata={"avg_reward": 0.25, "sampling_args": {"temperature": 0.2}},
     )
-    second_run = RunInfo(
-        env_id="demo-env",
-        model="openai/gpt-5",
+    second_run = _make_run(
+        tmp_path,
+        dirname="run-b",
         run_id="run-2",
-        path=second_run_dir,
+        metadata={"avg_reward": 0.75, "sampling_args": {"temperature": 0.8}},
     )
 
-    async with VerifiersTUI(
-        {"demo-env": {"openai/gpt-5": [first_run, second_run]}}
-    ).run_test() as pilot:
+    async with VerifiersTUI(_index(first_run, second_run)).run_test() as pilot:
         await pilot.pause()
 
         tree = pilot.app.screen.query_one("#run-browser-tree", RunBrowserTree)
@@ -732,23 +623,23 @@ async def test_browse_run_screen_opens_compare_mode_for_model(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_browse_run_screen_click_opens_run(tmp_path) -> None:
+    run = _make_run(tmp_path, metadata={"avg_reward": 0.75})
+
+    async with VerifiersTUI(_index(run)).run_test(size=(160, 46)) as pilot:
+        await pilot.pause()
+
+        await pilot.click("#run-browser-tree", offset=(8, 2))
+        await pilot.pause()
+
+        assert isinstance(pilot.app.screen, ViewRunScreen)
+
+
+@pytest.mark.asyncio
 async def test_browse_run_tree_left_arrow_moves_to_visible_parent(tmp_path) -> None:
-    run_dir = tmp_path / "demo-run"
-    run_dir.mkdir()
-    (run_dir / "metadata.json").write_text(
-        json.dumps({"avg_reward": 0.75}),
-        encoding="utf-8",
-    )
-    (run_dir / "results.jsonl").write_text("{}\n", encoding="utf-8")
+    run = _make_run(tmp_path, metadata={"avg_reward": 0.75})
 
-    run = RunInfo(
-        env_id="demo-env",
-        model="openai/gpt-5",
-        run_id="run-1",
-        path=run_dir,
-    )
-
-    async with VerifiersTUI({"demo-env": {"openai/gpt-5": [run]}}).run_test() as pilot:
+    async with VerifiersTUI(_index(run)).run_test() as pilot:
         await pilot.pause()
 
         tree = pilot.app.screen.query_one("#run-browser-tree", RunBrowserTree)
@@ -776,22 +667,9 @@ async def test_browse_run_tree_left_arrow_moves_to_visible_parent(tmp_path) -> N
 async def test_browse_run_tree_space_collapses_parent_folder_from_run_leaf(
     tmp_path,
 ) -> None:
-    run_dir = tmp_path / "demo-run"
-    run_dir.mkdir()
-    (run_dir / "metadata.json").write_text(
-        json.dumps({"avg_reward": 0.75}),
-        encoding="utf-8",
-    )
-    (run_dir / "results.jsonl").write_text("{}\n", encoding="utf-8")
+    run = _make_run(tmp_path, metadata={"avg_reward": 0.75})
 
-    run = RunInfo(
-        env_id="demo-env",
-        model="openai/gpt-5",
-        run_id="run-1",
-        path=run_dir,
-    )
-
-    async with VerifiersTUI({"demo-env": {"openai/gpt-5": [run]}}).run_test() as pilot:
+    async with VerifiersTUI(_index(run)).run_test() as pilot:
         await pilot.pause()
 
         tree = pilot.app.screen.query_one("#run-browser-tree", RunBrowserTree)
@@ -814,38 +692,22 @@ async def test_browse_run_tree_space_collapses_parent_folder_from_run_leaf(
 async def test_browse_run_tree_right_arrow_moves_leaf_to_next_parent_folder(
     tmp_path,
 ) -> None:
-    first_run_dir = tmp_path / "run-a"
-    first_run_dir.mkdir()
-    (first_run_dir / "metadata.json").write_text(
-        json.dumps({"avg_reward": 0.25}),
-        encoding="utf-8",
-    )
-    (first_run_dir / "results.jsonl").write_text("{}\n", encoding="utf-8")
-
-    second_run_dir = tmp_path / "run-b"
-    second_run_dir.mkdir()
-    (second_run_dir / "metadata.json").write_text(
-        json.dumps({"avg_reward": 0.75}),
-        encoding="utf-8",
-    )
-    (second_run_dir / "results.jsonl").write_text("{}\n", encoding="utf-8")
-
-    first_run = RunInfo(
-        env_id="demo-env",
+    first_run = _make_run(
+        tmp_path,
+        dirname="run-a",
         model="a/model",
         run_id="run-1",
-        path=first_run_dir,
+        metadata={"avg_reward": 0.25},
     )
-    second_run = RunInfo(
-        env_id="demo-env",
+    second_run = _make_run(
+        tmp_path,
+        dirname="run-b",
         model="b/model",
         run_id="run-2",
-        path=second_run_dir,
+        metadata={"avg_reward": 0.75},
     )
 
-    async with VerifiersTUI(
-        {"demo-env": {"a/model": [first_run], "b/model": [second_run]}}
-    ).run_test() as pilot:
+    async with VerifiersTUI(_index(first_run, second_run)).run_test() as pilot:
         await pilot.pause()
 
         tree = pilot.app.screen.query_one("#run-browser-tree", RunBrowserTree)
@@ -864,38 +726,24 @@ async def test_browse_run_tree_right_arrow_moves_leaf_to_next_parent_folder(
 
 @pytest.mark.asyncio
 async def test_browse_run_tree_right_arrow_expands_collapsed_folder(tmp_path) -> None:
-    first_run_dir = tmp_path / "run-a"
-    first_run_dir.mkdir()
-    (first_run_dir / "metadata.json").write_text(
-        json.dumps({"avg_reward": 0.25}),
-        encoding="utf-8",
-    )
-    (first_run_dir / "results.jsonl").write_text("{}\n", encoding="utf-8")
-
-    second_run_dir = tmp_path / "run-b"
-    second_run_dir.mkdir()
-    (second_run_dir / "metadata.json").write_text(
-        json.dumps({"avg_reward": 0.75}),
-        encoding="utf-8",
-    )
-    (second_run_dir / "results.jsonl").write_text("{}\n", encoding="utf-8")
-
-    first_run = RunInfo(
+    first_run = _make_run(
+        tmp_path,
+        dirname="run-a",
         env_id="alpha-env",
         model="model-a",
         run_id="run-1",
-        path=first_run_dir,
+        metadata={"avg_reward": 0.25},
     )
-    second_run = RunInfo(
+    second_run = _make_run(
+        tmp_path,
+        dirname="run-b",
         env_id="beta-env",
         model="model-b",
         run_id="run-2",
-        path=second_run_dir,
+        metadata={"avg_reward": 0.75},
     )
 
-    async with VerifiersTUI(
-        {"alpha-env": {"model-a": [first_run]}, "beta-env": {"model-b": [second_run]}}
-    ).run_test() as pilot:
+    async with VerifiersTUI(_index(first_run, second_run)).run_test() as pilot:
         await pilot.pause()
 
         tree = pilot.app.screen.query_one("#run-browser-tree", RunBrowserTree)
@@ -917,24 +765,16 @@ async def test_browse_run_tree_right_arrow_expands_collapsed_folder(tmp_path) ->
 async def test_browse_run_tree_clips_long_labels_without_horizontal_scrollbar(
     tmp_path,
 ) -> None:
-    run_dir = tmp_path / "demo-run"
-    run_dir.mkdir()
-    (run_dir / "metadata.json").write_text(
-        json.dumps({"avg_reward": 0.75}),
-        encoding="utf-8",
-    )
-    (run_dir / "results.jsonl").write_text("{}\n", encoding="utf-8")
-
     long_model = "openai/" + ("very-long-model-name-" * 8)
     long_run_id = "run-" + ("1234567890" * 12)
-    run = RunInfo(
-        env_id="demo-env",
+    run = _make_run(
+        tmp_path,
         model=long_model,
         run_id=long_run_id,
-        path=run_dir,
+        metadata={"avg_reward": 0.75},
     )
 
-    async with VerifiersTUI({"demo-env": {long_model: [run]}}).run_test() as pilot:
+    async with VerifiersTUI(_index(run)).run_test() as pilot:
         await pilot.pause()
 
         tree = pilot.app.screen.query_one("#run-browser-tree", RunBrowserTree)
@@ -950,79 +790,35 @@ async def test_browse_run_tree_clips_long_labels_without_horizontal_scrollbar(
 
 @pytest.mark.asyncio
 async def test_view_run_screen_populates_rollout_rewards_for_all_rows(tmp_path) -> None:
-    run_dir = tmp_path / "demo-run"
-    run_dir.mkdir()
-    (run_dir / "metadata.json").write_text(
-        json.dumps(
+    run = _make_run(
+        tmp_path,
+        metadata={"avg_reward": 0.5, "num_examples": 3, "rollouts_per_example": 1},
+        records=[
             {
-                "avg_reward": 0.5,
-                "num_examples": 3,
-                "rollouts_per_example": 1,
-            }
-        ),
-        encoding="utf-8",
-    )
-    (run_dir / "results.jsonl").write_text(
-        "\n".join(
-            [
-                json.dumps(
-                    {
-                        "reward": 0.1,
-                        "prompt": [{"role": "user", "content": "first prompt"}],
-                        "completion": [
-                            {"role": "assistant", "content": "first sample"}
-                        ],
-                    }
-                ),
-                json.dumps(
-                    {
-                        "reward": 0.2,
-                        "prompt": [{"role": "user", "content": "second prompt"}],
-                        "completion": [
-                            {"role": "assistant", "content": "second sample"}
-                        ],
-                    }
-                ),
-                json.dumps(
-                    {
-                        "reward": 0.3,
-                        "prompt": [{"role": "user", "content": "third prompt"}],
-                        "completion": [
-                            {"role": "assistant", "content": "third sample"}
-                        ],
-                    }
-                ),
-            ]
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-
-    run = RunInfo(
-        env_id="demo-env",
-        model="openai/gpt-5",
-        run_id="run-1",
-        path=run_dir,
+                "reward": 0.1,
+                "prompt": [{"role": "user", "content": "first prompt"}],
+                "completion": [{"role": "assistant", "content": "first sample"}],
+            },
+            {
+                "reward": 0.2,
+                "prompt": [{"role": "user", "content": "second prompt"}],
+                "completion": [{"role": "assistant", "content": "second sample"}],
+            },
+            {
+                "reward": 0.3,
+                "prompt": [{"role": "user", "content": "third prompt"}],
+                "completion": [{"role": "assistant", "content": "third sample"}],
+            },
+        ],
     )
     screen = ViewRunScreen(run)
 
     async with ViewRunHarness(screen).run_test() as pilot:
         await pilot.pause()
         rollout_list = screen.query_one("#rollout-list", OptionList)
-        first_prompt = rollout_list.get_option_at_index(0).prompt
-        second_prompt = rollout_list.get_option_at_index(1).prompt
-        third_prompt = rollout_list.get_option_at_index(2).prompt
-        first_text = (
-            first_prompt.plain if isinstance(first_prompt, Text) else str(first_prompt)
-        )
-        second_text = (
-            second_prompt.plain
-            if isinstance(second_prompt, Text)
-            else str(second_prompt)
-        )
-        third_text = (
-            third_prompt.plain if isinstance(third_prompt, Text) else str(third_prompt)
-        )
+        first_text = _plain(rollout_list.get_option_at_index(0).prompt)
+        second_text = _plain(rollout_list.get_option_at_index(1).prompt)
+        third_text = _plain(rollout_list.get_option_at_index(2).prompt)
 
         assert screen.records._cache.keys() == {0, 1, 2}
         assert "reward 0.100" in first_text
@@ -1034,48 +830,88 @@ async def test_view_run_screen_populates_rollout_rewards_for_all_rows(tmp_path) 
 
 
 @pytest.mark.asyncio
+async def test_view_run_screen_history_header_row_is_clickable(tmp_path) -> None:
+    run = _make_run(
+        tmp_path,
+        metadata={"avg_reward": 0.5, "num_examples": 1, "rollouts_per_example": 1},
+        records=[
+            {
+                "reward": 0.5,
+                "prompt": [{"role": "user", "content": "first prompt"}],
+                "completion": [{"role": "assistant", "content": "first sample"}],
+            }
+        ],
+    )
+
+    screen = ViewRunScreen(run)
+
+    async with ViewRunHarness(screen).run_test(size=(160, 46)) as pilot:
+        await pilot.pause()
+        section = screen.query(Collapsible).first()
+
+        assert section.collapsed is True
+
+        await pilot.click(section, offset=(30, 1))
+        await pilot.pause()
+
+        assert section.collapsed is False
+
+
+@pytest.mark.asyncio
+async def test_view_run_screen_log_tabs_are_clickable(tmp_path) -> None:
+    run = _make_run(
+        tmp_path,
+        metadata={"avg_reward": 0.5, "num_examples": 1, "rollouts_per_example": 1},
+        records=[
+            {
+                "reward": 0.5,
+                "prompt": [{"role": "user", "content": "first prompt"}],
+                "completion": [{"role": "assistant", "content": "first sample"}],
+            }
+        ],
+        logs={
+            "env_server.log": "server log\n",
+            "env_worker_0.log": "worker log\n",
+        },
+    )
+
+    screen = ViewRunScreen(run)
+
+    async with ViewRunHarness(screen).run_test(size=(160, 46)) as pilot:
+        await pilot.pause()
+        await pilot.press("l")
+        await pilot.pause()
+
+        assert screen._active_log_tab == 0
+
+        await pilot.click("#logs-tab-bar", offset=(8, 0))
+        await pilot.pause()
+
+        assert screen._active_log_tab == 1
+
+
+@pytest.mark.asyncio
 async def test_view_run_screen_ignores_metadata_rollout_count_when_file_is_short(
     tmp_path,
 ) -> None:
-    run_dir = tmp_path / "demo-run"
-    run_dir.mkdir()
-    (run_dir / "metadata.json").write_text(
-        json.dumps(
-            {
-                "avg_reward": 0.5,
-                "num_examples": 3,
-                "rollouts_per_example": 2,
-            }
-        ),
-        encoding="utf-8",
-    )
-    (run_dir / "results.jsonl").write_text(
-        json.dumps(
+    run = _make_run(
+        tmp_path,
+        metadata={"avg_reward": 0.5, "num_examples": 3, "rollouts_per_example": 2},
+        records=[
             {
                 "reward": 0.5,
                 "prompt": [{"role": "user", "content": "only prompt"}],
                 "completion": [{"role": "assistant", "content": "only sample"}],
             }
-        )
-        + "\n",
-        encoding="utf-8",
+        ],
     )
 
-    run = RunInfo(
-        env_id="demo-env",
-        model="openai/gpt-5",
-        run_id="run-1",
-        path=run_dir,
-    )
     screen = ViewRunScreen(run)
 
     async with ViewRunHarness(screen).run_test() as pilot:
         await pilot.pause()
         rollout_list = screen.query_one("#rollout-list", OptionList)
-        first_prompt = rollout_list.get_option_at_index(0).prompt
-        first_text = (
-            first_prompt.plain if isinstance(first_prompt, Text) else str(first_prompt)
-        )
+        first_text = _plain(rollout_list.get_option_at_index(0).prompt)
 
         assert rollout_list.option_count == 1
         assert screen.records.count_hint() == 1
@@ -1087,20 +923,10 @@ async def test_view_run_screen_ignores_metadata_rollout_count_when_file_is_short
 async def test_view_run_screen_renders_history_sections_with_math_markdown(
     tmp_path,
 ) -> None:
-    run_dir = tmp_path / "demo-run"
-    run_dir.mkdir()
-    (run_dir / "metadata.json").write_text(
-        json.dumps(
-            {
-                "avg_reward": 0.5,
-                "num_examples": 1,
-                "rollouts_per_example": 1,
-            }
-        ),
-        encoding="utf-8",
-    )
-    (run_dir / "results.jsonl").write_text(
-        json.dumps(
+    run = _make_run(
+        tmp_path,
+        metadata={"avg_reward": 0.5, "num_examples": 1, "rollouts_per_example": 1},
+        records=[
             {
                 "reward": 0.5,
                 "prompt": [
@@ -1118,17 +944,9 @@ async def test_view_run_screen_renders_history_sections_with_math_markdown(
                     }
                 ],
             }
-        )
-        + "\n",
-        encoding="utf-8",
+        ],
     )
 
-    run = RunInfo(
-        env_id="demo-env",
-        model="openai/gpt-5",
-        run_id="run-1",
-        path=run_dir,
-    )
     screen = ViewRunScreen(run)
 
     async with ViewRunHarness(screen).run_test() as pilot:
@@ -1159,19 +977,7 @@ async def test_view_run_screen_renders_history_sections_with_math_markdown(
 
 
 def test_record_preview_uses_error_when_completion_is_empty_payload(tmp_path) -> None:
-    run_dir = tmp_path / "demo-run"
-    run_dir.mkdir()
-    (run_dir / "metadata.json").write_text("{}", encoding="utf-8")
-    (run_dir / "results.jsonl").write_text("{}\n", encoding="utf-8")
-
-    screen = ViewRunScreen(
-        RunInfo(
-            env_id="demo-env",
-            model="openai/gpt-5",
-            run_id="run-1",
-            path=run_dir,
-        )
-    )
+    screen = ViewRunScreen(_make_run(tmp_path))
 
     preview = screen._record_preview(
         {
@@ -1190,19 +996,7 @@ def test_record_preview_uses_error_when_completion_is_empty_payload(tmp_path) ->
 
 
 def test_format_prompt_or_completion_handles_non_dict_entries(tmp_path) -> None:
-    run_dir = tmp_path / "demo-run"
-    run_dir.mkdir()
-    (run_dir / "metadata.json").write_text("{}", encoding="utf-8")
-    (run_dir / "results.jsonl").write_text("{}\n", encoding="utf-8")
-
-    screen = ViewRunScreen(
-        RunInfo(
-            env_id="demo-env",
-            model="openai/gpt-5",
-            run_id="run-1",
-            path=run_dir,
-        )
-    )
+    screen = ViewRunScreen(_make_run(tmp_path))
 
     rendered = screen._format_prompt_or_completion(
         [
@@ -1215,19 +1009,7 @@ def test_format_prompt_or_completion_handles_non_dict_entries(tmp_path) -> None:
 
 
 def test_format_prompt_or_completion_includes_reasoning_traces(tmp_path) -> None:
-    run_dir = tmp_path / "demo-run"
-    run_dir.mkdir()
-    (run_dir / "metadata.json").write_text("{}", encoding="utf-8")
-    (run_dir / "results.jsonl").write_text("{}\n", encoding="utf-8")
-
-    screen = ViewRunScreen(
-        RunInfo(
-            env_id="demo-env",
-            model="openai/gpt-5",
-            run_id="run-1",
-            path=run_dir,
-        )
-    )
+    screen = ViewRunScreen(_make_run(tmp_path))
 
     rendered = screen._format_prompt_or_completion(
         [
@@ -1265,19 +1047,7 @@ def test_format_prompt_or_completion_includes_reasoning_traces(tmp_path) -> None
 
 
 def test_history_section_data_includes_reasoning_traces(tmp_path) -> None:
-    run_dir = tmp_path / "demo-run"
-    run_dir.mkdir()
-    (run_dir / "metadata.json").write_text("{}", encoding="utf-8")
-    (run_dir / "results.jsonl").write_text("{}\n", encoding="utf-8")
-
-    screen = ViewRunScreen(
-        RunInfo(
-            env_id="demo-env",
-            model="openai/gpt-5",
-            run_id="run-1",
-            path=run_dir,
-        )
-    )
+    screen = ViewRunScreen(_make_run(tmp_path))
 
     sections = screen._history_section_data(
         {
@@ -1314,25 +1084,13 @@ def test_history_section_data_includes_reasoning_traces(tmp_path) -> None:
 
 
 def test_view_run_screen_sorts_pass_metrics_numerically(tmp_path) -> None:
-    run_dir = tmp_path / "demo-run"
-    run_dir.mkdir()
-    (run_dir / "metadata.json").write_text(
-        json.dumps(
-            {
+    screen = ViewRunScreen(
+        _make_run(
+            tmp_path,
+            metadata={
                 "pass_at_k": {"1": 0.1, "10": 1.0, "2": 0.2},
                 "pass_all_k": {"1": 0.01, "10": 0.1, "2": 0.02},
-            }
-        ),
-        encoding="utf-8",
-    )
-    (run_dir / "results.jsonl").write_text("{}\n", encoding="utf-8")
-
-    screen = ViewRunScreen(
-        RunInfo(
-            env_id="demo-env",
-            model="openai/gpt-5",
-            run_id="run-1",
-            path=run_dir,
+            },
         )
     )
 
@@ -1350,19 +1108,7 @@ def test_view_run_screen_sorts_pass_metrics_numerically(tmp_path) -> None:
 
 
 def test_view_run_screen_history_summary_omits_inline_hints(tmp_path) -> None:
-    run_dir = tmp_path / "demo-run"
-    run_dir.mkdir()
-    (run_dir / "metadata.json").write_text("{}", encoding="utf-8")
-    (run_dir / "results.jsonl").write_text("{}\n", encoding="utf-8")
-
-    screen = ViewRunScreen(
-        RunInfo(
-            env_id="demo-env",
-            model="openai/gpt-5",
-            run_id="run-1",
-            path=run_dir,
-        )
-    )
+    screen = ViewRunScreen(_make_run(tmp_path))
 
     rendered = screen._build_history_summary_text(
         {
@@ -1383,21 +1129,15 @@ def test_view_run_screen_history_summary_omits_inline_hints(tmp_path) -> None:
 def test_view_run_screen_builds_rollout_copy_items_from_viewer_sections(
     tmp_path,
 ) -> None:
-    run_dir = tmp_path / "demo-run"
-    run_dir.mkdir()
-    (run_dir / "metadata.json").write_text(
-        json.dumps(
-            {
-                "avg_reward": 0.75,
-                "num_examples": 1,
-                "rollouts_per_example": 1,
-                "state_columns": ["judge_response"],
-            }
-        ),
-        encoding="utf-8",
-    )
-    (run_dir / "results.jsonl").write_text(
-        json.dumps(
+    run = _make_run(
+        tmp_path,
+        metadata={
+            "avg_reward": 0.75,
+            "num_examples": 1,
+            "rollouts_per_example": 1,
+            "state_columns": ["judge_response"],
+        },
+        records=[
             {
                 "reward": 0.75,
                 "task": "Solve the puzzle",
@@ -1439,17 +1179,9 @@ def test_view_run_screen_builds_rollout_copy_items_from_viewer_sections(
                     {"role": "assistant", "content": "It is sunny."},
                 ],
             }
-        )
-        + "\n",
-        encoding="utf-8",
+        ],
     )
 
-    run = RunInfo(
-        env_id="demo-env",
-        model="openai/gpt-5",
-        run_id="run-1",
-        path=run_dir,
-    )
     screen = ViewRunScreen(run)
     items = {
         item.key: item for item in screen._build_rollout_copy_items(screen.records[0])
@@ -1472,36 +1204,17 @@ def test_view_run_screen_builds_rollout_copy_items_from_viewer_sections(
 
 @pytest.mark.asyncio
 async def test_view_run_screen_copy_action_opens_rollout_copy_screen(tmp_path) -> None:
-    run_dir = tmp_path / "demo-run"
-    run_dir.mkdir()
-    (run_dir / "metadata.json").write_text(
-        json.dumps(
-            {
-                "avg_reward": 0.5,
-                "num_examples": 1,
-                "rollouts_per_example": 1,
-            }
-        ),
-        encoding="utf-8",
-    )
-    (run_dir / "results.jsonl").write_text(
-        json.dumps(
+    run = _make_run(
+        tmp_path,
+        metadata={"avg_reward": 0.5, "num_examples": 1, "rollouts_per_example": 1},
+        records=[
             {
                 "reward": 0.5,
                 "task": "Task body",
                 "prompt": [{"role": "user", "content": "hello"}],
                 "completion": [{"role": "assistant", "content": "world"}],
             }
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-
-    run = RunInfo(
-        env_id="demo-env",
-        model="openai/gpt-5",
-        run_id="run-1",
-        path=run_dir,
+        ],
     )
     screen = ViewRunScreen(run)
 
@@ -1514,10 +1227,7 @@ async def test_view_run_screen_copy_action_opens_rollout_copy_screen(tmp_path) -
 
         copy_targets = pilot.app.screen.query_one("#rollout-copy-targets", OptionList)
         preview = pilot.app.screen.query_one("#rollout-copy-preview", TextArea)
-        first_prompt = copy_targets.get_option_at_index(0).prompt
-        first_text = (
-            first_prompt.plain if isinstance(first_prompt, Text) else str(first_prompt)
-        )
+        first_text = _plain(copy_targets.get_option_at_index(0).prompt)
 
         assert first_text == "Full rollout snapshot"
         assert "hello" in preview.text
