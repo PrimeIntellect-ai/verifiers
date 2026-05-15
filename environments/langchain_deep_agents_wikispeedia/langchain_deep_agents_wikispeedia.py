@@ -6,7 +6,12 @@ from typing import Protocol, cast
 from datasets import Dataset
 
 import verifiers as vf
-from wiki_graph import WikiGraph, WikiPair, load_wiki_graph
+from verifiers.v1.utils.prompt_utils import normalize_system_prompt
+
+if __package__:
+    from .wiki_graph import WikiGraph, WikiPair, load_wiki_graph
+else:
+    from wiki_graph import WikiGraph, WikiPair, load_wiki_graph
 
 
 class AgentMessage(Protocol):
@@ -69,8 +74,8 @@ class WikispeediaHarnessConfig(vf.HarnessConfig):
 
 
 class WikispeediaEnvConfig(vf.EnvConfig):
-    taskset: WikispeediaTasksetConfig
-    harness: WikispeediaHarnessConfig
+    taskset: WikispeediaTasksetConfig = WikispeediaTasksetConfig()
+    harness: WikispeediaHarnessConfig = WikispeediaHarnessConfig()
 
 
 class WikispeediaTaskset(vf.Taskset):
@@ -471,7 +476,9 @@ def make_langchain_deep_agents_program(
     return run_langchain_deep_agents_wikispeedia_program
 
 
-def load_taskset(config: WikispeediaTasksetConfig) -> WikispeediaTaskset:
+def load_taskset(
+    config: WikispeediaTasksetConfig = WikispeediaTasksetConfig(),
+) -> WikispeediaTaskset:
     pair_cache: dict[str, tuple[list[WikiPair], list[WikiPair]]] = {}
 
     def pairs() -> tuple[list[WikiPair], list[WikiPair]]:
@@ -530,35 +537,40 @@ def load_taskset(config: WikispeediaTasksetConfig) -> WikispeediaTaskset:
     else:
         metrics.insert(0, path_efficiency)
 
-    return WikispeediaTaskset(
-        source=build_train,
-        eval_source=build_eval,
-        taskset_id="langchain-deep-agents-wikispeedia",
-        system_prompt=system_prompt(allow_go_back=config.allow_go_back),
-        toolsets=[
-            load_toolset(
-                cache_dir=config.cache_dir,
-                allow_go_back=config.allow_go_back,
-            )
-        ],
-        rewards=rewards,
-        metrics=metrics,
-        config=config,
+    taskset = WikispeediaTaskset(config=config)
+    taskset.source = build_train
+    taskset.eval_source = build_eval
+    taskset.taskset_id = "langchain-deep-agents-wikispeedia"
+    taskset.system_prompt = normalize_system_prompt(
+        system_prompt(allow_go_back=config.allow_go_back),
+        field_name="taskset.system_prompt",
     )
+    taskset.add_toolset(
+        load_toolset(
+            cache_dir=config.cache_dir,
+            allow_go_back=config.allow_go_back,
+        )
+    )
+    taskset.rewards.extend(rewards)
+    taskset.metrics.extend(metrics)
+    return taskset
 
 
-def load_harness(config: WikispeediaHarnessConfig) -> WikispeediaHarness:
-    return WikispeediaHarness(
+def load_harness(
+    config: WikispeediaHarnessConfig = WikispeediaHarnessConfig(),
+) -> WikispeediaHarness:
+    harness = WikispeediaHarness(config=config)
+    harness.add_update(restore_agent_completion)
+    harness._configure_runtime(
         program=make_langchain_deep_agents_program(
             max_turns=config.max_turns,
             timeout_seconds=config.timeout_seconds,
-        ),
-        updates=[restore_agent_completion],
-        config=config,
+        )
     )
+    return harness
 
 
-def load_environment(config: WikispeediaEnvConfig) -> vf.Env:
+def load_environment(config: WikispeediaEnvConfig = WikispeediaEnvConfig()) -> vf.Env:
     """Load the v1 Wikispeedia taskset with a LangChain Deep Agents harness."""
 
     return vf.Env(

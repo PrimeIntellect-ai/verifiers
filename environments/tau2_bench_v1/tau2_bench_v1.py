@@ -681,28 +681,9 @@ class Tau2Taskset(vf.Taskset):
 
     def __init__(
         self,
-        domain: str | None = None,
-        *,
-        user_model: str | None = None,
-        user_args: ConfigMap | None = None,
-        user_base_url: str | None = None,
-        user_api_key_var: str | None = None,
-        max_steps: int | None = None,
-        max_errors: int | None = None,
-        max_turns: int | None = None,
-        config: Tau2TasksetConfig | None = None,
+        config: Tau2TasksetConfig = Tau2TasksetConfig(),
     ):
-        config = Tau2TasksetConfig(
-            config,
-            domain=domain,
-            user_model=user_model,
-            user_args=dict(user_args) if user_args is not None else None,
-            user_base_url=user_base_url,
-            user_api_key_var=user_api_key_var,
-            max_steps=max_steps,
-            max_errors=max_errors,
-            max_turns=max_turns,
-        )
+        config = type(self).config_type.from_config(config)
         resolved_user_args = (
             DEFAULT_LLM_ARGS_USER if config.user_args is None else config.user_args
         )
@@ -729,55 +710,36 @@ class Tau2Taskset(vf.Taskset):
         def load_rows():
             return source(config.domain, max_turns=config.max_turns)
 
-        super().__init__(
-            source=load_rows,
-            taskset_id=f"tau2_{config.domain}",
-            setups=[make_tau2_setup(session_factory)],
-            rewards=[tau2_reward],
-            metrics=[
+        super().__init__(config=config)
+        self.source = load_rows
+        self.taskset_id = f"tau2_{config.domain}"
+        self.setups.append(make_tau2_setup(session_factory))
+        self.rewards.append(tau2_reward)
+        self.metrics.extend(
+            [
                 tau2_num_errors,
                 tau2_num_steps,
                 tau2_num_assistant_tool_calls,
                 tau2_num_user_tool_calls,
-            ],
-            toolsets=[toolset],
-            user=vf.User(tau2_user, bindings={"session": session_factory}),
-            config=config,
+            ]
         )
+        self.add_toolset(toolset)
+        self.user = vf.User(tau2_user, bindings={"session": session_factory})
 
 
 class Tau2EnvConfig(vf.EnvConfig):
-    taskset: Tau2TasksetConfig
-    harness: vf.HarnessConfig
+    taskset: Tau2TasksetConfig = Tau2TasksetConfig()
+    harness: vf.HarnessConfig = vf.HarnessConfig()
 
 
 def load_taskset(
-    domain: str | None = None,
-    *,
-    user_model: str | None = None,
-    user_args: ConfigMap | None = None,
-    user_base_url: str | None = None,
-    user_api_key_var: str | None = None,
-    max_steps: int | None = None,
-    max_errors: int | None = None,
-    max_turns: int | None = None,
-    config: Tau2TasksetConfig,
+    config: Tau2TasksetConfig = Tau2TasksetConfig(),
 ) -> Tau2Taskset:
-    return Tau2Taskset(
-        domain=domain,
-        user_model=user_model,
-        user_args=user_args,
-        user_base_url=user_base_url,
-        user_api_key_var=user_api_key_var,
-        max_steps=max_steps,
-        max_errors=max_errors,
-        max_turns=max_turns,
-        config=config,
-    )
+    return Tau2Taskset(config=config)
 
 
 def load_environment(
-    config: Tau2EnvConfig,
+    config: Tau2EnvConfig = Tau2EnvConfig(),
 ) -> vf.Env:
     taskset = load_taskset(config=config.taskset)
     return vf.Env(taskset=taskset, harness=vf.Harness(config=config.harness))

@@ -153,6 +153,18 @@ TASKS: list[vf.ConfigData] = [
 
 
 class SelfJudgeTasksetConfig(vf.TasksetConfig):
+    source: str = f"{__name__}:source"
+    system_prompt: str = SYSTEM_PROMPT
+    toolsets: dict[str, dict[str, str]] = {
+        "bash": {"fn": f"{__name__}:load_bash_toolset"}
+    }
+    updates: list[vf.CallableConfig] = [
+        vf.CallableConfig(fn=f"{__name__}:sandbox_judge")
+    ]
+    rewards: list[vf.CallableConfig] = [
+        vf.CallableConfig(fn=f"{__name__}:self_consistency_score")
+    ]
+    metrics: list[vf.CallableConfig] = [vf.CallableConfig(fn=f"{__name__}:bash_calls")]
     num_examples: int = -1
 
 
@@ -161,8 +173,8 @@ class SelfJudgeHarnessConfig(vf.HarnessConfig):
 
 
 class SelfJudgeEnvConfig(vf.EnvConfig):
-    taskset: SelfJudgeTasksetConfig
-    harness: SelfJudgeHarnessConfig
+    taskset: SelfJudgeTasksetConfig = SelfJudgeTasksetConfig()
+    harness: SelfJudgeHarnessConfig = SelfJudgeHarnessConfig()
 
 
 async def bash(command: str, sandbox, state) -> str:
@@ -215,8 +227,10 @@ async def self_consistency_score(task, state) -> float:
     ).freeze()
     judge_state = state.for_task(judge_task, borrow="model")
     judge_state = await vf.Harness(
-        system_prompt=REWARD_JUDGE_SYSTEM_PROMPT,
-        max_turns=1,
+        config=vf.HarnessConfig(
+            system_prompt=REWARD_JUDGE_SYSTEM_PROMPT,
+            max_turns=1,
+        )
     ).run(judge_task, judge_state)
 
     messages = vf.get_messages(judge_state.get("completion") or [], role="assistant")
@@ -254,8 +268,10 @@ async def sandbox_judge(task, state) -> None:
     )
     bash_output_start = len(state.get("bash_tool_outputs", []))
     judge_state = await vf.Harness(
-        system_prompt=UPDATE_JUDGE_SYSTEM_PROMPT,
-        max_turns=3,
+        config=vf.HarnessConfig(
+            system_prompt=UPDATE_JUDGE_SYSTEM_PROMPT,
+            max_turns=3,
+        )
     ).run(judge_task, judge_state)
     judge_bash_outputs = state.get("bash_tool_outputs", [])[bash_output_start:]
 
@@ -346,30 +362,19 @@ def load_bash_toolset(config=None) -> vf.Toolset:
 
 
 def load_taskset(
-    config: SelfJudgeTasksetConfig,
+    config: SelfJudgeTasksetConfig = SelfJudgeTasksetConfig(),
 ) -> vf.Taskset:
-    def load_rows():
-        return source(num_examples=config.num_examples)
-
-    return vf.Taskset(
-        source=load_rows,
-        system_prompt=SYSTEM_PROMPT,
-        toolsets=[load_bash_toolset()],
-        updates=[sandbox_judge],
-        rewards=[self_consistency_score],
-        metrics=[bash_calls],
-        config=config,
-    )
+    return vf.Taskset(config=config)
 
 
 def load_harness(
-    config: SelfJudgeHarnessConfig,
+    config: SelfJudgeHarnessConfig = SelfJudgeHarnessConfig(),
 ) -> vf.Harness:
-    return vf.Harness(max_turns=config.max_turns, config=config)
+    return vf.Harness(config=config)
 
 
 def load_environment(
-    config: SelfJudgeEnvConfig,
+    config: SelfJudgeEnvConfig = SelfJudgeEnvConfig(),
 ) -> vf.Env:
     return vf.Env(
         taskset=load_taskset(config=config.taskset),

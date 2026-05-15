@@ -52,6 +52,8 @@ def get_source(
     max_turns: int = 3,
     min_names_per_turn: int = 1,
     max_names_per_turn: int = 5,
+    similarity_power: int = 4,
+    power_per_turn: bool = True,
     dataset_name: str = "kalomaze/alphabetic-arxiv-authors-it1",
     dataset_split: str = "train",
     seed: int = 1337420,
@@ -174,6 +176,8 @@ These are in addition to the prior list. Mark any NEW names (that weren't in the
                             "num_turns": num_turns,
                             "sort_by_first": sort_by_first,
                         },
+                        "similarity_power": similarity_power,
+                        "power_per_turn": power_per_turn,
                     }
                 )
             except Exception as e:
@@ -182,6 +186,36 @@ These are in addition to the prior list. Mark any NEW names (that weren't in the
         return Dataset.from_list(data)
 
     return source
+
+
+def source(
+    min_turns: int = 1,
+    max_turns: int = 3,
+    min_names_per_turn: int = 1,
+    max_names_per_turn: int = 5,
+    similarity_power: int = 4,
+    power_per_turn: bool = True,
+    dataset_name: str = "kalomaze/alphabetic-arxiv-authors-it1",
+    dataset_split: str = "train",
+    seed: int = 1337420,
+):
+    validate_parameters(
+        min_turns=min_turns,
+        max_turns=max_turns,
+        min_names_per_turn=min_names_per_turn,
+        max_names_per_turn=max_names_per_turn,
+    )
+    return get_source(
+        min_turns=min_turns,
+        max_turns=max_turns,
+        min_names_per_turn=min_names_per_turn,
+        max_names_per_turn=max_names_per_turn,
+        similarity_power=similarity_power,
+        power_per_turn=power_per_turn,
+        dataset_name=dataset_name,
+        dataset_split=dataset_split,
+        seed=seed,
+    )()
 
 
 def _count_tag_instances_and_contents(text: str, tag: str) -> tuple[int, list[str]]:
@@ -267,6 +301,28 @@ def weighted_reward_factory(similarity_power: int, power_per_turn: bool):
     return weighted_reward
 
 
+@vf.reward(weight=1.0)
+async def weighted_reward(task, state) -> float:
+    completion = state.get("completion") or []
+    actual_turns = state["info"]["num_turns"]
+    similarity_power = int(task.get("similarity_power", 4))
+    power_per_turn = bool(task.get("power_per_turn", True))
+    total = 0.0
+    for turn_num in range(1, actual_turns + 1):
+        total += eval_turn(
+            completion,
+            turn_num,
+            state,
+            similarity_power,
+            apply_power=power_per_turn,
+        )
+    if actual_turns <= 0:
+        return 0.0
+    if power_per_turn:
+        return total / actual_turns
+    return (total / actual_turns) ** similarity_power
+
+
 async def alphabet_user(task, state, transcript) -> list[dict[str, str]]:
     assistant_count = len(vf.get_messages(transcript, role="assistant"))
     follow_ups = state["info"]["follow_ups"]
@@ -275,64 +331,47 @@ async def alphabet_user(task, state, transcript) -> list[dict[str, str]]:
     return [{"role": "user", "content": follow_ups[assistant_count - 1]}]
 
 
+class AlphabetSortTasksetConfig(vf.TasksetConfig):
+    source: str = f"{__name__}:source"
+    rewards: list[vf.CallableConfig] = [
+        vf.CallableConfig(fn=f"{__name__}:weighted_reward")
+    ]
+    user: str = f"{__name__}:alphabet_user"
+    min_turns: int = 1
+    max_turns: int = 3
+    min_names_per_turn: int = 1
+    max_names_per_turn: int = 5
+    similarity_power: int = 4
+    power_per_turn: bool = True
+    dataset_name: str = "kalomaze/alphabetic-arxiv-authors-it1"
+    dataset_split: str = "train"
+    seed: int = 1337420
+
+
+class AlphabetSortEnvConfig(vf.EnvConfig):
+    taskset: AlphabetSortTasksetConfig = AlphabetSortTasksetConfig()
+    harness: vf.HarnessConfig = vf.HarnessConfig()
+
+
 def load_taskset(
-    min_turns: int = 1,
-    max_turns: int = 3,
-    min_names_per_turn: int = 1,
-    max_names_per_turn: int = 5,
-    similarity_power: int = 4,
-    power_per_turn: bool = True,
-    dataset_name: str = "kalomaze/alphabetic-arxiv-authors-it1",
-    dataset_split: str = "train",
-    seed: int = 1337420,
-    config=None,
-):
+    config: AlphabetSortTasksetConfig = AlphabetSortTasksetConfig(),
+) -> vf.Taskset:
     validate_parameters(
-        min_turns=min_turns,
-        max_turns=max_turns,
-        min_names_per_turn=min_names_per_turn,
-        max_names_per_turn=max_names_per_turn,
+        min_turns=config.min_turns,
+        max_turns=config.max_turns,
+        min_names_per_turn=config.min_names_per_turn,
+        max_names_per_turn=config.max_names_per_turn,
     )
-    return vf.Taskset(
-        source=get_source(
-            min_turns=min_turns,
-            max_turns=max_turns,
-            min_names_per_turn=min_names_per_turn,
-            max_names_per_turn=max_names_per_turn,
-            dataset_name=dataset_name,
-            dataset_split=dataset_split,
-            seed=seed,
-        ),
-        rewards=[weighted_reward_factory(similarity_power, power_per_turn)],
-        user=alphabet_user,
-        config=config,
-    )
+    return vf.Taskset(config=config)
 
 
 def load_v1_environment(
-    max_turns: int = 3,
-    min_turns: int = 1,
-    min_names_per_turn: int = 1,
-    max_names_per_turn: int = 5,
-    similarity_power: int = 4,
-    power_per_turn: bool = True,
-    dataset_name: str = "kalomaze/alphabetic-arxiv-authors-it1",
-    dataset_split: str = "train",
-    seed: int = 1337420,
-    **kwargs,
+    config: AlphabetSortEnvConfig = AlphabetSortEnvConfig(),
 ) -> vf.Env:
-    if kwargs:
-        raise TypeError(f"Unsupported v1 args: {sorted(kwargs)}")
     return vf.Env(
-        taskset=load_taskset(
-            min_turns=min_turns,
-            max_turns=max_turns,
-            min_names_per_turn=min_names_per_turn,
-            max_names_per_turn=max_names_per_turn,
-            similarity_power=similarity_power,
-            power_per_turn=power_per_turn,
-            dataset_name=dataset_name,
-            dataset_split=dataset_split,
-            seed=seed,
-        )
+        taskset=load_taskset(config=config.taskset),
+        harness=vf.Harness(config=config.harness),
     )
+
+
+load_environment = load_v1_environment

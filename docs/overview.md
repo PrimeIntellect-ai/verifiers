@@ -99,10 +99,23 @@ def source():
 async def contains_answer(task, state) -> float:
     return float(task["answer"] in str(state.get("completion") or ""))
 
-def load_taskset(config: vf.TasksetConfig):
-    return vf.Taskset(source=source, rewards=[contains_answer], config=config)
+class MyTasksetConfig(vf.TasksetConfig):
+    source: str = "my_env:source"
+    rewards: list[vf.CallableConfig] = [
+        vf.CallableConfig(fn="my_env:contains_answer", weight=1.0)
+    ]
 
-def load_environment(config: vf.EnvConfig) -> vf.Env:
+
+class MyEnvConfig(vf.EnvConfig):
+    taskset: MyTasksetConfig = MyTasksetConfig()
+    harness: vf.HarnessConfig = vf.HarnessConfig()
+
+
+def load_taskset(config: MyTasksetConfig = MyTasksetConfig()):
+    return vf.Taskset(config=config)
+
+
+def load_environment(config: MyEnvConfig = MyEnvConfig()) -> vf.Env:
     return vf.Env(taskset=load_taskset(config=config.taskset))
 ```
 If no harness is passed, `vf.Env` uses the base endpoint-backed harness. See
@@ -114,8 +127,8 @@ CLI harness with:
 
 ```python
 env = vf.Env(
-    taskset=vf.HarborTaskset(),
-    harness=vf.OpenCode(),
+    taskset=vf.HarborTaskset(config=vf.HarborTasksetConfig()),
+    harness=vf.OpenCode(config=vf.OpenCodeConfig()),
 )
 ```
 

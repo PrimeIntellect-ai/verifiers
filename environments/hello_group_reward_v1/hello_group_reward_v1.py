@@ -12,16 +12,37 @@ Return the assigned candidate exactly.
 
 
 class GroupRewardTasksetConfig(vf.TasksetConfig):
+    source: str = f"{__name__}:source"
+    system_prompt: str = SYSTEM_PROMPT
+    metrics: list[vf.CallableConfig] = [
+        vf.CallableConfig(fn=f"{__name__}:answer_length"),
+        vf.CallableConfig(fn=f"{__name__}:group_quality", stage="group"),
+        vf.CallableConfig(fn=f"{__name__}:group_rank", stage="group"),
+    ]
+    rewards: list[vf.CallableConfig] = [
+        vf.CallableConfig(fn=f"{__name__}:rollout_similarity", weight=0.5),
+        vf.CallableConfig(fn=f"{__name__}:relative_group_reward", stage="group"),
+    ]
+    advantages: list[vf.CallableConfig] = [
+        vf.CallableConfig(fn=f"{__name__}:centered_group_advantage")
+    ]
+    updates: list[vf.CallableConfig] = [
+        vf.CallableConfig(fn=f"{__name__}:summarize_group", stage="group")
+    ]
+    cleanups: list[vf.CallableConfig] = [
+        vf.CallableConfig(fn=f"{__name__}:mark_group_cleaned", stage="group")
+    ]
     num_examples: int = -1
 
 
 class GroupRewardHarnessConfig(vf.HarnessConfig):
+    program: vf.ProgramConfig = vf.ProgramConfig(fn=f"{__name__}:candidate_program")
     max_turns: int = 1
 
 
 class GroupRewardEnvConfig(vf.EnvConfig):
-    taskset: GroupRewardTasksetConfig
-    harness: GroupRewardHarnessConfig
+    taskset: GroupRewardTasksetConfig = GroupRewardTasksetConfig()
+    harness: GroupRewardHarnessConfig = GroupRewardHarnessConfig()
 
 
 def group_reward_task(
@@ -130,6 +151,8 @@ TASKS: list[vf.ConfigData] = [
 
 
 class GroupRewardTaskset(vf.Taskset):
+    config_type = GroupRewardTasksetConfig
+
     async def init_group(
         self, task: vf.Task, num_rollouts: int
     ) -> tuple[list[vf.Task], list[vf.State]]:
@@ -308,31 +331,19 @@ def source(num_examples: int = -1):
         }
 
 
-def load_taskset(config: GroupRewardTasksetConfig) -> GroupRewardTaskset:
-    def load_rows():
-        return source(num_examples=config.num_examples)
-
-    return GroupRewardTaskset(
-        source=load_rows,
-        system_prompt=SYSTEM_PROMPT,
-        metrics=[answer_length, group_quality, group_rank],
-        rewards=[rollout_similarity, relative_group_reward],
-        advantages=[centered_group_advantage],
-        updates=[summarize_group],
-        cleanups=[mark_group_cleaned],
-        config=config,
-    )
+def load_taskset(
+    config: GroupRewardTasksetConfig = GroupRewardTasksetConfig(),
+) -> GroupRewardTaskset:
+    return GroupRewardTaskset(config=config)
 
 
-def load_harness(config: GroupRewardHarnessConfig) -> vf.Harness:
-    return vf.Harness(
-        program=candidate_program,
-        max_turns=config.max_turns,
-        config=config,
-    )
+def load_harness(
+    config: GroupRewardHarnessConfig = GroupRewardHarnessConfig(),
+) -> vf.Harness:
+    return vf.Harness(config=config)
 
 
-def load_environment(config: GroupRewardEnvConfig) -> vf.Env:
+def load_environment(config: GroupRewardEnvConfig = GroupRewardEnvConfig()) -> vf.Env:
     return vf.Env(
         taskset=load_taskset(config=config.taskset),
         harness=load_harness(config=config.harness),

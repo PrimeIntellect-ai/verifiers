@@ -4,7 +4,6 @@ import sys
 from typing import cast
 
 from datasets import Dataset
-from pydantic import Field
 
 import verifiers as vf
 
@@ -62,14 +61,26 @@ DEFAULT_EXAMPLES = [
         "answer": "Curb Queue",
     },
 ]
+MCP_SERVER_PATH = str(Path(__file__).with_name("mcp_server.py"))
+DEFAULT_MCP_SERVERS: list[vf.ConfigData] = [
+    {
+        "name": "records",
+        "command": sys.executable,
+        "args": [MCP_SERVER_PATH],
+        "description": "Synthetic search-record MCP server",
+    },
+]
 
 
 class MCPSearchTasksetConfig(vf.TasksetConfig):
-    mcp_servers: list[vf.ConfigData] | None = None
+    source: str = f"{__name__}:source"
+    system_prompt: str = SYSTEM_PROMPT
+    rewards: list[vf.CallableConfig] = [
+        vf.CallableConfig(fn=f"{__name__}:exact_title_reward")
+    ]
+    mcp_servers: list[vf.ConfigData] = DEFAULT_MCP_SERVERS
     max_turns: int = 6
-    examples: list[vf.ConfigData] = Field(
-        default_factory=lambda: [dict(example) for example in DEFAULT_EXAMPLES]
-    )
+    examples: list[vf.ConfigData] = DEFAULT_EXAMPLES
 
 
 class MCPSearchTaskset(vf.Taskset):
@@ -77,14 +88,7 @@ class MCPSearchTaskset(vf.Taskset):
 
 
 def default_mcp_servers() -> list[vf.ConfigData]:
-    return [
-        {
-            "name": "records",
-            "command": sys.executable,
-            "args": [str(Path(__file__).with_name("mcp_server.py"))],
-            "description": "Synthetic search-record MCP server",
-        },
-    ]
+    return [dict(server) for server in DEFAULT_MCP_SERVERS]
 
 
 def default_dataset() -> Dataset:
@@ -92,11 +96,11 @@ def default_dataset() -> Dataset:
 
 
 def source(
-    dataset: Iterable[vf.ConfigMap] | None = None,
+    examples: Iterable[vf.ConfigMap] | None = None,
     *,
     max_turns: int = 6,
 ):
-    rows = dataset if dataset is not None else default_dataset()
+    rows = examples if examples is not None else default_dataset()
     for index, row in enumerate(rows):
         row = cast(vf.ConfigMap, row)
         question = str(row["question"])
@@ -146,39 +150,23 @@ def load_toolset(
 
 
 def load_taskset(
-    config: MCPSearchTasksetConfig,
-    dataset: Iterable[vf.ConfigMap] | None = None,
-    mcp_servers: Iterable[vf.ConfigMap] | None = None,
-    max_turns: int | None = None,
+    config: MCPSearchTasksetConfig = MCPSearchTasksetConfig(),
 ) -> MCPSearchTaskset:
-    taskset_overrides: vf.ConfigData = {}
-    if mcp_servers is not None:
-        taskset_overrides["mcp_servers"] = [dict(server) for server in mcp_servers]
-    if max_turns is not None:
-        taskset_overrides["max_turns"] = max_turns
-    taskset_config = MCPSearchTasksetConfig(config, **taskset_overrides)
-    return MCPSearchTaskset(
-        source=lambda: source(
-            dataset if dataset is not None else taskset_config.examples,
-            max_turns=taskset_config.max_turns,
-        ),
-        system_prompt=SYSTEM_PROMPT,
-        rewards=[exact_title_reward],
-        toolsets=[load_toolset(mcp_servers=taskset_config.mcp_servers)],
-        config=taskset_config,
-    )
+    taskset = MCPSearchTaskset(config=config)
+    taskset.add_toolset(load_toolset(mcp_servers=config.mcp_servers))
+    return taskset
 
 
-def load_harness(config: vf.HarnessConfig):
+def load_harness(config: vf.HarnessConfig = vf.HarnessConfig()):
     return vf.Harness(config=config)
 
 
 class MCPSearchEnvConfig(vf.EnvConfig):
-    taskset: MCPSearchTasksetConfig
-    harness: vf.HarnessConfig
+    taskset: MCPSearchTasksetConfig = MCPSearchTasksetConfig()
+    harness: vf.HarnessConfig = vf.HarnessConfig()
 
 
-def load_environment(config: MCPSearchEnvConfig) -> vf.Env:
+def load_environment(config: MCPSearchEnvConfig = MCPSearchEnvConfig()) -> vf.Env:
     return vf.Env(
         taskset=load_taskset(config=config.taskset),
         harness=load_harness(config=config.harness),

@@ -78,7 +78,8 @@ def test_bfcl_public_loader_is_v1_only(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_taskset(config: vf.TasksetConfig) -> vf.Taskset:
         nonlocal seen_taskset_config
         seen_taskset_config = config
-        return vf.Taskset(source=[], config=config)
+        config = config.model_copy(update={"source": [], "rewards": []})
+        return vf.Taskset(config=config)
 
     def fake_harness(config: vf.HarnessConfig) -> vf.Harness:
         nonlocal seen_harness_config
@@ -117,7 +118,10 @@ def test_bfcl_loader_supports_category_groups(
     def fake_taskset(config: vf.TasksetConfig) -> vf.Taskset:
         assert isinstance(config, bfcl.BFCLTasksetConfig)
         seen_taskset_categories.append(config.test_category)
-        return vf.Taskset(source=[{"question": "q", "answer": "a"}], config=config)
+        config = config.model_copy(
+            update={"source": [{"question": "q", "answer": "a"}], "rewards": []}
+        )
+        return vf.Taskset(config=config)
 
     def fake_harness(config: vf.HarnessConfig) -> vf.Harness:
         assert isinstance(config, bfcl.BFCLHarnessConfig)

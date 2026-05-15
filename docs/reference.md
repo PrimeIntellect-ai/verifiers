@@ -1035,12 +1035,11 @@ Environment-specific fields belong on the taskset or harness config that owns
 them; `EnvConfig` subclasses only bind concrete child config types.
 `taskset` must be typed as a `TasksetConfig` subclass, and `harness` must be
 typed as a `HarnessConfig` subclass.
-Annotation-only `Config` fields on `Config` subclasses default to their config
-class, so nested config objects do not need `Field(default_factory=...)`.
+Nested config defaults should be explicit config objects, e.g.
+`taskset: MyTasksetConfig = MyTasksetConfig()`.
 
-`Config` subclasses accept a positional source config plus direct keyword
-overrides. The source object is positional-only so subclasses can define a real
-field named `config`.
+`Config` subclasses are strict Pydantic config models. Validate raw mappings
+with `MyConfig.model_validate(...)` or use the typed object directly.
 
 ### ClientConfig
 

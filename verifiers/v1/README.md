@@ -44,8 +44,8 @@ A `Task` is an immutable, JSON-serializable dataset row. It is the canonical
 place for per-example data such as prompts, answers, metadata, tool filters, and
 sandbox overrides. A task is frozen before rollout code sees it.
 `task["prompt"]` must not contain system messages. Use `task["system_prompt"]`
-for per-task system instructions, or set `Taskset(system_prompt=...)` /
-`Harness(system_prompt=...)` for package-level instructions.
+for per-task system instructions, or set `TasksetConfig.system_prompt` /
+`HarnessConfig.system_prompt` for package-level instructions.
 Multiple system prompt sources reject by default; set `system_prompt_merge` in
 `HarnessConfig` only when that harness knows how they should combine.
 Tasks may also set `max_turns`, `tools`, `toolsets`, and `sandbox` at top level
@@ -148,11 +148,23 @@ async def contains_answer(task, state) -> float:
     return float(task["answer"] in str(state.get("completion") or ""))
 
 
-def load_taskset(config: vf.TasksetConfig):
-    return vf.Taskset(source=source, rewards=[contains_answer], config=config)
+class ReverseTasksetConfig(vf.TasksetConfig):
+    source: str = "my_env:source"
+    rewards: list[vf.CallableConfig] = [
+        vf.CallableConfig(fn="my_env:contains_answer", weight=1.0)
+    ]
 
 
-def load_environment(config: vf.EnvConfig):
+class ReverseEnvConfig(vf.EnvConfig):
+    taskset: ReverseTasksetConfig = ReverseTasksetConfig()
+    harness: vf.HarnessConfig = vf.HarnessConfig()
+
+
+def load_taskset(config: ReverseTasksetConfig = ReverseTasksetConfig()):
+    return vf.Taskset(config=config)
+
+
+def load_environment(config: ReverseEnvConfig = ReverseEnvConfig()):
     return vf.Env(taskset=load_taskset(config=config.taskset))
 ```
 
@@ -162,12 +174,14 @@ Standalone harness use is the same runner without the `Env` adapter:
 from verifiers.types import ClientConfig
 
 harness = vf.Harness(
-    client=ClientConfig(
-        client_type="openai_chat_completions",
-        api_base_url="https://api.openai.com/v1",
-        api_key_var="OPENAI_API_KEY",
+    config=vf.HarnessConfig(
+        client=ClientConfig(
+            client_type="openai_chat_completions",
+            api_base_url="https://api.openai.com/v1",
+            api_key_var="OPENAI_API_KEY",
+        ),
+        model="gpt-5.4-mini",
     ),
-    model="gpt-5.4-mini",
 )
 
 state = await harness.run(
@@ -177,17 +191,16 @@ state = await harness.run(
 
 ## Tasksets And Datasets
 
-`Taskset(source=...)` accepts an iterable of rows or a zero-argument loader
-function. A direct iterable is useful for tiny examples. A zero-argument loader
-is the preferred path for real tasksets because it keeps imports and
-constructors cheap.
+`TasksetConfig.source` accepts an import-reference string or an inline list of
+rows. Import-reference loaders are the preferred path for real tasksets because
+they keep imports and constructors cheap.
 
 The source loading contract is:
 
 - source rows are plain JSON-serializable mappings;
-- source loaders take no arguments;
+- import-ref source loaders receive matching config fields by name;
 - `Taskset` calls the loader on first access and caches the rows;
-- config is resolved before source loading, then closed over by the loader;
+- config is resolved before source loading;
 - trainers and harnesses do not pass runtime values into source.
 
 This keeps dataset loading lazy without reintroducing dynamic loader kwargs.
@@ -201,24 +214,23 @@ import verifiers as vf
 
 
 class GSM8KTasksetConfig(vf.TasksetConfig):
+    source: str = "my_env:source"
     dataset_name: str = "gsm8k"
     split: str = "train"
 
 
-def load_taskset(config: GSM8KTasksetConfig):
-    dataset_name = config.dataset_name
-    split = config.split
+def source(dataset_name: str = "gsm8k", split: str = "train"):
+    dataset = load_dataset(dataset_name, "main", split=split)
+    for index, row in enumerate(dataset):
+        yield {
+            "example_id": index,
+            "prompt": [{"role": "user", "content": row["question"]}],
+            "answer": row["answer"],
+        }
 
-    def source():
-        dataset = load_dataset(dataset_name, "main", split=split)
-        for index, row in enumerate(dataset):
-            yield {
-                "example_id": index,
-                "prompt": [{"role": "user", "content": row["question"]}],
-                "answer": row["answer"],
-            }
 
-    return vf.Taskset(source=source, config=config)
+def load_taskset(config: GSM8KTasksetConfig = GSM8KTasksetConfig()):
+    return vf.Taskset(config=config)
 ```
 
 `eval_source` is optional. If it is omitted, `get_eval_dataset()` uses the same
@@ -412,8 +424,15 @@ async def exact(task, state) -> float:
     return float(state.get("answer") == task.get("answer"))
 
 
-taskset = vf.Taskset(source=load_rows, rewards=[exact])
-harness = vf.Harness(program=replay_solution)
+taskset = vf.Taskset(
+    config=vf.TasksetConfig(
+        source="my_env:load_rows",
+        rewards=[vf.CallableConfig(fn="my_env:exact")],
+    )
+)
+harness = vf.Harness(
+    config=vf.HarnessConfig(program=vf.ProgramConfig(fn="my_env:replay_solution"))
+)
 env = vf.Env(taskset=taskset, harness=harness)
 ```
 
@@ -446,26 +465,32 @@ the program by itself.
 
 ```python
 # Local command.
-vf.Harness(program={"command": ["python", "run.py"]})
+vf.Harness(config=vf.HarnessConfig(program={"command": ["python", "run.py"]}))
 
 # Sandboxed command using Harness.sandbox.
 vf.Harness(
-    sandbox={"image": "python:3.11-slim"},
-    program={"sandbox": True, "command": ["python", "run.py"]},
+    config=vf.HarnessConfig(
+        sandbox={"image": "python:3.11-slim"},
+        program={"sandbox": True, "command": ["python", "run.py"]},
+    )
 )
 
 # Sandboxed default loop.
 vf.Harness(
-    sandbox={"image": "python:3.11-slim"},
-    program={"sandbox": True},
+    config=vf.HarnessConfig(
+        sandbox={"image": "python:3.11-slim"},
+        program={"sandbox": True},
+    )
 )
 
 # Sandboxed importable Python program.
 vf.Harness(
-    program={
-        "fn": "my_env.program:run",
-        "sandbox": {"image": "python:3.11-slim"},
-    }
+    config=vf.HarnessConfig(
+        program={
+            "fn": "my_env.program:run",
+            "sandbox": {"image": "python:3.11-slim"},
+        }
+    )
 )
 ```
 
@@ -543,14 +568,15 @@ common coding-agent CLIs.
 import verifiers as vf
 
 env = vf.Env(
-    taskset=vf.HarborTaskset(),
-    harness=vf.OpenCode(),
+    taskset=vf.HarborTaskset(config=vf.HarborTasksetConfig()),
+    harness=vf.OpenCode(config=vf.OpenCodeConfig()),
 )
 ```
 
-`HarborTaskset()` loads Harbor-format task directories from the environment
-package's reserved `tasks/` directory. `HarborTaskset(dataset="owner/name")`
-fetches a Harbor Hub dataset. Harbor task rows contribute sandbox settings and
+`HarborTaskset(config=vf.HarborTasksetConfig())` loads Harbor-format task
+directories from the environment package's reserved `tasks/` directory. Set
+`dataset = "owner/name"` on the config to fetch a Harbor Hub dataset. Harbor
+task rows contribute sandbox settings and
 `task.program` uploads for `/task/instruction.md` and `/task/task.toml`.
 `OpenCode` contributes the OpenCode install/setup, config generation, MCP tool
 proxy wiring, and log artifact collection. `Pi` follows the same pattern for
@@ -674,11 +700,13 @@ Tasksets and harnesses can pass toolsets as a list or a mapping:
 
 ```python
 vf.Taskset(
-    source=source,
-    toolsets={
-        "wiki": load_wiki_toolset(),
-        "python": vf.Toolset(tools=[python]),
-    },
+    config=vf.TasksetConfig(
+        source="my_env:source",
+        toolsets={
+            "wiki": {"fn": "my_env:load_wiki_toolset"},
+            "python": {"tools": ["my_env:python"]},
+        },
+    )
 )
 ```
 
@@ -993,20 +1021,24 @@ async def user(task, state, transcript):
     return [{"role": "user", "content": "Try one more time."}]
 
 
-taskset = vf.Taskset(source=source, user=user)
+taskset = vf.Taskset(
+    config=vf.TasksetConfig(source="my_env:source", user="my_env:user")
+)
 ```
 
-Direct callables are wrapped as `vf.User(fn=...)`. Use `vf.User(...)` when the
-user needs bindings, private dependency factories, scope, or a sandbox:
+Use `vf.UserConfig(...)` when the user needs bindings, private dependency
+factories, scope, or a sandbox:
 
 ```python
 taskset = vf.Taskset(
-    user=vf.User(
-        fn=user,
-        scope="group",
-        objects={"profile_db": load_profile_db},
-        bindings={"profile_db": "objects.profile_db"},
-        sandbox={"image": "python:3.11-slim", "scope": "group"},
+    config=vf.TasksetConfig(
+        user=vf.UserConfig(
+            fn="my_env:user",
+            scope="group",
+            objects={"profile_db": "my_env:load_profile_db"},
+            bindings={"profile_db": "objects.profile_db"},
+            sandbox=vf.SandboxConfig(image="python:3.11-slim", scope="group"),
+        )
     )
 )
 ```
@@ -1136,11 +1168,16 @@ recommended loader shape is:
 import verifiers as vf
 
 
-def load_taskset(config: vf.TasksetConfig):
-    return vf.Taskset(source=source, rewards=[exact], config=config)
+class MyTasksetConfig(vf.TasksetConfig):
+    source: str = "my_env:source"
+    rewards: list[vf.CallableConfig] = [vf.CallableConfig(fn="my_env:exact")]
 
 
-def load_harness(config: vf.HarnessConfig):
+def load_taskset(config: MyTasksetConfig = MyTasksetConfig()):
+    return vf.Taskset(config=config)
+
+
+def load_harness(config: vf.HarnessConfig = vf.HarnessConfig()):
     return vf.Harness(config=config)
 
 
@@ -1344,8 +1381,8 @@ def train_rows():
         }
 ```
 
-`source` and `eval_source` are singleton fields. Passing them directly to
-`Taskset(...)` overrides config.
+`source` and `eval_source` are singleton config fields. Put import refs or
+inline rows on the taskset config, not on the `Taskset` constructor.
 
 ### Toolsets
 

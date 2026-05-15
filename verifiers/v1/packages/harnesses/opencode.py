@@ -3,9 +3,7 @@ import shlex
 from pathlib import PurePosixPath
 from typing import cast
 
-from typing_extensions import Unpack
-
-from .command import HarnessKwargs, command_program, command_sandbox
+from .command import command_program, command_sandbox
 from .configs import (
     OPENCODE_DEFAULT_AGENT_WORKDIR,
     OPENCODE_DEFAULT_DISABLED_TOOLS,
@@ -18,7 +16,6 @@ from .configs import (
     OPENCODE_DEFAULT_SYSTEM_PROMPT_PATH,
     OpenCodeConfig,
 )
-from ...config import SandboxConfig
 from ...harness import Harness
 from ...utils.mcp_proxy_utils import proxy_command
 from ...utils.prompt_utils import (
@@ -27,11 +24,8 @@ from ...utils.prompt_utils import (
 )
 from ...types import (
     ConfigData,
-    ConfigMap,
     ProgramCommand,
-    ProgramMap,
     ProgramValue,
-    PromptInput,
 )
 
 DEFAULT_RELEASE_REPO = OPENCODE_DEFAULT_RELEASE_REPO
@@ -45,64 +39,13 @@ DEFAULT_SYSTEM_PROMPT = OPENCODE_DEFAULT_SYSTEM_PROMPT
 DEFAULT_DISABLED_TOOLS = list(OPENCODE_DEFAULT_DISABLED_TOOLS)
 
 
-class Unset:
-    pass
-
-
-UNSET = Unset()
-
-
 class OpenCode(Harness):
     config_type = OpenCodeConfig
 
-    def __init__(
-        self,
-        *,
-        agent_workdir: str | None = None,
-        instruction_path: str | None = None,
-        system_prompt_path: str | None = None,
-        log_path: str | None = None,
-        system_prompt: PromptInput | None | Unset = UNSET,
-        disabled_tools: list[str] | None = None,
-        allow_git: bool | None = None,
-        disable_compaction: bool | None = None,
-        release_repo: str | None = None,
-        release_version: str | None = None,
-        release_sha256: str | None = None,
-        install_ripgrep: bool | None = None,
-        provider_timeout_ms: int | None = None,
-        sandbox: bool | ConfigMap | SandboxConfig | None = None,
-        program: ProgramMap | None = None,
-        max_turns: int | None = None,
-        config: OpenCodeConfig | None = None,
-        **kwargs: Unpack[HarnessKwargs],
-    ):
-        config_data: ConfigData = {
-            "agent_workdir": agent_workdir,
-            "instruction_path": instruction_path,
-            "system_prompt_path": system_prompt_path,
-            "log_path": log_path,
-            "disabled_tools": disabled_tools,
-            "allow_git": allow_git,
-            "disable_compaction": disable_compaction,
-            "release_repo": release_repo,
-            "release_version": release_version,
-            "release_sha256": release_sha256,
-            "install_ripgrep": install_ripgrep,
-            "provider_timeout_ms": provider_timeout_ms,
-            "max_turns": max_turns,
-        }
-        if system_prompt is not UNSET:
-            config_data["system_prompt"] = system_prompt
-        config = OpenCodeConfig.from_config(config, **config_data)
-        if system_prompt is None:
-            config.system_prompt = None
-        sandbox_config: bool | ConfigMap | SandboxConfig
-        sandbox_config = (
-            config.sandbox if sandbox is None and config.sandbox is not None else True
-        )
-        if sandbox is not None:
-            sandbox_config = sandbox
+    def __init__(self, config: OpenCodeConfig = OpenCodeConfig()):
+        config = OpenCodeConfig.from_config(config)
+        super().__init__(config=config)
+        sandbox_config = config.sandbox if config.sandbox is not None else True
         files: dict[str, ProgramValue] = {
             config.instruction_path: cast(ProgramValue, task_instruction_text),
         }
@@ -117,7 +60,6 @@ class OpenCode(Harness):
                 "optional": True,
             }
         }
-        system_prompt_disabled = config.system_prompt is None
         command: ProgramCommand = [
             "bash",
             "-lc",
@@ -128,7 +70,7 @@ class OpenCode(Harness):
                 allow_git=config.allow_git,
             ),
         ]
-        super().__init__(
+        self._configure_runtime(
             program=command_program(
                 command=command,
                 sandbox=sandbox_config,
@@ -152,17 +94,11 @@ class OpenCode(Harness):
                     )
                 },
                 artifacts=artifacts,
-                program=program,
+                program=config.program,
             ),
             sandbox=command_sandbox(sandbox_config),
             system_prompt=config.system_prompt,
-            max_turns=config.max_turns,
-            config=config,
-            **kwargs,
         )
-        if system_prompt_disabled:
-            self.config.system_prompt = None
-            self.system_prompt = None
 
 
 def build_install_script(

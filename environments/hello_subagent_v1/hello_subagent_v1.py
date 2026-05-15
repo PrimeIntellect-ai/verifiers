@@ -73,28 +73,41 @@ def load_toolset():
     )
 
 
-def load_taskset(config: vf.TasksetConfig):
-    return vf.Taskset(
-        source=source,
-        system_prompt=(
-            "You are a parent coordinator. You must call ask_subagent once for "
-            "each requested name. After all tool results are available, join "
-            "the child answers with ', ' and output only that final joined text."
-        ),
-        rewards=[exact_answer],
-        config=config,
+class SubagentTasksetConfig(vf.TasksetConfig):
+    source: str = f"{__name__}:source"
+    system_prompt: str = (
+        "You are a parent coordinator. You must call ask_subagent once for "
+        "each requested name. After all tool results are available, join "
+        "the child answers with ', ' and output only that final joined text."
     )
+    rewards: list[vf.CallableConfig] = [
+        vf.CallableConfig(fn=f"{__name__}:exact_answer", weight=1.0)
+    ]
 
 
-def load_harness(config: vf.HarnessConfig):
-    return vf.Harness(
-        toolsets=[load_toolset()],
-        metrics=[subagent_calls],
-        config=config,
-    )
+class SubagentHarnessConfig(vf.HarnessConfig):
+    toolsets: dict[str, dict[str, str]] = {
+        "subagent": {"fn": f"{__name__}:load_toolset"}
+    }
+    metrics: list[vf.CallableConfig] = [
+        vf.CallableConfig(fn=f"{__name__}:subagent_calls")
+    ]
 
 
-def load_environment(config: vf.EnvConfig):
+class SubagentEnvConfig(vf.EnvConfig):
+    taskset: SubagentTasksetConfig = SubagentTasksetConfig()
+    harness: SubagentHarnessConfig = SubagentHarnessConfig()
+
+
+def load_taskset(config: SubagentTasksetConfig = SubagentTasksetConfig()):
+    return vf.Taskset(config=config)
+
+
+def load_harness(config: SubagentHarnessConfig = SubagentHarnessConfig()):
+    return vf.Harness(config=config)
+
+
+def load_environment(config: SubagentEnvConfig = SubagentEnvConfig()):
     return vf.Env(
         taskset=load_taskset(config=config.taskset),
         harness=load_harness(config=config.harness),

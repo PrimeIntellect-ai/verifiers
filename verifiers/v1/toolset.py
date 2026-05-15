@@ -3,6 +3,8 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import TypeAlias, cast
 
+from pydantic import BaseModel
+
 from .config import (
     CallableConfigEntry,
     MCPToolConfig,
@@ -15,6 +17,8 @@ from .config import (
 from .utils.binding_utils import BindingMap, normalize_binding_map
 from .utils.binding_utils import normalize_object_map
 from .types import ConfigMap, Handler, Objects, ToolSpec
+
+ToolsetCallableEntry: TypeAlias = CallableConfigEntry | Handler
 
 
 @dataclass(frozen=True)
@@ -51,11 +55,11 @@ class Toolset:
         scope: str | None = None,
         sandbox: ConfigMap | SandboxConfig | str | None = None,
         # Lifecycle collections.
-        stops: Iterable[CallableConfigEntry] = (),
-        setups: Iterable[CallableConfigEntry] = (),
-        updates: Iterable[CallableConfigEntry] = (),
-        cleanups: Iterable[CallableConfigEntry] = (),
-        teardowns: Iterable[CallableConfigEntry] = (),
+        stops: Iterable[ToolsetCallableEntry] = (),
+        setups: Iterable[ToolsetCallableEntry] = (),
+        updates: Iterable[ToolsetCallableEntry] = (),
+        cleanups: Iterable[ToolsetCallableEntry] = (),
+        teardowns: Iterable[ToolsetCallableEntry] = (),
         # Config.
         config: ToolsetConfig | None = None,
     ):
@@ -227,11 +231,13 @@ def named_toolset_from_config(name: str, value: object) -> Toolset:
     value = resolve_config_object(value)
     if isinstance(value, Toolset):
         return value
+    if isinstance(value, BaseModel):
+        value = value.model_dump(exclude_none=True)
     if isinstance(value, Mapping):
         spec = cast(ConfigMap, value)
         if "fn" in spec:
             return toolset_from_factory(name, spec)
-        return Toolset(config=ToolsetConfig.from_config(spec))
+        return toolset_from_mapping(spec)
     if callable(value):
         return call_toolset_factory(name, cast(Handler, value), {})
     return normalize_toolset(value)
@@ -276,7 +282,21 @@ def normalize_toolset(value: object) -> Toolset:
 
 
 def toolset_from_mapping(spec: ConfigMap) -> Toolset:
-    return Toolset(config=ToolsetConfig.from_config(spec))
+    return Toolset(
+        tools=cast(ToolEntries | None, spec.get("tools", ())),
+        show=cast(Iterable[str] | None, spec.get("show")),
+        hide=cast(Iterable[str] | None, spec.get("hide")),
+        bindings=cast(BindingMap | None, spec.get("bindings")),
+        objects=cast(Objects | None, spec.get("objects")),
+        write=cast(bool | None, spec.get("write")),
+        scope=cast(str | None, spec.get("scope")),
+        sandbox=cast(ConfigMap | SandboxConfig | str | None, spec.get("sandbox")),
+        stops=cast(Iterable[ToolsetCallableEntry], spec.get("stops") or ()),
+        setups=cast(Iterable[ToolsetCallableEntry], spec.get("setups") or ()),
+        updates=cast(Iterable[ToolsetCallableEntry], spec.get("updates") or ()),
+        cleanups=cast(Iterable[ToolsetCallableEntry], spec.get("cleanups") or ()),
+        teardowns=cast(Iterable[ToolsetCallableEntry], spec.get("teardowns") or ()),
+    )
 
 
 def tool_items(value: object) -> "list[ToolEntry]":

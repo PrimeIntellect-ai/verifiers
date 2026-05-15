@@ -60,8 +60,8 @@ def write_harbor_package(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Mod
 import verifiers.v1 as vf
 
 
-def load_taskset(**kwargs):
-    return vf.HarborTaskset(**kwargs)
+def load_taskset(config: vf.HarborTasksetConfig = vf.HarborTasksetConfig()):
+    return vf.HarborTaskset(config=config)
 
 
 def load_env():
@@ -273,10 +273,12 @@ def test_pi_harness_writes_intercepted_model_and_mcp_config() -> None:
 
 def test_terminus_2_harness_builds_sandbox_program() -> None:
     harness = vf.Terminus2(
-        system_prompt="extra system prompt",
-        agent_workdir="/workspace",
-        max_turns=7,
-        python_version="3.12",
+        config=vf.Terminus2Config(
+            system_prompt="extra system prompt",
+            agent_workdir="/workspace",
+            max_turns=7,
+            python_version="3.12",
+        )
     )
     program = cast(dict[str, object], harness.program)
     command = cast(list[object], program["command"])
@@ -312,17 +314,19 @@ def test_terminus_2_harness_builds_sandbox_program() -> None:
 
 def test_task_program_merges_into_command_program_without_collisions() -> None:
     harness = vf.Harness(
-        program={
-            "command": ["tool"],
-            "sandbox": True,
-            "files": {"/harness.txt": "harness"},
-            "setup": "echo harness",
-            "channels": {"mcp": "echo harness tools"},
-            "env": {"HARNESS": "1"},
-            "artifacts": {"log": {"path": "/logs/harness.log", "format": "text"}},
-            "args": ["--base"],
-        },
-        sandbox={"image": "python:3.11-slim"},
+        config=vf.HarnessConfig(
+            program={
+                "command": ["tool"],
+                "sandbox": True,
+                "files": {"/harness.txt": "harness"},
+                "setup": "echo harness",
+                "channels": {"mcp": "echo harness tools"},
+                "env": {"HARNESS": "1"},
+                "artifacts": {"log": {"path": "/logs/harness.log", "format": "text"}},
+                "args": ["--base"],
+            },
+            sandbox={"image": "python:3.11-slim"},
+        )
     )
     task = vf.Task(
         {
@@ -357,8 +361,10 @@ def test_task_program_merges_into_command_program_without_collisions() -> None:
 
 def test_task_program_rejects_harness_owned_keys() -> None:
     harness = vf.Harness(
-        program={"command": ["tool"], "sandbox": True},
-        sandbox={"image": "python:3.11-slim"},
+        config=vf.HarnessConfig(
+            program={"command": ["tool"], "sandbox": True},
+            sandbox={"image": "python:3.11-slim"},
+        )
     )
     task = vf.Task({"prompt": [], "program": {"command": ["other"]}}).freeze()
 
@@ -370,12 +376,14 @@ def test_task_program_rejects_harness_owned_keys() -> None:
 
 def test_task_program_rejects_colliding_upload_paths() -> None:
     harness = vf.Harness(
-        program={
-            "command": ["tool"],
-            "sandbox": True,
-            "files": {"/task/instruction.md": "harness"},
-        },
-        sandbox={"image": "python:3.11-slim"},
+        config=vf.HarnessConfig(
+            program={
+                "command": ["tool"],
+                "sandbox": True,
+                "files": {"/task/instruction.md": "harness"},
+            },
+            sandbox={"image": "python:3.11-slim"},
+        )
     )
     task = vf.Task(
         {"prompt": [], "program": {"files": {"/task/instruction.md": "task"}}}
