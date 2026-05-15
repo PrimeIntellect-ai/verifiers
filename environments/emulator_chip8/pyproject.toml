@@ -1,0 +1,24 @@
+[project]
+name = "emulator-chip8"
+description = "Prime emulator benchmark env for CHIP-8"
+tags = ["emulator", "chip8", "systems", "sandbox", "rust", "eval"]
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = ["verifiers"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["emulator_chip8.py", "pyproject.toml", "README.md", "tasks/manifest.json", "tasks/public_tests.json"]
+
+[project.entry-points."verifiers.environments"]
+emulator-chip8 = "emulator_chip8:load_environment"
+
+[tool.verifiers.eval]
+num_examples = 1
+rollouts_per_example = 1
+
+[tool.uv.sources]
+verifiers = { path = "../..", editable = true }

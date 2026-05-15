@@ -1,0 +1,46 @@
+{
+  "environment_id": "emulator-gameboy-cgb",
+  "sources": [
+    {
+      "name": "CGB Acid2",
+      "kind": "git",
+      "url": "https://github.com/mattcurrie/cgb-acid2",
+      "ref": "master",
+      "license": "MIT",
+      "covers": ["cgb-acid2"]
+    },
+    {
+      "name": "Mooneye test suite",
+      "kind": "git",
+      "url": "https://github.com/Gekkio/mooneye-test-suite",
+      "ref": "main",
+      "license": "MIT",
+      "covers": ["mooneye CGB tests"]
+    },
+    {
+      "name": "SameSuite",
+      "kind": "git",
+      "url": "https://github.com/LIJI32/SameSuite",
+      "ref": "master",
+      "license": "MIT",
+      "covers": ["SameSuite CGB"]
+    },
+    {
+      "name": "c-sp Game Boy test ROM index",
+      "kind": "git",
+      "url": "https://github.com/c-sp/game-boy-test-roms",
+      "ref": "master",
+      "license": "mixed-see-upstream",
+      "covers": ["cgb-acid2", "mooneye CGB tests", "SameSuite CGB"],
+      "notes": "Cross-indexes CGB public suites and expected outputs."
+    }
+  ],
+  "private_artifacts": [
+    {
+      "name": "gameboy_cgb_public_test_roms",
+      "required_for": ["cgb-acid2", "mooneye CGB tests", "SameSuite CGB"],
+      "storage": "private/generated artifact bucket or mounted secret volume",
+      "hash_policy": "sha256 manifest required before scoring"
+    }
+  ]
+}

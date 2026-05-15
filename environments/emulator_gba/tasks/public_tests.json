@@ -1,0 +1,49 @@
+{
+  "environment_id": "emulator-gba",
+  "sources": [
+    {
+      "name": "mGBA suite",
+      "kind": "git",
+      "url": "https://github.com/mgba-emu/suite",
+      "ref": "master",
+      "license": "MPL-2.0",
+      "covers": ["mGBA suite"],
+      "notes": "Game Boy Advance test suite from the mGBA project."
+    },
+    {
+      "name": "jsmolka gba-tests",
+      "kind": "git",
+      "url": "https://github.com/jsmolka/gba-tests",
+      "ref": "master",
+      "license": "unknown",
+      "covers": ["gba-suite"],
+      "notes": "CPU and hardware edge-case tests commonly used by GBA emulator authors."
+    },
+    {
+      "name": "Tonc examples",
+      "kind": "git",
+      "url": "https://github.com/gbadev-org/tonc",
+      "ref": "master",
+      "license": "mixed-see-upstream",
+      "covers": ["TONC demos"],
+      "notes": "Tutorial examples and demos for GBA rendering/hardware behavior."
+    },
+    {
+      "name": "NBA hardware tests",
+      "kind": "git",
+      "url": "https://github.com/nba-emu/hw-test",
+      "ref": "master",
+      "license": "unknown",
+      "covers": ["mGBA suite", "gba-suite"],
+      "notes": "Additional hardware tests for hidden/private GBA timing coverage."
+    }
+  ],
+  "private_artifacts": [
+    {
+      "name": "gba_bios",
+      "required_for": ["BIOS behavior"],
+      "storage": "private artifact bucket or mounted secret volume",
+      "hash_policy": "known BIOS hash required before BIOS-mode scoring"
+    }
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "environment_id": "emulator-sms",
+  "module_name": "emulator_sms",
+  "level": 5,
+  "slug": "sms",
+  "display_name": "Sega Master System",
+  "difficulty": "Medium-Hard",
+  "goal": "Implement Sega Master System emulation.",
+  "base_prompt": "Implement a Sega Master System emulator.",
+  "core_concepts": ["Z80 CPU", "VDP rendering", "Audio timing", "Cartridge mappers"],
+  "requirements": ["Z80 CPU", "VDP rendering", "PSG audio support", "Controller input", "Cartridge mapper support", "Deterministic stepping"],
+  "exposed_api": ["step()", "framebuffer()", "controller input API", "audio register API"],
+  "public_verification": ["ZEXDOC", "ZEXALL", "SMS Test Suite"],
+  "hidden_verification": ["Timing edge cases", "Audio synchronization", "Stability under long execution"],
+  "success_criteria": ["Z80 diagnostics pass", "VDP framebuffer hashes match", "Stable long execution"],
+  "framebuffer": {"width": 256, "height": 192},
+  "runtime": {"smoke_cycles": 50000, "verify_timeout_seconds": 1800},
+  "scoring_weights": {"correctness": 0.68, "determinism": 0.17, "performance": 0.1, "quality": 0.05},
+  "verification_cases": [
+    {"id": "sms_zexdoc", "stage": "public", "kind": "rom_suite", "name": "ZEXDOC", "expected_signal": "serial_pass", "source": "public"},
+    {"id": "sms_zexall", "stage": "public", "kind": "rom_suite", "name": "ZEXALL", "expected_signal": "serial_pass", "source": "public"},
+    {"id": "sms_test_suite", "stage": "public", "kind": "rom_suite", "name": "SMS Test Suite", "expected_signal": "suite_pass_rate", "source": "public"},
+    {"id": "sms_timing_edges", "stage": "hidden", "kind": "generated_rom", "name": "Timing edge cases", "expected_signal": "trace_crc", "source": "generated"},
+    {"id": "sms_audio_sync", "stage": "hidden", "kind": "generated_rom", "name": "Audio synchronization", "expected_signal": "audio_crc", "source": "generated"},
+    {"id": "sms_long_run", "stage": "hidden", "kind": "long_run", "name": "Stability under long execution", "expected_signal": "stability_hash", "source": "generated"}
+  ]
+}

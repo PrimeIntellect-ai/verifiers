@@ -1,0 +1,22 @@
+{
+  "environment_id": "emulator-nes",
+  "sources": [
+    {
+      "name": "christopherpow NES test ROM archive",
+      "kind": "git",
+      "url": "https://github.com/christopherpow/nes-test-roms",
+      "ref": "master",
+      "license": "mixed-see-upstream",
+      "covers": ["nestest", "blargg NES tests", "PPU timing tests", "Sprite hit tests", "VBlank timing tests"],
+      "notes": "Archive of many NESdev/blargg/kevtris validation ROMs."
+    },
+    {
+      "name": "NESdev emulator tests wiki",
+      "kind": "http",
+      "url": "https://www.nesdev.org/wiki/Emulator_tests",
+      "license": "documentation",
+      "covers": ["nestest", "blargg NES tests", "PPU timing tests", "Sprite hit tests", "VBlank timing tests"],
+      "notes": "Canonical index and descriptions for NES emulator validation ROMs."
+    }
+  ]
+}

@@ -1,0 +1,38 @@
+{
+  "environment_id": "emulator-ps1",
+  "sources": [
+    {
+      "name": "Peter Lemon PSX tests",
+      "kind": "git",
+      "url": "https://github.com/PeterLemon/PSX",
+      "ref": "master",
+      "license": "MIT",
+      "covers": ["ps1-tests", "CPU verification ROMs", "DMA tests", "GPU command tests"],
+      "notes": "PS1 CPU, DMA, GPU, GTE, and peripheral homebrew tests."
+    },
+    {
+      "name": "psxsdk",
+      "kind": "git",
+      "url": "https://github.com/ChrisRx/psxsdk",
+      "ref": "master",
+      "license": "GPL-2.0",
+      "covers": ["ps1-tests", "GPU command tests"],
+      "notes": "Open PS1 development SDK and examples for private generated tests."
+    },
+    {
+      "name": "psx-spx GPU specification",
+      "kind": "http",
+      "url": "https://psx-spx.consoledev.net/graphicsprocessingunitgpu/",
+      "license": "documentation",
+      "covers": ["GPU command tests", "DMA tests"]
+    }
+  ],
+  "private_artifacts": [
+    {
+      "name": "ps1_bios",
+      "required_for": ["BIOS boot", "Commercial game boot stability"],
+      "storage": "private artifact bucket or mounted secret volume",
+      "hash_policy": "known BIOS hash required before BIOS-mode scoring"
+    }
+  ]
+}

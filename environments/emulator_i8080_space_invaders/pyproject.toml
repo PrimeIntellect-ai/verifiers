@@ -1,0 +1,24 @@
+[project]
+name = "emulator-i8080-space-invaders"
+description = "Prime emulator benchmark env for Intel 8080 Space Invaders hardware"
+tags = ["emulator", "i8080", "space-invaders", "systems", "sandbox", "rust", "eval"]
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = ["verifiers"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["emulator_i8080_space_invaders.py", "pyproject.toml", "README.md", "tasks/manifest.json", "tasks/public_tests.json"]
+
+[project.entry-points."verifiers.environments"]
+emulator-i8080-space-invaders = "emulator_i8080_space_invaders:load_environment"
+
+[tool.verifiers.eval]
+num_examples = 1
+rollouts_per_example = 1
+
+[tool.uv.sources]
+verifiers = { path = "../..", editable = true }

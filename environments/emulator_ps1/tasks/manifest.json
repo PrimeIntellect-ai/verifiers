@@ -1,0 +1,28 @@
+{
+  "environment_id": "emulator-ps1",
+  "module_name": "emulator_ps1",
+  "level": 10,
+  "slug": "ps1",
+  "display_name": "Sony PlayStation",
+  "difficulty": "Research-Level",
+  "goal": "Implement a PlayStation emulator capable of booting commercial titles.",
+  "base_prompt": "Implement a Sony PlayStation emulator.",
+  "core_concepts": ["MIPS emulation", "DMA orchestration", "GPU command processing", "CD subsystem", "Geometry pipelines"],
+  "requirements": ["MIPS R3000A CPU", "DMA controller", "GPU command processor", "Timers", "Input subsystem", "CD-ROM support", "BIOS boot", "Save states"],
+  "exposed_api": ["step()", "framebuffer()", "DMA event API", "GPU command API", "BIOS loading API", "save/load state"],
+  "public_verification": ["ps1-tests", "CPU verification ROMs", "DMA tests", "GPU command tests"],
+  "hidden_verification": ["Geometry pipeline correctness", "CD timing", "Commercial game boot stability"],
+  "success_criteria": ["PS1 hardware tests pass", "BIOS boot path works with user-provided BIOS", "GPU command framebuffer hashes match"],
+  "framebuffer": {"width": 320, "height": 240},
+  "runtime": {"smoke_cycles": 33868800, "verify_timeout_seconds": 3600},
+  "scoring_weights": {"correctness": 0.75, "determinism": 0.1, "performance": 0.1, "quality": 0.05},
+  "verification_cases": [
+    {"id": "ps1_tests", "stage": "public", "kind": "homebrew_suite", "name": "ps1-tests", "expected_signal": "suite_pass_rate", "source": "public"},
+    {"id": "ps1_cpu", "stage": "public", "kind": "rom_suite", "name": "CPU verification ROMs", "expected_signal": "trace_crc", "source": "public"},
+    {"id": "ps1_dma", "stage": "public", "kind": "rom_suite", "name": "DMA tests", "expected_signal": "event_log_crc", "source": "public"},
+    {"id": "ps1_gpu", "stage": "public", "kind": "rom_suite", "name": "GPU command tests", "expected_signal": "framebuffer_hash", "source": "public"},
+    {"id": "ps1_gte", "stage": "hidden", "kind": "generated_homebrew", "name": "Geometry pipeline correctness", "expected_signal": "gte_trace_crc", "source": "generated"},
+    {"id": "ps1_cd_timing", "stage": "hidden", "kind": "generated_homebrew", "name": "CD timing", "expected_signal": "event_log_crc", "source": "generated"},
+    {"id": "ps1_boot_stability", "stage": "hidden", "kind": "long_run", "name": "Commercial game boot stability", "expected_signal": "stability_hash", "source": "user_supplied_by_hash"}
+  ]
+}

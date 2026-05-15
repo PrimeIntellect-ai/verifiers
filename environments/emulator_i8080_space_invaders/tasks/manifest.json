@@ -1,0 +1,27 @@
+{
+  "environment_id": "emulator-i8080-space-invaders",
+  "module_name": "emulator_i8080_space_invaders",
+  "level": 2,
+  "slug": "i8080_space_invaders",
+  "display_name": "Intel 8080 / Space Invaders",
+  "difficulty": "Easy",
+  "goal": "Implement enough Intel 8080 emulation to run Space Invaders style arcade hardware.",
+  "base_prompt": "Implement an Intel 8080 emulator capable of running the original Space Invaders arcade ROM.",
+  "core_concepts": ["Real CPU emulation", "Interrupts", "Arcade hardware abstraction", "Memory-mapped IO"],
+  "requirements": ["Full 8080 instruction set", "Interrupt support", "Memory-mapped IO", "Video framebuffer output", "Input handling", "Deterministic execution"],
+  "exposed_api": ["step()", "reset()", "framebuffer()", "input port API", "interrupt API"],
+  "public_verification": ["8080 CPU exerciser", "Space Invaders attract mode", "Framebuffer hashes"],
+  "hidden_verification": ["Interrupt timing", "CPU flag correctness", "Long-run stability"],
+  "success_criteria": ["CPU exerciser passes", "Attract-mode framebuffer hashes match", "Stable long-run execution"],
+  "framebuffer": {"width": 224, "height": 256},
+  "runtime": {"smoke_cycles": 20000, "verify_timeout_seconds": 1200},
+  "scoring_weights": {"correctness": 0.7, "determinism": 0.15, "performance": 0.1, "quality": 0.05},
+  "verification_cases": [
+    {"id": "i8080_cpu_exerciser", "stage": "public", "kind": "rom_suite", "name": "8080 CPU exerciser", "expected_signal": "serial_pass", "source": "public"},
+    {"id": "i8080_attract_mode", "stage": "public", "kind": "hardware_fixture", "name": "Space Invaders attract mode", "expected_signal": "framebuffer_hash", "source": "user_supplied_or_synthetic"},
+    {"id": "i8080_frame_hashes", "stage": "public", "kind": "frame_suite", "name": "Framebuffer hashes", "expected_signal": "frame_sequence_hash", "source": "public"},
+    {"id": "i8080_interrupt_timing", "stage": "hidden", "kind": "generated_rom", "name": "Interrupt timing", "expected_signal": "event_log_crc", "source": "generated"},
+    {"id": "i8080_flag_matrix", "stage": "hidden", "kind": "generated_rom", "name": "CPU flag correctness", "expected_signal": "trace_crc", "source": "generated"},
+    {"id": "i8080_long_run", "stage": "hidden", "kind": "stability", "name": "Long-run stability", "expected_signal": "timeout_free_run", "source": "generated"}
+  ]
+}

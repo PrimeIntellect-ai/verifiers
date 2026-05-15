@@ -1,0 +1,30 @@
+{
+  "environment_id": "emulator-gameboy-dmg",
+  "module_name": "emulator_gameboy_dmg",
+  "level": 3,
+  "slug": "gameboy_dmg",
+  "display_name": "Nintendo Game Boy (DMG)",
+  "difficulty": "Medium",
+  "goal": "Implement a monochrome Game Boy emulator.",
+  "base_prompt": "Implement a Nintendo Game Boy (DMG) emulator in Rust.",
+  "core_concepts": ["CPU emulation", "Interrupt systems", "PPU rendering", "Memory banking", "Hardware timing"],
+  "requirements": ["Sharp LR35902 CPU", "Memory map", "Interrupt controller", "Timer subsystem", "PPU rendering", "Joypad input", "Cartridge loading", "MBC1 support"],
+  "exposed_api": ["frame stepping", "framebuffer access", "save/load state", "deterministic stepping"],
+  "public_verification": ["blargg test ROMs", "mooneye-gb", "dmg-acid2", "Mealybug Tearoom tests", "SameSuite"],
+  "hidden_verification": ["Scanline timing", "OAM corruption edge cases", "Interrupt race conditions", "Pokemon Red gameplay stability"],
+  "success_criteria": ["Pass at least 90 percent of public ROMs", "Correct framebuffer hashes", "Stable 30-minute gameplay session"],
+  "framebuffer": {"width": 160, "height": 144},
+  "runtime": {"smoke_cycles": 70224, "verify_timeout_seconds": 1800},
+  "scoring_weights": {"correctness": 0.7, "determinism": 0.15, "performance": 0.1, "quality": 0.05},
+  "verification_cases": [
+    {"id": "dmg_blargg", "stage": "public", "kind": "rom_suite", "name": "blargg test ROMs", "expected_signal": "serial_pass", "source": "public"},
+    {"id": "dmg_mooneye", "stage": "public", "kind": "rom_suite", "name": "mooneye-gb", "expected_signal": "suite_pass_rate", "source": "public"},
+    {"id": "dmg_acid2", "stage": "public", "kind": "rom", "name": "dmg-acid2", "expected_signal": "framebuffer_hash", "source": "public"},
+    {"id": "dmg_mealybug", "stage": "public", "kind": "rom_suite", "name": "Mealybug Tearoom tests", "expected_signal": "framebuffer_hash", "source": "public"},
+    {"id": "dmg_samesuite", "stage": "public", "kind": "rom_suite", "name": "SameSuite", "expected_signal": "suite_pass_rate", "source": "public"},
+    {"id": "dmg_scanline_timing", "stage": "hidden", "kind": "generated_rom", "name": "Scanline timing", "expected_signal": "event_log_crc", "source": "generated"},
+    {"id": "dmg_oam_corruption", "stage": "hidden", "kind": "generated_rom", "name": "OAM corruption edge cases", "expected_signal": "memory_snapshot_hash", "source": "generated"},
+    {"id": "dmg_interrupt_races", "stage": "hidden", "kind": "generated_rom", "name": "Interrupt race conditions", "expected_signal": "trace_crc", "source": "generated"},
+    {"id": "dmg_pokemon_stability", "stage": "hidden", "kind": "long_run", "name": "Pokemon Red gameplay stability", "expected_signal": "stability_hash", "source": "user_supplied_by_hash"}
+  ]
+}

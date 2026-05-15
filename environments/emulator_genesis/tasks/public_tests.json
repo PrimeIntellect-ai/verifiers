@@ -1,0 +1,67 @@
+{
+  "environment_id": "emulator-genesis",
+  "sources": [
+    {
+      "name": "Tom Harte processor tests",
+      "kind": "git",
+      "url": "https://github.com/TomHarte/ProcessorTests",
+      "ref": "main",
+      "license": "MIT",
+      "sparse_paths": ["680x0/68000/v1"],
+      "artifact_globs": ["680x0/68000/v1/*.json.gz"],
+      "artifact_extensions": [".json.gz"],
+      "covers": ["68k verifier"],
+      "notes": "Machine-readable 68000 processor tests; fetched with sparse checkout so only the 68000 v1 JSON fixtures are mounted."
+    },
+    {
+      "name": "redcode Z80 test harness",
+      "kind": "git",
+      "url": "https://github.com/redcode/Z80",
+      "ref": "master",
+      "license": "BSD-3-Clause",
+      "artifact_globs": ["generated-roms/**/*.bin"],
+      "artifact_extensions": [".bin"],
+      "covers": ["Z80 tests"],
+      "notes": "Portable Z80 core test harness used as the public source for Genesis audio-CPU fixtures."
+    },
+    {
+      "name": "240p Test Suite",
+      "kind": "git",
+      "url": "https://github.com/ArtemioUrbina/240pTestSuite",
+      "ref": "master",
+      "license": "GPL-2.0",
+      "artifact_globs": ["240psuite/Genesis/**/*"],
+      "artifact_extensions": [".md", ".gen", ".smd"],
+      "covers": ["240p Test Suite", "VDP tests"],
+      "notes": "Genesis/Mega Drive video test patterns and hardware diagnostics."
+    },
+    {
+      "name": "Sega Retro sprite masking and overflow ROM page",
+      "kind": "http",
+      "url": "https://segaretro.org/Sprite_Masking_and_Overflow_Test_ROM",
+      "license": "documentation",
+      "covers": ["VDP tests"],
+      "notes": "Documents Nemesis' VDP sprite masking and overflow tests."
+    }
+  ],
+  "private_artifacts": [
+    {
+      "name": "genesis_240p_suite_rom",
+      "required_for": ["240p Test Suite", "VDP tests"],
+      "storage": "private/generated artifact bucket or mounted secret volume",
+      "hash_policy": "sha256 required before scoring"
+    },
+    {
+      "name": "genesis_z80_fixture_roms",
+      "required_for": ["Z80 tests"],
+      "storage": "private/generated artifact bucket or mounted secret volume",
+      "hash_policy": "sha256 required before scoring"
+    },
+    {
+      "name": "sonic_rom",
+      "required_for": ["Sonic gameplay stability"],
+      "storage": "private artifact bucket or mounted secret volume",
+      "hash_policy": "sha256 required before scoring"
+    }
+  ]
+}

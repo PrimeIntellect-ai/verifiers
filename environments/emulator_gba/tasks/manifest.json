@@ -1,0 +1,27 @@
+{
+  "environment_id": "emulator-gba",
+  "module_name": "emulator_gba",
+  "level": 7,
+  "slug": "gba",
+  "display_name": "Game Boy Advance",
+  "difficulty": "Hard",
+  "goal": "Implement a Game Boy Advance emulator.",
+  "base_prompt": "Implement a Game Boy Advance emulator.",
+  "core_concepts": ["ARM emulation", "DMA scheduling", "Event systems", "Pipeline timing"],
+  "requirements": ["ARM7TDMI CPU", "ARM and Thumb modes", "DMA", "Timers", "Interrupts", "PPU rendering", "BIOS support", "Save states"],
+  "exposed_api": ["step()", "frame stepping", "framebuffer access", "BIOS loading API", "save/load state"],
+  "public_verification": ["mGBA suite", "gba-suite", "TONC demos"],
+  "hidden_verification": ["DMA race conditions", "BIOS behavior", "Long-run commercial ROM stability"],
+  "success_criteria": ["ARM and Thumb CPU tests pass", "DMA and timer tests pass", "PPU framebuffer hashes match"],
+  "framebuffer": {"width": 240, "height": 160},
+  "runtime": {"smoke_cycles": 280896, "verify_timeout_seconds": 2400},
+  "scoring_weights": {"correctness": 0.72, "determinism": 0.13, "performance": 0.1, "quality": 0.05},
+  "verification_cases": [
+    {"id": "gba_mgba_suite", "stage": "public", "kind": "rom_suite", "name": "mGBA suite", "expected_signal": "suite_pass_rate", "source": "public"},
+    {"id": "gba_suite", "stage": "public", "kind": "rom_suite", "name": "gba-suite", "expected_signal": "suite_pass_rate", "source": "public"},
+    {"id": "gba_tonc", "stage": "public", "kind": "demo_suite", "name": "TONC demos", "expected_signal": "framebuffer_hash", "source": "public"},
+    {"id": "gba_dma_races", "stage": "hidden", "kind": "generated_rom", "name": "DMA race conditions", "expected_signal": "event_log_crc", "source": "generated"},
+    {"id": "gba_bios_behavior", "stage": "hidden", "kind": "generated_rom", "name": "BIOS behavior", "expected_signal": "swi_trace_crc", "source": "generated_or_user_bios_by_hash"},
+    {"id": "gba_commercial_stability", "stage": "hidden", "kind": "long_run", "name": "Long-run commercial ROM stability", "expected_signal": "stability_hash", "source": "user_supplied_by_hash"}
+  ]
+}

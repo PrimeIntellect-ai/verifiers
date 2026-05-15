@@ -131,4 +131,6 @@ class Env(vf.Environment):
                 else None,
             )
             state["runtime"].update(serializable_controls)
+            if "sampling_args" in serializable_controls:
+                state["sampling_args"] = serializable_controls["sampling_args"]
         return states
