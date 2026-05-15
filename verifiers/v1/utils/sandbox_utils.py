@@ -16,6 +16,7 @@ from verifiers.utils.async_utils import maybe_call_with_named_args
 
 from .artifact_utils import artifact_format, artifact_key, artifact_optional
 from .artifact_utils import artifact_path
+from .mcp_proxy_utils import MCP_PROXY_PYTHON_PATH
 from .program_utils import command_argv, command_env, float_config, int_config
 from .program_utils import program_option_mapping, program_channel_setup
 from .program_utils import resolve_program_value
@@ -511,8 +512,45 @@ def sandbox_scope(sandbox_config: ConfigMap) -> str:
 
 
 def python_package_install_command(package_args: str) -> str:
+    packages = shlex.split(package_args)
+    pip_packages = [package for package in packages if not package.startswith("mcp")]
+    pip_package_args = " ".join(shlex.quote(package) for package in pip_packages)
+    mcp_python_setup = ""
+    if any(package.startswith("mcp") for package in packages):
+        mcp_packages = [package for package in packages if package.startswith("mcp")]
+        mcp_package_args = " ".join(shlex.quote(package) for package in mcp_packages)
+        requests_packages = [
+            package for package in packages if package.startswith("requests")
+        ]
+        requests_package = requests_packages[0] if requests_packages else "requests"
+        mcp_python_setup = (
+            "VF_UV_SITE_PACKAGES=/tmp/vf-uv-site-packages\n"
+            "export UV_TOOL_DIR=/tmp/vf-tools\n"
+            "export UV_PYTHON_INSTALL_DIR=/tmp/vf-python\n"
+            "export UV_CACHE_DIR=/tmp/vf-uv-cache\n"
+            "export UV_DEFAULT_INDEX=https://pypi.org/simple\n"
+            "unset UV_INDEX UV_INDEX_URL UV_EXTRA_INDEX_URL UV_FIND_LINKS UV_NO_INDEX UV_CONFIG_FILE\n"
+            'mkdir -p "$VF_UV_SITE_PACKAGES" "$UV_TOOL_DIR" "$UV_PYTHON_INSTALL_DIR" "$UV_CACHE_DIR"\n'
+            '"$PYTHON" -m pip install --disable-pip-version-check --break-system-packages '
+            '  --target "$VF_UV_SITE_PACKAGES" uv==0.11.7 || '
+            '"$PYTHON" -m pip install --disable-pip-version-check '
+            '  --target "$VF_UV_SITE_PACKAGES" uv==0.11.7\n'
+            'env PYTHONPATH="$VF_UV_SITE_PACKAGES" "$PYTHON" -m uv --no-config tool install '
+            f"--python 3.11 --with {shlex.quote(requests_package)} {mcp_package_args}\n"
+            f'printf "%s\\n" "$UV_TOOL_DIR/mcp/bin/python" > {shlex.quote(MCP_PROXY_PYTHON_PATH)}\n'
+        )
+    pip_install = ""
+    if pip_package_args:
+        pip_install = (
+            "$PYTHON -m pip install --disable-pip-version-check --break-system-packages "
+            f"{pip_package_args} || "
+            "$PYTHON -m pip install --disable-pip-version-check "
+            f"{pip_package_args}"
+        )
     return (
         "set -e\n"
+        "export PIP_CONFIG_FILE=/dev/null\n"
+        "unset PIP_INDEX_URL PIP_EXTRA_INDEX_URL PIP_FIND_LINKS PIP_NO_INDEX PIP_REQUIRE_VIRTUALENV\n"
         "if command -v python3 >/dev/null 2>&1; then PYTHON=python3; "
         "elif command -v python >/dev/null 2>&1; then PYTHON=python; "
         "elif command -v apt-get >/dev/null 2>&1; then "
@@ -525,10 +563,8 @@ def python_package_install_command(package_args: str) -> str:
         "(command -v apt-get >/dev/null 2>&1 && "
         "apt-get -o Acquire::Retries=3 update && "
         "apt-get -o Acquire::Retries=3 install -y python3-pip)\n"
-        "$PYTHON -m pip install --disable-pip-version-check --break-system-packages "
-        f"{package_args} || "
-        "$PYTHON -m pip install --disable-pip-version-check "
-        f"{package_args}"
+        f"{mcp_python_setup}"
+        f"{pip_install}"
     )
 
 
