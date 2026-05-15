@@ -27,6 +27,7 @@ from renderers import (
 )
 from renderers import ToolCall as RendererToolCall
 from renderers import ToolCallFunction
+from renderers.client import RendererTransport as RenderersTransport
 from renderers.client import generate
 
 from verifiers.clients.client import Client
@@ -352,7 +353,9 @@ async def _get_incremental_prompt_ids(
             ),
         )
         _record_bridge(success=bridged is not None)
-        return bridged
+        if bridged is None:
+            return None
+        return list(getattr(bridged, "token_ids", bridged))
 
     return None
 
@@ -518,6 +521,13 @@ class RendererClient(
             tools=tools,
         )
 
+        renderer_transport = getattr(
+            self._config, "renderer_transport", "prime_vllm_generate"
+        )
+        transport: RenderersTransport = (
+            "dynamo" if renderer_transport == "dynamo_chat_nvext" else "vllm"
+        )
+
         return await generate(
             client=self.client,
             renderer=renderer,
@@ -530,9 +540,7 @@ class RendererClient(
             or sampling_params.pop("cache_salt", None),
             priority=args.get("priority") or sampling_params.pop("priority", None),
             extra_headers=args.get("extra_headers"),
-            transport=getattr(
-                self._config, "renderer_transport", "prime_vllm_generate"
-            ),
+            transport=transport,
         )
 
     async def raise_from_native_response(self, response: dict[str, Any]) -> None:

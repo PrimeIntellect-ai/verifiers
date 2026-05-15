@@ -120,8 +120,8 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
         if model in cache:
             return cache[model]
         try:
-            from renderers import create_renderer  # type: ignore[import-not-found]
-            from transformers import AutoTokenizer  # type: ignore[import-not-found]
+            from renderers import create_renderer
+            from transformers import AutoTokenizer
         except ImportError as exc:  # pragma: no cover - dependency surface
             raise ImportError(
                 "OpenAIChatCompletionsTokenClient with renderer_transport="
@@ -153,12 +153,35 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
             if "max_tokens" in sampling_args:
                 sampling_args["max_completion_tokens"] = sampling_args.pop("max_tokens")
             sampling_args["logprobs"] = True
-            extra_body = dict(return_token_ids=True)
-            if "extra_body" in sampling_args:
-                sampling_args["extra_body"] = {
-                    **sampling_args["extra_body"],
-                    **extra_body,
+
+            if self.renderer_transport == "dynamo_chat_nvext":
+                extra_body: dict[str, Any] = {
+                    "nvext": {"extra_fields": ["engine_data"]}
                 }
+            else:
+                extra_body = {"return_token_ids": True}
+
+            if "extra_body" in sampling_args:
+                merged = {**sampling_args["extra_body"]}
+                if "nvext" in merged and "nvext" in extra_body:
+                    merged_nvext = merged.get("nvext")
+                    extra_nvext = extra_body.get("nvext")
+                    base = (
+                        dict(merged_nvext) if isinstance(merged_nvext, Mapping) else {}
+                    )
+                    inc = dict(extra_nvext) if isinstance(extra_nvext, Mapping) else {}
+                    base_extra_fields = list(base.get("extra_fields") or [])
+                    inc_extra_fields = list(inc.get("extra_fields") or [])
+                    extra_fields = list(
+                        dict.fromkeys(base_extra_fields + inc_extra_fields)
+                    )
+                    merged["nvext"] = {**base, **inc, "extra_fields": extra_fields}
+                    sampling_args["extra_body"] = {
+                        **{k: v for k, v in extra_body.items() if k != "nvext"},
+                        **merged,
+                    }
+                else:
+                    sampling_args["extra_body"] = {**merged, **extra_body}
             else:
                 sampling_args["extra_body"] = extra_body
             return {k: v for k, v in sampling_args.items() if v is not None}
@@ -180,7 +203,12 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
             return await super().get_native_response(
                 prompt, model, sampling_args, tools, extra_headers=extra_headers
             )
-        prompt_ids = await self.get_prompt_ids(state, prompt, tools)
+        chat_template_kwargs = sampling_args["extra_body"].get(
+            "chat_template_kwargs", {}
+        )
+        prompt_ids = await self.get_prompt_ids(
+            state, prompt, tools, chat_template_kwargs=chat_template_kwargs
+        )
         if prompt_ids is None:
             # Reaching this branch means we have a non-empty trajectory but
             # could not stitch — surface it loudly so ops catches regressions.
@@ -229,22 +257,18 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
     ) -> OpenAIChatResponse:
         """Post stitched prompt_ids to Dynamo's chat-completions route.
 
-        Wire shape mirrors what ``RendererClient`` produces for
-        ``dynamo_chat_nvext`` (placeholder messages + ``nvext.token_data`` +
-        explicit ``stop_token_ids``) so a Dynamo deployment validated against
-        renderer-mode automatically accepts TITO-mode traffic too. The
-        engine ignores ``messages`` when ``nvext.token_data`` is present, so
-        the placeholder body stays small regardless of trajectory length.
+        The engine sees ``nvext.token_data`` and skips tokenization. Response
+        token IDs come back through ``nvext.engine_data.completion_token_ids``
+        and are grafted onto the standard token fields by
+        ``OpenAIChatCompletionsClient.from_native_response``.
         """
         renderer = self._get_renderer(model)
         stop_token_ids = list(renderer.get_stop_token_ids())
 
         extra_body = dict(sampling_args.pop("extra_body", {}) or {})
 
-        nvext: dict[str, Any] = {
-            "token_data": prompt_ids,
-            "extra_fields": ["completion_token_ids"],
-        }
+        nvext = dict(extra_body.pop("nvext", None) or {})
+        nvext["token_data"] = prompt_ids
         priority = sampling_args.get("priority", extra_body.get("priority"))
         if priority is not None:
             nvext["agent_hints"] = {"priority": priority}
@@ -274,6 +298,8 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
             "n",
             "repetition_penalty",
             "min_tokens",
+            "top_logprobs",
+            "stop",
         )
         for key in promotable:
             value = sampling_args.get(key, extra_body.get(key))
@@ -302,6 +328,7 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
         state: State,
         prompt_messages: OpenAIChatMessages,
         oai_tools: list[OpenAITool] | None,
+        chat_template_kwargs: dict | None = None,
     ) -> list[int] | None:
         """
         Build prompt_ids for the next turn by stitching engine tokens with
@@ -430,6 +457,7 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
         if tool_call_ids:
             dummy_assistant: OpenAIChatMessage = ChatCompletionAssistantMessageParam(
                 role="assistant",
+                reasoning_content="",  # type: ignore[typeddict-unknown-key]
                 tool_calls=[
                     ChatCompletionMessageFunctionToolCallParam(
                         id=tc_id,
@@ -441,20 +469,29 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
             )
         else:
             dummy_assistant: OpenAIChatMessage = ChatCompletionAssistantMessageParam(
-                role="assistant", content="x"
+                role="assistant",
+                reasoning_content="",  # type: ignore[typeddict-unknown-key]
+                content="x",
             )
+
+        forwarded_ctk = (
+            {"chat_template_kwargs": dict(chat_template_kwargs)}
+            if chat_template_kwargs
+            else {}
+        )
 
         try:
             bridge_full_ids = await self.tokenize(
                 messages=[dummy_assistant] + env_messages,
                 tools=oai_tools,
                 model=state["model"],
+                extra_kwargs=dict(forwarded_ctk),
             )
             bridge_base_ids = await self.tokenize(
                 messages=[dummy_assistant],
                 tools=oai_tools,
                 model=state["model"],
-                extra_kwargs=dict(add_generation_prompt=False),
+                extra_kwargs=dict(add_generation_prompt=False, **forwarded_ctk),
             )
         except Exception:
             self.logger.debug("TITO: bridge tokenization failed, falling back to MITO")

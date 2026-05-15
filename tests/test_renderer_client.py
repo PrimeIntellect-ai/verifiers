@@ -193,7 +193,7 @@ async def test_get_native_response_passes_renderer_transport_to_generate(
 
     assert response == {"content": "ok"}
     assert len(calls) == 1
-    assert calls[0]["transport"] == "dynamo_chat_nvext"
+    assert calls[0]["transport"] == "dynamo"
     assert calls[0]["prompt_ids"] == [10, 20]
 
 
@@ -469,7 +469,7 @@ _TRUNCATED_ANCHOR_MODELS = [
         "auto",
         id="nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
     ),
-    pytest.param("openai/gpt-oss-20b", "gpt_oss", id="openai/gpt-oss-20b"),
+    pytest.param("openai/gpt-oss-20b", "gpt-oss", id="openai/gpt-oss-20b"),
 ]
 
 
