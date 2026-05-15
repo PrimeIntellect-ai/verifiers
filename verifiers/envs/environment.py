@@ -828,7 +828,6 @@ class Environment(ABC):
         group_states = await maybe_retry(
             run_group_attempt,
             max_retries=max_retries,
-            terminal_error_types=(vf.ExampleDisregardError,),
             on_terminal=lambda _states, _error: [],
         )()
         outputs = [

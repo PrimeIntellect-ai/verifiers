@@ -157,7 +157,7 @@ def maybe_retry(
         vf.InfraError,
         vf.InvalidModelResponseError,
     ),
-    terminal_error_types: tuple[type[Exception], ...] = (),
+    terminal_error_types: tuple[type[Exception], ...] = (vf.ExampleDisregardError,),
     on_terminal: Callable[[T, Exception], T] | None = None,
 ) -> Callable[..., Coroutine[Any, Any, T]]:
     """
