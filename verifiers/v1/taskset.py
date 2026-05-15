@@ -5,11 +5,10 @@ from importlib.abc import Traversable
 from collections.abc import Iterable, Mapping
 from copy import deepcopy
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar, cast
+from typing import TYPE_CHECKING, cast
 
 from datasets import Dataset
 from verifiers.types import task_payload_from_info
-from typing_extensions import NotRequired, TypedDict
 
 from .config import (
     TasksetConfig,
@@ -46,26 +45,7 @@ if TYPE_CHECKING:
 TaskSourceValue = TaskRowsSource | None
 
 
-class TasksetKwargs(TypedDict):
-    eval_source: NotRequired[TaskSourceValue]
-    taskset_id: NotRequired[str | None]
-    system_prompt: NotRequired[PromptInput | None]
-    user: NotRequired[Handler | str | ConfigMap | None]
-    bindings: NotRequired[BindingMap | None]
-    objects: NotRequired[Objects | None]
-    toolsets: NotRequired[ToolsetCollection]
-    stops: NotRequired[Iterable[Handler]]
-    setups: NotRequired[Iterable[Handler]]
-    updates: NotRequired[Iterable[Handler]]
-    metrics: NotRequired[Iterable[Handler]]
-    rewards: NotRequired[Iterable[Handler]]
-    advantages: NotRequired[Iterable[Handler]]
-    cleanups: NotRequired[Iterable[Handler]]
-
-
 class Taskset:
-    config_type: ClassVar[type[TasksetConfig]] = TasksetConfig
-
     def __init__(
         self,
         # Singleton fields.
@@ -88,7 +68,11 @@ class Taskset:
         # Config.
         config: TasksetConfig | None = None,
     ):
-        self.config = type(self).config_type.from_config(config)
+        self.config = (
+            config
+            if isinstance(config, TasksetConfig)
+            else TasksetConfig.from_config(config)
+        )
         source_value = resolve_config_object(
             merge_config_value(source, self.config.source)
         )
@@ -156,7 +140,7 @@ class Taskset:
 
     @classmethod
     def config_schema(cls) -> str:
-        return cls.config_type.schema_text()
+        return TasksetConfig.schema_text()
 
     def _add_handler(self, handlers: list[Handler], fn: Handler) -> None:
         handlers.append(fn)

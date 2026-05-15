@@ -1,6 +1,10 @@
 import verifiers as vf
 
 
+class HelloRLMEnvConfig(vf.EnvConfig):
+    harness: vf.RLMConfig
+
+
 @vf.reward(weight=1.0)
 async def exact_answer(task, state) -> float:
     stdout = str(state.get("command", {}).get("stdout") or "")
@@ -64,12 +68,7 @@ def load_harness(config: vf.RLMConfig):
     return vf.RLM(config=config)
 
 
-class HelloRLMEnvConfig(vf.EnvConfig):
-    taskset: vf.TasksetConfig
-    harness: vf.RLMConfig
-
-
-def load_environment(config: HelloRLMEnvConfig):
+def load_environment(config: HelloRLMEnvConfig) -> vf.Env:
     return vf.Env(
         taskset=load_taskset(config=config.taskset),
         harness=load_harness(config=config.harness),

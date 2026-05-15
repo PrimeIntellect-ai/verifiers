@@ -181,7 +181,7 @@ async def read_section(section_id: str, wiki) -> str:
     return "\n".join(lines[section_start : section_end or len(lines)])
 
 
-def build_source(max_turns: int = 10):
+def build_source(max_turns: int = 10, judge_model: str | None = None):
     def source():
         dataset = load_dataset("willcb/wiki-trivia-questions-v4", split="train")
         for index, row in enumerate(dataset):
@@ -190,42 +190,37 @@ def build_source(max_turns: int = 10):
                 **row,
                 "example_id": index,
                 "max_turns": max_turns,
+                "judge_model": judge_model,
                 "prompt": [{"role": "user", "content": row["question"]}],
             }
 
     return source
 
 
-def judge_reward_factory(
-    judge_model: str,
-    judge_base_url: str,
-    judge_api_key_var: str,
-):
-    @vf.reward(weight=1.0)
-    async def judge_reward_func(task, state) -> float:
-        completion = state.get("completion") or []
-        messages = vf.get_messages(completion, role="assistant")
-        response = str(messages[-1].content or "") if messages else ""
-        prompt = JUDGE_PROMPT.format(
-            question=task["question"],
-            answer=task["answer"],
-            response=response,
+@vf.reward(weight=1.0)
+async def judge_reward_func(task, state) -> float:
+    completion = state.get("completion") or []
+    messages = vf.get_messages(completion, role="assistant")
+    response = str(messages[-1].content or "") if messages else ""
+    prompt = JUDGE_PROMPT.format(
+        question=task["question"],
+        answer=task["answer"],
+        response=response,
+    )
+    endpoint = state.get_endpoint_config(api="chat")
+    judge_client = AsyncOpenAI(
+        base_url=endpoint["api_base"],
+        api_key=endpoint["api_key"],
+    )
+    try:
+        result = await judge_client.chat.completions.create(
+            model=str(task.get("judge_model") or endpoint["model"]),
+            messages=[{"role": "user", "content": prompt}],
         )
-        judge_client = AsyncOpenAI(
-            base_url=judge_base_url,
-            api_key=os.getenv(judge_api_key_var, ""),
-        )
-        try:
-            result = await judge_client.chat.completions.create(
-                model=judge_model,
-                messages=[{"role": "user", "content": prompt}],
-            )
-        finally:
-            await judge_client.close()
-        text = result.choices[0].message.content or ""
-        return 1.0 if "yes" in text.lower() else 0.0
-
-    return judge_reward_func
+    finally:
+        await judge_client.close()
+    text = result.choices[0].message.content or ""
+    return 1.0 if "yes" in text.lower() else 0.0
 
 
 def load_toolset(
@@ -247,16 +242,21 @@ def load_toolset(
             embed_api_key_var=embed_api_key_var,
         )
 
-    return vf.Toolset(
-        tools=[search_pages, view_sections, read_section],
-        objects={"wiki": load_wiki_index},
-        bindings={
-            "search_pages.wiki": "objects.wiki",
-            "view_sections.wiki": "objects.wiki",
-            "read_section.wiki": "objects.wiki",
-        },
-        config=config,
-    )
+    return WikiSearchToolset(load_wiki_index=load_wiki_index, config=config)
+
+
+class WikiSearchToolset(vf.Toolset):
+    def __init__(self, *, load_wiki_index, config=None):
+        super().__init__(
+            tools=[search_pages, view_sections, read_section],
+            objects={"wiki": load_wiki_index},
+            bindings={
+                "search_pages.wiki": "objects.wiki",
+                "view_sections.wiki": "objects.wiki",
+                "read_section.wiki": "objects.wiki",
+            },
+            config=config,
+        )
 
 
 def load_taskset(
@@ -273,15 +273,9 @@ def load_taskset(
     config=None,
 ):
     return vf.Taskset(
-        source=build_source(max_turns=max_turns),
+        source=build_source(max_turns=max_turns, judge_model=judge_model),
         system_prompt=SYSTEM_PROMPT,
-        rewards=[
-            judge_reward_factory(
-                judge_model=judge_model,
-                judge_base_url=judge_base_url,
-                judge_api_key_var=judge_api_key_var,
-            )
-        ],
+        rewards=[judge_reward_func],
         toolsets=[
             load_toolset(
                 corpus_dataset=corpus_dataset,

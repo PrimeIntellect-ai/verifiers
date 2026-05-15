@@ -1508,10 +1508,8 @@ class WikiTasksetConfig(vf.TasksetConfig):
 
 
 class WikiTaskset(vf.Taskset):
-    config_type = WikiTasksetConfig
-
     def __init__(self, config):
-        config = self.config_type(config)
+        config = WikiTasksetConfig(config)
 
         def load_db():
             return open_db(config.db_path)
@@ -1534,7 +1532,7 @@ To inspect the active config shape:
 ```python
 print(vf.TasksetConfig.schema_text())
 print(vf.HarnessConfig.schema_text())
-print(WikiTaskset.config_schema())
+print(WikiTasksetConfig.schema_text())
 ```
 
 There is no public generic channel registry in v1. Stable cross-cutting

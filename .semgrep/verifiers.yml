@@ -112,3 +112,334 @@ rules:
       include:
         - /verifiers/utils/message_utils.py
     pattern-regex: "def\\s+get_messages\\b[\\s\\S]*?->\\s*list\\s*\\[\\s*dict\\b"
+
+  - id: verifiers-v1-no-signal-factories
+    languages: [python]
+    severity: ERROR
+    message: v1 reward/update/metric handlers must be top-level decorated callables; put dependencies on task/state/config instead of returning decorated inner functions.
+    paths:
+      include:
+        - /environments/**/*.py
+      exclude:
+        - /environments/**/proj/**/*.py
+        - /environments/**/tasks/**/*.py
+    pattern-either:
+      - pattern: |
+          def $OUTER(...):
+              ...
+              @vf.reward(...)
+              async def $INNER(...):
+                  ...
+              ...
+              return $INNER
+      - pattern: |
+          def $OUTER(...):
+              ...
+              @vf.reward
+              async def $INNER(...):
+                  ...
+              ...
+              return $INNER
+      - pattern: |
+          def $OUTER(...):
+              ...
+              @vf.update(...)
+              async def $INNER(...):
+                  ...
+              ...
+              return $INNER
+      - pattern: |
+          def $OUTER(...):
+              ...
+              @vf.update
+              async def $INNER(...):
+                  ...
+              ...
+              return $INNER
+      - pattern: |
+          def $OUTER(...):
+              ...
+              @vf.metric(...)
+              async def $INNER(...):
+                  ...
+              ...
+              return $INNER
+      - pattern: |
+          def $OUTER(...):
+              ...
+              @vf.metric
+              async def $INNER(...):
+                  ...
+              ...
+              return $INNER
+      - pattern: |
+          def $OUTER(...):
+              ...
+              @vf.reward(...)
+              def $INNER(...):
+                  ...
+              ...
+              return $INNER
+      - pattern: |
+          def $OUTER(...):
+              ...
+              @vf.reward
+              def $INNER(...):
+                  ...
+              ...
+              return $INNER
+      - pattern: |
+          def $OUTER(...):
+              ...
+              @vf.update(...)
+              def $INNER(...):
+                  ...
+              ...
+              return $INNER
+      - pattern: |
+          def $OUTER(...):
+              ...
+              @vf.update
+              def $INNER(...):
+                  ...
+              ...
+              return $INNER
+      - pattern: |
+          def $OUTER(...):
+              ...
+              @vf.metric(...)
+              def $INNER(...):
+                  ...
+              ...
+              return $INNER
+      - pattern: |
+          def $OUTER(...):
+              ...
+              @vf.metric
+              def $INNER(...):
+                  ...
+              ...
+              return $INNER
+
+  - id: verifiers-v1-no-env-constructor-objects-bindings
+    languages: [python]
+    severity: ERROR
+    message: Do not pass objects= or bindings= to user-facing vf.Taskset/vf.Toolset constructors in environments; put shared resources behind task/state/config-owned code.
+    paths:
+      include:
+        - /environments/**/*.py
+      exclude:
+        - /environments/**/proj/**/*.py
+        - /environments/**/tasks/**/*.py
+    pattern-either:
+      - pattern: vf.Taskset(..., objects=$VALUE, ...)
+      - pattern: vf.Taskset(..., bindings=$VALUE, ...)
+      - pattern: vf.Toolset(..., objects=$VALUE, ...)
+      - pattern: vf.Toolset(..., bindings=$VALUE, ...)
+
+  - id: verifiers-v1-no-v0-parser-in-v1-modules
+    languages: [python]
+    severity: ERROR
+    message: Modules that import verifiers.v1 must not use v0 Parser/XMLParser objects; parse inline with normal Python.
+    paths:
+      include:
+        - /environments/**/*.py
+      exclude:
+        - /environments/**/proj/**/*.py
+        - /environments/**/tasks/**/*.py
+    patterns:
+      - pattern-either:
+          - pattern-inside: |
+              import verifiers.v1 as vf
+              ...
+          - pattern-inside: |
+              from verifiers import v1 as vf
+              ...
+          - pattern-inside: |
+              from verifiers.v1 import $IMPORT
+              ...
+      - pattern-either:
+          - pattern: vf.Parser(...)
+          - pattern: vf.XMLParser(...)
+          - pattern: Parser(...)
+          - pattern: XMLParser(...)
+
+  - id: verifiers-v1-load-environment-single-config
+    languages: [python]
+    severity: ERROR
+    message: "v1 load_environment must be exactly load_environment(config: *EnvConfig) -> vf.Env; put all env knobs on TasksetConfig/HarnessConfig."
+    paths:
+      include:
+        - /environments/**/*.py
+      exclude:
+        - /environments/**/proj/**/*.py
+        - /environments/**/tasks/**/*.py
+    patterns:
+      - pattern-regex: "def\\s+load_environment\\s*\\([^)]*EnvConfig[^)]*\\)"
+      - pattern-not-regex: "def\\s+load_environment\\s*\\(\\s*config\\s*:\\s*(?:vf\\.)?[A-Za-z0-9_]*EnvConfig\\s*,?\\s*\\)\\s*->\\s*(?:vf\\.)?Env\\s*:"
+
+  - id: verifiers-v1-load-environment-no-local-config-wiring
+    languages: [python]
+    severity: ERROR
+    message: v1 load_environment should be a single return vf.Env(...) expression; move config.taskset/config.harness coercion and wiring into Taskset/Harness subclasses.
+    paths:
+      include:
+        - /environments/**/*.py
+      exclude:
+        - /environments/**/proj/**/*.py
+        - /environments/**/tasks/**/*.py
+    patterns:
+      - pattern-regex: "def\\s+load_environment\\s*\\([^)]*EnvConfig[^)]*\\)"
+      - pattern: |
+          def load_environment(...):
+              $STMT
+              return $RET
+
+  - id: verifiers-v1-load-environment-return-env
+    languages: [python]
+    severity: ERROR
+    message: v1 load_environment must directly return vf.Env(...); move alternate builders and EnvGroup composition outside the environment entrypoint.
+    paths:
+      include:
+        - /environments/**/*.py
+      exclude:
+        - /environments/**/proj/**/*.py
+        - /environments/**/tasks/**/*.py
+    patterns:
+      - pattern-regex: "def\\s+load_environment\\s*\\([^)]*EnvConfig[^)]*\\)"
+      - pattern-not-regex: "def\\s+load_environment\\s*\\([^)]*EnvConfig[^)]*\\)\\s*->\\s*(?:vf\\.)?Env\\s*:\\s*\\n\\s*return\\s+vf\\.Env\\s*\\("
+
+  - id: verifiers-v1-no-parent-config-default-overrides
+    languages: [python]
+    severity: ERROR
+    message: Do not override parent TasksetConfig/HarnessConfig defaults in subclasses; rename env-specific fields instead.
+    paths:
+      include:
+        - /environments/**/*.py
+      exclude:
+        - /environments/**/proj/**/*.py
+        - /environments/**/tasks/**/*.py
+    pattern-either:
+      - patterns:
+          - pattern-inside: |
+              class $CONFIG(vf.TasksetConfig):
+                  ...
+          - pattern-regex: "^\\s{4}(?:source|eval_source|taskset_id|system_prompt|user|bindings|objects|toolsets|stops|setups|updates|metrics|rewards|advantages|cleanups|scoring)\\s*:[^\\n=]+="
+      - patterns:
+          - pattern-inside: |
+              class $CONFIG(vf.HarnessConfig):
+                  ...
+          - pattern-regex: "^\\s{4}(?:program|system_prompt|system_prompt_merge|sandbox|client|model|sampling_args|keep_trajectory_step|user|bindings|toolsets|stops|setups|updates|metrics|rewards|advantages|cleanups|scoring|max_turns)\\s*:[^\\n=]+="
+
+  - id: verifiers-v1-no-base-harness-config-boilerplate
+    languages: [python]
+    severity: ERROR
+    message: Omit harness=vf.Harness(config=config.harness) unless the environment owns a custom harness/config path.
+    paths:
+      include:
+        - /environments/**/*.py
+      exclude:
+        - /environments/**/proj/**/*.py
+        - /environments/**/tasks/**/*.py
+    pattern: vf.Env(..., harness=vf.Harness(config=config.harness), ...)
+
+  - id: verifiers-v1-no-env-var-reads-in-signals
+    languages: [python]
+    severity: ERROR
+    message: v1 reward/update handlers must not read env vars directly; use state.get_endpoint_config(api="chat") and optionally override only judge_model.
+    paths:
+      include:
+        - /environments/**/*.py
+      exclude:
+        - /environments/**/proj/**/*.py
+        - /environments/**/tasks/**/*.py
+    pattern-either:
+      - pattern: |
+          @vf.reward(...)
+          async def $FUNC(...):
+              ...
+              os.getenv(...)
+              ...
+      - pattern: |
+          @vf.reward
+          async def $FUNC(...):
+              ...
+              os.getenv(...)
+              ...
+      - pattern: |
+          @vf.update(...)
+          async def $FUNC(...):
+              ...
+              os.getenv(...)
+              ...
+      - pattern: |
+          @vf.update
+          async def $FUNC(...):
+              ...
+              os.getenv(...)
+              ...
+      - pattern: |
+          @vf.reward(...)
+          async def $FUNC(...):
+              ...
+              os.environ[$KEY]
+              ...
+      - pattern: |
+          @vf.reward
+          async def $FUNC(...):
+              ...
+              os.environ[$KEY]
+              ...
+      - pattern: |
+          @vf.update(...)
+          async def $FUNC(...):
+              ...
+              os.environ[$KEY]
+              ...
+      - pattern: |
+          @vf.update
+          async def $FUNC(...):
+              ...
+              os.environ[$KEY]
+              ...
+
+  - id: verifiers-v1-no-judge-endpoint-config-fields
+    languages: [python]
+    severity: ERROR
+    message: Judge rewards must use state.get_endpoint_config(api="chat"); expose only judge_model, not judge_base_url or judge_api_key_var config fields.
+    paths:
+      include:
+        - /environments/**/*.py
+      exclude:
+        - /environments/**/proj/**/*.py
+        - /environments/**/tasks/**/*.py
+    patterns:
+      - pattern-inside: |
+          class $CONFIG(vf.TasksetConfig):
+              ...
+      - pattern-either:
+          - pattern: "judge_base_url: $TYPE = $VALUE"
+          - pattern: "judge_api_key_var: $TYPE = $VALUE"
+
+  - id: verifiers-v1-no-raw-kwargs-in-subclass-init
+    languages: [python]
+    severity: ERROR
+    message: v1 Taskset/Harness subclass __init__ methods must not accept raw **kwargs; spell forwarded kwargs explicitly.
+    paths:
+      include:
+        - /environments/**/*.py
+        - /verifiers/v1/**/*.py
+      exclude:
+        - /environments/**/proj/**/*.py
+        - /environments/**/tasks/**/*.py
+        - /verifiers/v1/utils/**/*.py
+    patterns:
+      - pattern-inside: |
+          class $CLS(...):
+              ...
+      - metavariable-regex:
+          metavariable: $CLS
+          regex: ".*(Taskset|Harness)$"
+      - pattern: |
+          def __init__(..., **$KWARGS):
+              ...

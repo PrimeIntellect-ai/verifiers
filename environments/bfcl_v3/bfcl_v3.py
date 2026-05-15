@@ -3,6 +3,8 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import cast
 
+from pydantic import Field, model_validator
+
 import verifiers as vf
 from verifiers.types import (
     AssistantMessage,
@@ -27,7 +29,6 @@ BFCLRawTurn = str | ConfigMap | Sequence[BFCLRawMessage] | None
 
 class BFCLTasksetConfig(vf.TasksetConfig):
     test_category: str = "simple_python"
-    test_categories: list[str] | None = None
     examples_per_category: int = -1
 
 
@@ -36,8 +37,15 @@ class BFCLHarnessConfig(vf.HarnessConfig):
 
 
 class BFCLEnvConfig(vf.EnvConfig):
-    taskset: BFCLTasksetConfig
-    harness: BFCLHarnessConfig
+    taskset: BFCLTasksetConfig = Field(default_factory=BFCLTasksetConfig)
+    harness: BFCLHarnessConfig = Field(default_factory=BFCLHarnessConfig)
+
+    @model_validator(mode="after")
+    def sync_harness_category(self) -> "BFCLEnvConfig":
+        self.harness = BFCLHarnessConfig(
+            self.harness, test_category=self.taskset.test_category
+        )
+        return self
 
 
 def modded_convert_func_name(function_name: str, model_name: str) -> str:
@@ -572,47 +580,43 @@ async def bfcl_multi_turn_program(
     return state
 
 
-class BFCLMultiTurnHarness(vf.Harness):
-    def __init__(self, config: BFCLHarnessConfig):
-        super().__init__(program=self.run_bfcl_multi_turn, config=config)
+class BFCLHarness(vf.Harness):
+    def __init__(self, config: BFCLHarnessConfig | None = None):
+        config = BFCLHarnessConfig(config)
+        patch_bfcl_eval()
+        from bfcl_eval.utils import is_multi_turn
+
+        program = (
+            self.run_bfcl_multi_turn if is_multi_turn(config.test_category) else None
+        )
+        super().__init__(program=program, config=config)
 
     async def run_bfcl_multi_turn(self, task: vf.Task, state: vf.State) -> vf.State:
         return await bfcl_multi_turn_program(task, state, self)
 
 
-def load_taskset(config: BFCLTasksetConfig) -> vf.Taskset:
-    return vf.Taskset(
-        source=build_source(config.test_category, config.examples_per_category),
-        rewards=[bfcl_reward],
-        config=config,
-    )
-
-
-def load_harness(config: BFCLHarnessConfig) -> vf.Harness:
-    patch_bfcl_eval()
-    from bfcl_eval.utils import is_multi_turn
-
-    if is_multi_turn(config.test_category):
-        return BFCLMultiTurnHarness(config=config)
-    return vf.Harness(config=config)
-
-
-def load_environment(config: BFCLEnvConfig) -> vf.Env | vf.EnvGroup:
-    base_taskset_config = config.taskset
-    base_harness_config = config.harness
-    categories = base_taskset_config.test_categories or [
-        base_taskset_config.test_category
-    ]
-    envs: list[vf.Env] = []
-    for category in categories:
-        taskset_config = BFCLTasksetConfig(base_taskset_config, test_category=category)
-        harness_config = BFCLHarnessConfig(base_harness_config, test_category=category)
-        envs.append(
-            vf.Env(
-                taskset=load_taskset(config=taskset_config),
-                harness=load_harness(config=harness_config),
-            )
+class BFCLTaskset(vf.Taskset):
+    def __init__(self, config: BFCLTasksetConfig | None = None):
+        config = BFCLTasksetConfig(config)
+        super().__init__(
+            source=build_source(config.test_category, config.examples_per_category),
+            rewards=[bfcl_reward],
+            config=config,
         )
-    if base_taskset_config.test_categories is not None:
-        return vf.EnvGroup(envs=envs, env_names=categories)
-    return envs[0]
+
+
+def load_taskset(config: BFCLTasksetConfig) -> BFCLTaskset:
+    return BFCLTaskset(config=config)
+
+
+def load_harness(config: BFCLHarnessConfig) -> BFCLHarness:
+    return BFCLHarness(config=config)
+
+
+def load_environment(
+    config: BFCLEnvConfig,
+) -> vf.Env:
+    return vf.Env(
+        taskset=load_taskset(config=config.taskset),
+        harness=load_harness(config=config.harness),
+    )

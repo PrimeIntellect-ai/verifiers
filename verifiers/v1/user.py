@@ -25,7 +25,7 @@ def state_transcript(
             *cast(list[PromptMessage], completion),
         ]
     if isinstance(completion, list):
-        return list(cast(list[PromptMessage], completion))
+        return cast(list[PromptMessage], completion)
     trajectory = state.get("trajectory")
     if isinstance(trajectory, Sequence) and not isinstance(trajectory, str):
         return completion_from_trajectory(cast(Sequence[ConfigMap], trajectory))

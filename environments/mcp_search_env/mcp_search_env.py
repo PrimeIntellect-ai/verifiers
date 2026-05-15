@@ -72,8 +72,8 @@ class MCPSearchTasksetConfig(vf.TasksetConfig):
     )
 
 
-class MCPSearchTaskset(vf.Taskset):
-    config_type = MCPSearchTasksetConfig
+class MCPSearchEnvConfig(vf.EnvConfig):
+    taskset: MCPSearchTasksetConfig
 
 
 def default_mcp_servers() -> list[vf.ConfigData]:
@@ -147,25 +147,16 @@ def load_toolset(
 
 def load_taskset(
     config: MCPSearchTasksetConfig,
-    dataset: Iterable[vf.ConfigMap] | None = None,
-    mcp_servers: Iterable[vf.ConfigMap] | None = None,
-    max_turns: int | None = None,
-) -> MCPSearchTaskset:
-    taskset_overrides: vf.ConfigData = {}
-    if mcp_servers is not None:
-        taskset_overrides["mcp_servers"] = [dict(server) for server in mcp_servers]
-    if max_turns is not None:
-        taskset_overrides["max_turns"] = max_turns
-    taskset_config = MCPSearchTasksetConfig(config, **taskset_overrides)
-    return MCPSearchTaskset(
+) -> vf.Taskset:
+    return vf.Taskset(
         source=lambda: source(
-            dataset if dataset is not None else taskset_config.examples,
-            max_turns=taskset_config.max_turns,
+            config.examples,
+            max_turns=config.max_turns,
         ),
         system_prompt=SYSTEM_PROMPT,
         rewards=[exact_title_reward],
-        toolsets=[load_toolset(mcp_servers=taskset_config.mcp_servers)],
-        config=taskset_config,
+        toolsets=[load_toolset(mcp_servers=config.mcp_servers)],
+        config=config,
     )
 
 
@@ -173,12 +164,9 @@ def load_harness(config: vf.HarnessConfig):
     return vf.Harness(config=config)
 
 
-class MCPSearchEnvConfig(vf.EnvConfig):
-    taskset: MCPSearchTasksetConfig
-    harness: vf.HarnessConfig
-
-
-def load_environment(config: MCPSearchEnvConfig) -> vf.Env:
+def load_environment(
+    config: MCPSearchEnvConfig,
+) -> vf.Env:
     return vf.Env(
         taskset=load_taskset(config=config.taskset),
         harness=load_harness(config=config.harness),

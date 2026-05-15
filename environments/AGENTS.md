@@ -11,6 +11,7 @@ This guide walks through building environments in Verifiers, from simple single-
 ## Table of Contents
 
 - [Your First Environment](#your-first-environment)
+- [v1 Env Shape](#v1-env-shape)
 - [Datasets](#datasets)
   - [Building the Prompt](#building-the-prompt)
   - [Evaluation Datasets](#evaluation-datasets)
@@ -75,6 +76,53 @@ When running this environment, each row in the dataset becomes a **rollout**:
 3. The reward function scores the result
 
 In `SingleTurnEnv`, the simplest environment type, just a single model response occurs per rollout. More complex environment types will allow us to add tool use or other custom interaction protocols.
+
+## v1 Env Shape
+
+New reusable environments should use one v1 shape: a typed config section, a
+taskset loader that owns task behavior, and a one-line environment loader.
+
+```python
+import verifiers as vf
+
+
+class SearchTasksetConfig(vf.TasksetConfig):
+    judge_model: str | None = None
+
+
+def load_taskset(config: SearchTasksetConfig) -> vf.Taskset:
+    return vf.Taskset(
+        source=source,
+        rewards=[judge_reward],
+        config=config,
+    )
+
+
+class SearchEnvConfig(vf.EnvConfig):
+    taskset: SearchTasksetConfig
+
+
+def load_environment(config: SearchEnvConfig) -> vf.Env:
+    return vf.Env(taskset=load_taskset(config=config.taskset))
+```
+
+If the environment needs reusable harness behavior, add one `*HarnessConfig`
+subclass, type the env config's `harness` field with it, and return
+`vf.Env(taskset=..., harness=*Harness(config=config.harness))`. If it does not
+own harness behavior, omit the `harness=` argument and use the default harness.
+
+The contract is intentionally narrow:
+
+- `load_environment` takes exactly one `config` parameter and returns the `vf.Env` expression directly. Do not add env-specific kwargs, `**kwargs`, local `cfg = ...` coercion, or multi-step taskset/harness wiring in the loader.
+- Env-specific knobs live on `*TasksetConfig` or `*HarnessConfig` subclasses. If child sections need concrete types, define a small `*EnvConfig` subclass whose `taskset` and `harness` fields use those concrete config classes.
+- Do not override parent config field defaults in subclasses. If a value is genuinely env-specific, give it a new field name such as `turn_limit` and translate it inside the owning class.
+- Do not pass `objects=` or `bindings=` through user-facing `vf.Taskset(...)` or `vf.Toolset(...)` constructor calls in environment modules. Put dependency resolution inside the owning taskset, harness, toolset, or state/task data path.
+- Reward, update, and metric handlers should be top-level decorated callables. Do not return decorated inner functions from factories; put policy values on task rows, state, or config.
+- v1 modules should not use v0 `vf.Parser` or `vf.XMLParser` objects. Parse with ordinary Python string or regex logic at the v1 boundary.
+- Judge-style rewards should read endpoint details with `state.get_endpoint_config(api="chat")`. The default judge endpoint is the rollout's primary model endpoint; if the environment needs a different judge model, expose one `judge_model: str | None = None` config field and override only the model name. Do not add `judge_base_url` or `judge_api_key_var` fields, read `os.environ` inside reward/update handlers, or instantiate clients from ad hoc env vars.
+- Taskset/Harness subclass `__init__` methods should spell forwarded kwargs explicitly and should not accept raw `**kwargs`.
+
+Generated Lab workspace guidance files (`AGENTS.md` and `environments/AGENTS.md`) are projections of these docs. Regenerate them with `prime lab sync` in Lab workspaces or `uv run python scripts/sync.py` in this repository; manual edits should fail the generated-file check.
 
 ## Datasets
 

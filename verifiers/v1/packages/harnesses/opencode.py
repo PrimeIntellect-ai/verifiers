@@ -3,9 +3,9 @@ import shlex
 from pathlib import PurePosixPath
 from typing import cast
 
-from typing_extensions import Unpack
+from verifiers.types import SamplingArgs
 
-from .command import HarnessKwargs, command_program, command_sandbox
+from .command import command_program, command_sandbox
 from .configs import (
     OPENCODE_DEFAULT_AGENT_WORKDIR,
     OPENCODE_DEFAULT_DISABLED_TOOLS,
@@ -28,11 +28,14 @@ from ...utils.prompt_utils import (
 from ...types import (
     ConfigData,
     ConfigMap,
+    Handler,
+    ModelClient,
     ProgramCommand,
     ProgramMap,
     ProgramValue,
     PromptInput,
 )
+from ...toolset import ToolsetCollection
 
 DEFAULT_RELEASE_REPO = OPENCODE_DEFAULT_RELEASE_REPO
 DEFAULT_RELEASE_VERSION = OPENCODE_DEFAULT_RELEASE_VERSION
@@ -53,8 +56,6 @@ UNSET = Unset()
 
 
 class OpenCode(Harness):
-    config_type = OpenCodeConfig
-
     def __init__(
         self,
         *,
@@ -75,7 +76,18 @@ class OpenCode(Harness):
         program: ProgramMap | None = None,
         max_turns: int | None = None,
         config: OpenCodeConfig | None = None,
-        **kwargs: Unpack[HarnessKwargs],
+        user: Handler | str | ConfigMap | None = None,
+        client: ModelClient | None = None,
+        model: str | None = None,
+        sampling_args: SamplingArgs | None = None,
+        toolsets: ToolsetCollection | None = None,
+        stops: list[Handler] | None = None,
+        setups: list[Handler] | None = None,
+        updates: list[Handler] | None = None,
+        metrics: list[Handler] | None = None,
+        rewards: list[Handler] | None = None,
+        advantages: list[Handler] | None = None,
+        cleanups: list[Handler] | None = None,
     ):
         config_data: ConfigData = {
             "agent_workdir": agent_workdir,
@@ -158,7 +170,18 @@ class OpenCode(Harness):
             system_prompt=config.system_prompt,
             max_turns=config.max_turns,
             config=config,
-            **kwargs,
+            user=user,
+            client=client,
+            model=model,
+            sampling_args=sampling_args,
+            toolsets=toolsets,
+            stops=stops,
+            setups=setups,
+            updates=updates,
+            metrics=metrics,
+            rewards=rewards,
+            advantages=advantages,
+            cleanups=cleanups,
         )
         if system_prompt_disabled:
             self.config.system_prompt = None

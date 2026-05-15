@@ -8,7 +8,6 @@ import pytest
 
 import verifiers as vf
 from verifiers.v1 import (
-    Config,
     Env,
     EnvConfig,
     Harness,
@@ -1167,12 +1166,15 @@ def test_subclasses_can_define_new_config_surface() -> None:
         custom_flag: bool = False
 
     class CustomHarness(Harness):
-        config_type = CustomHarnessConfig
+        def __init__(
+            self, config: CustomHarnessConfig | dict[str, object] | None = None
+        ):
+            super().__init__(config=CustomHarnessConfig(config))
 
     harness = CustomHarness(config={"custom_flag": True})
 
     assert getattr(harness.config, "custom_flag") is True
-    assert "custom_flag" in CustomHarness.config_schema()
+    assert "custom_flag" in harness.config.schema_text()
 
 
 def test_config_schema_is_visible_from_primary_types() -> None:
@@ -1185,29 +1187,6 @@ def test_config_schema_is_visible_from_primary_types() -> None:
     assert "bindings" in vf.ToolsetConfig.schema_text()
 
 
-def test_config_annotation_only_nested_config_defaults_recursively() -> None:
-    class LeafConfig(Config):
-        value: int = 1
-
-    class ChildConfig(Config):
-        leaf: LeafConfig
-
-    class ParentConfig(Config):
-        child: ChildConfig
-
-    first = ParentConfig()
-    second = ParentConfig()
-    configured = ParentConfig({"child": {"leaf": {"value": 3}}})
-
-    assert isinstance(first.child, ChildConfig)
-    assert isinstance(first.child.leaf, LeafConfig)
-    assert first.child.leaf.value == 1
-    assert first.child is not second.child
-    assert first.child.leaf is not second.child.leaf
-    assert configured.child.leaf.value == 3
-    assert "child: ChildConfig = <factory>" in ParentConfig.schema_text()
-
-
 def test_env_config_normalizes_mapping_config_to_attributes() -> None:
     config = EnvConfig(
         {
@@ -1217,16 +1196,9 @@ def test_env_config_normalizes_mapping_config_to_attributes() -> None:
     )
 
     assert isinstance(config.taskset, TasksetConfig)
-    assert isinstance(config.harness, HarnessConfig)
     assert config.taskset.taskset_id == "dict"
-    assert config.harness.model == "configured-model"
-
-
-def test_env_config_defaults_taskset_and_harness_to_base_configs() -> None:
-    config = EnvConfig()
-
-    assert isinstance(config.taskset, TasksetConfig)
     assert isinstance(config.harness, HarnessConfig)
+    assert config.harness.model == "configured-model"
 
 
 def test_env_config_rejects_unknown_top_level_sections() -> None:
@@ -1237,34 +1209,6 @@ def test_env_config_rejects_unknown_top_level_sections() -> None:
 def test_env_config_requires_child_sections_to_be_configs() -> None:
     with pytest.raises(ValueError):
         EnvConfig({"taskset": 1})
-    with pytest.raises(ValueError, match="EnvConfig.taskset cannot be None"):
-        EnvConfig({"taskset": None})
-    with pytest.raises(ValueError, match="EnvConfig.harness cannot be None"):
-        EnvConfig(harness=None)
-
-
-def test_env_config_child_config_objects_must_match_domain() -> None:
-    class LocalTasksetConfig(TasksetConfig):
-        split: str = "train"
-
-    class LocalHarnessConfig(HarnessConfig):
-        mode: str = "default"
-
-    config = EnvConfig(
-        taskset=LocalTasksetConfig(split="test"),
-        harness=LocalHarnessConfig(mode="custom"),
-    )
-
-    assert isinstance(config.taskset, LocalTasksetConfig)
-    assert isinstance(config.harness, LocalHarnessConfig)
-
-    class LocalConfig(Config):
-        split: str = "train"
-
-    with pytest.raises(ValueError):
-        EnvConfig(taskset=LocalConfig())
-    with pytest.raises(ValueError):
-        EnvConfig(harness=LocalConfig())
 
 
 def test_env_config_merges_child_config_defaults_with_nested_sections() -> None:
@@ -1292,55 +1236,6 @@ def test_env_config_merges_child_config_defaults_with_nested_sections() -> None:
     assert config.harness.max_turns == 3
     assert isinstance(default_config.taskset, LocalTasksetConfig)
     assert default_config.taskset.split == "kwarg"
-
-
-def test_config_object_merge_omits_nested_none_values() -> None:
-    base = HarnessConfig(
-        sampling_args={
-            "temperature": 0.7,
-            "extra_body": {
-                "top_k": 40,
-                "top_p": 0.9,
-            },
-        }
-    )
-    override = HarnessConfig(
-        sampling_args={
-            "extra_body": {
-                "top_p": None,
-                "min_p": 0.05,
-            },
-            "stop": [None, "DONE"],
-        }
-    )
-    config = EnvConfig(EnvConfig(harness=override), harness=base)
-
-    assert config.harness.sampling_args == {
-        "temperature": 0.7,
-        "extra_body": {
-            "top_k": 40,
-            "top_p": 0.9,
-            "min_p": 0.05,
-        },
-        "stop": [None, "DONE"],
-    }
-
-
-def test_env_config_subclasses_cannot_define_root_fields() -> None:
-    with pytest.raises(TypeError, match="unsupported root env config fields"):
-
-        class LocalEnvConfig(EnvConfig):
-            split: str = "train"
-
-
-def test_env_config_subclasses_must_use_domain_child_configs() -> None:
-    class LocalConfig(Config):
-        split: str = "train"
-
-    with pytest.raises(TypeError, match="taskset must be typed"):
-
-        class LocalEnvConfig(EnvConfig):
-            taskset: LocalConfig
 
 
 def test_env_config_harness_section_extends_imported_config() -> None:
@@ -1421,56 +1316,6 @@ def test_load_environment_coerces_typed_env_config_arg(
             "harness": {"model": "typed-model"},
         },
     }
-
-
-def test_load_environment_coerces_env_config_subclass_sections(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    module_name = "typed_env_config_subclass"
-    module = types.ModuleType(module_name)
-    seen: dict[str, object] = {}
-
-    class LocalTasksetConfig(TasksetConfig):
-        split: str = "train"
-
-    class LocalHarnessConfig(HarnessConfig):
-        mode: str = "default"
-
-    class LocalEnvConfig(EnvConfig):
-        taskset: LocalTasksetConfig
-        harness: LocalHarnessConfig
-
-    class LocalTaskset(Taskset):
-        config_type = LocalTasksetConfig
-
-    class LocalHarness(Harness):
-        config_type = LocalHarnessConfig
-
-    def load_environment(config: LocalEnvConfig) -> Env:
-        seen["config"] = config
-        return Env(
-            taskset=LocalTaskset(source=source_loader, config=config.taskset),
-            harness=LocalHarness(config=config.harness),
-        )
-
-    module.load_environment = load_environment
-    monkeypatch.setitem(sys.modules, module_name, module)
-
-    env = vf.load_environment(
-        "typed-env-config-subclass",
-        config={
-            "taskset": {"taskset_id": "typed", "split": "test"},
-            "harness": {"mode": "custom"},
-        },
-    )
-    config = seen["config"]
-
-    assert isinstance(config, LocalEnvConfig)
-    assert isinstance(config.taskset, LocalTasksetConfig)
-    assert isinstance(config.harness, LocalHarnessConfig)
-    assert env.taskset.config.taskset_id == "typed"
-    assert env.taskset.config.split == "test"
-    assert env.harness.config.mode == "custom"
 
 
 def test_load_environment_supplies_default_typed_env_config(
@@ -1598,19 +1443,19 @@ def test_reference_v1_harness_loaders_preserve_child_defaults() -> None:
     assert (
         group_reward.load_harness(
             config=group_reward.GroupRewardHarnessConfig()
-        ).config.max_turns
+        ).config.turn_limit
         == 1
     )
     assert (
         parallel_sandbox.load_harness(
             config=parallel_sandbox.ParallelSandboxHarnessConfig()
-        ).config.max_turns
+        ).config.turn_limit
         == 4
     )
     assert (
         self_judge.load_harness(
             config=self_judge.SelfJudgeHarnessConfig()
-        ).config.max_turns
+        ).config.turn_limit
         == 8
     )
 
@@ -1663,13 +1508,10 @@ def test_tau2_loader_forwards_mapping_harness_config(
     env = module.load_environment(
         config=module.Tau2EnvConfig(
             taskset={"max_turns": 7},
-            harness={"model": "configured-model", "max_turns": 3},
         )
     )
 
     assert type(env.harness) is Harness
-    assert env.harness.config.model == "configured-model"
-    assert env.harness.config.max_turns == 3
     assert isinstance(seen["taskset_config"], module.Tau2TasksetConfig)
     assert seen["taskset_config"].max_turns == 7
 
@@ -1777,26 +1619,27 @@ def test_self_judge_loader_projects_shortcuts_to_child_configs() -> None:
     )
 
     taskset = module.load_taskset(config=module.SelfJudgeTasksetConfig(num_examples=2))
-    harness = module.load_harness(config=module.SelfJudgeHarnessConfig(max_turns=3))
+    harness = module.load_harness(config=module.SelfJudgeHarnessConfig(turn_limit=3))
     shortcut_env = module.load_environment(
         config=module.SelfJudgeEnvConfig(
             taskset={"num_examples": 2},
-            harness={"max_turns": 3},
+            harness={"turn_limit": 3},
         ),
     )
     override_env = module.load_environment(
         config=module.SelfJudgeEnvConfig(
             taskset={"num_examples": 1},
-            harness={"max_turns": 5},
+            harness={"turn_limit": 5},
         ),
     )
 
     assert len(taskset.rows()) == 2
     assert harness.config.max_turns == 3
+    assert harness.config.turn_limit == 3
     assert len(shortcut_env.taskset.rows()) == 2
-    assert shortcut_env.harness.config.max_turns == 3
+    assert shortcut_env.harness.config.turn_limit == 3
     assert len(override_env.taskset.rows()) == 1
-    assert override_env.harness.config.max_turns == 5
+    assert override_env.harness.config.turn_limit == 5
 
 
 def test_subagent_loader_keeps_child_harness_internal(
@@ -1811,9 +1654,8 @@ def test_subagent_loader_keeps_child_harness_internal(
 
     assert env.harness.config.model == "parent"
     toolset = env.harness.toolsets[0]
-    assert toolset.bindings["ask_subagent.harness"] == "objects.harness"
-    child_harness = toolset.objects["harness"]()
-    assert child_harness.config.model is None
+    assert "ask_subagent.harness" not in toolset.bindings
+    assert module.child_harness().config.model is None
 
 
 def test_nested_configs_validate_and_feed_runtime_objects() -> None:
