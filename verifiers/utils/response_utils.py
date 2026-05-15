@@ -1,34 +1,56 @@
-import base64
-from io import BytesIO
-from typing import Any, cast
+from typing import Any
 
 import numpy as np
+import pybase64
 
 from verifiers.types import (
     AssistantMessage,
     Messages,
     Response,
+    RoutedExpertsPayload,
     TrajectoryStepTokens,
 )
 
 
-def parse_routed_experts(raw: Any) -> str | None:
+def parse_routed_experts(raw: Any) -> RoutedExpertsPayload | None:
     if raw is None:
         return None
-    return cast(str, raw)
+    assert isinstance(raw, dict)
+    data = raw["data"]
+    shape = raw["shape"]
+    assert isinstance(data, str)
+    assert isinstance(shape, list)
+    return {"data": data, "shape": [int(dim) for dim in shape]}
 
 
-def truncate_routed_experts(routed_experts: str | None, seq_len: int) -> str | None:
+def _decode_routed_experts(payload: RoutedExpertsPayload) -> np.ndarray:
+    shape = [int(dim) for dim in payload["shape"]]
+    decoded = pybase64.b64decode_as_bytearray(payload["data"])
+    expected_size = int(np.prod(shape, dtype=np.int64))
+    assert len(decoded) == expected_size, (len(decoded), expected_size, shape)
+    array = np.frombuffer(decoded, dtype=np.uint8).reshape(shape)
+    assert array.ndim == 3
+    return array
+
+
+def _encode_routed_experts(array: np.ndarray) -> RoutedExpertsPayload:
+    assert array.dtype == np.uint8
+    array = np.ascontiguousarray(array)
+    return {
+        "data": pybase64.b64encode(memoryview(array)).decode("ascii"),
+        "shape": list(array.shape),
+    }
+
+
+def truncate_routed_experts(
+    routed_experts: RoutedExpertsPayload | None, seq_len: int
+) -> RoutedExpertsPayload | None:
     if routed_experts is None:
         return None
 
-    array = np.load(BytesIO(base64.b64decode(routed_experts)), allow_pickle=False)
-    assert array.ndim == 3
+    array = _decode_routed_experts(routed_experts)
     assert 0 <= seq_len <= array.shape[0]
-
-    buffer = BytesIO()
-    np.save(buffer, np.ascontiguousarray(array[:seq_len]), allow_pickle=False)
-    return base64.b64encode(buffer.getvalue()).decode("ascii")
+    return _encode_routed_experts(array[:seq_len])
 
 
 async def parse_response_message(response: Response) -> Messages:
