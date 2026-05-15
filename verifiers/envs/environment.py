@@ -633,14 +633,25 @@ class Environment(ABC):
         """
         Finalize rollout state and clean up rollout-local resources.
         """
+        cleanup_error: Exception | None = None
         for handler in self._cleanup_handlers:
-            await maybe_call_with_named_args(
-                handler,
-                task=task,
-                state=state,
-                env=self,
-                resources=resources,
-            )
+            try:
+                await maybe_call_with_named_args(
+                    handler,
+                    task=task,
+                    state=state,
+                    env=self,
+                    resources=resources,
+                )
+            except Exception as e:
+                if cleanup_error is None:
+                    cleanup_error = e
+                self.logger.exception(
+                    "Cleanup handler %s failed",
+                    getattr(handler, "__name__", repr(handler)),
+                )
+        if cleanup_error is not None:
+            raise cleanup_error
 
     async def _teardown(self):
         """

@@ -238,16 +238,15 @@ class SandboxMixin:
         try:
             sandbox = await asyncio.shield(create_task)
         except asyncio.CancelledError:
-
-            def cleanup_created_sandbox(task: asyncio.Task):
-                try:
-                    sandbox = task.result()
-                except BaseException:
-                    return
-                self.register_sandbox(sandbox.id)
-                asyncio.create_task(self.delete_sandbox(sandbox.id))
-
-            create_task.add_done_callback(cleanup_created_sandbox)
+            try:
+                sandbox = await create_task
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                self.logger.debug(f"Sandbox create failed after cancellation: {e}")
+                raise asyncio.CancelledError from e
+            self.register_sandbox(sandbox.id)
+            await self.delete_sandbox(sandbox.id)
             raise
         except Exception as e:
             raise SandboxCreationError(f"Failed to create sandbox: {e}") from e
@@ -334,6 +333,12 @@ class SandboxMixin:
         except SandboxTimeoutError as e:
             state["sandbox_timeout"] = True
             self.logger.error(f"Sandbox timeout during background job: {repr(e)}")
+            raise vf.SandboxError() from e
+        except CommandTimeoutError as e:
+            state["sandbox_timeout"] = True
+            self.logger.error(
+                f"Sandbox command timeout during background job: {repr(e)}"
+            )
             raise vf.SandboxError() from e
 
     async def upload_file(
