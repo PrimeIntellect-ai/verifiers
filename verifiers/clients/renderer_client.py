@@ -53,6 +53,7 @@ from verifiers.types import (
     ToolMessage,
     Usage,
     UserMessage,
+    normalize_renderer_transport,
 )
 from verifiers.utils.client_utils import setup_openai_client
 
@@ -577,11 +578,8 @@ class RendererClient(
             prompt_ids = None
             multi_modal_data = None
 
-        renderer_transport = getattr(
-            self._config, "renderer_transport", "prime_vllm_generate"
-        )
-        transport: RenderersTransport = (
-            "dynamo" if renderer_transport == "dynamo_chat_nvext" else "vllm"
+        transport: RenderersTransport = normalize_renderer_transport(
+            getattr(self._config, "renderer_transport", None)
         )
 
         return await generate(

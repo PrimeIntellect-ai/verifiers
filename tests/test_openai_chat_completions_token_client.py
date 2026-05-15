@@ -278,12 +278,12 @@ async def test_get_native_response_uses_token_route_when_prompt_ids_available(
 
 
 # ---------------------------------------------------------------------------
-# dynamo_chat_nvext transport (Dynamo bis/dynamo-rl)
+# dynamo transport (Dynamo bis/dynamo-rl)
 # ---------------------------------------------------------------------------
 
 
 class _StubRenderer:
-    """Renderer stand-in for the dynamo_chat_nvext transport tests.
+    """Renderer stand-in for the dynamo transport tests.
 
     Returns deterministic ids so we can assert on body shape without pulling
     in a real HuggingFace tokenizer download. ``render_ids`` returns a
@@ -332,7 +332,7 @@ class _DynamoTestClient(OpenAIChatCompletionsTokenClient):
 
     @property
     def renderer_transport(self) -> str:  # type: ignore[override]
-        return "dynamo_chat_nvext"
+        return "dynamo"
 
     def _get_renderer(self, model: str):  # type: ignore[override]
         return self._stub_renderer
@@ -340,7 +340,7 @@ class _DynamoTestClient(OpenAIChatCompletionsTokenClient):
 
 @pytest.mark.asyncio
 async def test_local_tokenize_uses_renderer_under_dynamo_transport():
-    """Bridge tokenize must NOT hit any HTTP route under dynamo_chat_nvext.
+    """Bridge tokenize must NOT hit any HTTP route under dynamo.
 
     Goes straight through ``_local_tokenize`` -> ``renderer.render_ids``.
     The recording client would record any errant POST; we assert it sees
@@ -371,7 +371,7 @@ async def test_local_tokenize_uses_renderer_under_dynamo_transport():
 
 
 @pytest.mark.asyncio
-async def test_get_native_response_uses_dynamo_chat_nvext_under_transport(
+async def test_get_native_response_uses_dynamo_under_transport(
     monkeypatch: pytest.MonkeyPatch,
 ):
     """Dynamo transport must POST to /chat/completions with nvext.token_data.

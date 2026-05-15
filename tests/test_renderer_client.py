@@ -214,7 +214,7 @@ async def test_get_native_response_passes_renderer_transport_to_generate(
     client._client = object()
     client._config = vf.ClientConfig(
         client_type="renderer",
-        renderer_transport="dynamo_chat_nvext",
+        renderer_transport="dynamo",
     )
     renderer = _BridgeRenderer()
     calls = []

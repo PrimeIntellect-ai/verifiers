@@ -20,11 +20,16 @@ from verifiers.clients.openai_chat_completions_client import (
     OpenAITool,
     handle_openai_overlong_prompt,
 )
-from verifiers.types import RendererTransport, SamplingArgs, State
+from verifiers.types import (
+    RendererTransport,
+    SamplingArgs,
+    State,
+    normalize_renderer_transport,
+)
 
 # Sentinel returned by transports that don't tokenize over HTTP. Lets callers
 # route around the legacy /tokenize body shape without changing the signature.
-_DEFAULT_TRANSPORT: RendererTransport = "prime_vllm_generate"
+_DEFAULT_TRANSPORT: RendererTransport = "vllm"
 
 
 def _has_multimodal_content(messages) -> bool:
@@ -73,11 +78,11 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
 
     Two transports share this class:
 
-    * ``prime_vllm_generate`` (default): the historical TITO surface that
+    * ``vllm`` (default): the historical TITO surface that
       posts to vLLM's ``/v1/chat/completions/tokens`` and uses the engine's
       ``/tokenize`` for bridge-token computation. This is what vanilla vLLM
       ``>=0.20`` exposes.
-    * ``dynamo_chat_nvext``: posts pre-tokenized prompts to Dynamo's standard
+    * ``dynamo``: posts pre-tokenized prompts to Dynamo's standard
       ``/v1/chat/completions`` route with ``nvext.token_data`` carrying the
       stitched ``prompt_ids``. Bridge tokenization runs locally via the
       ``renderers`` package (no ``/tokenize`` round-trip) since Dynamo
@@ -99,15 +104,14 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
         """Wire-shape selector. ``ClientConfig.renderer_transport`` if set,
         else the default vLLM TITO shape. Mirrors the same field used by
         ``RendererClient`` so backend selection stays in one place."""
-        return cast(
-            RendererTransport,
+        return normalize_renderer_transport(
             getattr(self._config, "renderer_transport", _DEFAULT_TRANSPORT)
             if self._config is not None
             else _DEFAULT_TRANSPORT,
         )
 
     def _get_renderer(self, model: str):
-        """Lazy, per-model renderer cache. Used only by the ``dynamo_chat_nvext``
+        """Lazy, per-model renderer cache. Used only by the ``dynamo``
         transport for client-side tokenization and stop-token resolution.
 
         Loaded on first use and reused across calls so we pay the
@@ -125,7 +129,7 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
         except ImportError as exc:  # pragma: no cover - dependency surface
             raise ImportError(
                 "OpenAIChatCompletionsTokenClient with renderer_transport="
-                "'dynamo_chat_nvext' requires the 'renderers' and 'transformers' "
+                "'dynamo' requires the 'renderers' and 'transformers' "
                 "packages. Install via `pip install verifiers[renderers]` or add "
                 "renderers + transformers to your environment."
             ) from exc
@@ -154,7 +158,7 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
                 sampling_args["max_completion_tokens"] = sampling_args.pop("max_tokens")
             sampling_args["logprobs"] = True
 
-            if self.renderer_transport == "dynamo_chat_nvext":
+            if self.renderer_transport == "dynamo":
                 extra_body: dict[str, Any] = {
                     "nvext": {"extra_fields": ["engine_data"]}
                 }
@@ -227,8 +231,8 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
                 prompt, model, sampling_args, tools, extra_headers=extra_headers
             )
 
-        if self.renderer_transport == "dynamo_chat_nvext":
-            return await self._post_dynamo_chat_nvext(
+        if self.renderer_transport == "dynamo":
+            return await self._post_dynamo_chat_completions(
                 prompt=prompt,
                 prompt_ids=prompt_ids,
                 model=model,
@@ -254,7 +258,7 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
             options={"headers": extra_headers} if extra_headers else {},
         )
 
-    async def _post_dynamo_chat_nvext(
+    async def _post_dynamo_chat_completions(
         self,
         prompt: OpenAIChatMessages,
         prompt_ids: list[int],
@@ -554,7 +558,7 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
     ) -> list[int]:
         """Tokenize messages.
 
-        ``dynamo_chat_nvext`` transport: tokenizes locally via the
+        ``dynamo`` transport: tokenizes locally via the
         ``renderers`` package, no network call. Runs on a worker thread so
         the event loop stays free; HuggingFace fast tokenizers release the
         GIL during the Rust encode pass.
@@ -565,7 +569,7 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
         if extra_kwargs is None:
             extra_kwargs = {}
 
-        if self.renderer_transport == "dynamo_chat_nvext":
+        if self.renderer_transport == "dynamo":
             return await self._local_tokenize(
                 messages=messages,
                 tools=tools,
@@ -617,7 +621,7 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
                 if tokenizer is None:
                     raise RuntimeError(
                         "Renderer for model %r does not expose a tokenizer; "
-                        "cannot tokenize a raw string under dynamo_chat_nvext." % model
+                        "cannot tokenize a raw string under dynamo." % model
                     )
                 # Strip BOS for parity with vLLM /tokenize (which never
                 # prepends a BOS for raw-prompt tokenize requests).
