@@ -85,26 +85,29 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
 
-  release-from-auto-tag:
+  # ---------------------------------------------------------------------------
+  # Auto-tag flow: build → publish → github-release. Build runs untrusted code
+  # (uv build, build-time deps) without `id-token: write` so a poisoned build
+  # dep cannot mint the OIDC token and impersonate the PyPI publishing identity.
+  # The OIDC job only downloads the prebuilt artifact and runs the pinned
+  # pypa publish action. The github-release job has `contents: write` but no
+  # OIDC, so its blast radius is also bounded.
+  # ---------------------------------------------------------------------------
+  build-from-auto-tag:
     needs: auto-tag-on-main
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.auto-tag-on-main.outputs.created == 'true'
     runs-on: ubuntu-latest
-    environment: pypi-prod
     permissions:
-      contents: write
-      id-token: write
+      contents: read
+    outputs:
+      tag: ${{ needs.auto-tag-on-main.outputs.tag }}
+      version: ${{ needs.auto-tag-on-main.outputs.version }}
     steps:
       - name: Checkout auto-created tag
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           ref: refs/tags/${{ needs.auto-tag-on-main.outputs.tag }}
-
-      - name: Set release metadata
-        id: release
-        run: |
-          echo "tag=${{ needs.auto-tag-on-main.outputs.tag }}" >> "$GITHUB_OUTPUT"
-          echo "version=${{ needs.auto-tag-on-main.outputs.version }}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -117,24 +120,66 @@ jobs:
       - name: Build sdist and wheel
         run: uv build
 
+      - name: Upload dist artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish-from-auto-tag:
+    needs: build-from-auto-tag
+    runs-on: ubuntu-latest
+    environment: pypi-prod
+    permissions:
+      id-token: write
+    steps:
+      - name: Download dist artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
+
+  github-release-from-auto-tag:
+    needs: [build-from-auto-tag, publish-from-auto-tag]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout auto-created tag
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ needs.build-from-auto-tag.outputs.tag }}
+
+      - name: Download dist artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.release.outputs.tag }}
-          body_path: assets/release/RELEASE_${{ steps.release.outputs.tag }}.md
+          tag_name: ${{ needs.build-from-auto-tag.outputs.tag }}
+          body_path: assets/release/RELEASE_${{ needs.build-from-auto-tag.outputs.tag }}.md
           files: |
             dist/*
 
-  tag-and-release:
+  # ---------------------------------------------------------------------------
+  # Manual / pushed-tag flow: same three-job split as above.
+  # ---------------------------------------------------------------------------
+  build-tag:
     if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
-    environment: pypi-prod
     permissions:
-      contents: write
-      id-token: write
+      contents: read
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
     steps:
       - name: Checkout tagged release (dispatch)
         if: github.event_name == 'workflow_dispatch'
@@ -208,13 +253,51 @@ jobs:
       - name: Build sdist and wheel
         run: uv build
 
+      - name: Upload dist artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish-tag:
+    needs: build-tag
+    runs-on: ubuntu-latest
+    environment: pypi-prod
+    permissions:
+      id-token: write
+    steps:
+      - name: Download dist artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
+
+  github-release-tag:
+    needs: [build-tag, publish-tag]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout tag
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ needs.build-tag.outputs.tag }}
+
+      - name: Download dist artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.release.outputs.tag }}
-          body_path: assets/release/RELEASE_${{ steps.release.outputs.tag }}.md
+          tag_name: ${{ needs.build-tag.outputs.tag }}
+          body_path: assets/release/RELEASE_${{ needs.build-tag.outputs.tag }}.md
           files: |
             dist/*
