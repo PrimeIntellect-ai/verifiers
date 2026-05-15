@@ -85,14 +85,7 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
 
-  # ---------------------------------------------------------------------------
-  # Auto-tag flow: build → publish → github-release. Build runs untrusted code
-  # (uv build, build-time deps) without `id-token: write` so a poisoned build
-  # dep cannot mint the OIDC token and impersonate the PyPI publishing identity.
-  # The OIDC job only downloads the prebuilt artifact and runs the pinned
-  # pypa publish action. The github-release job has `contents: write` but no
-  # OIDC, so its blast radius is also bounded.
-  # ---------------------------------------------------------------------------
+  # Auto-tag flow: build (no OIDC) → publish (OIDC only) → github-release.
   build-from-auto-tag:
     needs: auto-tag-on-main
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.auto-tag-on-main.outputs.created == 'true'
@@ -169,9 +162,7 @@ jobs:
           files: |
             dist/*
 
-  # ---------------------------------------------------------------------------
-  # Manual / pushed-tag flow: same three-job split as above.
-  # ---------------------------------------------------------------------------
+  # Manual / pushed-tag flow: same three-job split.
   build-tag:
     if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
