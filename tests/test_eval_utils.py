@@ -87,6 +87,22 @@ def test_print_results_single_rollout(capsys, make_metadata, make_state, make_in
     assert "r1: [0.1, 0.2, 0.3]" in captured.out
 
 
+def test_print_results_includes_eval_name(capsys, make_metadata, make_output):
+    from verifiers.utils.eval_utils import print_results
+
+    metadata = make_metadata(env_id="env1")
+    metadata["name"] = "env1-short"
+    results = GenerateOutputs(
+        outputs=[make_output(example_id=0, reward=1.0)],
+        metadata=metadata,
+    )
+
+    print_results(results)
+    captured = capsys.readouterr()
+
+    assert "Environment: env1-short (env1)" in captured.out
+
+
 def test_print_results_three_rollouts(capsys, make_metadata, make_state, make_input):
     """Test print_results with three rollouts per example."""
     from verifiers.utils.eval_utils import print_results

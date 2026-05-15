@@ -344,6 +344,7 @@ num_examples = 50
 
 [[eval]]
 id = "gsm8k"
+name = "gsm8k-baseline"
 num_examples = 100  # overrides global default
 rollouts_per_example = 5
 
@@ -371,6 +372,7 @@ optional:
 | Field | Type | Description |
 |-------|------|-------------|
 | `id` | string | **Required.** Environment module name |
+| `name` | string | Optional eval label for display and saved result paths |
 | `args` | table | Arguments passed to `load_environment()` |
 | `taskset` | table | v1 taskset config passed through `EnvConfig.taskset` |
 | `harness` | table | v1 harness config passed through `EnvConfig.harness` |
@@ -379,6 +381,24 @@ optional:
 | `extra_env_kwargs` | table | Arguments passed to environment constructor |
 | `model` | string | Model to evaluate |
 | `endpoint_id` | string | Endpoint registry id (requires TOML `endpoints_path`) |
+
+Use `name` to run the same environment more than once with different args:
+
+```toml
+[[eval]]
+id = "reverse-text"
+name = "reverse-text-short"
+
+[eval.args]
+max_length = 32
+
+[[eval]]
+id = "reverse-text"
+name = "reverse-text-long"
+
+[eval.args]
+max_length = 256
+```
 
 Example with legacy environment args:
 

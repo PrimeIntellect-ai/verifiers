@@ -3,6 +3,7 @@ from pathlib import Path
 
 from verifiers.utils.path_utils import (
     find_latest_incomplete_eval_results_path,
+    get_eval_runs_dir,
     is_valid_eval_results_path,
 )
 
@@ -67,6 +68,19 @@ def test_find_latest_incomplete_eval_results_path_returns_none_when_no_match(
         env_dir_path=str(tmp_path / "environments"),
     )
     assert result is None
+
+
+def test_get_eval_runs_dir_uses_name_as_result_label(tmp_path: Path):
+    runs_dir = get_eval_runs_dir(
+        env_id="dummy-env",
+        name="dummy-env-short",
+        model="openai/gpt-4.1-mini",
+        output_dir=str(tmp_path / "outputs"),
+    )
+
+    assert runs_dir == (
+        tmp_path / "outputs" / "evals" / "dummy-env-short--openai--gpt-4.1-mini"
+    )
 
 
 def test_is_valid_eval_results_path_requires_files(tmp_path: Path):

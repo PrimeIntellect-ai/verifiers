@@ -36,6 +36,17 @@ from verifiers.utils.message_utils import format_messages
 from verifiers.utils.pricing_utils import format_cost_usd
 
 
+def _eval_label(config: EvalConfig) -> str:
+    return config.name or config.env_id
+
+
+def _eval_title(config: EvalConfig) -> str:
+    label = _eval_label(config)
+    if config.name and config.name != config.env_id:
+        return f"{label} ({config.env_id})"
+    return label
+
+
 @dataclass
 class EnvEvalState:
     """Dynamic eval state for a single env."""
@@ -572,7 +583,7 @@ class EvalDisplay(BaseDisplay):
 
         # build title with env name (and index if multi-env)
         title = Text()
-        title.append(config.env_id, style="bold cyan")
+        title.append(_eval_title(config), style="bold cyan")
         if len(self.configs) > 1:
             title.append(f" (env {env_idx + 1}/{len(self.configs)})", style="dim")
 
@@ -740,9 +751,10 @@ class EvalDisplay(BaseDisplay):
 
         prefix = "\u25b6 " if selected else "  "
         line = Text()
+        label = _eval_label(config)
         if env_state.status == "completed":
             line.append(f"{prefix}\u2713 ", style="bold green")
-            line.append(config.env_id, style="green")
+            line.append(label, style="green")
             line.append("  reward ", style="dim")
             line.append(format_numeric(env_state.reward), style="bold")
             color = self._get_error_rate_color(env_state.error_rate)
@@ -754,7 +766,7 @@ class EvalDisplay(BaseDisplay):
             line.append(f"  {time_str}", style="dim")
         elif env_state.status == "failed":
             line.append(f"{prefix}\u2717 ", style="bold red")
-            line.append(config.env_id, style="red")
+            line.append(label, style="red")
             if env_state.error:
                 line.append("  ", style="dim")
                 line.append(env_state.error[:80], style="red")
@@ -770,7 +782,7 @@ class EvalDisplay(BaseDisplay):
             )
             total_str = "..." if env_state.total <= 0 else str(env_state.total)
             line.append(f"{prefix}\u25cf ", style="bold yellow")
-            line.append(config.env_id, style="yellow")
+            line.append(label, style="yellow")
             line.append(f"  {pct:.0f}%", style="bold")
             line.append(f" ({env_state.progress}/{total_str})", style="dim")
             line.append("  reward ", style="dim")
@@ -784,7 +796,7 @@ class EvalDisplay(BaseDisplay):
             line.append(f"  {time_str}", style="dim")
         else:
             line.append(f"{prefix}\u25cb ", style="dim")
-            line.append(config.env_id, style="dim")
+            line.append(label, style="dim")
             line.append("  pending", style="dim")
 
         return line
@@ -958,7 +970,7 @@ class EvalDisplay(BaseDisplay):
             self.console.print(
                 Panel(
                     self._make_env_detail(config, env_state, results),
-                    title=f"[bold blue]{config.env_id}[/bold blue]",
+                    title=f"[bold blue]{_eval_title(config)}[/bold blue]",
                     border_style="dim",
                 )
             )
@@ -980,12 +992,12 @@ class EvalDisplay(BaseDisplay):
             env_state = self.state.envs[idx]
             if env_state.error:
                 self.console.print()
-                self.console.print(f"[red]error in {config.env_id}:[/red]")
+                self.console.print(f"[red]error in {_eval_label(config)}:[/red]")
                 self.console.print(f"  {env_state.error}")
 
         # Summary table with main metrics (printed last)
         table = Table(title="Evaluation Summary")
-        table.add_column("env_id", style="cyan")
+        table.add_column("eval", style="cyan")
         table.add_column("status", justify="center")
         table.add_column("examples", justify="center")
         table.add_column("rollouts", justify="center")
@@ -1060,7 +1072,7 @@ class EvalDisplay(BaseDisplay):
             mins, secs = divmod(int(elapsed), 60)
             time_str = f"{mins}m {secs:02d}s" if mins > 0 else f"{secs}s"
 
-            row = [config.env_id, status, examples_str, rollouts_str, reward]
+            row = [_eval_label(config), status, examples_str, rollouts_str, reward]
             if show_usage:
                 row.extend([input_tokens or "-", output_tokens or "-"])
             if show_cost:
@@ -1079,6 +1091,10 @@ class EvalDisplay(BaseDisplay):
         text = Text()
         text.append("model: ", style="dim")
         text.append(config.model, style="bold")
+        if config.name:
+            text.append("\n")
+            text.append("env: ", style="dim")
+            text.append(config.env_id, style="bold")
         text.append("\n")
         text.append("endpoint: ", style="dim")
         text.append(self._format_client_target(config))

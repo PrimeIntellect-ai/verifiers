@@ -13,6 +13,7 @@ import verifiers.scripts.eval as vf_eval
 import verifiers.utils.eval_utils
 from verifiers.types import GenerateOutputs
 from verifiers.utils.eval_utils import load_toml_config
+from verifiers.utils.path_utils import get_eval_results_path
 from verifiers.utils.save_utils import states_to_outputs
 
 
@@ -706,6 +707,34 @@ def test_load_toml_config_multi_env():
         assert result[1]["env_id"] == "env2"
 
 
+def test_load_toml_config_duplicate_envs_accept_names():
+    """Duplicate env ids can be labeled and configured independently."""
+    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
+        f.write(
+            '[[eval]]\nid = "env1"\nname = "env1-short"\n'
+            "[eval.args]\n"
+            'split = "short"\n\n'
+            '[[eval]]\nid = "env1"\nname = "env1-long"\n'
+            "[eval.args]\n"
+            'split = "long"\n'
+        )
+        f.flush()
+        result = load_toml_config(Path(f.name))
+
+    assert len(result) == 2
+    assert [config["env_id"] for config in result] == ["env1", "env1"]
+    assert [config["name"] for config in result] == ["env1-short", "env1-long"]
+    assert [config["env_args"]["split"] for config in result] == ["short", "long"]
+
+
+def test_load_toml_config_rejects_global_name():
+    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
+        f.write('name = "shared-name"\n\n[[eval]]\nid = "env1"\n')
+        f.flush()
+        with pytest.raises(ValueError, match="Invalid global field"):
+            load_toml_config(Path(f.name))
+
+
 def test_load_toml_config_with_env_args():
     """Multiple sections with env_args field loads correctly."""
     with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
@@ -813,6 +842,28 @@ def test_cli_multi_env_via_toml_config(monkeypatch, run_cli):
     assert len(configs) == 2
     assert configs[0].env_id == "env1"
     assert configs[1].env_id == "env2"
+
+
+def test_cli_duplicate_env_names_disambiguate_result_paths(monkeypatch, run_cli):
+    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
+        f.write(
+            '[[eval]]\nid = "env1"\nname = "env1-short"\n'
+            "[eval.args]\n"
+            'split = "short"\n\n'
+            '[[eval]]\nid = "env1"\nname = "env1-long"\n'
+            "[eval.args]\n"
+            'split = "long"\n'
+        )
+        f.flush()
+        captured = run_cli(monkeypatch, {"env_id_or_config": f.name})
+
+    configs = captured["configs"]
+    assert len(configs) == 2
+    assert [config.env_id for config in configs] == ["env1", "env1"]
+    assert [config.name for config in configs] == ["env1-short", "env1-long"]
+    assert [config.env_args["split"] for config in configs] == ["short", "long"]
+    assert get_eval_results_path(configs[0]).parent.name.startswith("env1-short--")
+    assert get_eval_results_path(configs[1]).parent.name.startswith("env1-long--")
 
 
 def test_cli_toml_ignores_cli_args(monkeypatch, run_cli):

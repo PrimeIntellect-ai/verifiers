@@ -51,7 +51,7 @@ def get_eval_results_path(config: EvalConfig) -> Path:
     base_path = _get_outputs_base_path(
         config.env_id, config.env_dir_path, config.output_dir
     )
-    return get_results_path(config.env_id, config.model, base_path)
+    return get_results_path(config.name or config.env_id, config.model, base_path)
 
 
 def get_eval_runs_dir(
@@ -59,10 +59,11 @@ def get_eval_runs_dir(
     model: str,
     env_dir_path: str = "./environments",
     output_dir: str | None = None,
+    name: str | None = None,
 ) -> Path:
     """Return directory containing all eval run directories for env/model."""
     base_path = _get_outputs_base_path(env_id, env_dir_path, output_dir)
-    env_model_str = f"{env_id}--{model.replace('/', '--')}"
+    env_model_str = f"{name or env_id}--{model.replace('/', '--')}"
     return base_path / "evals" / env_model_str
 
 
@@ -108,10 +109,15 @@ def find_latest_incomplete_eval_results_path(
     rollouts_per_example: int,
     env_dir_path: str = "./environments",
     output_dir: str | None = None,
+    name: str | None = None,
 ) -> Path | None:
     """Find the newest resumable, incomplete eval run for the provided config."""
     runs_dir = get_eval_runs_dir(
-        env_id=env_id, model=model, env_dir_path=env_dir_path, output_dir=output_dir
+        env_id=env_id,
+        model=model,
+        env_dir_path=env_dir_path,
+        output_dir=output_dir,
+        name=name,
     )
     if not runs_dir.exists():
         return None
