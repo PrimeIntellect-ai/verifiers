@@ -22,6 +22,7 @@ from renderers import (
     RenderedTokens,
     Renderer,
     RendererPool,
+    ToolCallParseStatus,
     ToolSpec,
     create_renderer_pool,
     is_multimodal,
@@ -612,18 +613,23 @@ class RendererClient(
         tool_calls = None
         raw_tcs = response.get("tool_calls")
         if raw_tcs:
+            # Drop malformed parses (INVALID_JSON / UNCLOSED_BLOCK / ...) —
+            # `ToolCall` requires non-null `name`/`arguments`, and the renderer
+            # client itself only promotes finish_reason to "tool_calls" when at
+            # least one OK call is present (renderers/client.py).
             tool_calls = [
                 ToolCall(
-                    id=f"call_{i}",
-                    name=tc["function"]["name"],
+                    id=tc.id or f"call_{i}",
+                    name=tc.name,
                     arguments=(
-                        tc["function"]["arguments"]
-                        if isinstance(tc["function"]["arguments"], str)
-                        else json.dumps(tc["function"]["arguments"])
+                        tc.arguments
+                        if isinstance(tc.arguments, str)
+                        else json.dumps(tc.arguments)
                     ),
                 )
                 for i, tc in enumerate(raw_tcs)
-            ]
+                if tc.status == ToolCallParseStatus.OK
+            ] or None
 
         prompt_ids = response.get("prompt_ids", [])
         completion_ids = response.get("completion_ids", [])
