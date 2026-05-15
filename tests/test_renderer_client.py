@@ -222,7 +222,7 @@ async def test_get_native_response_passes_renderer_transport_to_generate(
     client._get_renderer_or_pool = lambda model: renderer  # type: ignore[method-assign]
 
     async def fake_get_incremental_prompt_ids(**kwargs):
-        return [10, 20]
+        return RenderedTokens(token_ids=[10, 20])
 
     async def fake_generate(**kwargs):
         calls.append(kwargs)
@@ -244,7 +244,7 @@ async def test_get_native_response_passes_renderer_transport_to_generate(
 
     assert response == {"content": "ok"}
     assert len(calls) == 1
-    assert calls[0]["transport"] == "dynamo_chat_nvext"
+    assert calls[0]["transport"] == "dynamo"
     assert calls[0]["prompt_ids"] == [10, 20]
 
 

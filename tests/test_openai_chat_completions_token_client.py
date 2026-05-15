@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -381,7 +382,9 @@ async def test_get_native_response_uses_dynamo_chat_nvext_under_transport(
     recording_client = _RecordingClient()
     client = _DynamoTestClient(recording_client)
 
-    async def fake_get_prompt_ids(self, state, prompt_messages, oai_tools):  # noqa: ANN001
+    async def fake_get_prompt_ids(  # noqa: ANN001
+        self, state, prompt_messages, oai_tools, chat_template_kwargs=None
+    ):
         return [10, 20, 30]
 
     monkeypatch.setattr(
@@ -407,7 +410,17 @@ async def test_get_native_response_uses_dynamo_chat_nvext_under_transport(
     response = await client.get_native_response(
         prompt=prompt,
         model="test-model",
-        sampling_args={"max_completion_tokens": 16, "temperature": 0.5},
+        sampling_args={
+            "max_completion_tokens": 16,
+            "temperature": 0.5,
+            "extra_body": {
+                "nvext": {
+                    "extra_fields": ["timing"],
+                    "cache_salt": "ckpt-42",
+                },
+                "cache_salt": "top-level-salt",
+            },
+        },
         tools=None,
         state=state,
     )
@@ -421,7 +434,9 @@ async def test_get_native_response_uses_dynamo_chat_nvext_under_transport(
     assert call["path"] == "/chat/completions"
     body = call["body"]
     assert body["nvext"]["token_data"] == [10, 20, 30]
-    assert body["nvext"]["extra_fields"] == ["completion_token_ids"]
+    assert body["nvext"]["extra_fields"] == ["timing", "engine_data"]
+    assert body["nvext"]["cache_salt"] == "ckpt-42"
+    assert body["cache_salt"] == "top-level-salt"
     assert body["stop_token_ids"] == [99, 100]
     assert body["messages"] == [{"role": "user", "content": "(token-in mode)"}]
     assert body["max_completion_tokens"] == 16
@@ -434,3 +449,48 @@ async def test_get_native_response_uses_dynamo_chat_nvext_under_transport(
         c["path"] != "/chat/completions/tokens" and not c["path"].endswith("/tokenize")
         for c in recording_client.calls
     )
+
+
+@pytest.mark.asyncio
+async def test_from_native_response_grafts_dynamo_engine_data_tokens():
+    client = OpenAIChatCompletionsClient(_NoopClient())
+    message = SimpleNamespace(
+        content="ok",
+        tool_calls=None,
+        model_dump=lambda: {},
+    )
+    response = SimpleNamespace(
+        id="chatcmpl-test",
+        created=0,
+        model="test-model",
+        usage=SimpleNamespace(
+            prompt_tokens=3,
+            completion_tokens=2,
+            total_tokens=5,
+        ),
+        nvext={
+            "engine_data": {
+                "prompt_token_ids": [1, 2, 3],
+                "completion_token_ids": [4, 5],
+            },
+        },
+        choices=[
+            SimpleNamespace(
+                finish_reason="stop",
+                message=message,
+                logprobs={
+                    "content": [
+                        {"logprob": -0.1},
+                        {"logprob": -0.2},
+                    ]
+                },
+            )
+        ],
+    )
+
+    parsed = await client.from_native_response(cast(Any, response))
+
+    assert parsed.message.tokens is not None
+    assert parsed.message.tokens.prompt_ids == [1, 2, 3]
+    assert parsed.message.tokens.completion_ids == [4, 5]
+    assert parsed.message.tokens.completion_logprobs == [-0.1, -0.2]
