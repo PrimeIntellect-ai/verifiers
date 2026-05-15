@@ -7,8 +7,7 @@ This is a workspace for training and evaluating LLMs in environments created wit
 
 - `configs/`: Configuration files for training and evaluation
 - `environments/`: Environment modules
-- `AGENTS.md`: Documentation for AI coding agents
+- `AGENTS.md`: Prime-managed documentation for AI coding agents
+- `AGENTS.local.md`: Optional project-specific agent guidance
 - `CLAUDE.md`: Claude-specific pointer to `AGENTS.md`
 - `pyproject.toml`: Python project configuration
-
-## 
