@@ -536,6 +536,9 @@ def main(argv: list[str] | None = None):
     def build_eval_config(raw: dict) -> EvalConfig:
         """Build EvalConfig from a raw config dict."""
         env_id = raw["env_id"]
+        name = raw.get("name")
+        if name is not None and (not isinstance(name, str) or not name):
+            raise ValueError("'name' must be a non-empty string when provided.")
 
         # Resolve num_examples and rollouts_per_example with env defaults
         env_defaults = get_env_eval_defaults(env_id)
@@ -775,6 +778,7 @@ def main(argv: list[str] | None = None):
                 rollouts_per_example=rollouts_per_example,
                 env_dir_path=raw.get("env_dir_path", DEFAULT_ENV_DIR_PATH),
                 output_dir=raw.get("output_dir"),
+                name=name,
             )
             if auto_resume_path is not None:
                 resume_path = auto_resume_path
@@ -794,6 +798,7 @@ def main(argv: list[str] | None = None):
 
         return EvalConfig(
             env_id=env_id,
+            name=name,
             env_args=raw.get("env_args", {}),
             env_dir_path=raw.get("env_dir_path", DEFAULT_ENV_DIR_PATH),
             output_dir=raw.get("output_dir"),

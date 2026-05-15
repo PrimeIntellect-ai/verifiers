@@ -109,25 +109,35 @@ def _attach_metadata_cost(
     return cost
 
 
-def _with_metadata_cost(
+def _attach_metadata_name(metadata: GenerateMetadata, name: str | None) -> bool:
+    if name is None:
+        return False
+
+    metadata["name"] = name
+    return True
+
+
+def _with_eval_metadata(
     on_progress: ProgressCallback | list[ProgressCallback] | None,
     model_pricing: ModelPricing | None,
+    name: str | None,
 ) -> ProgressCallback | list[ProgressCallback] | None:
-    if model_pricing is None:
+    if model_pricing is None and name is None:
         return on_progress
 
-    def attach_cost(
+    def attach_metadata(
         all_outputs: list[RolloutOutput],
         new_outputs: list[RolloutOutput],
         metadata: GenerateMetadata,
     ) -> None:
+        _attach_metadata_name(metadata, name)
         _attach_metadata_cost(metadata, model_pricing, all_outputs)
 
     if on_progress is None:
-        return [attach_cost]
+        return [attach_metadata]
 
     if isinstance(on_progress, list):
-        callbacks: list[ProgressCallback] = [attach_cost]
+        callbacks: list[ProgressCallback] = [attach_metadata]
         callbacks.extend(cast(list[ProgressCallback], on_progress))
         return callbacks
 
@@ -136,7 +146,7 @@ def _with_metadata_cost(
         new_outputs: list[RolloutOutput],
         metadata: GenerateMetadata,
     ) -> None:
-        attach_cost(all_outputs, new_outputs, metadata)
+        attach_metadata(all_outputs, new_outputs, metadata)
         on_progress(all_outputs, new_outputs, metadata)
 
     return wrapped_progress
@@ -526,6 +536,7 @@ def load_toml_config(
     valid_fields = {
         # environment
         "env_id",
+        "name",
         "args",
         "env_args",
         "taskset",
@@ -573,11 +584,12 @@ def load_toml_config(
 
     # validate global fields
     if global_defaults:
-        invalid_global = set(global_defaults.keys()) - valid_fields
+        global_valid_fields = valid_fields - {"name"}
+        invalid_global = set(global_defaults.keys()) - global_valid_fields
         if invalid_global:
             raise ValueError(
                 f"Invalid global field(s) {invalid_global}. "
-                f"Valid fields are: {sorted(valid_fields)}"
+                f"Valid fields are: {sorted(global_valid_fields)}"
             )
 
     # merge global defaults with per-eval configs
@@ -856,7 +868,10 @@ def print_usage(results: GenerateOutputs):
 def print_results(results: GenerateOutputs, num_samples: int = 1):
     assert results["metadata"] is not None
     print("--- Evaluation ---")
-    print(f"Environment: {results['metadata']['env_id']}")
+    env_id = results["metadata"]["env_id"]
+    name = results["metadata"].get("name")
+    env_label = f"{name} ({env_id})" if name and name != env_id else env_id
+    print(f"Environment: {env_label}")
     print(f"Model: {results['metadata']['model']}")
     print(f"Provider: {results['metadata']['base_url']}")
     print(f"Examples: {results['metadata']['num_examples']}")
@@ -932,7 +947,7 @@ async def run_evaluation(
 
     results_path = config.resume_path or get_eval_results_path(config)
     model_pricing = await _resolve_model_pricing(config)
-    on_progress = _with_metadata_cost(on_progress, model_pricing)
+    on_progress = _with_eval_metadata(on_progress, model_pricing, config.name)
 
     try:
         if not config.disable_env_server:
@@ -1022,12 +1037,11 @@ async def run_evaluation(
         if not config.disable_env_server:
             await vf_env.stop_server()
 
-    if (
-        _attach_metadata_cost(outputs["metadata"], model_pricing, outputs["outputs"])
-        is not None
-    ):
-        if config.save_results:
-            await asyncio.to_thread(save_metadata, outputs["metadata"], results_path)
+    metadata_changed = _attach_metadata_name(outputs["metadata"], config.name)
+    if _attach_metadata_cost(outputs["metadata"], model_pricing, outputs["outputs"]):
+        metadata_changed = True
+    if metadata_changed and config.save_results:
+        await asyncio.to_thread(save_metadata, outputs["metadata"], results_path)
 
     return outputs
 

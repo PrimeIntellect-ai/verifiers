@@ -11,9 +11,11 @@ def make_config(
     independent_scoring: bool = False,
     endpoint_id: str | None = None,
     client_config: ClientConfig | None = None,
+    name: str | None = None,
 ) -> EvalConfig:
     return EvalConfig(
         env_id="dummy-env",
+        name=name,
         env_args={},
         env_dir_path="./environments",
         endpoint_id=endpoint_id,
@@ -80,6 +82,20 @@ def test_format_client_target_uses_single_resolved_base_url() -> None:
     )
 
     assert EvalDisplay._format_client_target(config) == "http://localhost:8001/v1"
+
+
+def test_display_uses_eval_name_for_duplicate_env_labels() -> None:
+    display = EvalDisplay(
+        [
+            make_config(max_concurrent=1, name="dummy-env-short"),
+            make_config(max_concurrent=1, name="dummy-env-long"),
+        ]
+    )
+
+    rendered = render_plain(display._make_compact_env_row(0))
+
+    assert "dummy-env-short" in rendered
+    assert "dummy-env-long" not in rendered
 
 
 def render_plain(renderable) -> str:

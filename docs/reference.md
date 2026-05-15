@@ -280,6 +280,7 @@ class VersionInfo(TypedDict):
 
 class GenerateMetadata(TypedDict):
     env_id: str
+    name: NotRequired[str]
     env_args: dict
     model: str
     base_url: str
@@ -1094,6 +1095,7 @@ Leaf endpoint configuration used inside `ClientConfig.endpoint_configs`. Has the
 ```python
 class EvalConfig(BaseModel):
     env_id: str
+    name: str | None = None
     env_args: dict
     env_dir_path: str
     endpoint_id: str | None = None
