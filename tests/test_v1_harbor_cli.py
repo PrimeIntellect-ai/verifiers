@@ -20,6 +20,7 @@ from verifiers.v1.packages.harnesses.terminus_2 import (
     terminus_2_agent_script,
 )
 from verifiers.v1.packages.tasksets.harbor import harbor_reward
+from verifiers.v1.utils.mcp_proxy_utils import MCP_PROXY_PYTHON_PATH
 from verifiers.v1.utils.program_utils import merge_task_program, merge_task_sandbox
 
 
@@ -268,7 +269,10 @@ def test_pi_harness_writes_intercepted_model_and_mcp_config() -> None:
     assert provider["api"] == "openai-completions"
     assert provider["apiKey"] == "secret"
     assert provider["models"] == [{"id": "model", "name": "openai/gpt-5.4-mini"}]
-    assert mcp["mcpServers"]["verifiers-tools"]["command"] == "python3"
+    server = mcp["mcpServers"]["verifiers-tools"]
+    assert server["command"] == "/bin/sh"
+    assert server["args"][0] == "-lc"
+    assert MCP_PROXY_PYTHON_PATH in server["args"][1]
 
 
 def test_terminus_2_harness_builds_sandbox_program() -> None:

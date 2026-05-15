@@ -7,6 +7,7 @@ from ..types import ConfigData, ConfigMap, ProgramChannel
 
 MCP_PROXY_PATH = "/tmp/vf_mcp_tools.py"
 MCP_PROXY_CONFIG_PATH = "/tmp/vf_mcp_tools.json"
+MCP_PROXY_PYTHON_PATH = "/tmp/vf_mcp_python"
 MCP_PACKAGE = "mcp>=1.14.1"
 REQUESTS_PACKAGE = "requests"
 
@@ -69,7 +70,13 @@ def proxy_program(
 
 
 def proxy_command() -> list[str]:
-    return ["python3", MCP_PROXY_PATH, MCP_PROXY_CONFIG_PATH]
+    command = (
+        f"PYTHON=$(cat {shlex.quote(MCP_PROXY_PYTHON_PATH)} 2>/dev/null || "
+        "command -v python3); "
+        f'exec "$PYTHON" {shlex.quote(MCP_PROXY_PATH)} '
+        f"{shlex.quote(MCP_PROXY_CONFIG_PATH)}"
+    )
+    return ["/bin/sh", "-lc", command]
 
 
 def proxy_sandbox(sandbox_config: ConfigMap) -> ConfigData:
