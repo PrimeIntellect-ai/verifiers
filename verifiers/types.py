@@ -56,7 +56,18 @@ EndpointApi = Literal[
     "openai_responses",
     "anthropic_messages",
 ]
+RendererTransport = Literal["vllm", "dynamo"]
 MessageType = Literal["chat", "completion"]  # deprecated
+
+
+def normalize_renderer_transport(value: object) -> RendererTransport:
+    if value is None:
+        return "vllm"
+    if not isinstance(value, str):
+        raise ValueError("renderer_transport must be a string")
+    if value in ("vllm", "dynamo"):
+        return cast(RendererTransport, value)
+    raise ValueError("renderer_transport must be 'vllm' or 'dynamo'")
 
 
 # Provider-agnostic message + response types
@@ -1015,6 +1026,7 @@ class ClientConfig(BaseModel):
     renderer: str = "auto"
     renderer_model_name: str | None = None
     renderer_pool_size: int | None = None
+    renderer_transport: RendererTransport = "vllm"
     tool_parser: str | None = None
     reasoning_parser: str | None = None
     preserve_all_thinking: bool = False
@@ -1040,6 +1052,11 @@ class ClientConfig(BaseModel):
     @classmethod
     def validate_extra_headers(cls, value: object) -> dict[str, str]:
         return _validate_extra_headers_value(value)
+
+    @field_validator("renderer_transport", mode="before")
+    @classmethod
+    def validate_renderer_transport(cls, value: object) -> RendererTransport:
+        return normalize_renderer_transport(value)
 
     @field_validator("endpoint_configs", mode="before")
     @classmethod

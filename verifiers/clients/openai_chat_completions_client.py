@@ -443,8 +443,44 @@ class OpenAIChatCompletionsClient(
                 case _:
                     return None
 
+        def _graft_engine_data(response: OpenAIChatResponse) -> None:
+            nvext = getattr(response, "nvext", None)
+            if nvext is None and hasattr(response, "model_dump"):
+                nvext = response.model_dump().get("nvext")
+            if not isinstance(nvext, dict):
+                return
+
+            choice = response.choices[0]
+            engine_data = nvext.get("engine_data")
+            completion_token_ids_top = nvext.get("completion_token_ids")
+            prompt_token_ids_top = nvext.get("prompt_token_ids")
+
+            completion_token_ids: list[int] | None = None
+            prompt_token_ids: list[int] | None = None
+            if isinstance(engine_data, dict):
+                if engine_data.get("completion_token_ids") is not None:
+                    completion_token_ids = list(engine_data["completion_token_ids"])
+                if engine_data.get("prompt_token_ids") is not None:
+                    prompt_token_ids = list(engine_data["prompt_token_ids"])
+            if completion_token_ids is None and completion_token_ids_top is not None:
+                completion_token_ids = list(completion_token_ids_top)
+            if prompt_token_ids is None and prompt_token_ids_top is not None:
+                prompt_token_ids = list(prompt_token_ids_top)
+
+            if (
+                getattr(choice, "token_ids", None) is None
+                and completion_token_ids is not None
+            ):
+                object.__setattr__(choice, "token_ids", completion_token_ids)
+            if (
+                getattr(response, "prompt_token_ids", None) is None
+                and prompt_token_ids is not None
+            ):
+                object.__setattr__(response, "prompt_token_ids", prompt_token_ids)
+
         def parse_tokens(response: OpenAIChatResponse) -> ResponseTokens | None:
             assert len(response.choices) == 1, "Response should always have one choice"
+            _graft_engine_data(response)
             choice = response.choices[0]
             if not hasattr(choice, "token_ids"):
                 return None
@@ -482,7 +518,7 @@ class OpenAIChatCompletionsClient(
                 logprobs_content = response.choices[0].logprobs["content"]
                 completion_logprobs = [token["logprob"] for token in logprobs_content]
 
-            choice_extra = choice.model_extra or {}
+            choice_extra = getattr(choice, "model_extra", None) or {}
             routed_experts = parse_routed_experts(choice_extra.get("routed_experts"))
             return ResponseTokens(
                 prompt_ids=prompt_ids,

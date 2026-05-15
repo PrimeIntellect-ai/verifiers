@@ -28,6 +28,7 @@ from renderers import (
 )
 from renderers import ToolCall as RendererToolCall
 from renderers import ToolCallFunction
+from renderers.client import RendererTransport as RenderersTransport
 from renderers.client import generate
 
 from verifiers.clients.client import Client
@@ -52,6 +53,7 @@ from verifiers.types import (
     ToolMessage,
     Usage,
     UserMessage,
+    normalize_renderer_transport,
 )
 from verifiers.utils.client_utils import setup_openai_client
 
@@ -576,6 +578,10 @@ class RendererClient(
             prompt_ids = None
             multi_modal_data = None
 
+        transport: RenderersTransport = normalize_renderer_transport(
+            getattr(self._config, "renderer_transport", None)
+        )
+
         return await generate(
             client=self.client,
             renderer=renderer,
@@ -589,6 +595,7 @@ class RendererClient(
             or sampling_params.pop("cache_salt", None),
             priority=args.get("priority") or sampling_params.pop("priority", None),
             extra_headers=args.get("extra_headers"),
+            transport=transport,
         )
 
     async def raise_from_native_response(self, response: dict[str, Any]) -> None:
