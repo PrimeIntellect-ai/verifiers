@@ -89,8 +89,10 @@ jobs:
     needs: auto-tag-on-main
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.auto-tag-on-main.outputs.created == 'true'
     runs-on: ubuntu-latest
+    environment: pypi-prod
     permissions:
       contents: write
+      id-token: write
     steps:
       - name: Checkout auto-created tag
         uses: actions/checkout@v4
@@ -116,9 +118,7 @@ jobs:
         run: uv build
 
       - name: Publish to PyPI
-        env:
-          PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
-        run: uv publish --token "$PYPI_TOKEN"
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -131,8 +131,10 @@ jobs:
   tag-and-release:
     if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    environment: pypi-prod
     permissions:
       contents: write
+      id-token: write
     steps:
       - name: Checkout tagged release (dispatch)
         if: github.event_name == 'workflow_dispatch'
@@ -207,9 +209,7 @@ jobs:
         run: uv build
 
       - name: Publish to PyPI
-        env:
-          PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
-        run: uv publish --token "$PYPI_TOKEN"
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
