@@ -697,6 +697,37 @@ class TestMaybeRetry:
         error_info = rollout_outputs[0]["error"]
         assert "InfraError" == error_info["error"]
 
+    @pytest.mark.asyncio
+    async def test_example_disregard_drops_group_without_retry(
+        self, mock_client, make_input
+    ):
+        """ExampleDisregardError drops the whole group instead of retrying it."""
+        dataset = Dataset.from_dict({"question": ["test"], "answer": ["test"]})
+        env = RetryCounterEnv(
+            fail_count=0, dataset=dataset, parser=Parser(), rubric=Rubric()
+        )
+        score_calls = 0
+
+        async def score_group(states):
+            nonlocal score_calls
+            score_calls += 1
+            states[0]["error"] = vf.ExampleDisregardError("example drifted")
+
+        env.rubric.score_group = score_group  # type: ignore[method-assign]
+
+        inputs = [make_input(example_id=0), make_input(example_id=0)]
+        with patch("verifiers.utils.async_utils.logger.warning") as mock_warning:
+            outputs = await env.generate(
+                inputs, client=mock_client, model="test-model", max_retries=3
+            )
+
+        assert outputs["outputs"] == []
+        assert env.call_counts[0] == 2
+        assert score_calls == 1
+        warning = mock_warning.call_args[0][0]
+        assert "ExampleDisregardError" in warning
+        assert "Returning result without retry" in warning
+
 
 class TestEmptyModelResponseErrors:
     """Test cases for empty and invalid model response error handling."""

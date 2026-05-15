@@ -5,7 +5,7 @@ from collections import deque
 from collections.abc import Mapping
 from collections.abc import Coroutine
 from time import perf_counter
-from typing import Any, AsyncContextManager, Callable, Optional, TypeVar
+from typing import Any, AsyncContextManager, Callable, Optional, TypeVar, cast
 
 import numpy as np
 import tenacity as tc
@@ -153,10 +153,11 @@ def maybe_retry(
     max_retries: int = 0,
     initial: float = 1.0,
     max_wait: float = 60.0,
-    error_types: tuple[type[Exception], ...] = (
+    retry_error_types: tuple[type[Exception], ...] = (
         vf.InfraError,
         vf.InvalidModelResponseError,
     ),
+    terminal_error_types: tuple[type[Exception], ...] = (),
 ) -> Callable[..., Coroutine[Any, Any, T]]:
     """
     Return retry-wrapped function if max_retries > 0, else return func unchanged.
@@ -166,28 +167,8 @@ def maybe_retry(
     Usage:
         state = await maybe_retry(self.run_rollout, max_retries=3)(input, client, ...)
     """
-    if max_retries <= 0:
+    if max_retries <= 0 and not terminal_error_types:
         return func
-
-    def reraise_error_from_state(result, error_types: tuple[type[Exception], ...]):
-        """Re-raise specified errors from state(s) to trigger tenacity retry."""
-        if isinstance(result, dict):
-            err = result.get("error")
-            if err and any(isinstance(err, err_type) for err_type in error_types):
-                raise err
-            if isinstance(err, Mapping):
-                retry_error = error_info_to_exception(err, error_types)
-                if retry_error is not None:
-                    raise retry_error
-        elif isinstance(result, list):
-            for state in result:
-                err = state.get("error")
-                if err and any(isinstance(err, err_type) for err_type in error_types):
-                    raise err
-                if isinstance(err, Mapping):
-                    retry_error = error_info_to_exception(err, error_types)
-                    if retry_error is not None:
-                        raise retry_error
 
     def log_retry(retry_state: tc.RetryCallState) -> None:
         """Log a warning with the exception and the number of attempts."""
@@ -204,6 +185,14 @@ def maybe_retry(
         next_action = retry_state.next_action.sleep if retry_state.next_action else 0
         logger.warning(
             f"Caught {error_chain} in {caller}. Retrying in {print_time(next_action)} (retry {retry_state.attempt_number}/{max_retries})"
+        )
+
+    def log_terminal(error: Exception) -> None:
+        """Log a warning when a terminal error stops retries."""
+        caller = getattr(func, "__name__", "unknown function")
+        error_chain = repr(ErrorChain(error))
+        logger.warning(
+            f"Caught {error_chain} in {caller}. Returning result without retry."
         )
 
     last_result = None
@@ -230,17 +219,53 @@ def maybe_retry(
         nonlocal last_result
         result = await func(*args, **kwargs)
         last_result = result  # store result
-        reraise_error_from_state(result, error_types)
+        terminal_error = find_error_in_state(result, terminal_error_types)
+        if terminal_error is not None:
+            log_terminal(terminal_error)
+            return result
+        if max_retries > 0:
+            retry_error = find_error_in_state(result, retry_error_types)
+            if retry_error is not None:
+                raise retry_error
         return result
 
     wrapper.__name__ = getattr(func, "__name__", "unknown")
     wrapper.__qualname__ = getattr(func, "__qualname__", "unknown")
 
+    if max_retries <= 0:
+        return wrapper
+
     return tc.AsyncRetrying(
-        retry=tc.retry_if_exception_type(error_types),
+        retry=tc.retry_if_exception_type(retry_error_types),
         stop=tc.stop_after_attempt(max_retries + 1),
         wait=tc.wait_exponential_jitter(initial=initial, max=max_wait),
         before_sleep=log_retry,
         retry_error_callback=return_last_result,
         reraise=True,
     ).wraps(wrapper)
+
+
+def find_error_in_state(
+    result: Any,
+    error_types: tuple[type[Exception], ...],
+) -> Exception | None:
+    """Return the first matching error from a state or list of states."""
+
+    def match_error(err: object) -> Exception | None:
+        if isinstance(err, Exception) and any(
+            isinstance(err, err_type) for err_type in error_types
+        ):
+            return err
+        if isinstance(err, Mapping):
+            return error_info_to_exception(cast(Mapping[str, object], err), error_types)
+        return None
+
+    if isinstance(result, dict):
+        return match_error(result.get("error"))
+    elif isinstance(result, list):
+        for state in result:
+            if isinstance(state, dict):
+                matched = match_error(state.get("error"))
+                if matched is not None:
+                    return matched
+    return None

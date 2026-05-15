@@ -68,6 +68,7 @@ from verifiers.types import (
     flatten_task_input,
 )
 from verifiers.utils.async_utils import (
+    find_error_in_state,
     maybe_call_with_named_args,
     maybe_retry,
     maybe_semaphore,
@@ -825,7 +826,13 @@ class Environment(ABC):
                 sampling_args,
             )
 
-        group_states = await maybe_retry(run_group_attempt, max_retries=max_retries)()
+        group_states = await maybe_retry(
+            run_group_attempt,
+            max_retries=max_retries,
+            terminal_error_types=(vf.ExampleDisregardError,),
+        )()
+        if find_error_in_state(group_states, (vf.ExampleDisregardError,)) is not None:
+            return []
         outputs = [
             state_to_output(state, state_columns or []) for state in group_states
         ]

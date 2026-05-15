@@ -50,6 +50,12 @@ class InfraError(Error):
     pass
 
 
+class ExampleDisregardError(Error):
+    """Used to drop an ungradeable example group without retrying."""
+
+    pass
+
+
 class TunnelError(InfraError):
     """Raised when a tunnel process dies or becomes unreachable."""
 
