@@ -289,7 +289,7 @@ class _BridgeRenderer:
             )
         )
 
-    def parse_response(self, token_ids):
+    def parse_response(self, token_ids, *, tools=None):
         return ParsedResponse(content="")
 
     def get_stop_token_ids(self):

@@ -19,9 +19,11 @@ from openai import AsyncOpenAI
 from renderers import Message as RendererMessage
 from renderers import (
     MultimodalRenderer,
+    ParsedToolCall,
     RenderedTokens,
     Renderer,
     RendererPool,
+    ToolCallParseStatus,
     ToolSpec,
     create_renderer_pool,
     is_multimodal,
@@ -596,6 +598,9 @@ class RendererClient(
             raise EmptyModelResponseError("Model returned no response")
 
         has_content = bool(response.get("content"))
+        # ``tool_calls`` is now ``list[ParsedToolCall]`` (renderers >=0.1.8.dev1)
+        # — a non-empty list with only malformed attempts still counts as the
+        # model having tried to call a tool, so we don't filter by status here.
         has_tool_calls = bool(response.get("tool_calls"))
         has_reasoning = bool(response.get("reasoning_content"))
         if not (has_content or has_tool_calls or has_reasoning):
@@ -609,20 +614,31 @@ class RendererClient(
         reasoning_content = response.get("reasoning_content")
         finish_reason = _parse_finish_reason(response.get("finish_reason"))
 
+        # renderers >=0.1.8.dev1 emits ParsedToolCall dataclasses (with .name,
+        # .arguments, .status, .id). Skip non-OK attempts — they're surfaced
+        # on the parsed response so trainers can inspect, but verifiers'
+        # tool-loop only acts on well-formed calls.
         tool_calls = None
-        raw_tcs = response.get("tool_calls")
-        if raw_tcs:
+        raw_tcs = response.get("tool_calls") or []
+        ok_tcs = [
+            tc
+            for tc in raw_tcs
+            if isinstance(tc, ParsedToolCall)
+            and tc.status == ToolCallParseStatus.OK
+            and tc.name
+        ]
+        if ok_tcs:
             tool_calls = [
                 ToolCall(
-                    id=f"call_{i}",
-                    name=tc["function"]["name"],
+                    id=tc.id or f"call_{i}",
+                    name=tc.name or "",
                     arguments=(
-                        tc["function"]["arguments"]
-                        if isinstance(tc["function"]["arguments"], str)
-                        else json.dumps(tc["function"]["arguments"])
+                        tc.arguments
+                        if isinstance(tc.arguments, str)
+                        else json.dumps(tc.arguments or {})
                     ),
                 )
-                for i, tc in enumerate(raw_tcs)
+                for i, tc in enumerate(ok_tcs)
             ]
 
         prompt_ids = response.get("prompt_ids", [])
