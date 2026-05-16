@@ -99,6 +99,7 @@ _TTT_CONTROL_KEYS = {
     "ttt_request_timeout_s",
     "ttt_window_seq_len",
     "ttt_require_exact_token_ids",
+    "ttt_require_content_mask",
     "ttt_train_prompt_lora",
     "ttt_train_completion_lora",
     "ttt_completion_lora_trains_initial_prompt",
@@ -371,15 +372,23 @@ def _role_train_ids(
     train_roles: set[str],
     *,
     start: int = 0,
+    content_only: bool = False,
+    require_content_mask: bool = False,
 ) -> list[int]:
     token_ids = rendered.token_ids
     indices = rendered.message_indices
     if len(indices) != len(token_ids):
         return []
+    content_mask = rendered.content_mask
+    has_content_mask = len(content_mask) == len(token_ids)
+    if content_only and require_content_mask and not has_content_mask:
+        raise ValueError("TTT content-only token selection requires renderer content_mask.")
 
     selected = []
     for pos, (token_id, msg_idx) in enumerate(zip(token_ids, indices)):
         if pos < start or msg_idx < 0 or msg_idx >= len(prompt):
+            continue
+        if content_only and has_content_mask and not content_mask[pos]:
             continue
         role = prompt[msg_idx].get("role")
         if role in train_roles:
@@ -773,13 +782,25 @@ class RendererClient(
 
             trajectory = _state_get(kwargs.get("state"), "trajectory", []) or []
             is_first_turn = not trajectory
+            require_content_mask = bool(
+                ttt_options.get(
+                    "ttt_require_content_mask",
+                    ttt_options.get("ttt_require_exact_token_ids", False),
+                )
+            )
             if is_first_turn:
                 token_role = "completion_initial_prompt"
                 if ttt_options.get("ttt_train_completion_lora", True) and ttt_options.get(
                     "ttt_completion_lora_trains_initial_prompt", True
                 ):
                     rendered_for_ttt = rendered_for_ttt or await _render_prompt(renderer, prompt, tools)
-                    new_prompt_ids = _role_train_ids(rendered_for_ttt, prompt, {"system", "user"})
+                    new_prompt_ids = _role_train_ids(
+                        rendered_for_ttt,
+                        prompt,
+                        {"system", "user"},
+                        content_only=True,
+                        require_content_mask=require_content_mask,
+                    )
                 else:
                     new_prompt_ids = []
             else:
@@ -798,8 +819,15 @@ class RendererClient(
                                 prompt,
                                 {"tool", "user"},
                                 start=max(previous_len, 0),
+                                content_only=True,
+                                require_content_mask=require_content_mask,
                             )
                         else:
+                            if require_content_mask:
+                                raise ValueError(
+                                    "TTT content-only token selection requires renderer full render "
+                                    "to match bridged prompt ids."
+                                )
                             new_prompt_ids = list(bridged.token_ids[max(previous_len, 0) :])
                     else:
                         rendered_for_ttt = rendered_for_ttt or await _render_prompt(renderer, prompt, tools)
@@ -808,6 +836,8 @@ class RendererClient(
                             prompt,
                             {"tool", "user"},
                             start=max(previous_len, 0),
+                            content_only=True,
+                            require_content_mask=require_content_mask,
                         )
                 else:
                     new_prompt_ids = []

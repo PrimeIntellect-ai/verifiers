@@ -391,6 +391,7 @@ async def test_renderer_client_ttt_routes_initial_prompt_to_completion_lora(monk
         RenderedTokens(
             token_ids=[10, 11, 12, 13],
             message_indices=[0, 1, 1, -1],
+            content_mask=[False, True, True, False],
         )
     )
     client = object.__new__(RendererClient)
@@ -424,7 +425,7 @@ async def test_renderer_client_ttt_routes_initial_prompt_to_completion_lora(monk
 
     prepare_call, complete_call = _TTTHTTPClient.calls
     assert prepare_call[1]["token_role"] == "completion_initial_prompt"
-    assert prepare_call[1]["new_prompt_ids"] == [10, 11, 12]
+    assert prepare_call[1]["new_prompt_ids"] == [11, 12]
     assert complete_call[1]["completion_ids"] == [21, 22]
     assert state["ttt_trace"][0]["adapter_path"] == "/tmp/adapter-turn"
     assert state["ttt_final_prompt_adapter"]["adapter_path"] == "/tmp/final-prompt"
@@ -436,6 +437,7 @@ async def test_renderer_client_ttt_routes_bridged_tool_tokens_to_prompt_lora(mon
     rendered = RenderedTokens(
         token_ids=[1, 2, 3, 40, 41, 42],
         message_indices=[0, 1, 2, 3, 3, -1],
+        content_mask=[True, True, True, False, True, False],
     )
     renderer = _TTTRenderer(rendered=rendered, bridged=RenderedTokens(token_ids=list(rendered.token_ids)))
     client = object.__new__(RendererClient)
@@ -479,7 +481,29 @@ async def test_renderer_client_ttt_routes_bridged_tool_tokens_to_prompt_lora(mon
 
     prepare_call = _TTTHTTPClient.calls[0]
     assert prepare_call[1]["token_role"] == "prompt_environment"
-    assert prepare_call[1]["new_prompt_ids"] == [40, 41]
+    assert prepare_call[1]["new_prompt_ids"] == [41]
+
+
+@pytest.mark.asyncio
+async def test_renderer_client_ttt_rejects_missing_content_mask():
+    renderer = _TTTRenderer(
+        RenderedTokens(
+            token_ids=[10, 11, 12, 13],
+            message_indices=[0, 1, 1, -1],
+        )
+    )
+    client = object.__new__(RendererClient)
+    client.client = object()
+    client._renderer = renderer
+
+    state = {"trajectory_id": "traj-missing-content-mask", "trajectory": []}
+    with pytest.raises(ValueError, match="content_mask"):
+        await client.get_native_response(
+            [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}],
+            "base-model",
+            _ttt_sampling_args(),
+            state=state,
+        )
 
 
 @pytest.mark.asyncio
