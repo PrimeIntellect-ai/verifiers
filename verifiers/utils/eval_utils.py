@@ -55,6 +55,7 @@ from verifiers.utils.save_utils import save_metadata
 
 logger = logging.getLogger(__name__)
 FREEFORM_ABLATION_SWEEP_FIELDS = {"args", "env_args"}
+CHAT_TEMPLATE_KWARG_FIELDS = ("reasoning_effort", "enable_thinking")
 
 
 def _client_config_uses_prime_inference(config: ClientConfig) -> bool:
@@ -455,6 +456,99 @@ def normalize_env_id_alias(config: Mapping[str, Any], section: str) -> dict[str,
     return normalized
 
 
+def _merge_sampling_arg_tables(
+    base: Mapping[str, Any],
+    override: Mapping[str, Any],
+) -> dict[str, Any]:
+    merged = {**dict(base), **dict(override)}
+    base_extra_body = base.get("extra_body")
+    override_extra_body = override.get("extra_body")
+    if isinstance(base_extra_body, Mapping) and isinstance(
+        override_extra_body, Mapping
+    ):
+        extra_body = {**dict(base_extra_body), **dict(override_extra_body)}
+        base_chat_template_kwargs = base_extra_body.get("chat_template_kwargs")
+        override_chat_template_kwargs = override_extra_body.get("chat_template_kwargs")
+        if isinstance(base_chat_template_kwargs, Mapping) and isinstance(
+            override_chat_template_kwargs, Mapping
+        ):
+            extra_body["chat_template_kwargs"] = {
+                **dict(base_chat_template_kwargs),
+                **dict(override_chat_template_kwargs),
+            }
+        merged["extra_body"] = extra_body
+    return merged
+
+
+def normalize_sampling_args(
+    sampling_args: Mapping[str, Any], section: str
+) -> dict[str, Any]:
+    normalized = dict(sampling_args)
+    chat_template_kwargs = {
+        key: normalized[key] for key in CHAT_TEMPLATE_KWARG_FIELDS if key in normalized
+    }
+    if not chat_template_kwargs:
+        return normalized
+
+    raw_extra_body = normalized.get("extra_body", {})
+    if raw_extra_body is None:
+        raw_extra_body = {}
+    if not isinstance(raw_extra_body, Mapping):
+        raise ValueError(f"{section}.extra_body must be a table.")
+    extra_body = dict(cast(Mapping[str, Any], raw_extra_body))
+
+    raw_chat_template_kwargs = extra_body.get("chat_template_kwargs", {})
+    if raw_chat_template_kwargs is None:
+        raw_chat_template_kwargs = {}
+    if not isinstance(raw_chat_template_kwargs, Mapping):
+        raise ValueError(f"{section}.extra_body.chat_template_kwargs must be a table.")
+    extra_body["chat_template_kwargs"] = {
+        **dict(cast(Mapping[str, Any], raw_chat_template_kwargs)),
+        **chat_template_kwargs,
+    }
+    normalized["extra_body"] = extra_body
+    return normalized
+
+
+def normalize_sampling_config(
+    config: Mapping[str, Any],
+    section: str,
+    *,
+    merge_sampling_with_existing: bool = False,
+) -> dict[str, Any]:
+    normalized = dict(config)
+    if "sampling_args" in normalized:
+        raw_sampling_args = normalized["sampling_args"]
+        if not isinstance(raw_sampling_args, Mapping):
+            raise ValueError(f"{section}.sampling_args must be a table.")
+        normalized["sampling_args"] = normalize_sampling_args(
+            cast(Mapping[str, Any], raw_sampling_args), f"{section}.sampling_args"
+        )
+
+    if "sampling" not in normalized:
+        return normalized
+
+    if "sampling_args" in normalized:
+        if not merge_sampling_with_existing:
+            raise ValueError(
+                f"{section} cannot contain both sampling and sampling_args."
+            )
+        existing_sampling_args = cast(Mapping[str, Any], normalized["sampling_args"])
+    else:
+        existing_sampling_args = {}
+
+    sampling = normalized.pop("sampling")
+    if not isinstance(sampling, Mapping):
+        raise ValueError(f"{section}.sampling must be a table.")
+    normalized["sampling_args"] = _merge_sampling_arg_tables(
+        existing_sampling_args,
+        normalize_sampling_args(
+            cast(Mapping[str, Any], sampling), f"{section}.sampling"
+        ),
+    )
+    return normalized
+
+
 def invalid_ablation_sweep_fields(
     sweep: Mapping[str, Any], valid_fields: set[str]
 ) -> set[str]:
@@ -556,6 +650,7 @@ def load_toml_config(
         "header_from_state",
         "headers_from_state",
         # sampling
+        "sampling",
         "sampling_args",
         "max_tokens",
         "temperature",
@@ -591,6 +686,7 @@ def load_toml_config(
                 f"Invalid global field(s) {invalid_global}. "
                 f"Valid fields are: {sorted(global_valid_fields)}"
             )
+    global_defaults = normalize_sampling_config(global_defaults, "global config")
 
     # merge global defaults with per-eval configs
     merged_eval_list: list[dict] = []
@@ -601,6 +697,9 @@ def load_toml_config(
                 f"Invalid field(s) {invalid_fields} for {eval_config.get('env_id', 'unknown')}. "
                 f"Valid fields are: {sorted(valid_fields)}"
             )
+        eval_config = normalize_sampling_config(
+            eval_config, f"[[eval]] {eval_config['env_id']}"
+        )
         # global defaults, then per-eval overrides
         merged = {**global_defaults, **eval_config}
         if "endpoint_id" in eval_config and "model" not in eval_config:
@@ -627,6 +726,7 @@ def load_toml_config(
                 f"Invalid field(s) {invalid_fields} in [[ablation]] block. "
                 f"Valid fields are: {sorted(valid_fields)}"
             )
+        ablation = normalize_sampling_config(ablation, "[[ablation]] block")
         # Validate sweep keys (except arg tables, which have freeform sub-keys)
         sweep = ablation.get("sweep", {})
         invalid_sweep = invalid_ablation_sweep_fields(sweep, valid_fields)
@@ -636,7 +736,13 @@ def load_toml_config(
                 f"Valid fields are: {sorted(valid_fields)}"
             )
         expanded = [
-            normalize_env_config_sections(config)
+            normalize_env_config_sections(
+                normalize_sampling_config(
+                    config,
+                    "expanded [[ablation]] config",
+                    merge_sampling_with_existing=True,
+                )
+            )
             for config in _expand_ablation(ablation, global_defaults)
         ]
         merged_eval_list.extend(expanded)

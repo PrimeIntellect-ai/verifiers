@@ -195,6 +195,24 @@ The `--sampling-args` flag accepts any parameters supported by the model's API:
 prime eval run my-env -S '{"temperature": 0.7, "top_p": 0.9}'
 ```
 
+In eval TOML configs, put generation parameters under `[sampling]`:
+
+```toml
+[sampling]
+max_tokens = 1024
+temperature = 0.7
+reasoning_effort = "medium"
+enable_thinking = true
+
+[[eval]]
+id = "my-env"
+```
+
+`reasoning_effort` and `enable_thinking` stay in `sampling_args` and are also
+mirrored into `extra_body.chat_template_kwargs` for OpenAI-compatible servers
+that read chat template options there. Keeping the top-level values lets the
+client translate them for the selected provider.
+
 ### Evaluation Scope
 
 | Flag | Short | Default | Description |
@@ -381,6 +399,7 @@ optional:
 | `extra_env_kwargs` | table | Arguments passed to environment constructor |
 | `model` | string | Model to evaluate |
 | `endpoint_id` | string | Endpoint registry id (requires TOML `endpoints_path`) |
+| `sampling` | table | Shorthand for `sampling_args` generation parameters |
 
 Use `name` to run the same environment more than once with different args:
 
@@ -418,7 +437,9 @@ For v1 BYO Harness environments, pass taskset/harness config through sibling
 ```toml
 [[eval]]
 id = "my-v1-env"
-sampling_args = { max_tokens = 4096 }
+
+[eval.sampling]
+max_tokens = 4096
 
 [eval.harness]
 max_turns = 4
@@ -429,6 +450,9 @@ weight = 0.5
 
 See [BYO Harness](byo-harness.md#toml-config) for the matching RL config shape
 and v1 callable/toolset patterns.
+
+The legacy inline `sampling_args = { ... }` spelling is still accepted and
+normalizes the same way as `[sampling]` / `[eval.sampling]`.
 
 ### Ablation Sweeps
 

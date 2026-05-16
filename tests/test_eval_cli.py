@@ -749,6 +749,92 @@ def test_load_toml_config_with_env_args():
         assert result[0]["env_args"]["max_examples"] == 100
 
 
+def test_load_toml_config_sampling_section_mirrors_chat_template_kwargs():
+    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
+        f.write(
+            "[sampling]\n"
+            "max_tokens = 1024\n"
+            'reasoning_effort = "medium"\n'
+            "enable_thinking = false\n\n"
+            "[sampling.extra_body]\n"
+            'custom = "value"\n\n'
+            "[sampling.extra_body.chat_template_kwargs]\n"
+            "clear_thinking = true\n\n"
+            "[[eval]]\n"
+            'env_id = "env1"\n'
+        )
+        f.flush()
+        result = load_toml_config(Path(f.name))
+
+    assert result[0]["sampling_args"] == {
+        "max_tokens": 1024,
+        "reasoning_effort": "medium",
+        "enable_thinking": False,
+        "extra_body": {
+            "custom": "value",
+            "chat_template_kwargs": {
+                "clear_thinking": True,
+                "reasoning_effort": "medium",
+                "enable_thinking": False,
+            },
+        },
+    }
+
+
+def test_load_toml_config_sampling_args_mirrors_chat_template_kwargs():
+    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
+        f.write(
+            "[[eval]]\n"
+            'env_id = "env1"\n'
+            'sampling_args = { max_tokens = 256, reasoning_effort = "high", enable_thinking = true }\n'
+        )
+        f.flush()
+        result = load_toml_config(Path(f.name))
+
+    assert result[0]["sampling_args"] == {
+        "max_tokens": 256,
+        "reasoning_effort": "high",
+        "enable_thinking": True,
+        "extra_body": {
+            "chat_template_kwargs": {
+                "reasoning_effort": "high",
+                "enable_thinking": True,
+            }
+        },
+    }
+
+
+def test_cli_toml_eval_sampling_section_pipes_thinking_args(monkeypatch, run_cli):
+    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
+        f.write(
+            "[[eval]]\n"
+            'env_id = "env1"\n\n'
+            "[eval.sampling]\n"
+            "max_tokens = 512\n"
+            'reasoning_effort = "low"\n'
+            "enable_thinking = true\n"
+        )
+        f.flush()
+        captured = run_cli(
+            monkeypatch,
+            {
+                "env_id_or_config": f.name,
+            },
+        )
+
+    assert captured["sampling_args"] == {
+        "max_tokens": 512,
+        "reasoning_effort": "low",
+        "enable_thinking": True,
+        "extra_body": {
+            "chat_template_kwargs": {
+                "reasoning_effort": "low",
+                "enable_thinking": True,
+            }
+        },
+    }
+
+
 def test_load_toml_config_with_args_taskset_harness():
     """args/taskset/harness sections normalize into load_environment kwargs."""
     with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
@@ -1261,6 +1347,44 @@ def test_ablation_global_defaults_apply():
 
     assert len(configs) == 2
     assert all(c["num_examples"] == 100 for c in configs)
+
+
+def test_ablation_sampling_sweep_merges_with_global_sampling_defaults():
+    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
+        f.write(
+            "[sampling]\n"
+            "max_tokens = 1024\n"
+            'reasoning_effort = "medium"\n\n'
+            '[[ablation]]\nenv_id = "my-env"\n\n'
+            "[ablation.sweep]\n"
+            "sampling = [{ temperature = 0.0 }, { temperature = 1.0, enable_thinking = false }]\n"
+        )
+        f.flush()
+        configs = load_toml_config(Path(f.name))
+
+    assert len(configs) == 2
+    assert configs[0]["sampling_args"] == {
+        "max_tokens": 1024,
+        "reasoning_effort": "medium",
+        "temperature": 0.0,
+        "extra_body": {
+            "chat_template_kwargs": {
+                "reasoning_effort": "medium",
+            }
+        },
+    }
+    assert configs[1]["sampling_args"] == {
+        "max_tokens": 1024,
+        "reasoning_effort": "medium",
+        "temperature": 1.0,
+        "enable_thinking": False,
+        "extra_body": {
+            "chat_template_kwargs": {
+                "reasoning_effort": "medium",
+                "enable_thinking": False,
+            }
+        },
+    }
 
 
 def test_ablation_endpoint_id_override_removes_global_model():
