@@ -94,6 +94,9 @@ browser = [
 openenv = [
     "openenv-core>=0.3.0",
 ]
+nemogym = [
+    "nemo-gym>=0.2.1,<0.3; python_version >= '3.12'",
+]
 renderers = [
     "renderers>=0.1.8.dev2",
 ]
@@ -118,7 +121,16 @@ conflicts = [
         { extra = "openenv" },
         { group = "policy" },
     ],
+    [
+        { extra = "nemogym" },
+        { extra = "openenv" },
+    ],
+    [
+        { extra = "nemogym" },
+        { group = "dev" },
+    ],
 ]
+
 [[tool.uv.index]]
 name = "pypi"
 url = "https://pypi.org/simple"

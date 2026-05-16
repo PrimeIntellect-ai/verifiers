@@ -36,6 +36,8 @@ from .env import Env
 from .harness import Harness
 from .packages.harnesses import (
     MiniSWEAgent,
+    NeMoGymHarness,
+    NeMoGymHarnessConfig,
     OpenCode,
     OpenCodeConfig,
     Pi,
@@ -58,6 +60,8 @@ from .taskset import Taskset, discover_sibling_dir
 from .packages.tasksets import (
     HarborTaskset,
     HarborTasksetConfig,
+    NeMoGymTaskset,
+    NeMoGymTasksetConfig,
 )
 from .toolset import MCPTool, Toolset
 from .types import (
@@ -91,6 +95,10 @@ __all__ = [
     "Message",
     "Messages",
     "MiniSWEAgent",
+    "NeMoGymHarness",
+    "NeMoGymHarnessConfig",
+    "NeMoGymTaskset",
+    "NeMoGymTasksetConfig",
     "OpenCode",
     "OpenCodeConfig",
     "Objects",
