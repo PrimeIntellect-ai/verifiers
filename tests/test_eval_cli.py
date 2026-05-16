@@ -720,6 +720,65 @@ def test_load_toml_config_with_env_args():
         assert result[0]["env_args"]["max_examples"] == 100
 
 
+def test_load_toml_config_sampling_section_moves_reasoning_to_chat_template_kwargs():
+    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
+        f.write(
+            "[sampling]\n"
+            "max_tokens = 1024\n"
+            'reasoning_effort = "medium"\n'
+            "enable_thinking = false\n\n"
+            "[sampling.extra_body]\n"
+            'custom = "value"\n\n'
+            "[sampling.extra_body.chat_template_kwargs]\n"
+            "clear_thinking = true\n\n"
+            "[[eval]]\n"
+            'env_id = "env1"\n'
+        )
+        f.flush()
+        result = load_toml_config(Path(f.name))
+
+    assert result[0]["sampling_args"] == {
+        "max_tokens": 1024,
+        "extra_body": {
+            "custom": "value",
+            "chat_template_kwargs": {
+                "clear_thinking": True,
+                "reasoning_effort": "medium",
+                "enable_thinking": False,
+            },
+        },
+    }
+
+
+def test_cli_toml_eval_sampling_section_pipes_thinking_args(monkeypatch, run_cli):
+    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
+        f.write(
+            "[[eval]]\n"
+            'env_id = "env1"\n\n'
+            "[eval.sampling]\n"
+            "max_tokens = 512\n"
+            'reasoning_effort = "low"\n'
+            "enable_thinking = true\n"
+        )
+        f.flush()
+        captured = run_cli(
+            monkeypatch,
+            {
+                "env_id_or_config": f.name,
+            },
+        )
+
+    assert captured["sampling_args"] == {
+        "max_tokens": 512,
+        "extra_body": {
+            "chat_template_kwargs": {
+                "reasoning_effort": "low",
+                "enable_thinking": True,
+            }
+        },
+    }
+
+
 def test_load_toml_config_with_args_taskset_harness():
     """args/taskset/harness sections normalize into load_environment kwargs."""
     with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
