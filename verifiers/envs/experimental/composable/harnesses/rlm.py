@@ -22,6 +22,11 @@ DEFAULT_RLM_MAX_DEPTH = 0
 DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH = "/task/append_to_system_prompt.txt"
 DEFAULT_RLM_CHECKOUT_PATH = "/tmp/rlm-checkout"
 DEFAULT_RLM_CHECKOUT_UPLOAD_NAME = "rlm_checkout"
+# Pinned outside the agent workdir because the agent has full destructive
+# control over its workdir (git clean -fdx, rm -rf, git stash, etc.) and any
+# of those wipe rlm's session dir mid-rollout, breaking the next meta.json
+# write with FileNotFoundError.
+DEFAULT_RLM_HOME = "/tmp/.rlm"
 DEFAULT_RLM_LOCAL_CHECKOUT_CACHE_ROOT = (
     Path.home() / ".cache" / "verifiers" / "rlm-checkouts"
 )
@@ -174,6 +179,12 @@ def rlm_harness(
     ``ComposableEnv(environment_vars=...)`` themselves; pass the kwargs
     here and the harness owns the env var plumbing.
 
+    The harness also pins ``RLM_HOME`` to ``DEFAULT_RLM_HOME`` (an
+    absolute path outside any task workdir) so rlm session state cannot
+    be wiped by the agent's own destructive ops on its workdir.
+    ``metrics_path`` follows the same path so post-rollout metrics
+    collection keeps matching where rlm actually writes.
+
     Git access from inside the agent is refused at the rlm tool layer
     (bash + ipython): rlm detects shell escapes and AST-walks
     ``subprocess.run`` / ``os.system`` / ``os.popen`` for a literal
@@ -219,6 +230,7 @@ def rlm_harness(
         "RLM_MAX_TURNS": str(rlm_max_turns),
         "RLM_EXEC_TIMEOUT": str(rlm_exec_timeout),
         "RLM_MAX_DEPTH": str(rlm_max_depth),
+        "RLM_HOME": DEFAULT_RLM_HOME,
     }
 
     def env_vars_for_rollout(state: State) -> dict[str, str]:
@@ -241,7 +253,7 @@ def rlm_harness(
         skills_path="/task/rlm-skills",
         get_upload_dirs=get_upload_dirs,
         upload_dir_mapping=upload_dir_mapping,
-        metrics_path="{workdir}/.rlm/sessions/*/meta.json",
+        metrics_path=f"{DEFAULT_RLM_HOME}/sessions/*/meta.json",
         metrics_key="metrics",
         metrics_prefix="rlm_",
         tool_names=tool_names,

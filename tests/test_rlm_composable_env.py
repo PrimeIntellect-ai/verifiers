@@ -202,7 +202,7 @@ def test_rlm_harness_uses_explicit_local_checkout(tmp_path):
 
     assert harness.get_upload_dirs() == {"rlm_checkout": checkout.resolve()}
     assert harness.upload_dir_mapping == {"rlm_checkout": "/tmp/rlm-checkout"}
-    assert harness.metrics_path == "{workdir}/.rlm/sessions/*/meta.json"
+    assert harness.metrics_path == "/tmp/.rlm/sessions/*/meta.json"
     assert harness.metrics_key == "metrics"
     assert harness.metrics_prefix == "rlm_"
     assert harness.skills_path == "/task/rlm-skills"
@@ -703,7 +703,7 @@ async def test_rlm_collects_logs_and_metrics(tmp_path):
         ),
         call(
             "sbx",
-            'f=$(ls /testbed/.rlm/sessions/*/meta.json 2>/dev/null | head -1) && cat "$f" || echo "{}"',
+            'f=$(ls /tmp/.rlm/sessions/*/meta.json 2>/dev/null | head -1) && cat "$f" || echo "{}"',
             working_dir=None,
         ),
     ]
