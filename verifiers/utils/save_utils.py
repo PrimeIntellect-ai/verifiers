@@ -279,6 +279,11 @@ def state_to_output(
     state_metrics = state.get("metrics") or {}
     for k, v in state_metrics.items():
         output[k] = v
+    # propagate judge records (LLM-as-judge calls captured by JudgeRubric).
+    # Auto-emitted so env authors don't need to register a state column.
+    judges = state.get("judges")
+    if judges:
+        output["judges"] = judges
     # add state columns (must be serializable)
     for col in state_columns or []:
         value = state.get(col)
