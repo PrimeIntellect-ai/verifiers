@@ -61,6 +61,9 @@ from verifiers.utils.response_utils import parse_routed_experts
 # bridge_break_rate metric.
 _bridge_metrics_lock = threading.Lock()
 _bridge_metrics: dict[str, int] = {"attempts": 0, "successes": 0, "failures": 0}
+_generate_accepts_multi_modal_data = (
+    "multi_modal_data" in inspect.signature(generate).parameters
+)
 
 try:
     from renderers import MultimodalRenderer, is_multimodal
@@ -596,20 +599,22 @@ class RendererClient(
             prompt_ids = None
             multi_modal_data = None
 
-        return await generate(
-            client=self.client,
-            renderer=renderer,
-            messages=prompt,
-            model=model,
-            prompt_ids=prompt_ids,
-            multi_modal_data=multi_modal_data,
-            tools=tools,
-            sampling_params=sampling_params,
-            cache_salt=args.get("cache_salt")
+        generate_kwargs = {
+            "client": self.client,
+            "renderer": renderer,
+            "messages": prompt,
+            "model": model,
+            "prompt_ids": prompt_ids,
+            "tools": tools,
+            "sampling_params": sampling_params,
+            "cache_salt": args.get("cache_salt")
             or sampling_params.pop("cache_salt", None),
-            priority=args.get("priority") or sampling_params.pop("priority", None),
-            extra_headers=args.get("extra_headers"),
-        )
+            "priority": args.get("priority") or sampling_params.pop("priority", None),
+            "extra_headers": args.get("extra_headers"),
+        }
+        if _generate_accepts_multi_modal_data:
+            generate_kwargs["multi_modal_data"] = multi_modal_data
+        return await generate(**generate_kwargs)
 
     async def raise_from_native_response(self, response: dict[str, Any]) -> None:
         if response is None:
