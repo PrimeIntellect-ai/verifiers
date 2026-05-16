@@ -310,6 +310,28 @@ async def test_get_native_response_preserves_compact_routed_experts_payload():
     assert response["routed_experts"] == {"data": "////", "shape": [3, 1, 1]}
 
 
+@pytest.mark.asyncio
+async def test_get_native_response_forwards_extra_headers_to_generate_request():
+    renderer = _GenerateRenderer()
+    fake_openai = _FakeGenerateClient()
+    client = object.__new__(RendererClient)
+    client._config = None
+    client._client = fake_openai
+    client._renderer = renderer
+    client._pool_size = 1
+
+    await client.get_native_response(
+        [{"role": "user", "content": "hi"}],
+        model="test-model",
+        sampling_args={"extra_headers": {"X-Static": "static"}},
+        extra_headers={"X-Session-ID": "trajectory-123", "X-Static": "state"},
+    )
+
+    assert fake_openai.requests[0]["options"] == {
+        "headers": {"X-Static": "state", "X-Session-ID": "trajectory-123"}
+    }
+
+
 class _BridgeRenderer:
     supports_tools = True
 
