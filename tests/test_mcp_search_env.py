@@ -1,5 +1,6 @@
 import importlib.util
 import inspect
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,7 @@ def _load_mcp_search_module() -> Any:
     assert spec.loader is not None
 
     module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 

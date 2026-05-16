@@ -6,7 +6,9 @@ from collections.abc import Callable, Iterable
 from importlib.abc import Traversable
 from pathlib import Path
 from typing import cast
+
 from pydantic import BaseModel
+
 from ..types import ConfigData, ConfigMap
 
 
@@ -34,9 +36,12 @@ def load_source_rows(
     sig = inspect.signature(source_loader)
     if any(p.kind == p.VAR_KEYWORD for p in sig.parameters.values()):
         return source_loader(**source_args)
-    allowed = {
-        key: value for key, value in source_args.items() if key in sig.parameters
+    keyword_names = {
+        name
+        for name, parameter in sig.parameters.items()
+        if parameter.kind != inspect.Parameter.POSITIONAL_ONLY
     }
+    allowed = {key: value for key, value in source_args.items() if key in keyword_names}
     return source_loader(**allowed)
 
 
@@ -49,7 +54,7 @@ def source_config_args(config: object | None) -> ConfigData:
         data = dict(config)
     else:
         return {"config": config, "taskset_config": config}
-    return {"config": config, "taskset_config": config, **data}
+    return {**data, "config": config, "taskset_config": config}
 
 
 def discover_sibling_dir(

@@ -55,7 +55,7 @@ def source(
 
 class ReverseTextTasksetConfig(vf.TasksetConfig):
     source: str = f"{__name__}:source"
-    system_prompt: str = (
+    system_prompt: str | None = (
         "Reverse the text character-by-character. Put your answer in "
         "<reversed_text> tags."
     )

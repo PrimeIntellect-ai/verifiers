@@ -284,8 +284,8 @@ def normalize_toolset(value: object) -> Toolset:
 def toolset_from_mapping(spec: ConfigMap) -> Toolset:
     return Toolset(
         tools=cast(ToolEntries | None, spec.get("tools", ())),
-        show=cast(Iterable[str] | None, spec.get("show")),
-        hide=cast(Iterable[str] | None, spec.get("hide")),
+        show=string_items(spec.get("show")),
+        hide=string_items(spec.get("hide")),
         bindings=cast(BindingMap | None, spec.get("bindings")),
         objects=cast(Objects | None, spec.get("objects")),
         write=cast(bool | None, spec.get("write")),

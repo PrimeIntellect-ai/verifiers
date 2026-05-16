@@ -20,6 +20,9 @@ from verifiers.v1 import (
     TasksetConfig,
     Toolset,
 )
+from verifiers.v1.toolset import normalize_toolset
+from verifiers.v1.utils.config_utils import config_data as v1_config_data
+from verifiers.v1.utils.taskset_utils import rows_from_source, source_config_args
 
 
 REF_MODULE = "v1_config_extension_refs"
@@ -42,6 +45,12 @@ def eval_source_loader() -> list[dict[str, object]]:
             "answer": "eval ok",
         }
     ]
+
+
+def positional_only_source(
+    config: str = "positional-default", /, split: str = "train"
+) -> list[dict[str, object]]:
+    return [{"config": config, "split": split}]
 
 
 @vf.metric
@@ -327,6 +336,67 @@ setattr(ref_module, "config_program", config_program)
 setattr(ref_module, "setup_aware_program", setup_aware_program)
 setattr(ref_module, "load_another_harness_config", load_another_harness_config)
 sys.modules[REF_MODULE] = ref_module
+
+
+def test_source_config_args_preserve_config_object_aliases() -> None:
+    raw_config = {
+        "config": "shadowed",
+        "taskset_config": "also-shadowed",
+        "split": "eval",
+    }
+
+    args = source_config_args(raw_config)
+
+    assert args["config"] is raw_config
+    assert args["taskset_config"] is raw_config
+    assert args["split"] == "eval"
+
+
+def test_config_data_recursively_dumps_nested_configs_without_none() -> None:
+    class NestedConfig(Config):
+        sandbox: vf.SandboxConfig | None = None
+
+    class OuterConfig(Config):
+        nested: NestedConfig = NestedConfig()
+        label: str | None = "default"
+
+    config = OuterConfig(
+        nested=NestedConfig(
+            sandbox=vf.SandboxConfig(image="python:3.12-slim", workdir=None)
+        ),
+        label=None,
+    )
+
+    assert v1_config_data(config) == {
+        "nested": {"sandbox": {"image": "python:3.12-slim"}}
+    }
+
+
+def test_source_loader_filters_positional_only_config_names() -> None:
+    rows = rows_from_source(
+        positional_only_source,
+        {"config": "shadowed", "split": "eval"},
+    )
+
+    assert rows == [{"config": "positional-default", "split": "eval"}]
+
+
+def test_toolset_mapping_treats_show_hide_strings_as_tool_names() -> None:
+    shown = normalize_toolset(
+        {
+            "tools": [direct_tool, hidden_tool],
+            "show": "direct_tool",
+        }
+    )
+    hidden = normalize_toolset(
+        {
+            "tools": [direct_tool, hidden_tool],
+            "hide": "hidden_tool",
+        }
+    )
+
+    assert shown.show == ("direct_tool",)
+    assert hidden.hide == ("hidden_tool",)
 
 
 def ref(name: str) -> str:
