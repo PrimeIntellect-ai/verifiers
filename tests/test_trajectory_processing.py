@@ -56,6 +56,40 @@ async def test_parse_response_tokens_with_tokens():
 
 
 @pytest.mark.asyncio
+async def test_parse_response_tokens_moves_routed_experts_off_response():
+    """Routed experts should live only on the parsed trajectory step."""
+    routed_experts = {"data": "abcd", "shape": [3, 78, 8]}
+    response = Response(
+        id="test-id",
+        created=0,
+        model="test-model",
+        message=ResponseMessage(
+            role="assistant",
+            content="Hello",
+            reasoning_content=None,
+            tool_calls=None,
+            finish_reason="stop",
+            is_truncated=False,
+            tokens=ResponseTokens(
+                prompt_ids=[1, 2],
+                prompt_mask=[0, 0],
+                completion_ids=[3],
+                completion_mask=[1],
+                completion_logprobs=[-0.1],
+                routed_experts=routed_experts,
+            ),
+        ),
+    )
+
+    tokens = await parse_response_tokens(response)
+
+    assert tokens is not None
+    assert tokens["routed_experts"] == routed_experts
+    assert response.message.tokens is not None
+    assert response.message.tokens.routed_experts is None
+
+
+@pytest.mark.asyncio
 async def test_parse_response_tokens_without_tokens():
     """Test parsing tokens from vf.Response without token data."""
     response = Response(

@@ -89,4 +89,6 @@ async def parse_response_tokens(
         # step. Leaving it on ``response.message.tokens`` too means every
         # downstream pass (msgpack, save) has to dedupe the duplicate.
         tokens.multi_modal_data = None
+    if routed_experts is not None:
+        tokens.routed_experts = None
     return out
