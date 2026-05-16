@@ -1,0 +1,24 @@
+[project]
+name = "nemo-workplace-assistant"
+description = "NeMo Gym workplace_assistant resource server environment via verifiers NeMo integration"
+tags = ["nemo-gym", "tools", "multi-turn", "session-state", "sandbox"]
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "verifiers>=0.1.11.dev1",
+    "nemo-gym @ https://test-files.pythonhosted.org/packages/c0/58/451a826009a0b206c932e1ebde3dcff2a8b31152c77133fdde7e5f7ccd90/nemo_gym-0.2.9892rc0-py3-none-any.whl",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["nemo_workplace_assistant.py", "README.md", "pyproject.toml"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.verifiers.eval]
+num_examples = 5
+rollouts_per_example = 1
