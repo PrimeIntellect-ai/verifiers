@@ -100,6 +100,7 @@ _TTT_CONTROL_KEYS = {
     "ttt_window_seq_len",
     "ttt_require_exact_token_ids",
     "ttt_require_content_mask",
+    "ttt_tool_output_train_names",
     "ttt_train_prompt_lora",
     "ttt_train_completion_lora",
     "ttt_completion_lora_trains_initial_prompt",
@@ -343,7 +344,56 @@ def _step_rendered_messages(step: Any) -> list[RendererMessage]:
 
 
 def _pop_ttt_options(sampling_params: dict[str, Any]) -> dict[str, Any]:
-    return {key: sampling_params.pop(key) for key in list(sampling_params) if key in _TTT_CONTROL_KEYS}
+    return {
+        key: sampling_params.pop(key)
+        for key in list(sampling_params)
+        if key in _TTT_CONTROL_KEYS
+    }
+
+
+def _normalize_tool_output_train_names(value: Any) -> set[str] | None:
+    if value is None:
+        return None
+    if not isinstance(value, list | tuple | set):
+        raise ValueError(
+            "ttt_tool_output_train_names must be null or a list of tool names."
+        )
+    names: set[str] = set()
+    for item in value:
+        if not isinstance(item, str) or not item:
+            raise ValueError(
+                "ttt_tool_output_train_names must contain non-empty strings."
+            )
+        names.add(item)
+    return names
+
+
+def _tool_spec_names(tools: list[ToolSpec] | None) -> set[str] | None:
+    if tools is None:
+        return None
+    names: set[str] = set()
+    for tool in tools:
+        function = tool.get("function") if isinstance(tool, Mapping) else None
+        name = function.get("name") if isinstance(function, Mapping) else None
+        if isinstance(name, str):
+            names.add(name)
+    return names
+
+
+def _validate_tool_output_train_names(
+    allowed_names: set[str] | None, tools: list[ToolSpec] | None
+) -> None:
+    if allowed_names is None:
+        return
+    available_names = _tool_spec_names(tools)
+    if available_names is None:
+        return
+    missing = allowed_names - available_names
+    if missing:
+        raise ValueError(
+            "ttt_tool_output_train_names contains names not available in tools: "
+            f"{sorted(missing)}. Available tools: {sorted(available_names)}"
+        )
 
 
 def _state_get(state: Any, key: str, default: Any = None) -> Any:
@@ -374,6 +424,7 @@ def _role_train_ids(
     start: int = 0,
     content_only: bool = False,
     require_content_mask: bool = False,
+    tool_output_train_names: set[str] | None = None,
 ) -> list[int]:
     token_ids = rendered.token_ids
     indices = rendered.message_indices
@@ -382,7 +433,9 @@ def _role_train_ids(
     content_mask = rendered.content_mask
     has_content_mask = len(content_mask) == len(token_ids)
     if content_only and require_content_mask and not has_content_mask:
-        raise ValueError("TTT content-only token selection requires renderer content_mask.")
+        raise ValueError(
+            "TTT content-only token selection requires renderer content_mask."
+        )
 
     selected = []
     for pos, (token_id, msg_idx) in enumerate(zip(token_ids, indices)):
@@ -391,6 +444,10 @@ def _role_train_ids(
         if content_only and has_content_mask and not content_mask[pos]:
             continue
         role = prompt[msg_idx].get("role")
+        if role == "tool" and tool_output_train_names is not None:
+            name = prompt[msg_idx].get("name")
+            if name not in tool_output_train_names:
+                continue
         if role in train_roles:
             selected.append(token_id)
     return selected
@@ -421,12 +478,16 @@ async def _render_prompt(
     )
 
 
-def _window_prompt_ids(prompt_ids: list[int], sampling_params: dict[str, Any], options: dict[str, Any]) -> list[int]:
+def _window_prompt_ids(
+    prompt_ids: list[int], sampling_params: dict[str, Any], options: dict[str, Any]
+) -> list[int]:
     window_len = options.get("ttt_window_seq_len")
     if not isinstance(window_len, int) or window_len <= 0:
         return prompt_ids
     max_tokens = sampling_params.get("max_tokens")
-    completion_budget = int(max_tokens) if isinstance(max_tokens, int) and max_tokens > 0 else 0
+    completion_budget = (
+        int(max_tokens) if isinstance(max_tokens, int) and max_tokens > 0 else 0
+    )
     prompt_budget = max(window_len - completion_budget, 1)
     return prompt_ids[-prompt_budget:]
 
@@ -443,7 +504,9 @@ async def _ttt_prepare_turn(
     learner_url = str(options["ttt_learner_url"]).rstrip("/")
     trajectory_id = _state_get(state, "trajectory_id")
     if trajectory_id is None:
-        raise ValueError("TTT requires state['trajectory_id'] for rollout-local LoRA sessions.")
+        raise ValueError(
+            "TTT requires state['trajectory_id'] for rollout-local LoRA sessions."
+        )
     trajectory = _state_get(state, "trajectory", []) or []
     turn_idx = len(trajectory)
     payload = {
@@ -485,7 +548,9 @@ async def _ttt_complete_turn(
     }
     timeout = float(options.get("ttt_request_timeout_s") or 120.0)
     async with httpx.AsyncClient(timeout=timeout) as client:
-        learner_response = await client.post(f"{learner_url}/complete_turn", json=payload)
+        learner_response = await client.post(
+            f"{learner_url}/complete_turn", json=payload
+        )
         learner_response.raise_for_status()
         complete = learner_response.json()
 
@@ -761,7 +826,9 @@ class RendererClient(
             if ttt_options.get("ttt_require_exact_token_ids"):
                 trajectory = _state_get(kwargs.get("state"), "trajectory", []) or []
                 if trajectory:
-                    raise ValueError("TTT exact-token mode could not bridge the next renderer prompt.")
+                    raise ValueError(
+                        "TTT exact-token mode could not bridge the next renderer prompt."
+                    )
             rendered_for_ttt = await _render_prompt(renderer, prompt, tools)
             prompt_ids = list(rendered_for_ttt.token_ids)
             multi_modal_data = rendered_for_ttt.multi_modal_data
@@ -774,9 +841,13 @@ class RendererClient(
         cache_salt = args.get("cache_salt") or sampling_params.pop("cache_salt", None)
         if ttt_enabled:
             if not ttt_options.get("ttt_learner_url"):
-                raise ValueError("TTT renderer mode requires ttt_learner_url in sampling_args.extra_body.")
+                raise ValueError(
+                    "TTT renderer mode requires ttt_learner_url in sampling_args.extra_body."
+                )
             if prompt_ids is None:
-                rendered_for_ttt = rendered_for_ttt or await _render_prompt(renderer, prompt, tools)
+                rendered_for_ttt = rendered_for_ttt or await _render_prompt(
+                    renderer, prompt, tools
+                )
                 prompt_ids = list(rendered_for_ttt.token_ids)
                 multi_modal_data = rendered_for_ttt.multi_modal_data
 
@@ -788,12 +859,20 @@ class RendererClient(
                     ttt_options.get("ttt_require_exact_token_ids", False),
                 )
             )
+            tool_output_train_names = _normalize_tool_output_train_names(
+                ttt_options.get("ttt_tool_output_train_names")
+            )
+            _validate_tool_output_train_names(tool_output_train_names, tools)
             if is_first_turn:
                 token_role = "completion_initial_prompt"
-                if ttt_options.get("ttt_train_completion_lora", True) and ttt_options.get(
+                if ttt_options.get(
+                    "ttt_train_completion_lora", True
+                ) and ttt_options.get(
                     "ttt_completion_lora_trains_initial_prompt", True
                 ):
-                    rendered_for_ttt = rendered_for_ttt or await _render_prompt(renderer, prompt, tools)
+                    rendered_for_ttt = rendered_for_ttt or await _render_prompt(
+                        renderer, prompt, tools
+                    )
                     new_prompt_ids = _role_train_ids(
                         rendered_for_ttt,
                         prompt,
@@ -808,11 +887,15 @@ class RendererClient(
                 if ttt_options.get("ttt_train_prompt_lora", True) and ttt_options.get(
                     "ttt_prompt_lora_trains_environment_responses", True
                 ):
-                    previous_len = _previous_prefix_token_len(kwargs.get("state"), prompt_ids)
+                    previous_len = _previous_prefix_token_len(
+                        kwargs.get("state"), prompt_ids
+                    )
                     if bridged is not None:
                         # Most hand-coded renderers return exact bridged IDs but omit attribution.
                         # Use a full render only for attribution when it matches the exact bridge.
-                        rendered_for_ttt = rendered_for_ttt or await _render_prompt(renderer, prompt, tools)
+                        rendered_for_ttt = rendered_for_ttt or await _render_prompt(
+                            renderer, prompt, tools
+                        )
                         if rendered_for_ttt.token_ids == prompt_ids:
                             new_prompt_ids = _role_train_ids(
                                 rendered_for_ttt,
@@ -821,16 +904,24 @@ class RendererClient(
                                 start=max(previous_len, 0),
                                 content_only=True,
                                 require_content_mask=require_content_mask,
+                                tool_output_train_names=tool_output_train_names,
                             )
                         else:
-                            if require_content_mask:
+                            if (
+                                require_content_mask
+                                or tool_output_train_names is not None
+                            ):
                                 raise ValueError(
-                                    "TTT content-only token selection requires renderer full render "
-                                    "to match bridged prompt ids."
+                                    "TTT content-only or tool-filtered token selection requires renderer "
+                                    "full render to match bridged prompt ids."
                                 )
-                            new_prompt_ids = list(bridged.token_ids[max(previous_len, 0) :])
+                            new_prompt_ids = list(
+                                bridged.token_ids[max(previous_len, 0) :]
+                            )
                     else:
-                        rendered_for_ttt = rendered_for_ttt or await _render_prompt(renderer, prompt, tools)
+                        rendered_for_ttt = rendered_for_ttt or await _render_prompt(
+                            renderer, prompt, tools
+                        )
                         new_prompt_ids = _role_train_ids(
                             rendered_for_ttt,
                             prompt,
@@ -838,11 +929,14 @@ class RendererClient(
                             start=max(previous_len, 0),
                             content_only=True,
                             require_content_mask=require_content_mask,
+                            tool_output_train_names=tool_output_train_names,
                         )
                 else:
                     new_prompt_ids = []
 
-            generation_prompt_ids = _window_prompt_ids(prompt_ids, sampling_params, ttt_options)
+            generation_prompt_ids = _window_prompt_ids(
+                prompt_ids, sampling_params, ttt_options
+            )
             prepare = await _ttt_prepare_turn(
                 state=kwargs.get("state"),
                 model=model,
@@ -855,7 +949,11 @@ class RendererClient(
             prompt_ids = generation_prompt_ids
             if ttt_options.get("ttt_cache_salt_includes_adapter", True):
                 adapter_version = prepare.get("adapter_name") or prepare.get("version")
-                cache_salt = f"{cache_salt}:{adapter_version}" if cache_salt is not None else str(adapter_version)
+                cache_salt = (
+                    f"{cache_salt}:{adapter_version}"
+                    if cache_salt is not None
+                    else str(adapter_version)
+                )
 
         response = await generate(
             client=self.client,

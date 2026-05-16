@@ -306,7 +306,9 @@ class _TTTRenderer:
     def render(self, messages, *, tools=None, add_generation_prompt=False):
         return self.rendered
 
-    def bridge_to_next_turn(self, previous_prompt_ids, previous_completion_ids, new_messages, *, tools=None):
+    def bridge_to_next_turn(
+        self, previous_prompt_ids, previous_completion_ids, new_messages, *, tools=None
+    ):
         return self.bridged
 
     def parse_response(self, token_ids, *, tools=None):
@@ -385,7 +387,9 @@ def _ttt_sampling_args():
 
 
 @pytest.mark.asyncio
-async def test_renderer_client_ttt_routes_initial_prompt_to_completion_lora(monkeypatch):
+async def test_renderer_client_ttt_routes_initial_prompt_to_completion_lora(
+    monkeypatch,
+):
     _TTTHTTPClient.calls = []
     renderer = _TTTRenderer(
         RenderedTokens(
@@ -412,7 +416,9 @@ async def test_renderer_client_ttt_routes_initial_prompt_to_completion_lora(monk
             "completion_logprobs": [-0.1, -0.2],
         }
 
-    monkeypatch.setattr("verifiers.clients.renderer_client.httpx.AsyncClient", _TTTHTTPClient)
+    monkeypatch.setattr(
+        "verifiers.clients.renderer_client.httpx.AsyncClient", _TTTHTTPClient
+    )
     monkeypatch.setattr("verifiers.clients.renderer_client.generate", fake_generate)
 
     state = {"trajectory_id": "traj-1", "trajectory": []}
@@ -432,14 +438,18 @@ async def test_renderer_client_ttt_routes_initial_prompt_to_completion_lora(monk
 
 
 @pytest.mark.asyncio
-async def test_renderer_client_ttt_routes_bridged_tool_tokens_to_prompt_lora(monkeypatch):
+async def test_renderer_client_ttt_routes_bridged_tool_tokens_to_prompt_lora(
+    monkeypatch,
+):
     _TTTHTTPClient.calls = []
     rendered = RenderedTokens(
         token_ids=[1, 2, 3, 40, 41, 42],
         message_indices=[0, 1, 2, 3, 3, -1],
         content_mask=[True, True, True, False, True, False],
     )
-    renderer = _TTTRenderer(rendered=rendered, bridged=RenderedTokens(token_ids=list(rendered.token_ids)))
+    renderer = _TTTRenderer(
+        rendered=rendered, bridged=RenderedTokens(token_ids=list(rendered.token_ids))
+    )
     client = object.__new__(RendererClient)
     client.client = object()
     client._renderer = renderer
@@ -454,7 +464,9 @@ async def test_renderer_client_ttt_routes_bridged_tool_tokens_to_prompt_lora(mon
             "completion_logprobs": [-0.3],
         }
 
-    monkeypatch.setattr("verifiers.clients.renderer_client.httpx.AsyncClient", _TTTHTTPClient)
+    monkeypatch.setattr(
+        "verifiers.clients.renderer_client.httpx.AsyncClient", _TTTHTTPClient
+    )
     monkeypatch.setattr("verifiers.clients.renderer_client.generate", fake_generate)
 
     state = {
@@ -485,6 +497,96 @@ async def test_renderer_client_ttt_routes_bridged_tool_tokens_to_prompt_lora(mon
 
 
 @pytest.mark.asyncio
+async def test_renderer_client_ttt_filters_tool_outputs_by_name(monkeypatch):
+    _TTTHTTPClient.calls = []
+    rendered = RenderedTokens(
+        token_ids=[1, 2, 3, 40, 41, 50, 51, 42],
+        message_indices=[0, 1, 2, 3, 3, 4, 4, -1],
+        content_mask=[True, True, True, False, True, False, True, False],
+    )
+    renderer = _TTTRenderer(
+        rendered=rendered, bridged=RenderedTokens(token_ids=list(rendered.token_ids))
+    )
+    client = object.__new__(RendererClient)
+    client.client = object()
+    client._renderer = renderer
+
+    async def fake_generate(**kwargs):
+        return {
+            "request_id": "r",
+            "content": "ok",
+            "finish_reason": "stop",
+            "prompt_ids": kwargs["prompt_ids"],
+            "completion_ids": [60],
+            "completion_logprobs": [-0.3],
+        }
+
+    monkeypatch.setattr(
+        "verifiers.clients.renderer_client.httpx.AsyncClient", _TTTHTTPClient
+    )
+    monkeypatch.setattr("verifiers.clients.renderer_client.generate", fake_generate)
+
+    state = {
+        "trajectory_id": "traj-tool-filter",
+        "trajectory": [
+            {
+                "prompt": [SystemMessage(content="s"), UserMessage(content="u")],
+                "completion": [AssistantMessage(content="a")],
+                "tokens": {"prompt_ids": [1, 2], "completion_ids": [3]},
+            }
+        ],
+    }
+    sampling_args = _ttt_sampling_args()
+    sampling_args["extra_body"]["ttt_tool_output_train_names"] = ["lookup"]
+    await client.get_native_response(
+        [
+            {"role": "system", "content": "s"},
+            {"role": "user", "content": "u"},
+            {"role": "assistant", "content": "a"},
+            {"role": "tool", "content": "selected", "name": "lookup"},
+            {"role": "tool", "content": "ignored", "name": "skip"},
+        ],
+        "base-model",
+        sampling_args,
+        tools=[
+            {"type": "function", "function": {"name": "lookup"}},
+            {"type": "function", "function": {"name": "skip"}},
+        ],
+        state=state,
+    )
+
+    prepare_call = _TTTHTTPClient.calls[0]
+    assert prepare_call[1]["token_role"] == "prompt_environment"
+    assert prepare_call[1]["new_prompt_ids"] == [41]
+
+
+@pytest.mark.asyncio
+async def test_renderer_client_ttt_validates_tool_output_train_names():
+    renderer = _TTTRenderer(
+        RenderedTokens(
+            token_ids=[10, 11, 12, 13],
+            message_indices=[0, 1, 1, -1],
+            content_mask=[False, True, True, False],
+        )
+    )
+    client = object.__new__(RendererClient)
+    client.client = object()
+    client._renderer = renderer
+
+    sampling_args = _ttt_sampling_args()
+    sampling_args["extra_body"]["ttt_tool_output_train_names"] = ["missing"]
+    state = {"trajectory_id": "traj-invalid-tools", "trajectory": []}
+    with pytest.raises(ValueError, match="not available in tools"):
+        await client.get_native_response(
+            [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}],
+            "base-model",
+            sampling_args,
+            tools=[{"type": "function", "function": {"name": "lookup"}}],
+            state=state,
+        )
+
+
+@pytest.mark.asyncio
 async def test_renderer_client_ttt_rejects_missing_content_mask():
     renderer = _TTTRenderer(
         RenderedTokens(
@@ -508,13 +610,20 @@ async def test_renderer_client_ttt_rejects_missing_content_mask():
 
 @pytest.mark.asyncio
 async def test_renderer_client_ttt_exact_mode_rejects_missing_later_bridge():
-    renderer = _TTTRenderer(RenderedTokens(token_ids=[1], message_indices=[0]), bridged=None)
+    renderer = _TTTRenderer(
+        RenderedTokens(token_ids=[1], message_indices=[0]), bridged=None
+    )
     client = object.__new__(RendererClient)
     client.client = object()
     client._renderer = renderer
     state = {
         "trajectory_id": "traj-3",
-        "trajectory": [{"prompt": [UserMessage(content="u")], "completion": [AssistantMessage(content="a")]}],
+        "trajectory": [
+            {
+                "prompt": [UserMessage(content="u")],
+                "completion": [AssistantMessage(content="a")],
+            }
+        ],
     }
 
     with pytest.raises(ValueError, match="could not bridge"):
