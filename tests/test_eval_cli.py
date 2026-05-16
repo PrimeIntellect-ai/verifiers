@@ -319,6 +319,54 @@ def test_cli_registry_headers_merged_with_eval_toml(tmp_path, monkeypatch, run_c
     }
 
 
+def test_cli_registry_prompt_cache_opt_out_flows_to_client_config(
+    monkeypatch, run_cli
+):
+    captured = run_cli(
+        monkeypatch,
+        {
+            "model": "openai",
+            "api_base_url": None,
+            "api_key_var": None,
+        },
+        endpoints={
+            "openai": [
+                {
+                    "model": "gpt-5.4-mini",
+                    "key": "OPENAI_API_KEY",
+                    "url": "https://api.openai.com/v1",
+                    "prompt_cache": False,
+                }
+            ]
+        },
+    )
+
+    assert captured["configs"][0].client_config.prompt_cache is False
+
+
+def test_cli_toml_prompt_cache_opt_out_overrides_registry(monkeypatch, run_cli):
+    captured = run_cli(
+        monkeypatch,
+        {
+            "model": "openai",
+            "api_base_url": None,
+            "api_key_var": None,
+            "prompt_cache": False,
+        },
+        endpoints={
+            "openai": [
+                {
+                    "model": "gpt-5.4-mini",
+                    "key": "OPENAI_API_KEY",
+                    "url": "https://api.openai.com/v1",
+                }
+            ]
+        },
+    )
+
+    assert captured["configs"][0].client_config.prompt_cache is False
+
+
 def test_cli_multi_variant_preserves_per_row_registry_headers(monkeypatch, run_cli):
     captured = run_cli(
         monkeypatch,

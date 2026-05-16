@@ -27,6 +27,8 @@ from verifiers.utils.message_utils import (
     serialize_messages_for_output,
 )
 from verifiers.utils.metric_utils import (
+    CacheWriteInputTokensMetric,
+    CachedInputTokensMetric,
     EnvMetrics,
     ErrorRateMetric,
     FinalInputTokensMetric,
@@ -41,6 +43,8 @@ from verifiers.utils.usage_utils import (
     StateUsageTracker,
 )
 from verifiers.utils.usage_utils import (
+    cast_token_usage,
+    extract_usage_token_details,
     extract_usage_tokens as extract_usage_tokens_from_response,
 )
 from verifiers.utils.version_utils import get_version_info
@@ -110,10 +114,19 @@ def _coerce_token_usage(value: object) -> TokenUsage | None:
         output_tokens = float(0.0 if output_raw is None else output_raw)
     except (TypeError, ValueError):
         return None
-    return {
+    usage: dict[str, float] = {
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
     }
+    for key in ("cached_input_tokens", "cache_write_input_tokens"):
+        raw_value = mapping_value.get(key)
+        if raw_value is None:
+            continue
+        try:
+            usage[key] = float(raw_value)
+        except (TypeError, ValueError):
+            continue
+    return cast_token_usage(usage)
 
 
 def _extract_state_token_usage(state: State) -> TokenUsage | None:
@@ -188,28 +201,25 @@ def state_to_output(
     if usage is None:
         # Legacy fallback for states that do not use state-level usage tracking.
         trajectory = state.get("trajectory", [])
-        input_tokens = 0
-        output_tokens = 0
+        usage_totals: dict[str, float] = {
+            "input_tokens": 0.0,
+            "output_tokens": 0.0,
+        }
         usage_seen = False
         for step in trajectory:
             response = step.get("response")
             if response is None:
                 continue
-            if getattr(response, "usage", None) is not None:
-                usage_seen = True
-            step_input_tokens, step_output_tokens = extract_usage_tokens(response)
-            input_tokens += step_input_tokens
-            output_tokens += step_output_tokens
+            details = extract_usage_token_details(response)
+            if details is None:
+                continue
+            usage_seen = True
+            for key, value in details.items():
+                usage_totals[key] = usage_totals.get(key, 0.0) + float(value)
         if usage_seen:
-            usage = {
-                "input_tokens": float(input_tokens),
-                "output_tokens": float(output_tokens),
-            }
+            usage = cast_token_usage(usage_totals)
     if usage is not None:
-        token_usage: dict[str, float] = {
-            "input_tokens": usage.get("input_tokens", 0.0),
-            "output_tokens": usage.get("output_tokens", 0.0),
-        }
+        token_usage: dict[str, float] = dict(usage)
         # Add context token metrics from trajectory
         trajectory = state.get("trajectory", [])
         if trajectory:
@@ -328,6 +338,8 @@ class GenerateOutputsBuilder:
         self.env_metrics = EnvMetrics()
         self.input_tokens = InputTokensMetric()
         self.output_tokens = OutputTokensMetric()
+        self.cached_input_tokens = CachedInputTokensMetric()
+        self.cache_write_input_tokens = CacheWriteInputTokensMetric()
         self.final_input_tokens = FinalInputTokensMetric()
         self.final_output_tokens = FinalOutputTokensMetric()
         self.pass_at_k = PassAtKMetric(rollouts_per_example, threshold=pass_threshold)
@@ -378,6 +390,8 @@ class GenerateOutputsBuilder:
         self.env_metrics.add_outputs(new_outputs)
         self.input_tokens.add_outputs(new_outputs)
         self.output_tokens.add_outputs(new_outputs)
+        self.cached_input_tokens.add_outputs(new_outputs)
+        self.cache_write_input_tokens.add_outputs(new_outputs)
         self.final_input_tokens.add_outputs(new_outputs)
         self.final_output_tokens.add_outputs(new_outputs)
         self.pass_at_k.add_outputs(new_outputs)
@@ -402,6 +416,12 @@ class GenerateOutputsBuilder:
                 input_tokens=self.input_tokens.compute(),
                 output_tokens=self.output_tokens.compute(),
             )
+            if self.cached_input_tokens.count > 0:
+                usage["cached_input_tokens"] = self.cached_input_tokens.compute()
+            if self.cache_write_input_tokens.count > 0:
+                usage["cache_write_input_tokens"] = (
+                    self.cache_write_input_tokens.compute()
+                )
             if self.final_input_tokens.count > 0:
                 usage["final_input_tokens"] = self.final_input_tokens.compute()
                 usage["final_output_tokens"] = self.final_output_tokens.compute()

@@ -243,14 +243,18 @@ Derivations:
 class TokenUsage(TypedDict, total=False):
     input_tokens: float
     output_tokens: float
+    cached_input_tokens: float
+    cache_write_input_tokens: float
     final_input_tokens: float
     final_output_tokens: float
 ```
 
 | Field | Description |
 |-------|-------------|
-| `input_tokens` | Sum of prompt tokens across all turns. Shared context is counted each time it appears in a prompt. |
+| `input_tokens` | Sum of non-cache-hit prompt tokens across all turns. Shared uncached context is counted each time it appears in a prompt. |
 | `output_tokens` | Sum of completion tokens across all turns. |
+| `cached_input_tokens` | Sum of prompt tokens served from provider prompt cache, when reported by the provider. |
+| `cache_write_input_tokens` | Sum of prompt tokens written to provider prompt cache, when reported by the provider. |
 | `final_input_tokens` | Non-completion tokens in the final turn's context (system prompts, user messages, tool results, etc.). |
 | `final_output_tokens` | Completion tokens in the final turn's context. Equals `output_tokens` for single-turn rollouts. |
 

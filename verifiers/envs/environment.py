@@ -481,10 +481,15 @@ class Environment(ABC):
         usage = state.get("usage")
         if isinstance(usage, Mapping):
             try:
-                return {
+                out: TokenUsage = {
                     "input_tokens": float(usage.get("input_tokens", 0.0)),
                     "output_tokens": float(usage.get("output_tokens", 0.0)),
                 }
+                for key in ("cached_input_tokens", "cache_write_input_tokens"):
+                    value = usage.get(key)
+                    if value is not None:
+                        out[key] = float(value)
+                return out
             except (TypeError, ValueError):
                 return None
         return None

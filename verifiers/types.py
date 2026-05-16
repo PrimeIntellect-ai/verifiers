@@ -170,6 +170,8 @@ class Usage(CustomBaseModel):
     reasoning_tokens: int
     completion_tokens: int
     total_tokens: int
+    cached_input_tokens: int | None = None
+    cache_write_input_tokens: int | None = None
 
 
 class ResponseTokens(CustomBaseModel):
@@ -221,6 +223,8 @@ class TrajectoryStepTokens(TypedDict):
 class TokenUsage(TypedDict):
     input_tokens: float
     output_tokens: float
+    cached_input_tokens: NotRequired[float]
+    cache_write_input_tokens: NotRequired[float]
     final_input_tokens: NotRequired[float]
     final_output_tokens: NotRequired[float]
 
@@ -555,6 +559,7 @@ Endpoint = TypedDict(
         "model": str,
         "api_client_type": NotRequired[ClientType],
         "extra_headers": NotRequired[dict[str, str]],
+        "prompt_cache": NotRequired[bool],
     },
 )
 Endpoints = dict[str, list[Endpoint]]
@@ -601,6 +606,7 @@ class ClientConfig(BaseModel):
         'e.g. {"X-Session-ID": "example_id"} adds a X-Session-ID header '
         "with the value of state['example_id'].",
     )
+    prompt_cache: bool = True
 
     @field_validator("extra_headers", mode="before")
     @classmethod
@@ -661,6 +667,7 @@ class EndpointClientConfig(BaseModel):
     max_keepalive_connections: int = 28000
     max_retries: int = 10
     extra_headers: dict[str, str] = Field(default_factory=dict)
+    prompt_cache: bool = True
 
     @field_validator("extra_headers", mode="before")
     @classmethod

@@ -10,6 +10,7 @@ from openai.types.responses import Response as OpenAIResponsesNativeResponse
 from verifiers.clients.client import Client
 from verifiers.clients.openai_chat_completions_client import (
     content_to_text,
+    get_prompt_cache_token_fields,
     get_usage_field,
     handle_openai_overlong_prompt,
 )
@@ -387,8 +388,13 @@ class OpenAIResponsesClient(
                 completion_tokens, int
             ):
                 return None
+            cached_tokens, cache_write_tokens = get_prompt_cache_token_fields(usage)
+            if cached_tokens is not None:
+                prompt_tokens = max(0, prompt_tokens - cached_tokens)
             if not isinstance(total_tokens, int):
                 total_tokens = prompt_tokens + completion_tokens
+            elif cached_tokens is not None:
+                total_tokens = max(0, total_tokens - cached_tokens)
             if not isinstance(reasoning_tokens, int):
                 reasoning_tokens = 0
             return Usage(
@@ -396,6 +402,8 @@ class OpenAIResponsesClient(
                 reasoning_tokens=reasoning_tokens,
                 completion_tokens=completion_tokens,
                 total_tokens=total_tokens,
+                cached_input_tokens=cached_tokens,
+                cache_write_input_tokens=cache_write_tokens,
             )
 
         def parse_is_truncated(response: OpenAIResponsesNativeResponse) -> bool:

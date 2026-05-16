@@ -243,6 +243,38 @@ def test_load_endpoints_toml_accepts_extra_headers_alias(tmp_path: Path):
     assert endpoints["proxy"][0]["extra_headers"] == {"X-A": "a"}
 
 
+def test_load_endpoints_toml_accepts_prompt_cache_opt_out(tmp_path: Path):
+    registry_path = tmp_path / "endpoints.toml"
+    registry_path.write_text(
+        "[[endpoint]]\n"
+        'endpoint_id = "openai"\n'
+        'model = "m"\n'
+        'url = "https://api.openai.com/v1"\n'
+        'key = "OPENAI_API_KEY"\n'
+        "prompt_cache = false\n",
+        encoding="utf-8",
+    )
+
+    endpoints = load_endpoints(str(registry_path))
+
+    assert endpoints["openai"][0]["prompt_cache"] is False
+
+
+def test_load_endpoints_toml_rejects_non_bool_prompt_cache(tmp_path: Path):
+    registry_path = tmp_path / "endpoints.toml"
+    registry_path.write_text(
+        "[[endpoint]]\n"
+        'endpoint_id = "openai"\n'
+        'model = "m"\n'
+        'url = "https://api.openai.com/v1"\n'
+        'key = "OPENAI_API_KEY"\n'
+        'prompt_cache = "yes"\n',
+        encoding="utf-8",
+    )
+
+    assert load_endpoints(str(registry_path)) == {}
+
+
 def test_load_endpoints_toml_rejects_headers_and_extra_headers_together(
     tmp_path: Path,
 ):

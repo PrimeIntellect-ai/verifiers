@@ -183,6 +183,15 @@ def build_extra_headers_from_state(raw: dict[str, Any]) -> dict[str, str]:
     return {**table, **from_list}
 
 
+def build_prompt_cache_enabled(raw: dict[str, Any], default: bool = True) -> bool:
+    raw_prompt_cache = raw.get("prompt_cache")
+    if raw_prompt_cache is None:
+        return default
+    if not isinstance(raw_prompt_cache, bool):
+        raise ValueError("'prompt_cache' must be a boolean when provided.")
+    return raw_prompt_cache
+
+
 def get_env_eval_defaults(env_id: str) -> dict[str, Any]:
     """Get eval config defaults from the environment module's pyproject.toml.
 
@@ -708,13 +717,18 @@ def main(argv: list[str] | None = None):
         }
 
         registry_headers_base: dict[str, str] = {}
+        registry_prompt_cache = True
         if endpoint_group is not None:
             registry_headers_base = dict(endpoint_group[0].get("extra_headers", {}))
+            registry_prompt_cache = bool(endpoint_group[0].get("prompt_cache", True))
 
         merged_headers: dict[str, str] = {
             **registry_headers_base,
             **eval_headers_merged,
         }
+        prompt_cache_enabled = build_prompt_cache_enabled(
+            raw, default=registry_prompt_cache
+        )
 
         primary_api_base_url = api_base_url
         if not isinstance(primary_api_base_url, str):
@@ -739,6 +753,9 @@ def main(argv: list[str] | None = None):
                         **dict(ep.get("extra_headers", {})),
                         **eval_headers_merged,
                     },
+                    prompt_cache=build_prompt_cache_enabled(
+                        raw, default=bool(ep.get("prompt_cache", True))
+                    ),
                 )
                 for ep in endpoint_group
             ]
@@ -751,6 +768,7 @@ def main(argv: list[str] | None = None):
             endpoint_configs=endpoint_configs,
             extra_headers=merged_headers,
             extra_headers_from_state=eval_headers_from_state,
+            prompt_cache=prompt_cache_enabled,
         )
 
         # Backward-compatible TOML field: resume_path

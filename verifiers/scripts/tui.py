@@ -3257,8 +3257,21 @@ class ViewRunScreen(Screen):
         if isinstance(usage, dict):
             input_tok = usage.get("input_tokens")
             output_tok = usage.get("output_tokens")
+            cached_input_tok = usage.get("cached_input_tokens")
+            cache_write_input_tok = usage.get("cache_write_input_tokens")
             if input_tok is not None:
                 usage_items.append(("Avg input tokens", format_numeric(input_tok)))
+            if cached_input_tok is not None:
+                usage_items.append(
+                    ("Avg cached input tokens", format_numeric(cached_input_tok))
+                )
+            if cache_write_input_tok is not None:
+                usage_items.append(
+                    (
+                        "Avg cache write input tokens",
+                        format_numeric(cache_write_input_tok),
+                    )
+                )
             if output_tok is not None:
                 usage_items.append(("Avg output tokens", format_numeric(output_tok)))
         max_tokens = sampling_args.get("max_tokens")
@@ -4728,10 +4741,21 @@ class ViewRunScreen(Screen):
             usage_lines = []
             input_tok = token_usage.get("input_tokens")
             output_tok = token_usage.get("output_tokens")
+            cached_input_tok = token_usage.get("cached_input_tokens")
+            cache_write_input_tok = token_usage.get("cache_write_input_tokens")
             final_inp = token_usage.get("final_input_tokens")
             final_outp = token_usage.get("final_output_tokens")
             if input_tok is not None:
                 usage_lines.append(f"input_tokens: {format_numeric(input_tok)}")
+            if cached_input_tok is not None:
+                usage_lines.append(
+                    f"cached_input_tokens: {format_numeric(cached_input_tok)}"
+                )
+            if cache_write_input_tok is not None:
+                usage_lines.append(
+                    "cache_write_input_tokens: "
+                    f"{format_numeric(cache_write_input_tok)}"
+                )
             if output_tok is not None:
                 usage_lines.append(f"output_tokens: {format_numeric(output_tok)}")
             if final_inp is not None:

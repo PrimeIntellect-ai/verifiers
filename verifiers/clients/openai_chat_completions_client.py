@@ -99,6 +99,24 @@ def get_usage_field(usage: Any, key: str) -> Any:
     return getattr(usage, key, None)
 
 
+def get_usage_int_field(usage: Any, key: str) -> int | None:
+    value = get_usage_field(usage, key)
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    return None
+
+
+def get_prompt_cache_token_fields(usage: Any) -> tuple[int | None, int | None]:
+    details = get_usage_field(usage, "prompt_tokens_details")
+    if details is None:
+        details = get_usage_field(usage, "input_tokens_details")
+    if details is None:
+        return None, None
+    cached_tokens = get_usage_int_field(details, "cached_tokens")
+    cache_write_tokens = get_usage_int_field(details, "cache_write_tokens")
+    return cached_tokens, cache_write_tokens
+
+
 def content_to_text(content: Any) -> str:
     """Get all text content from OAI message content."""
     if isinstance(content, str):
@@ -397,13 +415,20 @@ class OpenAIChatCompletionsClient(
                 completion_tokens, int
             ):
                 return None
+            cached_tokens, cache_write_tokens = get_prompt_cache_token_fields(usage)
+            if cached_tokens is not None:
+                prompt_tokens = max(0, prompt_tokens - cached_tokens)
             if not isinstance(total_tokens, int):
                 total_tokens = prompt_tokens + completion_tokens
+            elif cached_tokens is not None:
+                total_tokens = max(0, total_tokens - cached_tokens)
             return Usage(
                 prompt_tokens=prompt_tokens,
                 reasoning_tokens=0,
                 completion_tokens=completion_tokens,
                 total_tokens=total_tokens,
+                cached_input_tokens=cached_tokens,
+                cache_write_input_tokens=cache_write_tokens,
             )
 
         def parse_is_truncated(response: OpenAIChatResponse) -> bool:
