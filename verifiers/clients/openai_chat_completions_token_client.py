@@ -3,7 +3,6 @@ from typing import Any, Optional, cast
 
 from openai import AsyncOpenAI, BaseModel
 from openai.types.chat import (
-    ChatCompletion,
     ChatCompletionAssistantMessageParam,
 )
 from openai.types.chat.chat_completion_message_function_tool_call_param import (
@@ -18,6 +17,7 @@ from verifiers.clients.openai_chat_completions_client import (
     OpenAIChatResponse,
     OpenAITool,
     handle_openai_overlong_prompt,
+    _post_chat_completion_with_routed_experts_sidecar,
 )
 from verifiers.types import SamplingArgs, State
 
@@ -149,11 +149,11 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
             **extra_body,
         )
 
-        return await self.client.post(
+        return await _post_chat_completion_with_routed_experts_sidecar(
+            self.client,
             "/chat/completions/tokens",
             body=body,
-            cast_to=ChatCompletion,
-            options={"headers": extra_headers} if extra_headers else {},
+            extra_headers=extra_headers,
         )
 
     async def get_prompt_ids(

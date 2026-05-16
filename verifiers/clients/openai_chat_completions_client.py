@@ -2,6 +2,7 @@ import functools
 from collections.abc import Iterable, Mapping
 from typing import Any, TypeAlias, cast
 
+import httpx
 from openai import (
     AsyncOpenAI,
     AuthenticationError,
@@ -140,6 +141,163 @@ OpenAIChatMessage: TypeAlias = ChatCompletionMessageParam
 OpenAIChatMessages: TypeAlias = list[OpenAIChatMessage]
 OpenAIChatResponse: TypeAlias = ChatCompletion
 OpenAITool: TypeAlias = ChatCompletionToolParam
+
+_JSON_WS = b" \t\r\n"
+
+
+def _skip_json_ws(raw: bytes, idx: int, end: int | None = None) -> int:
+    if end is None:
+        end = len(raw)
+    while idx < end and raw[idx] in _JSON_WS:
+        idx += 1
+    return idx
+
+
+def _find_json_string_end(raw: bytes, idx: int, end: int | None = None) -> int | None:
+    if end is None:
+        end = len(raw)
+    while idx < end:
+        quote = raw.find(b'"', idx, end)
+        if quote < 0:
+            return None
+
+        backslashes = 0
+        prev = quote - 1
+        while prev >= idx and raw[prev] == 92:  # backslash
+            backslashes += 1
+            prev -= 1
+        if backslashes % 2 == 0:
+            return quote
+        idx = quote + 1
+    return None
+
+
+def _find_matching_json_object_end(raw: bytes, idx: int) -> int | None:
+    depth = 0
+    end = len(raw)
+    while idx < end:
+        ch = raw[idx]
+        if ch == 34:  # quote
+            string_end = _find_json_string_end(raw, idx + 1)
+            if string_end is None:
+                return None
+            idx = string_end + 1
+            continue
+        if ch == 123:  # {
+            depth += 1
+        elif ch == 125:  # }
+            depth -= 1
+            if depth == 0:
+                return idx + 1
+        idx += 1
+    return None
+
+
+def _find_json_key(
+    raw: bytes,
+    key: bytes,
+    *,
+    start: int = 0,
+    end: int | None = None,
+) -> tuple[int, int] | None:
+    if end is None:
+        end = len(raw)
+    pattern = b'"' + key + b'"'
+    idx = start
+    while idx < end:
+        key_idx = raw.find(pattern, idx, end)
+        if key_idx < 0:
+            return None
+
+        prev = key_idx - 1
+        while prev >= start and raw[prev] in _JSON_WS:
+            prev -= 1
+
+        colon_idx = _skip_json_ws(raw, key_idx + len(pattern), end)
+        if (
+            colon_idx < end
+            and raw[colon_idx] == 58  # :
+            and (prev < start or raw[prev] in (123, 44))  # { or ,
+        ):
+            return key_idx, colon_idx
+
+        idx = key_idx + len(pattern)
+    return None
+
+
+def _strip_routed_experts_data(raw: bytes) -> tuple[bytes, memoryview | None]:
+    search_start = 0
+    while True:
+        routed_key = _find_json_key(raw, b"routed_experts", start=search_start)
+        if routed_key is None:
+            return raw, None
+
+        value_start = _skip_json_ws(raw, routed_key[1] + 1)
+        if raw[value_start : value_start + 4] == b"null":
+            search_start = value_start + 4
+            continue
+        if value_start >= len(raw) or raw[value_start] != 123:  # {
+            search_start = routed_key[0] + 1
+            continue
+
+        object_end = _find_matching_json_object_end(raw, value_start)
+        if object_end is None:
+            return raw, None
+
+        data_key = _find_json_key(
+            raw,
+            b"data",
+            start=value_start + 1,
+            end=object_end - 1,
+        )
+        if data_key is None:
+            search_start = object_end
+            continue
+
+        data_quote = _skip_json_ws(raw, data_key[1] + 1, object_end)
+        if data_quote >= object_end or raw[data_quote] != 34:  # quote
+            search_start = object_end
+            continue
+
+        data_start = data_quote + 1
+        data_end = _find_json_string_end(raw, data_start, object_end)
+        if data_end is None:
+            return raw, None
+
+        routed_data = memoryview(raw)[data_start:data_end]
+        stripped = raw[:data_start] + raw[data_end:]
+        return stripped, routed_data
+
+
+def _parse_chat_completion_with_routed_experts_sidecar(raw: bytes) -> ChatCompletion:
+    stripped, routed_data = _strip_routed_experts_data(raw)
+    response = ChatCompletion.model_validate_json(stripped)
+    if routed_data is None:
+        return response
+    if not response.choices:
+        return response
+
+    choice_extra = response.choices[0].model_extra or {}
+    routed_experts = choice_extra.get("routed_experts")
+    if isinstance(routed_experts, dict):
+        routed_experts["data"] = routed_data
+    return response
+
+
+async def _post_chat_completion_with_routed_experts_sidecar(
+    client: AsyncOpenAI,
+    path: str,
+    *,
+    body: dict[str, Any],
+    extra_headers: Any = None,
+) -> ChatCompletion:
+    raw_response = await client.post(
+        path,
+        body=body,
+        cast_to=httpx.Response,
+        options={"headers": extra_headers} if extra_headers else {},
+    )
+    return _parse_chat_completion_with_routed_experts_sidecar(raw_response.content)
 
 
 class OpenAIChatCompletionsClient(
@@ -301,22 +459,36 @@ class OpenAIChatCompletionsClient(
 
         extra_headers = kwargs.pop("extra_headers", None)
 
+        body: dict[str, Any] = dict(
+            model=model,
+            messages=prompt,
+            **normalize_sampling_args(sampling_args),
+        )
         if tools:
-            response = await self.client.chat.completions.create(
+            body["tools"] = tools
+
+        if hasattr(self.client, "post"):
+            return await _post_chat_completion_with_routed_experts_sidecar(
+                self.client,
+                "/chat/completions",
+                body=body,
+                extra_headers=extra_headers,
+            )
+
+        if tools:
+            return await self.client.chat.completions.create(
                 model=model,
                 messages=prompt,
                 tools=tools,
                 extra_headers=extra_headers,
                 **normalize_sampling_args(sampling_args),
             )
-        else:
-            response = await self.client.chat.completions.create(
-                model=model,
-                messages=prompt,
-                extra_headers=extra_headers,
-                **normalize_sampling_args(sampling_args),
-            )
-        return response
+        return await self.client.chat.completions.create(
+            model=model,
+            messages=prompt,
+            extra_headers=extra_headers,
+            **normalize_sampling_args(sampling_args),
+        )
 
     async def raise_from_native_response(self, response: OpenAIChatResponse) -> None:
         if response is None:

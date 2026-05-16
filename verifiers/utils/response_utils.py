@@ -15,7 +15,7 @@ def parse_routed_experts(raw: Any) -> RoutedExpertsPayload | None:
     assert isinstance(raw, dict)
     data = raw["data"]
     shape = raw["shape"]
-    assert isinstance(data, str)
+    assert isinstance(data, (str, bytes, bytearray, memoryview))
     assert isinstance(shape, list)
     return {"data": data, "shape": [int(dim) for dim in shape]}
 

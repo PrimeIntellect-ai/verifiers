@@ -63,7 +63,7 @@ MessageType = Literal["chat", "completion"]  # deprecated
 class CustomBaseModel(BaseModel):
     """Allow extras and dict-like attribute access."""
 
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="allow", arbitrary_types_allowed=True)
 
     def __getitem__(self, key):
         return getattr(self, key)
@@ -183,8 +183,11 @@ class Usage(CustomBaseModel):
     total_tokens: int
 
 
+RoutedExpertsData: TypeAlias = str | bytes | bytearray | memoryview
+
+
 class RoutedExpertsPayload(TypedDict):
-    data: str
+    data: RoutedExpertsData
     shape: list[int]
 
 

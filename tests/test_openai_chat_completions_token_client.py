@@ -1,12 +1,19 @@
 from typing import Any, cast
 
+import httpx
+import msgpack
 import pytest
+from openai.types.chat import ChatCompletion
 
-from verifiers.clients.openai_chat_completions_client import OpenAIChatCompletionsClient
+from verifiers.clients.openai_chat_completions_client import (
+    OpenAIChatCompletionsClient,
+    _parse_chat_completion_with_routed_experts_sidecar,
+)
 from verifiers.clients.openai_chat_completions_token_client import (
     OpenAIChatCompletionsTokenClient,
 )
 from verifiers.types import State
+from verifiers.utils.serve_utils import msgpack_encoder
 
 
 class _NoopClient:
@@ -24,7 +31,46 @@ class _RecordingClient(_NoopClient):
         self, path: str, body: dict[str, Any], cast_to: type, **kwargs: Any
     ) -> Any:
         self.calls.append({"path": path, "body": body, "cast_to": cast_to})
+        if cast_to is httpx.Response:
+            return httpx.Response(200, json=_chat_completion_payload())
         return {"ok": True, "path": path, "body": body}
+
+
+def _chat_completion_payload(routed_data: str | None = None) -> dict[str, Any]:
+    choice: dict[str, Any] = {
+        "index": 0,
+        "message": {"role": "assistant", "content": "ok"},
+        "finish_reason": "stop",
+        "logprobs": {
+            "content": [
+                {
+                    "token": "ok",
+                    "bytes": None,
+                    "logprob": -0.125,
+                    "top_logprobs": [],
+                }
+            ]
+        },
+        "token_ids": [30],
+    }
+    if routed_data is not None:
+        choice["routed_experts"] = {
+            "data": routed_data,
+            "shape": [3, 1, 1],
+        }
+    return {
+        "id": "chatcmpl-test",
+        "object": "chat.completion",
+        "created": 1,
+        "model": "test-model",
+        "prompt_token_ids": [10, 20],
+        "choices": [choice],
+        "usage": {
+            "prompt_tokens": 2,
+            "completion_tokens": 1,
+            "total_tokens": 3,
+        },
+    }
 
 
 class _PromptIdTestClient(OpenAIChatCompletionsTokenClient):
@@ -270,7 +316,55 @@ async def test_get_native_response_uses_token_route_when_prompt_ids_available(
         state=state,
     )
 
-    assert response["ok"] is True
+    assert isinstance(response, ChatCompletion)
+    assert response.choices[0].message.content == "ok"
     assert len(recording_client.calls) == 1
     assert recording_client.calls[0]["path"] == "/chat/completions/tokens"
+    assert recording_client.calls[0]["cast_to"] is httpx.Response
     assert recording_client.calls[0]["body"]["tokens"] == [10, 20]
+
+
+def test_parse_chat_completion_strips_routed_experts_data_sidecar():
+    routed_data = "AQIDBAUG"
+    raw = httpx.Response(
+        200,
+        json=_chat_completion_payload(routed_data=routed_data),
+    ).content
+
+    response = _parse_chat_completion_with_routed_experts_sidecar(raw)
+
+    routed_experts = response.choices[0].model_extra["routed_experts"]
+    assert routed_experts["shape"] == [3, 1, 1]
+    assert isinstance(routed_experts["data"], memoryview)
+    assert routed_experts["data"].obj is raw
+    assert routed_experts["data"].tobytes() == routed_data.encode()
+
+
+@pytest.mark.asyncio
+async def test_from_native_response_preserves_routed_experts_sidecar():
+    routed_data = "AQIDBAUG"
+    raw = httpx.Response(
+        200,
+        json=_chat_completion_payload(routed_data=routed_data),
+    ).content
+    native = _parse_chat_completion_with_routed_experts_sidecar(raw)
+    client = OpenAIChatCompletionsClient(_NoopClient())
+
+    response = await client.from_native_response(native)
+
+    assert response.message.tokens is not None
+    routed_experts = response.message.tokens.routed_experts
+    assert routed_experts is not None
+    assert routed_experts["shape"] == [3, 1, 1]
+    assert isinstance(routed_experts["data"], memoryview)
+    assert routed_experts["data"].tobytes() == routed_data.encode()
+
+    packed = msgpack.packb(
+        response.model_dump(mode="python", warnings=False),
+        default=msgpack_encoder,
+        use_bin_type=True,
+    )
+    unpacked = msgpack.unpackb(packed, raw=False)
+    unpacked_routed = unpacked["message"]["tokens"]["routed_experts"]
+    assert unpacked_routed["data"] == routed_data.encode()
+    assert unpacked_routed["shape"] == [3, 1, 1]
