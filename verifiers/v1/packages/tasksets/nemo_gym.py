@@ -9,7 +9,11 @@ from typing import Any, cast
 from ...config import TasksetConfig, merge_config_value
 from ...taskset import Taskset
 from ...utils.endpoint_utils import normalize_openai_responses_input
-from ..nemo_gym import DEFAULT_NEMO_GYM_DATA_NAME, resolve_nemo_gym_data_path
+from ..nemo_gym import (
+    DEFAULT_NEMO_GYM_DATA_NAME,
+    agent_ref_name,
+    resolve_nemo_gym_data_path,
+)
 
 
 class NeMoGymTasksetConfig(TasksetConfig):
@@ -114,7 +118,7 @@ def normalize_nemo_gym_task_row(
     agent_name: str | None = None,
 ) -> dict[str, Any]:
     nemo_row = deepcopy(dict(row))
-    if agent_name and not _agent_ref_name(nemo_row.get("agent_ref")):
+    if agent_name and not agent_ref_name(nemo_row.get("agent_ref")):
         nemo_row["agent_ref"] = {
             "type": "responses_api_agents",
             "name": agent_name,
@@ -130,7 +134,7 @@ def normalize_nemo_gym_task_row(
     info.setdefault(
         "nemo_gym",
         {
-            "agent_name": _agent_ref_name(nemo_row.get("agent_ref")) or agent_name,
+            "agent_name": agent_ref_name(nemo_row.get("agent_ref")) or agent_name,
         },
     )
     task_row["info"] = info
@@ -156,10 +160,3 @@ def prompt_parts_from_nemo_gym_row(
         else:
             prompt.append(dumped)
     return prompt, system_prompt
-
-
-def _agent_ref_name(value: object) -> str | None:
-    if not isinstance(value, Mapping):
-        return None
-    name = value.get("name")
-    return name if isinstance(name, str) and name else None

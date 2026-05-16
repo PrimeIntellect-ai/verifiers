@@ -92,6 +92,9 @@ browser = [
     "aiohttp>=3.9.0",
     "python-dotenv>=1.0.0",
 ]
+nemogym = [
+    "nemo-gym>=0.2.1,<0.3; python_version >= '3.12'",
+]
 renderers = [
     "renderers>=0.1.8.dev0",
 ]
@@ -111,6 +114,16 @@ rl = [
 [tool.uv]
 preview = true
 required-version = ">=0.11.1"
+conflicts = [
+    [
+        { extra = "nemogym" },
+        { extra = "openenv" },
+    ],
+    [
+        { extra = "nemogym" },
+        { group = "dev" },
+    ],
+]
 
 [[tool.uv.index]]
 name = "pypi"

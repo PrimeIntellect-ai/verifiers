@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 
 DEFAULT_NEMO_GYM_DATA_NAME = "example.jsonl"
@@ -88,3 +89,10 @@ def first_nemo_gym_agent(
         except ValueError:
             continue
     return None
+
+
+def agent_ref_name(value: object) -> str | None:
+    if not isinstance(value, Mapping):
+        return None
+    name = value.get("name")
+    return name if isinstance(name, str) and name else None

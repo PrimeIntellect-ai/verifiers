@@ -6,7 +6,7 @@ version = "0.1.0"
 requires-python = ">=3.12,<3.14"
 dependencies = [
     "verifiers>=0.1.15.dev1",
-    "nemo-gym",
+    "nemo-gym>=0.2.1,<0.3",
 ]
 
 [build-system]
@@ -18,7 +18,6 @@ include = ["nemo_gym_env.py", "README.md", "pyproject.toml"]
 
 [tool.uv.sources]
 verifiers = { path = "../..", editable = true }
-nemo-gym = { git = "https://github.com/cdreetz/Gym.git", branch = "verifiers-rollout-headers" }
 
 [tool.verifiers.eval]
 num_examples = 1
