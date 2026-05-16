@@ -233,6 +233,83 @@ async def test_from_native_response_uses_request_id_and_token_lengths():
     assert response.usage.total_tokens == 5
 
 
+class _GenerateRenderer:
+    supports_tools = True
+
+    def __init__(self):
+        self.render_calls = []
+        self.parsed_ids = None
+
+    def render_ids(self, messages, *, tools=None, add_generation_prompt=False):
+        self.render_calls.append((messages, tools, add_generation_prompt))
+        return [10, 11]
+
+    def parse_response(self, token_ids):
+        self.parsed_ids = list(token_ids)
+        return ParsedResponse(content="ok")
+
+    def get_stop_token_ids(self):
+        return [99]
+
+
+class _FakeGenerateClient:
+    base_url = "http://fake-host:8000/v1"
+
+    def __init__(self):
+        self.requests = []
+
+    async def post(self, path, *, cast_to=None, body=None, options=None):
+        self.requests.append(
+            {
+                "path": path,
+                "cast_to": cast_to,
+                "body": body,
+                "options": options,
+            }
+        )
+        return {
+            "request_id": "resp-routed",
+            "choices": [
+                {
+                    "index": 0,
+                    "token_ids": [42],
+                    "logprobs": {"content": [{"token": "x", "logprob": -0.5}]},
+                    "finish_reason": "stop",
+                    "routed_experts": {"data": "////", "shape": [3, 1, 1]},
+                }
+            ],
+        }
+
+    async def close(self):
+        pass
+
+
+@pytest.mark.asyncio
+async def test_get_native_response_preserves_compact_routed_experts_payload():
+    """PrimeRL emits compact base64 routed_experts, not renderers' old base85
+    int32 payload. RendererClient should pass the dict through untouched.
+    """
+    renderer = _GenerateRenderer()
+    fake_openai = _FakeGenerateClient()
+    client = object.__new__(RendererClient)
+    client._config = None
+    client._client = fake_openai
+    client._renderer = renderer
+    client._pool_size = 1
+
+    response = await client.get_native_response(
+        [{"role": "user", "content": "hi"}],
+        model="test-model",
+        sampling_args={"max_tokens": 8},
+    )
+
+    assert fake_openai.requests[0]["path"].endswith("/inference/v1/generate")
+    assert fake_openai.requests[0]["body"]["token_ids"] == [10, 11]
+    assert fake_openai.requests[0]["body"]["sampling_params"]["stop_token_ids"] == [99]
+    assert renderer.parsed_ids == [42]
+    assert response["routed_experts"] == {"data": "////", "shape": [3, 1, 1]}
+
+
 class _BridgeRenderer:
     supports_tools = True
 
