@@ -9,6 +9,7 @@ concurrent rollouts tokenize in parallel instead of blocking the event loop.
 """
 
 import asyncio
+import inspect
 import json
 import threading
 from collections.abc import Mapping
@@ -16,16 +17,14 @@ from typing import Any, ClassVar, cast
 
 from openai import AsyncOpenAI
 
-from renderers import Message as RendererMessage
 from renderers import (
-    MultimodalRenderer,
     RenderedTokens,
     Renderer,
     RendererPool,
     ToolSpec,
     create_renderer_pool,
-    is_multimodal,
 )
+from renderers import Message as RendererMessage
 from renderers import ToolCall as RendererToolCall
 from renderers import ToolCallFunction
 from renderers.client import generate
@@ -62,6 +61,18 @@ from verifiers.utils.response_utils import parse_routed_experts
 # bridge_break_rate metric.
 _bridge_metrics_lock = threading.Lock()
 _bridge_metrics: dict[str, int] = {"attempts": 0, "successes": 0, "failures": 0}
+
+try:
+    from renderers import MultimodalRenderer, is_multimodal
+except ImportError:
+    MultimodalRenderer = Any
+
+    def is_multimodal(renderer: Renderer) -> bool:
+        try:
+            signature = inspect.signature(renderer.bridge_to_next_turn)
+        except (TypeError, ValueError):
+            return False
+        return "previous_multi_modal_data" in signature.parameters
 
 
 def get_bridge_metrics() -> dict[str, int]:
@@ -327,6 +338,14 @@ def _step_rendered_messages(step: Any) -> list[RendererMessage]:
     )
 
 
+def _coerce_rendered_tokens(value: Any) -> RenderedTokens | None:
+    if value is None:
+        return None
+    if isinstance(value, list):
+        return RenderedTokens(token_ids=value)
+    return cast(RenderedTokens, value)
+
+
 async def _get_incremental_prompt_ids(
     *,
     renderer: Renderer | RendererPool,
@@ -399,7 +418,7 @@ async def _get_incremental_prompt_ids(
             )
         bridged = await _maybe_offload(renderer, bridge)
         _record_bridge(success=bridged is not None)
-        return bridged
+        return _coerce_rendered_tokens(bridged)
 
     return None
 
@@ -572,7 +591,7 @@ class RendererClient(
         # /inference/v1/generate without re-rendering the whole turn.
         if bridged is not None:
             prompt_ids = bridged.token_ids
-            multi_modal_data = bridged.multi_modal_data
+            multi_modal_data = getattr(bridged, "multi_modal_data", None)
         else:
             prompt_ids = None
             multi_modal_data = None
