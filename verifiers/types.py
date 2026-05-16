@@ -190,6 +190,7 @@ class ResponseTokens(CustomBaseModel):
     completion_mask: list[int]
     completion_logprobs: list[float]
     routed_experts: str | None = None  # base64 NumPy [seq_len, layers, topk]
+    tool_output_train_mask: list[bool] | None = None
     # Renderer-emitted multimodal sidecar (renderers.base.MultiModalData)
     # carrying processed pixel_values / placeholder ranges per modality.
     # Populated by the renderer client when the rollout went through a

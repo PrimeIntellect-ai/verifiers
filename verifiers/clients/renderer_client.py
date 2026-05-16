@@ -99,13 +99,12 @@ _TTT_CONTROL_KEYS = {
     "ttt_request_timeout_s",
     "ttt_window_seq_len",
     "ttt_require_exact_token_ids",
-    "ttt_require_content_mask",
-    "ttt_tool_output_train_names",
-    "ttt_train_prompt_lora",
-    "ttt_train_completion_lora",
-    "ttt_completion_lora_trains_initial_prompt",
-    "ttt_prompt_lora_trains_environment_responses",
     "ttt_cache_salt_includes_adapter",
+    "tool_output_training_enabled",
+    "tool_output_training_weight",
+    "tool_output_train_names",
+    "tool_output_content_only",
+    "tool_output_require_content_mask",
 }
 
 
@@ -356,13 +355,13 @@ def _normalize_tool_output_train_names(value: Any) -> set[str] | None:
         return None
     if not isinstance(value, list | tuple | set):
         raise ValueError(
-            "ttt_tool_output_train_names must be null or a list of tool names."
+            "tool_output_train_names must be null or a list of tool names."
         )
     names: set[str] = set()
     for item in value:
         if not isinstance(item, str) or not item:
             raise ValueError(
-                "ttt_tool_output_train_names must contain non-empty strings."
+                "tool_output_train_names must contain non-empty strings."
             )
         names.add(item)
     return names
@@ -391,7 +390,7 @@ def _validate_tool_output_train_names(
     missing = allowed_names - available_names
     if missing:
         raise ValueError(
-            "ttt_tool_output_train_names contains names not available in tools: "
+            "tool_output_train_names contains names not available in tools: "
             f"{sorted(missing)}. Available tools: {sorted(available_names)}"
         )
 
@@ -416,40 +415,40 @@ def _state_set(state: Any, key: str, value: Any) -> None:
         pass
 
 
-def _role_train_ids(
+def _tool_output_train_mask(
     rendered: RenderedTokens,
     prompt: list[RendererMessage],
-    train_roles: set[str],
     *,
     start: int = 0,
-    content_only: bool = False,
-    require_content_mask: bool = False,
+    content_only: bool,
+    require_content_mask: bool,
     tool_output_train_names: set[str] | None = None,
-) -> list[int]:
+) -> list[bool]:
     token_ids = rendered.token_ids
     indices = rendered.message_indices
     if len(indices) != len(token_ids):
-        return []
+        if require_content_mask:
+            raise ValueError("Tool-output training requires renderer message_indices.")
+        return [False] * len(token_ids)
     content_mask = rendered.content_mask
     has_content_mask = len(content_mask) == len(token_ids)
     if content_only and require_content_mask and not has_content_mask:
         raise ValueError(
-            "TTT content-only token selection requires renderer content_mask."
+            "Tool-output training content-only token selection requires renderer content_mask."
         )
 
-    selected = []
-    for pos, (token_id, msg_idx) in enumerate(zip(token_ids, indices)):
+    selected = [False] * len(token_ids)
+    for pos, (_, msg_idx) in enumerate(zip(token_ids, indices)):
         if pos < start or msg_idx < 0 or msg_idx >= len(prompt):
             continue
         if content_only and has_content_mask and not content_mask[pos]:
             continue
         role = prompt[msg_idx].get("role")
-        if role == "tool" and tool_output_train_names is not None:
-            name = prompt[msg_idx].get("name")
-            if name not in tool_output_train_names:
-                continue
-        if role in train_roles:
-            selected.append(token_id)
+        if role != "tool":
+            continue
+        if tool_output_train_names is not None and prompt[msg_idx].get("name") not in tool_output_train_names:
+            continue
+        selected[pos] = True
     return selected
 
 
@@ -497,8 +496,7 @@ async def _ttt_prepare_turn(
     state: Any,
     model: str,
     prompt_ids: list[int],
-    new_prompt_ids: list[int],
-    token_role: str,
+    new_token_ids: list[int],
     options: dict[str, Any],
 ) -> dict[str, Any]:
     learner_url = str(options["ttt_learner_url"]).rstrip("/")
@@ -514,8 +512,7 @@ async def _ttt_prepare_turn(
         "turn_idx": turn_idx,
         "model": model,
         "prompt_ids": prompt_ids,
-        "new_prompt_ids": new_prompt_ids,
-        "token_role": token_role,
+        "new_token_ids": new_token_ids,
     }
     timeout = float(options.get("ttt_request_timeout_s") or 120.0)
     async with httpx.AsyncClient(timeout=timeout) as client:
@@ -545,6 +542,7 @@ async def _ttt_complete_turn(
         "completion_ids": completion_ids,
         "completion_logprobs": completion_logprobs,
         "prepare_version": prepare.get("version"),
+        "adapter_name": prepare.get("adapter_name"),
     }
     timeout = float(options.get("ttt_request_timeout_s") or 120.0)
     async with httpx.AsyncClient(timeout=timeout) as client:
@@ -557,18 +555,18 @@ async def _ttt_complete_turn(
     trace_entry = {
         **prepare,
         "prompt_ids": list(response.get("prompt_ids") or []),
+        "prompt_tool_output_train_mask": list(
+            response.get("prompt_tool_output_train_mask") or []
+        ),
         "completion_ids": completion_ids,
         "completion_logprobs": completion_logprobs,
         "turn_idx": turn_idx,
     }
     trace = list(_state_get(state, "ttt_trace", []) or [])
     trace.append(trace_entry)
-    final_prompt_adapter = complete.get("final_prompt_adapter")
     _state_set(state, "ttt_trace", trace)
-    _state_set(state, "ttt_final_prompt_adapter", final_prompt_adapter)
     response["ttt_trace_entry"] = trace_entry
     response["ttt_trace"] = trace
-    response["ttt_final_prompt_adapter"] = final_prompt_adapter
     return complete
 
 
@@ -644,6 +642,8 @@ async def _get_incremental_prompt_ids(
             )
         bridged = await _maybe_offload(renderer, bridge)
         _record_bridge(success=bridged is not None)
+        if bridged is not None:
+            setattr(bridged, "bridge_tail", tail)
         return bridged
 
     return None
@@ -807,6 +807,9 @@ class RendererClient(
             sampling_params["prompt_logprobs"] = 1
         ttt_options = _pop_ttt_options(sampling_params)
         ttt_enabled = bool(ttt_options.get("ttt_enabled"))
+        tool_output_training_enabled = bool(
+            ttt_options.get("tool_output_training_enabled")
+        )
 
         bridged = await _get_incremental_prompt_ids(
             renderer=renderer,
@@ -822,7 +825,7 @@ class RendererClient(
         if bridged is not None:
             prompt_ids: list[int] | None = list(bridged.token_ids)
             multi_modal_data = bridged.multi_modal_data
-        elif ttt_enabled:
+        elif ttt_enabled or tool_output_training_enabled:
             if ttt_options.get("ttt_require_exact_token_ids"):
                 trajectory = _state_get(kwargs.get("state"), "trajectory", []) or []
                 if trajectory:
@@ -839,8 +842,9 @@ class RendererClient(
         prepare: dict[str, Any] | None = None
         model_for_generation = model
         cache_salt = args.get("cache_salt") or sampling_params.pop("cache_salt", None)
-        if ttt_enabled:
-            if not ttt_options.get("ttt_learner_url"):
+        prompt_tool_output_train_mask: list[bool] | None = None
+        if ttt_enabled or tool_output_training_enabled:
+            if ttt_enabled and not ttt_options.get("ttt_learner_url"):
                 raise ValueError(
                     "TTT renderer mode requires ttt_learner_url in sampling_args.extra_body."
                 )
@@ -851,104 +855,69 @@ class RendererClient(
                 prompt_ids = list(rendered_for_ttt.token_ids)
                 multi_modal_data = rendered_for_ttt.multi_modal_data
 
-            trajectory = _state_get(kwargs.get("state"), "trajectory", []) or []
-            is_first_turn = not trajectory
-            require_content_mask = bool(
-                ttt_options.get(
-                    "ttt_require_content_mask",
-                    ttt_options.get("ttt_require_exact_token_ids", False),
-                )
-            )
+            previous_len = _previous_prefix_token_len(kwargs.get("state"), prompt_ids)
+            new_prompt_ids = list(prompt_ids[max(previous_len, 0) :])
             tool_output_train_names = _normalize_tool_output_train_names(
-                ttt_options.get("ttt_tool_output_train_names")
+                ttt_options.get("tool_output_train_names")
             )
             _validate_tool_output_train_names(tool_output_train_names, tools)
-            if is_first_turn:
-                token_role = "completion_initial_prompt"
-                if ttt_options.get(
-                    "ttt_train_completion_lora", True
-                ) and ttt_options.get(
-                    "ttt_completion_lora_trains_initial_prompt", True
-                ):
-                    rendered_for_ttt = rendered_for_ttt or await _render_prompt(
-                        renderer, prompt, tools
+            if tool_output_training_enabled:
+                rendered_for_ttt = rendered_for_ttt or await _render_prompt(
+                    renderer, prompt, tools
+                )
+                if rendered_for_ttt.token_ids != prompt_ids:
+                    bridge_tail = getattr(bridged, "bridge_tail", None)
+                    if bridged is None or not bridge_tail:
+                        raise ValueError(
+                            "Tool-output training requires renderer full render or bridged prompt attribution."
+                        )
+                    prompt_tool_output_train_mask = _tool_output_train_mask(
+                        bridged,
+                        list(bridge_tail),
+                        start=max(previous_len, 0),
+                        content_only=bool(
+                            ttt_options.get("tool_output_content_only", True)
+                        ),
+                        require_content_mask=bool(
+                            ttt_options.get("tool_output_require_content_mask", True)
+                        ),
+                        tool_output_train_names=tool_output_train_names,
                     )
-                    new_prompt_ids = _role_train_ids(
+                else:
+                    prompt_tool_output_train_mask = _tool_output_train_mask(
                         rendered_for_ttt,
                         prompt,
-                        {"system", "user"},
-                        content_only=True,
-                        require_content_mask=require_content_mask,
+                        start=max(previous_len, 0),
+                        content_only=bool(ttt_options.get("tool_output_content_only", True)),
+                        require_content_mask=bool(
+                            ttt_options.get("tool_output_require_content_mask", True)
+                        ),
+                        tool_output_train_names=tool_output_train_names,
                     )
-                else:
-                    new_prompt_ids = []
-            else:
-                token_role = "prompt_environment"
-                if ttt_options.get("ttt_train_prompt_lora", True) and ttt_options.get(
-                    "ttt_prompt_lora_trains_environment_responses", True
-                ):
-                    previous_len = _previous_prefix_token_len(
-                        kwargs.get("state"), prompt_ids
-                    )
-                    if bridged is not None:
-                        # Most hand-coded renderers return exact bridged IDs but omit attribution.
-                        # Use a full render only for attribution when it matches the exact bridge.
-                        rendered_for_ttt = rendered_for_ttt or await _render_prompt(
-                            renderer, prompt, tools
-                        )
-                        if rendered_for_ttt.token_ids == prompt_ids:
-                            new_prompt_ids = _role_train_ids(
-                                rendered_for_ttt,
-                                prompt,
-                                {"tool", "user"},
-                                start=max(previous_len, 0),
-                                content_only=True,
-                                require_content_mask=require_content_mask,
-                                tool_output_train_names=tool_output_train_names,
-                            )
-                        else:
-                            if (
-                                require_content_mask
-                                or tool_output_train_names is not None
-                            ):
-                                raise ValueError(
-                                    "TTT content-only or tool-filtered token selection requires renderer "
-                                    "full render to match bridged prompt ids."
-                                )
-                            new_prompt_ids = list(
-                                bridged.token_ids[max(previous_len, 0) :]
-                            )
-                    else:
-                        rendered_for_ttt = rendered_for_ttt or await _render_prompt(
-                            renderer, prompt, tools
-                        )
-                        new_prompt_ids = _role_train_ids(
-                            rendered_for_ttt,
-                            prompt,
-                            {"tool", "user"},
-                            start=max(previous_len, 0),
-                            content_only=True,
-                            require_content_mask=require_content_mask,
-                            tool_output_train_names=tool_output_train_names,
-                        )
-                else:
-                    new_prompt_ids = []
-
             generation_prompt_ids = _window_prompt_ids(
                 prompt_ids, sampling_params, ttt_options
             )
-            prepare = await _ttt_prepare_turn(
-                state=kwargs.get("state"),
-                model=model,
-                prompt_ids=generation_prompt_ids,
-                new_prompt_ids=new_prompt_ids,
-                token_role=token_role,
-                options=ttt_options,
-            )
-            model_for_generation = str(prepare.get("adapter_name") or model)
+            if prompt_tool_output_train_mask is not None:
+                prompt_tool_output_train_mask = prompt_tool_output_train_mask[
+                    -len(generation_prompt_ids) :
+                ]
+            if ttt_enabled:
+                prepare = await _ttt_prepare_turn(
+                    state=kwargs.get("state"),
+                    model=model,
+                    prompt_ids=generation_prompt_ids,
+                    new_token_ids=new_prompt_ids,
+                    options=ttt_options,
+                )
+                model_for_generation = str(prepare.get("adapter_name") or model)
             prompt_ids = generation_prompt_ids
-            if ttt_options.get("ttt_cache_salt_includes_adapter", True):
-                adapter_version = prepare.get("adapter_name") or prepare.get("version")
+            if (
+                ttt_enabled
+                and prepare is not None
+                and prepare.get("adapter_name")
+                and ttt_options.get("ttt_cache_salt_includes_adapter", True)
+            ):
+                adapter_version = prepare.get("adapter_name")
                 cache_salt = (
                     f"{cache_salt}:{adapter_version}"
                     if cache_salt is not None
@@ -968,6 +937,11 @@ class RendererClient(
             priority=args.get("priority") or sampling_params.pop("priority", None),
             extra_headers=args.get("extra_headers"),
         )
+        if prompt_tool_output_train_mask is not None:
+            response["prompt_tool_output_train_mask"] = prompt_tool_output_train_mask
+            response["tool_output_train_mask"] = prompt_tool_output_train_mask + [
+                False
+            ] * len(response.get("completion_ids") or [])
         if prepare is not None:
             await _ttt_complete_turn(
                 state=kwargs.get("state"),
@@ -1024,9 +998,9 @@ class RendererClient(
             completion_logprobs=completion_logprobs,
             routed_experts=response.get("routed_experts"),
             multi_modal_data=response.get("multi_modal_data"),
+            tool_output_train_mask=response.get("tool_output_train_mask"),
             ttt_trace_entry=response.get("ttt_trace_entry"),
             ttt_trace=response.get("ttt_trace"),
-            ttt_final_prompt_adapter=response.get("ttt_final_prompt_adapter"),
         )
 
         # /inference/v1/generate doesn't return usage; reconstruct from tokens.
