@@ -296,6 +296,212 @@ class _BridgeRenderer:
         return [self._STOP_TOKEN_ID]
 
 
+class _TTTRenderer:
+    supports_tools = True
+
+    def __init__(self, rendered: RenderedTokens, bridged: RenderedTokens | None = None):
+        self.rendered = rendered
+        self.bridged = bridged
+
+    def render(self, messages, *, tools=None, add_generation_prompt=False):
+        return self.rendered
+
+    def bridge_to_next_turn(self, previous_prompt_ids, previous_completion_ids, new_messages, *, tools=None):
+        return self.bridged
+
+    def parse_response(self, token_ids, *, tools=None):
+        return ParsedResponse(content="ok")
+
+    def get_stop_token_ids(self):
+        return [99]
+
+
+class _TTTHTTPResponse:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self.payload
+
+
+class _TTTHTTPClient:
+    calls = []
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return None
+
+    async def post(self, url, json):
+        self.calls.append((url, json))
+        if url.endswith("/prepare_turn"):
+            return _TTTHTTPResponse(
+                {
+                    "adapter_name": "adapter-turn",
+                    "adapter_path": "/tmp/adapter-turn",
+                    "adapter_kind": "combined",
+                    "base_step": 3,
+                    "version": json["turn_idx"],
+                }
+            )
+        if url.endswith("/complete_turn"):
+            return _TTTHTTPResponse(
+                {
+                    "final_prompt_adapter": {
+                        "adapter_name": "final-prompt",
+                        "adapter_path": "/tmp/final-prompt",
+                        "adapter_kind": "final_prompt",
+                    }
+                }
+            )
+        raise AssertionError(url)
+
+
+def _ttt_sampling_args():
+    return {
+        "temperature": 0.7,
+        "max_tokens": 2,
+        "extra_body": {
+            "ttt_enabled": True,
+            "ttt_learner_url": "http://ttt-learner",
+            "ttt_window_seq_len": 8,
+            "ttt_request_timeout_s": 1.0,
+            "ttt_require_exact_token_ids": True,
+            "ttt_train_prompt_lora": True,
+            "ttt_train_completion_lora": True,
+            "ttt_completion_lora_trains_initial_prompt": True,
+            "ttt_prompt_lora_trains_environment_responses": True,
+            "ttt_cache_salt_includes_adapter": True,
+            "cache_salt": "base",
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_renderer_client_ttt_routes_initial_prompt_to_completion_lora(monkeypatch):
+    _TTTHTTPClient.calls = []
+    renderer = _TTTRenderer(
+        RenderedTokens(
+            token_ids=[10, 11, 12, 13],
+            message_indices=[0, 1, 1, -1],
+        )
+    )
+    client = object.__new__(RendererClient)
+    client.client = object()
+    client._renderer = renderer
+
+    async def fake_generate(**kwargs):
+        assert kwargs["model"] == "adapter-turn"
+        assert kwargs["prompt_ids"] == [10, 11, 12, 13]
+        assert kwargs["cache_salt"] == "base:adapter-turn"
+        assert "ttt_enabled" not in kwargs["sampling_params"]
+        return {
+            "request_id": "r",
+            "content": "ok",
+            "finish_reason": "stop",
+            "prompt_ids": kwargs["prompt_ids"],
+            "completion_ids": [21, 22],
+            "completion_logprobs": [-0.1, -0.2],
+        }
+
+    monkeypatch.setattr("verifiers.clients.renderer_client.httpx.AsyncClient", _TTTHTTPClient)
+    monkeypatch.setattr("verifiers.clients.renderer_client.generate", fake_generate)
+
+    state = {"trajectory_id": "traj-1", "trajectory": []}
+    await client.get_native_response(
+        [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}],
+        "base-model",
+        _ttt_sampling_args(),
+        state=state,
+    )
+
+    prepare_call, complete_call = _TTTHTTPClient.calls
+    assert prepare_call[1]["token_role"] == "completion_initial_prompt"
+    assert prepare_call[1]["new_prompt_ids"] == [10, 11, 12]
+    assert complete_call[1]["completion_ids"] == [21, 22]
+    assert state["ttt_trace"][0]["adapter_path"] == "/tmp/adapter-turn"
+    assert state["ttt_final_prompt_adapter"]["adapter_path"] == "/tmp/final-prompt"
+
+
+@pytest.mark.asyncio
+async def test_renderer_client_ttt_routes_bridged_tool_tokens_to_prompt_lora(monkeypatch):
+    _TTTHTTPClient.calls = []
+    rendered = RenderedTokens(
+        token_ids=[1, 2, 3, 40, 41, 42],
+        message_indices=[0, 1, 2, 3, 3, -1],
+    )
+    renderer = _TTTRenderer(rendered=rendered, bridged=RenderedTokens(token_ids=list(rendered.token_ids)))
+    client = object.__new__(RendererClient)
+    client.client = object()
+    client._renderer = renderer
+
+    async def fake_generate(**kwargs):
+        return {
+            "request_id": "r",
+            "content": "ok",
+            "finish_reason": "stop",
+            "prompt_ids": kwargs["prompt_ids"],
+            "completion_ids": [50],
+            "completion_logprobs": [-0.3],
+        }
+
+    monkeypatch.setattr("verifiers.clients.renderer_client.httpx.AsyncClient", _TTTHTTPClient)
+    monkeypatch.setattr("verifiers.clients.renderer_client.generate", fake_generate)
+
+    state = {
+        "trajectory_id": "traj-2",
+        "trajectory": [
+            {
+                "prompt": [SystemMessage(content="s"), UserMessage(content="u")],
+                "completion": [AssistantMessage(content="a")],
+                "tokens": {"prompt_ids": [1, 2], "completion_ids": [3]},
+            }
+        ],
+    }
+    await client.get_native_response(
+        [
+            {"role": "system", "content": "s"},
+            {"role": "user", "content": "u"},
+            {"role": "assistant", "content": "a"},
+            {"role": "tool", "content": "result"},
+        ],
+        "base-model",
+        _ttt_sampling_args(),
+        state=state,
+    )
+
+    prepare_call = _TTTHTTPClient.calls[0]
+    assert prepare_call[1]["token_role"] == "prompt_environment"
+    assert prepare_call[1]["new_prompt_ids"] == [40, 41]
+
+
+@pytest.mark.asyncio
+async def test_renderer_client_ttt_exact_mode_rejects_missing_later_bridge():
+    renderer = _TTTRenderer(RenderedTokens(token_ids=[1], message_indices=[0]), bridged=None)
+    client = object.__new__(RendererClient)
+    client.client = object()
+    client._renderer = renderer
+    state = {
+        "trajectory_id": "traj-3",
+        "trajectory": [{"prompt": [UserMessage(content="u")], "completion": [AssistantMessage(content="a")]}],
+    }
+
+    with pytest.raises(ValueError, match="could not bridge"):
+        await client.get_native_response(
+            [{"role": "user", "content": "u"}, {"role": "tool", "content": "result"}],
+            "base-model",
+            _ttt_sampling_args(),
+            state=state,
+        )
+
+
 @pytest.mark.parametrize(
     ("tail", "expected"),
     [

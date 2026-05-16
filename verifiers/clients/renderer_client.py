@@ -14,6 +14,7 @@ import threading
 from collections.abc import Mapping
 from typing import Any, ClassVar, cast
 
+import httpx
 from openai import AsyncOpenAI
 
 from renderers import Message as RendererMessage
@@ -90,6 +91,20 @@ def _record_bridge(success: bool) -> None:
 # workers don't parallelize well). Callers with genuinely long prompts or
 # big tokenizers can bump this per-client.
 _DEFAULT_POOL_SIZE = 1
+
+
+_TTT_CONTROL_KEYS = {
+    "ttt_enabled",
+    "ttt_learner_url",
+    "ttt_request_timeout_s",
+    "ttt_window_seq_len",
+    "ttt_require_exact_token_ids",
+    "ttt_train_prompt_lora",
+    "ttt_train_completion_lora",
+    "ttt_completion_lora_trains_initial_prompt",
+    "ttt_prompt_lora_trains_environment_responses",
+    "ttt_cache_salt_includes_adapter",
+}
 
 
 # ── Helpers ─────────────────────────────────────────────────────────
@@ -326,6 +341,163 @@ def _step_rendered_messages(step: Any) -> list[RendererMessage]:
     )
 
 
+def _pop_ttt_options(sampling_params: dict[str, Any]) -> dict[str, Any]:
+    return {key: sampling_params.pop(key) for key in list(sampling_params) if key in _TTT_CONTROL_KEYS}
+
+
+def _state_get(state: Any, key: str, default: Any = None) -> Any:
+    if state is None:
+        return default
+    if isinstance(state, Mapping):
+        return state.get(key, default)
+    return getattr(state, key, default)
+
+
+def _state_set(state: Any, key: str, value: Any) -> None:
+    if state is None:
+        return
+    if isinstance(state, dict):
+        state[key] = value
+        return
+    try:
+        setattr(state, key, value)
+    except Exception:
+        pass
+
+
+def _role_train_ids(
+    rendered: RenderedTokens,
+    prompt: list[RendererMessage],
+    train_roles: set[str],
+    *,
+    start: int = 0,
+) -> list[int]:
+    token_ids = rendered.token_ids
+    indices = rendered.message_indices
+    if len(indices) != len(token_ids):
+        return []
+
+    selected = []
+    for pos, (token_id, msg_idx) in enumerate(zip(token_ids, indices)):
+        if pos < start or msg_idx < 0 or msg_idx >= len(prompt):
+            continue
+        role = prompt[msg_idx].get("role")
+        if role in train_roles:
+            selected.append(token_id)
+    return selected
+
+
+def _previous_prefix_token_len(state: Any, prompt_ids: list[int]) -> int:
+    trajectory = _state_get(state, "trajectory", []) or []
+    best = 0
+    for step in trajectory:
+        token_ids = _step_token_ids(step)
+        if token_ids is None:
+            continue
+        previous_prompt_ids, previous_completion_ids = token_ids
+        previous = previous_prompt_ids + previous_completion_ids
+        if len(previous) > best and prompt_ids[: len(previous)] == previous:
+            best = len(previous)
+    return best
+
+
+async def _render_prompt(
+    renderer: Renderer | RendererPool,
+    prompt: list[RendererMessage],
+    tools: list[ToolSpec] | None,
+) -> RenderedTokens:
+    return await _maybe_offload(
+        renderer,
+        lambda: renderer.render(prompt, tools=tools, add_generation_prompt=True),
+    )
+
+
+def _window_prompt_ids(prompt_ids: list[int], sampling_params: dict[str, Any], options: dict[str, Any]) -> list[int]:
+    window_len = options.get("ttt_window_seq_len")
+    if not isinstance(window_len, int) or window_len <= 0:
+        return prompt_ids
+    max_tokens = sampling_params.get("max_tokens")
+    completion_budget = int(max_tokens) if isinstance(max_tokens, int) and max_tokens > 0 else 0
+    prompt_budget = max(window_len - completion_budget, 1)
+    return prompt_ids[-prompt_budget:]
+
+
+async def _ttt_prepare_turn(
+    *,
+    state: Any,
+    model: str,
+    prompt_ids: list[int],
+    new_prompt_ids: list[int],
+    token_role: str,
+    options: dict[str, Any],
+) -> dict[str, Any]:
+    learner_url = str(options["ttt_learner_url"]).rstrip("/")
+    trajectory_id = _state_get(state, "trajectory_id")
+    if trajectory_id is None:
+        raise ValueError("TTT requires state['trajectory_id'] for rollout-local LoRA sessions.")
+    trajectory = _state_get(state, "trajectory", []) or []
+    turn_idx = len(trajectory)
+    payload = {
+        "session_id": str(trajectory_id),
+        "turn_idx": turn_idx,
+        "model": model,
+        "prompt_ids": prompt_ids,
+        "new_prompt_ids": new_prompt_ids,
+        "token_role": token_role,
+    }
+    timeout = float(options.get("ttt_request_timeout_s") or 120.0)
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        response = await client.post(f"{learner_url}/prepare_turn", json=payload)
+        response.raise_for_status()
+        return response.json()
+
+
+async def _ttt_complete_turn(
+    *,
+    state: Any,
+    model: str,
+    response: dict[str, Any],
+    prepare: dict[str, Any],
+    options: dict[str, Any],
+) -> dict[str, Any]:
+    learner_url = str(options["ttt_learner_url"]).rstrip("/")
+    trajectory_id = _state_get(state, "trajectory_id")
+    trajectory = _state_get(state, "trajectory", []) or []
+    turn_idx = len(trajectory)
+    completion_ids = list(response.get("completion_ids") or [])
+    completion_logprobs = list(response.get("completion_logprobs") or [])
+    payload = {
+        "session_id": str(trajectory_id),
+        "turn_idx": turn_idx,
+        "model": model,
+        "completion_ids": completion_ids,
+        "completion_logprobs": completion_logprobs,
+        "prepare_version": prepare.get("version"),
+    }
+    timeout = float(options.get("ttt_request_timeout_s") or 120.0)
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        learner_response = await client.post(f"{learner_url}/complete_turn", json=payload)
+        learner_response.raise_for_status()
+        complete = learner_response.json()
+
+    trace_entry = {
+        **prepare,
+        "prompt_ids": list(response.get("prompt_ids") or []),
+        "completion_ids": completion_ids,
+        "completion_logprobs": completion_logprobs,
+        "turn_idx": turn_idx,
+    }
+    trace = list(_state_get(state, "ttt_trace", []) or [])
+    trace.append(trace_entry)
+    final_prompt_adapter = complete.get("final_prompt_adapter")
+    _state_set(state, "ttt_trace", trace)
+    _state_set(state, "ttt_final_prompt_adapter", final_prompt_adapter)
+    response["ttt_trace_entry"] = trace_entry
+    response["ttt_trace"] = trace
+    response["ttt_final_prompt_adapter"] = final_prompt_adapter
+    return complete
+
+
 async def _get_incremental_prompt_ids(
     *,
     renderer: Renderer | RendererPool,
@@ -559,6 +731,8 @@ class RendererClient(
             sampling_params["max_tokens"] = max_tokens
         if args.get("prompt_logprobs"):
             sampling_params["prompt_logprobs"] = 1
+        ttt_options = _pop_ttt_options(sampling_params)
+        ttt_enabled = bool(ttt_options.get("ttt_enabled"))
 
         bridged = await _get_incremental_prompt_ids(
             renderer=renderer,
@@ -566,30 +740,115 @@ class RendererClient(
             state=kwargs.get("state"),
             tools=tools,
         )
-        # ``bridged`` is RenderedTokens | None. Unpack token_ids + mm_data
-        # so multimodal renderers thread per-image features through to
+
+        # ``bridged`` is RenderedTokens | None. Unpack token_ids + mm_data so
+        # multimodal renderers thread per-image features through to
         # /inference/v1/generate without re-rendering the whole turn.
+        rendered_for_ttt: RenderedTokens | None = None
         if bridged is not None:
-            prompt_ids = bridged.token_ids
+            prompt_ids: list[int] | None = list(bridged.token_ids)
             multi_modal_data = bridged.multi_modal_data
+        elif ttt_enabled:
+            if ttt_options.get("ttt_require_exact_token_ids"):
+                trajectory = _state_get(kwargs.get("state"), "trajectory", []) or []
+                if trajectory:
+                    raise ValueError("TTT exact-token mode could not bridge the next renderer prompt.")
+            rendered_for_ttt = await _render_prompt(renderer, prompt, tools)
+            prompt_ids = list(rendered_for_ttt.token_ids)
+            multi_modal_data = rendered_for_ttt.multi_modal_data
         else:
             prompt_ids = None
             multi_modal_data = None
 
-        return await generate(
+        prepare: dict[str, Any] | None = None
+        model_for_generation = model
+        cache_salt = args.get("cache_salt") or sampling_params.pop("cache_salt", None)
+        if ttt_enabled:
+            if not ttt_options.get("ttt_learner_url"):
+                raise ValueError("TTT renderer mode requires ttt_learner_url in sampling_args.extra_body.")
+            if prompt_ids is None:
+                rendered_for_ttt = rendered_for_ttt or await _render_prompt(renderer, prompt, tools)
+                prompt_ids = list(rendered_for_ttt.token_ids)
+                multi_modal_data = rendered_for_ttt.multi_modal_data
+
+            trajectory = _state_get(kwargs.get("state"), "trajectory", []) or []
+            is_first_turn = not trajectory
+            if is_first_turn:
+                token_role = "completion_initial_prompt"
+                if ttt_options.get("ttt_train_completion_lora", True) and ttt_options.get(
+                    "ttt_completion_lora_trains_initial_prompt", True
+                ):
+                    rendered_for_ttt = rendered_for_ttt or await _render_prompt(renderer, prompt, tools)
+                    new_prompt_ids = _role_train_ids(rendered_for_ttt, prompt, {"system", "user"})
+                else:
+                    new_prompt_ids = []
+            else:
+                token_role = "prompt_environment"
+                if ttt_options.get("ttt_train_prompt_lora", True) and ttt_options.get(
+                    "ttt_prompt_lora_trains_environment_responses", True
+                ):
+                    previous_len = _previous_prefix_token_len(kwargs.get("state"), prompt_ids)
+                    if bridged is not None:
+                        # Most hand-coded renderers return exact bridged IDs but omit attribution.
+                        # Use a full render only for attribution when it matches the exact bridge.
+                        rendered_for_ttt = rendered_for_ttt or await _render_prompt(renderer, prompt, tools)
+                        if rendered_for_ttt.token_ids == prompt_ids:
+                            new_prompt_ids = _role_train_ids(
+                                rendered_for_ttt,
+                                prompt,
+                                {"tool", "user"},
+                                start=max(previous_len, 0),
+                            )
+                        else:
+                            new_prompt_ids = list(bridged.token_ids[max(previous_len, 0) :])
+                    else:
+                        rendered_for_ttt = rendered_for_ttt or await _render_prompt(renderer, prompt, tools)
+                        new_prompt_ids = _role_train_ids(
+                            rendered_for_ttt,
+                            prompt,
+                            {"tool", "user"},
+                            start=max(previous_len, 0),
+                        )
+                else:
+                    new_prompt_ids = []
+
+            generation_prompt_ids = _window_prompt_ids(prompt_ids, sampling_params, ttt_options)
+            prepare = await _ttt_prepare_turn(
+                state=kwargs.get("state"),
+                model=model,
+                prompt_ids=generation_prompt_ids,
+                new_prompt_ids=new_prompt_ids,
+                token_role=token_role,
+                options=ttt_options,
+            )
+            model_for_generation = str(prepare.get("adapter_name") or model)
+            prompt_ids = generation_prompt_ids
+            if ttt_options.get("ttt_cache_salt_includes_adapter", True):
+                adapter_version = prepare.get("adapter_name") or prepare.get("version")
+                cache_salt = f"{cache_salt}:{adapter_version}" if cache_salt is not None else str(adapter_version)
+
+        response = await generate(
             client=self.client,
             renderer=renderer,
             messages=prompt,
-            model=model,
+            model=model_for_generation,
             prompt_ids=prompt_ids,
             multi_modal_data=multi_modal_data,
             tools=tools,
             sampling_params=sampling_params,
-            cache_salt=args.get("cache_salt")
-            or sampling_params.pop("cache_salt", None),
+            cache_salt=cache_salt,
             priority=args.get("priority") or sampling_params.pop("priority", None),
             extra_headers=args.get("extra_headers"),
         )
+        if prepare is not None:
+            await _ttt_complete_turn(
+                state=kwargs.get("state"),
+                model=model,
+                response=response,
+                prepare=prepare,
+                options=ttt_options,
+            )
+        return response
 
     async def raise_from_native_response(self, response: dict[str, Any]) -> None:
         if response is None:
@@ -637,6 +896,9 @@ class RendererClient(
             completion_logprobs=completion_logprobs,
             routed_experts=response.get("routed_experts"),
             multi_modal_data=response.get("multi_modal_data"),
+            ttt_trace_entry=response.get("ttt_trace_entry"),
+            ttt_trace=response.get("ttt_trace"),
+            ttt_final_prompt_adapter=response.get("ttt_final_prompt_adapter"),
         )
 
         # /inference/v1/generate doesn't return usage; reconstruct from tokens.
