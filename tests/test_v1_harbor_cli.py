@@ -190,6 +190,7 @@ timeout_sec = 45
 
     assert rows["shared-default"]["harbor"]["verifier_mode"] == "shared"
     assert rows["shared-default"]["harbor"]["verifier_sandbox"] is None
+    assert rows["shared-default"]["harbor"]["verifier_upload_tests"] is False
     assert rows["separate-implicit"]["harbor"]["verifier_mode"] == "separate"
     assert rows["separate-implicit"]["harbor"]["verifier_sandbox"] == {
         "image": "verifier:latest",
@@ -205,11 +206,13 @@ timeout_sec = 45
     assert rows["separate-implicit"]["harbor"]["artifacts"] == [
         "/logs/agent/trajectory.json"
     ]
+    assert rows["separate-implicit"]["harbor"]["verifier_upload_tests"] is False
     assert rows["separate-reuse-env"]["harbor"]["verifier_mode"] == "separate"
     assert rows["separate-reuse-env"]["harbor"]["verifier_sandbox"]["image"] == (
         "agent-reused:latest"
     )
     assert rows["separate-reuse-env"]["harbor"]["verifier_sandbox"]["memory_gb"] == 3.0
+    assert rows["separate-reuse-env"]["harbor"]["verifier_upload_tests"] is True
 
 
 def test_harbor_taskset_rejects_shared_mode_with_verifier_environment(
@@ -378,6 +381,7 @@ async def test_harbor_reward_uses_fresh_separate_verifier_sandbox(
                     "image": "verifier:latest",
                     "scope": "rollout",
                 },
+                "verifier_upload_tests": True,
                 "verifier_env": {"MODEL": "judge"},
                 "artifacts": [
                     "/logs/agent/trajectory.json",
@@ -400,13 +404,20 @@ async def test_harbor_reward_uses_fresh_separate_verifier_sandbox(
     assert not any(
         path == "/tmp/harbor_tests.tar.gz" for _, path, _ in agent_client.upload_files
     )
+    assert any(
+        path == "/tmp/harbor_tests.tar.gz"
+        for _, path, _ in verifier_client.upload_files
+    )
     transfer_command = agent_client.execute_commands[0][0]
     assert "/logs/artifacts" in transfer_command
     assert "/logs/agent/trajectory.json" in transfer_command
     assert "/a/data" in transfer_command
     assert "/b/data" in transfer_command
     assert agent_client.download_files[0][1] == "/tmp/_vf_harbor_inputs.tar.gz"
-    assert verifier_client.upload_files[0][1] == "/tmp/_vf_harbor_inputs.tar.gz"
+    assert any(
+        path == "/tmp/_vf_harbor_inputs.tar.gz"
+        for _, path, _ in verifier_client.upload_files
+    )
     assert any(
         "tar -xzf" in command for command, _, _ in verifier_client.execute_commands
     )

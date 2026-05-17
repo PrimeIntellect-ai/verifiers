@@ -248,8 +248,10 @@ class HarborTaskset(Taskset):
         )
         sandbox = self.sandbox_config(environment, agent_timeout)
         verifier_sandbox: ConfigData | None = None
+        verifier_upload_tests = False
         if verifier_mode == VERIFIER_MODE_SEPARATE and verifier_environment is None:
             verifier_sandbox = {**sandbox, "command_timeout": int(test_timeout)}
+            verifier_upload_tests = True
         elif verifier_mode == VERIFIER_MODE_SEPARATE:
             verifier_environment = cast(ConfigMap, verifier_environment)
             verifier_sandbox = self.sandbox_config(
@@ -284,6 +286,7 @@ class HarborTaskset(Taskset):
                 "test_timeout": test_timeout,
                 "verifier_mode": verifier_mode,
                 "verifier_sandbox": verifier_sandbox,
+                "verifier_upload_tests": verifier_upload_tests,
                 "verifier_env": verifier_config.get("env") or {},
                 "artifacts": config.get("artifacts") or [],
             },
@@ -493,6 +496,10 @@ async def run_separate_harbor_verifier(
     state["harbor_verifier_sandbox_id"] = lease.id
     try:
         await lease.execute("mkdir -p /logs/verifier /logs/artifacts /tests")
+        if harbor.get("verifier_upload_tests"):
+            await upload_harbor_tests(
+                lease.client, lease.id, Path(str(harbor["task_dir"]))
+            )
         await transfer_harbor_verifier_inputs(
             agent_client,
             agent_sandbox_id,
