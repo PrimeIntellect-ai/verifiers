@@ -1,10 +1,10 @@
 """Compatibility entrypoint for the retired Verifiers eval viewer."""
 
-PRIME_EVAL_TUI_MESSAGE = "vf-tui has moved. Use `prime eval tui`."
+PRIME_EVAL_VIEW_MESSAGE = "vf-tui is deprecated. Use `prime eval view`."
 
 
 def main() -> None:
-    print(PRIME_EVAL_TUI_MESSAGE)
+    print(PRIME_EVAL_VIEW_MESSAGE)
 
 
 if __name__ == "__main__":
