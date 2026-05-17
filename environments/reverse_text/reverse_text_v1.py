@@ -1,18 +1,27 @@
-from __future__ import annotations
-
+import re
 from difflib import SequenceMatcher
 
 from datasets import load_dataset
 
-import verifiers.v1 as vf
-from verifiers.parsers.xml_parser import XMLParser
+import verifiers as vf
 
-parser = XMLParser(["reversed_text"], answer_field="reversed_text")
+
+class TagExtractor:
+    def __init__(self, tag: str):
+        self.pattern = re.compile(rf"<{tag}>(.*?)</{tag}>", re.DOTALL)
+
+    def __call__(self, completion: list[vf.ConfigData]) -> str:
+        messages = vf.get_messages(completion, role="assistant")
+        if not messages:
+            return ""
+        message = messages[-1]
+        match = self.pattern.search(str(message.content or ""))
+        return match.group(1).strip() if match else ""
 
 
 @vf.reward(weight=1.0)
-async def lcs_reward_func(task, state) -> float:
-    response = parser.parse_answer(state.get("completion") or []) or ""
+async def lcs_reward_func(task, state, extract_reversed_text) -> float:
+    response = extract_reversed_text(state.get("completion") or [])
     answer = str(task["answer"])
     return SequenceMatcher(None, response, answer).ratio()
 
@@ -56,6 +65,10 @@ def load_taskset(
         source=build_source(dataset_name, dataset_split),
         system_prompt=system_prompt,
         rewards=[lcs_reward_func],
+        objects={"extract_reversed_text": lambda: TagExtractor("reversed_text")},
+        bindings={
+            "lcs_reward_func.extract_reversed_text": "objects.extract_reversed_text"
+        },
         config=config,
     )
 

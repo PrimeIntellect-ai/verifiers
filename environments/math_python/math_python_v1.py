@@ -1,10 +1,8 @@
-from __future__ import annotations
-
 import json
 
 from math_verify import parse, verify
 
-import verifiers.v1 as vf
+import verifiers as vf
 from verifiers.errors import SandboxError
 from verifiers.utils.data_utils import extract_boxed_answer, load_example_dataset
 
@@ -60,11 +58,8 @@ except BaseException:
 @vf.reward(weight=1.0)
 async def correct_answer(task, state) -> float:
     completion = state.get("completion") or []
-    response_text = ""
-    for message in reversed(completion):
-        if message.get("role") == "assistant":
-            response_text = str(message.get("content") or "")
-            break
+    messages = vf.get_messages(completion, role="assistant")
+    response_text = str(messages[-1].content or "") if messages else ""
     response = extract_boxed_answer(response_text)
     answer = str(task["answer"])
     if not response or len(response) > 50_000:

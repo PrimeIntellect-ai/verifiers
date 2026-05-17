@@ -173,12 +173,20 @@ class InterceptionServer:
         """Attach `error` to the rollout's state if one is registered and
         unset. First error wins — later failures (e.g. the downstream
         `response_future` raising too) should not clobber the original cause.
+
+        Also skip when the rollout loop has already finalized via a clean
+        stop condition (e.g. ``state["prompt_too_long"]`` from an
+        ``OverlongPromptError``). Tail-end failures that happen after
+        that — e.g. ``write_eof`` to an agent that has already exited —
+        are consequences of the termination, not new infra problems, and
+        must not be surfaced as a spurious ``InterceptionError`` /
+        ``StreamInterrupted`` alongside the real stop signal.
         """
         context = self.active_rollouts.get(rollout_id)
         if context is None:
             return
         state = context.get("state")
-        if state is None or state.get("error"):
+        if state is None or state.get("error") or state.get("prompt_too_long"):
             return
         state["error"] = error
 
@@ -295,7 +303,7 @@ class InterceptionServer:
                 self._set_rollout_error(
                     rollout_id,
                     InterceptionError(
-                        f"intercepted request failed: {type(e).__name__}: {e}"
+                        f"Intercepted request failed: {type(e).__name__}: {e}"
                     ),
                 )
                 return web.json_response({"error": str(e)}, status=500)
@@ -433,7 +441,7 @@ class InterceptionServer:
             )
             self._set_rollout_error(
                 rollout_id,
-                StreamInterrupted(f"prepare failed: {type(e).__name__}: {e}"),
+                StreamInterrupted(f"Prepare failed: {type(e).__name__}: {e}"),
             )
             return response
         # Reuse one get() task across keepalive cycles; asyncio.wait_for on
@@ -460,7 +468,7 @@ class InterceptionServer:
                         self._set_rollout_error(
                             rollout_id,
                             StreamInterrupted(
-                                f"keepalive write failed after {print_time(waited_s)}: "
+                                f"Keepalive write failed after {print_time(waited_s)}: "
                                 f"{type(e).__name__}: {e}"
                             ),
                         )
@@ -490,7 +498,7 @@ class InterceptionServer:
             self._set_rollout_error(
                 rollout_id,
                 StreamInterrupted(
-                    f"stream write failed after {print_time(waited_s)}: "
+                    f"Stream write failed after {print_time(waited_s)}: "
                     f"{type(e).__name__}: {e}"
                 ),
             )
@@ -510,7 +518,7 @@ class InterceptionServer:
             self._set_rollout_error(
                 rollout_id,
                 StreamInterrupted(
-                    f"streaming response_future failed: {type(e).__name__}: {e}"
+                    f"Streaming response_future failed: {type(e).__name__}: {e}"
                 ),
             )
 
@@ -527,7 +535,7 @@ class InterceptionServer:
             self._set_rollout_error(
                 rollout_id,
                 StreamInterrupted(
-                    f"write_eof failed after {print_time(waited_s)}: "
+                    f"Write EOF failed after {print_time(waited_s)}: "
                     f"{type(e).__name__}: {e}"
                 ),
             )

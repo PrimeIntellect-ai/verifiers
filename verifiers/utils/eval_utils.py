@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import asyncio
 import itertools
 import json
@@ -20,14 +18,17 @@ from datasets.utils import logging as ds_logging
 
 import verifiers as vf
 from verifiers.types import (
+    ClientConfig,
     ClientType,
     Endpoint,
     Endpoints,
+    EvalCost,
     EvalConfig,
     EvalRunConfig,
     GenerateMetadata,
     GenerateOutputs,
     LogCallback,
+    ModelPricing,
     ProgressCallback,
     RolloutInput,
     RolloutOutput,
@@ -44,9 +45,111 @@ from verifiers.utils.logging_utils import (
     print_time,
 )
 from verifiers.utils.path_utils import get_eval_results_path
+from verifiers.utils.pricing_utils import (
+    compute_eval_cost,
+    fetch_prime_pricing,
+    format_cost_usd,
+    is_prime_inference_url,
+)
+from verifiers.utils.save_utils import save_metadata
 
 logger = logging.getLogger(__name__)
 FREEFORM_ABLATION_SWEEP_FIELDS = {"args", "env_args"}
+
+
+def _client_config_uses_prime_inference(config: ClientConfig) -> bool:
+    if config.endpoint_configs:
+        urls = [endpoint.api_base_url for endpoint in config.endpoint_configs]
+    else:
+        urls = [config.api_base_url]
+
+    return bool(urls) and all(is_prime_inference_url(url) for url in urls)
+
+
+async def _resolve_model_pricing(config: EvalConfig) -> ModelPricing | None:
+    if not _client_config_uses_prime_inference(config.client_config):
+        return None
+
+    pricing_by_model = await fetch_prime_pricing()
+    return pricing_by_model.get(config.model)
+
+
+def _sum_output_usage(outputs: list[RolloutOutput]) -> TokenUsage | None:
+    input_tokens = 0.0
+    output_tokens = 0.0
+    usage_seen = False
+    for output in outputs:
+        token_usage = output.get("token_usage")
+        if not isinstance(token_usage, Mapping):
+            continue
+        try:
+            input_tokens += float(token_usage.get("input_tokens", 0.0))
+            output_tokens += float(token_usage.get("output_tokens", 0.0))
+        except (TypeError, ValueError):
+            return None
+        usage_seen = True
+
+    if not usage_seen:
+        return None
+
+    return TokenUsage(input_tokens=input_tokens, output_tokens=output_tokens)
+
+
+def _attach_metadata_cost(
+    metadata: GenerateMetadata,
+    model_pricing: ModelPricing | None,
+    outputs: list[RolloutOutput],
+) -> EvalCost | None:
+    cost = compute_eval_cost(_sum_output_usage(outputs), model_pricing)
+    if cost is None:
+        metadata.pop("cost", None)
+        return None
+
+    metadata["cost"] = cost
+    return cost
+
+
+def _attach_metadata_name(metadata: GenerateMetadata, name: str | None) -> bool:
+    if name is None:
+        return False
+
+    metadata["name"] = name
+    return True
+
+
+def _with_eval_metadata(
+    on_progress: ProgressCallback | list[ProgressCallback] | None,
+    model_pricing: ModelPricing | None,
+    name: str | None,
+) -> ProgressCallback | list[ProgressCallback] | None:
+    if model_pricing is None and name is None:
+        return on_progress
+
+    def attach_metadata(
+        all_outputs: list[RolloutOutput],
+        new_outputs: list[RolloutOutput],
+        metadata: GenerateMetadata,
+    ) -> None:
+        _attach_metadata_name(metadata, name)
+        _attach_metadata_cost(metadata, model_pricing, all_outputs)
+
+    if on_progress is None:
+        return [attach_metadata]
+
+    if isinstance(on_progress, list):
+        callbacks: list[ProgressCallback] = [attach_metadata]
+        callbacks.extend(cast(list[ProgressCallback], on_progress))
+        return callbacks
+
+    def wrapped_progress(
+        all_outputs: list[RolloutOutput],
+        new_outputs: list[RolloutOutput],
+        metadata: GenerateMetadata,
+    ) -> None:
+        attach_metadata(all_outputs, new_outputs, metadata)
+        on_progress(all_outputs, new_outputs, metadata)
+
+    return wrapped_progress
 
 
 def _coerce_endpoint(raw_endpoint: object, source: str) -> Endpoint:
@@ -439,6 +542,7 @@ def load_toml_config(
     valid_fields = {
         # environment
         "env_id",
+        "name",
         "args",
         "env_args",
         "taskset",
@@ -487,11 +591,12 @@ def load_toml_config(
 
     # validate global fields
     if global_defaults:
-        invalid_global = set(global_defaults.keys()) - valid_fields
+        global_valid_fields = valid_fields - {"name"}
+        invalid_global = set(global_defaults.keys()) - global_valid_fields
         if invalid_global:
             raise ValueError(
                 f"Invalid global field(s) {invalid_global}. "
-                f"Valid fields are: {sorted(valid_fields)}"
+                f"Valid fields are: {sorted(global_valid_fields)}"
             )
 
     # merge global defaults with per-eval configs
@@ -771,12 +876,20 @@ def print_usage(results: GenerateOutputs):
         print(f"final_input_tokens (avg): {float(inp):.3f}")
     if out is not None:
         print(f"final_output_tokens (avg): {float(out):.3f}")
+    cost = results["metadata"].get("cost")
+    if isinstance(cost, Mapping):
+        total_usd = cost.get("total_usd")
+        if isinstance(total_usd, int | float):
+            print(f"cost (all): {format_cost_usd(float(total_usd))}")
 
 
 def print_results(results: GenerateOutputs, num_samples: int = 1):
     assert results["metadata"] is not None
     print("--- Evaluation ---")
-    print(f"Environment: {results['metadata']['env_id']}")
+    env_id = results["metadata"]["env_id"]
+    name = results["metadata"].get("name")
+    env_label = f"{name} ({env_id})" if name and name != env_id else env_id
+    print(f"Environment: {env_label}")
     print(f"Model: {results['metadata']['model']}")
     print(f"Provider: {results['metadata']['base_url']}")
     print(f"Examples: {results['metadata']['num_examples']}")
@@ -851,6 +964,8 @@ async def run_evaluation(
         vf_env.set_kwargs(**config.extra_env_kwargs)
 
     results_path = config.resume_path or get_eval_results_path(config)
+    model_pricing = await _resolve_model_pricing(config)
+    on_progress = _with_eval_metadata(on_progress, model_pricing, config.name)
 
     try:
         if not config.disable_env_server:
@@ -939,6 +1054,12 @@ async def run_evaluation(
     finally:
         if not config.disable_env_server:
             await vf_env.stop_server()
+
+    metadata_changed = _attach_metadata_name(outputs["metadata"], config.name)
+    if _attach_metadata_cost(outputs["metadata"], model_pricing, outputs["outputs"]):
+        metadata_changed = True
+    if metadata_changed and config.save_results:
+        await asyncio.to_thread(save_metadata, outputs["metadata"], results_path)
 
     return outputs
 
@@ -1086,6 +1207,7 @@ async def run_evaluations_tui(
                 metrics=metrics,
                 error_rate=metadata.get("avg_error"),
                 usage=metadata.get("usage"),
+                cost=metadata.get("cost"),
                 avg_timing=avg_timing,
             )
 

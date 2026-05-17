@@ -1,10 +1,9 @@
-from __future__ import annotations
-
 import importlib.util
 import inspect
 from pathlib import Path
 from typing import Any
 
+import pytest
 import verifiers.v1 as vf
 
 
@@ -27,7 +26,9 @@ def _load_mcp_search_module() -> Any:
 def test_mcp_search_env_is_v1_only() -> None:
     module = _load_mcp_search_module()
 
-    env = module.load_environment(max_turns=4)
+    env = module.load_environment(
+        config=module.MCPSearchEnvConfig(taskset={"max_turns": 4})
+    )
 
     assert isinstance(env, vf.Env)
     assert isinstance(env.taskset, vf.Taskset)
@@ -41,7 +42,7 @@ def test_mcp_search_env_is_v1_only() -> None:
 def test_mcp_search_default_taskset_has_stable_non_doc_fixture() -> None:
     module = _load_mcp_search_module()
 
-    rows = module.load_taskset().rows()
+    rows = module.load_taskset(config=module.MCPSearchTasksetConfig()).rows()
 
     assert len(rows) >= 10
     assert len({row["answer"] for row in rows}) == len(rows)
@@ -53,9 +54,24 @@ def test_mcp_search_taskset_accepts_v1_taskset_config() -> None:
     module = _load_mcp_search_module()
 
     env = module.load_environment(
-        config=vf.EnvConfig(taskset={"max_turns": 3}),
+        config=module.MCPSearchEnvConfig(taskset={"max_turns": 3}),
     )
     rows = env.taskset.rows()
 
     assert env.taskset.config.max_turns == 3
     assert all(row["max_turns"] == 3 for row in rows)
+
+
+@pytest.mark.asyncio
+async def test_mcp_search_reward_handles_missing_assistant() -> None:
+    module = _load_mcp_search_module()
+
+    task = vf.Task({"answer": "expected"})
+    assert await module.exact_title_reward(task, vf.State({"completion": []})) == 0.0
+    assert (
+        await module.exact_title_reward(
+            task,
+            vf.State({"completion": [{"role": "user", "content": "expected"}]}),
+        )
+        == 0.0
+    )

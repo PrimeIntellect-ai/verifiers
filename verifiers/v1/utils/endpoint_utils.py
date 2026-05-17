@@ -1,13 +1,11 @@
-from __future__ import annotations
-
 import asyncio
 import json
 import logging
 import os
 import time
 import uuid
-from collections.abc import Callable, Mapping
-from typing import Any, Literal, cast
+from collections.abc import Mapping
+from typing import Literal, Protocol, cast
 
 from anthropic import Anthropic, AsyncAnthropic
 from openai import AsyncOpenAI, OpenAI
@@ -16,6 +14,7 @@ from verifiers.errors import Error, TunnelError
 from verifiers.types import (
     AssistantMessage,
     ClientType,
+    EndpointApi,
     Messages,
     SystemMessage,
     Tool,
@@ -36,18 +35,18 @@ from verifiers.utils.serve_utils import get_free_port
 from ..runtime import Runtime
 from ..state import State
 from ..task import Task
+from ..types import ConfigData, ConfigMap, Handler, PromptMessage
 
-EndpointApi = Literal[
-    "chat",
-    "chat_completions",
-    "completions",
-    "responses",
-    "messages",
-    "openai_chat_completions",
-    "openai_completions",
-    "openai_responses",
-    "anthropic_messages",
-]
+
+class TunnelHandle(Protocol):
+    is_running: bool
+    url: object
+
+    async def start(self) -> object: ...
+
+    async def check_registered(self) -> bool: ...
+
+    def sync_stop(self) -> object: ...
 
 
 def client_from_state(
@@ -68,7 +67,7 @@ def endpoint_config_from_state(
     return endpoint.config(state, api=api)
 
 
-def endpoint_from_state(state: State) -> Endpoint:
+def endpoint_from_state(state: State) -> "Endpoint":
     runtime = state._runtime()
     harness = getattr(runtime, "harness", None)
     endpoint = getattr(harness, "endpoint", None)
@@ -144,7 +143,7 @@ class Endpoint:
             self.port, secret=secret or os.environ.get("ENDPOINT_SECRET")
         )
         self.secret = self.server.secret
-        self._tunnel: object | None = None
+        self._tunnel: TunnelHandle | None = None
         self._tunnel_lock = asyncio.Lock()
         self._tunnel_last_checked = 0.0
         self._rollout_queues: dict[str, asyncio.Queue[str]] = {}
@@ -224,8 +223,8 @@ class Endpoint:
     def rollout_queue(self, rollout_key: str) -> asyncio.Queue[str]:
         return self._rollout_queues[rollout_key]
 
-    def get_request(self, request_id: str) -> dict[str, object]:
-        return cast(dict[str, object], self.server.intercepts[request_id])
+    def get_request(self, request_id: str) -> ConfigData:
+        return cast(ConfigData, self.server.intercepts[request_id])
 
     async def url_base(self) -> str:
         if self.use_tunnel:
@@ -236,12 +235,12 @@ class Endpoint:
         from prime_tunnel import Tunnel
 
         async with self._tunnel_lock:
-            tunnel = cast(Any, self._tunnel)
+            tunnel = self._tunnel
             if tunnel is not None and not tunnel.is_running:
                 tunnel.sync_stop()
                 self._tunnel = None
 
-            tunnel = cast(Any, self._tunnel)
+            tunnel = self._tunnel
             if tunnel is not None:
                 now = time.time()
                 if now - self._tunnel_last_checked > self.TUNNEL_CHECK_INTERVAL:
@@ -251,25 +250,25 @@ class Endpoint:
                         self._tunnel = None
 
             if self._tunnel is None:
-                tunnel = Tunnel(local_port=self.port)
+                tunnel = cast(TunnelHandle, Tunnel(local_port=self.port))
                 url = await tunnel.start()
                 self._tunnel = tunnel
                 self._tunnel_last_checked = time.time()
                 return str(url)
 
-            tunnel = cast(Any, self._tunnel)
+            tunnel = self._tunnel
             if tunnel.url is None:
                 raise TunnelError("Tunnel started but URL is unavailable.")
             return str(tunnel.url)
 
     async def check_tunnel(self) -> None:
-        tunnel = cast(Any, self._tunnel)
+        tunnel = self._tunnel
         if tunnel is not None and not tunnel.is_running:
             raise TunnelError("Tunnel process died during rollout.")
 
     async def teardown(self) -> None:
         async with self._tunnel_lock:
-            tunnel = cast(Any, self._tunnel)
+            tunnel = self._tunnel
             if tunnel is not None:
                 tunnel.sync_stop()
                 self._tunnel = None
@@ -277,16 +276,16 @@ class Endpoint:
 
 
 async def run_intercepted_program(
-    program: Callable[..., object],
+    program: Handler,
     endpoint: Endpoint,
     runtime: Runtime,
     task: Task,
     state: State,
 ) -> object:
-    async def call_tool(name: str, arguments: Mapping[str, object]) -> object:
+    async def call_tool(name: str, arguments: ConfigMap) -> object:
         return await runtime.call_tool(name, task, state, **dict(arguments))
 
-    async def call_user(transcript: list[object]) -> object:
+    async def call_user(transcript: list[PromptMessage]) -> object:
         return await runtime.user_messages(task, state, transcript=transcript)
 
     async def check_stop() -> object:
@@ -432,7 +431,7 @@ async def forward_request(
             deliver_response(request, response, error)
 
 
-def normalize_endpoint_prompt(request: dict[str, object]) -> Messages:
+def normalize_endpoint_prompt(request: ConfigData) -> Messages:
     protocol = request.get("protocol")
     if protocol == "anthropic_messages":
         return normalize_anthropic_messages(request)
@@ -453,7 +452,7 @@ def normalize_endpoint_messages(messages: object) -> Messages:
     raise TypeError("Endpoint messages must be vf.Messages or str.")
 
 
-def normalize_anthropic_messages(request: dict[str, object]) -> Messages:
+def normalize_anthropic_messages(request: ConfigData) -> Messages:
     messages: Messages = []
     system = request.get("system")
     if isinstance(system, str) and system:
@@ -464,7 +463,7 @@ def normalize_anthropic_messages(request: dict[str, object]) -> Messages:
     for raw_message in raw_messages:
         if not isinstance(raw_message, Mapping):
             raise TypeError("Anthropic endpoint message entries must be dicts.")
-        raw_message = cast(Mapping[str, object], raw_message)
+        raw_message = cast(ConfigMap, raw_message)
         role = raw_message.get("role")
         content = raw_message.get("content")
         if role == "user":
@@ -486,7 +485,7 @@ def normalize_anthropic_user_message(content: object) -> Messages:
     for block in content:
         if not isinstance(block, Mapping):
             continue
-        block = cast(Mapping[str, object], block)
+        block = cast(ConfigMap, block)
         block_type = block.get("type")
         if block_type == "text" and isinstance(block.get("text"), str):
             text_parts.append(str(block["text"]))
@@ -515,7 +514,7 @@ def normalize_anthropic_assistant_message(content: object) -> AssistantMessage:
     for block in content:
         if not isinstance(block, Mapping):
             continue
-        block = cast(Mapping[str, object], block)
+        block = cast(ConfigMap, block)
         block_type = block.get("type")
         if block_type == "text" and isinstance(block.get("text"), str):
             text_parts.append(str(block["text"]))
@@ -544,7 +543,7 @@ def anthropic_block_content_text(content: object) -> str:
         for block in content:
             if not isinstance(block, Mapping):
                 continue
-            block = cast(Mapping[str, object], block)
+            block = cast(ConfigMap, block)
             text = block.get("text")
             if isinstance(text, str):
                 text_parts.append(text)
@@ -561,7 +560,7 @@ def normalize_openai_responses_input(raw_input: object) -> Messages:
     for item in raw_input:
         if not isinstance(item, Mapping):
             raise TypeError("OpenAI Responses input entries must be dicts.")
-        item = cast(Mapping[str, object], item)
+        item = cast(ConfigMap, item)
         item_type = item.get("type")
         if item_type == "function_call":
             call_id = item.get("call_id") or item.get("id")
@@ -608,7 +607,7 @@ def responses_content_text(content: object) -> str:
         text_parts: list[str] = []
         for part in content:
             if isinstance(part, Mapping):
-                part = cast(Mapping[str, object], part)
+                part = cast(ConfigMap, part)
                 text = part.get("text")
                 if isinstance(text, str):
                     text_parts.append(text)
@@ -628,13 +627,13 @@ def normalize_endpoint_tools(tools: object, protocol: str) -> list[Tool] | None:
             continue
         if not isinstance(raw_tool, dict):
             raise TypeError("Endpoint tool definitions must be dicts.")
-        raw_tool = cast(dict[str, Any], raw_tool)
+        raw_tool = cast(ConfigData, raw_tool)
         if protocol == "anthropic_messages":
             normalized.append(
                 Tool(
                     name=str(raw_tool.get("name", "")),
                     description=str(raw_tool.get("description", "")),
-                    parameters=cast(dict[str, Any], raw_tool.get("input_schema") or {}),
+                    parameters=cast(ConfigData, raw_tool.get("input_schema") or {}),
                 )
             )
             continue
@@ -643,19 +642,20 @@ def normalize_endpoint_tools(tools: object, protocol: str) -> list[Tool] | None:
                 Tool(
                     name=str(raw_tool.get("name", "")),
                     description=str(raw_tool.get("description", "")),
-                    parameters=cast(dict[str, Any], raw_tool.get("parameters") or {}),
+                    parameters=cast(ConfigData, raw_tool.get("parameters") or {}),
                     strict=cast(bool | None, raw_tool.get("strict")),
                 )
             )
             continue
         function_payload = raw_tool.get("function")
         if raw_tool.get("type") == "function" and isinstance(function_payload, dict):
+            function_payload = cast(ConfigData, function_payload)
             normalized.append(
                 Tool(
                     name=str(function_payload.get("name", "")),
                     description=str(function_payload.get("description", "")),
                     parameters=cast(
-                        dict[str, Any], function_payload.get("parameters") or {}
+                        ConfigData, function_payload.get("parameters") or {}
                     ),
                     strict=cast(bool | None, function_payload.get("strict")),
                 )
@@ -666,6 +666,6 @@ def normalize_endpoint_tools(tools: object, protocol: str) -> list[Tool] | None:
 
 
 def assistant_completion_from_messages(
-    prompt: list[dict[str, object]], messages: list[dict[str, object]]
-) -> list[dict[str, object]]:
+    prompt: list[ConfigData], messages: list[ConfigData]
+) -> list[ConfigData]:
     return messages[len(prompt) :]

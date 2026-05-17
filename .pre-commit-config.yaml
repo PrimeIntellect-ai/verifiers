@@ -15,6 +15,11 @@ repos:
         entry: uv run ruff format
         language: system
         types_or: [python, pyi]
+      - id: semgrep-v1-policy
+        name: Semgrep v1 policy
+        entry: uv run --group policy semgrep --metrics=off --disable-version-check --config .semgrep/verifiers.yml --error --quiet
+        language: system
+        pass_filenames: false
       - id: sync-agents-md
         name: Sync AGENTS.md from docs
         entry: uv run python scripts/sync.py

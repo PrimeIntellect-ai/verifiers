@@ -1,15 +1,14 @@
-from collections.abc import Mapping
 import math
+from collections.abc import Mapping, Sequence
 from types import MappingProxyType
-
 from typing import Any
 
-from verifiers.types import TokenUsage
+from verifiers.types import Response, TokenUsage, Usage
 
 
-def _get_usage_value(usage_obj: object, key: str) -> int | float:
+def _get_usage_value(usage_obj: object, key: str) -> object:
     if isinstance(usage_obj, Mapping):
-        return usage_obj.get(key, 0)  # type: ignore[return-value]
+        return usage_obj.get(key, 0)
     return getattr(usage_obj, key, 0)
 
 
@@ -84,7 +83,9 @@ def extract_usage_token_details(response: object) -> dict[str, int] | None:
     subtract_cached_from_input = False
     cached_input_tokens = _get_optional_usage_value(usage, "cached_input_tokens")
     if cached_input_tokens is None:
-        cached_input_tokens = _get_optional_usage_value(usage, "cache_read_input_tokens")
+        cached_input_tokens = _get_optional_usage_value(
+            usage, "cache_read_input_tokens"
+        )
     if cached_input_tokens is None:
         cached_input_tokens = _get_nested_usage_value(usage, "cached_tokens")
         subtract_cached_from_input = cached_input_tokens is not None
@@ -108,6 +109,19 @@ def extract_usage_tokens(response: object) -> tuple[int, int]:
     if details is None:
         return 0, 0
     return details["input_tokens"], details["output_tokens"]
+
+
+def usage_tokens(usage: Usage) -> tuple[int, int]:
+    if usage.prompt_tokens < 0 or usage.completion_tokens < 0:
+        raise ValueError("Response usage tokens must be non-negative.")
+    return usage.prompt_tokens, usage.completion_tokens
+
+
+def response_usage_tokens(response: Response) -> tuple[int, int]:
+    usage = response.usage
+    if usage is None:
+        return 0, 0
+    return usage_tokens(usage)
 
 
 class StateUsageTracker:
@@ -180,7 +194,7 @@ def cast_token_usage(usage: Mapping[str, Any]) -> TokenUsage:
 
 
 def compute_context_token_metrics(
-    trajectory: list,
+    trajectory: Sequence[Mapping[str, object]],
 ) -> dict[str, float]:
     """Compute context token metrics from the trajectory.
 
@@ -201,7 +215,6 @@ def compute_context_token_metrics(
     if not trajectory:
         return _zero
 
-    # Find the last step with usage data.
     last_step_total = 0
     found = False
     for step in reversed(trajectory):
@@ -211,9 +224,7 @@ def compute_context_token_metrics(
         details = extract_usage_token_details(response)
         if details is None:
             continue
-        prompt_tokens = details["input_tokens"] + details.get(
-            "cached_input_tokens", 0
-        )
+        prompt_tokens = details["input_tokens"] + details.get("cached_input_tokens", 0)
         completion_tokens = details["output_tokens"]
         last_step_total = prompt_tokens + completion_tokens
         found = True
@@ -222,7 +233,6 @@ def compute_context_token_metrics(
     if not found:
         return _zero
 
-    # Sum completion tokens across all steps with usage data.
     total_completion = 0
     for step in trajectory:
         response = step.get("response")

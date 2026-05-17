@@ -33,8 +33,6 @@ statement to ``True := trivial``" cheat.  The marker convention matches
 "protected" means.
 """
 
-from __future__ import annotations
-
 import re
 from dataclasses import dataclass
 
@@ -86,7 +84,7 @@ Only edit the lines BELOW `-- lean-guard: end protected` (the proof body).\
 
 
 @dataclass(frozen=True)
-class _Preset:
+class DatasetPreset:
     dataset_name: str
     dataset_split: str = "train"
     dataset_subset: str | None = None
@@ -97,23 +95,23 @@ class _Preset:
     normalize_mathlib_imports: bool = False
 
 
-PRESETS: dict[str, _Preset] = {
-    "goedel-pset": _Preset("Goedel-LM/Goedel-Pset-v1"),
-    "numina-lean": _Preset("AI-MO/NuminaMath-LEAN", name_column="uuid"),
-    "deepseek-prover-v1": _Preset(
+PRESETS: dict[str, DatasetPreset] = {
+    "goedel-pset": DatasetPreset("Goedel-LM/Goedel-Pset-v1"),
+    "numina-lean": DatasetPreset("AI-MO/NuminaMath-LEAN", name_column="uuid"),
+    "deepseek-prover-v1": DatasetPreset(
         "deepseek-ai/DeepSeek-Prover-V1",
         header_column="header",
         name_column="name",
     ),
-    "kimina": _Preset("AI-MO/Kimina-Prover-Promptset", name_column="name"),
-    "minif2f": _Preset(
+    "kimina": DatasetPreset("AI-MO/Kimina-Prover-Promptset", name_column="name"),
+    "minif2f": DatasetPreset(
         "cat-searcher/minif2f-lean4",
         dataset_split="test",
         header_column="header",
         name_column="id",
         normalize_mathlib_imports=True,
     ),
-    "deepseek-proverbench": _Preset(
+    "deepseek-proverbench": DatasetPreset(
         "deepseek-ai/DeepSeek-ProverBench",
         header_column="header",
         name_column="name",

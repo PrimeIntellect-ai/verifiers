@@ -16,5 +16,5 @@ build-backend = "hatchling.build"
 include = ["browser_cua_example.py", "pyproject.toml"]
 
 [tool.verifiers.eval]
-num_examples = 1
-rollouts_per_example = 1
+num_examples = 5
+rollouts_per_example = 3

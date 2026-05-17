@@ -1,7 +1,5 @@
 # NOTE: Helper functions for example datasets. Not intended for core functionality.
 
-from __future__ import annotations
-
 import random
 from typing import TYPE_CHECKING, Any, Callable, cast
 
@@ -23,13 +21,13 @@ BOXED_SYSTEM_PROMPT = (
 
 
 def format_dataset(
-    dataset: Dataset,
+    dataset: "Dataset",
     system_prompt: str | None = None,
     few_shot: Messages | None = None,
     question_key: str = "question",
     answer_key: str = "answer",
     map_kwargs: dict = {},
-) -> Dataset:
+) -> "Dataset":
     """
     Create `example_id` and `prompt` columns if not present.
     """
@@ -271,7 +269,7 @@ def get_preprocess_fn(name: str) -> Callable[[dict], dict]:
 
 def load_example_dataset(
     name: str = "gsm8k", split: str | None = None, n: int | None = None, seed: int = 0
-) -> Dataset:
+) -> "Dataset":
     from datasets import Dataset, concatenate_datasets, load_dataset
 
     if name == "aime2024":

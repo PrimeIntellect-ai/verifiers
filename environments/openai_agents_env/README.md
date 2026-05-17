@@ -12,7 +12,7 @@
 ### Datasets
 - **Primary dataset(s)**: `gsm8k` train (train) and test (eval) via `load_example_dataset`
 - **Source links**: Uses the example loader in `verifiers.utils.data_utils`
-- **Split sizes**: Configurable via args; defaults to 50 train / 20 eval
+- **Split sizes**: Configurable via taskset config; defaults to 50 train / 20 eval
 
 ### Task
 - **Type**: `vf.Env` with a GSM8K `vf.Taskset` and OpenAI Agents SDK `vf.Harness`
@@ -33,12 +33,11 @@ Configure model and sampling:
 ```bash
 prime eval run openai-agents-env \
   -m gpt-4.1-mini \
-  -n 20 -r 3 -t 1024 -T 0.7 \
-  -a '{"num_train_examples": 50, "num_eval_examples": 20}'
+  -n 20 -r 3 -t 1024 -T 0.7
 ```
 
-### Environment Arguments
-| Arg | Type | Default | Description |
+### Taskset Config
+| Field | Type | Default | Description |
 | --- | ---- | ------- | ----------- |
 | `num_train_examples` | int | `50` | Number of training examples |
 | `num_eval_examples` | int | `20` | Number of evaluation examples |

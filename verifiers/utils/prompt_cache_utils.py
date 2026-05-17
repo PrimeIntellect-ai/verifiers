@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -20,9 +18,7 @@ OPENAI_CACHE_CLIENT_TYPES: frozenset[ClientType] = frozenset(
         "openai_responses",
     }
 )
-ANTHROPIC_CACHE_CLIENT_TYPES: frozenset[ClientType] = frozenset(
-    {"anthropic_messages"}
-)
+ANTHROPIC_CACHE_CLIENT_TYPES: frozenset[ClientType] = frozenset({"anthropic_messages"})
 OPENROUTER_CACHE_CLIENT_TYPES: frozenset[ClientType] = frozenset(
     {
         "openai_chat_completions",
@@ -75,17 +71,13 @@ class PromptCachePolicy:
 
 
 class PromptCacheAdapter:
-    def policy_for(
-        self, identity: EndpointIdentity, model: str
-    ) -> PromptCachePolicy:
+    def policy_for(self, identity: EndpointIdentity, model: str) -> PromptCachePolicy:
         _ = identity, model
         return PromptCachePolicy(mode="implicit")
 
 
 class AnthropicPromptCacheAdapter(PromptCacheAdapter):
-    def policy_for(
-        self, identity: EndpointIdentity, model: str
-    ) -> PromptCachePolicy:
+    def policy_for(self, identity: EndpointIdentity, model: str) -> PromptCachePolicy:
         _ = identity, model
         return PromptCachePolicy(mode="anthropic_top_level")
 
@@ -93,9 +85,7 @@ class AnthropicPromptCacheAdapter(PromptCacheAdapter):
 class OpenRouterPromptCacheAdapter(PromptCacheAdapter):
     anthropic_model_prefixes = ("anthropic/",)
 
-    def policy_for(
-        self, identity: EndpointIdentity, model: str
-    ) -> PromptCachePolicy:
+    def policy_for(self, identity: EndpointIdentity, model: str) -> PromptCachePolicy:
         _ = identity
         if model.startswith(self.anthropic_model_prefixes):
             return PromptCachePolicy(mode="openrouter_anthropic_top_level")

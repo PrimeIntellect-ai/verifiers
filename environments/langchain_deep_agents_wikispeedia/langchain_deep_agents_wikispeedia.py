@@ -1,14 +1,17 @@
-from __future__ import annotations
-
 import asyncio
+import json
 from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
-from typing import cast
+from typing import Protocol, cast
 
 from datasets import Dataset
 
-import verifiers.v1 as vf
-from verifiers.v1.utils.prompt_utils import state_system_prompt_text
+import verifiers as vf
 from wiki_graph import WikiGraph, WikiPair, load_wiki_graph
+
+
+class AgentMessage(Protocol):
+    role: str
+    content: object
 
 
 def system_prompt(allow_go_back: bool = True) -> str:
@@ -43,6 +46,39 @@ tools at that point and reply with a brief confirmation."""
 
 
 SYSTEM_PROMPT = system_prompt()
+
+
+class WikispeediaTasksetConfig(vf.TasksetConfig):
+    cache_dir: str | None = None
+    min_path_length: int = 3
+    max_path_length: int = 6
+    train_size: int = 50_000
+    eval_size: int = 1_000
+    eval_target_fraction: float = 0.1
+    split_seed: int = 0
+    links_only: bool = False
+    allow_go_back: bool = True
+    max_turns: int = 50
+    efficiency_weight: float = 0.0
+    stratify_path_length: bool = True
+
+
+class WikispeediaHarnessConfig(vf.HarnessConfig):
+    max_turns: int = 50
+    timeout_seconds: float = 1200.0
+
+
+class WikispeediaEnvConfig(vf.EnvConfig):
+    taskset: WikispeediaTasksetConfig
+    harness: WikispeediaHarnessConfig
+
+
+class WikispeediaTaskset(vf.Taskset):
+    config_type = WikispeediaTasksetConfig
+
+
+class WikispeediaHarness(vf.Harness):
+    config_type = WikispeediaHarnessConfig
 
 
 def format_article(wiki: WikiGraph, article: str, links_only: bool = False) -> str:
@@ -129,18 +165,17 @@ async def agent_timeout(task: vf.Task, state: vf.State) -> float:
 
 def iter_tool_calls(state: vf.State) -> Iterator[str]:
     completion = state.get("completion") or []
-    for msg in completion:
-        if not isinstance(msg, Mapping):
-            continue
-        tool_calls = msg.get("tool_calls")
+    messages = (
+        vf.get_messages(completion, role="assistant")
+        if isinstance(completion, list)
+        else []
+    )
+    for msg in messages:
+        tool_calls = msg.tool_calls
         if not isinstance(tool_calls, list):
             continue
         for tool_call in tool_calls:
-            if not isinstance(tool_call, Mapping):
-                continue
-            name = tool_call.get("name")
-            if isinstance(name, str):
-                yield name
+            yield tool_call.name
 
 
 def count_tool_calls(state: vf.State, name: str | None = None) -> int:
@@ -189,25 +224,40 @@ async def total_tool_calls(task: vf.Task, state: vf.State) -> float:
 
 async def assistant_turns(task: vf.Task, state: vf.State) -> float:
     completion = state.get("completion") or []
-    count = sum(
-        1
-        for msg in completion
-        if isinstance(msg, Mapping) and msg.get("role") == "assistant"
+    return float(
+        len(vf.get_messages(completion, role="assistant"))
+        if isinstance(completion, list)
+        else 0
     )
-    return float(count)
 
 
 async def invalid_link_rate(task: vf.Task, state: vf.State) -> float:
     clicks = 0
     invalid = 0
     completion = state.get("completion") or []
-    for msg in completion:
-        if not isinstance(msg, Mapping):
+    if not isinstance(completion, list):
+        return 0.0
+
+    transcript = vf.get_messages(completion)
+    id_to_name: dict[str, str] = {}
+    for msg in transcript:
+        if msg.role == "assistant":
+            tool_calls = msg.tool_calls
+            if tool_calls:
+                for tc in tool_calls:
+                    id_to_name[tc.id] = tc.name
+
+    for msg in transcript:
+        if msg.role != "tool":
             continue
-        if msg.get("role") != "tool" or msg.get("name") != "click_link":
+        tool_name = id_to_name.get(msg.tool_call_id)
+        if tool_name is None:
+            extra = msg.get("name")
+            tool_name = extra if isinstance(extra, str) else None
+        if tool_name != "click_link":
             continue
         clicks += 1
-        content = msg.get("content", "")
+        content = msg.content
         if isinstance(content, str) and "is not a valid link" in content:
             invalid += 1
     return float(invalid / clicks) if clicks else 0.0
@@ -233,7 +283,7 @@ def build_dataset(
             f"Your mission: {source} >> {target}\n\n"
             f"Here is the starting article:\n\n{starting}"
         )
-        info: dict[str, object] = {
+        info: vf.ConfigData = {
             "source": source,
             "target": target,
             "shortest_path": dist,
@@ -254,7 +304,9 @@ def build_dataset(
     return Dataset.from_list(records)
 
 
-def serialize_agent_completion(messages: Sequence[object]) -> list[dict[str, object]]:
+def serialize_agent_completion(
+    messages: Sequence[AgentMessage | vf.ConfigMap],
+) -> list[vf.ConfigData]:
     role_aliases = {
         "human": "user",
         "ai": "assistant",
@@ -262,7 +314,7 @@ def serialize_agent_completion(messages: Sequence[object]) -> list[dict[str, obj
         "system": "system",
     }
     call_names: dict[str, str] = {}
-    serialized: list[dict[str, object]] = []
+    serialized: list[vf.ConfigData] = []
     for message in messages:
         if isinstance(message, Mapping):
             payload = dict(message)
@@ -282,7 +334,7 @@ def serialize_agent_completion(messages: Sequence[object]) -> list[dict[str, obj
             )
         raw_role = payload.get("role") or payload.get("type") or "assistant"
         role = role_aliases.get(str(raw_role), str(raw_role))
-        item: dict[str, object] = {
+        item: vf.ConfigData = {
             "role": role,
             "content": payload.get("content", ""),
         }
@@ -299,6 +351,14 @@ def serialize_agent_completion(messages: Sequence[object]) -> list[dict[str, obj
                 )
                 if isinstance(tool_id, str) and isinstance(name, str):
                     call_names[tool_id] = name
+                arguments = tool_call_payload.get("arguments")
+                if not isinstance(arguments, str):
+                    args = tool_call_payload.get("args", {})
+                    try:
+                        arguments = json.dumps(args if args is not None else {})
+                    except (TypeError, ValueError):
+                        arguments = str(args)
+                    tool_call_payload["arguments"] = arguments
                 normalized_tool_calls.append(tool_call_payload)
             item["tool_calls"] = normalized_tool_calls
         name = payload.get("name")
@@ -367,12 +427,19 @@ def make_langchain_deep_agents_program(
         )
         runtime_tools = state.get_tools()
         nav_tools = langchain_navigation_tools(runtime_tools)
+        state_system_prompt = ""
+        system_prompt_messages = state.get("system_prompt")
+        if isinstance(system_prompt_messages, list):
+            state_system_prompt = "\n\n".join(
+                str(message.content or "")
+                for message in vf.get_messages(system_prompt_messages)
+            )
         agent = create_deep_agent(
             model=model,
             tools=nav_tools,
-            system_prompt=state_system_prompt_text(task, state) or SYSTEM_PROMPT,
+            system_prompt=state_system_prompt or SYSTEM_PROMPT,
         )
-        prompt = str(cast(list[dict[str, object]], state["prompt"])[-1]["content"])
+        prompt = str(cast(list[vf.ConfigData], state["prompt"])[-1]["content"])
         recursion_limit = state.get_max_turns(max_turns)
         invoke_config = (
             {"recursion_limit": recursion_limit} if recursion_limit > 0 else None
@@ -404,52 +471,38 @@ def make_langchain_deep_agents_program(
     return run_langchain_deep_agents_wikispeedia_program
 
 
-def load_taskset(
-    cache_dir: str | None = None,
-    min_path_length: int = 3,
-    max_path_length: int = 6,
-    train_size: int = 50_000,
-    eval_size: int = 1_000,
-    eval_target_fraction: float = 0.1,
-    split_seed: int = 0,
-    links_only: bool = False,
-    allow_go_back: bool = True,
-    max_turns: int = 50,
-    efficiency_weight: float = 0.0,
-    stratify_path_length: bool = True,
-    config: vf.TasksetConfig | None = None,
-) -> vf.Taskset:
+def load_taskset(config: WikispeediaTasksetConfig) -> WikispeediaTaskset:
     pair_cache: dict[str, tuple[list[WikiPair], list[WikiPair]]] = {}
 
     def pairs() -> tuple[list[WikiPair], list[WikiPair]]:
         if "pairs" not in pair_cache:
-            pair_cache["pairs"] = load_wiki_graph(cache_dir).split_pairs(
-                train_size=train_size,
-                eval_size=eval_size,
-                min_dist=min_path_length,
-                max_dist=max_path_length,
-                eval_target_fraction=eval_target_fraction,
-                seed=split_seed,
-                stratify=stratify_path_length,
+            pair_cache["pairs"] = load_wiki_graph(config.cache_dir).split_pairs(
+                train_size=config.train_size,
+                eval_size=config.eval_size,
+                min_dist=config.min_path_length,
+                max_dist=config.max_path_length,
+                eval_target_fraction=config.eval_target_fraction,
+                seed=config.split_seed,
+                stratify=config.stratify_path_length,
             )
         return pair_cache["pairs"]
 
     def build_train() -> Dataset:
         train, _ = pairs()
         return build_dataset(
-            load_wiki_graph(cache_dir),
+            load_wiki_graph(config.cache_dir),
             train,
-            links_only=links_only,
-            max_turns=max_turns,
+            links_only=config.links_only,
+            max_turns=config.max_turns,
         )
 
     def build_eval() -> Dataset:
         _, eval_ = pairs()
         return build_dataset(
-            load_wiki_graph(cache_dir),
+            load_wiki_graph(config.cache_dir),
             eval_,
-            links_only=links_only,
-            max_turns=max_turns,
+            links_only=config.links_only,
+            max_turns=config.max_turns,
         )
 
     rewards = [reached_target]
@@ -465,82 +518,50 @@ def load_taskset(
             for name in sorted(DEEP_AGENT_TOOLS | WIKISPEEDIA_TOOLS)
         ],
     ]
-    if efficiency_weight > 0:
+    if config.efficiency_weight > 0:
 
         async def weighted_path_efficiency(task: vf.Task, state: vf.State) -> float:
             return await path_efficiency(task, state)
 
         weighted_path_efficiency.__name__ = "path_efficiency"
-        rewards.append(vf.reward(weight=efficiency_weight)(weighted_path_efficiency))
+        rewards.append(
+            vf.reward(weight=config.efficiency_weight)(weighted_path_efficiency)
+        )
     else:
         metrics.insert(0, path_efficiency)
 
-    return vf.Taskset(
+    return WikispeediaTaskset(
         source=build_train,
         eval_source=build_eval,
         taskset_id="langchain-deep-agents-wikispeedia",
-        system_prompt=system_prompt(allow_go_back=allow_go_back),
-        toolsets=[load_toolset(cache_dir=cache_dir, allow_go_back=allow_go_back)],
+        system_prompt=system_prompt(allow_go_back=config.allow_go_back),
+        toolsets=[
+            load_toolset(
+                cache_dir=config.cache_dir,
+                allow_go_back=config.allow_go_back,
+            )
+        ],
         rewards=rewards,
         metrics=metrics,
         config=config,
     )
 
 
-def load_harness(
-    max_turns: int = 50,
-    timeout_seconds: float = 1200.0,
-    config: vf.HarnessConfig | None = None,
-) -> vf.Harness:
-    return vf.Harness(
+def load_harness(config: WikispeediaHarnessConfig) -> WikispeediaHarness:
+    return WikispeediaHarness(
         program=make_langchain_deep_agents_program(
-            max_turns=max_turns,
-            timeout_seconds=timeout_seconds,
+            max_turns=config.max_turns,
+            timeout_seconds=config.timeout_seconds,
         ),
-        max_turns=max_turns,
         updates=[restore_agent_completion],
         config=config,
     )
 
 
-def load_environment(
-    cache_dir: str | None = None,
-    min_path_length: int = 3,
-    max_path_length: int = 6,
-    train_size: int = 50_000,
-    eval_size: int = 1_000,
-    eval_target_fraction: float = 0.1,
-    split_seed: int = 0,
-    links_only: bool = False,
-    allow_go_back: bool = True,
-    max_turns: int = 50,
-    timeout_seconds: float = 1200.0,
-    efficiency_weight: float = 0.0,
-    stratify_path_length: bool = True,
-    config: vf.EnvConfig | None = None,
-) -> vf.Env:
+def load_environment(config: WikispeediaEnvConfig) -> vf.Env:
     """Load the v1 Wikispeedia taskset with a LangChain Deep Agents harness."""
-    config = config or vf.EnvConfig()
 
     return vf.Env(
-        taskset=load_taskset(
-            cache_dir=cache_dir,
-            min_path_length=min_path_length,
-            max_path_length=max_path_length,
-            train_size=train_size,
-            eval_size=eval_size,
-            eval_target_fraction=eval_target_fraction,
-            split_seed=split_seed,
-            links_only=links_only,
-            allow_go_back=allow_go_back,
-            max_turns=max_turns,
-            efficiency_weight=efficiency_weight,
-            stratify_path_length=stratify_path_length,
-            config=config.taskset,
-        ),
-        harness=load_harness(
-            max_turns=max_turns,
-            timeout_seconds=timeout_seconds,
-            config=config.harness,
-        ),
+        taskset=load_taskset(config=config.taskset),
+        harness=load_harness(config=config.harness),
     )

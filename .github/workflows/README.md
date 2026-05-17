@@ -5,7 +5,7 @@ This directory contains automated workflows for the verifiers project.
 ## Workflows
 
 ### 1. Style (`style.yml`)
-**Purpose**: Code style checking using ruff and ty.
+**Purpose**: Code style checking using ruff, ty, and Semgrep policy rules.
 
 **Triggers**:
 - Pull requests (opened, synchronized, reopened)
@@ -14,7 +14,8 @@ This directory contains automated workflows for the verifiers project.
 **What it does**:
 - Runs ruff for linting and formatting checks
 - Runs ty type checks with `uv run ty check verifiers`
-- Uses configuration from `pyproject.toml`
+- Runs Semgrep policy checks through pre-commit's isolated hook environment.
+- Uses configuration from `pyproject.toml`, `.pre-commit-config.yaml`, and `.semgrep/verifiers.yml`
 
 ### 2. Test (`test.yml`)
 **Purpose**: Comprehensive testing with coverage reports.
@@ -46,6 +47,9 @@ To run checks locally the same way they run in CI:
 ```bash
 # Ty parity with CI (Python 3.13 target configured in `pyproject.toml`)
 uv run ty check verifiers
+
+# Verifiers-specific policy lint
+env PYTHONWARNINGS=ignore::SyntaxWarning uv run pre-commit run semgrep-v1-policy --all-files
 
 # Tests
 uv sync

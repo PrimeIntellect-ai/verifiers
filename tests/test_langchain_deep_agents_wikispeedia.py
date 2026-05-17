@@ -57,12 +57,49 @@ def test_wikispeedia_loads_as_v1_taskset_harness(
 ) -> None:
     module = load_module(monkeypatch)
 
-    env = module.load_environment(train_size=1, eval_size=1)
+    env = module.load_environment(config=module.WikispeediaEnvConfig())
 
     assert isinstance(env, vf.Env)
     assert isinstance(env.taskset, vf.Taskset)
     assert isinstance(env.harness, vf.Harness)
     assert env.taskset.taskset_id == "langchain-deep-agents-wikispeedia"
+
+
+def test_wikispeedia_env_config_reaches_taskset_and_harness(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = load_module(monkeypatch)
+    wiki = make_small_wiki(module)
+    monkeypatch.setattr(module, "load_wiki_graph", lambda cache_dir=None: wiki)
+
+    env = module.load_environment(
+        config=module.WikispeediaEnvConfig(
+            taskset={
+                "train_size": 2,
+                "eval_size": 1,
+                "min_path_length": 1,
+                "max_path_length": 1,
+                "eval_target_fraction": 0.5,
+                "allow_go_back": False,
+                "links_only": True,
+                "max_turns": 7,
+            },
+            harness={
+                "max_turns": 8,
+                "timeout_seconds": 9.0,
+            },
+        )
+    )
+
+    train_rows = list(env.taskset.source())
+    eval_rows = list(env.taskset.eval_source())
+
+    assert len(train_rows) == 2
+    assert len(eval_rows) == 1
+    assert train_rows[0]["max_turns"] == 7
+    assert env.harness.config.max_turns == 8
+    assert env.harness.config.timeout_seconds == 9.0
+    assert [tool.__name__ for tool in env.taskset.toolsets[0].tools] == ["click_link"]
 
 
 def test_wikispeedia_rows_use_v1_task_shape(
@@ -90,11 +127,13 @@ def test_wikispeedia_taskset_sources_use_disjoint_target_split(
     wiki = make_small_wiki(module)
     monkeypatch.setattr(module, "load_wiki_graph", lambda cache_dir=None: wiki)
     taskset = module.load_taskset(
-        train_size=2,
-        eval_size=1,
-        min_path_length=1,
-        max_path_length=1,
-        eval_target_fraction=0.5,
+        config=module.WikispeediaTasksetConfig(
+            train_size=2,
+            eval_size=1,
+            min_path_length=1,
+            max_path_length=1,
+            eval_target_fraction=0.5,
+        )
     )
 
     train_rows = list(taskset.source())
@@ -114,8 +153,12 @@ def test_wikispeedia_efficiency_weight_uses_fresh_reward_wrapper(
     wiki = make_small_wiki(module)
     monkeypatch.setattr(module, "load_wiki_graph", lambda cache_dir=None: wiki)
 
-    weighted = module.load_taskset(efficiency_weight=0.5)
-    plain = module.load_taskset(efficiency_weight=0.0)
+    weighted = module.load_taskset(
+        config=module.WikispeediaTasksetConfig(efficiency_weight=0.5)
+    )
+    plain = module.load_taskset(
+        config=module.WikispeediaTasksetConfig(efficiency_weight=0.0)
+    )
 
     assert any(fn.__name__ == "path_efficiency" for fn in weighted.rewards)
     assert any(fn is module.path_efficiency for fn in plain.metrics)
@@ -127,13 +170,17 @@ def test_wikispeedia_taskset_owns_navigation_tools(
 ) -> None:
     module = load_module(monkeypatch)
 
-    taskset = module.load_taskset(allow_go_back=True)
+    taskset = module.load_taskset(
+        config=module.WikispeediaTasksetConfig(allow_go_back=True)
+    )
     names = [tool.__name__ for tool in taskset.toolsets[0].tools]
-    no_back = module.load_taskset(allow_go_back=False)
+    no_back = module.load_taskset(
+        config=module.WikispeediaTasksetConfig(allow_go_back=False)
+    )
 
     assert names == ["click_link", "go_back"]
     assert [tool.__name__ for tool in no_back.toolsets[0].tools] == ["click_link"]
-    assert module.load_harness().toolsets == []
+    assert module.load_harness(config=module.WikispeediaHarnessConfig()).toolsets == []
 
 
 def test_wikispeedia_system_prompt_matches_available_tools(
@@ -141,8 +188,12 @@ def test_wikispeedia_system_prompt_matches_available_tools(
 ) -> None:
     module = load_module(monkeypatch)
 
-    with_back = module.load_taskset(allow_go_back=True)
-    without_back = module.load_taskset(allow_go_back=False)
+    with_back = module.load_taskset(
+        config=module.WikispeediaTasksetConfig(allow_go_back=True)
+    )
+    without_back = module.load_taskset(
+        config=module.WikispeediaTasksetConfig(allow_go_back=False)
+    )
 
     assert "go_back" in with_back.system_prompt[0]["content"]
     assert "go_back" not in without_back.system_prompt[0]["content"]
@@ -156,11 +207,16 @@ async def test_wikispeedia_tools_resolve_through_v1_runtime(
     module = load_module(monkeypatch)
     wiki = make_small_wiki(module)
     monkeypatch.setattr(module, "load_wiki_graph", lambda cache_dir=None: wiki)
-    env = module.load_environment(
-        train_size=2,
-        eval_size=1,
-        min_path_length=1,
-        max_path_length=1,
+    env = vf.Env(
+        taskset=module.load_taskset(
+            config=module.WikispeediaTasksetConfig(
+                train_size=2,
+                eval_size=1,
+                min_path_length=1,
+                max_path_length=1,
+            )
+        ),
+        harness=module.load_harness(config=module.WikispeediaHarnessConfig()),
     )
     task = module.vf.Task(list(env.taskset.source())[0]).freeze()
     state = module.vf.State.for_task(task)
@@ -248,6 +304,12 @@ async def test_wikispeedia_graph_recursion_limit_stops_rollout(
         async def ainvoke(self, payload, config=None):
             raise GraphRecursionError("recursion limit")
 
+    created_system_prompts = []
+
+    def fake_create_deep_agent(**kwargs):
+        created_system_prompts.append(kwargs["system_prompt"])
+        return FakeAgent()
+
     fake_deepagents = types.ModuleType("deepagents")
     fake_langchain_openai = types.ModuleType("langchain_openai")
     fake_langgraph = types.ModuleType("langgraph")
@@ -255,7 +317,7 @@ async def test_wikispeedia_graph_recursion_limit_stops_rollout(
     fake_langchain_core = types.ModuleType("langchain_core")
     fake_tools_module = types.ModuleType("langchain_core.tools")
 
-    fake_deepagents.create_deep_agent = lambda **kwargs: FakeAgent()
+    fake_deepagents.create_deep_agent = fake_create_deep_agent
     fake_langchain_openai.ChatOpenAI = FakeChatOpenAI
     fake_langgraph_errors.GraphRecursionError = GraphRecursionError
     fake_langgraph.errors = fake_langgraph_errors
@@ -276,12 +338,16 @@ async def test_wikispeedia_graph_recursion_limit_stops_rollout(
         {
             "info": {"source": "A"},
             "prompt": [{"role": "user", "content": "start"}],
-            "system_prompt": [{"role": "system", "content": "prompt"}],
+            "system_prompt": [
+                {"role": "user", "content": "first prompt chunk"},
+                {"role": "system", "content": "second prompt chunk"},
+            ],
         }
     )
 
     result = await program({}, state)
 
+    assert created_system_prompts == ["first prompt chunk\n\nsecond prompt chunk"]
     assert result["agent_timeout"] is True
     assert result["stop_reason"] == "agent_recursion_limit"
     assert result["agent_completion"] == []
@@ -298,11 +364,10 @@ async def test_wikispeedia_tool_metrics_use_agent_completion(
         {
             "role": "assistant",
             "content": "",
-            "tool_calls": [{"id": "call_1", "name": "click_link"}],
+            "tool_calls": [{"id": "call_1", "name": "click_link", "arguments": "{}"}],
         },
         {
             "role": "tool",
-            "name": "click_link",
             "tool_call_id": "call_1",
             "content": "'C' is not a valid link from 'A'.",
         },

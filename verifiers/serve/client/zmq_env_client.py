@@ -30,7 +30,7 @@ from verifiers.serve.types import (
 class ZMQEnvClient(EnvClient):
     """ZMQ-based environment client."""
 
-    DEFAULT_REQUEST_TIMEOUT = 36_000  # 10h
+    DEFAULT_REQUEST_TIMEOUT: float | None = None
 
     def __init__(self, address: str = "tcp://127.0.0.1:5000", **kwargs):
         super().__init__(address=address, **kwargs)

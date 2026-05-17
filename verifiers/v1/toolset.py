@@ -1,84 +1,80 @@
-from __future__ import annotations
-
 import inspect
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from typing import cast
+from typing import TypeAlias, cast
 
 from .config import (
+    CallableConfigEntry,
     MCPToolConfig,
     SandboxConfig,
     ToolsetConfig,
     config_callables,
     resolve_config_object,
     sandbox_config_mapping,
-    string_mapping,
 )
+from .utils.binding_utils import BindingMap, normalize_binding_map
+from .utils.binding_utils import normalize_object_map
+from .types import ConfigMap, Handler, Objects, ToolSpec
 
 
 @dataclass(frozen=True)
 class Toolset:
     # Tool surface.
-    tools: tuple[object, ...] = ()
+    tools: "tuple[ToolEntry, ...]" = ()
     show: tuple[str, ...] | None = None
     hide: tuple[str, ...] | None = None
     # Local dependencies and runtime policy.
-    bindings: Mapping[str, object] = field(default_factory=dict)
-    objects: Mapping[str, object] = field(default_factory=dict)
+    bindings: BindingMap = field(default_factory=dict)
+    objects: Objects = field(default_factory=dict)
     write: bool = False
     scope: str | None = None
-    sandbox: Mapping[str, object] | SandboxConfig | str | None = None
+    sandbox: ConfigMap | SandboxConfig | str | None = None
     # Lifecycle collections.
-    stops: tuple[object, ...] = ()
-    setups: tuple[object, ...] = ()
-    updates: tuple[object, ...] = ()
-    cleanups: tuple[object, ...] = ()
-    teardowns: tuple[object, ...] = ()
+    stops: tuple[Handler, ...] = ()
+    setups: tuple[Handler, ...] = ()
+    updates: tuple[Handler, ...] = ()
+    cleanups: tuple[Handler, ...] = ()
+    teardowns: tuple[Handler, ...] = ()
     # Config.
-    config: object | None = None
+    config: ToolsetConfig | None = None
 
     def __init__(
         self,
         # Tool surface.
-        tools: Iterable[object] = (),
+        tools: "ToolEntries | None" = (),
         show: Iterable[str] | None = None,
         hide: Iterable[str] | None = None,
         # Local dependencies and runtime policy.
-        bindings: Mapping[str, object] | None = None,
-        objects: Mapping[str, object] | None = None,
+        bindings: BindingMap | None = None,
+        objects: Objects | None = None,
         write: bool | None = None,
         scope: str | None = None,
-        sandbox: Mapping[str, object] | SandboxConfig | str | None = None,
+        sandbox: ConfigMap | SandboxConfig | str | None = None,
         # Lifecycle collections.
-        stops: Iterable[object] = (),
-        setups: Iterable[object] = (),
-        updates: Iterable[object] = (),
-        cleanups: Iterable[object] = (),
-        teardowns: Iterable[object] = (),
+        stops: Iterable[CallableConfigEntry] = (),
+        setups: Iterable[CallableConfigEntry] = (),
+        updates: Iterable[CallableConfigEntry] = (),
+        cleanups: Iterable[CallableConfigEntry] = (),
+        teardowns: Iterable[CallableConfigEntry] = (),
         # Config.
-        config: object | None = None,
+        config: ToolsetConfig | None = None,
     ):
         config_map = toolset_config_mapping(config)
+        tool_values = tool_items(tools)
+        config_bindings: BindingMap = {}
+        config_objects: Objects = {}
         if config_map:
-            tools = [*tools, *tool_items(config_map.get("tools"))]
+            tool_values.extend(tool_items(config_map.get("tools")))
             show = show if show is not None else string_items(config_map.get("show"))
             hide = hide if hide is not None else string_items(config_map.get("hide"))
-            config_bindings = config_map.get("bindings") or {}
-            if not isinstance(config_bindings, Mapping):
-                raise TypeError("Toolset bindings must be a mapping.")
-            bindings = {
-                **string_mapping(cast(Mapping[object, object], config_bindings)),
-                **dict(bindings or {}),
-            }
-            config_objects = config_map.get("objects") or {}
-            if not isinstance(config_objects, Mapping):
-                raise TypeError("Toolset objects must be a mapping.")
-            objects = {
-                **{
-                    str(key): resolve_config_object(item)
-                    for key, item in config_objects.items()
-                },
-                **dict(objects or {}),
+            config_bindings = normalize_binding_map(
+                config_map.get("bindings"), "Toolset bindings"
+            )
+            config_objects = {
+                str(key): resolve_config_object(item)
+                for key, item in normalize_object_map(
+                    config_map.get("objects"), "Toolset objects"
+                ).items()
             }
             if "write" in config_map and write is None:
                 write_value = config_map["write"]
@@ -91,7 +87,7 @@ class Toolset:
             sandbox = (
                 sandbox
                 if sandbox is not None
-                else cast(Mapping[str, object] | str | None, config_map.get("sandbox"))
+                else cast(ConfigMap | str | None, config_map.get("sandbox"))
             )
             stops = [*stops, *config_callables(config_map.get("stops"), "stop")]
             setups = [
@@ -112,24 +108,35 @@ class Toolset:
             ]
         if show is not None and hide is not None:
             raise ValueError("Toolset accepts show or hide, not both.")
-        object.__setattr__(self, "tools", tuple(tool_item(tool) for tool in tools))
+        object.__setattr__(self, "tools", tuple(tool_values))
         object.__setattr__(self, "show", tuple(show) if show is not None else None)
         object.__setattr__(self, "hide", tuple(hide) if hide is not None else None)
-        object.__setattr__(self, "bindings", dict(bindings or {}))
-        object.__setattr__(self, "objects", dict(objects or {}))
+        object.__setattr__(
+            self,
+            "bindings",
+            {
+                **config_bindings,
+                **normalize_binding_map(bindings, "Toolset bindings"),
+            },
+        )
+        object.__setattr__(
+            self,
+            "objects",
+            {**config_objects, **normalize_object_map(objects, "Toolset objects")},
+        )
         object.__setattr__(self, "write", bool(write))
         if scope is not None and scope not in {"rollout", "group", "global"}:
             raise ValueError("Toolset scope must be 'rollout', 'group', or 'global'.")
         object.__setattr__(self, "scope", scope)
         if isinstance(sandbox, str) and sandbox != "program":
             raise ValueError("Toolset sandbox string must be 'program'.")
-        sandbox_value: Mapping[str, object] | str | None
+        sandbox_value: ConfigMap | str | None
         if isinstance(sandbox, str):
             sandbox_value = sandbox
         else:
             sandbox_value = sandbox_config_mapping(sandbox)
         if isinstance(sandbox_value, Mapping):
-            prefer = cast(Mapping[str, object], sandbox_value).get("prefer")
+            prefer = cast(ConfigMap, sandbox_value).get("prefer")
             if prefer is not None and prefer != "program":
                 raise ValueError("Toolset sandbox.prefer must be 'program'.")
         object.__setattr__(self, "sandbox", sandbox_value)
@@ -145,10 +152,16 @@ class Toolset:
         object.__setattr__(self, "config", config)
 
 
+ToolsetItem: TypeAlias = Toolset | ToolSpec
+ToolsetCollection: TypeAlias = (
+    ToolsetItem | Iterable[ToolsetItem] | dict[str, ToolsetItem | ConfigMap]
+)
+
+
 def flatten_toolsets(
-    toolsets: Iterable[object], apply_visibility: bool = False
-) -> list[object]:
-    flat: list[object] = []
+    toolsets: "Iterable[ToolEntry]", apply_visibility: bool = False
+) -> "list[ToolEntry]":
+    flat: list[ToolEntry] = []
     for item in toolsets:
         if isinstance(item, Toolset):
             tools = flatten_toolsets(item.tools, apply_visibility)
@@ -164,7 +177,7 @@ def flatten_toolsets(
     return flat
 
 
-def iter_toolsets(toolsets: Iterable[object]) -> list[Toolset]:
+def iter_toolsets(toolsets: "Iterable[ToolEntry]") -> list[Toolset]:
     groups: list[Toolset] = []
     for item in toolsets:
         if isinstance(item, Toolset):
@@ -173,7 +186,7 @@ def iter_toolsets(toolsets: Iterable[object]) -> list[Toolset]:
     return groups
 
 
-def normalize_toolsets(toolsets: Iterable[object]) -> list[Toolset]:
+def normalize_toolsets(toolsets: "Iterable[ToolEntry]") -> list[Toolset]:
     return [normalize_toolset(toolset) for toolset in toolsets]
 
 
@@ -207,7 +220,7 @@ def normalize_toolset_collection(
         return [normalize_toolset(value)], {}
     if not isinstance(value, Iterable):
         return [normalize_toolset(value)], {}
-    return normalize_toolsets(value), {}
+    return normalize_toolsets(cast(Iterable[ToolEntry], value)), {}
 
 
 def named_toolset_from_config(name: str, value: object) -> Toolset:
@@ -215,28 +228,24 @@ def named_toolset_from_config(name: str, value: object) -> Toolset:
     if isinstance(value, Toolset):
         return value
     if isinstance(value, Mapping):
-        spec = cast(Mapping[str, object], value)
+        spec = cast(ConfigMap, value)
         if "fn" in spec:
             return toolset_from_factory(name, spec)
-        return Toolset(config=spec)
+        return Toolset(config=ToolsetConfig.from_config(spec))
     if callable(value):
-        return call_toolset_factory(name, cast(Callable[..., object], value), {})
+        return call_toolset_factory(name, cast(Handler, value), {})
     return normalize_toolset(value)
 
 
-def toolset_from_factory(name: str, spec: Mapping[str, object]) -> Toolset:
+def toolset_from_factory(name: str, spec: ConfigMap) -> Toolset:
     fn = resolve_config_object(spec.get("fn"))
     if not callable(fn):
         raise TypeError(f"Toolset {name!r} requires callable fn.")
     kwargs = {key: value for key, value in spec.items() if key != "fn"}
-    return call_toolset_factory(name, cast(Callable[..., object], fn), kwargs)
+    return call_toolset_factory(name, cast(Handler, fn), kwargs)
 
 
-def call_toolset_factory(
-    name: str,
-    fn: Callable[..., object],
-    kwargs: Mapping[str, object],
-) -> Toolset:
+def call_toolset_factory(name: str, fn: Handler, kwargs: ConfigMap) -> Toolset:
     result = fn(**kwargs)
     if inspect.isawaitable(result):
         raise TypeError(f"Toolset {name!r} fn must be synchronous.")
@@ -254,7 +263,7 @@ def normalize_toolset_result(value: object) -> list[Toolset]:
         return [normalize_toolset(value)]
     if not isinstance(value, Iterable):
         return [normalize_toolset(value)]
-    return normalize_toolsets(value)
+    return normalize_toolsets(cast(Iterable[ToolEntry], value))
 
 
 def normalize_toolset(value: object) -> Toolset:
@@ -262,15 +271,15 @@ def normalize_toolset(value: object) -> Toolset:
     if isinstance(value, Toolset):
         return value
     if isinstance(value, Mapping):
-        return toolset_from_mapping(cast(Mapping[str, object], value))
-    return Toolset(tools=[value])
+        return toolset_from_mapping(cast(ConfigMap, value))
+    return Toolset(tools=[cast(ToolEntry, value)])
 
 
-def toolset_from_mapping(spec: Mapping[str, object]) -> Toolset:
-    return Toolset(config=spec)
+def toolset_from_mapping(spec: ConfigMap) -> Toolset:
+    return Toolset(config=ToolsetConfig.from_config(spec))
 
 
-def tool_items(value: object) -> list[object]:
+def tool_items(value: object) -> "list[ToolEntry]":
     if value is None:
         return []
     if isinstance(value, str) or isinstance(value, Mapping):
@@ -280,18 +289,22 @@ def tool_items(value: object) -> list[object]:
     return [tool_item(item) for item in value]
 
 
-def tool_item(value: object) -> object:
+def tool_item(value: object) -> "ToolEntry":
     value = resolve_config_object(value)
+    if isinstance(value, Toolset | MCPTool):
+        return value
     if isinstance(value, MCPToolConfig):
         return MCPTool.from_mapping(value.model_dump(exclude_none=True))
     if isinstance(value, Mapping):
         if "command" in value:
-            return MCPTool.from_mapping(cast(Mapping[str, object], value))
+            return MCPTool.from_mapping(cast(ConfigMap, value))
         raise TypeError("Tool mapping specs require command.")
-    return value
+    if not callable(value):
+        raise TypeError("Tool entries must be callables, Toolsets, or MCP tool specs.")
+    return cast(Handler, value)
 
 
-def toolset_config_mapping(config: object | None) -> Mapping[str, object]:
+def toolset_config_mapping(config: ToolsetConfig | None) -> ConfigMap:
     if config is None:
         return {}
     return ToolsetConfig.from_config(config).model_dump(exclude_none=True)
@@ -326,14 +339,14 @@ def tool_name(tool: object) -> str:
 class MCPTool:
     command: str
     args: tuple[str, ...] = ()
-    env: Mapping[str, str] | None = None
+    env: dict[str, str] | None = None
     cwd: str | None = None
 
     def __init__(
         self,
         command: str,
         args: Iterable[str] = (),
-        env: Mapping[str, str] | None = None,
+        env: dict[str, str] | None = None,
         cwd: str | None = None,
     ):
         object.__setattr__(self, "command", command)
@@ -342,7 +355,7 @@ class MCPTool:
         object.__setattr__(self, "cwd", cwd)
 
     @classmethod
-    def from_mapping(cls, spec: Mapping[str, object]) -> MCPTool:
+    def from_mapping(cls, spec: ConfigMap) -> "MCPTool":
         config = MCPToolConfig.from_config(spec)
         return cls(
             command=config.command,
@@ -350,3 +363,7 @@ class MCPTool:
             env=config.env,
             cwd=config.cwd,
         )
+
+
+ToolEntry: TypeAlias = Handler | str | ConfigMap | Toolset | MCPTool | MCPToolConfig
+ToolEntries: TypeAlias = ToolEntry | Iterable[ToolEntry]

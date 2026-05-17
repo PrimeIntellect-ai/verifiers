@@ -1,7 +1,5 @@
 """No-agent debugger for SWE-style SandboxTaskSet instances."""
 
-from __future__ import annotations
-
 import shlex
 import time
 from typing import Any, Literal

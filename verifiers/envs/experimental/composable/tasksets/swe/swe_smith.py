@@ -20,8 +20,6 @@ C++ is special-cased: upstream currently registers profiles for ~20 of 69 repos
 priority languages (py, go, java, js, ts, rs) have 100% coverage.
 """
 
-from __future__ import annotations
-
 import logging
 import shlex
 import tempfile

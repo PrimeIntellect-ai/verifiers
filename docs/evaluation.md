@@ -68,7 +68,8 @@ The positional argument accepts two formats:
 
 Environment IDs are converted to Python module names (`my-env` → `my_env`) and imported. Modules must be installed (via `prime env install` or `uv pip install`).
 
-The `--env-args` flag passes arguments to your `load_environment()` function:
+For legacy or direct-constructor environments, the `--env-args` flag passes
+arguments to your `load_environment()` function:
 
 ```bash
 prime eval run my-env -a '{"difficulty": "hard", "num_examples": 100}'
@@ -227,6 +228,8 @@ The `--num-workers` flag controls how many worker processes the env server spawn
 
 When evaluating multiple environments, the display shows an overview panel at the top with a compact status line per environment, and a detail panel below with full progress, metrics, and logs for one environment at a time. Use the **left/right arrow keys** to switch between environments. The overview scrolls to keep the selected environment visible and is capped at half the terminal height.
 
+When an eval runs against a Prime Inference endpoint and the model id has pricing available from `prime inference models`, token usage rows also show the estimated total USD cost as `cost (all)`. Cost appears after the final input/output token metrics in the live display and in the final summary. If pricing or token usage is unavailable, the cost field is omitted.
+
 ### Output and Saving
 
 | Flag | Short | Default | Description |
@@ -247,6 +250,8 @@ By default, results are saved to `./outputs/evals/{env_id}--{model}/{run_id}/`. 
 
 - `results.jsonl` — rollout outputs, one per line
 - `metadata.json` — evaluation configuration and aggregate metrics
+
+When Prime Inference pricing is available for the evaluated model, `metadata.json` includes a `cost` object with total-run `input_usd`, `output_usd`, and `total_usd`. The field is omitted for unpriced models, third-party providers, unavailable pricing, or missing usage.
 
 ### Resuming Evaluations
 
@@ -341,6 +346,7 @@ num_examples = 50
 
 [[eval]]
 id = "gsm8k"
+name = "gsm8k-baseline"
 num_examples = 100  # overrides global default
 rollouts_per_example = 5
 
@@ -368,16 +374,35 @@ optional:
 | Field | Type | Description |
 |-------|------|-------------|
 | `id` | string | **Required.** Environment module name |
+| `name` | string | Optional eval label for display and saved result paths |
 | `args` | table | Arguments passed to `load_environment()` |
-| `taskset` | table | v1 taskset config passed through `config.taskset` |
-| `harness` | table | v1 harness config passed through `config.harness` |
+| `taskset` | table | v1 taskset config passed through `EnvConfig.taskset` |
+| `harness` | table | v1 harness config passed through `EnvConfig.harness` |
 | `num_examples` | integer | Number of dataset examples to evaluate |
 | `rollouts_per_example` | integer | Rollouts per example |
 | `extra_env_kwargs` | table | Arguments passed to environment constructor |
 | `model` | string | Model to evaluate |
 | `endpoint_id` | string | Endpoint registry id (requires TOML `endpoints_path`) |
 
-Example with environment args:
+Use `name` to run the same environment more than once with different args:
+
+```toml
+[[eval]]
+id = "reverse-text"
+name = "reverse-text-short"
+
+[eval.args]
+max_length = 32
+
+[[eval]]
+id = "reverse-text"
+name = "reverse-text-long"
+
+[eval.args]
+max_length = 256
+```
+
+Example with legacy environment args:
 
 ```toml
 [[eval]]

@@ -15,7 +15,7 @@ description = "TextArena environment for OpenEnv"
 requires-python = ">=3.10"
 dependencies = [
     # Core OpenEnv dependencies (required for server functionality)
-    "openenv-core[core]==0.2.1",
+    "openenv-core>=0.3.0",
     "fastapi>=0.115.0",
     "pydantic>=2.0.0",
     "uvicorn>=0.24.0",
@@ -47,4 +47,3 @@ server = "textarena_env.server.app:main"
 # Explicitly list packages - "textarena_env" maps to current dir
 packages = ["textarena_env", "textarena_env.server"]
 package-dir = {"textarena_env" = ".", "textarena_env.server" = "server"}
-

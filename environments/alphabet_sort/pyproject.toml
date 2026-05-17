@@ -14,3 +14,7 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build]
 include = ["alphabet_sort.py", "alphabet_sort_v1.py"]
+
+[tool.verifiers.eval]
+num_examples = 5
+rollouts_per_example = 3

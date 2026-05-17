@@ -1,7 +1,5 @@
 """MCP server lifecycle for Harbor-format tasks."""
 
-from __future__ import annotations
-
 import asyncio
 import logging
 import shlex

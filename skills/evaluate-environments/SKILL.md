@@ -11,7 +11,8 @@ Run reliable environment evaluations and produce actionable summaries, not raw l
 ## Canonical Eval Path
 1. Use `prime eval run` as the default way to run evaluations.
 2. Do not add `--skip-upload` or other opt-out flags unless the user explicitly requests that deviation.
-3. Standard `prime eval run` runs save results automatically, keeping them available in the user's private Evaluations tab and locally in `prime eval tui`.
+3. Standard `prime eval run` runs save results automatically, keeping them available in the user's private Evaluations tab and locally in `prime eval view`.
+4. For Prime Inference models with available pricing, eval output and saved metadata include estimated total-run USD cost automatically; no extra flags or API-key handling are needed.
 
 ## Core Loop
 1. Run a smoke evaluation first (do not require pre-install):
@@ -27,6 +28,12 @@ prime eval run owner/my-env -m openai/gpt-4.1-mini -n 5
 prime eval run owner/my-env -m openai/gpt-4.1-mini -n 200 -r 3 -s
 ```
 4. Treat ownerless env ids as local-first. If not found locally, rely on Prime resolution for your remote env where applicable.
+5. When the user asks for a "real" or "base" eval, do not substitute a tiny smoke run. Use the requested model/env and make the run size explicit before interpreting results.
+6. If the user says the defaults are fine or asks for no flags, use the shortest canonical command and rely on global config:
+```bash
+prime eval run my-env
+prime eval run my-env -m openai/gpt-4.1-mini
+```
 
 ## Endpoint Shortcuts And Model Family Choice
 1. Encourage users to define endpoint aliases in `configs/endpoints.toml` so model, base URL, and key wiring stay reusable.
@@ -90,11 +97,12 @@ prime eval run owner/my-env -m openai/gpt-4.1-mini -n 200 -r 3 -s
 prime eval run configs/eval/my-benchmark.toml
 ```
 3. Make config files the default for benchmark sweeps, multi-model comparisons, and recurring reports.
+4. Use `name` on individual `[[eval]]` entries when the same environment appears multiple times. `id` selects the environment to load; `name` labels the run in displays, summaries, metadata, and saved result paths.
 
 ## Common Evaluation Patterns
-1. Pass args to `load_environment()`:
+1. Override v1 taskset and harness config through explicit child sections:
 ```bash
-prime eval run my-env -a '{"difficulty":"hard"}'
+prime eval run my-env -a '{"config":{"taskset":{"difficulty":"hard"},"harness":{"max_turns":20}}}'
 ```
 2. Override constructor kwargs:
 ```bash
@@ -120,18 +128,34 @@ prime eval run my-env -s -o /path/to/output
 ```bash
 prime eval run configs/eval/my-benchmark.toml
 ```
-8. Pass extra HTTP headers via CLI (repeatable):
+8. Run the same environment more than once with different args by giving each entry a `name`:
+```toml
+[[eval]]
+id = "reverse-text"
+name = "reverse-text-short"
+
+[eval.args]
+max_length = 32
+
+[[eval]]
+id = "reverse-text"
+name = "reverse-text-long"
+
+[eval.args]
+max_length = 256
+```
+9. Pass extra HTTP headers via CLI (repeatable):
 ```bash
 prime eval run my-env -m my-proxy --header "X-Custom-Header: value"
 ```
-9. Set headers in `[[eval]]` TOML configs as a table or list (merge order: registry row < `headers` table < `header` list / `--header`):
+10. Set headers in `[[eval]]` TOML configs as a table or list (merge order: registry row < `headers` table < `header` list / `--header`):
 ```toml
 [[eval]]
 env_id = "my-env"
 headers = { "X-Custom-Header" = "value" }
 header = ["X-Another: val"]
 ```
-10. Run ablation sweeps using `[[ablation]]` blocks in TOML configs:
+11. Run ablation sweeps using `[[ablation]]` blocks in TOML configs:
 ```toml
 [[ablation]]
 env_id = "my-env"
@@ -139,17 +163,18 @@ env_id = "my-env"
 [ablation.sweep]
 temperature = [0.0, 0.5, 1.0]
 
-[ablation.sweep.args]
+[ablation.sweep.taskset]
 difficulty = ["easy", "hard"]
 ```
-This generates the cartesian product (6 configs in this example). Use `--abbreviated-summary` (`-A`) for compact ablation results.
+This generates the cartesian product (6 configs in this example). Sweep v1 environment-owned settings under `taskset` or `harness`, not as root args. Use `--abbreviated-summary` (`-A`) for compact ablation results.
 
 ## Inspect Saved Results
 1. Browse locally saved runs:
 ```bash
-prime eval tui
+prime eval view
 ```
-2. Inspect platform-visible runs when needed:
+2. Check `metadata.json` for aggregate token usage and, when available, total-run `cost.input_usd`, `cost.output_usd`, and `cost.total_usd`.
+3. Inspect platform-visible runs when needed:
 ```bash
 prime eval list
 prime eval get <eval-id>
@@ -167,6 +192,9 @@ prime eval samples <eval-id>
 2. Record exact command lines and key flags in the report.
 3. Call out missing credentials, endpoint mismatches, and dependency errors directly.
 4. Do not overinterpret tiny sample runs.
+5. Distinguish a completed rollout with poor reward from an environment/runtime failure.
+6. For timeout debugging, check the environment's own timeout behavior and the outer sandbox/eval timeout before changing reward logic.
+7. For repo example changes, use `tests/test_envs.py -k <env>` when package installability is part of the risk, not just `prime eval run` from the current checkout.
 
 ## Output Format
 Return:

@@ -35,20 +35,21 @@ Configure model and sampling:
 ```bash
 prime eval run {env_id_dash} \
   -m openai/gpt-4.1-mini \
-  -n 20 -r 3 -t 1024 -T 0.7 \
-  -a '{{"key": "value"}}'  # env-specific args as JSON
+  -n 20 -r 3 -t 1024 -T 0.7
 ```
 
 Notes:
-- Use `-a` / `--env-args` to pass environment-specific configuration as a JSON object.
+- Put task-owned settings under `[env.taskset]` and harness-owned settings under `[env.harness]` in TOML configs.
 
-### Environment Arguments
-Document any supported environment arguments and their meaning. Example:
+### Taskset Config
+Document any taskset config fields and their meaning. Example:
 
-| Arg | Type | Default | Description |
+| Field | Type | Default | Description |
 | --- | ---- | ------- | ----------- |
-| `foo` | str | `"bar"` | What this controls |
 | `max_examples` | int | `-1` | Limit on dataset size (use -1 for all) |
+
+### Harness Config
+Document any harness config fields and their meaning.
 
 ### Metrics
 Summarize key metrics your rubric emits and how they’re interpreted.
@@ -118,7 +119,7 @@ tags = ["openenv", "tools", "multi-turn"]
 version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = [
-    "verifiers[openenv]>={vf.__version__}",
+    "verifiers>={vf.__version__}",
 ]
 
 [build-system]
@@ -139,35 +140,80 @@ from .{env_id} import load_environment
 __all__ = ["load_environment"]
 """
 
-ENVIRONMENT_TEMPLATE = '''\
+ENVIRONMENT_TEMPLATE = """\
 import verifiers as vf
 
 
-def load_environment(**kwargs) -> vf.Environment:
-    """
-    Loads a custom environment.
-    """
-    raise NotImplementedError("Implement your custom environment here.")
-'''
+def source():
+    return [
+        {
+            "prompt": [{"role": "user", "content": "Reverse abc."}],
+            "answer": "cba",
+        }
+    ]
+
+
+@vf.reward(weight=1.0)
+async def exact_answer(task, state) -> float:
+    return float(task["answer"] in str(state.get("completion") or ""))
+
+
+def load_taskset(config: vf.TasksetConfig) -> vf.Taskset:
+    return vf.Taskset(source=source, rewards=[exact_answer], config=config)
+
+
+def load_environment(config: vf.EnvConfig) -> vf.Env:
+    return vf.Env(taskset=load_taskset(config=config.taskset))
+"""
+
+HARNESS_ENVIRONMENT_TEMPLATE = """\
+import verifiers as vf
+
+
+def source():
+    return [
+        {
+            "prompt": [{"role": "user", "content": "Reverse abc."}],
+            "answer": "cba",
+        }
+    ]
+
+
+@vf.reward(weight=1.0)
+async def exact_answer(task, state) -> float:
+    return float(task["answer"] in str(state.get("completion") or ""))
+
+
+def load_taskset(config: vf.TasksetConfig) -> vf.Taskset:
+    return vf.Taskset(source=source, rewards=[exact_answer], config=config)
+
+
+def load_harness(config: vf.HarnessConfig) -> vf.Harness:
+    return vf.Harness(config=config)
+
+
+def load_environment(config: vf.EnvConfig) -> vf.Env:
+    return vf.Env(
+        taskset=load_taskset(config=config.taskset),
+        harness=load_harness(config=config.harness),
+    )
+"""
 
 OPENENV_ENVIRONMENT_TEMPLATE = """\
-from typing import Any
-
 import verifiers as vf
+from verifiers.types import Messages, UserMessage
 
 
-def render_prompt(observation: Any) -> list[dict[str, Any]]:
-    if isinstance(observation, dict):
-        messages = observation.get("messages")
-        if isinstance(messages, list) and messages:
-            return messages
-        prompt = observation.get("prompt")
-        if isinstance(prompt, str) and prompt.strip():
-            return [{"role": "user", "content": prompt}]
-    raise RuntimeError(
-        "OpenEnv observation did not include a renderable prompt. "
-        "Update render_prompt() for your project's observation schema."
-    )
+class OpenEnvPromptRenderer:
+    def __call__(self, observation: object) -> Messages:
+        if isinstance(observation, dict):
+            prompt = observation.get("prompt")
+            if isinstance(prompt, str) and prompt.strip():
+                return [UserMessage(content=prompt)]
+        raise RuntimeError(
+            "OpenEnv observation did not include a renderable prompt. "
+            "Update OpenEnvPromptRenderer for your project's observation schema."
+        )
 
 
 def load_environment(
@@ -179,7 +225,7 @@ def load_environment(
         num_train_examples=num_train_examples,
         num_eval_examples=num_eval_examples,
         seed=seed,
-        prompt_renderer=render_prompt,
+        prompt_renderer=OpenEnvPromptRenderer(),
     )
 """
 
@@ -221,7 +267,7 @@ version = "0.1.0"
 description = "OpenEnv project bundled with a verifiers environment"
 requires-python = ">=3.10"
 dependencies = [
-    "openenv-core[core]==0.2.1",
+    "openenv-core>=0.3.0",
     "fastapi>=0.115.0",
     "uvicorn>=0.24.0",
 ]
@@ -318,6 +364,7 @@ def init_environment(
     rewrite_readme: bool = False,
     multi_file: bool = False,
     openenv: bool = False,
+    with_harness: bool = False,
 ) -> Path:
     """
     Initialize a new verifiers environment.
@@ -376,7 +423,12 @@ def init_environment(
     # create environment file if it doesn't exist
     environment_file = environment_dir / f"{env_id_underscore}.py"
     if not environment_file.exists():
-        template = OPENENV_ENVIRONMENT_TEMPLATE if openenv else ENVIRONMENT_TEMPLATE
+        if openenv:
+            template = OPENENV_ENVIRONMENT_TEMPLATE
+        elif with_harness:
+            template = HARNESS_ENVIRONMENT_TEMPLATE
+        else:
+            template = ENVIRONMENT_TEMPLATE
         environment_file.write_text(template)
     else:
         print(
@@ -421,6 +473,12 @@ def main():
         default=False,
         help="Initialize with the enforced OpenEnv layout (proj/ + vf-build workflow).",
     )
+    parser.add_argument(
+        "--with-harness",
+        action="store_true",
+        default=False,
+        help="Include an explicit v1 load_harness stub.",
+    )
     args = parser.parse_args()
 
     init_environment(
@@ -429,6 +487,7 @@ def main():
         rewrite_readme=args.rewrite_readme,
         multi_file=args.multi_file,
         openenv=args.openenv,
+        with_harness=args.with_harness,
     )
 
 

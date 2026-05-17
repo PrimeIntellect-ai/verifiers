@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import importlib
 import sys
 import types
@@ -10,6 +8,7 @@ import pytest
 
 import verifiers as vf
 from verifiers.v1 import (
+    Config,
     Env,
     EnvConfig,
     Harness,
@@ -159,6 +158,31 @@ async def update_from_binding(
     state["expected"] = expected
 
 
+@vf.update(stage="group")
+async def group_update_from_binding(
+    tasks: list[Mapping[str, object]], states: list[dict[str, object]], expected: str
+) -> None:
+    _ = tasks
+    for state in states:
+        state["group_expected"] = expected
+
+
+@vf.reward
+async def reward_from_binding(
+    task: Mapping[str, object], state: dict[str, object], expected: str
+) -> float:
+    _ = state
+    return float(task.get("answer") == expected)
+
+
+@vf.reward(stage="group")
+async def group_reward_from_binding(
+    tasks: list[Mapping[str, object]], states: list[dict[str, object]], expected: str
+) -> list[float]:
+    _ = tasks
+    return [float(state.get("answer") == expected) for state in states]
+
+
 async def colliding_tool(value: str, token: str) -> str:
     return f"{token}:{value}"
 
@@ -263,10 +287,17 @@ async def setup_aware_program(
 
 
 def config_toolset(prefix: str = "cfg") -> Toolset:
+    def prefix_value() -> str:
+        return prefix
+
     return Toolset(
         tools=[config_tool],
-        bindings={"config_tool.prefix": prefix},
+        bindings={"config_tool.prefix": prefix_value},
     )
+
+
+def load_another_harness_config() -> HarnessConfig:
+    return HarnessConfig(max_turns=6, rewards=[config_reward])
 
 
 ref_module = types.ModuleType(REF_MODULE)
@@ -293,6 +324,7 @@ setattr(ref_module, "config_user_with_bindings", config_user_with_bindings)
 setattr(ref_module, "sandbox_user", sandbox_user)
 setattr(ref_module, "config_program", config_program)
 setattr(ref_module, "setup_aware_program", setup_aware_program)
+setattr(ref_module, "load_another_harness_config", load_another_harness_config)
 sys.modules[REF_MODULE] = ref_module
 
 
@@ -409,16 +441,21 @@ def test_env_capabilities_follow_group_lifecycle_handlers() -> None:
     assert not group_cleanup_env.provides_advantages
 
 
-def test_group_lifecycle_handlers_reject_extra_args() -> None:
+@pytest.mark.asyncio
+async def test_group_lifecycle_handlers_require_bound_extra_args() -> None:
     @vf.update(stage="group")
     async def bad_group_update(tasks, states, extra) -> None:
         _ = tasks, states, extra
 
-    with pytest.raises(ValueError, match="exactly tasks and states"):
-        Env(
-            taskset=Taskset(source=source_loader, updates=[bad_group_update]),
-            harness=Harness(program=config_program),
-        )
+    env = Env(
+        taskset=Taskset(source=source_loader, updates=[bad_group_update]),
+        harness=Harness(program=config_program),
+    )
+    task = Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+    state = State.for_task(task)
+
+    with pytest.raises(TypeError, match="extra"):
+        await env.harness.runtime.update_group([task], [state])
 
 
 def test_env_capabilities_follow_custom_taskset_init_group() -> None:
@@ -462,7 +499,10 @@ def test_harness_config_extends_constructor_surface() -> None:
 
     assert harness.program is config_program
     assert harness.config.max_turns == 3
-    assert harness.metrics == [config_metric]
+    assert [metric.__name__ for metric in harness.metrics] == [
+        "num_turns",
+        "config_metric",
+    ]
     assert harness.rewards == [config_reward]
     assert harness.advantages == [config_advantage]
     assert harness.setups == [config_setup]
@@ -480,6 +520,14 @@ def test_harness_owns_default_render_completion_update() -> None:
         getattr(handler, "__self__", None) is harness
         and getattr(handler, "__name__", "") == "render_completion"
         for handler in harness.runtime.rollout_update
+    )
+
+
+def test_harness_owns_default_num_turns_metric() -> None:
+    harness = Harness(program=config_program)
+
+    assert any(
+        signal["name"] == "num_turns" for signal in harness.runtime.rollout_signals
     )
 
 
@@ -553,8 +601,11 @@ async def test_group_update_config_runs_before_group_scoring() -> None:
 
 
 def test_lifecycle_fields_are_framework_managed() -> None:
+    assert vf.State is State
+
     task = Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
-    state = State.for_task(task)
+    state = vf.State.for_task(task)
+    assert state.uses_v1_contract is True
 
     for key, value in {
         "is_completed": True,
@@ -562,8 +613,7 @@ def test_lifecycle_fields_are_framework_managed() -> None:
         "is_truncated": True,
         "error": {"message": "boom"},
     }.items():
-        with pytest.raises(RuntimeError, match="framework-managed"):
-            State({key: value})
+        assert State({key: value})[key] == value
         with pytest.raises(RuntimeError, match="framework-managed"):
             state[key] = value
         with pytest.raises(RuntimeError, match="framework-managed"):
@@ -572,8 +622,16 @@ def test_lifecycle_fields_are_framework_managed() -> None:
             state.setdefault(key, value)
         with pytest.raises(RuntimeError, match="framework-managed"):
             state.pop(key)
+    state["user_field"] = "ok"
+    assert state.popitem() == ("user_field", "ok")
+
+    protected_only = State()._enable_v1_contract()
+    protected_only._set_completed(False)
+    protected_only._set_stop_condition(None, overwrite=True)
+    protected_only._set_truncated(False, overwrite=True)
+    protected_only._set_error(None)
     with pytest.raises(RuntimeError, match="framework-managed"):
-        state.popitem()
+        protected_only.popitem()
     with pytest.raises(RuntimeError, match="framework-managed"):
         state.clear()
 
@@ -604,7 +662,9 @@ def test_toolsets_config_accepts_addressable_map_and_fn_tables() -> None:
 
     assert set(taskset.named_toolsets) == {"direct", "configured"}
     assert taskset.toolsets[0].tools == (direct_tool,)
-    assert taskset.toolsets[1].bindings == {"config_tool.prefix": "from_config"}
+    prefix = taskset.toolsets[1].bindings["config_tool.prefix"]
+    assert callable(prefix)
+    assert prefix() == "from_config"
 
 
 @pytest.mark.asyncio
@@ -695,6 +755,21 @@ async def test_tool_bindings_inject_owner_private_objects() -> None:
     assert await state.get_tools()["object_tool"](value="alpha") == "alpha"
 
 
+def test_binding_strings_must_be_framework_paths() -> None:
+    with pytest.raises(ValueError, match="Binding string sources"):
+        Toolset(tools=[config_tool], bindings={"config_tool.prefix": "literal"})
+
+
+def test_binding_sources_reject_direct_objects() -> None:
+    with pytest.raises(TypeError, match="framework path or callable"):
+        Toolset(tools=[config_tool], bindings={"config_tool.prefix": object()})
+
+
+def test_toolset_binding_keys_must_target_callable_args() -> None:
+    with pytest.raises(ValueError, match="callable.arg"):
+        Toolset(tools=[config_tool], bindings={"prefix": "task.answer"})
+
+
 @pytest.mark.asyncio
 async def test_rollout_handlers_receive_bound_hidden_args() -> None:
     harness = Harness(
@@ -713,6 +788,89 @@ async def test_rollout_handlers_receive_bound_hidden_args() -> None:
     await harness.runtime.update_rollout(task, state)
 
     assert state["expected"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_harness_handlers_receive_bound_hidden_args() -> None:
+    harness = Harness(
+        updates=[update_from_binding],
+        bindings={"update_from_binding.expected": "task.answer"},
+    )
+    task = Task(
+        {"prompt": [{"role": "user", "content": "hi"}], "answer": "ok"}
+    ).freeze()
+    state = await harness.setup_state(task, State.for_task(task))
+
+    await harness.runtime.update_rollout(task, state)
+
+    assert state["expected"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_taskset_handlers_receive_bound_hidden_args() -> None:
+    taskset = Taskset(
+        updates=[update_from_binding],
+        bindings={"update_from_binding.expected": "task.answer"},
+    )
+    harness = Harness()
+    harness.attach_taskset(taskset)
+    task = Task(
+        {"prompt": [{"role": "user", "content": "hi"}], "answer": "ok"}
+    ).freeze()
+    state = await harness.setup_state(task, State.for_task(task))
+
+    await harness.runtime.update_rollout(task, state)
+
+    assert state["expected"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_group_handlers_receive_bound_hidden_args() -> None:
+    harness = Harness(
+        updates=[group_update_from_binding],
+        bindings={"group_update_from_binding.expected": "tasks.0.answer"},
+    )
+    task = Task(
+        {"prompt": [{"role": "user", "content": "hi"}], "answer": "ok"}
+    ).freeze()
+    state = State.for_task(task)
+
+    await harness.runtime.update_group([task], [state])
+
+    assert state["group_expected"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_signals_receive_bound_hidden_args() -> None:
+    harness = Harness(
+        rewards=[reward_from_binding],
+        bindings={"reward_from_binding.expected": "task.answer"},
+    )
+    task = Task(
+        {"prompt": [{"role": "user", "content": "hi"}], "answer": "ok"}
+    ).freeze()
+    state = await harness.setup_state(task, State.for_task(task))
+
+    await harness.runtime.score_rollout(task, state)
+
+    assert state["reward"] == 1.0
+    assert state["metrics"]["reward_from_binding"] == 1.0
+
+
+@pytest.mark.asyncio
+async def test_group_signals_receive_bound_hidden_args() -> None:
+    harness = Harness(
+        rewards=[group_reward_from_binding],
+        bindings={"group_reward_from_binding.expected": "states.0.answer"},
+    )
+    task = Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+    state = State.for_task(task)
+    state["answer"] = "ok"
+
+    await harness.runtime.score_group([task], [state])
+
+    assert state["reward"] == 1.0
+    assert state["metrics"]["group_reward_from_binding"] == 1.0
 
 
 @pytest.mark.asyncio
@@ -1027,6 +1185,29 @@ def test_config_schema_is_visible_from_primary_types() -> None:
     assert "bindings" in vf.ToolsetConfig.schema_text()
 
 
+def test_config_annotation_only_nested_config_defaults_recursively() -> None:
+    class LeafConfig(Config):
+        value: int = 1
+
+    class ChildConfig(Config):
+        leaf: LeafConfig
+
+    class ParentConfig(Config):
+        child: ChildConfig
+
+    first = ParentConfig()
+    second = ParentConfig()
+    configured = ParentConfig({"child": {"leaf": {"value": 3}}})
+
+    assert isinstance(first.child, ChildConfig)
+    assert isinstance(first.child.leaf, LeafConfig)
+    assert first.child.leaf.value == 1
+    assert first.child is not second.child
+    assert first.child.leaf is not second.child.leaf
+    assert configured.child.leaf.value == 3
+    assert "child: ChildConfig = <factory>" in ParentConfig.schema_text()
+
+
 def test_env_config_normalizes_mapping_config_to_attributes() -> None:
     config = EnvConfig(
         {
@@ -1035,8 +1216,17 @@ def test_env_config_normalizes_mapping_config_to_attributes() -> None:
         }
     )
 
-    assert config.taskset == {"taskset_id": "dict"}
-    assert config.harness == {"model": "configured-model"}
+    assert isinstance(config.taskset, TasksetConfig)
+    assert isinstance(config.harness, HarnessConfig)
+    assert config.taskset.taskset_id == "dict"
+    assert config.harness.model == "configured-model"
+
+
+def test_env_config_defaults_taskset_and_harness_to_base_configs() -> None:
+    config = EnvConfig()
+
+    assert isinstance(config.taskset, TasksetConfig)
+    assert isinstance(config.harness, HarnessConfig)
 
 
 def test_env_config_rejects_unknown_top_level_sections() -> None:
@@ -1047,6 +1237,34 @@ def test_env_config_rejects_unknown_top_level_sections() -> None:
 def test_env_config_requires_child_sections_to_be_configs() -> None:
     with pytest.raises(ValueError):
         EnvConfig({"taskset": 1})
+    with pytest.raises(ValueError, match="EnvConfig.taskset cannot be None"):
+        EnvConfig({"taskset": None})
+    with pytest.raises(ValueError, match="EnvConfig.harness cannot be None"):
+        EnvConfig(harness=None)
+
+
+def test_env_config_child_config_objects_must_match_domain() -> None:
+    class LocalTasksetConfig(TasksetConfig):
+        split: str = "train"
+
+    class LocalHarnessConfig(HarnessConfig):
+        mode: str = "default"
+
+    config = EnvConfig(
+        taskset=LocalTasksetConfig(split="test"),
+        harness=LocalHarnessConfig(mode="custom"),
+    )
+
+    assert isinstance(config.taskset, LocalTasksetConfig)
+    assert isinstance(config.harness, LocalHarnessConfig)
+
+    class LocalConfig(Config):
+        split: str = "train"
+
+    with pytest.raises(ValueError):
+        EnvConfig(taskset=LocalConfig())
+    with pytest.raises(ValueError):
+        EnvConfig(harness=LocalConfig())
 
 
 def test_env_config_merges_child_config_defaults_with_nested_sections() -> None:
@@ -1076,6 +1294,95 @@ def test_env_config_merges_child_config_defaults_with_nested_sections() -> None:
     assert default_config.taskset.split == "kwarg"
 
 
+def test_config_object_merge_omits_nested_none_values() -> None:
+    base = HarnessConfig(
+        sampling_args={
+            "temperature": 0.7,
+            "extra_body": {
+                "top_k": 40,
+                "top_p": 0.9,
+            },
+        }
+    )
+    override = HarnessConfig(
+        sampling_args={
+            "extra_body": {
+                "top_p": None,
+                "min_p": 0.05,
+            },
+            "stop": [None, "DONE"],
+        }
+    )
+    config = EnvConfig(EnvConfig(harness=override), harness=base)
+
+    assert config.harness.sampling_args == {
+        "temperature": 0.7,
+        "extra_body": {
+            "top_k": 40,
+            "top_p": 0.9,
+            "min_p": 0.05,
+        },
+        "stop": [None, "DONE"],
+    }
+
+
+def test_env_config_subclasses_cannot_define_root_fields() -> None:
+    with pytest.raises(TypeError, match="unsupported root env config fields"):
+
+        class LocalEnvConfig(EnvConfig):
+            split: str = "train"
+
+
+def test_env_config_subclasses_must_use_domain_child_configs() -> None:
+    class LocalConfig(Config):
+        split: str = "train"
+
+    with pytest.raises(TypeError, match="taskset must be typed"):
+
+        class LocalEnvConfig(EnvConfig):
+            taskset: LocalConfig
+
+
+def test_env_config_harness_section_extends_imported_config() -> None:
+    config = EnvConfig(
+        {
+            "harness": {
+                "config": ref("load_another_harness_config"),
+                "rewards": [{"fn": ref("updated_reward"), "weight": 0}],
+            }
+        }
+    )
+    harness = Harness(config=config.harness)
+
+    assert harness.config.max_turns == 6
+    assert [reward.__name__ for reward in harness.rewards] == [
+        "config_reward",
+        "updated_reward",
+    ]
+    assert getattr(harness.rewards[1], "reward_weight") == 0.0
+
+
+def test_harness_config_normalizes_program_mapping() -> None:
+    config = HarnessConfig(
+        program={
+            "command": ["echo", "ok"],
+            "sandbox": {"packages": "numpy"},
+            "channels": {"mcp": True},
+        }
+    )
+
+    assert config.program == {
+        "command": ["echo", "ok"],
+        "sandbox": {"packages": ["numpy"]},
+        "channels": {"mcp": True},
+    }
+
+
+def test_harness_config_rejects_unknown_program_tool_interface() -> None:
+    with pytest.raises(ValueError, match="unknown channel"):
+        HarnessConfig(program={"command": ["echo"], "channels": {"ptc": True}})
+
+
 def test_load_environment_coerces_typed_env_config_arg(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1083,10 +1390,9 @@ def test_load_environment_coerces_typed_env_config_arg(
     module = types.ModuleType(module_name)
     seen: dict[str, object] = {}
 
-    def load_environment(split: str = "train", config: EnvConfig | None = None) -> Env:
+    def load_environment(split: str = "train", *, config: EnvConfig) -> Env:
         seen["split"] = split
         seen["config"] = config
-        config = config or EnvConfig()
         return Env(
             taskset=Taskset(source=source_loader, config=config.taskset),
             harness=Harness(config=config.harness),
@@ -1115,6 +1421,79 @@ def test_load_environment_coerces_typed_env_config_arg(
             "harness": {"model": "typed-model"},
         },
     }
+
+
+def test_load_environment_coerces_env_config_subclass_sections(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_name = "typed_env_config_subclass"
+    module = types.ModuleType(module_name)
+    seen: dict[str, object] = {}
+
+    class LocalTasksetConfig(TasksetConfig):
+        split: str = "train"
+
+    class LocalHarnessConfig(HarnessConfig):
+        mode: str = "default"
+
+    class LocalEnvConfig(EnvConfig):
+        taskset: LocalTasksetConfig
+        harness: LocalHarnessConfig
+
+    class LocalTaskset(Taskset):
+        config_type = LocalTasksetConfig
+
+    class LocalHarness(Harness):
+        config_type = LocalHarnessConfig
+
+    def load_environment(config: LocalEnvConfig) -> Env:
+        seen["config"] = config
+        return Env(
+            taskset=LocalTaskset(source=source_loader, config=config.taskset),
+            harness=LocalHarness(config=config.harness),
+        )
+
+    module.load_environment = load_environment
+    monkeypatch.setitem(sys.modules, module_name, module)
+
+    env = vf.load_environment(
+        "typed-env-config-subclass",
+        config={
+            "taskset": {"taskset_id": "typed", "split": "test"},
+            "harness": {"mode": "custom"},
+        },
+    )
+    config = seen["config"]
+
+    assert isinstance(config, LocalEnvConfig)
+    assert isinstance(config.taskset, LocalTasksetConfig)
+    assert isinstance(config.harness, LocalHarnessConfig)
+    assert env.taskset.config.taskset_id == "typed"
+    assert env.taskset.config.split == "test"
+    assert env.harness.config.mode == "custom"
+
+
+def test_load_environment_supplies_default_typed_env_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_name = "default_typed_env_config"
+    module = types.ModuleType(module_name)
+    seen: dict[str, object] = {}
+
+    def load_environment(config: EnvConfig) -> Env:
+        seen["config"] = config
+        return Env(
+            taskset=Taskset(source=source_loader, config=config.taskset),
+            harness=Harness(config=config.harness),
+        )
+
+    module.load_environment = load_environment
+    monkeypatch.setitem(sys.modules, module_name, module)
+
+    env = vf.load_environment("default-typed-env-config")
+
+    assert isinstance(seen["config"], EnvConfig)
+    assert env.env_args == {}
 
 
 def test_load_environment_leaves_untyped_config_arg_as_kwargs(
@@ -1165,21 +1544,12 @@ def test_unset_base_config_defaults_do_not_override_child_defaults() -> None:
     assert explicit_config.max_turns == 10
 
 
-def test_config_field_name_is_allowed_in_typed_configs() -> None:
+def test_config_field_name_is_reserved_for_config_refs() -> None:
     class LocalTasksetConfig(TasksetConfig):
         config: dict[str, object] | None = None
 
-    loaded_config = LocalTasksetConfig.from_config({"config": {"mode": "loaded"}})
-    direct_config = LocalTasksetConfig(config={"mode": "direct"})
-    merged_config = LocalTasksetConfig(
-        {"taskset_id": "local"},
-        config={"mode": "merged"},
-    )
-
-    assert loaded_config.config == {"mode": "loaded"}
-    assert direct_config.config == {"mode": "direct"}
-    assert merged_config.taskset_id == "local"
-    assert merged_config.config == {"mode": "merged"}
+    with pytest.raises(TypeError, match="reserves the 'config' field"):
+        LocalTasksetConfig.from_config({"config": {"mode": "loaded"}})
 
 
 @pytest.mark.parametrize(
@@ -1225,12 +1595,27 @@ def test_reference_v1_harness_loaders_preserve_child_defaults() -> None:
         "environments.hello_self_judge_v1.hello_self_judge_v1"
     )
 
-    assert group_reward.load_harness().config.max_turns == 1
-    assert parallel_sandbox.load_harness().config.max_turns == 4
-    assert self_judge.load_harness().config.max_turns == 8
+    assert (
+        group_reward.load_harness(
+            config=group_reward.GroupRewardHarnessConfig()
+        ).config.max_turns
+        == 1
+    )
+    assert (
+        parallel_sandbox.load_harness(
+            config=parallel_sandbox.ParallelSandboxHarnessConfig()
+        ).config.max_turns
+        == 4
+    )
+    assert (
+        self_judge.load_harness(
+            config=self_judge.SelfJudgeHarnessConfig()
+        ).config.max_turns
+        == 8
+    )
 
 
-def test_bfcl_v1_loader_preserves_mapping_config_sections(
+def test_bfcl_loader_preserves_mapping_config_sections(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     module = importlib.import_module("environments.bfcl_v3.bfcl_v3")
@@ -1249,8 +1634,8 @@ def test_bfcl_v1_loader_preserves_mapping_config_sections(
     monkeypatch.setattr(module, "load_taskset", fake_taskset)
     monkeypatch.setattr(module, "load_harness", fake_harness)
 
-    env = module.load_v1_environment(
-        config=EnvConfig(
+    env = module.load_environment(
+        config=module.BFCLEnvConfig(
             taskset={"taskset_id": "bfcl-env-args"},
             harness={"model": "bfcl-model"},
         )
@@ -1275,8 +1660,8 @@ def test_tau2_loader_forwards_mapping_harness_config(
 
     monkeypatch.setattr(module, "load_taskset", fake_taskset)
 
-    env = module.load_v1_environment(
-        config=EnvConfig(
+    env = module.load_environment(
+        config=module.Tau2EnvConfig(
             taskset={"max_turns": 7},
             harness={"model": "configured-model", "max_turns": 3},
         )
@@ -1391,13 +1776,16 @@ def test_self_judge_loader_projects_shortcuts_to_child_configs() -> None:
         "environments.hello_self_judge_v1.hello_self_judge_v1"
     )
 
-    taskset = module.load_taskset(num_examples=2)
-    harness = module.load_harness(max_turns=3)
-    shortcut_env = module.load_environment(num_examples=2, max_turns=3)
+    taskset = module.load_taskset(config=module.SelfJudgeTasksetConfig(num_examples=2))
+    harness = module.load_harness(config=module.SelfJudgeHarnessConfig(max_turns=3))
+    shortcut_env = module.load_environment(
+        config=module.SelfJudgeEnvConfig(
+            taskset={"num_examples": 2},
+            harness={"max_turns": 3},
+        ),
+    )
     override_env = module.load_environment(
-        num_examples=2,
-        max_turns=3,
-        config=EnvConfig(
+        config=module.SelfJudgeEnvConfig(
             taskset={"num_examples": 1},
             harness={"max_turns": 5},
         ),
@@ -1422,7 +1810,9 @@ def test_subagent_loader_keeps_child_harness_internal(
     )
 
     assert env.harness.config.model == "parent"
-    child_harness = env.harness.toolsets[0].bindings["ask_subagent.harness"]
+    toolset = env.harness.toolsets[0]
+    assert toolset.bindings["ask_subagent.harness"] == "objects.harness"
+    child_harness = toolset.objects["harness"]()
     assert child_harness.config.model is None
 
 
@@ -1499,9 +1889,9 @@ def test_configs_load_from_toml_sections(tmp_path) -> None:
     assert taskset.source is source_loader
     assert getattr(taskset.rewards[0], "__name__") == "config_reward"
     assert getattr(taskset.rewards[0], "reward_weight") == 0.5
-    assert taskset.named_toolsets["configured"].bindings == {
-        "config_tool.prefix": "toml"
-    }
+    prefix = taskset.named_toolsets["configured"].bindings["config_tool.prefix"]
+    assert callable(prefix)
+    assert prefix() == "toml"
     assert harness.program == {"fn": ref("config_program")}
     assert callable(harness._program)
     assert harness.config.max_turns == 7

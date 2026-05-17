@@ -11,8 +11,6 @@ This module provides the client for connecting to a TextArena Environment server
 over HTTP.
 """
 
-from __future__ import annotations
-
 from typing import Any, Dict
 
 from openenv.core.client_types import StepResult

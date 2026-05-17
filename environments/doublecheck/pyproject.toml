@@ -15,3 +15,7 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build]
 include = ["doublecheck.py"]
+
+[tool.verifiers.eval]
+num_examples = 5
+rollouts_per_example = 3
