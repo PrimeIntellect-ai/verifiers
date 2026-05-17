@@ -135,6 +135,18 @@ def get_preprocess_fn(name: str) -> Callable[[dict], dict]:
             }
 
         return preprocess_aime2025
+    elif name == "aime2026":
+
+        def preprocess_aime2026(x: dict[str, Any]) -> dict[str, Any]:
+            # ``answer`` in the source dataset is int64; renaming to
+            # ``temp_answer`` so the int->str cast survives ``.map`` type
+            # inference (see the rename hook at the end of ``load_example_dataset``).
+            return {
+                "question": x["problem"],
+                "temp_answer": str(x["answer"]),
+            }
+
+        return preprocess_aime2026
     elif name == "amc2023":
 
         def preprocess_amc2023(x: dict[str, Any]) -> dict[str, Any]:
@@ -286,6 +298,10 @@ def load_example_dataset(
             Dataset, load_dataset("opencompass/AIME2025", "AIME2025-II")[split]
         )
         dataset = concatenate_datasets([aime_i, aime_ii])
+    elif name == "aime2026":
+        if split is None:
+            split = "train"
+        dataset = load_dataset("MathArena/aime_2026")[split]
     elif name == "amc2023":
         if split is None:
             split = "train"
