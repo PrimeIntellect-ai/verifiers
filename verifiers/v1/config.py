@@ -252,6 +252,28 @@ class SignalConfig(Config):
     skip: bool = False
 
 
+def validate_scoring_map(value: object, field: str) -> dict[str, ConfigData]:
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise TypeError(f"{field} must be a mapping.")
+    result: dict[str, ConfigData] = {}
+    for name, item in value.items():
+        if not isinstance(name, str):
+            raise TypeError(f"{field} keys must be strings.")
+        if isinstance(item, BaseModel):
+            data = item.model_dump(exclude_none=True, exclude_unset=True)
+        elif isinstance(item, Mapping):
+            data = string_mapping(cast(ConfigInputMap, item))
+        else:
+            raise TypeError(f"{field}.{name} must be a mapping.")
+        result[name] = SignalConfig.from_config(data).model_dump(
+            exclude_none=True,
+            exclude_unset=True,
+        )
+    return result
+
+
 class TasksetConfig(Config):
     # Singleton fields describe one logical value owned by the taskset.
     source: TaskSource | None = None
@@ -271,12 +293,17 @@ class TasksetConfig(Config):
     rewards: list[CallableEntry] = []
     advantages: list[CallableEntry] = []
     cleanups: list[CallableEntry] = []
-    scoring: dict[str, SignalConfig] = {}
+    scoring: dict[str, ConfigData] = {}
 
     @field_validator("bindings", mode="before")
     @classmethod
     def validate_bindings(cls, value: object) -> Bindings:
         return normalize_binding_map(value, "taskset.bindings")
+
+    @field_validator("scoring", mode="before")
+    @classmethod
+    def validate_scoring(cls, value: object) -> dict[str, ConfigData]:
+        return validate_scoring_map(value, "taskset.scoring")
 
 
 class HarnessConfig(Config):
@@ -302,12 +329,17 @@ class HarnessConfig(Config):
     rewards: list[CallableEntry] = []
     advantages: list[CallableEntry] = []
     cleanups: list[CallableEntry] = []
-    scoring: dict[str, SignalConfig] = {}
+    scoring: dict[str, ConfigData] = {}
 
     @field_validator("bindings", mode="before")
     @classmethod
     def validate_bindings(cls, value: object) -> Bindings:
         return normalize_binding_map(value, "harness.bindings", allow_objects=False)
+
+    @field_validator("scoring", mode="before")
+    @classmethod
+    def validate_scoring(cls, value: object) -> dict[str, ConfigData]:
+        return validate_scoring_map(value, "harness.scoring")
 
 
 class EnvConfig(Config):

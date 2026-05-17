@@ -694,6 +694,42 @@ async def test_update_config_runs_before_rollout_scoring() -> None:
 
 
 @pytest.mark.asyncio
+async def test_scoring_config_entries_feed_runtime_as_mappings() -> None:
+    taskset = make_taskset(
+        source=source_loader,
+        rewards=[config_reward],
+        scoring={"config_reward": vf.SignalConfig(weight=0.5)},
+    )
+    harness = make_harness(program=config_program)
+    Env(taskset=taskset, harness=harness)
+
+    task = next(iter(taskset))
+    state = await harness.run(task)
+
+    assert taskset.config.scoring == {"config_reward": {"weight": 0.5}}
+    assert state["reward"] == 0.5
+
+
+@pytest.mark.asyncio
+async def test_harness_scoring_config_entries_feed_runtime_as_mappings() -> None:
+    harness = make_harness(
+        program=config_program,
+        config={
+            "rewards": [ref("config_reward")],
+            "scoring": {"config_reward": {"weight": 0.5}},
+        },
+    )
+    task = Task(
+        {"prompt": [{"role": "user", "content": "hi"}], "answer": "ok"}
+    ).freeze()
+
+    state = await harness.run(task)
+
+    assert harness.config.scoring == {"config_reward": {"weight": 0.5}}
+    assert state["reward"] == 0.5
+
+
+@pytest.mark.asyncio
 async def test_setup_config_runs_before_program() -> None:
     harness = make_harness(
         config={
