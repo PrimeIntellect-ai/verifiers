@@ -7,12 +7,11 @@ from importlib.abc import Traversable
 from pathlib import Path
 from typing import cast
 
-from typing_extensions import Unpack
-
 from verifiers.envs.experimental.utils.git_checkout_cache import (
     resolve_git_checkout,
     validate_git_checkout,
 )
+from verifiers.types import SamplingArgs
 
 from ...config import SandboxConfig, sandbox_config_mapping
 from ...harness import Harness
@@ -20,7 +19,7 @@ from ...state import State
 from ...task import Task
 from ...taskset import Taskset
 from ...utils.prompt_utils import task_text
-from .command import HarnessKwargs, command_program
+from .command import command_program
 from .configs import (
     RLM_DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH,
     RLM_DEFAULT_EXEC_TIMEOUT,
@@ -31,7 +30,15 @@ from .configs import (
     RLM_DEFAULT_INSTRUCTION_PATH,
     RLMConfig,
 )
-from ...types import ConfigMap, ProgramMap, ProgramOptionMap, ProgramValue
+from ...toolset import ToolsetCollection
+from ...types import (
+    ConfigMap,
+    Handler,
+    ModelClient,
+    ProgramMap,
+    ProgramOptionMap,
+    ProgramValue,
+)
 
 DEFAULT_RLM_REPO_URL = RLM_DEFAULT_REPO_URL
 DEFAULT_RLM_REPO_REF = RLM_DEFAULT_REPO_REF
@@ -50,8 +57,6 @@ ProgramDir = str | Path | Traversable
 
 
 class RLM(Harness):
-    config_type = RLMConfig
-
     def __init__(
         self,
         *,
@@ -73,7 +78,18 @@ class RLM(Harness):
         sandbox: bool | ConfigMap | SandboxConfig | None = None,
         program: ProgramMap | None = None,
         config: RLMConfig | None = None,
-        **kwargs: Unpack[HarnessKwargs],
+        user: Handler | str | ConfigMap | None = None,
+        client: ModelClient | None = None,
+        model: str | None = None,
+        sampling_args: SamplingArgs | None = None,
+        toolsets: ToolsetCollection | None = None,
+        stops: list[Handler] | None = None,
+        setups: list[Handler] | None = None,
+        updates: list[Handler] | None = None,
+        metrics: list[Handler] | None = None,
+        rewards: list[Handler] | None = None,
+        advantages: list[Handler] | None = None,
+        cleanups: list[Handler] | None = None,
     ):
         harness_config = RLMConfig.from_config(
             config,
@@ -187,9 +203,20 @@ class RLM(Harness):
                 rlm_sub_llm_call_count,
                 rlm_sub_llm_total_turns,
                 rlm_sub_llm_total_tool_calls,
+                *(metrics or []),
             ],
             config=harness_config,
-            **kwargs,
+            user=user,
+            client=client,
+            model=model,
+            sampling_args=sampling_args,
+            toolsets=toolsets,
+            stops=stops,
+            setups=setups,
+            updates=updates,
+            rewards=rewards,
+            advantages=advantages,
+            cleanups=cleanups,
         )
 
     def attach_taskset(self, taskset: Taskset) -> None:

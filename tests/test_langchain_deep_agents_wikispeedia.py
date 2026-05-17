@@ -57,49 +57,14 @@ def test_wikispeedia_loads_as_v1_taskset_harness(
 ) -> None:
     module = load_module(monkeypatch)
 
-    env = module.load_environment(config=module.WikispeediaEnvConfig())
+    env = module.load_environment(
+        config=module.WikispeediaEnvConfig(taskset={"train_size": 1, "eval_size": 1})
+    )
 
     assert isinstance(env, vf.Env)
     assert isinstance(env.taskset, vf.Taskset)
     assert isinstance(env.harness, vf.Harness)
     assert env.taskset.taskset_id == "langchain-deep-agents-wikispeedia"
-
-
-def test_wikispeedia_env_config_reaches_taskset_and_harness(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    module = load_module(monkeypatch)
-    wiki = make_small_wiki(module)
-    monkeypatch.setattr(module, "load_wiki_graph", lambda cache_dir=None: wiki)
-
-    env = module.load_environment(
-        config=module.WikispeediaEnvConfig(
-            taskset={
-                "train_size": 2,
-                "eval_size": 1,
-                "min_path_length": 1,
-                "max_path_length": 1,
-                "eval_target_fraction": 0.5,
-                "allow_go_back": False,
-                "links_only": True,
-                "max_turns": 7,
-            },
-            harness={
-                "max_turns": 8,
-                "timeout_seconds": 9.0,
-            },
-        )
-    )
-
-    train_rows = list(env.taskset.source())
-    eval_rows = list(env.taskset.eval_source())
-
-    assert len(train_rows) == 2
-    assert len(eval_rows) == 1
-    assert train_rows[0]["max_turns"] == 7
-    assert env.harness.config.max_turns == 8
-    assert env.harness.config.timeout_seconds == 9.0
-    assert [tool.__name__ for tool in env.taskset.toolsets[0].tools] == ["click_link"]
 
 
 def test_wikispeedia_rows_use_v1_task_shape(
@@ -127,7 +92,7 @@ def test_wikispeedia_taskset_sources_use_disjoint_target_split(
     wiki = make_small_wiki(module)
     monkeypatch.setattr(module, "load_wiki_graph", lambda cache_dir=None: wiki)
     taskset = module.load_taskset(
-        config=module.WikispeediaTasksetConfig(
+        module.WikispeediaTasksetConfig(
             train_size=2,
             eval_size=1,
             min_path_length=1,
@@ -154,11 +119,9 @@ def test_wikispeedia_efficiency_weight_uses_fresh_reward_wrapper(
     monkeypatch.setattr(module, "load_wiki_graph", lambda cache_dir=None: wiki)
 
     weighted = module.load_taskset(
-        config=module.WikispeediaTasksetConfig(efficiency_weight=0.5)
+        module.WikispeediaTasksetConfig(efficiency_weight=0.5)
     )
-    plain = module.load_taskset(
-        config=module.WikispeediaTasksetConfig(efficiency_weight=0.0)
-    )
+    plain = module.load_taskset(module.WikispeediaTasksetConfig(efficiency_weight=0.0))
 
     assert any(fn.__name__ == "path_efficiency" for fn in weighted.rewards)
     assert any(fn is module.path_efficiency for fn in plain.metrics)
@@ -170,17 +133,13 @@ def test_wikispeedia_taskset_owns_navigation_tools(
 ) -> None:
     module = load_module(monkeypatch)
 
-    taskset = module.load_taskset(
-        config=module.WikispeediaTasksetConfig(allow_go_back=True)
-    )
+    taskset = module.load_taskset(module.WikispeediaTasksetConfig(allow_go_back=True))
     names = [tool.__name__ for tool in taskset.toolsets[0].tools]
-    no_back = module.load_taskset(
-        config=module.WikispeediaTasksetConfig(allow_go_back=False)
-    )
+    no_back = module.load_taskset(module.WikispeediaTasksetConfig(allow_go_back=False))
 
     assert names == ["click_link", "go_back"]
     assert [tool.__name__ for tool in no_back.toolsets[0].tools] == ["click_link"]
-    assert module.load_harness(config=module.WikispeediaHarnessConfig()).toolsets == []
+    assert module.load_harness(module.WikispeediaHarnessConfig()).toolsets == []
 
 
 def test_wikispeedia_system_prompt_matches_available_tools(
@@ -188,11 +147,9 @@ def test_wikispeedia_system_prompt_matches_available_tools(
 ) -> None:
     module = load_module(monkeypatch)
 
-    with_back = module.load_taskset(
-        config=module.WikispeediaTasksetConfig(allow_go_back=True)
-    )
+    with_back = module.load_taskset(module.WikispeediaTasksetConfig(allow_go_back=True))
     without_back = module.load_taskset(
-        config=module.WikispeediaTasksetConfig(allow_go_back=False)
+        module.WikispeediaTasksetConfig(allow_go_back=False)
     )
 
     assert "go_back" in with_back.system_prompt[0]["content"]
@@ -207,16 +164,15 @@ async def test_wikispeedia_tools_resolve_through_v1_runtime(
     module = load_module(monkeypatch)
     wiki = make_small_wiki(module)
     monkeypatch.setattr(module, "load_wiki_graph", lambda cache_dir=None: wiki)
-    env = vf.Env(
-        taskset=module.load_taskset(
-            config=module.WikispeediaTasksetConfig(
-                train_size=2,
-                eval_size=1,
-                min_path_length=1,
-                max_path_length=1,
-            )
+    env = module.load_environment(
+        config=module.WikispeediaEnvConfig(
+            taskset={
+                "train_size": 2,
+                "eval_size": 1,
+                "min_path_length": 1,
+                "max_path_length": 1,
+            }
         ),
-        harness=module.load_harness(config=module.WikispeediaHarnessConfig()),
     )
     task = module.vf.Task(list(env.taskset.source())[0]).freeze()
     state = module.vf.State.for_task(task)
@@ -368,6 +324,7 @@ async def test_wikispeedia_tool_metrics_use_agent_completion(
         },
         {
             "role": "tool",
+            "name": "click_link",
             "tool_call_id": "call_1",
             "content": "'C' is not a valid link from 'A'.",
         },

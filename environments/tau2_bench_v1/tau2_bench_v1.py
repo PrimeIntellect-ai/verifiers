@@ -10,6 +10,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import cast
 
+from pydantic import Field
+
 import verifiers as core_vf
 import verifiers as vf
 from verifiers.types import Tool
@@ -531,8 +533,11 @@ def load_session_factory(
     return load_session
 
 
-def make_tau2_tool(name: str, schema: ConfigMap) -> vf.Handler:
-    async def tool(session: Tau2Session, state, **arguments) -> str:
+def make_tau2_tool(
+    name: str, schema: ConfigMap, session_factory: Callable[..., Tau2Session]
+) -> vf.Handler:
+    async def tool(task, state, **arguments) -> str:
+        session = session_factory(task, state)
         return await session.call_agent_tool(name, arguments, state)
 
     function_schema = cast(ConfigMap, schema["function"])
@@ -561,13 +566,6 @@ def load_toolset(
     environment_constructor = registry.get_env_constructor(domain)
     environment = cast(TauEnvironment, environment_constructor())
     schemas = [tool.openai_schema for tool in environment.get_tools()]
-    tools = [
-        make_tau2_tool(
-            str(cast(ConfigMap, schema["function"])["name"]),
-            schema,
-        )
-        for schema in schemas
-    ]
     if session_factory is None:
         session_factory = load_session_factory(
             domain=domain,
@@ -576,12 +574,15 @@ def load_toolset(
             max_steps=max_steps,
             max_errors=max_errors,
         )
-    return vf.Toolset(
-        tools=tools,
-        bindings={f"{tool.__name__}.session": session_factory for tool in tools},
-        write=True,
-        scope="rollout",
-    )
+    tools = [
+        make_tau2_tool(
+            str(cast(ConfigMap, schema["function"])["name"]),
+            schema,
+            session_factory,
+        )
+        for schema in schemas
+    ]
+    return vf.Toolset(tools=tools, write=True, scope="rollout")
 
 
 def tau2_user_args(
@@ -676,9 +677,11 @@ class Tau2TasksetConfig(vf.TasksetConfig):
     max_turns: int = DEFAULT_MAX_STEPS
 
 
-class Tau2Taskset(vf.Taskset):
-    config_type = Tau2TasksetConfig
+class Tau2EnvConfig(vf.EnvConfig):
+    taskset: Tau2TasksetConfig = Field(default_factory=Tau2TasksetConfig)
 
+
+class Tau2Taskset(vf.Taskset):
     def __init__(
         self,
         domain: str | None = None,
@@ -746,38 +749,9 @@ class Tau2Taskset(vf.Taskset):
         )
 
 
-class Tau2EnvConfig(vf.EnvConfig):
-    taskset: Tau2TasksetConfig
-    harness: vf.HarnessConfig
+def load_taskset(config: Tau2TasksetConfig) -> Tau2Taskset:
+    return Tau2Taskset(config=config)
 
 
-def load_taskset(
-    domain: str | None = None,
-    *,
-    user_model: str | None = None,
-    user_args: ConfigMap | None = None,
-    user_base_url: str | None = None,
-    user_api_key_var: str | None = None,
-    max_steps: int | None = None,
-    max_errors: int | None = None,
-    max_turns: int | None = None,
-    config: Tau2TasksetConfig,
-) -> Tau2Taskset:
-    return Tau2Taskset(
-        domain=domain,
-        user_model=user_model,
-        user_args=user_args,
-        user_base_url=user_base_url,
-        user_api_key_var=user_api_key_var,
-        max_steps=max_steps,
-        max_errors=max_errors,
-        max_turns=max_turns,
-        config=config,
-    )
-
-
-def load_environment(
-    config: Tau2EnvConfig,
-) -> vf.Env:
-    taskset = load_taskset(config=config.taskset)
-    return vf.Env(taskset=taskset, harness=vf.Harness(config=config.harness))
+def load_environment(config: Tau2EnvConfig) -> vf.Env:
+    return vf.Env(taskset=load_taskset(config=config.taskset))

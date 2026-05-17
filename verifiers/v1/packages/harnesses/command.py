@@ -1,16 +1,10 @@
 from collections.abc import Mapping
 from typing import cast
 
-from typing_extensions import NotRequired, TypedDict
-
-from verifiers.clients import Client
-from verifiers.types import ClientConfig, SamplingArgs
-
 from ...config import SandboxConfig, sandbox_config_mapping
 from ...types import (
     ConfigData,
     ConfigMap,
-    Handler,
     ProgramCommand,
     ProgramMap,
     ProgramOptionMap,
@@ -19,7 +13,6 @@ from ...types import (
 )
 from ...utils.binding_utils import Bindings
 from ...utils.program_utils import program_list_items
-from ...toolset import ToolsetCollection
 
 
 DEFAULT_COMMAND_SANDBOX: ConfigData = {
@@ -30,21 +23,6 @@ DEFAULT_COMMAND_SANDBOX: ConfigData = {
     "command_timeout": 900,
     "network_access": True,
 }
-
-
-class HarnessKwargs(TypedDict):
-    user: NotRequired[Handler | str | ConfigMap | None]
-    client: NotRequired[Client | ClientConfig | None]
-    model: NotRequired[str | None]
-    sampling_args: NotRequired[SamplingArgs | None]
-    toolsets: NotRequired[ToolsetCollection | None]
-    stops: NotRequired[list[Handler] | None]
-    setups: NotRequired[list[Handler] | None]
-    updates: NotRequired[list[Handler] | None]
-    metrics: NotRequired[list[Handler] | None]
-    rewards: NotRequired[list[Handler] | None]
-    advantages: NotRequired[list[Handler] | None]
-    cleanups: NotRequired[list[Handler] | None]
 
 
 def command_program(

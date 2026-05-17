@@ -431,7 +431,7 @@ def load_harness(config: vf.HarnessConfig):
     )
 
 
-def load_environment(config: vf.EnvConfig):
+def load_environment(config: vf.EnvConfig) -> vf.Env:
     return vf.Env(
         taskset=load_taskset(config=config.taskset),
         harness=load_harness(config=config.harness),

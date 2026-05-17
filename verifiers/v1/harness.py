@@ -1,5 +1,5 @@
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, ClassVar, cast
+from typing import TYPE_CHECKING, cast
 
 from verifiers.decorators import metric, update
 from verifiers.errors import Error, OverlongPromptError
@@ -68,8 +68,6 @@ if TYPE_CHECKING:
 
 
 class Harness:
-    config_type: ClassVar[type[HarnessConfig]] = HarnessConfig
-
     def __init__(
         self,
         # Singleton fields.
@@ -94,7 +92,11 @@ class Harness:
         # Config.
         config: HarnessConfig | None = None,
     ):
-        self.config = type(self).config_type.from_config(config)
+        self.config = (
+            config
+            if isinstance(config, HarnessConfig)
+            else HarnessConfig.from_config(config)
+        )
         if max_turns is not None:
             self.config.max_turns = max_turns
         program_value = resolve_config_object(
@@ -159,7 +161,7 @@ class Harness:
 
     @classmethod
     def config_schema(cls) -> str:
-        return cls.config_type.schema_text()
+        return HarnessConfig.schema_text()
 
     def _add_handler(self, handlers: list[Handler], fn: Handler) -> None:
         handlers.append(fn)

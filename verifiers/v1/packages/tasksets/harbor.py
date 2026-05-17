@@ -13,12 +13,11 @@ from pathlib import Path
 from typing import cast
 
 from pydantic import Field
-from typing_extensions import Unpack
 
 from verifiers.utils.import_utils import load_toml
 
 from ...config import TasksetConfig, merge_config_value
-from ...taskset import Taskset, TasksetKwargs
+from ...taskset import Taskset
 from ...utils.sandbox_utils import SandboxClient
 from verifiers.decorators import reward
 from ...types import ConfigData, Handler, ProgramOptionMap
@@ -70,8 +69,6 @@ class HarborTasksetConfig(TasksetConfig):
 
 
 class HarborTaskset(Taskset):
-    config_type = HarborTasksetConfig
-
     def __init__(
         self,
         dataset: str | None = None,
@@ -91,9 +88,8 @@ class HarborTaskset(Taskset):
         env: ProgramOptionMap | None = None,
         rewards: Iterable[Handler] = (),
         config: HarborTasksetConfig | None = None,
-        **kwargs: Unpack[TasksetKwargs],
     ):
-        self.config = type(self).config_type.from_config(config)
+        self.config = HarborTasksetConfig.from_config(config)
         dataset_value = merge_config_value(dataset, self.config.dataset)
         if dataset_value is not None and not isinstance(dataset_value, str):
             raise TypeError("HarborTaskset dataset must be a string.")
@@ -152,7 +148,6 @@ class HarborTaskset(Taskset):
             taskset_id="harbor",
             rewards=[harbor_reward, *extra_rewards],
             config=self.config,
-            **kwargs,
         )
 
     def load_rows(self) -> list[ConfigData]:

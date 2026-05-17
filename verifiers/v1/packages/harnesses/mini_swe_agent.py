@@ -1,16 +1,25 @@
 import shlex
 from pathlib import PurePosixPath
 
-from typing_extensions import Unpack
+from verifiers.types import SamplingArgs
 
-from .command import HarnessKwargs, command_program, command_sandbox
+from .command import command_program, command_sandbox
 from ...config import SandboxConfig
 from ...harness import Harness
 from ...utils.prompt_utils import (
     state_system_prompt_text,
     task_text as task_instruction_text,
 )
-from ...types import ConfigMap, ProgramMap, ProgramOptionMap, ProgramValue, PromptInput
+from ...toolset import ToolsetCollection
+from ...types import (
+    ConfigMap,
+    Handler,
+    ModelClient,
+    ProgramMap,
+    ProgramOptionMap,
+    ProgramValue,
+    PromptInput,
+)
 
 DEFAULT_INSTALL_DIR = "/opt/mini-swe-agent"
 DEFAULT_PREFIX_DIR = f"{DEFAULT_INSTALL_DIR}/prefix"
@@ -57,7 +66,18 @@ class MiniSWEAgent(Harness):
         sandbox: bool | ConfigMap | SandboxConfig = True,
         program: ProgramMap | None = None,
         max_turns: int | None = 4,
-        **kwargs: Unpack[HarnessKwargs],
+        user: Handler | str | ConfigMap | None = None,
+        client: ModelClient | None = None,
+        model: str | None = None,
+        sampling_args: SamplingArgs | None = None,
+        toolsets: ToolsetCollection | None = None,
+        stops: list[Handler] | None = None,
+        setups: list[Handler] | None = None,
+        updates: list[Handler] | None = None,
+        metrics: list[Handler] | None = None,
+        rewards: list[Handler] | None = None,
+        advantages: list[Handler] | None = None,
+        cleanups: list[Handler] | None = None,
     ):
         files: dict[str, ProgramValue] = {
             instruction_path: task_instruction_text,
@@ -112,7 +132,18 @@ class MiniSWEAgent(Harness):
             sandbox=command_sandbox(sandbox),
             system_prompt=system_prompt,
             max_turns=max_turns,
-            **kwargs,
+            user=user,
+            client=client,
+            model=model,
+            sampling_args=sampling_args,
+            toolsets=toolsets,
+            stops=stops,
+            setups=setups,
+            updates=updates,
+            metrics=metrics,
+            rewards=rewards,
+            advantages=advantages,
+            cleanups=cleanups,
         )
 
 

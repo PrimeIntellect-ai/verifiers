@@ -21,10 +21,10 @@ repos:
         language: system
         pass_filenames: false
       - id: sync-agents-md
-        name: Sync AGENTS.md from docs
-        entry: uv run python scripts/sync.py
+        name: Check generated AGENTS.md
+        entry: uv run python scripts/sync.py --check
         language: system
-        files: ^(docs/environments\.md|assets/agents/.*\.md|scripts/sync\.py)$
+        files: ^(docs/environments\.md|assets/agents/.*\.md|scripts/sync\.py|AGENTS\.md|CLAUDE\.md|environments/AGENTS\.md|assets/lab/(AGENTS|CLAUDE)\.md|assets/lab/environments/AGENTS\.md)$
         pass_filenames: false
       - id: ty
         name: ty (ci parity)

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Protocol, cast
 
 from datasets import load_dataset
-from pydantic import Field
+from pydantic import Field, model_validator
 
 import verifiers as vf
 from verifiers.v1.types import ConfigMap, ProgramOptionMap
@@ -32,6 +32,26 @@ class RlmSweTasksetConfig(vf.TasksetConfig):
     timeout_minutes: int | None = None
     hide_tests_from_agent: bool = True
     env: vf.ConfigData = Field(default_factory=dict)
+
+
+class RlmSweEnvConfig(vf.EnvConfig):
+    taskset: RlmSweTasksetConfig
+    harness: vf.RLMConfig
+
+    @model_validator(mode="after")
+    def sync_harness_with_taskset(self) -> "RlmSweEnvConfig":
+        harness = vf.RLMConfig(
+            vf.RLMConfig(workdir=DEFAULT_REPO_PATH, rlm_tools=list(DEFAULT_RLM_TOOLS)),
+            **self.harness.model_dump(exclude_unset=True, exclude_none=True),
+        )
+        taskset = RlmSweTaskset(config=self.taskset)
+        self.harness = vf.RLMConfig(
+            harness,
+            workdir=taskset.repo_path,
+            gh_token=harness.gh_token or os.environ.get("GH_TOKEN"),
+            env_vars={**taskset.get_env_vars(), **harness.env_vars},
+        )
+        return self
 
 
 class SandboxCommandResult(Protocol):
@@ -65,9 +85,7 @@ class R2ESandbox(Protocol):
     ) -> SandboxCommandResult: ...
 
 
-class R2ESWETaskset(vf.Taskset):
-    config_type = RlmSweTasksetConfig
-
+class RlmSweTaskset(vf.Taskset):
     def __init__(
         self,
         dataset_name: str | None = None,
@@ -488,39 +506,25 @@ def extract_gold_patch(
     return patch
 
 
-def load_taskset(
-    config: RlmSweTasksetConfig,
-) -> R2ESWETaskset:
-    return R2ESWETaskset(config=config)
+def load_taskset(config: RlmSweTasksetConfig) -> RlmSweTaskset:
+    return RlmSweTaskset(config=config)
 
 
-def load_harness(
-    config: vf.RLMConfig,
-    taskset: R2ESWETaskset | None = None,
-) -> vf.RLM:
-    user_config = vf.RLMConfig(config)
+R2ESWETaskset = RlmSweTaskset
+
+
+def load_harness(config: vf.RLMConfig) -> vf.RLM:
     config = vf.RLMConfig(
         vf.RLMConfig(workdir=DEFAULT_REPO_PATH, rlm_tools=list(DEFAULT_RLM_TOOLS)),
-        **user_config.model_dump(exclude_unset=True, exclude_none=True),
+        **config.model_dump(exclude_unset=True, exclude_none=True),
     )
-    if taskset is not None:
-        config = vf.RLMConfig(
-            config,
-            workdir=taskset.repo_path,
-            gh_token=config.gh_token or os.environ.get("GH_TOKEN"),
-            env_vars={**taskset.get_env_vars(), **config.env_vars},
-        )
     return vf.RLM(
         config=config,
     )
 
 
-class RlmSweEnvConfig(vf.EnvConfig):
-    taskset: RlmSweTasksetConfig
-    harness: vf.RLMConfig
-
-
 def load_environment(config: RlmSweEnvConfig) -> vf.Env:
-    taskset = load_taskset(config=config.taskset)
-    harness = load_harness(config=config.harness, taskset=taskset)
-    return vf.Env(taskset=taskset, harness=harness)
+    return vf.Env(
+        taskset=load_taskset(config=config.taskset),
+        harness=load_harness(config=config.harness),
+    )

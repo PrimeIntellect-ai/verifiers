@@ -52,6 +52,8 @@ def get_source(
     max_turns: int = 3,
     min_names_per_turn: int = 1,
     max_names_per_turn: int = 5,
+    similarity_power: int = 4,
+    power_per_turn: bool = True,
     dataset_name: str = "kalomaze/alphabetic-arxiv-authors-it1",
     dataset_split: str = "train",
     seed: int = 1337420,
@@ -173,6 +175,8 @@ These are in addition to the prior list. Mark any NEW names (that weren't in the
                             "ground_truths": ground_truths,
                             "num_turns": num_turns,
                             "sort_by_first": sort_by_first,
+                            "similarity_power": similarity_power,
+                            "power_per_turn": power_per_turn,
                         },
                     }
                 )
@@ -244,27 +248,26 @@ def eval_turn(
     return attempt_scores[-1]
 
 
-def weighted_reward_factory(similarity_power: int, power_per_turn: bool):
-    @vf.reward(weight=1.0)
-    async def weighted_reward(task, state) -> float:
-        completion = state.get("completion") or []
-        actual_turns = state["info"]["num_turns"]
-        total = 0.0
-        for turn_num in range(1, actual_turns + 1):
-            total += eval_turn(
-                completion,
-                turn_num,
-                state,
-                similarity_power,
-                apply_power=power_per_turn,
-            )
-        if actual_turns <= 0:
-            return 0.0
-        if power_per_turn:
-            return total / actual_turns
-        return (total / actual_turns) ** similarity_power
-
-    return weighted_reward
+@vf.reward(weight=1.0)
+async def weighted_reward(task, state) -> float:
+    completion = state.get("completion") or []
+    actual_turns = state["info"]["num_turns"]
+    similarity_power = int(state["info"]["similarity_power"])
+    power_per_turn = bool(state["info"]["power_per_turn"])
+    total = 0.0
+    for turn_num in range(1, actual_turns + 1):
+        total += eval_turn(
+            completion,
+            turn_num,
+            state,
+            similarity_power,
+            apply_power=power_per_turn,
+        )
+    if actual_turns <= 0:
+        return 0.0
+    if power_per_turn:
+        return total / actual_turns
+    return (total / actual_turns) ** similarity_power
 
 
 async def alphabet_user(task, state, transcript) -> list[dict[str, str]]:
@@ -299,11 +302,13 @@ def load_taskset(
             max_turns=max_turns,
             min_names_per_turn=min_names_per_turn,
             max_names_per_turn=max_names_per_turn,
+            similarity_power=similarity_power,
+            power_per_turn=power_per_turn,
             dataset_name=dataset_name,
             dataset_split=dataset_split,
             seed=seed,
         ),
-        rewards=[weighted_reward_factory(similarity_power, power_per_turn)],
+        rewards=[weighted_reward],
         user=alphabet_user,
         config=config,
     )

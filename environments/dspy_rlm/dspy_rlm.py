@@ -4,13 +4,13 @@ import verifiers as vf
 from verifiers.utils.data_utils import load_example_dataset
 
 
-class DSPYRLMTasksetConfig(vf.TasksetConfig):
+class DspyRLMTasksetConfig(vf.TasksetConfig):
     num_train_examples: int = 50
     num_eval_examples: int = 20
 
 
-class DSPYRLMEnvConfig(vf.EnvConfig):
-    taskset: DSPYRLMTasksetConfig
+class DspyRLMEnvConfig(vf.EnvConfig):
+    taskset: DspyRLMTasksetConfig
     harness: vf.HarnessConfig
 
 
@@ -94,23 +94,30 @@ def answer_reward(task: vf.Task, state: vf.State) -> float:
     return answers_match(agent_answer, str(task.get("answer", "")))
 
 
-def load_taskset(config: DSPYRLMTasksetConfig) -> vf.Taskset:
-    return vf.Taskset(
-        source=lambda: load_rows("train", config.num_train_examples),
-        eval_source=lambda: load_rows("test", config.num_eval_examples),
-        taskset_id="gsm8k-dspy-rlm",
-        rewards=[answer_reward],
-        config=config,
-    )
+class DspyRLMTaskset(vf.Taskset):
+    def __init__(self, config: DspyRLMTasksetConfig | None = None):
+        config = DspyRLMTasksetConfig(config)
+        super().__init__(
+            source=lambda: load_rows("train", config.num_train_examples),
+            eval_source=lambda: load_rows("test", config.num_eval_examples),
+            taskset_id="gsm8k-dspy-rlm",
+            rewards=[answer_reward],
+            config=config,
+        )
+
+
+def load_taskset(config: DspyRLMTasksetConfig) -> DspyRLMTaskset:
+    return DspyRLMTaskset(config=config)
 
 
 def load_harness(config: vf.HarnessConfig) -> vf.Harness:
     return vf.Harness(program=run_dspy_rlm_program, config=config)
 
 
-def load_environment(config: DSPYRLMEnvConfig) -> vf.Env:
-    """Load the DSPy RLM V1 taskset/harness example environment."""
+def load_environment(
+    config: DspyRLMEnvConfig,
+) -> vf.Env:
     return vf.Env(
         taskset=load_taskset(config=config.taskset),
-        harness=load_harness(config=config.harness),
+        harness=load_harness(config.harness),
     )

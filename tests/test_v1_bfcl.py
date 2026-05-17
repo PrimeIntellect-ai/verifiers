@@ -4,7 +4,6 @@ from types import ModuleType
 
 import pytest
 
-import verifiers as root_vf
 import verifiers.v1 as vf
 
 
@@ -75,12 +74,12 @@ def test_bfcl_public_loader_is_v1_only(monkeypatch: pytest.MonkeyPatch) -> None:
     seen_taskset_config: vf.TasksetConfig | None = None
     seen_harness_config: vf.HarnessConfig | None = None
 
-    def fake_taskset(config: vf.TasksetConfig) -> vf.Taskset:
+    def fake_taskset(config: vf.TasksetConfig | None = None) -> vf.Taskset:
         nonlocal seen_taskset_config
         seen_taskset_config = config
         return vf.Taskset(source=[], config=config)
 
-    def fake_harness(config: vf.HarnessConfig) -> vf.Harness:
+    def fake_harness(config: vf.HarnessConfig | None = None) -> vf.Harness:
         nonlocal seen_harness_config
         seen_harness_config = config
         return vf.Harness(config=config)
@@ -90,12 +89,8 @@ def test_bfcl_public_loader_is_v1_only(monkeypatch: pytest.MonkeyPatch) -> None:
 
     env = bfcl.load_environment(
         config=bfcl.BFCLEnvConfig(
-            taskset=bfcl.BFCLTasksetConfig(
-                test_category="simple_python",
-                examples_per_category=0,
-            ),
-            harness=bfcl.BFCLHarnessConfig(),
-        )
+            taskset={"test_category": "simple_python", "examples_per_category": 0}
+        ),
     )
 
     assert isinstance(env, vf.Env)
@@ -107,37 +102,8 @@ def test_bfcl_public_loader_is_v1_only(monkeypatch: pytest.MonkeyPatch) -> None:
     assert not hasattr(bfcl, "load_v1_environment")
 
 
-def test_bfcl_loader_supports_category_groups(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_bfcl_loader_rejects_category_groups() -> None:
     bfcl = load_bfcl_module()
-    seen_taskset_categories = []
-    seen_harness_categories = []
 
-    def fake_taskset(config: vf.TasksetConfig) -> vf.Taskset:
-        assert isinstance(config, bfcl.BFCLTasksetConfig)
-        seen_taskset_categories.append(config.test_category)
-        return vf.Taskset(source=[{"question": "q", "answer": "a"}], config=config)
-
-    def fake_harness(config: vf.HarnessConfig) -> vf.Harness:
-        assert isinstance(config, bfcl.BFCLHarnessConfig)
-        seen_harness_categories.append(config.test_category)
-        return vf.Harness(config=config)
-
-    monkeypatch.setattr(bfcl, "load_taskset", fake_taskset)
-    monkeypatch.setattr(bfcl, "load_harness", fake_harness)
-
-    env = bfcl.load_environment(
-        config=bfcl.BFCLEnvConfig(
-            taskset=bfcl.BFCLTasksetConfig(
-                test_categories=["simple_python", "simple_java"],
-                examples_per_category=0,
-            ),
-            harness=bfcl.BFCLHarnessConfig(),
-        )
-    )
-
-    assert isinstance(env, root_vf.EnvGroup)
-    assert env.env_names == ["simple_python", "simple_java"]
-    assert seen_taskset_categories == ["simple_python", "simple_java"]
-    assert seen_harness_categories == ["simple_python", "simple_java"]
+    with pytest.raises(ValueError):
+        bfcl.BFCLTasksetConfig(test_categories=["simple_python", "simple_java"])

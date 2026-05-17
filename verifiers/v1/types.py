@@ -36,8 +36,6 @@ TaskSource: TypeAlias = str | TaskRowsSource
 
 PromptMessage: TypeAlias = Message | ConfigMap
 PromptInput: TypeAlias = str | Sequence[PromptMessage]
-Transcript: TypeAlias = Sequence[PromptMessage]
-TranscriptData: TypeAlias = list[PromptMessage]
 ToolSpec: TypeAlias = Handler | str | ConfigMap
 ToolSpecs: TypeAlias = ToolSpec | Sequence[ToolSpec]
 ToolsetSpecs: TypeAlias = ToolSpec | Sequence[ToolSpec] | ConfigMap

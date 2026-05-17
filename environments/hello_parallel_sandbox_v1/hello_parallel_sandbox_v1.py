@@ -136,7 +136,7 @@ class ParallelSandboxTasksetConfig(vf.TasksetConfig):
 
 
 class ParallelSandboxHarnessConfig(vf.HarnessConfig):
-    max_turns: int = 4
+    turn_limit: int = 4
 
 
 class ParallelSandboxEnvConfig(vf.EnvConfig):
@@ -360,13 +360,19 @@ def load_taskset(config: ParallelSandboxTasksetConfig) -> vf.Taskset:
     )
 
 
-def load_harness(config: ParallelSandboxHarnessConfig) -> vf.Harness:
-    return vf.Harness(
-        program={"sandbox": True, "channels": "callable"},
-        sandbox=PROGRAM_SANDBOX,
-        max_turns=config.max_turns,
-        config=config,
-    )
+class ParallelSandboxHarness(vf.Harness):
+    def __init__(self, config: ParallelSandboxHarnessConfig | None = None):
+        config = ParallelSandboxHarnessConfig(config)
+        super().__init__(
+            program={"sandbox": True, "channels": "callable"},
+            sandbox=PROGRAM_SANDBOX,
+            max_turns=config.turn_limit,
+            config=config,
+        )
+
+
+def load_harness(config: ParallelSandboxHarnessConfig) -> ParallelSandboxHarness:
+    return ParallelSandboxHarness(config=config)
 
 
 def load_environment(config: ParallelSandboxEnvConfig) -> vf.Env:

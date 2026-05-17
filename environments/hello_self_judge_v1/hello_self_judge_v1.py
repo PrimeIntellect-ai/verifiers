@@ -157,7 +157,7 @@ class SelfJudgeTasksetConfig(vf.TasksetConfig):
 
 
 class SelfJudgeHarnessConfig(vf.HarnessConfig):
-    max_turns: int = 8
+    turn_limit: int = 8
 
 
 class SelfJudgeEnvConfig(vf.EnvConfig):
@@ -345,9 +345,7 @@ def load_bash_toolset(config=None) -> vf.Toolset:
     )
 
 
-def load_taskset(
-    config: SelfJudgeTasksetConfig,
-) -> vf.Taskset:
+def load_taskset(config: SelfJudgeTasksetConfig) -> vf.Taskset:
     def load_rows():
         return source(num_examples=config.num_examples)
 
@@ -362,15 +360,17 @@ def load_taskset(
     )
 
 
-def load_harness(
-    config: SelfJudgeHarnessConfig,
-) -> vf.Harness:
-    return vf.Harness(max_turns=config.max_turns, config=config)
+class SelfJudgeHarness(vf.Harness):
+    def __init__(self, config: SelfJudgeHarnessConfig | None = None):
+        config = SelfJudgeHarnessConfig(config)
+        super().__init__(max_turns=config.turn_limit, config=config)
 
 
-def load_environment(
-    config: SelfJudgeEnvConfig,
-) -> vf.Env:
+def load_harness(config: SelfJudgeHarnessConfig) -> SelfJudgeHarness:
+    return SelfJudgeHarness(config=config)
+
+
+def load_environment(config: SelfJudgeEnvConfig) -> vf.Env:
     return vf.Env(
         taskset=load_taskset(config=config.taskset),
         harness=load_harness(config=config.harness),

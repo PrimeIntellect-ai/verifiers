@@ -17,7 +17,7 @@ from .decorators import (  # noqa # isort: skip
     teardown,
     update,
 )
-from .types import DatasetBuilder, State  # noqa # isort: skip
+from .types import DatasetBuilder, Message, Messages, State  # noqa # isort: skip
 from .parsers.parser import Parser  # noqa # isort: skip
 from .rubrics.rubric import Rubric  # noqa # isort: skip
 
@@ -52,6 +52,8 @@ __all__ = [
     "Handler",
     "MutableConfigMap",
     "Objects",
+    "Message",
+    "Messages",
     "Parser",
     "ThinkParser",
     "MaybeThinkParser",

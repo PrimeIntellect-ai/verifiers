@@ -19,8 +19,11 @@ class TagExtractor:
         return match.group(1).strip() if match else ""
 
 
+extract_reversed_text = TagExtractor("reversed_text")
+
+
 @vf.reward(weight=1.0)
-async def lcs_reward_func(task, state, extract_reversed_text) -> float:
+async def lcs_reward_func(task, state) -> float:
     response = extract_reversed_text(state.get("completion") or [])
     answer = str(task["answer"])
     return SequenceMatcher(None, response, answer).ratio()
@@ -65,10 +68,6 @@ def load_taskset(
         source=build_source(dataset_name, dataset_split),
         system_prompt=system_prompt,
         rewards=[lcs_reward_func],
-        objects={"extract_reversed_text": lambda: TagExtractor("reversed_text")},
-        bindings={
-            "lcs_reward_func.extract_reversed_text": "objects.extract_reversed_text"
-        },
         config=config,
     )
 

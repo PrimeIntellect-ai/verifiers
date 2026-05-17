@@ -16,7 +16,7 @@ class GroupRewardTasksetConfig(vf.TasksetConfig):
 
 
 class GroupRewardHarnessConfig(vf.HarnessConfig):
-    max_turns: int = 1
+    turn_limit: int = 1
 
 
 class GroupRewardEnvConfig(vf.EnvConfig):
@@ -324,12 +324,18 @@ def load_taskset(config: GroupRewardTasksetConfig) -> GroupRewardTaskset:
     )
 
 
-def load_harness(config: GroupRewardHarnessConfig) -> vf.Harness:
-    return vf.Harness(
-        program=candidate_program,
-        max_turns=config.max_turns,
-        config=config,
-    )
+class GroupRewardHarness(vf.Harness):
+    def __init__(self, config: GroupRewardHarnessConfig | None = None):
+        config = GroupRewardHarnessConfig(config)
+        super().__init__(
+            program=candidate_program,
+            max_turns=config.turn_limit,
+            config=config,
+        )
+
+
+def load_harness(config: GroupRewardHarnessConfig) -> GroupRewardHarness:
+    return GroupRewardHarness(config=config)
 
 
 def load_environment(config: GroupRewardEnvConfig) -> vf.Env:
