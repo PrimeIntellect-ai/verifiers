@@ -18,7 +18,7 @@ Find correctness risks and regressions first, then assess maintainability and ec
 - `load_environment(...)`
 - base class and rollout behavior (`SingleTurnEnv`, `MultiTurnEnv`, `ToolEnv`/`MCPEnv`/`StatefulToolEnv`, `SandboxEnv`/`PythonEnv`, V1 `vf.Env` with `vf.Taskset`/`vf.Harness` for framework programs, `CliAgentEnv` for sandboxed agents)
 - rubric and metrics
-2. Verify installability and runtime entrypoint with the canonical eval path. Do not add `--skip-upload` unless the user explicitly requests that deviation; standard runs save automatically for the private Evaluations tab and `prime eval tui`:
+2. Verify installability and runtime entrypoint with the canonical eval path. Do not add `--skip-upload` unless the user explicitly requests that deviation; standard runs save automatically for the private Evaluations tab and `prime eval view`:
 ```bash
 prime env install <env>
 prime eval run <env> -m openai/gpt-4.1-mini -n 5

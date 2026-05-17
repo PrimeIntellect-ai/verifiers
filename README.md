@@ -225,7 +225,7 @@ Evaluations use [Prime Inference](https://docs.primeintellect.ai/inference/overv
 
 View local evaluation results in the terminal UI:
 ```bash
-prime eval tui
+prime eval view
 ```
 
 To publish the environment to the [Environments Hub](https://app.primeintellect.ai/dashboard/environments?ex_sort=most_stars), do:
