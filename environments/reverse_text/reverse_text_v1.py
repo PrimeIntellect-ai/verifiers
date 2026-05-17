@@ -26,65 +26,70 @@ async def lcs_reward_func(task, state, extract_reversed_text) -> float:
     return SequenceMatcher(None, response, answer).ratio()
 
 
-def build_source(
+def extract_reversed_text() -> TagExtractor:
+    return TagExtractor("reversed_text")
+
+
+def source(
     dataset_name: str = "PrimeIntellect/Reverse-Text-RL",
     dataset_split: str = "train",
 ):
-    def source():
-        def map_row(row):
-            return {
-                "question": row["prompt"],
-                "answer": row["prompt"][::-1],
-                "info": {},
-            }
+    def map_row(row):
+        return {
+            "question": row["prompt"],
+            "answer": row["prompt"][::-1],
+            "info": {},
+        }
 
-        dataset = load_dataset(dataset_name, split=dataset_split).map(map_row)
-        dataset = dataset.remove_columns(["prompt"])
-        for index, row in enumerate(dataset):
-            yield {
-                "example_id": index,
-                "prompt": [{"role": "user", "content": row["question"]}],
-                "question": row["question"],
-                "answer": row["answer"],
-                "info": row.get("info") or {},
-            }
+    dataset = load_dataset(dataset_name, split=dataset_split).map(map_row)
+    dataset = dataset.remove_columns(["prompt"])
+    for index, row in enumerate(dataset):
+        yield {
+            "example_id": index,
+            "prompt": [{"role": "user", "content": row["question"]}],
+            "question": row["question"],
+            "answer": row["answer"],
+            "info": row.get("info") or {},
+        }
 
-    return source
+
+class ReverseTextTasksetConfig(vf.TasksetConfig):
+    source: str = f"{__name__}:source"
+    system_prompt: str | None = (
+        "Reverse the text character-by-character. Put your answer in "
+        "<reversed_text> tags."
+    )
+    rewards: list[vf.CallableConfig] = [
+        vf.CallableConfig(fn=f"{__name__}:lcs_reward_func")
+    ]
+    objects: dict[str, str] = {
+        "extract_reversed_text": f"{__name__}:extract_reversed_text"
+    }
+    bindings: dict[str, str] = {
+        "lcs_reward_func.extract_reversed_text": "objects.extract_reversed_text"
+    }
+    dataset_name: str = "PrimeIntellect/Reverse-Text-RL"
+    dataset_split: str = "train"
+
+
+class ReverseTextEnvConfig(vf.EnvConfig):
+    taskset: ReverseTextTasksetConfig = ReverseTextTasksetConfig()
+    harness: vf.HarnessConfig = vf.HarnessConfig()
 
 
 def load_taskset(
-    dataset_name: str = "PrimeIntellect/Reverse-Text-RL",
-    dataset_split: str = "train",
-    system_prompt: str | None = (
-        "Reverse the text character-by-character. Put your answer in "
-        "<reversed_text> tags."
-    ),
-    config=None,
-):
-    return vf.Taskset(
-        source=build_source(dataset_name, dataset_split),
-        system_prompt=system_prompt,
-        rewards=[lcs_reward_func],
-        objects={"extract_reversed_text": lambda: TagExtractor("reversed_text")},
-        bindings={
-            "lcs_reward_func.extract_reversed_text": "objects.extract_reversed_text"
-        },
-        config=config,
-    )
+    config: ReverseTextTasksetConfig = ReverseTextTasksetConfig(),
+) -> vf.Taskset:
+    return vf.Taskset(config=config)
 
 
 def load_v1_environment(
-    dataset_name: str = "PrimeIntellect/Reverse-Text-RL",
-    dataset_split: str = "train",
-    system_prompt: str | None = (
-        "Reverse the text character-by-character. Put your answer in "
-        "<reversed_text> tags."
-    ),
+    config: ReverseTextEnvConfig = ReverseTextEnvConfig(),
 ) -> vf.Env:
     return vf.Env(
-        taskset=load_taskset(
-            dataset_name=dataset_name,
-            dataset_split=dataset_split,
-            system_prompt=system_prompt,
-        )
+        taskset=load_taskset(config=config.taskset),
+        harness=vf.Harness(config=config.harness),
     )
+
+
+load_environment = load_v1_environment

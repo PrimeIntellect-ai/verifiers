@@ -5,13 +5,23 @@ from verifiers.utils.data_utils import load_example_dataset
 
 
 class DSPYRLMTasksetConfig(vf.TasksetConfig):
+    source: str = f"{__name__}:load_train_rows"
+    eval_source: str = f"{__name__}:load_eval_rows"
+    taskset_id: str = "gsm8k-dspy-rlm"
+    rewards: list[vf.CallableConfig] = [
+        vf.CallableConfig(fn=f"{__name__}:answer_reward")
+    ]
     num_train_examples: int = 50
     num_eval_examples: int = 20
 
 
+class DSPYRLMHarnessConfig(vf.HarnessConfig):
+    program: vf.ProgramConfig = vf.ProgramConfig(fn=f"{__name__}:run_dspy_rlm_program")
+
+
 class DSPYRLMEnvConfig(vf.EnvConfig):
-    taskset: DSPYRLMTasksetConfig
-    harness: vf.HarnessConfig
+    taskset: DSPYRLMTasksetConfig = DSPYRLMTasksetConfig()
+    harness: DSPYRLMHarnessConfig = DSPYRLMHarnessConfig()
 
 
 async def run_dspy_rlm_program(task: vf.Task, state: vf.State) -> vf.State:
@@ -46,6 +56,14 @@ async def run_dspy_rlm_program(task: vf.Task, state: vf.State) -> vf.State:
 def load_rows(split: str, num_examples: int):
     n = num_examples if num_examples > 0 else None
     return load_example_dataset("gsm8k", split=split, n=n)
+
+
+def load_train_rows(num_train_examples: int):
+    return load_rows("train", num_train_examples)
+
+
+def load_eval_rows(num_eval_examples: int):
+    return load_rows("test", num_eval_examples)
 
 
 def extract_dspy_answer(text: str) -> str:
@@ -94,21 +112,15 @@ def answer_reward(task: vf.Task, state: vf.State) -> float:
     return answers_match(agent_answer, str(task.get("answer", "")))
 
 
-def load_taskset(config: DSPYRLMTasksetConfig) -> vf.Taskset:
-    return vf.Taskset(
-        source=lambda: load_rows("train", config.num_train_examples),
-        eval_source=lambda: load_rows("test", config.num_eval_examples),
-        taskset_id="gsm8k-dspy-rlm",
-        rewards=[answer_reward],
-        config=config,
-    )
+def load_taskset(config: DSPYRLMTasksetConfig = DSPYRLMTasksetConfig()) -> vf.Taskset:
+    return vf.Taskset(config=config)
 
 
-def load_harness(config: vf.HarnessConfig) -> vf.Harness:
-    return vf.Harness(program=run_dspy_rlm_program, config=config)
+def load_harness(config: DSPYRLMHarnessConfig = DSPYRLMHarnessConfig()) -> vf.Harness:
+    return vf.Harness(config=config)
 
 
-def load_environment(config: DSPYRLMEnvConfig) -> vf.Env:
+def load_environment(config: DSPYRLMEnvConfig = DSPYRLMEnvConfig()) -> vf.Env:
     """Load the DSPy RLM V1 taskset/harness example environment."""
     return vf.Env(
         taskset=load_taskset(config=config.taskset),

@@ -181,51 +181,49 @@ async def read_section(section_id: str, wiki) -> str:
     return "\n".join(lines[section_start : section_end or len(lines)])
 
 
-def build_source(max_turns: int = 10):
-    def source():
-        dataset = load_dataset("willcb/wiki-trivia-questions-v4", split="train")
-        for index, row in enumerate(dataset):
-            row = cast(dict, row)
-            yield {
-                **row,
-                "example_id": index,
-                "max_turns": max_turns,
-                "prompt": [{"role": "user", "content": row["question"]}],
-            }
-
-    return source
-
-
-def judge_reward_factory(
-    judge_model: str,
-    judge_base_url: str,
-    judge_api_key_var: str,
+def source(
+    max_turns: int = 10,
+    judge_model: str = "gpt-4.1-mini",
+    judge_base_url: str = "https://api.openai.com/v1",
+    judge_api_key_var: str = "OPENAI_API_KEY",
 ):
-    @vf.reward(weight=1.0)
-    async def judge_reward_func(task, state) -> float:
-        completion = state.get("completion") or []
-        messages = vf.get_messages(completion, role="assistant")
-        response = str(messages[-1].content or "") if messages else ""
-        prompt = JUDGE_PROMPT.format(
-            question=task["question"],
-            answer=task["answer"],
-            response=response,
-        )
-        judge_client = AsyncOpenAI(
-            base_url=judge_base_url,
-            api_key=os.getenv(judge_api_key_var, ""),
-        )
-        try:
-            result = await judge_client.chat.completions.create(
-                model=judge_model,
-                messages=[{"role": "user", "content": prompt}],
-            )
-        finally:
-            await judge_client.close()
-        text = result.choices[0].message.content or ""
-        return 1.0 if "yes" in text.lower() else 0.0
+    dataset = load_dataset("willcb/wiki-trivia-questions-v4", split="train")
+    for index, row in enumerate(dataset):
+        row = cast(dict, row)
+        yield {
+            **row,
+            "example_id": index,
+            "max_turns": max_turns,
+            "judge_model": judge_model,
+            "judge_base_url": judge_base_url,
+            "judge_api_key_var": judge_api_key_var,
+            "prompt": [{"role": "user", "content": row["question"]}],
+        }
 
-    return judge_reward_func
+
+@vf.reward(weight=1.0)
+async def judge_reward_func(task, state) -> float:
+    completion = state.get("completion") or []
+    messages = vf.get_messages(completion, role="assistant")
+    response = str(messages[-1].content or "") if messages else ""
+    prompt = JUDGE_PROMPT.format(
+        question=task["question"],
+        answer=task["answer"],
+        response=response,
+    )
+    judge_client = AsyncOpenAI(
+        base_url=str(task.get("judge_base_url") or "https://api.openai.com/v1"),
+        api_key=os.getenv(str(task.get("judge_api_key_var") or "OPENAI_API_KEY"), ""),
+    )
+    try:
+        result = await judge_client.chat.completions.create(
+            model=str(task.get("judge_model") or "gpt-4.1-mini"),
+            messages=[{"role": "user", "content": prompt}],
+        )
+    finally:
+        await judge_client.close()
+    text = result.choices[0].message.content or ""
+    return 1.0 if "yes" in text.lower() else 0.0
 
 
 def load_toolset(
@@ -259,66 +257,47 @@ def load_toolset(
     )
 
 
+class WikiSearchTasksetConfig(vf.TasksetConfig):
+    source: str = f"{__name__}:source"
+    system_prompt: str = SYSTEM_PROMPT
+    rewards: list[vf.CallableConfig] = [
+        vf.CallableConfig(fn=f"{__name__}:judge_reward_func")
+    ]
+    toolsets: dict[str, dict[str, str]] = {
+        "wiki": {
+            "fn": f"{__name__}:load_toolset",
+            "corpus_dataset": "willcb/rare-wiki-pages",
+            "corpus_split": "train",
+            "chroma_db_dir": CHROMA_DB_DIR,
+            "embed_model": "text-embedding-3-small",
+            "embed_base_url": "https://api.openai.com/v1",
+            "embed_api_key_var": "OPENAI_API_KEY",
+        }
+    }
+    max_turns: int = 10
+    judge_model: str = "gpt-4.1-mini"
+    judge_base_url: str = "https://api.openai.com/v1"
+    judge_api_key_var: str = "OPENAI_API_KEY"
+
+
+class WikiSearchEnvConfig(vf.EnvConfig):
+    taskset: WikiSearchTasksetConfig = WikiSearchTasksetConfig()
+    harness: vf.HarnessConfig = vf.HarnessConfig()
+
+
 def load_taskset(
-    max_turns: int = 10,
-    judge_model: str = "gpt-4.1-mini",
-    judge_base_url: str = "https://api.openai.com/v1",
-    judge_api_key_var: str = "OPENAI_API_KEY",
-    corpus_dataset: str = "willcb/rare-wiki-pages",
-    corpus_split: str = "train",
-    chroma_db_dir: str = CHROMA_DB_DIR,
-    embed_model: str = "text-embedding-3-small",
-    embed_base_url: str = "https://api.openai.com/v1",
-    embed_api_key_var: str = "OPENAI_API_KEY",
-    config=None,
-):
-    return vf.Taskset(
-        source=build_source(max_turns=max_turns),
-        system_prompt=SYSTEM_PROMPT,
-        rewards=[
-            judge_reward_factory(
-                judge_model=judge_model,
-                judge_base_url=judge_base_url,
-                judge_api_key_var=judge_api_key_var,
-            )
-        ],
-        toolsets=[
-            load_toolset(
-                corpus_dataset=corpus_dataset,
-                corpus_split=corpus_split,
-                chroma_db_dir=chroma_db_dir,
-                embed_model=embed_model,
-                embed_base_url=embed_base_url,
-                embed_api_key_var=embed_api_key_var,
-            )
-        ],
-        config=config,
-    )
+    config: WikiSearchTasksetConfig = WikiSearchTasksetConfig(),
+) -> vf.Taskset:
+    return vf.Taskset(config=config)
 
 
 def load_v1_environment(
-    max_turns: int = 10,
-    judge_model: str = "gpt-4.1-mini",
-    judge_base_url: str = "https://api.openai.com/v1",
-    judge_api_key_var: str = "OPENAI_API_KEY",
-    embed_model: str = "text-embedding-3-small",
-    embed_base_url: str = "https://api.openai.com/v1",
-    embed_api_key_var: str = "OPENAI_API_KEY",
-    corpus_dataset: str = "willcb/rare-wiki-pages",
-    corpus_split: str = "train",
-    chroma_db_dir: str = CHROMA_DB_DIR,
+    config: WikiSearchEnvConfig = WikiSearchEnvConfig(),
 ) -> vf.Env:
     return vf.Env(
-        taskset=load_taskset(
-            max_turns=max_turns,
-            judge_model=judge_model,
-            judge_base_url=judge_base_url,
-            judge_api_key_var=judge_api_key_var,
-            corpus_dataset=corpus_dataset,
-            corpus_split=corpus_split,
-            chroma_db_dir=chroma_db_dir,
-            embed_model=embed_model,
-            embed_base_url=embed_base_url,
-            embed_api_key_var=embed_api_key_var,
-        )
+        taskset=load_taskset(config=config.taskset),
+        harness=vf.Harness(config=config.harness),
     )
+
+
+load_environment = load_v1_environment

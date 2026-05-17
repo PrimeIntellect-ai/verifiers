@@ -101,18 +101,44 @@ def test_alphabet_sort_v1_validates_parameters():
     spec.loader.exec_module(module)
 
     with pytest.raises(ValueError, match="min_turns must be at least 1"):
-        module.load_taskset(min_turns=0)
+        module.load_taskset(config=module.AlphabetSortTasksetConfig(min_turns=0))
     with pytest.raises(
         ValueError, match="min_turns must be less than or equal to max_turns"
     ):
-        module.load_taskset(min_turns=3, max_turns=2)
+        module.load_taskset(
+            config=module.AlphabetSortTasksetConfig(min_turns=3, max_turns=2)
+        )
     with pytest.raises(ValueError, match="min_names_per_turn must be at least 1"):
-        module.load_taskset(min_names_per_turn=0)
+        module.load_taskset(
+            config=module.AlphabetSortTasksetConfig(min_names_per_turn=0)
+        )
     with pytest.raises(
         ValueError,
         match="min_names_per_turn must be less than or equal to max_names_per_turn",
     ):
-        module.load_taskset(min_names_per_turn=3, max_names_per_turn=2)
+        module.load_taskset(
+            config=module.AlphabetSortTasksetConfig(
+                min_names_per_turn=3,
+                max_names_per_turn=2,
+            )
+        )
+
+
+@pytest.mark.parametrize("env_name", ["alphabet_sort", "math_python"])
+def test_v1_wrapper_rejects_unknown_kwargs(env_name: str):
+    module_path = Path("environments") / env_name / f"{env_name}.py"
+    spec = importlib.util.spec_from_file_location(
+        f"{env_name}_wrapper_test", module_path
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+
+    with pytest.raises(
+        TypeError, match="Unsupported v1 load_environment kwargs: extra"
+    ):
+        module.load_environment(v1=True, extra=True)
 
 
 @pytest.mark.slow

@@ -7,13 +7,25 @@ ANSWER_RE = re.compile(r"^\s*ANSWER\s*:?\s*(.+?)\s*$", re.IGNORECASE)
 
 
 class OpenAIAgentsTasksetConfig(vf.TasksetConfig):
+    source: str = f"{__name__}:load_train_rows"
+    eval_source: str = f"{__name__}:load_eval_rows"
+    taskset_id: str = "gsm8k-openai-agents"
+    rewards: list[vf.CallableConfig] = [
+        vf.CallableConfig(fn=f"{__name__}:answer_reward")
+    ]
     num_train_examples: int = 50
     num_eval_examples: int = 20
 
 
+class OpenAIAgentsHarnessConfig(vf.HarnessConfig):
+    program: vf.ProgramConfig = vf.ProgramConfig(
+        fn=f"{__name__}:run_openai_agents_program"
+    )
+
+
 class OpenAIAgentsEnvConfig(vf.EnvConfig):
-    taskset: OpenAIAgentsTasksetConfig
-    harness: vf.HarnessConfig
+    taskset: OpenAIAgentsTasksetConfig = OpenAIAgentsTasksetConfig()
+    harness: OpenAIAgentsHarnessConfig = OpenAIAgentsHarnessConfig()
 
 
 def calculate(expression: str) -> str:
@@ -77,6 +89,14 @@ def load_rows(split: str, num_examples: int):
     return load_example_dataset("gsm8k", split=split, n=n)
 
 
+def load_train_rows(num_train_examples: int):
+    return load_rows("train", num_train_examples)
+
+
+def load_eval_rows(num_eval_examples: int):
+    return load_rows("test", num_eval_examples)
+
+
 def extract_answer(text: str) -> str:
     for line in reversed(text.splitlines()):
         match = ANSWER_RE.match(line)
@@ -113,21 +133,21 @@ def answer_reward(task: vf.Task, state: vf.State) -> float:
     return answers_match(agent_answer, str(task.get("answer", "")))
 
 
-def load_taskset(config: OpenAIAgentsTasksetConfig) -> vf.Taskset:
-    return vf.Taskset(
-        source=lambda: load_rows("train", config.num_train_examples),
-        eval_source=lambda: load_rows("test", config.num_eval_examples),
-        taskset_id="gsm8k-openai-agents",
-        rewards=[answer_reward],
-        config=config,
-    )
+def load_taskset(
+    config: OpenAIAgentsTasksetConfig = OpenAIAgentsTasksetConfig(),
+) -> vf.Taskset:
+    return vf.Taskset(config=config)
 
 
-def load_harness(config: vf.HarnessConfig) -> vf.Harness:
-    return vf.Harness(program=run_openai_agents_program, config=config)
+def load_harness(
+    config: OpenAIAgentsHarnessConfig = OpenAIAgentsHarnessConfig(),
+) -> vf.Harness:
+    return vf.Harness(config=config)
 
 
-def load_environment(config: OpenAIAgentsEnvConfig) -> vf.Env:
+def load_environment(
+    config: OpenAIAgentsEnvConfig = OpenAIAgentsEnvConfig(),
+) -> vf.Env:
     """Load the OpenAI Agents SDK V1 taskset/harness example environment."""
     return vf.Env(
         taskset=load_taskset(config=config.taskset),

@@ -17,6 +17,27 @@ PROGRAM_SANDBOX = {
 }
 
 
+class DSPyFlightsTasksetConfig(vf.TasksetConfig):
+    source: str = f"{__name__}:source"
+    rewards: list[vf.CallableConfig] = [
+        vf.CallableConfig(fn=f"{__name__}:expected_database_change")
+    ]
+    metrics: list[vf.CallableConfig] = [vf.CallableConfig(fn=f"{__name__}:dspy_calls")]
+
+
+class DSPyFlightsHarnessConfig(vf.HarnessConfig):
+    program: vf.ProgramConfig = vf.ProgramConfig(
+        fn=f"{__name__}:run_dspy_flight_program",
+        sandbox=True,
+    )
+    sandbox: vf.SandboxConfig = vf.SandboxConfig(**PROGRAM_SANDBOX)
+
+
+class DSPyFlightsEnvConfig(vf.EnvConfig):
+    taskset: DSPyFlightsTasksetConfig = DSPyFlightsTasksetConfig()
+    harness: DSPyFlightsHarnessConfig = DSPyFlightsHarnessConfig()
+
+
 class Date(BaseModel):
     # Somehow LLM is bad at specifying `datetime.datetime`, so
     # we define a custom class to represent the date.
@@ -414,24 +435,15 @@ def stringify_nested(value: object) -> object:
     return str(value)
 
 
-def load_taskset(config: vf.TasksetConfig):
-    return vf.Taskset(
-        source=source,
-        rewards=[expected_database_change],
-        metrics=[dspy_calls],
-        config=config,
-    )
+def load_taskset(config: DSPyFlightsTasksetConfig = DSPyFlightsTasksetConfig()):
+    return vf.Taskset(config=config)
 
 
-def load_harness(config: vf.HarnessConfig):
-    return vf.Harness(
-        program={"fn": "dspy_flights:run_dspy_flight_program", "sandbox": True},
-        sandbox=PROGRAM_SANDBOX,
-        config=config,
-    )
+def load_harness(config: DSPyFlightsHarnessConfig = DSPyFlightsHarnessConfig()):
+    return vf.Harness(config=config)
 
 
-def load_environment(config: vf.EnvConfig):
+def load_environment(config: DSPyFlightsEnvConfig = DSPyFlightsEnvConfig()):
     return vf.Env(
         taskset=load_taskset(config=config.taskset),
         harness=load_harness(config=config.harness),

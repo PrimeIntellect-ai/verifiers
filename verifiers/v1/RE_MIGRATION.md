@@ -52,22 +52,33 @@ Every migrated package should expose:
 import verifiers as vf
 
 
-def load_taskset(config: vf.TasksetConfig) -> vf.Taskset:
-    return vf.Taskset(
-        source=load_rows,
-        system_prompt=SYSTEM_PROMPT,
-        rewards=[reward_fn],
-        metrics=[metric_fn],
-        toolsets=[load_toolset()],
-        config=config,
-    )
+class MyTasksetConfig(vf.TasksetConfig):
+    split: str = "train"
+    system_prompt: str = SYSTEM_PROMPT
+    rewards: list[vf.CallableConfig] = [vf.CallableConfig(fn="my_env:reward_fn")]
+    metrics: list[vf.CallableConfig] = [vf.CallableConfig(fn="my_env:metric_fn")]
+    toolsets: list[dict[str, str]] = [{"fn": "my_env:load_toolset"}]
+
+
+class MyTaskset(vf.Taskset[MyTasksetConfig]):
+    def rows(self) -> list[dict[str, object]]:
+        return load_rows(split=self.config.split)
+
+
+class MyEnvConfig(vf.EnvConfig):
+    taskset: MyTasksetConfig = MyTasksetConfig()
+    harness: vf.HarnessConfig = vf.HarnessConfig()
+
+
+def load_taskset(config: MyTasksetConfig = MyTasksetConfig()) -> vf.Taskset:
+    return MyTaskset(config=config)
 
 
 def load_harness(config: vf.HarnessConfig) -> vf.Harness:
     return vf.Harness(config=config)
 
 
-def load_environment(config: vf.EnvConfig) -> vf.Env:
+def load_environment(config: MyEnvConfig = MyEnvConfig()) -> vf.Env:
     return vf.Env(
         taskset=load_taskset(config=config.taskset),
         harness=load_harness(config=config.harness),
@@ -100,7 +111,16 @@ live with the environment instead of the root `verifiers` package.
 Put system instructions in `system_prompt`, not in `prompt`:
 
 ```python
-vf.Taskset(source=load_rows, system_prompt="Answer concisely.")
+class PromptTasksetConfig(vf.TasksetConfig):
+    system_prompt: str = "Answer concisely."
+
+
+class PromptTaskset(vf.Taskset[PromptTasksetConfig]):
+    def rows(self) -> list[dict[str, object]]:
+        return [{"prompt": [{"role": "user", "content": "Question?"}]}]
+
+
+taskset = PromptTaskset(config=PromptTasksetConfig())
 ```
 
 or per task:
@@ -133,7 +153,7 @@ Use this for:
 
 Migration:
 
-1. Convert the old dataset builder into `source` / `eval_source`.
+1. Convert the old dataset builder into `Taskset.rows()`.
 2. Convert each reward or metric into `@vf.reward` / `@vf.metric`.
 3. Return `vf.Env(taskset=taskset)`.
 
@@ -143,16 +163,6 @@ Example:
 import verifiers as vf
 
 
-def source():
-    for row in load_dataset(...):
-        yield {
-            "prompt": [{"role": "user", "content": row["question"]}],
-            "answer": row["answer"],
-            "info": {"id": row["id"]},
-            "max_turns": 1,
-        }
-
-
 @vf.reward(weight=1.0)
 async def exact(task, state) -> float:
     messages = vf.get_messages(state.get("completion") or [], role="assistant")
@@ -160,11 +170,35 @@ async def exact(task, state) -> float:
     return float(str(task["answer"]).strip() in response)
 
 
-def load_taskset(config: vf.TasksetConfig):
-    return vf.Taskset(source=source, rewards=[exact], config=config)
+class QATasksetConfig(vf.TasksetConfig):
+    split: str = "train"
+    rewards: list[vf.CallableConfig] = [
+        vf.CallableConfig(fn=f"{__name__}:exact", weight=1.0)
+    ]
 
 
-def load_environment(config: vf.EnvConfig):
+class QATaskset(vf.Taskset[QATasksetConfig]):
+    def rows(self) -> list[dict[str, object]]:
+        return [
+            {
+                "prompt": [{"role": "user", "content": row["question"]}],
+                "answer": row["answer"],
+                "info": {"id": row["id"]},
+                "max_turns": 1,
+            }
+            for row in load_dataset(..., split=self.config.split)
+        ]
+
+
+class QAEnvConfig(vf.EnvConfig):
+    taskset: QATasksetConfig = QATasksetConfig()
+
+
+def load_taskset(config: QATasksetConfig = QATasksetConfig()):
+    return QATaskset(config=config)
+
+
+def load_environment(config: QAEnvConfig = QAEnvConfig()):
     return vf.Env(taskset=load_taskset(config=config.taskset))
 ```
 
@@ -172,7 +206,7 @@ Gotchas:
 
 - Reference answers stay on `task`; do not expect `state["answer"]` to be the
   gold answer.
-- Shared extraction or judging dependencies belong on `Taskset(objects=...)` and
+- Shared extraction or judging dependencies belong on `TasksetConfig.objects` and
   enter reward signatures through `bindings`:
 
 ```python
@@ -186,12 +220,18 @@ async def exact(task, state, extract_answer) -> float:
     return float(extract_answer(state.get("completion") or []) == task["answer"])
 
 
-taskset = vf.Taskset(
-    source=source,
-    rewards=[exact],
-    objects={"extract_answer": AnswerExtractor},
-    bindings={"exact.extract_answer": "objects.extract_answer"},
-)
+class ExtractTasksetConfig(vf.TasksetConfig):
+    rewards: list[vf.CallableConfig] = [vf.CallableConfig(fn="my_env:exact")]
+    objects: dict[str, str] = {"extract_answer": "my_env:AnswerExtractor"}
+    bindings: dict[str, str] = {"exact.extract_answer": "objects.extract_answer"}
+
+
+class ExtractTaskset(vf.Taskset[ExtractTasksetConfig]):
+    def rows(self) -> list[dict[str, object]]:
+        return [{"prompt": [{"role": "user", "content": "Question?"}], "answer": "A"}]
+
+
+taskset = ExtractTaskset(config=ExtractTasksetConfig())
 ```
 
 - Judge metrics are regular reward/metric functions. Instantiate judge clients
@@ -244,13 +284,25 @@ def load_toolset(config=None):
     )
 
 
-def load_taskset(config: vf.TasksetConfig):
-    return vf.Taskset(
-        source=source,
-        toolsets=[load_toolset()],
-        rewards=[judge_reward],
-        config=config,
-    )
+class SearchTasksetConfig(vf.TasksetConfig):
+    toolsets: list[dict[str, str]] = [{"fn": f"{__name__}:load_toolset"}]
+    rewards: list[vf.CallableConfig] = [
+        vf.CallableConfig(fn=f"{__name__}:judge_reward")
+    ]
+
+
+class SearchTaskset(vf.Taskset[SearchTasksetConfig]):
+    def rows(self) -> list[dict[str, object]]:
+        return [
+            {
+                "prompt": [{"role": "user", "content": "Search the web."}],
+                "answer": "example",
+            }
+        ]
+
+
+def load_taskset(config: SearchTasksetConfig = SearchTasksetConfig()):
+    return SearchTaskset(config=config)
 ```
 
 Gotchas:
@@ -319,13 +371,16 @@ def task_toolset(task):
     )
 
 
-def source():
-    yield {
-        "prompt": [{"role": "user", "content": "Call the right function."}],
-        "tool_schemas": [...],
-        "toolsets": {"dynamic": {"fn": "my_env:task_toolset"}},
-        "max_turns": 1,
-    }
+class ToolTaskset(vf.Taskset):
+    def rows(self) -> list[dict[str, object]]:
+        return [
+            {
+                "prompt": [{"role": "user", "content": "Call the right function."}],
+                "tool_schemas": [...],
+                "toolsets": {"dynamic": {"fn": "my_env:task_toolset"}},
+                "max_turns": 1,
+            }
+        ]
 ```
 
 Gotchas:
@@ -395,7 +450,7 @@ Use this for:
 Migration:
 
 1. Make the user simulator a callable returning messages.
-2. Pass it as `Taskset(user=...)` or `Harness(user=...)`.
+2. Pass it as `TasksetConfig.user` or `HarnessConfig.user`.
 3. Keep task-specific simulator state in `state`.
 4. Put static simulator clients behind `User(objects=...)`; use a callable
    binding when the hidden argument depends on task or state.
@@ -416,16 +471,22 @@ def load_session():
     return SessionFactory(...)
 
 
-taskset = vf.Taskset(
-    source=source,
-    user={
-        "fn": user,
-        "scope": "rollout",
-        "objects": {"session": load_session},
-        "bindings": {"session": "objects.session"},
-    },
-    rewards=[reward],
-)
+class SessionTasksetConfig(vf.TasksetConfig):
+    user: vf.UserConfig = vf.UserConfig(
+        fn="my_env:user",
+        scope="rollout",
+        objects={"session": "my_env:load_session"},
+        bindings={"session": "objects.session"},
+    )
+    rewards: list[vf.CallableConfig] = [vf.CallableConfig(fn="my_env:reward")]
+
+
+class SessionTaskset(vf.Taskset[SessionTasksetConfig]):
+    def rows(self) -> list[dict[str, object]]:
+        return [{"prompt": [{"role": "user", "content": "Begin."}]}]
+
+
+taskset = SessionTaskset(config=SessionTasksetConfig())
 ```
 
 For task/state-dependent sessions, bind a callable source directly:
@@ -435,10 +496,19 @@ def session_for_rollout(task, state):
     return Session(task["scenario"], state["trajectory_id"])
 
 
-taskset = vf.Taskset(
-    source=source,
-    user=vf.User(user, bindings={"session": session_for_rollout}),
-)
+class BoundSessionTasksetConfig(vf.TasksetConfig):
+    user: vf.UserConfig = vf.UserConfig(
+        fn="my_env:user",
+        bindings={"session": "my_env:session_for_rollout"},
+    )
+
+
+class BoundSessionTaskset(vf.Taskset[BoundSessionTasksetConfig]):
+    def rows(self) -> list[dict[str, object]]:
+        return [{"prompt": [{"role": "user", "content": "Begin."}]}]
+
+
+taskset = BoundSessionTaskset(config=BoundSessionTasksetConfig())
 ```
 
 Gotchas:
@@ -548,8 +618,9 @@ Use this for:
 Migration:
 
 1. Use `vf.HarborTaskset` for Harbor-format task directories.
-2. Use `vf.OpenCode()`, `vf.Pi()`, `vf.MiniSWEAgent()`, `vf.Terminus2()`, or
-   `vf.RLM()` for the command harness.
+2. Use `vf.OpenCode(config=...)`, `vf.Pi(config=...)`,
+   `vf.MiniSWEAgent(config=...)`, `vf.Terminus2(config=...)`, or
+   `vf.RLM(config=...)` for the command harness.
 3. Put task-owned uploads and sandbox overrides on the taskset.
 4. Keep scoring as reward/metric functions on the taskset.
 
@@ -562,16 +633,17 @@ Example:
 
 ```python
 env = vf.Env(
-    taskset=vf.HarborTaskset(),
-    harness=vf.OpenCode(),
+    taskset=vf.HarborTaskset(config=vf.HarborTasksetConfig()),
+    harness=vf.OpenCode(config=vf.OpenCodeConfig()),
 )
 ```
 
 Gotchas:
 
-- `HarborTaskset()` loads Harbor-format task directories from the environment
-  package's reserved `tasks/` directory. `HarborTaskset(dataset="owner/name")`
-  fetches a Harbor Hub dataset.
+- `HarborTaskset(config=vf.HarborTasksetConfig())` loads Harbor-format task
+  directories from the environment package's reserved `tasks/` directory.
+  Pass `vf.HarborTasksetConfig(dataset="owner/name")` as the config to fetch a
+  Harbor Hub dataset.
 - `HarborTaskset` owns task loading, per-task sandbox overrides, `/task` uploads,
   and test scoring.
 - `OpenCode` owns OpenCode installation, config generation, MCP tool proxy
@@ -625,22 +697,24 @@ def instruction(task, state):
 
 
 harness = vf.Harness(
-    sandbox={"image": "python:3.11-slim", "scope": "group"},
-    program={
-        "sandbox": True,
-        "command": ["bash", "-lc", "solver run /task/instruction.md"],
-        "channels": "mcp",
-        "files": {"/task/instruction.md": instruction},
-        "dirs": {"/workspace/task": task_package},
-        "setup": ["pip install -e /workspace/task"],
-        "artifacts": {
-            "report": {
-                "path": "/workspace/task/report.json",
-                "format": "json",
-                "optional": True,
-            }
-        },
-    },
+    config=vf.HarnessConfig(
+        sandbox=vf.SandboxConfig(image="python:3.11-slim", scope="group"),
+        program=vf.ProgramConfig(
+            sandbox=True,
+            command=["bash", "-lc", "solver run /task/instruction.md"],
+            channels="mcp",
+            files={"/task/instruction.md": "my_env:instruction"},
+            dirs={"/workspace/task": "my_env:task_package"},
+            setup=["pip install -e /workspace/task"],
+            artifacts={
+                "report": {
+                    "path": "/workspace/task/report.json",
+                    "format": "json",
+                    "optional": True,
+                }
+            },
+        ),
+    )
 )
 ```
 

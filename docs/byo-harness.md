@@ -36,33 +36,50 @@ runtime state instead of constructing its own copy.
 import verifiers as vf
 
 
-def source():
-    yield {
-        "system_prompt": "Reverse text exactly.",
-        "prompt": [{"role": "user", "content": "Reverse abc."}],
-        "answer": "cba",
-        "max_turns": 1,
-    }
-
-
 @vf.reward(weight=1.0)
 async def contains_answer(task, state) -> float:
     return float(task["answer"] in str(state.get("completion") or ""))
 
 
-def load_taskset(config: vf.TasksetConfig):
-    return vf.Taskset(source=source, rewards=[contains_answer], config=config)
+class ReverseTasksetConfig(vf.TasksetConfig):
+    split: str = "train"
+    rewards: list[vf.CallableConfig] = [
+        vf.CallableConfig(fn="my_env:contains_answer", weight=1.0)
+    ]
 
 
-def load_environment(config: vf.EnvConfig):
+class ReverseTaskset(vf.Taskset[ReverseTasksetConfig]):
+    def rows(self) -> list[dict[str, object]]:
+        rows = [
+            {
+                "system_prompt": "Reverse text exactly.",
+                "prompt": [{"role": "user", "content": "Reverse abc."}],
+                "answer": "cba",
+                "split": "train",
+                "max_turns": 1,
+            }
+        ]
+        return [row for row in rows if row["split"] == self.config.split]
+
+
+class ReverseEnvConfig(vf.EnvConfig):
+    taskset: ReverseTasksetConfig = ReverseTasksetConfig()
+    harness: vf.HarnessConfig = vf.HarnessConfig()
+
+
+def load_taskset(config: ReverseTasksetConfig = ReverseTasksetConfig()):
+    return ReverseTaskset(config=config)
+
+
+def load_environment(config: ReverseEnvConfig = ReverseEnvConfig()):
     return vf.Env(taskset=load_taskset(config=config.taskset))
 ```
 
 ## Tasksets
 
-`Taskset(source=...)` accepts either a direct iterable of rows or a zero-argument
-loader. Direct iterables are fine for tiny examples. Real tasksets should use a
-zero-argument loader so imports and constructors stay cheap.
+Tasksets usually own row loading directly. Config should hold user-facing knobs,
+such as dataset name, split, or size limits; the taskset class should turn those
+values into rows.
 
 ```python
 from datasets import load_dataset
@@ -74,25 +91,29 @@ class GSM8KTasksetConfig(vf.TasksetConfig):
     split: str = "train"
 
 
-def load_taskset(config: GSM8KTasksetConfig):
-    dataset_name = config.dataset_name
-    split = config.split
-
-    def source():
-        dataset = load_dataset(dataset_name, "main", split=split)
-        for index, row in enumerate(dataset):
-            yield {
+class GSM8KTaskset(vf.Taskset[GSM8KTasksetConfig]):
+    def rows(self) -> list[dict[str, object]]:
+        dataset = load_dataset(
+            self.config.dataset_name,
+            "main",
+            split=self.config.split,
+        )
+        return [
+            {
                 "example_id": index,
                 "prompt": [{"role": "user", "content": row["question"]}],
                 "answer": row["answer"],
             }
+            for index, row in enumerate(dataset)
+        ]
 
-    return vf.Taskset(source=source, config=config)
+
+def load_taskset(config: GSM8KTasksetConfig = GSM8KTasksetConfig()):
+    return GSM8KTaskset(config=config)
 ```
 
-Source rows are JSON-serializable mappings. Config is resolved before source
-loading and closed over by the loader; trainers and harnesses do not pass
-runtime values into source.
+Rows are JSON-serializable mappings. The base taskset normalizes each row into a
+stable task payload for eval and training workers.
 
 Do not use a top-level string `task` field for routing. v1 tasksets serialize
 the full task payload through `info["task"]` for worker compatibility, and
@@ -125,21 +146,38 @@ async def exact(task, state, extract_answer) -> float:
     return float(response == task["answer"])
 
 
-def load_environment(config: vf.EnvConfig) -> vf.Env:
-    return vf.Env(
-        taskset=vf.Taskset(
-            source=source,
-            rewards=[exact],
-            objects={"extract_answer": AnswerExtractor},
-            bindings={"exact.extract_answer": "objects.extract_answer"},
-            config=config.taskset,
-        )
-    )
+def build_answer_extractor() -> AnswerExtractor:
+    return AnswerExtractor()
+
+
+class ExtractTasksetConfig(vf.TasksetConfig):
+    rewards: list[vf.CallableConfig] = [vf.CallableConfig(fn="my_env:exact")]
+    objects: dict[str, str] = {"extract_answer": "my_env:build_answer_extractor"}
+    bindings: dict[str, str] = {"exact.extract_answer": "objects.extract_answer"}
+
+
+class ExtractTaskset(vf.Taskset[ExtractTasksetConfig]):
+    def rows(self) -> list[dict[str, object]]:
+        return [
+            {
+                "prompt": [{"role": "user", "content": "What is 2 + 2?"}],
+                "answer": "4",
+            }
+        ]
+
+
+class ExtractEnvConfig(vf.EnvConfig):
+    taskset: ExtractTasksetConfig = ExtractTasksetConfig()
+    harness: vf.HarnessConfig = vf.HarnessConfig()
+
+
+def load_environment(config: ExtractEnvConfig = ExtractEnvConfig()) -> vf.Env:
+    return vf.Env(taskset=ExtractTaskset(config=config.taskset))
 ```
 
-`objects` values are instances or zero-argument factories. Factories are lazy
-and resolve once per taskset runtime. Bindings keep the reward signature explicit
-without moving shared dependencies into global state.
+Config `objects` values are import refs to zero-argument factories. Runtime
+mutation APIs can still accept live objects, but serialized configs should stay
+on the import-ref side of the boundary.
 
 ## Message Access
 
@@ -224,7 +262,18 @@ toolset = vf.Toolset(
     bindings={"search.index": "objects.index"},
 )
 
-taskset = vf.Taskset(source=source, toolsets=[toolset])
+class SearchTaskset(vf.Taskset):
+    def rows(self) -> list[dict[str, object]]:
+        return [
+            {
+                "prompt": [{"role": "user", "content": "Search for docs."}],
+                "answer": "example",
+            }
+        ]
+
+
+taskset = SearchTaskset(config=vf.TasksetConfig())
+taskset.add_toolset(toolset)
 ```
 
 Bindings inject hidden arguments that the model does not see. Common binding
@@ -256,14 +305,27 @@ back to the taskset, then let the harness adapt the resolved callables.
 MCP servers are also tools:
 
 ```python
-taskset = vf.Taskset(
-    source=source,
-    toolsets=[
-        vf.Toolset(
-            tools=[vf.MCPTool(command="uvx", args=["mcp-server-fetch"])]
-        )
-    ],
-)
+class FetchTasksetConfig(vf.TasksetConfig):
+    toolsets: list[dict[str, object]] = [
+        {
+            "tools": [
+                {"command": "uvx", "args": ["mcp-server-fetch"]},
+            ]
+        }
+    ]
+
+
+class FetchTaskset(vf.Taskset[FetchTasksetConfig]):
+    def rows(self) -> list[dict[str, object]]:
+        return [
+            {
+                "prompt": [{"role": "user", "content": "Fetch example.com."}],
+                "answer": "example",
+            }
+        ]
+
+
+taskset = FetchTaskset(config=FetchTasksetConfig())
 ```
 
 ## Harnesses
@@ -272,11 +334,12 @@ Create a harness when rollout behavior is no longer just "call the model with
 the resolved taskset tools."
 
 ```python
-def load_harness(config: vf.HarnessConfig):
-    return vf.Harness(
-        program={"fn": "my_env.program:run"},
-        config=config,
-    )
+class AgentHarnessConfig(vf.HarnessConfig):
+    program: vf.ProgramConfig = vf.ProgramConfig(fn="my_env.program:run")
+
+
+def load_harness(config: AgentHarnessConfig = AgentHarnessConfig()):
+    return vf.Harness(config=config)
 
 
 def load_environment(config: vf.EnvConfig):
@@ -327,9 +390,34 @@ async def exact(task, state) -> float:
     return float(state.get("answer") == task.get("answer"))
 
 
-def load_environment():
-    taskset = vf.Taskset(source=load_rows, rewards=[exact])
-    return vf.Env(taskset=taskset, harness=vf.Harness(program=replay_solution))
+class ReplayTasksetConfig(vf.TasksetConfig):
+    rewards: list[vf.CallableConfig] = [vf.CallableConfig(fn="my_env:exact")]
+
+
+class ReplayTaskset(vf.Taskset[ReplayTasksetConfig]):
+    def rows(self) -> list[dict[str, object]]:
+        return [
+            {
+                "prompt": [{"role": "user", "content": "Say the answer."}],
+                "answer": "done",
+            }
+        ]
+
+
+class ReplayHarnessConfig(vf.HarnessConfig):
+    program: vf.ProgramConfig = vf.ProgramConfig(fn="my_env:replay_solution")
+
+
+class ReplayEnvConfig(vf.EnvConfig):
+    taskset: ReplayTasksetConfig = ReplayTasksetConfig()
+    harness: ReplayHarnessConfig = ReplayHarnessConfig()
+
+
+def load_environment(config: ReplayEnvConfig = ReplayEnvConfig()):
+    return vf.Env(
+        taskset=ReplayTaskset(config=config.taskset),
+        harness=vf.Harness(config=config.harness),
+    )
 ```
 
 Use this for cached completions, deterministic solvers, and gold-solution
@@ -343,17 +431,23 @@ re-exported through `verifiers.v1`. `OpenCode`, `Pi`, `MiniSWEAgent`,
 command-line agents:
 
 ```python
-def load_environment():
+class HarborEnvConfig(vf.EnvConfig):
+    taskset: vf.HarborTasksetConfig = vf.HarborTasksetConfig()
+    harness: vf.OpenCodeConfig = vf.OpenCodeConfig()
+
+
+def load_environment(config: HarborEnvConfig = HarborEnvConfig()):
     return vf.Env(
-        taskset=vf.HarborTaskset(),
-        harness=vf.OpenCode(),
+        taskset=vf.HarborTaskset(config=config.taskset),
+        harness=vf.OpenCode(config=config.harness),
     )
 ```
 
-`HarborTaskset()` loads Harbor-format task directories from the environment
-package's reserved `tasks/` directory. `HarborTaskset(dataset="owner/name")`
-fetches a Harbor Hub dataset. The taskset owns Harbor task loading, sandbox
-overrides, task uploads, and test scoring. CLI harnesses own CLI
+`HarborTaskset(config=vf.HarborTasksetConfig())` loads Harbor-format task
+directories from the environment package's reserved `tasks/` directory. Set
+`dataset = "owner/name"` on the config to fetch a Harbor Hub dataset. The
+taskset owns Harbor task loading, sandbox overrides, task uploads, and test
+scoring. CLI harnesses own CLI
 installation/config/run behavior and work with any taskset that supplies a
 prompt.
 Tasksets can expose package-owned upload directories with `get_upload_dirs()`.
@@ -534,8 +628,8 @@ mcp = { fn = "my_env.cli:write_cli_config" }
 "write_cli_config.endpoint_config" = { fn = "my_env.cli:endpoint_config" }
 ```
 
-The implementation details for TOML refs, toolset tables, source loaders,
-program bindings, and custom config subclasses are in
+The implementation details for TOML refs, toolset tables, row loading, program
+bindings, and custom config subclasses are in
 `verifiers/v1/README.md`.
 
 ## When To Use Which Path

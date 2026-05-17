@@ -2,10 +2,8 @@ import json
 import shlex
 from pathlib import PurePosixPath
 
-from typing_extensions import Unpack
-
-from .command import HarnessKwargs, command_program, command_sandbox
-from ...config import SandboxConfig
+from .command import base_harness_config, command_program, command_sandbox
+from .configs import PiConfig
 from ...harness import Harness
 from ...state import State
 from ...utils.mcp_proxy_utils import proxy_command
@@ -13,7 +11,7 @@ from ...utils.prompt_utils import (
     state_system_prompt_text,
     task_text as task_instruction_text,
 )
-from ...types import ConfigMap, ProgramMap, ProgramOptionMap, ProgramValue, PromptInput
+from ...types import ConfigMap, ProgramCommand, ProgramOptionMap, ProgramValue
 
 DEFAULT_PI_PACKAGE = "@mariozechner/pi-coding-agent"
 DEFAULT_PI_WORKDIR = "/app"
@@ -23,68 +21,56 @@ DEFAULT_LOG_PATH = "/logs/agent/pi.txt"
 DEFAULT_SYSTEM_PROMPT = "Complete the user's task using the available tools."
 
 
-class Pi(Harness):
-    def __init__(
-        self,
-        *,
-        agent_workdir: str = DEFAULT_PI_WORKDIR,
-        instruction_path: str = DEFAULT_INSTRUCTION_PATH,
-        system_prompt_path: str = DEFAULT_SYSTEM_PROMPT_PATH,
-        log_path: str = DEFAULT_LOG_PATH,
-        system_prompt: PromptInput | None = DEFAULT_SYSTEM_PROMPT,
-        package: str = DEFAULT_PI_PACKAGE,
-        install_mcp_adapter: bool = True,
-        sandbox: bool | ConfigMap | SandboxConfig = True,
-        program: ProgramMap | None = None,
-        max_turns: int | None = 4,
-        **kwargs: Unpack[HarnessKwargs],
-    ):
+class Pi(Harness[PiConfig]):
+    def __init__(self, config: PiConfig = PiConfig()):
+        config = PiConfig.from_config(config)
+        super().__init__(config=base_harness_config(config))
+        self.config = config
+        sandbox_config = config.sandbox if config.sandbox is not None else True
         files: dict[str, ProgramValue] = {
-            instruction_path: task_instruction_text,
+            config.instruction_path: task_instruction_text,
         }
-        if system_prompt is not None:
-            files[system_prompt_path] = state_system_prompt_text
+        if config.system_prompt is not None:
+            files[config.system_prompt_path] = state_system_prompt_text
         artifacts: ProgramOptionMap = {
             "pi_log": {
-                "path": log_path,
+                "path": config.log_path,
                 "format": "text",
                 "optional": True,
             }
         }
-        command = [
+        command: ProgramCommand = [
             "bash",
             "-lc",
             build_pi_run_script(
-                agent_workdir=agent_workdir,
-                instruction_path=instruction_path,
-                system_prompt_path=system_prompt_path
-                if system_prompt is not None
+                agent_workdir=config.agent_workdir,
+                instruction_path=config.instruction_path,
+                system_prompt_path=config.system_prompt_path
+                if config.system_prompt is not None
                 else None,
-                log_path=log_path,
+                log_path=config.log_path,
             ),
         ]
-        super().__init__(
+        self._configure_runtime(
             program=command_program(
                 command=command,
-                sandbox=sandbox,
+                sandbox=sandbox_config,
                 files=files,
-                setup=build_pi_install_script(package=package),
+                setup=build_pi_install_script(package=config.package),
                 channels={
                     "mcp": build_pi_mcp_setup(
-                        agent_workdir=agent_workdir,
-                        install_mcp_adapter=install_mcp_adapter,
+                        agent_workdir=config.agent_workdir,
+                        install_mcp_adapter=config.install_mcp_adapter,
                     )
                 }
-                if install_mcp_adapter
+                if config.install_mcp_adapter
                 else None,
                 bindings={"setup_pi.endpoint_config": pi_endpoint_config},
                 artifacts=artifacts,
-                program=program,
+                program=config.program,
             ),
-            sandbox=command_sandbox(sandbox),
-            system_prompt=system_prompt,
-            max_turns=max_turns,
-            **kwargs,
+            sandbox=command_sandbox(sandbox_config),
+            system_prompt=config.system_prompt,
         )
 
 

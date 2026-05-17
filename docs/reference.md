@@ -636,23 +636,8 @@ serialization boundary.
 #### Taskset
 
 ```python
-class Taskset:
-    def __init__(
-        source=None,
-        eval_source=None,
-        taskset_id: str | None = None,
-        system_prompt=None,
-        user=None,
-        toolsets=(),
-        stops=(),
-        setups=(),
-        updates=(),
-        metrics=(),
-        rewards=(),
-        advantages=(),
-        cleanups=(),
-        config: TasksetConfig | Mapping[str, object] | None = None,
-    ): ...
+class Taskset(Generic[TasksetConfigT]):
+    def __init__(config: TasksetConfig = TasksetConfig()): ...
 
     def rows() -> list[dict[str, Any]]: ...
     def eval_rows() -> list[dict[str, Any]]: ...
@@ -663,33 +648,15 @@ class Taskset:
     def get_eval_dataset() -> Dataset: ...
 ```
 
-Packages task rows and task-owned behavior. `source` and `eval_source` may be
-iterables or zero-argument loaders. Loaders should close over resolved config
-instead of accepting runtime kwargs.
+Packages task rows and task-owned behavior. Subclasses usually bind a typed
+config with `Taskset[MyTasksetConfig]`, override `rows()`, and read typed values
+from `self.config`.
 
 #### Harness
 
 ```python
-class Harness:
-    def __init__(
-        program=None,
-        system_prompt=None,
-        user=None,
-        sandbox=None,
-        client=None,
-        model: str | None = None,
-        sampling_args: SamplingArgs | None = None,
-        max_turns: int | None = None,
-        toolsets=None,
-        stops=None,
-        setups=None,
-        updates=None,
-        metrics=None,
-        rewards=None,
-        advantages=None,
-        cleanups=None,
-        config: HarnessConfig | Mapping[str, object] | None = None,
-    ): ...
+class Harness(Generic[HarnessConfigT]):
+    def __init__(config: HarnessConfig = HarnessConfig()): ...
 
     async def run(task: Task | Mapping[str, Any], state: State | None = None) -> State: ...
     async def score_group(tasks: list[Task], states: list[State]) -> list[State]: ...
@@ -1035,12 +1002,11 @@ Environment-specific fields belong on the taskset or harness config that owns
 them; `EnvConfig` subclasses only bind concrete child config types.
 `taskset` must be typed as a `TasksetConfig` subclass, and `harness` must be
 typed as a `HarnessConfig` subclass.
-Annotation-only `Config` fields on `Config` subclasses default to their config
-class, so nested config objects do not need `Field(default_factory=...)`.
+Nested config defaults should be explicit config objects, e.g.
+`taskset: MyTasksetConfig = MyTasksetConfig()`.
 
-`Config` subclasses accept a positional source config plus direct keyword
-overrides. The source object is positional-only so subclasses can define a real
-field named `config`.
+`Config` subclasses are strict Pydantic config models. Validate raw mappings
+with `MyConfig.model_validate(...)` or use the typed object directly.
 
 ### ClientConfig
 

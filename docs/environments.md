@@ -693,11 +693,39 @@ The environment file exports a taskset-first v1 loader:
 import verifiers as vf
 
 
-def load_taskset(config: vf.TasksetConfig) -> vf.Taskset:
-    return vf.Taskset(source=source, rewards=[reward_fn], config=config)
+@vf.reward(weight=1.0)
+async def reward_fn(task, state) -> float:
+    return float(task["answer"] in str(state.get("completion") or ""))
 
 
-def load_environment(config: vf.EnvConfig) -> vf.Env:
+class MyTasksetConfig(vf.TasksetConfig):
+    split: str = "train"
+    rewards: list[vf.CallableConfig] = [
+        vf.CallableConfig(fn=f"{__name__}:reward_fn")
+    ]
+
+
+class MyTaskset(vf.Taskset[MyTasksetConfig]):
+    def rows(self) -> list[dict[str, object]]:
+        rows = [
+            {
+                "prompt": [{"role": "user", "content": "Reverse abc."}],
+                "answer": "cba",
+                "split": "train",
+            }
+        ]
+        return [row for row in rows if row["split"] == self.config.split]
+
+
+class MyEnvConfig(vf.EnvConfig):
+    taskset: MyTasksetConfig = MyTasksetConfig()
+
+
+def load_taskset(config: MyTasksetConfig = MyTasksetConfig()) -> vf.Taskset:
+    return MyTaskset(config=config)
+
+
+def load_environment(config: MyEnvConfig = MyEnvConfig()) -> vf.Env:
     return vf.Env(taskset=load_taskset(config=config.taskset))
 ```
 

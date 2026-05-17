@@ -57,7 +57,12 @@ def load_env():
 
 
 def test_mini_swe_agent_builds_sandbox_program():
-    harness = vf.MiniSWEAgent(system_prompt="Use tests.", agent_workdir="/app")
+    harness = vf.MiniSWEAgent(
+        config=vf.MiniSWEAgentConfig(
+            system_prompt="Use tests.",
+            agent_workdir="/app",
+        )
+    )
     program = cast(dict[str, Any], harness.program)
 
     assert isinstance(harness, vf.Harness)

@@ -7,8 +7,6 @@ from importlib.abc import Traversable
 from pathlib import Path
 from typing import cast
 
-from typing_extensions import Unpack
-
 from verifiers.envs.experimental.utils.git_checkout_cache import (
     resolve_git_checkout,
     validate_git_checkout,
@@ -20,7 +18,7 @@ from ...state import State
 from ...task import Task
 from ...taskset import Taskset
 from ...utils.prompt_utils import task_text
-from .command import HarnessKwargs, command_program
+from .command import base_harness_config, command_program
 from .configs import (
     RLM_DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH,
     RLM_DEFAULT_EXEC_TIMEOUT,
@@ -31,7 +29,7 @@ from .configs import (
     RLM_DEFAULT_INSTRUCTION_PATH,
     RLMConfig,
 )
-from ...types import ConfigMap, ProgramMap, ProgramOptionMap, ProgramValue
+from ...types import ConfigMap, ProgramCommand, ProgramValue
 
 DEFAULT_RLM_REPO_URL = RLM_DEFAULT_REPO_URL
 DEFAULT_RLM_REPO_REF = RLM_DEFAULT_REPO_REF
@@ -49,59 +47,20 @@ REQUIRED_RLM_CHECKOUT_FILES = ("install.sh", "pyproject.toml")
 ProgramDir = str | Path | Traversable
 
 
-class RLM(Harness):
-    config_type = RLMConfig
-
-    def __init__(
-        self,
-        *,
-        workdir: str | None = None,
-        instruction_path: str | None = None,
-        rlm_repo_url: str | None = None,
-        rlm_repo_ref: str | None = None,
-        rlm_max_turns: int | None = None,
-        rlm_exec_timeout: int | None = None,
-        rlm_max_depth: int | None = None,
-        summarize_at_tokens: int | tuple[int, int] | list[int] | None = None,
-        include_sub_rlm_trajectories: bool | None = None,
-        append_to_system_prompt: str | None = None,
-        local_checkout: str | Path | None = None,
-        gh_token: str | None = None,
-        rlm_tools: list[str] | None = None,
-        env_vars: ProgramOptionMap | None = None,
-        skills: str | Path | None = None,
-        sandbox: bool | ConfigMap | SandboxConfig | None = None,
-        program: ProgramMap | None = None,
-        config: RLMConfig | None = None,
-        **kwargs: Unpack[HarnessKwargs],
-    ):
-        harness_config = RLMConfig.from_config(
-            config,
-            workdir=workdir,
-            instruction_path=instruction_path,
-            rlm_repo_url=rlm_repo_url,
-            rlm_repo_ref=rlm_repo_ref,
-            rlm_max_turns=rlm_max_turns,
-            rlm_exec_timeout=rlm_exec_timeout,
-            rlm_max_depth=rlm_max_depth,
-            summarize_at_tokens=summarize_at_tokens,
-            include_sub_rlm_trajectories=include_sub_rlm_trajectories,
-            append_to_system_prompt=append_to_system_prompt,
-            local_checkout=local_checkout,
-            gh_token=gh_token,
-            rlm_tools=rlm_tools,
-            env_vars=dict(env_vars) if env_vars is not None else None,
-            skills=skills,
-        )
+class RLM(Harness[RLMConfig]):
+    def __init__(self, config: RLMConfig = RLMConfig()):
+        harness_config = RLMConfig.from_config(config)
+        super().__init__(config=base_harness_config(harness_config))
+        self.config = harness_config
         if (
             not harness_config.include_sub_rlm_trajectories
             and harness_config.keep_trajectory_step is None
         ):
-            harness_config.keep_trajectory_step = keep_only_parent_rlm_steps
+            self.keep_trajectory_step = keep_only_parent_rlm_steps
         summarize_resolver = build_summarize_resolver(
             harness_config.summarize_at_tokens
         )
-        env: ProgramOptionMap = {
+        env: dict[str, ProgramValue] = {
             "PATH": "/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
             "OPENAI_MODEL": "runtime.model",
             "RLM_MODEL": "runtime.model",
@@ -114,13 +73,7 @@ class RLM(Harness):
         if summarize_resolver is not None:
             env["RLM_SUMMARIZE_AT_TOKENS"] = summarize_resolver
         sandbox_config: ConfigMap | SandboxConfig | bool
-        sandbox_config = (
-            harness_config.sandbox
-            if sandbox is None and harness_config.sandbox is not None
-            else True
-        )
-        if sandbox is not None:
-            sandbox_config = sandbox
+        sandbox_config = harness_config.sandbox or True
         if sandbox_config is True:
             sandbox_config = {
                 "image": "python:3.11-slim",
@@ -149,12 +102,12 @@ class RLM(Harness):
         if harness_config.skills is not None:
             dirs[DEFAULT_RLM_SKILLS_PATH] = Path(harness_config.skills)
         self._explicit_skills = harness_config.skills is not None
-        command = [
+        command: ProgramCommand = [
             "bash",
             "-lc",
             build_run_script(harness_config.instruction_path, harness_config.workdir),
         ]
-        super().__init__(
+        self._configure_runtime(
             program=command_program(
                 command=command,
                 sandbox=sandbox_config,
@@ -180,7 +133,7 @@ class RLM(Harness):
                         "optional": True,
                     }
                 },
-                program=program,
+                program=harness_config.program,
             ),
             sandbox=None if sandbox_config is False else sandbox_config,
             metrics=[
@@ -188,8 +141,6 @@ class RLM(Harness):
                 rlm_sub_llm_total_turns,
                 rlm_sub_llm_total_tool_calls,
             ],
-            config=harness_config,
-            **kwargs,
         )
 
     def attach_taskset(self, taskset: Taskset) -> None:

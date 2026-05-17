@@ -10,7 +10,6 @@ from importlib.abc import Traversable
 from os import PathLike
 from typing import Literal, TypeAlias
 
-from pydantic import BaseModel
 from verifiers.clients import Client
 from verifiers.types import ClientConfig, Message
 
@@ -24,8 +23,6 @@ JsonValue: TypeAlias = (
     str | int | float | bool | None | list["JsonValue"] | dict[str, "JsonValue"]
 )
 JsonData: TypeAlias = dict[str, JsonValue]
-ConfigFactory: TypeAlias = Callable[[], BaseModel | ConfigMap]
-ConfigSource: TypeAlias = BaseModel | ConfigMap | str | ConfigFactory
 CallableConfigEntry: TypeAlias = Handler | str | ConfigMap
 HandlerList: TypeAlias = Iterable[Handler]
 

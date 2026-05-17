@@ -1,16 +1,14 @@
 import shlex
 from pathlib import PurePosixPath
 
-from typing_extensions import Unpack
-
-from .command import HarnessKwargs, command_program, command_sandbox
-from ...config import SandboxConfig
+from .command import base_harness_config, command_program, command_sandbox
+from .configs import Terminus2Config
 from ...harness import Harness
 from ...utils.prompt_utils import (
     state_system_prompt_text,
     task_text as task_instruction_text,
 )
-from ...types import ConfigMap, ProgramMap, ProgramOptionMap, ProgramValue, PromptInput
+from ...types import ProgramCommand, ProgramOptionMap, ProgramValue
 
 DEFAULT_AGENT_WORKDIR = "/app"
 DEFAULT_INSTRUCTION_PATH = "/terminus_2/instruction.md"
@@ -22,66 +20,52 @@ DEFAULT_MODEL_NAME = "openai/gpt-4.1-mini"
 DEFAULT_API_BASE_URL = "https://api.pinference.ai/api/v1"
 
 
-class Terminus2(Harness):
-    def __init__(
-        self,
-        *,
-        agent_workdir: str = DEFAULT_AGENT_WORKDIR,
-        instruction_path: str = DEFAULT_INSTRUCTION_PATH,
-        system_prompt_path: str = DEFAULT_SYSTEM_PROMPT_PATH,
-        log_path: str = DEFAULT_LOG_PATH,
-        harbor_package: str = DEFAULT_HARBOR_PACKAGE,
-        python_version: str = DEFAULT_PYTHON_VERSION,
-        model_name: str = DEFAULT_MODEL_NAME,
-        api_base_url: str = DEFAULT_API_BASE_URL,
-        system_prompt: PromptInput | None = None,
-        sandbox: bool | ConfigMap | SandboxConfig = True,
-        program: ProgramMap | None = None,
-        max_turns: int | None = 4,
-        **kwargs: Unpack[HarnessKwargs],
-    ):
+class Terminus2(Harness[Terminus2Config]):
+    def __init__(self, config: Terminus2Config = Terminus2Config()):
+        config = Terminus2Config.from_config(config)
+        super().__init__(config=base_harness_config(config))
+        self.config = config
+        sandbox_config = config.sandbox if config.sandbox is not None else True
         files: dict[str, ProgramValue] = {
-            instruction_path: task_instruction_text,
+            config.instruction_path: task_instruction_text,
         }
-        if system_prompt is not None:
-            files[system_prompt_path] = state_system_prompt_text
+        if config.system_prompt is not None:
+            files[config.system_prompt_path] = state_system_prompt_text
         artifacts: ProgramOptionMap = {
             "terminus_2_log": {
-                "path": log_path,
+                "path": config.log_path,
                 "format": "text",
                 "optional": True,
             }
         }
-        command = [
+        command: ProgramCommand = [
             "bash",
             "-lc",
             build_terminus_2_run_script(
-                agent_workdir=agent_workdir,
-                instruction_path=instruction_path,
-                system_prompt_path=system_prompt_path
-                if system_prompt is not None
+                agent_workdir=config.agent_workdir,
+                instruction_path=config.instruction_path,
+                system_prompt_path=config.system_prompt_path
+                if config.system_prompt is not None
                 else None,
-                log_path=log_path,
-                harbor_package=harbor_package,
-                python_version=python_version,
-                model_name=model_name,
-                api_base_url=api_base_url,
-                max_turns=max_turns,
+                log_path=config.log_path,
+                harbor_package=config.harbor_package,
+                python_version=config.python_version,
+                model_name=config.model_name,
+                api_base_url=config.api_base_url,
+                max_turns=config.max_turns,
             ),
         ]
-        super().__init__(
+        self._configure_runtime(
             program=command_program(
                 command=command,
-                sandbox=sandbox,
+                sandbox=sandbox_config,
                 files=files,
                 setup=build_terminus_2_install_script(),
                 artifacts=artifacts,
-                program=program,
+                program=config.program,
             ),
-            sandbox=command_sandbox(sandbox),
-            system_prompt=system_prompt,
-            max_turns=max_turns,
-            **kwargs,
+            sandbox=command_sandbox(sandbox_config),
+            system_prompt=config.system_prompt,
         )
 
 

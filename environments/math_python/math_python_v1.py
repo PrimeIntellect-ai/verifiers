@@ -92,6 +92,38 @@ def build_system_prompt(pip_install_packages: str = "numpy sympy scipy") -> str:
     )
 
 
+class MathPythonTasksetConfig(vf.TasksetConfig):
+    source: str = f"{__name__}:source"
+    system_prompt: str = build_system_prompt()
+    rewards: list[vf.CallableConfig] = [
+        vf.CallableConfig(fn=f"{__name__}:correct_answer")
+    ]
+    dataset_name: str = "math"
+    dataset_split: str = "train"
+    num_train_examples: int = -1
+
+
+class MathPythonHarnessConfig(vf.HarnessConfig):
+    max_turns: int = 100
+    toolsets: dict[str, dict[str, str | int]] = {
+        "python": {
+            "fn": f"{__name__}:load_toolset",
+            "pip_install_packages": "numpy sympy scipy",
+            "sandbox_cpu_cores": 1,
+            "sandbox_memory_gb": 2,
+            "sandbox_disk_size_gb": 5,
+            "sandbox_gpu_count": 0,
+            "sandbox_timeout_minutes": 60,
+            "sandbox_timeout_per_command_seconds": 60,
+        }
+    }
+
+
+class MathPythonEnvConfig(vf.EnvConfig):
+    taskset: MathPythonTasksetConfig = MathPythonTasksetConfig()
+    harness: MathPythonHarnessConfig = MathPythonHarnessConfig()
+
+
 def source(
     dataset_name: str = "math",
     dataset_split: str = "train",
@@ -143,89 +175,24 @@ def load_toolset(
 
 
 def load_taskset(
-    dataset_name: str = "math",
-    dataset_split: str = "train",
-    num_train_examples: int = -1,
-    pip_install_packages: str = "numpy sympy scipy",
-    config=None,
-):
-    def load_rows():
-        return source(
-            dataset_name=dataset_name,
-            dataset_split=dataset_split,
-            num_train_examples=num_train_examples,
-        )
-
-    return vf.Taskset(
-        source=load_rows,
-        system_prompt=build_system_prompt(pip_install_packages),
-        rewards=[correct_answer],
-        config=config,
-    )
+    config: MathPythonTasksetConfig = MathPythonTasksetConfig(),
+) -> vf.Taskset:
+    return vf.Taskset(config=config)
 
 
 def load_harness(
-    max_turns: int = 100,
-    pip_install_packages: str = "numpy sympy scipy",
-    sandbox_cpu_cores: int = 1,
-    sandbox_memory_gb: int = 2,
-    sandbox_disk_size_gb: int = 5,
-    sandbox_gpu_count: int = 0,
-    sandbox_timeout_minutes: int = 60,
-    sandbox_timeout_per_command_seconds: int = 60,
-    config=None,
-):
-    return vf.Harness(
-        toolsets=[
-            load_toolset(
-                pip_install_packages=pip_install_packages,
-                sandbox_cpu_cores=sandbox_cpu_cores,
-                sandbox_memory_gb=sandbox_memory_gb,
-                sandbox_disk_size_gb=sandbox_disk_size_gb,
-                sandbox_gpu_count=sandbox_gpu_count,
-                sandbox_timeout_minutes=sandbox_timeout_minutes,
-                sandbox_timeout_per_command_seconds=sandbox_timeout_per_command_seconds,
-            )
-        ],
-        max_turns=max_turns,
-        config=config,
-    )
+    config: MathPythonHarnessConfig = MathPythonHarnessConfig(),
+) -> vf.Harness:
+    return vf.Harness(config=config)
 
 
 def load_v1_environment(
-    dataset_name: str = "math",
-    dataset_split: str = "train",
-    num_train_examples: int = -1,
-    max_turns: int = 100,
-    max_startup_wait_seconds: int = 60,
-    pip_install_packages: str = "numpy sympy scipy",
-    sandbox_cpu_cores: int = 1,
-    sandbox_memory_gb: int = 2,
-    sandbox_disk_size_gb: int = 5,
-    sandbox_gpu_count: int = 0,
-    sandbox_timeout_minutes: int = 60,
-    sandbox_timeout_per_command_seconds: int = 60,
-    sandbox_client_max_workers: int | None = None,
-    **kwargs,
+    config: MathPythonEnvConfig = MathPythonEnvConfig(),
 ) -> vf.Env:
-    _ = max_startup_wait_seconds, sandbox_client_max_workers
-    if kwargs:
-        raise TypeError(f"Unsupported v1 args: {sorted(kwargs)}")
     return vf.Env(
-        taskset=load_taskset(
-            dataset_name=dataset_name,
-            dataset_split=dataset_split,
-            num_train_examples=num_train_examples,
-            pip_install_packages=pip_install_packages,
-        ),
-        harness=load_harness(
-            max_turns=max_turns,
-            pip_install_packages=pip_install_packages,
-            sandbox_cpu_cores=sandbox_cpu_cores,
-            sandbox_memory_gb=sandbox_memory_gb,
-            sandbox_disk_size_gb=sandbox_disk_size_gb,
-            sandbox_gpu_count=sandbox_gpu_count,
-            sandbox_timeout_minutes=sandbox_timeout_minutes,
-            sandbox_timeout_per_command_seconds=sandbox_timeout_per_command_seconds,
-        ),
+        taskset=load_taskset(config=config.taskset),
+        harness=load_harness(config=config.harness),
     )
+
+
+load_environment = load_v1_environment

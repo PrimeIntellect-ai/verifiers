@@ -10,6 +10,7 @@ from types import ModuleType, SimpleNamespace
 from typing import Any, cast
 
 import pytest
+from pydantic import BaseModel
 
 import verifiers.v1 as vf
 from verifiers.clients import Client
@@ -264,6 +265,79 @@ def program_ref(name: str) -> str:
     return f"{PROGRAM_REF_MODULE}:{name}"
 
 
+def dynamic_program_ref(value: object) -> str:
+    name = getattr(value, "__name__", type(value).__name__)
+    ref_name = f"{name}_{id(value)}"
+    setattr(ref_module, ref_name, value)
+    return program_ref(ref_name)
+
+
+def config_value(value: object) -> object:
+    if callable(value):
+        return {"fn": dynamic_program_ref(value)}
+    if isinstance(value, BaseModel):
+        return value
+    if isinstance(value, dict):
+        return {
+            str(key): dynamic_program_ref(item)
+            if key == "fn" and callable(item)
+            else config_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [config_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [config_value(item) for item in value]
+    return value
+
+
+def config_data(config: object | None) -> dict[str, object]:
+    if config is None:
+        return {}
+    if isinstance(config, BaseModel):
+        return config.model_dump(exclude_none=True)
+    if isinstance(config, dict):
+        return dict(config)
+    raise TypeError("test config must be a mapping or config object")
+
+
+def has_runtime_toolset(value: object) -> bool:
+    if isinstance(value, vf.Toolset):
+        return True
+    if isinstance(value, dict):
+        return any(has_runtime_toolset(item) for item in value.values())
+    if isinstance(value, list | tuple):
+        return any(has_runtime_toolset(item) for item in value)
+    return False
+
+
+def make_harness(config: object | None = None, **values: object) -> vf.Harness:
+    data = {**config_data(config), **values}
+    runtime_client = data.pop("client", None)
+    runtime_toolsets = data.pop("toolsets", None)
+    if runtime_toolsets is not None and not has_runtime_toolset(runtime_toolsets):
+        data["toolsets"] = runtime_toolsets
+        runtime_toolsets = None
+    harness = vf.Harness(config=vf.HarnessConfig.model_validate(config_value(data)))
+    if runtime_client is not None:
+        harness.client = cast(Client, runtime_client)
+    if runtime_toolsets is not None:
+        harness.add_toolset(runtime_toolsets)
+    return harness
+
+
+def make_taskset(config: object | None = None, **values: object) -> vf.Taskset:
+    data = {**config_data(config), **values}
+    runtime_toolsets = data.pop("toolsets", None)
+    if runtime_toolsets is not None and not has_runtime_toolset(runtime_toolsets):
+        data["toolsets"] = runtime_toolsets
+        runtime_toolsets = None
+    taskset = vf.Taskset(config=vf.TasksetConfig.model_validate(config_value(data)))
+    if runtime_toolsets is not None:
+        taskset.add_toolset(runtime_toolsets)
+    return taskset
+
+
 async def child_reads_program_sandbox(task, state) -> dict[str, object]:
     _ = task
     tools = state.get_tools()
@@ -396,7 +470,7 @@ async def child_program(task, state):
 
 
 async def parent_program(task, state):
-    child = vf.Harness(program=child_program)
+    child = make_harness(program=child_program)
     child_task = vf.Task({"prompt": [{"role": "user", "content": "child"}]}).freeze()
     child_state = state.for_task(child_task, borrow="model")
     child_state = await child.run(child_task, child_state)
@@ -410,7 +484,7 @@ async def mark_submitted(task, state):
 
 
 async def parent_calls_owned_child_program(task, state):
-    child = vf.Harness(
+    child = make_harness(
         program=child_program, client=cast(Client, FakeClient()), model="child-model"
     )
     child_task = vf.Task({"prompt": [{"role": "user", "content": "child"}]}).freeze()
@@ -420,7 +494,7 @@ async def parent_calls_owned_child_program(task, state):
 
 async def update_summary_with_resolved_handles(task, state):
     _ = task
-    child = vf.Harness(system_prompt="Summarize the parent rollout in one word.")
+    child = make_harness(system_prompt="Summarize the parent rollout in one word.")
     child_task = vf.Task(
         {"prompt": [{"role": "user", "content": str(state["completion"])}]}
     ).freeze()
@@ -436,7 +510,7 @@ async def update_summary_with_resolved_handles(task, state):
 
 async def update_child_uses_borrowed_tool(task, state):
     _ = task
-    child = vf.Harness(max_turns=2)
+    child = make_harness(max_turns=2)
     child_task = vf.Task({"prompt": [{"role": "user", "content": "inspect"}]}).freeze()
     child_state = state.for_task(
         child_task,
@@ -462,7 +536,7 @@ async def update_parallel_children_use_borrowed_tool(task, state):
             tools="borrowed_stage_tool",
             transcript="append",
         )
-        return await vf.Harness(max_turns=2).run(child_task, child_state)
+        return await make_harness(max_turns=2).run(child_task, child_state)
 
     children = await asyncio.gather(run_child("a"), run_child("b"))
     state["update_child_trajectory_ids"] = [
@@ -480,7 +554,7 @@ async def reward_child_uses_borrowed_tool(task, state) -> float:
         borrow="model",
         tools="borrowed_stage_tool",
     )
-    child_state = await vf.Harness(max_turns=2).run(child_task, child_state)
+    child_state = await make_harness(max_turns=2).run(child_task, child_state)
     state["reward_child_completion"] = child_state["completion"][-1]["content"]
     state["reward_child_requests"] = child_state["num_model_requests"]
     return float("reward" in state.get("borrowed_stage_values", []))
@@ -539,7 +613,7 @@ async def test_v1_records_default_metrics_usage_and_timing() -> None:
         completion_tokens=7,
         total_tokens=18,
     )
-    harness = vf.Harness(
+    harness = make_harness(
         client=cast(
             Client,
             FakeModelClient([fake_response(content="ok", usage=usage)]),
@@ -568,7 +642,7 @@ def test_v1_state_does_not_copy_task_answer_to_top_level() -> None:
 
 @pytest.mark.asyncio
 async def test_endpoint_exposes_tool_user_and_stop_surfaces() -> None:
-    harness = vf.Harness(
+    harness = make_harness(
         program=endpoint_program,
         model="test-model",
         toolsets=[vf.Toolset(tools=[echo_tool])],
@@ -597,7 +671,7 @@ async def test_endpoint_exposes_tool_user_and_stop_surfaces() -> None:
 
 @pytest.mark.asyncio
 async def test_state_helpers_load_runtime_tools_while_rollout_is_active() -> None:
-    harness = vf.Harness(
+    harness = make_harness(
         program=state_tools_program,
         toolsets=[vf.Toolset(tools=[echo_tool])],
     )
@@ -612,7 +686,7 @@ async def test_state_helpers_load_runtime_tools_while_rollout_is_active() -> Non
 
 @pytest.mark.asyncio
 async def test_entrypoint_program_uses_state_tools_helper() -> None:
-    harness = vf.Harness(
+    harness = make_harness(
         program=state_tool_program,
         toolsets=[vf.Toolset(tools=[echo_tool])],
     )
@@ -626,7 +700,7 @@ async def test_entrypoint_program_uses_state_tools_helper() -> None:
 
 @pytest.mark.asyncio
 async def test_offline_replay_program_scores_without_model_client() -> None:
-    taskset = vf.Taskset(
+    taskset = make_taskset(
         source=[
             {
                 "prompt": [{"role": "user", "content": "Return the answer."}],
@@ -635,7 +709,7 @@ async def test_offline_replay_program_scores_without_model_client() -> None:
         ],
         rewards=[replay_reward],
     )
-    harness = vf.Harness(program=replay_answer_program)
+    harness = make_harness(program=replay_answer_program)
     harness.attach_taskset(taskset)
     task = next(iter(taskset))
 
@@ -665,7 +739,7 @@ async def test_base_program_returns_tool_errors_to_model() -> None:
             fake_response(content="Recovered."),
         ]
     )
-    harness = vf.Harness(
+    harness = make_harness(
         client=cast(Client, client),
         model="fake",
         toolsets=[vf.Toolset(tools=[failing_tool])],
@@ -697,7 +771,7 @@ async def test_base_program_stops_after_tool_calls_state_stop() -> None:
             )
         ]
     )
-    harness = vf.Harness(
+    harness = make_harness(
         client=cast(Client, client),
         model="fake",
         toolsets=[vf.Toolset(tools=[finish_tool])],
@@ -717,7 +791,7 @@ async def test_base_program_stops_after_tool_calls_state_stop() -> None:
 @pytest.mark.asyncio
 async def test_base_program_submits_system_prompt_before_prompt() -> None:
     client = CapturingModelClient([fake_response(content="ok")])
-    harness = vf.Harness(client=cast(Client, client), model="fake", max_turns=1)
+    harness = make_harness(client=cast(Client, client), model="fake", max_turns=1)
     task = vf.Task(
         {
             "system_prompt": "Use a short answer.",
@@ -751,7 +825,7 @@ async def test_taskset_setup_initializes_base_harness_prompt_and_sampling() -> N
             {"role": "user", "content": f"task {task['answer']}"}
         )
 
-    taskset = vf.Taskset(
+    taskset = make_taskset(
         source=[{"prompt": [], "answer": "ready", "max_turns": 3}],
         setups=[initialize_from_taskset],
     )
@@ -778,7 +852,7 @@ async def test_taskset_setup_initializes_base_harness_prompt_and_sampling() -> N
 
 @pytest.mark.asyncio
 async def test_callable_tool_can_accept_name_argument() -> None:
-    harness = vf.Harness(toolsets=[vf.Toolset(tools=[named_tool])])
+    harness = make_harness(toolsets=[vf.Toolset(tools=[named_tool])])
     task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
     state = vf.State.for_task(task)
     harness.runtime.prepare_state(task, state)
@@ -790,7 +864,7 @@ async def test_callable_tool_can_accept_name_argument() -> None:
 
 @pytest.mark.asyncio
 async def test_callable_tool_rejects_reserved_hidden_args() -> None:
-    harness = vf.Harness(toolsets=[vf.Toolset(tools=[echo_tool])])
+    harness = make_harness(toolsets=[vf.Toolset(tools=[echo_tool])])
     task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
     state = vf.State.for_task(task)
     harness.runtime.prepare_state(task, state)
@@ -801,7 +875,7 @@ async def test_callable_tool_rejects_reserved_hidden_args() -> None:
 
 @pytest.mark.asyncio
 async def test_callable_tools_are_available_through_mcp_proxy() -> None:
-    harness = vf.Harness(
+    harness = make_harness(
         program=mcp_proxy_program,
         toolsets=[vf.Toolset(tools=[echo_tool])],
     )
@@ -816,7 +890,7 @@ async def test_callable_tools_are_available_through_mcp_proxy() -> None:
 
 @pytest.mark.asyncio
 async def test_command_env_exposes_model_endpoint_without_tool_payloads() -> None:
-    harness = vf.Harness(toolsets=[vf.Toolset(tools=[echo_tool])])
+    harness = make_harness(toolsets=[vf.Toolset(tools=[echo_tool])])
     task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
     state = vf.State.for_task(task)
     state["endpoint_root_url"] = "http://127.0.0.1:1/rollout/test"
@@ -842,7 +916,7 @@ async def test_command_env_endpoint_auth_overrides_inherited_keys(monkeypatch) -
     monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://api.anthropic.invalid")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "host-anthropic-key")
 
-    harness = vf.Harness(toolsets=[vf.Toolset(tools=[echo_tool])])
+    harness = make_harness(toolsets=[vf.Toolset(tools=[echo_tool])])
     task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
     state = vf.State.for_task(task)
     state["endpoint_root_url"] = "http://127.0.0.1:1/rollout/test"
@@ -1034,7 +1108,7 @@ def test_sandbox_fn_program_requires_local_pyproject(
 
 
 def test_sandbox_python_program_installs_runtime_client_deps() -> None:
-    harness = vf.Harness(program={"sandbox": True}, sandbox={"packages": ["numpy"]})
+    harness = make_harness(program={"sandbox": True}, sandbox={"packages": ["numpy"]})
 
     sandbox = harness.prepare_sandbox_config(
         {"packages": ["numpy"]},
@@ -1111,7 +1185,7 @@ def test_sandbox_program_patch_cannot_set_lifecycle_fields() -> None:
 
 
 def test_program_channels_mcp_injects_proxy_into_sandbox_program() -> None:
-    harness = vf.Harness(
+    harness = make_harness(
         program={"sandbox": True, "command": ["true"], "channels": "mcp"},
         sandbox={"image": "python:3.11-slim"},
     )
@@ -1143,12 +1217,12 @@ def test_program_channels_mcp_injects_proxy_into_sandbox_program() -> None:
 
 def test_program_channels_mcp_requires_sandbox_command() -> None:
     with pytest.raises(ValueError, match="requires program.sandbox"):
-        vf.Harness(program={"command": ["true"], "channels": "mcp"})
+        make_harness(program={"command": ["true"], "channels": "mcp"})
 
 
 def test_program_channels_callable_rejects_command_programs() -> None:
     with pytest.raises(ValueError, match="program.channels='callable'"):
-        vf.Harness(program={"command": ["true"], "channels": "callable"})
+        make_harness(program={"command": ["true"], "channels": "callable"})
 
 
 @pytest.mark.asyncio
@@ -1158,14 +1232,16 @@ async def test_program_channels_mcp_setup_uses_bindings_after_setup_before_comma
     install_fake_sandboxes(monkeypatch)
     install_fake_endpoint_tunnel(monkeypatch)
 
-    harness = vf.Harness(
+    harness = make_harness(
         program={
             "command": ["python", "-c", "print('ok')"],
             "sandbox": True,
             "setup": "echo setup",
             "channels": {"mcp": configure_cli_endpoint},
             "bindings": {
-                "configure_cli_endpoint.endpoint_config": endpoint_config_binding
+                "configure_cli_endpoint.endpoint_config": {
+                    "fn": endpoint_config_binding
+                }
             },
         },
         sandbox={"image": "python:3.11-slim"},
@@ -1189,7 +1265,7 @@ async def test_rollout_setup_receives_program_sandbox_before_program_setup(
     install_fake_sandboxes(monkeypatch)
     install_fake_endpoint_tunnel(monkeypatch)
 
-    harness = vf.Harness(
+    harness = make_harness(
         program={
             "command": ["true"],
             "sandbox": True,
@@ -1219,7 +1295,7 @@ async def test_sandbox_state_input_upload_runs_after_rollout_setup(
 ) -> None:
     install_fake_sandboxes(monkeypatch)
 
-    harness = vf.Harness(setups=[state_input_setup])
+    harness = make_harness(setups=[state_input_setup])
     task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
     state = vf.State.for_task(task)
     program = {
@@ -1250,7 +1326,7 @@ async def test_task_command_uses_background_job(
     install_fake_sandboxes(monkeypatch)
     install_fake_endpoint_tunnel(monkeypatch)
 
-    harness = vf.Harness(
+    harness = make_harness(
         program={"command": ["sleep", "120"], "sandbox": True},
         sandbox={"image": "python:3.11-slim", "workdir": "/app"},
     )
@@ -1273,7 +1349,7 @@ async def test_program_channels_mcp_setup_accepts_config_ref_mappings(
     install_fake_sandboxes(monkeypatch)
     install_fake_endpoint_tunnel(monkeypatch)
 
-    harness = vf.Harness(
+    harness = make_harness(
         program={
             "command": ["true"],
             "sandbox": True,
@@ -1297,7 +1373,7 @@ async def test_program_channels_mcp_setup_accepts_config_ref_mappings(
 
 def test_program_bindings_must_match_owned_callables() -> None:
     with pytest.raises(ValueError, match="does not match a callable"):
-        vf.Harness(
+        make_harness(
             program={
                 "command": ["true"],
                 "sandbox": True,
@@ -1309,13 +1385,15 @@ def test_program_bindings_must_match_owned_callables() -> None:
 
 def test_program_setup_is_not_a_binding_target() -> None:
     with pytest.raises(ValueError, match="setup callables cannot use"):
-        vf.Harness(
+        make_harness(
             program={
                 "command": ["true"],
                 "sandbox": True,
                 "setup": configure_cli_endpoint,
                 "bindings": {
-                    "configure_cli_endpoint.endpoint_config": endpoint_config_binding
+                    "configure_cli_endpoint.endpoint_config": {
+                        "fn": endpoint_config_binding
+                    }
                 },
             },
             sandbox={"image": "python:3.11-slim"},
@@ -1382,7 +1460,7 @@ async def test_real_sandbox_base_program_calls_host_callable_tool() -> None:
             fake_response(content="done"),
         ]
     )
-    harness = vf.Harness(
+    harness = make_harness(
         client=cast(Client, client),
         model="fake",
         program={"sandbox": True, "channels": "callable"},
@@ -1424,7 +1502,7 @@ async def test_real_sandbox_base_program_calls_host_callable_tool() -> None:
 @pytest.mark.asyncio
 @pytest.mark.prime_sandbox
 async def test_real_sandbox_command_program_uses_mcp_tool_proxy() -> None:
-    harness = vf.Harness(
+    harness = make_harness(
         program={
             "sandbox": True,
             "command": ["python", "/tmp/call_mcp.py"],
@@ -1455,7 +1533,7 @@ async def test_real_sandbox_command_program_uses_mcp_tool_proxy() -> None:
 
 @pytest.mark.asyncio
 async def test_nested_harness_uses_explicit_child_model_controls() -> None:
-    harness = vf.Harness(program=parent_program)
+    harness = make_harness(program=parent_program)
     task = vf.Task({"prompt": [{"role": "user", "content": "parent"}]}).freeze()
     state = vf.State.for_task(task)
     state["runtime"]["model"] = "model-a"
@@ -1475,7 +1553,7 @@ async def test_nested_harness_uses_explicit_child_model_controls() -> None:
 
 @pytest.mark.asyncio
 async def test_state_finalize_strips_nested_runtime_handles() -> None:
-    harness = vf.Harness(program=parent_program)
+    harness = make_harness(program=parent_program)
     task = vf.Task({"prompt": [{"role": "user", "content": "parent"}]}).freeze()
     state = vf.State.for_task(task)
     state["runtime"]["model"] = "model-a"
@@ -1501,7 +1579,7 @@ async def test_state_finalize_strips_nested_runtime_handles() -> None:
 
 @pytest.mark.asyncio
 async def test_nested_harness_can_use_own_model_controls() -> None:
-    harness = vf.Harness(program=parent_calls_owned_child_program)
+    harness = make_harness(program=parent_calls_owned_child_program)
     task = vf.Task({"prompt": [{"role": "user", "content": "parent"}]}).freeze()
     state = vf.State.for_task(task)
     state["runtime"]["model"] = "parent-model"
@@ -1521,7 +1599,7 @@ async def test_update_child_harness_run_uses_resolved_runtime_handles() -> None:
     client = CapturingModelClient(
         [fake_response("parent answer"), fake_response("summary")]
     )
-    harness = vf.Harness(updates=[update_summary_with_resolved_handles])
+    harness = make_harness(updates=[update_summary_with_resolved_handles])
     task = vf.Task({"prompt": [{"role": "user", "content": "parent"}]}).freeze()
     state = vf.State.for_task(task)
     state["runtime"]["model"] = "model-a"
@@ -1555,7 +1633,7 @@ async def test_update_child_harness_can_borrow_live_tools() -> None:
             fake_response("child judged"),
         ]
     )
-    harness = vf.Harness(
+    harness = make_harness(
         updates=[update_child_uses_borrowed_tool],
         toolsets=[vf.Toolset(tools=[borrowed_record_tool], write=True)],
     )
@@ -1614,7 +1692,7 @@ async def test_update_and_reward_children_can_share_borrowed_live_tools() -> Non
             fake_response('{"score": 1.0}'),
         ]
     )
-    harness = vf.Harness(
+    harness = make_harness(
         updates=[update_parallel_children_use_borrowed_tool],
         rewards=[reward_child_uses_borrowed_tool],
         toolsets=[vf.Toolset(tools=[borrowed_stage_tool], write=True)],
@@ -1648,7 +1726,7 @@ async def test_update_and_reward_children_can_share_borrowed_live_tools() -> Non
 
 @pytest.mark.asyncio
 async def test_toolset_can_contribute_stop_condition() -> None:
-    harness = vf.Harness(
+    harness = make_harness(
         program=mark_submitted,
         toolsets=[vf.Toolset(stops=[submitted])],
     )
@@ -1697,7 +1775,7 @@ async def test_mcp_lifetime_follows_toolset_scope(
 
     monkeypatch.setattr(mcp_utils, "connect_mcp_tool", connect_mcp_tool)
 
-    harness = vf.Harness(
+    harness = make_harness(
         toolsets=[
             vf.Toolset(tools=[vf.MCPTool("global_tool")], scope="global"),
             vf.Toolset(tools=[vf.MCPTool("rollout_tool")], scope="rollout"),
@@ -1749,7 +1827,7 @@ async def test_program_sandbox_group_scope_reuses_and_cleans(
     install_fake_sandboxes(monkeypatch)
     install_fake_endpoint_tunnel(monkeypatch)
 
-    harness = vf.Harness(
+    harness = make_harness(
         program={"sandbox": True, "command": ["python", "-c", "print('ok')"]},
         sandbox={"image": "python:3.11-slim", "scope": "group"},
     )
@@ -1783,7 +1861,7 @@ async def test_program_sandbox_global_scope_lives_until_teardown(
     install_fake_sandboxes(monkeypatch)
     install_fake_endpoint_tunnel(monkeypatch)
 
-    harness = vf.Harness(
+    harness = make_harness(
         program={"sandbox": True, "command": ["python", "-c", "print('ok')"]},
         sandbox={"image": "python:3.11-slim", "scope": "global"},
     )
@@ -1862,7 +1940,7 @@ async def test_toolset_can_bind_to_primary_program_sandbox(
     install_fake_sandboxes(monkeypatch)
     install_fake_endpoint_tunnel(monkeypatch)
 
-    harness = vf.Harness(
+    harness = make_harness(
         program={"sandbox": True, "command": ["python", "-c", "print('ok')"]},
         sandbox={"image": "python:3.11-slim", "scope": "group"},
         toolsets=[vf.Toolset(tools=[program_sandbox_id], sandbox="program")],
@@ -1885,7 +1963,7 @@ async def test_toolset_sandbox_prefer_program_falls_back_to_owned_sandbox(
 ) -> None:
     install_fake_sandboxes(monkeypatch)
 
-    harness = vf.Harness(
+    harness = make_harness(
         toolsets=[
             vf.Toolset(
                 tools=[program_sandbox_id],
@@ -1917,7 +1995,7 @@ async def test_toolset_sandbox_prefer_program_uses_active_program_sandbox(
     install_fake_sandboxes(monkeypatch)
     install_fake_endpoint_tunnel(monkeypatch)
 
-    harness = vf.Harness(
+    harness = make_harness(
         program={"sandbox": True, "command": ["python", "-c", "print('ok')"]},
         sandbox={"image": "python:3.11-slim", "scope": "group"},
         toolsets=[
@@ -1953,11 +2031,11 @@ async def test_child_state_can_borrow_primary_program_sandbox(
     install_fake_sandboxes(monkeypatch)
     install_fake_endpoint_tunnel(monkeypatch)
 
-    parent = vf.Harness(
+    parent = make_harness(
         program={"sandbox": True, "command": ["python", "-c", "print('ok')"]},
         sandbox={"image": "python:3.11-slim", "scope": "group"},
     )
-    child = vf.Harness(
+    child = make_harness(
         program=child_reads_program_sandbox,
         toolsets=[vf.Toolset(tools=[program_sandbox_id], sandbox="program")],
     )

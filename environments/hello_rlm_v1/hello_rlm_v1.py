@@ -52,24 +52,27 @@ def source():
     ]
 
 
-def load_taskset(config: vf.TasksetConfig):
-    return vf.Taskset(
-        source=source,
-        rewards=[exact_answer],
-        config=config,
-    )
+class HelloRLMTasksetConfig(vf.TasksetConfig):
+    source: str = f"{__name__}:source"
+    rewards: list[vf.CallableConfig] = [
+        vf.CallableConfig(fn=f"{__name__}:exact_answer", weight=1.0)
+    ]
 
 
-def load_harness(config: vf.RLMConfig):
+def load_taskset(config: HelloRLMTasksetConfig = HelloRLMTasksetConfig()):
+    return vf.Taskset(config=config)
+
+
+def load_harness(config: vf.RLMConfig = vf.RLMConfig()):
     return vf.RLM(config=config)
 
 
 class HelloRLMEnvConfig(vf.EnvConfig):
-    taskset: vf.TasksetConfig
-    harness: vf.RLMConfig
+    taskset: HelloRLMTasksetConfig = HelloRLMTasksetConfig()
+    harness: vf.RLMConfig = vf.RLMConfig()
 
 
-def load_environment(config: HelloRLMEnvConfig):
+def load_environment(config: HelloRLMEnvConfig = HelloRLMEnvConfig()):
     return vf.Env(
         taskset=load_taskset(config=config.taskset),
         harness=load_harness(config=config.harness),

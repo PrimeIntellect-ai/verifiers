@@ -1,43 +1,15 @@
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 import sys
-from typing import ClassVar, Literal, cast
+from os import PathLike
+from typing import Literal, TypeAlias, cast
 
-from pydantic import (
-    BaseModel,
-    ConfigDict,
-    Field,
-    ValidationInfo,
-    field_validator,
-    model_validator,
-)
-from pydantic_core import PydanticUndefined
+from pydantic import BaseModel, ValidationInfo, field_validator, model_validator
+from pydantic_config import BaseConfig
 from typing_extensions import Self
 
-from .types import (
-    CallableConfigEntry,
-    ConfigData,
-    ConfigInputMap,
-    ConfigMap,
-    ConfigSource,
-    Handler,
-    ModelClient,
-    Objects,
-    ProgramCommand,
-    ProgramOptionMap,
-    ProgramSetup,
-    ProgramChannels,
-    ProgramValue,
-    PromptInput,
-    TaskSource,
-    ToolsetSpecs,
-    ToolSpecs,
-)
-from .utils.binding_utils import (
-    Bindings,
-    normalize_binding_map,
-    normalize_object_map,
-)
+from .types import ConfigData, ConfigInputMap, ConfigMap
+from .utils.binding_utils import Bindings, normalize_binding_map
 from .utils.config_callable_utils import (
     CallableKind as CallableKind,
     config_callables as config_callables,
@@ -47,16 +19,12 @@ from .utils.config_utils import (
     annotation_text,
     config_data,
     default_text,
-    expand_config_ref,
-    expand_config_ref_data,
     import_config_ref as import_config_ref,
-    merge_child_config,
-    merge_config_value as merge_config_value,
-    omit_none,
     resolve_config_object as resolve_config_object,
-    string_mapping as string_mapping,
+    string_mapping,
 )
 from .utils.mcp_proxy_utils import validate_program_channels
+from verifiers.types import ClientConfig
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -64,55 +32,42 @@ else:
     import tomli as tomllib
 
 
-class Config(BaseModel):
-    model_config = ConfigDict(arbitrary_types_allowed=True, extra="forbid")
-    supports_config_ref: ClassVar[bool] = False
+JsonMap: TypeAlias = ConfigData
+ConfigSource: TypeAlias = BaseModel | ConfigMap | None
+ProgramValue: TypeAlias = object
+ProgramCommand: TypeAlias = str | list[ProgramValue]
+ProgramOptionMap: TypeAlias = ConfigData
+ProgramSetup: TypeAlias = ProgramValue | list[ProgramValue]
+ProgramChannels: TypeAlias = str | JsonMap | list[str | JsonMap]
+PromptInput: TypeAlias = str | list[JsonMap]
+ToolsetSpecs: TypeAlias = str | JsonMap | list[str | JsonMap] | dict[str, str | JsonMap]
+TaskSource: TypeAlias = str | list[JsonMap]
 
-    @classmethod
-    def __pydantic_init_subclass__(cls, **kwargs: object) -> None:
-        super().__pydantic_init_subclass__(**kwargs)
-        changed = False
-        for field in cls.model_fields.values():
-            annotation = field.annotation
-            if (
-                field.is_required()
-                and isinstance(annotation, type)
-                and issubclass(annotation, Config)
-            ):
-                field.default = PydanticUndefined
-                field.default_factory = annotation
-                changed = True
-        if changed:
-            cls.model_rebuild(force=True)
 
-    def __init__(self, config: ConfigSource | None = None, /, **data: object):
-        super().__init__(**type(self)._merge_config_data(config, data))
+class Config(BaseConfig):
+    """Strict serializable v1 config base."""
 
-    @classmethod
-    def from_config(cls, config: ConfigSource | None = None, /, **data: object) -> Self:
-        return cls(**cls._merge_config_data(config, data))
-
-    @classmethod
-    def _merge_config_data(
-        cls, config: ConfigSource | None, data: ConfigData
-    ) -> ConfigData:
-        data = omit_none(data)
-        if cls.supports_config_ref:
-            cls._validate_config_ref_contract()
-            config = cast(ConfigSource | None, expand_config_ref(config, cls))
-            data = expand_config_ref_data(data, cls)
-        if config is not None:
-            base = config_data(config, cls)
-            base.update(data)
-            data = base
-        return data
-
-    @classmethod
-    def _validate_config_ref_contract(cls) -> None:
-        if "config" in cls.model_fields:
-            raise TypeError(
-                f"{cls.__name__} reserves the 'config' field for config refs."
+    @model_validator(mode="after")
+    def validate_serializable_config(self) -> Self:
+        for name in type(self).model_fields:
+            validate_serializable_value(
+                getattr(self, name), f"{type(self).__name__}.{name}"
             )
+        return self
+
+    @classmethod
+    def from_config(cls, config: ConfigSource = None) -> Self:
+        if config is None:
+            return cls()
+        if isinstance(config, cls):
+            return config
+        if isinstance(config, BaseModel):
+            data = config.model_dump(exclude_none=True)
+        elif isinstance(config, Mapping):
+            data = string_mapping(cast(ConfigInputMap, config))
+        else:
+            raise TypeError("Config must be a mapping or config object.")
+        return cls.model_validate(data)
 
     @classmethod
     def from_toml(
@@ -126,7 +81,7 @@ class Config(BaseModel):
                 if not isinstance(data, Mapping):
                     raise TypeError(f"TOML section {section!r} does not exist.")
                 data = data[key]
-        return cls.from_config(data)
+        return cls.from_config(cast(ConfigMap, data))
 
     @classmethod
     def schema_text(cls) -> str:
@@ -136,6 +91,38 @@ class Config(BaseModel):
                 f"- {name}: {annotation_text(field.annotation)} = {default_text(field)}"
             )
         return "\n".join(lines)
+
+
+def validate_serializable_value(value: object, field: str) -> None:
+    if value is None or isinstance(value, str | int | float | bool):
+        return
+    if isinstance(value, BaseModel):
+        return
+    if callable(value) or isinstance(value, PathLike):
+        raise TypeError(f"{field} must be serializable; use an import ref string.")
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise TypeError(f"{field} mapping keys must be strings.")
+            validate_serializable_value(item, f"{field}.{key}")
+        return
+    if isinstance(value, list | tuple):
+        for index, item in enumerate(value):
+            validate_serializable_value(item, f"{field}.{index}")
+        return
+    raise TypeError(f"{field} must be serializable; got {type(value).__name__}.")
+
+
+class CallableConfig(Config):
+    fn: str
+    priority: int | None = None
+    stage: Literal["rollout", "group"] | None = None
+    weight: float | None = None
+    skip: bool = False
+
+
+CallableEntry: TypeAlias = str | CallableConfig
+CallableConfigEntry: TypeAlias = CallableEntry
 
 
 class SandboxConfig(Config):
@@ -149,9 +136,9 @@ class SandboxConfig(Config):
     timeout_minutes: int = 60
     workdir: str | None = None
     command_timeout: int | None = None
-    packages: list[str] = Field(default_factory=list)
+    packages: list[str] = []
     install_timeout: int = 300
-    setup_commands: list[str] = Field(default_factory=list)
+    setup_commands: list[str] = []
     setup_timeout: int = 300
     scope: Literal["rollout", "group", "global"] = "rollout"
     prefer: Literal["program"] | None = None
@@ -166,7 +153,7 @@ class SandboxConfig(Config):
 
 class MCPToolConfig(Config):
     command: str
-    args: list[str] = Field(default_factory=list)
+    args: list[str] = []
     env: dict[str, str] | None = None
     cwd: str | None = None
 
@@ -182,20 +169,27 @@ class ProgramConfig(Config):
     base: bool = False
     fn: str | None = None
     command: ProgramCommand | None = None
-    sandbox: bool | SandboxConfig | ConfigMap | None = None
-    files: ProgramOptionMap = Field(default_factory=dict)
-    dirs: ProgramOptionMap = Field(default_factory=dict)
-    setup: ProgramSetup = Field(default_factory=list)
-    bindings: Bindings = Field(default_factory=dict)
-    env: ProgramOptionMap = Field(default_factory=dict)
-    artifacts: ProgramOptionMap = Field(default_factory=dict)
+    sandbox: bool | SandboxConfig | JsonMap | None = None
+    files: ProgramOptionMap = {}
+    dirs: ProgramOptionMap = {}
+    setup: ProgramSetup = []
+    bindings: Bindings = {}
+    env: ProgramOptionMap = {}
+    artifacts: ProgramOptionMap = {}
     channels: ProgramChannels | None = None
-    args: list[ProgramValue] = Field(default_factory=list)
+    args: list[ProgramValue] = []
 
     @field_validator("channels")
     @classmethod
     def validate_channels(cls, value: object) -> object:
         validate_program_channels(value)
+        return value
+
+    @field_validator("env", mode="before")
+    @classmethod
+    def validate_env(cls, value: object) -> object:
+        if isinstance(value, Mapping):
+            return {str(key): str(item) for key, item in value.items()}
         return value
 
     @field_validator("bindings", mode="before")
@@ -205,10 +199,10 @@ class ProgramConfig(Config):
 
 
 class UserConfig(Config):
-    fn: Handler | str
+    fn: str
     scope: Literal["rollout", "group", "global"] = "rollout"
-    bindings: Bindings = Field(default_factory=dict)
-    objects: Objects = Field(default_factory=dict)
+    bindings: Bindings = {}
+    objects: dict[str, str] = {}
     sandbox: SandboxConfig | None = None
 
     @field_validator("bindings", mode="before")
@@ -216,26 +210,21 @@ class UserConfig(Config):
     def validate_bindings(cls, value: object) -> Bindings:
         return normalize_binding_map(value, "user.bindings", key_style="arg")
 
-    @field_validator("objects", mode="before")
-    @classmethod
-    def validate_objects(cls, value: object) -> Objects:
-        return normalize_object_map(value, "user.objects")
-
 
 class ToolsetConfig(Config):
-    tools: ToolSpecs | None = Field(default_factory=list)
+    tools: str | JsonMap | list[str | JsonMap] | None = []
     show: list[str] | None = None
     hide: list[str] | None = None
-    bindings: Bindings = Field(default_factory=dict)
-    objects: Objects = Field(default_factory=dict)
+    bindings: Bindings = {}
+    objects: dict[str, str] = {}
     write: bool = False
     scope: Literal["rollout", "group", "global"] | None = None
     sandbox: SandboxConfig | Literal["program"] | None = None
-    stops: list[CallableConfigEntry] = Field(default_factory=list)
-    setups: list[CallableConfigEntry] = Field(default_factory=list)
-    updates: list[CallableConfigEntry] = Field(default_factory=list)
-    cleanups: list[CallableConfigEntry] = Field(default_factory=list)
-    teardowns: list[CallableConfigEntry] = Field(default_factory=list)
+    stops: list[CallableEntry] = []
+    setups: list[CallableEntry] = []
+    updates: list[CallableEntry] = []
+    cleanups: list[CallableEntry] = []
+    teardowns: list[CallableEntry] = []
 
     @field_validator("show", "hide", mode="before")
     @classmethod
@@ -249,11 +238,6 @@ class ToolsetConfig(Config):
     def validate_bindings(cls, value: object) -> Bindings:
         return normalize_binding_map(value, "toolset.bindings")
 
-    @field_validator("objects", mode="before")
-    @classmethod
-    def validate_objects(cls, value: object) -> Objects:
-        return normalize_object_map(value, "toolset.objects")
-
     @model_validator(mode="after")
     def validate_visibility(self) -> "ToolsetConfig":
         if self.show is not None and self.hide is not None:
@@ -261,87 +245,106 @@ class ToolsetConfig(Config):
         return self
 
 
-class TasksetConfig(Config):
-    supports_config_ref: ClassVar[bool] = True
+class SignalConfig(Config):
+    stage: Literal["rollout", "group"] | None = None
+    priority: int | None = None
+    weight: float | None = None
+    skip: bool = False
 
+
+def validate_scoring_map(value: object, field: str) -> dict[str, ConfigData]:
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise TypeError(f"{field} must be a mapping.")
+    result: dict[str, ConfigData] = {}
+    for name, item in value.items():
+        if not isinstance(name, str):
+            raise TypeError(f"{field} keys must be strings.")
+        if isinstance(item, BaseModel):
+            data = item.model_dump(exclude_none=True, exclude_unset=True)
+        elif isinstance(item, Mapping):
+            data = string_mapping(cast(ConfigInputMap, item))
+        else:
+            raise TypeError(f"{field}.{name} must be a mapping.")
+        result[name] = SignalConfig.from_config(data).model_dump(
+            exclude_none=True,
+            exclude_unset=True,
+        )
+    return result
+
+
+class TasksetConfig(Config):
     # Singleton fields describe one logical value owned by the taskset.
     source: TaskSource | None = None
     eval_source: TaskSource | None = None
     taskset_id: str | None = None
     system_prompt: PromptInput | None = None
-    user: Handler | str | ConfigMap | None = None
-    bindings: Bindings = Field(default_factory=dict)
-    objects: Objects = Field(default_factory=dict)
+    user: UserConfig | str | None = None
+    bindings: Bindings = {}
+    objects: dict[str, str] = {}
 
-    # Collection fields are merged/extended from code and config.
-    toolsets: ToolsetSpecs | None = Field(default_factory=list)
-    stops: list[CallableConfigEntry] = Field(default_factory=list)
-    setups: list[CallableConfigEntry] = Field(default_factory=list)
-    updates: list[CallableConfigEntry] = Field(default_factory=list)
-    metrics: list[CallableConfigEntry] = Field(default_factory=list)
-    rewards: list[CallableConfigEntry] = Field(default_factory=list)
-    advantages: list[CallableConfigEntry] = Field(default_factory=list)
-    cleanups: list[CallableConfigEntry] = Field(default_factory=list)
-    scoring: dict[str, ConfigData] = Field(default_factory=dict)
+    # Collection fields are configured only here; runtime mutation APIs are separate.
+    toolsets: ToolsetSpecs | None = []
+    stops: list[CallableEntry] = []
+    setups: list[CallableEntry] = []
+    updates: list[CallableEntry] = []
+    metrics: list[CallableEntry] = []
+    rewards: list[CallableEntry] = []
+    advantages: list[CallableEntry] = []
+    cleanups: list[CallableEntry] = []
+    scoring: dict[str, ConfigData] = {}
 
     @field_validator("bindings", mode="before")
     @classmethod
     def validate_bindings(cls, value: object) -> Bindings:
         return normalize_binding_map(value, "taskset.bindings")
 
-    @field_validator("objects", mode="before")
+    @field_validator("scoring", mode="before")
     @classmethod
-    def validate_objects(cls, value: object) -> Objects:
-        return normalize_object_map(value, "taskset.objects")
+    def validate_scoring(cls, value: object) -> dict[str, ConfigData]:
+        return validate_scoring_map(value, "taskset.scoring")
 
 
 class HarnessConfig(Config):
-    supports_config_ref: ClassVar[bool] = True
-
     # Singleton fields describe one logical value owned by the harness.
-    program: Handler | str | ConfigMap | None = None
+    program: ProgramConfig | str | None = None
     system_prompt: PromptInput | None = None
     system_prompt_merge: str = "reject"
     sandbox: SandboxConfig | None = None
-    client: ModelClient | ConfigMap | str | None = None
+    client: ClientConfig | JsonMap | str | None = None
     model: str | None = None
-    sampling_args: ConfigData = Field(default_factory=dict)
-    keep_trajectory_step: Handler | str | None = None
-    user: Handler | str | ConfigMap | None = None
-    bindings: Bindings = Field(default_factory=dict)
-
-    # Collection fields are merged/extended from code and config.
-    toolsets: ToolsetSpecs | None = Field(default_factory=list)
-    stops: list[CallableConfigEntry] = Field(default_factory=list)
-    setups: list[CallableConfigEntry] = Field(default_factory=list)
-    updates: list[CallableConfigEntry] = Field(default_factory=list)
-    metrics: list[CallableConfigEntry] = Field(default_factory=list)
-    rewards: list[CallableConfigEntry] = Field(default_factory=list)
-    advantages: list[CallableConfigEntry] = Field(default_factory=list)
-    cleanups: list[CallableConfigEntry] = Field(default_factory=list)
-    scoring: dict[str, ConfigData] = Field(default_factory=dict)
+    sampling_args: JsonMap = {}
+    keep_trajectory_step: str | None = None
+    user: UserConfig | str | None = None
+    bindings: Bindings = {}
     max_turns: int = 10
 
-    @field_validator("program", mode="before")
-    @classmethod
-    def validate_program(cls, value: object) -> object:
-        if value is None or callable(value) or isinstance(value, str):
-            return value
-        if isinstance(value, Mapping):
-            return ProgramConfig.from_config(
-                string_mapping(cast(ConfigInputMap, value))
-            ).model_dump(exclude_none=True, exclude_defaults=True)
-        raise TypeError("program must be a callable, import ref, or mapping.")
+    # Collection fields are configured only here; runtime mutation APIs are separate.
+    toolsets: ToolsetSpecs | None = []
+    stops: list[CallableEntry] = []
+    setups: list[CallableEntry] = []
+    updates: list[CallableEntry] = []
+    metrics: list[CallableEntry] = []
+    rewards: list[CallableEntry] = []
+    advantages: list[CallableEntry] = []
+    cleanups: list[CallableEntry] = []
+    scoring: dict[str, ConfigData] = {}
 
     @field_validator("bindings", mode="before")
     @classmethod
     def validate_bindings(cls, value: object) -> Bindings:
         return normalize_binding_map(value, "harness.bindings", allow_objects=False)
 
+    @field_validator("scoring", mode="before")
+    @classmethod
+    def validate_scoring(cls, value: object) -> dict[str, ConfigData]:
+        return validate_scoring_map(value, "harness.scoring")
+
 
 class EnvConfig(Config):
-    taskset: TasksetConfig = Field(default_factory=TasksetConfig)
-    harness: HarnessConfig = Field(default_factory=HarnessConfig)
+    taskset: TasksetConfig = TasksetConfig()
+    harness: HarnessConfig = HarnessConfig()
 
     @classmethod
     def __pydantic_init_subclass__(cls, **kwargs: object) -> None:
@@ -380,30 +383,15 @@ class EnvConfig(Config):
             raise ValueError(str(exc)) from exc
         return value
 
-    @classmethod
-    def _merge_config_data(
-        cls, config: ConfigSource | None, data: ConfigData
-    ) -> ConfigData:
-        data = dict(data)
-        if config is None:
-            return data
-        base = config_data(config, cls)
-        for section in ("taskset", "harness"):
-            default_provided = section in data
-            override_provided = section in base
-            default = data.get(section)
-            override = base.pop(section, None)
-            if default_provided:
-                if override_provided:
-                    if default is None or override is None:
-                        data[section] = None
-                    else:
-                        data[section] = merge_child_config(default, override)
-                continue
-            if override_provided:
-                data[section] = override
-        base.update(data)
-        return base
+
+def config_model_mapping(value: object | None) -> ConfigData | None:
+    if value is None:
+        return None
+    if isinstance(value, BaseModel):
+        return value.model_dump(exclude_none=True)
+    if isinstance(value, Mapping):
+        return string_mapping(cast(ConfigInputMap, value))
+    raise TypeError("Config value must be a mapping or config object.")
 
 
 def sandbox_config_mapping(
@@ -414,11 +402,11 @@ def sandbox_config_mapping(
     if isinstance(value, SandboxConfig):
         return value.model_dump(exclude_none=True, exclude_unset=not fill_defaults)
     if isinstance(value, Mapping):
-        mapping = cast(ConfigMap, value)
+        mapping = string_mapping(cast(ConfigInputMap, value))
         prefer = mapping.get("prefer")
         if prefer is not None and prefer != "program":
             raise ValueError("sandbox.prefer must be 'program'.")
-        sandbox = SandboxConfig.from_config(mapping).model_dump(exclude_none=True)
+        sandbox = SandboxConfig.model_validate(mapping).model_dump(exclude_none=True)
         if fill_defaults:
             return sandbox
         return {key: sandbox[key] for key in mapping if key in sandbox}
