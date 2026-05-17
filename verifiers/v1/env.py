@@ -1,4 +1,5 @@
 import asyncio
+import os
 import uuid
 from typing import cast
 
@@ -28,6 +29,10 @@ class Env(vf.Environment):
             eval_dataset=self.taskset.get_eval_dataset,
             rubric=vf.Rubric(),
         )
+        _bt_project = os.environ.get("VF_BRAINTRUST_PROJECT")
+        if _bt_project:
+            from verifiers.integrations.braintrust import instrument
+            instrument(self, project=_bt_project)
 
     @vf.teardown
     async def teardown_harness(self) -> None:
