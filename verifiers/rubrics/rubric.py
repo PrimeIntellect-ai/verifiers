@@ -293,8 +293,19 @@ class Rubric:
 
     async def cleanup(self, state: State):
         """Run all @vf.cleanup-decorated methods on this rubric."""
+        cleanup_error: Exception | None = None
         for handler in self._cleanup_handlers:
-            await self._call_cleanup_handler(handler, state)
+            try:
+                await self._call_cleanup_handler(handler, state)
+            except Exception as e:
+                if cleanup_error is None:
+                    cleanup_error = e
+                self.logger.exception(
+                    "Cleanup handler %s failed",
+                    getattr(handler, "__name__", repr(handler)),
+                )
+        if cleanup_error is not None:
+            raise cleanup_error
 
     async def _call_cleanup_handler(self, handler: Callable[..., Any], state: State):
         objects = self.cleanup_objects(handler, state)
