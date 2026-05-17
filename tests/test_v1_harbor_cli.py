@@ -1,9 +1,11 @@
 import importlib
 import json
 import sys
+import tarfile
 import types
 from pathlib import Path
 from types import ModuleType
+from types import SimpleNamespace
 from typing import cast
 from uuid import uuid4
 
@@ -19,7 +21,7 @@ from verifiers.v1.packages.harnesses.terminus_2 import (
     Terminus2,
     terminus_2_agent_script,
 )
-from verifiers.v1.packages.tasksets.harbor import harbor_reward
+from verifiers.v1.packages.tasksets.harbor import HARBOR_REWARD_COMMAND, harbor_reward
 from verifiers.v1.utils.program_utils import merge_task_program, merge_task_sandbox
 
 
@@ -138,6 +140,112 @@ def test_harbor_taskset_constructs_env_with_opencode(
     assert "task_dir" not in cast(dict[str, object], env.harness.program)
 
 
+def test_harbor_reward_command_prefers_text_reward() -> None:
+    assert HARBOR_REWARD_COMMAND.index("reward.txt") < HARBOR_REWARD_COMMAND.index(
+        "reward.json"
+    )
+
+
+def test_harbor_taskset_resolves_verifier_environment_modes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package = write_harbor_package(tmp_path, monkeypatch)
+    tasks_root = cast(Path, getattr(package, "tasks_root"))
+    write_harbor_task(tasks_root, "shared-default")
+    implicit = write_harbor_task(tasks_root, "separate-implicit")
+    explicit = write_harbor_task(tasks_root, "separate-reuse-env")
+    implicit.joinpath("task.toml").write_text(
+        """
+schema_version = "1.2"
+artifacts = ["/logs/agent/trajectory.json"]
+
+[environment]
+docker_image = "agent:latest"
+cpus = 1
+memory_mb = 2048
+storage_mb = 4096
+
+[verifier]
+timeout_sec = 30
+
+[verifier.environment]
+docker_image = "verifier:latest"
+cpus = 2
+memory_mb = 1024
+storage_mb = 2048
+allow_internet = false
+""".strip()
+    )
+    explicit.joinpath("task.toml").write_text(
+        """
+schema_version = "1.2"
+
+[environment]
+docker_image = "agent-reused:latest"
+cpus = 3
+memory_mb = 3072
+storage_mb = 6144
+
+[verifier]
+environment_mode = "separate"
+timeout_sec = 45
+""".strip()
+    )
+
+    rows = {task["task_name"]: task for task in getattr(package, "load_taskset")()}
+
+    assert rows["shared-default"]["harbor"]["verifier_mode"] == "shared"
+    assert rows["shared-default"]["harbor"]["verifier_sandbox"] is None
+    assert rows["shared-default"]["harbor"]["verifier_upload_tests"] is False
+    assert rows["separate-implicit"]["harbor"]["verifier_mode"] == "separate"
+    assert rows["separate-implicit"]["harbor"]["verifier_sandbox"] == {
+        "image": "verifier:latest",
+        "cpu_cores": 2.0,
+        "memory_gb": 1.0,
+        "disk_size_gb": 2.0,
+        "timeout_minutes": 120,
+        "command_timeout": 30,
+        "workdir": "/app",
+        "scope": "rollout",
+        "network_access": False,
+    }
+    assert rows["separate-implicit"]["harbor"]["artifacts"] == [
+        "/logs/agent/trajectory.json"
+    ]
+    assert rows["separate-implicit"]["harbor"]["verifier_upload_tests"] is False
+    assert rows["separate-reuse-env"]["harbor"]["verifier_mode"] == "separate"
+    assert rows["separate-reuse-env"]["harbor"]["verifier_sandbox"]["image"] == (
+        "agent-reused:latest"
+    )
+    assert rows["separate-reuse-env"]["harbor"]["verifier_sandbox"]["memory_gb"] == 3.0
+    assert rows["separate-reuse-env"]["harbor"]["verifier_upload_tests"] is True
+
+
+def test_harbor_taskset_rejects_shared_mode_with_verifier_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package = write_harbor_package(tmp_path, monkeypatch)
+    task_dir = write_harbor_task(
+        cast(Path, getattr(package, "tasks_root")),
+        "bad-shared-env",
+    )
+    task_dir.joinpath("task.toml").write_text(
+        """
+[environment]
+docker_image = "agent:latest"
+
+[verifier]
+environment_mode = "shared"
+
+[verifier.environment]
+docker_image = "verifier:latest"
+""".strip()
+    )
+
+    with pytest.raises(ValueError, match="incompatible"):
+        list(getattr(package, "load_taskset")())
+
+
 class FakeHarborCommandResult:
     def __init__(
         self,
@@ -155,12 +263,56 @@ class FakeHarborSandboxClient:
     instances: list["FakeHarborSandboxClient"] = []
 
     def __init__(self):
+        self.create_requests: list[object] = []
+        self.created: list[str] = []
+        self.deleted: list[str] = []
+        self.upload_files: list[tuple[str, str, str]] = []
+        self.download_files: list[tuple[str, str, str]] = []
         self.execute_commands: list[tuple[str, int | None, str | None]] = []
         self.background_jobs: list[tuple[str, str, int | None, str | None]] = []
         type(self).instances.append(self)
 
+    async def create(self, request: object) -> object:
+        self.create_requests.append(request)
+        sandbox_id = f"verifier-sbx-{len(type(self).instances)}"
+        self.created.append(sandbox_id)
+        return SimpleNamespace(id=sandbox_id)
+
+    async def wait_for_creation(self, sandbox_id: str) -> None:
+        assert sandbox_id
+
+    async def delete(self, sandbox_id: str) -> None:
+        self.deleted.append(sandbox_id)
+
     async def upload_file(self, *args: object, **kwargs: object) -> None:
+        sandbox_id = str(kwargs.get("sandbox_id") or args[0])
+        file_path = str(kwargs.get("file_path") or args[1])
+        local_file_path = str(kwargs.get("local_file_path") or args[2])
+        self.upload_files.append((sandbox_id, file_path, local_file_path))
+
+    async def upload_bytes(self, *args: object, **kwargs: object) -> None:
+        sandbox_id = str(kwargs.get("sandbox_id") or args[0])
+        file_path = str(kwargs.get("file_path") or args[1])
+        self.upload_files.append((sandbox_id, file_path, "<bytes>"))
+
+    async def download_file(self, *args: object, **kwargs: object) -> None:
+        sandbox_id = str(kwargs.get("sandbox_id") or args[0])
+        file_path = str(kwargs.get("file_path") or args[1])
+        local_file_path = str(kwargs.get("local_file_path") or args[2])
+        self.download_files.append((sandbox_id, file_path, local_file_path))
+        local_path = Path(local_file_path)
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        if file_path.endswith(".tar.gz"):
+            with tarfile.open(local_path, "w:gz") as tar:
+                marker = local_path.parent / "marker.txt"
+                marker.write_text(file_path)
+                tar.add(marker, arcname="marker.txt")
+            return
+        local_path.write_text(file_path)
+
+    async def read_file(self, *args: object, **kwargs: object) -> str:
         _ = args, kwargs
+        return ""
 
     async def execute_command(
         self, *args: object, **kwargs: object
@@ -204,8 +356,78 @@ async def test_harbor_reward_uses_background_job_for_tests(
 
     client = FakeHarborSandboxClient.instances[0]
     assert reward == 1.0
+    assert client.created == []
     assert client.background_jobs == [("sbx-1", "bash test.sh", 120, "/tests")]
     assert ("bash test.sh", 120, "/tests") not in client.execute_commands
+
+
+@pytest.mark.asyncio
+async def test_harbor_reward_uses_fresh_separate_verifier_sandbox(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    task_dir = write_harbor_task(tmp_path)
+    fake_module = types.ModuleType("prime_sandboxes")
+    fake_module.AsyncSandboxClient = FakeHarborSandboxClient
+
+    class FakeCreateSandboxRequest:
+        def __init__(self, **kwargs: object):
+            self.__dict__.update(kwargs)
+
+    fake_module.CreateSandboxRequest = FakeCreateSandboxRequest
+    monkeypatch.setitem(sys.modules, "prime_sandboxes", fake_module)
+    FakeHarborSandboxClient.instances = []
+
+    reward = await harbor_reward(
+        {
+            "harbor": {
+                "task_dir": str(task_dir),
+                "test_timeout": 120,
+                "verifier_mode": "separate",
+                "verifier_sandbox": {
+                    "image": "verifier:latest",
+                    "scope": "rollout",
+                },
+                "verifier_upload_tests": True,
+                "verifier_env": {"MODEL": "judge"},
+                "artifacts": [
+                    "/logs/agent/trajectory.json",
+                    "/a/data",
+                    "/b/data",
+                ],
+            }
+        },
+        {"sandbox_id": "agent-sbx"},
+    )
+
+    agent_client, verifier_client = FakeHarborSandboxClient.instances
+    assert reward == 1.0
+    assert agent_client.created == []
+    assert verifier_client.create_requests[0].docker_image == "verifier:latest"
+    assert verifier_client.deleted == ["verifier-sbx-2"]
+    assert verifier_client.background_jobs == [
+        ("verifier-sbx-2", "bash /tests/test.sh", 120, None)
+    ]
+    assert not any(
+        path == "/tmp/harbor_tests.tar.gz" for _, path, _ in agent_client.upload_files
+    )
+    assert any(
+        path == "/tmp/harbor_tests.tar.gz"
+        for _, path, _ in verifier_client.upload_files
+    )
+    transfer_command = agent_client.execute_commands[0][0]
+    assert "/logs/artifacts" in transfer_command
+    assert "/logs/agent/trajectory.json" in transfer_command
+    assert "/a/data" in transfer_command
+    assert "/b/data" in transfer_command
+    assert agent_client.download_files[0][1] == "/tmp/_vf_harbor_inputs.tar.gz"
+    assert any(
+        path == "/tmp/_vf_harbor_inputs.tar.gz"
+        for _, path, _ in verifier_client.upload_files
+    )
+    assert any(
+        "tar -xzf" in command for command, _, _ in verifier_client.execute_commands
+    )
+    assert verifier_client.background_jobs[0][1] != "bash test.sh"
 
 
 def test_packaged_harbor_and_opencode_imports_are_reexported() -> None:

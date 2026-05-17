@@ -2,6 +2,7 @@ import inspect
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -19,11 +20,20 @@ from verifiers.utils.import_utils import load_toml
 
 from ...config import TasksetConfig, merge_config_value
 from ...taskset import Taskset, TasksetKwargs
-from ...utils.sandbox_utils import SandboxClient
+from ...utils.sandbox_utils import SandboxClient, create_sandbox_lease
 from verifiers.decorators import reward
-from ...types import ConfigData, Handler, ProgramOptionMap
+from ...types import ConfigData, ConfigMap, Handler, ProgramOptionMap
 
 TASKS_SUBDIR = "tasks"
+VERIFIER_MODE_SHARED = "shared"
+VERIFIER_MODE_SEPARATE = "separate"
+HARBOR_ARTIFACTS_DIR = "/logs/artifacts"
+HARBOR_REWARD_COMMAND = (
+    "if [ -s /logs/verifier/reward.txt ]; then "
+    "cat /logs/verifier/reward.txt; "
+    "elif [ -s /logs/verifier/reward.json ]; then "
+    "cat /logs/verifier/reward.json; fi"
+)
 
 
 def _resolve_caller_package() -> str | None:
@@ -197,24 +207,56 @@ class HarborTaskset(Taskset):
             raise TypeError(f"{task_toml_path} [environment] must be a mapping.")
         agent_config = config.get("agent", {}) or {}
         verifier_config = config.get("verifier", {}) or {}
+        if not isinstance(agent_config, Mapping):
+            raise TypeError(f"{task_toml_path} [agent] must be a mapping.")
+        if not isinstance(verifier_config, Mapping):
+            raise TypeError(f"{task_toml_path} [verifier] must be a mapping.")
         instruction = instruction_path.read_text().strip()
         task_remote_dir = self.task_dir.rstrip("/") or "/task"
-        sandbox = {
-            "image": environment.get("docker_image") or self.docker_image,
-            "cpu_cores": parse_number(environment.get("cpus"), self.cpu_cores),
-            "memory_gb": parse_gb(environment.get("memory"), self.memory_gb),
-            "disk_size_gb": parse_gb(environment.get("storage"), self.disk_size_gb),
-            "timeout_minutes": self.timeout_minutes,
-            "command_timeout": int(
-                parse_number(
-                    agent_config.get("timeout_sec"), self.agent_timeout_seconds
+        test_timeout = parse_number(
+            verifier_config.get("timeout_sec"),
+            self.verifier_timeout_seconds,
+        )
+        verifier_environment = verifier_config.get("environment")
+        verifier_mode = verifier_config.get("environment_mode")
+        if verifier_mode is not None:
+            verifier_mode = str(verifier_mode)
+            if verifier_mode not in {VERIFIER_MODE_SHARED, VERIFIER_MODE_SEPARATE}:
+                raise ValueError(
+                    f"{task_toml_path} [verifier].environment_mode must be "
+                    "'shared' or 'separate'."
                 )
-            ),
-            "workdir": self.workdir,
-            "scope": self.scope,
-        }
-        if "allow_internet" in environment:
-            sandbox["network_access"] = bool(environment["allow_internet"])
+        elif verifier_environment is not None:
+            verifier_mode = VERIFIER_MODE_SEPARATE
+        else:
+            verifier_mode = VERIFIER_MODE_SHARED
+        if verifier_mode == VERIFIER_MODE_SHARED and verifier_environment is not None:
+            raise ValueError(
+                f"{task_toml_path} [verifier].environment_mode='shared' is "
+                "incompatible with [verifier.environment]."
+            )
+        if (
+            verifier_mode == VERIFIER_MODE_SEPARATE
+            and verifier_environment is not None
+            and not isinstance(verifier_environment, Mapping)
+        ):
+            raise TypeError(
+                f"{task_toml_path} [verifier.environment] must be a mapping."
+            )
+        agent_timeout = int(
+            parse_number(agent_config.get("timeout_sec"), self.agent_timeout_seconds)
+        )
+        sandbox = self.sandbox_config(environment, agent_timeout)
+        verifier_sandbox: ConfigData | None = None
+        verifier_upload_tests = False
+        if verifier_mode == VERIFIER_MODE_SEPARATE and verifier_environment is None:
+            verifier_sandbox = {**sandbox, "command_timeout": int(test_timeout)}
+            verifier_upload_tests = True
+        elif verifier_mode == VERIFIER_MODE_SEPARATE:
+            verifier_environment = cast(ConfigMap, verifier_environment)
+            verifier_sandbox = self.sandbox_config(
+                verifier_environment, int(test_timeout)
+            )
         return {
             "example_id": index,
             "task_name": task_dir.name,
@@ -241,10 +283,12 @@ class HarborTaskset(Taskset):
                 "task_name": task_dir.name,
                 "config": config,
                 "docker_image": environment.get("docker_image"),
-                "test_timeout": parse_number(
-                    verifier_config.get("timeout_sec"),
-                    self.verifier_timeout_seconds,
-                ),
+                "test_timeout": test_timeout,
+                "verifier_mode": verifier_mode,
+                "verifier_sandbox": verifier_sandbox,
+                "verifier_upload_tests": verifier_upload_tests,
+                "verifier_env": verifier_config.get("env") or {},
+                "artifacts": config.get("artifacts") or [],
             },
             "info": {
                 "harbor": {
@@ -253,6 +297,33 @@ class HarborTaskset(Taskset):
                 }
             },
         }
+
+    def sandbox_config(
+        self, environment: ConfigMap, command_timeout: int
+    ) -> ConfigData:
+        memory = (
+            f"{environment['memory_mb']}mb"
+            if "memory_mb" in environment
+            else environment.get("memory")
+        )
+        storage = (
+            f"{environment['storage_mb']}mb"
+            if "storage_mb" in environment
+            else environment.get("storage")
+        )
+        sandbox: ConfigData = {
+            "image": environment.get("docker_image") or self.docker_image,
+            "cpu_cores": parse_number(environment.get("cpus"), self.cpu_cores),
+            "memory_gb": parse_gb(memory, self.memory_gb),
+            "disk_size_gb": parse_gb(storage, self.disk_size_gb),
+            "timeout_minutes": self.timeout_minutes,
+            "command_timeout": command_timeout,
+            "workdir": self.workdir,
+            "scope": self.scope,
+        }
+        if "allow_internet" in environment:
+            sandbox["network_access"] = bool(environment["allow_internet"])
+        return sandbox
 
 
 def harbor_task_dirs(root: Path, task_names: Iterable[str] | None = None) -> list[Path]:
@@ -370,38 +441,177 @@ async def harbor_reward(task, state) -> float:
     if not isinstance(harbor, Mapping):
         return 0.0
     task_dir = Path(str(harbor["task_dir"]))
+    mode = str(harbor.get("verifier_mode") or VERIFIER_MODE_SHARED)
+    timeout = int(parse_number(harbor.get("test_timeout"), 900))
+    verifier_env = harbor.get("verifier_env") or {}
+    if not isinstance(verifier_env, Mapping):
+        raise TypeError("[verifier].env must be a mapping.")
+    verifier_env = {str(key): str(value) for key, value in verifier_env.items()}
+    verifier_env = verifier_env or None
     from prime_sandboxes import AsyncSandboxClient
 
     client = cast(SandboxClient, AsyncSandboxClient())
     try:
-        await upload_harbor_tests(client, sandbox_id, task_dir)
-        test_timeout = int(parse_number(harbor.get("test_timeout"), 900))
-        result = await client.run_background_job(
-            sandbox_id=sandbox_id,
-            command="bash test.sh",
-            working_dir="/tests",
-            timeout=test_timeout,
-        )
-        state["harbor_tests"] = {
-            "returncode": result.exit_code,
-            "stdout": result.stdout or "",
-            "stderr": result.stderr or "",
-        }
-        reward_result = await client.execute_command(
-            sandbox_id=sandbox_id,
-            command=(
-                "if [ -s /logs/verifier/reward.txt ]; then "
-                "cat /logs/verifier/reward.txt; "
-                "elif [ -s /logs/verifier/reward.json ]; then "
-                "cat /logs/verifier/reward.json; fi"
-            ),
-        )
+        if mode == VERIFIER_MODE_SEPARATE:
+            reward_text = await run_separate_harbor_verifier(
+                client, sandbox_id, harbor, state, timeout, verifier_env
+            )
+        else:
+            await upload_harbor_tests(client, sandbox_id, task_dir)
+            reward_text = await run_harbor_tests(
+                client,
+                sandbox_id,
+                state,
+                command="bash test.sh",
+                working_dir="/tests",
+                timeout=timeout,
+                env=verifier_env,
+            )
     except Exception as e:
         state["harbor_error"] = str(e)
         return 0.0
     finally:
         await client.aclose()
-    return parse_reward_text(str(reward_result.stdout or "").strip())
+    return parse_reward_text(str(reward_text or "").strip())
+
+
+async def run_separate_harbor_verifier(
+    agent_client: SandboxClient,
+    agent_sandbox_id: str,
+    harbor: ConfigMap,
+    state: ConfigData,
+    timeout: int,
+    verifier_env: dict[str, str] | None,
+) -> str:
+    """Run Harbor's separate verifier mode in a fresh sandbox.
+
+    This is needed only when Harbor resolves the verifier environment separately
+    from the agent environment; the verifier image owns /tests/test.sh, so we
+    transfer just the configured grading inputs before running it.
+    """
+    sandbox = harbor.get("verifier_sandbox")
+    if not isinstance(sandbox, Mapping):
+        raise RuntimeError("Separate Harbor verifier did not resolve a sandbox.")
+    lease = await create_sandbox_lease(cast(ConfigData, dict(sandbox)), "harbor")
+    state["harbor_verifier_sandbox_id"] = lease.id
+    try:
+        await lease.execute("mkdir -p /logs/verifier /logs/artifacts /tests")
+        if harbor.get("verifier_upload_tests"):
+            await upload_harbor_tests(
+                lease.client, lease.id, Path(str(harbor["task_dir"]))
+            )
+        await transfer_harbor_verifier_inputs(
+            agent_client,
+            agent_sandbox_id,
+            lease.client,
+            lease.id,
+            harbor,
+        )
+        return await run_harbor_tests(
+            lease.client,
+            lease.id,
+            state,
+            command="bash /tests/test.sh",
+            working_dir=None,
+            timeout=timeout,
+            env=verifier_env,
+        )
+    finally:
+        await lease.delete()
+
+
+async def run_harbor_tests(
+    client: SandboxClient,
+    sandbox_id: str,
+    state: ConfigData,
+    *,
+    command: str,
+    working_dir: str | None,
+    timeout: int,
+    env: dict[str, str] | None,
+) -> str:
+    result = await client.run_background_job(
+        sandbox_id=sandbox_id,
+        command=command,
+        working_dir=working_dir,
+        timeout=timeout,
+        env=env,
+    )
+    state["harbor_tests"] = {
+        "returncode": result.exit_code,
+        "stdout": result.stdout or "",
+        "stderr": result.stderr or "",
+    }
+    reward_result = await client.execute_command(
+        sandbox_id=sandbox_id,
+        command=HARBOR_REWARD_COMMAND,
+    )
+    return reward_result.stdout or ""
+
+
+async def transfer_harbor_verifier_inputs(
+    agent_client: SandboxClient,
+    agent_sandbox_id: str,
+    verifier_client: SandboxClient,
+    verifier_sandbox_id: str,
+    harbor: ConfigMap,
+) -> None:
+    raw_artifacts = harbor.get("artifacts") or []
+    if not isinstance(raw_artifacts, list):
+        raise TypeError("Harbor task artifacts must be a list.")
+    sources = [HARBOR_ARTIFACTS_DIR]
+    for artifact in raw_artifacts:
+        if isinstance(artifact, str):
+            sources.append(artifact)
+            continue
+        if isinstance(artifact, dict):
+            source = cast(ConfigData, artifact).get("source")
+            if isinstance(source, str):
+                sources.append(source)
+                continue
+        raise TypeError("Harbor artifacts must be strings or source mappings.")
+
+    with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp_file:
+        local_tar = Path(tmp_file.name)
+    remote_tar = "/tmp/_vf_harbor_inputs.tar.gz"
+    tar_paths = [
+        (source, source.lstrip("/")) for source in sources if source.lstrip("/")
+    ]
+    archive_command = "\n".join(
+        [
+            "set -e",
+            f"rm -f {shlex.quote(remote_tar)}",
+            "set --",
+            *[
+                'if [ -e {source} ]; then set -- "$@" {path}; fi'.format(
+                    source=shlex.quote(source),
+                    path=shlex.quote(path),
+                )
+                for source, path in tar_paths
+            ],
+            'if [ "$#" -eq 0 ]; then exit 42; fi',
+            f'tar -czf {shlex.quote(remote_tar)} -C / "$@"',
+        ]
+    )
+    try:
+        result = await agent_client.execute_command(
+            sandbox_id=agent_sandbox_id,
+            command=archive_command,
+        )
+        if result.exit_code == 42:
+            return
+        if result.exit_code:
+            raise RuntimeError(result.stderr or result.stdout or "tar failed")
+        await agent_client.download_file(agent_sandbox_id, remote_tar, str(local_tar))
+        await upload_harbor_archive(
+            verifier_client, verifier_sandbox_id, local_tar, remote_tar
+        )
+    finally:
+        local_tar.unlink(missing_ok=True)
+        await agent_client.execute_command(
+            sandbox_id=agent_sandbox_id,
+            command=f"rm -f {shlex.quote(remote_tar)}",
+        )
 
 
 async def upload_harbor_tests(
@@ -412,17 +622,37 @@ async def upload_harbor_tests(
     try:
         await build_harbor_tests_archive(task_dir, tar_path)
         remote_tar = "/tmp/harbor_tests.tar.gz"
-        await client.upload_file(sandbox_id, remote_tar, str(tar_path))
-        await client.execute_command(
-            sandbox_id=sandbox_id,
-            command=(
-                f"mkdir -p /oracle /tests /logs/verifier && "
-                f"tar -xzf {remote_tar} -C / && rm {remote_tar}"
-            ),
+        await upload_harbor_archive(
+            client,
+            sandbox_id,
+            tar_path,
+            remote_tar,
+            before_extract="mkdir -p /oracle /tests /logs/verifier",
             timeout=900,
         )
     finally:
         tar_path.unlink(missing_ok=True)
+
+
+async def upload_harbor_archive(
+    client: SandboxClient,
+    sandbox_id: str,
+    local_tar: Path,
+    remote_tar: str,
+    *,
+    before_extract: str | None = None,
+    timeout: int | None = None,
+) -> None:
+    await client.upload_file(sandbox_id, remote_tar, str(local_tar))
+    extract = f"tar -xzf {shlex.quote(remote_tar)} -C / && rm {shlex.quote(remote_tar)}"
+    command = f"{before_extract} && {extract}" if before_extract else extract
+    result = await client.execute_command(
+        sandbox_id=sandbox_id,
+        command=command,
+        timeout=timeout,
+    )
+    if result.exit_code:
+        raise RuntimeError(result.stderr or result.stdout or "tar extract failed")
 
 
 async def build_harbor_tests_archive(task_dir: Path, tar_path: Path) -> None:
