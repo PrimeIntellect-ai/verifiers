@@ -68,7 +68,6 @@ class EndpointIdentity:
 @dataclass(frozen=True)
 class PromptCachePolicy:
     mode: PromptCacheMode = "disabled"
-    prefire_groups: bool = False
 
     @property
     def enabled(self) -> bool:
@@ -76,13 +75,11 @@ class PromptCachePolicy:
 
 
 class PromptCacheAdapter:
-    prefire_groups = True
-
     def policy_for(
         self, identity: EndpointIdentity, model: str
     ) -> PromptCachePolicy:
         _ = identity, model
-        return PromptCachePolicy(mode="implicit", prefire_groups=self.prefire_groups)
+        return PromptCachePolicy(mode="implicit")
 
 
 class AnthropicPromptCacheAdapter(PromptCacheAdapter):
@@ -90,9 +87,7 @@ class AnthropicPromptCacheAdapter(PromptCacheAdapter):
         self, identity: EndpointIdentity, model: str
     ) -> PromptCachePolicy:
         _ = identity, model
-        return PromptCachePolicy(
-            mode="anthropic_top_level", prefire_groups=self.prefire_groups
-        )
+        return PromptCachePolicy(mode="anthropic_top_level")
 
 
 class OpenRouterPromptCacheAdapter(PromptCacheAdapter):
@@ -103,11 +98,8 @@ class OpenRouterPromptCacheAdapter(PromptCacheAdapter):
     ) -> PromptCachePolicy:
         _ = identity
         if model.startswith(self.anthropic_model_prefixes):
-            return PromptCachePolicy(
-                mode="openrouter_anthropic_top_level",
-                prefire_groups=self.prefire_groups,
-            )
-        return PromptCachePolicy(mode="implicit", prefire_groups=self.prefire_groups)
+            return PromptCachePolicy(mode="openrouter_anthropic_top_level")
+        return PromptCachePolicy(mode="implicit")
 
 
 @dataclass(frozen=True)
@@ -170,19 +162,6 @@ def resolve_prompt_cache_policy(
     if spec is None:
         return DISABLED_PROMPT_CACHE_POLICY
     return spec.prompt_cache.policy_for(identity, model)
-
-
-def should_prefire_prompt_cache_group(
-    client_or_config: object, model: str, group_size: int
-) -> bool:
-    if group_size <= 1:
-        return False
-    config = client_or_config if isinstance(client_or_config, ClientConfig) else None
-    if config is None:
-        config = getattr(client_or_config, "config", None)
-    if not isinstance(config, ClientConfig):
-        return False
-    return resolve_prompt_cache_policy(config, model).prefire_groups
 
 
 def _cache_control_payload() -> dict[str, str]:

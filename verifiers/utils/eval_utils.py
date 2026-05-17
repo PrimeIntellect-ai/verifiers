@@ -720,9 +720,7 @@ def print_usage(results: GenerateOutputs):
     input_total = 0.0
     output_total = 0.0
     cached_input_total = 0.0
-    cache_write_input_total = 0.0
     cached_input_count = 0
-    cache_write_input_count = 0
     final_input_total = 0.0
     final_output_total = 0.0
     context_count = 0
@@ -737,10 +735,6 @@ def print_usage(results: GenerateOutputs):
         if cached is not None:
             cached_input_total += float(cached)
             cached_input_count += 1
-        cache_write = token_usage.get("cache_write_input_tokens")
-        if cache_write is not None:
-            cache_write_input_total += float(cache_write)
-            cache_write_input_count += 1
         inp = token_usage.get("final_input_tokens")
         out = token_usage.get("final_output_tokens")
         if inp is not None and out is not None:
@@ -756,10 +750,6 @@ def print_usage(results: GenerateOutputs):
         )
         if cached_input_count > 0:
             usage["cached_input_tokens"] = cached_input_total / cached_input_count
-        if cache_write_input_count > 0:
-            usage["cache_write_input_tokens"] = (
-                cache_write_input_total / cache_write_input_count
-            )
         if context_count > 0:
             usage["final_input_tokens"] = final_input_total / context_count
             usage["final_output_tokens"] = final_output_total / context_count
@@ -774,9 +764,6 @@ def print_usage(results: GenerateOutputs):
     cached = usage.get("cached_input_tokens")
     if cached is not None:
         print(f"cached_input_tokens (avg): {float(cached):.3f}")
-    cache_write = usage.get("cache_write_input_tokens")
-    if cache_write is not None:
-        print(f"cache_write_input_tokens (avg): {float(cache_write):.3f}")
     print(f"output_tokens (avg): {float(usage.get('output_tokens', 0.0)):.3f}")
     inp = usage.get("final_input_tokens")
     out = usage.get("final_output_tokens")

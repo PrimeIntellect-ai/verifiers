@@ -171,7 +171,6 @@ class Usage(CustomBaseModel):
     completion_tokens: int
     total_tokens: int
     cached_input_tokens: int | None = None
-    cache_write_input_tokens: int | None = None
 
 
 class ResponseTokens(CustomBaseModel):
@@ -224,7 +223,6 @@ class TokenUsage(TypedDict):
     input_tokens: float
     output_tokens: float
     cached_input_tokens: NotRequired[float]
-    cache_write_input_tokens: NotRequired[float]
     final_input_tokens: NotRequired[float]
     final_output_tokens: NotRequired[float]
 

@@ -9,7 +9,6 @@ import verifiers as vf
 from verifiers.clients import Client
 from verifiers.types import ClientConfig
 from verifiers.types import RolloutInput, SamplingArgs
-from verifiers.utils.prompt_cache_utils import should_prefire_prompt_cache_group
 
 from .harness import Harness
 from .state import State
@@ -103,24 +102,12 @@ class Env(vf.Environment):
                 "score_rollout": self.score_rollouts,
             },
         )
-        task_state_pairs = list(zip(tasks, states))
-        if should_prefire_prompt_cache_group(client, model, len(task_state_pairs)):
-            first_task, first_state = task_state_pairs[0]
-            first_result = await self.harness.run(first_task, first_state)
-            remaining_results = await asyncio.gather(
-                *[
-                    self.harness.run(task, state)
-                    for task, state in task_state_pairs[1:]
-                ]
-            )
-            states = [first_result, *remaining_results]
-        else:
-            states = await asyncio.gather(
-                *[
-                    self.harness.run(task, state)
-                    for task, state in task_state_pairs
-                ]
-            )
+        states = await asyncio.gather(
+            *[
+                self.harness.run(task, state)
+                for task, state in zip(tasks, states)
+            ]
+        )
         try:
             if self.score_rollouts:
                 await self.harness.score_group(tasks, states)

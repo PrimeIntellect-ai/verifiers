@@ -9,12 +9,11 @@ import verifiers.v1 as vf
 from verifiers.clients.anthropic_messages_client import AnthropicMessagesClient
 from verifiers.clients.client import Client
 from verifiers.clients.openai_chat_completions_client import OpenAIChatCompletionsClient
-from verifiers.types import ClientConfig, Response, ResponseMessage, Usage
+from verifiers.types import ClientConfig, Response, ResponseMessage
 from verifiers.utils.prompt_cache_utils import (
     EndpointIdentity,
     apply_prompt_cache_to_request,
     resolve_prompt_cache_policy,
-    should_prefire_prompt_cache_group,
 )
 from verifiers.utils.save_utils import state_to_output
 from verifiers.utils.usage_utils import extract_usage_token_details
@@ -65,35 +64,30 @@ class RecordingClient(Client):
         pass
 
 
-class GroupOrderClient(Client):
+class ConcurrentStartClient(Client):
     def __init__(self, config: ClientConfig):
         super().__init__(config)
         self.first_active = False
-        self.started_during_first: list[int] = []
+        self.started_any = False
+        self.overlapped_first = False
 
     def setup_client(self, config):
         return object()
 
     async def get_response(self, prompt, model, sampling_args, tools=None, **kwargs):
-        _ = prompt, model, sampling_args, tools
-        state = kwargs["state"]
-        rollout_index = int(state["rollout_index"])
-        if rollout_index == 0:
+        _ = prompt, model, sampling_args, tools, kwargs
+        if self.first_active:
+            self.overlapped_first = True
+        elif not self.started_any:
+            self.started_any = True
             self.first_active = True
             await asyncio.sleep(0.01)
             self.first_active = False
-        elif self.first_active:
-            self.started_during_first.append(rollout_index)
         return Response(
-            id=f"resp-{rollout_index}",
+            id="resp",
             created=0,
             model="model",
-            usage=Usage(
-                prompt_tokens=1,
-                reasoning_tokens=0,
-                completion_tokens=1,
-                total_tokens=2,
-            ),
+            usage=None,
             message=ResponseMessage(
                 content="ok",
                 finish_reason="stop",
@@ -118,14 +112,6 @@ class GroupOrderClient(Client):
 
     async def close(self) -> None:
         pass
-
-
-class IndexedTaskset(vf.Taskset):
-    async def init_group(self, task, num_rollouts):
-        tasks, states = await super().init_group(task, num_rollouts)
-        for index, state in enumerate(states):
-            state["rollout_index"] = index
-        return tasks, states
 
 
 def test_endpoint_identity_normalizes_official_origins():
@@ -193,7 +179,7 @@ def test_prompt_cache_false_disables_inferred_provider_policy():
     )
 
     assert policy.mode == "disabled"
-    assert not policy.prefire_groups
+    assert not policy.enabled
 
 
 def test_anthropic_request_policy_adds_top_level_cache_control():
@@ -262,42 +248,6 @@ def test_openai_policy_does_not_mutate_request():
     assert extra_kwargs == {}
 
 
-def test_group_prefire_is_tied_to_cache_policy():
-    assert should_prefire_prompt_cache_group(
-        ClientConfig(
-            client_type="openai_chat_completions",
-            api_base_url="https://api.openai.com/v1",
-        ),
-        "gpt-5.4-mini",
-        2,
-    )
-    assert not should_prefire_prompt_cache_group(
-        ClientConfig(
-            client_type="openai_chat_completions",
-            api_base_url="https://api.openai.com/v1",
-            prompt_cache=False,
-        ),
-        "gpt-5.4-mini",
-        2,
-    )
-    assert not should_prefire_prompt_cache_group(
-        ClientConfig(
-            client_type="openai_chat_completions",
-            api_base_url="https://api.example.com/v1",
-        ),
-        "model",
-        2,
-    )
-    assert not should_prefire_prompt_cache_group(
-        ClientConfig(
-            client_type="openai_chat_completions",
-            api_base_url="https://api.openai.com/v1",
-        ),
-        "gpt-5.4-mini",
-        1,
-    )
-
-
 @pytest.mark.asyncio
 async def test_client_request_hook_applies_prompt_cache_policy():
     client = RecordingClient(
@@ -317,15 +267,15 @@ async def test_client_request_hook_applies_prompt_cache_policy():
 
 
 @pytest.mark.asyncio
-async def test_v1_group_prefire_serializes_first_rollout_for_cached_provider():
-    client = GroupOrderClient(
+async def test_v1_group_rollouts_start_concurrently_for_cached_provider():
+    client = ConcurrentStartClient(
         ClientConfig(
             client_type="openai_chat_completions",
             api_base_url="https://api.openai.com/v1",
         )
     )
     env = vf.Env(
-        taskset=IndexedTaskset(source=[{"question": "q"}]),
+        taskset=vf.Taskset(source=[{"question": "q"}]),
         harness=vf.Harness(max_turns=1),
     )
 
@@ -340,34 +290,7 @@ async def test_v1_group_prefire_serializes_first_rollout_for_cached_provider():
         {},
     )
 
-    assert client.started_during_first == []
-
-
-@pytest.mark.asyncio
-async def test_v1_group_prefire_is_skipped_for_generic_provider():
-    client = GroupOrderClient(
-        ClientConfig(
-            client_type="openai_chat_completions",
-            api_base_url="https://api.example.com/v1",
-        )
-    )
-    env = vf.Env(
-        taskset=IndexedTaskset(source=[{"question": "q"}]),
-        harness=vf.Harness(max_turns=1),
-    )
-
-    await env._run_group_states(
-        [
-            {"prompt": [{"role": "user", "content": "q"}], "example_id": 0},
-            {"prompt": [{"role": "user", "content": "q"}], "example_id": 0},
-            {"prompt": [{"role": "user", "content": "q"}], "example_id": 0},
-        ],
-        client,
-        "model",
-        {},
-    )
-
-    assert client.started_during_first
+    assert client.overlapped_first
 
 
 @pytest.mark.asyncio
@@ -404,7 +327,6 @@ async def test_openai_usage_splits_cached_input_tokens():
     assert response.usage is not None
     assert response.usage.prompt_tokens == 20
     assert response.usage.cached_input_tokens == 80
-    assert response.usage.cache_write_input_tokens == 10
     assert response.usage.total_tokens == 25
 
 
@@ -429,11 +351,10 @@ async def test_anthropic_usage_splits_cache_read_and_write_tokens():
     assert response.usage is not None
     assert response.usage.prompt_tokens == 15
     assert response.usage.cached_input_tokens == 80
-    assert response.usage.cache_write_input_tokens == 10
     assert response.usage.total_tokens == 22
 
 
-def test_native_anthropic_usage_counts_cache_writes_as_uncached_input():
+def test_native_anthropic_cache_creation_counts_as_uncached_input():
     response = SimpleNamespace(
         usage=SimpleNamespace(
             input_tokens=5,
@@ -447,7 +368,6 @@ def test_native_anthropic_usage_counts_cache_writes_as_uncached_input():
         "input_tokens": 15,
         "output_tokens": 7,
         "cached_input_tokens": 80,
-        "cache_write_input_tokens": 10,
     }
 
 
@@ -467,7 +387,6 @@ def test_serialized_response_usage_counts_cache_details():
         "input_tokens": 20,
         "output_tokens": 7,
         "cached_input_tokens": 80,
-        "cache_write_input_tokens": 10,
     }
 
 

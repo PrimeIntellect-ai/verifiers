@@ -94,22 +94,11 @@ def extract_usage_token_details(response: object) -> dict[str, int] | None:
         if subtract_cached_from_input:
             details["input_tokens"] = max(0, details["input_tokens"] - cached_int)
 
-    cache_write_input_tokens = _get_optional_usage_value(
-        usage, "cache_write_input_tokens"
+    cache_creation_input_tokens = _get_optional_usage_value(
+        usage, "cache_creation_input_tokens"
     )
-    add_cache_write_to_input = False
-    if cache_write_input_tokens is None:
-        cache_write_input_tokens = _get_optional_usage_value(
-            usage, "cache_creation_input_tokens"
-        )
-        add_cache_write_to_input = cache_write_input_tokens is not None
-    if cache_write_input_tokens is None:
-        cache_write_input_tokens = _get_nested_usage_value(usage, "cache_write_tokens")
-    if cache_write_input_tokens is not None:
-        cache_write_int = _coerce_usage_int(cache_write_input_tokens)
-        details["cache_write_input_tokens"] = cache_write_int
-        if add_cache_write_to_input:
-            details["input_tokens"] += cache_write_int
+    if cache_creation_input_tokens is not None:
+        details["input_tokens"] += _coerce_usage_int(cache_creation_input_tokens)
 
     return details
 
@@ -144,7 +133,6 @@ class StateUsageTracker:
         output_tokens: int | float = 0,
         *,
         cached_input_tokens: int | float | None = None,
-        cache_write_input_tokens: int | float | None = None,
         mark_seen: bool = True,
     ) -> None:
         deltas: dict[str, float] = {
@@ -153,10 +141,6 @@ class StateUsageTracker:
         }
         if cached_input_tokens is not None:
             deltas["cached_input_tokens"] = float(cached_input_tokens or 0.0)
-        if cache_write_input_tokens is not None:
-            deltas["cache_write_input_tokens"] = float(
-                cache_write_input_tokens or 0.0
-            )
         if any(delta < 0 for delta in deltas.values()):
             raise ValueError("Token usage increments must be non-negative.")
         if mark_seen:
@@ -174,7 +158,6 @@ class StateUsageTracker:
             details["input_tokens"],
             details["output_tokens"],
             cached_input_tokens=details.get("cached_input_tokens"),
-            cache_write_input_tokens=details.get("cache_write_input_tokens"),
             mark_seen=True,
         )
 
@@ -189,7 +172,7 @@ def cast_token_usage(usage: Mapping[str, Any]) -> TokenUsage:
         "input_tokens": float(usage.get("input_tokens", 0.0)),
         "output_tokens": float(usage.get("output_tokens", 0.0)),
     }
-    for key in ("cached_input_tokens", "cache_write_input_tokens"):
+    for key in ("cached_input_tokens",):
         value = usage.get(key)
         if value is not None:
             out[key] = float(value)

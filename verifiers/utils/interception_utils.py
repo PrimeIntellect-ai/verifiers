@@ -856,21 +856,12 @@ def serialize_anthropic_message_response(response: Response) -> dict[str, Any]:
         content.append({"type": "text", "text": ""})
     usage = {}
     if response.usage is not None:
-        input_tokens = response.usage.prompt_tokens
-        if response.usage.cache_write_input_tokens is not None:
-            input_tokens = max(
-                0, input_tokens - response.usage.cache_write_input_tokens
-            )
         usage = {
-            "input_tokens": input_tokens,
+            "input_tokens": response.usage.prompt_tokens,
             "output_tokens": response.usage.completion_tokens,
         }
         if response.usage.cached_input_tokens is not None:
             usage["cache_read_input_tokens"] = response.usage.cached_input_tokens
-        if response.usage.cache_write_input_tokens is not None:
-            usage["cache_creation_input_tokens"] = (
-                response.usage.cache_write_input_tokens
-            )
     return {
         "id": response.id,
         "type": "message",
