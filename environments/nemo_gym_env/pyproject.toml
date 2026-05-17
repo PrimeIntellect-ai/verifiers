@@ -1,0 +1,24 @@
+[project]
+name = "nemo-gym-env"
+description = "Example Verifiers environment backed by a NeMo Gym task."
+tags = ["nemo-gym", "tool-use", "v1", "train", "eval"]
+version = "0.1.0"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "verifiers",
+    "nemo-gym",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["nemo_gym_env.py", "README.md", "pyproject.toml"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.verifiers.eval]
+num_examples = 5
+rollouts_per_example = 3
