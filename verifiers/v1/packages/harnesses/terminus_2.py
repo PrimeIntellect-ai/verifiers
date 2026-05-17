@@ -155,8 +155,6 @@ def terminus_2_agent_script(
         instruction = system_prompt_path.read_text() + "\\n\\n" + instruction
 """
     return f"""\
-from __future__ import annotations
-
 import asyncio
 import logging
 import os

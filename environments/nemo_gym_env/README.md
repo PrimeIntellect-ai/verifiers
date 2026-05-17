@@ -46,7 +46,7 @@ prime eval run nemo-gym-env \
 | `timeout_seconds` | float | `null` | Optional per-rollout timeout for the NeMo Gym run. |
 
 ### Adapting
-This example is intentionally tied to one NeMo Gym task. To create another Verifiers environment, copy this directory and change `NEMO_ENV` in `nemo_gym_env.py` to another packaged NeMo Gym environment name, such as `example_multi_step`, `mcqa`, or `structured_outputs`.
+This example is intentionally tied to one NeMo Gym task. To create another Verifiers environment, copy this directory and change `NEMO_ENV` in `nemo_gym_env/env.py` to another packaged NeMo Gym environment name, such as `example_multi_step`, `mcqa`, or `structured_outputs`.
 
 ### Metrics
 | Metric | Meaning |

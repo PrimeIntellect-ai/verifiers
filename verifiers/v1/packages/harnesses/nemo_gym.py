@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import asyncio
 import contextlib
 import inspect
@@ -7,21 +5,25 @@ import json
 import logging
 import os
 import secrets
-from collections.abc import Mapping, Sequence
+from collections.abc import Awaitable, Iterator, Mapping, Sequence
 from copy import deepcopy
-from typing import Any, Protocol, cast
+from typing import Protocol, cast
+from typing_extensions import NotRequired, TypedDict, Unpack
 from urllib.parse import urlparse
 
 from aiohttp import ClientSession, web
 from pydantic import Field
 
-from verifiers.types import AssistantMessage, ToolCall, ToolMessage
+from verifiers.types import AssistantMessage, SamplingArgs, ToolCall, ToolMessage
 from verifiers.utils.serve_utils import get_free_port
 
-from ...config import HarnessConfig
+from ...config import HarnessConfig, SandboxConfig
 from ...harness import Harness
 from ...state import State
 from ...task import Task
+from ...toolset import ToolsetCollection
+from ...types import ConfigData, ConfigMap, Handler, ModelClient, PromptInput, TaskRow
+from ...utils.binding_utils import BindingMap
 from ..nemo_gym import (
     agent_ref_name,
     first_nemo_gym_agent,
@@ -39,6 +41,7 @@ _NEMO_GYM_ACTIVE_RUNNERS = 0
 _NEMO_GYM_OWNS_AIOHTTP_CLIENT = False
 _RAY_ENABLE_UV_RUN_RUNTIME_ENV = "RAY_ENABLE_UV_RUN_RUNTIME_ENV"
 _NEMO_GYM_CONFIG_PATH_ENV_VAR_NAME = "NEMO_GYM_CONFIG_PATH"
+EndpointConfig = dict[str, str]
 
 
 class NeMoGymHarnessConfig(HarnessConfig):
@@ -48,21 +51,61 @@ class NeMoGymHarnessConfig(HarnessConfig):
     server_name: str | None = None
     agent_name: str | None = None
     timeout_seconds: float | None = None
-    global_config: dict[str, object] = Field(default_factory=dict)
+    global_config: ConfigData = Field(default_factory=dict)
 
 
 class NeMoGymRunner(Protocol):
     async def run(
         self,
-        row: Mapping[str, Any],
+        row: TaskRow,
         *,
         config_paths: Sequence[str],
         server_name: str | None,
         agent_name: str | None,
-        endpoint_config: Mapping[str, str],
+        endpoint_config: EndpointConfig,
         timeout_seconds: float | None,
-        global_config: Mapping[str, object],
-    ) -> Mapping[str, Any]: ...
+        global_config: ConfigMap,
+    ) -> ConfigMap: ...
+
+
+class NeMoGymServerClient(Protocol):
+    global_config_dict: ConfigMap
+    head_server_config: object
+
+
+class NeMoGymRunHelper(Protocol):
+    _server_client: NeMoGymServerClient
+
+    def start(self, parser_config: object) -> None: ...
+
+    def shutdown(self) -> None: ...
+
+    def poll(self) -> None: ...
+
+
+class NeMoGymRolloutCollector(Protocol):
+    def run_examples(
+        self, rows: list[ConfigData], *, head_server_config: object
+    ) -> Iterator[Awaitable[tuple[ConfigData, ConfigMap]]]: ...
+
+
+class NeMoGymHarnessKwargs(TypedDict):
+    system_prompt: NotRequired[PromptInput | None]
+    user: NotRequired[Handler | str | ConfigMap | None]
+    bindings: NotRequired[BindingMap | None]
+    sandbox: NotRequired[ConfigMap | SandboxConfig | None]
+    client: NotRequired[ModelClient | None]
+    model: NotRequired[str | None]
+    sampling_args: NotRequired[SamplingArgs | None]
+    max_turns: NotRequired[int | None]
+    toolsets: NotRequired[ToolsetCollection | None]
+    stops: NotRequired[list[Handler] | None]
+    setups: NotRequired[list[Handler] | None]
+    updates: NotRequired[list[Handler] | None]
+    metrics: NotRequired[list[Handler] | None]
+    rewards: NotRequired[list[Handler] | None]
+    advantages: NotRequired[list[Handler] | None]
+    cleanups: NotRequired[list[Handler] | None]
 
 
 class NeMoGymHarness(Harness):
@@ -75,6 +118,7 @@ class NeMoGymHarness(Harness):
     """
 
     config_type = NeMoGymHarnessConfig
+    config: NeMoGymHarnessConfig
 
     def __init__(
         self,
@@ -85,12 +129,12 @@ class NeMoGymHarness(Harness):
         server_name: str | None = None,
         agent_name: str | None = None,
         timeout_seconds: float | None = None,
-        global_config: Mapping[str, object] | None = None,
+        global_config: ConfigMap | None = None,
         runner: NeMoGymRunner | None = None,
-        config: NeMoGymHarnessConfig | Mapping[str, object] | None = None,
-        **kwargs: Any,
+        config: NeMoGymHarnessConfig | None = None,
+        **kwargs: Unpack[NeMoGymHarnessKwargs],
     ):
-        harness_config = type(self).config_type.from_config(
+        harness_config = NeMoGymHarnessConfig.from_config(
             config,
             nemo_env=nemo_env,
             config_name=config_name,
@@ -120,7 +164,7 @@ class NeMoGymHarness(Harness):
 
     async def _run_nemo_gym(self, task: Task, state: State) -> State:
         endpoint_config = state.get_endpoint_config(api="responses")
-        row = nemo_gym_row_from_task(task, self.config.agent_name)
+        row = nemo_gym_row_from_task(cast(ConfigMap, task), self.config.agent_name)
         result = await self.runner.run(
             row,
             config_paths=self._config_paths(),
@@ -163,23 +207,23 @@ class PersistentNeMoGymRunner:
 
     def __init__(self) -> None:
         self._lifecycle_lock = asyncio.Lock()
-        self._helper: Any | None = None
-        self._rollout_collector: Any | None = None
+        self._helper: NeMoGymRunHelper | None = None
+        self._rollout_collector: NeMoGymRolloutCollector | None = None
         self._proxy: NeMoGymModelProxy | None = None
         self._config_key: str | None = None
-        self._head_server_config: Any | None = None
+        self._head_server_config: object | None = None
 
     async def run(
         self,
-        row: Mapping[str, Any],
+        row: TaskRow,
         *,
         config_paths: Sequence[str],
         server_name: str | None,
         agent_name: str | None,
-        endpoint_config: Mapping[str, str],
+        endpoint_config: EndpointConfig,
         timeout_seconds: float | None,
-        global_config: Mapping[str, object],
-    ) -> Mapping[str, Any]:
+        global_config: ConfigMap,
+    ) -> ConfigMap:
         async with self._lifecycle_lock:
             await self._ensure_started(
                 config_paths=config_paths,
@@ -197,7 +241,7 @@ class PersistentNeMoGymRunner:
         return await asyncio.wait_for(run_once, timeout=timeout_seconds)
 
     async def _ensure_started(
-        self, *, config_paths: Sequence[str], global_config: Mapping[str, object]
+        self, *, config_paths: Sequence[str], global_config: ConfigMap
     ) -> None:
         global _NEMO_GYM_ACTIVE_RUNNERS, _NEMO_GYM_OWNS_AIOHTTP_CLIENT
 
@@ -214,14 +258,22 @@ class PersistentNeMoGymRunner:
             await self.teardown()
 
         try:
-            from omegaconf import OmegaConf
+            from omegaconf import OmegaConf  # ty: ignore[unresolved-import]
 
-            from nemo_gym import cli as nemo_cli
-            from nemo_gym.global_config import GlobalConfigDictParserConfig
-            from nemo_gym import global_config as nemo_global_config
-            from nemo_gym import server_utils as nemo_server_utils
-            from nemo_gym.rollout_collection import RolloutCollectionHelper
-            from nemo_gym.server_utils import (
+            from nemo_gym import cli as nemo_cli  # ty: ignore[unresolved-import]
+            from nemo_gym.global_config import (  # ty: ignore[unresolved-import]
+                GlobalConfigDictParserConfig,
+            )
+            from nemo_gym import (  # ty: ignore[unresolved-import]
+                global_config as nemo_global_config,
+            )
+            from nemo_gym import (  # ty: ignore[unresolved-import]
+                server_utils as nemo_server_utils,
+            )
+            from nemo_gym.rollout_collection import (  # ty: ignore[unresolved-import]
+                RolloutCollectionHelper,
+            )
+            from nemo_gym.server_utils import (  # ty: ignore[unresolved-import]
                 GlobalAIOHTTPAsyncClientConfig,
                 is_global_aiohttp_client_setup,
                 set_global_aiohttp_client,
@@ -243,7 +295,7 @@ class PersistentNeMoGymRunner:
             skip_load_from_dotenv=True,
         )
 
-        helper = nemo_cli.RunHelper()
+        helper = cast(NeMoGymRunHelper, nemo_cli.RunHelper())
         async with _NEMO_GYM_GLOBALS_LOCK:
             reset_nemo_gym_global_config(nemo_global_config)
             try:
@@ -268,7 +320,9 @@ class PersistentNeMoGymRunner:
                 raise
 
         self._helper = helper
-        self._rollout_collector = RolloutCollectionHelper()
+        self._rollout_collector = cast(
+            NeMoGymRolloutCollector, RolloutCollectionHelper()
+        )
         self._config_key = key
         self._head_server_config = helper._server_client.head_server_config
 
@@ -280,12 +334,12 @@ class PersistentNeMoGymRunner:
 
     async def _run_once(
         self,
-        row: Mapping[str, Any],
+        row: TaskRow,
         *,
         server_name: str | None,
         agent_name: str | None,
-        endpoint_config: Mapping[str, str],
-    ) -> Mapping[str, Any]:
+        endpoint_config: EndpointConfig,
+    ) -> ConfigMap:
         if (
             self._helper is None
             or self._rollout_collector is None
@@ -315,7 +369,7 @@ class PersistentNeMoGymRunner:
                     "NeMo Gym rollout collector returned no tasks."
                 ) from exc
             _, result = await future
-            return cast(Mapping[str, Any], result)
+            return cast(ConfigMap, result)
 
     async def teardown(self) -> None:
         global _NEMO_GYM_ACTIVE_RUNNERS, _NEMO_GYM_OWNS_AIOHTTP_CLIENT
@@ -333,12 +387,21 @@ class PersistentNeMoGymRunner:
                 await proxy.stop()
             return
 
+        nemo_global_config: object | None
+        nemo_server_utils: object | None
         try:
-            from nemo_gym import global_config as nemo_global_config
-            from nemo_gym import server_utils as nemo_server_utils
+            from nemo_gym import (  # ty: ignore[unresolved-import]
+                global_config as imported_nemo_global_config,
+            )
+            from nemo_gym import (  # ty: ignore[unresolved-import]
+                server_utils as imported_nemo_server_utils,
+            )
         except ImportError:
             nemo_global_config = None
             nemo_server_utils = None
+        else:
+            nemo_global_config = imported_nemo_global_config
+            nemo_server_utils = imported_nemo_server_utils
 
         try:
             await asyncio.to_thread(helper.shutdown)
@@ -408,7 +471,7 @@ class NeMoGymModelProxy:
         if runner is not None:
             await runner.cleanup()
 
-    def endpoint_config(self) -> dict[str, str]:
+    def endpoint_config(self) -> EndpointConfig:
         return {
             "base_url": f"http://{self.host}:{self.port}/v1",
             "api_base": f"http://{self.host}:{self.port}/v1",
@@ -418,7 +481,7 @@ class NeMoGymModelProxy:
         }
 
     @contextlib.asynccontextmanager
-    async def activate(self, routing_model: str, endpoint_config: Mapping[str, str]):
+    async def activate(self, routing_model: str, endpoint_config: EndpointConfig):
         async with self._lock:
             if routing_model in self._endpoints_by_model:
                 raise RuntimeError(
@@ -481,7 +544,7 @@ class NeMoGymModelProxy:
         headers = self._upstream_headers(request, endpoint["api_key"])
         if json_payload is not None:
             json_payload["model"] = endpoint["model"]
-            request_kwargs: dict[str, Any] = {"json": json_payload}
+            request_kwargs: ConfigData = {"json": json_payload}
         else:
             request_kwargs = {"data": await request.read()}
 
@@ -499,11 +562,9 @@ class NeMoGymModelProxy:
             )
 
     async def _endpoint_for_request(
-        self, json_payload: Mapping[str, Any] | None
-    ) -> dict[str, str] | None:
-        routing_model = (
-            json_payload.get("model") if isinstance(json_payload, Mapping) else None
-        )
+        self, json_payload: ConfigMap | None
+    ) -> EndpointConfig | None:
+        routing_model = json_payload.get("model") if json_payload is not None else None
         async with self._lock:
             if isinstance(routing_model, str):
                 endpoint = self._endpoints_by_model.get(routing_model)
@@ -536,18 +597,18 @@ class NeMoGymModelProxy:
         headers["Authorization"] = f"Bearer {api_key}"
         return headers
 
-    async def _request_json(self, request: web.Request) -> dict[str, Any] | None:
+    async def _request_json(self, request: web.Request) -> ConfigData | None:
         content_type = request.headers.get("content-type", "")
         if "json" not in content_type:
             return None
         payload = await request.json()
         if not isinstance(payload, dict):
             raise TypeError("OpenAI-compatible proxy requests must be JSON objects.")
-        return cast(dict[str, Any], payload)
+        return cast(ConfigData, payload)
 
-    def _response_headers(self, headers: Mapping[str, str]) -> dict[str, str]:
+    def _response_headers(self, headers: ConfigMap) -> dict[str, str]:
         return {
-            key: value
+            key: str(value)
             for key, value in headers.items()
             if key.lower()
             not in {
@@ -563,9 +624,9 @@ class NeMoGymModelProxy:
 def build_nemo_gym_global_config(
     *,
     config_paths: Sequence[str],
-    endpoint_config: Mapping[str, str],
-    global_config: Mapping[str, object],
-) -> dict[str, object]:
+    endpoint_config: EndpointConfig,
+    global_config: ConfigMap,
+) -> ConfigData:
     config = dict(global_config)
     config["config_paths"] = list(config_paths)
     config["policy_base_url"] = str(endpoint_config["base_url"])
@@ -579,8 +640,8 @@ def build_nemo_gym_global_config(
 
 
 def build_nemo_gym_policy_model_config(
-    endpoint_config: Mapping[str, str],
-) -> dict[str, object]:
+    endpoint_config: EndpointConfig,
+) -> ConfigData:
     parsed_url = urlparse(str(endpoint_config["base_url"]))
     if not parsed_url.hostname or parsed_url.port is None:
         raise ValueError(
@@ -601,7 +662,7 @@ def nemo_gym_proxy_model_name(rollout_id: str) -> str:
     return f"{PROXY_MODEL_NAME}-{rollout_id}"
 
 
-class _NoopPolicyModelProcess:
+class NoopPolicyModelProcess:
     pid = 0
 
     def __init__(self) -> None:
@@ -639,10 +700,9 @@ def skip_nemo_gym_policy_model_process(nemo_cli_module: object):
 
     def run_command(command: str, working_dir_path: object):
         if (
-            f"{_NEMO_GYM_CONFIG_PATH_ENV_VAR_NAME}="
-            f"{NEMO_GYM_POLICY_MODEL_SERVER_NAME}"
+            f"{_NEMO_GYM_CONFIG_PATH_ENV_VAR_NAME}={NEMO_GYM_POLICY_MODEL_SERVER_NAME}"
         ) in command:
-            return _NoopPolicyModelProcess()
+            return NoopPolicyModelProcess()
         return original_run_command(command, working_dir_path)
 
     setattr(nemo_cli_module, "setup_env_command", setup_env_command)
@@ -678,7 +738,7 @@ def disable_ray_uv_run_runtime_env():
     ray_constants: object | None = None
     original_constant: object | None = None
     try:
-        import ray._private.ray_constants as ray_constants
+        import ray._private.ray_constants as ray_constants  # ty: ignore[unresolved-import]
 
         original_constant = getattr(ray_constants, _RAY_ENABLE_UV_RUN_RUNTIME_ENV)
         setattr(ray_constants, _RAY_ENABLE_UV_RUN_RUNTIME_ENV, False)
@@ -696,10 +756,10 @@ def disable_ray_uv_run_runtime_env():
 
 
 def prepare_nemo_gym_request_row(
-    row: Mapping[str, Any],
+    row: TaskRow,
     agent_name: str | None,
-) -> dict[str, Any]:
-    prepared = deepcopy(dict(row))
+) -> ConfigData:
+    prepared: ConfigData = deepcopy(dict(row))
     if agent_name and not agent_ref_name(prepared.get("agent_ref")):
         prepared["agent_ref"] = {
             "type": "responses_api_agents",
@@ -714,28 +774,29 @@ def prepare_nemo_gym_request_row(
 
 
 def prepare_nemo_gym_rollout_collection_row(
-    row: Mapping[str, Any],
+    row: TaskRow,
     *,
     server_name: str | None,
     agent_name: str | None,
-) -> dict[str, Any]:
+) -> ConfigData:
     prepared = prepare_nemo_gym_request_row(row, agent_name)
     target_server_name = nemo_gym_server_name(prepared, server_name)
-    agent_ref = dict(cast(Mapping[str, Any], prepared["agent_ref"]))
+    agent_ref = dict(cast(ConfigMap, prepared["agent_ref"]))
     agent_ref["name"] = target_server_name
     prepared["agent_ref"] = agent_ref
     return prepared
 
 
-def set_nemo_gym_proxy_model(row: dict[str, Any], routing_model: str) -> None:
+def set_nemo_gym_proxy_model(row: ConfigData, routing_model: str) -> None:
     create_params = row.get("responses_create_params")
     if not isinstance(create_params, Mapping):
         raise ValueError("NeMo Gym row requires responses_create_params.")
-    row["responses_create_params"] = dict(create_params)
-    row["responses_create_params"]["model"] = routing_model
+    params = dict(cast(ConfigMap, create_params))
+    params["model"] = routing_model
+    row["responses_create_params"] = params
 
 
-def nemo_gym_server_name(row: Mapping[str, Any], server_name: str | None) -> str:
+def nemo_gym_server_name(row: TaskRow, server_name: str | None) -> str:
     if server_name:
         return server_name
     name = agent_ref_name(row.get("agent_ref"))
@@ -747,14 +808,10 @@ def nemo_gym_server_name(row: Mapping[str, Any], server_name: str | None) -> str
     return name
 
 
-def nemo_gym_row_from_task(
-    task: Mapping[str, Any], agent_name: str | None
-) -> dict[str, Any]:
+def nemo_gym_row_from_task(task: ConfigMap, agent_name: str | None) -> ConfigData:
     raw_row = task.get("nemo_gym_row")
     if isinstance(raw_row, Mapping):
-        return prepare_nemo_gym_request_row(
-            cast(Mapping[str, Any], raw_row), agent_name
-        )
+        return prepare_nemo_gym_request_row(cast(TaskRow, raw_row), agent_name)
     if "responses_create_params" not in task:
         raise ValueError(
             "NeMoGymHarness tasks must contain nemo_gym_row or responses_create_params."
@@ -771,17 +828,19 @@ def nemo_gym_row_from_task(
     return prepare_nemo_gym_request_row(row, agent_name)
 
 
-def apply_nemo_gym_result(state: State, result: Mapping[str, Any]) -> None:
+def apply_nemo_gym_result(state: State, result: ConfigMap) -> None:
     result_dict = jsonable_mapping(result)
     state["nemo_gym_result"] = result_dict
     response = result_dict.get("response")
     if isinstance(response, Mapping):
-        completion = messages_from_nemo_gym_response(response)
+        completion = messages_from_nemo_gym_response(cast(ConfigMap, response))
         if completion:
             state["completion"] = completion
     reward = result_dict.get("reward")
-    if reward is not None:
+    if isinstance(reward, int | float | str) and not isinstance(reward, bool):
         state["reward"] = float(reward)
+    elif reward is not None:
+        raise TypeError("NeMo Gym reward must be numeric.")
     metrics = state.setdefault("metrics", {})
     if isinstance(metrics, dict):
         for key, value in result_dict.items():
@@ -795,15 +854,16 @@ def apply_nemo_gym_result(state: State, result: Mapping[str, Any]) -> None:
 
 
 def messages_from_nemo_gym_response(
-    response: Mapping[str, Any],
-) -> list[dict[str, Any]]:
+    response: ConfigMap,
+) -> list[ConfigData]:
     output = response.get("output")
     if not isinstance(output, list):
         return []
-    messages: list[dict[str, Any]] = []
+    messages: list[ConfigData] = []
     for item in output:
         if not isinstance(item, Mapping):
             continue
+        item = cast(ConfigMap, item)
         item_type = item.get("type")
         if item_type == "function_call":
             call_id = item.get("call_id") or item.get("id")
@@ -811,35 +871,44 @@ def messages_from_nemo_gym_response(
             arguments = item.get("arguments")
             if isinstance(call_id, str) and isinstance(name, str):
                 messages.append(
-                    AssistantMessage(
-                        content=None,
-                        tool_calls=[
-                            ToolCall(
-                                id=call_id,
-                                name=name,
-                                arguments=arguments
-                                if isinstance(arguments, str)
-                                else "{}",
-                            )
-                        ],
-                    ).model_dump(exclude_none=True)
+                    cast(
+                        ConfigData,
+                        AssistantMessage(
+                            content=None,
+                            tool_calls=[
+                                ToolCall(
+                                    id=call_id,
+                                    name=name,
+                                    arguments=arguments
+                                    if isinstance(arguments, str)
+                                    else "{}",
+                                )
+                            ],
+                        ).model_dump(exclude_none=True),
+                    )
                 )
             continue
         if item_type == "function_call_output":
             call_id = item.get("call_id")
             if isinstance(call_id, str):
                 messages.append(
-                    ToolMessage(
-                        tool_call_id=call_id,
-                        content=nemo_output_text(item.get("output")),
-                    ).model_dump(exclude_none=True)
+                    cast(
+                        ConfigData,
+                        ToolMessage(
+                            tool_call_id=call_id,
+                            content=nemo_output_text(item.get("output")),
+                        ).model_dump(exclude_none=True),
+                    )
                 )
             continue
         if item_type == "message":
             messages.append(
-                AssistantMessage(
-                    content=nemo_content_text(item.get("content")),
-                ).model_dump(exclude_none=True)
+                cast(
+                    ConfigData,
+                    AssistantMessage(
+                        content=nemo_content_text(item.get("content")),
+                    ).model_dump(exclude_none=True),
+                )
             )
     return messages
 
@@ -850,8 +919,11 @@ def nemo_content_text(content: object) -> str:
     if isinstance(content, list):
         parts: list[str] = []
         for part in content:
-            if isinstance(part, Mapping) and isinstance(part.get("text"), str):
-                parts.append(str(part["text"]))
+            if isinstance(part, Mapping):
+                part = cast(ConfigMap, part)
+                text = part.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
         return "\n".join(parts)
     return "" if content is None else str(content)
 
@@ -862,16 +934,18 @@ def nemo_output_text(output: object) -> str:
     return json.dumps(jsonable(output), sort_keys=True)
 
 
-def jsonable_mapping(value: Mapping[str, Any]) -> dict[str, Any]:
-    return cast(dict[str, Any], jsonable(dict(value)))
+def jsonable_mapping(value: ConfigMap) -> ConfigData:
+    return cast(ConfigData, jsonable(dict(value)))
 
 
-def jsonable(value: Any) -> Any:
+def jsonable(value: object) -> object:
     model_dump = getattr(value, "model_dump", None)
     if callable(model_dump):
         return jsonable(model_dump(exclude_none=True))
     if isinstance(value, Mapping):
-        return {str(key): jsonable(item) for key, item in value.items()}
+        return {
+            str(key): jsonable(item) for key, item in cast(ConfigMap, value).items()
+        }
     if isinstance(value, list):
         return [jsonable(item) for item in value]
     if isinstance(value, tuple):

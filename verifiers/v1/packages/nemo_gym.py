@@ -1,14 +1,15 @@
-from __future__ import annotations
-
 from collections.abc import Mapping
 from pathlib import Path
+from typing import cast
+
+from ..types import ConfigMap
 
 DEFAULT_NEMO_GYM_DATA_NAME = "example.jsonl"
 
 
 def nemo_gym_package_root() -> Path:
     try:
-        from nemo_gym import PARENT_DIR as nemo_gym_root
+        from nemo_gym import PARENT_DIR as nemo_gym_root  # ty: ignore[unresolved-import]
     except ImportError as exc:
         raise ImportError(
             "NeMo Gym integration requires nemo-gym. Install with: uv add nemo-gym"
@@ -56,7 +57,7 @@ def resolve_nemo_gym_data_path(
 
 def infer_nemo_gym_agent_from_config(config_path: str | Path) -> tuple[str, str]:
     try:
-        from omegaconf import OmegaConf
+        from omegaconf import OmegaConf  # ty: ignore[unresolved-import]
     except ImportError as exc:
         raise ImportError(
             "NeMo Gym config inference requires omegaconf. "
@@ -94,5 +95,5 @@ def first_nemo_gym_agent(
 def agent_ref_name(value: object) -> str | None:
     if not isinstance(value, Mapping):
         return None
-    name = value.get("name")
+    name = cast(ConfigMap, value).get("name")
     return name if isinstance(name, str) and name else None

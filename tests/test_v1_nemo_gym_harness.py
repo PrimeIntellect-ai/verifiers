@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import asyncio
 import gzip
 import os
@@ -149,9 +147,7 @@ async def test_nemo_gym_proxy_strips_content_encoding_after_decompression():
     async def handle_response(request: web.Request) -> web.Response:
         body = await request.json()
         return web.Response(
-            body=gzip.compress(
-                f'{{"model":"{body["model"]}","ok":true}}'.encode()
-            ),
+            body=gzip.compress(f'{{"model":"{body["model"]}","ok":true}}'.encode()),
             headers={
                 "Content-Encoding": "gzip",
                 "Content-Type": "application/json",
@@ -253,7 +249,10 @@ def test_set_nemo_gym_proxy_model_preserves_row_without_mutating_create_params()
         "temperature": 0.2,
         "model": "proxy-rollout",
     }
-    assert create_params == {"input": [{"role": "user", "content": "hi"}], "temperature": 0.2}
+    assert create_params == {
+        "input": [{"role": "user", "content": "hi"}],
+        "temperature": 0.2,
+    }
 
 
 def test_disable_ray_uv_run_runtime_env_sets_and_restores_env(monkeypatch):
@@ -302,7 +301,9 @@ def test_skip_nemo_gym_policy_model_process_leaves_other_processes_untouched():
     assert proxy_process.poll() == 0
     assert real_process == "real-process"
     assert module.setup_calls == [(".", {}, "example_single_tool_call")]
-    assert module.calls == [("NEMO_GYM_CONFIG_PATH=example_single_tool_call python app.py", ".")]
+    assert module.calls == [
+        ("NEMO_GYM_CONFIG_PATH=example_single_tool_call python app.py", ".")
+    ]
 
 
 @pytest.mark.asyncio

@@ -1,13 +1,13 @@
-from __future__ import annotations
-
 import json
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Mapping
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, cast
+from typing import cast
+from typing_extensions import Unpack
 
 from ...config import TasksetConfig, merge_config_value
-from ...taskset import Taskset
+from ...taskset import Taskset, TasksetKwargs
+from ...types import ConfigData, ConfigMap, TaskRow, TaskRows, TaskRowsSource
 from ...utils.endpoint_utils import normalize_openai_responses_input
 from ..nemo_gym import (
     DEFAULT_NEMO_GYM_DATA_NAME,
@@ -17,7 +17,7 @@ from ..nemo_gym import (
 
 
 class NeMoGymTasksetConfig(TasksetConfig):
-    rows: object | None = None
+    rows: TaskRowsSource | None = None
     nemo_env: str | None = None
     jsonl_path: str | None = None
     data_name: str = DEFAULT_NEMO_GYM_DATA_NAME
@@ -33,22 +33,24 @@ class NeMoGymTaskset(Taskset):
     """
 
     config_type = NeMoGymTasksetConfig
+    config: NeMoGymTasksetConfig
 
     def __init__(
         self,
-        rows: Iterable[Mapping[str, Any]]
-        | Callable[[], Iterable[Mapping[str, Any]]]
-        | None = None,
+        rows: TaskRowsSource | None = None,
         nemo_env: str | None = None,
         jsonl_path: str | Path | None = None,
         data_name: str | None = None,
         agent_name: str | None = None,
         limit: int | None = None,
-        config: NeMoGymTasksetConfig | Mapping[str, object] | None = None,
-        **kwargs: Any,
+        config: NeMoGymTasksetConfig | None = None,
+        **kwargs: Unpack[TasksetKwargs],
     ):
-        self.config = type(self).config_type.from_config(config)
-        self._rows_source = merge_config_value(rows, self.config.rows)
+        self.config = NeMoGymTasksetConfig.from_config(config)
+        self._rows_source = cast(
+            TaskRowsSource | None,
+            merge_config_value(rows, self.config.rows),
+        )
         self.nemo_env = cast(
             str | None,
             merge_config_value(nemo_env, self.config.nemo_env),
@@ -75,7 +77,14 @@ class NeMoGymTaskset(Taskset):
             merge_config_value(agent_name, self.config.agent_name),
         )
         raw_limit = merge_config_value(limit, self.config.limit)
-        self.limit = int(raw_limit) if raw_limit is not None else None
+        if raw_limit is None:
+            self.limit = None
+        elif isinstance(raw_limit, int) and not isinstance(raw_limit, bool):
+            self.limit = raw_limit
+        elif isinstance(raw_limit, str):
+            self.limit = int(raw_limit)
+        else:
+            raise TypeError("NeMoGymTaskset limit must be an integer.")
         super().__init__(
             source=self.load_rows,
             taskset_id="nemo_gym",
@@ -83,7 +92,7 @@ class NeMoGymTaskset(Taskset):
             **kwargs,
         )
 
-    def load_rows(self) -> list[dict[str, Any]]:
+    def load_rows(self) -> list[ConfigData]:
         raw_rows = self._load_raw_rows()
         if self.limit is not None:
             raw_rows = raw_rows[: self.limit]
@@ -92,45 +101,45 @@ class NeMoGymTaskset(Taskset):
             for index, row in enumerate(raw_rows)
         ]
 
-    def _load_raw_rows(self) -> list[Mapping[str, Any]]:
+    def _load_raw_rows(self) -> list[TaskRow]:
         if self._rows_source is not None:
-            source = (
-                self._rows_source()
-                if callable(self._rows_source)
-                else self._rows_source
+            source = self._rows_source
+            rows = (
+                cast(Callable[[], TaskRows], source)() if callable(source) else source
             )
-            return [dict(row) for row in cast(Iterable[Mapping[str, Any]], source)]
+            return [dict(row) for row in rows]
         if self.jsonl_path is None:
             raise ValueError("NeMoGymTaskset requires rows=... or jsonl_path=...")
-        rows: list[Mapping[str, Any]] = []
+        rows: list[TaskRow] = []
         with self.jsonl_path.open(encoding="utf-8") as f:
             for line in f:
                 stripped = line.strip()
                 if stripped:
-                    rows.append(cast(Mapping[str, Any], json.loads(stripped)))
+                    rows.append(cast(TaskRow, json.loads(stripped)))
         return rows
 
 
 def normalize_nemo_gym_task_row(
-    row: Mapping[str, Any],
+    row: TaskRow,
     index: int,
     *,
     agent_name: str | None = None,
-) -> dict[str, Any]:
-    nemo_row = deepcopy(dict(row))
+) -> ConfigData:
+    nemo_row: ConfigData = deepcopy(dict(row))
     if agent_name and not agent_ref_name(nemo_row.get("agent_ref")):
         nemo_row["agent_ref"] = {
             "type": "responses_api_agents",
             "name": agent_name,
         }
-    task_row = deepcopy(nemo_row)
+    task_row: ConfigData = deepcopy(nemo_row)
     task_row["nemo_gym_row"] = nemo_row
     task_row.setdefault("example_id", index)
     prompt, system_prompt = prompt_parts_from_nemo_gym_row(nemo_row)
     task_row.setdefault("prompt", prompt)
     if system_prompt:
         task_row.setdefault("system_prompt", system_prompt)
-    info = dict(task_row.get("info") or {})
+    raw_info = task_row.get("info")
+    info = dict(cast(ConfigMap, raw_info)) if isinstance(raw_info, Mapping) else {}
     info.setdefault(
         "nemo_gym",
         {
@@ -142,19 +151,20 @@ def normalize_nemo_gym_task_row(
 
 
 def prompt_parts_from_nemo_gym_row(
-    row: Mapping[str, Any],
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    row: TaskRow,
+) -> tuple[list[ConfigData], list[ConfigData]]:
     create_params = row.get("responses_create_params")
     if not isinstance(create_params, Mapping):
         return [], []
+    create_params = cast(ConfigMap, create_params)
     try:
         messages = normalize_openai_responses_input(create_params.get("input"))
     except Exception:
         return [], []
-    prompt: list[dict[str, Any]] = []
-    system_prompt: list[dict[str, Any]] = []
+    prompt: list[ConfigData] = []
+    system_prompt: list[ConfigData] = []
     for message in messages:
-        dumped = message.model_dump(exclude_none=True)
+        dumped = cast(ConfigData, message.model_dump(exclude_none=True))
         if getattr(message, "role", None) == "system":
             system_prompt.append(dumped)
         else:
