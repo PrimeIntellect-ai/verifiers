@@ -1,34 +1,23 @@
-import base64
-from io import BytesIO
-from typing import Any, cast
-
-import numpy as np
+from typing import Any
 
 from verifiers.types import (
     AssistantMessage,
     Messages,
     Response,
+    RoutedExpertsPayload,
     TrajectoryStepTokens,
 )
 
 
-def parse_routed_experts(raw: Any) -> str | None:
+def parse_routed_experts(raw: Any) -> RoutedExpertsPayload | None:
     if raw is None:
         return None
-    return cast(str, raw)
-
-
-def truncate_routed_experts(routed_experts: str | None, seq_len: int) -> str | None:
-    if routed_experts is None:
-        return None
-
-    array = np.load(BytesIO(base64.b64decode(routed_experts)), allow_pickle=False)
-    assert array.ndim == 3
-    assert 0 <= seq_len <= array.shape[0]
-
-    buffer = BytesIO()
-    np.save(buffer, np.ascontiguousarray(array[:seq_len]), allow_pickle=False)
-    return base64.b64encode(buffer.getvalue()).decode("ascii")
+    assert isinstance(raw, dict)
+    data = raw["data"]
+    shape = raw["shape"]
+    assert isinstance(data, str)
+    assert isinstance(shape, list)
+    return {"data": data, "shape": [int(dim) for dim in shape]}
 
 
 async def parse_response_message(response: Response) -> Messages:
@@ -73,15 +62,11 @@ async def parse_response_tokens(
             completion_ids = []
             completion_mask = []
             completion_logprobs = []
-            routed_experts = truncate_routed_experts(routed_experts, len(prompt_ids))
         elif prompt_len + completion_len > max_seq_len:
             is_truncated = True
             completion_ids = tokens.completion_ids[: max_seq_len - prompt_len]
             completion_mask = tokens.completion_mask[: max_seq_len - prompt_len]
             completion_logprobs = tokens.completion_logprobs[: max_seq_len - prompt_len]
-            routed_experts = truncate_routed_experts(
-                routed_experts, prompt_len + len(completion_ids)
-            )
         else:
             is_truncated = False
     else:

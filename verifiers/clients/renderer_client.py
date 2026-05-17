@@ -56,6 +56,7 @@ from verifiers.types import (
     UserMessage,
 )
 from verifiers.utils.client_utils import setup_openai_client
+from verifiers.utils.response_utils import parse_routed_experts
 
 # Module-level bridge counters. Incremented by every RendererClient instance
 # that tries to stitch a multi-turn prompt; callers (e.g. prime-rl's
@@ -651,7 +652,7 @@ class RendererClient(
             completion_ids=completion_ids,
             completion_mask=[1] * len(completion_ids),
             completion_logprobs=completion_logprobs,
-            routed_experts=response.get("routed_experts"),
+            routed_experts=parse_routed_experts(response.get("routed_experts")),
             multi_modal_data=response.get("multi_modal_data"),
         )
 
