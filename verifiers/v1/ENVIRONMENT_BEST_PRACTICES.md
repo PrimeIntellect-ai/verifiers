@@ -105,11 +105,24 @@ import verifiers as vf
 
 
 class MyTasksetConfig(vf.TasksetConfig):
-    source: str = "my_env.data:load_rows"
+    split: str = "train"
     rewards: list[vf.CallableConfig] = [
         vf.CallableConfig(fn="my_env.rewards:exact")
     ]
-    split: str = "train"
+
+
+class MyTaskset(vf.Taskset):
+    config_type = MyTasksetConfig
+
+    def rows(self) -> list[dict[str, object]]:
+        rows = [
+            {
+                "prompt": [{"role": "user", "content": "What is 2 + 2?"}],
+                "answer": "4",
+                "split": "train",
+            }
+        ]
+        return [row for row in rows if row["split"] == self.config.split]
 
 
 class MyEnvConfig(vf.EnvConfig):
@@ -118,7 +131,7 @@ class MyEnvConfig(vf.EnvConfig):
 
 
 def load_taskset(config: MyTasksetConfig = MyTasksetConfig()) -> vf.Taskset:
-    return vf.Taskset(config=config)
+    return MyTaskset(config=config)
 
 
 def load_environment(config: MyEnvConfig = MyEnvConfig()) -> vf.Env:
@@ -137,8 +150,21 @@ import verifiers as vf
 
 
 class MyTasksetConfig(vf.TasksetConfig):
-    source: str = "my_env.data:load_rows"
     split: str = "train"
+
+
+class MyTaskset(vf.Taskset):
+    config_type = MyTasksetConfig
+
+    def rows(self) -> list[dict[str, object]]:
+        rows = [
+            {
+                "prompt": [{"role": "user", "content": "What is 2 + 2?"}],
+                "answer": "4",
+                "split": "train",
+            }
+        ]
+        return [row for row in rows if row["split"] == self.config.split]
 
 
 class MyHarnessConfig(vf.HarnessConfig):
@@ -152,7 +178,7 @@ class MyEnvConfig(vf.EnvConfig):
 
 
 def load_taskset(config: MyTasksetConfig = MyTasksetConfig()) -> vf.Taskset:
-    return vf.Taskset(config=config)
+    return MyTaskset(config=config)
 
 
 def load_harness(config: MyHarnessConfig = MyHarnessConfig()) -> vf.Harness:

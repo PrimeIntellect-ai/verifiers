@@ -53,11 +53,18 @@ import verifiers as vf
 
 
 class MyTasksetConfig(vf.TasksetConfig):
-    source: str = "my_env:load_rows"
+    split: str = "train"
     system_prompt: str = SYSTEM_PROMPT
     rewards: list[vf.CallableConfig] = [vf.CallableConfig(fn="my_env:reward_fn")]
     metrics: list[vf.CallableConfig] = [vf.CallableConfig(fn="my_env:metric_fn")]
     toolsets: list[dict[str, str]] = [{"fn": "my_env:load_toolset"}]
+
+
+class MyTaskset(vf.Taskset):
+    config_type = MyTasksetConfig
+
+    def rows(self) -> list[dict[str, object]]:
+        return load_rows(split=self.config.split)
 
 
 class MyEnvConfig(vf.EnvConfig):
@@ -66,7 +73,7 @@ class MyEnvConfig(vf.EnvConfig):
 
 
 def load_taskset(config: MyTasksetConfig = MyTasksetConfig()) -> vf.Taskset:
-    return vf.Taskset(config=config)
+    return MyTaskset(config=config)
 
 
 def load_harness(config: vf.HarnessConfig) -> vf.Harness:
@@ -106,12 +113,18 @@ live with the environment instead of the root `verifiers` package.
 Put system instructions in `system_prompt`, not in `prompt`:
 
 ```python
-vf.Taskset(
-    config=vf.TasksetConfig(
-        source="my_env:load_rows",
-        system_prompt="Answer concisely.",
-    )
-)
+class PromptTasksetConfig(vf.TasksetConfig):
+    system_prompt: str = "Answer concisely."
+
+
+class PromptTaskset(vf.Taskset):
+    config_type = PromptTasksetConfig
+
+    def rows(self) -> list[dict[str, object]]:
+        return [{"prompt": [{"role": "user", "content": "Question?"}]}]
+
+
+taskset = PromptTaskset(config=PromptTasksetConfig())
 ```
 
 or per task:
@@ -144,7 +157,7 @@ Use this for:
 
 Migration:
 
-1. Convert the old dataset builder into `source` / `eval_source`.
+1. Convert the old dataset builder into `Taskset.rows()`.
 2. Convert each reward or metric into `@vf.reward` / `@vf.metric`.
 3. Return `vf.Env(taskset=taskset)`.
 
@@ -152,16 +165,6 @@ Example:
 
 ```python
 import verifiers as vf
-
-
-def source():
-    for row in load_dataset(...):
-        yield {
-            "prompt": [{"role": "user", "content": row["question"]}],
-            "answer": row["answer"],
-            "info": {"id": row["id"]},
-            "max_turns": 1,
-        }
 
 
 @vf.reward(weight=1.0)
@@ -172,10 +175,25 @@ async def exact(task, state) -> float:
 
 
 class QATasksetConfig(vf.TasksetConfig):
-    source: str = f"{__name__}:source"
+    split: str = "train"
     rewards: list[vf.CallableConfig] = [
         vf.CallableConfig(fn=f"{__name__}:exact", weight=1.0)
     ]
+
+
+class QATaskset(vf.Taskset):
+    config_type = QATasksetConfig
+
+    def rows(self) -> list[dict[str, object]]:
+        return [
+            {
+                "prompt": [{"role": "user", "content": row["question"]}],
+                "answer": row["answer"],
+                "info": {"id": row["id"]},
+                "max_turns": 1,
+            }
+            for row in load_dataset(..., split=self.config.split)
+        ]
 
 
 class QAEnvConfig(vf.EnvConfig):
@@ -183,7 +201,7 @@ class QAEnvConfig(vf.EnvConfig):
 
 
 def load_taskset(config: QATasksetConfig = QATasksetConfig()):
-    return vf.Taskset(config=config)
+    return QATaskset(config=config)
 
 
 def load_environment(config: QAEnvConfig = QAEnvConfig()):
@@ -208,14 +226,20 @@ async def exact(task, state, extract_answer) -> float:
     return float(extract_answer(state.get("completion") or []) == task["answer"])
 
 
-taskset = vf.Taskset(
-    config=vf.TasksetConfig(
-        source="my_env:source",
-        rewards=[vf.CallableConfig(fn="my_env:exact")],
-        objects={"extract_answer": "my_env:AnswerExtractor"},
-        bindings={"exact.extract_answer": "objects.extract_answer"},
-    )
-)
+class ExtractTasksetConfig(vf.TasksetConfig):
+    rewards: list[vf.CallableConfig] = [vf.CallableConfig(fn="my_env:exact")]
+    objects: dict[str, str] = {"extract_answer": "my_env:AnswerExtractor"}
+    bindings: dict[str, str] = {"exact.extract_answer": "objects.extract_answer"}
+
+
+class ExtractTaskset(vf.Taskset):
+    config_type = ExtractTasksetConfig
+
+    def rows(self) -> list[dict[str, object]]:
+        return [{"prompt": [{"role": "user", "content": "Question?"}], "answer": "A"}]
+
+
+taskset = ExtractTaskset(config=ExtractTasksetConfig())
 ```
 
 - Judge metrics are regular reward/metric functions. Instantiate judge clients
@@ -269,15 +293,26 @@ def load_toolset(config=None):
 
 
 class SearchTasksetConfig(vf.TasksetConfig):
-    source: str = f"{__name__}:source"
     toolsets: list[dict[str, str]] = [{"fn": f"{__name__}:load_toolset"}]
     rewards: list[vf.CallableConfig] = [
         vf.CallableConfig(fn=f"{__name__}:judge_reward")
     ]
 
 
+class SearchTaskset(vf.Taskset):
+    config_type = SearchTasksetConfig
+
+    def rows(self) -> list[dict[str, object]]:
+        return [
+            {
+                "prompt": [{"role": "user", "content": "Search the web."}],
+                "answer": "example",
+            }
+        ]
+
+
 def load_taskset(config: SearchTasksetConfig = SearchTasksetConfig()):
-    return vf.Taskset(config=config)
+    return SearchTaskset(config=config)
 ```
 
 Gotchas:
@@ -346,13 +381,16 @@ def task_toolset(task):
     )
 
 
-def source():
-    yield {
-        "prompt": [{"role": "user", "content": "Call the right function."}],
-        "tool_schemas": [...],
-        "toolsets": {"dynamic": {"fn": "my_env:task_toolset"}},
-        "max_turns": 1,
-    }
+class ToolTaskset(vf.Taskset):
+    def rows(self) -> list[dict[str, object]]:
+        return [
+            {
+                "prompt": [{"role": "user", "content": "Call the right function."}],
+                "tool_schemas": [...],
+                "toolsets": {"dynamic": {"fn": "my_env:task_toolset"}},
+                "max_turns": 1,
+            }
+        ]
 ```
 
 Gotchas:
@@ -443,18 +481,24 @@ def load_session():
     return SessionFactory(...)
 
 
-taskset = vf.Taskset(
-    config=vf.TasksetConfig(
-        source="my_env:source",
-        user=vf.UserConfig(
-            fn="my_env:user",
-            scope="rollout",
-            objects={"session": "my_env:load_session"},
-            bindings={"session": "objects.session"},
-        ),
-        rewards=[vf.CallableConfig(fn="my_env:reward")],
+class SessionTasksetConfig(vf.TasksetConfig):
+    user: vf.UserConfig = vf.UserConfig(
+        fn="my_env:user",
+        scope="rollout",
+        objects={"session": "my_env:load_session"},
+        bindings={"session": "objects.session"},
     )
-)
+    rewards: list[vf.CallableConfig] = [vf.CallableConfig(fn="my_env:reward")]
+
+
+class SessionTaskset(vf.Taskset):
+    config_type = SessionTasksetConfig
+
+    def rows(self) -> list[dict[str, object]]:
+        return [{"prompt": [{"role": "user", "content": "Begin."}]}]
+
+
+taskset = SessionTaskset(config=SessionTasksetConfig())
 ```
 
 For task/state-dependent sessions, bind a callable source directly:
@@ -464,15 +508,21 @@ def session_for_rollout(task, state):
     return Session(task["scenario"], state["trajectory_id"])
 
 
-taskset = vf.Taskset(
-    config=vf.TasksetConfig(
-        source="my_env:source",
-        user=vf.UserConfig(
-            fn="my_env:user",
-            bindings={"session": "my_env:session_for_rollout"},
-        ),
+class BoundSessionTasksetConfig(vf.TasksetConfig):
+    user: vf.UserConfig = vf.UserConfig(
+        fn="my_env:user",
+        bindings={"session": "my_env:session_for_rollout"},
     )
-)
+
+
+class BoundSessionTaskset(vf.Taskset):
+    config_type = BoundSessionTasksetConfig
+
+    def rows(self) -> list[dict[str, object]]:
+        return [{"prompt": [{"role": "user", "content": "Begin."}]}]
+
+
+taskset = BoundSessionTaskset(config=BoundSessionTasksetConfig())
 ```
 
 Gotchas:

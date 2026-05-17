@@ -36,25 +36,32 @@ runtime state instead of constructing its own copy.
 import verifiers as vf
 
 
-def source():
-    yield {
-        "system_prompt": "Reverse text exactly.",
-        "prompt": [{"role": "user", "content": "Reverse abc."}],
-        "answer": "cba",
-        "max_turns": 1,
-    }
-
-
 @vf.reward(weight=1.0)
 async def contains_answer(task, state) -> float:
     return float(task["answer"] in str(state.get("completion") or ""))
 
 
 class ReverseTasksetConfig(vf.TasksetConfig):
-    source: str = "my_env:source"
+    split: str = "train"
     rewards: list[vf.CallableConfig] = [
         vf.CallableConfig(fn="my_env:contains_answer", weight=1.0)
     ]
+
+
+class ReverseTaskset(vf.Taskset):
+    config_type = ReverseTasksetConfig
+
+    def rows(self) -> list[dict[str, object]]:
+        rows = [
+            {
+                "system_prompt": "Reverse text exactly.",
+                "prompt": [{"role": "user", "content": "Reverse abc."}],
+                "answer": "cba",
+                "split": "train",
+                "max_turns": 1,
+            }
+        ]
+        return [row for row in rows if row["split"] == self.config.split]
 
 
 class ReverseEnvConfig(vf.EnvConfig):
@@ -63,7 +70,7 @@ class ReverseEnvConfig(vf.EnvConfig):
 
 
 def load_taskset(config: ReverseTasksetConfig = ReverseTasksetConfig()):
-    return vf.Taskset(config=config)
+    return ReverseTaskset(config=config)
 
 
 def load_environment(config: ReverseEnvConfig = ReverseEnvConfig()):
@@ -72,9 +79,9 @@ def load_environment(config: ReverseEnvConfig = ReverseEnvConfig()):
 
 ## Tasksets
 
-`TasksetConfig.source` accepts an import-reference string or an inline list of
-rows. Real tasksets should use an import-reference loader so imports and
-constructors stay cheap.
+Tasksets usually own row loading directly. Config should hold user-facing knobs,
+such as dataset name, split, or size limits; the taskset class should turn those
+values into rows.
 
 ```python
 from datasets import load_dataset
@@ -82,27 +89,35 @@ import verifiers as vf
 
 
 class GSM8KTasksetConfig(vf.TasksetConfig):
-    source: str = "my_env:source"
     dataset_name: str = "gsm8k"
     split: str = "train"
 
 
-def source(dataset_name: str = "gsm8k", split: str = "train"):
-    dataset = load_dataset(dataset_name, "main", split=split)
-    for index, row in enumerate(dataset):
-        yield {
-            "example_id": index,
-            "prompt": [{"role": "user", "content": row["question"]}],
-            "answer": row["answer"],
-        }
+class GSM8KTaskset(vf.Taskset):
+    config_type = GSM8KTasksetConfig
+
+    def rows(self) -> list[dict[str, object]]:
+        dataset = load_dataset(
+            self.config.dataset_name,
+            "main",
+            split=self.config.split,
+        )
+        return [
+            {
+                "example_id": index,
+                "prompt": [{"role": "user", "content": row["question"]}],
+                "answer": row["answer"],
+            }
+            for index, row in enumerate(dataset)
+        ]
 
 
 def load_taskset(config: GSM8KTasksetConfig = GSM8KTasksetConfig()):
-    return vf.Taskset(config=config)
+    return GSM8KTaskset(config=config)
 ```
 
-Source rows are JSON-serializable mappings. Config is resolved before source
-loading; matching config fields are passed to import-ref source loaders.
+Rows are JSON-serializable mappings. The base taskset normalizes each row into a
+stable task payload for eval and training workers.
 
 Do not use a top-level string `task` field for routing. v1 tasksets serialize
 the full task payload through `info["task"]` for worker compatibility, and
@@ -140,10 +155,21 @@ def build_answer_extractor() -> AnswerExtractor:
 
 
 class ExtractTasksetConfig(vf.TasksetConfig):
-    source: str = "my_env:source"
     rewards: list[vf.CallableConfig] = [vf.CallableConfig(fn="my_env:exact")]
     objects: dict[str, str] = {"extract_answer": "my_env:build_answer_extractor"}
     bindings: dict[str, str] = {"exact.extract_answer": "objects.extract_answer"}
+
+
+class ExtractTaskset(vf.Taskset):
+    config_type = ExtractTasksetConfig
+
+    def rows(self) -> list[dict[str, object]]:
+        return [
+            {
+                "prompt": [{"role": "user", "content": "What is 2 + 2?"}],
+                "answer": "4",
+            }
+        ]
 
 
 class ExtractEnvConfig(vf.EnvConfig):
@@ -152,9 +178,7 @@ class ExtractEnvConfig(vf.EnvConfig):
 
 
 def load_environment(config: ExtractEnvConfig = ExtractEnvConfig()) -> vf.Env:
-    return vf.Env(
-        taskset=vf.Taskset(config=config.taskset)
-    )
+    return vf.Env(taskset=ExtractTaskset(config=config.taskset))
 ```
 
 Config `objects` values are import refs to zero-argument factories. Runtime
@@ -244,7 +268,17 @@ toolset = vf.Toolset(
     bindings={"search.index": "objects.index"},
 )
 
-taskset = vf.Taskset(config=vf.TasksetConfig(source="my_env:source"))
+class SearchTaskset(vf.Taskset):
+    def rows(self) -> list[dict[str, object]]:
+        return [
+            {
+                "prompt": [{"role": "user", "content": "Search for docs."}],
+                "answer": "example",
+            }
+        ]
+
+
+taskset = SearchTaskset(config=vf.TasksetConfig())
 taskset.add_toolset(toolset)
 ```
 
@@ -277,18 +311,29 @@ back to the taskset, then let the harness adapt the resolved callables.
 MCP servers are also tools:
 
 ```python
-taskset = vf.Taskset(
-    config=vf.TasksetConfig(
-        source="my_env:source",
-        toolsets=[
+class FetchTasksetConfig(vf.TasksetConfig):
+    toolsets: list[dict[str, object]] = [
+        {
+            "tools": [
+                {"command": "uvx", "args": ["mcp-server-fetch"]},
+            ]
+        }
+    ]
+
+
+class FetchTaskset(vf.Taskset):
+    config_type = FetchTasksetConfig
+
+    def rows(self) -> list[dict[str, object]]:
+        return [
             {
-                "tools": [
-                    {"command": "uvx", "args": ["mcp-server-fetch"]},
-                ]
+                "prompt": [{"role": "user", "content": "Fetch example.com."}],
+                "answer": "example",
             }
-        ],
-    )
-)
+        ]
+
+
+taskset = FetchTaskset(config=FetchTasksetConfig())
 ```
 
 ## Harnesses
@@ -354,8 +399,19 @@ async def exact(task, state) -> float:
 
 
 class ReplayTasksetConfig(vf.TasksetConfig):
-    source: str = "my_env:load_rows"
     rewards: list[vf.CallableConfig] = [vf.CallableConfig(fn="my_env:exact")]
+
+
+class ReplayTaskset(vf.Taskset):
+    config_type = ReplayTasksetConfig
+
+    def rows(self) -> list[dict[str, object]]:
+        return [
+            {
+                "prompt": [{"role": "user", "content": "Say the answer."}],
+                "answer": "done",
+            }
+        ]
 
 
 class ReplayHarnessConfig(vf.HarnessConfig):
@@ -369,7 +425,7 @@ class ReplayEnvConfig(vf.EnvConfig):
 
 def load_environment(config: ReplayEnvConfig = ReplayEnvConfig()):
     return vf.Env(
-        taskset=vf.Taskset(config=config.taskset),
+        taskset=ReplayTaskset(config=config.taskset),
         harness=vf.Harness(config=config.harness),
     )
 ```
@@ -582,8 +638,8 @@ mcp = { fn = "my_env.cli:write_cli_config" }
 "write_cli_config.endpoint_config" = { fn = "my_env.cli:endpoint_config" }
 ```
 
-The implementation details for TOML refs, toolset tables, source loaders,
-program bindings, and custom config subclasses are in
+The implementation details for TOML refs, toolset tables, row loading, program
+bindings, and custom config subclasses are in
 `verifiers/v1/README.md`.
 
 ## When To Use Which Path

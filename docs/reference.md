@@ -637,22 +637,7 @@ serialization boundary.
 
 ```python
 class Taskset:
-    def __init__(
-        source=None,
-        eval_source=None,
-        taskset_id: str | None = None,
-        system_prompt=None,
-        user=None,
-        toolsets=(),
-        stops=(),
-        setups=(),
-        updates=(),
-        metrics=(),
-        rewards=(),
-        advantages=(),
-        cleanups=(),
-        config: TasksetConfig | Mapping[str, object] | None = None,
-    ): ...
+    def __init__(config: TasksetConfig = TasksetConfig()): ...
 
     def rows() -> list[dict[str, Any]]: ...
     def eval_rows() -> list[dict[str, Any]]: ...
@@ -663,33 +648,14 @@ class Taskset:
     def get_eval_dataset() -> Dataset: ...
 ```
 
-Packages task rows and task-owned behavior. `source` and `eval_source` may be
-iterables or zero-argument loaders. Loaders should close over resolved config
-instead of accepting runtime kwargs.
+Packages task rows and task-owned behavior. Subclasses usually override
+`rows()` and read typed values from `self.config`.
 
 #### Harness
 
 ```python
 class Harness:
-    def __init__(
-        program=None,
-        system_prompt=None,
-        user=None,
-        sandbox=None,
-        client=None,
-        model: str | None = None,
-        sampling_args: SamplingArgs | None = None,
-        max_turns: int | None = None,
-        toolsets=None,
-        stops=None,
-        setups=None,
-        updates=None,
-        metrics=None,
-        rewards=None,
-        advantages=None,
-        cleanups=None,
-        config: HarnessConfig | Mapping[str, object] | None = None,
-    ): ...
+    def __init__(config: HarnessConfig = HarnessConfig()): ...
 
     async def run(task: Task | Mapping[str, Any], state: State | None = None) -> State: ...
     async def score_group(tasks: list[Task], states: list[State]) -> list[State]: ...

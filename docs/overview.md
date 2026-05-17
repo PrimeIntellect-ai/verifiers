@@ -88,22 +88,30 @@ custom harnesses, use the v1 Taskset/Harness path:
 # my_env.py
 import verifiers as vf
 
-def source():
-    yield {
-        "prompt": [{"role": "user", "content": "Reverse abc."}],
-        "answer": "cba",
-        "max_turns": 1,
-    }
-
 @vf.reward(weight=1.0)
 async def contains_answer(task, state) -> float:
     return float(task["answer"] in str(state.get("completion") or ""))
 
 class MyTasksetConfig(vf.TasksetConfig):
-    source: str = "my_env:source"
+    split: str = "train"
     rewards: list[vf.CallableConfig] = [
         vf.CallableConfig(fn="my_env:contains_answer", weight=1.0)
     ]
+
+
+class MyTaskset(vf.Taskset):
+    config_type = MyTasksetConfig
+
+    def rows(self) -> list[dict[str, object]]:
+        rows = [
+            {
+                "prompt": [{"role": "user", "content": "Reverse abc."}],
+                "answer": "cba",
+                "split": "train",
+                "max_turns": 1,
+            }
+        ]
+        return [row for row in rows if row["split"] == self.config.split]
 
 
 class MyEnvConfig(vf.EnvConfig):
@@ -112,7 +120,7 @@ class MyEnvConfig(vf.EnvConfig):
 
 
 def load_taskset(config: MyTasksetConfig = MyTasksetConfig()):
-    return vf.Taskset(config=config)
+    return MyTaskset(config=config)
 
 
 def load_environment(config: MyEnvConfig = MyEnvConfig()) -> vf.Env:
