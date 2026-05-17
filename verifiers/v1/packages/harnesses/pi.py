@@ -21,9 +21,7 @@ DEFAULT_LOG_PATH = "/logs/agent/pi.txt"
 DEFAULT_SYSTEM_PROMPT = "Complete the user's task using the available tools."
 
 
-class Pi(Harness):
-    config_type = PiConfig
-
+class Pi(Harness[PiConfig]):
     def __init__(self, config: PiConfig = PiConfig()):
         config = PiConfig.from_config(config)
         super().__init__(config=base_harness_config(config))

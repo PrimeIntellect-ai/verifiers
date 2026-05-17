@@ -578,7 +578,7 @@ async def bfcl_multi_turn_program(
     return state
 
 
-class BFCLMultiTurnHarness(vf.Harness):
+class BFCLMultiTurnHarness(vf.Harness[BFCLHarnessConfig]):
     def __init__(self, config: BFCLHarnessConfig):
         super().__init__(config=config)
         self._configure_runtime(program=self.run_bfcl_multi_turn)

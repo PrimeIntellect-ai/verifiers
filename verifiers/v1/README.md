@@ -147,9 +147,7 @@ class ReverseTasksetConfig(vf.TasksetConfig):
     ]
 
 
-class ReverseTaskset(vf.Taskset):
-    config_type = ReverseTasksetConfig
-
+class ReverseTaskset(vf.Taskset[ReverseTasksetConfig]):
     def rows(self) -> list[dict[str, object]]:
         rows = [
             {
@@ -212,9 +210,7 @@ class GSM8KTasksetConfig(vf.TasksetConfig):
     split: str = "train"
 
 
-class GSM8KTaskset(vf.Taskset):
-    config_type = GSM8KTasksetConfig
-
+class GSM8KTaskset(vf.Taskset[GSM8KTasksetConfig]):
     def rows(self) -> list[dict[str, object]]:
         dataset = load_dataset(
             self.config.dataset_name,
@@ -430,9 +426,7 @@ class ReplayTasksetConfig(vf.TasksetConfig):
     rewards: list[vf.CallableConfig] = [vf.CallableConfig(fn="my_env:exact")]
 
 
-class ReplayTaskset(vf.Taskset):
-    config_type = ReplayTasksetConfig
-
+class ReplayTaskset(vf.Taskset[ReplayTasksetConfig]):
     def rows(self) -> list[dict[str, object]]:
         return [
             {
@@ -719,9 +713,7 @@ class WikiTasksetConfig(vf.TasksetConfig):
     }
 
 
-class WikiTaskset(vf.Taskset):
-    config_type = WikiTasksetConfig
-
+class WikiTaskset(vf.Taskset[WikiTasksetConfig]):
     def rows(self) -> list[dict[str, object]]:
         return [
             {
@@ -1049,9 +1041,7 @@ class UserTasksetConfig(vf.TasksetConfig):
     user: str = "my_env:user"
 
 
-class UserTaskset(vf.Taskset):
-    config_type = UserTasksetConfig
-
+class UserTaskset(vf.Taskset[UserTasksetConfig]):
     def rows(self) -> list[dict[str, object]]:
         return [{"prompt": [{"role": "user", "content": "Try the task."}]}]
 
@@ -1206,9 +1196,7 @@ class MyTasksetConfig(vf.TasksetConfig):
     rewards: list[vf.CallableConfig] = [vf.CallableConfig(fn="my_env:exact")]
 
 
-class MyTaskset(vf.Taskset):
-    config_type = MyTasksetConfig
-
+class MyTaskset(vf.Taskset[MyTasksetConfig]):
     def rows(self) -> list[dict[str, object]]:
         rows = [
             {
@@ -1429,9 +1417,7 @@ class DatasetTasksetConfig(vf.TasksetConfig):
     limit: int = 100
 
 
-class DatasetTaskset(vf.Taskset):
-    config_type = DatasetTasksetConfig
-
+class DatasetTaskset(vf.Taskset[DatasetTasksetConfig]):
     def rows(self) -> list[dict[str, object]]:
         dataset = load_dataset("my-org/my-dataset", split=self.config.split)
         return [
@@ -1603,9 +1589,7 @@ class WikiTasksetConfig(vf.TasksetConfig):
     db_path: str = "wiki.db"
 
 
-class WikiTaskset(vf.Taskset):
-    config_type = WikiTasksetConfig
-
+class WikiTaskset(vf.Taskset[WikiTasksetConfig]):
     def rows(self) -> list[dict[str, object]]:
         return load_rows()
 

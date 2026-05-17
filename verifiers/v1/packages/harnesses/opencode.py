@@ -39,9 +39,7 @@ DEFAULT_SYSTEM_PROMPT = OPENCODE_DEFAULT_SYSTEM_PROMPT
 DEFAULT_DISABLED_TOOLS = list(OPENCODE_DEFAULT_DISABLED_TOOLS)
 
 
-class OpenCode(Harness):
-    config_type = OpenCodeConfig
-
+class OpenCode(Harness[OpenCodeConfig]):
     def __init__(self, config: OpenCodeConfig = OpenCodeConfig()):
         config = OpenCodeConfig.from_config(config)
         super().__init__(config=base_harness_config(config))

@@ -5,7 +5,7 @@ from importlib.abc import Traversable
 from collections.abc import Mapping
 from copy import deepcopy
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar, cast
+from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar, cast, get_args, get_origin
 
 from datasets import Dataset
 from verifiers.types import task_payload_from_info
@@ -35,13 +35,36 @@ if TYPE_CHECKING:
 
 
 TaskSourceValue = TaskRowsSource | None
+TasksetConfigT = TypeVar("TasksetConfigT", bound=TasksetConfig)
 
 
-class Taskset:
-    config_type: ClassVar[type[TasksetConfig]] = TasksetConfig
+class Taskset(Generic[TasksetConfigT]):
+    _config_cls: ClassVar[type[TasksetConfig]] = TasksetConfig
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)
+        for base in getattr(cls, "__orig_bases__", ()):
+            if get_origin(base) is Taskset:
+                config_cls = get_args(base)[0]
+                if not (
+                    isinstance(config_cls, type)
+                    and issubclass(config_cls, TasksetConfig)
+                ):
+                    raise TypeError("Taskset generic argument must be TasksetConfig.")
+                cls._config_cls = config_cls
+                return
+        for base in cls.__bases__:
+            inherited = getattr(base, "_config_cls", None)
+            if inherited is not None:
+                cls._config_cls = inherited
+                return
+        cls._config_cls = TasksetConfig
 
     def __init__(self, config: TasksetConfig = TasksetConfig()):
-        self.config = type(self).config_type.from_config(config)
+        config_cls = type(self)._config_cls
+        if config_cls is TasksetConfig and isinstance(config, TasksetConfig):
+            config_cls = type(config)
+        self.config = cast(TasksetConfigT, config_cls.from_config(config))
         source_value = resolve_config_object(self.config.source)
         self.source = cast(
             TaskSourceValue,
@@ -95,7 +118,7 @@ class Taskset:
 
     @classmethod
     def config_schema(cls) -> str:
-        return cls.config_type.schema_text()
+        return cls._config_cls.schema_text()
 
     def _add_handler(self, handlers: list[Handler], fn: Handler) -> None:
         handlers.append(fn)

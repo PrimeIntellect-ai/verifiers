@@ -47,9 +47,7 @@ REQUIRED_RLM_CHECKOUT_FILES = ("install.sh", "pyproject.toml")
 ProgramDir = str | Path | Traversable
 
 
-class RLM(Harness):
-    config_type = RLMConfig
-
+class RLM(Harness[RLMConfig]):
     def __init__(self, config: RLMConfig = RLMConfig()):
         harness_config = RLMConfig.from_config(config)
         super().__init__(config=base_harness_config(harness_config))

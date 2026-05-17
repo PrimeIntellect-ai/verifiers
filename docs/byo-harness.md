@@ -48,9 +48,7 @@ class ReverseTasksetConfig(vf.TasksetConfig):
     ]
 
 
-class ReverseTaskset(vf.Taskset):
-    config_type = ReverseTasksetConfig
-
+class ReverseTaskset(vf.Taskset[ReverseTasksetConfig]):
     def rows(self) -> list[dict[str, object]]:
         rows = [
             {
@@ -93,9 +91,7 @@ class GSM8KTasksetConfig(vf.TasksetConfig):
     split: str = "train"
 
 
-class GSM8KTaskset(vf.Taskset):
-    config_type = GSM8KTasksetConfig
-
+class GSM8KTaskset(vf.Taskset[GSM8KTasksetConfig]):
     def rows(self) -> list[dict[str, object]]:
         dataset = load_dataset(
             self.config.dataset_name,
@@ -160,9 +156,7 @@ class ExtractTasksetConfig(vf.TasksetConfig):
     bindings: dict[str, str] = {"exact.extract_answer": "objects.extract_answer"}
 
 
-class ExtractTaskset(vf.Taskset):
-    config_type = ExtractTasksetConfig
-
+class ExtractTaskset(vf.Taskset[ExtractTasksetConfig]):
     def rows(self) -> list[dict[str, object]]:
         return [
             {
@@ -321,9 +315,7 @@ class FetchTasksetConfig(vf.TasksetConfig):
     ]
 
 
-class FetchTaskset(vf.Taskset):
-    config_type = FetchTasksetConfig
-
+class FetchTaskset(vf.Taskset[FetchTasksetConfig]):
     def rows(self) -> list[dict[str, object]]:
         return [
             {
@@ -402,9 +394,7 @@ class ReplayTasksetConfig(vf.TasksetConfig):
     rewards: list[vf.CallableConfig] = [vf.CallableConfig(fn="my_env:exact")]
 
 
-class ReplayTaskset(vf.Taskset):
-    config_type = ReplayTasksetConfig
-
+class ReplayTaskset(vf.Taskset[ReplayTasksetConfig]):
     def rows(self) -> list[dict[str, object]]:
         return [
             {

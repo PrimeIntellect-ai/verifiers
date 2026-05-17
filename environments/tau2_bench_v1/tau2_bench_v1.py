@@ -676,14 +676,12 @@ class Tau2TasksetConfig(vf.TasksetConfig):
     max_turns: int = DEFAULT_MAX_STEPS
 
 
-class Tau2Taskset(vf.Taskset):
-    config_type = Tau2TasksetConfig
-
+class Tau2Taskset(vf.Taskset[Tau2TasksetConfig]):
     def __init__(
         self,
         config: Tau2TasksetConfig = Tau2TasksetConfig(),
     ):
-        config = type(self).config_type.from_config(config)
+        config = Tau2TasksetConfig.from_config(config)
         resolved_user_args = (
             DEFAULT_LLM_ARGS_USER if config.user_args is None else config.user_args
         )

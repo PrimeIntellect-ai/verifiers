@@ -156,9 +156,7 @@ class EnvTasksetConfig(vf.TasksetConfig):
     ]
 
 
-class EnvTaskset(vf.Taskset):
-    config_type = EnvTasksetConfig
-
+class EnvTaskset(vf.Taskset[EnvTasksetConfig]):
     def rows(self) -> list[dict[str, object]]:
         rows = [
             {
@@ -198,9 +196,7 @@ class EnvTasksetConfig(vf.TasksetConfig):
     ]
 
 
-class EnvTaskset(vf.Taskset):
-    config_type = EnvTasksetConfig
-
+class EnvTaskset(vf.Taskset[EnvTasksetConfig]):
     def rows(self) -> list[dict[str, object]]:
         rows = [
             {

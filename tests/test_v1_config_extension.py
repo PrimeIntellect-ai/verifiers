@@ -447,11 +447,11 @@ def has_runtime_toolset(value: object) -> bool:
 def make_taskset(config: object | None = None, **values: object) -> Taskset:
     data = {**config_data(config), **values}
     runtime_toolsets = data.pop("toolsets", None)
-    config_type = type(config) if isinstance(config, TasksetConfig) else TasksetConfig
     if runtime_toolsets is not None and not has_runtime_toolset(runtime_toolsets):
         data["toolsets"] = runtime_toolsets
         runtime_toolsets = None
-    taskset = Taskset(config=config_type.model_validate(config_value(data)))
+    config_cls = type(config) if isinstance(config, TasksetConfig) else TasksetConfig
+    taskset = Taskset(config=config_cls.model_validate(config_value(data)))
     if runtime_toolsets is not None:
         taskset.add_toolset(runtime_toolsets)
     return taskset
@@ -461,11 +461,11 @@ def make_harness(config: object | None = None, **values: object) -> Harness:
     data = {**config_data(config), **values}
     runtime_client = data.pop("client", None)
     runtime_toolsets = data.pop("toolsets", None)
-    config_type = type(config) if isinstance(config, HarnessConfig) else HarnessConfig
     if runtime_toolsets is not None and not has_runtime_toolset(runtime_toolsets):
         data["toolsets"] = runtime_toolsets
         runtime_toolsets = None
-    harness = Harness(config=config_type.model_validate(config_value(data)))
+    config_cls = type(config) if isinstance(config, HarnessConfig) else HarnessConfig
+    harness = Harness(config=config_cls.model_validate(config_value(data)))
     if runtime_client is not None:
         harness.client = runtime_client
     if runtime_toolsets is not None:
@@ -1346,13 +1346,44 @@ def test_subclasses_can_define_new_config_surface() -> None:
     class CustomHarnessConfig(HarnessConfig):
         custom_flag: bool = False
 
-    class CustomHarness(Harness):
-        config_type = CustomHarnessConfig
+    class CustomHarness(Harness[CustomHarnessConfig]):
+        pass
 
     harness = CustomHarness(config={"custom_flag": True})
 
     assert getattr(harness.config, "custom_flag") is True
     assert "custom_flag" in CustomHarness.config_schema()
+
+
+def test_generic_taskset_config_binding_is_inferred() -> None:
+    class LocalTasksetConfig(TasksetConfig):
+        split: str = "train"
+
+    class LocalTaskset(Taskset[LocalTasksetConfig]):
+        pass
+
+    taskset = LocalTaskset(config={"split": "test"})
+
+    assert isinstance(taskset.config, LocalTasksetConfig)
+    assert taskset.config.split == "test"
+    assert "split" in LocalTaskset.config_schema()
+
+
+def test_generic_harness_config_binding_is_inherited() -> None:
+    class LocalHarnessConfig(HarnessConfig):
+        mode: str = "default"
+
+    class LocalHarness(Harness[LocalHarnessConfig]):
+        pass
+
+    class ChildHarness(LocalHarness):
+        pass
+
+    harness = ChildHarness(config={"mode": "custom"})
+
+    assert isinstance(harness.config, LocalHarnessConfig)
+    assert harness.config.mode == "custom"
+    assert "mode" in ChildHarness.config_schema()
 
 
 def test_config_schema_is_visible_from_primary_types() -> None:
@@ -1630,11 +1661,11 @@ def test_load_environment_coerces_env_config_subclass_sections(
         taskset: LocalTasksetConfig
         harness: LocalHarnessConfig
 
-    class LocalTaskset(Taskset):
-        config_type = LocalTasksetConfig
+    class LocalTaskset(Taskset[LocalTasksetConfig]):
+        pass
 
-    class LocalHarness(Harness):
-        config_type = LocalHarnessConfig
+    class LocalHarness(Harness[LocalHarnessConfig]):
+        pass
 
     def load_environment(config: LocalEnvConfig) -> Env:
         seen["config"] = config
@@ -1683,11 +1714,11 @@ def test_load_environment_coerces_base_env_config_object_to_subclass(
         taskset: LocalTasksetConfig = LocalTasksetConfig()
         harness: LocalHarnessConfig = LocalHarnessConfig()
 
-    class LocalTaskset(Taskset):
-        config_type = LocalTasksetConfig
+    class LocalTaskset(Taskset[LocalTasksetConfig]):
+        pass
 
-    class LocalHarness(Harness):
-        config_type = LocalHarnessConfig
+    class LocalHarness(Harness[LocalHarnessConfig]):
+        pass
 
     def load_environment(config: LocalEnvConfig) -> Env:
         seen["config"] = config

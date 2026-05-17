@@ -83,8 +83,8 @@ class MCPSearchTasksetConfig(vf.TasksetConfig):
     examples: list[vf.ConfigData] = DEFAULT_EXAMPLES
 
 
-class MCPSearchTaskset(vf.Taskset):
-    config_type = MCPSearchTasksetConfig
+class MCPSearchTaskset(vf.Taskset[MCPSearchTasksetConfig]):
+    pass
 
 
 def default_mcp_servers() -> list[vf.ConfigData]:

@@ -78,12 +78,12 @@ class WikispeediaEnvConfig(vf.EnvConfig):
     harness: WikispeediaHarnessConfig = WikispeediaHarnessConfig()
 
 
-class WikispeediaTaskset(vf.Taskset):
-    config_type = WikispeediaTasksetConfig
+class WikispeediaTaskset(vf.Taskset[WikispeediaTasksetConfig]):
+    pass
 
 
-class WikispeediaHarness(vf.Harness):
-    config_type = WikispeediaHarnessConfig
+class WikispeediaHarness(vf.Harness[WikispeediaHarnessConfig]):
+    pass
 
 
 def format_article(wiki: WikiGraph, article: str, links_only: bool = False) -> str:

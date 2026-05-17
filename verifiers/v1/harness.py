@@ -1,5 +1,5 @@
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, ClassVar, cast
+from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar, cast, get_args, get_origin
 
 from verifiers.decorators import metric, update
 from verifiers.errors import Error, OverlongPromptError
@@ -72,13 +72,36 @@ class UnsetValue:
 
 
 UNSET = UnsetValue()
+HarnessConfigT = TypeVar("HarnessConfigT", bound=HarnessConfig)
 
 
-class Harness:
-    config_type: ClassVar[type[HarnessConfig]] = HarnessConfig
+class Harness(Generic[HarnessConfigT]):
+    _config_cls: ClassVar[type[HarnessConfig]] = HarnessConfig
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)
+        for base in getattr(cls, "__orig_bases__", ()):
+            if get_origin(base) is Harness:
+                config_cls = get_args(base)[0]
+                if not (
+                    isinstance(config_cls, type)
+                    and issubclass(config_cls, HarnessConfig)
+                ):
+                    raise TypeError("Harness generic argument must be HarnessConfig.")
+                cls._config_cls = config_cls
+                return
+        for base in cls.__bases__:
+            inherited = getattr(base, "_config_cls", None)
+            if inherited is not None:
+                cls._config_cls = inherited
+                return
+        cls._config_cls = HarnessConfig
 
     def __init__(self, config: HarnessConfig = HarnessConfig()):
-        self.config = type(self).config_type.from_config(config)
+        config_cls = type(self)._config_cls
+        if config_cls is HarnessConfig and isinstance(config, HarnessConfig):
+            config_cls = type(config)
+        self.config = cast(HarnessConfigT, config_cls.from_config(config))
         program_value = resolve_config_object(self.config.program)
         if isinstance(program_value, ProgramConfig):
             program_value = program_value.model_dump(
@@ -153,7 +176,7 @@ class Harness:
 
     @classmethod
     def config_schema(cls) -> str:
-        return cls.config_type.schema_text()
+        return cls._config_cls.schema_text()
 
     def _add_handler(self, handlers: list[Handler], fn: Handler) -> None:
         handlers.append(fn)

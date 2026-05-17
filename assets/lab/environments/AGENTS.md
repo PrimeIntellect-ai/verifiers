@@ -712,9 +712,7 @@ class MyTasksetConfig(vf.TasksetConfig):
     ]
 
 
-class MyTaskset(vf.Taskset):
-    config_type = MyTasksetConfig
-
+class MyTaskset(vf.Taskset[MyTasksetConfig]):
     def rows(self) -> list[dict[str, object]]:
         rows = [
             {

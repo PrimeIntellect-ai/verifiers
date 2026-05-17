@@ -636,7 +636,7 @@ serialization boundary.
 #### Taskset
 
 ```python
-class Taskset:
+class Taskset(Generic[TasksetConfigT]):
     def __init__(config: TasksetConfig = TasksetConfig()): ...
 
     def rows() -> list[dict[str, Any]]: ...
@@ -648,13 +648,14 @@ class Taskset:
     def get_eval_dataset() -> Dataset: ...
 ```
 
-Packages task rows and task-owned behavior. Subclasses usually override
-`rows()` and read typed values from `self.config`.
+Packages task rows and task-owned behavior. Subclasses usually bind a typed
+config with `Taskset[MyTasksetConfig]`, override `rows()`, and read typed values
+from `self.config`.
 
 #### Harness
 
 ```python
-class Harness:
+class Harness(Generic[HarnessConfigT]):
     def __init__(config: HarnessConfig = HarnessConfig()): ...
 
     async def run(task: Task | Mapping[str, Any], state: State | None = None) -> State: ...

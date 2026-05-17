@@ -60,9 +60,7 @@ class MyTasksetConfig(vf.TasksetConfig):
     toolsets: list[dict[str, str]] = [{"fn": "my_env:load_toolset"}]
 
 
-class MyTaskset(vf.Taskset):
-    config_type = MyTasksetConfig
-
+class MyTaskset(vf.Taskset[MyTasksetConfig]):
     def rows(self) -> list[dict[str, object]]:
         return load_rows(split=self.config.split)
 
@@ -117,9 +115,7 @@ class PromptTasksetConfig(vf.TasksetConfig):
     system_prompt: str = "Answer concisely."
 
 
-class PromptTaskset(vf.Taskset):
-    config_type = PromptTasksetConfig
-
+class PromptTaskset(vf.Taskset[PromptTasksetConfig]):
     def rows(self) -> list[dict[str, object]]:
         return [{"prompt": [{"role": "user", "content": "Question?"}]}]
 
@@ -181,9 +177,7 @@ class QATasksetConfig(vf.TasksetConfig):
     ]
 
 
-class QATaskset(vf.Taskset):
-    config_type = QATasksetConfig
-
+class QATaskset(vf.Taskset[QATasksetConfig]):
     def rows(self) -> list[dict[str, object]]:
         return [
             {
@@ -232,9 +226,7 @@ class ExtractTasksetConfig(vf.TasksetConfig):
     bindings: dict[str, str] = {"exact.extract_answer": "objects.extract_answer"}
 
 
-class ExtractTaskset(vf.Taskset):
-    config_type = ExtractTasksetConfig
-
+class ExtractTaskset(vf.Taskset[ExtractTasksetConfig]):
     def rows(self) -> list[dict[str, object]]:
         return [{"prompt": [{"role": "user", "content": "Question?"}], "answer": "A"}]
 
@@ -299,9 +291,7 @@ class SearchTasksetConfig(vf.TasksetConfig):
     ]
 
 
-class SearchTaskset(vf.Taskset):
-    config_type = SearchTasksetConfig
-
+class SearchTaskset(vf.Taskset[SearchTasksetConfig]):
     def rows(self) -> list[dict[str, object]]:
         return [
             {
@@ -491,9 +481,7 @@ class SessionTasksetConfig(vf.TasksetConfig):
     rewards: list[vf.CallableConfig] = [vf.CallableConfig(fn="my_env:reward")]
 
 
-class SessionTaskset(vf.Taskset):
-    config_type = SessionTasksetConfig
-
+class SessionTaskset(vf.Taskset[SessionTasksetConfig]):
     def rows(self) -> list[dict[str, object]]:
         return [{"prompt": [{"role": "user", "content": "Begin."}]}]
 
@@ -515,9 +503,7 @@ class BoundSessionTasksetConfig(vf.TasksetConfig):
     )
 
 
-class BoundSessionTaskset(vf.Taskset):
-    config_type = BoundSessionTasksetConfig
-
+class BoundSessionTaskset(vf.Taskset[BoundSessionTasksetConfig]):
     def rows(self) -> list[dict[str, object]]:
         return [{"prompt": [{"role": "user", "content": "Begin."}]}]
 

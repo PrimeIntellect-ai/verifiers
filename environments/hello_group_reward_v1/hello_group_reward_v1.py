@@ -150,9 +150,7 @@ TASKS: list[vf.ConfigData] = [
 ]
 
 
-class GroupRewardTaskset(vf.Taskset):
-    config_type = GroupRewardTasksetConfig
-
+class GroupRewardTaskset(vf.Taskset[GroupRewardTasksetConfig]):
     async def init_group(
         self, task: vf.Task, num_rollouts: int
     ) -> tuple[list[vf.Task], list[vf.State]]:

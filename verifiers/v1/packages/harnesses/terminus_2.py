@@ -20,9 +20,7 @@ DEFAULT_MODEL_NAME = "openai/gpt-4.1-mini"
 DEFAULT_API_BASE_URL = "https://api.pinference.ai/api/v1"
 
 
-class Terminus2(Harness):
-    config_type = Terminus2Config
-
+class Terminus2(Harness[Terminus2Config]):
     def __init__(self, config: Terminus2Config = Terminus2Config()):
         config = Terminus2Config.from_config(config)
         super().__init__(config=base_harness_config(config))

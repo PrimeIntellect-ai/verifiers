@@ -35,9 +35,7 @@ DEFAULT_MODEL_CLASS = "litellm_textbased"
 DEFAULT_ENVIRONMENT_TIMEOUT = 120
 
 
-class MiniSWEAgent(Harness):
-    config_type = MiniSWEAgentConfig
-
+class MiniSWEAgent(Harness[MiniSWEAgentConfig]):
     def __init__(self, config: MiniSWEAgentConfig = MiniSWEAgentConfig()):
         config = MiniSWEAgentConfig.from_config(config)
         super().__init__(config=base_harness_config(config))
