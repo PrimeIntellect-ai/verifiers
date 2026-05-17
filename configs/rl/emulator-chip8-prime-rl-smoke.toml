@@ -1,0 +1,59 @@
+# Self-managed prime-rl smoke for a 2-GPU node.
+# This is the config used to validate that emulator environments can enter a
+# real trainer/orchestrator/inference loop outside Hosted Training.
+
+max_steps = 1
+seq_len = 4096
+max_async_level = 0
+
+[deployment]
+gpus_per_node = 2
+num_train_gpus = 1
+num_infer_gpus = 1
+
+[model]
+name = "Qwen/Qwen3-0.6B"
+
+[orchestrator]
+batch_size = 1
+rollouts_per_example = 1
+# Renderer mode preserves tokenized trajectory data for prime-rl without using
+# the token-client chat endpoint, which rejects MiniSWEAgent's system message.
+use_token_client = false
+use_renderer = true
+
+[[orchestrator.filters]]
+type = "gibberish"
+enforce = false
+
+[[orchestrator.filters]]
+type = "repetition"
+enforce = false
+
+[[orchestrator.filters]]
+type = "zero_advantage"
+# A one-rollout smoke batch has zero advantage by construction; keep this as a
+# monitored signal instead of filtering out the only training sample.
+enforce = false
+
+[orchestrator.train.sampling]
+max_completion_tokens = 512
+temperature = 0.7
+
+[[orchestrator.train.env]]
+id = "emulator-chip8"
+name = "emulator-chip8"
+args = { max_tasks = 1, sandbox_timeout_minutes = 30, environment_timeout = 1800, agent_step_limit = 20, max_turns = 4, inline_system_prompt = true }
+timeout = 2400
+max_total_completion_tokens = 2048
+
+[trainer]
+max_steps = 1
+max_async_level = 0
+
+[trainer.optim]
+lr = 1e-6
+
+[ckpt]
+
+[inference]

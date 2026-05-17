@@ -1,0 +1,28 @@
+{
+  "environment_id": "emulator-genesis",
+  "module_name": "emulator_genesis",
+  "level": 8,
+  "slug": "genesis",
+  "display_name": "Sega Genesis / Mega Drive",
+  "difficulty": "Very Hard",
+  "goal": "Implement Genesis emulation with dual CPU coordination.",
+  "base_prompt": "Implement a Sega Genesis emulator.",
+  "core_concepts": ["Multi-CPU synchronization", "Bus arbitration", "FM synthesis", "Timing coordination"],
+  "requirements": ["Motorola 68000 CPU", "Z80 audio CPU", "VDP", "PSG + FM audio", "Controller input", "ROM loading", "Deterministic execution"],
+  "exposed_api": ["step()", "framebuffer()", "audio sample/register API", "controller input API", "ROM loading API"],
+  "public_verification": ["68k verifier", "VDP tests", "Z80 tests", "240p Test Suite"],
+  "hidden_verification": ["Bus arbitration timing", "Audio synchronization", "Sonic gameplay stability"],
+  "success_criteria": ["68k and Z80 diagnostics pass", "VDP frame hashes match", "Audio timing remains synchronized"],
+  "framebuffer": {"width": 320, "height": 224},
+  "runtime": {"smoke_cycles": 536931, "verify_timeout_seconds": 2400},
+  "scoring_weights": {"correctness": 0.72, "determinism": 0.13, "performance": 0.1, "quality": 0.05},
+  "verification_cases": [
+    {"id": "genesis_68k", "stage": "public", "kind": "rom_suite", "name": "68k verifier", "expected_signal": "trace_crc", "source": "public"},
+    {"id": "genesis_vdp", "stage": "public", "kind": "rom_suite", "name": "VDP tests", "expected_signal": "framebuffer_hash", "source": "public"},
+    {"id": "genesis_z80", "stage": "public", "kind": "rom_suite", "name": "Z80 tests", "expected_signal": "serial_pass", "source": "public"},
+    {"id": "genesis_240p", "stage": "public", "kind": "rom_suite", "name": "240p Test Suite", "expected_signal": "framebuffer_hash", "source": "public"},
+    {"id": "genesis_bus_arbitration", "stage": "hidden", "kind": "generated_rom", "name": "Bus arbitration timing", "expected_signal": "event_log_crc", "source": "generated"},
+    {"id": "genesis_audio_sync", "stage": "hidden", "kind": "generated_rom", "name": "Audio synchronization", "expected_signal": "audio_crc", "source": "generated"},
+    {"id": "genesis_sonic_stability", "stage": "hidden", "kind": "long_run", "name": "Sonic gameplay stability", "expected_signal": "stability_hash", "source": "user_supplied_by_hash"}
+  ]
+}

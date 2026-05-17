@@ -1,0 +1,64 @@
+# Full all-env gpt-5.4-mini private eval entrypoint.
+# Unlike the prime-smoke config, this runs the real implementation prompts and
+# the suite-backed verifier for every emulator environment. Expect long runtime
+# and private artifact mounts for copyrighted ROM/BIOS cases.
+model = "openai/gpt-5.4-mini"
+provider = "prime"
+num_examples = 1
+rollouts_per_example = 1
+max_concurrent = 1
+max_tokens = 4096
+temperature = 0.2
+save_results = true
+disable_tui = true
+output_dir = "/tmp/emulator-gpt54-suite"
+
+[[eval]]
+id = "emulator-chip8"
+name = "emulator-chip8-suite"
+args = { max_tasks = 1, sandbox_timeout_minutes = 120, environment_timeout = 21600, agent_step_limit = 1000, max_turns = 80 }
+
+[[eval]]
+id = "emulator-i8080-space-invaders"
+name = "emulator-i8080-space-invaders-suite"
+args = { max_tasks = 1, sandbox_timeout_minutes = 120, environment_timeout = 21600, agent_step_limit = 1000, max_turns = 80 }
+
+[[eval]]
+id = "emulator-gameboy-dmg"
+name = "emulator-gameboy-dmg-suite"
+args = { max_tasks = 1, sandbox_timeout_minutes = 120, environment_timeout = 21600, agent_step_limit = 1000, max_turns = 80 }
+
+[[eval]]
+id = "emulator-nes"
+name = "emulator-nes-suite"
+args = { max_tasks = 1, sandbox_timeout_minutes = 120, environment_timeout = 21600, agent_step_limit = 1000, max_turns = 80 }
+
+[[eval]]
+id = "emulator-sms"
+name = "emulator-sms-suite"
+args = { max_tasks = 1, sandbox_timeout_minutes = 120, environment_timeout = 21600, agent_step_limit = 1000, max_turns = 80 }
+
+[[eval]]
+id = "emulator-gameboy-cgb"
+name = "emulator-gameboy-cgb-suite"
+args = { max_tasks = 1, sandbox_timeout_minutes = 120, environment_timeout = 21600, agent_step_limit = 1000, max_turns = 80 }
+
+[[eval]]
+id = "emulator-gba"
+name = "emulator-gba-suite"
+args = { max_tasks = 1, sandbox_timeout_minutes = 120, environment_timeout = 21600, agent_step_limit = 1000, max_turns = 80 }
+
+[[eval]]
+id = "emulator-genesis"
+name = "emulator-genesis-suite"
+args = { max_tasks = 1, sandbox_timeout_minutes = 120, environment_timeout = 21600, agent_step_limit = 1000, max_turns = 80 }
+
+[[eval]]
+id = "emulator-snes"
+name = "emulator-snes-suite"
+args = { max_tasks = 1, sandbox_timeout_minutes = 120, environment_timeout = 21600, agent_step_limit = 1000, max_turns = 80 }
+
+[[eval]]
+id = "emulator-ps1"
+name = "emulator-ps1-suite"
+args = { max_tasks = 1, sandbox_timeout_minutes = 120, environment_timeout = 21600, agent_step_limit = 1000, max_turns = 80 }

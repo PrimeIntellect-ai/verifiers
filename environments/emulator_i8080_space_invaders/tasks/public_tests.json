@@ -1,0 +1,40 @@
+{
+  "environment_id": "emulator-i8080-space-invaders",
+  "sources": [
+    {
+      "name": "PCjs 8080 exerciser sources",
+      "kind": "git",
+      "url": "https://github.com/jeffpar/pcjs",
+      "ref": "gh-pages",
+      "license": "MIT",
+      "artifact_globs": ["machines/pcx80/ram/exerciser/*"],
+      "artifact_extensions": [".json5", ".asm", ".mac"],
+      "covers": ["8080 CPU exerciser"],
+      "notes": "machines/pcx80/ram/exerciser contains 8080EX1, 8080EXER, 8080PRE, CPUTEST, and TEST sources/manifests."
+    },
+    {
+      "name": "PCjs 8080 exerciser page",
+      "kind": "http",
+      "url": "https://www.pcjs.org/machines/pcx80/ram/exerciser/",
+      "license": "MIT",
+      "covers": ["8080 CPU exerciser"],
+      "notes": "Documents the exerciser machine and links to source."
+    },
+    {
+      "name": "Private Space Invaders ROM artifact",
+      "kind": "private-artifact",
+      "url": "https://www.computerarcheology.com/Arcade/SpaceInvaders/",
+      "license": "copyrighted-user-supplied",
+      "covers": ["Space Invaders attract mode", "Framebuffer hashes"],
+      "notes": "Private eval can mount user-provided Space Invaders ROM by SHA256; git must not include ROM bytes."
+    }
+  ],
+  "private_artifacts": [
+    {
+      "name": "space_invaders_rom_set",
+      "required_for": ["Space Invaders attract mode", "Framebuffer hashes"],
+      "storage": "private artifact bucket or mounted secret volume",
+      "hash_policy": "sha256 required before scoring"
+    }
+  ]
+}

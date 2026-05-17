@@ -1,0 +1,53 @@
+{
+  "environment_id": "emulator-gameboy-dmg",
+  "sources": [
+    {
+      "name": "c-sp Game Boy test ROM index",
+      "kind": "git",
+      "url": "https://github.com/c-sp/game-boy-test-roms",
+      "ref": "master",
+      "license": "mixed-see-upstream",
+      "covers": ["blargg test ROMs", "mooneye-gb", "dmg-acid2", "Mealybug Tearoom tests", "SameSuite"],
+      "notes": "Aggregates many GB/GBC public suites and expected-output documentation."
+    },
+    {
+      "name": "Mooneye test suite",
+      "kind": "git",
+      "url": "https://github.com/Gekkio/mooneye-test-suite",
+      "ref": "main",
+      "license": "MIT",
+      "covers": ["mooneye-gb"],
+      "notes": "Acceptance, emulator-only, and misc GB tests."
+    },
+    {
+      "name": "DMG Acid2",
+      "kind": "git",
+      "url": "https://github.com/mattcurrie/dmg-acid2",
+      "ref": "master",
+      "license": "MIT",
+      "covers": ["dmg-acid2"]
+    },
+    {
+      "name": "SameSuite",
+      "kind": "git",
+      "url": "https://github.com/LIJI32/SameSuite",
+      "ref": "master",
+      "license": "MIT",
+      "covers": ["SameSuite"]
+    }
+  ],
+  "private_artifacts": [
+    {
+      "name": "gameboy_dmg_public_test_roms",
+      "required_for": ["blargg test ROMs", "mooneye-gb", "dmg-acid2", "Mealybug Tearoom tests", "SameSuite"],
+      "storage": "private/generated artifact bucket or mounted secret volume",
+      "hash_policy": "sha256 manifest required before scoring"
+    },
+    {
+      "name": "pokemon_red_rom",
+      "required_for": ["Pokemon Red gameplay stability"],
+      "storage": "private artifact bucket or mounted secret volume",
+      "hash_policy": "sha256 required before scoring"
+    }
+  ]
+}

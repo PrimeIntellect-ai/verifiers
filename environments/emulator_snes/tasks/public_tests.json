@@ -1,0 +1,37 @@
+{
+  "environment_id": "emulator-snes",
+  "sources": [
+    {
+      "name": "Peter Lemon SNES tests",
+      "kind": "git",
+      "url": "https://github.com/PeterLemon/SNES",
+      "ref": "master",
+      "license": "MIT",
+      "covers": ["SNESdev tests", "PPU timing suites"],
+      "notes": "SNES CPU/PPU/DMA homebrew tests."
+    },
+    {
+      "name": "undisbeliever SNES test ROMs",
+      "kind": "git",
+      "url": "https://github.com/undisbeliever/snes-test-roms",
+      "ref": "master",
+      "license": "MIT",
+      "covers": ["SNESdev tests"],
+      "notes": "SNES homebrew validation ROMs."
+    },
+    {
+      "name": "SNESdev emulator tests wiki",
+      "kind": "http",
+      "url": "https://snes.nesdev.org/wiki/Emulator_tests",
+      "license": "documentation",
+      "covers": ["blargg SNES tests", "SNESdev tests", "PPU timing suites"]
+    },
+    {
+      "name": "Snes Central blargg hardware tests",
+      "kind": "http",
+      "url": "https://snescentral.com/article.php?id=1115",
+      "license": "mixed-see-upstream",
+      "covers": ["blargg SNES tests"]
+    }
+  ]
+}

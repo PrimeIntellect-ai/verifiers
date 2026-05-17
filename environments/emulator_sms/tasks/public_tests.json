@@ -1,0 +1,44 @@
+{
+  "environment_id": "emulator-sms",
+  "sources": [
+    {
+      "name": "sverx SMS Test Suite",
+      "kind": "git",
+      "url": "https://github.com/sverx/SMSTestSuite",
+      "ref": "master",
+      "license": "GPL-3.0",
+      "covers": ["SMS Test Suite"],
+      "notes": "Sega Master System video/audio/input diagnostics."
+    },
+    {
+      "name": "redcode Z80 test harness",
+      "kind": "git",
+      "url": "https://github.com/redcode/Z80",
+      "ref": "master",
+      "license": "BSD-3-Clause",
+      "covers": ["ZEXDOC", "ZEXALL"],
+      "notes": "Fetches/runs ZEXDOC and ZEXALL through the Z80 test tool."
+    },
+    {
+      "name": "SMS Power TestSuite page",
+      "kind": "http",
+      "url": "https://www.smspower.org/Homebrew/TestSuite-SMS",
+      "license": "documentation",
+      "covers": ["SMS Test Suite"]
+    }
+  ],
+  "private_artifacts": [
+    {
+      "name": "sms_test_suite_roms",
+      "required_for": ["SMS Test Suite"],
+      "storage": "private/generated artifact bucket or mounted secret volume",
+      "hash_policy": "sha256 required before scoring"
+    },
+    {
+      "name": "zexdoc_zexall_roms",
+      "required_for": ["ZEXDOC", "ZEXALL"],
+      "storage": "private/generated artifact bucket or mounted secret volume",
+      "hash_policy": "sha256 required before scoring"
+    }
+  ]
+}

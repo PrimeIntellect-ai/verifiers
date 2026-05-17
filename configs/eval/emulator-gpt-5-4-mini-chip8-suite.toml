@@ -1,0 +1,17 @@
+# Suite-backed gpt-5.4-mini canary for the easiest emulator environment.
+# This is the cheapest real verifier path before launching the all-env suite.
+model = "openai/gpt-5.4-mini"
+provider = "prime"
+num_examples = 1
+rollouts_per_example = 1
+max_concurrent = 1
+max_tokens = 4096
+temperature = 0.2
+save_results = true
+disable_tui = true
+output_dir = "/tmp/emulator-gpt54-chip8-suite"
+
+[[eval]]
+id = "emulator-chip8"
+name = "emulator-chip8-suite-canary"
+args = { max_tasks = 1, sandbox_timeout_minutes = 30, environment_timeout = 60, agent_step_limit = 1, max_turns = 1 }

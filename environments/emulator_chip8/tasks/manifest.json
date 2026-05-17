@@ -1,0 +1,27 @@
+{
+  "environment_id": "emulator-chip8",
+  "module_name": "emulator_chip8",
+  "level": 1,
+  "slug": "chip8",
+  "display_name": "CHIP-8",
+  "difficulty": "Very Easy",
+  "goal": "Implement a CHIP-8 interpreter capable of loading and executing standard ROMs.",
+  "base_prompt": "Implement a CHIP-8 emulator in Rust.",
+  "core_concepts": ["Virtual machines", "Opcode decoding", "Memory management", "Display rendering", "Input handling", "Timers"],
+  "requirements": ["64x32 monochrome display", "Full CHIP-8 instruction set", "Keypad input", "Delay and sound timers", "ROM loading", "Deterministic execution"],
+  "exposed_api": ["step()", "reset()", "framebuffer()", "keypad input API"],
+  "public_verification": ["IBM Logo ROM", "Corax opcode test", "Timendus CHIP-8 suite"],
+  "hidden_verification": ["Timing edge cases", "Invalid opcode handling", "Quirk ROMs"],
+  "success_criteria": ["All public tests pass", "Deterministic framebuffer hashes", "Stable execution for 10000 cycles"],
+  "framebuffer": {"width": 64, "height": 32},
+  "runtime": {"smoke_cycles": 10000, "verify_timeout_seconds": 900},
+  "scoring_weights": {"correctness": 0.65, "determinism": 0.2, "performance": 0.1, "quality": 0.05},
+  "verification_cases": [
+    {"id": "chip8_ibm_logo", "stage": "public", "kind": "rom", "name": "IBM Logo ROM", "expected_signal": "framebuffer_hash", "source": "public"},
+    {"id": "chip8_corax_opcode", "stage": "public", "kind": "rom", "name": "Corax opcode test", "expected_signal": "pass_marker", "source": "public"},
+    {"id": "chip8_timendus_suite", "stage": "public", "kind": "rom_suite", "name": "Timendus CHIP-8 suite", "expected_signal": "suite_pass_rate", "source": "public"},
+    {"id": "chip8_timer_edges", "stage": "hidden", "kind": "generated_rom", "name": "Timing edge cases", "expected_signal": "trace_crc", "source": "generated"},
+    {"id": "chip8_invalid_opcode", "stage": "hidden", "kind": "generated_rom", "name": "Invalid opcode handling", "expected_signal": "error_contract", "source": "generated"},
+    {"id": "chip8_quirks", "stage": "hidden", "kind": "rom_suite", "name": "Quirk ROMs", "expected_signal": "frame_sequence_hash", "source": "withheld"}
+  ]
+}

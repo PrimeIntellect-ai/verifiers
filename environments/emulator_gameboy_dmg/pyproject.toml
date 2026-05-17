@@ -1,0 +1,24 @@
+[project]
+name = "emulator-gameboy-dmg"
+description = "Prime emulator benchmark env for Nintendo Game Boy DMG"
+tags = ["emulator", "gameboy", "dmg", "systems", "sandbox", "rust", "eval"]
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = ["verifiers"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["emulator_gameboy_dmg.py", "pyproject.toml", "README.md", "tasks/manifest.json", "tasks/public_tests.json"]
+
+[project.entry-points."verifiers.environments"]
+emulator-gameboy-dmg = "emulator_gameboy_dmg:load_environment"
+
+[tool.verifiers.eval]
+num_examples = 1
+rollouts_per_example = 1
+
+[tool.uv.sources]
+verifiers = { path = "../..", editable = true }

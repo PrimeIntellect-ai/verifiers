@@ -64,6 +64,24 @@ class FakeClient:
         self.closed = True
 
 
+def test_v1_env_apply_controls_mirrors_sampling_args_for_rollout_outputs():
+    env = vf.Env(taskset=vf.Taskset(source=[]), harness=vf.Harness())
+    state = vf.State()
+    sampling_args = {"temperature": 0.7, "max_completion_tokens": 128}
+
+    env.apply_controls(
+        [state],
+        {
+            "model": "test-model",
+            "sampling_args": sampling_args,
+            "score_rollout": True,
+        },
+    )
+
+    assert state["runtime"]["sampling_args"] == sampling_args
+    assert state["sampling_args"] == sampling_args
+
+
 class FakeModelClient:
     def __init__(self, responses: list[Response]):
         self.responses = responses

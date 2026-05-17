@@ -1,0 +1,41 @@
+# Minimal Prime Labs / Hosted Training LoRA example for the emulator benchmark.
+# This intentionally uses a trainable open-weight Hosted Training model; use
+# openai/gpt-5.4-mini for eval, not finetuning.
+model = "openai/gpt-oss-20b"
+
+max_steps = 10
+batch_size = 8
+rollouts_per_example = 2
+
+[sampling]
+max_tokens = 4096
+temperature = 0.7
+reasoning_effort = "low"
+
+[[env]]
+id = "emulator-chip8"
+
+[env.args]
+max_tasks = 1
+sandbox_timeout_minutes = 60
+environment_timeout = 7200
+agent_step_limit = 250
+max_turns = 40
+
+# Keep online eval cheap during bring-up. Remove or expand this block after the
+# first reward-diversity check.
+[eval]
+interval = 5
+num_examples = 1
+rollouts_per_example = 1
+eval_base_model = true
+
+[[eval.env]]
+id = "emulator-chip8"
+
+[eval.env.args]
+max_tasks = 1
+sandbox_timeout_minutes = 30
+environment_timeout = 1800
+agent_step_limit = 100
+max_turns = 20
