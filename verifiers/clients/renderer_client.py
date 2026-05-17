@@ -612,18 +612,28 @@ class RendererClient(
         tool_calls = None
         raw_tcs = response.get("tool_calls")
         if raw_tcs:
-            tool_calls = [
-                ToolCall(
-                    id=f"call_{i}",
-                    name=tc["function"]["name"],
-                    arguments=(
-                        tc["function"]["arguments"]
-                        if isinstance(tc["function"]["arguments"], str)
-                        else json.dumps(tc["function"]["arguments"])
-                    ),
+            tool_calls = []
+            for i, tc in enumerate(raw_tcs):
+                function = _get_value(tc, "function")
+                name = _get_value(function, "name") if function is not None else None
+                arguments = (
+                    _get_value(function, "arguments")
+                    if function is not None
+                    else None
                 )
-                for i, tc in enumerate(raw_tcs)
-            ]
+                if name is None:
+                    name = _get_value(tc, "name")
+                if arguments is None:
+                    arguments = _get_value(tc, "arguments")
+                if not isinstance(arguments, str):
+                    arguments = json.dumps(arguments)
+                tool_calls.append(
+                    ToolCall(
+                        id=_get_value(tc, "id") or f"call_{i}",
+                        name=name,
+                        arguments=arguments,
+                    )
+                )
 
         prompt_ids = response.get("prompt_ids", [])
         completion_ids = response.get("completion_ids", [])

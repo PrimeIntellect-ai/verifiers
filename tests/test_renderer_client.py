@@ -1,4 +1,6 @@
+import asyncio
 from functools import lru_cache
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -231,6 +233,47 @@ async def test_from_native_response_uses_request_id_and_token_lengths():
     assert response.usage.prompt_tokens == 3
     assert response.usage.completion_tokens == 2
     assert response.usage.total_tokens == 5
+
+
+def test_from_native_response_accepts_dict_tool_calls():
+    client = object.__new__(RendererClient)
+
+    response = asyncio.run(
+        client.from_native_response(
+            {
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_lookup",
+                        "function": {
+                            "name": "lookup",
+                            "arguments": {"query": "prime"},
+                        },
+                    }
+                ],
+            }
+        )
+    )
+
+    assert response.message.tool_calls == [
+        ToolCall(id="call_lookup", name="lookup", arguments='{"query": "prime"}')
+    ]
+
+
+def test_from_native_response_accepts_object_tool_calls():
+    client = object.__new__(RendererClient)
+    tool_call = SimpleNamespace(
+        id="call_lookup",
+        function=SimpleNamespace(name="lookup", arguments={"query": "prime"}),
+    )
+
+    response = asyncio.run(
+        client.from_native_response({"content": "", "tool_calls": [tool_call]})
+    )
+
+    assert response.message.tool_calls == [
+        ToolCall(id="call_lookup", name="lookup", arguments='{"query": "prime"}')
+    ]
 
 
 class _BridgeRenderer:
