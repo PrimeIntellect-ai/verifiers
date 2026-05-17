@@ -1666,6 +1666,58 @@ def test_load_environment_coerces_env_config_subclass_sections(
     assert env.harness.config.mode == "custom"
 
 
+def test_load_environment_coerces_base_env_config_object_to_subclass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_name = "typed_env_config_object_subclass"
+    module = types.ModuleType(module_name)
+    seen: dict[str, object] = {}
+
+    class LocalTasksetConfig(TasksetConfig):
+        split: str = "train"
+
+    class LocalHarnessConfig(HarnessConfig):
+        mode: str = "default"
+
+    class LocalEnvConfig(EnvConfig):
+        taskset: LocalTasksetConfig = LocalTasksetConfig()
+        harness: LocalHarnessConfig = LocalHarnessConfig()
+
+    class LocalTaskset(Taskset):
+        config_type = LocalTasksetConfig
+
+    class LocalHarness(Harness):
+        config_type = LocalHarnessConfig
+
+    def load_environment(config: LocalEnvConfig) -> Env:
+        seen["config"] = config
+        taskset_config = LocalTasksetConfig.from_config(
+            {**config.taskset.model_dump(), "source": ref("source_loader")}
+        )
+        return Env(
+            taskset=LocalTaskset(config=taskset_config),
+            harness=LocalHarness(config=config.harness),
+        )
+
+    module.load_environment = load_environment
+    monkeypatch.setitem(sys.modules, module_name, module)
+
+    env = vf.load_environment(
+        "typed-env-config-object-subclass",
+        config=EnvConfig(
+            taskset=TasksetConfig(taskset_id="typed"),
+            harness=HarnessConfig(model="typed-model"),
+        ),
+    )
+    config = seen["config"]
+
+    assert isinstance(config, LocalEnvConfig)
+    assert isinstance(config.taskset, LocalTasksetConfig)
+    assert isinstance(config.harness, LocalHarnessConfig)
+    assert env.taskset.config.taskset_id == "typed"
+    assert env.harness.config.model == "typed-model"
+
+
 def test_load_environment_supplies_default_typed_env_config(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

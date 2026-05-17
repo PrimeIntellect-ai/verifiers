@@ -1,7 +1,7 @@
 import shlex
 from pathlib import PurePosixPath
 
-from .command import command_program, command_sandbox
+from .command import base_harness_config, command_program, command_sandbox
 from .configs import Terminus2Config
 from ...harness import Harness
 from ...utils.prompt_utils import (
@@ -25,7 +25,8 @@ class Terminus2(Harness):
 
     def __init__(self, config: Terminus2Config = Terminus2Config()):
         config = Terminus2Config.from_config(config)
-        super().__init__(config=config)
+        super().__init__(config=base_harness_config(config))
+        self.config = config
         sandbox_config = config.sandbox if config.sandbox is not None else True
         files: dict[str, ProgramValue] = {
             config.instruction_path: task_instruction_text,

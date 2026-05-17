@@ -1,9 +1,9 @@
 from collections.abc import Mapping
-from typing import cast
+from typing import TypeVar, cast
 
 from pydantic import BaseModel
 
-from ...config import SandboxConfig, sandbox_config_mapping
+from ...config import HarnessConfig, SandboxConfig, sandbox_config_mapping
 from ...types import (
     ConfigData,
     ConfigMap,
@@ -17,6 +17,8 @@ from ...utils.binding_utils import Bindings
 from ...utils.config_utils import resolve_config_object
 from ...utils.program_utils import program_list_items
 
+ConfigT = TypeVar("ConfigT", bound=HarnessConfig)
+
 
 DEFAULT_COMMAND_SANDBOX: ConfigData = {
     "image": "python:3.11-slim",
@@ -26,6 +28,10 @@ DEFAULT_COMMAND_SANDBOX: ConfigData = {
     "command_timeout": 900,
     "network_access": True,
 }
+
+
+def base_harness_config(config: ConfigT) -> ConfigT:
+    return cast(ConfigT, config.model_copy(update={"program": None}))
 
 
 def command_program(

@@ -3,7 +3,7 @@ import shlex
 from pathlib import PurePosixPath
 from typing import cast
 
-from .command import command_program, command_sandbox
+from .command import base_harness_config, command_program, command_sandbox
 from .configs import (
     OPENCODE_DEFAULT_AGENT_WORKDIR,
     OPENCODE_DEFAULT_DISABLED_TOOLS,
@@ -44,7 +44,8 @@ class OpenCode(Harness):
 
     def __init__(self, config: OpenCodeConfig = OpenCodeConfig()):
         config = OpenCodeConfig.from_config(config)
-        super().__init__(config=config)
+        super().__init__(config=base_harness_config(config))
+        self.config = config
         sandbox_config = config.sandbox if config.sandbox is not None else True
         files: dict[str, ProgramValue] = {
             config.instruction_path: cast(ProgramValue, task_instruction_text),

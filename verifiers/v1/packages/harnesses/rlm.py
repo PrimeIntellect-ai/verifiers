@@ -18,7 +18,7 @@ from ...state import State
 from ...task import Task
 from ...taskset import Taskset
 from ...utils.prompt_utils import task_text
-from .command import command_program
+from .command import base_harness_config, command_program
 from .configs import (
     RLM_DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH,
     RLM_DEFAULT_EXEC_TIMEOUT,
@@ -52,7 +52,8 @@ class RLM(Harness):
 
     def __init__(self, config: RLMConfig = RLMConfig()):
         harness_config = RLMConfig.from_config(config)
-        super().__init__(config=harness_config)
+        super().__init__(config=base_harness_config(harness_config))
+        self.config = harness_config
         if (
             not harness_config.include_sub_rlm_trajectories
             and harness_config.keep_trajectory_step is None

@@ -245,6 +245,40 @@ def test_opencode_config_owns_opencode_harness_fields() -> None:
     assert "/opencode/system.txt" not in cast(dict[str, object], program["files"])
 
 
+@pytest.mark.parametrize(
+    ("harness_cls", "config_cls"),
+    [
+        (vf.OpenCode, vf.OpenCodeConfig),
+        (vf.MiniSWEAgent, vf.MiniSWEAgentConfig),
+        (vf.Pi, vf.PiConfig),
+        (vf.RLM, vf.RLMConfig),
+        (vf.Terminus2, vf.Terminus2Config),
+    ],
+)
+def test_packaged_command_harnesses_defer_partial_program_overrides(
+    harness_cls, config_cls
+) -> None:
+    override = {
+        "setup": "echo caller",
+        "env": {"CALLER": "1"},
+        "args": ["--caller"],
+    }
+    harness = harness_cls(config=config_cls(program=override))
+    program = cast(dict[str, object], harness.program)
+    env = cast(dict[str, object], program["env"])
+    setup = cast(list[object], program["setup"])
+    args = cast(list[object], program["args"])
+
+    assert program["command"]
+    assert env["CALLER"] == "1"
+    assert "echo caller" in setup
+    assert "--caller" in args
+    assert isinstance(harness.config.program, vf.ProgramConfig)
+    assert harness.config.program.env == {"CALLER": "1"}
+    assert harness.config.program.setup == override["setup"]
+    assert harness.config.program.args == override["args"]
+
+
 def test_pi_harness_writes_intercepted_model_and_mcp_config() -> None:
     harness = vf.Pi()
     program = cast(dict[str, object], harness.program)

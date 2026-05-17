@@ -113,7 +113,7 @@ def prepare_typed_env_config(
         return env_args
 
     call_env_args = dict(env_args)
-    call_env_args["config"] = config_type.model_validate(config)
+    call_env_args["config"] = config_type.from_config(config)
     return call_env_args
 
 
