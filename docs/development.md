@@ -323,7 +323,7 @@ uv run ty check verifiers             # Type check (matches CI Ty target)
 prime env init new-env                       # Create taskset-first v1 environment
 prime env install new-env                    # Install environment
 prime eval run new-env -m openai/gpt-4.1-mini -n 5  # Test environment
-prime eval tui                               # Browse evals in the tree browser
+prime eval view                              # Browse evals in the tree browser
 ```
 
 ### CLI Tools
@@ -334,7 +334,7 @@ prime eval tui                               # Browse evals in the tree browser
 | `prime env init` | Initialize new environment from template |
 | `prime env install` | Install environment module |
 | `prime lab setup` | Set up training workspace |
-| `prime eval tui` | Terminal UI for browsing evals and rollout details |
+| `prime eval view` | Terminal UI for browsing evals and rollout details |
 | `prime rl run` | Launch Hosted Training |
 
 ### Project Guidelines

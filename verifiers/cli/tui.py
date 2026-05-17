@@ -1,8 +1,8 @@
 """TUI exports for host CLIs."""
 
-from verifiers.scripts.tui import VerifiersTUI, main
+from verifiers.scripts.tui import main
 
-__all__ = ["VerifiersTUI", "main"]
+__all__ = ["main"]
 
 
 if __name__ == "__main__":
