@@ -21,6 +21,7 @@ from verifiers.v1.runtime import Runtime
 from verifiers.v1.utils.endpoint_utils import endpoint_api_key
 from verifiers.v1.utils import mcp_utils
 from verifiers.v1.utils.mcp_proxy_utils import MCP_PROXY_CONFIG_PATH, MCP_PROXY_PATH
+from verifiers.v1.utils.mcp_proxy_utils import MCP_PROXY_PYTHON_PATH
 from verifiers.v1.utils.mcp_proxy_utils import proxy_command, proxy_source
 from verifiers.v1.utils.program_utils import command_env
 from verifiers.v1.utils.sandbox_program_utils import (
@@ -37,6 +38,7 @@ from verifiers.v1.utils.sandbox_program_utils import (
 from verifiers.v1.utils.sandbox_utils import (
     VF_STATE_INPUT_PATH_KEY,
     collect_sandbox_artifacts,
+    python_package_install_command,
     run_sandbox_command,
 )
 
@@ -945,6 +947,18 @@ build-backend = "hatchling.build"
     assert command[2].endswith(" /tmp/vf_program_runner.py fn local_program:run")
 
 
+def test_python_package_install_command_ignores_image_pip_config() -> None:
+    command = python_package_install_command("mcp requests")
+
+    assert "export PIP_CONFIG_FILE=/dev/null" in command
+    assert (
+        "unset PIP_INDEX_URL PIP_EXTRA_INDEX_URL PIP_FIND_LINKS PIP_NO_INDEX "
+        "PIP_REQUIRE_VIRTUALENV"
+    ) in command
+    assert "uv python install 3.11" in command
+    assert MCP_PROXY_PYTHON_PATH in command
+
+
 def test_sandbox_fn_program_resolves_local_module_package(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1134,7 +1148,11 @@ def test_program_channels_mcp_injects_proxy_into_sandbox_program() -> None:
         "tool_base_url": "http://127.0.0.1:1/rollout/test/vf/tools",
         "tool_api_key": harness.endpoint.secret,
     }
-    assert proxy_command() == ["python3", MCP_PROXY_PATH, MCP_PROXY_CONFIG_PATH]
+    command = proxy_command()
+    assert command[:2] == ["/bin/sh", "-lc"]
+    assert MCP_PROXY_PYTHON_PATH in command[2]
+    assert MCP_PROXY_PATH in command[2]
+    assert MCP_PROXY_CONFIG_PATH in command[2]
     packages = sandbox["packages"]
     assert isinstance(packages, list)
     assert "mcp>=1.14.1" in packages

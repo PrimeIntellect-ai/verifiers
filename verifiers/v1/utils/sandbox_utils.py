@@ -16,6 +16,7 @@ from verifiers.utils.async_utils import maybe_call_with_named_args
 
 from .artifact_utils import artifact_format, artifact_key, artifact_optional
 from .artifact_utils import artifact_path
+from .mcp_proxy_utils import MCP_PROXY_PYTHON_PATH
 from .program_utils import command_argv, command_env, float_config, int_config
 from .program_utils import program_option_mapping, program_channel_setup
 from .program_utils import resolve_program_value
@@ -511,8 +512,26 @@ def sandbox_scope(sandbox_config: ConfigMap) -> str:
 
 
 def python_package_install_command(package_args: str) -> str:
+    packages = shlex.split(package_args)
+    mcp_python_setup = ""
+    if any(package.startswith("mcp") for package in packages):
+        mcp_python_setup = (
+            "if ! \"$PYTHON\" -c 'import sys; raise SystemExit(sys.version_info < (3, 10))'; then\n"
+            "  VF_UV_SITE_PACKAGES=/tmp/vf-uv-site-packages\n"
+            '  mkdir -p "$VF_UV_SITE_PACKAGES"\n'
+            '  "$PYTHON" -m pip install --disable-pip-version-check --break-system-packages '
+            '    --target "$VF_UV_SITE_PACKAGES" uv==0.11.7 || '
+            '"$PYTHON" -m pip install --disable-pip-version-check '
+            '    --target "$VF_UV_SITE_PACKAGES" uv==0.11.7\n'
+            '  env PYTHONPATH="$VF_UV_SITE_PACKAGES" "$PYTHON" -m uv python install 3.11\n'
+            '  PYTHON="$(env PYTHONPATH="$VF_UV_SITE_PACKAGES" "$PYTHON" -m uv python find 3.11)"\n'
+            "fi\n"
+            f'printf "%s\\n" "$PYTHON" > {shlex.quote(MCP_PROXY_PYTHON_PATH)}\n'
+        )
     return (
         "set -e\n"
+        "export PIP_CONFIG_FILE=/dev/null\n"
+        "unset PIP_INDEX_URL PIP_EXTRA_INDEX_URL PIP_FIND_LINKS PIP_NO_INDEX PIP_REQUIRE_VIRTUALENV\n"
         "if command -v python3 >/dev/null 2>&1; then PYTHON=python3; "
         "elif command -v python >/dev/null 2>&1; then PYTHON=python; "
         "elif command -v apt-get >/dev/null 2>&1; then "
@@ -525,6 +544,7 @@ def python_package_install_command(package_args: str) -> str:
         "(command -v apt-get >/dev/null 2>&1 && "
         "apt-get -o Acquire::Retries=3 update && "
         "apt-get -o Acquire::Retries=3 install -y python3-pip)\n"
+        f"{mcp_python_setup}"
         "$PYTHON -m pip install --disable-pip-version-check --break-system-packages "
         f"{package_args} || "
         "$PYTHON -m pip install --disable-pip-version-check "
