@@ -972,8 +972,11 @@ def test_sandbox_fn_program_resolves_package_module_root(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     package = tmp_path / "package_program"
+    marker = tmp_path / "import_marker"
     package.mkdir()
-    (package / "__init__.py").write_text("")
+    (package / "__init__.py").write_text(
+        f"from pathlib import Path\nPath({str(marker)!r}).write_text('imported')\n"
+    )
     (package / "worker.py").write_text("async def run(task, state): return state\n")
     (package / "pyproject.toml").write_text(
         """
@@ -993,6 +996,32 @@ build-backend = "hatchling.build"
     )
 
     assert package_root == SandboxPackage(local_root=package.resolve())
+    assert not marker.exists()
+    assert "package_program" not in sys.modules
+
+
+def test_sandbox_fn_program_resolves_nested_package_module_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    outer = tmp_path / "outer"
+    package = outer / "inner"
+    marker = tmp_path / "import_marker"
+    package.mkdir(parents=True)
+    (outer / "__init__.py").write_text(
+        f"from pathlib import Path\nPath({str(marker)!r}).write_text('imported')\n"
+    )
+    (package / "__init__.py").write_text("")
+    (package / "worker.py").write_text("async def run(task, state): return state\n")
+    (package / "pyproject.toml").write_text(
+        '[project]\nname = "nested-package-program"\nversion = "0.1.0"\n'
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    package_root = sandbox_program_package(mode="fn", fn_ref="outer.inner.worker:run")
+
+    assert package_root == SandboxPackage(local_root=package.resolve())
+    assert not marker.exists()
+    assert "outer" not in sys.modules
 
 
 def test_sandbox_fn_program_does_not_walk_to_parent_pyproject(
@@ -1018,8 +1047,16 @@ build-backend = "hatchling.build"
         sandbox_program_package(mode="fn", fn_ref="nested_program:run")
 
 
-def test_sandbox_fn_program_does_not_install_stdlib_packages() -> None:
-    assert sandbox_program_package(mode="fn", fn_ref="json:dumps") is None
+@pytest.mark.parametrize(
+    "fn_ref",
+    [
+        "json:dumps",
+        "os.path:join",
+        "collections.abc:Mapping",
+    ],
+)
+def test_sandbox_fn_program_does_not_install_stdlib_packages(fn_ref: str) -> None:
+    assert sandbox_program_package(mode="fn", fn_ref=fn_ref) is None
 
 
 def test_sandbox_fn_program_requires_local_pyproject(

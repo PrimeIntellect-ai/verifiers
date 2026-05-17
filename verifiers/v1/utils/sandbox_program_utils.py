@@ -192,7 +192,8 @@ def sandbox_program_package(*, mode: str, fn_ref: str | None) -> SandboxPackage 
     module_name, _, _ = fn_ref.partition(":")
     if not module_name:
         raise ValueError("program.fn must include a module path.")
-    spec = importlib.util.find_spec(module_name)
+    root_module_name, _, _ = module_name.partition(".")
+    spec = importlib.util.find_spec(root_module_name)
     if spec is None:
         raise ImportError(f"Cannot resolve program.fn module {module_name!r}.")
     roots = package_roots_for_module(module_name, spec)
@@ -224,7 +225,7 @@ def package_roots_for_module(
     module_name: str, spec: importlib.machinery.ModuleSpec
 ) -> set[Path]:
     roots = set()
-    for path in module_source_paths(spec):
+    for path in module_source_paths(module_name, spec):
         if is_external_import_path(path):
             continue
         root = module_package_root(path)
@@ -238,7 +239,26 @@ def package_roots_for_module(
     return roots
 
 
-def module_source_paths(spec: importlib.machinery.ModuleSpec) -> list[Path]:
+def module_source_paths(
+    module_name: str, spec: importlib.machinery.ModuleSpec
+) -> list[Path]:
+    _, _, nested_name = module_name.partition(".")
+    if nested_name and spec.submodule_search_locations:
+        paths = []
+        relative_path = Path(*nested_name.split("."))
+        for location in spec.submodule_search_locations:
+            path = Path(location).resolve() / relative_path
+            if (path / "__init__.py").is_file():
+                paths.append(path)
+            module_path = path.with_suffix(".py")
+            if module_path.is_file():
+                paths.append(module_path)
+        if paths or all(
+            is_external_import_path(Path(location).resolve())
+            for location in spec.submodule_search_locations
+        ):
+            return paths
+        raise ImportError(f"Cannot resolve program.fn module {module_name!r}.")
     origin = spec.origin
     if spec.submodule_search_locations:
         return [Path(path).resolve() for path in spec.submodule_search_locations]
