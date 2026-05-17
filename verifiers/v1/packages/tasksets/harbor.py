@@ -29,10 +29,10 @@ VERIFIER_MODE_SHARED = "shared"
 VERIFIER_MODE_SEPARATE = "separate"
 HARBOR_ARTIFACTS_DIR = "/logs/artifacts"
 HARBOR_REWARD_COMMAND = (
-    "if [ -s /logs/verifier/reward.json ]; then "
-    "cat /logs/verifier/reward.json; "
-    "elif [ -s /logs/verifier/reward.txt ]; then "
-    "cat /logs/verifier/reward.txt; fi"
+    "if [ -s /logs/verifier/reward.txt ]; then "
+    "cat /logs/verifier/reward.txt; "
+    "elif [ -s /logs/verifier/reward.json ]; then "
+    "cat /logs/verifier/reward.json; fi"
 )
 
 

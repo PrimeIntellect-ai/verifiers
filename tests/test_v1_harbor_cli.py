@@ -21,7 +21,7 @@ from verifiers.v1.packages.harnesses.terminus_2 import (
     Terminus2,
     terminus_2_agent_script,
 )
-from verifiers.v1.packages.tasksets.harbor import harbor_reward
+from verifiers.v1.packages.tasksets.harbor import HARBOR_REWARD_COMMAND, harbor_reward
 from verifiers.v1.utils.program_utils import merge_task_program, merge_task_sandbox
 
 
@@ -138,6 +138,12 @@ def test_harbor_taskset_constructs_env_with_opencode(
     assert task["task_name"] == "task-a"
     assert isinstance(env.harness, vf.OpenCode)
     assert "task_dir" not in cast(dict[str, object], env.harness.program)
+
+
+def test_harbor_reward_command_prefers_text_reward() -> None:
+    assert HARBOR_REWARD_COMMAND.index("reward.txt") < HARBOR_REWARD_COMMAND.index(
+        "reward.json"
+    )
 
 
 def test_harbor_taskset_resolves_verifier_environment_modes(
