@@ -1,6 +1,7 @@
 import json
 import logging
 import time
+from collections import Counter
 from collections.abc import Mapping
 from datetime import date, datetime
 from pathlib import Path
@@ -334,6 +335,15 @@ def _delta_intermediate_mm_data(trajectory: object) -> object:
     step-deltas in that window. Placeholder offsets stay relative to the
     step's own cumulative token sequence; the assembler shifts them.
 
+    Non-monotonic trajectories: the diff is lossless only when the prior
+    step's cumulative is a multiset-subset of the current step's. When
+    that breaks — e.g. a compaction step that preserves a subset of prior
+    images, a pruning harness that drops earlier turns, or a sliding-window
+    context that rolls items out — diffing against ``prior`` would drop
+    items that should have survived. Such steps emit their full cumulative
+    as-is and reset the prior baseline, so per-window assemblers always
+    see at least their window's images.
+
     Returns a new list of step dicts (shallow copies for rewritten
     entries) so the input state isn't mutated. Non-list inputs and
     empty / single-step trajectories pass through unchanged.
@@ -356,6 +366,13 @@ def _delta_intermediate_mm_data(trajectory: object) -> object:
         current_hashes = _read_mm_hashes(step_mm)
 
         if idx == 0:
+            out.append(step)
+            prior_hashes = current_hashes
+            continue
+
+        # Non-monotonic transition (e.g. partial compaction): emit
+        # cumulative as-is and reset the baseline. See helper docstring.
+        if not _is_monotonic_extension(prior_hashes, current_hashes):
             out.append(step)
             prior_hashes = current_hashes
             continue
@@ -392,6 +409,28 @@ def _read_mm_hashes(mm: object) -> dict[str, list[str]]:
     return {
         modality: list(hs) for modality, hs in hashes.items() if isinstance(hs, list)
     }
+
+
+def _is_monotonic_extension(
+    prior: dict[str, list[str]], current: dict[str, list[str]]
+) -> bool:
+    """Precondition for ``_diff_mm_data`` to be lossless against ``prior``.
+
+    True iff every prior occurrence of every hash has a matching current
+    occurrence to consume, per modality — i.e. ``prior`` is a multiset-subset
+    of ``current``. Equivalently: every image in prior is still in current,
+    so the trajectory grew monotonically from prior to current.
+
+    Returns ``False`` when a compaction step preserved a subset of prior
+    images, a pruning harness dropped earlier turns, a sliding-window
+    context rolled items out, or any other non-monotonic transition. The
+    caller must then emit current's full cumulative as-is and reset the
+    baseline instead of diffing.
+    """
+    for modality, prior_hashes in prior.items():
+        if Counter(prior_hashes) - Counter(current.get(modality, [])):
+            return False
+    return True
 
 
 def _diff_mm_data(mm: object, prior_hashes: dict[str, list[str]]) -> object:
