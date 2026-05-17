@@ -124,6 +124,23 @@ def test_alphabet_sort_v1_validates_parameters():
         )
 
 
+@pytest.mark.parametrize("env_name", ["alphabet_sort", "math_python"])
+def test_v1_wrapper_rejects_unknown_kwargs(env_name: str):
+    module_path = Path("environments") / env_name / f"{env_name}.py"
+    spec = importlib.util.spec_from_file_location(
+        f"{env_name}_wrapper_test", module_path
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+
+    with pytest.raises(
+        TypeError, match="Unsupported v1 load_environment kwargs: extra"
+    ):
+        module.load_environment(v1=True, extra=True)
+
+
 @pytest.mark.slow
 @pytest.mark.parametrize("env_dir", get_environments(), ids=lambda x: x.name)
 def test_env(env_dir: Path, tmp_path_factory: pytest.TempPathFactory):

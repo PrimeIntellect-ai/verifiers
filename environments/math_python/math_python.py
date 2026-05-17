@@ -20,6 +20,10 @@ def load_environment(
     **kwargs,
 ):
     if v1:
+        if kwargs:
+            unexpected = ", ".join(sorted(kwargs))
+            raise TypeError(f"Unsupported v1 load_environment kwargs: {unexpected}")
+
         from math_python_v1 import (
             MathPythonEnvConfig,
             MathPythonHarnessConfig,

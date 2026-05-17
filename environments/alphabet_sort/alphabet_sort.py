@@ -204,6 +204,10 @@ def load_environment(
     **kwargs,
 ) -> vf.Environment:
     if v1:
+        if kwargs:
+            unexpected = ", ".join(sorted(kwargs))
+            raise TypeError(f"Unsupported v1 load_environment kwargs: {unexpected}")
+
         from alphabet_sort_v1 import (
             AlphabetSortEnvConfig,
             AlphabetSortTasksetConfig,
