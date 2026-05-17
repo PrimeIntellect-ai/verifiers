@@ -195,6 +195,23 @@ The `--sampling-args` flag accepts any parameters supported by the model's API:
 prime eval run my-env -S '{"temperature": 0.7, "top_p": 0.9}'
 ```
 
+In eval TOML configs, put generation parameters under `[sampling]`:
+
+```toml
+[sampling]
+max_tokens = 1024
+temperature = 0.7
+reasoning_effort = "medium"
+enable_thinking = true
+
+[[eval]]
+id = "my-env"
+```
+
+`reasoning_effort` and `enable_thinking` from `[sampling]` are forwarded through
+`extra_body.chat_template_kwargs` for OpenAI-compatible servers that read chat
+template options there.
+
 ### Evaluation Scope
 
 | Flag | Short | Default | Description |
