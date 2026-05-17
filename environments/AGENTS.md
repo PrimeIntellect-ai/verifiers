@@ -699,11 +699,22 @@ The environment file exports a taskset-first v1 loader:
 import verifiers as vf
 
 
-def load_taskset(config: vf.TasksetConfig) -> vf.Taskset:
-    return vf.Taskset(source=source, rewards=[reward_fn], config=config)
+class MyTasksetConfig(vf.TasksetConfig):
+    source: str = f"{__name__}:source"
+    rewards: list[vf.CallableConfig] = [
+        vf.CallableConfig(fn=f"{__name__}:reward_fn")
+    ]
 
 
-def load_environment(config: vf.EnvConfig) -> vf.Env:
+class MyEnvConfig(vf.EnvConfig):
+    taskset: MyTasksetConfig = MyTasksetConfig()
+
+
+def load_taskset(config: MyTasksetConfig = MyTasksetConfig()) -> vf.Taskset:
+    return vf.Taskset(config=config)
+
+
+def load_environment(config: MyEnvConfig = MyEnvConfig()) -> vf.Env:
     return vf.Env(taskset=load_taskset(config=config.taskset))
 ```
 

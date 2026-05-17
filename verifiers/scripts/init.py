@@ -158,11 +158,22 @@ async def exact_answer(task, state) -> float:
     return float(task["answer"] in str(state.get("completion") or ""))
 
 
-def load_taskset(config: vf.TasksetConfig) -> vf.Taskset:
-    return vf.Taskset(source=source, rewards=[exact_answer], config=config)
+class EnvTasksetConfig(vf.TasksetConfig):
+    source: str = f"{__name__}:source"
+    rewards: list[vf.CallableConfig] = [
+        vf.CallableConfig(fn=f"{__name__}:exact_answer", weight=1.0)
+    ]
 
 
-def load_environment(config: vf.EnvConfig) -> vf.Env:
+class EnvConfig(vf.EnvConfig):
+    taskset: EnvTasksetConfig = EnvTasksetConfig()
+
+
+def load_taskset(config: EnvTasksetConfig = EnvTasksetConfig()) -> vf.Taskset:
+    return vf.Taskset(config=config)
+
+
+def load_environment(config: EnvConfig = EnvConfig()) -> vf.Env:
     return vf.Env(taskset=load_taskset(config=config.taskset))
 """
 
@@ -184,15 +195,31 @@ async def exact_answer(task, state) -> float:
     return float(task["answer"] in str(state.get("completion") or ""))
 
 
-def load_taskset(config: vf.TasksetConfig) -> vf.Taskset:
-    return vf.Taskset(source=source, rewards=[exact_answer], config=config)
+class EnvTasksetConfig(vf.TasksetConfig):
+    source: str = f"{__name__}:source"
+    rewards: list[vf.CallableConfig] = [
+        vf.CallableConfig(fn=f"{__name__}:exact_answer", weight=1.0)
+    ]
 
 
-def load_harness(config: vf.HarnessConfig) -> vf.Harness:
+class EnvHarnessConfig(vf.HarnessConfig):
+    pass
+
+
+class EnvConfig(vf.EnvConfig):
+    taskset: EnvTasksetConfig = EnvTasksetConfig()
+    harness: EnvHarnessConfig = EnvHarnessConfig()
+
+
+def load_taskset(config: EnvTasksetConfig = EnvTasksetConfig()) -> vf.Taskset:
+    return vf.Taskset(config=config)
+
+
+def load_harness(config: EnvHarnessConfig = EnvHarnessConfig()) -> vf.Harness:
     return vf.Harness(config=config)
 
 
-def load_environment(config: vf.EnvConfig) -> vf.Env:
+def load_environment(config: EnvConfig = EnvConfig()) -> vf.Env:
     return vf.Env(
         taskset=load_taskset(config=config.taskset),
         harness=load_harness(config=config.harness),
