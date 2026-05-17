@@ -192,7 +192,8 @@ def sandbox_program_package(*, mode: str, fn_ref: str | None) -> SandboxPackage 
     module_name, _, _ = fn_ref.partition(":")
     if not module_name:
         raise ValueError("program.fn must include a module path.")
-    spec = importlib.util.find_spec(module_name)
+    root_module_name, _, _ = module_name.partition(".")
+    spec = importlib.util.find_spec(root_module_name)
     if spec is None:
         raise ImportError(f"Cannot resolve program.fn module {module_name!r}.")
     roots = package_roots_for_module(module_name, spec)
@@ -224,7 +225,7 @@ def package_roots_for_module(
     module_name: str, spec: importlib.machinery.ModuleSpec
 ) -> set[Path]:
     roots = set()
-    for path in module_source_paths(spec):
+    for path in module_source_paths(module_name, spec):
         if is_external_import_path(path):
             continue
         root = module_package_root(path)
@@ -238,8 +239,34 @@ def package_roots_for_module(
     return roots
 
 
-def module_source_paths(spec: importlib.machinery.ModuleSpec) -> list[Path]:
+def module_source_paths(
+    module_name: str, spec: importlib.machinery.ModuleSpec
+) -> list[Path]:
+    _, _, nested_name = module_name.partition(".")
+    if nested_name and spec.submodule_search_locations:
+        parent_name = module_name.rpartition(".")[0].partition(".")[2]
+        parent_path = Path(*parent_name.split("."))
+        search_path = [
+            str(Path(path).resolve() / parent_path)
+            for path in spec.submodule_search_locations
+        ]
+        nested_spec = importlib.machinery.PathFinder.find_spec(module_name, search_path)
+        if nested_spec is None and all(
+            is_external_import_path(Path(path).resolve())
+            for path in spec.submodule_search_locations
+        ):
+            return []
+        if nested_spec is None:
+            raise ImportError(f"Cannot resolve program.fn module {module_name!r}.")
+        spec = nested_spec
     origin = spec.origin
+    if (
+        nested_name
+        and spec.name != module_name
+        and origin not in {None, "built-in", "frozen"}
+        and not is_external_import_path(Path(origin).resolve())
+    ):
+        raise ImportError(f"Cannot resolve program.fn module {module_name!r}.")
     if spec.submodule_search_locations:
         return [Path(path).resolve() for path in spec.submodule_search_locations]
     if origin in {None, "built-in", "frozen"}:
