@@ -5,8 +5,8 @@ tags = ["nemo-gym", "tool-use", "v1", "train", "eval"]
 version = "0.1.0"
 requires-python = ">=3.12,<3.14"
 dependencies = [
-    "verifiers>=0.1.15.dev1",
-    "nemo-gym>=0.2.1,<0.3",
+    "verifiers",
+    "nemo-gym",
 ]
 
 [build-system]
@@ -16,11 +16,9 @@ build-backend = "hatchling.build"
 [tool.hatch.build]
 include = ["nemo_gym_env.py", "README.md", "pyproject.toml"]
 
-[tool.uv.sources]
-verifiers = { path = "../..", editable = true }
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.verifiers.eval]
-num_examples = 1
-rollouts_per_example = 1
-max_concurrent = 1
-max_tokens = 128
+num_examples = 5
+rollouts_per_example = 3
