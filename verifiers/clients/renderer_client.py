@@ -91,6 +91,7 @@ def _record_bridge(success: bool) -> None:
 # workers don't parallelize well). Callers with genuinely long prompts or
 # big tokenizers can bump this per-client.
 _DEFAULT_POOL_SIZE = 1
+_DEFAULT_WINDOW_HEADROOM_TOKENS = 8
 
 
 _TTT_CONTROL_KEYS = {
@@ -99,6 +100,7 @@ _TTT_CONTROL_KEYS = {
     "ttt_learner_url",
     "ttt_request_timeout_s",
     "ttt_window_seq_len",
+    "ttt_window_headroom_tokens",
     "ttt_require_exact_token_ids",
     "ttt_cache_salt_includes_adapter",
     "tool_output_training_enabled",
@@ -500,7 +502,10 @@ def _window_prompt_ids(
         return prompt_ids
     max_tokens = sampling_params.get("max_tokens")
     completion_budget = int(max_tokens) if isinstance(max_tokens, int) and max_tokens > 0 else 1
-    prompt_budget = max(window_len - completion_budget, 1)
+    headroom = options.get("ttt_window_headroom_tokens", _DEFAULT_WINDOW_HEADROOM_TOKENS)
+    if not isinstance(headroom, int) or headroom < 0:
+        headroom = _DEFAULT_WINDOW_HEADROOM_TOKENS
+    prompt_budget = max(window_len - completion_budget - headroom, 1)
     return prompt_ids[-prompt_budget:]
 
 
