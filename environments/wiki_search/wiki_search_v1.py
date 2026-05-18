@@ -183,9 +183,6 @@ async def read_section(section_id: str, wiki) -> str:
 
 def source(
     max_turns: int = 10,
-    judge_model: str = "gpt-4.1-mini",
-    judge_base_url: str = "https://api.openai.com/v1",
-    judge_api_key_var: str = "OPENAI_API_KEY",
 ):
     dataset = load_dataset("willcb/wiki-trivia-questions-v4", split="train")
     for index, row in enumerate(dataset):
@@ -194,36 +191,40 @@ def source(
             **row,
             "example_id": index,
             "max_turns": max_turns,
-            "judge_model": judge_model,
-            "judge_base_url": judge_base_url,
-            "judge_api_key_var": judge_api_key_var,
             "prompt": [{"role": "user", "content": row["question"]}],
         }
 
 
-@vf.reward(weight=1.0)
-async def judge_reward_func(task, state) -> float:
-    completion = state.get("completion") or []
-    messages = vf.get_messages(completion, role="assistant")
-    response = str(messages[-1].content or "") if messages else ""
-    prompt = JUDGE_PROMPT.format(
-        question=task["question"],
-        answer=task["answer"],
-        response=response,
-    )
-    judge_client = AsyncOpenAI(
-        base_url=str(task.get("judge_base_url") or "https://api.openai.com/v1"),
-        api_key=os.getenv(str(task.get("judge_api_key_var") or "OPENAI_API_KEY"), ""),
-    )
-    try:
-        result = await judge_client.chat.completions.create(
-            model=str(task.get("judge_model") or "gpt-4.1-mini"),
-            messages=[{"role": "user", "content": prompt}],
+def judge_reward_factory(
+    judge_model: str = "gpt-4.1-mini",
+    judge_base_url: str = "https://api.openai.com/v1",
+    judge_api_key_var: str = "OPENAI_API_KEY",
+):
+    @vf.reward(weight=1.0)
+    async def judge_reward_func(task, state) -> float:
+        completion = state.get("completion") or []
+        messages = vf.get_messages(completion, role="assistant")
+        response = str(messages[-1].content or "") if messages else ""
+        prompt = JUDGE_PROMPT.format(
+            question=task["question"],
+            answer=task["answer"],
+            response=response,
         )
-    finally:
-        await judge_client.close()
-    text = result.choices[0].message.content or ""
-    return 1.0 if "yes" in text.lower() else 0.0
+        judge_client = AsyncOpenAI(
+            base_url=judge_base_url,
+            api_key=os.getenv(judge_api_key_var, ""),
+        )
+        try:
+            result = await judge_client.chat.completions.create(
+                model=judge_model,
+                messages=[{"role": "user", "content": prompt}],
+            )
+        finally:
+            await judge_client.close()
+        text = result.choices[0].message.content or ""
+        return 1.0 if "yes" in text.lower() else 0.0
+
+    return judge_reward_func
 
 
 def load_toolset(
@@ -278,13 +279,20 @@ class WikiSearchEnvConfig(vf.EnvConfig):
 
 class WikiSearchTaskset(vf.Taskset[WikiSearchTasksetConfig]):
     _default_source = source
-    _default_rewards = (judge_reward_func,)
 
 
 def load_taskset(
     config: WikiSearchTasksetConfig = WikiSearchTasksetConfig(),
 ) -> WikiSearchTaskset:
     taskset = WikiSearchTaskset(config=config)
+    if "rewards" not in taskset.config.model_fields_set:
+        taskset.add_reward(
+            judge_reward_factory(
+                judge_model=config.judge_model,
+                judge_base_url=config.judge_base_url,
+                judge_api_key_var=config.judge_api_key_var,
+            )
+        )
     if "toolsets" not in taskset.config.model_fields_set:
         taskset.add_toolset(
             {

@@ -1429,6 +1429,20 @@ def test_taskset_class_defaults_are_used_until_config_overrides() -> None:
     assert disabled.rewards == []
 
 
+def test_taskset_config_defaults_are_used_before_class_defaults() -> None:
+    class LocalTasksetConfig(TasksetConfig):
+        source: str | None = ref("source_loader")
+
+    class LocalTaskset(Taskset[LocalTasksetConfig]):
+        _default_source = eval_source_loader
+
+    taskset = LocalTaskset()
+    disabled = LocalTaskset(config={"source": None})
+
+    assert taskset.source is source_loader
+    assert disabled.source is None
+
+
 def test_harness_class_defaults_are_used_until_config_overrides() -> None:
     class LocalHarness(Harness[HarnessConfig]):
         _default_program = config_program
@@ -1447,6 +1461,20 @@ def test_harness_class_defaults_are_used_until_config_overrides() -> None:
     assert configured.program is setup_aware_program
     assert config_metric not in configured.metrics
     assert configured.metrics[-1].__name__ == "group_config_metric"
+
+
+def test_harness_config_defaults_are_used_before_class_defaults() -> None:
+    class LocalHarnessConfig(HarnessConfig):
+        program: str | None = ref("config_program")
+
+    class LocalHarness(Harness[LocalHarnessConfig]):
+        _default_program = setup_aware_program
+
+    harness = LocalHarness()
+    disabled = LocalHarness(config={"program": None})
+
+    assert harness.program is config_program
+    assert disabled.program is None
 
 
 def test_config_schema_is_visible_from_primary_types() -> None:

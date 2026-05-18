@@ -93,11 +93,9 @@ class Harness(ConfigBound[HarnessConfigT]):
     def __init__(self, config: HarnessConfig = HarnessConfig()):
         self.config = cast(HarnessConfigT, type(self)._config_cls.from_config(config))
         fields_set = self.config.model_fields_set
-        program_config = (
-            self.config.program
-            if "program" in fields_set
-            else type(self)._default_program
-        )
+        program_config = self.config.program
+        if program_config is None and "program" not in fields_set:
+            program_config = type(self)._default_program
         program_value = resolve_config_object(program_config)
         if isinstance(program_value, ProgramConfig):
             program_value = program_value.model_dump(

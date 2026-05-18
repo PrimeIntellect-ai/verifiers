@@ -96,6 +96,19 @@ def test_wiki_search_v1_default_and_explicit_toolsets(
     assert env.taskset.config.corpus_split == "validation"
     assert list(env.taskset.named_toolsets) == ["wiki"]
     assert len(env.taskset.toolsets) == 1
+    assert len(env.taskset.rewards) == 1
+
+    monkeypatch.setattr(
+        module,
+        "load_dataset",
+        lambda *args, **kwargs: [{"question": "question?", "answer": "answer"}],
+    )
+    rows = list(module.source(max_turns=3))
+
+    assert rows[0]["max_turns"] == 3
+    assert "judge_model" not in rows[0]
+    assert "judge_base_url" not in rows[0]
+    assert "judge_api_key_var" not in rows[0]
 
     taskset = module.load_taskset(
         config=module.WikiSearchTasksetConfig(toolsets={"custom": {"tools": []}})

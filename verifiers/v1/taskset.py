@@ -57,19 +57,17 @@ class Taskset(ConfigBound[TasksetConfigT]):
     def __init__(self, config: TasksetConfig = TasksetConfig()):
         self.config = cast(TasksetConfigT, type(self)._config_cls.from_config(config))
         fields_set = self.config.model_fields_set
-        source_config = (
-            self.config.source if "source" in fields_set else type(self)._default_source
-        )
+        source_config = self.config.source
+        if source_config is None and "source" not in fields_set:
+            source_config = type(self)._default_source
         source_value = resolve_config_object(source_config)
         self.source = cast(
             TaskSourceValue,
             source_value,
         )
-        eval_source_config = (
-            self.config.eval_source
-            if "eval_source" in fields_set
-            else type(self)._default_eval_source
-        )
+        eval_source_config = self.config.eval_source
+        if eval_source_config is None and "eval_source" not in fields_set:
+            eval_source_config = type(self)._default_eval_source
         eval_source_value = resolve_config_object(eval_source_config)
         self.eval_source = cast(
             TaskSourceValue,
