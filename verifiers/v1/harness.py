@@ -80,28 +80,31 @@ class Harness(Generic[HarnessConfigT]):
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)
-        for base in getattr(cls, "__orig_bases__", ()):
-            if get_origin(base) is Harness:
-                config_cls = get_args(base)[0]
-                if not (
-                    isinstance(config_cls, type)
-                    and issubclass(config_cls, HarnessConfig)
-                ):
-                    raise TypeError("Harness generic argument must be HarnessConfig.")
-                cls._config_cls = config_cls
-                return
-        for base in cls.__bases__:
-            inherited = getattr(base, "_config_cls", None)
-            if inherited is not None:
-                cls._config_cls = inherited
-                return
-        cls._config_cls = HarnessConfig
+        config_cls = next(
+            (
+                get_args(base)[0]
+                for base in getattr(cls, "__orig_bases__", ())
+                if get_origin(base) is Harness
+            ),
+            None,
+        )
+        if config_cls is None:
+            config_cls = next(
+                (
+                    base._config_cls
+                    for base in cls.__bases__
+                    if hasattr(base, "_config_cls")
+                ),
+                HarnessConfig,
+            )
+        if not isinstance(config_cls, type) or not issubclass(
+            config_cls, HarnessConfig
+        ):
+            raise TypeError("Harness generic argument must be HarnessConfig.")
+        cls._config_cls = config_cls
 
     def __init__(self, config: HarnessConfig = HarnessConfig()):
-        config_cls = type(self)._config_cls
-        if config_cls is HarnessConfig and isinstance(config, HarnessConfig):
-            config_cls = type(config)
-        self.config = cast(HarnessConfigT, config_cls.from_config(config))
+        self.config = cast(HarnessConfigT, type(self)._config_cls.from_config(config))
         program_value = resolve_config_object(self.config.program)
         if isinstance(program_value, ProgramConfig):
             program_value = program_value.model_dump(

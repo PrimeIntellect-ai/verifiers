@@ -43,28 +43,31 @@ class Taskset(Generic[TasksetConfigT]):
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)
-        for base in getattr(cls, "__orig_bases__", ()):
-            if get_origin(base) is Taskset:
-                config_cls = get_args(base)[0]
-                if not (
-                    isinstance(config_cls, type)
-                    and issubclass(config_cls, TasksetConfig)
-                ):
-                    raise TypeError("Taskset generic argument must be TasksetConfig.")
-                cls._config_cls = config_cls
-                return
-        for base in cls.__bases__:
-            inherited = getattr(base, "_config_cls", None)
-            if inherited is not None:
-                cls._config_cls = inherited
-                return
-        cls._config_cls = TasksetConfig
+        config_cls = next(
+            (
+                get_args(base)[0]
+                for base in getattr(cls, "__orig_bases__", ())
+                if get_origin(base) is Taskset
+            ),
+            None,
+        )
+        if config_cls is None:
+            config_cls = next(
+                (
+                    base._config_cls
+                    for base in cls.__bases__
+                    if hasattr(base, "_config_cls")
+                ),
+                TasksetConfig,
+            )
+        if not isinstance(config_cls, type) or not issubclass(
+            config_cls, TasksetConfig
+        ):
+            raise TypeError("Taskset generic argument must be TasksetConfig.")
+        cls._config_cls = config_cls
 
     def __init__(self, config: TasksetConfig = TasksetConfig()):
-        config_cls = type(self)._config_cls
-        if config_cls is TasksetConfig and isinstance(config, TasksetConfig):
-            config_cls = type(config)
-        self.config = cast(TasksetConfigT, config_cls.from_config(config))
+        self.config = cast(TasksetConfigT, type(self)._config_cls.from_config(config))
         source_value = resolve_config_object(self.config.source)
         self.source = cast(
             TaskSourceValue,

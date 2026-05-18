@@ -424,16 +424,6 @@ def config_value(value: object) -> object:
     return value
 
 
-def config_data(config: object | None) -> dict[str, object]:
-    if config is None:
-        return {}
-    if isinstance(config, BaseModel):
-        return config.model_dump(exclude_none=True)
-    if isinstance(config, Mapping):
-        return {str(key): item for key, item in config.items()}
-    raise TypeError("test config must be a mapping or config object")
-
-
 def has_runtime_toolset(value: object) -> bool:
     if isinstance(value, Toolset):
         return True
@@ -445,27 +435,27 @@ def has_runtime_toolset(value: object) -> bool:
 
 
 def make_taskset(config: object | None = None, **values: object) -> Taskset:
-    data = {**config_data(config), **values}
+    base_config = TasksetConfig.from_config(config)
+    data = {**base_config.model_dump(exclude_none=True), **values}
     runtime_toolsets = data.pop("toolsets", None)
     if runtime_toolsets is not None and not has_runtime_toolset(runtime_toolsets):
         data["toolsets"] = runtime_toolsets
         runtime_toolsets = None
-    config_cls = type(config) if isinstance(config, TasksetConfig) else TasksetConfig
-    taskset = Taskset(config=config_cls.model_validate(config_value(data)))
+    taskset = Taskset(config=type(base_config).from_config(config_value(data)))
     if runtime_toolsets is not None:
         taskset.add_toolset(runtime_toolsets)
     return taskset
 
 
 def make_harness(config: object | None = None, **values: object) -> Harness:
-    data = {**config_data(config), **values}
+    base_config = HarnessConfig.from_config(config)
+    data = {**base_config.model_dump(exclude_none=True), **values}
     runtime_client = data.pop("client", None)
     runtime_toolsets = data.pop("toolsets", None)
     if runtime_toolsets is not None and not has_runtime_toolset(runtime_toolsets):
         data["toolsets"] = runtime_toolsets
         runtime_toolsets = None
-    config_cls = type(config) if isinstance(config, HarnessConfig) else HarnessConfig
-    harness = Harness(config=config_cls.model_validate(config_value(data)))
+    harness = Harness(config=type(base_config).from_config(config_value(data)))
     if runtime_client is not None:
         harness.client = runtime_client
     if runtime_toolsets is not None:
