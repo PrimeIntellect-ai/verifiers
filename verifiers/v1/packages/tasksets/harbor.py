@@ -67,33 +67,21 @@ class HarborTasksetConfig(TasksetConfig):
 
 
 class HarborTaskset(Taskset[HarborTasksetConfig]):
-    def __init__(self, config: HarborTasksetConfig = HarborTasksetConfig()):
-        self.config = HarborTasksetConfig.from_config(config)
+    config: HarborTasksetConfig
+
+    def __init__(self, config: HarborTasksetConfig | None = None):
+        self.config = cast(HarborTasksetConfig, self._coerce_config(config))
         if self.config.dataset is not None and not isinstance(self.config.dataset, str):
             raise TypeError("HarborTaskset dataset must be a string.")
-        self.dataset = self.config.dataset
         self._bundle_package = (
-            _resolve_caller_package() if self.dataset is None else None
+            _resolve_caller_package() if self.config.dataset is None else None
         )
-        self.task_names = list(self.config.task_names or [])
         cache_dir_value = self.config.cache_dir
-        self.cache_dir = (
+        self._cache_dir = (
             Path(str(cache_dir_value)).expanduser() if cache_dir_value else None
         )
-        self.refresh = self.config.refresh
-        self.docker_image = self.config.docker_image
-        self.cpu_cores = self.config.cpu_cores
-        self.memory_gb = self.config.memory_gb
-        self.disk_size_gb = self.config.disk_size_gb
-        self.timeout_minutes = self.config.timeout_minutes
-        self.agent_timeout_seconds = self.config.agent_timeout_seconds
-        self.verifier_timeout_seconds = self.config.verifier_timeout_seconds
-        self.workdir = self.config.workdir
-        self.task_dir = self.config.task_dir
-        self.scope = self.config.scope
-        if self.scope not in {"rollout", "group", "global"}:
+        if self.config.scope not in {"rollout", "group", "global"}:
             raise ValueError("HarborTaskset scope must be rollout, group, or global.")
-        self.env = dict(self.config.env)
         super().__init__(config=self.config)
         self.source = self.load_rows
         self.taskset_id = self.config.taskset_id or "harbor"
@@ -101,7 +89,7 @@ class HarborTaskset(Taskset[HarborTasksetConfig]):
 
     def load_rows(self) -> list[ConfigData]:
         root = self.resolve_tasks_root()
-        task_dirs = harbor_task_dirs(root, self.task_names)
+        task_dirs = harbor_task_dirs(root, list(self.config.task_names or []))
         rows = [
             self.task_row(task_dir, index) for index, task_dir in enumerate(task_dirs)
         ]
@@ -110,11 +98,11 @@ class HarborTaskset(Taskset[HarborTasksetConfig]):
         return rows
 
     def resolve_tasks_root(self) -> Path:
-        if self.dataset is not None:
+        if self.config.dataset is not None:
             return download_harbor_dataset(
-                self.dataset,
-                cache_dir=self.cache_dir,
-                refresh=self.refresh,
+                self.config.dataset,
+                cache_dir=self._cache_dir,
+                refresh=self.config.refresh,
             )
         if self._bundle_package is None:
             raise RuntimeError(
@@ -142,20 +130,22 @@ class HarborTaskset(Taskset[HarborTasksetConfig]):
         agent_config = config.get("agent", {}) or {}
         verifier_config = config.get("verifier", {}) or {}
         instruction = instruction_path.read_text().strip()
-        task_remote_dir = self.task_dir.rstrip("/") or "/task"
+        task_remote_dir = self.config.task_dir.rstrip("/") or "/task"
         sandbox = {
-            "image": environment.get("docker_image") or self.docker_image,
-            "cpu_cores": parse_number(environment.get("cpus"), self.cpu_cores),
-            "memory_gb": parse_gb(environment.get("memory"), self.memory_gb),
-            "disk_size_gb": parse_gb(environment.get("storage"), self.disk_size_gb),
-            "timeout_minutes": self.timeout_minutes,
+            "image": environment.get("docker_image") or self.config.docker_image,
+            "cpu_cores": parse_number(environment.get("cpus"), self.config.cpu_cores),
+            "memory_gb": parse_gb(environment.get("memory"), self.config.memory_gb),
+            "disk_size_gb": parse_gb(
+                environment.get("storage"), self.config.disk_size_gb
+            ),
+            "timeout_minutes": self.config.timeout_minutes,
             "command_timeout": int(
                 parse_number(
-                    agent_config.get("timeout_sec"), self.agent_timeout_seconds
+                    agent_config.get("timeout_sec"), self.config.agent_timeout_seconds
                 )
             ),
-            "workdir": self.workdir,
-            "scope": self.scope,
+            "workdir": self.config.workdir,
+            "scope": self.config.scope,
         }
         if "allow_internet" in environment:
             sandbox["network_access"] = bool(environment["allow_internet"])
@@ -176,8 +166,8 @@ class HarborTaskset(Taskset[HarborTasksetConfig]):
                     "HARBOR_TASK_NAME": task_dir.name,
                     "HARBOR_TASK_DIR": task_remote_dir,
                     "HARBOR_INSTRUCTION_PATH": f"{task_remote_dir}/instruction.md",
-                    "AGENT_WORKDIR": self.workdir,
-                    **self.env,
+                    "AGENT_WORKDIR": self.config.workdir,
+                    **self.config.env,
                 },
             },
             "harbor": {
@@ -187,7 +177,7 @@ class HarborTaskset(Taskset[HarborTasksetConfig]):
                 "docker_image": environment.get("docker_image"),
                 "test_timeout": parse_number(
                     verifier_config.get("timeout_sec"),
-                    self.verifier_timeout_seconds,
+                    self.config.verifier_timeout_seconds,
                 ),
             },
             "info": {

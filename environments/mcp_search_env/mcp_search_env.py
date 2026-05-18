@@ -80,7 +80,9 @@ class MCPSearchTasksetConfig(vf.TasksetConfig):
 
 
 class MCPSearchTaskset(vf.Taskset[MCPSearchTasksetConfig]):
-    pass
+    def _configure_from_config(self) -> None:
+        if "toolsets" not in self.config.model_fields_set:
+            self.add_toolset(load_toolset(mcp_servers=self.config.mcp_servers))
 
 
 def default_mcp_servers() -> list[vf.ConfigData]:
@@ -149,16 +151,8 @@ def load_toolset(
     )
 
 
-def load_taskset(
-    config: MCPSearchTasksetConfig = MCPSearchTasksetConfig(),
-) -> MCPSearchTaskset:
-    taskset = MCPSearchTaskset(config=config)
-    taskset.add_toolset(load_toolset(mcp_servers=config.mcp_servers))
-    return taskset
-
-
-def load_harness(config: vf.HarnessConfig = vf.HarnessConfig()):
-    return vf.Harness(config=config)
+def load_taskset(config: MCPSearchTasksetConfig | None = None) -> MCPSearchTaskset:
+    return MCPSearchTaskset(config=config)
 
 
 class MCPSearchEnvConfig(vf.EnvConfig):
@@ -168,6 +162,5 @@ class MCPSearchEnvConfig(vf.EnvConfig):
 
 load_environment = vf.Env.loader(
     taskset=load_taskset,
-    harness=load_harness,
     env_config=MCPSearchEnvConfig,
 )

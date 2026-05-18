@@ -164,8 +164,12 @@ class ReverseEnvConfig(vf.EnvConfig):
     harness: vf.HarnessConfig = vf.HarnessConfig()
 
 
-def load_environment(config: ReverseEnvConfig = ReverseEnvConfig()):
-    return vf.Env.from_config(config, taskset=ReverseTaskset)
+def load_environment(config: ReverseEnvConfig | None = None):
+    return vf.Env.from_config(
+        config,
+        taskset=ReverseTaskset,
+        env_config=ReverseEnvConfig,
+    )
 ```
 
 Standalone harness use is the same runner without the `Env` adapter:
@@ -222,7 +226,7 @@ class GSM8KTaskset(vf.Taskset[GSM8KTasksetConfig]):
         ]
 
 
-def load_taskset(config: GSM8KTasksetConfig = GSM8KTasksetConfig()):
+def load_taskset(config: GSM8KTasksetConfig | None = None):
     return GSM8KTaskset(config=config)
 ```
 
@@ -1204,8 +1208,8 @@ class MyEnvConfig(vf.EnvConfig):
     harness: vf.HarnessConfig = vf.HarnessConfig()
 
 
-def load_environment(config: MyEnvConfig = MyEnvConfig()):
-    return vf.Env.from_config(config, taskset=MyTaskset)
+def load_environment(config: MyEnvConfig | None = None):
+    return vf.Env.from_config(config, taskset=MyTaskset, env_config=MyEnvConfig)
 ```
 
 With that loader, eval TOML routes v1 config through the `taskset`/`harness`
@@ -1549,9 +1553,7 @@ class WikiTaskset(vf.Taskset[WikiTasksetConfig]):
     def rows(self) -> list[dict[str, object]]:
         return load_rows()
 
-    def __init__(self, config: WikiTasksetConfig = WikiTasksetConfig()):
-        super().__init__(config=config)
-
+    def _configure_from_config(self) -> None:
         def load_db():
             return open_db(self.config.db_path)
 

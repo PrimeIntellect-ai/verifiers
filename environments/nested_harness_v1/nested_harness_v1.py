@@ -95,21 +95,12 @@ class NestedHarness(vf.Harness[NestedHarnessConfig]):
     _default_program = parent_program
     _default_metrics = (child_calls,)
 
-
-def load_taskset(config: vf.TasksetConfig = vf.TasksetConfig()):
-    return NestedTaskset(config=config)
-
-
-def load_harness(config: NestedHarnessConfig = NestedHarnessConfig()):
-    harness = NestedHarness(config=config)
-    if "toolsets" not in harness.config.model_fields_set:
-        harness.add_toolset({"nested": load_toolset(config=config.toolset)})
-    return harness
+    def _configure_from_config(self) -> None:
+        if "toolsets" not in self.config.model_fields_set:
+            self.add_toolset({"nested": load_toolset(config=self.config.toolset)})
 
 
 load_environment = vf.Env.loader(
-    taskset=load_taskset,
-    harness=load_harness,
-    taskset_config=vf.TasksetConfig,
-    harness_config=NestedHarnessConfig,
+    taskset=NestedTaskset,
+    harness=NestedHarness,
 )

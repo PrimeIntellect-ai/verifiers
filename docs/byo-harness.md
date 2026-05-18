@@ -66,8 +66,12 @@ class ReverseEnvConfig(vf.EnvConfig):
     harness: vf.HarnessConfig = vf.HarnessConfig()
 
 
-def load_environment(config: ReverseEnvConfig = ReverseEnvConfig()):
-    return vf.Env.from_config(config, taskset=ReverseTaskset)
+def load_environment(config: ReverseEnvConfig | None = None):
+    return vf.Env.from_config(
+        config,
+        taskset=ReverseTaskset,
+        env_config=ReverseEnvConfig,
+    )
 ```
 
 ## Tasksets
@@ -103,7 +107,7 @@ class GSM8KTaskset(vf.Taskset[GSM8KTasksetConfig]):
         ]
 
 
-def load_taskset(config: GSM8KTasksetConfig = GSM8KTasksetConfig()):
+def load_taskset(config: GSM8KTasksetConfig | None = None):
     return GSM8KTaskset(config=config)
 ```
 
@@ -166,8 +170,12 @@ class ExtractEnvConfig(vf.EnvConfig):
     harness: vf.HarnessConfig = vf.HarnessConfig()
 
 
-def load_environment(config: ExtractEnvConfig = ExtractEnvConfig()) -> vf.Env:
-    return vf.Env(taskset=ExtractTaskset(config=config.taskset))
+def load_environment(config: ExtractEnvConfig | None = None) -> vf.Env:
+    return vf.Env.from_config(
+        config,
+        taskset=ExtractTaskset,
+        env_config=ExtractEnvConfig,
+    )
 ```
 
 Config `objects` values are import refs to zero-argument factories. Runtime
@@ -331,8 +339,13 @@ class AgentEnvConfig(vf.EnvConfig):
     harness: AgentHarnessConfig = AgentHarnessConfig()
 
 
-def load_environment(config: AgentEnvConfig = AgentEnvConfig()):
-    return vf.Env.from_config(config, taskset=FetchTaskset, harness=AgentHarness)
+def load_environment(config: AgentEnvConfig | None = None):
+    return vf.Env.from_config(
+        config,
+        taskset=FetchTaskset,
+        harness=AgentHarness,
+        env_config=AgentEnvConfig,
+    )
 ```
 
 `Harness.program` can be:
@@ -422,10 +435,12 @@ class HarborEnvConfig(vf.EnvConfig):
     harness: vf.OpenCodeConfig = vf.OpenCodeConfig()
 
 
-def load_environment(config: HarborEnvConfig = HarborEnvConfig()):
-    return vf.Env(
-        taskset=vf.HarborTaskset(config=config.taskset),
-        harness=vf.OpenCode(config=config.harness),
+def load_environment(config: HarborEnvConfig | None = None):
+    return vf.Env.from_config(
+        config,
+        taskset=vf.HarborTaskset,
+        harness=vf.OpenCode,
+        env_config=HarborEnvConfig,
     )
 ```
 
@@ -495,8 +510,13 @@ The recommended loader takes one `config` object and routes its `taskset` and
 `harness` sections:
 
 ```python
-def load_environment(config: MyEnvConfig = MyEnvConfig()):
-    return vf.Env.from_config(config, taskset=MyTaskset, harness=MyHarness)
+def load_environment(config: MyEnvConfig | None = None):
+    return vf.Env.from_config(
+        config,
+        taskset=MyTaskset,
+        harness=MyHarness,
+        env_config=MyEnvConfig,
+    )
 ```
 
 Eval config passes v1 config through the `taskset`/`harness` sections:

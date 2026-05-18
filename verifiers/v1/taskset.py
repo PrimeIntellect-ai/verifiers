@@ -12,15 +12,13 @@ from verifiers.types import task_payload_from_info
 
 from .config import (
     TasksetConfig,
-    merge_config_handler_map,
     resolve_config_object,
 )
 from .state import State
 from .task import Task
-from .toolset import merge_toolsets, normalize_toolset_collection
-from .user import normalize_user
 from .utils.prompt_utils import normalize_system_prompt
 from .utils.config_utils import ConfigBound
+from .utils.runtime_owner_utils import RuntimeOwnerMixin
 from .utils.taskset_utils import dataset_info_with_task, discover_sibling_dir
 from .utils.taskset_utils import rows_from_source
 from .types import (
@@ -39,9 +37,10 @@ TaskSourceValue = TaskRowsSource | None
 TasksetConfigT = TypeVar("TasksetConfigT", bound=TasksetConfig)
 
 
-class Taskset(ConfigBound[TasksetConfigT]):
+class Taskset(ConfigBound[TasksetConfigT], RuntimeOwnerMixin):
     _config_base_cls: ClassVar[type[TasksetConfig]] = TasksetConfig
     _config_cls: ClassVar[type[TasksetConfig]] = TasksetConfig
+    config: TasksetConfigT
     _default_source: ClassVar[TaskSourceValue] = None
     _default_eval_source: ClassVar[TaskSourceValue] = None
     _default_user: ClassVar[object | None] = None
@@ -54,20 +53,17 @@ class Taskset(ConfigBound[TasksetConfigT]):
     _default_advantages: ClassVar[tuple[Handler, ...]] = ()
     _default_cleanups: ClassVar[tuple[Handler, ...]] = ()
 
-    def __init__(self, config: TasksetConfig = TasksetConfig()):
-        self.config = cast(TasksetConfigT, type(self)._config_cls.from_config(config))
-        fields_set = self.config.model_fields_set
-        source_config = self.config.source
-        if source_config is None and "source" not in fields_set:
-            source_config = type(self)._default_source
+    def __init__(self, config: TasksetConfig | None = None):
+        self.config = cast(TasksetConfigT, self._coerce_config(config))
+        source_config = self._defaulted("source", type(self)._default_source)
         source_value = resolve_config_object(source_config)
         self.source = cast(
             TaskSourceValue,
             source_value,
         )
-        eval_source_config = self.config.eval_source
-        if eval_source_config is None and "eval_source" not in fields_set:
-            eval_source_config = type(self)._default_eval_source
+        eval_source_config = self._defaulted(
+            "eval_source", type(self)._default_eval_source
+        )
         eval_source_value = resolve_config_object(eval_source_config)
         self.eval_source = cast(
             TaskSourceValue,
@@ -80,10 +76,7 @@ class Taskset(ConfigBound[TasksetConfigT]):
         self.system_prompt = normalize_system_prompt(
             self.config.system_prompt, field_name="taskset.system_prompt"
         )
-        user_config = self.config.user
-        if user_config is None and "user" not in fields_set:
-            user_config = type(self)._default_user
-        self.user = normalize_user(user_config)
+        self._init_runtime_user()
         self.bindings = dict(self.config.bindings)
         self.objects = {
             **{
@@ -91,80 +84,14 @@ class Taskset(ConfigBound[TasksetConfigT]):
                 for key, item in self.config.objects.items()
             }
         }
-        default_toolsets = (
-            () if "toolsets" in fields_set else type(self)._default_toolsets
-        )
-        self.toolsets, self.named_toolsets = merge_toolsets(
-            default_toolsets, self.config.toolsets
-        )
-        handlers = merge_config_handler_map(
-            {
-                "stop": () if "stops" in fields_set else type(self)._default_stops,
-                "setup": () if "setups" in fields_set else type(self)._default_setups,
-                "update": ()
-                if "updates" in fields_set
-                else type(self)._default_updates,
-                "metric": ()
-                if "metrics" in fields_set
-                else type(self)._default_metrics,
-                "reward": ()
-                if "rewards" in fields_set
-                else type(self)._default_rewards,
-                "advantage": ()
-                if "advantages" in fields_set
-                else type(self)._default_advantages,
-                "cleanup": ()
-                if "cleanups" in fields_set
-                else type(self)._default_cleanups,
-            },
-            self.config,
-        )
-        self.stops = handlers["stop"]
-        self.setups = handlers["setup"]
-        self.updates = handlers["update"]
-        self.metrics = handlers["metric"]
-        self.rewards = handlers["reward"]
-        self.advantages = handlers["advantage"]
-        self.cleanups = handlers["cleanup"]
+        self._init_runtime_toolsets()
+        self._init_runtime_handlers()
         self._rows: list[ConfigData] | None = None
         self._eval_rows: list[ConfigData] | None = None
         self._dataset: Dataset | None = None
         self._eval_dataset: Dataset | None = None
         self._attached_harnesses: weakref.WeakSet["Harness"] = weakref.WeakSet()
-
-    def _add_handler(self, handlers: list[Handler], fn: Handler) -> None:
-        handlers.append(fn)
-        self._refresh_attached_harnesses()
-
-    def add_metric(self, fn: Handler) -> None:
-        self._add_handler(self.metrics, fn)
-
-    def add_reward(self, fn: Handler) -> None:
-        self._add_handler(self.rewards, fn)
-
-    def add_advantage(self, fn: Handler) -> None:
-        self._add_handler(self.advantages, fn)
-
-    def add_toolset(self, toolset: object) -> None:
-        toolsets, named_toolsets = normalize_toolset_collection(toolset)
-        duplicate = set(self.named_toolsets) & set(named_toolsets)
-        if duplicate:
-            raise ValueError(f"Toolsets are defined twice: {sorted(duplicate)}.")
-        self.toolsets.extend(toolsets)
-        self.named_toolsets.update(named_toolsets)
-        self._refresh_attached_harnesses()
-
-    def add_stop(self, fn: Handler) -> None:
-        self._add_handler(self.stops, fn)
-
-    def add_setup(self, fn: Handler) -> None:
-        self._add_handler(self.setups, fn)
-
-    def add_update(self, fn: Handler) -> None:
-        self._add_handler(self.updates, fn)
-
-    def add_cleanup(self, fn: Handler) -> None:
-        self._add_handler(self.cleanups, fn)
+        self._configure_from_config()
 
     def attach_harness(self, harness: "Harness") -> None:
         self._attached_harnesses.add(harness)
@@ -179,6 +106,9 @@ class Taskset(ConfigBound[TasksetConfigT]):
     def _refresh_attached_harnesses(self) -> None:
         for harness in list(self._attached_harnesses):
             harness.runtime = harness.resolve_runtime()
+
+    def _runtime_owner_changed(self) -> None:
+        self._refresh_attached_harnesses()
 
     def rows(self) -> list[ConfigData]:
         if self._rows is None:

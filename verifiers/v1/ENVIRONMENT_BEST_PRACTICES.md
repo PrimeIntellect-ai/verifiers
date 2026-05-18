@@ -21,9 +21,10 @@ proves the looser surface is needed.
    or `load_harness(config: HarnessConfigType)` only when reusable construction
    logic cannot live on the class defaults.
 4. Public child loader config parameters MUST be typed as one concrete Pydantic
-   config type with an explicit config-object default such as
-   `config: MyTasksetConfig = MyTasksetConfig()`. Do not advertise unions of
-   mappings, base configs, and specific configs.
+   config type with a `None` default such as
+   `config: MyTasksetConfig | None = None`. Do not construct config objects in
+   function signatures, and do not advertise unions of mappings, base configs,
+   and specific configs.
 5. `load_environment` MUST NOT mirror taskset or harness fields as keyword
    arguments. The root env loader receives the typed envelope; the child configs
    own all environment-specific settings.
@@ -131,8 +132,8 @@ class MyEnvConfig(vf.EnvConfig):
     harness: vf.HarnessConfig = vf.HarnessConfig()
 
 
-def load_environment(config: MyEnvConfig = MyEnvConfig()) -> vf.Env:
-    return vf.Env.from_config(config, taskset=MyTaskset)
+def load_environment(config: MyEnvConfig | None = None) -> vf.Env:
+    return vf.Env.from_config(config, taskset=MyTaskset, env_config=MyEnvConfig)
 ```
 
 ### Custom Harness
@@ -176,8 +177,13 @@ class MyEnvConfig(vf.EnvConfig):
     harness: MyHarnessConfig = MyHarnessConfig()
 
 
-def load_environment(config: MyEnvConfig = MyEnvConfig()) -> vf.Env:
-    return vf.Env.from_config(config, taskset=MyTaskset, harness=MyHarness)
+def load_environment(config: MyEnvConfig | None = None) -> vf.Env:
+    return vf.Env.from_config(
+        config,
+        taskset=MyTaskset,
+        harness=MyHarness,
+        env_config=MyEnvConfig,
+    )
 ```
 
 ## External Configuration

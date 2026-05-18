@@ -4,17 +4,24 @@ from typing import TypeVar, cast
 from pydantic import BaseModel
 
 from ...config import HarnessConfig, SandboxConfig, sandbox_config_mapping
+from ...harness import Harness
 from ...types import (
     ConfigData,
     ConfigMap,
+    Handler,
     ProgramCommand,
+    ProgramChannels,
     ProgramMap,
     ProgramOptionMap,
     ProgramSetup,
-    ProgramChannels,
+    ProgramValue,
 )
 from ...utils.binding_utils import Bindings
 from ...utils.config_utils import resolve_config_object
+from ...utils.prompt_utils import (
+    state_system_prompt_text,
+    task_text as task_instruction_text,
+)
 from ...utils.program_utils import program_list_items
 
 ConfigT = TypeVar("ConfigT", bound=HarnessConfig)
@@ -32,6 +39,73 @@ DEFAULT_COMMAND_SANDBOX: ConfigData = {
 
 def base_harness_config(config: ConfigT) -> ConfigT:
     return cast(ConfigT, config.model_copy(update={"program": None}))
+
+
+class CommandHarness(Harness[ConfigT]):
+    def __init__(self, config: ConfigT | None = None):
+        config = cast(ConfigT, self._coerce_config(config))
+        super().__init__(config=base_harness_config(config))
+        self.config = config
+        sandbox = self.sandbox_value(config)
+        self._configure_runtime(
+            program=command_program(
+                command=self.command(config),
+                sandbox=sandbox,
+                files=self.files(config),
+                dirs=self.dirs(config),
+                setup=self.setup(config),
+                bindings=self.bindings_value(config),
+                env=self.env(config),
+                artifacts=self.artifacts(config),
+                channels=self.channels(config),
+                program=config.program,
+            ),
+            sandbox=command_sandbox(sandbox, self.sandbox_defaults(config)),
+            system_prompt=config.system_prompt,
+            metrics=self.extra_metrics(config),
+        )
+
+    def command(self, config: ConfigT) -> ProgramCommand:
+        raise NotImplementedError
+
+    def sandbox_value(self, config: ConfigT) -> bool | ConfigMap | SandboxConfig:
+        return config.sandbox if config.sandbox is not None else True
+
+    def sandbox_defaults(self, config: ConfigT) -> ConfigMap | None:
+        return None
+
+    def files(self, config: ConfigT) -> ProgramOptionMap:
+        files: ProgramOptionMap = {}
+        instruction_path = getattr(config, "instruction_path", None)
+        system_prompt_path = getattr(config, "system_prompt_path", None)
+        if instruction_path:
+            files[str(instruction_path)] = cast(ProgramValue, task_instruction_text)
+        if system_prompt_path and config.system_prompt is not None:
+            files[str(system_prompt_path)] = cast(
+                ProgramValue, state_system_prompt_text
+            )
+        return files
+
+    def dirs(self, config: ConfigT) -> ProgramOptionMap | None:
+        return None
+
+    def setup(self, config: ConfigT) -> ProgramSetup | None:
+        return None
+
+    def bindings_value(self, config: ConfigT) -> Bindings | None:
+        return None
+
+    def env(self, config: ConfigT) -> ProgramOptionMap | None:
+        return None
+
+    def artifacts(self, config: ConfigT) -> ProgramOptionMap | None:
+        return None
+
+    def channels(self, config: ConfigT) -> ProgramChannels | None:
+        return None
+
+    def extra_metrics(self, config: ConfigT) -> list[Handler] | None:
+        return None
 
 
 def command_program(

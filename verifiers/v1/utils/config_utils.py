@@ -39,10 +39,34 @@ class ConfigBound(Generic[ConfigT]):
 
 
 def config_data(value: object, target: type[BaseModel] | None = None) -> ConfigData:
+    return explicit_config_data(value, target)
+
+
+def explicit_config_data(
+    value: object, target: type[BaseModel] | None = None
+) -> ConfigData:
     if value is None:
         data: ConfigData = {}
     elif isinstance(value, BaseModel):
-        data = model_config_data(value)
+        data = explicit_model_config_data(value)
+        if target is not None:
+            data = {
+                key: item for key, item in data.items() if key in target.model_fields
+            }
+    elif isinstance(value, Mapping):
+        data = string_mapping(cast(ConfigInputMap, value))
+    else:
+        raise TypeError("Config must be a mapping or config object.")
+    return data
+
+
+def resolved_config_data(
+    value: object, target: type[BaseModel] | None = None
+) -> ConfigData:
+    if value is None:
+        data: ConfigData = {}
+    elif isinstance(value, BaseModel):
+        data = cast(ConfigData, value.model_dump(exclude_none=True))
         if target is not None:
             data = {
                 key: item for key, item in data.items() if key in target.model_fields
@@ -55,6 +79,10 @@ def config_data(value: object, target: type[BaseModel] | None = None) -> ConfigD
 
 
 def model_config_data(value: BaseModel) -> ConfigData:
+    return explicit_model_config_data(value)
+
+
+def explicit_model_config_data(value: BaseModel) -> ConfigData:
     data: ConfigData = {}
     for key in value.model_fields_set:
         item = getattr(value, key)

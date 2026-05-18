@@ -679,7 +679,7 @@ class Tau2TasksetConfig(vf.TasksetConfig):
 class Tau2Taskset(vf.Taskset[Tau2TasksetConfig]):
     def __init__(
         self,
-        config: Tau2TasksetConfig = Tau2TasksetConfig(),
+        config: Tau2TasksetConfig | None = None,
     ):
         config = Tau2TasksetConfig.from_config(config)
         resolved_user_args = (
@@ -730,10 +730,4 @@ class Tau2EnvConfig(vf.EnvConfig):
     harness: vf.HarnessConfig = vf.HarnessConfig()
 
 
-def load_taskset(
-    config: Tau2TasksetConfig = Tau2TasksetConfig(),
-) -> Tau2Taskset:
-    return Tau2Taskset(config=config)
-
-
-load_environment = vf.Env.loader(taskset=load_taskset, env_config=Tau2EnvConfig)
+load_environment = vf.Env.loader(taskset=Tau2Taskset, env_config=Tau2EnvConfig)

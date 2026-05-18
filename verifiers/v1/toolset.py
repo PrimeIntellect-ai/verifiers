@@ -6,7 +6,7 @@ from typing import TypeAlias, cast
 from pydantic import BaseModel
 
 from .config import (
-    CallableConfigEntry,
+    CallableEntry,
     MCPToolConfig,
     SandboxConfig,
     ToolsetConfig,
@@ -16,9 +16,10 @@ from .config import (
 )
 from .utils.binding_utils import BindingMap, normalize_binding_map
 from .utils.binding_utils import normalize_object_map
+from .utils.config_utils import resolved_config_data
 from .types import ConfigMap, Handler, Objects, ToolSpec
 
-ToolsetCallableEntry: TypeAlias = CallableConfigEntry | Handler
+ToolsetCallableEntry: TypeAlias = CallableEntry | Handler
 
 
 @dataclass(frozen=True)
@@ -335,7 +336,7 @@ def tool_item(value: object) -> "ToolEntry":
 def toolset_config_mapping(config: ToolsetConfig | None) -> ConfigMap:
     if config is None:
         return {}
-    return ToolsetConfig.from_config(config).model_dump(exclude_none=True)
+    return resolved_config_data(ToolsetConfig.from_config(config))
 
 
 def string_items(value: object) -> list[str] | None:

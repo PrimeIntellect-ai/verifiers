@@ -1,14 +1,21 @@
 import shlex
 from pathlib import PurePosixPath
 
-from .command import base_harness_config, command_program, command_sandbox
-from .configs import MiniSWEAgentConfig
-from ...harness import Harness
-from ...utils.prompt_utils import (
-    state_system_prompt_text,
-    task_text as task_instruction_text,
+from .command import CommandHarness
+from .configs import (
+    MINI_SWE_AGENT_DEFAULT_AGENT_WORKDIR,
+    MINI_SWE_AGENT_DEFAULT_CONFIG_SPEC,
+    MINI_SWE_AGENT_DEFAULT_ENVIRONMENT_TIMEOUT,
+    MINI_SWE_AGENT_DEFAULT_INSTRUCTION_PATH,
+    MINI_SWE_AGENT_DEFAULT_LOG_PATH,
+    MINI_SWE_AGENT_DEFAULT_MODEL_CLASS,
+    MINI_SWE_AGENT_DEFAULT_PACKAGE_SHA256,
+    MINI_SWE_AGENT_DEFAULT_PACKAGE_VERSION,
+    MINI_SWE_AGENT_DEFAULT_SYSTEM_PROMPT_PATH,
+    MINI_SWE_AGENT_DEFAULT_TRAJECTORY_PATH,
+    MiniSWEAgentConfig,
 )
-from ...types import ProgramCommand, ProgramOptionMap, ProgramValue
+from ...types import ProgramCommand, ProgramOptionMap, ProgramSetup
 
 DEFAULT_INSTALL_DIR = "/opt/mini-swe-agent"
 DEFAULT_PREFIX_DIR = f"{DEFAULT_INSTALL_DIR}/prefix"
@@ -22,43 +29,12 @@ MINI_SWE_AGENT_CLI_SHA256 = (
 )
 MINI_SWE_AGENT_PYTHON_VERSION = "3.11"
 UV_PACKAGE_VERSION = "0.11.7"
-DEFAULT_PACKAGE_VERSION = MINI_SWE_AGENT_CLI_VERSION
-DEFAULT_PACKAGE_SHA256 = MINI_SWE_AGENT_CLI_SHA256
-DEFAULT_INSTRUCTION_PATH = "/mini-swe-agent/prompt.txt"
-DEFAULT_SYSTEM_PROMPT_PATH = "/mini-swe-agent/system.txt"
 DEFAULT_LOG_DIR = "/logs/agent"
-DEFAULT_LOG_PATH = f"{DEFAULT_LOG_DIR}/mini-swe-agent.log"
-DEFAULT_TRAJECTORY_PATH = f"{DEFAULT_LOG_DIR}/mini-swe-agent.traj.json"
-DEFAULT_AGENT_WORKDIR = "${AGENT_WORKDIR:-/app}"
-DEFAULT_CONFIG_SPEC = "mini_textbased"
-DEFAULT_MODEL_CLASS = "litellm_textbased"
-DEFAULT_ENVIRONMENT_TIMEOUT = 120
 
 
-class MiniSWEAgent(Harness[MiniSWEAgentConfig]):
-    def __init__(self, config: MiniSWEAgentConfig = MiniSWEAgentConfig()):
-        config = MiniSWEAgentConfig.from_config(config)
-        super().__init__(config=base_harness_config(config))
-        self.config = config
-        sandbox_config = config.sandbox if config.sandbox is not None else True
-        files: dict[str, ProgramValue] = {
-            config.instruction_path: task_instruction_text,
-        }
-        if config.system_prompt is not None:
-            files[config.system_prompt_path] = state_system_prompt_text
-        artifacts: ProgramOptionMap = {
-            "mini_swe_agent_log": {
-                "path": config.log_path,
-                "format": "text",
-                "optional": True,
-            },
-            "mini_swe_agent_trajectory": {
-                "path": config.trajectory_path,
-                "format": "json",
-                "optional": True,
-            },
-        }
-        command: ProgramCommand = [
+class MiniSWEAgent(CommandHarness[MiniSWEAgentConfig]):
+    def command(self, config: MiniSWEAgentConfig) -> ProgramCommand:
+        return [
             "bash",
             "-lc",
             build_mini_swe_agent_run_script(
@@ -75,30 +51,35 @@ class MiniSWEAgent(Harness[MiniSWEAgentConfig]):
                 extra_config_specs=config.extra_config_specs,
             ),
         ]
-        self._configure_runtime(
-            program=command_program(
-                command=command,
-                sandbox=sandbox_config,
-                files=files,
-                setup=build_mini_swe_agent_install_script(
-                    package_version=config.package_version,
-                    package_sha256=config.package_sha256,
-                    install_python=config.install_python,
-                ),
-                env={
-                    "OPENAI_MODEL": "runtime.model",
-                },
-                artifacts=artifacts,
-                program=config.program,
-            ),
-            sandbox=command_sandbox(sandbox_config),
-            system_prompt=config.system_prompt,
+
+    def setup(self, config: MiniSWEAgentConfig) -> ProgramSetup:
+        return build_mini_swe_agent_install_script(
+            package_version=config.package_version,
+            package_sha256=config.package_sha256,
+            install_python=config.install_python,
         )
+
+    def env(self, config: MiniSWEAgentConfig) -> ProgramOptionMap:
+        return {"OPENAI_MODEL": "runtime.model"}
+
+    def artifacts(self, config: MiniSWEAgentConfig) -> ProgramOptionMap:
+        return {
+            "mini_swe_agent_log": {
+                "path": config.log_path,
+                "format": "text",
+                "optional": True,
+            },
+            "mini_swe_agent_trajectory": {
+                "path": config.trajectory_path,
+                "format": "json",
+                "optional": True,
+            },
+        }
 
 
 def build_mini_swe_agent_install_script(
-    package_version: str = DEFAULT_PACKAGE_VERSION,
-    package_sha256: str = DEFAULT_PACKAGE_SHA256,
+    package_version: str = MINI_SWE_AGENT_DEFAULT_PACKAGE_VERSION,
+    package_sha256: str = MINI_SWE_AGENT_DEFAULT_PACKAGE_SHA256,
     prefix_dir: str = DEFAULT_PREFIX_DIR,
     install_python: bool = True,
 ) -> str:
@@ -161,19 +142,21 @@ test -x {quoted_prefix_dir}/bin/mini
 
 
 def build_mini_swe_agent_run_script(
-    agent_workdir: str = DEFAULT_AGENT_WORKDIR,
-    instruction_path: str = DEFAULT_INSTRUCTION_PATH,
-    system_prompt_path: str | None = DEFAULT_SYSTEM_PROMPT_PATH,
-    log_path: str = DEFAULT_LOG_PATH,
-    trajectory_path: str = DEFAULT_TRAJECTORY_PATH,
+    agent_workdir: str = MINI_SWE_AGENT_DEFAULT_AGENT_WORKDIR,
+    instruction_path: str = MINI_SWE_AGENT_DEFAULT_INSTRUCTION_PATH,
+    system_prompt_path: str | None = MINI_SWE_AGENT_DEFAULT_SYSTEM_PROMPT_PATH,
+    log_path: str = MINI_SWE_AGENT_DEFAULT_LOG_PATH,
+    trajectory_path: str = MINI_SWE_AGENT_DEFAULT_TRAJECTORY_PATH,
     mini_binary: str = DEFAULT_MINI_BINARY,
-    config_spec: str = DEFAULT_CONFIG_SPEC,
-    model_class: str = DEFAULT_MODEL_CLASS,
-    environment_timeout: int = DEFAULT_ENVIRONMENT_TIMEOUT,
+    config_spec: str = MINI_SWE_AGENT_DEFAULT_CONFIG_SPEC,
+    model_class: str = MINI_SWE_AGENT_DEFAULT_MODEL_CLASS,
+    environment_timeout: int = MINI_SWE_AGENT_DEFAULT_ENVIRONMENT_TIMEOUT,
     extra_config_specs: list[str] | None = None,
 ) -> str:
-    if agent_workdir == DEFAULT_AGENT_WORKDIR:
-        workdir_assignment = f"MINI_SWE_AGENT_WORKDIR={DEFAULT_AGENT_WORKDIR}"
+    if agent_workdir == MINI_SWE_AGENT_DEFAULT_AGENT_WORKDIR:
+        workdir_assignment = (
+            f"MINI_SWE_AGENT_WORKDIR={MINI_SWE_AGENT_DEFAULT_AGENT_WORKDIR}"
+        )
     else:
         workdir_assignment = f"MINI_SWE_AGENT_WORKDIR={shlex.quote(agent_workdir)}"
 

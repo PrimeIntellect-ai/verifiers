@@ -472,8 +472,9 @@ def make_langchain_deep_agents_program(
 
 
 def load_taskset(
-    config: WikispeediaTasksetConfig = WikispeediaTasksetConfig(),
+    config: WikispeediaTasksetConfig | None = None,
 ) -> WikispeediaTaskset:
+    config = WikispeediaTasksetConfig.from_config(config)
     pair_cache: dict[str, tuple[list[WikiPair], list[WikiPair]]] = {}
 
     def pairs() -> tuple[list[WikiPair], list[WikiPair]]:
@@ -552,8 +553,9 @@ def load_taskset(
 
 
 def load_harness(
-    config: WikispeediaHarnessConfig = WikispeediaHarnessConfig(),
+    config: WikispeediaHarnessConfig | None = None,
 ) -> WikispeediaHarness:
+    config = WikispeediaHarnessConfig.from_config(config)
     harness = WikispeediaHarness(config=config)
     harness.add_update(restore_agent_completion)
     harness._configure_runtime(

@@ -70,8 +70,8 @@ class MyEnvConfig(vf.EnvConfig):
     harness: vf.HarnessConfig = vf.HarnessConfig()
 
 
-def load_environment(config: MyEnvConfig = MyEnvConfig()) -> vf.Env:
-    return vf.Env.from_config(config, taskset=MyTaskset)
+def load_environment(config: MyEnvConfig | None = None) -> vf.Env:
+    return vf.Env.from_config(config, taskset=MyTaskset, env_config=MyEnvConfig)
 ```
 
 Rows should be plain serializable task data:
@@ -175,8 +175,8 @@ class QAEnvConfig(vf.EnvConfig):
     taskset: QATasksetConfig = QATasksetConfig()
 
 
-def load_environment(config: QAEnvConfig = QAEnvConfig()):
-    return vf.Env.from_config(config, taskset=QATaskset)
+def load_environment(config: QAEnvConfig | None = None):
+    return vf.Env.from_config(config, taskset=QATaskset, env_config=QAEnvConfig)
 ```
 
 Gotchas:

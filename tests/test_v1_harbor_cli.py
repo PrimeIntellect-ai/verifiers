@@ -12,10 +12,12 @@ import pytest
 import verifiers as root_vf
 import verifiers.v1 as vf
 from verifiers.v1.packages.harnesses.pi import pi_mcp_json, pi_models_json
+from verifiers.v1.packages.harnesses.configs import (
+    TERMINUS_2_DEFAULT_API_BASE_URL,
+    TERMINUS_2_DEFAULT_HARBOR_PACKAGE,
+    TERMINUS_2_DEFAULT_MODEL_NAME,
+)
 from verifiers.v1.packages.harnesses.terminus_2 import (
-    DEFAULT_API_BASE_URL,
-    DEFAULT_HARBOR_PACKAGE,
-    DEFAULT_MODEL_NAME,
     Terminus2,
     terminus_2_agent_script,
 )
@@ -60,7 +62,7 @@ def write_harbor_package(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Mod
 import verifiers.v1 as vf
 
 
-def load_taskset(config: vf.HarborTasksetConfig = vf.HarborTasksetConfig()):
+def load_taskset(config: vf.HarborTasksetConfig | None = None):
     return vf.HarborTaskset(config=config)
 
 
@@ -332,14 +334,14 @@ def test_terminus_2_harness_builds_sandbox_program() -> None:
 
     run_script = cast(str, command[2])
     assert "TERMINUS_2_WORKDIR=/workspace" in run_script
-    assert f"--with {DEFAULT_HARBOR_PACKAGE}" in run_script
+    assert f"--with {TERMINUS_2_DEFAULT_HARBOR_PACKAGE}" in run_script
     assert "git+https://github.com" not in run_script
     assert "max_turns=7" in run_script
 
     script = terminus_2_agent_script(max_turns=7)
     compile(script, "terminus_2_agent.py", "exec")
-    assert DEFAULT_MODEL_NAME in script
-    assert DEFAULT_API_BASE_URL in script
+    assert TERMINUS_2_DEFAULT_MODEL_NAME in script
+    assert TERMINUS_2_DEFAULT_API_BASE_URL in script
     assert "OPENAI_MODEL" not in script
     assert "PRIME_API_KEY" in script
     assert "async def prepare_logs_for_host(self) -> None" in script

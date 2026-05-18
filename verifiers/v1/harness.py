@@ -21,7 +21,6 @@ from .config import (
     ProgramConfig,
     SandboxConfig,
     import_config_ref,
-    merge_config_handler_map,
     resolve_config_object,
     sandbox_config_mapping,
 )
@@ -31,6 +30,7 @@ from .utils.endpoint_utils import (
     run_intercepted_program,
 )
 from .utils.config_utils import ConfigBound
+from .utils.runtime_owner_utils import RuntimeOwnerMixin
 from .utils.json_utils import json_args
 from .utils.mcp_proxy_utils import (
     proxy_program,
@@ -60,8 +60,6 @@ from .utils.tool_utils import tool_error_content
 from .utils.trajectory_utils import has_borrowed_trajectory, sync_trajectory
 from .state import State
 from .task import Task
-from .toolset import merge_toolsets, normalize_toolset_collection
-from .user import normalize_user
 from .types import ConfigData, ConfigMap, Handler, ModelClient, ProgramMap
 
 if TYPE_CHECKING:
@@ -76,9 +74,10 @@ UNSET = UnsetValue()
 HarnessConfigT = TypeVar("HarnessConfigT", bound=HarnessConfig)
 
 
-class Harness(ConfigBound[HarnessConfigT]):
+class Harness(ConfigBound[HarnessConfigT], RuntimeOwnerMixin):
     _config_base_cls: ClassVar[type[HarnessConfig]] = HarnessConfig
     _config_cls: ClassVar[type[HarnessConfig]] = HarnessConfig
+    config: HarnessConfigT
     _default_program: ClassVar[object | None] = None
     _default_user: ClassVar[object | None] = None
     _default_toolsets: ClassVar[object] = ()
@@ -91,11 +90,8 @@ class Harness(ConfigBound[HarnessConfigT]):
     _default_cleanups: ClassVar[tuple[Handler, ...]] = ()
 
     def __init__(self, config: HarnessConfig | None = None):
-        self.config = cast(HarnessConfigT, type(self)._config_cls.from_config(config))
-        fields_set = self.config.model_fields_set
-        program_config = self.config.program
-        if program_config is None and "program" not in fields_set:
-            program_config = type(self)._default_program
+        self.config = cast(HarnessConfigT, self._coerce_config(config))
+        program_config = self._defaulted("program", type(self)._default_program)
         program_value = resolve_config_object(program_config)
         if isinstance(program_value, ProgramConfig):
             program_value = program_value.model_dump(
@@ -108,10 +104,7 @@ class Harness(ConfigBound[HarnessConfigT]):
             self.config.system_prompt, field_name="harness.system_prompt"
         )
         self.system_prompt_merge = self.config.system_prompt_merge
-        user_config = self.config.user
-        if user_config is None and "user" not in fields_set:
-            user_config = type(self)._default_user
-        self.user = normalize_user(user_config)
+        self._init_runtime_user()
         self.bindings = dict(self.config.bindings)
         self.sandbox = sandbox_config_mapping(self.config.sandbox)
         self.client = cast(
@@ -120,46 +113,13 @@ class Harness(ConfigBound[HarnessConfigT]):
         )
         self.model = self.config.model
         self.sampling_args = cast(SamplingArgs, self.config.sampling_args)
-        default_toolsets = (
-            () if "toolsets" in fields_set else type(self)._default_toolsets
-        )
-        self.toolsets, self.named_toolsets = merge_toolsets(
-            default_toolsets, self.config.toolsets
-        )
-        default_metrics: list[Handler] = [num_turns]
-        if "metrics" not in fields_set:
-            default_metrics.extend(type(self)._default_metrics)
-        handlers = merge_config_handler_map(
-            {
-                "stop": () if "stops" in fields_set else type(self)._default_stops,
-                "setup": () if "setups" in fields_set else type(self)._default_setups,
-                "update": ()
-                if "updates" in fields_set
-                else type(self)._default_updates,
-                "metric": default_metrics,
-                "reward": ()
-                if "rewards" in fields_set
-                else type(self)._default_rewards,
-                "advantage": ()
-                if "advantages" in fields_set
-                else type(self)._default_advantages,
-                "cleanup": ()
-                if "cleanups" in fields_set
-                else type(self)._default_cleanups,
-            },
-            self.config,
-        )
-        self.stops = handlers["stop"]
-        self.setups = handlers["setup"]
-        self.updates = handlers["update"]
-        self.metrics = handlers["metric"]
-        self.rewards = handlers["reward"]
-        self.advantages = handlers["advantage"]
-        self.cleanups = handlers["cleanup"]
+        self._init_runtime_toolsets()
+        self._init_runtime_handlers(base_metrics=(num_turns,))
         keep_step_value = resolve_config_object(self.config.keep_trajectory_step)
         if keep_step_value is not None and not callable(keep_step_value):
             raise TypeError("keep_trajectory_step must be callable.")
         self.keep_trajectory_step = cast(Handler | None, keep_step_value)
+        self._configure_from_config()
         self.taskset: "Taskset | None" = None
         self.runtime = self.resolve_runtime()
         self.endpoint = Endpoint(use_tunnel=self.program_uses_sandbox())
@@ -187,39 +147,9 @@ class Harness(ConfigBound[HarnessConfigT]):
         self.endpoint = Endpoint(use_tunnel=self.program_uses_sandbox())
         self._program = self.compile_program(self.program)
 
-    def _add_handler(self, handlers: list[Handler], fn: Handler) -> None:
-        handlers.append(fn)
-        self.runtime = self.resolve_runtime()
-
-    def add_metric(self, fn: Handler) -> None:
-        self._add_handler(self.metrics, fn)
-
-    def add_reward(self, fn: Handler) -> None:
-        self._add_handler(self.rewards, fn)
-
-    def add_advantage(self, fn: Handler) -> None:
-        self._add_handler(self.advantages, fn)
-
-    def add_toolset(self, toolset: object) -> None:
-        toolsets, named_toolsets = normalize_toolset_collection(toolset)
-        duplicate = set(self.named_toolsets) & set(named_toolsets)
-        if duplicate:
-            raise ValueError(f"Toolsets are defined twice: {sorted(duplicate)}.")
-        self.toolsets.extend(toolsets)
-        self.named_toolsets.update(named_toolsets)
-        self.runtime = self.resolve_runtime()
-
-    def add_stop(self, fn: Handler) -> None:
-        self._add_handler(self.stops, fn)
-
-    def add_setup(self, fn: Handler) -> None:
-        self._add_handler(self.setups, fn)
-
-    def add_update(self, fn: Handler) -> None:
-        self._add_handler(self.updates, fn)
-
-    def add_cleanup(self, fn: Handler) -> None:
-        self._add_handler(self.cleanups, fn)
+    def _runtime_owner_changed(self) -> None:
+        if hasattr(self, "runtime"):
+            self.runtime = self.resolve_runtime()
 
     def attach_taskset(self, taskset: "Taskset") -> None:
         self.taskset = taskset

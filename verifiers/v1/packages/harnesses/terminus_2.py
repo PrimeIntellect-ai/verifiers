@@ -1,44 +1,24 @@
 import shlex
 from pathlib import PurePosixPath
 
-from .command import base_harness_config, command_program, command_sandbox
-from .configs import Terminus2Config
-from ...harness import Harness
-from ...utils.prompt_utils import (
-    state_system_prompt_text,
-    task_text as task_instruction_text,
+from .command import CommandHarness
+from .configs import (
+    TERMINUS_2_DEFAULT_AGENT_WORKDIR,
+    TERMINUS_2_DEFAULT_API_BASE_URL,
+    TERMINUS_2_DEFAULT_HARBOR_PACKAGE,
+    TERMINUS_2_DEFAULT_INSTRUCTION_PATH,
+    TERMINUS_2_DEFAULT_LOG_PATH,
+    TERMINUS_2_DEFAULT_MODEL_NAME,
+    TERMINUS_2_DEFAULT_PYTHON_VERSION,
+    TERMINUS_2_DEFAULT_SYSTEM_PROMPT_PATH,
+    Terminus2Config,
 )
-from ...types import ProgramCommand, ProgramOptionMap, ProgramValue
-
-DEFAULT_AGENT_WORKDIR = "/app"
-DEFAULT_INSTRUCTION_PATH = "/terminus_2/instruction.md"
-DEFAULT_SYSTEM_PROMPT_PATH = "/terminus_2/system_prompt.txt"
-DEFAULT_LOG_PATH = "/logs/agent/terminus_2.log"
-DEFAULT_HARBOR_PACKAGE = "harbor==0.6.6"
-DEFAULT_PYTHON_VERSION = "3.12"
-DEFAULT_MODEL_NAME = "openai/gpt-4.1-mini"
-DEFAULT_API_BASE_URL = "https://api.pinference.ai/api/v1"
+from ...types import ProgramCommand, ProgramOptionMap
 
 
-class Terminus2(Harness[Terminus2Config]):
-    def __init__(self, config: Terminus2Config = Terminus2Config()):
-        config = Terminus2Config.from_config(config)
-        super().__init__(config=base_harness_config(config))
-        self.config = config
-        sandbox_config = config.sandbox if config.sandbox is not None else True
-        files: dict[str, ProgramValue] = {
-            config.instruction_path: task_instruction_text,
-        }
-        if config.system_prompt is not None:
-            files[config.system_prompt_path] = state_system_prompt_text
-        artifacts: ProgramOptionMap = {
-            "terminus_2_log": {
-                "path": config.log_path,
-                "format": "text",
-                "optional": True,
-            }
-        }
-        command: ProgramCommand = [
+class Terminus2(CommandHarness[Terminus2Config]):
+    def command(self, config: Terminus2Config) -> ProgramCommand:
+        return [
             "bash",
             "-lc",
             build_terminus_2_run_script(
@@ -55,18 +35,18 @@ class Terminus2(Harness[Terminus2Config]):
                 max_turns=config.max_turns,
             ),
         ]
-        self._configure_runtime(
-            program=command_program(
-                command=command,
-                sandbox=sandbox_config,
-                files=files,
-                setup=build_terminus_2_install_script(),
-                artifacts=artifacts,
-                program=config.program,
-            ),
-            sandbox=command_sandbox(sandbox_config),
-            system_prompt=config.system_prompt,
-        )
+
+    def setup(self, config: Terminus2Config) -> str:
+        return build_terminus_2_install_script()
+
+    def artifacts(self, config: Terminus2Config) -> ProgramOptionMap:
+        return {
+            "terminus_2_log": {
+                "path": config.log_path,
+                "format": "text",
+                "optional": True,
+            }
+        }
 
 
 def build_terminus_2_install_script() -> str:
@@ -82,14 +62,14 @@ fi
 
 def build_terminus_2_run_script(
     *,
-    agent_workdir: str = DEFAULT_AGENT_WORKDIR,
-    instruction_path: str = DEFAULT_INSTRUCTION_PATH,
-    system_prompt_path: str | None = DEFAULT_SYSTEM_PROMPT_PATH,
-    log_path: str = DEFAULT_LOG_PATH,
-    harbor_package: str = DEFAULT_HARBOR_PACKAGE,
-    python_version: str = DEFAULT_PYTHON_VERSION,
-    model_name: str = DEFAULT_MODEL_NAME,
-    api_base_url: str = DEFAULT_API_BASE_URL,
+    agent_workdir: str = TERMINUS_2_DEFAULT_AGENT_WORKDIR,
+    instruction_path: str = TERMINUS_2_DEFAULT_INSTRUCTION_PATH,
+    system_prompt_path: str | None = TERMINUS_2_DEFAULT_SYSTEM_PROMPT_PATH,
+    log_path: str = TERMINUS_2_DEFAULT_LOG_PATH,
+    harbor_package: str = TERMINUS_2_DEFAULT_HARBOR_PACKAGE,
+    python_version: str = TERMINUS_2_DEFAULT_PYTHON_VERSION,
+    model_name: str = TERMINUS_2_DEFAULT_MODEL_NAME,
+    api_base_url: str = TERMINUS_2_DEFAULT_API_BASE_URL,
     max_turns: int | None = 4,
 ) -> str:
     log_dir = str(PurePosixPath(log_path).parent)
@@ -124,11 +104,11 @@ PY
 
 def terminus_2_agent_script(
     *,
-    instruction_path: str = DEFAULT_INSTRUCTION_PATH,
-    system_prompt_path: str | None = DEFAULT_SYSTEM_PROMPT_PATH,
+    instruction_path: str = TERMINUS_2_DEFAULT_INSTRUCTION_PATH,
+    system_prompt_path: str | None = TERMINUS_2_DEFAULT_SYSTEM_PROMPT_PATH,
     log_dir: str = "/logs/agent",
-    model_name: str = DEFAULT_MODEL_NAME,
-    api_base_url: str = DEFAULT_API_BASE_URL,
+    model_name: str = TERMINUS_2_DEFAULT_MODEL_NAME,
+    api_base_url: str = TERMINUS_2_DEFAULT_API_BASE_URL,
     max_turns: int | None = 4,
 ) -> str:
     system_prompt_block = ""
@@ -233,7 +213,7 @@ class LocalEnvironment(BaseEnvironment):
 
 
 async def main() -> None:
-    workdir = Path(os.environ.get("AGENT_WORKDIR") or {DEFAULT_AGENT_WORKDIR!r})
+    workdir = Path(os.environ.get("AGENT_WORKDIR") or {TERMINUS_2_DEFAULT_AGENT_WORKDIR!r})
     logs_dir = Path({log_dir!r})
     instruction = Path({instruction_path!r}).read_text()
 {system_prompt_block}    env = LocalEnvironment(workdir=workdir, logs_dir=logs_dir)
@@ -255,14 +235,6 @@ asyncio.run(main())
 
 
 __all__ = [
-    "DEFAULT_AGENT_WORKDIR",
-    "DEFAULT_API_BASE_URL",
-    "DEFAULT_HARBOR_PACKAGE",
-    "DEFAULT_INSTRUCTION_PATH",
-    "DEFAULT_LOG_PATH",
-    "DEFAULT_MODEL_NAME",
-    "DEFAULT_PYTHON_VERSION",
-    "DEFAULT_SYSTEM_PROMPT_PATH",
     "Terminus2",
     "build_terminus_2_install_script",
     "build_terminus_2_run_script",

@@ -278,29 +278,6 @@ def eval_turn(
     return attempt_scores[-1]
 
 
-def weighted_reward_factory(similarity_power: int, power_per_turn: bool):
-    @vf.reward(weight=1.0)
-    async def weighted_reward(task, state) -> float:
-        completion = state.get("completion") or []
-        actual_turns = state["info"]["num_turns"]
-        total = 0.0
-        for turn_num in range(1, actual_turns + 1):
-            total += eval_turn(
-                completion,
-                turn_num,
-                state,
-                similarity_power,
-                apply_power=power_per_turn,
-            )
-        if actual_turns <= 0:
-            return 0.0
-        if power_per_turn:
-            return total / actual_turns
-        return (total / actual_turns) ** similarity_power
-
-    return weighted_reward
-
-
 @vf.reward(weight=1.0)
 async def weighted_reward(task, state) -> float:
     completion = state.get("completion") or []
@@ -353,21 +330,17 @@ class AlphabetSortTaskset(vf.Taskset[AlphabetSortTasksetConfig]):
     _default_rewards = (weighted_reward,)
     _default_user = alphabet_user
 
-
-def load_taskset(
-    config: AlphabetSortTasksetConfig = AlphabetSortTasksetConfig(),
-) -> AlphabetSortTaskset:
-    validate_parameters(
-        min_turns=config.min_turns,
-        max_turns=config.max_turns,
-        min_names_per_turn=config.min_names_per_turn,
-        max_names_per_turn=config.max_names_per_turn,
-    )
-    return AlphabetSortTaskset(config=config)
+    def _configure_from_config(self) -> None:
+        validate_parameters(
+            min_turns=self.config.min_turns,
+            max_turns=self.config.max_turns,
+            min_names_per_turn=self.config.min_names_per_turn,
+            max_names_per_turn=self.config.max_names_per_turn,
+        )
 
 
 load_v1_environment = vf.Env.loader(
-    taskset=load_taskset,
+    taskset=AlphabetSortTaskset,
     env_config=AlphabetSortEnvConfig,
 )
 load_environment = load_v1_environment

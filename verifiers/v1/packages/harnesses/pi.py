@@ -2,44 +2,17 @@ import json
 import shlex
 from pathlib import PurePosixPath
 
-from .command import base_harness_config, command_program, command_sandbox
-from .configs import PiConfig
-from ...harness import Harness
+from .command import CommandHarness
+from .configs import PI_DEFAULT_PACKAGE, PiConfig
 from ...state import State
 from ...utils.mcp_proxy_utils import proxy_command
-from ...utils.prompt_utils import (
-    state_system_prompt_text,
-    task_text as task_instruction_text,
-)
-from ...types import ConfigMap, ProgramCommand, ProgramOptionMap, ProgramValue
-
-DEFAULT_PI_PACKAGE = "@mariozechner/pi-coding-agent"
-DEFAULT_PI_WORKDIR = "/app"
-DEFAULT_INSTRUCTION_PATH = "/pi/instruction.txt"
-DEFAULT_SYSTEM_PROMPT_PATH = "/pi/system.txt"
-DEFAULT_LOG_PATH = "/logs/agent/pi.txt"
-DEFAULT_SYSTEM_PROMPT = "Complete the user's task using the available tools."
+from ...utils.binding_utils import Bindings
+from ...types import ConfigMap, ProgramChannels, ProgramCommand, ProgramOptionMap
 
 
-class Pi(Harness[PiConfig]):
-    def __init__(self, config: PiConfig = PiConfig()):
-        config = PiConfig.from_config(config)
-        super().__init__(config=base_harness_config(config))
-        self.config = config
-        sandbox_config = config.sandbox if config.sandbox is not None else True
-        files: dict[str, ProgramValue] = {
-            config.instruction_path: task_instruction_text,
-        }
-        if config.system_prompt is not None:
-            files[config.system_prompt_path] = state_system_prompt_text
-        artifacts: ProgramOptionMap = {
-            "pi_log": {
-                "path": config.log_path,
-                "format": "text",
-                "optional": True,
-            }
-        }
-        command: ProgramCommand = [
+class Pi(CommandHarness[PiConfig]):
+    def command(self, config: PiConfig) -> ProgramCommand:
+        return [
             "bash",
             "-lc",
             build_pi_run_script(
@@ -51,30 +24,34 @@ class Pi(Harness[PiConfig]):
                 log_path=config.log_path,
             ),
         ]
-        self._configure_runtime(
-            program=command_program(
-                command=command,
-                sandbox=sandbox_config,
-                files=files,
-                setup=build_pi_install_script(package=config.package),
-                channels={
-                    "mcp": build_pi_mcp_setup(
-                        agent_workdir=config.agent_workdir,
-                        install_mcp_adapter=config.install_mcp_adapter,
-                    )
-                }
-                if config.install_mcp_adapter
-                else None,
-                bindings={"setup_pi.endpoint_config": pi_endpoint_config},
-                artifacts=artifacts,
-                program=config.program,
-            ),
-            sandbox=command_sandbox(sandbox_config),
-            system_prompt=config.system_prompt,
-        )
+
+    def setup(self, config: PiConfig) -> str:
+        return build_pi_install_script(package=config.package)
+
+    def artifacts(self, config: PiConfig) -> ProgramOptionMap:
+        return {
+            "pi_log": {
+                "path": config.log_path,
+                "format": "text",
+                "optional": True,
+            }
+        }
+
+    def channels(self, config: PiConfig) -> ProgramChannels | None:
+        if not config.install_mcp_adapter:
+            return None
+        return {
+            "mcp": build_pi_mcp_setup(
+                agent_workdir=config.agent_workdir,
+                install_mcp_adapter=config.install_mcp_adapter,
+            )
+        }
+
+    def bindings_value(self, config: PiConfig) -> Bindings:
+        return {"setup_pi.endpoint_config": pi_endpoint_config}
 
 
-def build_pi_install_script(package: str = DEFAULT_PI_PACKAGE) -> str:
+def build_pi_install_script(package: str = PI_DEFAULT_PACKAGE) -> str:
     return f"""\
 set -e
 apt-get -o Acquire::Retries=3 update -qq && apt-get -o Acquire::Retries=3 install -y -qq curl ca-certificates nodejs npm > /dev/null 2>&1

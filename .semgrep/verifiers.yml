@@ -33,26 +33,20 @@ rules:
           metavariable: $ANNOT
           regex: "(Any|ConfigMap|Mapping\\[str, object\\]|dict\\[str, object\\]|.*\\|.*\\|.*)"
 
-  - id: verifiers-v1-loaders-require-config
+  - id: verifiers-v1-no-config-object-defaults
     languages: [python]
     severity: ERROR
-    message: Public `load_taskset` and `load_harness` loaders must require one concrete config object; defaults are supplied by the typed EnvConfig.
+    message: Public v1 `config` parameters should default to None; do not construct config objects in function signatures.
     paths:
       include:
+        - /verifiers/v1/**/*.py
         - /environments/**/*.py
-    pattern-either:
-      - pattern: |
-          def load_taskset(..., config: $CONFIG | None = None, ...):
-              ...
-      - pattern: |
-          def load_harness(..., config: $CONFIG | None = None, ...):
-              ...
-      - pattern: |
-          def load_taskset(..., config: Optional[$CONFIG] = None, ...):
-              ...
-      - pattern: |
-          def load_harness(..., config: Optional[$CONFIG] = None, ...):
-              ...
+    pattern: |
+      def $FUNC(..., config: $CONFIG = $DEFAULT(), ...):
+          ...
+    metavariable-regex:
+      metavariable: $DEFAULT
+      regex: ".*Config"
 
   - id: verifiers-no-private-framework-classes
     languages: [python]

@@ -590,11 +590,12 @@ class BFCLTaskset(vf.Taskset[BFCLTasksetConfig]):
     _default_rewards = (bfcl_reward,)
 
 
-def load_taskset(config: BFCLTasksetConfig = BFCLTasksetConfig()) -> BFCLTaskset:
+def load_taskset(config: BFCLTasksetConfig | None = None) -> BFCLTaskset:
     return BFCLTaskset(config=config)
 
 
-def load_harness(config: BFCLHarnessConfig = BFCLHarnessConfig()) -> vf.Harness:
+def load_harness(config: BFCLHarnessConfig | None = None) -> vf.Harness:
+    config = BFCLHarnessConfig.from_config(config)
     patch_bfcl_eval()
     from bfcl_eval.utils import is_multi_turn
 
@@ -603,7 +604,8 @@ def load_harness(config: BFCLHarnessConfig = BFCLHarnessConfig()) -> vf.Harness:
     return vf.Harness(config=config)
 
 
-def load_environment(config: BFCLEnvConfig = BFCLEnvConfig()) -> vf.Env | vf.EnvGroup:
+def load_environment(config: BFCLEnvConfig | None = None) -> vf.Env | vf.EnvGroup:
+    config = BFCLEnvConfig.from_config(config)
     base_taskset_config = config.taskset
     base_harness_config = config.harness
     categories = base_taskset_config.test_categories or [

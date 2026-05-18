@@ -280,37 +280,33 @@ class WikiSearchEnvConfig(vf.EnvConfig):
 class WikiSearchTaskset(vf.Taskset[WikiSearchTasksetConfig]):
     _default_source = source
 
-
-def load_taskset(
-    config: WikiSearchTasksetConfig = WikiSearchTasksetConfig(),
-) -> WikiSearchTaskset:
-    taskset = WikiSearchTaskset(config=config)
-    if "rewards" not in taskset.config.model_fields_set:
-        taskset.add_reward(
-            judge_reward_factory(
-                judge_model=config.judge_model,
-                judge_base_url=config.judge_base_url,
-                judge_api_key_var=config.judge_api_key_var,
-            )
-        )
-    if "toolsets" not in taskset.config.model_fields_set:
-        taskset.add_toolset(
-            {
-                "wiki": load_toolset(
-                    corpus_dataset=config.corpus_dataset,
-                    corpus_split=config.corpus_split,
-                    chroma_db_dir=config.chroma_db_dir,
-                    embed_model=config.embed_model,
-                    embed_base_url=config.embed_base_url,
-                    embed_api_key_var=config.embed_api_key_var,
+    def _configure_from_config(self) -> None:
+        config = self.config
+        if "rewards" not in config.model_fields_set:
+            self.add_reward(
+                judge_reward_factory(
+                    judge_model=config.judge_model,
+                    judge_base_url=config.judge_base_url,
+                    judge_api_key_var=config.judge_api_key_var,
                 )
-            }
-        )
-    return taskset
+            )
+        if "toolsets" not in config.model_fields_set:
+            self.add_toolset(
+                {
+                    "wiki": load_toolset(
+                        corpus_dataset=config.corpus_dataset,
+                        corpus_split=config.corpus_split,
+                        chroma_db_dir=config.chroma_db_dir,
+                        embed_model=config.embed_model,
+                        embed_base_url=config.embed_base_url,
+                        embed_api_key_var=config.embed_api_key_var,
+                    )
+                }
+            )
 
 
 load_v1_environment = vf.Env.loader(
-    taskset=load_taskset,
+    taskset=WikiSearchTaskset,
     env_config=WikiSearchEnvConfig,
 )
 load_environment = load_v1_environment

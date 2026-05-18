@@ -19,7 +19,9 @@ from .utils.config_utils import (
     annotation_text,
     config_data,
     default_text,
+    explicit_config_data,
     import_config_ref as import_config_ref,
+    resolved_config_data,
     resolve_config_object as resolve_config_object,
     string_mapping,
 )
@@ -61,13 +63,7 @@ class Config(BaseConfig):
             return cls()
         if isinstance(config, cls):
             return config
-        if isinstance(config, BaseModel):
-            data = config.model_dump(exclude_none=True, exclude_unset=True)
-        elif isinstance(config, Mapping):
-            data = string_mapping(cast(ConfigInputMap, config))
-        else:
-            raise TypeError("Config must be a mapping or config object.")
-        return cls.model_validate(data)
+        return cls.model_validate(explicit_config_data(config))
 
     @classmethod
     def from_toml(
@@ -122,7 +118,6 @@ class CallableConfig(Config):
 
 
 CallableEntry: TypeAlias = str | CallableConfig
-CallableConfigEntry: TypeAlias = CallableEntry
 
 
 class SandboxConfig(Config):
@@ -274,16 +269,7 @@ def validate_scoring_map(value: object, field: str) -> dict[str, ConfigData]:
     return result
 
 
-class TasksetConfig(Config):
-    # Singleton fields describe one logical value owned by the taskset.
-    source: TaskSource | None = None
-    eval_source: TaskSource | None = None
-    taskset_id: str | None = None
-    system_prompt: PromptInput | None = None
-    user: UserConfig | str | None = None
-    bindings: Bindings = {}
-    objects: dict[str, str] = {}
-
+class LifecycleConfig(Config):
     # Collection fields are configured only here; runtime mutation APIs are separate.
     toolsets: ToolsetSpecs | None = []
     stops: list[CallableEntry] = []
@@ -295,18 +281,29 @@ class TasksetConfig(Config):
     cleanups: list[CallableEntry] = []
     scoring: dict[str, ConfigData] = {}
 
+    @field_validator("scoring", mode="before")
+    @classmethod
+    def validate_scoring(cls, value: object) -> dict[str, ConfigData]:
+        return validate_scoring_map(value, "scoring")
+
+
+class TasksetConfig(LifecycleConfig):
+    # Singleton fields describe one logical value owned by the taskset.
+    source: TaskSource | None = None
+    eval_source: TaskSource | None = None
+    taskset_id: str | None = None
+    system_prompt: PromptInput | None = None
+    user: UserConfig | str | None = None
+    bindings: Bindings = {}
+    objects: dict[str, str] = {}
+
     @field_validator("bindings", mode="before")
     @classmethod
     def validate_bindings(cls, value: object) -> Bindings:
         return normalize_binding_map(value, "taskset.bindings")
 
-    @field_validator("scoring", mode="before")
-    @classmethod
-    def validate_scoring(cls, value: object) -> dict[str, ConfigData]:
-        return validate_scoring_map(value, "taskset.scoring")
 
-
-class HarnessConfig(Config):
+class HarnessConfig(LifecycleConfig):
     # Singleton fields describe one logical value owned by the harness.
     program: ProgramConfig | str | None = None
     system_prompt: PromptInput | None = None
@@ -320,26 +317,10 @@ class HarnessConfig(Config):
     bindings: Bindings = {}
     max_turns: int = 10
 
-    # Collection fields are configured only here; runtime mutation APIs are separate.
-    toolsets: ToolsetSpecs | None = []
-    stops: list[CallableEntry] = []
-    setups: list[CallableEntry] = []
-    updates: list[CallableEntry] = []
-    metrics: list[CallableEntry] = []
-    rewards: list[CallableEntry] = []
-    advantages: list[CallableEntry] = []
-    cleanups: list[CallableEntry] = []
-    scoring: dict[str, ConfigData] = {}
-
     @field_validator("bindings", mode="before")
     @classmethod
     def validate_bindings(cls, value: object) -> Bindings:
         return normalize_binding_map(value, "harness.bindings", allow_objects=False)
-
-    @field_validator("scoring", mode="before")
-    @classmethod
-    def validate_scoring(cls, value: object) -> dict[str, ConfigData]:
-        return validate_scoring_map(value, "harness.scoring")
 
 
 class EnvConfig(Config):
@@ -390,7 +371,11 @@ def sandbox_config_mapping(
     if value is None:
         return None
     if isinstance(value, SandboxConfig):
-        return value.model_dump(exclude_none=True, exclude_unset=not fill_defaults)
+        return (
+            resolved_config_data(value)
+            if fill_defaults
+            else explicit_config_data(value, SandboxConfig)
+        )
     if isinstance(value, Mapping):
         mapping = string_mapping(cast(ConfigInputMap, value))
         prefer = mapping.get("prefer")

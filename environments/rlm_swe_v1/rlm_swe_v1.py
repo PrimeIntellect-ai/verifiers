@@ -65,7 +65,7 @@ class R2ESandbox(Protocol):
 
 
 class R2ESWETaskset(vf.Taskset[RlmSweTasksetConfig]):
-    def __init__(self, config: RlmSweTasksetConfig = RlmSweTasksetConfig()):
+    def __init__(self, config: RlmSweTasksetConfig | None = None):
         config = RlmSweTasksetConfig.from_config(config)
         self.dataset_name = config.dataset_name
         self.repo_path = config.repo_path
@@ -457,13 +457,13 @@ def extract_gold_patch(
 
 
 def load_taskset(
-    config: RlmSweTasksetConfig = RlmSweTasksetConfig(),
+    config: RlmSweTasksetConfig | None = None,
 ) -> R2ESWETaskset:
     return R2ESWETaskset(config=config)
 
 
 def load_harness(
-    config: vf.RLMConfig = vf.RLMConfig(),
+    config: vf.RLMConfig | None = None,
     taskset: R2ESWETaskset | None = None,
 ) -> vf.RLM:
     user_config = vf.RLMConfig.from_config(config)
@@ -496,7 +496,8 @@ class RlmSweEnvConfig(vf.EnvConfig):
     harness: vf.RLMConfig = vf.RLMConfig()
 
 
-def load_environment(config: RlmSweEnvConfig = RlmSweEnvConfig()) -> vf.Env:
+def load_environment(config: RlmSweEnvConfig | None = None) -> vf.Env:
+    config = RlmSweEnvConfig.from_config(config)
     taskset = load_taskset(config=config.taskset)
     harness = load_harness(config=config.harness, taskset=taskset)
     return vf.Env(taskset=taskset, harness=harness)

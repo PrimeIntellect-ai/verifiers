@@ -87,11 +87,12 @@ class Env(vf.Environment):
             harness_config=harness_config,
         )
 
-        def load_environment(config=env_config_cls()) -> "Env":
+        def load_environment(config=None) -> "Env":
             return cls.from_config(
-                env_config_cls.from_config(config),
+                config,
                 taskset=taskset,
                 harness=harness,
+                env_config=env_config_cls,
             )
 
         load_environment.__annotations__["config"] = env_config_cls
@@ -100,23 +101,25 @@ class Env(vf.Environment):
     @classmethod
     def from_config(
         cls,
-        config: EnvConfig = EnvConfig(),
+        config: EnvConfig | None = None,
         *,
         taskset: TasksetBuilder = Taskset,
         harness: HarnessBuilder = Harness,
+        env_config: type[EnvConfig] | None = None,
     ) -> "Env":
-        config_cls = (
-            type(config)
-            if isinstance(config, EnvConfig)
-            else cls.config(
+        if env_config is not None:
+            config_cls = env_config
+        elif isinstance(config, EnvConfig):
+            config_cls = type(config)
+        else:
+            config_cls = cls.config(
                 taskset=taskset,
                 harness=harness,
             )
-        )
-        env_config = config_cls.from_config(config)
+        env_config_value = config_cls.from_config(config)
         return cls(
-            taskset=taskset(config=env_config.taskset),
-            harness=harness(config=env_config.harness),
+            taskset=taskset(config=env_config_value.taskset),
+            harness=harness(config=env_config_value.harness),
         )
 
     @vf.teardown

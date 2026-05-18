@@ -139,7 +139,25 @@ class MathPythonTaskset(vf.Taskset[MathPythonTasksetConfig]):
 
 
 class MathPythonHarness(vf.Harness[MathPythonHarnessConfig]):
-    pass
+    def _configure_from_config(self) -> None:
+        if "toolsets" in self.config.model_fields_set:
+            return
+        config = self.config
+        self.add_toolset(
+            {
+                "python": load_toolset(
+                    pip_install_packages=config.pip_install_packages,
+                    sandbox_cpu_cores=config.sandbox_cpu_cores,
+                    sandbox_memory_gb=config.sandbox_memory_gb,
+                    sandbox_disk_size_gb=config.sandbox_disk_size_gb,
+                    sandbox_gpu_count=config.sandbox_gpu_count,
+                    sandbox_timeout_minutes=config.sandbox_timeout_minutes,
+                    sandbox_timeout_per_command_seconds=(
+                        config.sandbox_timeout_per_command_seconds
+                    ),
+                )
+            }
+        )
 
 
 def load_toolset(
@@ -174,38 +192,9 @@ def load_toolset(
     )
 
 
-def load_taskset(
-    config: MathPythonTasksetConfig = MathPythonTasksetConfig(),
-) -> MathPythonTaskset:
-    return MathPythonTaskset(config=config)
-
-
-def load_harness(
-    config: MathPythonHarnessConfig = MathPythonHarnessConfig(),
-) -> MathPythonHarness:
-    harness = MathPythonHarness(config=config)
-    if "toolsets" not in harness.config.model_fields_set:
-        harness.add_toolset(
-            {
-                "python": load_toolset(
-                    pip_install_packages=config.pip_install_packages,
-                    sandbox_cpu_cores=config.sandbox_cpu_cores,
-                    sandbox_memory_gb=config.sandbox_memory_gb,
-                    sandbox_disk_size_gb=config.sandbox_disk_size_gb,
-                    sandbox_gpu_count=config.sandbox_gpu_count,
-                    sandbox_timeout_minutes=config.sandbox_timeout_minutes,
-                    sandbox_timeout_per_command_seconds=(
-                        config.sandbox_timeout_per_command_seconds
-                    ),
-                )
-            }
-        )
-    return harness
-
-
 load_v1_environment = vf.Env.loader(
-    taskset=load_taskset,
-    harness=load_harness,
+    taskset=MathPythonTaskset,
+    harness=MathPythonHarness,
     env_config=MathPythonEnvConfig,
 )
 load_environment = load_v1_environment

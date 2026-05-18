@@ -48,8 +48,8 @@ ProgramDir = str | Path | Traversable
 
 
 class RLM(Harness[RLMConfig]):
-    def __init__(self, config: RLMConfig = RLMConfig()):
-        harness_config = RLMConfig.from_config(config)
+    def __init__(self, config: RLMConfig | None = None):
+        harness_config = cast(RLMConfig, self._coerce_config(config))
         super().__init__(config=base_harness_config(harness_config))
         self.config = harness_config
         if (
