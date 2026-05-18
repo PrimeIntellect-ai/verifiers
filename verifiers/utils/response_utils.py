@@ -61,6 +61,14 @@ async def parse_response_tokens(
     completion_logprobs = tokens.completion_logprobs
     routed_experts = tokens.routed_experts
     multi_modal_data = tokens.multi_modal_data
+    tool_output_train_mask = tokens.tool_output_train_mask
+    if tool_output_train_mask is not None:
+        expected_len = len(prompt_ids) + len(completion_ids)
+        if len(tool_output_train_mask) != expected_len:
+            raise ValueError(
+                "tool_output_train_mask length "
+                f"{len(tool_output_train_mask)} does not match token length {expected_len}."
+            )
 
     if max_seq_len is not None:
         prompt_len = len(prompt_ids)
@@ -104,4 +112,7 @@ async def parse_response_tokens(
         # step. Leaving it on ``response.message.tokens`` too means every
         # downstream pass (msgpack, save) has to dedupe the duplicate.
         tokens.multi_modal_data = None
+    if tool_output_train_mask is not None:
+        visible_len = len(prompt_ids) + len(completion_ids)
+        out["tool_output_train_mask"] = tool_output_train_mask[:visible_len]
     return out

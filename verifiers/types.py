@@ -239,6 +239,7 @@ class TrajectoryStepTokens(TypedDict):
     # ``NotRequired`` because text-only rollouts (and non-renderer client
     # types) never populate it.
     multi_modal_data: NotRequired[Any]
+    tool_output_train_mask: NotRequired[list[bool]]
 
 
 class TokenUsage(TypedDict):

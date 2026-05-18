@@ -114,6 +114,71 @@ async def test_parse_response_tokens_with_max_seq_len_truncates_completion():
 
 
 @pytest.mark.asyncio
+async def test_parse_response_tokens_preserves_tool_output_train_mask():
+    """Tool-output masks must survive ResponseTokens -> TrajectoryStepTokens."""
+    response = Response(
+        id="test-id",
+        created=0,
+        model="test-model",
+        message=ResponseMessage(
+            role="assistant",
+            content="Hello",
+            reasoning_content=None,
+            tool_calls=None,
+            finish_reason="stop",
+            is_truncated=False,
+            tokens=ResponseTokens(
+                prompt_ids=[1, 2, 3],
+                prompt_mask=[0, 0, 0],
+                completion_ids=[4, 5],
+                completion_mask=[1, 1],
+                completion_logprobs=[-0.1, -0.2],
+                tool_output_train_mask=[False, True, True, False, False],
+            ),
+        ),
+    )
+
+    tokens = await parse_response_tokens(response)
+
+    assert tokens is not None
+    assert tokens["tool_output_train_mask"] == [False, True, True, False, False]
+
+
+@pytest.mark.asyncio
+async def test_parse_response_tokens_truncates_tool_output_train_mask():
+    """Tool-output masks follow the same max_seq_len truncation as token ids."""
+    response = Response(
+        id="test-id",
+        created=0,
+        model="test-model",
+        message=ResponseMessage(
+            role="assistant",
+            content="Hello",
+            reasoning_content=None,
+            tool_calls=None,
+            finish_reason="length",
+            is_truncated=True,
+            tokens=ResponseTokens(
+                prompt_ids=[1, 2],
+                prompt_mask=[0, 0],
+                completion_ids=[3, 4, 5],
+                completion_mask=[1, 1, 1],
+                completion_logprobs=[-0.1, -0.2, -0.3],
+                tool_output_train_mask=[False, True, False, False, False],
+            ),
+        ),
+    )
+
+    tokens = await parse_response_tokens(response, max_seq_len=4)
+
+    assert tokens is not None
+    assert tokens["prompt_ids"] == [1, 2]
+    assert tokens["completion_ids"] == [3, 4]
+    assert tokens["tool_output_train_mask"] == [False, True, False, False]
+    assert tokens["is_truncated"] is True
+
+
+@pytest.mark.asyncio
 async def test_parse_response_tokens_with_overlong_prompt():
     """Test overlong prompt handling with max_seq_len."""
     response = Response(
