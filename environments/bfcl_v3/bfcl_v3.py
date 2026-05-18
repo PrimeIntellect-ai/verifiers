@@ -16,6 +16,7 @@ from verifiers.types import (
 from verifiers.utils.message_utils import message_role, normalize_messages
 
 from verifiers.v1.utils.endpoint_utils import assistant_completion_from_messages
+from verifiers.v1.utils.config_utils import explicit_config_data
 from verifiers.v1.utils.json_utils import json_args
 from verifiers.v1.types import ConfigMap
 
@@ -609,13 +610,13 @@ def load_environment(config: BFCLEnvConfig | None = None) -> vf.Env | vf.EnvGrou
     for category in categories:
         taskset_config = BFCLTasksetConfig.model_validate(
             {
-                **taskset_template.model_dump(exclude_none=True),
+                **explicit_config_data(taskset_template),
                 "test_category": category,
             }
         )
         harness_config = BFCLHarnessConfig.model_validate(
             {
-                **harness_template.model_dump(exclude_none=True),
+                **explicit_config_data(harness_template),
                 "test_category": category,
             }
         )

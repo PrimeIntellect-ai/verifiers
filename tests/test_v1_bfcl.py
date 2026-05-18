@@ -97,6 +97,8 @@ def test_bfcl_public_loader_is_v1_only(monkeypatch: pytest.MonkeyPatch) -> None:
     assert isinstance(seen_harness_config, bfcl.BFCLHarnessConfig)
     assert seen_taskset_config.test_category == "simple_python"
     assert seen_taskset_config.examples_per_category == 0
+    assert "rewards" not in seen_taskset_config.model_fields_set
+    assert [reward.__name__ for reward in env.taskset.rewards] == ["bfcl_reward"]
     assert seen_harness_config.test_category == "simple_python"
     assert not hasattr(bfcl, "load_v1_environment")
 
