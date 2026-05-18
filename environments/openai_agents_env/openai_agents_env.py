@@ -12,15 +12,6 @@ class OpenAIAgentsTasksetConfig(vf.TasksetConfig):
     num_eval_examples: int = 20
 
 
-class OpenAIAgentsHarnessConfig(vf.HarnessConfig):
-    pass
-
-
-class OpenAIAgentsEnvConfig(vf.EnvConfig):
-    taskset: OpenAIAgentsTasksetConfig = OpenAIAgentsTasksetConfig()
-    harness: OpenAIAgentsHarnessConfig = OpenAIAgentsHarnessConfig()
-
-
 def calculate(expression: str) -> str:
     """Evaluate a math expression and return the result."""
     try:
@@ -132,16 +123,11 @@ class OpenAIAgentsTaskset(vf.Taskset[OpenAIAgentsTasksetConfig]):
     _default_rewards = (answer_reward,)
 
 
-class OpenAIAgentsHarness(vf.Harness[OpenAIAgentsHarnessConfig]):
+class OpenAIAgentsHarness(vf.Harness):
     _default_program = run_openai_agents_program
 
 
-def load_environment(
-    config: OpenAIAgentsEnvConfig = OpenAIAgentsEnvConfig(),
-) -> vf.Env:
-    """Load the OpenAI Agents SDK V1 taskset/harness example environment."""
-    return vf.Env.from_config(
-        config,
-        taskset=OpenAIAgentsTaskset,
-        harness=OpenAIAgentsHarness,
-    )
+load_environment = vf.Env.loader(
+    taskset=OpenAIAgentsTaskset,
+    harness=OpenAIAgentsHarness,
+)

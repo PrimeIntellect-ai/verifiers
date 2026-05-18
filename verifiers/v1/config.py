@@ -384,16 +384,6 @@ class EnvConfig(Config):
         return value
 
 
-def config_model_mapping(value: object | None) -> ConfigData | None:
-    if value is None:
-        return None
-    if isinstance(value, BaseModel):
-        return value.model_dump(exclude_none=True)
-    if isinstance(value, Mapping):
-        return string_mapping(cast(ConfigInputMap, value))
-    raise TypeError("Config value must be a mapping or config object.")
-
-
 def sandbox_config_mapping(
     value: object | None, *, fill_defaults: bool = True
 ) -> ConfigData | None:

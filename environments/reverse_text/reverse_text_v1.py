@@ -61,20 +61,16 @@ class ReverseTextTasksetConfig(vf.TasksetConfig):
     dataset_split: str = "train"
 
 
-class ReverseTextEnvConfig(vf.EnvConfig):
-    taskset: ReverseTextTasksetConfig = ReverseTextTasksetConfig()
-    harness: vf.HarnessConfig = vf.HarnessConfig()
-
-
 class ReverseTextTaskset(vf.Taskset[ReverseTextTasksetConfig]):
     _default_source = source
     _default_rewards = (lcs_reward_func,)
 
 
-def load_v1_environment(
-    config: ReverseTextEnvConfig = ReverseTextEnvConfig(),
-) -> vf.Env:
-    return vf.Env.from_config(config, taskset=ReverseTextTaskset)
+ReverseTextEnvConfig = vf.Env.config(taskset=ReverseTextTaskset)
+load_v1_environment = vf.Env.loader(
+    taskset=ReverseTextTaskset,
+    env_config=ReverseTextEnvConfig,
+)
 
 
 load_environment = load_v1_environment

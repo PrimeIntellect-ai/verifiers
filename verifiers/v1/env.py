@@ -1,6 +1,7 @@
 import asyncio
 import uuid
-from typing import cast
+from collections.abc import Callable
+from typing import TypeAlias, cast
 
 import verifiers as vf
 from verifiers.clients import Client
@@ -11,7 +12,10 @@ from .harness import Harness
 from .state import State
 from .taskset import Taskset
 from .types import ConfigMap
-from .config import EnvConfig
+from .config import EnvConfig, HarnessConfig, TasksetConfig
+
+TasksetBuilder: TypeAlias = type[Taskset] | Callable[..., Taskset]
+HarnessBuilder: TypeAlias = type[Harness] | Callable[..., Harness]
 
 
 class Env(vf.Environment):
@@ -31,14 +35,85 @@ class Env(vf.Environment):
         )
 
     @classmethod
+    def config(
+        cls,
+        *,
+        taskset: TasksetBuilder = Taskset,
+        harness: HarnessBuilder = Harness,
+        taskset_config: type[TasksetConfig] | None = None,
+        harness_config: type[HarnessConfig] | None = None,
+    ) -> type[EnvConfig]:
+        taskset_config = taskset_config or getattr(
+            taskset, "_config_cls", TasksetConfig
+        )
+        harness_config = harness_config or getattr(
+            harness, "_config_cls", HarnessConfig
+        )
+        taskset_name = str(getattr(taskset, "__name__", type(taskset).__name__))
+        harness_name = str(getattr(harness, "__name__", type(harness).__name__))
+        name = (
+            f"{taskset_name}EnvConfig"
+            if harness is Harness
+            else f"{taskset_name}{harness_name}EnvConfig"
+        )
+        return type(
+            name,
+            (EnvConfig,),
+            {
+                "__module__": cls.__module__,
+                "__annotations__": {
+                    "taskset": taskset_config,
+                    "harness": harness_config,
+                },
+                "taskset": taskset_config(),
+                "harness": harness_config(),
+            },
+        )
+
+    @classmethod
+    def loader(
+        cls,
+        *,
+        taskset: TasksetBuilder = Taskset,
+        harness: HarnessBuilder = Harness,
+        taskset_config: type[TasksetConfig] | None = None,
+        harness_config: type[HarnessConfig] | None = None,
+        env_config: type[EnvConfig] | None = None,
+    ):
+        env_config_cls = env_config or cls.config(
+            taskset=taskset,
+            harness=harness,
+            taskset_config=taskset_config,
+            harness_config=harness_config,
+        )
+
+        def load_environment(config=env_config_cls()) -> "Env":
+            return cls.from_config(
+                env_config_cls.from_config(config),
+                taskset=taskset,
+                harness=harness,
+            )
+
+        load_environment.__annotations__["config"] = env_config_cls
+        return load_environment
+
+    @classmethod
     def from_config(
         cls,
         config: EnvConfig = EnvConfig(),
         *,
-        taskset: type[Taskset] = Taskset,
-        harness: type[Harness] = Harness,
+        taskset: TasksetBuilder = Taskset,
+        harness: HarnessBuilder = Harness,
     ) -> "Env":
-        env_config = type(config).from_config(config)
+        config_cls = (
+            type(config)
+            if isinstance(config, EnvConfig)
+            else cls.config(
+                taskset=taskset,
+                harness=harness,
+            )
+        )
+        env_config = config_cls.from_config(config)
         return cls(
             taskset=taskset(config=env_config.taskset),
             harness=harness(config=env_config.harness),

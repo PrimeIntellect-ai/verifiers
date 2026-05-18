@@ -4,7 +4,7 @@ from typing import ClassVar, Generic, TypeVar, cast, get_args, get_origin
 
 from pydantic import BaseModel
 from pydantic_core import PydanticUndefined
-from ..types import ConfigData, ConfigInputMap, ConfigMap
+from ..types import ConfigData, ConfigInputMap
 
 ConfigT = TypeVar("ConfigT", bound=BaseModel)
 
@@ -75,10 +75,6 @@ def config_dump_value(value: object) -> object:
     if isinstance(value, list | tuple):
         return [config_dump_value(item) for item in value]
     return value
-
-
-def omit_none(data: ConfigMap) -> ConfigData:
-    return {key: value for key, value in data.items() if value is not None}
 
 
 def resolve_config_object(value: object) -> object:

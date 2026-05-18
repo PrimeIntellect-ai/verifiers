@@ -161,11 +161,6 @@ class SelfJudgeHarnessConfig(vf.HarnessConfig):
     max_turns: int = 8
 
 
-class SelfJudgeEnvConfig(vf.EnvConfig):
-    taskset: SelfJudgeTasksetConfig = SelfJudgeTasksetConfig()
-    harness: SelfJudgeHarnessConfig = SelfJudgeHarnessConfig()
-
-
 async def bash(command: str, sandbox, state) -> str:
     """Run a bash command in the rollout sandbox and return stdout/stderr."""
     result = await sandbox.execute(command, timeout=120, working_dir="/tmp")
@@ -358,11 +353,7 @@ class SelfJudgeTaskset(vf.Taskset[SelfJudgeTasksetConfig]):
     _default_metrics = (bash_calls,)
 
 
-def load_environment(
-    config: SelfJudgeEnvConfig = SelfJudgeEnvConfig(),
-) -> vf.Env:
-    return vf.Env.from_config(
-        config,
-        taskset=SelfJudgeTaskset,
-        harness=vf.Harness,
-    )
+load_environment = vf.Env.loader(
+    taskset=SelfJudgeTaskset,
+    harness_config=SelfJudgeHarnessConfig,
+)

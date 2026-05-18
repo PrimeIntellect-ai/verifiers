@@ -107,13 +107,9 @@ def load_harness(config: NestedHarnessConfig = NestedHarnessConfig()):
     return harness
 
 
-class NestedEnvConfig(vf.EnvConfig):
-    taskset: vf.TasksetConfig = vf.TasksetConfig()
-    harness: NestedHarnessConfig = NestedHarnessConfig()
-
-
-def load_environment(config: NestedEnvConfig = NestedEnvConfig()):
-    return vf.Env(
-        taskset=load_taskset(config=config.taskset),
-        harness=load_harness(config=config.harness),
-    )
+load_environment = vf.Env.loader(
+    taskset=load_taskset,
+    harness=load_harness,
+    taskset_config=vf.TasksetConfig,
+    harness_config=NestedHarnessConfig,
+)

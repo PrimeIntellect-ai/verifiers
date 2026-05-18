@@ -301,13 +301,8 @@ def load_taskset(
     return taskset
 
 
-def load_v1_environment(
-    config: WikiSearchEnvConfig = WikiSearchEnvConfig(),
-) -> vf.Env:
-    return vf.Env(
-        taskset=load_taskset(config=config.taskset),
-        harness=vf.Harness(config=config.harness),
-    )
-
-
+load_v1_environment = vf.Env.loader(
+    taskset=load_taskset,
+    env_config=WikiSearchEnvConfig,
+)
 load_environment = load_v1_environment

@@ -81,24 +81,14 @@ class SubagentTasksetConfig(vf.TasksetConfig):
     )
 
 
-class SubagentHarnessConfig(vf.HarnessConfig):
-    pass
-
-
-class SubagentEnvConfig(vf.EnvConfig):
-    taskset: SubagentTasksetConfig = SubagentTasksetConfig()
-    harness: SubagentHarnessConfig = SubagentHarnessConfig()
-
-
 class SubagentTaskset(vf.Taskset[SubagentTasksetConfig]):
     _default_source = source
     _default_rewards = (exact_answer,)
 
 
-class SubagentHarness(vf.Harness[SubagentHarnessConfig]):
+class SubagentHarness(vf.Harness):
     _default_toolsets = {"subagent": load_toolset}
     _default_metrics = (subagent_calls,)
 
 
-def load_environment(config: SubagentEnvConfig = SubagentEnvConfig()):
-    return vf.Env.from_config(config, taskset=SubagentTaskset, harness=SubagentHarness)
+load_environment = vf.Env.loader(taskset=SubagentTaskset, harness=SubagentHarness)

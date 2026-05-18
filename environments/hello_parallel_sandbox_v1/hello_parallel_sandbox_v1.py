@@ -141,11 +141,6 @@ class ParallelSandboxHarnessConfig(vf.HarnessConfig):
     max_turns: int = 4
 
 
-class ParallelSandboxEnvConfig(vf.EnvConfig):
-    taskset: ParallelSandboxTasksetConfig = ParallelSandboxTasksetConfig()
-    harness: ParallelSandboxHarnessConfig = ParallelSandboxHarnessConfig()
-
-
 async def bash(command: str, sandbox, state) -> str:
     """Run a bash command in the active program sandbox."""
     result = await sandbox.execute(command, timeout=120, working_dir="/tmp")
@@ -369,11 +364,7 @@ class ParallelSandboxHarness(vf.Harness[ParallelSandboxHarnessConfig]):
     _default_program = vf.ProgramConfig(sandbox=True, channels="callable")
 
 
-def load_environment(
-    config: ParallelSandboxEnvConfig = ParallelSandboxEnvConfig(),
-) -> vf.Env:
-    return vf.Env.from_config(
-        config,
-        taskset=ParallelSandboxTaskset,
-        harness=ParallelSandboxHarness,
-    )
+load_environment = vf.Env.loader(
+    taskset=ParallelSandboxTaskset,
+    harness=ParallelSandboxHarness,
+)

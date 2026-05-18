@@ -20,11 +20,6 @@ class GroupRewardHarnessConfig(vf.HarnessConfig):
     max_turns: int = 1
 
 
-class GroupRewardEnvConfig(vf.EnvConfig):
-    taskset: GroupRewardTasksetConfig = GroupRewardTasksetConfig()
-    harness: GroupRewardHarnessConfig = GroupRewardHarnessConfig()
-
-
 def group_reward_task(
     task_id: str,
     question: str,
@@ -322,9 +317,7 @@ GroupRewardTaskset._default_cleanups = (mark_group_cleaned,)
 GroupRewardHarness._default_program = candidate_program
 
 
-def load_environment(config: GroupRewardEnvConfig = GroupRewardEnvConfig()) -> vf.Env:
-    return vf.Env.from_config(
-        config,
-        taskset=GroupRewardTaskset,
-        harness=GroupRewardHarness,
-    )
+load_environment = vf.Env.loader(
+    taskset=GroupRewardTaskset,
+    harness=GroupRewardHarness,
+)

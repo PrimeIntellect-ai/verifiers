@@ -52,19 +52,9 @@ def source():
     ]
 
 
-class HelloRLMTasksetConfig(vf.TasksetConfig):
-    pass
-
-
-class HelloRLMTaskset(vf.Taskset[HelloRLMTasksetConfig]):
+class HelloRLMTaskset(vf.Taskset):
     _default_source = source
     _default_rewards = (exact_answer,)
 
 
-class HelloRLMEnvConfig(vf.EnvConfig):
-    taskset: HelloRLMTasksetConfig = HelloRLMTasksetConfig()
-    harness: vf.RLMConfig = vf.RLMConfig()
-
-
-def load_environment(config: HelloRLMEnvConfig = HelloRLMEnvConfig()):
-    return vf.Env.from_config(config, taskset=HelloRLMTaskset, harness=vf.RLM)
+load_environment = vf.Env.loader(taskset=HelloRLMTaskset, harness=vf.RLM)

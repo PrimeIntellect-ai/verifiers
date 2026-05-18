@@ -203,13 +203,9 @@ def load_harness(
     return harness
 
 
-def load_v1_environment(
-    config: MathPythonEnvConfig = MathPythonEnvConfig(),
-) -> vf.Env:
-    return vf.Env(
-        taskset=load_taskset(config=config.taskset),
-        harness=load_harness(config=config.harness),
-    )
-
-
+load_v1_environment = vf.Env.loader(
+    taskset=load_taskset,
+    harness=load_harness,
+    env_config=MathPythonEnvConfig,
+)
 load_environment = load_v1_environment

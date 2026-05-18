@@ -10,15 +10,6 @@ class DSPYRLMTasksetConfig(vf.TasksetConfig):
     num_eval_examples: int = 20
 
 
-class DSPYRLMHarnessConfig(vf.HarnessConfig):
-    pass
-
-
-class DSPYRLMEnvConfig(vf.EnvConfig):
-    taskset: DSPYRLMTasksetConfig = DSPYRLMTasksetConfig()
-    harness: DSPYRLMHarnessConfig = DSPYRLMHarnessConfig()
-
-
 async def run_dspy_rlm_program(task: vf.Task, state: vf.State) -> vf.State:
     import dspy
 
@@ -113,14 +104,8 @@ class DSPYRLMTaskset(vf.Taskset[DSPYRLMTasksetConfig]):
     _default_rewards = (answer_reward,)
 
 
-class DSPYRLMHarness(vf.Harness[DSPYRLMHarnessConfig]):
+class DSPYRLMHarness(vf.Harness):
     _default_program = run_dspy_rlm_program
 
 
-def load_environment(config: DSPYRLMEnvConfig = DSPYRLMEnvConfig()) -> vf.Env:
-    """Load the DSPy RLM V1 taskset/harness example environment."""
-    return vf.Env.from_config(
-        config,
-        taskset=DSPYRLMTaskset,
-        harness=DSPYRLMHarness,
-    )
+load_environment = vf.Env.loader(taskset=DSPYRLMTaskset, harness=DSPYRLMHarness)

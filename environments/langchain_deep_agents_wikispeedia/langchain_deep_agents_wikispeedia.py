@@ -73,11 +73,6 @@ class WikispeediaHarnessConfig(vf.HarnessConfig):
     timeout_seconds: float = 1200.0
 
 
-class WikispeediaEnvConfig(vf.EnvConfig):
-    taskset: WikispeediaTasksetConfig = WikispeediaTasksetConfig()
-    harness: WikispeediaHarnessConfig = WikispeediaHarnessConfig()
-
-
 class WikispeediaTaskset(vf.Taskset[WikispeediaTasksetConfig]):
     pass
 
@@ -570,10 +565,14 @@ def load_harness(
     return harness
 
 
-def load_environment(config: WikispeediaEnvConfig = WikispeediaEnvConfig()) -> vf.Env:
-    """Load the v1 Wikispeedia taskset with a LangChain Deep Agents harness."""
-
-    return vf.Env(
-        taskset=load_taskset(config=config.taskset),
-        harness=load_harness(config=config.harness),
-    )
+WikispeediaEnvConfig = vf.Env.config(
+    taskset=load_taskset,
+    harness=load_harness,
+    taskset_config=WikispeediaTasksetConfig,
+    harness_config=WikispeediaHarnessConfig,
+)
+load_environment = vf.Env.loader(
+    taskset=load_taskset,
+    harness=load_harness,
+    env_config=WikispeediaEnvConfig,
+)
