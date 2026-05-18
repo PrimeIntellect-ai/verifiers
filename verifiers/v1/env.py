@@ -43,12 +43,15 @@ class Env(vf.Environment):
         taskset_config: type[TasksetConfig] | None = None,
         harness_config: type[HarnessConfig] | None = None,
     ) -> type[EnvConfig]:
-        taskset_config = taskset_config or getattr(
-            taskset, "_config_cls", TasksetConfig
-        )
-        harness_config = harness_config or getattr(
-            harness, "_config_cls", HarnessConfig
-        )
+        taskset_config = taskset_config or getattr(taskset, "_config_cls", None)
+        harness_config = harness_config or getattr(harness, "_config_cls", None)
+        if taskset_config is None and harness_config is None:
+            raise ValueError(
+                "Env.config requires at least one taskset_config or harness_config "
+                "when config types cannot be inferred from Taskset/Harness classes."
+            )
+        taskset_config = taskset_config or TasksetConfig
+        harness_config = harness_config or HarnessConfig
         taskset_name = str(getattr(taskset, "__name__", type(taskset).__name__))
         harness_name = str(getattr(harness, "__name__", type(harness).__name__))
         name = (

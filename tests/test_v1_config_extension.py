@@ -1395,6 +1395,31 @@ def test_generic_config_binding_is_inferred_and_inherited() -> None:
     assert env.harness.config.mode == "mapping"
 
 
+def test_env_config_requires_config_type_for_plain_builders() -> None:
+    def load_taskset(config: TasksetConfig | None = None) -> Taskset:
+        return Taskset(config=config)
+
+    def load_harness(config: HarnessConfig | None = None) -> Harness:
+        return Harness(config=config)
+
+    class LocalTasksetConfig(TasksetConfig):
+        split: str = "train"
+
+    with pytest.raises(
+        ValueError, match="at least one taskset_config or harness_config"
+    ):
+        Env.config(taskset=load_taskset, harness=load_harness)
+
+    env_config = Env.config(
+        taskset=load_taskset,
+        harness=load_harness,
+        taskset_config=LocalTasksetConfig,
+    )
+
+    assert env_config.model_fields["taskset"].annotation is LocalTasksetConfig
+    assert env_config.model_fields["harness"].annotation is HarnessConfig
+
+
 def test_config_object_coercion_preserves_child_defaults() -> None:
     from verifiers.v1.packages.harnesses.opencode import OpenCodeConfig
 
