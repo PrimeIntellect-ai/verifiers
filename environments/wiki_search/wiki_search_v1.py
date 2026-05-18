@@ -285,18 +285,19 @@ def load_taskset(
     config: WikiSearchTasksetConfig = WikiSearchTasksetConfig(),
 ) -> WikiSearchTaskset:
     taskset = WikiSearchTaskset(config=config)
-    taskset.add_toolset(
-        {
-            "wiki": load_toolset(
-                corpus_dataset=config.corpus_dataset,
-                corpus_split=config.corpus_split,
-                chroma_db_dir=config.chroma_db_dir,
-                embed_model=config.embed_model,
-                embed_base_url=config.embed_base_url,
-                embed_api_key_var=config.embed_api_key_var,
-            )
-        }
-    )
+    if "toolsets" not in taskset.config.model_fields_set:
+        taskset.add_toolset(
+            {
+                "wiki": load_toolset(
+                    corpus_dataset=config.corpus_dataset,
+                    corpus_split=config.corpus_split,
+                    chroma_db_dir=config.chroma_db_dir,
+                    embed_model=config.embed_model,
+                    embed_base_url=config.embed_base_url,
+                    embed_api_key_var=config.embed_api_key_var,
+                )
+            }
+        )
     return taskset
 
 
