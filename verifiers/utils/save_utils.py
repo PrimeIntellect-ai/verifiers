@@ -232,7 +232,14 @@ def state_to_output(
     )
     usage = _extract_state_token_usage(state)
     if usage is not None:
-        token_usage: dict[str, float] = dict(usage)
+        token_usage: dict[str, float] = {
+            "input_tokens": usage["input_tokens"],
+            "output_tokens": usage["output_tokens"],
+        }
+        for key in ("cached_input_tokens", "final_input_tokens", "final_output_tokens"):
+            value = usage.get(key)
+            if value is not None:
+                token_usage[key] = value
         # Add context token metrics from trajectory
         trajectory = state.get("trajectory", [])
         if isinstance(trajectory, list):

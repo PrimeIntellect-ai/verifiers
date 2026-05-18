@@ -1,9 +1,12 @@
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, TypeVar
 from urllib.parse import urlsplit
 
 from verifiers.types import ClientConfig, ClientType
+
+NativePromptT = TypeVar("NativePromptT")
+NativeToolsT = TypeVar("NativeToolsT")
 
 PromptCacheMode = Literal[
     "disabled",
@@ -162,11 +165,11 @@ def apply_prompt_cache_to_request(
     *,
     config: ClientConfig | None,
     model: str,
-    native_prompt: object,
-    native_tools: object,
+    native_prompt: NativePromptT,
+    native_tools: NativeToolsT,
     sampling_args: Mapping[str, Any],
     extra_kwargs: Mapping[str, Any],
-) -> tuple[object, object, dict[str, Any], dict[str, Any]]:
+) -> tuple[NativePromptT, NativeToolsT, dict[str, Any], dict[str, Any]]:
     policy = resolve_prompt_cache_policy(config, model)
     updated_sampling_args = dict(sampling_args)
     updated_extra_kwargs = dict(extra_kwargs)

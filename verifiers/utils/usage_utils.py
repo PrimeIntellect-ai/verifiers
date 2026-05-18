@@ -1,20 +1,22 @@
 import math
 from collections.abc import Mapping, Sequence
 from types import MappingProxyType
-from typing import Any
+from typing import Any, cast
 
 from verifiers.types import Response, TokenUsage, Usage
 
 
 def _get_usage_value(usage_obj: object, key: str) -> object:
     if isinstance(usage_obj, Mapping):
-        return usage_obj.get(key, 0)
+        usage_mapping = cast(Mapping[str, object], usage_obj)
+        return usage_mapping.get(key, 0)
     return getattr(usage_obj, key, 0)
 
 
 def _get_optional_usage_value(usage_obj: object, key: str) -> object:
     if isinstance(usage_obj, Mapping):
-        return usage_obj.get(key)
+        usage_mapping = cast(Mapping[str, object], usage_obj)
+        return usage_mapping.get(key)
     return getattr(usage_obj, key, None)
 
 
@@ -24,7 +26,8 @@ def _get_nested_usage_value(usage_obj: object, key: str) -> object:
         return value
     details = _get_optional_usage_value(usage_obj, "prompt_tokens_details")
     if isinstance(details, Mapping):
-        return details.get(key)
+        details_mapping = cast(Mapping[str, object], details)
+        return details_mapping.get(key)
     if details is not None:
         return getattr(details, key, None)
     return None
@@ -32,7 +35,8 @@ def _get_nested_usage_value(usage_obj: object, key: str) -> object:
 
 def _get_response_usage(response: object) -> object:
     if isinstance(response, Mapping):
-        return response.get("usage")
+        response_mapping = cast(Mapping[str, object], response)
+        return response_mapping.get("usage")
     return getattr(response, "usage", None)
 
 
