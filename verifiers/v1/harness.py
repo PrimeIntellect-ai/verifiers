@@ -151,7 +151,7 @@ class Harness(Generic[HarnessConfigT]):
         self.toolsets, self.named_toolsets = merge_toolsets(
             default_toolsets, self.config.toolsets
         )
-        default_metrics = [num_turns]
+        default_metrics: list[Handler] = [num_turns]
         if "metrics" not in fields_set:
             default_metrics.extend(type(self)._default_metrics)
         handlers = merge_config_handler_map(
