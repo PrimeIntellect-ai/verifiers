@@ -17,6 +17,7 @@ from typing import Any, ClassVar, cast
 from openai import AsyncOpenAI
 
 from renderers import Message as RendererMessage
+from renderers import OverlongPromptError as RendererOverlongPromptError
 from renderers import (
     MultimodalRenderer,
     ParsedToolCall,
@@ -36,7 +37,7 @@ from verifiers.clients.client import Client
 from verifiers.clients.openai_chat_completions_client import (
     handle_openai_overlong_prompt,
 )
-from verifiers.errors import EmptyModelResponseError
+from verifiers.errors import EmptyModelResponseError, OverlongPromptError
 from verifiers.types import (
     AssistantMessage,
     ClientConfig,
@@ -578,20 +579,32 @@ class RendererClient(
             prompt_ids = None
             multi_modal_data = None
 
-        return await generate(
-            client=self.client,
-            renderer=renderer,
-            messages=prompt,
-            model=model,
-            prompt_ids=prompt_ids,
-            multi_modal_data=multi_modal_data,
-            tools=tools,
-            sampling_params=sampling_params,
-            cache_salt=args.get("cache_salt")
-            or sampling_params.pop("cache_salt", None),
-            priority=args.get("priority") or sampling_params.pop("priority", None),
-            extra_headers=args.get("extra_headers"),
-        )
+        # ``renderers.client.generate`` discovers the engine's context-length
+        # cap on its own (via ``GET /v1/models``, cached) and raises
+        # ``renderers.OverlongPromptError`` on pre-flight overflow. Rebadge
+        # that into the verifiers-native ``OverlongPromptError`` so the
+        # ``MultiTurnEnv.prompt_too_long`` stop condition picks it up via
+        # the ``vf.Error`` hierarchy. The ``@handle_openai_overlong_prompt``
+        # decorator still handles the fallback case (cap unknown → engine
+        # 4xx → vf.OverlongPromptError) for engines whose ``/v1/models``
+        # doesn't expose ``max_model_len``.
+        try:
+            return await generate(
+                client=self.client,
+                renderer=renderer,
+                messages=prompt,
+                model=model,
+                prompt_ids=prompt_ids,
+                multi_modal_data=multi_modal_data,
+                tools=tools,
+                sampling_params=sampling_params,
+                cache_salt=args.get("cache_salt")
+                or sampling_params.pop("cache_salt", None),
+                priority=args.get("priority") or sampling_params.pop("priority", None),
+                extra_headers=args.get("extra_headers"),
+            )
+        except RendererOverlongPromptError as exc:
+            raise OverlongPromptError(str(exc)) from exc
 
     async def raise_from_native_response(self, response: dict[str, Any]) -> None:
         if response is None:
