@@ -1239,6 +1239,30 @@ async def test_user_config_supports_scope_bindings_and_objects() -> None:
     assert messages == [{"role": "user", "content": "secret-token"}]
 
 
+def test_taskset_config_default_user_is_active() -> None:
+    class ConfigDefaultUserTasksetConfig(TasksetConfig):
+        user: str = ref("config_user")
+
+    class ConfigDefaultUserTaskset(Taskset[ConfigDefaultUserTasksetConfig]):
+        pass
+
+    taskset = ConfigDefaultUserTaskset(config=ConfigDefaultUserTasksetConfig())
+
+    assert taskset.user is not None
+
+
+def test_harness_config_default_user_is_active() -> None:
+    class ConfigDefaultUserHarnessConfig(HarnessConfig):
+        user: str = ref("config_user")
+
+    class ConfigDefaultUserHarness(Harness[ConfigDefaultUserHarnessConfig]):
+        pass
+
+    harness = ConfigDefaultUserHarness(config=ConfigDefaultUserHarnessConfig())
+
+    assert harness.user is not None
+
+
 @pytest.mark.asyncio
 async def test_direct_user_callable_receives_default_transcript_binding() -> None:
     harness = make_harness(user=direct_user_with_transcript)

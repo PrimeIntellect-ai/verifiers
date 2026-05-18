@@ -105,9 +105,9 @@ class Taskset(Generic[TasksetConfigT]):
         self.system_prompt = normalize_system_prompt(
             self.config.system_prompt, field_name="taskset.system_prompt"
         )
-        user_config = (
-            self.config.user if "user" in fields_set else type(self)._default_user
-        )
+        user_config = self.config.user
+        if user_config is None and "user" not in fields_set:
+            user_config = type(self)._default_user
         self.user = normalize_user(user_config)
         self.bindings = dict(self.config.bindings)
         self.objects = {

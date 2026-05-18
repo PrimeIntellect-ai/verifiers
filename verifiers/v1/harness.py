@@ -133,9 +133,9 @@ class Harness(Generic[HarnessConfigT]):
             self.config.system_prompt, field_name="harness.system_prompt"
         )
         self.system_prompt_merge = self.config.system_prompt_merge
-        user_config = (
-            self.config.user if "user" in fields_set else type(self)._default_user
-        )
+        user_config = self.config.user
+        if user_config is None and "user" not in fields_set:
+            user_config = type(self)._default_user
         self.user = normalize_user(user_config)
         self.bindings = dict(self.config.bindings)
         self.sandbox = sandbox_config_mapping(self.config.sandbox)
