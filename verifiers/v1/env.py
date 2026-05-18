@@ -11,6 +11,7 @@ from .harness import Harness
 from .state import State
 from .taskset import Taskset
 from .types import ConfigMap
+from .config import EnvConfig
 
 
 class Env(vf.Environment):
@@ -27,6 +28,20 @@ class Env(vf.Environment):
             dataset=self.taskset.get_dataset,
             eval_dataset=self.taskset.get_eval_dataset,
             rubric=vf.Rubric(),
+        )
+
+    @classmethod
+    def from_config(
+        cls,
+        config: EnvConfig = EnvConfig(),
+        *,
+        taskset: type[Taskset] = Taskset,
+        harness: type[Harness] = Harness,
+    ) -> "Env":
+        env_config = type(config).from_config(config)
+        return cls(
+            taskset=taskset(config=env_config.taskset),
+            harness=harness(config=env_config.harness),
         )
 
     @vf.teardown

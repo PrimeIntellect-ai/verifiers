@@ -1,10 +1,41 @@
 import importlib
 from collections.abc import Mapping
-from typing import cast
+from typing import ClassVar, Generic, TypeVar, cast, get_args, get_origin
 
 from pydantic import BaseModel
 from pydantic_core import PydanticUndefined
 from ..types import ConfigData, ConfigInputMap, ConfigMap
+
+ConfigT = TypeVar("ConfigT", bound=BaseModel)
+
+
+class ConfigBound(Generic[ConfigT]):
+    _config_base_cls: ClassVar[type[BaseModel]] = BaseModel
+    _config_cls: ClassVar[type[BaseModel]] = BaseModel
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)
+        config_cls = None
+        for base in getattr(cls, "__orig_bases__", ()):
+            origin = get_origin(base)
+            if isinstance(origin, type) and issubclass(origin, ConfigBound):
+                candidate = get_args(base)[0]
+                if not isinstance(candidate, TypeVar):
+                    config_cls = candidate
+                break
+        config_cls = config_cls or cls._config_cls
+        if not isinstance(config_cls, type) or not issubclass(
+            config_cls, cls._config_base_cls
+        ):
+            raise TypeError(
+                f"{cls.__name__} generic argument must be "
+                f"{cls._config_base_cls.__name__}."
+            )
+        cls._config_cls = config_cls
+
+    @classmethod
+    def config_schema(cls) -> str:
+        return cls._config_cls.schema_text()  # type: ignore[attr-defined]
 
 
 def config_data(value: object, target: type[BaseModel] | None = None) -> ConfigData:

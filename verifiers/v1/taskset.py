@@ -5,7 +5,7 @@ from importlib.abc import Traversable
 from collections.abc import Mapping
 from copy import deepcopy
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar, cast, get_args, get_origin
+from typing import TYPE_CHECKING, ClassVar, TypeVar, cast
 
 from datasets import Dataset
 from verifiers.types import task_payload_from_info
@@ -20,6 +20,7 @@ from .task import Task
 from .toolset import merge_toolsets, normalize_toolset_collection
 from .user import normalize_user
 from .utils.prompt_utils import normalize_system_prompt
+from .utils.config_utils import ConfigBound
 from .utils.taskset_utils import dataset_info_with_task, discover_sibling_dir
 from .utils.taskset_utils import rows_from_source
 from .types import (
@@ -38,7 +39,8 @@ TaskSourceValue = TaskRowsSource | None
 TasksetConfigT = TypeVar("TasksetConfigT", bound=TasksetConfig)
 
 
-class Taskset(Generic[TasksetConfigT]):
+class Taskset(ConfigBound[TasksetConfigT]):
+    _config_base_cls: ClassVar[type[TasksetConfig]] = TasksetConfig
     _config_cls: ClassVar[type[TasksetConfig]] = TasksetConfig
     _default_source: ClassVar[TaskSourceValue] = None
     _default_eval_source: ClassVar[TaskSourceValue] = None
@@ -51,31 +53,6 @@ class Taskset(Generic[TasksetConfigT]):
     _default_rewards: ClassVar[tuple[Handler, ...]] = ()
     _default_advantages: ClassVar[tuple[Handler, ...]] = ()
     _default_cleanups: ClassVar[tuple[Handler, ...]] = ()
-
-    def __init_subclass__(cls, **kwargs: object) -> None:
-        super().__init_subclass__(**kwargs)
-        config_cls = next(
-            (
-                get_args(base)[0]
-                for base in getattr(cls, "__orig_bases__", ())
-                if get_origin(base) is Taskset
-            ),
-            None,
-        )
-        if config_cls is None:
-            config_cls = next(
-                (
-                    base._config_cls
-                    for base in cls.__bases__
-                    if hasattr(base, "_config_cls")
-                ),
-                TasksetConfig,
-            )
-        if not isinstance(config_cls, type) or not issubclass(
-            config_cls, TasksetConfig
-        ):
-            raise TypeError("Taskset generic argument must be TasksetConfig.")
-        cls._config_cls = config_cls
 
     def __init__(self, config: TasksetConfig = TasksetConfig()):
         self.config = cast(TasksetConfigT, type(self)._config_cls.from_config(config))
@@ -156,10 +133,6 @@ class Taskset(Generic[TasksetConfigT]):
         self._dataset: Dataset | None = None
         self._eval_dataset: Dataset | None = None
         self._attached_harnesses: weakref.WeakSet["Harness"] = weakref.WeakSet()
-
-    @classmethod
-    def config_schema(cls) -> str:
-        return cls._config_cls.schema_text()
 
     def _add_handler(self, handlers: list[Handler], fn: Handler) -> None:
         handlers.append(fn)

@@ -1,5 +1,5 @@
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, ClassVar, Generic, TypeVar, cast, get_args, get_origin
+from typing import TYPE_CHECKING, ClassVar, TypeVar, cast
 
 from verifiers.decorators import metric, update
 from verifiers.errors import Error, OverlongPromptError
@@ -30,6 +30,7 @@ from .utils.endpoint_utils import (
     assistant_completion_from_messages,
     run_intercepted_program,
 )
+from .utils.config_utils import ConfigBound
 from .utils.json_utils import json_args
 from .utils.mcp_proxy_utils import (
     proxy_program,
@@ -75,7 +76,8 @@ UNSET = UnsetValue()
 HarnessConfigT = TypeVar("HarnessConfigT", bound=HarnessConfig)
 
 
-class Harness(Generic[HarnessConfigT]):
+class Harness(ConfigBound[HarnessConfigT]):
+    _config_base_cls: ClassVar[type[HarnessConfig]] = HarnessConfig
     _config_cls: ClassVar[type[HarnessConfig]] = HarnessConfig
     _default_program: ClassVar[object | None] = None
     _default_user: ClassVar[object | None] = None
@@ -87,31 +89,6 @@ class Harness(Generic[HarnessConfigT]):
     _default_rewards: ClassVar[tuple[Handler, ...]] = ()
     _default_advantages: ClassVar[tuple[Handler, ...]] = ()
     _default_cleanups: ClassVar[tuple[Handler, ...]] = ()
-
-    def __init_subclass__(cls, **kwargs: object) -> None:
-        super().__init_subclass__(**kwargs)
-        config_cls = next(
-            (
-                get_args(base)[0]
-                for base in getattr(cls, "__orig_bases__", ())
-                if get_origin(base) is Harness
-            ),
-            None,
-        )
-        if config_cls is None:
-            config_cls = next(
-                (
-                    base._config_cls
-                    for base in cls.__bases__
-                    if hasattr(base, "_config_cls")
-                ),
-                HarnessConfig,
-            )
-        if not isinstance(config_cls, type) or not issubclass(
-            config_cls, HarnessConfig
-        ):
-            raise TypeError("Harness generic argument must be HarnessConfig.")
-        cls._config_cls = config_cls
 
     def __init__(self, config: HarnessConfig = HarnessConfig()):
         self.config = cast(HarnessConfigT, type(self)._config_cls.from_config(config))
@@ -211,10 +188,6 @@ class Harness(Generic[HarnessConfigT]):
         self.runtime = self.resolve_runtime()
         self.endpoint = Endpoint(use_tunnel=self.program_uses_sandbox())
         self._program = self.compile_program(self.program)
-
-    @classmethod
-    def config_schema(cls) -> str:
-        return cls._config_cls.schema_text()
 
     def _add_handler(self, handlers: list[Handler], fn: Handler) -> None:
         handlers.append(fn)

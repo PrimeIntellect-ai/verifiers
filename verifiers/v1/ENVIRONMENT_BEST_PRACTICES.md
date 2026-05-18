@@ -14,15 +14,15 @@ proves the looser surface is needed.
    `EnvConfigType` is `vf.EnvConfig` for base taskset/harness configs, or an
    environment-local `vf.EnvConfig` subclass that binds concrete child config
    types.
-2. Environment modules SHOULD expose `load_taskset(config: TasksetConfigType)`
-   whenever the taskset has any reusable construction logic.
-3. Environment modules SHOULD expose `load_harness(config: HarnessConfigType)`
-   when the harness has reusable construction logic or a custom config type.
-   Environments using the default harness MAY construct `vf.Harness` directly in
-   `load_environment`.
-4. Public `load_taskset` and `load_harness` config parameters MUST be typed as
-   one concrete Pydantic config type with an explicit config-object default such
-   as `config: MyTasksetConfig = MyTasksetConfig()`. Do not advertise unions of
+2. Environment modules SHOULD use `vf.Env.from_config(...)` when taskset and
+   harness construction is just "instantiate these classes with their child
+   configs."
+3. Environment modules SHOULD expose `load_taskset(config: TasksetConfigType)`
+   or `load_harness(config: HarnessConfigType)` only when reusable construction
+   logic cannot live on the class defaults.
+4. Public child loader config parameters MUST be typed as one concrete Pydantic
+   config type with an explicit config-object default such as
+   `config: MyTasksetConfig = MyTasksetConfig()`. Do not advertise unions of
    mappings, base configs, and specific configs.
 5. `load_environment` MUST NOT mirror taskset or harness fields as keyword
    arguments. The root env loader receives the typed envelope; the child configs
@@ -44,10 +44,9 @@ your loader runs. The type annotation is not cosmetic.
    `harness` annotation.
 4. The config object that reaches `load_environment` is already validated and
    typed. Do not reconstruct child config objects just to recover their type.
-5. `load_taskset(config: MyTasksetConfig)` and
-   `load_harness(config: MyHarnessConfig)` make the reusable construction
-   contract explicit. They also give tests and examples one stable place to
-   exercise child config behavior.
+5. `vf.Env.from_config(config, taskset=MyTaskset, harness=MyHarness)` is the
+   default construction path. Use child loader functions only when they add real
+   construction behavior.
 6. Root env kwargs behave differently from TOML child sections. TOML
    `[env.taskset]` and `[env.harness]` route into the env config envelope; CLI
    `-a` passes loader kwargs. This is why CLI child config overrides must be
@@ -132,15 +131,8 @@ class MyEnvConfig(vf.EnvConfig):
     harness: vf.HarnessConfig = vf.HarnessConfig()
 
 
-def load_taskset(config: MyTasksetConfig = MyTasksetConfig()) -> vf.Taskset:
-    return MyTaskset(config=config)
-
-
 def load_environment(config: MyEnvConfig = MyEnvConfig()) -> vf.Env:
-    return vf.Env(
-        taskset=load_taskset(config=config.taskset),
-        harness=vf.Harness(config=config.harness),
-    )
+    return vf.Env.from_config(config, taskset=MyTaskset)
 ```
 
 ### Custom Harness
@@ -184,19 +176,8 @@ class MyEnvConfig(vf.EnvConfig):
     harness: MyHarnessConfig = MyHarnessConfig()
 
 
-def load_taskset(config: MyTasksetConfig = MyTasksetConfig()) -> vf.Taskset:
-    return MyTaskset(config=config)
-
-
-def load_harness(config: MyHarnessConfig = MyHarnessConfig()) -> vf.Harness:
-    return MyHarness(config=config)
-
-
 def load_environment(config: MyEnvConfig = MyEnvConfig()) -> vf.Env:
-    return vf.Env(
-        taskset=load_taskset(config=config.taskset),
-        harness=load_harness(config=config.harness),
-    )
+    return vf.Env.from_config(config, taskset=MyTaskset, harness=MyHarness)
 ```
 
 ## External Configuration

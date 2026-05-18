@@ -726,12 +726,8 @@ class MyEnvConfig(vf.EnvConfig):
     taskset: MyTasksetConfig = MyTasksetConfig()
 
 
-def load_taskset(config: MyTasksetConfig = MyTasksetConfig()) -> vf.Taskset:
-    return MyTaskset(config=config)
-
-
 def load_environment(config: MyEnvConfig = MyEnvConfig()) -> vf.Env:
-    return vf.Env(taskset=load_taskset(config=config.taskset))
+    return vf.Env.from_config(config, taskset=MyTaskset)
 ```
 
 ### pyproject.toml

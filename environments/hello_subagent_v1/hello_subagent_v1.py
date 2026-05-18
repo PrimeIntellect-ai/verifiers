@@ -100,16 +100,5 @@ class SubagentHarness(vf.Harness[SubagentHarnessConfig]):
     _default_metrics = (subagent_calls,)
 
 
-def load_taskset(config: SubagentTasksetConfig = SubagentTasksetConfig()):
-    return SubagentTaskset(config=config)
-
-
-def load_harness(config: SubagentHarnessConfig = SubagentHarnessConfig()):
-    return SubagentHarness(config=config)
-
-
 def load_environment(config: SubagentEnvConfig = SubagentEnvConfig()):
-    return vf.Env(
-        taskset=load_taskset(config=config.taskset),
-        harness=load_harness(config=config.harness),
-    )
+    return vf.Env.from_config(config, taskset=SubagentTaskset, harness=SubagentHarness)

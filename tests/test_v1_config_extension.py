@@ -1357,34 +1357,13 @@ async def test_harness_run_defers_group_cleanup_when_group_boundary_exists() -> 
     assert state["group_cleaned"] is True
 
 
-def test_subclasses_can_define_new_config_surface() -> None:
-    class CustomHarnessConfig(HarnessConfig):
-        custom_flag: bool = False
-
-    class CustomHarness(Harness[CustomHarnessConfig]):
-        pass
-
-    harness = CustomHarness(config={"custom_flag": True})
-
-    assert getattr(harness.config, "custom_flag") is True
-    assert "custom_flag" in CustomHarness.config_schema()
-
-
-def test_generic_taskset_config_binding_is_inferred() -> None:
+def test_generic_config_binding_is_inferred_and_inherited() -> None:
     class LocalTasksetConfig(TasksetConfig):
         split: str = "train"
 
     class LocalTaskset(Taskset[LocalTasksetConfig]):
         pass
 
-    taskset = LocalTaskset(config={"split": "test"})
-
-    assert isinstance(taskset.config, LocalTasksetConfig)
-    assert taskset.config.split == "test"
-    assert "split" in LocalTaskset.config_schema()
-
-
-def test_generic_harness_config_binding_is_inherited() -> None:
     class LocalHarnessConfig(HarnessConfig):
         mode: str = "default"
 
@@ -1394,11 +1373,49 @@ def test_generic_harness_config_binding_is_inherited() -> None:
     class ChildHarness(LocalHarness):
         pass
 
+    taskset = LocalTaskset(config={"split": "test"})
     harness = ChildHarness(config={"mode": "custom"})
 
+    assert isinstance(taskset.config, LocalTasksetConfig)
+    assert taskset.config.split == "test"
+    assert "split" in LocalTaskset.config_schema()
     assert isinstance(harness.config, LocalHarnessConfig)
     assert harness.config.mode == "custom"
     assert "mode" in ChildHarness.config_schema()
+
+
+def test_env_from_config_builds_bound_child_classes() -> None:
+    class LocalTasksetConfig(TasksetConfig):
+        split: str = "train"
+
+    class LocalTaskset(Taskset[LocalTasksetConfig]):
+        pass
+
+    class LocalHarnessConfig(HarnessConfig):
+        mode: str = "default"
+
+    class LocalHarness(Harness[LocalHarnessConfig]):
+        pass
+
+    class LocalEnvConfig(EnvConfig):
+        taskset: LocalTasksetConfig = LocalTasksetConfig()
+        harness: LocalHarnessConfig = LocalHarnessConfig()
+
+    env = Env.from_config(
+        LocalEnvConfig(taskset={"split": "test"}, harness={"mode": "object"}),
+        taskset=LocalTaskset,
+        harness=LocalHarness,
+    )
+    child_mapping_env = Env.from_config(
+        LocalEnvConfig(taskset={"split": "eval"}, harness={"mode": "mapping"}),
+        taskset=LocalTaskset,
+        harness=LocalHarness,
+    )
+
+    assert env.taskset.config.split == "test"
+    assert env.harness.config.mode == "object"
+    assert child_mapping_env.taskset.config.split == "eval"
+    assert child_mapping_env.harness.config.mode == "mapping"
 
 
 def test_config_object_coercion_preserves_child_defaults() -> None:
@@ -1944,23 +1961,18 @@ def test_reference_v1_harness_loaders_preserve_child_defaults() -> None:
     )
 
     assert (
-        group_reward.load_harness(
+        group_reward.GroupRewardHarness(
             config=group_reward.GroupRewardHarnessConfig()
         ).config.max_turns
         == 1
     )
     assert (
-        parallel_sandbox.load_harness(
+        parallel_sandbox.ParallelSandboxHarness(
             config=parallel_sandbox.ParallelSandboxHarnessConfig()
         ).config.max_turns
         == 4
     )
-    assert (
-        self_judge.load_harness(
-            config=self_judge.SelfJudgeHarnessConfig()
-        ).config.max_turns
-        == 8
-    )
+    assert vf.Harness(config=self_judge.SelfJudgeHarnessConfig()).config.max_turns == 8
 
 
 def test_math_python_v1_wrapper_rejects_unsupported_sandbox_kwargs() -> None:
@@ -2133,8 +2145,10 @@ def test_self_judge_loader_projects_shortcuts_to_child_configs() -> None:
         "environments.hello_self_judge_v1.hello_self_judge_v1"
     )
 
-    taskset = module.load_taskset(config=module.SelfJudgeTasksetConfig(num_examples=2))
-    harness = module.load_harness(config=module.SelfJudgeHarnessConfig(max_turns=3))
+    taskset = module.SelfJudgeTaskset(
+        config=module.SelfJudgeTasksetConfig(num_examples=2)
+    )
+    harness = vf.Harness(config=module.SelfJudgeHarnessConfig(max_turns=3))
     shortcut_env = module.load_environment(
         config=module.SelfJudgeEnvConfig(
             taskset={"num_examples": 2},

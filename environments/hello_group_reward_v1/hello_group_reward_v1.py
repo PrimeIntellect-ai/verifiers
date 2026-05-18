@@ -322,20 +322,9 @@ GroupRewardTaskset._default_cleanups = (mark_group_cleaned,)
 GroupRewardHarness._default_program = candidate_program
 
 
-def load_taskset(
-    config: GroupRewardTasksetConfig = GroupRewardTasksetConfig(),
-) -> GroupRewardTaskset:
-    return GroupRewardTaskset(config=config)
-
-
-def load_harness(
-    config: GroupRewardHarnessConfig = GroupRewardHarnessConfig(),
-) -> GroupRewardHarness:
-    return GroupRewardHarness(config=config)
-
-
 def load_environment(config: GroupRewardEnvConfig = GroupRewardEnvConfig()) -> vf.Env:
-    return vf.Env(
-        taskset=load_taskset(config=config.taskset),
-        harness=load_harness(config=config.harness),
+    return vf.Env.from_config(
+        config,
+        taskset=GroupRewardTaskset,
+        harness=GroupRewardHarness,
     )

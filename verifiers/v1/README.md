@@ -164,12 +164,8 @@ class ReverseEnvConfig(vf.EnvConfig):
     harness: vf.HarnessConfig = vf.HarnessConfig()
 
 
-def load_taskset(config: ReverseTasksetConfig = ReverseTasksetConfig()):
-    return ReverseTaskset(config=config)
-
-
 def load_environment(config: ReverseEnvConfig = ReverseEnvConfig()):
-    return vf.Env(taskset=load_taskset(config=config.taskset))
+    return vf.Env.from_config(config, taskset=ReverseTaskset)
 ```
 
 Standalone harness use is the same runner without the `Env` adapter:
@@ -1214,26 +1210,13 @@ class MyTaskset(vf.Taskset[MyTasksetConfig]):
         return [row for row in rows if row["split"] == self.config.split]
 
 
-def load_taskset(config: MyTasksetConfig = MyTasksetConfig()):
-    return MyTaskset(config=config)
+class MyEnvConfig(vf.EnvConfig):
+    taskset: MyTasksetConfig = MyTasksetConfig()
+    harness: vf.HarnessConfig = vf.HarnessConfig()
 
 
-def load_harness(config: vf.HarnessConfig = vf.HarnessConfig()):
-    return vf.Harness(config=config)
-
-
-def load_environment(config: vf.EnvConfig):
-    return vf.Env(
-        taskset=load_taskset(config=config.taskset),
-        harness=load_harness(config=config.harness),
-    )
-```
-
-If the base harness is enough, omit `load_harness`:
-
-```python
-def load_environment(config: vf.EnvConfig):
-    return vf.Env(taskset=load_taskset(config=config.taskset))
+def load_environment(config: MyEnvConfig = MyEnvConfig()):
+    return vf.Env.from_config(config, taskset=MyTaskset)
 ```
 
 With that loader, eval TOML routes v1 config through the `taskset`/`harness`
@@ -1269,23 +1252,12 @@ class MyTasksetConfig(vf.TasksetConfig):
 
 
 class MyEnvConfig(vf.EnvConfig):
-    taskset: MyTasksetConfig
-    harness: vf.HarnessConfig
-
-
-def load_taskset(config: MyTasksetConfig):
-    ...
-
-
-def load_harness(config: vf.HarnessConfig):
-    ...
+    taskset: MyTasksetConfig = MyTasksetConfig()
+    harness: vf.HarnessConfig = vf.HarnessConfig()
 
 
 def load_environment(config: MyEnvConfig):
-    return vf.Env(
-        taskset=load_taskset(config=config.taskset),
-        harness=load_harness(config=config.harness),
-    )
+    return vf.Env.from_config(config, taskset=MyTaskset)
 ```
 
 RL and Hosted Training TOML uses the same split under `env`:
@@ -1575,9 +1547,10 @@ Config objects can be loaded directly from a TOML section:
 taskset_config = vf.TasksetConfig.from_toml("local.toml", "taskset")
 harness_config = vf.HarnessConfig.from_toml("local.toml", "harness")
 
-env = vf.Env(
-    taskset=load_taskset(config=taskset_config),
-    harness=load_harness(config=harness_config),
+env = vf.Env.from_config(
+    MyEnvConfig(taskset=taskset_config, harness=harness_config),
+    taskset=MyTaskset,
+    harness=MyHarness,
 )
 ```
 

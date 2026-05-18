@@ -358,22 +358,11 @@ class SelfJudgeTaskset(vf.Taskset[SelfJudgeTasksetConfig]):
     _default_metrics = (bash_calls,)
 
 
-def load_taskset(
-    config: SelfJudgeTasksetConfig = SelfJudgeTasksetConfig(),
-) -> SelfJudgeTaskset:
-    return SelfJudgeTaskset(config=config)
-
-
-def load_harness(
-    config: SelfJudgeHarnessConfig = SelfJudgeHarnessConfig(),
-) -> vf.Harness:
-    return vf.Harness(config=config)
-
-
 def load_environment(
     config: SelfJudgeEnvConfig = SelfJudgeEnvConfig(),
 ) -> vf.Env:
-    return vf.Env(
-        taskset=load_taskset(config=config.taskset),
-        harness=load_harness(config=config.harness),
+    return vf.Env.from_config(
+        config,
+        taskset=SelfJudgeTaskset,
+        harness=vf.Harness,
     )

@@ -61,21 +61,10 @@ class HelloRLMTaskset(vf.Taskset[HelloRLMTasksetConfig]):
     _default_rewards = (exact_answer,)
 
 
-def load_taskset(config: HelloRLMTasksetConfig = HelloRLMTasksetConfig()):
-    return HelloRLMTaskset(config=config)
-
-
-def load_harness(config: vf.RLMConfig = vf.RLMConfig()):
-    return vf.RLM(config=config)
-
-
 class HelloRLMEnvConfig(vf.EnvConfig):
     taskset: HelloRLMTasksetConfig = HelloRLMTasksetConfig()
     harness: vf.RLMConfig = vf.RLMConfig()
 
 
 def load_environment(config: HelloRLMEnvConfig = HelloRLMEnvConfig()):
-    return vf.Env(
-        taskset=load_taskset(config=config.taskset),
-        harness=load_harness(config=config.harness),
-    )
+    return vf.Env.from_config(config, taskset=HelloRLMTaskset, harness=vf.RLM)

@@ -440,16 +440,9 @@ class DSPyFlightsHarness(vf.Harness[DSPyFlightsHarnessConfig]):
     )
 
 
-def load_taskset(config: DSPyFlightsTasksetConfig = DSPyFlightsTasksetConfig()):
-    return DSPyFlightsTaskset(config=config)
-
-
-def load_harness(config: DSPyFlightsHarnessConfig = DSPyFlightsHarnessConfig()):
-    return DSPyFlightsHarness(config=config)
-
-
 def load_environment(config: DSPyFlightsEnvConfig = DSPyFlightsEnvConfig()):
-    return vf.Env(
-        taskset=load_taskset(config=config.taskset),
-        harness=load_harness(config=config.harness),
+    return vf.Env.from_config(
+        config,
+        taskset=DSPyFlightsTaskset,
+        harness=DSPyFlightsHarness,
     )
