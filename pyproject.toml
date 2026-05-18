@@ -72,7 +72,7 @@ dev = [
     "aiohttp>=3.9.0",
     "python-dotenv>=1.0.0",
     "nltk",
-    "renderers>=0.1.8.dev2",
+    "renderers>=0.1.8.dev4",
 ]
 policy = [
     "semgrep>=1.150.0",
@@ -95,7 +95,7 @@ openenv = [
     "openenv-core>=0.3.0",
 ]
 renderers = [
-    "renderers>=0.1.8.dev2",
+    "renderers>=0.1.8.dev4",
 ]
 rl = [
     "torch>=2.8.0,<2.9.0",
@@ -125,13 +125,6 @@ url = "https://pypi.org/simple"
 default = true
 exclude-newer = "7 days"
 
-[tool.uv.sources]
-# TEMPORARY: pin renderers to the PromptTooLongError PR head so CI here can
-# import the new exception before the renderers release ships on PyPI. Drop
-# this entry (or bump back to a PyPI version) once renderers#48 merges and
-# the next renderers dev release is published.
-renderers = { git = "https://github.com/PrimeIntellect-ai/renderers", rev = "f859dcb" }
-
 [tool.uv.exclude-newer-package]
 # PrimeIntellect-published on PyPI (trusted publisher)
 prime-tunnel = false
@@ -144,11 +137,6 @@ flash-attn = [{ requirement = "torch", match-runtime = true }]
 
 [tool.uv.extra-build-variables]
 flash-attn = { FLASH_ATTENTION_SKIP_CUDA_BUILD = "TRUE" }
-# Pair with the renderers git pin above. hatch-vcs can't auto-bump the
-# renderers-v0.1.8.dev3 tag, so pretend HEAD is dev4 during the wheel
-# build. Drop together with the [tool.uv.sources] entry above when the
-# next renderers release ships on PyPI.
-renderers = { SETUPTOOLS_SCM_PRETEND_VERSION = "0.1.8.dev4", SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RENDERERS = "0.1.8.dev4" }
 
 [tool.ruff]
 exclude = [
