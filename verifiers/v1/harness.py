@@ -90,7 +90,7 @@ class Harness(ConfigBound[HarnessConfigT]):
     _default_advantages: ClassVar[tuple[Handler, ...]] = ()
     _default_cleanups: ClassVar[tuple[Handler, ...]] = ()
 
-    def __init__(self, config: HarnessConfig = HarnessConfig()):
+    def __init__(self, config: HarnessConfig | None = None):
         self.config = cast(HarnessConfigT, type(self)._config_cls.from_config(config))
         fields_set = self.config.model_fields_set
         program_config = self.config.program

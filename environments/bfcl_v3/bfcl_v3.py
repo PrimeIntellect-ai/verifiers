@@ -613,19 +613,13 @@ def load_environment(config: BFCLEnvConfig = BFCLEnvConfig()) -> vf.Env | vf.Env
     for category in categories:
         taskset_config = BFCLTasksetConfig.model_validate(
             {
-                **base_taskset_config.model_dump(
-                    exclude_none=True,
-                    exclude_unset=True,
-                ),
+                **base_taskset_config.model_dump(exclude_none=True),
                 "test_category": category,
             }
         )
         harness_config = BFCLHarnessConfig.model_validate(
             {
-                **base_harness_config.model_dump(
-                    exclude_none=True,
-                    exclude_unset=True,
-                ),
+                **base_harness_config.model_dump(exclude_none=True),
                 "test_category": category,
             }
         )
