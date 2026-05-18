@@ -2269,6 +2269,18 @@ def test_toolset_config_is_load_bearing() -> None:
     assert toolset.cleanups == (config_cleanup,)
 
 
+def test_inline_toolset_object_refs_resolve() -> None:
+    toolset = normalize_toolset(
+        {
+            "tools": [dynamic_ref(object_tool)],
+            "objects": {"box": dynamic_ref(load_object_box)},
+            "bindings": {"object_tool.box": "objects.box"},
+        }
+    )
+
+    assert toolset.objects == {"box": load_object_box}
+
+
 def test_toolset_write_arg_overrides_config() -> None:
     toolset = Toolset(write=False, config={"write": True})
 

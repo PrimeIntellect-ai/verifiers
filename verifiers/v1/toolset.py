@@ -126,7 +126,15 @@ class Toolset:
         object.__setattr__(
             self,
             "objects",
-            {**config_objects, **normalize_object_map(objects, "Toolset objects")},
+            {
+                **config_objects,
+                **{
+                    str(key): resolve_config_object(item)
+                    for key, item in normalize_object_map(
+                        objects, "Toolset objects"
+                    ).items()
+                },
+            },
         )
         object.__setattr__(self, "write", bool(write))
         if scope is not None and scope not in {"rollout", "group", "global"}:

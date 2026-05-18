@@ -4,8 +4,13 @@ import sys
 from os import PathLike
 from typing import Literal, TypeAlias, cast
 
-from pydantic import BaseModel, ValidationInfo, field_validator, model_validator
-from pydantic_config import BaseConfig
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 from typing_extensions import Self
 
 from .types import ConfigData, ConfigInputMap, ConfigMap
@@ -30,6 +35,10 @@ if sys.version_info >= (3, 11):
     import tomllib
 else:
     import tomli as tomllib
+
+
+class BaseConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
 
 
 JsonMap: TypeAlias = ConfigData

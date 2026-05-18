@@ -151,12 +151,11 @@ async def exact_answer(task, state) -> float:
 
 class EnvTasksetConfig(vf.TasksetConfig):
     split: str = "train"
-    rewards: list[vf.CallableConfig] = [
-        vf.CallableConfig(fn=f"{__name__}:exact_answer", weight=1.0)
-    ]
 
 
 class EnvTaskset(vf.Taskset[EnvTasksetConfig]):
+    _default_rewards = (exact_answer,)
+
     def rows(self) -> list[dict[str, object]]:
         rows = [
             {
@@ -191,12 +190,11 @@ async def exact_answer(task, state) -> float:
 
 class EnvTasksetConfig(vf.TasksetConfig):
     split: str = "train"
-    rewards: list[vf.CallableConfig] = [
-        vf.CallableConfig(fn=f"{__name__}:exact_answer", weight=1.0)
-    ]
 
 
 class EnvTaskset(vf.Taskset[EnvTasksetConfig]):
+    _default_rewards = (exact_answer,)
+
     def rows(self) -> list[dict[str, object]]:
         rows = [
             {

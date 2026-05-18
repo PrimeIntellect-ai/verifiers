@@ -19,15 +19,14 @@ class TagExtractor:
         return match.group(1).strip() if match else ""
 
 
+REVERSED_TEXT_EXTRACTOR = TagExtractor("reversed_text")
+
+
 @vf.reward(weight=1.0)
 async def lcs_reward_func(task, state) -> float:
-    response = extract_reversed_text()(state.get("completion") or [])
+    response = REVERSED_TEXT_EXTRACTOR(state.get("completion") or [])
     answer = str(task["answer"])
     return SequenceMatcher(None, response, answer).ratio()
-
-
-def extract_reversed_text() -> TagExtractor:
-    return TagExtractor("reversed_text")
 
 
 def source(
