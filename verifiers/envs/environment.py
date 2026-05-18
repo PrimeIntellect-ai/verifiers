@@ -745,6 +745,7 @@ class Environment(ABC):
         max_retries: int = 0,
         state_columns: list[str] | None = None,
         env_client: EnvClient | None = None,
+        training_context: dict | None = None,
     ) -> RolloutOutput:
         """Generate and, optionally, score a rollout."""
 
@@ -765,9 +766,12 @@ class Environment(ABC):
                 sampling_args,
                 max_retries,
                 state_columns,
+                training_context=training_context,
             )
 
         resolved_client = resolve_client(client)
+
+        self.rubric.training_context = training_context
 
         async def run_rollout_attempt() -> State:
             return await self._run_rollout_state(
@@ -791,6 +795,7 @@ class Environment(ABC):
         max_retries: int = 0,
         state_columns: list[str] | None = None,
         env_client: EnvClient | None = None,
+        training_context: dict | None = None,
         **kwargs,
     ) -> list[RolloutOutput]:
         """Generate and, optionally, score one group."""
@@ -812,9 +817,12 @@ class Environment(ABC):
                 sampling_args,
                 max_retries,
                 state_columns,
+                training_context=training_context,
             )
 
         resolved_client = resolve_client(client)
+
+        self.rubric.training_context = training_context
 
         async def run_group_attempt() -> list[State]:
             return await self._run_group_states(
