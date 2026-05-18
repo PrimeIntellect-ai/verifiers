@@ -18,18 +18,10 @@ PROGRAM_SANDBOX = {
 
 
 class DSPyFlightsTasksetConfig(vf.TasksetConfig):
-    source: str = f"{__name__}:source"
-    rewards: list[vf.CallableConfig] = [
-        vf.CallableConfig(fn=f"{__name__}:expected_database_change")
-    ]
-    metrics: list[vf.CallableConfig] = [vf.CallableConfig(fn=f"{__name__}:dspy_calls")]
+    pass
 
 
 class DSPyFlightsHarnessConfig(vf.HarnessConfig):
-    program: vf.ProgramConfig = vf.ProgramConfig(
-        fn=f"{__name__}:run_dspy_flight_program",
-        sandbox=True,
-    )
     sandbox: vf.SandboxConfig = vf.SandboxConfig(**PROGRAM_SANDBOX)
 
 
@@ -435,12 +427,25 @@ def stringify_nested(value: object) -> object:
     return str(value)
 
 
+class DSPyFlightsTaskset(vf.Taskset[DSPyFlightsTasksetConfig]):
+    _default_source = source
+    _default_rewards = (expected_database_change,)
+    _default_metrics = (dspy_calls,)
+
+
+class DSPyFlightsHarness(vf.Harness[DSPyFlightsHarnessConfig]):
+    _default_program = vf.ProgramConfig(
+        fn=f"{__name__}:run_dspy_flight_program",
+        sandbox=True,
+    )
+
+
 def load_taskset(config: DSPyFlightsTasksetConfig = DSPyFlightsTasksetConfig()):
-    return vf.Taskset(config=config)
+    return DSPyFlightsTaskset(config=config)
 
 
 def load_harness(config: DSPyFlightsHarnessConfig = DSPyFlightsHarnessConfig()):
-    return vf.Harness(config=config)
+    return DSPyFlightsHarness(config=config)
 
 
 def load_environment(config: DSPyFlightsEnvConfig = DSPyFlightsEnvConfig()):

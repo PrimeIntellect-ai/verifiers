@@ -142,12 +142,11 @@ async def contains_answer(task, state) -> float:
 
 class ReverseTasksetConfig(vf.TasksetConfig):
     split: str = "train"
-    rewards: list[vf.CallableConfig] = [
-        vf.CallableConfig(fn="my_env:contains_answer", weight=1.0)
-    ]
 
 
 class ReverseTaskset(vf.Taskset[ReverseTasksetConfig]):
+    _default_rewards = (contains_answer,)
+
     def rows(self) -> list[dict[str, object]]:
         rows = [
             {
@@ -423,10 +422,12 @@ async def exact(task, state) -> float:
 
 
 class ReplayTasksetConfig(vf.TasksetConfig):
-    rewards: list[vf.CallableConfig] = [vf.CallableConfig(fn="my_env:exact")]
+    pass
 
 
 class ReplayTaskset(vf.Taskset[ReplayTasksetConfig]):
+    _default_rewards = (exact,)
+
     def rows(self) -> list[dict[str, object]]:
         return [
             {
@@ -436,10 +437,12 @@ class ReplayTaskset(vf.Taskset[ReplayTasksetConfig]):
         ]
 
 
+class ReplayHarness(vf.Harness[vf.HarnessConfig]):
+    _default_program = replay_solution
+
+
 taskset = ReplayTaskset(config=ReplayTasksetConfig())
-harness = vf.Harness(
-    config=vf.HarnessConfig(program=vf.ProgramConfig(fn="my_env:replay_solution"))
-)
+harness = ReplayHarness()
 env = vf.Env(taskset=taskset, harness=harness)
 ```
 
@@ -707,13 +710,15 @@ Tasksets and harnesses can pass toolsets as a list or a mapping:
 
 ```python
 class WikiTasksetConfig(vf.TasksetConfig):
-    toolsets: dict[str, dict[str, object]] = {
+    pass
+
+
+class WikiTaskset(vf.Taskset[WikiTasksetConfig]):
+    _default_toolsets = {
         "wiki": {"fn": "my_env:load_wiki_toolset"},
         "python": {"tools": ["my_env:python"]},
     }
 
-
-class WikiTaskset(vf.Taskset[WikiTasksetConfig]):
     def rows(self) -> list[dict[str, object]]:
         return [
             {
@@ -1193,10 +1198,11 @@ import verifiers as vf
 
 class MyTasksetConfig(vf.TasksetConfig):
     split: str = "train"
-    rewards: list[vf.CallableConfig] = [vf.CallableConfig(fn="my_env:exact")]
 
 
 class MyTaskset(vf.Taskset[MyTasksetConfig]):
+    _default_rewards = (exact,)
+
     def rows(self) -> list[dict[str, object]]:
         rows = [
             {

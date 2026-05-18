@@ -149,12 +149,11 @@ async def contains_answer(task, state) -> float:
 
 class MyTasksetConfig(vf.TasksetConfig):
     split: str = "train"
-    rewards: list[vf.CallableConfig] = [
-        vf.CallableConfig(fn=f"{__name__}:contains_answer", weight=1.0)
-    ]
 
 
 class MyTaskset(vf.Taskset[MyTasksetConfig]):
+    _default_rewards = (contains_answer,)
+
     def rows(self) -> list[dict[str, object]]:
         rows = [
             {

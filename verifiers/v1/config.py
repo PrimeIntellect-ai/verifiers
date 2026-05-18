@@ -62,7 +62,7 @@ class Config(BaseConfig):
         if isinstance(config, cls):
             return config
         if isinstance(config, BaseModel):
-            data = config.model_dump(exclude_none=True)
+            data = config.model_dump(exclude_none=True, exclude_unset=True)
         elif isinstance(config, Mapping):
             data = string_mapping(cast(ConfigInputMap, config))
         else:

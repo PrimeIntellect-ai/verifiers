@@ -314,6 +314,7 @@ ref_module = types.ModuleType(REF_MODULE)
 setattr(ref_module, "source_loader", source_loader)
 setattr(ref_module, "eval_source_loader", eval_source_loader)
 setattr(ref_module, "config_metric", config_metric)
+setattr(ref_module, "group_config_metric", group_config_metric)
 setattr(ref_module, "config_reward", config_reward)
 setattr(ref_module, "config_advantage", config_advantage)
 setattr(ref_module, "config_cleanup", config_cleanup)
@@ -1376,6 +1377,60 @@ def test_generic_harness_config_binding_is_inherited() -> None:
     assert "mode" in ChildHarness.config_schema()
 
 
+def test_config_object_coercion_preserves_child_defaults() -> None:
+    from verifiers.v1.packages.harnesses.opencode import OpenCodeConfig
+
+    config = OpenCodeConfig.from_config(HarnessConfig(model="configured-model"))
+    explicit = OpenCodeConfig.from_config(
+        HarnessConfig(model="configured-model", max_turns=10)
+    )
+
+    assert config.model == "configured-model"
+    assert config.max_turns == OpenCodeConfig().max_turns
+    assert explicit.max_turns == 10
+
+
+def test_taskset_class_defaults_are_used_until_config_overrides() -> None:
+    class LocalTaskset(Taskset[TasksetConfig]):
+        _default_source = source_loader
+        _default_rewards = (config_reward,)
+
+    taskset = LocalTaskset()
+    configured = LocalTaskset(
+        config={
+            "source": ref("eval_source_loader"),
+            "rewards": [ref("updated_reward")],
+        }
+    )
+    disabled = LocalTaskset(config={"rewards": []})
+
+    assert taskset.source is source_loader
+    assert taskset.rewards == [config_reward]
+    assert configured.source is eval_source_loader
+    assert configured.rewards[0].__name__ == "updated_reward"
+    assert disabled.rewards == []
+
+
+def test_harness_class_defaults_are_used_until_config_overrides() -> None:
+    class LocalHarness(Harness[HarnessConfig]):
+        _default_program = config_program
+        _default_metrics = (config_metric,)
+
+    harness = LocalHarness()
+    configured = LocalHarness(
+        config={
+            "program": ref("setup_aware_program"),
+            "metrics": [ref("group_config_metric")],
+        }
+    )
+
+    assert harness.program is config_program
+    assert config_metric in harness.metrics
+    assert configured.program is setup_aware_program
+    assert config_metric not in configured.metrics
+    assert configured.metrics[-1].__name__ == "group_config_metric"
+
+
 def test_config_schema_is_visible_from_primary_types() -> None:
     assert "toolsets" in Taskset.config_schema()
     assert "toolsets" in Harness.config_schema()
@@ -1882,6 +1937,15 @@ def test_reference_v1_harness_loaders_preserve_child_defaults() -> None:
         ).config.max_turns
         == 8
     )
+
+
+def test_math_python_v1_wrapper_rejects_unsupported_sandbox_kwargs() -> None:
+    module = importlib.import_module("environments.math_python.math_python")
+
+    with pytest.raises(TypeError, match="max_startup_wait_seconds"):
+        module.load_environment(v1=True, max_startup_wait_seconds=10)
+    with pytest.raises(TypeError, match="sandbox_client_max_workers"):
+        module.load_environment(v1=True, sandbox_client_max_workers=2)
 
 
 def test_bfcl_loader_preserves_mapping_config_sections(

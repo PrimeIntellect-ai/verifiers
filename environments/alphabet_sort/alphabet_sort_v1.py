@@ -332,11 +332,6 @@ async def alphabet_user(task, state, transcript) -> list[dict[str, str]]:
 
 
 class AlphabetSortTasksetConfig(vf.TasksetConfig):
-    source: str = f"{__name__}:source"
-    rewards: list[vf.CallableConfig] = [
-        vf.CallableConfig(fn=f"{__name__}:weighted_reward")
-    ]
-    user: str = f"{__name__}:alphabet_user"
     min_turns: int = 1
     max_turns: int = 3
     min_names_per_turn: int = 1
@@ -353,16 +348,22 @@ class AlphabetSortEnvConfig(vf.EnvConfig):
     harness: vf.HarnessConfig = vf.HarnessConfig()
 
 
+class AlphabetSortTaskset(vf.Taskset[AlphabetSortTasksetConfig]):
+    _default_source = source
+    _default_rewards = (weighted_reward,)
+    _default_user = alphabet_user
+
+
 def load_taskset(
     config: AlphabetSortTasksetConfig = AlphabetSortTasksetConfig(),
-) -> vf.Taskset:
+) -> AlphabetSortTaskset:
     validate_parameters(
         min_turns=config.min_turns,
         max_turns=config.max_turns,
         min_names_per_turn=config.min_names_per_turn,
         max_names_per_turn=config.max_names_per_turn,
     )
-    return vf.Taskset(config=config)
+    return AlphabetSortTaskset(config=config)
 
 
 def load_v1_environment(

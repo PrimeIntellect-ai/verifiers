@@ -43,12 +43,11 @@ async def contains_answer(task, state) -> float:
 
 class ReverseTasksetConfig(vf.TasksetConfig):
     split: str = "train"
-    rewards: list[vf.CallableConfig] = [
-        vf.CallableConfig(fn="my_env:contains_answer", weight=1.0)
-    ]
 
 
 class ReverseTaskset(vf.Taskset[ReverseTasksetConfig]):
+    _default_rewards = (contains_answer,)
+
     def rows(self) -> list[dict[str, object]]:
         rows = [
             {
@@ -151,12 +150,12 @@ def build_answer_extractor() -> AnswerExtractor:
 
 
 class ExtractTasksetConfig(vf.TasksetConfig):
-    rewards: list[vf.CallableConfig] = [vf.CallableConfig(fn="my_env:exact")]
-    objects: dict[str, str] = {"extract_answer": "my_env:build_answer_extractor"}
-    bindings: dict[str, str] = {"exact.extract_answer": "objects.extract_answer"}
+    pass
 
 
 class ExtractTaskset(vf.Taskset[ExtractTasksetConfig]):
+    _default_rewards = (exact,)
+
     def rows(self) -> list[dict[str, object]]:
         return [
             {
@@ -306,16 +305,18 @@ MCP servers are also tools:
 
 ```python
 class FetchTasksetConfig(vf.TasksetConfig):
-    toolsets: list[dict[str, object]] = [
+    pass
+
+
+class FetchTaskset(vf.Taskset[FetchTasksetConfig]):
+    _default_toolsets = (
         {
             "tools": [
                 {"command": "uvx", "args": ["mcp-server-fetch"]},
             ]
-        }
-    ]
+        },
+    )
 
-
-class FetchTaskset(vf.Taskset[FetchTasksetConfig]):
     def rows(self) -> list[dict[str, object]]:
         return [
             {
@@ -335,11 +336,15 @@ the resolved taskset tools."
 
 ```python
 class AgentHarnessConfig(vf.HarnessConfig):
-    program: vf.ProgramConfig = vf.ProgramConfig(fn="my_env.program:run")
+    timeout_seconds: int = 120
+
+
+class AgentHarness(vf.Harness[AgentHarnessConfig]):
+    _default_program = run
 
 
 def load_harness(config: AgentHarnessConfig = AgentHarnessConfig()):
-    return vf.Harness(config=config)
+    return AgentHarness(config=config)
 
 
 def load_environment(config: vf.EnvConfig):
@@ -391,10 +396,12 @@ async def exact(task, state) -> float:
 
 
 class ReplayTasksetConfig(vf.TasksetConfig):
-    rewards: list[vf.CallableConfig] = [vf.CallableConfig(fn="my_env:exact")]
+    pass
 
 
 class ReplayTaskset(vf.Taskset[ReplayTasksetConfig]):
+    _default_rewards = (exact,)
+
     def rows(self) -> list[dict[str, object]]:
         return [
             {
@@ -405,7 +412,11 @@ class ReplayTaskset(vf.Taskset[ReplayTasksetConfig]):
 
 
 class ReplayHarnessConfig(vf.HarnessConfig):
-    program: vf.ProgramConfig = vf.ProgramConfig(fn="my_env:replay_solution")
+    pass
+
+
+class ReplayHarness(vf.Harness[ReplayHarnessConfig]):
+    _default_program = replay_solution
 
 
 class ReplayEnvConfig(vf.EnvConfig):

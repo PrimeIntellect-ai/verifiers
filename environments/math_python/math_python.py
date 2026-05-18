@@ -20,8 +20,13 @@ def load_environment(
     **kwargs,
 ):
     if v1:
-        if kwargs:
-            unexpected = ", ".join(sorted(kwargs))
+        unsupported = [*kwargs]
+        if max_startup_wait_seconds != 60:
+            unsupported.append("max_startup_wait_seconds")
+        if sandbox_client_max_workers is not None:
+            unsupported.append("sandbox_client_max_workers")
+        if unsupported:
+            unexpected = ", ".join(sorted(unsupported))
             raise TypeError(f"Unsupported v1 load_environment kwargs: {unexpected}")
 
         from math_python_v1 import (
@@ -42,18 +47,13 @@ def load_environment(
                 ),
                 harness=MathPythonHarnessConfig(
                     max_turns=max_turns,
-                    toolsets={
-                        "python": {
-                            "fn": "math_python_v1:load_toolset",
-                            "pip_install_packages": pip_install_packages,
-                            "sandbox_cpu_cores": sandbox_cpu_cores,
-                            "sandbox_memory_gb": sandbox_memory_gb,
-                            "sandbox_disk_size_gb": sandbox_disk_size_gb,
-                            "sandbox_gpu_count": sandbox_gpu_count,
-                            "sandbox_timeout_minutes": sandbox_timeout_minutes,
-                            "sandbox_timeout_per_command_seconds": sandbox_timeout_per_command_seconds,
-                        }
-                    },
+                    pip_install_packages=pip_install_packages,
+                    sandbox_cpu_cores=sandbox_cpu_cores,
+                    sandbox_memory_gb=sandbox_memory_gb,
+                    sandbox_disk_size_gb=sandbox_disk_size_gb,
+                    sandbox_gpu_count=sandbox_gpu_count,
+                    sandbox_timeout_minutes=sandbox_timeout_minutes,
+                    sandbox_timeout_per_command_seconds=sandbox_timeout_per_command_seconds,
                 ),
             )
         )

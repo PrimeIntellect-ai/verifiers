@@ -153,18 +153,7 @@ TASKS: list[vf.ConfigData] = [
 
 
 class SelfJudgeTasksetConfig(vf.TasksetConfig):
-    source: str = f"{__name__}:source"
     system_prompt: str = SYSTEM_PROMPT
-    toolsets: dict[str, dict[str, str]] = {
-        "bash": {"fn": f"{__name__}:load_bash_toolset"}
-    }
-    updates: list[vf.CallableConfig] = [
-        vf.CallableConfig(fn=f"{__name__}:sandbox_judge")
-    ]
-    rewards: list[vf.CallableConfig] = [
-        vf.CallableConfig(fn=f"{__name__}:self_consistency_score")
-    ]
-    metrics: list[vf.CallableConfig] = [vf.CallableConfig(fn=f"{__name__}:bash_calls")]
     num_examples: int = -1
 
 
@@ -361,10 +350,18 @@ def load_bash_toolset(config=None) -> vf.Toolset:
     )
 
 
+class SelfJudgeTaskset(vf.Taskset[SelfJudgeTasksetConfig]):
+    _default_source = source
+    _default_toolsets = {"bash": load_bash_toolset}
+    _default_updates = (sandbox_judge,)
+    _default_rewards = (self_consistency_score,)
+    _default_metrics = (bash_calls,)
+
+
 def load_taskset(
     config: SelfJudgeTasksetConfig = SelfJudgeTasksetConfig(),
-) -> vf.Taskset:
-    return vf.Taskset(config=config)
+) -> SelfJudgeTaskset:
+    return SelfJudgeTaskset(config=config)
 
 
 def load_harness(

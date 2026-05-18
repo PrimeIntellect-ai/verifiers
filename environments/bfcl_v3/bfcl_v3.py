@@ -26,8 +26,6 @@ BFCLRawTurn = str | ConfigMap | Sequence[BFCLRawMessage] | None
 
 
 class BFCLTasksetConfig(vf.TasksetConfig):
-    source: str = f"{__name__}:source"
-    rewards: list[vf.CallableConfig] = [vf.CallableConfig(fn=f"{__name__}:bfcl_reward")]
     test_category: str = "simple_python"
     test_categories: list[str] | None = None
     examples_per_category: int = -1
@@ -587,8 +585,13 @@ class BFCLMultiTurnHarness(vf.Harness[BFCLHarnessConfig]):
         return await bfcl_multi_turn_program(task, state, self)
 
 
-def load_taskset(config: BFCLTasksetConfig = BFCLTasksetConfig()) -> vf.Taskset:
-    return vf.Taskset(config=config)
+class BFCLTaskset(vf.Taskset[BFCLTasksetConfig]):
+    _default_source = source
+    _default_rewards = (bfcl_reward,)
+
+
+def load_taskset(config: BFCLTasksetConfig = BFCLTasksetConfig()) -> BFCLTaskset:
+    return BFCLTaskset(config=config)
 
 
 def load_harness(config: BFCLHarnessConfig = BFCLHarnessConfig()) -> vf.Harness:
@@ -609,10 +612,22 @@ def load_environment(config: BFCLEnvConfig = BFCLEnvConfig()) -> vf.Env | vf.Env
     envs: list[vf.Env] = []
     for category in categories:
         taskset_config = BFCLTasksetConfig.model_validate(
-            {**base_taskset_config.model_dump(), "test_category": category}
+            {
+                **base_taskset_config.model_dump(
+                    exclude_none=True,
+                    exclude_unset=True,
+                ),
+                "test_category": category,
+            }
         )
         harness_config = BFCLHarnessConfig.model_validate(
-            {**base_harness_config.model_dump(), "test_category": category}
+            {
+                **base_harness_config.model_dump(
+                    exclude_none=True,
+                    exclude_unset=True,
+                ),
+                "test_category": category,
+            }
         )
         envs.append(
             vf.Env(

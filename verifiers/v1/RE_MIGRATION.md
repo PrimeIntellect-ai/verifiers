@@ -55,12 +55,12 @@ import verifiers as vf
 class MyTasksetConfig(vf.TasksetConfig):
     split: str = "train"
     system_prompt: str = SYSTEM_PROMPT
-    rewards: list[vf.CallableConfig] = [vf.CallableConfig(fn="my_env:reward_fn")]
-    metrics: list[vf.CallableConfig] = [vf.CallableConfig(fn="my_env:metric_fn")]
-    toolsets: list[dict[str, str]] = [{"fn": "my_env:load_toolset"}]
 
 
 class MyTaskset(vf.Taskset[MyTasksetConfig]):
+    _default_rewards = (reward_fn,)
+    _default_metrics = (metric_fn,)
+
     def rows(self) -> list[dict[str, object]]:
         return load_rows(split=self.config.split)
 
@@ -172,12 +172,11 @@ async def exact(task, state) -> float:
 
 class QATasksetConfig(vf.TasksetConfig):
     split: str = "train"
-    rewards: list[vf.CallableConfig] = [
-        vf.CallableConfig(fn=f"{__name__}:exact", weight=1.0)
-    ]
 
 
 class QATaskset(vf.Taskset[QATasksetConfig]):
+    _default_rewards = (exact,)
+
     def rows(self) -> list[dict[str, object]]:
         return [
             {
@@ -221,12 +220,12 @@ async def exact(task, state, extract_answer) -> float:
 
 
 class ExtractTasksetConfig(vf.TasksetConfig):
-    rewards: list[vf.CallableConfig] = [vf.CallableConfig(fn="my_env:exact")]
-    objects: dict[str, str] = {"extract_answer": "my_env:AnswerExtractor"}
-    bindings: dict[str, str] = {"exact.extract_answer": "objects.extract_answer"}
+    pass
 
 
 class ExtractTaskset(vf.Taskset[ExtractTasksetConfig]):
+    _default_rewards = (exact,)
+
     def rows(self) -> list[dict[str, object]]:
         return [{"prompt": [{"role": "user", "content": "Question?"}], "answer": "A"}]
 
@@ -285,13 +284,12 @@ def load_toolset(config=None):
 
 
 class SearchTasksetConfig(vf.TasksetConfig):
-    toolsets: list[dict[str, str]] = [{"fn": f"{__name__}:load_toolset"}]
-    rewards: list[vf.CallableConfig] = [
-        vf.CallableConfig(fn=f"{__name__}:judge_reward")
-    ]
+    pass
 
 
 class SearchTaskset(vf.Taskset[SearchTasksetConfig]):
+    _default_rewards = (judge_reward,)
+
     def rows(self) -> list[dict[str, object]]:
         return [
             {
@@ -478,10 +476,11 @@ class SessionTasksetConfig(vf.TasksetConfig):
         objects={"session": "my_env:load_session"},
         bindings={"session": "objects.session"},
     )
-    rewards: list[vf.CallableConfig] = [vf.CallableConfig(fn="my_env:reward")]
 
 
 class SessionTaskset(vf.Taskset[SessionTasksetConfig]):
+    _default_rewards = (reward,)
+
     def rows(self) -> list[dict[str, object]]:
         return [{"prompt": [{"role": "user", "content": "Begin."}]}]
 

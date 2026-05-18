@@ -132,28 +132,7 @@ PROGRAM_SANDBOX = {
 
 
 class ParallelSandboxTasksetConfig(vf.TasksetConfig):
-    source: str = f"{__name__}:source"
     system_prompt: str = SYSTEM_PROMPT
-    toolsets: dict[str, vf.ToolsetConfig] = {
-        "bash": vf.ToolsetConfig(
-            tools=[f"{__name__}:bash"],
-            write=True,
-            sandbox="program",
-        )
-    }
-    updates: list[vf.CallableConfig] = [
-        vf.CallableConfig(fn=f"{__name__}:parallel_sandbox_audit")
-    ]
-    rewards: list[vf.CallableConfig] = [
-        vf.CallableConfig(fn=f"{__name__}:sandbox_stage_score")
-    ]
-    metrics: list[vf.CallableConfig] = [
-        vf.CallableConfig(fn=f"{__name__}:bash_calls"),
-        vf.CallableConfig(fn=f"{__name__}:update_audits"),
-    ]
-    cleanups: list[vf.CallableConfig] = [
-        vf.CallableConfig(fn=f"{__name__}:collect_program_sandbox_commands")
-    ]
     num_examples: int = -1
 
 
@@ -372,16 +351,35 @@ def source(num_examples: int = -1):
         }
 
 
+class ParallelSandboxTaskset(vf.Taskset[ParallelSandboxTasksetConfig]):
+    _default_source = source
+    _default_toolsets = {
+        "bash": vf.ToolsetConfig(
+            tools=[f"{__name__}:bash"],
+            write=True,
+            sandbox="program",
+        )
+    }
+    _default_updates = (parallel_sandbox_audit,)
+    _default_rewards = (sandbox_stage_score,)
+    _default_metrics = (bash_calls, update_audits)
+    _default_cleanups = (collect_program_sandbox_commands,)
+
+
+class ParallelSandboxHarness(vf.Harness[ParallelSandboxHarnessConfig]):
+    pass
+
+
 def load_taskset(
     config: ParallelSandboxTasksetConfig = ParallelSandboxTasksetConfig(),
-) -> vf.Taskset:
-    return vf.Taskset(config=config)
+) -> ParallelSandboxTaskset:
+    return ParallelSandboxTaskset(config=config)
 
 
 def load_harness(
     config: ParallelSandboxHarnessConfig = ParallelSandboxHarnessConfig(),
-) -> vf.Harness:
-    return vf.Harness(config=config)
+) -> ParallelSandboxHarness:
+    return ParallelSandboxHarness(config=config)
 
 
 def load_environment(

@@ -5,18 +5,13 @@ from verifiers.utils.data_utils import load_example_dataset
 
 
 class DSPYRLMTasksetConfig(vf.TasksetConfig):
-    source: str = f"{__name__}:load_train_rows"
-    eval_source: str = f"{__name__}:load_eval_rows"
     taskset_id: str = "gsm8k-dspy-rlm"
-    rewards: list[vf.CallableConfig] = [
-        vf.CallableConfig(fn=f"{__name__}:answer_reward")
-    ]
     num_train_examples: int = 50
     num_eval_examples: int = 20
 
 
 class DSPYRLMHarnessConfig(vf.HarnessConfig):
-    program: vf.ProgramConfig = vf.ProgramConfig(fn=f"{__name__}:run_dspy_rlm_program")
+    pass
 
 
 class DSPYRLMEnvConfig(vf.EnvConfig):
@@ -112,12 +107,26 @@ def answer_reward(task: vf.Task, state: vf.State) -> float:
     return answers_match(agent_answer, str(task.get("answer", "")))
 
 
-def load_taskset(config: DSPYRLMTasksetConfig = DSPYRLMTasksetConfig()) -> vf.Taskset:
-    return vf.Taskset(config=config)
+class DSPYRLMTaskset(vf.Taskset[DSPYRLMTasksetConfig]):
+    _default_source = load_train_rows
+    _default_eval_source = load_eval_rows
+    _default_rewards = (answer_reward,)
 
 
-def load_harness(config: DSPYRLMHarnessConfig = DSPYRLMHarnessConfig()) -> vf.Harness:
-    return vf.Harness(config=config)
+class DSPYRLMHarness(vf.Harness[DSPYRLMHarnessConfig]):
+    _default_program = run_dspy_rlm_program
+
+
+def load_taskset(
+    config: DSPYRLMTasksetConfig = DSPYRLMTasksetConfig(),
+) -> DSPYRLMTaskset:
+    return DSPYRLMTaskset(config=config)
+
+
+def load_harness(
+    config: DSPYRLMHarnessConfig = DSPYRLMHarnessConfig(),
+) -> DSPYRLMHarness:
+    return DSPYRLMHarness(config=config)
 
 
 def load_environment(config: DSPYRLMEnvConfig = DSPYRLMEnvConfig()) -> vf.Env:

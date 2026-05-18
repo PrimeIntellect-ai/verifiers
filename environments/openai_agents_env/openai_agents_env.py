@@ -7,20 +7,13 @@ ANSWER_RE = re.compile(r"^\s*ANSWER\s*:?\s*(.+?)\s*$", re.IGNORECASE)
 
 
 class OpenAIAgentsTasksetConfig(vf.TasksetConfig):
-    source: str = f"{__name__}:load_train_rows"
-    eval_source: str = f"{__name__}:load_eval_rows"
     taskset_id: str = "gsm8k-openai-agents"
-    rewards: list[vf.CallableConfig] = [
-        vf.CallableConfig(fn=f"{__name__}:answer_reward")
-    ]
     num_train_examples: int = 50
     num_eval_examples: int = 20
 
 
 class OpenAIAgentsHarnessConfig(vf.HarnessConfig):
-    program: vf.ProgramConfig = vf.ProgramConfig(
-        fn=f"{__name__}:run_openai_agents_program"
-    )
+    pass
 
 
 class OpenAIAgentsEnvConfig(vf.EnvConfig):
@@ -133,16 +126,26 @@ def answer_reward(task: vf.Task, state: vf.State) -> float:
     return answers_match(agent_answer, str(task.get("answer", "")))
 
 
+class OpenAIAgentsTaskset(vf.Taskset[OpenAIAgentsTasksetConfig]):
+    _default_source = load_train_rows
+    _default_eval_source = load_eval_rows
+    _default_rewards = (answer_reward,)
+
+
+class OpenAIAgentsHarness(vf.Harness[OpenAIAgentsHarnessConfig]):
+    _default_program = run_openai_agents_program
+
+
 def load_taskset(
     config: OpenAIAgentsTasksetConfig = OpenAIAgentsTasksetConfig(),
-) -> vf.Taskset:
-    return vf.Taskset(config=config)
+) -> OpenAIAgentsTaskset:
+    return OpenAIAgentsTaskset(config=config)
 
 
 def load_harness(
     config: OpenAIAgentsHarnessConfig = OpenAIAgentsHarnessConfig(),
-) -> vf.Harness:
-    return vf.Harness(config=config)
+) -> OpenAIAgentsHarness:
+    return OpenAIAgentsHarness(config=config)
 
 
 def load_environment(

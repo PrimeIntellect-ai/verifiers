@@ -20,8 +20,8 @@ class TagExtractor:
 
 
 @vf.reward(weight=1.0)
-async def lcs_reward_func(task, state, extract_reversed_text) -> float:
-    response = extract_reversed_text(state.get("completion") or [])
+async def lcs_reward_func(task, state) -> float:
+    response = extract_reversed_text()(state.get("completion") or [])
     answer = str(task["answer"])
     return SequenceMatcher(None, response, answer).ratio()
 
@@ -54,20 +54,10 @@ def source(
 
 
 class ReverseTextTasksetConfig(vf.TasksetConfig):
-    source: str = f"{__name__}:source"
     system_prompt: str | None = (
         "Reverse the text character-by-character. Put your answer in "
         "<reversed_text> tags."
     )
-    rewards: list[vf.CallableConfig] = [
-        vf.CallableConfig(fn=f"{__name__}:lcs_reward_func")
-    ]
-    objects: dict[str, str] = {
-        "extract_reversed_text": f"{__name__}:extract_reversed_text"
-    }
-    bindings: dict[str, str] = {
-        "lcs_reward_func.extract_reversed_text": "objects.extract_reversed_text"
-    }
     dataset_name: str = "PrimeIntellect/Reverse-Text-RL"
     dataset_split: str = "train"
 
@@ -77,10 +67,15 @@ class ReverseTextEnvConfig(vf.EnvConfig):
     harness: vf.HarnessConfig = vf.HarnessConfig()
 
 
+class ReverseTextTaskset(vf.Taskset[ReverseTextTasksetConfig]):
+    _default_source = source
+    _default_rewards = (lcs_reward_func,)
+
+
 def load_taskset(
     config: ReverseTextTasksetConfig = ReverseTextTasksetConfig(),
-) -> vf.Taskset:
-    return vf.Taskset(config=config)
+) -> ReverseTextTaskset:
+    return ReverseTextTaskset(config=config)
 
 
 def load_v1_environment(

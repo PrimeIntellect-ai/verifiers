@@ -2,8 +2,6 @@ import verifiers as vf
 
 
 class NestedHarnessConfig(vf.HarnessConfig):
-    program: vf.ProgramConfig = vf.ProgramConfig(fn=f"{__name__}:parent_program")
-    metrics: list[vf.CallableConfig] = [vf.CallableConfig(fn=f"{__name__}:child_calls")]
     toolset: vf.ToolsetConfig | None = None
 
 
@@ -11,6 +9,10 @@ async def child_program(task, state):
     state["answer"] = str(task["prompt"]).upper()
     state["completion"] = [{"role": "assistant", "content": state["answer"]}]
     return state
+
+
+class ChildHarness(vf.Harness[vf.HarnessConfig]):
+    _default_program = child_program
 
 
 async def call_harness(prompt, harness, state):
@@ -58,7 +60,7 @@ def source():
 
 
 def load_child_harness():
-    return vf.Harness(config=vf.HarnessConfig(program=f"{__name__}:child_program"))
+    return ChildHarness()
 
 
 def load_toolset(config: vf.ToolsetConfig | None = None):
@@ -84,30 +86,25 @@ async def parent_program(task, state):
     return state
 
 
+class NestedTaskset(vf.Taskset[vf.TasksetConfig]):
+    _default_source = source
+    _default_rewards = (exact_answer,)
+
+
+class NestedHarness(vf.Harness[NestedHarnessConfig]):
+    _default_program = parent_program
+    _default_metrics = (child_calls,)
+
+
 def load_taskset(config: vf.TasksetConfig = vf.TasksetConfig()):
-    taskset_config = type(config).model_validate(
-        {
-            **config.model_dump(),
-            "source": f"{__name__}:source",
-            "rewards": [vf.CallableConfig(fn=f"{__name__}:exact_answer", weight=1.0)],
-        }
-    )
-    return vf.Taskset(config=taskset_config)
+    return NestedTaskset(config=config)
 
 
 def load_harness(config: NestedHarnessConfig = NestedHarnessConfig()):
-    toolset = {"nested": {"fn": f"{__name__}:load_toolset"}}
-    if config.toolset is not None:
-        toolset["nested"]["config"] = config.toolset
-    harness_config = NestedHarnessConfig.model_validate(
-        {**config.model_dump(exclude_none=True), "toolsets": toolset}
-    )
-    base_config = {
-        key: value
-        for key, value in harness_config.model_dump().items()
-        if key in vf.HarnessConfig.model_fields
-    }
-    return vf.Harness(config=vf.HarnessConfig.model_validate(base_config))
+    harness = NestedHarness(config=config)
+    if "toolsets" not in harness.config.model_fields_set:
+        harness.add_toolset({"nested": load_toolset(config=config.toolset)})
+    return harness
 
 
 class NestedEnvConfig(vf.EnvConfig):

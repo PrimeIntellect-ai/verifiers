@@ -77,6 +77,16 @@ HarnessConfigT = TypeVar("HarnessConfigT", bound=HarnessConfig)
 
 class Harness(Generic[HarnessConfigT]):
     _config_cls: ClassVar[type[HarnessConfig]] = HarnessConfig
+    _default_program: ClassVar[object | None] = None
+    _default_user: ClassVar[object | None] = None
+    _default_toolsets: ClassVar[object] = ()
+    _default_stops: ClassVar[tuple[Handler, ...]] = ()
+    _default_setups: ClassVar[tuple[Handler, ...]] = ()
+    _default_updates: ClassVar[tuple[Handler, ...]] = ()
+    _default_metrics: ClassVar[tuple[Handler, ...]] = ()
+    _default_rewards: ClassVar[tuple[Handler, ...]] = ()
+    _default_advantages: ClassVar[tuple[Handler, ...]] = ()
+    _default_cleanups: ClassVar[tuple[Handler, ...]] = ()
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)
@@ -105,7 +115,13 @@ class Harness(Generic[HarnessConfigT]):
 
     def __init__(self, config: HarnessConfig = HarnessConfig()):
         self.config = cast(HarnessConfigT, type(self)._config_cls.from_config(config))
-        program_value = resolve_config_object(self.config.program)
+        fields_set = self.config.model_fields_set
+        program_config = (
+            self.config.program
+            if "program" in fields_set
+            else type(self)._default_program
+        )
+        program_value = resolve_config_object(program_config)
         if isinstance(program_value, ProgramConfig):
             program_value = program_value.model_dump(
                 exclude_none=True,
@@ -117,7 +133,10 @@ class Harness(Generic[HarnessConfigT]):
             self.config.system_prompt, field_name="harness.system_prompt"
         )
         self.system_prompt_merge = self.config.system_prompt_merge
-        self.user = normalize_user(self.config.user)
+        user_config = (
+            self.config.user if "user" in fields_set else type(self)._default_user
+        )
+        self.user = normalize_user(user_config)
         self.bindings = dict(self.config.bindings)
         self.sandbox = sandbox_config_mapping(self.config.sandbox)
         self.client = cast(
@@ -126,16 +145,32 @@ class Harness(Generic[HarnessConfigT]):
         )
         self.model = self.config.model
         self.sampling_args = cast(SamplingArgs, self.config.sampling_args)
-        self.toolsets, self.named_toolsets = merge_toolsets((), self.config.toolsets)
+        default_toolsets = (
+            () if "toolsets" in fields_set else type(self)._default_toolsets
+        )
+        self.toolsets, self.named_toolsets = merge_toolsets(
+            default_toolsets, self.config.toolsets
+        )
+        default_metrics = [num_turns]
+        if "metrics" not in fields_set:
+            default_metrics.extend(type(self)._default_metrics)
         handlers = merge_config_handler_map(
             {
-                "stop": (),
-                "setup": (),
-                "update": (),
-                "metric": [num_turns],
-                "reward": (),
-                "advantage": (),
-                "cleanup": (),
+                "stop": () if "stops" in fields_set else type(self)._default_stops,
+                "setup": () if "setups" in fields_set else type(self)._default_setups,
+                "update": ()
+                if "updates" in fields_set
+                else type(self)._default_updates,
+                "metric": default_metrics,
+                "reward": ()
+                if "rewards" in fields_set
+                else type(self)._default_rewards,
+                "advantage": ()
+                if "advantages" in fields_set
+                else type(self)._default_advantages,
+                "cleanup": ()
+                if "cleanups" in fields_set
+                else type(self)._default_cleanups,
             },
             self.config,
         )

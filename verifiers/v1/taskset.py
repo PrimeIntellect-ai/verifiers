@@ -40,6 +40,17 @@ TasksetConfigT = TypeVar("TasksetConfigT", bound=TasksetConfig)
 
 class Taskset(Generic[TasksetConfigT]):
     _config_cls: ClassVar[type[TasksetConfig]] = TasksetConfig
+    _default_source: ClassVar[TaskSourceValue] = None
+    _default_eval_source: ClassVar[TaskSourceValue] = None
+    _default_user: ClassVar[object | None] = None
+    _default_toolsets: ClassVar[object] = ()
+    _default_stops: ClassVar[tuple[Handler, ...]] = ()
+    _default_setups: ClassVar[tuple[Handler, ...]] = ()
+    _default_updates: ClassVar[tuple[Handler, ...]] = ()
+    _default_metrics: ClassVar[tuple[Handler, ...]] = ()
+    _default_rewards: ClassVar[tuple[Handler, ...]] = ()
+    _default_advantages: ClassVar[tuple[Handler, ...]] = ()
+    _default_cleanups: ClassVar[tuple[Handler, ...]] = ()
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)
@@ -68,12 +79,21 @@ class Taskset(Generic[TasksetConfigT]):
 
     def __init__(self, config: TasksetConfig = TasksetConfig()):
         self.config = cast(TasksetConfigT, type(self)._config_cls.from_config(config))
-        source_value = resolve_config_object(self.config.source)
+        fields_set = self.config.model_fields_set
+        source_config = (
+            self.config.source if "source" in fields_set else type(self)._default_source
+        )
+        source_value = resolve_config_object(source_config)
         self.source = cast(
             TaskSourceValue,
             source_value,
         )
-        eval_source_value = resolve_config_object(self.config.eval_source)
+        eval_source_config = (
+            self.config.eval_source
+            if "eval_source" in fields_set
+            else type(self)._default_eval_source
+        )
+        eval_source_value = resolve_config_object(eval_source_config)
         self.eval_source = cast(
             TaskSourceValue,
             eval_source_value,
@@ -85,7 +105,10 @@ class Taskset(Generic[TasksetConfigT]):
         self.system_prompt = normalize_system_prompt(
             self.config.system_prompt, field_name="taskset.system_prompt"
         )
-        self.user = normalize_user(self.config.user)
+        user_config = (
+            self.config.user if "user" in fields_set else type(self)._default_user
+        )
+        self.user = normalize_user(user_config)
         self.bindings = dict(self.config.bindings)
         self.objects = {
             **{
@@ -93,16 +116,31 @@ class Taskset(Generic[TasksetConfigT]):
                 for key, item in self.config.objects.items()
             }
         }
-        self.toolsets, self.named_toolsets = merge_toolsets((), self.config.toolsets)
+        default_toolsets = (
+            () if "toolsets" in fields_set else type(self)._default_toolsets
+        )
+        self.toolsets, self.named_toolsets = merge_toolsets(
+            default_toolsets, self.config.toolsets
+        )
         handlers = merge_config_handler_map(
             {
-                "stop": (),
-                "setup": (),
-                "update": (),
-                "metric": (),
-                "reward": (),
-                "advantage": (),
-                "cleanup": (),
+                "stop": () if "stops" in fields_set else type(self)._default_stops,
+                "setup": () if "setups" in fields_set else type(self)._default_setups,
+                "update": ()
+                if "updates" in fields_set
+                else type(self)._default_updates,
+                "metric": ()
+                if "metrics" in fields_set
+                else type(self)._default_metrics,
+                "reward": ()
+                if "rewards" in fields_set
+                else type(self)._default_rewards,
+                "advantage": ()
+                if "advantages" in fields_set
+                else type(self)._default_advantages,
+                "cleanup": ()
+                if "cleanups" in fields_set
+                else type(self)._default_cleanups,
             },
             self.config,
         )

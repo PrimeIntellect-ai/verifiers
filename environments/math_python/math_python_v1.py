@@ -93,11 +93,7 @@ def build_system_prompt(pip_install_packages: str = "numpy sympy scipy") -> str:
 
 
 class MathPythonTasksetConfig(vf.TasksetConfig):
-    source: str = f"{__name__}:source"
     system_prompt: str = build_system_prompt()
-    rewards: list[vf.CallableConfig] = [
-        vf.CallableConfig(fn=f"{__name__}:correct_answer")
-    ]
     dataset_name: str = "math"
     dataset_split: str = "train"
     num_train_examples: int = -1
@@ -105,18 +101,13 @@ class MathPythonTasksetConfig(vf.TasksetConfig):
 
 class MathPythonHarnessConfig(vf.HarnessConfig):
     max_turns: int = 100
-    toolsets: dict[str, dict[str, str | int]] = {
-        "python": {
-            "fn": f"{__name__}:load_toolset",
-            "pip_install_packages": "numpy sympy scipy",
-            "sandbox_cpu_cores": 1,
-            "sandbox_memory_gb": 2,
-            "sandbox_disk_size_gb": 5,
-            "sandbox_gpu_count": 0,
-            "sandbox_timeout_minutes": 60,
-            "sandbox_timeout_per_command_seconds": 60,
-        }
-    }
+    pip_install_packages: str = "numpy sympy scipy"
+    sandbox_cpu_cores: int = 1
+    sandbox_memory_gb: int = 2
+    sandbox_disk_size_gb: int = 5
+    sandbox_gpu_count: int = 0
+    sandbox_timeout_minutes: int = 60
+    sandbox_timeout_per_command_seconds: int = 60
 
 
 class MathPythonEnvConfig(vf.EnvConfig):
@@ -140,6 +131,15 @@ def source(
             "example_id": index,
             "prompt": [{"role": "user", "content": row["question"]}],
         }
+
+
+class MathPythonTaskset(vf.Taskset[MathPythonTasksetConfig]):
+    _default_source = source
+    _default_rewards = (correct_answer,)
+
+
+class MathPythonHarness(vf.Harness[MathPythonHarnessConfig]):
+    pass
 
 
 def load_toolset(
@@ -176,14 +176,31 @@ def load_toolset(
 
 def load_taskset(
     config: MathPythonTasksetConfig = MathPythonTasksetConfig(),
-) -> vf.Taskset:
-    return vf.Taskset(config=config)
+) -> MathPythonTaskset:
+    return MathPythonTaskset(config=config)
 
 
 def load_harness(
     config: MathPythonHarnessConfig = MathPythonHarnessConfig(),
-) -> vf.Harness:
-    return vf.Harness(config=config)
+) -> MathPythonHarness:
+    harness = MathPythonHarness(config=config)
+    if "toolsets" not in harness.config.model_fields_set:
+        harness.add_toolset(
+            {
+                "python": load_toolset(
+                    pip_install_packages=config.pip_install_packages,
+                    sandbox_cpu_cores=config.sandbox_cpu_cores,
+                    sandbox_memory_gb=config.sandbox_memory_gb,
+                    sandbox_disk_size_gb=config.sandbox_disk_size_gb,
+                    sandbox_gpu_count=config.sandbox_gpu_count,
+                    sandbox_timeout_minutes=config.sandbox_timeout_minutes,
+                    sandbox_timeout_per_command_seconds=(
+                        config.sandbox_timeout_per_command_seconds
+                    ),
+                )
+            }
+        )
+    return harness
 
 
 def load_v1_environment(

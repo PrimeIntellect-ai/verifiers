@@ -74,24 +74,15 @@ def load_toolset():
 
 
 class SubagentTasksetConfig(vf.TasksetConfig):
-    source: str = f"{__name__}:source"
     system_prompt: str = (
         "You are a parent coordinator. You must call ask_subagent once for "
         "each requested name. After all tool results are available, join "
         "the child answers with ', ' and output only that final joined text."
     )
-    rewards: list[vf.CallableConfig] = [
-        vf.CallableConfig(fn=f"{__name__}:exact_answer", weight=1.0)
-    ]
 
 
 class SubagentHarnessConfig(vf.HarnessConfig):
-    toolsets: dict[str, dict[str, str]] = {
-        "subagent": {"fn": f"{__name__}:load_toolset"}
-    }
-    metrics: list[vf.CallableConfig] = [
-        vf.CallableConfig(fn=f"{__name__}:subagent_calls")
-    ]
+    pass
 
 
 class SubagentEnvConfig(vf.EnvConfig):
@@ -99,12 +90,22 @@ class SubagentEnvConfig(vf.EnvConfig):
     harness: SubagentHarnessConfig = SubagentHarnessConfig()
 
 
+class SubagentTaskset(vf.Taskset[SubagentTasksetConfig]):
+    _default_source = source
+    _default_rewards = (exact_answer,)
+
+
+class SubagentHarness(vf.Harness[SubagentHarnessConfig]):
+    _default_toolsets = {"subagent": load_toolset}
+    _default_metrics = (subagent_calls,)
+
+
 def load_taskset(config: SubagentTasksetConfig = SubagentTasksetConfig()):
-    return vf.Taskset(config=config)
+    return SubagentTaskset(config=config)
 
 
 def load_harness(config: SubagentHarnessConfig = SubagentHarnessConfig()):
-    return vf.Harness(config=config)
+    return SubagentHarness(config=config)
 
 
 def load_environment(config: SubagentEnvConfig = SubagentEnvConfig()):

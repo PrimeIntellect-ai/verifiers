@@ -700,12 +700,11 @@ async def reward_fn(task, state) -> float:
 
 class MyTasksetConfig(vf.TasksetConfig):
     split: str = "train"
-    rewards: list[vf.CallableConfig] = [
-        vf.CallableConfig(fn=f"{__name__}:reward_fn")
-    ]
 
 
 class MyTaskset(vf.Taskset[MyTasksetConfig]):
+    _default_rewards = (reward_fn,)
+
     def rows(self) -> list[dict[str, object]]:
         rows = [
             {

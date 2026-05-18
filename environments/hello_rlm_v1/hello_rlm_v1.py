@@ -53,14 +53,16 @@ def source():
 
 
 class HelloRLMTasksetConfig(vf.TasksetConfig):
-    source: str = f"{__name__}:source"
-    rewards: list[vf.CallableConfig] = [
-        vf.CallableConfig(fn=f"{__name__}:exact_answer", weight=1.0)
-    ]
+    pass
+
+
+class HelloRLMTaskset(vf.Taskset[HelloRLMTasksetConfig]):
+    _default_source = source
+    _default_rewards = (exact_answer,)
 
 
 def load_taskset(config: HelloRLMTasksetConfig = HelloRLMTasksetConfig()):
-    return vf.Taskset(config=config)
+    return HelloRLMTaskset(config=config)
 
 
 def load_harness(config: vf.RLMConfig = vf.RLMConfig()):

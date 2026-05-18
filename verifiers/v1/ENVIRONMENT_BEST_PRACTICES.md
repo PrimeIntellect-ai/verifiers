@@ -104,14 +104,18 @@ Use this when the taskset owns the environment and the base harness is enough.
 import verifiers as vf
 
 
+@vf.reward(weight=1.0)
+async def exact(task, state) -> float:
+    return float(state.get("answer") == task["answer"])
+
+
 class MyTasksetConfig(vf.TasksetConfig):
     split: str = "train"
-    rewards: list[vf.CallableConfig] = [
-        vf.CallableConfig(fn="my_env.rewards:exact")
-    ]
 
 
 class MyTaskset(vf.Taskset[MyTasksetConfig]):
+    _default_rewards = (exact,)
+
     def rows(self) -> list[dict[str, object]]:
         rows = [
             {
@@ -147,6 +151,10 @@ Use this when the harness owns a reusable execution mechanism or config surface.
 import verifiers as vf
 
 
+async def run(task, state) -> vf.State:
+    return state
+
+
 class MyTasksetConfig(vf.TasksetConfig):
     split: str = "train"
 
@@ -164,8 +172,11 @@ class MyTaskset(vf.Taskset[MyTasksetConfig]):
 
 
 class MyHarnessConfig(vf.HarnessConfig):
-    program: vf.ProgramConfig = vf.ProgramConfig(fn="my_env.programs:run")
     timeout_seconds: int = 120
+
+
+class MyHarness(vf.Harness[MyHarnessConfig]):
+    _default_program = run
 
 
 class MyEnvConfig(vf.EnvConfig):
@@ -178,7 +189,7 @@ def load_taskset(config: MyTasksetConfig = MyTasksetConfig()) -> vf.Taskset:
 
 
 def load_harness(config: MyHarnessConfig = MyHarnessConfig()) -> vf.Harness:
-    return vf.Harness(config=config)
+    return MyHarness(config=config)
 
 
 def load_environment(config: MyEnvConfig = MyEnvConfig()) -> vf.Env:

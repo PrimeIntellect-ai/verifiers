@@ -258,23 +258,14 @@ def load_toolset(
 
 
 class WikiSearchTasksetConfig(vf.TasksetConfig):
-    source: str = f"{__name__}:source"
     system_prompt: str = SYSTEM_PROMPT
-    rewards: list[vf.CallableConfig] = [
-        vf.CallableConfig(fn=f"{__name__}:judge_reward_func")
-    ]
-    toolsets: dict[str, dict[str, str]] = {
-        "wiki": {
-            "fn": f"{__name__}:load_toolset",
-            "corpus_dataset": "willcb/rare-wiki-pages",
-            "corpus_split": "train",
-            "chroma_db_dir": CHROMA_DB_DIR,
-            "embed_model": "text-embedding-3-small",
-            "embed_base_url": "https://api.openai.com/v1",
-            "embed_api_key_var": "OPENAI_API_KEY",
-        }
-    }
     max_turns: int = 10
+    corpus_dataset: str = "willcb/rare-wiki-pages"
+    corpus_split: str = "train"
+    chroma_db_dir: str = CHROMA_DB_DIR
+    embed_model: str = "text-embedding-3-small"
+    embed_base_url: str = "https://api.openai.com/v1"
+    embed_api_key_var: str = "OPENAI_API_KEY"
     judge_model: str = "gpt-4.1-mini"
     judge_base_url: str = "https://api.openai.com/v1"
     judge_api_key_var: str = "OPENAI_API_KEY"
@@ -285,10 +276,28 @@ class WikiSearchEnvConfig(vf.EnvConfig):
     harness: vf.HarnessConfig = vf.HarnessConfig()
 
 
+class WikiSearchTaskset(vf.Taskset[WikiSearchTasksetConfig]):
+    _default_source = source
+    _default_rewards = (judge_reward_func,)
+
+
 def load_taskset(
     config: WikiSearchTasksetConfig = WikiSearchTasksetConfig(),
-) -> vf.Taskset:
-    return vf.Taskset(config=config)
+) -> WikiSearchTaskset:
+    taskset = WikiSearchTaskset(config=config)
+    taskset.add_toolset(
+        {
+            "wiki": load_toolset(
+                corpus_dataset=config.corpus_dataset,
+                corpus_split=config.corpus_split,
+                chroma_db_dir=config.chroma_db_dir,
+                embed_model=config.embed_model,
+                embed_base_url=config.embed_base_url,
+                embed_api_key_var=config.embed_api_key_var,
+            )
+        }
+    )
+    return taskset
 
 
 def load_v1_environment(

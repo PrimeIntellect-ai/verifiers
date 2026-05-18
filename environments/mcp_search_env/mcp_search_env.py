@@ -73,11 +73,7 @@ DEFAULT_MCP_SERVERS: list[vf.ConfigData] = [
 
 
 class MCPSearchTasksetConfig(vf.TasksetConfig):
-    source: str = f"{__name__}:source"
     system_prompt: str = SYSTEM_PROMPT
-    rewards: list[vf.CallableConfig] = [
-        vf.CallableConfig(fn=f"{__name__}:exact_title_reward")
-    ]
     mcp_servers: list[vf.ConfigData] = DEFAULT_MCP_SERVERS
     max_turns: int = 6
     examples: list[vf.ConfigData] = DEFAULT_EXAMPLES
@@ -136,6 +132,10 @@ async def exact_title_reward(task: vf.Task, state: vf.State) -> float:
     )
     response = str(messages[-1].content or "") if messages else ""
     return float(str(task["answer"]).lower() in response.lower())
+
+
+MCPSearchTaskset._default_source = source
+MCPSearchTaskset._default_rewards = (exact_title_reward,)
 
 
 def load_toolset(
