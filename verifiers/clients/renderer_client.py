@@ -95,6 +95,7 @@ _DEFAULT_POOL_SIZE = 1
 
 _TTT_CONTROL_KEYS = {
     "ttt_enabled",
+    "ttt_windowing_enabled",
     "ttt_learner_url",
     "ttt_request_timeout_s",
     "ttt_window_seq_len",
@@ -807,8 +808,14 @@ class RendererClient(
             sampling_params["prompt_logprobs"] = 1
         ttt_options = _pop_ttt_options(sampling_params)
         ttt_enabled = bool(ttt_options.get("ttt_enabled"))
+        ttt_windowing_enabled = bool(
+            ttt_enabled or ttt_options.get("ttt_windowing_enabled")
+        )
         tool_output_training_enabled = bool(
             ttt_options.get("tool_output_training_enabled")
+        )
+        needs_exact_prompt_ids = (
+            ttt_windowing_enabled or tool_output_training_enabled
         )
 
         bridged = await _get_incremental_prompt_ids(
@@ -825,8 +832,11 @@ class RendererClient(
         if bridged is not None:
             prompt_ids: list[int] | None = list(bridged.token_ids)
             multi_modal_data = bridged.multi_modal_data
-        elif ttt_enabled or tool_output_training_enabled:
-            if ttt_options.get("ttt_require_exact_token_ids"):
+        elif needs_exact_prompt_ids:
+            if (
+                ttt_windowing_enabled
+                and ttt_options.get("ttt_require_exact_token_ids")
+            ):
                 trajectory = _state_get(kwargs.get("state"), "trajectory", []) or []
                 if trajectory:
                     raise ValueError(
@@ -843,7 +853,7 @@ class RendererClient(
         model_for_generation = model
         cache_salt = args.get("cache_salt") or sampling_params.pop("cache_salt", None)
         prompt_tool_output_train_mask: list[bool] | None = None
-        if ttt_enabled or tool_output_training_enabled:
+        if needs_exact_prompt_ids:
             if ttt_enabled and not ttt_options.get("ttt_learner_url"):
                 raise ValueError(
                     "TTT renderer mode requires ttt_learner_url in sampling_args.extra_body."

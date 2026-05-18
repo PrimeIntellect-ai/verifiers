@@ -348,21 +348,14 @@ class _TTTHTTPClient:
                 {
                     "adapter_name": "adapter-turn",
                     "adapter_path": "/tmp/adapter-turn",
-                    "adapter_kind": "combined",
+                    "adapter_kind": "snapshot",
                     "base_step": 3,
                     "version": json["turn_idx"],
+                    "session_id": json["session_id"],
                 }
             )
         if url.endswith("/complete_turn"):
-            return _TTTHTTPResponse(
-                {
-                    "final_prompt_adapter": {
-                        "adapter_name": "final-prompt",
-                        "adapter_path": "/tmp/final-prompt",
-                        "adapter_kind": "final_prompt",
-                    }
-                }
-            )
+            return _TTTHTTPResponse({"status": "ok", "version": json.get("prepare_version")})
         raise AssertionError(url)
 
 
@@ -376,10 +369,6 @@ def _ttt_sampling_args():
             "ttt_window_seq_len": 8,
             "ttt_request_timeout_s": 1.0,
             "ttt_require_exact_token_ids": True,
-            "ttt_train_prompt_lora": True,
-            "ttt_train_completion_lora": True,
-            "ttt_completion_lora_trains_initial_prompt": True,
-            "ttt_prompt_lora_trains_environment_responses": True,
             "ttt_cache_salt_includes_adapter": True,
             "cache_salt": "base",
         },
@@ -387,7 +376,7 @@ def _ttt_sampling_args():
 
 
 @pytest.mark.asyncio
-async def test_renderer_client_ttt_routes_initial_prompt_to_completion_lora(
+async def test_renderer_client_ttt_appends_initial_prompt_tokens(
     monkeypatch,
 ):
     _TTTHTTPClient.calls = []
@@ -406,7 +395,14 @@ async def test_renderer_client_ttt_routes_initial_prompt_to_completion_lora(
         assert kwargs["model"] == "adapter-turn"
         assert kwargs["prompt_ids"] == [10, 11, 12, 13]
         assert kwargs["cache_salt"] == "base:adapter-turn"
-        assert "ttt_enabled" not in kwargs["sampling_params"]
+        assert {
+            "ttt_enabled",
+            "ttt_learner_url",
+            "ttt_window_seq_len",
+            "ttt_request_timeout_s",
+            "ttt_require_exact_token_ids",
+            "ttt_cache_salt_includes_adapter",
+        }.isdisjoint(kwargs["sampling_params"])
         return {
             "request_id": "r",
             "content": "ok",
@@ -430,15 +426,75 @@ async def test_renderer_client_ttt_routes_initial_prompt_to_completion_lora(
     )
 
     prepare_call, complete_call = _TTTHTTPClient.calls
-    assert prepare_call[1]["token_role"] == "completion_initial_prompt"
-    assert prepare_call[1]["new_prompt_ids"] == [11, 12]
+    assert prepare_call[1]["new_token_ids"] == [10, 11, 12, 13]
+    assert prepare_call[1]["prompt_ids"] == [10, 11, 12, 13]
     assert complete_call[1]["completion_ids"] == [21, 22]
+    assert complete_call[1]["adapter_name"] == "adapter-turn"
     assert state["ttt_trace"][0]["adapter_path"] == "/tmp/adapter-turn"
-    assert state["ttt_final_prompt_adapter"]["adapter_path"] == "/tmp/final-prompt"
+    assert state["ttt_trace"][0]["session_id"] == "traj-1"
 
 
 @pytest.mark.asyncio
-async def test_renderer_client_ttt_routes_bridged_tool_tokens_to_prompt_lora(
+async def test_renderer_client_sliding_window_only_windows_prompt_without_ttt_learner(
+    monkeypatch,
+):
+    _TTTHTTPClient.calls = []
+    renderer = _TTTRenderer(
+        RenderedTokens(
+            token_ids=[10, 11, 12, 13, 14],
+            message_indices=[0, 1, 1, 1, -1],
+            content_mask=[False, True, True, True, False],
+        )
+    )
+    client = object.__new__(RendererClient)
+    client.client = object()
+    client._renderer = renderer
+
+    async def fake_generate(**kwargs):
+        assert kwargs["model"] == "base-model"
+        assert kwargs["prompt_ids"] == [13, 14]
+        assert {
+            "ttt_enabled",
+            "ttt_windowing_enabled",
+            "ttt_learner_url",
+            "ttt_window_seq_len",
+            "ttt_request_timeout_s",
+            "ttt_require_exact_token_ids",
+            "ttt_cache_salt_includes_adapter",
+        }.isdisjoint(kwargs["sampling_params"])
+        return {
+            "request_id": "r",
+            "content": "ok",
+            "finish_reason": "stop",
+            "prompt_ids": kwargs["prompt_ids"],
+            "completion_ids": [21, 22],
+            "completion_logprobs": [-0.1, -0.2],
+        }
+
+    monkeypatch.setattr(
+        "verifiers.clients.renderer_client.httpx.AsyncClient", _TTTHTTPClient
+    )
+    monkeypatch.setattr("verifiers.clients.renderer_client.generate", fake_generate)
+
+    state = {"trajectory_id": "traj-window-only", "trajectory": []}
+    sampling_args = _ttt_sampling_args()
+    sampling_args["extra_body"]["ttt_enabled"] = False
+    sampling_args["extra_body"]["ttt_windowing_enabled"] = True
+    sampling_args["extra_body"].pop("ttt_learner_url")
+
+    await client.get_native_response(
+        [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}],
+        "base-model",
+        sampling_args,
+        state=state,
+    )
+
+    assert _TTTHTTPClient.calls == []
+    assert "ttt_trace" not in state
+
+
+@pytest.mark.asyncio
+async def test_renderer_client_ttt_appends_bridged_prompt_tokens(
     monkeypatch,
 ):
     _TTTHTTPClient.calls = []
@@ -492,12 +548,11 @@ async def test_renderer_client_ttt_routes_bridged_tool_tokens_to_prompt_lora(
     )
 
     prepare_call = _TTTHTTPClient.calls[0]
-    assert prepare_call[1]["token_role"] == "prompt_environment"
-    assert prepare_call[1]["new_prompt_ids"] == [41]
+    assert prepare_call[1]["new_token_ids"] == [40, 41, 42]
 
 
 @pytest.mark.asyncio
-async def test_renderer_client_ttt_filters_tool_outputs_by_name(monkeypatch):
+async def test_renderer_client_tool_output_training_filters_tool_outputs_by_name(monkeypatch):
     _TTTHTTPClient.calls = []
     rendered = RenderedTokens(
         token_ids=[1, 2, 3, 40, 41, 50, 51, 42],
@@ -537,8 +592,9 @@ async def test_renderer_client_ttt_filters_tool_outputs_by_name(monkeypatch):
         ],
     }
     sampling_args = _ttt_sampling_args()
-    sampling_args["extra_body"]["ttt_tool_output_train_names"] = ["lookup"]
-    await client.get_native_response(
+    sampling_args["extra_body"]["tool_output_training_enabled"] = True
+    sampling_args["extra_body"]["tool_output_train_names"] = ["lookup"]
+    response = await client.get_native_response(
         [
             {"role": "system", "content": "s"},
             {"role": "user", "content": "u"},
@@ -556,8 +612,19 @@ async def test_renderer_client_ttt_filters_tool_outputs_by_name(monkeypatch):
     )
 
     prepare_call = _TTTHTTPClient.calls[0]
-    assert prepare_call[1]["token_role"] == "prompt_environment"
-    assert prepare_call[1]["new_prompt_ids"] == [41]
+    assert prepare_call[1]["new_token_ids"] == [40, 41, 50, 51, 42]
+    assert response["prompt_tool_output_train_mask"] == [False, False, False, False, True, False, False, False]
+    assert response["tool_output_train_mask"] == [
+        False,
+        False,
+        False,
+        False,
+        True,
+        False,
+        False,
+        False,
+        False,
+    ]
 
 
 @pytest.mark.asyncio
@@ -574,7 +641,7 @@ async def test_renderer_client_ttt_validates_tool_output_train_names():
     client._renderer = renderer
 
     sampling_args = _ttt_sampling_args()
-    sampling_args["extra_body"]["ttt_tool_output_train_names"] = ["missing"]
+    sampling_args["extra_body"]["tool_output_train_names"] = ["missing"]
     state = {"trajectory_id": "traj-invalid-tools", "trajectory": []}
     with pytest.raises(ValueError, match="not available in tools"):
         await client.get_native_response(
