@@ -396,6 +396,20 @@ def _validate_tool_output_train_names(
         )
 
 
+def _tool_call_field(tool_call: Any, field: str, default: Any = None) -> Any:
+    if isinstance(tool_call, Mapping):
+        return tool_call.get(field, default)
+    return getattr(tool_call, field, default)
+
+
+def _tool_call_function_field(tool_call: Any, field: str, default: Any = None) -> Any:
+    function = _tool_call_field(tool_call, "function")
+    if isinstance(function, Mapping):
+        return function.get(field, default)
+    value = _tool_call_field(tool_call, field, default)
+    return value
+
+
 def _state_get(state: Any, key: str, default: Any = None) -> Any:
     if state is None:
         return default
@@ -983,18 +997,27 @@ class RendererClient(
         tool_calls = None
         raw_tcs = response.get("tool_calls")
         if raw_tcs:
-            tool_calls = [
-                ToolCall(
-                    id=f"call_{i}",
-                    name=tc["function"]["name"],
-                    arguments=(
-                        tc["function"]["arguments"]
-                        if isinstance(tc["function"]["arguments"], str)
-                        else json.dumps(tc["function"]["arguments"])
-                    ),
+            tool_calls = []
+            for i, tc in enumerate(raw_tcs):
+                status = _tool_call_field(tc, "status")
+                status_value = getattr(status, "value", status)
+                if status_value not in (None, "ok"):
+                    continue
+                name = _tool_call_function_field(tc, "name")
+                if not name:
+                    continue
+                arguments = _tool_call_function_field(tc, "arguments")
+                tool_calls.append(
+                    ToolCall(
+                        id=_tool_call_field(tc, "id") or f"call_{i}",
+                        name=str(name),
+                        arguments=arguments
+                        if isinstance(arguments, str)
+                        else json.dumps(arguments),
+                    )
                 )
-                for i, tc in enumerate(raw_tcs)
-            ]
+            if not tool_calls:
+                tool_calls = None
 
         prompt_ids = response.get("prompt_ids", [])
         completion_ids = response.get("completion_ids", [])

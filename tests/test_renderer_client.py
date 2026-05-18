@@ -5,7 +5,13 @@ import pytest
 
 import verifiers as vf
 from renderers import RendererPool
-from renderers.base import ParsedResponse, RenderedTokens, create_renderer
+from renderers.base import (
+    ParsedResponse,
+    ParsedToolCall,
+    RenderedTokens,
+    ToolCallParseStatus,
+    create_renderer,
+)
 from verifiers.clients.renderer_client import (
     RendererClient,
     _attach_tool_call_names,
@@ -231,6 +237,31 @@ async def test_from_native_response_uses_request_id_and_token_lengths():
     assert response.usage.prompt_tokens == 3
     assert response.usage.completion_tokens == 2
     assert response.usage.total_tokens == 5
+
+
+@pytest.mark.asyncio
+async def test_from_native_response_accepts_renderer_parsed_tool_calls():
+    client = object.__new__(RendererClient)
+    response_dict = {
+        "request_id": "resp-tool",
+        "content": "",
+        "reasoning_content": None,
+        "tool_calls": [
+            ParsedToolCall(raw='{"name":"lookup"}', name="lookup", arguments={"q": "x"}),
+            ParsedToolCall(raw="{bad", status=ToolCallParseStatus.INVALID_JSON),
+        ],
+        "finish_reason": "tool_calls",
+        "prompt_ids": [1],
+        "completion_ids": [2],
+        "completion_logprobs": [-0.1],
+    }
+
+    response = await client.from_native_response(response_dict)
+
+    assert response.message.tool_calls is not None
+    assert len(response.message.tool_calls) == 1
+    assert response.message.tool_calls[0].name == "lookup"
+    assert response.message.tool_calls[0].arguments == '{"q": "x"}'
 
 
 class _BridgeRenderer:
