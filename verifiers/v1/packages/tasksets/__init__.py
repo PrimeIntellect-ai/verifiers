@@ -1,3 +1,3 @@
-from .harbor import HarborTaskset, HarborTasksetConfig
+from .harbor import HarborTaskset, HarborTasksetConfig, parse_harbor_dockerfile
 
-__all__ = ["HarborTaskset", "HarborTasksetConfig"]
+__all__ = ["HarborTaskset", "HarborTasksetConfig", "parse_harbor_dockerfile"]

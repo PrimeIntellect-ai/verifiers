@@ -63,6 +63,7 @@ from .taskset import Taskset, discover_sibling_dir
 from .packages.tasksets import (
     HarborTaskset,
     HarborTasksetConfig,
+    parse_harbor_dockerfile,
 )
 from .toolset import MCPTool, Toolset
 from .types import (
@@ -133,6 +134,7 @@ __all__ = [
     "collect_signals",
     "discover_sibling_dir",
     "metric",
+    "parse_harbor_dockerfile",
     "get_messages",
     "reward",
     "score_group",

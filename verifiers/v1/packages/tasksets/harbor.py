@@ -1,7 +1,9 @@
 import inspect
 import json
 import os
+import posixpath
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -21,6 +23,7 @@ from verifiers.decorators import reward
 from ...types import ConfigData
 
 TASKS_SUBDIR = "tasks"
+HARBOR_BUILD_CONTEXT = "/tmp/harbor_environment"
 
 
 def _resolve_caller_package() -> str | None:
@@ -134,6 +137,8 @@ class HarborTaskset(Taskset[HarborTasksetConfig]):
     def task_row(self, task_dir: Path, index: int) -> ConfigData:
         task_toml_path = task_dir / "task.toml"
         instruction_path = task_dir / "instruction.md"
+        environment_dir = task_dir / "environment"
+        dockerfile_path = environment_dir / "Dockerfile"
         with task_toml_path.open("rb") as f:
             config = load_toml(f)
         environment = config.get("environment", {}) or {}
@@ -143,8 +148,15 @@ class HarborTaskset(Taskset[HarborTasksetConfig]):
         verifier_config = config.get("verifier", {}) or {}
         instruction = instruction_path.read_text().strip()
         task_remote_dir = self.task_dir.rstrip("/") or "/task"
+        docker_image = environment.get("docker_image") or self.docker_image
+        workdir = self.workdir
+        dockerfile_program: ConfigData | None = None
+        if environment.get("docker_image") is None and dockerfile_path.exists():
+            dockerfile_program = parse_harbor_dockerfile(dockerfile_path)
+            docker_image = dockerfile_program["image"]
+            workdir = str(dockerfile_program["workdir"])
         sandbox = {
-            "image": environment.get("docker_image") or self.docker_image,
+            "image": docker_image,
             "cpu_cores": parse_number(environment.get("cpus"), self.cpu_cores),
             "memory_gb": parse_gb(environment.get("memory"), self.memory_gb),
             "disk_size_gb": parse_gb(environment.get("storage"), self.disk_size_gb),
@@ -154,11 +166,30 @@ class HarborTaskset(Taskset[HarborTasksetConfig]):
                     agent_config.get("timeout_sec"), self.agent_timeout_seconds
                 )
             ),
-            "workdir": self.workdir,
+            "workdir": workdir,
             "scope": self.scope,
         }
         if "allow_internet" in environment:
             sandbox["network_access"] = bool(environment["allow_internet"])
+        program: ConfigData = {
+            "files": {
+                f"{task_remote_dir}/instruction.md": {"task": "instruction"},
+                f"{task_remote_dir}/task.toml": {"task": "task_toml"},
+            },
+            "env": {
+                "HARBOR_TASK_NAME": task_dir.name,
+                "HARBOR_TASK_DIR": task_remote_dir,
+                "HARBOR_INSTRUCTION_PATH": f"{task_remote_dir}/instruction.md",
+                "AGENT_WORKDIR": workdir,
+                **self.env,
+            },
+        }
+        if dockerfile_program is not None:
+            program["dirs"] = {HARBOR_BUILD_CONTEXT: str(environment_dir)}
+            cast(dict[str, str], program["env"]).update(
+                cast(dict[str, str], dockerfile_program["env"])
+            )
+            program["setup"] = dockerfile_program["setup"]
         return {
             "example_id": index,
             "task_name": task_dir.name,
@@ -167,24 +198,12 @@ class HarborTaskset(Taskset[HarborTasksetConfig]):
             "task_dir": str(task_dir),
             "prompt": [{"role": "user", "content": instruction}],
             "sandbox": sandbox,
-            "program": {
-                "files": {
-                    f"{task_remote_dir}/instruction.md": {"task": "instruction"},
-                    f"{task_remote_dir}/task.toml": {"task": "task_toml"},
-                },
-                "env": {
-                    "HARBOR_TASK_NAME": task_dir.name,
-                    "HARBOR_TASK_DIR": task_remote_dir,
-                    "HARBOR_INSTRUCTION_PATH": f"{task_remote_dir}/instruction.md",
-                    "AGENT_WORKDIR": self.workdir,
-                    **self.env,
-                },
-            },
+            "program": program,
             "harbor": {
                 "task_dir": str(task_dir),
                 "task_name": task_dir.name,
                 "config": config,
-                "docker_image": environment.get("docker_image"),
+                "docker_image": docker_image,
                 "test_timeout": parse_number(
                     verifier_config.get("timeout_sec"),
                     self.verifier_timeout_seconds,
@@ -193,10 +212,99 @@ class HarborTaskset(Taskset[HarborTasksetConfig]):
             "info": {
                 "harbor": {
                     "task_name": task_dir.name,
-                    "docker_image": environment.get("docker_image"),
+                    "docker_image": docker_image,
                 }
             },
         }
+
+
+def parse_harbor_dockerfile(
+    dockerfile_path: Path, build_context: str = HARBOR_BUILD_CONTEXT
+) -> ConfigData:
+    image: str | None = None
+    workdir = "/"
+    env: dict[str, str] = {}
+    setup: list[str] = []
+    pending = ""
+
+    for raw_line in dockerfile_path.read_text().splitlines():
+        line = raw_line.rstrip()
+        if not pending and (not line.strip() or line.lstrip().startswith("#")):
+            continue
+        if line.endswith("\\"):
+            pending += line[:-1].rstrip() + " "
+            continue
+        line = (pending + line).strip()
+        pending = ""
+        if not line or line.startswith("#"):
+            continue
+
+        parts = line.split(None, 1)
+        if len(parts) < 2:
+            continue
+        kind, value = parts[0].upper(), parts[1].strip()
+        if kind == "FROM":
+            if image is not None:
+                raise ValueError(
+                    f"{dockerfile_path} uses a multi-stage Dockerfile, which "
+                    "HarborTaskset Dockerfile replay does not support. Set "
+                    "[environment].docker_image to a prebuilt image instead."
+                )
+            image = next(
+                token
+                for token in value.split()
+                if not token.startswith("--") and token.upper() != "AS"
+            )
+        elif kind == "WORKDIR":
+            path = value if value.startswith("/") else posixpath.join(workdir, value)
+            workdir = posixpath.normpath(path)
+            setup.append(f"mkdir -p {shlex.quote(workdir)}")
+        elif kind == "ENV":
+            tokens = shlex.split(value)
+            if tokens and "=" in tokens[0]:
+                for token in tokens:
+                    if "=" in token:
+                        key, _, val = token.partition("=")
+                        env[key] = val
+            elif len(tokens) >= 2:
+                env[tokens[0]] = " ".join(tokens[1:])
+        elif kind == "RUN":
+            setup.append(f"cd {shlex.quote(workdir)} && {value}")
+        elif kind in {"COPY", "ADD"}:
+            tokens = json.loads(value) if value.startswith("[") else shlex.split(value)
+            if any(str(token).startswith("--from") for token in tokens):
+                continue
+            paths = [str(token) for token in tokens if not str(token).startswith("--")]
+            if len(paths) < 2:
+                continue
+            target = paths[-1]
+            if not target.startswith("/"):
+                target = posixpath.normpath(posixpath.join(workdir, target))
+            for source in paths[:-1]:
+                source = source[2:] if source.startswith("./") else source.lstrip("/")
+                local_source = dockerfile_path.parent / source.rstrip("/")
+                copy_contents = (
+                    source in {"", "."} or source.endswith("/") or local_source.is_dir()
+                )
+                source_path = (
+                    build_context
+                    if source in {"", "."}
+                    else f"{build_context}/{source.rstrip('/')}"
+                )
+                if copy_contents:
+                    source_path = f"{source_path}/."
+                mkdir_path = (
+                    target
+                    if copy_contents or target.endswith("/") or len(paths) > 2
+                    else posixpath.dirname(target)
+                )
+                setup.append(
+                    f"mkdir -p {shlex.quote(mkdir_path)} && "
+                    f"cp -R {shlex.quote(source_path)} {shlex.quote(target)}"
+                )
+    if image is None:
+        raise ValueError(f"{dockerfile_path} must contain a FROM instruction.")
+    return {"image": image, "workdir": workdir, "env": env, "setup": setup}
 
 
 def harbor_task_dirs(root: Path, task_names: Iterable[str] | None = None) -> list[Path]:

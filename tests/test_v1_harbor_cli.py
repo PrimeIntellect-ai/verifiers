@@ -19,7 +19,11 @@ from verifiers.v1.packages.harnesses.terminus_2 import (
     Terminus2,
     terminus_2_agent_script,
 )
-from verifiers.v1.packages.tasksets.harbor import harbor_reward
+from verifiers.v1.packages.tasksets.harbor import (
+    HARBOR_BUILD_CONTEXT,
+    harbor_reward,
+    parse_harbor_dockerfile,
+)
 from verifiers.v1.utils.program_utils import merge_task_program, merge_task_sandbox
 
 
@@ -107,6 +111,136 @@ def test_harbor_taskset_loads_package_tasks_with_program_patch(
     }
     assert task["program"]["env"]["HARBOR_TASK_NAME"] == "task-a"
     assert task["program"]["env"]["AGENT_WORKDIR"] == "/app"
+
+
+def test_harbor_taskset_replays_environment_dockerfile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package = write_harbor_package(tmp_path, monkeypatch)
+    task_dir = cast(Path, getattr(package, "tasks_root")) / "docker-task"
+    environment_dir = task_dir / "environment"
+    (environment_dir / "data").mkdir(parents=True)
+    (task_dir / "tests").mkdir(parents=True)
+    (task_dir / "solution").mkdir()
+    (task_dir / "instruction.md").write_text("Inspect /workspace/data/value.txt\n")
+    (task_dir / "task.toml").write_text(
+        """
+version = "1.0"
+
+[environment]
+cpus = 1
+memory = "2G"
+storage = "8G"
+
+[agent]
+timeout_sec = 600
+
+[verifier]
+timeout_sec = 300
+""".strip()
+    )
+    (environment_dir / "Dockerfile").write_text(
+        """
+FROM python:3.13-slim-bookworm
+ENV FOO=bar BAZ=qux
+WORKDIR /workspace
+COPY data /workspace/data
+RUN python3 -m compileall .
+""".strip()
+    )
+    (environment_dir / "data" / "value.txt").write_text("42")
+    (task_dir / "tests" / "test.sh").write_text("echo 1 > /logs/verifier/reward.txt")
+    (task_dir / "solution" / "solve.sh").write_text("true")
+
+    taskset = getattr(package, "load_taskset")()
+    task = next(iter(taskset))
+    program = cast(dict[str, object], task["program"])
+
+    assert task["sandbox"]["image"] == "python:3.13-slim-bookworm"
+    assert task["sandbox"]["workdir"] == "/workspace"
+    assert cast(dict[str, object], program["dirs"]) == {
+        HARBOR_BUILD_CONTEXT: str(environment_dir)
+    }
+    assert cast(dict[str, str], program["env"])["FOO"] == "bar"
+    assert cast(dict[str, str], program["env"])["AGENT_WORKDIR"] == "/workspace"
+    assert program["setup"] == [
+        "mkdir -p /workspace",
+        f"mkdir -p /workspace/data && "
+        f"cp -R {HARBOR_BUILD_CONTEXT}/data/. /workspace/data",
+        "cd /workspace && python3 -m compileall .",
+    ]
+
+
+def test_harbor_dockerfile_copy_dot_copies_context_contents(tmp_path: Path) -> None:
+    environment_dir = tmp_path / "environment"
+    environment_dir.mkdir()
+    dockerfile = environment_dir / "Dockerfile"
+    dockerfile.write_text(
+        """
+FROM ubuntu:24.04
+WORKDIR /app
+COPY . .
+""".strip()
+    )
+
+    program = parse_harbor_dockerfile(dockerfile)
+
+    assert program["setup"] == [
+        "mkdir -p /app",
+        f"mkdir -p /app && cp -R {HARBOR_BUILD_CONTEXT}/. /app",
+    ]
+
+
+def test_harbor_dockerfile_keeps_legacy_env_value_words(tmp_path: Path) -> None:
+    environment_dir = tmp_path / "environment"
+    environment_dir.mkdir()
+    dockerfile = environment_dir / "Dockerfile"
+    dockerfile.write_text(
+        """
+FROM ubuntu:24.04
+ENV GREETING hello beautiful world
+""".strip()
+    )
+
+    program = parse_harbor_dockerfile(dockerfile)
+
+    assert program["env"] == {"GREETING": "hello beautiful world"}
+
+
+def test_harbor_dockerfile_ignores_comment_continuations(tmp_path: Path) -> None:
+    environment_dir = tmp_path / "environment"
+    environment_dir.mkdir()
+    dockerfile = environment_dir / "Dockerfile"
+    dockerfile.write_text(
+        """
+# comment with trailing slash \\
+FROM ubuntu:24.04
+WORKDIR /app
+RUN echo ok
+""".strip()
+    )
+
+    program = parse_harbor_dockerfile(dockerfile)
+
+    assert program["image"] == "ubuntu:24.04"
+    assert program["setup"] == ["mkdir -p /app", "cd /app && echo ok"]
+
+
+def test_harbor_dockerfile_rejects_multi_stage_builds(tmp_path: Path) -> None:
+    environment_dir = tmp_path / "environment"
+    environment_dir.mkdir()
+    dockerfile = environment_dir / "Dockerfile"
+    dockerfile.write_text(
+        """
+FROM alpine:3.20 AS builder
+RUN touch /built
+FROM ubuntu:24.04
+COPY --from=builder /built /built
+""".strip()
+    )
+
+    with pytest.raises(ValueError, match="multi-stage Dockerfile.*does not support"):
+        parse_harbor_dockerfile(dockerfile)
 
 
 def test_harbor_taskset_rejects_malformed_package_task(
