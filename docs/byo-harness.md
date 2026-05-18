@@ -427,7 +427,7 @@ class ReplayEnvConfig(vf.EnvConfig):
 def load_environment(config: ReplayEnvConfig = ReplayEnvConfig()):
     return vf.Env(
         taskset=ReplayTaskset(config=config.taskset),
-        harness=vf.Harness(config=config.harness),
+        harness=ReplayHarness(config=config.harness),
     )
 ```
 
