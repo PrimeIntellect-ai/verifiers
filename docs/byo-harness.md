@@ -300,11 +300,7 @@ back to the taskset, then let the harness adapt the resolved callables.
 MCP servers are also tools:
 
 ```python
-class FetchTasksetConfig(vf.TasksetConfig):
-    pass
-
-
-class FetchTaskset(vf.Taskset[FetchTasksetConfig]):
+class FetchTaskset(vf.Taskset):
     _default_toolsets = (
         {
             "tools": [
@@ -313,16 +309,7 @@ class FetchTaskset(vf.Taskset[FetchTasksetConfig]):
         },
     )
 
-    def rows(self) -> list[dict[str, object]]:
-        return [
-            {
-                "prompt": [{"role": "user", "content": "Fetch example.com."}],
-                "answer": "example",
-            }
-        ]
-
-
-taskset = FetchTaskset(config=FetchTasksetConfig())
+taskset = FetchTaskset()
 ```
 
 ## Harnesses
@@ -340,7 +327,7 @@ class AgentHarness(vf.Harness[AgentHarnessConfig]):
 
 
 class AgentEnvConfig(vf.EnvConfig):
-    taskset: FetchTasksetConfig = FetchTasksetConfig()
+    taskset: vf.TasksetConfig = vf.TasksetConfig()
     harness: AgentHarnessConfig = AgentHarnessConfig()
 
 
@@ -413,16 +400,10 @@ class ReplayHarness(vf.Harness[ReplayHarnessConfig]):
     _default_program = replay_solution
 
 
-class ReplayEnvConfig(vf.EnvConfig):
-    taskset: ReplayTasksetConfig = ReplayTasksetConfig()
-    harness: ReplayHarnessConfig = ReplayHarnessConfig()
-
-
-def load_environment(config: ReplayEnvConfig = ReplayEnvConfig()):
-    return vf.Env(
-        taskset=ReplayTaskset(config=config.taskset),
-        harness=ReplayHarness(config=config.harness),
-    )
+env = vf.Env(
+    taskset=ReplayTaskset(config=ReplayTasksetConfig()),
+    harness=ReplayHarness(config=ReplayHarnessConfig()),
+)
 ```
 
 Use this for cached completions, deterministic solvers, and gold-solution
@@ -577,18 +558,6 @@ split = "train"
 [env.taskset.toolsets.search]
 tools = ["my_env.tools:search"]
 bindings = { "search.index" = "objects.index" }
-```
-
-Taskset and harness sections can import a base config with `config` and then
-overlay local fields. Collection fields extend the imported config.
-
-```toml
-[env.harness]
-config = "my_env.configs:load_another_harness_config"
-
-[[env.harness.rewards]]
-fn = "my_env.rewards:new_reward_func"
-weight = 0
 ```
 
 Callable config uses `fn = "module:callable"` when metadata is needed:

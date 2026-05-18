@@ -437,9 +437,10 @@ class ReplayHarness(vf.Harness[vf.HarnessConfig]):
     _default_program = replay_solution
 
 
-taskset = ReplayTaskset(config=ReplayTasksetConfig())
-harness = ReplayHarness()
-env = vf.Env(taskset=taskset, harness=harness)
+env = vf.Env(
+    taskset=ReplayTaskset(config=ReplayTasksetConfig()),
+    harness=ReplayHarness(),
+)
 ```
 
 This is the preferred shape for "solve without inference" flows. Use a custom
@@ -705,26 +706,14 @@ whitelist or blacklist that toolset's nested tool surface.
 Tasksets and harnesses can pass toolsets as a list or a mapping:
 
 ```python
-class WikiTasksetConfig(vf.TasksetConfig):
-    pass
-
-
-class WikiTaskset(vf.Taskset[WikiTasksetConfig]):
+class WikiTaskset(vf.Taskset):
     _default_toolsets = {
         "wiki": {"fn": "my_env:load_wiki_toolset"},
         "python": {"tools": ["my_env:python"]},
     }
 
-    def rows(self) -> list[dict[str, object]]:
-        return [
-            {
-                "prompt": [{"role": "user", "content": "Use the wiki."}],
-                "answer": "example",
-            }
-        ]
 
-
-taskset = WikiTaskset(config=WikiTasksetConfig())
+taskset = WikiTaskset()
 ```
 
 Mapped toolsets are still active by default, but their keys become task-level
@@ -1283,18 +1272,6 @@ split = "train"
 
 [env.taskset.scoring.exact_answer]
 weight = 1.0
-```
-
-Taskset and harness sections can import a base config with `config` and then
-overlay local fields. Collection fields extend the imported config.
-
-```toml
-[env.harness]
-config = "my_env.configs:load_another_harness_config"
-
-[[env.harness.rewards]]
-fn = "my_env.rewards:new_reward_func"
-weight = 0
 ```
 
 The outer runner owns model, endpoint, client, sampling, rollout count, and

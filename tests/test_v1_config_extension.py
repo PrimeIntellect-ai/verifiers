@@ -1373,8 +1373,17 @@ def test_generic_config_binding_is_inferred_and_inherited() -> None:
     class ChildHarness(LocalHarness):
         pass
 
+    class LocalEnvConfig(EnvConfig):
+        taskset: LocalTasksetConfig = LocalTasksetConfig()
+        harness: LocalHarnessConfig = LocalHarnessConfig()
+
     taskset = LocalTaskset(config={"split": "test"})
     harness = ChildHarness(config={"mode": "custom"})
+    env = Env.from_config(
+        LocalEnvConfig(taskset={"split": "eval"}, harness={"mode": "mapping"}),
+        taskset=LocalTaskset,
+        harness=LocalHarness,
+    )
 
     assert isinstance(taskset.config, LocalTasksetConfig)
     assert taskset.config.split == "test"
@@ -1382,40 +1391,8 @@ def test_generic_config_binding_is_inferred_and_inherited() -> None:
     assert isinstance(harness.config, LocalHarnessConfig)
     assert harness.config.mode == "custom"
     assert "mode" in ChildHarness.config_schema()
-
-
-def test_env_from_config_builds_bound_child_classes() -> None:
-    class LocalTasksetConfig(TasksetConfig):
-        split: str = "train"
-
-    class LocalTaskset(Taskset[LocalTasksetConfig]):
-        pass
-
-    class LocalHarnessConfig(HarnessConfig):
-        mode: str = "default"
-
-    class LocalHarness(Harness[LocalHarnessConfig]):
-        pass
-
-    class LocalEnvConfig(EnvConfig):
-        taskset: LocalTasksetConfig = LocalTasksetConfig()
-        harness: LocalHarnessConfig = LocalHarnessConfig()
-
-    env = Env.from_config(
-        LocalEnvConfig(taskset={"split": "test"}, harness={"mode": "object"}),
-        taskset=LocalTaskset,
-        harness=LocalHarness,
-    )
-    child_mapping_env = Env.from_config(
-        LocalEnvConfig(taskset={"split": "eval"}, harness={"mode": "mapping"}),
-        taskset=LocalTaskset,
-        harness=LocalHarness,
-    )
-
-    assert env.taskset.config.split == "test"
-    assert env.harness.config.mode == "object"
-    assert child_mapping_env.taskset.config.split == "eval"
-    assert child_mapping_env.harness.config.mode == "mapping"
+    assert env.taskset.config.split == "eval"
+    assert env.harness.config.mode == "mapping"
 
 
 def test_config_object_coercion_preserves_child_defaults() -> None:
