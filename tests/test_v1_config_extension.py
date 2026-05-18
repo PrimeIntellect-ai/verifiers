@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from typing import Any, cast
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 import verifiers as vf
 from verifiers.v1 import (
@@ -1418,6 +1418,37 @@ def test_env_config_requires_config_type_for_plain_builders() -> None:
 
     assert env_config.model_fields["taskset"].annotation is LocalTasksetConfig
     assert env_config.model_fields["harness"].annotation is HarnessConfig
+
+
+def test_env_config_allows_required_child_configs() -> None:
+    class RequiredTasksetConfig(TasksetConfig):
+        dataset: str
+
+    class RequiredTaskset(Taskset[RequiredTasksetConfig]):
+        pass
+
+    class RequiredHarnessConfig(HarnessConfig):
+        endpoint: str
+
+    class RequiredHarness(Harness[RequiredHarnessConfig]):
+        pass
+
+    env_config = Env.config(taskset=RequiredTaskset, harness=RequiredHarness)
+
+    assert env_config.model_fields["taskset"].is_required()
+    assert env_config.model_fields["harness"].is_required()
+    with pytest.raises(ValidationError, match="taskset"):
+        env_config()
+
+    env = Env.loader(taskset=RequiredTaskset, harness=RequiredHarness)(
+        config={
+            "taskset": {"dataset": "train"},
+            "harness": {"endpoint": "local"},
+        }
+    )
+
+    assert env.taskset.config.dataset == "train"
+    assert env.harness.config.endpoint == "local"
 
 
 def test_config_object_coercion_preserves_child_defaults() -> None:

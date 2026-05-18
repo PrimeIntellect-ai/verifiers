@@ -11,7 +11,7 @@ from verifiers.types import RolloutInput, SamplingArgs
 from .harness import Harness
 from .state import State
 from .taskset import Taskset
-from .types import ConfigMap
+from .types import ConfigData, ConfigMap
 from .config import EnvConfig, HarnessConfig, TasksetConfig
 
 TasksetBuilder: TypeAlias = type[Taskset] | Callable[..., Taskset]
@@ -59,19 +59,22 @@ class Env(vf.Environment):
             if harness is Harness
             else f"{taskset_name}{harness_name}EnvConfig"
         )
-        return type(
-            name,
-            (EnvConfig,),
-            {
-                "__module__": cls.__module__,
-                "__annotations__": {
-                    "taskset": taskset_config,
-                    "harness": harness_config,
-                },
-                "taskset": taskset_config(),
-                "harness": harness_config(),
+        namespace: ConfigData = {
+            "__module__": cls.__module__,
+            "__annotations__": {
+                "taskset": taskset_config,
+                "harness": harness_config,
             },
-        )
+        }
+        for field_name, config_cls in (
+            ("taskset", taskset_config),
+            ("harness", harness_config),
+        ):
+            if not any(
+                field.is_required() for field in config_cls.model_fields.values()
+            ):
+                namespace[field_name] = config_cls()
+        return type(name, (EnvConfig,), namespace)
 
     @classmethod
     def loader(
