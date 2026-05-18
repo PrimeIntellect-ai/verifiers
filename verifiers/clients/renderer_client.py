@@ -499,11 +499,18 @@ def _window_prompt_ids(
     if not isinstance(window_len, int) or window_len <= 0:
         return prompt_ids
     max_tokens = sampling_params.get("max_tokens")
-    completion_budget = (
-        int(max_tokens) if isinstance(max_tokens, int) and max_tokens > 0 else 0
-    )
+    completion_budget = int(max_tokens) if isinstance(max_tokens, int) and max_tokens > 0 else 1
     prompt_budget = max(window_len - completion_budget, 1)
     return prompt_ids[-prompt_budget:]
+
+
+def _normalize_max_tokens(sampling_params: dict[str, Any]) -> None:
+    max_tokens = sampling_params.get("max_tokens")
+    if max_tokens is None:
+        return
+    if isinstance(max_tokens, int) and max_tokens > 0:
+        return
+    sampling_params.pop("max_tokens", None)
 
 
 async def _ttt_prepare_turn(
@@ -816,8 +823,9 @@ class RendererClient(
             if args.get(key) is not None:
                 sampling_params[key] = args[key]
         max_tokens = args.get("max_tokens") or args.get("max_completion_tokens")
-        if max_tokens is not None:
+        if isinstance(max_tokens, int) and max_tokens > 0:
             sampling_params["max_tokens"] = max_tokens
+        _normalize_max_tokens(sampling_params)
         if args.get("prompt_logprobs"):
             sampling_params["prompt_logprobs"] = 1
         ttt_options = _pop_ttt_options(sampling_params)

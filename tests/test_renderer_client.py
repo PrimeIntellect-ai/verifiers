@@ -525,6 +525,48 @@ async def test_renderer_client_sliding_window_only_windows_prompt_without_ttt_le
 
 
 @pytest.mark.asyncio
+async def test_renderer_client_windowing_drops_zero_max_tokens(monkeypatch):
+    renderer = _TTTRenderer(
+        RenderedTokens(
+            token_ids=[10, 11, 12, 13, 14],
+            message_indices=[0, 1, 1, 1, -1],
+            content_mask=[False, True, True, True, False],
+        )
+    )
+    client = object.__new__(RendererClient)
+    client.client = object()
+    client._renderer = renderer
+
+    async def fake_generate(**kwargs):
+        assert kwargs["prompt_ids"] == [12, 13, 14]
+        assert "max_tokens" not in kwargs["sampling_params"]
+        return {
+            "request_id": "r",
+            "content": "ok",
+            "finish_reason": "stop",
+            "prompt_ids": kwargs["prompt_ids"],
+            "completion_ids": [21],
+            "completion_logprobs": [-0.1],
+        }
+
+    monkeypatch.setattr("verifiers.clients.renderer_client.generate", fake_generate)
+
+    sampling_args = _ttt_sampling_args()
+    sampling_args["max_tokens"] = 0
+    sampling_args["extra_body"]["ttt_enabled"] = False
+    sampling_args["extra_body"]["ttt_windowing_enabled"] = True
+    sampling_args["extra_body"]["ttt_window_seq_len"] = 4
+    sampling_args["extra_body"].pop("ttt_learner_url")
+
+    await client.get_native_response(
+        [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}],
+        "base-model",
+        sampling_args,
+        state={"trajectory_id": "traj-window-zero", "trajectory": []},
+    )
+
+
+@pytest.mark.asyncio
 async def test_renderer_client_ttt_appends_bridged_prompt_tokens(
     monkeypatch,
 ):
