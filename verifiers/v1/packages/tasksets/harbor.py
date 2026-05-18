@@ -87,6 +87,14 @@ class HarborTaskset(Taskset[HarborTasksetConfig]):
         self.taskset_id = self.config.taskset_id or "harbor"
         self.rewards.insert(0, harbor_reward)
 
+    @property
+    def task_names(self) -> list[str]:
+        return list(self.config.task_names or [])
+
+    @property
+    def cpu_cores(self) -> float:
+        return self.config.cpu_cores
+
     def load_rows(self) -> list[ConfigData]:
         root = self.resolve_tasks_root()
         task_dirs = harbor_task_dirs(root, list(self.config.task_names or []))
