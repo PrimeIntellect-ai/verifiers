@@ -18,26 +18,13 @@ from ...state import State
 from ...task import Task
 from ...taskset import Taskset
 from ...utils.prompt_utils import task_text
-from .command import base_harness_config, command_program
+from .command import command_program
 from .configs import (
     RLM_DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH,
-    RLM_DEFAULT_EXEC_TIMEOUT,
-    RLM_DEFAULT_MAX_DEPTH,
-    RLM_DEFAULT_MAX_TURNS,
-    RLM_DEFAULT_REPO_REF,
-    RLM_DEFAULT_REPO_URL,
-    RLM_DEFAULT_INSTRUCTION_PATH,
     RLMConfig,
 )
 from ...types import ConfigMap, ProgramCommand, ProgramValue
 
-DEFAULT_RLM_REPO_URL = RLM_DEFAULT_REPO_URL
-DEFAULT_RLM_REPO_REF = RLM_DEFAULT_REPO_REF
-DEFAULT_RLM_MAX_TURNS = RLM_DEFAULT_MAX_TURNS
-DEFAULT_RLM_EXEC_TIMEOUT = RLM_DEFAULT_EXEC_TIMEOUT
-DEFAULT_RLM_MAX_DEPTH = RLM_DEFAULT_MAX_DEPTH
-DEFAULT_RLM_INSTRUCTION_PATH = RLM_DEFAULT_INSTRUCTION_PATH
-DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH = RLM_DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH
 DEFAULT_RLM_CHECKOUT_PATH = "/tmp/rlm-checkout"
 DEFAULT_RLM_SKILLS_PATH = "/rlm/skills"
 DEFAULT_RLM_LOCAL_CHECKOUT_CACHE_ROOT = (
@@ -50,7 +37,7 @@ ProgramDir = str | Path | Traversable
 class RLM(Harness[RLMConfig]):
     def __init__(self, config: RLMConfig | None = None):
         harness_config = cast(RLMConfig, self._coerce_config(config))
-        super().__init__(config=base_harness_config(harness_config))
+        super().__init__(config=harness_config.model_copy(update={"program": None}))
         self.config = harness_config
         if (
             not harness_config.include_sub_rlm_trajectories
@@ -113,7 +100,7 @@ class RLM(Harness[RLMConfig]):
                 sandbox=sandbox_config,
                 files={
                     harness_config.instruction_path: task_instruction_text,
-                    DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH: (
+                    RLM_DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH: (
                         harness_config.append_to_system_prompt
                     ),
                 },
@@ -187,7 +174,7 @@ set -eo pipefail
 export PATH="$HOME/.local/bin:$PATH"
 export RLM_MODEL="${{RLM_MODEL:-$OPENAI_MODEL}}"
 export OPENAI_API_KEY="${{OPENAI_API_KEY:-intercepted}}"
-export RLM_APPEND_TO_SYSTEM_PROMPT="$(cat {shlex.quote(DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH)} 2>/dev/null || true)"
+export RLM_APPEND_TO_SYSTEM_PROMPT="$(cat {shlex.quote(RLM_DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH)} 2>/dev/null || true)"
 cd "${{AGENT_WORKDIR:-{workdir}}}"
 rlm "$(cat {shlex.quote(instruction_path)})"
 """

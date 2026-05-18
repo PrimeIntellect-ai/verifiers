@@ -590,10 +590,6 @@ class BFCLTaskset(vf.Taskset[BFCLTasksetConfig]):
     _default_rewards = (bfcl_reward,)
 
 
-def load_taskset(config: BFCLTasksetConfig | None = None) -> BFCLTaskset:
-    return BFCLTaskset(config=config)
-
-
 def load_harness(config: BFCLHarnessConfig | None = None) -> vf.Harness:
     config = BFCLHarnessConfig.from_config(config)
     patch_bfcl_eval()
@@ -606,31 +602,29 @@ def load_harness(config: BFCLHarnessConfig | None = None) -> vf.Harness:
 
 def load_environment(config: BFCLEnvConfig | None = None) -> vf.Env | vf.EnvGroup:
     config = BFCLEnvConfig.from_config(config)
-    base_taskset_config = config.taskset
-    base_harness_config = config.harness
-    categories = base_taskset_config.test_categories or [
-        base_taskset_config.test_category
-    ]
+    taskset_template = config.taskset
+    harness_template = config.harness
+    categories = taskset_template.test_categories or [taskset_template.test_category]
     envs: list[vf.Env] = []
     for category in categories:
         taskset_config = BFCLTasksetConfig.model_validate(
             {
-                **base_taskset_config.model_dump(exclude_none=True),
+                **taskset_template.model_dump(exclude_none=True),
                 "test_category": category,
             }
         )
         harness_config = BFCLHarnessConfig.model_validate(
             {
-                **base_harness_config.model_dump(exclude_none=True),
+                **harness_template.model_dump(exclude_none=True),
                 "test_category": category,
             }
         )
         envs.append(
             vf.Env(
-                taskset=load_taskset(config=taskset_config),
+                taskset=BFCLTaskset(config=taskset_config),
                 harness=load_harness(config=harness_config),
             )
         )
-    if base_taskset_config.test_categories is not None:
+    if taskset_template.test_categories is not None:
         return vf.EnvGroup(envs=envs, env_names=categories)
     return envs[0]

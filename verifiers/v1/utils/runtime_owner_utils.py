@@ -21,15 +21,15 @@ _HANDLER_DEFAULTS: dict[CallableKind, tuple[str, str]] = {
 
 class RuntimeOwnerMixin:
     _config_cls: ClassVar[type[Config]]
-    _default_user: ClassVar[object | None]
-    _default_toolsets: ClassVar[object]
-    _default_stops: ClassVar[tuple[Handler, ...]]
-    _default_setups: ClassVar[tuple[Handler, ...]]
-    _default_updates: ClassVar[tuple[Handler, ...]]
-    _default_metrics: ClassVar[tuple[Handler, ...]]
-    _default_rewards: ClassVar[tuple[Handler, ...]]
-    _default_advantages: ClassVar[tuple[Handler, ...]]
-    _default_cleanups: ClassVar[tuple[Handler, ...]]
+    _default_user: ClassVar[object | None] = None
+    _default_toolsets: ClassVar[object] = ()
+    _default_stops: ClassVar[tuple[Handler, ...]] = ()
+    _default_setups: ClassVar[tuple[Handler, ...]] = ()
+    _default_updates: ClassVar[tuple[Handler, ...]] = ()
+    _default_metrics: ClassVar[tuple[Handler, ...]] = ()
+    _default_rewards: ClassVar[tuple[Handler, ...]] = ()
+    _default_advantages: ClassVar[tuple[Handler, ...]] = ()
+    _default_cleanups: ClassVar[tuple[Handler, ...]] = ()
 
     config: Config
     toolsets: list[Toolset]

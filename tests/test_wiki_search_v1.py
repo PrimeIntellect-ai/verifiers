@@ -110,7 +110,7 @@ def test_wiki_search_v1_default_and_explicit_toolsets(
     assert "judge_base_url" not in rows[0]
     assert "judge_api_key_var" not in rows[0]
 
-    taskset = module.load_taskset(
+    taskset = module.WikiSearchTaskset(
         config=module.WikiSearchTasksetConfig(toolsets={"custom": {"tools": []}})
     )
 

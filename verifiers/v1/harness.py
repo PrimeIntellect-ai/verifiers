@@ -79,15 +79,6 @@ class Harness(ConfigBound[HarnessConfigT], RuntimeOwnerMixin):
     _config_cls: ClassVar[type[HarnessConfig]] = HarnessConfig
     config: HarnessConfigT
     _default_program: ClassVar[object | None] = None
-    _default_user: ClassVar[object | None] = None
-    _default_toolsets: ClassVar[object] = ()
-    _default_stops: ClassVar[tuple[Handler, ...]] = ()
-    _default_setups: ClassVar[tuple[Handler, ...]] = ()
-    _default_updates: ClassVar[tuple[Handler, ...]] = ()
-    _default_metrics: ClassVar[tuple[Handler, ...]] = ()
-    _default_rewards: ClassVar[tuple[Handler, ...]] = ()
-    _default_advantages: ClassVar[tuple[Handler, ...]] = ()
-    _default_cleanups: ClassVar[tuple[Handler, ...]] = ()
 
     def __init__(self, config: HarnessConfig | None = None):
         self.config = cast(HarnessConfigT, self._coerce_config(config))

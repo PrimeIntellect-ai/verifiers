@@ -24,7 +24,6 @@ from .utils.taskset_utils import rows_from_source
 from .types import (
     ConfigData,
     ConfigMap,
-    Handler,
     TaskRow,
     TaskRowsSource,
 )
@@ -43,15 +42,6 @@ class Taskset(ConfigBound[TasksetConfigT], RuntimeOwnerMixin):
     config: TasksetConfigT
     _default_source: ClassVar[TaskSourceValue] = None
     _default_eval_source: ClassVar[TaskSourceValue] = None
-    _default_user: ClassVar[object | None] = None
-    _default_toolsets: ClassVar[object] = ()
-    _default_stops: ClassVar[tuple[Handler, ...]] = ()
-    _default_setups: ClassVar[tuple[Handler, ...]] = ()
-    _default_updates: ClassVar[tuple[Handler, ...]] = ()
-    _default_metrics: ClassVar[tuple[Handler, ...]] = ()
-    _default_rewards: ClassVar[tuple[Handler, ...]] = ()
-    _default_advantages: ClassVar[tuple[Handler, ...]] = ()
-    _default_cleanups: ClassVar[tuple[Handler, ...]] = ()
 
     def __init__(self, config: TasksetConfig | None = None):
         self.config = cast(TasksetConfigT, self._coerce_config(config))

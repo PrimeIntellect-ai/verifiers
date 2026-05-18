@@ -21,7 +21,7 @@ from verifiers.v1 import (
     Toolset,
 )
 from verifiers.v1.toolset import normalize_toolset
-from verifiers.v1.utils.config_utils import config_data as v1_config_data
+from verifiers.v1.utils.config_utils import explicit_config_data
 from verifiers.v1.utils.taskset_utils import rows_from_source, source_config_args
 
 
@@ -353,7 +353,7 @@ def test_source_config_args_preserve_config_object_aliases() -> None:
     assert args["split"] == "eval"
 
 
-def test_config_data_recursively_dumps_nested_configs_without_none() -> None:
+def test_explicit_config_data_recursively_dumps_nested_configs_without_none() -> None:
     class NestedConfig(Config):
         sandbox: vf.SandboxConfig | None = None
 
@@ -368,7 +368,7 @@ def test_config_data_recursively_dumps_nested_configs_without_none() -> None:
         label=None,
     )
 
-    assert v1_config_data(config) == {
+    assert explicit_config_data(config) == {
         "nested": {"sandbox": {"image": "python:3.12-slim"}}
     }
 
@@ -1995,17 +1995,11 @@ def test_bfcl_loader_preserves_mapping_config_sections(
     module = importlib.import_module("environments.bfcl_v3.bfcl_v3")
     seen: dict[str, object] = {}
 
-    def fake_taskset(config: object = None, **kwargs: object) -> Taskset:
-        _ = kwargs
-        seen["taskset_config"] = config
-        return make_taskset(source=source_loader, config=config)
-
     def fake_harness(config: object = None, **kwargs: object) -> Harness:
         _ = kwargs
         seen["harness_config"] = config
         return make_harness(config=config)
 
-    monkeypatch.setattr(module, "load_taskset", fake_taskset)
     monkeypatch.setattr(module, "load_harness", fake_harness)
 
     env = module.load_environment(
@@ -2017,7 +2011,7 @@ def test_bfcl_loader_preserves_mapping_config_sections(
 
     assert env.taskset.config.taskset_id == "bfcl-env-args"
     assert env.harness.config.model == "bfcl-model"
-    assert isinstance(seen["taskset_config"], module.BFCLTasksetConfig)
+    assert isinstance(env.taskset.config, module.BFCLTasksetConfig)
     assert isinstance(seen["harness_config"], module.BFCLHarnessConfig)
 
 

@@ -38,10 +38,6 @@ class ConfigBound(Generic[ConfigT]):
         return cls._config_cls.schema_text()  # type: ignore[attr-defined]
 
 
-def config_data(value: object, target: type[BaseModel] | None = None) -> ConfigData:
-    return explicit_config_data(value, target)
-
-
 def explicit_config_data(
     value: object, target: type[BaseModel] | None = None
 ) -> ConfigData:
@@ -78,10 +74,6 @@ def resolved_config_data(
     return data
 
 
-def model_config_data(value: BaseModel) -> ConfigData:
-    return explicit_model_config_data(value)
-
-
 def explicit_model_config_data(value: BaseModel) -> ConfigData:
     data: ConfigData = {}
     for key in value.model_fields_set:
@@ -93,7 +85,7 @@ def explicit_model_config_data(value: BaseModel) -> ConfigData:
 
 def config_dump_value(value: object) -> object:
     if isinstance(value, BaseModel):
-        return model_config_data(value)
+        return explicit_model_config_data(value)
     if isinstance(value, Mapping):
         return {
             key: config_dump_value(item)

@@ -4,15 +4,6 @@ from pathlib import PurePosixPath
 from .command import CommandHarness
 from .configs import (
     MINI_SWE_AGENT_DEFAULT_AGENT_WORKDIR,
-    MINI_SWE_AGENT_DEFAULT_CONFIG_SPEC,
-    MINI_SWE_AGENT_DEFAULT_ENVIRONMENT_TIMEOUT,
-    MINI_SWE_AGENT_DEFAULT_INSTRUCTION_PATH,
-    MINI_SWE_AGENT_DEFAULT_LOG_PATH,
-    MINI_SWE_AGENT_DEFAULT_MODEL_CLASS,
-    MINI_SWE_AGENT_DEFAULT_PACKAGE_SHA256,
-    MINI_SWE_AGENT_DEFAULT_PACKAGE_VERSION,
-    MINI_SWE_AGENT_DEFAULT_SYSTEM_PROMPT_PATH,
-    MINI_SWE_AGENT_DEFAULT_TRAJECTORY_PATH,
     MiniSWEAgentConfig,
 )
 from ...types import ProgramCommand, ProgramOptionMap, ProgramSetup
@@ -22,11 +13,6 @@ DEFAULT_PREFIX_DIR = f"{DEFAULT_INSTALL_DIR}/prefix"
 DEFAULT_SITE_PACKAGES_DIR = f"{DEFAULT_PREFIX_DIR}/site-packages"
 DEFAULT_UV_SITE_PACKAGES_DIR = f"{DEFAULT_INSTALL_DIR}/uv-site-packages"
 DEFAULT_MINI_BINARY = f"{DEFAULT_PREFIX_DIR}/bin/mini"
-MINI_SWE_AGENT_CLI_PACKAGE = "mini-swe-agent"
-MINI_SWE_AGENT_CLI_VERSION = "2.2.8"
-MINI_SWE_AGENT_CLI_SHA256 = (
-    "694df4de1337e665e3cd82e99f93374f573bf52b8e7c362ac5d8045ad9f7c37c"
-)
 MINI_SWE_AGENT_PYTHON_VERSION = "3.11"
 UV_PACKAGE_VERSION = "0.11.7"
 DEFAULT_LOG_DIR = "/logs/agent"
@@ -78,10 +64,10 @@ class MiniSWEAgent(CommandHarness[MiniSWEAgentConfig]):
 
 
 def build_mini_swe_agent_install_script(
-    package_version: str = MINI_SWE_AGENT_DEFAULT_PACKAGE_VERSION,
-    package_sha256: str = MINI_SWE_AGENT_DEFAULT_PACKAGE_SHA256,
+    package_version: str,
+    package_sha256: str,
+    install_python: bool,
     prefix_dir: str = DEFAULT_PREFIX_DIR,
-    install_python: bool = True,
 ) -> str:
     install_tools = ""
     if install_python:
@@ -142,15 +128,15 @@ test -x {quoted_prefix_dir}/bin/mini
 
 
 def build_mini_swe_agent_run_script(
-    agent_workdir: str = MINI_SWE_AGENT_DEFAULT_AGENT_WORKDIR,
-    instruction_path: str = MINI_SWE_AGENT_DEFAULT_INSTRUCTION_PATH,
-    system_prompt_path: str | None = MINI_SWE_AGENT_DEFAULT_SYSTEM_PROMPT_PATH,
-    log_path: str = MINI_SWE_AGENT_DEFAULT_LOG_PATH,
-    trajectory_path: str = MINI_SWE_AGENT_DEFAULT_TRAJECTORY_PATH,
+    agent_workdir: str,
+    instruction_path: str,
+    system_prompt_path: str | None,
+    log_path: str,
+    trajectory_path: str,
+    config_spec: str,
+    model_class: str,
+    environment_timeout: int,
     mini_binary: str = DEFAULT_MINI_BINARY,
-    config_spec: str = MINI_SWE_AGENT_DEFAULT_CONFIG_SPEC,
-    model_class: str = MINI_SWE_AGENT_DEFAULT_MODEL_CLASS,
-    environment_timeout: int = MINI_SWE_AGENT_DEFAULT_ENVIRONMENT_TIMEOUT,
     extra_config_specs: list[str] | None = None,
 ) -> str:
     if agent_workdir == MINI_SWE_AGENT_DEFAULT_AGENT_WORKDIR:

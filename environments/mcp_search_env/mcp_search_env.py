@@ -3,8 +3,6 @@ from pathlib import Path
 import sys
 from typing import cast
 
-from datasets import Dataset
-
 import verifiers as vf
 
 SYSTEM_PROMPT = "Use the available MCP tools to answer the question."
@@ -85,20 +83,12 @@ class MCPSearchTaskset(vf.Taskset[MCPSearchTasksetConfig]):
             self.add_toolset(load_toolset(mcp_servers=self.config.mcp_servers))
 
 
-def default_mcp_servers() -> list[vf.ConfigData]:
-    return [dict(server) for server in DEFAULT_MCP_SERVERS]
-
-
-def default_dataset() -> Dataset:
-    return Dataset.from_list(DEFAULT_EXAMPLES)
-
-
 def source(
     examples: Iterable[vf.ConfigMap] | None = None,
     *,
     max_turns: int = 6,
 ):
-    rows = examples if examples is not None else default_dataset()
+    rows = examples if examples is not None else DEFAULT_EXAMPLES
     for index, row in enumerate(rows):
         row = cast(vf.ConfigMap, row)
         question = str(row["question"])
@@ -144,15 +134,11 @@ def load_toolset(
     mcp_servers: Iterable[vf.ConfigMap] | None = None,
     config: vf.ToolsetConfig | None = None,
 ) -> vf.Toolset:
-    servers = mcp_servers or default_mcp_servers()
+    servers = mcp_servers or [dict(server) for server in DEFAULT_MCP_SERVERS]
     return vf.Toolset(
         tools=[mcp_tool_from_config(server) for server in servers],
         config=config,
     )
-
-
-def load_taskset(config: MCPSearchTasksetConfig | None = None) -> MCPSearchTaskset:
-    return MCPSearchTaskset(config=config)
 
 
 class MCPSearchEnvConfig(vf.EnvConfig):
@@ -161,6 +147,6 @@ class MCPSearchEnvConfig(vf.EnvConfig):
 
 
 load_environment = vf.Env.loader(
-    taskset=load_taskset,
+    taskset=MCPSearchTaskset,
     env_config=MCPSearchEnvConfig,
 )

@@ -8,7 +8,6 @@ from ...harness import Harness
 from ...types import (
     ConfigData,
     ConfigMap,
-    Handler,
     ProgramCommand,
     ProgramChannels,
     ProgramMap,
@@ -37,14 +36,10 @@ DEFAULT_COMMAND_SANDBOX: ConfigData = {
 }
 
 
-def base_harness_config(config: ConfigT) -> ConfigT:
-    return cast(ConfigT, config.model_copy(update={"program": None}))
-
-
 class CommandHarness(Harness[ConfigT]):
     def __init__(self, config: ConfigT | None = None):
         config = cast(ConfigT, self._coerce_config(config))
-        super().__init__(config=base_harness_config(config))
+        super().__init__(config=config.model_copy(update={"program": None}))
         self.config = config
         sandbox = self.sandbox_value(config)
         self._configure_runtime(
@@ -52,7 +47,6 @@ class CommandHarness(Harness[ConfigT]):
                 command=self.command(config),
                 sandbox=sandbox,
                 files=self.files(config),
-                dirs=self.dirs(config),
                 setup=self.setup(config),
                 bindings=self.bindings_value(config),
                 env=self.env(config),
@@ -60,9 +54,8 @@ class CommandHarness(Harness[ConfigT]):
                 channels=self.channels(config),
                 program=config.program,
             ),
-            sandbox=command_sandbox(sandbox, self.sandbox_defaults(config)),
+            sandbox=command_sandbox(sandbox),
             system_prompt=config.system_prompt,
-            metrics=self.extra_metrics(config),
         )
 
     def command(self, config: ConfigT) -> ProgramCommand:
@@ -70,9 +63,6 @@ class CommandHarness(Harness[ConfigT]):
 
     def sandbox_value(self, config: ConfigT) -> bool | ConfigMap | SandboxConfig:
         return config.sandbox if config.sandbox is not None else True
-
-    def sandbox_defaults(self, config: ConfigT) -> ConfigMap | None:
-        return None
 
     def files(self, config: ConfigT) -> ProgramOptionMap:
         files: ProgramOptionMap = {}
@@ -85,9 +75,6 @@ class CommandHarness(Harness[ConfigT]):
                 ProgramValue, state_system_prompt_text
             )
         return files
-
-    def dirs(self, config: ConfigT) -> ProgramOptionMap | None:
-        return None
 
     def setup(self, config: ConfigT) -> ProgramSetup | None:
         return None
@@ -102,9 +89,6 @@ class CommandHarness(Harness[ConfigT]):
         return None
 
     def channels(self, config: ConfigT) -> ProgramChannels | None:
-        return None
-
-    def extra_metrics(self, config: ConfigT) -> list[Handler] | None:
         return None
 
 

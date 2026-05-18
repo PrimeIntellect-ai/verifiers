@@ -3,12 +3,7 @@ import shlex
 from pathlib import PurePosixPath
 
 from .command import CommandHarness
-from .configs import (
-    OPENCODE_DEFAULT_RELEASE_REPO,
-    OPENCODE_DEFAULT_RELEASE_SHA256,
-    OPENCODE_DEFAULT_RELEASE_VERSION,
-    OpenCodeConfig,
-)
+from .configs import OpenCodeConfig
 from ...utils.mcp_proxy_utils import proxy_command
 from ...types import (
     ConfigData,
@@ -65,10 +60,10 @@ class OpenCode(CommandHarness[OpenCodeConfig]):
 
 
 def build_install_script(
-    release_repo: str = OPENCODE_DEFAULT_RELEASE_REPO,
-    release_version: str = OPENCODE_DEFAULT_RELEASE_VERSION,
-    release_sha256: str = OPENCODE_DEFAULT_RELEASE_SHA256,
-    install_ripgrep: bool = True,
+    release_repo: str,
+    release_version: str,
+    release_sha256: str,
+    install_ripgrep: bool,
 ) -> str:
     rg_install = (
         "apt-get -o Acquire::Retries=3 install -y -qq ripgrep > /dev/null 2>&1 || true"

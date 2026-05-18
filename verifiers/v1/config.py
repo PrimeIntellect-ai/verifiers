@@ -17,7 +17,6 @@ from .utils.config_callable_utils import (
 )
 from .utils.config_utils import (
     annotation_text,
-    config_data,
     default_text,
     explicit_config_data,
     import_config_ref as import_config_ref,
@@ -359,7 +358,7 @@ class EnvConfig(Config):
                 "Omit the section to use the default config."
             )
         try:
-            config_data(value)
+            explicit_config_data(value)
         except TypeError as exc:
             raise ValueError(str(exc)) from exc
         return value

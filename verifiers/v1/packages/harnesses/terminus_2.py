@@ -5,11 +5,8 @@ from .command import CommandHarness
 from .configs import (
     TERMINUS_2_DEFAULT_AGENT_WORKDIR,
     TERMINUS_2_DEFAULT_API_BASE_URL,
-    TERMINUS_2_DEFAULT_HARBOR_PACKAGE,
     TERMINUS_2_DEFAULT_INSTRUCTION_PATH,
-    TERMINUS_2_DEFAULT_LOG_PATH,
     TERMINUS_2_DEFAULT_MODEL_NAME,
-    TERMINUS_2_DEFAULT_PYTHON_VERSION,
     TERMINUS_2_DEFAULT_SYSTEM_PROMPT_PATH,
     Terminus2Config,
 )
@@ -62,15 +59,15 @@ fi
 
 def build_terminus_2_run_script(
     *,
-    agent_workdir: str = TERMINUS_2_DEFAULT_AGENT_WORKDIR,
-    instruction_path: str = TERMINUS_2_DEFAULT_INSTRUCTION_PATH,
-    system_prompt_path: str | None = TERMINUS_2_DEFAULT_SYSTEM_PROMPT_PATH,
-    log_path: str = TERMINUS_2_DEFAULT_LOG_PATH,
-    harbor_package: str = TERMINUS_2_DEFAULT_HARBOR_PACKAGE,
-    python_version: str = TERMINUS_2_DEFAULT_PYTHON_VERSION,
-    model_name: str = TERMINUS_2_DEFAULT_MODEL_NAME,
-    api_base_url: str = TERMINUS_2_DEFAULT_API_BASE_URL,
-    max_turns: int | None = 4,
+    agent_workdir: str,
+    instruction_path: str,
+    system_prompt_path: str | None,
+    log_path: str,
+    harbor_package: str,
+    python_version: str,
+    model_name: str,
+    api_base_url: str,
+    max_turns: int | None,
 ) -> str:
     log_dir = str(PurePosixPath(log_path).parent)
     agent_script = terminus_2_agent_script(

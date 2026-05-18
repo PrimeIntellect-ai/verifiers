@@ -23,7 +23,6 @@ JsonValue: TypeAlias = (
     str | int | float | bool | None | list["JsonValue"] | dict[str, "JsonValue"]
 )
 JsonData: TypeAlias = dict[str, JsonValue]
-CallableConfigEntry: TypeAlias = Handler | str | ConfigMap
 HandlerList: TypeAlias = Iterable[Handler]
 
 TaskRow: TypeAlias = Mapping[str, object]
