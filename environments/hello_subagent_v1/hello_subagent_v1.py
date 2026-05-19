@@ -86,7 +86,7 @@ class SubagentTaskset(vf.Taskset[SubagentTasksetConfig]):
     _default_rewards = (exact_answer,)
 
 
-class SubagentHarness(vf.Harness):
+class SubagentHarness(vf.Harness[vf.HarnessConfig]):
     _default_toolsets = {"subagent": load_toolset}
     _default_metrics = (subagent_calls,)
 

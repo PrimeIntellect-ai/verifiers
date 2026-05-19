@@ -270,7 +270,7 @@ toolset = vf.Toolset(
     bindings={"search.index": "objects.index"},
 )
 
-class SearchTaskset(vf.Taskset):
+class SearchTaskset(vf.Taskset[vf.TasksetConfig]):
     def rows(self) -> list[dict[str, object]]:
         return [
             {
@@ -313,7 +313,7 @@ back to the taskset, then let the harness adapt the resolved callables.
 MCP servers are also tools:
 
 ```python
-class FetchTaskset(vf.Taskset):
+class FetchTaskset(vf.Taskset[vf.TasksetConfig]):
     _default_toolsets = (
         {
             "tools": [

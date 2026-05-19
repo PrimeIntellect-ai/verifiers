@@ -104,7 +104,7 @@ class DSPYRLMTaskset(vf.Taskset[DSPYRLMTasksetConfig]):
     _default_rewards = (answer_reward,)
 
 
-class DSPYRLMHarness(vf.Harness):
+class DSPYRLMHarness(vf.Harness[vf.HarnessConfig]):
     _default_program = run_dspy_rlm_program
 
 

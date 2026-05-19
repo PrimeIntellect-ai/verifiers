@@ -327,7 +327,7 @@ group, group-scoped seeds, or task variants that must be generated before
 rollout dispatch.
 
 ```python
-class MyTaskset(vf.Taskset):
+class MyTaskset(vf.Taskset[vf.TasksetConfig]):
     async def init_group(self, task, num_rollouts):
         tasks = []
         states = []
@@ -710,7 +710,7 @@ whitelist or blacklist that toolset's nested tool surface.
 Tasksets and harnesses can pass toolsets as a list or a mapping:
 
 ```python
-class WikiTaskset(vf.Taskset):
+class WikiTaskset(vf.Taskset[vf.TasksetConfig]):
     _default_toolsets = {
         "wiki": {"fn": "my_env:load_wiki_toolset"},
         "python": {"tools": ["my_env:python"]},

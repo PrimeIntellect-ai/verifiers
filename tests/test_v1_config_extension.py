@@ -2045,6 +2045,33 @@ def test_math_python_v1_wrapper_rejects_unsupported_sandbox_kwargs() -> None:
         module.load_environment(v1=True, sandbox_client_max_workers=2)
 
 
+def test_math_python_v1_prompt_tracks_harness_packages() -> None:
+    module = importlib.import_module("environments.math_python.math_python_v1")
+
+    env = module.load_v1_environment(
+        config=module.MathPythonEnvConfig(
+            harness=module.MathPythonHarnessConfig(pip_install_packages="numpy pandas")
+        )
+    )
+
+    prompt = env.taskset.config.system_prompt
+    assert "numpy pandas" in prompt
+    assert "numpy sympy scipy" not in prompt
+
+
+def test_math_python_v1_explicit_prompt_wins() -> None:
+    module = importlib.import_module("environments.math_python.math_python_v1")
+
+    env = module.load_v1_environment(
+        config=module.MathPythonEnvConfig(
+            taskset=module.MathPythonTasksetConfig(system_prompt="custom prompt"),
+            harness=module.MathPythonHarnessConfig(pip_install_packages="numpy pandas"),
+        )
+    )
+
+    assert env.taskset.config.system_prompt == "custom prompt"
+
+
 def test_bfcl_loader_preserves_mapping_config_sections(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

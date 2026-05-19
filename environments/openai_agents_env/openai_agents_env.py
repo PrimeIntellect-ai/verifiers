@@ -123,7 +123,7 @@ class OpenAIAgentsTaskset(vf.Taskset[OpenAIAgentsTasksetConfig]):
     _default_rewards = (answer_reward,)
 
 
-class OpenAIAgentsHarness(vf.Harness):
+class OpenAIAgentsHarness(vf.Harness[vf.HarnessConfig]):
     _default_program = run_openai_agents_program
 
 

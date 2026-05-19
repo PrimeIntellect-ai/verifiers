@@ -1,6 +1,7 @@
 import json
 
 from math_verify import parse, verify
+from pydantic import model_validator
 
 import verifiers as vf
 from verifiers.errors import SandboxError
@@ -93,7 +94,7 @@ def build_system_prompt(pip_install_packages: str = "numpy sympy scipy") -> str:
 
 
 class MathPythonTasksetConfig(vf.TasksetConfig):
-    system_prompt: str = build_system_prompt()
+    system_prompt: str | None = None
     dataset_name: str = "math"
     dataset_split: str = "train"
     num_train_examples: int = -1
@@ -113,6 +114,18 @@ class MathPythonHarnessConfig(vf.HarnessConfig):
 class MathPythonEnvConfig(vf.EnvConfig):
     taskset: MathPythonTasksetConfig = MathPythonTasksetConfig()
     harness: MathPythonHarnessConfig = MathPythonHarnessConfig()
+
+    @model_validator(mode="after")
+    def derive_taskset_system_prompt(self) -> "MathPythonEnvConfig":
+        if "system_prompt" not in self.taskset.model_fields_set:
+            self.taskset = self.taskset.model_copy(
+                update={
+                    "system_prompt": build_system_prompt(
+                        self.harness.pip_install_packages
+                    )
+                }
+            )
+        return self
 
 
 def source(

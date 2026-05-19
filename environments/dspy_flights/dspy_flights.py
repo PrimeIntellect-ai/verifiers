@@ -418,7 +418,7 @@ def stringify_nested(value: object) -> object:
     return str(value)
 
 
-class DSPyFlightsTaskset(vf.Taskset):
+class DSPyFlightsTaskset(vf.Taskset[vf.TasksetConfig]):
     _default_source = source
     _default_rewards = (expected_database_change,)
     _default_metrics = (dspy_calls,)
