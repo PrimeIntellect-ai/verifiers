@@ -5,7 +5,7 @@ tags = ["v1", "taskset", "harness", "multi-turn", "tool-use", "langchain", "deep
 version = "0.1.4"
 requires-python = ">=3.11,<3.13"
 dependencies = [
-    "verifiers>=0.1.14",
+    "verifiers>=0.1.15.dev7",
     "datasets",
     "deepagents>=0.5.5",
     "langgraph",
