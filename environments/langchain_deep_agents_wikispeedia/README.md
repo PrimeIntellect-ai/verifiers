@@ -49,6 +49,18 @@ Notes:
 - The first run downloads ~5MB of SNAP data into `~/.cache/wikispeedia` (override with `cache_dir`).
 - Set `OPENAI_API_KEY` (or whatever the policy endpoint expects) for the agent.
 
+### LangSmith tracing
+
+Deep Agents uses LangGraph/LangChain native LangSmith tracing. Enable it with
+the standard LangSmith environment variables before running the eval:
+
+```bash
+export LANGSMITH_TRACING=true
+export LANGSMITH_API_KEY=...
+export LANGSMITH_PROJECT=verifiers-wikispeedia
+prime eval run langchain-deep-agents-wikispeedia
+```
+
 ### Taskset Config
 
 | Field | Type | Default | Description |

@@ -1,5 +1,7 @@
 import asyncio
 import json
+import os
+import uuid
 from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from typing import Protocol, cast
 
@@ -46,6 +48,8 @@ tools at that point and reply with a brief confirmation."""
 
 
 SYSTEM_PROMPT = system_prompt()
+ENV_ID = "langchain-deep-agents-wikispeedia"
+AGENT_NAME = "wikispeedia-navigator"
 
 
 class WikispeediaTasksetConfig(vf.TasksetConfig):
@@ -438,12 +442,35 @@ def make_langchain_deep_agents_program(
             model=model,
             tools=nav_tools,
             system_prompt=state_system_prompt or SYSTEM_PROMPT,
+            name=AGENT_NAME,
         )
         prompt = str(cast(list[vf.ConfigData], state["prompt"])[-1]["content"])
         recursion_limit = state.get_max_turns(max_turns)
-        invoke_config = (
-            {"recursion_limit": recursion_limit} if recursion_limit > 0 else None
-        )
+        runtime = state.get("runtime", {})
+        runtime = runtime if isinstance(runtime, Mapping) else {}
+        source = str(state["info"]["source"])
+        target = str(state["info"]["target"])
+        trajectory_id = str(state["trajectory_id"])
+        run_id = uuid.UUID(hex=trajectory_id)
+        state["langsmith_run_id"] = str(run_id)
+        invoke_metadata = {
+            "vf_env": ENV_ID,
+            "vf_task_id": str(task.get("task_id", "")),
+            "vf_trajectory_id": trajectory_id,
+            "vf_group_key": str(runtime.get("group_key", "")),
+            "source": source,
+            "target": target,
+            "shortest_path": int(state["info"]["shortest_path"]),
+        }
+        invoke_config: dict[str, object] = {
+            "run_name": f"wikispeedia:{source}->{target}",
+            "run_id": run_id,
+            "configurable": {"thread_id": trajectory_id},
+            "metadata": invoke_metadata,
+            "tags": ["verifiers", "vf-v1", ENV_ID],
+        }
+        if recursion_limit > 0:
+            invoke_config["recursion_limit"] = recursion_limit
         invoke = agent.ainvoke(
             {"messages": [{"role": "user", "content": prompt}]},
             config=invoke_config,
@@ -560,6 +587,8 @@ def load_harness(config: WikispeediaHarnessConfig) -> WikispeediaHarness:
 
 def load_environment(config: WikispeediaEnvConfig) -> vf.Env:
     """Load the v1 Wikispeedia taskset with a LangChain Deep Agents harness."""
+    if os.environ.get("LANGSMITH_TRACING") == "true":
+        vf.ensure_keys(["LANGSMITH_API_KEY"])
 
     return vf.Env(
         taskset=load_taskset(config=config.taskset),
