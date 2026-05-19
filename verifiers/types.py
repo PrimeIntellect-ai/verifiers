@@ -196,6 +196,18 @@ class ResponseTokens(CustomBaseModel):
     # multimodal-aware renderer; ``None`` otherwise. Stored as ``Any`` to
     # avoid a hard import dependency on ``renderers`` at this layer.
     multi_modal_data: Any | None = None
+    # Renderer-emitted per-token attribution for the prompt
+    # (``renderers.base.RenderedTokens``) — carries ``token_ids``,
+    # ``message_indices``, ``sampled_mask``, ``is_content``,
+    # ``message_roles``. Lets downstream consumers (prime-rl) build
+    # selective loss masks like SFT-on-tool-body
+    # (``attr.content_mask_for_roles({"tool"})``) without a second
+    # render pass. ``None`` for non-renderer clients (chat completions,
+    # responses, Anthropic) whose tokenizations aren't byte-stable and
+    # whose body/scaffold cut is unknown. Stored as ``Any`` for the
+    # same reason as ``multi_modal_data`` — avoid hard ``renderers``
+    # dependency at this layer.
+    prompt_attribution: Any | None = None
 
 
 FinishReason = Literal["stop", "length", "tool_calls"] | None
@@ -238,6 +250,13 @@ class TrajectoryStepTokens(TypedDict):
     # ``NotRequired`` because text-only rollouts (and non-renderer client
     # types) never populate it.
     multi_modal_data: NotRequired[Any]
+    # Renderer-emitted per-token prompt attribution
+    # (``renderers.base.RenderedTokens``). ``NotRequired`` because only
+    # rollouts that went through ``RendererClient`` populate it; other
+    # clients (chat completions, responses, Anthropic) don't know the
+    # body/scaffold cut. See the matching field on :class:`ResponseTokens`
+    # for the consumer-side use case (prime-rl SFT-on-tool-body masks).
+    prompt_attribution: NotRequired[Any]
 
 
 class TokenUsage(TypedDict):

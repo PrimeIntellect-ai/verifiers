@@ -572,12 +572,22 @@ class RendererClient(
         # ``bridged`` is RenderedTokens | None. Unpack token_ids + mm_data
         # so multimodal renderers thread per-image features through to
         # /inference/v1/generate without re-rendering the whole turn.
+        # When present, the bridge result also carries per-token
+        # attribution (``is_content`` / ``sampled_mask`` /
+        # ``message_indices`` / ``message_roles``) for the new portion of
+        # the prompt; thread it into ``generate`` as ``prompt_attribution``
+        # so downstream consumers can build SFT-on-tool-body / selective
+        # loss masks without a second render pass. On the first turn
+        # (``bridged is None``), ``generate`` does the render itself and
+        # surfaces the attribution on the result.
         if bridged is not None:
             prompt_ids = bridged.token_ids
             multi_modal_data = bridged.multi_modal_data
+            prompt_attribution = bridged
         else:
             prompt_ids = None
             multi_modal_data = None
+            prompt_attribution = None
 
         # ``renderers.client.generate`` discovers the engine's context-length
         # cap on its own (via ``GET /v1/models``, cached) and raises
@@ -596,6 +606,7 @@ class RendererClient(
                 model=model,
                 prompt_ids=prompt_ids,
                 multi_modal_data=multi_modal_data,
+                prompt_attribution=prompt_attribution,
                 tools=tools,
                 sampling_params=sampling_params,
                 cache_salt=args.get("cache_salt")
@@ -666,6 +677,7 @@ class RendererClient(
             completion_logprobs=completion_logprobs,
             routed_experts=response.get("routed_experts"),
             multi_modal_data=response.get("multi_modal_data"),
+            prompt_attribution=response.get("prompt_attribution"),
         )
 
         # /inference/v1/generate doesn't return usage; reconstruct from tokens.

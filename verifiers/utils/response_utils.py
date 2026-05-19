@@ -45,6 +45,47 @@ async def parse_response_message(response: Response) -> Messages:
     return [message]
 
 
+def _truncate_prompt_attribution(attribution: Any, prompt_len: int) -> Any:
+    """Slice a ``renderers.RenderedTokens`` prompt-attribution sidecar to
+    ``prompt_len`` tokens.
+
+    Only the per-token lists (``token_ids`` / ``message_indices`` /
+    ``sampled_mask`` / ``is_content``) need truncation; ``message_roles``
+    is indexed by message position (not token position), so it stays
+    intact even when some trailing messages contributed only truncated
+    tokens — ``message_indices[k]`` still points into the correct slot.
+    ``multi_modal_data`` is left as-is for the same reason: callers
+    truncate it themselves if they need exact byte-alignment against the
+    truncated prompt (matches the existing ``routed_experts`` policy
+    where the slicing happens in :func:`truncate_routed_experts`).
+
+    Returns ``None`` for falsy input so callers can chain through
+    ``attribution = _truncate_prompt_attribution(attribution, N)``
+    without branching.
+    """
+    if attribution is None:
+        return None
+    # Lazy import — keeps the hard ``renderers`` dependency out of
+    # ``response_utils`` for clients that don't go through RendererClient.
+    from renderers.base import RenderedTokens
+
+    if not isinstance(attribution, RenderedTokens):
+        return attribution
+
+    return RenderedTokens(
+        token_ids=list(attribution.token_ids[:prompt_len]),
+        message_indices=list(attribution.message_indices[:prompt_len]),
+        sampled_mask=list(attribution.sampled_mask[:prompt_len])
+        if attribution.sampled_mask
+        else [],
+        is_content=list(attribution.is_content[:prompt_len])
+        if attribution.is_content
+        else [],
+        message_roles=list(attribution.message_roles),
+        multi_modal_data=attribution.multi_modal_data,
+    )
+
+
 async def parse_response_tokens(
     response: Response, max_seq_len: int | None = None
 ) -> TrajectoryStepTokens | None:
@@ -61,6 +102,7 @@ async def parse_response_tokens(
     completion_logprobs = tokens.completion_logprobs
     routed_experts = tokens.routed_experts
     multi_modal_data = tokens.multi_modal_data
+    prompt_attribution = tokens.prompt_attribution
 
     if max_seq_len is not None:
         prompt_len = len(prompt_ids)
@@ -74,6 +116,9 @@ async def parse_response_tokens(
             completion_mask = []
             completion_logprobs = []
             routed_experts = truncate_routed_experts(routed_experts, len(prompt_ids))
+            prompt_attribution = _truncate_prompt_attribution(
+                prompt_attribution, len(prompt_ids)
+            )
         elif prompt_len + completion_len > max_seq_len:
             is_truncated = True
             completion_ids = tokens.completion_ids[: max_seq_len - prompt_len]
@@ -82,6 +127,8 @@ async def parse_response_tokens(
             routed_experts = truncate_routed_experts(
                 routed_experts, prompt_len + len(completion_ids)
             )
+            # ``prompt_attribution`` covers only the prompt and the
+            # prompt itself wasn't truncated here, so no slicing needed.
         else:
             is_truncated = False
     else:
@@ -104,4 +151,10 @@ async def parse_response_tokens(
         # step. Leaving it on ``response.message.tokens`` too means every
         # downstream pass (msgpack, save) has to dedupe the duplicate.
         tokens.multi_modal_data = None
+    if prompt_attribution is not None:
+        out["prompt_attribution"] = prompt_attribution
+        # Same move-not-copy policy as ``multi_modal_data`` — the parsed
+        # step is the canonical home; clearing the response-side ref
+        # avoids duplicate serialisation on save / msgpack.
+        tokens.prompt_attribution = None
     return out
