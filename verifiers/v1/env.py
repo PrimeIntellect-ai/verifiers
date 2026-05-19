@@ -3,8 +3,9 @@ import inspect
 import uuid
 from collections.abc import Callable
 from types import UnionType
-from typing import TypeAlias, Union, cast, get_args, get_origin, get_type_hints
+from typing import TypeAlias, TypeVar, Union, cast, get_args, get_origin, get_type_hints
 
+from pydantic import BaseModel
 import verifiers as vf
 from verifiers.clients import Client
 from verifiers.types import ClientConfig
@@ -19,6 +20,7 @@ from .utils.config_utils import explicit_config_data
 
 TasksetBuilder: TypeAlias = type[Taskset] | Callable[..., Taskset] | Taskset
 HarnessBuilder: TypeAlias = type[Harness] | Callable[..., Harness] | Harness
+ConfigT = TypeVar("ConfigT", bound=BaseModel)
 
 
 class Env(vf.Environment):
@@ -164,13 +166,13 @@ class Env(vf.Environment):
         return states
 
 
-def builder_config_type(builder: object, base: type) -> type:
+def builder_config_type(builder: object, base: type[ConfigT]) -> type[ConfigT]:
     if isinstance(builder, Taskset | Harness):
-        return type(builder.config)
+        return cast(type[ConfigT], type(builder.config))
     config_cls = getattr(builder, "_config_cls", None)
     if isinstance(config_cls, type) and issubclass(config_cls, base):
-        return config_cls
-    signature = inspect.signature(builder)
+        return cast(type[ConfigT], config_cls)
+    signature = inspect.signature(cast(Callable[..., object], builder))
     if "config" not in signature.parameters:
         return base
     try:
@@ -180,7 +182,7 @@ def builder_config_type(builder: object, base: type) -> type:
     return config_type(annotation, base) or base
 
 
-def config_type(annotation: object, base: type) -> type | None:
+def config_type(annotation: object, base: type[ConfigT]) -> type[ConfigT] | None:
     if annotation is inspect.Parameter.empty:
         return None
     origin = get_origin(annotation)
