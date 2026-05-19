@@ -704,3 +704,142 @@ class TestMultiTurnEnv:
         assert completion[0]["content"] == "First response"
         assert completion[1]["role"] == "user"
         assert completion[1]["content"] == "Final feedback"
+
+
+class TestAddModelResponseToolNames:
+    """``MultiTurnEnv.add_model_response`` attaches per-message tool-name
+    attribution to the trajectory step when the response carries a
+    renderer's ``prompt_attribution``. Non-renderer responses leave the
+    field absent — these tests pin both shapes."""
+
+    @pytest.mark.asyncio
+    async def test_add_model_response_attaches_prompt_message_tool_names(
+        self, mock_multiturn_env
+    ):
+        """When the response's ``ResponseTokens.prompt_attribution`` is
+        populated by ``RendererClient``, ``add_model_response`` derives
+        per-message tool function names and stores them on the
+        trajectory step's tokens dict.
+        """
+        from renderers.base import RenderedTokens
+
+        from verifiers.types import (
+            Response,
+            ResponseMessage,
+            ResponseTokens,
+            State,
+        )
+
+        prompt_messages = [
+            {"role": "user", "content": "What's 6*7?"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "type": "function",
+                        "id": "c1",
+                        "function": {"name": "calc", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "content": "42", "tool_call_id": "c1"},
+            {"role": "user", "content": "Now answer."},
+        ]
+        attribution = RenderedTokens(
+            token_ids=[0] * 4,
+            message_indices=[0, 1, 2, 3],
+            sampled_mask=[False, False, False, False],
+            is_content=[False, False, True, False],
+            message_roles=["user", "assistant", "tool", "user"],
+        )
+        response = Response(
+            id="r-1",
+            created=0,
+            model="test-model",
+            message=ResponseMessage(
+                role="assistant",
+                content="42.",
+                reasoning_content=None,
+                tool_calls=None,
+                finish_reason="stop",
+                is_truncated=False,
+                tokens=ResponseTokens(
+                    prompt_ids=[0, 0, 0, 0],
+                    prompt_mask=[0, 0, 0, 0],
+                    completion_ids=[1, 2],
+                    completion_mask=[1, 1],
+                    completion_logprobs=[-0.1, -0.2],
+                    prompt_attribution=attribution,
+                ),
+            ),
+        )
+
+        state = State(
+            input={"prompt": prompt_messages, "example_id": 0},
+            trajectory=[],
+            trajectory_id="t-test",
+        )
+
+        await mock_multiturn_env.add_model_response(state, prompt_messages, response)
+
+        assert len(state["trajectory"]) == 1
+        tokens = state["trajectory"][0]["tokens"]
+        assert tokens is not None
+        assert "prompt_message_tool_names" in tokens
+        assert tokens["prompt_message_tool_names"] == [None, None, "calc", None]
+
+    @pytest.mark.asyncio
+    async def test_add_model_response_omits_tool_names_when_no_attribution(
+        self, mock_multiturn_env
+    ):
+        """Non-renderer clients leave ``prompt_attribution=None`` on
+        the response tokens — the derive helper returns ``None`` and
+        ``add_model_response`` omits the field entirely (instead of
+        storing ``None``) so the trajectory step stays minimal for
+        non-renderer rollouts.
+        """
+        from verifiers.types import (
+            Response,
+            ResponseMessage,
+            ResponseTokens,
+            State,
+        )
+
+        prompt_messages = [
+            {"role": "user", "content": "hi"},
+        ]
+        response = Response(
+            id="r-2",
+            created=0,
+            model="test-model",
+            message=ResponseMessage(
+                role="assistant",
+                content="ok",
+                reasoning_content=None,
+                tool_calls=None,
+                finish_reason="stop",
+                is_truncated=False,
+                tokens=ResponseTokens(
+                    prompt_ids=[0],
+                    prompt_mask=[0],
+                    completion_ids=[1],
+                    completion_mask=[1],
+                    completion_logprobs=[-0.1],
+                    # no prompt_attribution
+                ),
+            ),
+        )
+
+        state = State(
+            input={"prompt": prompt_messages, "example_id": 0},
+            trajectory=[],
+            trajectory_id="t-test",
+        )
+
+        await mock_multiturn_env.add_model_response(state, prompt_messages, response)
+
+        assert len(state["trajectory"]) == 1
+        tokens = state["trajectory"][0]["tokens"]
+        assert tokens is not None
+        assert "prompt_message_tool_names" not in tokens

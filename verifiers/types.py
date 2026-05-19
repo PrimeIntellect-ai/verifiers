@@ -257,6 +257,19 @@ class TrajectoryStepTokens(TypedDict):
     # body/scaffold cut. See the matching field on :class:`ResponseTokens`
     # for the consumer-side use case (prime-rl SFT-on-tool-body masks).
     prompt_attribution: NotRequired[Any]
+    # Per-message tool-function names for the prompt-attribution slice
+    # the renderer covered. Parallel to ``prompt_attribution.message_roles``
+    # (same length). For each message, the tool's function name when the
+    # message is a tool response and the name is recoverable from a
+    # preceding assistant's ``tool_calls`` (joined by ``tool_call_id``);
+    # ``None`` otherwise (non-tool messages, or tool responses whose
+    # issuing assistant is outside the covered slice — e.g. in the
+    # prior portion of a bridged turn). Trainer joins with
+    # ``prompt_attribution.message_indices`` to recover per-token
+    # attribution and build SFT masks. ``NotRequired`` for the same
+    # reason as ``prompt_attribution``: only renderer-client rollouts
+    # populate it.
+    prompt_message_tool_names: NotRequired[list[str | None]]
 
 
 class TokenUsage(TypedDict):

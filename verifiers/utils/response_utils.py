@@ -18,6 +18,136 @@ def parse_routed_experts(raw: Any) -> str | None:
     return cast(str, raw)
 
 
+def derive_prompt_message_tool_names(
+    prompt_messages: Messages,
+    prompt_attribution: Any,
+) -> list[str | None] | None:
+    """Per-message tool function names for a renderer-attributed prompt.
+
+    Produces a list parallel to ``prompt_attribution.message_roles`` —
+    one entry per message the renderer's attribution covers. Each entry
+    is the tool function name when the message is a tool response and
+    its ``tool_call_id`` resolves to a preceding assistant's tool_call,
+    or ``None`` otherwise (non-tool messages; tool responses whose
+    issuing assistant isn't in the covered slice).
+
+    The covered slice is the trailing ``len(message_roles)`` messages
+    of ``prompt_messages`` — this matches both the first-turn render
+    (covers every prompt message) and the bridge path (covers only
+    ``new_messages``). Names are recoverable for any tool message
+    whose issuing assistant also lives in that slice; an "orphan" tool
+    message whose issuer is in the prior portion of a bridged turn
+    gets ``None`` because the bridge attribution doesn't carry the
+    prior conversation forward.
+
+    Returns ``None`` when ``prompt_attribution`` is missing (e.g.
+    rollout didn't go through ``RendererClient``). Returns an empty
+    list when the attribution covers zero messages.
+
+    Trainer joins the returned list with
+    ``prompt_attribution.message_indices`` to recover per-token tool
+    attribution and build selective loss masks (SFT-on-tool-outputs).
+    """
+    if prompt_attribution is None:
+        return None
+    message_roles = getattr(prompt_attribution, "message_roles", None)
+    if message_roles is None:
+        return None
+    n_msgs = len(message_roles)
+    if n_msgs == 0:
+        return []
+
+    # The renderer attribution covers the trailing ``n_msgs`` messages
+    # of ``prompt_messages``. For first-turn renders this is the full
+    # prompt; for bridge attribution it's just ``new_messages``.
+    covered = prompt_messages[-n_msgs:]
+
+    # Build a tool_call_id -> name lookup from assistants in the covered
+    # slice. Tool messages whose tool_call_id was issued by an assistant
+    # outside this slice (prior portion of a bridged turn) won't resolve;
+    # those entries fall through to ``None``.
+    tool_call_id_to_name: dict[str, str] = {}
+    for msg in covered:
+        if _message_role(msg) != "assistant":
+            continue
+        for tc in _message_tool_calls(msg):
+            tc_id = _tool_call_id(tc)
+            tc_name = _tool_call_name(tc)
+            if isinstance(tc_id, str) and isinstance(tc_name, str):
+                tool_call_id_to_name[tc_id] = tc_name
+
+    out: list[str | None] = []
+    for msg in covered:
+        if _message_role(msg) != "tool":
+            out.append(None)
+            continue
+        tc_id = _message_tool_call_id(msg)
+        if not isinstance(tc_id, str):
+            out.append(None)
+            continue
+        out.append(tool_call_id_to_name.get(tc_id))
+    return out
+
+
+def _message_role(message: Any) -> str | None:
+    role = getattr(message, "role", None)
+    if isinstance(role, str):
+        return role
+    if isinstance(message, dict):
+        role = message.get("role")
+        return role if isinstance(role, str) else None
+    return None
+
+
+def _message_tool_calls(message: Any) -> list:
+    """Return the assistant's ``tool_calls`` as an iterable, regardless
+    of whether the message is a Pydantic model (``AssistantMessage``)
+    or a plain dict (e.g. from a renderer-rebuilt history)."""
+    tcs = getattr(message, "tool_calls", None)
+    if tcs is None and isinstance(message, dict):
+        tcs = message.get("tool_calls")
+    if not tcs:
+        return []
+    return list(tcs)
+
+
+def _tool_call_id(tc: Any) -> str | None:
+    tc_id = getattr(tc, "id", None)
+    if isinstance(tc_id, str):
+        return tc_id
+    if isinstance(tc, dict):
+        tc_id = tc.get("id")
+        return tc_id if isinstance(tc_id, str) else None
+    return None
+
+
+def _tool_call_name(tc: Any) -> str | None:
+    # ``ToolCall`` (Pydantic) exposes ``name`` directly; OpenAI dict
+    # shape nests it under ``function.name``. Support both.
+    name = getattr(tc, "name", None)
+    if isinstance(name, str):
+        return name
+    if isinstance(tc, dict):
+        direct = tc.get("name")
+        if isinstance(direct, str):
+            return direct
+        fn = tc.get("function")
+        if isinstance(fn, dict):
+            nested = fn.get("name")
+            return nested if isinstance(nested, str) else None
+    return None
+
+
+def _message_tool_call_id(message: Any) -> str | None:
+    tcid = getattr(message, "tool_call_id", None)
+    if isinstance(tcid, str):
+        return tcid
+    if isinstance(message, dict):
+        tcid = message.get("tool_call_id")
+        return tcid if isinstance(tcid, str) else None
+    return None
+
+
 def truncate_routed_experts(routed_experts: str | None, seq_len: int) -> str | None:
     if routed_experts is None:
         return None

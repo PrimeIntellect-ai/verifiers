@@ -301,6 +301,227 @@ async def test_parse_response_tokens_leaves_prompt_attribution_when_only_complet
     assert out_attr.is_content == [False, True]
 
 
+# ---------------------------------------------------------------------------
+# derive_prompt_message_tool_names — per-message tool function name lookup.
+# ---------------------------------------------------------------------------
+
+
+def test_derive_prompt_message_tool_names_returns_none_without_attribution():
+    """Non-renderer client rollouts carry no ``prompt_attribution``;
+    the helper short-circuits to ``None`` so callers can omit the
+    field on the trajectory step without branching."""
+    from verifiers.utils.response_utils import derive_prompt_message_tool_names
+
+    msgs = [
+        {"role": "user", "content": "Hi"},
+        {"role": "assistant", "content": "Hello!"},
+    ]
+    assert derive_prompt_message_tool_names(msgs, None) is None
+
+
+def test_derive_prompt_message_tool_names_returns_empty_list_on_empty_attribution():
+    """Empty ``message_roles`` (renderer covered zero messages) →
+    empty list, distinct from ``None`` (no attribution at all)."""
+    from renderers.base import RenderedTokens
+
+    from verifiers.utils.response_utils import derive_prompt_message_tool_names
+
+    attribution = RenderedTokens(
+        token_ids=[],
+        message_indices=[],
+        sampled_mask=[],
+        is_content=[],
+        message_roles=[],
+    )
+    out = derive_prompt_message_tool_names([], attribution)
+    assert out == []
+
+
+def test_derive_prompt_message_tool_names_first_turn_render():
+    """On the first turn ``prompt_attribution.message_roles`` covers
+    the full conversation. The helper produces one entry per message:
+    the tool name for tool messages whose ``tool_call_id`` resolves
+    to a preceding assistant's ``tool_calls``, ``None`` otherwise.
+    """
+    from renderers.base import RenderedTokens
+
+    from verifiers.utils.response_utils import derive_prompt_message_tool_names
+
+    msgs = [
+        {"role": "user", "content": "What's 6*7?"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "type": "function",
+                    "id": "c1",
+                    "function": {"name": "calc", "arguments": '{"e": "6*7"}'},
+                }
+            ],
+        },
+        {"role": "tool", "content": "42", "tool_call_id": "c1"},
+        {"role": "user", "content": "What's the capital of France?"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "type": "function",
+                    "id": "c2",
+                    "function": {"name": "lookup", "arguments": '{"q": "capital"}'},
+                }
+            ],
+        },
+        {"role": "tool", "content": "Paris", "tool_call_id": "c2"},
+    ]
+    attribution = RenderedTokens(
+        token_ids=[0] * 6,  # don't care about actual tokens here
+        message_indices=[],
+        sampled_mask=[],
+        is_content=[],
+        message_roles=[m["role"] for m in msgs],
+    )
+    out = derive_prompt_message_tool_names(msgs, attribution)
+    assert out == [None, None, "calc", None, None, "lookup"]
+
+
+def test_derive_prompt_message_tool_names_bridge_with_resolvable_caller():
+    """In the bridge path ``message_roles`` covers only ``new_messages``
+    (the tail of the prompt). When a tool message's issuing assistant
+    is *also* in that tail (a complete tool cycle within the new
+    portion), its name resolves from the in-slice lookup."""
+    from renderers.base import RenderedTokens
+
+    from verifiers.utils.response_utils import derive_prompt_message_tool_names
+
+    full_prompt = [
+        {"role": "user", "content": "First turn"},
+        {"role": "assistant", "content": "First reply"},
+        # The bridge starts here — new_messages is the tail.
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "type": "function",
+                    "id": "c1",
+                    "function": {"name": "lookup", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "content": "result", "tool_call_id": "c1"},
+    ]
+    # Bridge attribution covers the trailing 2 messages.
+    attribution = RenderedTokens(
+        token_ids=[],
+        message_indices=[],
+        sampled_mask=[],
+        is_content=[],
+        message_roles=["assistant", "tool"],
+    )
+    out = derive_prompt_message_tool_names(full_prompt, attribution)
+    assert out == [None, "lookup"]
+
+
+def test_derive_prompt_message_tool_names_bridge_with_orphan_tool_message():
+    """Tool message whose issuing assistant is in the prior portion of
+    a bridged turn is an *orphan* — the bridge attribution only covers
+    the tail, so the lookup misses and the entry is ``None``. This is
+    the documented edge case: trainers should treat orphans as
+    "untrainable" via the natural ``None`` fallthrough."""
+    from renderers.base import RenderedTokens
+
+    from verifiers.utils.response_utils import derive_prompt_message_tool_names
+
+    full_prompt = [
+        # The assistant that issued the tool_call lives in the prior
+        # portion — outside the bridge's covered slice.
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "type": "function",
+                    "id": "c1",
+                    "function": {"name": "lookup", "arguments": "{}"},
+                }
+            ],
+        },
+        # Bridge covers from here on: just the tool message.
+        {"role": "tool", "content": "result", "tool_call_id": "c1"},
+    ]
+    attribution = RenderedTokens(
+        token_ids=[],
+        message_indices=[],
+        sampled_mask=[],
+        is_content=[],
+        message_roles=["tool"],
+    )
+    out = derive_prompt_message_tool_names(full_prompt, attribution)
+    # Orphan — issuing assistant not in the covered slice → None.
+    assert out == [None]
+
+
+def test_derive_prompt_message_tool_names_accepts_pydantic_messages():
+    """``MultiTurnEnv`` passes prompts through that may be either
+    Pydantic ``Message`` instances (``AssistantMessage``,
+    ``ToolMessage``) or plain dicts depending on the env. The helper
+    must handle both — uses ``getattr`` then falls back to dict
+    access."""
+    from renderers.base import RenderedTokens
+
+    from verifiers.types import AssistantMessage, ToolCall, ToolMessage, UserMessage
+    from verifiers.utils.response_utils import derive_prompt_message_tool_names
+
+    msgs = [
+        UserMessage(content="hi"),
+        AssistantMessage(
+            content="",
+            tool_calls=[
+                ToolCall(id="c1", name="lookup", arguments="{}"),
+            ],
+        ),
+        ToolMessage(content="result", tool_call_id="c1"),
+    ]
+    attribution = RenderedTokens(
+        token_ids=[],
+        message_indices=[],
+        sampled_mask=[],
+        is_content=[],
+        message_roles=["user", "assistant", "tool"],
+    )
+    out = derive_prompt_message_tool_names(msgs, attribution)
+    assert out == [None, None, "lookup"]
+
+
+def test_derive_prompt_message_tool_names_handles_tool_call_without_function_envelope():
+    """``ToolCall`` Pydantic exposes ``name`` directly; OpenAI dict
+    shape nests it under ``function.name``. The helper accepts both —
+    no caller has to normalise before calling it."""
+    from renderers.base import RenderedTokens
+
+    from verifiers.utils.response_utils import derive_prompt_message_tool_names
+
+    msgs = [
+        # ToolCall in flat Pydantic shape (no "function" key)
+        {
+            "role": "assistant",
+            "tool_calls": [{"id": "c1", "name": "lookup", "arguments": "{}"}],
+        },
+        {"role": "tool", "content": "ok", "tool_call_id": "c1"},
+    ]
+    attribution = RenderedTokens(
+        token_ids=[],
+        message_indices=[],
+        sampled_mask=[],
+        is_content=[],
+        message_roles=["assistant", "tool"],
+    )
+    out = derive_prompt_message_tool_names(msgs, attribution)
+    assert out == [None, "lookup"]
+
+
 def test_process_trajectory_steps_for_training(make_input):
     """Test processing trajectory steps into training examples."""
     state1 = State(

@@ -20,6 +20,7 @@ from verifiers.utils.message_utils import (
     maybe_normalize_messages,
 )
 from verifiers.utils.response_utils import (
+    derive_prompt_message_tool_names,
     parse_response_message,
     parse_response_tokens,
 )
@@ -152,6 +153,19 @@ class MultiTurnEnv(vf.Environment):
         is_truncated = response_is_truncated or (
             tokens is not None and bool(tokens.get("is_truncated"))
         )
+        if tokens is not None:
+            # Derive per-message tool-function names from the renderer's
+            # prompt attribution + the full prompt-message list. Used
+            # downstream by trainers that want SFT loss on tool response
+            # bodies (joining with prompt_attribution.message_indices to
+            # build per-token masks). ``None`` for non-renderer clients
+            # whose tokens carry no prompt_attribution; we omit the field
+            # in that case so the trajectory step stays minimal.
+            names = derive_prompt_message_tool_names(
+                prompt_messages, tokens.get("prompt_attribution")
+            )
+            if names is not None:
+                tokens["prompt_message_tool_names"] = names
         trajectory_step = TrajectoryStep(
             prompt=prompt_messages,
             completion=completion_messages,
