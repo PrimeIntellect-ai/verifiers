@@ -524,6 +524,7 @@ async def _ttt_prepare_turn(
     model: str,
     prompt_ids: list[int],
     new_token_ids: list[int],
+    new_token_replay_mask: list[bool] | None,
     options: dict[str, Any],
 ) -> dict[str, Any]:
     learner_url = str(options["ttt_learner_url"]).rstrip("/")
@@ -540,12 +541,44 @@ async def _ttt_prepare_turn(
         "model": model,
         "prompt_ids": prompt_ids,
         "new_token_ids": new_token_ids,
+        "new_token_replay_mask": new_token_replay_mask,
     }
     timeout = float(options.get("ttt_request_timeout_s") or 120.0)
     async with httpx.AsyncClient(timeout=timeout) as client:
         response = await client.post(f"{learner_url}/prepare_turn", json=payload)
         response.raise_for_status()
         return response.json()
+
+
+def _windowed_prompt_replay_spans(
+    prepare: dict[str, Any],
+    *,
+    previous_len: int,
+    full_prompt_len: int,
+    windowed_prompt_len: int,
+) -> list[dict[str, Any]]:
+    window_offset = max(full_prompt_len - windowed_prompt_len, 0)
+    spans: list[dict[str, Any]] = []
+    for span in prepare.get("prompt_replay_spans") or []:
+        new_start = span.get("new_start")
+        new_end = span.get("new_end")
+        if not isinstance(new_start, int) or not isinstance(new_end, int):
+            continue
+        abs_start = previous_len + new_start
+        abs_end = previous_len + new_end
+        clipped_start = max(abs_start, window_offset)
+        clipped_end = min(abs_end, full_prompt_len)
+        if clipped_start >= clipped_end:
+            continue
+        spans.append(
+            {
+                **span,
+                "prompt_start": clipped_start - window_offset,
+                "prompt_end": clipped_end - window_offset,
+                "window_offset": window_offset,
+            }
+        )
+    return spans
 
 
 async def _ttt_complete_turn(
@@ -880,6 +913,7 @@ class RendererClient(
         model_for_generation = model
         cache_salt = args.get("cache_salt") or sampling_params.pop("cache_salt", None)
         prompt_tool_output_train_mask: list[bool] | None = None
+        prompt_tool_output_train_mask_full: list[bool] | None = None
         if needs_exact_prompt_ids:
             if ttt_enabled and not ttt_options.get("ttt_learner_url"):
                 raise ValueError(
@@ -931,20 +965,34 @@ class RendererClient(
                         ),
                         tool_output_train_names=tool_output_train_names,
                     )
+                prompt_tool_output_train_mask_full = list(prompt_tool_output_train_mask)
             generation_prompt_ids = _window_prompt_ids(
                 prompt_ids, sampling_params, ttt_options
             )
+            full_prompt_len = len(prompt_ids)
             if prompt_tool_output_train_mask is not None:
                 prompt_tool_output_train_mask = prompt_tool_output_train_mask[
                     -len(generation_prompt_ids) :
                 ]
             if ttt_enabled:
+                new_token_replay_mask = None
+                if prompt_tool_output_train_mask_full is not None:
+                    new_token_replay_mask = prompt_tool_output_train_mask_full[
+                        max(previous_len, 0) :
+                    ]
                 prepare = await _ttt_prepare_turn(
                     state=kwargs.get("state"),
                     model=model,
                     prompt_ids=generation_prompt_ids,
                     new_token_ids=new_prompt_ids,
+                    new_token_replay_mask=new_token_replay_mask,
                     options=ttt_options,
+                )
+                prepare["prompt_adapter_spans"] = _windowed_prompt_replay_spans(
+                    prepare,
+                    previous_len=max(previous_len, 0),
+                    full_prompt_len=full_prompt_len,
+                    windowed_prompt_len=len(generation_prompt_ids),
                 )
                 model_for_generation = str(prepare.get("adapter_name") or model)
             prompt_ids = generation_prompt_ids

@@ -19,6 +19,7 @@ from verifiers.clients.renderer_client import (
     _is_valid_incremental_tail,
     _step_token_ids,
     _to_renderer_message,
+    _windowed_prompt_replay_spans,
 )
 from verifiers.errors import EmptyModelResponseError
 from verifiers.types import (
@@ -406,6 +407,33 @@ def _ttt_sampling_args():
     }
 
 
+def test_windowed_prompt_replay_spans_are_clipped_to_prompt_window():
+    prepare = {
+        "prompt_replay_spans": [
+            {"new_start": 0, "new_end": 4, "adapter_path": "/tmp/a0"},
+            {"new_start": 4, "new_end": 8, "adapter_path": "/tmp/a1"},
+        ]
+    }
+
+    spans = _windowed_prompt_replay_spans(
+        prepare,
+        previous_len=3,
+        full_prompt_len=11,
+        windowed_prompt_len=6,
+    )
+
+    assert spans == [
+        {
+            "new_start": 4,
+            "new_end": 8,
+            "adapter_path": "/tmp/a1",
+            "prompt_start": 2,
+            "prompt_end": 6,
+            "window_offset": 5,
+        }
+    ]
+
+
 @pytest.mark.asyncio
 async def test_renderer_client_ttt_appends_initial_prompt_tokens(
     monkeypatch,
@@ -686,6 +714,7 @@ async def test_renderer_client_tool_output_training_filters_tool_outputs_by_name
 
     prepare_call = _TTTHTTPClient.calls[0]
     assert prepare_call[1]["new_token_ids"] == [40, 41, 50, 51, 42]
+    assert prepare_call[1]["new_token_replay_mask"] == [False, True, False, False, False]
     assert response["prompt_tool_output_train_mask"] == [False, False, False, False, True, False, False, False]
     assert response["tool_output_train_mask"] == [
         False,
