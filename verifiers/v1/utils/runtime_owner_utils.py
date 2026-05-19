@@ -16,6 +16,7 @@ _HANDLER_DEFAULTS: dict[CallableKind, tuple[str, str]] = {
     "reward": ("rewards", "_default_rewards"),
     "advantage": ("advantages", "_default_advantages"),
     "cleanup": ("cleanups", "_default_cleanups"),
+    "teardown": ("teardowns", "_default_teardowns"),
 }
 
 
@@ -30,6 +31,7 @@ class RuntimeOwnerMixin:
     _default_rewards: ClassVar[tuple[Handler, ...]] = ()
     _default_advantages: ClassVar[tuple[Handler, ...]] = ()
     _default_cleanups: ClassVar[tuple[Handler, ...]] = ()
+    _default_teardowns: ClassVar[tuple[Handler, ...]] = ()
 
     config: Config
     toolsets: list[Toolset]
@@ -41,6 +43,7 @@ class RuntimeOwnerMixin:
     rewards: list[Handler]
     advantages: list[Handler]
     cleanups: list[Handler]
+    teardowns: list[Handler]
 
     def _coerce_config(self, config: ConfigSource = None) -> Config:
         return type(self)._config_cls.from_config(config)
@@ -79,6 +82,7 @@ class RuntimeOwnerMixin:
         self.rewards = handlers["reward"]
         self.advantages = handlers["advantage"]
         self.cleanups = handlers["cleanup"]
+        self.teardowns = handlers["teardown"]
 
     def _configure_from_config(self) -> None:
         pass
@@ -119,3 +123,6 @@ class RuntimeOwnerMixin:
 
     def add_cleanup(self, fn: Handler) -> None:
         self._add_handler(self.cleanups, fn)
+
+    def add_teardown(self, fn: Handler) -> None:
+        self._add_handler(self.teardowns, fn)

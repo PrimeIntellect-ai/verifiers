@@ -103,6 +103,19 @@ async def config_group_cleanup(
         state["group_cleaned"] = True
 
 
+TEARDOWN_EVENTS: list[str] = []
+
+
+@vf.teardown
+async def config_taskset_teardown() -> None:
+    TEARDOWN_EVENTS.append("taskset")
+
+
+@vf.teardown
+async def config_harness_teardown() -> None:
+    TEARDOWN_EVENTS.append("harness")
+
+
 @vf.setup(priority=5)
 async def config_setup(task: Mapping[str, object], state: dict[str, object]) -> None:
     _ = task
@@ -319,6 +332,8 @@ setattr(ref_module, "config_reward", config_reward)
 setattr(ref_module, "config_advantage", config_advantage)
 setattr(ref_module, "config_cleanup", config_cleanup)
 setattr(ref_module, "config_group_cleanup", config_group_cleanup)
+setattr(ref_module, "config_taskset_teardown", config_taskset_teardown)
+setattr(ref_module, "config_harness_teardown", config_harness_teardown)
 setattr(ref_module, "config_setup", config_setup)
 setattr(ref_module, "config_update", config_update)
 setattr(ref_module, "updated_reward", updated_reward)
@@ -480,6 +495,7 @@ def test_taskset_config_extends_constructor_surface() -> None:
             "advantages": [ref("config_advantage")],
             "setups": [ref("config_setup")],
             "cleanups": [ref("config_cleanup")],
+            "teardowns": [ref("config_taskset_teardown")],
             "toolsets": [
                 {
                     "tools": [ref("config_tool")],
@@ -502,6 +518,7 @@ def test_taskset_config_extends_constructor_surface() -> None:
     assert taskset.advantages == [config_advantage]
     assert taskset.setups == [config_setup]
     assert taskset.cleanups == [config_cleanup]
+    assert taskset.teardowns == [config_taskset_teardown]
     assert taskset.user is not None
     assert len(taskset.toolsets) == 1
     assert taskset.toolsets[0].tools == (config_tool,)
@@ -623,6 +640,7 @@ def test_harness_config_extends_constructor_surface() -> None:
             "advantages": [ref("config_advantage")],
             "setups": [ref("config_setup")],
             "cleanups": [ref("config_cleanup")],
+            "teardowns": [ref("config_harness_teardown")],
             "toolsets": [
                 {
                     "tools": [ref("config_tool")],
@@ -645,6 +663,7 @@ def test_harness_config_extends_constructor_surface() -> None:
     assert harness.advantages == [config_advantage]
     assert harness.setups == [config_setup]
     assert harness.cleanups == [config_cleanup]
+    assert harness.teardowns == [config_harness_teardown]
     assert harness.user is not None
     assert len(harness.toolsets) == 2
     assert harness.toolsets[0].hide == ("config_tool",)
@@ -755,6 +774,21 @@ async def test_taskset_setup_runs_before_program() -> None:
 
     assert state["program_saw_setup"] is True
     assert state["setup_order"] == ["config_setup"]
+
+
+@pytest.mark.asyncio
+async def test_configured_owner_teardowns_run() -> None:
+    TEARDOWN_EVENTS.clear()
+    taskset = make_taskset(
+        source=source_loader,
+        teardowns=[config_taskset_teardown],
+    )
+    harness = make_harness(teardowns=[config_harness_teardown])
+    Env(taskset=taskset, harness=harness)
+
+    await harness.teardown()
+
+    assert set(TEARDOWN_EVENTS) == {"taskset", "harness"}
 
 
 @pytest.mark.asyncio

@@ -278,6 +278,7 @@ class LifecycleConfig(Config):
     rewards: list[CallableEntry] = []
     advantages: list[CallableEntry] = []
     cleanups: list[CallableEntry] = []
+    teardowns: list[CallableEntry] = []
     scoring: dict[str, ConfigData] = {}
 
     @field_validator("scoring", mode="before")
