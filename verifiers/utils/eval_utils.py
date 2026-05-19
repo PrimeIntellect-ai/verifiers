@@ -1,4 +1,6 @@
 import asyncio
+import importlib
+import inspect
 import itertools
 import json
 import logging
@@ -926,6 +928,20 @@ def quiet_datasets():
         enable_progress_bar()
 
 
+def _load_environment_accepts_arg(env_id: str, arg_name: str) -> bool:
+    module_name = env_id.replace("-", "_").split("/")[-1]
+    try:
+        module = importlib.import_module(module_name)
+        env_load_func = getattr(module, "load_environment")
+        sig = inspect.signature(env_load_func)
+    except Exception:
+        return False
+
+    return arg_name in sig.parameters or any(
+        param.kind == inspect.Parameter.VAR_KEYWORD for param in sig.parameters.values()
+    )
+
+
 async def run_evaluation(
     config: EvalConfig,
     on_start: StartCallback | None = None,
@@ -937,13 +953,22 @@ async def run_evaluation(
     maybe_suppress_logs = (
         log_level(logging.CRITICAL) if not config.disable_env_server else nullcontext()
     )
+    extra_env_kwargs = dict(config.extra_env_kwargs)
+    env_args = dict(config.env_args)
+    if "model" in config.env_args:
+        extra_env_kwargs.pop("model", None)
+    elif "model" in extra_env_kwargs and _load_environment_accepts_arg(
+        config.env_id, "model"
+    ):
+        env_args["model"] = extra_env_kwargs["model"]
+
     with maybe_suppress_logs:
-        vf_env = vf.load_environment(env_id=config.env_id, **config.env_args)
+        vf_env = vf.load_environment(env_id=config.env_id, **env_args)
 
     # set extra environment kwargs
-    if config.extra_env_kwargs:
-        logger.info(f"Setting extra environment kwargs: {config.extra_env_kwargs}")
-        vf_env.set_kwargs(**config.extra_env_kwargs)
+    if extra_env_kwargs:
+        logger.info(f"Setting extra environment kwargs: {extra_env_kwargs}")
+        vf_env.set_kwargs(**extra_env_kwargs)
 
     results_path = config.resume_path or get_eval_results_path(config)
     model_pricing = await _resolve_model_pricing(config)
@@ -951,7 +976,7 @@ async def run_evaluation(
 
     try:
         if not config.disable_env_server:
-            extra_env_kwargs = dict(config.extra_env_kwargs)
+            extra_env_kwargs = dict(extra_env_kwargs)
             # resolve total concurrency
             if "concurrency" not in extra_env_kwargs:
                 if config.max_concurrent <= 0:
