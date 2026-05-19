@@ -282,6 +282,8 @@ def state_to_output(
         output[k] = v
     # add state columns (must be serializable)
     for col in state_columns or []:
+        if col in output:
+            continue
         value = state.get(col)
         if col == "trajectory":
             # Renderer multimodal rollouts accumulate mm_data on every step

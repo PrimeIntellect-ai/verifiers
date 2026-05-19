@@ -234,6 +234,22 @@ class TestSavingResults:
             "final_output_tokens": 5,
         }
 
+    def test_state_columns_do_not_overwrite_standard_output_fields(self, make_state):
+        state = make_state()
+        tracker = StateUsageTracker()
+        tracker.increment(input_tokens=3, output_tokens=4)
+        state["usage_tracker"] = tracker
+        state["usage"] = tracker.usage
+        state["trajectory"] = [{"step": 1}]
+
+        output = states_to_outputs(
+            [state], state_columns=["token_usage", "trajectory"]
+        )[0]
+
+        assert output["token_usage"]["input_tokens"] == 3.0
+        assert output["token_usage"]["output_tokens"] == 4.0
+        assert output["trajectory"] == [{"step": 1}]
+
     def test_states_to_outputs(self, make_state):
         states = [
             make_state(
