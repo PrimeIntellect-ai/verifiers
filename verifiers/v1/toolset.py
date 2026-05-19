@@ -113,6 +113,8 @@ class Toolset:
             ]
         if show is not None and hide is not None:
             raise ValueError("Toolset accepts show or hide, not both.")
+        if write is not None and not isinstance(write, bool):
+            raise TypeError("Toolset write must be a boolean.")
         object.__setattr__(self, "tools", tuple(tool_values))
         object.__setattr__(self, "show", tuple(show) if show is not None else None)
         object.__setattr__(self, "hide", tuple(hide) if hide is not None else None)

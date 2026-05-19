@@ -400,6 +400,11 @@ def test_toolset_mapping_treats_show_hide_strings_as_tool_names() -> None:
     assert hidden.hide == ("hidden_tool",)
 
 
+def test_inline_toolset_mapping_rejects_non_boolean_write() -> None:
+    with pytest.raises(TypeError, match="Toolset write must be a boolean"):
+        normalize_toolset({"tools": [direct_tool], "write": "false"})
+
+
 def ref(name: str) -> str:
     return f"{REF_MODULE}:{name}"
 
