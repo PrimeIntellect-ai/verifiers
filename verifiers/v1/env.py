@@ -166,13 +166,15 @@ class Env(vf.Environment):
         return states
 
 
-def builder_config_type(builder: object, base: type[ConfigT]) -> type[ConfigT]:
+def builder_config_type(
+    builder: TasksetBuilder | HarnessBuilder, base: type[ConfigT]
+) -> type[ConfigT]:
     if isinstance(builder, Taskset | Harness):
         return cast(type[ConfigT], type(builder.config))
     config_cls = getattr(builder, "_config_cls", None)
     if isinstance(config_cls, type) and issubclass(config_cls, base):
         return cast(type[ConfigT], config_cls)
-    signature = inspect.signature(cast(Callable[..., object], builder))
+    signature = inspect.signature(cast(Callable[..., Taskset | Harness], builder))
     if "config" not in signature.parameters:
         return base
     try:
