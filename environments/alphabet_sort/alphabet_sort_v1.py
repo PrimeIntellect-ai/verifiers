@@ -330,7 +330,7 @@ class AlphabetSortTaskset(vf.Taskset[AlphabetSortTasksetConfig]):
     _default_rewards = (weighted_reward,)
     _default_user = alphabet_user
 
-    def _configure_from_config(self) -> None:
+    def _configure_runtime_defaults(self) -> None:
         validate_parameters(
             min_turns=self.config.min_turns,
             max_turns=self.config.max_turns,

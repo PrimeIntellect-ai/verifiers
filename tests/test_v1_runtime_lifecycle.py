@@ -829,7 +829,7 @@ async def test_taskset_setup_initializes_base_harness_prompt_and_sampling() -> N
         source=[{"prompt": [], "answer": "ready", "max_turns": 3}],
         setups=[initialize_from_taskset],
     )
-    env = vf.Env(taskset=taskset)
+    env = vf.Env(None, taskset=taskset)
     client = CapturingModelClient([fake_response(content="ok")])
 
     state = await env.rollout(

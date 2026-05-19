@@ -181,7 +181,14 @@ For example, Harbor task directories can run through the bundled OpenCode CLI
 harness with:
 
 ```python
-env = vf.Env(taskset=vf.HarborTaskset, harness=vf.OpenCode)
+env = vf.Env(
+    vf.EnvConfig(
+        taskset=vf.HarborTasksetConfig(),
+        harness=vf.OpenCodeConfig(),
+    ),
+    taskset=vf.HarborTaskset,
+    harness=vf.OpenCode,
+)
 ```
 
 The same environment package is the unit used by evals and `prime-rl`. The

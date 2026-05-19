@@ -56,6 +56,14 @@ def explicit_config_data(
     return data
 
 
+def coerce_config(config_cls: type[ConfigT], value: object = None) -> ConfigT:
+    if value is None:
+        return config_cls()
+    if isinstance(value, config_cls):
+        return value
+    return config_cls.model_validate(explicit_config_data(value))
+
+
 def resolved_config_data(
     value: object, target: type[BaseModel] | None = None
 ) -> ConfigData:

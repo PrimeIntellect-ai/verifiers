@@ -7,6 +7,7 @@ from typing import Callable, Union, get_args, get_origin, get_type_hints
 from verifiers.envs.environment import Environment
 from verifiers.utils.config_utils import MissingKeyError
 from verifiers.v1.config import EnvConfig
+from verifiers.v1.utils.config_utils import coerce_config
 
 
 def load_environment(env_id: str, **env_args) -> Environment:
@@ -113,7 +114,7 @@ def prepare_typed_env_config(
         return env_args
 
     call_env_args = dict(env_args)
-    call_env_args["config"] = config_type.from_config(config)
+    call_env_args["config"] = coerce_config(config_type, config)
     return call_env_args
 
 

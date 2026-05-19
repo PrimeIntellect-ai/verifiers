@@ -14,6 +14,7 @@ import verifiers as core_vf
 import verifiers as vf
 from verifiers.types import Tool
 from verifiers.v1.types import ConfigMap
+from verifiers.v1.utils.config_utils import coerce_config
 
 from tau2.agent.llm_agent import AGENT_INSTRUCTION, SYSTEM_PROMPT, LLMAgent
 from tau2.agent.llm_agent import is_valid_agent_history_message
@@ -681,7 +682,7 @@ class Tau2Taskset(vf.Taskset[Tau2TasksetConfig]):
         self,
         config: Tau2TasksetConfig | None = None,
     ):
-        config = Tau2TasksetConfig.from_config(config)
+        config = coerce_config(Tau2TasksetConfig, config)
         resolved_user_args = (
             DEFAULT_LLM_ARGS_USER if config.user_args is None else config.user_args
         )

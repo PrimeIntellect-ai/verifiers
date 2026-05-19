@@ -689,11 +689,12 @@ dependencies come from normal `[project.dependencies]`.
 
 ```python
 class Env(vf.Environment):
-    def __init__(taskset: Taskset, harness: Harness | None = None): ...
+    def __init__(config, *, taskset=Taskset, harness=Harness): ...
 ```
 
 Adapter that makes a v1 taskset/harness pair usable by eval and training
-workers. If `harness` is omitted, `Env` uses the base `Harness`.
+workers. `config` is an `EnvConfig` object or mapping with nested `taskset` and
+`harness` sections.
 
 #### Toolset And MCPTool
 
@@ -729,17 +730,18 @@ callable sources.
 #### v1 Config Models
 
 ```python
-TasksetConfig.from_toml(path, section=None)
-HarnessConfig.from_toml(path, section=None)
+TasksetConfig(...)
+HarnessConfig(...)
 ToolsetConfig(...)
 SandboxConfig(...)
 UserConfig(...)
 MCPToolConfig(...)
 ```
 
-v1 config models are Pydantic models. Constructors accept config objects or
-plain mappings; TOML config uses `"module:object"` refs for Python callables and
-loaders. Unknown fields fail validation.
+v1 config models are strict Pydantic models. Python code builds them directly,
+and TOML config validates into the same models at the loader boundary. TOML
+uses `"module:object"` refs for Python callables and loaders. Unknown fields
+fail validation.
 
 ---
 
@@ -966,15 +968,7 @@ Provider-agnostic tool definition. Environments define tools using this type; ea
 
 ```python
 class Config(BaseModel):
-    def __init__(self, config: object | None = None, /, **data: object): ...
-
-    @classmethod
-    def from_config(cls, config: object | None = None, /, **data: object) -> Self: ...
-
-    @classmethod
-    def from_toml(
-        cls, path: str | Path, section: str | Iterable[str] | None = None
-    ) -> Self: ...
+    ...
 
 class EnvConfig(Config):
     taskset: TasksetConfig

@@ -280,7 +280,7 @@ class WikiSearchEnvConfig(vf.EnvConfig):
 class WikiSearchTaskset(vf.Taskset[WikiSearchTasksetConfig]):
     _default_source = source
 
-    def _configure_from_config(self) -> None:
+    def _configure_runtime_defaults(self) -> None:
         config = self.config
         if "rewards" not in config.model_fields_set:
             self.add_reward(

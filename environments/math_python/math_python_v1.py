@@ -152,7 +152,7 @@ class MathPythonTaskset(vf.Taskset[MathPythonTasksetConfig]):
 
 
 class MathPythonHarness(vf.Harness[MathPythonHarnessConfig]):
-    def _configure_from_config(self) -> None:
+    def _configure_runtime_defaults(self) -> None:
         if "toolsets" in self.config.model_fields_set:
             return
         config = self.config

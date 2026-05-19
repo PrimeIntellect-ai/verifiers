@@ -10,6 +10,7 @@ from typing import Protocol, cast
 from datasets import load_dataset
 import verifiers as vf
 from verifiers.v1.types import ConfigMap
+from verifiers.v1.utils.config_utils import coerce_config
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +67,7 @@ class R2ESandbox(Protocol):
 
 class R2ESWETaskset(vf.Taskset[RlmSweTasksetConfig]):
     def __init__(self, config: RlmSweTasksetConfig | None = None):
-        config = RlmSweTasksetConfig.from_config(config)
+        config = coerce_config(RlmSweTasksetConfig, config)
         self.dataset_name = config.dataset_name
         self.repo_path = config.repo_path
         self.alt_path = config.alt_path
@@ -466,7 +467,7 @@ def load_harness(
     config: vf.RLMConfig | None = None,
     taskset: R2ESWETaskset | None = None,
 ) -> vf.RLM:
-    user_config = vf.RLMConfig.from_config(config)
+    user_config = coerce_config(vf.RLMConfig, config)
     base_data = vf.RLMConfig(
         workdir=DEFAULT_REPO_PATH,
         rlm_tools=list(DEFAULT_RLM_TOOLS),
@@ -497,7 +498,7 @@ class RlmSweEnvConfig(vf.EnvConfig):
 
 
 def load_environment(config: RlmSweEnvConfig | None = None) -> vf.Env:
-    config = RlmSweEnvConfig.from_config(config)
+    config = coerce_config(RlmSweEnvConfig, config)
     taskset = load_taskset(config=config.taskset)
     harness = load_harness(config=config.harness, taskset=taskset)
-    return vf.Env(taskset=taskset, harness=harness)
+    return vf.Env(config, taskset=taskset, harness=harness)

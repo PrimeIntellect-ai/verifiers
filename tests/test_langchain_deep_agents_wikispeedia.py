@@ -208,6 +208,7 @@ async def test_wikispeedia_tools_resolve_through_v1_runtime(
     wiki = make_small_wiki(module)
     monkeypatch.setattr(module, "load_wiki_graph", lambda cache_dir=None: wiki)
     env = vf.Env(
+        None,
         taskset=module.load_taskset(
             config=module.WikispeediaTasksetConfig(
                 train_size=2,

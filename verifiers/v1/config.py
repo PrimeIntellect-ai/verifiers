@@ -1,6 +1,4 @@
-from collections.abc import Iterable, Mapping
-from pathlib import Path
-import sys
+from collections.abc import Mapping
 from os import PathLike
 from typing import Literal, TypeAlias, cast
 
@@ -17,6 +15,7 @@ from .utils.config_callable_utils import (
 )
 from .utils.config_utils import (
     annotation_text,
+    coerce_config,
     default_text,
     explicit_config_data,
     import_config_ref as import_config_ref,
@@ -26,11 +25,6 @@ from .utils.config_utils import (
 )
 from .utils.mcp_proxy_utils import validate_program_channels
 from verifiers.types import ClientConfig
-
-if sys.version_info >= (3, 11):
-    import tomllib
-else:
-    import tomli as tomllib
 
 
 JsonMap: TypeAlias = ConfigData
@@ -55,28 +49,6 @@ class Config(BaseConfig):
                 getattr(self, name), f"{type(self).__name__}.{name}"
             )
         return self
-
-    @classmethod
-    def from_config(cls, config: ConfigSource = None) -> Self:
-        if config is None:
-            return cls()
-        if isinstance(config, cls):
-            return config
-        return cls.model_validate(explicit_config_data(config))
-
-    @classmethod
-    def from_toml(
-        cls, path: str | Path, section: str | Iterable[str] | None = None
-    ) -> Self:
-        with Path(path).open("rb") as f:
-            data: object = tomllib.load(f)
-        if section is not None:
-            keys = section.split(".") if isinstance(section, str) else list(section)
-            for key in keys:
-                if not isinstance(data, Mapping):
-                    raise TypeError(f"TOML section {section!r} does not exist.")
-                data = data[key]
-        return cls.from_config(cast(ConfigMap, data))
 
     @classmethod
     def schema_text(cls) -> str:
@@ -261,7 +233,7 @@ def validate_scoring_map(value: object, field: str) -> dict[str, ConfigData]:
             data = string_mapping(cast(ConfigInputMap, item))
         else:
             raise TypeError(f"{field}.{name} must be a mapping.")
-        result[name] = SignalConfig.from_config(data).model_dump(
+        result[name] = coerce_config(SignalConfig, data).model_dump(
             exclude_none=True,
             exclude_unset=True,
         )

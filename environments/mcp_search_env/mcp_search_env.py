@@ -78,7 +78,7 @@ class MCPSearchTasksetConfig(vf.TasksetConfig):
 
 
 class MCPSearchTaskset(vf.Taskset[MCPSearchTasksetConfig]):
-    def _configure_from_config(self) -> None:
+    def _configure_runtime_defaults(self) -> None:
         if "toolsets" not in self.config.model_fields_set:
             self.add_toolset(load_toolset(mcp_servers=self.config.mcp_servers))
 
@@ -100,7 +100,7 @@ def source(
         }
 
 
-def mcp_tool_from_config(config: vf.ConfigMap) -> vf.MCPTool:
+def mcp_tool(config: vf.ConfigMap) -> vf.MCPTool:
     return vf.MCPTool(
         command=str(config["command"]),
         args=[
@@ -136,7 +136,7 @@ def load_toolset(
 ) -> vf.Toolset:
     servers = mcp_servers or [dict(server) for server in DEFAULT_MCP_SERVERS]
     return vf.Toolset(
-        tools=[mcp_tool_from_config(server) for server in servers],
+        tools=[mcp_tool(server) for server in servers],
         config=config,
     )
 

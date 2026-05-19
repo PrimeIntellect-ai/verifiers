@@ -153,9 +153,11 @@ def test_env(env_dir: Path, tmp_path_factory: pytest.TempPathFactory):
     repo_root = Path(__file__).parent.parent
     cmd = (
         f"cd {tmp_venv_dir} && uv venv --clear && source .venv/bin/activate && "
-        "uv pip install --exclude-newer-package prime-pydantic-config=false "
+        "uv pip install "
+        "--exclude-newer-package prime-pydantic-config=2026-05-20T00:00:00Z "
         f"{repo_root.as_posix()} && "
-        "uv pip install --exclude-newer-package prime-pydantic-config=false "
+        "uv pip install "
+        "--exclude-newer-package prime-pydantic-config=2026-05-20T00:00:00Z "
         f"{env_dir.absolute().as_posix()}"
     )
     try:

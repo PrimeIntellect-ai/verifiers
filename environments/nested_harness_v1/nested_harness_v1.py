@@ -95,7 +95,7 @@ class NestedHarness(vf.Harness[NestedHarnessConfig]):
     _default_program = parent_program
     _default_metrics = (child_calls,)
 
-    def _configure_from_config(self) -> None:
+    def _configure_runtime_defaults(self) -> None:
         if "toolsets" not in self.config.model_fields_set:
             self.add_toolset({"nested": load_toolset(config=self.config.toolset)})
 

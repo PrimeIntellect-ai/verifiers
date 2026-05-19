@@ -6,6 +6,7 @@ from ..toolset import Toolset, merge_toolsets, normalize_toolset_collection
 from ..types import Handler
 from ..user import normalize_user
 from .config_callable_utils import CallableKind, merge_config_handler_map
+from .config_utils import coerce_config
 
 
 _HANDLER_DEFAULTS: dict[CallableKind, tuple[str, str]] = {
@@ -46,7 +47,7 @@ class RuntimeOwnerMixin:
     teardowns: list[Handler]
 
     def _coerce_config(self, config: ConfigSource = None) -> Config:
-        return type(self)._config_cls.from_config(config)
+        return coerce_config(type(self)._config_cls, config)
 
     def _field_was_set(self, field: str) -> bool:
         return field in self.config.model_fields_set
@@ -84,7 +85,7 @@ class RuntimeOwnerMixin:
         self.cleanups = handlers["cleanup"]
         self.teardowns = handlers["teardown"]
 
-    def _configure_from_config(self) -> None:
+    def _configure_runtime_defaults(self) -> None:
         pass
 
     def _runtime_owner_changed(self) -> None:

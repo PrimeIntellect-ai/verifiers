@@ -6,6 +6,7 @@ from typing import Literal, cast
 from .config import UserConfig, import_config_ref, resolve_config_object
 from .utils.binding_utils import BindingMap, normalize_binding_map
 from .utils.binding_utils import normalize_object_map
+from .utils.config_utils import coerce_config
 from .utils.trajectory_utils import completion_from_trajectory
 from .types import ConfigMap, Handler, Objects, PromptMessage
 
@@ -72,7 +73,7 @@ def normalize_user(value: object | None) -> User | None:
 
 
 def user_from_mapping(spec: ConfigMap) -> User:
-    config = UserConfig.from_config(spec)
+    config = coerce_config(UserConfig, spec)
     fn = config.fn
     if isinstance(fn, str):
         fn = import_config_ref(fn)

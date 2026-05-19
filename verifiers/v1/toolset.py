@@ -16,7 +16,7 @@ from .config import (
 )
 from .utils.binding_utils import BindingMap, normalize_binding_map
 from .utils.binding_utils import normalize_object_map
-from .utils.config_utils import resolved_config_data
+from .utils.config_utils import coerce_config, resolved_config_data
 from .types import ConfigMap, Handler, Objects, ToolSpec
 
 ToolsetCallableEntry: TypeAlias = CallableEntry | Handler
@@ -229,7 +229,7 @@ def normalize_toolset_collection(
                 raise TypeError("Toolset names must be strings.")
             if key in named:
                 raise ValueError(f"Toolset {key!r} is defined twice.")
-            named[key] = named_toolset_from_config(key, item)
+            named[key] = named_toolset(key, item)
         return list(named.values()), named
     if isinstance(value, str):
         return [normalize_toolset(value)], {}
@@ -238,7 +238,7 @@ def normalize_toolset_collection(
     return normalize_toolsets(cast(Iterable[ToolEntry], value)), {}
 
 
-def named_toolset_from_config(name: str, value: object) -> Toolset:
+def named_toolset(name: str, value: object) -> Toolset:
     value = resolve_config_object(value)
     if isinstance(value, Toolset):
         return value
@@ -331,10 +331,21 @@ def tool_item(value: object) -> "ToolEntry":
     if isinstance(value, Toolset | MCPTool):
         return value
     if isinstance(value, MCPToolConfig):
-        return MCPTool.from_mapping(value.model_dump(exclude_none=True))
+        return MCPTool(
+            command=value.command,
+            args=value.args,
+            env=value.env,
+            cwd=value.cwd,
+        )
     if isinstance(value, Mapping):
         if "command" in value:
-            return MCPTool.from_mapping(cast(ConfigMap, value))
+            config = coerce_config(MCPToolConfig, value)
+            return MCPTool(
+                command=config.command,
+                args=config.args,
+                env=config.env,
+                cwd=config.cwd,
+            )
         raise TypeError("Tool mapping specs require command.")
     if not callable(value):
         raise TypeError("Tool entries must be callables, Toolsets, or MCP tool specs.")
@@ -344,7 +355,7 @@ def tool_item(value: object) -> "ToolEntry":
 def toolset_config_mapping(config: ToolsetConfig | None) -> ConfigMap:
     if config is None:
         return {}
-    return resolved_config_data(ToolsetConfig.from_config(config))
+    return resolved_config_data(coerce_config(ToolsetConfig, config))
 
 
 def string_items(value: object) -> list[str] | None:
@@ -390,16 +401,6 @@ class MCPTool:
         object.__setattr__(self, "args", tuple(args))
         object.__setattr__(self, "env", dict(env) if env is not None else None)
         object.__setattr__(self, "cwd", cwd)
-
-    @classmethod
-    def from_mapping(cls, spec: ConfigMap) -> "MCPTool":
-        config = MCPToolConfig.from_config(spec)
-        return cls(
-            command=config.command,
-            args=config.args,
-            env=config.env,
-            cwd=config.cwd,
-        )
 
 
 ToolEntry: TypeAlias = Handler | str | ConfigMap | Toolset | MCPTool | MCPToolConfig

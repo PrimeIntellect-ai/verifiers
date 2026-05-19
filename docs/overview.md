@@ -128,8 +128,12 @@ CLI harness with:
 
 ```python
 env = vf.Env(
-    taskset=vf.HarborTaskset(config=vf.HarborTasksetConfig()),
-    harness=vf.OpenCode(config=vf.OpenCodeConfig()),
+    vf.EnvConfig(
+        taskset=vf.HarborTasksetConfig(),
+        harness=vf.OpenCodeConfig(),
+    ),
+    taskset=vf.HarborTaskset,
+    harness=vf.OpenCode,
 )
 ```
 

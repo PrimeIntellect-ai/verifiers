@@ -110,7 +110,7 @@ class Harness(ConfigBound[HarnessConfigT], RuntimeOwnerMixin):
         if keep_step_value is not None and not callable(keep_step_value):
             raise TypeError("keep_trajectory_step must be callable.")
         self.keep_trajectory_step = cast(Handler | None, keep_step_value)
-        self._configure_from_config()
+        self._configure_runtime_defaults()
         self.taskset: "Taskset | None" = None
         self.runtime = self.resolve_runtime()
         self.endpoint = Endpoint(use_tunnel=self.program_uses_sandbox())

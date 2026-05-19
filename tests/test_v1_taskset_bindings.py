@@ -110,7 +110,7 @@ async def extracted_answer_reward(task, state, extract_answer) -> float:
 
 
 async def score_taskset(taskset: vf.Taskset) -> vf.State:
-    env = vf.Env(taskset=taskset, harness=vf.Harness())
+    env = vf.Env(None, taskset=taskset, harness=vf.Harness())
     task = next(iter(taskset))
     state = await env.harness.setup_state(task, vf.State.for_task(task))
     await env.harness.runtime.score_rollout(task, state)
@@ -147,7 +147,7 @@ async def test_taskset_object_factory_is_lazy_and_resolved_once() -> None:
         objects={"prefixer": make_prefixer},
         bindings={"prefix_reward.prefixer": "objects.prefixer"},
     )
-    env = vf.Env(taskset=taskset, harness=vf.Harness())
+    env = vf.Env(None, taskset=taskset, harness=vf.Harness())
     task = next(iter(taskset))
     state = await env.harness.setup_state(task, vf.State.for_task(task))
 
@@ -179,7 +179,7 @@ async def test_caller_kwargs_win_over_taskset_bindings_for_handlers() -> None:
         objects={"token": lambda: "bound"},
         bindings={"setup_with_override.token": "objects.token"},
     )
-    env = vf.Env(taskset=taskset, harness=vf.Harness())
+    env = vf.Env(None, taskset=taskset, harness=vf.Harness())
     task = next(iter(taskset))
     state = vf.State.for_task(task)
 
@@ -226,7 +226,7 @@ async def test_taskset_bindings_support_shared_extractor_pattern() -> None:
         objects={"extract_answer": lambda: TagExtractor("answer")},
         bindings={"extracted_answer_reward.extract_answer": "objects.extract_answer"},
     )
-    env = vf.Env(taskset=taskset, harness=vf.Harness())
+    env = vf.Env(None, taskset=taskset, harness=vf.Harness())
     task = next(iter(taskset))
     state = await env.harness.setup_state(task, vf.State.for_task(task))
     state["completion"] = [{"role": "assistant", "content": "<answer>ok</answer>"}]

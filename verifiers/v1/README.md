@@ -117,13 +117,13 @@ across local Python programs, command programs, and sandboxed programs.
 `Env` is the eval/training adapter:
 
 ```python
-env = vf.Env(taskset=taskset, harness=harness)
+env = vf.Env(config, taskset=MyTaskset, harness=MyHarness)
 ```
 
 If `harness` is omitted, `Env` uses the base endpoint-backed `Harness`:
 
 ```python
-env = vf.Env(taskset=taskset)
+env = vf.Env(config, taskset=MyTaskset)
 ```
 
 Normal v1 environment packages should not subclass `Env`. Define or configure a
@@ -438,8 +438,12 @@ class ReplayHarness(vf.Harness[vf.HarnessConfig]):
 
 
 env = vf.Env(
-    taskset=ReplayTaskset(config=ReplayTasksetConfig()),
-    harness=ReplayHarness(),
+    vf.EnvConfig(
+        taskset=ReplayTasksetConfig(),
+        harness=ReplayHarnessConfig(),
+    ),
+    taskset=ReplayTaskset,
+    harness=ReplayHarness,
 )
 ```
 
@@ -575,12 +579,16 @@ common coding-agent CLIs.
 import verifiers as vf
 
 env = vf.Env(
-    taskset=vf.HarborTaskset(config=vf.HarborTasksetConfig()),
-    harness=vf.OpenCode(config=vf.OpenCodeConfig()),
+    vf.EnvConfig(
+        taskset=vf.HarborTasksetConfig(),
+        harness=vf.OpenCodeConfig(),
+    ),
+    taskset=vf.HarborTaskset,
+    harness=vf.OpenCode,
 )
 ```
 
-`HarborTaskset(config=vf.HarborTasksetConfig())` loads Harbor-format task
+`vf.HarborTaskset` loads Harbor-format task
 directories from the environment package's reserved `tasks/` directory. Set
 `dataset = "owner/name"` on the config to fetch a Harbor Hub dataset. Harbor
 task rows contribute sandbox settings and
@@ -1527,11 +1535,17 @@ yield {
 
 ### Loading Config In Code
 
-Config objects can be loaded directly from a TOML section:
+TOML sections validate into the same config objects used by Python:
 
 ```python
-taskset_config = vf.TasksetConfig.from_toml("local.toml", "taskset")
-harness_config = vf.HarnessConfig.from_toml("local.toml", "harness")
+import tomllib
+
+
+with open("local.toml", "rb") as f:
+    raw = tomllib.load(f)
+
+taskset_config = MyTasksetConfig.model_validate(raw["taskset"])
+harness_config = MyHarnessConfig.model_validate(raw["harness"])
 
 env = vf.Env(
     MyEnvConfig(taskset=taskset_config, harness=harness_config),
@@ -1558,7 +1572,7 @@ class WikiTaskset(vf.Taskset[WikiTasksetConfig]):
     def rows(self) -> list[dict[str, object]]:
         return load_rows()
 
-    def _configure_from_config(self) -> None:
+    def _configure_runtime_defaults(self) -> None:
         def load_db():
             return open_db(self.config.db_path)
 

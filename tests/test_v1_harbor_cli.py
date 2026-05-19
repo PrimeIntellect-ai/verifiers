@@ -67,7 +67,7 @@ def load_taskset(config: vf.HarborTasksetConfig | None = None):
 
 
 def load_env():
-    return vf.Env(taskset=vf.HarborTaskset(), harness=vf.OpenCode())
+    return vf.Env(None, taskset=vf.HarborTaskset(), harness=vf.OpenCode())
 """.lstrip()
     )
     monkeypatch.syspath_prepend(str(tmp_path))

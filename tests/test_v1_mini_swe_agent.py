@@ -46,7 +46,7 @@ import verifiers.v1 as vf
 
 
 def load_env():
-    return vf.Env(taskset=vf.HarborTaskset(), harness=vf.MiniSWEAgent())
+    return vf.Env(None, taskset=vf.HarborTaskset(), harness=vf.MiniSWEAgent())
 """.lstrip()
     )
     monkeypatch.syspath_prepend(str(tmp_path))

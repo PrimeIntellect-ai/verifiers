@@ -137,7 +137,7 @@ Migration:
 
 1. Convert the old dataset builder into `Taskset.rows()`.
 2. Convert each reward or metric into `@vf.reward` / `@vf.metric`.
-3. Return `vf.Env(taskset=taskset)`.
+3. Return `vf.Env(config, taskset=TasksetClass)`.
 
 Example:
 
@@ -283,7 +283,7 @@ class SearchTaskset(vf.Taskset[SearchTasksetConfig]):
         ]
 
 
-env = vf.Env(taskset=SearchTaskset)
+env = vf.Env(vf.EnvConfig(), taskset=SearchTaskset)
 ```
 
 Gotchas:
@@ -399,7 +399,14 @@ directories, and other sandboxed CLI programs. Prefer packaged harnesses when
 the format already matches:
 
 ```python
-env = vf.Env(taskset=vf.HarborTaskset, harness=vf.OpenCode)
+env = vf.Env(
+    vf.EnvConfig(
+        taskset=vf.HarborTasksetConfig(),
+        harness=vf.OpenCodeConfig(),
+    ),
+    taskset=vf.HarborTaskset,
+    harness=vf.OpenCode,
+)
 ```
 
 For custom command programs, put task-directory metadata on `task`, use

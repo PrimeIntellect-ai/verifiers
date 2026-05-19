@@ -81,7 +81,7 @@ class Taskset(ConfigBound[TasksetConfigT], RuntimeOwnerMixin):
         self._dataset: Dataset | None = None
         self._eval_dataset: Dataset | None = None
         self._attached_harnesses: weakref.WeakSet["Harness"] = weakref.WeakSet()
-        self._configure_from_config()
+        self._configure_runtime_defaults()
 
     def attach_harness(self, harness: "Harness") -> None:
         self._attached_harnesses.add(harness)
