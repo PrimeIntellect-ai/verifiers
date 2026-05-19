@@ -74,7 +74,7 @@ prime eval run langchain-deep-agents-wikispeedia
 | `split_seed` | int | `0` | Seed for deterministic train/eval split. |
 | `links_only` | bool | `False` | Render articles as just the link menu (ablation: tests whether the agent navigates from semantic content or link names alone). |
 | `allow_go_back` | bool | `True` | Expose the `go_back` tool. |
-| `max_turns` | int | `50` | Per-rollout turn cap. |
+| `max_turns` | int | `50` | Per-rollout LangGraph recursion limit stored on each task row. This is not a literal model-turn count; Deep Agents may spend multiple graph steps per model/tool cycle. |
 | `efficiency_weight` | float | `0.0` | If `> 0`, mix `path_efficiency` into the reward at this weight (a near-optimal route earns up to `1 + efficiency_weight`; a wanderer that reaches the target still earns `1`). Default `0.0` keeps reward as pure binary reachability. |
 | `stratify_path_length` | bool | `True` | Take equal counts at each shortest-path bucket inside `[min_path_length, max_path_length]`, capped at the smallest non-empty bucket. The SNAP graph's natural distribution heavily skews toward the lower end of any band (4-6 → 83% sp=4); without stratification the policy over-trains on the trivial floor. Set `False` to recover the natural distribution. |
 
@@ -82,7 +82,7 @@ prime eval run langchain-deep-agents-wikispeedia
 
 | Field | Type | Default | Description |
 | --- | ---- | ------- | ----------- |
-| `max_turns` | int | `50` | LangChain recursion limit fallback when runtime config does not provide one. |
+| `max_turns` | int | `50` | LangGraph recursion limit fallback when runtime config does not provide one. This is not directly correlated with model turns. |
 | `timeout_seconds` | float | `1200.0` | Per-rollout wall-clock cap. |
 
 ### Metrics
@@ -103,3 +103,4 @@ prime eval run langchain-deep-agents-wikispeedia
 - Reward is `reached_target` only — exact, deterministic, no judge required. The deep-agent structural metrics are zero-weight so they show up in eval tables without shaping the policy.
 - `min_path_length=4, max_path_length=6` is the calibrated RL difficulty band for Nemotron-30B-A3B-BF16 — predicted ~0.3-0.4 reach rate, the useful-gradient zone. The 3-5 band landed at 0.61 mean reach (dominated by the trivial sp=3 floor where the deep-agent scaffolding is decorative); the 5-7 band landed at 0.13 with 27% timeouts.
 - This is the primary LangChain Deep Agents example because tool use is load-bearing: the model cannot reach the target without invoking `click_link`.
+- `max_turns` is passed through to LangGraph as `recursion_limit`. It caps graph execution steps, not model calls, so the observed number of model/tool cycles can be lower than the configured value.

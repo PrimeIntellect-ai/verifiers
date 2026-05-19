@@ -50,6 +50,7 @@ tools at that point and reply with a brief confirmation."""
 SYSTEM_PROMPT = system_prompt()
 ENV_ID = "langchain-deep-agents-wikispeedia"
 AGENT_NAME = "wikispeedia-navigator"
+NAVIGATION_TOOL_CALLS_KEY = "navigation_tool_calls"
 
 
 class WikispeediaTasksetConfig(vf.TasksetConfig):
@@ -94,6 +95,14 @@ def format_article(wiki: WikiGraph, article: str, links_only: bool = False) -> s
     return f"# {article}\n\n{text}\n\n---\nAvailable links: {links_str}"
 
 
+def record_navigation_tool_call(state: vf.State, name: str, valid: bool) -> None:
+    calls = state.get(NAVIGATION_TOOL_CALLS_KEY)
+    if not isinstance(calls, list):
+        calls = []
+        state[NAVIGATION_TOOL_CALLS_KEY] = calls
+    calls.append({"name": name, "valid": valid})
+
+
 async def click_link(article: str, wiki: WikiGraph, state: vf.State) -> str:
     """Navigate to a linked Wikipedia article."""
     links_only = bool(state.get("links_only", False))
@@ -101,11 +110,13 @@ async def click_link(article: str, wiki: WikiGraph, state: vf.State) -> str:
     available = wiki.get_links(current)
     normalized = wiki.normalize_name(article)
     if normalized is None or normalized not in available:
+        record_navigation_tool_call(state, "click_link", valid=False)
         avail_str = ", ".join(available) if available else "(none)"
         return (
             f"'{article}' is not a valid link from '{current}'.\n"
             f"Available links: {avail_str}"
         )
+    record_navigation_tool_call(state, "click_link", valid=True)
     state["current_article"] = normalized
     state["path"].append(normalized)
     if normalized == state["info"]["target"]:
@@ -123,7 +134,9 @@ async def go_back(wiki: WikiGraph, state: vf.State) -> str:
     """Undo the last click_link and return to the previous article."""
     path = state["path"]
     if len(path) <= 1:
+        record_navigation_tool_call(state, "go_back", valid=False)
         return "You are already at the starting article. Cannot go back."
+    record_navigation_tool_call(state, "go_back", valid=True)
     path.pop()
     state["current_article"] = path[-1]
     return format_article(
@@ -167,7 +180,20 @@ async def agent_timeout(task: vf.Task, state: vf.State) -> float:
     return 1.0 if state.get("agent_timeout", False) else 0.0
 
 
-def iter_tool_calls(state: vf.State) -> Iterator[str]:
+def has_navigation_tool_log(state: vf.State) -> bool:
+    return isinstance(state.get(NAVIGATION_TOOL_CALLS_KEY), list)
+
+
+def iter_navigation_tool_calls(state: vf.State) -> Iterator[vf.ConfigMap]:
+    calls = state.get(NAVIGATION_TOOL_CALLS_KEY)
+    if not isinstance(calls, list):
+        return
+    for call in calls:
+        if isinstance(call, Mapping):
+            yield call
+
+
+def iter_completion_tool_calls(state: vf.State) -> Iterator[str]:
     completion = state.get("completion") or []
     messages = (
         vf.get_messages(completion, role="assistant")
@@ -183,9 +209,26 @@ def iter_tool_calls(state: vf.State) -> Iterator[str]:
 
 
 def count_tool_calls(state: vf.State, name: str | None = None) -> int:
+    if has_navigation_tool_log(state):
+        nav_count = sum(
+            1
+            for call in iter_navigation_tool_calls(state)
+            if name is None or call.get("name") == name
+        )
+        if name in WIKISPEEDIA_TOOLS:
+            return nav_count
+        completion_count = sum(
+            1
+            for tool_name in iter_completion_tool_calls(state)
+            if tool_name not in WIKISPEEDIA_TOOLS
+            and (name is None or tool_name == name)
+        )
+        return nav_count + completion_count
     if name is None:
-        return sum(1 for _ in iter_tool_calls(state))
-    return sum(1 for tool_name in iter_tool_calls(state) if tool_name == name)
+        return sum(1 for _ in iter_completion_tool_calls(state))
+    return sum(
+        1 for tool_name in iter_completion_tool_calls(state) if tool_name == name
+    )
 
 
 def make_tool_count_metric(
@@ -236,6 +279,15 @@ async def assistant_turns(task: vf.Task, state: vf.State) -> float:
 
 
 async def invalid_link_rate(task: vf.Task, state: vf.State) -> float:
+    if has_navigation_tool_log(state):
+        click_calls = [
+            call
+            for call in iter_navigation_tool_calls(state)
+            if call.get("name") == "click_link"
+        ]
+        invalid = sum(1 for call in click_calls if call.get("valid") is False)
+        return float(invalid / len(click_calls)) if click_calls else 0.0
+
     clicks = 0
     invalid = 0
     completion = state.get("completion") or []
@@ -422,6 +474,7 @@ def make_langchain_deep_agents_program(
         state["reached_target"] = False
         state["agent_timeout"] = False
         state["links_only"] = bool(task.get("links_only", False))
+        state[NAVIGATION_TOOL_CALLS_KEY] = []
 
         endpoint_config = state.get_endpoint_config(api="chat")
         model = ChatOpenAI(

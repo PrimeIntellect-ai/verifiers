@@ -234,6 +234,10 @@ async def test_wikispeedia_tools_resolve_through_v1_runtime(
     assert sorted(tools) == ["click_link", "go_back"]
     assert result.startswith("TARGET REACHED")
     assert state["reached_target"] is True
+    assert state[module.NAVIGATION_TOOL_CALLS_KEY] == [
+        {"name": "click_link", "valid": True}
+    ]
+    assert await module.total_tool_calls(task, state) == 1.0
 
 
 @pytest.mark.asyncio
@@ -479,3 +483,23 @@ async def test_wikispeedia_tool_metrics_use_agent_completion(
 
     assert await module.total_tool_calls(task, state) == 1.0
     assert await module.invalid_link_rate(task, state) == 1.0
+
+
+@pytest.mark.asyncio
+async def test_wikispeedia_navigation_metrics_use_state_log_when_completion_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = load_module(monkeypatch)
+    task = vf.Task({"prompt": [], "info": {"shortest_path": 1}}).freeze()
+    state = vf.State.for_task(task)
+    state["completion"] = []
+    state[module.NAVIGATION_TOOL_CALLS_KEY] = [
+        {"name": "click_link", "valid": False},
+        {"name": "click_link", "valid": True},
+        {"name": "go_back", "valid": True},
+    ]
+
+    assert await module.total_tool_calls(task, state) == 3.0
+    assert await module.make_tool_count_metric("click_link")(task, state) == 2.0
+    assert await module.make_tool_count_metric("go_back")(task, state) == 1.0
+    assert await module.invalid_link_rate(task, state) == 0.5
