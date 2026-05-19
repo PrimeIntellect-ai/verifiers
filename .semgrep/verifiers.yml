@@ -41,12 +41,13 @@ rules:
       include:
         - /verifiers/v1/**/*.py
         - /environments/**/*.py
-    pattern: |
-      def $FUNC(..., config: $CONFIG = $DEFAULT(), ...):
-          ...
-    metavariable-regex:
-      metavariable: $DEFAULT
-      regex: ".*Config"
+    patterns:
+      - pattern: |
+          def $FUNC(..., config: $CONFIG = $DEFAULT(), ...):
+              ...
+      - metavariable-regex:
+          metavariable: $DEFAULT
+          regex: ".*Config"
 
   - id: verifiers-no-private-framework-classes
     languages: [python]

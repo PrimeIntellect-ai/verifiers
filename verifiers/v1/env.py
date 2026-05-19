@@ -187,7 +187,12 @@ def builder_config_type(
         annotation = get_type_hints(builder).get("config")
     except Exception:
         annotation = signature.parameters["config"].annotation
-    return config_type(annotation, base) or base
+    config_cls = config_type(annotation, base)
+    if config_cls is None:
+        raise TypeError(
+            "Env builder config parameters must be annotated with a config type."
+        )
+    return config_cls
 
 
 def config_type(annotation: object, base: type[ConfigT]) -> type[ConfigT] | None:

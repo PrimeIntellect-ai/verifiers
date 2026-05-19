@@ -86,8 +86,7 @@ def explicit_model_config_data(value: BaseModel) -> ConfigData:
     data: ConfigData = {}
     for key in value.model_fields_set:
         item = getattr(value, key)
-        if item is not None:
-            data[key] = config_dump_value(item)
+        data[key] = config_dump_value(item)
     return data
 
 
@@ -98,7 +97,6 @@ def config_dump_value(value: object) -> object:
         return {
             key: config_dump_value(item)
             for key, item in string_mapping(cast(ConfigInputMap, value)).items()
-            if item is not None
         }
     if isinstance(value, list | tuple):
         return [config_dump_value(item) for item in value]

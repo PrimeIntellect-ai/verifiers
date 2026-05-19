@@ -369,7 +369,7 @@ def test_source_config_args_preserve_config_object_aliases() -> None:
     assert args["split"] == "eval"
 
 
-def test_explicit_config_data_recursively_dumps_nested_configs_without_none() -> None:
+def test_explicit_config_data_preserves_explicit_none_values() -> None:
     class NestedConfig(Config):
         sandbox: vf.SandboxConfig | None = None
 
@@ -385,7 +385,8 @@ def test_explicit_config_data_recursively_dumps_nested_configs_without_none() ->
     )
 
     assert explicit_config_data(config) == {
-        "nested": {"sandbox": {"image": "python:3.12-slim"}}
+        "nested": {"sandbox": {"image": "python:3.12-slim", "workdir": None}},
+        "label": None,
     }
 
 
@@ -1527,6 +1528,14 @@ def test_env_builder_callables_must_accept_config() -> None:
         return Taskset()
 
     with pytest.raises(TypeError, match="must accept a config parameter"):
+        Env(None, taskset=load_taskset)
+
+
+def test_env_builder_callables_must_annotate_config() -> None:
+    def load_taskset(config=None) -> Taskset:
+        return Taskset(config=config)
+
+    with pytest.raises(TypeError, match="annotated with a config type"):
         Env(None, taskset=load_taskset)
 
 
