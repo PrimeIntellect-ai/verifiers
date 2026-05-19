@@ -293,13 +293,16 @@ def normalize_toolset(value: object) -> Toolset:
 
 
 def toolset_from_mapping(spec: ConfigMap) -> Toolset:
+    write = spec.get("write")
+    if write is not None and not isinstance(write, bool):
+        raise TypeError("Toolset write must be a boolean.")
     return Toolset(
         tools=cast(ToolEntries | None, spec.get("tools", ())),
         show=string_items(spec.get("show")),
         hide=string_items(spec.get("hide")),
         bindings=cast(BindingMap | None, spec.get("bindings")),
         objects=cast(Objects | None, spec.get("objects")),
-        write=cast(bool | None, spec.get("write")),
+        write=write,
         scope=cast(str | None, spec.get("scope")),
         sandbox=cast(ConfigMap | SandboxConfig | str | None, spec.get("sandbox")),
         stops=cast(Iterable[ToolsetCallableEntry], spec.get("stops") or ()),
