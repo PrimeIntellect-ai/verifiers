@@ -89,18 +89,28 @@ def _upload_tar_filter(info: tarfile.TarInfo) -> tarfile.TarInfo | None:
 
 class HarnessMetricsRubricGroup(vf.RubricGroup):
     async def cleanup(self, state: State) -> None:
+        cleanup_error: Exception | None = None
         for rubric in self.rubrics:
-            await rubric.cleanup(state)
+            try:
+                await rubric.cleanup(state)
+            except Exception as e:
+                if cleanup_error is None:
+                    cleanup_error = e
+                self.logger.exception(
+                    "Cleanup for rubric %s failed",
+                    rubric.__class__.__name__,
+                )
         harness_metrics = state.get("_harness_metrics")
-        if not isinstance(harness_metrics, dict):
-            return
-        state_metrics = state.get("metrics")
-        if not isinstance(state_metrics, dict):
-            state_metrics = {}
-            state["metrics"] = state_metrics
-        for key, value in harness_metrics.items():
-            if isinstance(key, str) and isinstance(value, (int, float)):
-                state_metrics[key] = float(value)
+        if isinstance(harness_metrics, dict):
+            state_metrics = state.get("metrics")
+            if not isinstance(state_metrics, dict):
+                state_metrics = {}
+                state["metrics"] = state_metrics
+            for key, value in harness_metrics.items():
+                if isinstance(key, str) and isinstance(value, (int, float)):
+                    state_metrics[key] = float(value)
+        if cleanup_error is not None:
+            raise cleanup_error
 
 
 class ComposableEnv(CliAgentEnv):

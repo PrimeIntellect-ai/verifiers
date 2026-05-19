@@ -758,14 +758,25 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         the sandbox is always deleted since scoring will not happen.
         """
         completed = state.get("is_completed", False)
+        post_rollout_error: Exception | None = None
         if completed:
-            await self.post_rollout(state)
+            try:
+                await self.post_rollout(state)
+            except Exception as e:
+                post_rollout_error = e
+                self.logger.exception("Post-rollout cleanup failed")
         sandbox_id = state.get("sandbox_id")
         if sandbox_id:
-            if self.keep_sandbox_for_scoring and completed:
+            if (
+                self.keep_sandbox_for_scoring
+                and completed
+                and post_rollout_error is None
+            ):
                 self.deregister_sandbox(sandbox_id)
             else:
                 await self.delete_sandbox(sandbox_id)
+        if post_rollout_error is not None:
+            raise post_rollout_error
 
     async def env_response(
         self, messages: Messages, state: State, **kwargs

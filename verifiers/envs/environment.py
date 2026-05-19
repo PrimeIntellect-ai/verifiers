@@ -633,14 +633,40 @@ class Environment(ABC):
         """
         Finalize rollout state and clean up rollout-local resources.
         """
+        cleanup_error: Exception | None = None
         for handler in self._cleanup_handlers:
-            await maybe_call_with_named_args(
-                handler,
-                task=task,
-                state=state,
-                env=self,
-                resources=resources,
-            )
+            try:
+                await maybe_call_with_named_args(
+                    handler,
+                    task=task,
+                    state=state,
+                    env=self,
+                    resources=resources,
+                )
+            except Exception as e:
+                if cleanup_error is None:
+                    cleanup_error = e
+                self.logger.exception(
+                    "Cleanup handler %s failed",
+                    getattr(handler, "__name__", repr(handler)),
+                )
+        if cleanup_error is not None:
+            raise cleanup_error
+
+    async def _cleanup_rollout_states(self, states: list[State]) -> None:
+        cleanup_error: Exception | None = None
+        for state in states:
+            try:
+                await self.rubric.cleanup(state)
+            except Exception as e:
+                if cleanup_error is None:
+                    cleanup_error = e
+                self.logger.exception(
+                    "Rubric cleanup failed for rollout example_id=%s",
+                    state.get("example_id"),
+                )
+        if cleanup_error is not None:
+            raise cleanup_error
 
     async def _teardown(self):
         """
@@ -691,14 +717,26 @@ class Environment(ABC):
             sampling_args,
         )
 
-        state["timing"].scoring.start = time.time()
-        if self.score_rollouts:
-            await self.rubric.score_rollout(state)
-        else:
-            await self.rubric.dummy_score_rollout(state)
-        state["timing"].scoring.end = time.time()
-
-        await self.rubric.cleanup(state)
+        primary_error: BaseException | None = None
+        try:
+            state["timing"].scoring.start = time.time()
+            if self.score_rollouts:
+                await self.rubric.score_rollout(state)
+            else:
+                await self.rubric.dummy_score_rollout(state)
+            state["timing"].scoring.end = time.time()
+        except BaseException as e:
+            primary_error = e
+            raise
+        finally:
+            try:
+                await self._cleanup_rollout_states([state])
+            except Exception:
+                if primary_error is None:
+                    raise
+                self.logger.exception(
+                    "Rubric cleanup failed after rollout scoring failed"
+                )
         return state
 
     async def _run_group_states(
@@ -709,31 +747,65 @@ class Environment(ABC):
         sampling_args: SamplingArgs,
     ) -> list[State]:
         rollout_tasks = [
-            self.rollout(
-                input,
-                client,
-                model,
-                sampling_args,
+            asyncio.create_task(
+                self.rollout(
+                    input,
+                    client,
+                    model,
+                    sampling_args,
+                )
             )
             for input in group_inputs
         ]
-        group_states = await asyncio.gather(*rollout_tasks)
+        group_states: list[State] = []
+        primary_error: BaseException | None = None
+        try:
+            group_states = await asyncio.gather(*rollout_tasks)
 
-        start_scoring = time.time()
-        for state in group_states:
-            state["timing"].scoring.start = start_scoring
-        if self.score_rollouts:
-            await self.rubric.score_group(group_states)
-        else:
-            await self.rubric.dummy_score_group(group_states)
-        end_scoring = time.time()
-        for state in group_states:
-            state["timing"].scoring.end = end_scoring
+            start_scoring = time.time()
+            for state in group_states:
+                state["timing"].scoring.start = start_scoring
+            if self.score_rollouts:
+                await self.rubric.score_group(group_states)
+            else:
+                await self.rubric.dummy_score_group(group_states)
+            end_scoring = time.time()
+            for state in group_states:
+                state["timing"].scoring.end = end_scoring
 
-        for state in group_states:
-            await self.rubric.cleanup(state)
+            return group_states
+        except BaseException as e:
+            primary_error = e
+            raise
+        finally:
+            pending_tasks = [task for task in rollout_tasks if not task.done()]
+            if pending_tasks:
+                for task in pending_tasks:
+                    task.cancel()
+                await asyncio.gather(*pending_tasks, return_exceptions=True)
 
-        return group_states
+            cleanup_states: list[State] = []
+            seen_state_ids: set[int] = set()
+            for state in group_states:
+                cleanup_states.append(state)
+                seen_state_ids.add(id(state))
+            for task in rollout_tasks:
+                if not task.done() or task.cancelled():
+                    continue
+                try:
+                    state = task.result()
+                except BaseException:
+                    continue
+                if id(state) not in seen_state_ids:
+                    cleanup_states.append(state)
+                    seen_state_ids.add(id(state))
+
+            try:
+                await self._cleanup_rollout_states(cleanup_states)
+            except Exception:
+                if primary_error is None:
+                    raise
+                self.logger.exception("Rubric cleanup failed after group run failed")
 
     @final
     async def run_rollout(

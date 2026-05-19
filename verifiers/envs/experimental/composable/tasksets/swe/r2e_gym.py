@@ -140,7 +140,7 @@ class R2ERubric(vf.Rubric):
         self.add_reward_func(self.solved)
 
     async def solved(self, state, info, **kwargs) -> float:
-        if isinstance(state.get("error"), vf.InfraError):
+        if state.get("error") is not None:
             return 0.0
         sandbox_client = state.get("sandbox_client")
         sandbox_id = state.get("sandbox_id")
@@ -165,8 +165,8 @@ class R2ERubric(vf.Rubric):
         if sandbox_client and sandbox_id:
             try:
                 await sandbox_client.delete(sandbox_id)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Failed to delete sandbox {sandbox_id}: {e}")
 
 
 class R2EGymTaskSet(SandboxTaskSet):
