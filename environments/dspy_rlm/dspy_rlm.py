@@ -44,11 +44,11 @@ def load_rows(split: str, num_examples: int):
     return load_example_dataset("gsm8k", split=split, n=n)
 
 
-def load_train_rows(num_train_examples: int):
+def load_train_rows(num_train_examples: int = 50):
     return load_rows("train", num_train_examples)
 
 
-def load_eval_rows(num_eval_examples: int):
+def load_eval_rows(num_eval_examples: int = 20):
     return load_rows("test", num_eval_examples)
 
 
