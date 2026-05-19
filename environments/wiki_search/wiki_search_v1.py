@@ -316,4 +316,7 @@ class WikiSearchTaskset(vf.Taskset[WikiSearchTasksetConfig]):
 
 def load_environment(config: WikiSearchEnvConfig | None = None) -> vf.Env:
     config = config or WikiSearchEnvConfig()
-    return vf.Env(taskset=WikiSearchTaskset(config=config.taskset))
+    return vf.Env(
+        taskset=WikiSearchTaskset(config=config.taskset),
+        harness=vf.Harness(config=config.harness),
+    )

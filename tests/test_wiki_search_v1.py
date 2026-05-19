@@ -116,3 +116,21 @@ def test_wiki_search_v1_default_and_explicit_toolsets(
 
     assert list(taskset.named_toolsets) == ["custom"]
     assert len(taskset.toolsets) == 1
+
+    configured_env = module.load_environment(
+        config=module.WikiSearchEnvConfig(harness={"max_turns": 7})
+    )
+
+    assert configured_env.harness.config.max_turns == 7
+
+
+def test_wiki_search_v1_rejects_legacy_judge_endpoint_kwargs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    wrapper = load_wiki_module("wiki_search", monkeypatch)
+
+    with pytest.raises(ValueError, match="state.get_endpoint_config"):
+        wrapper.load_environment(
+            v1=True,
+            judge_base_url="https://judge.example/v1",
+        )

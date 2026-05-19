@@ -41,6 +41,16 @@ def test_mcp_search_env_is_v1_only() -> None:
     assert env.taskset.config.max_turns == 4
 
 
+def test_mcp_search_env_preserves_harness_config() -> None:
+    module = _load_mcp_search_module()
+
+    env = module.load_environment(
+        config=module.MCPSearchEnvConfig(harness={"max_turns": 7})
+    )
+
+    assert env.harness.config.max_turns == 7
+
+
 def test_mcp_search_default_taskset_has_stable_non_doc_fixture() -> None:
     module = _load_mcp_search_module()
 

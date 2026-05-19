@@ -148,4 +148,7 @@ class MCPSearchEnvConfig(vf.EnvConfig):
 
 def load_environment(config: MCPSearchEnvConfig | None = None) -> vf.Env:
     config = config or MCPSearchEnvConfig()
-    return vf.Env(taskset=MCPSearchTaskset(config=config.taskset))
+    return vf.Env(
+        taskset=MCPSearchTaskset(config=config.taskset),
+        harness=vf.Harness(config=config.harness),
+    )

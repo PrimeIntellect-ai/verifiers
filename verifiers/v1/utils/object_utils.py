@@ -46,5 +46,7 @@ def validate_no_arg_loader(spec: object, context: str) -> None:
         signature = inspect.signature(cast(Callable[..., object], spec))
     except (TypeError, ValueError) as exc:
         raise TypeError(f"{context} factory signature cannot be inspected.") from exc
-    if signature.parameters:
-        raise TypeError(f"{context} factory must accept no arguments.")
+    try:
+        signature.bind()
+    except TypeError as exc:
+        raise TypeError(f"{context} factory must accept no arguments.") from exc

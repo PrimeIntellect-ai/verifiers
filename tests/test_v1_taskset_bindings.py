@@ -93,6 +93,10 @@ def load_config_prefixer() -> Prefixer:
     return Prefixer("config:")
 
 
+def load_defaulted_prefixer(prefix: str = "defaulted:") -> Prefixer:
+    return Prefixer(prefix)
+
+
 def load_answer_extractor() -> TagExtractor:
     return TagExtractor("answer")
 
@@ -167,6 +171,20 @@ async def test_taskset_object_factory_is_lazy_and_resolved_once() -> None:
 
     assert prefixer_factory_calls == 1
     assert state["prefixed"] == "factory:ok"
+
+
+@pytest.mark.asyncio
+async def test_taskset_object_factory_accepts_defaulted_arguments() -> None:
+    taskset = make_taskset(
+        source=source_rows,
+        rewards=[prefix_reward],
+        objects={"prefixer": dynamic_ref(load_defaulted_prefixer)},
+        bindings={"prefix_reward.prefixer": "objects.prefixer"},
+    )
+
+    state = await score_taskset(taskset)
+
+    assert state["prefixed"] == "defaulted:ok"
 
 
 @pytest.mark.asyncio
