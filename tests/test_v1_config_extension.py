@@ -2112,6 +2112,9 @@ def test_math_python_v1_wrapper_rejects_unsupported_sandbox_kwargs() -> None:
 def test_math_python_v1_prompt_tracks_harness_packages() -> None:
     module = importlib.import_module("environments.math_python.math_python_v1")
 
+    default_env = module.load_environment()
+    assert "numpy sympy scipy" in default_env.taskset.config.system_prompt
+
     env = module.load_environment(
         config=module.MathPythonEnvConfig(
             harness=module.MathPythonHarnessConfig(pip_install_packages="numpy pandas")
