@@ -462,7 +462,7 @@ def make_langchain_deep_agents_program(
             "target": target,
             "shortest_path": int(state["info"]["shortest_path"]),
         }
-        invoke_config: dict[str, object] = {
+        invoke_config: vf.ConfigData = {
             "run_name": f"wikispeedia:{source}->{target}",
             "run_id": run_id,
             "configurable": {"thread_id": trajectory_id},
