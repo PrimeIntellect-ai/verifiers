@@ -47,8 +47,6 @@ def load_environment(
                 taskset=WikiSearchTasksetConfig(
                     max_turns=max_turns,
                     judge_model=judge_model,
-                    judge_base_url=judge_base_url,
-                    judge_api_key_var=judge_api_key_var,
                     corpus_dataset=corpus_dataset,
                     corpus_split=corpus_split,
                     chroma_db_dir=chroma_db_dir,

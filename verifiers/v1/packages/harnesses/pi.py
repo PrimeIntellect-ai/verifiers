@@ -1,16 +1,32 @@
 import json
 import shlex
 from pathlib import PurePosixPath
+from typing import cast
 
-from .command import CommandHarness
+from .command import configure_command_harness
 from .configs import PiConfig
+from ...harness import Harness
 from ...state import State
 from ...utils.mcp_proxy_utils import proxy_command
 from ...utils.binding_utils import Bindings
 from ...types import ConfigMap, ProgramChannels, ProgramCommand, ProgramOptionMap
 
 
-class Pi(CommandHarness[PiConfig]):
+class Pi(Harness[PiConfig]):
+    def __init__(self, config: PiConfig | None = None):
+        config = cast(PiConfig, self._coerce_config(config))
+        super().__init__(config=config.model_copy(update={"program": None}))
+        self.config = config
+        configure_command_harness(
+            self,
+            config,
+            command=self.command(config),
+            setup=self.setup(config),
+            bindings=self.bindings_value(config),
+            artifacts=self.artifacts(config),
+            channels=self.channels(config),
+        )
+
     def command(self, config: PiConfig) -> ProgramCommand:
         return [
             "bash",

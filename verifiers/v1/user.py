@@ -13,7 +13,7 @@ from .types import ConfigMap, Handler, Objects, PromptMessage
 UserScope = Literal["rollout", "group", "global"]
 
 
-def state_transcript(
+def state_messages(
     state: ConfigMap, transcript: Sequence[PromptMessage] | None = None
 ) -> list[PromptMessage]:
     if transcript is not None:
@@ -51,8 +51,8 @@ class User:
             parameters = inspect.signature(self.fn).parameters
         except (TypeError, ValueError):
             parameters = {}
-        if "transcript" in parameters:
-            bindings.setdefault("transcript", state_transcript)
+        if "messages" in parameters:
+            bindings.setdefault("messages", state_messages)
         object.__setattr__(self, "bindings", bindings)
         object.__setattr__(
             self, "objects", normalize_object_map(self.objects, "User objects")
@@ -83,10 +83,13 @@ def user_from_mapping(spec: ConfigMap) -> User:
         fn=fn,
         scope=cast(UserScope, config.scope),
         bindings=config.bindings,
-        objects={
-            str(key): resolve_config_object(value)
-            for key, value in config.objects.items()
-        },
+        objects=cast(
+            Objects,
+            {
+                str(key): resolve_config_object(value)
+                for key, value in config.objects.items()
+            },
+        ),
         sandbox=config.sandbox.model_dump(exclude_none=True)
         if config.sandbox is not None
         else None,

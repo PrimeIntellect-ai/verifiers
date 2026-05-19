@@ -36,60 +36,54 @@ DEFAULT_COMMAND_SANDBOX: ConfigData = {
 }
 
 
-class CommandHarness(Harness[ConfigT]):
-    def __init__(self, config: ConfigT | None = None):
-        config = cast(ConfigT, self._coerce_config(config))
-        super().__init__(config=config.model_copy(update={"program": None}))
-        self.config = config
-        sandbox = self.sandbox_value(config)
-        self._configure_runtime(
-            program=command_program(
-                command=self.command(config),
-                sandbox=sandbox,
-                files=self.files(config),
-                setup=self.setup(config),
-                bindings=self.bindings_value(config),
-                env=self.env(config),
-                artifacts=self.artifacts(config),
-                channels=self.channels(config),
-                program=config.program,
-            ),
-            sandbox=command_sandbox(sandbox),
-            system_prompt=config.system_prompt,
-        )
+def configure_command_harness(
+    harness: Harness[ConfigT],
+    config: ConfigT,
+    *,
+    command: ProgramCommand,
+    sandbox: bool | ConfigMap | SandboxConfig | None = None,
+    files: ProgramOptionMap | None = None,
+    setup: ProgramSetup | None = None,
+    bindings: Bindings | None = None,
+    env: ProgramOptionMap | None = None,
+    artifacts: ProgramOptionMap | None = None,
+    channels: ProgramChannels | None = None,
+) -> None:
+    sandbox_value = command_sandbox_value(config, sandbox)
+    harness._configure_runtime(
+        program=command_program(
+            command=command,
+            sandbox=sandbox_value,
+            files=files if files is not None else command_files(config),
+            setup=setup,
+            bindings=bindings,
+            env=env,
+            artifacts=artifacts,
+            channels=channels,
+            program=config.program,
+        ),
+        sandbox=command_sandbox(sandbox_value),
+        system_prompt=config.system_prompt,
+    )
 
-    def command(self, config: ConfigT) -> ProgramCommand:
-        raise NotImplementedError
 
-    def sandbox_value(self, config: ConfigT) -> bool | ConfigMap | SandboxConfig:
-        return config.sandbox if config.sandbox is not None else True
+def command_sandbox_value(
+    config: HarnessConfig, sandbox: bool | ConfigMap | SandboxConfig | None = None
+) -> bool | ConfigMap | SandboxConfig:
+    if sandbox is not None:
+        return sandbox
+    return config.sandbox if config.sandbox is not None else True
 
-    def files(self, config: ConfigT) -> ProgramOptionMap:
-        files: ProgramOptionMap = {}
-        instruction_path = getattr(config, "instruction_path", None)
-        system_prompt_path = getattr(config, "system_prompt_path", None)
-        if instruction_path:
-            files[str(instruction_path)] = cast(ProgramValue, task_instruction_text)
-        if system_prompt_path and config.system_prompt is not None:
-            files[str(system_prompt_path)] = cast(
-                ProgramValue, state_system_prompt_text
-            )
-        return files
 
-    def setup(self, config: ConfigT) -> ProgramSetup | None:
-        return None
-
-    def bindings_value(self, config: ConfigT) -> Bindings | None:
-        return None
-
-    def env(self, config: ConfigT) -> ProgramOptionMap | None:
-        return None
-
-    def artifacts(self, config: ConfigT) -> ProgramOptionMap | None:
-        return None
-
-    def channels(self, config: ConfigT) -> ProgramChannels | None:
-        return None
+def command_files(config: HarnessConfig) -> ProgramOptionMap:
+    files: ProgramOptionMap = {}
+    instruction_path = getattr(config, "instruction_path", None)
+    system_prompt_path = getattr(config, "system_prompt_path", None)
+    if instruction_path:
+        files[str(instruction_path)] = cast(ProgramValue, task_instruction_text)
+    if system_prompt_path and config.system_prompt is not None:
+        files[str(system_prompt_path)] = cast(ProgramValue, state_system_prompt_text)
+    return files
 
 
 def command_program(

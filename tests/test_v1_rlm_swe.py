@@ -77,7 +77,6 @@ def test_rlm_harness_uploads_taskset_skills_by_default(tmp_path: Path):
             return {"skills": skills}
 
     env = vf.Env(
-        None,
         taskset=SkillTaskset(config=vf.TasksetConfig(source=[])),
         harness=vf.RLM(config=vf.RLMConfig(local_checkout="/tmp/checkout")),
     )
@@ -120,7 +119,6 @@ def test_rlm_harness_explicit_skills_override_taskset_skills(tmp_path: Path):
             return {"skills": taskset_skills}
 
     env = vf.Env(
-        None,
         taskset=SkillTaskset(config=vf.TasksetConfig(source=[])),
         harness=vf.RLM(
             config=vf.RLMConfig(
@@ -183,7 +181,7 @@ def test_rlm_swe_environment_uses_v1_r2e_taskset(monkeypatch):
 
 def test_rlm_swe_taskset_hooks_are_registered_with_runtime():
     taskset = rlm_swe_v1.load_taskset(config=rlm_swe_v1.RlmSweTasksetConfig())
-    env = vf.Env(None, taskset=taskset)
+    env = vf.Env(taskset=taskset)
 
     setup_names = [handler.__name__ for handler in env.harness.runtime.rollout_setup]
     cleanup_names = [

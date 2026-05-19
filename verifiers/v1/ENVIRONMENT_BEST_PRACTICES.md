@@ -14,16 +14,16 @@ proves the looser surface is needed.
    `EnvConfigType` is `vf.EnvConfig` for base taskset/harness configs, or an
    environment-local `vf.EnvConfig` subclass that binds concrete child config
    types.
-2. Environment modules SHOULD use `vf.Env(config, taskset=..., harness=...)`
-   as the single v1 construction path.
+2. Environment modules SHOULD construct explicit taskset/harness objects and
+   pass them to `vf.Env(taskset=..., harness=...)`. `vf.Env(config=...)` is a
+   convenience path for already-typed config envelopes, not the docs/templates
+   golden path.
 3. Environment modules SHOULD expose `load_taskset(config: TasksetConfigType)`
    or `load_harness(config: HarnessConfigType)` only when reusable construction
    logic cannot live on the class defaults.
 4. Public child loader config parameters MUST be typed as one concrete Pydantic
-   config type with a `None` default such as
-   `config: MyTasksetConfig | None = None`. Do not construct config objects in
-   function signatures, and do not advertise unions of mappings, base configs,
-   and specific configs.
+   config type. Do not construct config objects in function signatures, and do
+   not advertise unions of mappings, base configs, and specific configs.
 5. `load_environment` MUST NOT mirror taskset or harness fields as keyword
    arguments. The root env loader receives the typed envelope; the child configs
    own all environment-specific settings.
@@ -44,9 +44,9 @@ your loader runs. The type annotation is not cosmetic.
    `harness` annotation.
 4. The config object that reaches `load_environment` is already validated and
    typed. Do not reconstruct child config objects just to recover their type.
-5. `vf.Env(config, taskset=MyTaskset, harness=MyHarness)` is the
-   default construction path. Use child loader functions only when they add real
-   construction behavior.
+5. `vf.Env(taskset=MyTaskset(config=config.taskset), harness=MyHarness(config=config.harness))`
+   is the default construction path. Use child loader functions only when they
+   make that explicit object boundary clearer.
 6. Root env kwargs behave differently from TOML child sections. TOML
    `[env.taskset]` and `[env.harness]` route into the env config envelope; CLI
    `-a` passes loader kwargs. This is why CLI child config overrides must be
@@ -131,8 +131,12 @@ class MyEnvConfig(vf.EnvConfig):
     harness: vf.HarnessConfig = vf.HarnessConfig()
 
 
-def load_environment(config: MyEnvConfig | None = None) -> vf.Env:
-    return vf.Env(config, taskset=MyTaskset)
+def load_taskset(config: MyTasksetConfig) -> MyTaskset:
+    return MyTaskset(config=config)
+
+
+def load_environment(config: MyEnvConfig) -> vf.Env:
+    return vf.Env(taskset=load_taskset(config.taskset))
 ```
 
 ### Custom Harness
@@ -176,8 +180,19 @@ class MyEnvConfig(vf.EnvConfig):
     harness: MyHarnessConfig = MyHarnessConfig()
 
 
-def load_environment(config: MyEnvConfig | None = None) -> vf.Env:
-    return vf.Env(config, taskset=MyTaskset, harness=MyHarness)
+def load_taskset(config: MyTasksetConfig) -> MyTaskset:
+    return MyTaskset(config=config)
+
+
+def load_harness(config: MyHarnessConfig) -> MyHarness:
+    return MyHarness(config=config)
+
+
+def load_environment(config: MyEnvConfig) -> vf.Env:
+    return vf.Env(
+        taskset=load_taskset(config.taskset),
+        harness=load_harness(config.harness),
+    )
 ```
 
 ## External Configuration
@@ -227,9 +242,11 @@ surfaces. Inside Python environment code, use typed config objects.
    and small policy choices that compose the two.
 2. Prefer v1-native framework objects over stdlib-shaped user code. User-facing
    environment code should read as Verifiers code first.
-3. Put shared extractor and factory import refs in `TasksetConfig.objects` and
-   wire them with `TasksetConfig.bindings`; live objects belong only in runtime
-   mutation APIs.
+3. Keep shared dependencies behind the taskset or harness that owns them.
+   Prefer serializable loader paths in config; no-arg loader callables are
+   acceptable for Python-only construction. Do not pass `objects=` or
+   `bindings=` through user-facing `Taskset`/`Toolset` constructors in
+   environment files.
 4. Compose related categories inside one taskset only when they share the same
    harness lifecycle and scoring contract.
 5. Expose explicit typed loaders for separate v1 envs when categories need

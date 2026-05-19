@@ -114,4 +114,8 @@ class DSPYRLMEnvConfig(vf.EnvConfig):
 
 
 def load_environment(config: DSPYRLMEnvConfig | None = None) -> vf.Env:
-    return vf.Env(config, taskset=DSPYRLMTaskset, harness=DSPYRLMHarness)
+    config = config or DSPYRLMEnvConfig()
+    return vf.Env(
+        taskset=DSPYRLMTaskset(config=config.taskset),
+        harness=DSPYRLMHarness(config=config.harness),
+    )

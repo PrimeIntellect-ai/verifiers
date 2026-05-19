@@ -170,8 +170,8 @@ class MyEnvConfig(vf.EnvConfig):
     taskset: MyTasksetConfig = MyTasksetConfig()
 
 
-def load_environment(config: MyEnvConfig | None = None) -> vf.Env:
-    return vf.Env(config, taskset=MyTaskset)
+def load_environment(config: MyEnvConfig) -> vf.Env:
+    return vf.Env(taskset=MyTaskset(config=config.taskset))
 ```
 If no harness is passed, `vf.Env` uses the base endpoint-backed harness. See
 **[BYO Harness](docs/byo-harness.md)** for the advanced v1 taskset/harness API.
@@ -182,12 +182,8 @@ harness with:
 
 ```python
 env = vf.Env(
-    vf.EnvConfig(
-        taskset=vf.HarborTasksetConfig(),
-        harness=vf.OpenCodeConfig(),
-    ),
-    taskset=vf.HarborTaskset,
-    harness=vf.OpenCode,
+    taskset=vf.HarborTaskset(config=vf.HarborTasksetConfig()),
+    harness=vf.OpenCode(config=vf.OpenCodeConfig()),
 )
 ```
 

@@ -72,4 +72,5 @@ class ReverseTextEnvConfig(vf.EnvConfig):
 
 
 def load_environment(config: ReverseTextEnvConfig | None = None) -> vf.Env:
-    return vf.Env(config, taskset=ReverseTextTaskset)
+    config = config or ReverseTextEnvConfig()
+    return vf.Env(taskset=ReverseTextTaskset(config=config.taskset))

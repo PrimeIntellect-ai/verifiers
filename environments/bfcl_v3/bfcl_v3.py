@@ -622,7 +622,6 @@ def load_environment(config: BFCLEnvConfig | None = None) -> vf.Env | vf.EnvGrou
         )
         envs.append(
             vf.Env(
-                None,
                 taskset=BFCLTaskset(config=taskset_config),
                 harness=load_harness(config=harness_config),
             )

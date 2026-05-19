@@ -9,4 +9,8 @@ class OpenCodeHarborEnvConfig(vf.EnvConfig):
 def load_environment(
     config: OpenCodeHarborEnvConfig | None = None,
 ) -> vf.Env:
-    return vf.Env(config, taskset=vf.HarborTaskset, harness=vf.OpenCode)
+    config = config or OpenCodeHarborEnvConfig()
+    return vf.Env(
+        taskset=vf.HarborTaskset(config=config.taskset),
+        harness=vf.OpenCode(config=config.harness),
+    )

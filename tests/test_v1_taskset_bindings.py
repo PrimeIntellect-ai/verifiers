@@ -80,6 +80,23 @@ class TagExtractor:
         return "" if match is None else match.group(1).strip()
 
 
+prefixer_factory_calls = 0
+
+
+def load_factory_prefixer() -> Prefixer:
+    global prefixer_factory_calls
+    prefixer_factory_calls += 1
+    return Prefixer("factory:")
+
+
+def load_config_prefixer() -> Prefixer:
+    return Prefixer("config:")
+
+
+def load_answer_extractor() -> TagExtractor:
+    return TagExtractor("answer")
+
+
 @vf.reward
 async def prefix_reward(state, prefixer) -> float:
     state["prefixed"] = prefixer("ok")
@@ -110,7 +127,7 @@ async def extracted_answer_reward(task, state, extract_answer) -> float:
 
 
 async def score_taskset(taskset: vf.Taskset) -> vf.State:
-    env = vf.Env(None, taskset=taskset, harness=vf.Harness())
+    env = vf.Env(taskset=taskset, harness=vf.Harness(config=vf.HarnessConfig()))
     task = next(iter(taskset))
     state = await env.harness.setup_state(task, vf.State.for_task(task))
     await env.harness.runtime.score_rollout(task, state)
@@ -118,7 +135,7 @@ async def score_taskset(taskset: vf.Taskset) -> vf.State:
 
 
 @pytest.mark.asyncio
-async def test_taskset_object_binding_resolves_instance() -> None:
+async def test_taskset_object_binding_rejects_live_instance() -> None:
     taskset = make_taskset(
         source=source_rows,
         rewards=[prefix_reward],
@@ -126,35 +143,29 @@ async def test_taskset_object_binding_resolves_instance() -> None:
         bindings={"prefix_reward.prefixer": "objects.prefixer"},
     )
 
-    state = await score_taskset(taskset)
-
-    assert state["prefixed"] == "inst:ok"
-    assert state["reward"] == 1.0
+    with pytest.raises(TypeError, match="no-arg loader"):
+        await score_taskset(taskset)
 
 
 @pytest.mark.asyncio
 async def test_taskset_object_factory_is_lazy_and_resolved_once() -> None:
-    calls = 0
-
-    def make_prefixer() -> Prefixer:
-        nonlocal calls
-        calls += 1
-        return Prefixer("factory:")
+    global prefixer_factory_calls
+    prefixer_factory_calls = 0
 
     taskset = make_taskset(
         source=source_rows,
         rewards=[prefix_reward],
-        objects={"prefixer": make_prefixer},
+        objects={"prefixer": dynamic_ref(load_factory_prefixer)},
         bindings={"prefix_reward.prefixer": "objects.prefixer"},
     )
-    env = vf.Env(None, taskset=taskset, harness=vf.Harness())
+    env = vf.Env(taskset=taskset, harness=vf.Harness(config=vf.HarnessConfig()))
     task = next(iter(taskset))
     state = await env.harness.setup_state(task, vf.State.for_task(task))
 
     await env.harness.runtime.score_rollout(task, state)
     await env.harness.runtime.score_rollout(task, state)
 
-    assert calls == 1
+    assert prefixer_factory_calls == 1
     assert state["prefixed"] == "factory:ok"
 
 
@@ -179,7 +190,7 @@ async def test_caller_kwargs_win_over_taskset_bindings_for_handlers() -> None:
         objects={"token": lambda: "bound"},
         bindings={"setup_with_override.token": "objects.token"},
     )
-    env = vf.Env(None, taskset=taskset, harness=vf.Harness())
+    env = vf.Env(taskset=taskset, harness=vf.Harness(config=vf.HarnessConfig()))
     task = next(iter(taskset))
     state = vf.State.for_task(task)
 
@@ -204,7 +215,7 @@ async def test_missing_taskset_binding_error_names_signal_and_arg() -> None:
 @pytest.mark.asyncio
 async def test_taskset_config_map_round_trips_objects_and_bindings() -> None:
     config = vf.TasksetConfig(
-        objects={"prefixer": dynamic_ref(Prefixer("config:"))},
+        objects={"prefixer": dynamic_ref(load_config_prefixer)},
         bindings={"prefix_reward.prefixer": "objects.prefixer"},
     )
     taskset = make_taskset(
@@ -223,10 +234,10 @@ async def test_taskset_bindings_support_shared_extractor_pattern() -> None:
     taskset = make_taskset(
         source=source_rows,
         rewards=[extracted_answer_reward],
-        objects={"extract_answer": lambda: TagExtractor("answer")},
+        objects={"extract_answer": dynamic_ref(load_answer_extractor)},
         bindings={"extracted_answer_reward.extract_answer": "objects.extract_answer"},
     )
-    env = vf.Env(None, taskset=taskset, harness=vf.Harness())
+    env = vf.Env(taskset=taskset, harness=vf.Harness(config=vf.HarnessConfig()))
     task = next(iter(taskset))
     state = await env.harness.setup_state(task, vf.State.for_task(task))
     state["completion"] = [{"role": "assistant", "content": "<answer>ok</answer>"}]

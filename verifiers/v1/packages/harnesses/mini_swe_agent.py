@@ -1,11 +1,13 @@
 import shlex
 from pathlib import PurePosixPath
+from typing import cast
 
-from .command import CommandHarness
+from .command import configure_command_harness
 from .configs import (
     MINI_SWE_AGENT_DEFAULT_AGENT_WORKDIR,
     MiniSWEAgentConfig,
 )
+from ...harness import Harness
 from ...types import ProgramCommand, ProgramOptionMap, ProgramSetup
 
 DEFAULT_INSTALL_DIR = "/opt/mini-swe-agent"
@@ -18,7 +20,20 @@ UV_PACKAGE_VERSION = "0.11.7"
 DEFAULT_LOG_DIR = "/logs/agent"
 
 
-class MiniSWEAgent(CommandHarness[MiniSWEAgentConfig]):
+class MiniSWEAgent(Harness[MiniSWEAgentConfig]):
+    def __init__(self, config: MiniSWEAgentConfig | None = None):
+        config = cast(MiniSWEAgentConfig, self._coerce_config(config))
+        super().__init__(config=config.model_copy(update={"program": None}))
+        self.config = config
+        configure_command_harness(
+            self,
+            config,
+            command=self.command(config),
+            setup=self.setup(config),
+            env=self.env(config),
+            artifacts=self.artifacts(config),
+        )
+
     def command(self, config: MiniSWEAgentConfig) -> ProgramCommand:
         return [
             "bash",

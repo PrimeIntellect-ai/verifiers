@@ -75,12 +75,15 @@ class Toolset:
             config_bindings = normalize_binding_map(
                 config_map.get("bindings"), "Toolset bindings"
             )
-            config_objects = {
-                str(key): resolve_config_object(item)
-                for key, item in normalize_object_map(
-                    config_map.get("objects"), "Toolset objects"
-                ).items()
-            }
+            config_objects = cast(
+                Objects,
+                {
+                    str(key): resolve_config_object(item)
+                    for key, item in normalize_object_map(
+                        config_map.get("objects"), "Toolset objects"
+                    ).items()
+                },
+            )
             if "write" in config_map and write is None:
                 write_value = config_map["write"]
                 if not isinstance(write_value, bool):
@@ -131,12 +134,15 @@ class Toolset:
             "objects",
             {
                 **config_objects,
-                **{
-                    str(key): resolve_config_object(item)
-                    for key, item in normalize_object_map(
-                        objects, "Toolset objects"
-                    ).items()
-                },
+                **cast(
+                    Objects,
+                    {
+                        str(key): resolve_config_object(item)
+                        for key, item in normalize_object_map(
+                            objects, "Toolset objects"
+                        ).items()
+                    },
+                ),
             },
         )
         object.__setattr__(self, "write", bool(write))

@@ -532,8 +532,14 @@ def load_session_factory(
     return load_session
 
 
-def make_tau2_tool(name: str, schema: ConfigMap) -> vf.Handler:
-    async def tool(session: Tau2Session, state, **arguments) -> str:
+def make_tau2_tool(
+    name: str, schema: ConfigMap, session_factory: Callable[..., Tau2Session]
+) -> vf.Handler:
+    async def tool(task, state, **arguments) -> str:
+        session = cast(
+            Tau2Session,
+            await maybe_call_with_named_args(session_factory, task=task, state=state),
+        )
         return await session.call_agent_tool(name, arguments, state)
 
     function_schema = cast(ConfigMap, schema["function"])
@@ -562,13 +568,6 @@ def load_toolset(
     environment_constructor = registry.get_env_constructor(domain)
     environment = cast(TauEnvironment, environment_constructor())
     schemas = [tool.openai_schema for tool in environment.get_tools()]
-    tools = [
-        make_tau2_tool(
-            str(cast(ConfigMap, schema["function"])["name"]),
-            schema,
-        )
-        for schema in schemas
-    ]
     if session_factory is None:
         session_factory = load_session_factory(
             domain=domain,
@@ -577,9 +576,16 @@ def load_toolset(
             max_steps=max_steps,
             max_errors=max_errors,
         )
+    tools = [
+        make_tau2_tool(
+            str(cast(ConfigMap, schema["function"])["name"]),
+            schema,
+            session_factory,
+        )
+        for schema in schemas
+    ]
     return vf.Toolset(
         tools=tools,
-        bindings={f"{tool.__name__}.session": session_factory for tool in tools},
         write=True,
         scope="rollout",
     )
@@ -595,9 +601,15 @@ def tau2_user_args(
     }
 
 
-async def tau2_user(session: Tau2Session, state, transcript) -> list[vf.ConfigData]:
-    _ = transcript
-    return await session.user_messages(state)
+def make_tau2_user(session_factory: Callable[..., Tau2Session]) -> vf.Handler:
+    async def tau2_user(task, state) -> list[vf.ConfigData]:
+        session = cast(
+            Tau2Session,
+            await maybe_call_with_named_args(session_factory, task=task, state=state),
+        )
+        return await session.user_messages(state)
+
+    return tau2_user
 
 
 @vf.reward(weight=1.0)
@@ -722,7 +734,7 @@ class Tau2Taskset(vf.Taskset[Tau2TasksetConfig]):
         ):
             self.add_metric(metric)
         self.add_toolset(toolset)
-        self.user = vf.User(tau2_user, bindings={"session": session_factory})
+        self.user = vf.User(make_tau2_user(session_factory))
 
 
 class Tau2EnvConfig(vf.EnvConfig):
@@ -731,4 +743,5 @@ class Tau2EnvConfig(vf.EnvConfig):
 
 
 def load_environment(config: Tau2EnvConfig | None = None) -> vf.Env:
-    return vf.Env(config, taskset=Tau2Taskset)
+    config = config or Tau2EnvConfig()
+    return vf.Env(taskset=Tau2Taskset(config=config.taskset))

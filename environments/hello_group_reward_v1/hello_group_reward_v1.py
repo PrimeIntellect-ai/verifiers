@@ -323,4 +323,8 @@ class GroupRewardEnvConfig(vf.EnvConfig):
 
 
 def load_environment(config: GroupRewardEnvConfig | None = None) -> vf.Env:
-    return vf.Env(config, taskset=GroupRewardTaskset, harness=GroupRewardHarness)
+    config = config or GroupRewardEnvConfig()
+    return vf.Env(
+        taskset=GroupRewardTaskset(config=config.taskset),
+        harness=GroupRewardHarness(config=config.harness),
+    )

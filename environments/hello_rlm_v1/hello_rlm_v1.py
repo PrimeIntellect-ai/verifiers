@@ -63,4 +63,8 @@ class HelloRLMEnvConfig(vf.EnvConfig):
 
 
 def load_environment(config: HelloRLMEnvConfig | None = None) -> vf.Env:
-    return vf.Env(config, taskset=HelloRLMTaskset, harness=vf.RLM)
+    config = config or HelloRLMEnvConfig()
+    return vf.Env(
+        taskset=HelloRLMTaskset(config=config.taskset),
+        harness=vf.RLM(config=config.harness),
+    )

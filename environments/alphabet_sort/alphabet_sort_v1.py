@@ -300,8 +300,8 @@ async def weighted_reward(task, state) -> float:
     return (total / actual_turns) ** similarity_power
 
 
-async def alphabet_user(task, state, transcript) -> list[dict[str, str]]:
-    assistant_count = len(vf.get_messages(transcript, role="assistant"))
+async def alphabet_user(task, state, messages) -> list[dict[str, str]]:
+    assistant_count = len(vf.get_messages(messages, role="assistant"))
     follow_ups = state["info"]["follow_ups"]
     if assistant_count <= 0 or assistant_count > len(follow_ups):
         return []
@@ -340,4 +340,5 @@ class AlphabetSortTaskset(vf.Taskset[AlphabetSortTasksetConfig]):
 
 
 def load_environment(config: AlphabetSortEnvConfig | None = None) -> vf.Env:
-    return vf.Env(config, taskset=AlphabetSortTaskset)
+    config = config or AlphabetSortEnvConfig()
+    return vf.Env(taskset=AlphabetSortTaskset(config=config.taskset))
