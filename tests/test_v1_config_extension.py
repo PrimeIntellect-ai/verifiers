@@ -1487,6 +1487,14 @@ def test_env_constructor_requires_required_child_configs() -> None:
     with pytest.raises(ValidationError, match="dataset"):
         Env(None, taskset=RequiredTaskset, harness=RequiredHarness)
 
+    prebuilt_env = Env(
+        None,
+        taskset=RequiredTaskset(config=RequiredTasksetConfig(dataset="prebuilt-train")),
+        harness=RequiredHarness(config=RequiredHarnessConfig(endpoint="prebuilt")),
+    )
+    assert prebuilt_env.taskset.config.dataset == "prebuilt-train"
+    assert prebuilt_env.harness.config.endpoint == "prebuilt"
+
     env = Env(
         {
             "taskset": {"dataset": "train"},

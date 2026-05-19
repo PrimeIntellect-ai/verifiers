@@ -52,19 +52,20 @@ class Env(vf.Environment):
                 )
             taskset_input = data.get("taskset")
             harness_input = data.get("harness")
-        taskset_config = taskset_config_cls.model_validate(
-            explicit_config_data(taskset_input)
-        )
-        harness_config = harness_config_cls.model_validate(
-            explicit_config_data(harness_input)
-        )
-
-        self.taskset = (
-            taskset if isinstance(taskset, Taskset) else taskset(config=taskset_config)
-        )
-        self.harness = (
-            harness if isinstance(harness, Harness) else harness(config=harness_config)
-        )
+        if not isinstance(taskset, Taskset):
+            taskset = taskset(
+                config=taskset_config_cls.model_validate(
+                    explicit_config_data(taskset_input)
+                )
+            )
+        if not isinstance(harness, Harness):
+            harness = harness(
+                config=harness_config_cls.model_validate(
+                    explicit_config_data(harness_input)
+                )
+            )
+        self.taskset = taskset
+        self.harness = harness
         self.config = EnvConfig(
             taskset=cast(TasksetConfig, self.taskset.config),
             harness=cast(HarnessConfig, self.harness.config),
