@@ -25,6 +25,7 @@ exclude-newer-span = "P7D"
 [options.exclude-newer-package]
 prime-tunnel = false
 prime-sandboxes = false
+prime-pydantic-config = false
 renderers = false
 openenv-core = false
 
@@ -4171,6 +4172,25 @@ wheels = [
 ]
 
 [[package]]
+name = "prime-pydantic-config"
+version = "0.3.0.dev78"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pydantic" },
+    { name = "tyro" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/78/b7/ae107f1b8e4a99c20bba6a54fdbfd50af5a35639d524eec5036e6e8f2574/prime_pydantic_config-0.3.0.dev78.tar.gz", hash = "sha256:4e03cb96b1ce743faf822cdc6d95139eb50859f9d52fc84c9127d63631beb6e7", size = 45277, upload-time = "2026-05-19T03:52:43.663Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/09/6c/ee4d5478d821a26190405dc9f36543ccf4216a429159c75c82f4ceea153d/prime_pydantic_config-0.3.0.dev78-py3-none-any.whl", hash = "sha256:ae5b568955918b200b5eb1ec616b199335252b2326bf5c10d51b20facb8b6ecc", size = 15542, upload-time = "2026-05-19T03:52:42.787Z" },
+]
+
+[package.optional-dependencies]
+toml = [
+    { name = "tomli", version = "2.0.2", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.11' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "tomli", version = "2.4.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11' or extra == 'extra-9-verifiers-openenv' or extra != 'group-9-verifiers-policy'" },
+]
+
+[[package]]
 name = "prime-sandboxes"
 version = "0.2.25"
 source = { registry = "https://pypi.org/simple" }
@@ -4623,21 +4643,6 @@ wheels = [
 [package.optional-dependencies]
 email = [
     { name = "email-validator" },
-]
-
-[[package]]
-name = "pydantic-config"
-version = "0.3.0"
-source = { git = "https://github.com/samsja/pydantic_config#73c1d84f7c359fa5fa3b7cfb946272352866efb7" }
-dependencies = [
-    { name = "pydantic" },
-    { name = "tyro" },
-]
-
-[package.optional-dependencies]
-toml = [
-    { name = "tomli", version = "2.0.2", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.11' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "tomli", version = "2.4.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11' or extra == 'extra-9-verifiers-openenv' or extra != 'group-9-verifiers-policy'" },
 ]
 
 [[package]]
@@ -6751,10 +6756,10 @@ dependencies = [
     { name = "numpy" },
     { name = "openai" },
     { name = "openai-agents" },
+    { name = "prime-pydantic-config", extra = ["toml"] },
     { name = "prime-sandboxes" },
     { name = "prime-tunnel" },
     { name = "pydantic" },
-    { name = "pydantic-config", extra = ["toml"] },
     { name = "pyzmq" },
     { name = "regex" },
     { name = "requests" },
@@ -6845,10 +6850,10 @@ requires-dist = [
     { name = "openai-agents", specifier = ">=0.0.7" },
     { name = "openenv-core", marker = "extra == 'openenv'", specifier = ">=0.3.0" },
     { name = "peft", marker = "extra == 'rl'" },
+    { name = "prime-pydantic-config", extras = ["toml"] },
     { name = "prime-sandboxes", specifier = ">=0.2.25" },
     { name = "prime-tunnel", specifier = ">=0.1.6" },
     { name = "pydantic", specifier = ">=2.11.9" },
-    { name = "pydantic-config", extras = ["toml"], git = "https://github.com/samsja/pydantic_config" },
     { name = "python-dotenv", marker = "extra == 'browser'", specifier = ">=1.0.0" },
     { name = "pyzmq", specifier = ">=27.1.0" },
     { name = "reasoning-gym", marker = "extra == 'rg'" },
