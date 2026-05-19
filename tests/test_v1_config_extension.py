@@ -1554,6 +1554,19 @@ def test_env_builder_callables_must_annotate_config() -> None:
         Env(None, taskset=load_taskset)
 
 
+def test_env_builder_callables_must_be_synchronous() -> None:
+    async def load_taskset(config: TasksetConfig) -> Taskset:
+        return Taskset(config=config)
+
+    async def load_harness(config: HarnessConfig) -> Harness:
+        return Harness(config=config)
+
+    with pytest.raises(TypeError, match="builder callables must be synchronous"):
+        Env(None, taskset=load_taskset)
+    with pytest.raises(TypeError, match="builder callables must be synchronous"):
+        Env(None, harness=load_harness)
+
+
 def test_config_object_coercion_preserves_child_defaults() -> None:
     from verifiers.v1.packages.harnesses.opencode import OpenCode
     from verifiers.v1.packages.harnesses.opencode import OpenCodeConfig

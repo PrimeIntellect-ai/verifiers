@@ -58,12 +58,20 @@ class Env(vf.Environment):
                     explicit_config_data(taskset_input)
                 )
             )
+            if inspect.isawaitable(taskset):
+                if inspect.iscoroutine(taskset):
+                    taskset.close()
+                raise TypeError("Env taskset builders must be synchronous.")
         if not isinstance(harness, Harness):
             harness = harness(
                 config=harness_config_cls.model_validate(
                     explicit_config_data(harness_input)
                 )
             )
+            if inspect.isawaitable(harness):
+                if inspect.iscoroutine(harness):
+                    harness.close()
+                raise TypeError("Env harness builders must be synchronous.")
         self.taskset = taskset
         self.harness = harness
         self.config = EnvConfig(
@@ -187,6 +195,8 @@ def builder_config_type(
 ) -> type[ConfigT]:
     if isinstance(builder, Taskset | Harness):
         return cast(type[ConfigT], type(builder.config))
+    if inspect.iscoroutinefunction(builder):
+        raise TypeError("Env builder callables must be synchronous.")
     config_cls = getattr(builder, "_config_cls", None)
     if isinstance(config_cls, type) and issubclass(config_cls, base):
         return cast(type[ConfigT], config_cls)
