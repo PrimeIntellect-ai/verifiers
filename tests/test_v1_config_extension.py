@@ -1500,6 +1500,21 @@ def test_env_mapping_rejects_unknown_root_keys() -> None:
         Env({"harnes": {"max_turns": 3}})
 
 
+def test_env_rejects_config_overrides_for_instances() -> None:
+    with pytest.raises(ValueError, match="Taskset instance"):
+        Env({"taskset": {"taskset_id": "ignored"}}, taskset=Taskset())
+    with pytest.raises(ValueError, match="Harness instance"):
+        Env({"harness": {"max_turns": 3}}, harness=Harness())
+
+
+def test_env_builder_callables_must_accept_config() -> None:
+    def load_taskset() -> Taskset:
+        return Taskset()
+
+    with pytest.raises(TypeError, match="must accept a config parameter"):
+        Env(taskset=load_taskset)
+
+
 def test_config_object_coercion_preserves_child_defaults() -> None:
     from verifiers.v1.packages.harnesses.opencode import OpenCodeConfig
 

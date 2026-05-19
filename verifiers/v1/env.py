@@ -31,6 +31,10 @@ class Env(vf.Environment):
         taskset: TasksetBuilder = Taskset,
         harness: HarnessBuilder = Harness,
     ):
+        if config is not None and isinstance(taskset, Taskset):
+            raise ValueError("Env config cannot override a Taskset instance.")
+        if config is not None and isinstance(harness, Harness):
+            raise ValueError("Env config cannot override a Harness instance.")
         taskset_config_cls = builder_config_type(taskset, TasksetConfig)
         harness_config_cls = builder_config_type(harness, HarnessConfig)
         if isinstance(config, EnvConfig):
@@ -179,7 +183,7 @@ def builder_config_type(
         return cast(type[ConfigT], config_cls)
     signature = inspect.signature(cast(Callable[..., Taskset | Harness], builder))
     if "config" not in signature.parameters:
-        return base
+        raise TypeError("Env builder callables must accept a config parameter.")
     try:
         annotation = get_type_hints(builder).get("config")
     except Exception:
