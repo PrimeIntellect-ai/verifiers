@@ -41,6 +41,15 @@ class Env(vf.Environment):
             extra_keys = set(data) - set(EnvConfig.model_fields)
             if extra_keys:
                 raise ValueError(f"Unknown Env config keys: {sorted(extra_keys)}.")
+            null_sections = [
+                key
+                for key in ("taskset", "harness")
+                if key in data and data[key] is None
+            ]
+            if null_sections:
+                raise ValueError(
+                    f"Env config sections cannot be null: {sorted(null_sections)}."
+                )
             taskset_input = data.get("taskset")
             harness_input = data.get("harness")
         taskset_config = taskset_config_cls.model_validate(

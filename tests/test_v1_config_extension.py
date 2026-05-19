@@ -1505,6 +1505,13 @@ def test_env_mapping_rejects_unknown_root_keys() -> None:
         Env({"harnes": {"max_turns": 3}})
 
 
+def test_env_mapping_rejects_null_child_sections() -> None:
+    with pytest.raises(ValueError, match="cannot be null"):
+        Env({"taskset": None})
+    with pytest.raises(ValueError, match="cannot be null"):
+        Env({"harness": None})
+
+
 def test_env_config_tracks_prebuilt_children() -> None:
     taskset = Taskset(config=TasksetConfig(taskset_id="actual"))
     harness = Harness(config=HarnessConfig(max_turns=3))
