@@ -38,6 +38,9 @@ class Env(vf.Environment):
             harness_input = config.harness
         else:
             data = explicit_config_data(config)
+            extra_keys = set(data) - set(EnvConfig.model_fields)
+            if extra_keys:
+                raise ValueError(f"Unknown Env config keys: {sorted(extra_keys)}.")
             taskset_input = data.get("taskset")
             harness_input = data.get("harness")
         taskset_config = taskset_config_cls.model_validate(

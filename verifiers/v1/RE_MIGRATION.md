@@ -272,6 +272,7 @@ class SearchTasksetConfig(vf.TasksetConfig):
 
 class SearchTaskset(vf.Taskset[SearchTasksetConfig]):
     _default_rewards = (judge_reward,)
+    _default_toolsets = (load_toolset(),)
 
     def rows(self) -> list[dict[str, object]]:
         return [

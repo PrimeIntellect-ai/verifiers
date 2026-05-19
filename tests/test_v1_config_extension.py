@@ -420,6 +420,11 @@ def test_inline_toolset_mapping_rejects_non_boolean_write() -> None:
         normalize_toolset({"tools": [direct_tool], "write": "false"})
 
 
+def test_inline_toolset_mapping_rejects_unknown_keys() -> None:
+    with pytest.raises(ValueError, match="Unknown toolset config keys"):
+        normalize_toolset({"tools": [direct_tool], "bindngs": {}})
+
+
 def ref(name: str) -> str:
     return f"{REF_MODULE}:{name}"
 
@@ -1488,6 +1493,11 @@ def test_env_alternative_constructors_are_removed() -> None:
     assert not hasattr(Env, "config")
     assert not hasattr(Env, "loader")
     assert not hasattr(Env, "from_config")
+
+
+def test_env_mapping_rejects_unknown_root_keys() -> None:
+    with pytest.raises(ValueError, match="Unknown Env config keys"):
+        Env({"harnes": {"max_turns": 3}})
 
 
 def test_config_object_coercion_preserves_child_defaults() -> None:

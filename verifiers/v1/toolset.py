@@ -293,6 +293,9 @@ def normalize_toolset(value: object) -> Toolset:
 
 
 def toolset_from_mapping(spec: ConfigMap) -> Toolset:
+    extra_keys = set(spec) - set(ToolsetConfig.model_fields)
+    if extra_keys:
+        raise ValueError(f"Unknown toolset config keys: {sorted(extra_keys)}.")
     write = spec.get("write")
     if write is not None and not isinstance(write, bool):
         raise TypeError("Toolset write must be a boolean.")
