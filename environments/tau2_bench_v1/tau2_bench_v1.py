@@ -712,16 +712,15 @@ class Tau2Taskset(vf.Taskset[Tau2TasksetConfig]):
         super().__init__(config=config)
         self.source = load_rows
         self.taskset_id = f"tau2_{config.domain}"
-        self.setups.append(make_tau2_setup(session_factory))
-        self.rewards.append(tau2_reward)
-        self.metrics.extend(
-            [
-                tau2_num_errors,
-                tau2_num_steps,
-                tau2_num_assistant_tool_calls,
-                tau2_num_user_tool_calls,
-            ]
-        )
+        self.add_setup(make_tau2_setup(session_factory))
+        self.add_reward(tau2_reward)
+        for metric in (
+            tau2_num_errors,
+            tau2_num_steps,
+            tau2_num_assistant_tool_calls,
+            tau2_num_user_tool_calls,
+        ):
+            self.add_metric(metric)
         self.add_toolset(toolset)
         self.user = vf.User(tau2_user, bindings={"session": session_factory})
 

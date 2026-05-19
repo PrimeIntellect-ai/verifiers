@@ -548,8 +548,10 @@ def load_taskset(
             allow_go_back=config.allow_go_back,
         )
     )
-    taskset.rewards.extend(rewards)
-    taskset.metrics.extend(metrics)
+    for reward in rewards:
+        taskset.add_reward(reward)
+    for metric in metrics:
+        taskset.add_metric(metric)
     return taskset
 
 
