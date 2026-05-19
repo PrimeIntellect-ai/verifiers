@@ -317,7 +317,10 @@ GroupRewardTaskset._default_cleanups = (mark_group_cleaned,)
 GroupRewardHarness._default_program = candidate_program
 
 
-load_environment = vf.Env.loader(
-    taskset=GroupRewardTaskset,
-    harness=GroupRewardHarness,
-)
+class GroupRewardEnvConfig(vf.EnvConfig):
+    taskset: GroupRewardTasksetConfig = GroupRewardTasksetConfig()
+    harness: GroupRewardHarnessConfig = GroupRewardHarnessConfig()
+
+
+def load_environment(config: GroupRewardEnvConfig | None = None) -> vf.Env:
+    return vf.Env(config, taskset=GroupRewardTaskset, harness=GroupRewardHarness)

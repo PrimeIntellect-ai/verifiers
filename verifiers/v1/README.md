@@ -6,7 +6,7 @@ and training environments from two primary objects:
 - a `Taskset`, which defines what is being attempted;
 - a `Harness`, which defines how a model attempts it.
 
-`vf.Env(taskset, harness)` adapts those objects to the existing
+`vf.Env(config, taskset=..., harness=...)` adapts those objects to the existing
 `vf.Environment` worker API used by evals and trainers. For local experiments,
 `Harness` is runnable on its own with `await harness.run(task)`.
 
@@ -165,11 +165,7 @@ class ReverseEnvConfig(vf.EnvConfig):
 
 
 def load_environment(config: ReverseEnvConfig | None = None):
-    return vf.Env.from_config(
-        config,
-        taskset=ReverseTaskset,
-        env_config=ReverseEnvConfig,
-    )
+    return vf.Env(config, taskset=ReverseTaskset)
 ```
 
 Standalone harness use is the same runner without the `Env` adapter:
@@ -1215,7 +1211,7 @@ class MyEnvConfig(vf.EnvConfig):
 
 
 def load_environment(config: MyEnvConfig | None = None):
-    return vf.Env.from_config(config, taskset=MyTaskset, env_config=MyEnvConfig)
+    return vf.Env(config, taskset=MyTaskset)
 ```
 
 With that loader, eval TOML routes v1 config through the `taskset`/`harness`
@@ -1256,7 +1252,7 @@ class MyEnvConfig(vf.EnvConfig):
 
 
 def load_environment(config: MyEnvConfig):
-    return vf.Env.from_config(config, taskset=MyTaskset)
+    return vf.Env(config, taskset=MyTaskset)
 ```
 
 RL and Hosted Training TOML uses the same split under `env`:
@@ -1537,7 +1533,7 @@ Config objects can be loaded directly from a TOML section:
 taskset_config = vf.TasksetConfig.from_toml("local.toml", "taskset")
 harness_config = vf.HarnessConfig.from_toml("local.toml", "harness")
 
-env = vf.Env.from_config(
+env = vf.Env(
     MyEnvConfig(taskset=taskset_config, harness=harness_config),
     taskset=MyTaskset,
     harness=MyHarness,

@@ -34,10 +34,10 @@ def load_environment(
             MathPythonHarnessConfig,
             MathPythonTasksetConfig,
             build_system_prompt,
-            load_v1_environment,
+            load_environment as load_v1,
         )
 
-        return load_v1_environment(
+        return load_v1(
             config=MathPythonEnvConfig(
                 taskset=MathPythonTasksetConfig(
                     dataset_name=dataset_name,

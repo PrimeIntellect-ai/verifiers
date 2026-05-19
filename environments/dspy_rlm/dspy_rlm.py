@@ -108,4 +108,10 @@ class DSPYRLMHarness(vf.Harness[vf.HarnessConfig]):
     _default_program = run_dspy_rlm_program
 
 
-load_environment = vf.Env.loader(taskset=DSPYRLMTaskset, harness=DSPYRLMHarness)
+class DSPYRLMEnvConfig(vf.EnvConfig):
+    taskset: DSPYRLMTasksetConfig = DSPYRLMTasksetConfig()
+    harness: vf.HarnessConfig = vf.HarnessConfig()
+
+
+def load_environment(config: DSPYRLMEnvConfig | None = None) -> vf.Env:
+    return vf.Env(config, taskset=DSPYRLMTaskset, harness=DSPYRLMHarness)

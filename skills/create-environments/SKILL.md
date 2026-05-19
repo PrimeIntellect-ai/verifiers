@@ -50,7 +50,7 @@ prime env install math-python --from-repo
 5. Add `pyproject.toml` defaults in `[tool.verifiers.eval]` only when stable.
 
 ### V1 Authoring Rules
-1. Keep v1 environment entrypoints tiny: `import verifiers as vf`, define `@vf.reward` / `@vf.metric` functions, define `TasksetConfig` / `HarnessConfig` subclasses for user-facing knobs, define `Taskset[Config]` / `Harness[Config]` classes, then expose `load_environment` with `vf.Env.from_config(...)` or `vf.Env.loader(...)`.
+1. Keep v1 environment entrypoints tiny: `import verifiers as vf`, define `@vf.reward` / `@vf.metric` functions, define `TasksetConfig` / `HarnessConfig` subclasses for user-facing knobs, define `Taskset[Config]` / `Harness[Config]` classes, then expose `load_environment` with `vf.Env(config, taskset=..., harness=...)`.
 2. Put shared extractor and factory import refs in `TasksetConfig.objects` and wire them with `TasksetConfig.bindings`. Runtime mutation APIs can still accept live objects, but serialized configs should stay on the import-ref side of the boundary. Do not introduce v1 Parser/Rubric wrappers; parsing is ordinary Python or a bound object.
 3. Use `vf.get_messages(state.get("completion") or [], role="assistant")` when reading state completions. The helper returns typed message objects and should not receive `None`.
 4. Use `program.channels` for v1 program protocol/channel selection. Do not use stale `program.tools` terminology.
@@ -108,11 +108,7 @@ class MyEnvConfig(vf.EnvConfig):
 
 
 def load_environment(config: MyEnvConfig | None = None) -> vf.Env:
-    return vf.Env.from_config(
-        config,
-        taskset=MyTaskset,
-        env_config=MyEnvConfig,
-    )
+    return vf.Env(config, taskset=MyTaskset)
 ```
 7. Do not add root env config knobs. Put settings as leaf fields on the taskset or harness config that owns them.
 

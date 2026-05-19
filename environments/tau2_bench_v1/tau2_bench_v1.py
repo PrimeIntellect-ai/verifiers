@@ -730,4 +730,5 @@ class Tau2EnvConfig(vf.EnvConfig):
     harness: vf.HarnessConfig = vf.HarnessConfig()
 
 
-load_environment = vf.Env.loader(taskset=Tau2Taskset, env_config=Tau2EnvConfig)
+def load_environment(config: Tau2EnvConfig | None = None) -> vf.Env:
+    return vf.Env(config, taskset=Tau2Taskset)

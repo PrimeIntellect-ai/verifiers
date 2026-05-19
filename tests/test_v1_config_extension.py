@@ -1412,17 +1412,13 @@ def test_generic_config_binding_is_inferred_and_inherited() -> None:
     class ChildHarness(LocalHarness):
         pass
 
-    class LocalEnvConfig(EnvConfig):
-        taskset: LocalTasksetConfig = LocalTasksetConfig()
-        harness: LocalHarnessConfig = LocalHarnessConfig()
-
     taskset = LocalTaskset(config={"split": "test"})
     harness = ChildHarness(config={"mode": "custom"})
-    env = Env.loader(
+    env = Env(
+        {"taskset": {"split": "eval"}, "harness": {"mode": "mapping"}},
         taskset=LocalTaskset,
         harness=LocalHarness,
-        env_config=LocalEnvConfig,
-    )(config={"taskset": {"split": "eval"}, "harness": {"mode": "mapping"}})
+    )
 
     assert isinstance(taskset.config, LocalTasksetConfig)
     assert taskset.config.split == "test"
@@ -1434,32 +1430,32 @@ def test_generic_config_binding_is_inferred_and_inherited() -> None:
     assert env.harness.config.mode == "mapping"
 
 
-def test_env_config_requires_config_type_for_plain_builders() -> None:
-    def load_taskset(config: TasksetConfig | None = None) -> Taskset:
-        return Taskset(config=config)
-
-    def load_harness(config: HarnessConfig | None = None) -> Harness:
-        return Harness(config=config)
-
+def test_env_constructor_infers_annotated_builder_config_types() -> None:
     class LocalTasksetConfig(TasksetConfig):
         split: str = "train"
 
-    with pytest.raises(
-        ValueError, match="at least one taskset_config or harness_config"
-    ):
-        Env.config(taskset=load_taskset, harness=load_harness)
+    class LocalHarnessConfig(HarnessConfig):
+        mode: str = "default"
 
-    env_config = Env.config(
+    def load_taskset(config: LocalTasksetConfig | None = None) -> Taskset:
+        return Taskset(config=config)
+
+    def load_harness(config: LocalHarnessConfig | None = None) -> Harness:
+        return Harness(config=config)
+
+    env = Env(
+        {"taskset": {"split": "eval"}, "harness": {"mode": "mapping"}},
         taskset=load_taskset,
         harness=load_harness,
-        taskset_config=LocalTasksetConfig,
     )
 
-    assert env_config.model_fields["taskset"].annotation is LocalTasksetConfig
-    assert env_config.model_fields["harness"].annotation is HarnessConfig
+    assert isinstance(env.taskset.config, LocalTasksetConfig)
+    assert env.taskset.config.split == "eval"
+    assert isinstance(env.harness.config, LocalHarnessConfig)
+    assert env.harness.config.mode == "mapping"
 
 
-def test_env_config_allows_required_child_configs() -> None:
+def test_env_constructor_requires_required_child_configs() -> None:
     class RequiredTasksetConfig(TasksetConfig):
         dataset: str
 
@@ -1472,22 +1468,26 @@ def test_env_config_allows_required_child_configs() -> None:
     class RequiredHarness(Harness[RequiredHarnessConfig]):
         pass
 
-    env_config = Env.config(taskset=RequiredTaskset, harness=RequiredHarness)
+    with pytest.raises(ValidationError, match="dataset"):
+        Env(taskset=RequiredTaskset, harness=RequiredHarness)
 
-    assert env_config.model_fields["taskset"].is_required()
-    assert env_config.model_fields["harness"].is_required()
-    with pytest.raises(ValidationError, match="taskset"):
-        env_config()
-
-    env = Env.loader(taskset=RequiredTaskset, harness=RequiredHarness)(
-        config={
+    env = Env(
+        {
             "taskset": {"dataset": "train"},
             "harness": {"endpoint": "local"},
-        }
+        },
+        taskset=RequiredTaskset,
+        harness=RequiredHarness,
     )
 
     assert env.taskset.config.dataset == "train"
     assert env.harness.config.endpoint == "local"
+
+
+def test_env_alternative_constructors_are_removed() -> None:
+    assert not hasattr(Env, "config")
+    assert not hasattr(Env, "loader")
+    assert not hasattr(Env, "from_config")
 
 
 def test_config_object_coercion_preserves_child_defaults() -> None:
@@ -2087,7 +2087,7 @@ def test_math_python_v1_wrapper_rejects_unsupported_sandbox_kwargs() -> None:
 def test_math_python_v1_prompt_tracks_harness_packages() -> None:
     module = importlib.import_module("environments.math_python.math_python_v1")
 
-    env = module.load_v1_environment(
+    env = module.load_environment(
         config=module.MathPythonEnvConfig(
             harness=module.MathPythonHarnessConfig(pip_install_packages="numpy pandas")
         )
@@ -2101,7 +2101,7 @@ def test_math_python_v1_prompt_tracks_harness_packages() -> None:
 def test_math_python_v1_explicit_prompt_wins() -> None:
     module = importlib.import_module("environments.math_python.math_python_v1")
 
-    env = module.load_v1_environment(
+    env = module.load_environment(
         config=module.MathPythonEnvConfig(
             taskset=module.MathPythonTasksetConfig(system_prompt="custom prompt"),
             harness=module.MathPythonHarnessConfig(pip_install_packages="numpy pandas"),

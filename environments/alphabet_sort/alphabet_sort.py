@@ -211,10 +211,10 @@ def load_environment(
         from alphabet_sort_v1 import (
             AlphabetSortEnvConfig,
             AlphabetSortTasksetConfig,
-            load_v1_environment,
+            load_environment as load_v1,
         )
 
-        return load_v1_environment(
+        return load_v1(
             config=AlphabetSortEnvConfig(
                 taskset=AlphabetSortTasksetConfig(
                     max_turns=max_turns,

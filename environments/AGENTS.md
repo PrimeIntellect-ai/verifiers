@@ -727,7 +727,7 @@ class MyEnvConfig(vf.EnvConfig):
 
 
 def load_environment(config: MyEnvConfig | None = None) -> vf.Env:
-    return vf.Env.from_config(config, taskset=MyTaskset, env_config=MyEnvConfig)
+    return vf.Env(config, taskset=MyTaskset)
 ```
 
 ### pyproject.toml

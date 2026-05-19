@@ -14,10 +14,10 @@ def load_environment(
         from reverse_text_v1 import (
             ReverseTextEnvConfig,
             ReverseTextTasksetConfig,
-            load_v1_environment,
+            load_environment as load_v1,
         )
 
-        return load_v1_environment(
+        return load_v1(
             config=ReverseTextEnvConfig(
                 taskset=ReverseTextTasksetConfig(
                     dataset_name=dataset_name,

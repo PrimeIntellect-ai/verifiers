@@ -171,7 +171,7 @@ class MyEnvConfig(vf.EnvConfig):
 
 
 def load_environment(config: MyEnvConfig | None = None) -> vf.Env:
-    return vf.Env.from_config(config, taskset=MyTaskset, env_config=MyEnvConfig)
+    return vf.Env(config, taskset=MyTaskset)
 ```
 If no harness is passed, `vf.Env` uses the base endpoint-backed harness. See
 **[BYO Harness](docs/byo-harness.md)** for the advanced v1 taskset/harness API.
@@ -181,7 +181,7 @@ For example, Harbor task directories can run through the bundled OpenCode CLI
 harness with:
 
 ```python
-env = vf.Env.from_config(taskset=vf.HarborTaskset, harness=vf.OpenCode)
+env = vf.Env(taskset=vf.HarborTaskset, harness=vf.OpenCode)
 ```
 
 The same environment package is the unit used by evals and `prime-rl`. The

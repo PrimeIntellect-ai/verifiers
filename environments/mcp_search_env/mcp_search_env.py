@@ -146,7 +146,5 @@ class MCPSearchEnvConfig(vf.EnvConfig):
     harness: vf.HarnessConfig = vf.HarnessConfig()
 
 
-load_environment = vf.Env.loader(
-    taskset=MCPSearchTaskset,
-    env_config=MCPSearchEnvConfig,
-)
+def load_environment(config: MCPSearchEnvConfig | None = None) -> vf.Env:
+    return vf.Env(config, taskset=MCPSearchTaskset)

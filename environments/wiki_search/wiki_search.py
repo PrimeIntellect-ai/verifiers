@@ -39,10 +39,10 @@ def load_environment(
         from wiki_search_v1 import (
             WikiSearchEnvConfig,
             WikiSearchTasksetConfig,
-            load_v1_environment,
+            load_environment as load_v1,
         )
 
-        return load_v1_environment(
+        return load_v1(
             config=WikiSearchEnvConfig(
                 taskset=WikiSearchTasksetConfig(
                     max_turns=max_turns,

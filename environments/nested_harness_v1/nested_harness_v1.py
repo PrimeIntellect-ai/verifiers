@@ -100,7 +100,10 @@ class NestedHarness(vf.Harness[NestedHarnessConfig]):
             self.add_toolset({"nested": load_toolset(config=self.config.toolset)})
 
 
-load_environment = vf.Env.loader(
-    taskset=NestedTaskset,
-    harness=NestedHarness,
-)
+class NestedEnvConfig(vf.EnvConfig):
+    taskset: vf.TasksetConfig = vf.TasksetConfig()
+    harness: NestedHarnessConfig = NestedHarnessConfig()
+
+
+def load_environment(config: NestedEnvConfig | None = None) -> vf.Env:
+    return vf.Env(config, taskset=NestedTaskset, harness=NestedHarness)

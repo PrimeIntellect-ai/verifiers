@@ -153,8 +153,10 @@ def test_env(env_dir: Path, tmp_path_factory: pytest.TempPathFactory):
     repo_root = Path(__file__).parent.parent
     cmd = (
         f"cd {tmp_venv_dir} && uv venv --clear && source .venv/bin/activate && "
-        f"uv pip install {repo_root.as_posix()} && "
-        f"uv pip install {env_dir.absolute().as_posix()}"
+        "uv pip install --exclude-newer-package prime-pydantic-config=false "
+        f"{repo_root.as_posix()} && "
+        "uv pip install --exclude-newer-package prime-pydantic-config=false "
+        f"{env_dir.absolute().as_posix()}"
     )
     try:
         process = subprocess.run(

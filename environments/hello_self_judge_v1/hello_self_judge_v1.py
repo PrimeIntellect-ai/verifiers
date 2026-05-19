@@ -353,7 +353,14 @@ class SelfJudgeTaskset(vf.Taskset[SelfJudgeTasksetConfig]):
     _default_metrics = (bash_calls,)
 
 
-load_environment = vf.Env.loader(
-    taskset=SelfJudgeTaskset,
-    harness_config=SelfJudgeHarnessConfig,
-)
+class SelfJudgeHarness(vf.Harness[SelfJudgeHarnessConfig]):
+    pass
+
+
+class SelfJudgeEnvConfig(vf.EnvConfig):
+    taskset: SelfJudgeTasksetConfig = SelfJudgeTasksetConfig()
+    harness: SelfJudgeHarnessConfig = SelfJudgeHarnessConfig()
+
+
+def load_environment(config: SelfJudgeEnvConfig | None = None) -> vf.Env:
+    return vf.Env(config, taskset=SelfJudgeTaskset, harness=SelfJudgeHarness)

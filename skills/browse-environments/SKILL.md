@@ -61,7 +61,7 @@ prime eval run name -m openai/gpt-4.1-mini -n 5
 ```bash
 prime env install reverse-text --from-repo
 ```
-4. For v1 Taskset + Harness examples, inspect the environment package for `Taskset[Config]` / optional `Harness[Config]` classes plus `load_environment(config: MyEnvConfig | None = None) -> vf.Env`; expect `vf.Env.from_config(...)` or `vf.Env.loader(...)` to connect concrete child config types.
+4. For v1 Taskset + Harness examples, inspect the environment package for `Taskset[Config]` / optional `Harness[Config]` classes plus `load_environment(config: MyEnvConfig | None = None) -> vf.Env`; expect `vf.Env(config, taskset=..., harness=...)` to connect concrete child config types.
 
 ## Anti-Patterns
 1. Do not recommend building from scratch if a strong ecosystem option exists.

@@ -305,8 +305,5 @@ class WikiSearchTaskset(vf.Taskset[WikiSearchTasksetConfig]):
             )
 
 
-load_v1_environment = vf.Env.loader(
-    taskset=WikiSearchTaskset,
-    env_config=WikiSearchEnvConfig,
-)
-load_environment = load_v1_environment
+def load_environment(config: WikiSearchEnvConfig | None = None) -> vf.Env:
+    return vf.Env(config, taskset=WikiSearchTaskset)

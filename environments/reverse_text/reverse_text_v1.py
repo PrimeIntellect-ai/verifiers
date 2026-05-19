@@ -66,11 +66,10 @@ class ReverseTextTaskset(vf.Taskset[ReverseTextTasksetConfig]):
     _default_rewards = (lcs_reward_func,)
 
 
-ReverseTextEnvConfig = vf.Env.config(taskset=ReverseTextTaskset)
-load_v1_environment = vf.Env.loader(
-    taskset=ReverseTextTaskset,
-    env_config=ReverseTextEnvConfig,
-)
+class ReverseTextEnvConfig(vf.EnvConfig):
+    taskset: ReverseTextTasksetConfig = ReverseTextTasksetConfig()
+    harness: vf.HarnessConfig = vf.HarnessConfig()
 
 
-load_environment = load_v1_environment
+def load_environment(config: ReverseTextEnvConfig | None = None) -> vf.Env:
+    return vf.Env(config, taskset=ReverseTextTaskset)

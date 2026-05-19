@@ -91,4 +91,10 @@ class SubagentHarness(vf.Harness[vf.HarnessConfig]):
     _default_metrics = (subagent_calls,)
 
 
-load_environment = vf.Env.loader(taskset=SubagentTaskset, harness=SubagentHarness)
+class SubagentEnvConfig(vf.EnvConfig):
+    taskset: SubagentTasksetConfig = SubagentTasksetConfig()
+    harness: vf.HarnessConfig = vf.HarnessConfig()
+
+
+def load_environment(config: SubagentEnvConfig | None = None) -> vf.Env:
+    return vf.Env(config, taskset=SubagentTaskset, harness=SubagentHarness)

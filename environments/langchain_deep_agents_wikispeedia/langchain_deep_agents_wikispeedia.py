@@ -567,14 +567,10 @@ def load_harness(
     return harness
 
 
-WikispeediaEnvConfig = vf.Env.config(
-    taskset=load_taskset,
-    harness=load_harness,
-    taskset_config=WikispeediaTasksetConfig,
-    harness_config=WikispeediaHarnessConfig,
-)
-load_environment = vf.Env.loader(
-    taskset=load_taskset,
-    harness=load_harness,
-    env_config=WikispeediaEnvConfig,
-)
+class WikispeediaEnvConfig(vf.EnvConfig):
+    taskset: WikispeediaTasksetConfig = WikispeediaTasksetConfig()
+    harness: WikispeediaHarnessConfig = WikispeediaHarnessConfig()
+
+
+def load_environment(config: WikispeediaEnvConfig | None = None) -> vf.Env:
+    return vf.Env(config, taskset=load_taskset, harness=load_harness)

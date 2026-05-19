@@ -71,7 +71,7 @@ class MyEnvConfig(vf.EnvConfig):
 
 
 def load_environment(config: MyEnvConfig | None = None) -> vf.Env:
-    return vf.Env.from_config(config, taskset=MyTaskset, env_config=MyEnvConfig)
+    return vf.Env(config, taskset=MyTaskset)
 ```
 
 Rows should be plain serializable task data:
@@ -176,7 +176,7 @@ class QAEnvConfig(vf.EnvConfig):
 
 
 def load_environment(config: QAEnvConfig | None = None):
-    return vf.Env.from_config(config, taskset=QATaskset, env_config=QAEnvConfig)
+    return vf.Env(config, taskset=QATaskset)
 ```
 
 Gotchas:
@@ -282,7 +282,7 @@ class SearchTaskset(vf.Taskset[SearchTasksetConfig]):
         ]
 
 
-env = vf.Env.from_config(taskset=SearchTaskset)
+env = vf.Env(taskset=SearchTaskset)
 ```
 
 Gotchas:
@@ -398,7 +398,7 @@ directories, and other sandboxed CLI programs. Prefer packaged harnesses when
 the format already matches:
 
 ```python
-env = vf.Env.from_config(taskset=vf.HarborTaskset, harness=vf.OpenCode)
+env = vf.Env(taskset=vf.HarborTaskset, harness=vf.OpenCode)
 ```
 
 For custom command programs, put task-directory metadata on `task`, use

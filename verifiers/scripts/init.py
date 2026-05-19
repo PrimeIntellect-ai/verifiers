@@ -172,7 +172,7 @@ class EnvConfig(vf.EnvConfig):
 
 
 def load_environment(config: EnvConfig | None = None) -> vf.Env:
-    return vf.Env.from_config(config, taskset=EnvTaskset, env_config=EnvConfig)
+    return vf.Env(config, taskset=EnvTaskset)
 """
 
 HARNESS_ENVIRONMENT_TEMPLATE = """\
@@ -216,12 +216,7 @@ class EnvConfig(vf.EnvConfig):
 
 
 def load_environment(config: EnvConfig | None = None) -> vf.Env:
-    return vf.Env.from_config(
-        config,
-        taskset=EnvTaskset,
-        harness=EnvHarness,
-        env_config=EnvConfig,
-    )
+    return vf.Env(config, taskset=EnvTaskset, harness=EnvHarness)
 """
 
 OPENENV_ENVIRONMENT_TEMPLATE = """\
