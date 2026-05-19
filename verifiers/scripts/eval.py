@@ -484,6 +484,12 @@ def build_parser() -> argparse.ArgumentParser:
         help='Number of env server worker processes ("auto" = concurrency // 256, or an integer)',
     )
     parser.add_argument(
+        "--metrics-port",
+        type=int,
+        default=None,
+        help="Expose env server Prometheus metrics at http://0.0.0.0:<port>/metrics",
+    )
+    parser.add_argument(
         "--abbreviated-summary",
         "-A",
         default=False,
@@ -813,6 +819,7 @@ def main(argv: list[str] | None = None):
             max_retries=raw.get("max_retries", 0),
             num_workers=raw.get("num_workers", "auto"),
             disable_env_server=raw.get("disable_env_server", False),
+            metrics_port=raw.get("metrics_port"),
             verbose=raw.get("verbose", False),
             disable_tui=raw.get("disable_tui", False),
             state_columns=raw.get("state_columns", []),

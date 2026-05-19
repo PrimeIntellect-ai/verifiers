@@ -1308,6 +1308,7 @@ class Environment(ABC):
         log_level: str | None = None,
         log_dir: str | None = None,
         console_logging: bool = True,
+        metrics_port: int | None = None,
         # health check configs
         health_check_interval: float = 1.0,  # 1s
         startup_timeout: float = 600.0,  # 10m
@@ -1349,6 +1350,7 @@ class Environment(ABC):
             kwargs=dict(
                 address=address,
                 num_workers=num_workers,
+                metrics_port=metrics_port,
                 death_pipe=death_pipe_reader,
             ),
             daemon=False,
