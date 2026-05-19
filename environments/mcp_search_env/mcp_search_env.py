@@ -72,9 +72,9 @@ DEFAULT_MCP_SERVERS: list[vf.ConfigData] = [
 
 class MCPSearchTasksetConfig(vf.TasksetConfig):
     system_prompt: str = SYSTEM_PROMPT
-    mcp_servers: list[vf.ConfigData] = DEFAULT_MCP_SERVERS
+    mcp_servers: list[vf.ConfigData] | None = None
     max_turns: int = 6
-    examples: list[vf.ConfigData] = DEFAULT_EXAMPLES
+    examples: list[vf.ConfigData] | None = None
 
 
 class MCPSearchTaskset(vf.Taskset[MCPSearchTasksetConfig]):

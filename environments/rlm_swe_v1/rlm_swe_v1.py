@@ -31,7 +31,7 @@ class RlmSweTasksetConfig(vf.TasksetConfig):
     ds_keep_in_memory: bool = True
     timeout_minutes: int | None = None
     hide_tests_from_agent: bool = True
-    env: vf.ConfigData = {}
+    env: vf.ConfigData | None = None
 
 
 class SandboxCommandResult(Protocol):
@@ -76,7 +76,7 @@ class R2ESWETaskset(vf.Taskset[RlmSweTasksetConfig]):
         self.ds_keep_in_memory = config.ds_keep_in_memory
         self.timeout_minutes = config.timeout_minutes
         self.hide_tests_from_agent = config.hide_tests_from_agent
-        self.env = dict(config.env)
+        self.env = dict(config.env or {})
         super().__init__(config=config)
         self.source = self.load_rows
 
