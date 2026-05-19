@@ -440,7 +440,7 @@ class ReplayHarness(vf.Harness[vf.HarnessConfig]):
 env = vf.Env(
     vf.EnvConfig(
         taskset=ReplayTasksetConfig(),
-        harness=ReplayHarnessConfig(),
+        harness=vf.HarnessConfig(),
     ),
     taskset=ReplayTaskset,
     harness=ReplayHarness,

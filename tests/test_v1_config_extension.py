@@ -1504,6 +1504,24 @@ def test_env_mapping_rejects_unknown_root_keys() -> None:
         Env({"harnes": {"max_turns": 3}})
 
 
+def test_env_config_tracks_prebuilt_children() -> None:
+    taskset = Taskset(config=TasksetConfig(taskset_id="actual"))
+    harness = Harness(config=HarnessConfig(max_turns=3))
+    env = Env(
+        {
+            "taskset": {"taskset_id": "ignored"},
+            "harness": {"max_turns": 9},
+        },
+        taskset=taskset,
+        harness=harness,
+    )
+
+    assert env.config.taskset is taskset.config
+    assert env.config.harness is harness.config
+    assert env.config.taskset.taskset_id == "actual"
+    assert env.config.harness.max_turns == 3
+
+
 def test_env_builder_callables_must_accept_config() -> None:
     def load_taskset() -> Taskset:
         return Taskset()

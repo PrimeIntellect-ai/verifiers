@@ -50,12 +50,15 @@ class Env(vf.Environment):
             explicit_config_data(harness_input)
         )
 
-        self.config = EnvConfig(taskset=taskset_config, harness=harness_config)
         self.taskset = (
             taskset if isinstance(taskset, Taskset) else taskset(config=taskset_config)
         )
         self.harness = (
             harness if isinstance(harness, Harness) else harness(config=harness_config)
+        )
+        self.config = EnvConfig(
+            taskset=cast(TasksetConfig, self.taskset.config),
+            harness=cast(HarnessConfig, self.harness.config),
         )
         self.harness.attach_taskset(self.taskset)
         super().__init__(
