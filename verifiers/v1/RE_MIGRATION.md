@@ -198,7 +198,12 @@ async def exact(task, state, extract_answer) -> float:
 
 
 class ExtractTasksetConfig(vf.TasksetConfig):
-    pass
+    objects: dict[str, str] = {
+        "extract_answer": "my_env:build_answer_extractor",
+    }
+    bindings: dict[str, str] = {
+        "exact.extract_answer": "objects.extract_answer",
+    }
 
 
 class ExtractTaskset(vf.Taskset[ExtractTasksetConfig]):

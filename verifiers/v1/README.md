@@ -992,13 +992,19 @@ EOF
 
 
 harness = vf.Harness(
-    program={
-        "command": ["my-cli", "run", "/task/instruction.md"],
-        "sandbox": True,
-        "bindings": {"write_cli_config.endpoint_config": endpoint_config},
-        "channels": {"mcp": write_cli_config},
-    },
-    sandbox={"image": "python:3.11-slim"},
+    config=vf.HarnessConfig(
+        program={
+            "command": ["my-cli", "run", "/task/instruction.md"],
+            "sandbox": True,
+            "bindings": {
+                "write_cli_config.endpoint_config": {
+                    "fn": "my_env.cli:endpoint_config"
+                },
+            },
+            "channels": {"mcp": {"fn": "my_env.cli:write_cli_config"}},
+        },
+        sandbox={"image": "python:3.11-slim"},
+    )
 )
 ```
 
@@ -1402,6 +1408,7 @@ packages = ["numpy", "pandas"]
 
 [env.taskset.toolsets.search]
 tools = ["my_env.tools:search"]
+objects = { index = "my_env.tools:load_index" }
 bindings = { "search.index" = "objects.index" }
 ```
 
@@ -1498,12 +1505,14 @@ def openai_key(state):
 
 
 vf.Harness(
-    program={
-        "command": ["my-cli", "run"],
-        "sandbox": True,
-        "env": {"OPENAI_API_KEY": openai_key},
-    },
-    sandbox={"image": "python:3.11-slim"},
+    config=vf.HarnessConfig(
+        program={
+            "command": ["my-cli", "run"],
+            "sandbox": True,
+            "env": {"OPENAI_API_KEY": {"fn": "my_env.cli:openai_key"}},
+        },
+        sandbox={"image": "python:3.11-slim"},
+    )
 )
 ```
 
@@ -1590,6 +1599,17 @@ async def ask_child(prompt: str, harness, state):
     child_state = await harness.run(task)
     state.setdefault("child_answers", []).append(child_state["answer"])
     return child_state["answer"]
+
+
+def load_child_harness():
+    return vf.Harness()
+
+
+child_tools = vf.Toolset(
+    tools=[ask_child],
+    objects={"harness": load_child_harness},
+    bindings={"ask_child.harness": "objects.harness"},
+)
 ```
 
 The child receives a fresh `trajectory_id` and its own rollout-local state. It
@@ -1607,7 +1627,9 @@ async def summarize(task, state):
         transcript="append",
     )
     child_state = await vf.Harness(
-        system_prompt="Summarize the rollout in one sentence."
+        config=vf.HarnessConfig(
+            system_prompt="Summarize the rollout in one sentence."
+        )
     ).run(child_task, child_state)
     state["summary"] = child_state["completion"]
 ```
