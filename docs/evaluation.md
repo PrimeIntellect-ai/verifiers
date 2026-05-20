@@ -383,15 +383,15 @@ optional:
 | `endpoint_id` | string | Endpoint registry id (requires TOML `endpoints_path`) |
 
 Use `harness.type` to choose a registered v1 harness config for reusable taskset
-environments. Bundled names include `opencode`, `mini-swe-agent`, `pi`, `rlm`,
-and `terminus2`:
+environments. Bundled names include `opencode`, `claude-code`, `codex`,
+`mini-swe-agent`, `pi`, `rlm`, and `terminus2`:
 
 ```toml
 [[eval]]
 id = "openthoughts-tblite"
 
 [eval.harness]
-type = "terminus2"
+type = "codex"
 max_turns = 4
 ```
 

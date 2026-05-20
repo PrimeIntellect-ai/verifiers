@@ -1565,19 +1565,22 @@ def test_env_config_convenience_uses_bound_child_configs() -> None:
 
 
 @pytest.mark.parametrize(
-    ("alias", "config_cls", "harness_cls"),
+    ("alias", "config_cls", "harness_cls", "config_fields"),
     [
-        ("opencode", vf.OpenCodeConfig, vf.OpenCode),
-        ("open-code", vf.OpenCodeConfig, vf.OpenCode),
-        ("mini-swe-agent", vf.MiniSWEAgentConfig, vf.MiniSWEAgent),
-        ("pi", vf.PiConfig, vf.Pi),
-        ("rlm", vf.RLMConfig, vf.RLM),
-        ("terminus2", vf.Terminus2Config, vf.Terminus2),
-        ("terminus-2", vf.Terminus2Config, vf.Terminus2),
+        ("opencode", vf.OpenCodeConfig, vf.OpenCode, {"max_turns": 4}),
+        ("open-code", vf.OpenCodeConfig, vf.OpenCode, {"max_turns": 4}),
+        ("claude", vf.ClaudeCodeConfig, vf.ClaudeCode, {"max_turns": 4}),
+        ("claude-code", vf.ClaudeCodeConfig, vf.ClaudeCode, {"max_turns": 4}),
+        ("codex", vf.CodexConfig, vf.Codex, {}),
+        ("mini-swe-agent", vf.MiniSWEAgentConfig, vf.MiniSWEAgent, {"max_turns": 4}),
+        ("pi", vf.PiConfig, vf.Pi, {"max_turns": 4}),
+        ("rlm", vf.RLMConfig, vf.RLM, {"max_turns": 4}),
+        ("terminus2", vf.Terminus2Config, vf.Terminus2, {"max_turns": 4}),
+        ("terminus-2", vf.Terminus2Config, vf.Terminus2, {"max_turns": 4}),
     ],
 )
 def test_env_config_harness_type_selects_packaged_harness_config(
-    alias, config_cls, harness_cls
+    alias, config_cls, harness_cls, config_fields
 ) -> None:
     class GenericEnvConfig(EnvConfig):
         taskset: TasksetConfig = TasksetConfig(source=[])
@@ -1585,12 +1588,13 @@ def test_env_config_harness_type_selects_packaged_harness_config(
 
     config = coerce_config(
         GenericEnvConfig,
-        {"harness": {"type": alias, "max_turns": 4}},
+        {"harness": {"type": alias, **config_fields}},
     )
     env = Env(config=config)
 
     assert isinstance(config.harness, config_cls)
-    assert config.harness.max_turns == 4
+    if "max_turns" in config_fields:
+        assert config.harness.max_turns == 4
     assert isinstance(env.harness, harness_cls)
 
 

@@ -12,6 +12,8 @@ import pytest
 
 import verifiers as root_vf
 import verifiers.v1 as vf
+from verifiers.v1.packages.harnesses.claude_code import claude_code_mcp_json
+from verifiers.v1.packages.harnesses.codex import codex_mcp_toml
 from verifiers.v1.packages.harnesses.configs import (
     TERMINUS_2_DEFAULT_API_BASE_URL,
     TERMINUS_2_DEFAULT_HARBOR_PACKAGE,
@@ -212,9 +214,19 @@ async def test_harbor_reward_uses_background_job_for_tests(
 
 
 def test_packaged_harbor_and_opencode_imports_are_reexported() -> None:
-    from verifiers.v1.packages.harnesses import OpenCode, OpenCodeConfig, Pi
+    from verifiers.v1.packages.harnesses import (
+        ClaudeCode,
+        Codex,
+        OpenCode,
+        OpenCodeConfig,
+        Pi,
+    )
     from verifiers.v1.packages.tasksets import HarborTaskset
 
+    assert vf.ClaudeCode is ClaudeCode
+    assert root_vf.ClaudeCode is ClaudeCode
+    assert vf.Codex is Codex
+    assert root_vf.Codex is Codex
     assert vf.OpenCode is OpenCode
     assert vf.OpenCodeConfig is OpenCodeConfig
     assert vf.Pi is Pi
@@ -255,6 +267,8 @@ def test_opencode_config_owns_opencode_harness_fields() -> None:
     ("harness_cls", "config_cls"),
     [
         (vf.OpenCode, vf.OpenCodeConfig),
+        (vf.ClaudeCode, vf.ClaudeCodeConfig),
+        (vf.Codex, vf.CodexConfig),
         (vf.MiniSWEAgent, vf.MiniSWEAgentConfig),
         (vf.Pi, vf.PiConfig),
         (vf.RLM, vf.RLMConfig),
@@ -310,6 +324,73 @@ def test_pi_harness_writes_intercepted_model_and_mcp_config() -> None:
     assert provider["apiKey"] == "secret"
     assert provider["models"] == [{"id": "model", "name": "openai/gpt-5.4-mini"}]
     assert mcp["mcpServers"]["verifiers-tools"]["command"] == "python3"
+
+
+def test_claude_code_harness_builds_sandbox_program() -> None:
+    harness = vf.ClaudeCode(
+        config=vf.ClaudeCodeConfig(
+            system_prompt="extra system prompt",
+            agent_workdir="/workspace",
+            max_turns=7,
+        )
+    )
+    program = cast(dict[str, object], harness.program)
+    command = cast(list[object], program["command"])
+    setup = cast(str, program["setup"])
+    files = cast(dict[str, object], program["files"])
+    env = cast(dict[str, object], program["env"])
+    mcp = json.loads(claude_code_mcp_json())
+
+    assert "npm install -g @anthropic-ai/claude-code" in setup
+    assert "/claude-code/instruction.txt" in files
+    assert "/claude-code/system.txt" in files
+    assert program["channels"] == "mcp"
+    assert env["ANTHROPIC_MODEL"] == "runtime.model"
+    assert env["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] == "1"
+    assert "cat /claude-code/instruction.txt | claude -p" in cast(str, command[2])
+    assert '"$(cat /claude-code/instruction.txt)"' not in cast(str, command[2])
+    assert "--max-turns 7" in cast(str, command[2])
+    assert "--permission-mode bypassPermissions" in cast(str, command[2])
+    assert "--mcp-config /tmp/claude-code-mcp.json" in cast(str, command[2])
+    assert mcp["mcpServers"]["verifiers-tools"]["command"] == "python3"
+
+
+def test_codex_harness_builds_sandbox_program() -> None:
+    harness = vf.Codex(
+        config=vf.CodexConfig(
+            system_prompt="extra system prompt",
+            agent_workdir="/workspace",
+            codex_sandbox="workspace-write",
+            model_reasoning_effort="high",
+        )
+    )
+    program = cast(dict[str, object], harness.program)
+    command = cast(list[object], program["command"])
+    setup = cast(str, program["setup"])
+    files = cast(dict[str, object], program["files"])
+    env = cast(dict[str, object], program["env"])
+    mcp_toml = codex_mcp_toml()
+
+    assert "npm install -g @openai/codex" in setup
+    assert "/codex/instruction.txt" in files
+    assert "/codex/system.txt" in files
+    assert program["channels"] == "mcp"
+    assert env["OPENAI_MODEL"] == "runtime.model"
+    assert callable(env["CODEX_API_KEY"])
+    assert 'model_provider = "verifiers"' in cast(str, command[2])
+    assert 'approval_policy = "never"' in cast(str, command[2])
+    assert 'sandbox_mode = "workspace-write"' in cast(str, command[2])
+    assert 'model_reasoning_effort = "high"' in cast(str, command[2])
+    assert "--sandbox workspace-write" in cast(str, command[2])
+    assert "--output-last-message /logs/agent/codex.txt.final" in cast(str, command[2])
+    assert "- < /logs/agent/codex.txt.prompt" in cast(str, command[2])
+    assert '"$(cat /logs/agent/codex.txt.prompt)"' not in cast(str, command[2])
+    assert 'command = "python3"' in mcp_toml
+
+
+def test_codex_config_rejects_max_turns() -> None:
+    with pytest.raises(ValueError, match="CodexConfig.max_turns is not supported"):
+        vf.CodexConfig(max_turns=7)
 
 
 def test_terminus_2_harness_builds_sandbox_program() -> None:

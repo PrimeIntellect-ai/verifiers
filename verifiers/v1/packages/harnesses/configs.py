@@ -1,4 +1,5 @@
 from collections.abc import Mapping
+from typing import ClassVar, Literal
 
 from pydantic import field_validator
 
@@ -61,6 +62,20 @@ PI_DEFAULT_INSTRUCTION_PATH = "/pi/instruction.txt"
 PI_DEFAULT_SYSTEM_PROMPT_PATH = "/pi/system.txt"
 PI_DEFAULT_LOG_PATH = "/logs/agent/pi.txt"
 PI_DEFAULT_SYSTEM_PROMPT = "Complete the user's task using the available tools."
+
+CLAUDE_CODE_DEFAULT_AGENT_WORKDIR = "/app"
+CLAUDE_CODE_DEFAULT_INSTRUCTION_PATH = "/claude-code/instruction.txt"
+CLAUDE_CODE_DEFAULT_SYSTEM_PROMPT_PATH = "/claude-code/system.txt"
+CLAUDE_CODE_DEFAULT_LOG_PATH = "/logs/agent/claude-code.txt"
+CLAUDE_CODE_DEFAULT_PACKAGE = "@anthropic-ai/claude-code"
+CLAUDE_CODE_DEFAULT_PERMISSION_MODE = "bypassPermissions"
+
+CODEX_DEFAULT_AGENT_WORKDIR = "/app"
+CODEX_DEFAULT_INSTRUCTION_PATH = "/codex/instruction.txt"
+CODEX_DEFAULT_SYSTEM_PROMPT_PATH = "/codex/system.txt"
+CODEX_DEFAULT_LOG_PATH = "/logs/agent/codex.txt"
+CODEX_DEFAULT_PACKAGE = "@openai/codex"
+CODEX_DEFAULT_SANDBOX_MODE = "danger-full-access"
 
 RLM_DEFAULT_REPO_URL = "github.com/PrimeIntellect-ai/rlm-harness.git"
 RLM_DEFAULT_REPO_REF = "main"
@@ -127,6 +142,52 @@ class PiConfig(HarnessConfig):
     install_mcp_adapter: bool = True
     sandbox: SandboxConfig | None = SandboxConfig()
     max_turns: int = 4
+
+
+class ClaudeCodeConfig(HarnessConfig):
+    _config_aliases: ClassVar[tuple[str, ...]] = ("claude", "claude-code")
+
+    agent_workdir: str = CLAUDE_CODE_DEFAULT_AGENT_WORKDIR
+    instruction_path: str = CLAUDE_CODE_DEFAULT_INSTRUCTION_PATH
+    system_prompt_path: str = CLAUDE_CODE_DEFAULT_SYSTEM_PROMPT_PATH
+    log_path: str = CLAUDE_CODE_DEFAULT_LOG_PATH
+    system_prompt: PromptInput | None = None
+    package: str = CLAUDE_CODE_DEFAULT_PACKAGE
+    permission_mode: Literal[
+        "default",
+        "acceptEdits",
+        "plan",
+        "auto",
+        "dontAsk",
+        "bypassPermissions",
+    ] = CLAUDE_CODE_DEFAULT_PERMISSION_MODE
+    sandbox: SandboxConfig | None = SandboxConfig()
+    max_turns: int = 4
+
+
+class CodexConfig(HarnessConfig):
+    _config_aliases: ClassVar[tuple[str, ...]] = ("codex", "codex-cli")
+
+    agent_workdir: str = CODEX_DEFAULT_AGENT_WORKDIR
+    instruction_path: str = CODEX_DEFAULT_INSTRUCTION_PATH
+    system_prompt_path: str = CODEX_DEFAULT_SYSTEM_PROMPT_PATH
+    log_path: str = CODEX_DEFAULT_LOG_PATH
+    system_prompt: PromptInput | None = None
+    package: str = CODEX_DEFAULT_PACKAGE
+    codex_sandbox: Literal["read-only", "workspace-write", "danger-full-access"] = (
+        CODEX_DEFAULT_SANDBOX_MODE
+    )
+    model_reasoning_effort: (
+        Literal["minimal", "low", "medium", "high", "xhigh"] | None
+    ) = None
+    sandbox: SandboxConfig | None = SandboxConfig()
+
+    @field_validator("max_turns")
+    @classmethod
+    def validate_no_max_turns(cls, value: int) -> int:
+        if value != HarnessConfig.model_fields["max_turns"].default:
+            raise ValueError("CodexConfig.max_turns is not supported by codex exec.")
+        return value
 
 
 class RLMConfig(HarnessConfig):
