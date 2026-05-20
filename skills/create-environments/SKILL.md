@@ -51,7 +51,7 @@ prime env install math-python --from-repo
 
 ### V1 Authoring Rules
 1. Keep v1 environment entrypoints tiny: `import verifiers as vf`, define top-level `@vf.reward` / `@vf.metric` functions, define `TasksetConfig` / `HarnessConfig` subclasses for user-facing knobs, define `Taskset[Config]` / `Harness[Config]` classes, then expose `load_environment` with explicit `vf.Env(taskset=MyTaskset(config=config.taskset), harness=MyHarness(config=config.harness))` objects.
-2. Keep shared dependencies behind the taskset or harness that owns them. Prefer serializable loader paths in config; use no-arg loader callables only for Python-only construction. Do not pass `objects=` or `bindings=` through user-facing `vf.Taskset(...)` or `vf.Toolset(...)` constructors in environment files. Do not introduce v1 Parser/Rubric wrappers; parsing is ordinary Python.
+2. Keep shared dependencies behind the taskset or harness that owns them. Use bindings as the canonical injection path; prefer serializable loader paths for bound objects in config, and use no-arg loader callables only for Python-only construction. Do not pass already-instantiated resource objects through environment loaders. Do not introduce v1 Parser/Rubric wrappers; parsing is ordinary Python.
 3. Use `vf.get_messages(state.get("completion") or [], role="assistant")` when reading state completions. The helper returns typed message objects and should not receive `None`.
 4. Use `program.channels` for v1 program protocol/channel selection. Do not use stale `program.tools` terminology.
 5. Use `load_taskset(config)` / `load_harness(config)` only when they make the explicit object boundary clearer. Put behavior on the taskset or harness class, and use typed config objects as the only construction values.

@@ -158,7 +158,7 @@ rules:
   - id: verifiers-v1-no-signal-factories
     languages: [python]
     severity: ERROR
-    message: v1 reward/update/metric handlers must be top-level decorated callables; put dependencies on task/state/config instead of returning decorated inner functions.
+    message: v1 reward/update/metric handlers must be top-level decorated callables; inject shared resources through taskset/harness bindings instead of returning decorated inner functions.
     paths:
       include:
         - /environments/**/*.py
@@ -262,22 +262,6 @@ rules:
                   ...
               ...
               return $INNER
-
-  - id: verifiers-v1-no-env-constructor-objects-bindings
-    languages: [python]
-    severity: ERROR
-    message: Do not pass objects= or bindings= to user-facing vf.Taskset/vf.Toolset constructors in environments; put shared resources behind task/state/config-owned code.
-    paths:
-      include:
-        - /environments/**/*.py
-      exclude:
-        - /environments/**/proj/**/*.py
-        - /environments/**/tasks/**/*.py
-    pattern-either:
-      - pattern: vf.Taskset(..., objects=$VALUE, ...)
-      - pattern: vf.Taskset(..., bindings=$VALUE, ...)
-      - pattern: vf.Toolset(..., objects=$VALUE, ...)
-      - pattern: vf.Toolset(..., bindings=$VALUE, ...)
 
   - id: verifiers-v1-no-v0-parser-in-v1-modules
     languages: [python]

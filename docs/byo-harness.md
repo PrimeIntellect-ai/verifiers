@@ -181,10 +181,11 @@ def load_environment(config: ExtractEnvConfig) -> vf.Env:
     )
 ```
 
-Config object loaders should be serializable import refs when they cross a TOML
-or CLI boundary. Python-only construction may use no-arg loader callables, but
-environment files should not wire live dependencies through constructor-level
-`objects=` / `bindings=`.
+Bindings are the canonical way to inject shared resources. Config object
+loaders should be serializable import refs when they cross a TOML or CLI
+boundary. Python-only construction may use no-arg loader callables, but
+environment files should not pass already-instantiated resource objects through
+loaders.
 
 ## Message Access
 

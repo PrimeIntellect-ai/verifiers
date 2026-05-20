@@ -736,8 +736,8 @@ async def grade_answer(answer: str, task) -> str:
     return "correct" if answer == task["answer"] else "incorrect"
 
 
-# In environment files, prefer wrapping this in a taskset/harness-owned helper
-# instead of passing constructor-level bindings directly.
+# Bindings are the normal way to inject hidden arguments. Keep them on the
+# taskset, toolset, user, program, or harness that owns the callable.
 vf.Toolset(config=vf.ToolsetConfig(tools=["my_env:grade_answer"]))
 ```
 

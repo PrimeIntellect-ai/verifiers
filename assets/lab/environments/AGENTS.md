@@ -295,9 +295,11 @@ async def my_reward_func(completion, my_helper) -> float:
 ```
 
 For taskset/harness environments, keep shared dependencies behind the taskset or
-harness that owns them. Configured dependencies should use serializable loader
-paths; Python-only construction may use no-arg loader callables when a resource
-cannot be serialized.
+harness that owns them. Bindings are the canonical way to inject shared
+resources into rewards, updates, tools, and programs. Configured binding
+objects should use serializable loader paths when they cross a TOML or CLI
+boundary; Python-only construction may use no-arg loader callables when a
+resource cannot be serialized.
 
 Judges are used for tasks where deterministic evaluation is impractical, and an
 LLM is used to score responses. **JudgeRubric** stores an LLM client inside the
@@ -788,9 +790,10 @@ object shape above. Do not pass both `config=` and `taskset=`/`harness=` to
 `vf.Env`.
 
 Keep v1 dependencies behind the owning taskset or harness. Do not pass
-`objects=` or `bindings=` through user-facing `vf.Taskset(...)` or
-`vf.Toolset(...)` constructors in environment files. Prefer serializable import
-paths in config; a no-arg loader callable is acceptable for Python-only
+already-instantiated resource objects through environment loaders. Bindings are
+allowed wherever the owning taskset, toolset, user, program, or harness wires
+callables. `objects` entries should be loader specs: prefer serializable import
+paths in config, and use no-arg loader callables only for Python-only
 construction when the dependency cannot be serialized.
 
 Judge-style rewards should read endpoint details from the rollout state:

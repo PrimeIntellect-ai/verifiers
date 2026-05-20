@@ -243,10 +243,10 @@ surfaces. Inside Python environment code, use typed config objects.
 2. Prefer v1-native framework objects over stdlib-shaped user code. User-facing
    environment code should read as Verifiers code first.
 3. Keep shared dependencies behind the taskset or harness that owns them.
-   Prefer serializable loader paths in config; no-arg loader callables are
-   acceptable for Python-only construction. Do not pass `objects=` or
-   `bindings=` through user-facing `Taskset`/`Toolset` constructors in
-   environment files.
+   Bindings are the canonical injection path for shared resources. Prefer
+   serializable loader paths in config; no-arg loader callables are acceptable
+   for Python-only construction. Do not pass pre-initialized resource objects
+   through environment loaders.
 4. Compose related categories inside one taskset only when they share the same
    harness lifecycle and scoring contract.
 5. Expose explicit typed loaders for separate v1 envs when categories need

@@ -44,7 +44,7 @@ prime eval run <env> -m openai/gpt-4.1-mini -n 5
 3. v1 taskset/harness contracts:
 - Expect new taskset/harness environments to use the v1 `vf.Env(taskset=..., harness=...)` / `vf.Taskset[Config]` / `vf.Harness[Config]` format as the environment boundary, with `EnvConfig` containing only taskset and harness child configs.
 - Expect tasksets to own task data, task-owned tools, user behavior, metrics, rewards, and task-specific config. Flag one-off harness classes that only wrap task behavior.
-- Flag `objects=` or `bindings=` passed to user-facing `vf.Taskset(...)` / `vf.Toolset(...)` constructors in environment files; shared dependencies should be owned behind taskset/harness code or serializable loader paths.
+- Expect shared dependencies to use bindings owned by the taskset, toolset, user, program, or harness that needs them. Flag pre-initialized resource objects passed through environment loaders; object entries should be serializable loader paths or no-arg loader callables.
 - Verify `Task` data is serializable, `state` remains serializable at rollout boundaries, and model/client controls flow through runtime state rather than top-level dataset columns.
 - For V1 harness programs, verify framework clients consume `state.get_endpoint_config(api="chat")` rather than hardcoding an upstream LLM endpoint. For `CliAgentEnv` agents, verify sandboxed agent code consumes the injected interception endpoint; the proxy is what makes rollouts visible to the rubric.
 4. Migration fidelity:
