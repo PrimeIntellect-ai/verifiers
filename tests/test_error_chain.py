@@ -1,7 +1,13 @@
 """Tests for verifiers.utils.error_utils.ErrorChain."""
 
 import verifiers as vf
-from verifiers.utils.error_utils import ErrorChain, get_vf_error_chain
+from verifiers.utils.error_utils import (
+    ErrorChain,
+    error_info,
+    error_info_to_exception,
+    get_vf_error_chain,
+    is_retryable_error,
+)
 
 
 class TestErrorChain:
@@ -147,3 +153,51 @@ class TestErrorChain:
         # error1 and error2 have same type, should be counted together
         assert counter[ErrorChain(ValueError("any"))] == 2
         assert counter[ErrorChain(TypeError("any"))] == 1
+
+    def test_error_info_marks_default_retryable_errors(self):
+        """Serialized errors carry verifiers' default retryability decision."""
+        retryable_errors = [
+            vf.InfraError("infra"),
+            vf.SandboxError("sandbox"),
+            vf.BrowserSandboxError("browser"),
+            vf.TunnelError("tunnel"),
+            vf.InvalidModelResponseError("invalid response"),
+            vf.EmptyModelResponseError("empty response"),
+        ]
+
+        for error in retryable_errors:
+            info = error_info(error)
+            assert info["is_retryable"] is True
+            assert is_retryable_error(error) is True
+
+    def test_error_info_marks_plain_model_errors_non_retryable(self):
+        """Plain model/provider errors are not retryable by default."""
+        outer = vf.ModelError()
+        outer.__cause__ = RuntimeError(
+            "No available workers (all circuits open or unhealthy)"
+        )
+
+        info = error_info(outer)
+
+        assert info["error_chain_str"] == "ModelError -> RuntimeError"
+        assert info["is_retryable"] is False
+        assert is_retryable_error(outer) is False
+
+    def test_error_info_to_exception_uses_retryable_flag_for_serialized_subclasses(
+        self,
+    ):
+        """Serialized subclass names do not need to enumerate their base classes."""
+        info = {
+            "error": "SandboxError",
+            "error_chain_repr": "SandboxError('sandbox unavailable')",
+            "error_chain_str": "SandboxError",
+            "is_retryable": True,
+        }
+
+        assert isinstance(
+            error_info_to_exception(
+                info,
+                (vf.InfraError, vf.InvalidModelResponseError),
+            ),
+            vf.InfraError,
+        )

@@ -23,7 +23,7 @@ from verifiers.types import (
     TokenUsage,
     Tool,
 )
-from verifiers.utils.error_utils import ErrorChain
+from verifiers.utils.error_utils import error_info
 from verifiers.utils.message_utils import (
     sanitize_tool_calls,
     serialize_messages_for_output,
@@ -262,13 +262,10 @@ def state_to_output(
                 error_chain_repr=str(error["error_chain_repr"]),
                 error_chain_str=str(error["error_chain_str"]),
             )
+            if isinstance(error.get("is_retryable"), bool):
+                output["error"]["is_retryable"] = error["is_retryable"]
         else:
-            error_chain = ErrorChain(cast(BaseException, error))
-            output["error"] = ErrorInfo(
-                error=type(error).__name__,
-                error_chain_repr=repr(error_chain),
-                error_chain_str=str(error_chain),
-            )
+            output["error"] = error_info(cast(BaseException, error))
         output["error_chain"] = output["error"]["error_chain_repr"]
         output["long_error_chain"] = output["error"]["error_chain_str"]
     # only include optional fields if non-empty

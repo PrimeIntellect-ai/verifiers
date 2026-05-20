@@ -4,6 +4,11 @@ from typing import Callable, cast
 import verifiers as vf
 from verifiers.types import ErrorInfo
 
+DEFAULT_RETRYABLE_ERROR_TYPES: tuple[type[Exception], ...] = (
+    vf.InfraError,
+    vf.InvalidModelResponseError,
+)
+
 
 def get_error_chain(
     error: BaseException | None, parent_type: type[BaseException] | None = None
@@ -56,12 +61,24 @@ class ErrorChain:
         return " -> ".join([repr(e) for e in self.chain])
 
 
+def is_retryable_error(
+    error: BaseException,
+    error_types: tuple[type[Exception], ...] = DEFAULT_RETRYABLE_ERROR_TYPES,
+) -> bool:
+    """Return whether an error chain matches verifiers' retry policy."""
+    error_chain = ErrorChain(error)
+    return any(error_type in error_chain for error_type in error_types)
+
+
 def error_info(error: BaseException) -> ErrorInfo:
     error_chain = ErrorChain(error)
     return ErrorInfo(
         error=type(error).__name__,
         error_chain_repr=repr(error_chain),
         error_chain_str=str(error_chain),
+        is_retryable=any(
+            error_type in error_chain for error_type in DEFAULT_RETRYABLE_ERROR_TYPES
+        ),
     )
 
 
@@ -81,6 +98,11 @@ def error_info_to_exception(
 ) -> Exception | None:
     chain = str(error.get("error_chain_str") or error.get("error") or "")
     detail = str(error.get("error_chain_repr") or error.get("error") or "")
+    if (
+        error_types == DEFAULT_RETRYABLE_ERROR_TYPES
+        and error.get("is_retryable") is True
+    ):
+        return vf.InfraError(detail)
     for error_type in error_types:
         if error_type.__name__ in chain:
             return error_type(detail)
