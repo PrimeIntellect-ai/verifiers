@@ -10,6 +10,7 @@ from verifiers.types import (
     GroupRewardFunc,
     MultiAgentRewardFunc,
     RewardFunc,
+    RolloutScore,
     State,
     TASK_INPUT_FIELDS,
 )
