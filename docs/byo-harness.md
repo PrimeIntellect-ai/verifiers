@@ -66,8 +66,11 @@ class ReverseEnvConfig(vf.EnvConfig):
     harness: vf.HarnessConfig = vf.HarnessConfig()
 
 
-def load_environment(config: ReverseEnvConfig):
-    return vf.Env(taskset=ReverseTaskset(config=config.taskset))
+def load_environment(config: ReverseEnvConfig) -> vf.Env:
+    return vf.Env(
+        taskset=ReverseTaskset(config=config.taskset),
+        harness=vf.Harness(config=config.harness),
+    )
 ```
 
 ## Tasksets
@@ -172,7 +175,10 @@ class ExtractEnvConfig(vf.EnvConfig):
 
 
 def load_environment(config: ExtractEnvConfig) -> vf.Env:
-    return vf.Env(taskset=ExtractTaskset(config=config.taskset))
+    return vf.Env(
+        taskset=ExtractTaskset(config=config.taskset),
+        harness=vf.Harness(config=config.harness),
+    )
 ```
 
 Config object loaders should be serializable import refs when they cross a TOML
@@ -338,7 +344,7 @@ class AgentEnvConfig(vf.EnvConfig):
     harness: AgentHarnessConfig = AgentHarnessConfig()
 
 
-def load_environment(config: AgentEnvConfig):
+def load_environment(config: AgentEnvConfig) -> vf.Env:
     return vf.Env(
         taskset=FetchTaskset(config=config.taskset),
         harness=AgentHarness(config=config.harness),
@@ -432,7 +438,7 @@ class HarborEnvConfig(vf.EnvConfig):
     harness: vf.OpenCodeConfig = vf.OpenCodeConfig()
 
 
-def load_environment(config: HarborEnvConfig):
+def load_environment(config: HarborEnvConfig) -> vf.Env:
     return vf.Env(
         taskset=vf.HarborTaskset(config=config.taskset),
         harness=vf.OpenCode(config=config.harness),
@@ -505,7 +511,7 @@ The recommended loader takes one `config` object and routes its `taskset` and
 `harness` sections:
 
 ```python
-def load_environment(config: MyEnvConfig):
+def load_environment(config: MyEnvConfig) -> vf.Env:
     return vf.Env(
         taskset=MyTaskset(config=config.taskset),
         harness=MyHarness(config=config.harness),
@@ -544,8 +550,11 @@ class MyEnvConfig(vf.EnvConfig):
     harness: vf.HarnessConfig = vf.HarnessConfig()
 
 
-def load_environment(config: MyEnvConfig):
-    return vf.Env(taskset=MyTaskset(config=config.taskset))
+def load_environment(config: MyEnvConfig) -> vf.Env:
+    return vf.Env(
+        taskset=MyTaskset(config=config.taskset),
+        harness=vf.Harness(config=config.harness),
+    )
 ```
 
 RL and Hosted Training config uses the same shape under `env`:

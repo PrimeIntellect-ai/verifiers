@@ -1489,9 +1489,20 @@ def test_env_requires_taskset() -> None:
         Env()
 
 
-def test_env_rejects_unbound_taskset_config() -> None:
+def test_env_accepts_base_taskset_config() -> None:
+    env = Env(taskset=TasksetConfig(taskset_id="plain"))
+
+    assert type(env.taskset) is Taskset
+    assert env.taskset.config.taskset_id == "plain"
+    assert env.config.taskset is env.taskset.config
+
+
+def test_env_rejects_unbound_taskset_config_subclass() -> None:
+    class UnboundTasksetConfig(TasksetConfig):
+        split: str = "train"
+
     with pytest.raises(TypeError, match="No Taskset class is bound"):
-        Env(taskset=TasksetConfig())
+        Env(taskset=UnboundTasksetConfig())
 
 
 def test_env_config_tracks_prebuilt_children() -> None:
@@ -1553,9 +1564,23 @@ def test_env_config_convenience_uses_bound_child_configs() -> None:
     assert env.harness.config.mode == "mapping"
 
 
-def test_env_config_convenience_requires_bound_taskset_config() -> None:
+def test_env_config_convenience_accepts_base_taskset_config() -> None:
+    env = Env(config=EnvConfig(taskset=TasksetConfig(source=[])))
+
+    assert type(env.taskset) is Taskset
+    assert env.taskset.config.source == []
+
+
+def test_env_config_convenience_requires_bound_taskset_config_subclass() -> None:
+    class UnboundTasksetConfig(TasksetConfig):
+        split: str = "train"
+
+    class UnboundEnvConfig(EnvConfig):
+        taskset: UnboundTasksetConfig = UnboundTasksetConfig()
+        harness: HarnessConfig = HarnessConfig()
+
     with pytest.raises(TypeError, match="No Taskset class is bound"):
-        Env(config=EnvConfig(taskset=TasksetConfig(source=[])))
+        Env(config=UnboundEnvConfig())
 
 
 def test_config_object_coercion_preserves_child_defaults() -> None:

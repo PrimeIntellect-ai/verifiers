@@ -156,6 +156,8 @@ def resolve_taskset(value: TasksetInput) -> Taskset:
         return value
     if not isinstance(value, TasksetConfig):
         raise TypeError("Env taskset must be a Taskset or TasksetConfig.")
+    if type(value) is TasksetConfig:
+        return Taskset(config=value)
     owner = config_owner(type(value), TasksetConfig)
     if owner is None:
         raise TypeError(

@@ -112,7 +112,10 @@ def load_taskset(config: MyTasksetConfig) -> MyTaskset:
 
 
 def load_environment(config: MyEnvConfig) -> vf.Env:
-    return vf.Env(taskset=load_taskset(config.taskset))
+    return vf.Env(
+        taskset=load_taskset(config.taskset),
+        harness=vf.Harness(config=config.harness),
+    )
 ```
 7. Do not add root env config knobs. Put settings as leaf fields on the taskset or harness config that owns them.
 

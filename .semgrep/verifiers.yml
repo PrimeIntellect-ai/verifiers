@@ -17,22 +17,21 @@ rules:
   - id: verifiers-v1-config-param-one-type
     languages: [python]
     severity: ERROR
-    message: Public v1 `config` parameters must be one concrete config type; keep raw mappings at explicit config-loader boundaries.
+    message: v1 environment `config` parameters should be one concrete config type; keep raw mappings at explicit config-loader boundaries.
     paths:
       include:
-        - /verifiers/v1/**/*.py
         - /environments/**/*.py
-      exclude:
-        - /verifiers/v1/config.py
-        - /verifiers/v1/utils/**/*.py
     pattern-either:
       - patterns:
           - pattern: |
               def $FUNC(..., config: $ANNOT, ...):
                   ...
+          - pattern-not: |
+              def $FUNC(..., config: $ANNOT = $DEFAULT, ...):
+                  ...
           - metavariable-regex:
               metavariable: $ANNOT
-              regex: "(Any|ConfigMap|Mapping\\[str, object\\]|dict\\[str, object\\]|.*\\|.*\\|.*)"
+              regex: "(Any|ConfigMap|Mapping\\[str, object\\]|dict\\[str, object\\]|.*\\|.*)"
       - patterns:
           - pattern: |
               def $FUNC(..., config: $ANNOT = $DEFAULT, ...):
