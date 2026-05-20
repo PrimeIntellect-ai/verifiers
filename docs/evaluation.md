@@ -375,12 +375,33 @@ optional:
 | `name` | string | Optional eval label for display and saved result paths |
 | `args` | table | Arguments passed to `load_environment()` |
 | `taskset` | table | v1 taskset config passed through `EnvConfig.taskset` |
-| `harness` | table | v1 harness config passed through `EnvConfig.harness` |
+| `harness` | table | v1 harness config passed through `EnvConfig.harness`; set `type` to choose a registered harness config |
 | `num_examples` | integer | Number of dataset examples to evaluate |
 | `rollouts_per_example` | integer | Rollouts per example |
 | `extra_env_kwargs` | table | Arguments passed to environment constructor |
 | `model` | string | Model to evaluate |
 | `endpoint_id` | string | Endpoint registry id (requires TOML `endpoints_path`) |
+
+Use `harness.type` to choose a registered v1 harness config for reusable taskset
+environments. Bundled names include `opencode`, `mini-swe-agent`, `pi`, `rlm`,
+and `terminus2`:
+
+```toml
+[[eval]]
+id = "openthoughts-tblite"
+
+[eval.harness]
+type = "terminus2"
+max_turns = 4
+```
+
+If no harness fields need overrides, the shorthand is:
+
+```toml
+[[eval]]
+id = "openthoughts-tblite"
+harness = "pi"
+```
 
 Use `name` to run the same environment more than once with different args:
 

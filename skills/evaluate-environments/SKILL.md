@@ -104,31 +104,32 @@ prime eval run configs/eval/my-benchmark.toml
 ```bash
 prime eval run my-env -a '{"config":{"taskset":{"difficulty":"hard"},"harness":{"max_turns":20}}}'
 ```
-2. Override legacy/v0 constructor kwargs only when the environment still exposes them; for v1, use `config.taskset` and `config.harness` instead:
+2. For reusable v1 taskset environments whose `EnvConfig.harness` is typed as `vf.HarnessConfig`, select a registered harness in TOML with `harness = "pi"` or with `[eval.harness] type = "terminus2"` plus that harness config's fields.
+3. Override legacy/v0 constructor kwargs only when the environment still exposes them; for v1, use `config.taskset` and `config.harness` instead:
 ```bash
 prime eval run my-env -x '{"max_turns":20}'
 ```
-3. Bound per-rollout wall-clock time (use the dedicated `--timeout` flag; wins over `-x` and TOML `[eval.extra_env_kwargs]`):
+4. Bound per-rollout wall-clock time (use the dedicated `--timeout` flag; wins over `-x` and TOML `[eval.extra_env_kwargs]`):
 ```bash
 prime eval run my-env --timeout 600
 ```
-4. Save extra state columns:
+5. Save extra state columns:
 ```bash
 prime eval run my-env -s -C "judge_response,parsed_answer"
 ```
-5. Resume interrupted runs:
+6. Resume interrupted runs:
 ```bash
 prime eval run my-env -n 1000 -s --resume
 ```
-6. Save results to a custom output directory:
+7. Save results to a custom output directory:
 ```bash
 prime eval run my-env -s -o /path/to/output
 ```
-7. Run multi-environment TOML suites:
+8. Run multi-environment TOML suites:
 ```bash
 prime eval run configs/eval/my-benchmark.toml
 ```
-8. Run the same environment more than once with different args by giving each entry a `name`:
+9. Run the same environment more than once with different args by giving each entry a `name`:
 ```toml
 [[eval]]
 id = "reverse-text"
@@ -144,18 +145,18 @@ name = "reverse-text-long"
 [eval.args]
 max_length = 256
 ```
-9. Pass extra HTTP headers via CLI (repeatable):
+10. Pass extra HTTP headers via CLI (repeatable):
 ```bash
 prime eval run my-env -m my-proxy --header "X-Custom-Header: value"
 ```
-10. Set headers in `[[eval]]` TOML configs as a table or list (merge order: registry row < `headers` table < `header` list / `--header`):
+11. Set headers in `[[eval]]` TOML configs as a table or list (merge order: registry row < `headers` table < `header` list / `--header`):
 ```toml
 [[eval]]
 env_id = "my-env"
 headers = { "X-Custom-Header" = "value" }
 header = ["X-Another: val"]
 ```
-11. Run ablation sweeps using `[[ablation]]` blocks in TOML configs:
+12. Run ablation sweeps using `[[ablation]]` blocks in TOML configs:
 ```toml
 [[ablation]]
 env_id = "my-env"

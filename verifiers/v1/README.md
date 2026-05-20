@@ -1241,6 +1241,12 @@ For environment-specific settings, define leaf fields on the taskset or harness
 config that owns them. An `EnvConfig` subclass only fixes the concrete taskset
 and harness config types for the loader.
 
+Reusable taskset environments can keep `harness` typed as `vf.HarnessConfig`.
+Then TOML may select a registered harness config with `type`, for example
+`type = "terminus2"` or `type = "pi"`, and pass that config's ordinary fields
+beside it. Use `harness = "pi"` when the selected harness needs no field
+overrides.
+
 ```python
 class MyTasksetConfig(vf.TasksetConfig):
     split: str = "train"

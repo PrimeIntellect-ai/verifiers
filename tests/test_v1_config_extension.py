@@ -1564,6 +1564,91 @@ def test_env_config_convenience_uses_bound_child_configs() -> None:
     assert env.harness.config.mode == "mapping"
 
 
+@pytest.mark.parametrize(
+    ("alias", "config_cls", "harness_cls"),
+    [
+        ("opencode", vf.OpenCodeConfig, vf.OpenCode),
+        ("open-code", vf.OpenCodeConfig, vf.OpenCode),
+        ("mini-swe-agent", vf.MiniSWEAgentConfig, vf.MiniSWEAgent),
+        ("pi", vf.PiConfig, vf.Pi),
+        ("rlm", vf.RLMConfig, vf.RLM),
+        ("terminus2", vf.Terminus2Config, vf.Terminus2),
+        ("terminus-2", vf.Terminus2Config, vf.Terminus2),
+    ],
+)
+def test_env_config_harness_type_selects_packaged_harness_config(
+    alias, config_cls, harness_cls
+) -> None:
+    class GenericEnvConfig(EnvConfig):
+        taskset: TasksetConfig = TasksetConfig(source=[])
+        harness: HarnessConfig = vf.OpenCodeConfig()
+
+    config = coerce_config(
+        GenericEnvConfig,
+        {"harness": {"type": alias, "max_turns": 4}},
+    )
+    env = Env(config=config)
+
+    assert isinstance(config.harness, config_cls)
+    assert config.harness.max_turns == 4
+    assert isinstance(env.harness, harness_cls)
+
+
+def test_env_config_harness_name_selects_packaged_harness_config() -> None:
+    class GenericEnvConfig(EnvConfig):
+        taskset: TasksetConfig = TasksetConfig(source=[])
+        harness: HarnessConfig = vf.OpenCodeConfig()
+
+    config = coerce_config(GenericEnvConfig, {"harness": "pi"})
+    env = Env(config=config)
+
+    assert isinstance(config.harness, vf.PiConfig)
+    assert isinstance(env.harness, vf.Pi)
+
+
+def test_env_config_harness_type_uses_registered_owner_aliases() -> None:
+    class AliasHarnessConfig(HarnessConfig):
+        mode: str = "default"
+
+    class AliasHarness(Harness[AliasHarnessConfig]):
+        pass
+
+    class GenericEnvConfig(EnvConfig):
+        taskset: TasksetConfig = TasksetConfig(source=[])
+        harness: HarnessConfig = HarnessConfig()
+
+    config = coerce_config(
+        GenericEnvConfig,
+        {"harness": {"type": "alias-harness", "mode": "selected"}},
+    )
+    env = Env(config=config)
+
+    assert isinstance(config.harness, AliasHarnessConfig)
+    assert config.harness.mode == "selected"
+    assert isinstance(env.harness, AliasHarness)
+
+
+def test_env_config_harness_type_requires_string() -> None:
+    class GenericEnvConfig(EnvConfig):
+        taskset: TasksetConfig = TasksetConfig(source=[])
+        harness: HarnessConfig = HarnessConfig()
+
+    with pytest.raises(
+        ValidationError, match="EnvConfig.harness.type must be a string"
+    ):
+        coerce_config(GenericEnvConfig, {"harness": {"type": 123}})
+
+
+def test_harness_config_aliases_reject_collisions() -> None:
+    class CollisionHarnessConfig(HarnessConfig):
+        pass
+
+    with pytest.raises(TypeError, match="already resolves"):
+
+        class CollisionHarness(Harness[CollisionHarnessConfig]):
+            _config_aliases = ("pi",)
+
+
 def test_env_config_convenience_accepts_base_taskset_config() -> None:
     env = Env(config=EnvConfig(taskset=TasksetConfig(source=[])))
 

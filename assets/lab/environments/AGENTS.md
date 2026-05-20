@@ -711,6 +711,9 @@ by the framework; do not accept `None` or write `config = config or MyEnvConfig(
 `EnvConfig` is a lightweight envelope for the two child configs. Put environment
 knobs on `TasksetConfig` or `HarnessConfig`, not on `EnvConfig` itself.
 Environment packages should not subclass `Env`.
+Reusable taskset environments can type `harness` as `vf.HarnessConfig`; TOML can
+then select a registered harness with names like `type = "terminus2"` or
+`type = "pi"` inside the harness table.
 
 The taskset-only shape is:
 

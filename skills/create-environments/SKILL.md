@@ -73,7 +73,8 @@ split = "train"
 [env.harness]
 max_turns = 8
 ```
-6. In code, use the current class-based config shape:
+6. For reusable taskset environments that should compose with packaged harnesses, type the env field as `harness: vf.HarnessConfig = vf.OpenCodeConfig()`; TOML can then select a registered harness with `harness = "pi"` or `[env.harness] type = "terminus2"`.
+7. In code, use the current class-based config shape:
 ```python
 import verifiers as vf
 
@@ -117,7 +118,7 @@ def load_environment(config: MyEnvConfig) -> vf.Env:
         harness=vf.Harness(config=config.harness),
     )
 ```
-7. Do not add root env config knobs. Put settings as leaf fields on the taskset or harness config that owns them.
+8. Do not add root env config knobs. Put settings as leaf fields on the taskset or harness config that owns them.
 
 ### 2. Port From Another Library, Project, or Paper
 1. Create a strict source-to-target mapping before coding:

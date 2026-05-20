@@ -2,6 +2,7 @@ import importlib
 import json
 import sys
 import types
+from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
 from typing import cast
@@ -11,12 +12,12 @@ import pytest
 
 import verifiers as root_vf
 import verifiers.v1 as vf
-from verifiers.v1.packages.harnesses.pi import pi_mcp_json, pi_models_json
 from verifiers.v1.packages.harnesses.configs import (
     TERMINUS_2_DEFAULT_API_BASE_URL,
     TERMINUS_2_DEFAULT_HARBOR_PACKAGE,
     TERMINUS_2_DEFAULT_MODEL_NAME,
 )
+from verifiers.v1.packages.harnesses.pi import pi_mcp_json, pi_models_json
 from verifiers.v1.packages.harnesses.terminus_2 import (
     Terminus2,
     terminus_2_agent_script,
@@ -243,7 +244,10 @@ def test_opencode_config_owns_opencode_harness_fields() -> None:
     assert "apt-get -o Acquire::Retries=3 update" in setup
     assert "apt-get -o Acquire::Retries=3 install" in setup
     assert "/workspace" in cast(str, command[2])
+    assert 'if [[ -z "$OPENCODE_WORKDIR" ]]; then' in cast(str, command[2])
     assert '"webfetch": false' in cast(str, mcp_setup)
+    assert 'if [ -z "$OPENCODE_WORKDIR" ]; then' in cast(str, mcp_setup)
+    assert "[[" not in cast(str, mcp_setup)
     assert "/opencode/system.txt" not in cast(dict[str, object], program["files"])
 
 
@@ -285,20 +289,21 @@ def test_pi_harness_writes_intercepted_model_and_mcp_config() -> None:
     harness = vf.Pi()
     program = cast(dict[str, object], harness.program)
     setup = cast(str, program["setup"])
-    models = json.loads(
-        pi_models_json(
-            {
-                "base_url": "http://127.0.0.1:1/rollout/key/v1",
-                "api_key": "secret",
-                "api_client_type": "openai_chat_completions",
-                "model": "openai/gpt-5.4-mini",
-            }
-        )
-    )
+    channel_setup = cast(dict[str, object], program["channels"])["mcp"]
+    endpoint_config = {
+        "base_url": "http://127.0.0.1:1/rollout/key/v1",
+        "api_key": "secret",
+        "api_client_type": "openai_chat_completions",
+        "model": "openai/gpt-5.4-mini",
+    }
+    mcp_setup = cast(Callable[[dict[str, object]], str], channel_setup)(endpoint_config)
+    models = json.loads(pi_models_json(endpoint_config))
     mcp = json.loads(pi_mcp_json())
 
     assert "apt-get -o Acquire::Retries=3 update" in setup
     assert "apt-get -o Acquire::Retries=3 install" in setup
+    assert 'if [ -z "$PI_WORKDIR" ]; then' in mcp_setup
+    assert "[[" not in mcp_setup
     provider = models["providers"]["verifiers"]
     assert provider["baseUrl"] == "http://127.0.0.1:1/rollout/key/v1"
     assert provider["api"] == "openai-completions"

@@ -27,7 +27,9 @@ def normalize_env_config_sections(raw: Mapping[str, object]) -> dict[str, object
     if taskset is not None:
         child_config["taskset"] = config_table(taskset, "taskset")
     if harness is not None:
-        child_config["harness"] = config_table(harness, "harness")
+        child_config["harness"] = (
+            harness if isinstance(harness, str) else config_table(harness, "harness")
+        )
 
     if child_config:
         existing_config = config_table(env_args.get("config", {}), "env_args.config")

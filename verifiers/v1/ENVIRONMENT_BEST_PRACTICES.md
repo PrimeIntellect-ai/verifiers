@@ -41,7 +41,9 @@ your loader runs. The type annotation is not cosmetic.
    `TasksetConfig` subclass. Otherwise those TOML fields are rejected before
    your loader can convert or forward them.
 3. If your environment has custom harness fields, the same rule applies to the
-   `harness` annotation.
+   `harness` annotation unless TOML selects a registered harness config with
+   `[env.harness] type = "terminus2"`, `[env.harness] type = "pi"`, or another
+   owner/config alias.
 4. The config object that reaches `load_environment` is already validated and
    typed. Do not reconstruct child config objects just to recover their type.
 5. `vf.Env(taskset=MyTaskset(config=config.taskset), harness=MyHarness(config=config.harness))`

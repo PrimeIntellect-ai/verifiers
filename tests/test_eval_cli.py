@@ -778,6 +778,16 @@ def test_load_toml_config_with_args_taskset_harness():
     assert "harness" not in result[0]
 
 
+def test_load_toml_config_with_harness_name():
+    """harness may be a registered v1 harness name."""
+    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
+        f.write('[[eval]]\nenv_id = "env1"\nharness = "pi"\n')
+        f.flush()
+        result = load_toml_config(Path(f.name))
+
+    assert result[0]["env_args"] == {"config": {"harness": "pi"}}
+
+
 def test_load_toml_config_missing_env_section():
     """TOML without [[eval]] section raises ValueError."""
     with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:

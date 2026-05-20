@@ -1,3 +1,4 @@
+import importlib
 from collections.abc import Mapping
 from os import PathLike
 from typing import Literal, TypeAlias, cast
@@ -16,6 +17,7 @@ from .utils.config_callable_utils import (
 from .utils.config_utils import (
     annotation_text,
     coerce_config,
+    config_type_alias,
     default_text,
     explicit_config_data,
     import_config_ref as import_config_ref,
@@ -330,6 +332,22 @@ class EnvConfig(Config):
                 f"EnvConfig.{info.field_name} cannot be None. "
                 "Omit the section to use the default config."
             )
+        if (
+            info.field_name == "harness"
+            and cls.model_fields["harness"].annotation is HarnessConfig
+        ):
+            if isinstance(value, str):
+                importlib.import_module(".packages.harnesses", __package__)
+                return config_type_alias(value, HarnessConfig)()
+            if isinstance(value, Mapping) and "type" in value:
+                importlib.import_module(".packages.harnesses", __package__)
+                data = string_mapping(cast(ConfigInputMap, value))
+                harness_type = data.pop("type")
+                if not isinstance(harness_type, str):
+                    raise ValueError("EnvConfig.harness.type must be a string.")
+                return config_type_alias(harness_type, HarnessConfig).model_validate(
+                    data
+                )
         try:
             explicit_config_data(value)
         except TypeError as exc:

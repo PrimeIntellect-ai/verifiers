@@ -10,11 +10,13 @@ ConfigT = TypeVar("ConfigT", bound=BaseModel)
 ConfigOwnerT = TypeVar("ConfigOwnerT", bound="ConfigBound")
 
 _CONFIG_OWNERS: dict[tuple[type[BaseModel], type[BaseModel]], type["ConfigBound"]] = {}
+_CONFIG_TYPE_ALIASES: dict[tuple[type[BaseModel], str], type[BaseModel]] = {}
 
 
 class ConfigBound(Generic[ConfigT]):
     _config_base_cls: ClassVar[type[BaseModel]] = BaseModel
     _config_cls: ClassVar[type[BaseModel]] = BaseModel
+    _config_aliases: ClassVar[tuple[str, ...]] = ()
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)
@@ -61,6 +63,20 @@ def register_config_owner(
             f"define a distinct config class for {owner_cls.__name__}."
         )
     _CONFIG_OWNERS[key] = owner_cls
+    for alias in (owner_cls.__name__, config_cls.__name__.removesuffix("Config")):
+        key = "".join(char for char in alias.lower() if char.isalnum())
+        _CONFIG_TYPE_ALIASES.setdefault((base_cls, key), config_cls)
+    for alias in (
+        *getattr(owner_cls, "_config_aliases", ()),
+        *getattr(config_cls, "_config_aliases", ()),
+    ):
+        key = "".join(char for char in alias.lower() if char.isalnum())
+        existing = _CONFIG_TYPE_ALIASES.get((base_cls, key))
+        if existing is not None and existing is not config_cls:
+            raise TypeError(
+                f"Config alias {alias!r} already resolves to {existing.__name__}."
+            )
+        _CONFIG_TYPE_ALIASES[(base_cls, key)] = config_cls
 
 
 def config_owner(
@@ -74,6 +90,17 @@ def config_owner(
         if owner is not None:
             return owner
     return None
+
+
+def config_type_alias(
+    alias: str,
+    base_cls: type[BaseModel],
+) -> type[BaseModel]:
+    key = (base_cls, "".join(char for char in alias.lower() if char.isalnum()))
+    config_cls = _CONFIG_TYPE_ALIASES.get(key)
+    if config_cls is None:
+        raise ValueError(f"Unknown config type {alias!r}.")
+    return config_cls
 
 
 def explicit_config_data(
