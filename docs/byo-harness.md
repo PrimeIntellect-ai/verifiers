@@ -473,6 +473,18 @@ directories from the environment package's reserved `tasks/` directory. Set
 taskset owns Harbor task loading, sandbox overrides, task uploads, and test
 scoring.
 
+Harbor verifier environment settings in `task.toml` are honored by the v1
+taskset. By default, `[verifier]` runs in the agent sandbox. Setting
+`[verifier.environment]` implies `environment_mode = "separate"`, and
+`[verifier] environment_mode = "separate"` without a verifier environment starts
+a fresh verifier sandbox from the task's main `[environment]`. Separate verifier
+sandbox runs receive `/logs/artifacts` plus task `artifacts = [...]` entries,
+then run `test.sh` from `/tests`; when no verifier-specific environment is
+declared, v1 uploads the task's `tests/` directory because there is no Harbor
+Docker build context to bake those tests into the image. Harbor reward parsing
+follows the current Harbor order: `/logs/verifier/reward.json` first, then
+`/logs/verifier/reward.txt`.
+
 `TextArenaTaskset(config=TextArenaTasksetConfig(...))` wraps compatible
 TextArena single-player text games as v1 task rows plus a taskset-owned user
 callback. The reusable taskset owns TextArena lifecycle, answer injection, row
