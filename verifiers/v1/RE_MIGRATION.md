@@ -70,8 +70,8 @@ class MyEnvConfig(vf.EnvConfig):
     harness: vf.HarnessConfig = vf.HarnessConfig()
 
 
-def load_environment(config: MyEnvConfig | None = None) -> vf.Env:
-    return vf.Env(config, taskset=MyTaskset)
+def load_environment(config: MyEnvConfig) -> vf.Env:
+    return vf.Env(taskset=MyTaskset(config=config.taskset))
 ```
 
 Rows should be plain serializable task data:
@@ -137,7 +137,7 @@ Migration:
 
 1. Convert the old dataset builder into `Taskset.rows()`.
 2. Convert each reward or metric into `@vf.reward` / `@vf.metric`.
-3. Return `vf.Env(config, taskset=TasksetClass)`.
+3. Return `vf.Env(taskset=TasksetClass(config=config.taskset))`.
 
 Example:
 
@@ -175,8 +175,8 @@ class QAEnvConfig(vf.EnvConfig):
     taskset: QATasksetConfig = QATasksetConfig()
 
 
-def load_environment(config: QAEnvConfig | None = None):
-    return vf.Env(config, taskset=QATaskset)
+def load_environment(config: QAEnvConfig):
+    return vf.Env(taskset=QATaskset(config=config.taskset))
 ```
 
 Gotchas:
@@ -283,7 +283,7 @@ class SearchTaskset(vf.Taskset[SearchTasksetConfig]):
         ]
 
 
-env = vf.Env(vf.EnvConfig(), taskset=SearchTaskset)
+env = vf.Env(taskset=SearchTaskset(config=vf.TasksetConfig()))
 ```
 
 Gotchas:

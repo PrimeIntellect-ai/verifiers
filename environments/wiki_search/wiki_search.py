@@ -12,6 +12,8 @@ import verifiers as vf
 from verifiers.rubrics.judge_rubric import JudgeRubric
 
 CHROMA_DB_DIR = ".chroma_db"
+DEFAULT_JUDGE_BASE_URL = "https://api.openai.com/v1"
+DEFAULT_JUDGE_API_KEY_VAR = "OPENAI_API_KEY"
 _chroma_semaphore: asyncio.Semaphore | None = None
 
 
@@ -25,8 +27,8 @@ def _get_chroma_semaphore() -> asyncio.Semaphore:
 def load_environment(
     max_turns: int = 10,
     judge_model: str = "gpt-4.1-mini",
-    judge_base_url: str = "https://api.openai.com/v1",
-    judge_api_key_var: str = "OPENAI_API_KEY",
+    judge_base_url: str = DEFAULT_JUDGE_BASE_URL,
+    judge_api_key_var: str = DEFAULT_JUDGE_API_KEY_VAR,
     embed_model: str = "text-embedding-3-small",
     embed_base_url: str = "https://api.openai.com/v1",
     embed_api_key_var: str = "OPENAI_API_KEY",
@@ -36,6 +38,14 @@ def load_environment(
     v1: bool = False,
 ) -> vf.Environment:
     if v1:
+        if (
+            judge_base_url != DEFAULT_JUDGE_BASE_URL
+            or judge_api_key_var != DEFAULT_JUDGE_API_KEY_VAR
+        ):
+            raise ValueError(
+                'v1 wiki_search judges through state.get_endpoint_config(api="chat"); '
+                "set the rollout endpoint and only override judge_model."
+            )
         from wiki_search_v1 import (
             WikiSearchEnvConfig,
             WikiSearchTasksetConfig,
@@ -47,8 +57,6 @@ def load_environment(
                 taskset=WikiSearchTasksetConfig(
                     max_turns=max_turns,
                     judge_model=judge_model,
-                    judge_base_url=judge_base_url,
-                    judge_api_key_var=judge_api_key_var,
                     corpus_dataset=corpus_dataset,
                     corpus_split=corpus_split,
                     chroma_db_dir=chroma_db_dir,

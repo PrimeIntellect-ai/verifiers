@@ -829,7 +829,7 @@ async def test_taskset_setup_initializes_base_harness_prompt_and_sampling() -> N
         source=[{"prompt": [], "answer": "ready", "max_turns": 3}],
         setups=[initialize_from_taskset],
     )
-    env = vf.Env(None, taskset=taskset)
+    env = vf.Env(taskset=taskset)
     client = CapturingModelClient([fake_response(content="ok")])
 
     state = await env.rollout(
@@ -1135,8 +1135,8 @@ async def test_sandbox_base_program_max_turns_zero_is_unbounded(
         _ = state, messages, client
         return {"role": "assistant", "content": "done"}
 
-    async def call_user(state, transcript):
-        _ = state, transcript
+    async def call_user(state, messages):
+        _ = state, messages
         return []
 
     async def check_stop(state):

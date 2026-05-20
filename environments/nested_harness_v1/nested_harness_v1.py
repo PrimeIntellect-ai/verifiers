@@ -60,16 +60,17 @@ def source():
 
 
 def load_child_harness():
-    return ChildHarness()
+    return ChildHarness(config=vf.HarnessConfig())
 
 
 def load_toolset(config: vf.ToolsetConfig | None = None):
+    async def call_child_harness(prompt, state):
+        return await call_harness(prompt, load_child_harness(), state)
+
+    call_child_harness.__name__ = "call_harness"
+    call_child_harness.__doc__ = call_harness.__doc__
     return vf.Toolset(
-        tools=[call_harness],
-        objects={"child_harness": load_child_harness},
-        bindings={
-            "call_harness.harness": "objects.child_harness",
-        },
+        tools=[call_child_harness],
         config=config,
     )
 
@@ -105,5 +106,8 @@ class NestedEnvConfig(vf.EnvConfig):
     harness: NestedHarnessConfig = NestedHarnessConfig()
 
 
-def load_environment(config: NestedEnvConfig | None = None) -> vf.Env:
-    return vf.Env(config, taskset=NestedTaskset, harness=NestedHarness)
+def load_environment(config: NestedEnvConfig) -> vf.Env:
+    return vf.Env(
+        taskset=NestedTaskset(config=config.taskset),
+        harness=NestedHarness(config=config.harness),
+    )

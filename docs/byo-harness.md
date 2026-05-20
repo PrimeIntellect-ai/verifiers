@@ -66,8 +66,8 @@ class ReverseEnvConfig(vf.EnvConfig):
     harness: vf.HarnessConfig = vf.HarnessConfig()
 
 
-def load_environment(config: ReverseEnvConfig | None = None):
-    return vf.Env(config, taskset=ReverseTaskset)
+def load_environment(config: ReverseEnvConfig):
+    return vf.Env(taskset=ReverseTaskset(config=config.taskset))
 ```
 
 ## Tasksets
@@ -171,13 +171,14 @@ class ExtractEnvConfig(vf.EnvConfig):
     harness: vf.HarnessConfig = vf.HarnessConfig()
 
 
-def load_environment(config: ExtractEnvConfig | None = None) -> vf.Env:
-    return vf.Env(config, taskset=ExtractTaskset)
+def load_environment(config: ExtractEnvConfig) -> vf.Env:
+    return vf.Env(taskset=ExtractTaskset(config=config.taskset))
 ```
 
-Config `objects` values are import refs to zero-argument factories. Runtime
-mutation APIs can still accept live objects, but serialized configs should stay
-on the import-ref side of the boundary.
+Config object loaders should be serializable import refs when they cross a TOML
+or CLI boundary. Python-only construction may use no-arg loader callables, but
+environment files should not wire live dependencies through constructor-level
+`objects=` / `bindings=`.
 
 ## Message Access
 
@@ -252,15 +253,16 @@ or tool channel; duplicate keys across the taskset and harness fail.
 Tools are packaged as `Toolset` objects. A taskset can own tools directly:
 
 ```python
-async def search(query: str, index) -> str:
-    return index.search(query)
+def search_tool(index_path: str):
+    index = load_index(index_path)
+
+    async def search(query: str) -> str:
+        return index.search(query)
+
+    return search
 
 
-toolset = vf.Toolset(
-    tools=[search],
-    objects={"index": load_index},
-    bindings={"search.index": "objects.index"},
-)
+toolset = vf.Toolset(tools=[search_tool("wiki.index")])
 
 class SearchTaskset(vf.Taskset[vf.TasksetConfig]):
     def rows(self) -> list[dict[str, object]]:
@@ -336,8 +338,11 @@ class AgentEnvConfig(vf.EnvConfig):
     harness: AgentHarnessConfig = AgentHarnessConfig()
 
 
-def load_environment(config: AgentEnvConfig | None = None):
-    return vf.Env(config, taskset=FetchTaskset, harness=AgentHarness)
+def load_environment(config: AgentEnvConfig):
+    return vf.Env(
+        taskset=FetchTaskset(config=config.taskset),
+        harness=AgentHarness(config=config.harness),
+    )
 ```
 
 `Harness.program` can be:
@@ -406,12 +411,8 @@ class ReplayHarness(vf.Harness[ReplayHarnessConfig]):
 
 
 env = vf.Env(
-    vf.EnvConfig(
-        taskset=ReplayTasksetConfig(),
-        harness=ReplayHarnessConfig(),
-    ),
-    taskset=ReplayTaskset,
-    harness=ReplayHarness,
+    taskset=ReplayTaskset(config=ReplayTasksetConfig()),
+    harness=ReplayHarness(config=ReplayHarnessConfig()),
 )
 ```
 
@@ -431,8 +432,11 @@ class HarborEnvConfig(vf.EnvConfig):
     harness: vf.OpenCodeConfig = vf.OpenCodeConfig()
 
 
-def load_environment(config: HarborEnvConfig | None = None):
-    return vf.Env(config, taskset=vf.HarborTaskset, harness=vf.OpenCode)
+def load_environment(config: HarborEnvConfig):
+    return vf.Env(
+        taskset=vf.HarborTaskset(config=config.taskset),
+        harness=vf.OpenCode(config=config.harness),
+    )
 ```
 
 `HarborTaskset(config=vf.HarborTasksetConfig())` loads Harbor-format task
@@ -501,8 +505,11 @@ The recommended loader takes one `config` object and routes its `taskset` and
 `harness` sections:
 
 ```python
-def load_environment(config: MyEnvConfig | None = None):
-    return vf.Env(config, taskset=MyTaskset, harness=MyHarness)
+def load_environment(config: MyEnvConfig):
+    return vf.Env(
+        taskset=MyTaskset(config=config.taskset),
+        harness=MyHarness(config=config.harness),
+    )
 ```
 
 Eval config passes v1 config through the `taskset`/`harness` sections:
@@ -538,7 +545,7 @@ class MyEnvConfig(vf.EnvConfig):
 
 
 def load_environment(config: MyEnvConfig):
-    return vf.Env(config, taskset=MyTaskset)
+    return vf.Env(taskset=MyTaskset(config=config.taskset))
 ```
 
 RL and Hosted Training config uses the same shape under `env`:

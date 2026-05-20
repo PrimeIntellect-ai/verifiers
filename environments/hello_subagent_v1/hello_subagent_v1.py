@@ -1,8 +1,9 @@
 import verifiers as vf
 
 
-async def ask_subagent(name: str, harness, state) -> str:
+async def ask_subagent(name: str, state) -> str:
     """Ask a child language-model harness to produce the greeting for one name."""
+    harness = load_child_harness()
     task = vf.Task(
         {
             "name": name,
@@ -61,14 +62,12 @@ def source():
 
 
 def load_child_harness():
-    return vf.Harness()
+    return vf.Harness(config=vf.HarnessConfig())
 
 
 def load_toolset():
     return vf.Toolset(
         tools=[ask_subagent],
-        objects={"harness": load_child_harness},
-        bindings={"ask_subagent.harness": "objects.harness"},
         scope="rollout",
     )
 
@@ -96,5 +95,8 @@ class SubagentEnvConfig(vf.EnvConfig):
     harness: vf.HarnessConfig = vf.HarnessConfig()
 
 
-def load_environment(config: SubagentEnvConfig | None = None) -> vf.Env:
-    return vf.Env(config, taskset=SubagentTaskset, harness=SubagentHarness)
+def load_environment(config: SubagentEnvConfig) -> vf.Env:
+    return vf.Env(
+        taskset=SubagentTaskset(config=config.taskset),
+        harness=SubagentHarness(config=config.harness),
+    )

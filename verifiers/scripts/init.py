@@ -171,8 +171,12 @@ class EnvConfig(vf.EnvConfig):
     taskset: EnvTasksetConfig = EnvTasksetConfig()
 
 
-def load_environment(config: EnvConfig | None = None) -> vf.Env:
-    return vf.Env(config, taskset=EnvTaskset)
+def load_taskset(config: EnvTasksetConfig) -> EnvTaskset:
+    return EnvTaskset(config=config)
+
+
+def load_environment(config: EnvConfig) -> vf.Env:
+    return vf.Env(taskset=load_taskset(config.taskset))
 """
 
 HARNESS_ENVIRONMENT_TEMPLATE = """\
@@ -215,8 +219,19 @@ class EnvConfig(vf.EnvConfig):
     harness: EnvHarnessConfig = EnvHarnessConfig()
 
 
-def load_environment(config: EnvConfig | None = None) -> vf.Env:
-    return vf.Env(config, taskset=EnvTaskset, harness=EnvHarness)
+def load_taskset(config: EnvTasksetConfig) -> EnvTaskset:
+    return EnvTaskset(config=config)
+
+
+def load_harness(config: EnvHarnessConfig) -> EnvHarness:
+    return EnvHarness(config=config)
+
+
+def load_environment(config: EnvConfig) -> vf.Env:
+    return vf.Env(
+        taskset=load_taskset(config.taskset),
+        harness=load_harness(config.harness),
+    )
 """
 
 OPENENV_ENVIRONMENT_TEMPLATE = """\

@@ -322,5 +322,8 @@ class GroupRewardEnvConfig(vf.EnvConfig):
     harness: GroupRewardHarnessConfig = GroupRewardHarnessConfig()
 
 
-def load_environment(config: GroupRewardEnvConfig | None = None) -> vf.Env:
-    return vf.Env(config, taskset=GroupRewardTaskset, harness=GroupRewardHarness)
+def load_environment(config: GroupRewardEnvConfig) -> vf.Env:
+    return vf.Env(
+        taskset=GroupRewardTaskset(config=config.taskset),
+        harness=GroupRewardHarness(config=config.harness),
+    )

@@ -497,8 +497,7 @@ class RlmSweEnvConfig(vf.EnvConfig):
     harness: vf.RLMConfig = vf.RLMConfig()
 
 
-def load_environment(config: RlmSweEnvConfig | None = None) -> vf.Env:
-    config = coerce_config(RlmSweEnvConfig, config)
+def load_environment(config: RlmSweEnvConfig) -> vf.Env:
     taskset = load_taskset(config=config.taskset)
     harness = load_harness(config=config.harness, taskset=taskset)
-    return vf.Env(None, taskset=taskset, harness=harness)
+    return vf.Env(taskset=taskset, harness=harness)

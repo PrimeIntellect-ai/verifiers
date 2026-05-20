@@ -6,7 +6,7 @@ and training environments from two primary objects:
 - a `Taskset`, which defines what is being attempted;
 - a `Harness`, which defines how a model attempts it.
 
-`vf.Env(config, taskset=..., harness=...)` adapts those objects to the existing
+`vf.Env(taskset=..., harness=...)` adapts those objects to the existing
 `vf.Environment` worker API used by evals and trainers. For local experiments,
 `Harness` is runnable on its own with `await harness.run(task)`.
 
@@ -117,13 +117,16 @@ across local Python programs, command programs, and sandboxed programs.
 `Env` is the eval/training adapter:
 
 ```python
-env = vf.Env(config, taskset=MyTaskset, harness=MyHarness)
+env = vf.Env(
+    taskset=MyTaskset(config=config.taskset),
+    harness=MyHarness(config=config.harness),
+)
 ```
 
 If `harness` is omitted, `Env` uses the base endpoint-backed `Harness`:
 
 ```python
-env = vf.Env(config, taskset=MyTaskset)
+env = vf.Env(taskset=MyTaskset(config=config.taskset))
 ```
 
 Normal v1 environment packages should not subclass `Env`. Define or configure a
@@ -164,8 +167,8 @@ class ReverseEnvConfig(vf.EnvConfig):
     harness: vf.HarnessConfig = vf.HarnessConfig()
 
 
-def load_environment(config: ReverseEnvConfig | None = None):
-    return vf.Env(config, taskset=ReverseTaskset)
+def load_environment(config: ReverseEnvConfig):
+    return vf.Env(taskset=ReverseTaskset(config=config.taskset))
 ```
 
 Standalone harness use is the same runner without the `Env` adapter:
@@ -685,19 +688,16 @@ tools, MCP tools, bindings, stop conditions, cleanup, and teardown should be
 declared on an explicit `Toolset`.
 
 ```python
-async def search(query: str, index) -> str:
-    return index.search(query)
+def search_tool(index_path: str):
+    index = SearchIndex.open(index_path)
+
+    async def search(query: str) -> str:
+        return index.search(query)
+
+    return search
 
 
-def load_index():
-    return SearchIndex.open()
-
-
-toolset = vf.Toolset(
-    tools=[search],
-    objects={"index": load_index},
-    bindings={"search.index": "objects.index"},
-)
+toolset = vf.Toolset(tools=[search_tool("wiki.index")])
 ```
 
 `Toolset.tools` accepts:
@@ -732,19 +732,13 @@ addresses. List toolsets are active defaults but unnamed.
 Bindings inject arguments that the model does not see:
 
 ```python
-async def search(query: str, index) -> str:
-    return index.search(query)
+async def grade_answer(answer: str, task) -> str:
+    return "correct" if answer == task["answer"] else "incorrect"
 
 
-def load_index():
-    return SearchIndex.open()
-
-
-vf.Toolset(
-    tools=[search],
-    objects={"index": load_index},
-    bindings={"search.index": "objects.index"},
-)
+# In environment files, prefer wrapping this in a taskset/harness-owned helper
+# instead of passing constructor-level bindings directly.
+vf.Toolset(config=vf.ToolsetConfig(tools=["my_env:grade_answer"]))
 ```
 
 Binding roots:
@@ -1035,8 +1029,8 @@ A `User` is a callable that can return environment/user messages during the
 default loop. Tasksets and harnesses may define at most one user.
 
 ```python
-async def user(task, state, transcript):
-    if len([m for m in transcript if m["role"] == "assistant"]) >= 2:
+async def user(task, state, messages):
+    if len([m for m in messages if m["role"] == "assistant"]) >= 2:
         return []
     return [{"role": "user", "content": "Try one more time."}]
 
@@ -1053,8 +1047,8 @@ class UserTaskset(vf.Taskset[UserTasksetConfig]):
 taskset = UserTaskset(config=UserTasksetConfig())
 ```
 
-Use `vf.UserConfig(...)` when the user needs bindings, private dependency
-factories, scope, or a sandbox:
+Use `vf.UserConfig(...)` when the user needs scope, sandboxing, or serialized
+loader-path dependencies:
 
 ```python
 taskset = vf.Taskset(
@@ -1062,16 +1056,14 @@ taskset = vf.Taskset(
         user=vf.UserConfig(
             fn="my_env:user",
             scope="group",
-            objects={"profile_db": "my_env:load_profile_db"},
-            bindings={"profile_db": "objects.profile_db"},
             sandbox=vf.SandboxConfig(image="python:3.11-slim", scope="group"),
         )
     )
 )
 ```
 
-`transcript` is a default binding for user functions. It currently means the
-observable message list passed to the user simulator.
+`messages` is the default binding for user functions. It is the rendered prompt
+and completion message list passed to the user simulator.
 
 ## Signals, Stop, Update, Cleanup, Teardown
 
@@ -1218,8 +1210,8 @@ class MyEnvConfig(vf.EnvConfig):
     harness: vf.HarnessConfig = vf.HarnessConfig()
 
 
-def load_environment(config: MyEnvConfig | None = None):
-    return vf.Env(config, taskset=MyTaskset)
+def load_environment(config: MyEnvConfig):
+    return vf.Env(taskset=MyTaskset(config=config.taskset))
 ```
 
 With that loader, eval TOML routes v1 config through the `taskset`/`harness`
@@ -1260,7 +1252,7 @@ class MyEnvConfig(vf.EnvConfig):
 
 
 def load_environment(config: MyEnvConfig):
-    return vf.Env(config, taskset=MyTaskset)
+    return vf.Env(taskset=MyTaskset(config=config.taskset))
 ```
 
 RL and Hosted Training TOML uses the same split under `env`:
@@ -1548,9 +1540,8 @@ taskset_config = MyTasksetConfig.model_validate(raw["taskset"])
 harness_config = MyHarnessConfig.model_validate(raw["harness"])
 
 env = vf.Env(
-    MyEnvConfig(taskset=taskset_config, harness=harness_config),
-    taskset=MyTaskset,
-    harness=MyHarness,
+    taskset=MyTaskset(config=taskset_config),
+    harness=MyHarness(config=harness_config),
 )
 ```
 
@@ -1573,16 +1564,9 @@ class WikiTaskset(vf.Taskset[WikiTasksetConfig]):
         return load_rows()
 
     def _configure_runtime_defaults(self) -> None:
-        def load_db():
-            return open_db(self.config.db_path)
+        search_tool = wiki_search_tool(self.config.db_path)
 
-        self.add_toolset(
-            vf.Toolset(
-                tools=[search],
-                objects={"db": load_db},
-                bindings={"search.db": "objects.db"},
-            )
-        )
+        self.add_toolset(vf.Toolset(tools=[search_tool]))
 ```
 
 To inspect the active config shape:
@@ -1612,14 +1596,14 @@ async def ask_child(prompt: str, harness, state):
 
 
 def load_child_harness():
-    return vf.Harness()
+    return vf.Harness(config=vf.HarnessConfig())
 
 
-child_tools = vf.Toolset(
-    tools=[ask_child],
-    objects={"harness": load_child_harness},
-    bindings={"ask_child.harness": "objects.harness"},
-)
+async def ask_child_tool(prompt, state):
+    return await ask_child(prompt, load_child_harness(), state)
+
+
+child_tools = vf.Toolset(tools=[ask_child_tool])
 ```
 
 The child receives a fresh `trajectory_id` and its own rollout-local state. It

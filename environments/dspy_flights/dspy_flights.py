@@ -436,5 +436,8 @@ class DSPyFlightsEnvConfig(vf.EnvConfig):
     harness: DSPyFlightsHarnessConfig = DSPyFlightsHarnessConfig()
 
 
-def load_environment(config: DSPyFlightsEnvConfig | None = None) -> vf.Env:
-    return vf.Env(config, taskset=DSPyFlightsTaskset, harness=DSPyFlightsHarness)
+def load_environment(config: DSPyFlightsEnvConfig) -> vf.Env:
+    return vf.Env(
+        taskset=DSPyFlightsTaskset(config=config.taskset),
+        harness=DSPyFlightsHarness(config=config.harness),
+    )

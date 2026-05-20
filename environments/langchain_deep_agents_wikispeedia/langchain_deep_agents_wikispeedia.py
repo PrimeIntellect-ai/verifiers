@@ -200,21 +200,31 @@ def load_toolset(
     allow_go_back: bool = True,
     config: vf.ToolsetConfig | None = None,
 ) -> vf.Toolset:
-    tools = [click_link]
-    bindings = {
-        "click_link.wiki": "objects.wiki",
-    }
+    wiki_graph: WikiGraph | None = None
+
+    def wiki() -> WikiGraph:
+        nonlocal wiki_graph
+        if wiki_graph is None:
+            wiki_graph = load_wiki_graph(cache_dir)
+        return wiki_graph
+
+    async def click_link_tool(article: str, state: vf.State) -> str:
+        return await click_link(article, wiki(), state)
+
+    click_link_tool.__name__ = "click_link"
+    click_link_tool.__doc__ = click_link.__doc__
+
+    tools: list[vf.Handler] = [click_link_tool]
     if allow_go_back:
-        tools.append(go_back)
-        bindings.update(
-            {
-                "go_back.wiki": "objects.wiki",
-            }
-        )
+
+        async def go_back_tool(state: vf.State) -> str:
+            return await go_back(wiki(), state)
+
+        go_back_tool.__name__ = "go_back"
+        go_back_tool.__doc__ = go_back.__doc__
+        tools.append(go_back_tool)
     return vf.Toolset(
         tools=tools,
-        objects={"wiki": lambda: load_wiki_graph(cache_dir)},
-        bindings=bindings,
         config=config,
     )
 
@@ -575,5 +585,8 @@ class WikispeediaEnvConfig(vf.EnvConfig):
     harness: WikispeediaHarnessConfig = WikispeediaHarnessConfig()
 
 
-def load_environment(config: WikispeediaEnvConfig | None = None) -> vf.Env:
-    return vf.Env(config, taskset=load_taskset, harness=load_harness)
+def load_environment(config: WikispeediaEnvConfig) -> vf.Env:
+    return vf.Env(
+        taskset=load_taskset(config=config.taskset),
+        harness=load_harness(config=config.harness),
+    )

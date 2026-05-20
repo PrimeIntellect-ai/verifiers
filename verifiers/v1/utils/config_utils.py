@@ -7,6 +7,9 @@ from pydantic_core import PydanticUndefined
 from ..types import ConfigData, ConfigInputMap
 
 ConfigT = TypeVar("ConfigT", bound=BaseModel)
+ConfigOwnerT = TypeVar("ConfigOwnerT", bound="ConfigBound")
+
+_CONFIG_OWNERS: dict[tuple[type[BaseModel], type[BaseModel]], type["ConfigBound"]] = {}
 
 
 class ConfigBound(Generic[ConfigT]):
@@ -15,15 +18,15 @@ class ConfigBound(Generic[ConfigT]):
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)
-        config_cls = None
-        for base in getattr(cls, "__orig_bases__", ()):
+        explicit_config_cls = None
+        for base in cls.__dict__.get("__orig_bases__", ()):
             origin = get_origin(base)
             if isinstance(origin, type) and issubclass(origin, ConfigBound):
                 candidate = get_args(base)[0]
                 if not isinstance(candidate, TypeVar):
-                    config_cls = candidate
+                    explicit_config_cls = candidate
                 break
-        config_cls = config_cls or cls._config_cls
+        config_cls = explicit_config_cls or cls._config_cls
         if not isinstance(config_cls, type) or not issubclass(
             config_cls, cls._config_base_cls
         ):
@@ -32,10 +35,45 @@ class ConfigBound(Generic[ConfigT]):
                 f"{cls._config_base_cls.__name__}."
             )
         cls._config_cls = config_cls
+        if explicit_config_cls is not None and config_cls is not cls._config_base_cls:
+            register_config_owner(
+                base_cls=cls._config_base_cls,
+                config_cls=config_cls,
+                owner_cls=cls,
+            )
 
     @classmethod
     def config_schema(cls) -> str:
         return cls._config_cls.schema_text()  # type: ignore[attr-defined]
+
+
+def register_config_owner(
+    *,
+    base_cls: type[BaseModel],
+    config_cls: type[BaseModel],
+    owner_cls: type[ConfigOwnerT],
+) -> None:
+    key = (base_cls, config_cls)
+    existing = _CONFIG_OWNERS.get(key)
+    if existing is not None and existing is not owner_cls:
+        raise TypeError(
+            f"{config_cls.__name__} is already bound to {existing.__name__}; "
+            f"define a distinct config class for {owner_cls.__name__}."
+        )
+    _CONFIG_OWNERS[key] = owner_cls
+
+
+def config_owner(
+    config_cls: type[BaseModel],
+    base_cls: type[BaseModel],
+) -> type[ConfigBound] | None:
+    for candidate in config_cls.__mro__:
+        if not issubclass(candidate, BaseModel):
+            continue
+        owner = _CONFIG_OWNERS.get((base_cls, candidate))
+        if owner is not None:
+            return owner
+    return None
 
 
 def explicit_config_data(

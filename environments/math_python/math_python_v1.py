@@ -8,13 +8,9 @@ from verifiers.errors import SandboxError
 from verifiers.utils.data_utils import extract_boxed_answer, load_example_dataset
 
 
-def python_session() -> dict[str, list[str]]:
-    return {"history": []}
-
-
-async def python(code: str, sandbox, session) -> str:
+async def python(code: str, sandbox, state) -> str:
     """Execute Python code in the rollout sandbox."""
-    history = session.setdefault("history", [])
+    history = state.setdefault("python_history", [])
     script = f"""
 import ast
 import contextlib
@@ -187,8 +183,6 @@ def load_toolset(
     return vf.Toolset(
         tools=[python],
         write=True,
-        objects={"python_session": python_session},
-        bindings={"python.session": "objects.python_session"},
         sandbox={
             "image": "python:3.11-slim",
             "scope": "group",
@@ -205,6 +199,8 @@ def load_toolset(
     )
 
 
-def load_environment(config: MathPythonEnvConfig | None = None) -> vf.Env:
-    config = config or MathPythonEnvConfig()
-    return vf.Env(config, taskset=MathPythonTaskset, harness=MathPythonHarness)
+def load_environment(config: MathPythonEnvConfig) -> vf.Env:
+    return vf.Env(
+        taskset=MathPythonTaskset(config=config.taskset),
+        harness=MathPythonHarness(config=config.harness),
+    )

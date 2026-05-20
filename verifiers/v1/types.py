@@ -32,8 +32,6 @@ TaskSource: TypeAlias = str | TaskRowsSource
 
 PromptMessage: TypeAlias = Message | ConfigMap
 PromptInput: TypeAlias = str | Sequence[PromptMessage]
-Transcript: TypeAlias = Sequence[PromptMessage]
-TranscriptData: TypeAlias = list[PromptMessage]
 ToolSpec: TypeAlias = Handler | str | ConfigMap
 ToolSpecs: TypeAlias = ToolSpec | Sequence[ToolSpec]
 ToolsetSpecs: TypeAlias = ToolSpec | Sequence[ToolSpec] | ConfigMap
@@ -52,4 +50,5 @@ ProgramChannel: TypeAlias = Literal["callable", "mcp"]
 ProgramChannelSpec: TypeAlias = ProgramChannel | ConfigMap
 ProgramChannels: TypeAlias = ProgramChannelSpec | list[ProgramChannelSpec]
 
-Objects: TypeAlias = Mapping[str, object | Callable[[], object | Awaitable[object]]]
+ObjectLoader: TypeAlias = str | Callable[[], object | Awaitable[object]]
+Objects: TypeAlias = Mapping[str, ObjectLoader]

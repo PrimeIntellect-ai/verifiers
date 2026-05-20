@@ -369,7 +369,8 @@ class ParallelSandboxEnvConfig(vf.EnvConfig):
     harness: ParallelSandboxHarnessConfig = ParallelSandboxHarnessConfig()
 
 
-def load_environment(config: ParallelSandboxEnvConfig | None = None) -> vf.Env:
+def load_environment(config: ParallelSandboxEnvConfig) -> vf.Env:
     return vf.Env(
-        config, taskset=ParallelSandboxTaskset, harness=ParallelSandboxHarness
+        taskset=ParallelSandboxTaskset(config=config.taskset),
+        harness=ParallelSandboxHarness(config=config.harness),
     )

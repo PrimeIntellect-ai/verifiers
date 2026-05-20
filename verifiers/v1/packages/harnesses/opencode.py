@@ -1,9 +1,11 @@
 import json
 import shlex
 from pathlib import PurePosixPath
+from typing import cast
 
-from .command import CommandHarness
+from .command import configure_command_harness
 from .configs import OpenCodeConfig
+from ...harness import Harness
 from ...utils.mcp_proxy_utils import proxy_command
 from ...types import (
     ConfigData,
@@ -14,7 +16,20 @@ from ...types import (
 )
 
 
-class OpenCode(CommandHarness[OpenCodeConfig]):
+class OpenCode(Harness[OpenCodeConfig]):
+    def __init__(self, config: OpenCodeConfig | None = None):
+        config = cast(OpenCodeConfig, self._coerce_config(config))
+        super().__init__(config=config.model_copy(update={"program": None}))
+        self.config = config
+        configure_command_harness(
+            self,
+            config,
+            command=self.command(config),
+            setup=self.setup(config),
+            artifacts=self.artifacts(config),
+            channels=self.channels(config),
+        )
+
     def command(self, config: OpenCodeConfig) -> ProgramCommand:
         return [
             "bash",
