@@ -25,7 +25,6 @@ from verifiers.types import (
     Usage,
 )
 from verifiers.utils.client_utils import setup_openai_client
-from verifiers.utils.response_utils import parse_routed_experts
 
 OpenAITextMessages = str
 OpenAITextResponse = Completion
@@ -170,15 +169,12 @@ class OpenAICompletionsClient(
             )
             if completion_logprobs is None:
                 return None
-            choice_extra = response.choices[0].model_extra or {}
-            routed_experts = parse_routed_experts(choice_extra.get("routed_experts"))
             return ResponseTokens(
                 prompt_ids=prompt_ids,
                 prompt_mask=prompt_mask,
                 completion_ids=completion_ids,
                 completion_mask=completion_mask,
                 completion_logprobs=completion_logprobs,
-                routed_experts=routed_experts,
             )
 
         return Response(
