@@ -24,12 +24,17 @@ def _get_nested_usage_value(usage_obj: object, key: str) -> object:
     value = _get_optional_usage_value(usage_obj, key)
     if value is not None:
         return value
-    details = _get_optional_usage_value(usage_obj, "prompt_tokens_details")
-    if isinstance(details, Mapping):
-        details_mapping = cast(Mapping[str, object], details)
-        return details_mapping.get(key)
-    if details is not None:
-        return getattr(details, key, None)
+    for details_key in ("prompt_tokens_details", "input_tokens_details"):
+        details = _get_optional_usage_value(usage_obj, details_key)
+        if isinstance(details, Mapping):
+            details_mapping = cast(Mapping[str, object], details)
+            nested_value = details_mapping.get(key)
+            if nested_value is not None:
+                return nested_value
+        elif details is not None:
+            nested_value = getattr(details, key, None)
+            if nested_value is not None:
+                return nested_value
     return None
 
 

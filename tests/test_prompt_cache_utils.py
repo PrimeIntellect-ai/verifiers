@@ -33,7 +33,9 @@ class RecordingClient(Client):
     async def to_native_prompt(self, messages):
         return messages, {}
 
-    async def get_native_response(self, prompt, model, sampling_args, tools=None, **kwargs):
+    async def get_native_response(
+        self, prompt, model, sampling_args, tools=None, **kwargs
+    ):
         self.request = {
             "prompt": prompt,
             "model": model,
@@ -101,7 +103,9 @@ class ConcurrentStartClient(Client):
     async def to_native_prompt(self, messages):
         return messages, {}
 
-    async def get_native_response(self, prompt, model, sampling_args, tools=None, **kwargs):
+    async def get_native_response(
+        self, prompt, model, sampling_args, tools=None, **kwargs
+    ):
         raise AssertionError("get_response is implemented directly")
 
     async def raise_from_native_response(self, response):
@@ -275,8 +279,10 @@ async def test_v1_group_rollouts_start_concurrently_for_cached_provider():
         )
     )
     env = vf.Env(
-        taskset=vf.Taskset(source=[{"question": "q"}]),
-        harness=vf.Harness(max_turns=1),
+        taskset=vf.Taskset(
+            config=vf.TasksetConfig.model_validate({"source": [{"question": "q"}]})
+        ),
+        harness=vf.Harness(config=vf.HarnessConfig.model_validate({"max_turns": 1})),
     )
 
     await env._run_group_states(
@@ -379,6 +385,24 @@ def test_serialized_response_usage_counts_cache_details():
             "prompt_tokens_details": {
                 "cached_tokens": 80,
                 "cache_write_tokens": 10,
+            },
+        }
+    }
+
+    assert extract_usage_token_details(response) == {
+        "input_tokens": 20,
+        "output_tokens": 7,
+        "cached_input_tokens": 80,
+    }
+
+
+def test_serialized_responses_usage_counts_input_token_cache_details():
+    response = {
+        "usage": {
+            "input_tokens": 100,
+            "output_tokens": 7,
+            "input_tokens_details": {
+                "cached_tokens": 80,
             },
         }
     }
