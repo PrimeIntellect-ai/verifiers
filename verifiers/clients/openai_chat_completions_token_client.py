@@ -3,6 +3,7 @@ from typing import Any, Optional, cast
 
 from openai import AsyncOpenAI, BaseModel
 from openai.types.chat import (
+    ChatCompletion,
     ChatCompletionAssistantMessageParam,
 )
 from openai.types.chat.chat_completion_message_function_tool_call_param import (
@@ -19,9 +20,6 @@ from verifiers.clients.openai_chat_completions_client import (
     handle_openai_overlong_prompt,
 )
 from verifiers.types import SamplingArgs, State
-from verifiers.utils.client_utils import (
-    post_chat_completion_with_routed_experts_sidecar,
-)
 
 
 def _has_multimodal_content(messages) -> bool:
@@ -142,20 +140,20 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
             )
 
         extra_body = sampling_args.pop("extra_body", {})
-        body = {
-            "model": model,
-            "messages": prompt,
-            "tools": tools,
-            "tokens": prompt_ids,
+        body = dict(
+            model=model,
+            messages=prompt,
+            tools=tools,
+            tokens=prompt_ids,
             **sampling_args,
             **extra_body,
-        }
+        )
 
-        return await post_chat_completion_with_routed_experts_sidecar(
-            self.client,
+        return await self.client.post(
             "/chat/completions/tokens",
             body=body,
-            extra_headers=extra_headers,
+            cast_to=ChatCompletion,
+            options={"headers": extra_headers} if extra_headers else {},
         )
 
     async def get_prompt_ids(

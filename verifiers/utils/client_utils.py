@@ -1,20 +1,16 @@
 import json
 import logging
 import os
-from collections.abc import Mapping
-from typing import Any
 from pathlib import Path
 
 import httpx
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
-from openai.types.chat import ChatCompletion
 
 from verifiers.types import (
     ClientConfig,
     EndpointClientConfig,
 )
-from verifiers.utils.response_utils import strip_routed_experts_data
 
 logger = logging.getLogger(__name__)
 
@@ -99,32 +95,6 @@ def setup_http_client(config: ClientConfig) -> httpx.AsyncClient:
     resolved_config = resolve_client_config(config)
     headers, _ = _build_headers_and_api_key(resolved_config)
     return _build_http_client(resolved_config, headers)
-
-
-def parse_chat_completion_with_routed_experts_sidecar(raw: bytes) -> ChatCompletion:
-    stripped, routed_data = strip_routed_experts_data(raw)
-    response = ChatCompletion.model_validate_json(stripped)
-    if routed_data is not None:
-        choice_extra = response.choices[0].model_extra
-        assert choice_extra is not None
-        choice_extra["routed_experts"]["data"] = routed_data
-    return response
-
-
-async def post_chat_completion_with_routed_experts_sidecar(
-    client: AsyncOpenAI,
-    path: str,
-    *,
-    body: dict[str, Any],
-    extra_headers: Mapping[str, str] | None = None,
-) -> ChatCompletion:
-    raw_response = await client.post(
-        path,
-        body=body,
-        cast_to=httpx.Response,
-        options={"headers": extra_headers} if extra_headers else {},
-    )
-    return parse_chat_completion_with_routed_experts_sidecar(raw_response.content)
 
 
 def _setup_openai_client_from_resolved(config: ClientConfig) -> AsyncOpenAI:

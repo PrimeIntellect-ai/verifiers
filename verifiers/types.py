@@ -183,19 +183,13 @@ class Usage(CustomBaseModel):
     total_tokens: int
 
 
-class RoutedExpertsPayload(TypedDict):
-    # Keep the raw response sidecar opaque so Pydantic does not validate memoryview.
-    data: Any
-    shape: list[int]
-
-
 class ResponseTokens(CustomBaseModel):
     prompt_ids: list[int]
     prompt_mask: list[int]
     completion_ids: list[int]
     completion_mask: list[int]
     completion_logprobs: list[float]
-    routed_experts: RoutedExpertsPayload | None = None
+    routed_experts: str | None = None  # base64 NumPy [seq_len, layers, topk]
     # Renderer-emitted multimodal sidecar (renderers.base.MultiModalData)
     # carrying processed pixel_values / placeholder ranges per modality.
     # Populated by the renderer client when the rollout went through a
@@ -238,7 +232,7 @@ class TrajectoryStepTokens(TypedDict):
     completion_logprobs: list[float]
     overlong_prompt: bool
     is_truncated: bool
-    routed_experts: RoutedExpertsPayload | None
+    routed_experts: str | None  # base64 NumPy [seq_len, layers, topk]
     # Renderer-emitted multimodal sidecar (renderers.base.MultiModalData)
     # carrying processed pixel_values / placeholder ranges per modality.
     # ``NotRequired`` because text-only rollouts (and non-renderer client

@@ -1,3 +1,9 @@
+import base64
+from io import BytesIO
+from typing import Any, cast
+
+import numpy as np
+
 from verifiers.types import (
     AssistantMessage,
     Messages,
@@ -5,19 +11,24 @@ from verifiers.types import (
     TrajectoryStepTokens,
 )
 
-ROUTED_EXPERTS_DATA_PREFIX = b'"routed_experts":{"data":"'
+
+def parse_routed_experts(raw: Any) -> str | None:
+    if raw is None:
+        return None
+    return cast(str, raw)
 
 
-def strip_routed_experts_data(raw: bytes) -> tuple[bytes, memoryview | None]:
-    data_start = raw.find(ROUTED_EXPERTS_DATA_PREFIX)
-    if data_start < 0:
-        return raw, None
+def truncate_routed_experts(routed_experts: str | None, seq_len: int) -> str | None:
+    if routed_experts is None:
+        return None
 
-    data_start += len(ROUTED_EXPERTS_DATA_PREFIX)
-    data_end = raw.index(b'"', data_start)
-    routed_data = memoryview(raw)[data_start:data_end]
-    stripped = raw[:data_start] + raw[data_end:]
-    return stripped, routed_data
+    array = np.load(BytesIO(base64.b64decode(routed_experts)), allow_pickle=False)
+    assert array.ndim == 3
+    assert 0 <= seq_len <= array.shape[0]
+
+    buffer = BytesIO()
+    np.save(buffer, np.ascontiguousarray(array[:seq_len]), allow_pickle=False)
+    return base64.b64encode(buffer.getvalue()).decode("ascii")
 
 
 async def parse_response_message(response: Response) -> Messages:
@@ -62,11 +73,15 @@ async def parse_response_tokens(
             completion_ids = []
             completion_mask = []
             completion_logprobs = []
+            routed_experts = truncate_routed_experts(routed_experts, len(prompt_ids))
         elif prompt_len + completion_len > max_seq_len:
             is_truncated = True
             completion_ids = tokens.completion_ids[: max_seq_len - prompt_len]
             completion_mask = tokens.completion_mask[: max_seq_len - prompt_len]
             completion_logprobs = tokens.completion_logprobs[: max_seq_len - prompt_len]
+            routed_experts = truncate_routed_experts(
+                routed_experts, prompt_len + len(completion_ids)
+            )
         else:
             is_truncated = False
     else:
@@ -89,6 +104,4 @@ async def parse_response_tokens(
         # step. Leaving it on ``response.message.tokens`` too means every
         # downstream pass (msgpack, save) has to dedupe the duplicate.
         tokens.multi_modal_data = None
-    if routed_experts is not None:
-        tokens.routed_experts = None
     return out
