@@ -53,15 +53,15 @@ def test_load_environment_accepts_v1_taskset_and_harness_config() -> None:
 
     env = module.load_environment(
         config=module.OpenCodeHarborEnvConfig(
-            taskset={
-                "task_names": ["task-a"],
-                "cpu_cores": 1.5,
-            },
-            harness={
-                "agent_workdir": "/workspace",
-                "disabled_tools": ["webfetch"],
-                "max_turns": 2,
-            },
+            taskset=module.vf.HarborTasksetConfig(
+                task_names=["task-a"],
+                cpu_cores=1.5,
+            ),
+            harness=module.vf.OpenCodeConfig(
+                agent_workdir="/workspace",
+                disabled_tools=["webfetch"],
+                max_turns=2,
+            ),
         )
     )
 

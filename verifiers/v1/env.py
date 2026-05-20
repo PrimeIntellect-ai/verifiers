@@ -1,28 +1,45 @@
 import asyncio
 import uuid
-from typing import cast
+from typing import TypeAlias, cast
 
 import verifiers as vf
 from verifiers.clients import Client
 from verifiers.types import ClientConfig
 from verifiers.types import RolloutInput, SamplingArgs
 
+from .config import EnvConfig, HarnessConfig, TasksetConfig
 from .harness import Harness
 from .state import State
 from .taskset import Taskset
 from .types import ConfigMap
+from .utils.config_utils import config_owner
+
+TasksetInput: TypeAlias = Taskset | TasksetConfig
+HarnessInput: TypeAlias = Harness | HarnessConfig | None
 
 
 class Env(vf.Environment):
     def __init__(
         self,
-        taskset: Taskset,
-        harness: Harness | None = None,
+        *,
+        taskset: TasksetInput | None = None,
+        harness: HarnessInput = None,
+        config: EnvConfig | None = None,
     ):
-        harness = Harness() if harness is None else harness
-        self.taskset = taskset
-        self.harness = harness
-        self.harness.attach_taskset(taskset)
+        if config is not None and (taskset is not None or harness is not None):
+            raise TypeError("Pass either config= or taskset=/harness=, not both.")
+        if config is not None:
+            taskset = config.taskset
+            harness = config.harness
+        if taskset is None:
+            raise TypeError("Env requires a taskset.")
+        self.taskset = resolve_taskset(taskset)
+        self.harness = resolve_harness(harness)
+        self.config = EnvConfig(
+            taskset=cast(TasksetConfig, self.taskset.config),
+            harness=cast(HarnessConfig, self.harness.config),
+        )
+        self.harness.attach_taskset(self.taskset)
         super().__init__(
             dataset=self.taskset.get_dataset,
             eval_dataset=self.taskset.get_eval_dataset,
@@ -132,3 +149,37 @@ class Env(vf.Environment):
             )
             state["runtime"].update(serializable_controls)
         return states
+
+
+def resolve_taskset(value: TasksetInput) -> Taskset:
+    if isinstance(value, Taskset):
+        return value
+    if not isinstance(value, TasksetConfig):
+        raise TypeError("Env taskset must be a Taskset or TasksetConfig.")
+    if type(value) is TasksetConfig:
+        return Taskset(config=value)
+    owner = config_owner(type(value), TasksetConfig)
+    if owner is None:
+        raise TypeError(
+            f"No Taskset class is bound to {type(value).__name__}; "
+            "instantiate the Taskset explicitly."
+        )
+    return cast(type[Taskset], owner)(config=value)
+
+
+def resolve_harness(value: HarnessInput) -> Harness:
+    if value is None:
+        return Harness(config=HarnessConfig())
+    if isinstance(value, Harness):
+        return value
+    if not isinstance(value, HarnessConfig):
+        raise TypeError("Env harness must be a Harness or HarnessConfig.")
+    if type(value) is HarnessConfig:
+        return Harness(config=value)
+    owner = config_owner(type(value), HarnessConfig)
+    if owner is None:
+        raise TypeError(
+            f"No Harness class is bound to {type(value).__name__}; "
+            "instantiate the Harness explicitly."
+        )
+    return cast(type[Harness], owner)(config=value)

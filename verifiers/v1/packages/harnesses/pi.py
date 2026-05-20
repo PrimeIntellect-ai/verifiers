@@ -1,94 +1,73 @@
 import json
 import shlex
 from pathlib import PurePosixPath
+from typing import cast
 
-from typing_extensions import Unpack
-
-from .command import HarnessKwargs, command_program, command_sandbox
-from ...config import SandboxConfig
+from .command import configure_command_harness
+from .configs import PiConfig
 from ...harness import Harness
 from ...state import State
 from ...utils.mcp_proxy_utils import proxy_command
-from ...utils.prompt_utils import (
-    state_system_prompt_text,
-    task_text as task_instruction_text,
-)
-from ...types import ConfigMap, ProgramMap, ProgramOptionMap, ProgramValue, PromptInput
-
-DEFAULT_PI_PACKAGE = "@mariozechner/pi-coding-agent"
-DEFAULT_PI_WORKDIR = "/app"
-DEFAULT_INSTRUCTION_PATH = "/pi/instruction.txt"
-DEFAULT_SYSTEM_PROMPT_PATH = "/pi/system.txt"
-DEFAULT_LOG_PATH = "/logs/agent/pi.txt"
-DEFAULT_SYSTEM_PROMPT = "Complete the user's task using the available tools."
+from ...utils.binding_utils import Bindings
+from ...types import ConfigMap, ProgramChannels, ProgramCommand, ProgramOptionMap
 
 
-class Pi(Harness):
-    def __init__(
-        self,
-        *,
-        agent_workdir: str = DEFAULT_PI_WORKDIR,
-        instruction_path: str = DEFAULT_INSTRUCTION_PATH,
-        system_prompt_path: str = DEFAULT_SYSTEM_PROMPT_PATH,
-        log_path: str = DEFAULT_LOG_PATH,
-        system_prompt: PromptInput | None = DEFAULT_SYSTEM_PROMPT,
-        package: str = DEFAULT_PI_PACKAGE,
-        install_mcp_adapter: bool = True,
-        sandbox: bool | ConfigMap | SandboxConfig = True,
-        program: ProgramMap | None = None,
-        max_turns: int | None = 4,
-        **kwargs: Unpack[HarnessKwargs],
-    ):
-        files: dict[str, ProgramValue] = {
-            instruction_path: task_instruction_text,
-        }
-        if system_prompt is not None:
-            files[system_prompt_path] = state_system_prompt_text
-        artifacts: ProgramOptionMap = {
+class Pi(Harness[PiConfig]):
+    def __init__(self, config: PiConfig | None = None):
+        config = cast(PiConfig, self._coerce_config(config))
+        super().__init__(config=config.model_copy(update={"program": None}))
+        self.config = config
+        configure_command_harness(
+            self,
+            config,
+            command=self.command(config),
+            setup=self.setup(config),
+            bindings=self.bindings_value(config),
+            artifacts=self.artifacts(config),
+            channels=self.channels(config),
+        )
+
+    def command(self, config: PiConfig) -> ProgramCommand:
+        return [
+            "bash",
+            "-lc",
+            build_pi_run_script(
+                agent_workdir=config.agent_workdir,
+                instruction_path=config.instruction_path,
+                system_prompt_path=config.system_prompt_path
+                if config.system_prompt is not None
+                else None,
+                log_path=config.log_path,
+            ),
+        ]
+
+    def setup(self, config: PiConfig) -> str:
+        return build_pi_install_script(package=config.package)
+
+    def artifacts(self, config: PiConfig) -> ProgramOptionMap:
+        return {
             "pi_log": {
-                "path": log_path,
+                "path": config.log_path,
                 "format": "text",
                 "optional": True,
             }
         }
-        command = [
-            "bash",
-            "-lc",
-            build_pi_run_script(
-                agent_workdir=agent_workdir,
-                instruction_path=instruction_path,
-                system_prompt_path=system_prompt_path
-                if system_prompt is not None
-                else None,
-                log_path=log_path,
-            ),
-        ]
-        super().__init__(
-            program=command_program(
-                command=command,
-                sandbox=sandbox,
-                files=files,
-                setup=build_pi_install_script(package=package),
-                channels={
-                    "mcp": build_pi_mcp_setup(
-                        agent_workdir=agent_workdir,
-                        install_mcp_adapter=install_mcp_adapter,
-                    )
-                }
-                if install_mcp_adapter
-                else None,
-                bindings={"setup_pi.endpoint_config": pi_endpoint_config},
-                artifacts=artifacts,
-                program=program,
-            ),
-            sandbox=command_sandbox(sandbox),
-            system_prompt=system_prompt,
-            max_turns=max_turns,
-            **kwargs,
-        )
+
+    def channels(self, config: PiConfig) -> ProgramChannels | None:
+        if not config.install_mcp_adapter:
+            return None
+        return {
+            "mcp": build_pi_mcp_setup(
+                agent_workdir=config.agent_workdir,
+                install_mcp_adapter=config.install_mcp_adapter,
+            )
+        }
+
+    def bindings_value(self, config: PiConfig) -> Bindings:
+        return {"setup_pi.endpoint_config": pi_endpoint_config}
 
 
-def build_pi_install_script(package: str = DEFAULT_PI_PACKAGE) -> str:
+def build_pi_install_script(package: str) -> str:
     return f"""\
 set -e
 apt-get -o Acquire::Retries=3 update -qq && apt-get -o Acquire::Retries=3 install -y -qq curl ca-certificates nodejs npm > /dev/null 2>&1

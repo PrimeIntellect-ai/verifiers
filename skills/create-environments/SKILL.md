@@ -44,17 +44,17 @@ prime env install math-python --from-repo
 - `ToolEnv` or `MCPEnv` for stateless tools.
 - `StatefulToolEnv` for per-rollout resources.
 - `CliAgentEnv` for running agent binaries in sandboxes with API interception. Override `get_sandbox_resources(state)` for per-instance resources, `build_env_vars(state)` for custom env vars.
-- V1 `vf.Env` with `vf.Taskset`/`vf.Harness` for the current taskset/harness environment pattern that separates the task collection from the rollout runner. Use this for new taskset/harness work that needs config-driven metrics, rewards, toolsets, user functions, endpoint interception, or sandboxed Python/command programs. Framework programs should build clients from `state.get_endpoint_config(api="chat")`.
-3. For v1, import `verifiers as vf`, expose `load_environment(config: vf.EnvConfig) -> vf.Env`, and define a concrete `EnvConfig` subclass only when the taskset or harness uses concrete child config types.
+- V1 `vf.Env` with `vf.Taskset[Config]`/`vf.Harness[Config]` for the current taskset/harness environment pattern that separates the task collection from the rollout runner. Use this for new taskset/harness work that needs config-driven metrics, rewards, toolsets, user functions, endpoint interception, or sandboxed Python/command programs. Framework programs should build clients from `state.get_endpoint_config(api="chat")`.
+3. For v1, import `verifiers as vf`, define typed taskset/harness config subclasses when needed, bind them with `class MyTaskset(vf.Taskset[MyTasksetConfig])` and `class MyHarness(vf.Harness[MyHarnessConfig])`, and expose `load_environment(config: MyEnvConfig) -> vf.Env`.
 4. For v0 environments, keep the existing `vf.Environment` patterns and preserve v0 compatibility.
 5. Add `pyproject.toml` defaults in `[tool.verifiers.eval]` only when stable.
 
 ### V1 Authoring Rules
-1. Keep v1 environment entrypoints tiny: `import verifiers as vf`, define `load_taskset(config: MyTasksetConfig)`, optionally define `load_harness(config: MyHarnessConfig)`, and wire them from `load_environment(config: vf.EnvConfig)` or a concrete `EnvConfig` subclass when needed.
-2. Use `Taskset(objects=..., bindings=...)` for shared taskset dependencies such as extractors, clients, or format checkers. Do not introduce v1 Parser/Rubric wrappers; parsing is ordinary Python or a bound object.
+1. Keep v1 environment entrypoints tiny: `import verifiers as vf`, define top-level `@vf.reward` / `@vf.metric` functions, define `TasksetConfig` / `HarnessConfig` subclasses for user-facing knobs, define `Taskset[Config]` / `Harness[Config]` classes, then expose `load_environment` with explicit `vf.Env(taskset=MyTaskset(config=config.taskset), harness=MyHarness(config=config.harness))` objects.
+2. Keep shared dependencies behind the taskset or harness that owns them. Use bindings as the canonical injection path; prefer serializable loader paths for bound objects in config, and use no-arg loader callables only for Python-only construction. Do not pass already-instantiated resource objects through environment loaders. Do not introduce v1 Parser/Rubric wrappers; parsing is ordinary Python.
 3. Use `vf.get_messages(state.get("completion") or [], role="assistant")` when reading state completions. The helper returns typed message objects and should not receive `None`.
 4. Use `program.channels` for v1 program protocol/channel selection. Do not use stale `program.tools` terminology.
-5. Avoid no-op `load_taskset`/`load_harness` wrappers. Add named helpers only when they encode real reusable wiring.
+5. Use `load_taskset(config)` / `load_harness(config)` only when they make the explicit object boundary clearer. Put behavior on the taskset or harness class, and use typed config objects as the only construction values.
 
 ### V1 Taskset/Harness Shape
 1. Put task data, task-owned tools, user behavior, metrics, rewards, and task-specific configuration on the `Taskset`.
@@ -73,17 +73,48 @@ split = "train"
 [env.harness]
 max_turns = 8
 ```
-6. In code, normalize config at the loader boundary and pass child configs directly:
+6. In code, use the current class-based config shape:
 ```python
+import verifiers as vf
+
+
+@vf.reward(weight=1.0)
+async def contains_answer(task, state) -> float:
+    return float(task["answer"] in str(state.get("completion") or ""))
+
+
+class MyTasksetConfig(vf.TasksetConfig):
+    split: str = "train"
+
+
+class MyTaskset(vf.Taskset[MyTasksetConfig]):
+    _default_rewards = (contains_answer,)
+
+    def rows(self) -> list[dict[str, object]]:
+        rows = [
+            {
+                "prompt": [{"role": "user", "content": "Reverse abc."}],
+                "answer": "cba",
+                "split": "train",
+                "max_turns": 1,
+            }
+        ]
+        return [row for row in rows if row["split"] == self.config.split]
+
+
 class MyEnvConfig(vf.EnvConfig):
-    taskset: MyTasksetConfig
-    harness: vf.HarnessConfig
+    taskset: MyTasksetConfig = MyTasksetConfig()
+    harness: vf.HarnessConfig = vf.HarnessConfig()
+
+
+def load_taskset(config: MyTasksetConfig) -> MyTaskset:
+    return MyTaskset(config=config)
 
 
 def load_environment(config: MyEnvConfig) -> vf.Env:
     return vf.Env(
-        taskset=load_taskset(config=config.taskset),
-        harness=load_harness(config=config.harness),
+        taskset=load_taskset(config.taskset),
+        harness=vf.Harness(config=config.harness),
     )
 ```
 7. Do not add root env config knobs. Put settings as leaf fields on the taskset or harness config that owns them.

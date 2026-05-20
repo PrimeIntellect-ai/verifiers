@@ -46,7 +46,7 @@ import verifiers.v1 as vf
 
 
 def load_env():
-    return vf.Env(taskset=vf.HarborTaskset(), harness=vf.MiniSWEAgent())
+    return vf.Env(taskset=vf.HarborTaskset(config=vf.HarborTasksetConfig()), harness=vf.MiniSWEAgent(config=vf.MiniSWEAgentConfig()))
 """.lstrip()
     )
     monkeypatch.syspath_prepend(str(tmp_path))
@@ -57,7 +57,12 @@ def load_env():
 
 
 def test_mini_swe_agent_builds_sandbox_program():
-    harness = vf.MiniSWEAgent(system_prompt="Use tests.", agent_workdir="/app")
+    harness = vf.MiniSWEAgent(
+        config=vf.MiniSWEAgentConfig(
+            system_prompt="Use tests.",
+            agent_workdir="/app",
+        )
+    )
     program = cast(dict[str, Any], harness.program)
 
     assert isinstance(harness, vf.Harness)

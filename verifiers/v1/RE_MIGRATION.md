@@ -52,33 +52,26 @@ Every migrated package should expose:
 import verifiers as vf
 
 
-def load_taskset(config: vf.TasksetConfig) -> vf.Taskset:
-    return vf.Taskset(
-        source=load_rows,
-        system_prompt=SYSTEM_PROMPT,
-        rewards=[reward_fn],
-        metrics=[metric_fn],
-        toolsets=[load_toolset()],
-        config=config,
-    )
+class MyTasksetConfig(vf.TasksetConfig):
+    split: str = "train"
+    system_prompt: str = SYSTEM_PROMPT
 
 
-def load_harness(config: vf.HarnessConfig) -> vf.Harness:
-    return vf.Harness(config=config)
+class MyTaskset(vf.Taskset[MyTasksetConfig]):
+    _default_rewards = (reward_fn,)
+    _default_metrics = (metric_fn,)
+
+    def rows(self) -> list[dict[str, object]]:
+        return load_rows(split=self.config.split)
 
 
-def load_environment(config: vf.EnvConfig) -> vf.Env:
-    return vf.Env(
-        taskset=load_taskset(config=config.taskset),
-        harness=load_harness(config=config.harness),
-    )
-```
+class MyEnvConfig(vf.EnvConfig):
+    taskset: MyTasksetConfig = MyTasksetConfig()
+    harness: vf.HarnessConfig = vf.HarnessConfig()
 
-If the base harness is enough, omit `load_harness`:
 
-```python
-def load_environment(config: vf.EnvConfig) -> vf.Env:
-    return vf.Env(taskset=load_taskset(config=config.taskset))
+def load_environment(config: MyEnvConfig) -> vf.Env:
+    return vf.Env(taskset=MyTaskset(config=config.taskset))
 ```
 
 Rows should be plain serializable task data:
@@ -100,7 +93,16 @@ live with the environment instead of the root `verifiers` package.
 Put system instructions in `system_prompt`, not in `prompt`:
 
 ```python
-vf.Taskset(source=load_rows, system_prompt="Answer concisely.")
+class PromptTasksetConfig(vf.TasksetConfig):
+    system_prompt: str = "Answer concisely."
+
+
+class PromptTaskset(vf.Taskset[PromptTasksetConfig]):
+    def rows(self) -> list[dict[str, object]]:
+        return [{"prompt": [{"role": "user", "content": "Question?"}]}]
+
+
+taskset = PromptTaskset(config=PromptTasksetConfig())
 ```
 
 or per task:
@@ -133,24 +135,14 @@ Use this for:
 
 Migration:
 
-1. Convert the old dataset builder into `source` / `eval_source`.
+1. Convert the old dataset builder into `Taskset.rows()`.
 2. Convert each reward or metric into `@vf.reward` / `@vf.metric`.
-3. Return `vf.Env(taskset=taskset)`.
+3. Return `vf.Env(taskset=TasksetClass(config=config.taskset))`.
 
 Example:
 
 ```python
 import verifiers as vf
-
-
-def source():
-    for row in load_dataset(...):
-        yield {
-            "prompt": [{"role": "user", "content": row["question"]}],
-            "answer": row["answer"],
-            "info": {"id": row["id"]},
-            "max_turns": 1,
-        }
 
 
 @vf.reward(weight=1.0)
@@ -160,19 +152,38 @@ async def exact(task, state) -> float:
     return float(str(task["answer"]).strip() in response)
 
 
-def load_taskset(config: vf.TasksetConfig):
-    return vf.Taskset(source=source, rewards=[exact], config=config)
+class QATasksetConfig(vf.TasksetConfig):
+    split: str = "train"
 
 
-def load_environment(config: vf.EnvConfig):
-    return vf.Env(taskset=load_taskset(config=config.taskset))
+class QATaskset(vf.Taskset[QATasksetConfig]):
+    _default_rewards = (exact,)
+
+    def rows(self) -> list[dict[str, object]]:
+        return [
+            {
+                "prompt": [{"role": "user", "content": row["question"]}],
+                "answer": row["answer"],
+                "info": {"id": row["id"]},
+                "max_turns": 1,
+            }
+            for row in load_dataset(..., split=self.config.split)
+        ]
+
+
+class QAEnvConfig(vf.EnvConfig):
+    taskset: QATasksetConfig = QATasksetConfig()
+
+
+def load_environment(config: QAEnvConfig):
+    return vf.Env(taskset=QATaskset(config=config.taskset))
 ```
 
 Gotchas:
 
 - Reference answers stay on `task`; do not expect `state["answer"]` to be the
   gold answer.
-- Shared extraction or judging dependencies belong on `Taskset(objects=...)` and
+- Shared extraction or judging dependencies belong on `TasksetConfig.objects` and
   enter reward signatures through `bindings`:
 
 ```python
@@ -186,12 +197,23 @@ async def exact(task, state, extract_answer) -> float:
     return float(extract_answer(state.get("completion") or []) == task["answer"])
 
 
-taskset = vf.Taskset(
-    source=source,
-    rewards=[exact],
-    objects={"extract_answer": AnswerExtractor},
-    bindings={"exact.extract_answer": "objects.extract_answer"},
-)
+class ExtractTasksetConfig(vf.TasksetConfig):
+    objects: dict[str, str] = {
+        "extract_answer": "my_env:build_answer_extractor",
+    }
+    bindings: dict[str, str] = {
+        "exact.extract_answer": "objects.extract_answer",
+    }
+
+
+class ExtractTaskset(vf.Taskset[ExtractTasksetConfig]):
+    _default_rewards = (exact,)
+
+    def rows(self) -> list[dict[str, object]]:
+        return [{"prompt": [{"role": "user", "content": "Question?"}], "answer": "A"}]
+
+
+taskset = ExtractTaskset(config=ExtractTasksetConfig())
 ```
 
 - Judge metrics are regular reward/metric functions. Instantiate judge clients
@@ -244,13 +266,24 @@ def load_toolset(config=None):
     )
 
 
-def load_taskset(config: vf.TasksetConfig):
-    return vf.Taskset(
-        source=source,
-        toolsets=[load_toolset()],
-        rewards=[judge_reward],
-        config=config,
-    )
+class SearchTasksetConfig(vf.TasksetConfig):
+    pass
+
+
+class SearchTaskset(vf.Taskset[SearchTasksetConfig]):
+    _default_rewards = (judge_reward,)
+    _default_toolsets = (load_toolset(),)
+
+    def rows(self) -> list[dict[str, object]]:
+        return [
+            {
+                "prompt": [{"role": "user", "content": "Search the web."}],
+                "answer": "example",
+            }
+        ]
+
+
+env = vf.Env(taskset=SearchTaskset(config=vf.TasksetConfig()))
 ```
 
 Gotchas:
@@ -278,168 +311,51 @@ async def finish(answer: str, state) -> str:
 toolset = vf.Toolset(tools=[finish])
 ```
 
-## Dynamic Tool Schema Environments
+## Dynamic Tool Schemas And Services
 
-Use this for:
+Use this for `bfcl_v3`, `mcp_atlas`, and evals where each task row carries
+schemas or service metadata. Keep schemas on `task`, point
+`task["toolsets"]` at an importable task-local factory, and score from the
+assistant tool calls or service call records in state.
 
-- `bfcl_v3`
-- evals where every task row carries its own function schemas
+References:
 
-Migration:
-
-1. Keep schemas on `task`.
-2. Add a task-local toolset spec under `task["toolsets"]`.
-3. Have that toolset factory build callable objects with `tool_def`.
-4. Score from the assistant tool calls in `state["completion"]`.
-
-Reference: `environments/bfcl_v3/bfcl_v3.py`.
-
-Example:
-
-```python
-from verifiers.types import Tool
-
-import verifiers as vf
-
-
-class SchemaTool:
-    def __init__(self, tool_def):
-        self.name = tool_def.name
-        self.__name__ = tool_def.name
-        self.tool_def = tool_def
-
-    async def __call__(self, state, **arguments):
-        state.setdefault("tool_calls", []).append({self.name: arguments})
-        return "recorded"
-
-
-def task_toolset(task):
-    return vf.Toolset(
-        tools=[SchemaTool(Tool(**schema)) for schema in task["tool_schemas"]]
-    )
-
-
-def source():
-    yield {
-        "prompt": [{"role": "user", "content": "Call the right function."}],
-        "tool_schemas": [...],
-        "toolsets": {"dynamic": {"fn": "my_env:task_toolset"}},
-        "max_turns": 1,
-    }
-```
+- `environments/bfcl_v3/bfcl_v3.py`
+- service-style task-local toolsets in `mcp_atlas`
 
 Gotchas:
 
-- Dynamic tools still execute. Use a no-op recorder when the eval only needs to
-  inspect emitted tool calls.
-- Toolset factory refs in task data must be import strings so tasks remain
+- Dynamic tools still execute; use a recorder when the eval only needs emitted
+  calls.
+- Toolset factory refs in task data must be import strings so task rows stay
   serializable.
-- For multi-turn benchmarks with task-specific execution semantics, use a
-  custom harness program rather than subclassing Env.
+- Service sandboxes stay private to the toolset unless the task or harness
+  explicitly shares a compatible primary sandbox.
 
-## Sandbox-Backed Callable Tools
+## Sandbox-Backed Tools
 
-Use this for:
-
-- Python execution tools in `math_env`
-- code-analysis helpers that need isolated filesystem/process state
-
-Migration:
-
-1. Define the tool as a normal callable.
-2. Place it in a `vf.Toolset(..., sandbox={...})`.
-3. Add `sandbox` to the tool signature when it needs the sandbox handle.
-4. Choose `scope="rollout"`, `scope="group"`, or `scope="global"` based on
-   lifetime.
+Use this for Python execution tools and code-analysis helpers. Define a normal
+callable, place it in `vf.Toolset(..., sandbox={...})`, add `sandbox` to the
+tool signature, and choose `scope="rollout"`, `"group"`, or `"global"` based on
+lifetime.
 
 Reference: `environments/math_python/math_python_v1.py`.
 
-Example:
-
-```python
-async def python(code: str, sandbox) -> str:
-    result = await sandbox.execute(f"python - <<'PY'\n{code}\nPY")
-    return result.stdout
-
-
-def load_python_toolset(config=None):
-    return vf.Toolset(
-        tools=[python],
-        write=True,
-        scope="group",
-        sandbox={
-            "image": "python:3.11-slim",
-            "packages": ["numpy", "sympy"],
-            "timeout_minutes": 60,
-        },
-        config=config,
-    )
-```
-
 Gotchas:
 
-- Use `scope="group"` when scoring may need to inspect the same sandbox after
-  rollout.
-- Use `scope="rollout"` for throwaway execution where scoring only reads state.
-- Live sandbox handles stay inside the runtime. Save only serializable sandbox
-  refs, command records, or artifacts that downstream scoring/display should see.
+- Use `scope="group"` when scoring needs to inspect the sandbox after rollout.
+- Save only serializable sandbox refs, command records, or artifacts on state.
+- Updates should call resolved tools through `state.get_tools()` when they need
+  live sandbox or service access.
 
 ## User Simulators
 
-Use this for:
-
-- `tau2-bench-v1`
-- tasksets where the environment returns a user message when the model does not
-  call a tool
-
-Migration:
-
-1. Make the user simulator a callable returning messages.
-2. Pass it as `Taskset(user=...)` or `Harness(user=...)`.
-3. Keep task-specific simulator state in `state`.
-4. Put static simulator clients behind `User(objects=...)`; use a callable
-   binding when the hidden argument depends on task or state.
+Use this for `tau2-bench-v1` and tasksets where the environment returns a user
+message when the model does not call a tool. Put the simulator on
+`TasksetConfig.user` or `HarnessConfig.user`; keep per-rollout simulator state
+in `state`; put static clients behind `User(objects=...)`.
 
 Reference: `environments/tau2_bench_v1/tau2_bench_v1.py`.
-
-Example:
-
-```python
-async def user(task, state, session) -> list[dict[str, object]]:
-    if state.get("done"):
-        return []
-    message = await session.next_message(task, state)
-    return [{"role": "user", "content": message}]
-
-
-def load_session():
-    return SessionFactory(...)
-
-
-taskset = vf.Taskset(
-    source=source,
-    user={
-        "fn": user,
-        "scope": "rollout",
-        "objects": {"session": load_session},
-        "bindings": {"session": "objects.session"},
-    },
-    rewards=[reward],
-)
-```
-
-For task/state-dependent sessions, bind a callable source directly:
-
-```python
-def session_for_rollout(task, state):
-    return Session(task["scenario"], state["trajectory_id"])
-
-
-taskset = vf.Taskset(
-    source=source,
-    user=vf.User(user, bindings={"session": session_for_rollout}),
-)
-```
 
 Gotchas:
 
@@ -449,362 +365,86 @@ Gotchas:
 
 ## MCP Toolsets
 
-Use this for:
-
-- environments where tools are already exposed by stdio MCP servers
-- local servers that can be launched from a command plus args
-
-Migration:
-
-1. Wrap each server as `vf.MCPTool(command=..., args=[...])`.
-2. Put MCP tools in a taskset or harness toolset.
-3. Use `program={"command": [...], "sandbox": True, "channels": "mcp"}` for
-   sandbox command harnesses that should consume resolved toolsets through MCP.
+Use this when tools already exist behind stdio MCP servers. Wrap each server as
+`vf.MCPTool(command=..., args=[...])`, put the MCP tools in a taskset or
+harness toolset, and use `program.channels="mcp"` for sandbox command harnesses
+that should consume resolved toolsets through MCP.
 
 Reference: `environments/mcp_search_env/mcp_search_env.py`.
-
-Example:
-
-```python
-def load_toolset(config=None):
-    return vf.Toolset(
-        tools=[
-            vf.MCPTool(
-                command="python",
-                args=["-m", "my_package.mcp_server", "--task-root", TASK_ROOT],
-            )
-        ],
-        config=config,
-    )
-```
 
 Gotchas:
 
 - MCP server auth and secrets should be handled by the server command or env.
-- Use task fields and bindings when the server needs task-specific arguments.
-- Callable tools and MCP tools can coexist in toolsets. Python programs receive
-  callable handles; sandbox command programs can request an MCP server through
-  `program.channels`.
-- `program.channels` names the program-facing channel, not a concrete tool. Use
-  `"callable"` or `"mcp"`; tools such as `bash` are regular Toolset entries.
+- Callable tools and MCP tools can coexist in toolsets.
+- `program.channels` names the program-facing channel, not a concrete tool.
 
 ## Nested Harness Calls
 
-Use this for:
-
-- helper subagents inside a tool call
-- judge or planner harnesses launched from a parent harness
-
-Migration:
-
-1. Construct the child `vf.Harness` as a normal object.
-2. Bind it into a toolset object.
-3. Call `await child_harness.run(child_task)`.
+Use this for helper subagents, judges, or planners launched inside a tool call.
+Construct the child `vf.Harness` as a normal object, bind it into a toolset
+object, and call `await child_harness.run(child_task)`.
 
 Reference: `environments/hello_subagent_v1/hello_subagent_v1.py`.
 
-Example:
-
-```python
-async def ask_child(question: str, harness, state) -> str:
-    child_task = vf.Task(
-        {"prompt": [{"role": "user", "content": question}]}
-    ).freeze()
-    child_state = await harness.run(child_task)
-    state.setdefault("child_answers", []).append(child_state["answer"])
-    messages = vf.get_messages(child_state.get("completion") or [], role="assistant")
-    return str(messages[-1].content or "") if messages else ""
-
-
-def load_child_harness():
-    return vf.Harness()
-
-
-toolset = vf.Toolset(
-    tools=[ask_child],
-    objects={"child_harness": load_child_harness},
-    bindings={"ask_child.harness": "objects.child_harness"},
-)
-```
-
 Gotchas:
 
-- Child harnesses do not automatically inherit parent model controls. Construct
-  the child harness with the client/model it should use.
-- Child rollout state is returned to the caller. Persist summaries or full child
-  state explicitly when the parent needs it.
+- Child harnesses do not automatically inherit parent model controls.
+- Persist summaries or child state explicitly when the parent needs them.
 - Child runtime handles are stripped before state is finalized.
 
-## Sandbox CLI Harnesses
+## Command Harnesses
 
-Use this for:
-
-- OpenCode-style task directories
-- Harbor-shaped tasksets
-- mini-swe-agent task directories
-- RLM-style command harnesses
-- CLI programs that call an intercepted OpenAI-compatible endpoint
-
-Migration:
-
-1. Use `vf.HarborTaskset` for Harbor-format task directories.
-2. Use `vf.OpenCode()`, `vf.Pi()`, `vf.MiniSWEAgent()`, `vf.Terminus2()`, or
-   `vf.RLM()` for the command harness.
-3. Put task-owned uploads and sandbox overrides on the taskset.
-4. Keep scoring as reward/metric functions on the taskset.
-
-The packaged implementations live under `verifiers.v1.packages` while the v1
-API stabilizes, and are re-exported from `verifiers.v1` for normal use.
-
-Reference: `environments/opencode_harbor/opencode_harbor.py`.
-
-Example:
+Use this for Harbor, OpenCode, mini-swe-agent, RLM, terminal-bench-style task
+directories, and other sandboxed CLI programs. Prefer packaged harnesses when
+the format already matches:
 
 ```python
 env = vf.Env(
-    taskset=vf.HarborTaskset(),
-    harness=vf.OpenCode(),
+    vf.EnvConfig(
+        taskset=vf.HarborTasksetConfig(),
+        harness=vf.OpenCodeConfig(),
+    ),
+    taskset=vf.HarborTaskset,
+    harness=vf.OpenCode,
 )
 ```
 
+For custom command programs, put task-directory metadata on `task`, use
+callable `program.files` / `program.dirs` import refs for task-dependent
+uploads, set per-task sandbox overrides under `task["sandbox"]`, and collect
+logs or reports through `program.artifacts`.
+
+References:
+
+- `environments/opencode_harbor/opencode_harbor.py`
+- `environments/rlm_swe_v1/rlm_swe_v1.py`
+
 Gotchas:
 
-- `HarborTaskset()` loads Harbor-format task directories from the environment
-  package's reserved `tasks/` directory. `HarborTaskset(dataset="owner/name")`
-  fetches a Harbor Hub dataset.
-- `HarborTaskset` owns task loading, per-task sandbox overrides, `/task` uploads,
-  and test scoring.
-- `OpenCode` owns OpenCode installation, config generation, MCP tool proxy
-  wiring, and log artifacts.
-- `Pi` owns Pi installation, intercepted model config generation, optional MCP
-  adapter setup, and log artifacts.
-- `MiniSWEAgent` owns mini-swe-agent installation, config layering, endpoint
-  env, and log/trajectory artifacts.
-- `Terminus2` owns Harbor Terminus agent installation, endpoint env, and log
+- `HarborTaskset` owns Harbor task loading, task sandbox overrides, `/task`
+  uploads, and test scoring.
+- CLI harnesses own installation, endpoint wiring, config generation, and log
   artifacts.
-- `RLM` owns RLM installation, optional `/task/rlm-skills` upload, endpoint
-  wiring, and trajectory filtering.
-- `task.program` is the merge point for task-owned program files/env/setup.
-- Harness-owned CLI tool registration belongs in `program.channels.mcp`; it runs
+- Harness-owned MCP registration belongs in `program.channels.mcp`; it runs
   after ordinary setup and before the command.
-- Use group-scoped sandbox lifetime when scoring needs to inspect the sandbox.
+- Use `scope="group"` when scoring needs sandbox state after rollout.
 
-## Task-Directory Command Harnesses
+## Mixed Suites And Post-Rollout Checks
 
-Use this for:
+For mixed suites, build one v1 `Env` per independently configurable
+taskset/harness pair until a v1-native suite wrapper exists. Do not wrap v1
+`Env` objects in the v0 `EnvGroup`; use one `Taskset` with a `category` task
+field when categories share the same harness and lifecycle.
 
-- `terminal_bench_2`
-- `general_agent`
-- `nl2repobench`
-- `clbench_rlm`, `graphwalks_rlm`, `longbenchpro_rlm`, `longcot_rlm`
-- `math_env_rlm`, `mrcr_v2_rlm`, `needle_in_haystack_rlm`, `oolong_rlm`
-- `rlm_graphwalks`, `rlm_longcot`, `rlm_mrcr_v2`, `rlm_oolong`,
-  `rlm_secrets`, `tau3_bench_rlm`
-- RLM/OpenCode packages that stage a per-task workspace
+For generated-code verification, run the agent with the base loop, a Python
+program, or a sandbox command; materialize verification results in `@vf.update`;
+score with `@vf.reward` / `@vf.metric`; and use `@vf.cleanup` for final
+serializable mutation or resource cleanup.
 
-Migration:
+References:
 
-1. Put task-directory metadata on `task`, including instruction text and local
-   package paths.
-2. Use a sandboxed command program for the solver.
-3. Use callable `program.files` / `program.dirs` values when uploads depend on
-   the task row.
-4. Use `task["sandbox"]` for per-task sandbox overrides such as image, workdir,
-   resources, or timeout.
-5. Put final logs, JSON reports, and DB snapshots in `program.artifacts`.
-
-Example:
-
-```python
-def task_package(task, state):
-    return Path(task["task_dir"])
-
-
-def instruction(task, state):
-    return Path(task["task_dir"], "instruction.md").read_text()
-
-
-harness = vf.Harness(
-    sandbox={"image": "python:3.11-slim", "scope": "group"},
-    program={
-        "sandbox": True,
-        "command": ["bash", "-lc", "solver run /task/instruction.md"],
-        "channels": "mcp",
-        "files": {"/task/instruction.md": instruction},
-        "dirs": {"/workspace/task": task_package},
-        "setup": ["pip install -e /workspace/task"],
-        "artifacts": {
-            "report": {
-                "path": "/workspace/task/report.json",
-                "format": "json",
-                "optional": True,
-            }
-        },
-    },
-)
-```
-
-Gotchas:
-
-- `program.files` values become file contents. `program.dirs` values become
-  uploaded directory roots.
-- `program.artifacts.*.optional` must be a boolean. Missing optional artifacts
-  are recorded as `None`.
-- Use `scope="group"` when scoring needs the sandbox after rollout; v1 keeps
-  the sandbox alive until group scoring and cleanup complete.
-
-## Mixed Environment Suites
-
-Use this for:
-
-- packages that currently route across several task categories or harness
-  variants
-- suites that should preserve separate tasksets, scoring, or harness configs
-
-Migration:
-
-1. Build one v1 `Env` per independently configurable taskset/harness pair.
-2. Expose separate typed loaders for the v1 envs until a v1-native suite wrapper
-   exists.
-3. Keep category-specific rewards, tools, and harness settings inside each
-   child env.
-
-Example:
-
-```python
-def load_math_environment(config: vf.EnvConfig) -> vf.Env:
-    return vf.Env(...)
-
-
-def load_graph_environment(config: vf.EnvConfig) -> vf.Env:
-    return vf.Env(...)
-```
-
-Gotchas:
-
-- Do not wrap v1 `Env` objects in the v0 `EnvGroup`; that creates a mixed
-  contract where rollout execution and scoring live on different stacks.
-- Use one `Taskset` with a `category` task field when categories share the same
-  harness and lifecycle.
-- Keep explicit v0 and v1 loaders only when the migration is intentionally dual
-  stack.
-
-## Code Verification And Post-Rollout Checks
-
-Use this for:
-
-- `scicode`
-- `livecodebench`
-- `code_env`
-- environments that verify generated code after the agent loop
-
-Migration:
-
-1. Run the agent with the base loop, a Python program, or a sandbox command.
-2. Put verification that prepares state for scoring in `@vf.update`.
-3. Put reward/metric computation in `@vf.reward` / `@vf.metric`.
-4. Put post-scoring resource cleanup in `@vf.cleanup`.
-
-Example:
-
-```python
-import json
-
-
-async def bash(command: str, sandbox) -> str:
-    result = await sandbox.execute(command, timeout=120)
-    return json.dumps(
-        {
-            "returncode": result.exit_code,
-            "stdout": result.stdout,
-            "stderr": result.stderr,
-        }
-    )
-
-
-@vf.update
-async def run_tests(task, state):
-    tools = state.get_tools()
-    state["tests"] = json.loads(await tools["bash"](command="pytest -q"))
-
-
-@vf.reward
-async def pass_rate(task, state) -> float:
-    return 1.0 if state["tests"]["returncode"] == 0 else 0.0
-
-
-toolset = vf.Toolset(
-    tools=[bash],
-    updates=[run_tests],
-    sandbox="program",
-    write=True,
-)
-```
-
-Gotchas:
-
-- Updates run before rewards and metrics. Use them for parsing, verification,
-  and serializable state materialization.
-- Updates should call resolved tools through `state.get_tools()` when they need live
-  sandbox or service access.
-- Cleanup runs after scoring. Use it for user-visible final mutation or
-  resource cleanup that is not handled by sandbox scope.
-- For verification that needs sandbox state, keep the owning sandbox at
-  `scope="group"` or borrow the primary program sandbox in the child state.
-
-## Sandbox Service Toolsets
-
-Use this for:
-
-- `mcp_atlas`
-- task-local services that expose tool schemas and mutate private state
-
-Migration:
-
-1. Load or derive tool schemas during taskset construction and store them on
-   `task`.
-2. Build task-local callable tools from those schemas.
-3. Put the service container behind the same task-local `Toolset` as a sandbox.
-4. Bind `sandbox` into each callable that needs to call the service.
-
-Example:
-
-```python
-class ServiceTool:
-    def __init__(self, tool_def):
-        self.name = tool_def.name
-        self.tool_def = tool_def
-
-    async def __call__(self, state, sandbox, **arguments):
-        result = await sandbox.execute(
-            atlas_curl_command(
-                "/call-tool",
-                {"tool_name": self.name, "tool_args": arguments},
-            )
-        )
-        state.setdefault("service_calls", []).append({self.name: arguments})
-        return json.loads(result.stdout)
-
-
-def service_toolset(task):
-    tools = [ServiceTool(vf.Tool(**schema)) for schema in task["tool_schemas"]]
-    return vf.Toolset(
-        tools=tools,
-        sandbox={
-            "image": task["service_image"],
-            "start_command": task["service_start_command"],
-            "scope": "rollout",
-        },
-        write=True,
-    )
-```
-
-Gotchas:
-
-- Schemas on `task` keep tool definitions serializable and available before the
-  first model request.
-- The sandbox remains private to the toolset unless the task or harness
-  explicitly passes a compatible primary sandbox.
+- `scicode`, `livecodebench`, and `code_env` style verification environments
+- mixed v0/v1 packages during staged migrations
 
 ## Task and State Gotchas
 

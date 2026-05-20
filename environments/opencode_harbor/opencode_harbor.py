@@ -2,20 +2,12 @@ import verifiers as vf
 
 
 class OpenCodeHarborEnvConfig(vf.EnvConfig):
-    taskset: vf.HarborTasksetConfig
-    harness: vf.OpenCodeConfig
-
-
-def load_taskset(config: vf.HarborTasksetConfig) -> vf.HarborTaskset:
-    return vf.HarborTaskset(config=config)
-
-
-def load_harness(config: vf.OpenCodeConfig) -> vf.OpenCode:
-    return vf.OpenCode(config=config)
+    taskset: vf.HarborTasksetConfig = vf.HarborTasksetConfig()
+    harness: vf.OpenCodeConfig = vf.OpenCodeConfig()
 
 
 def load_environment(config: OpenCodeHarborEnvConfig) -> vf.Env:
     return vf.Env(
-        taskset=load_taskset(config.taskset),
-        harness=load_harness(config.harness),
+        taskset=vf.HarborTaskset(config=config.taskset),
+        harness=vf.OpenCode(config=config.harness),
     )

@@ -3,6 +3,8 @@ import inspect
 from collections.abc import Iterable, Mapping
 from typing import Literal, TypeAlias, cast
 
+from pydantic import BaseModel
+
 from .config_utils import resolve_config_object
 from ..types import ConfigMap, Handler
 
@@ -56,6 +58,8 @@ def config_callables(value: object, kind: CallableKind) -> list[Handler]:
 
 def callable_config_item(value: object, kind: CallableKind) -> Handler:
     value = resolve_config_object(value)
+    if isinstance(value, BaseModel):
+        value = value.model_dump(exclude_none=True)
     if isinstance(value, Mapping):
         return callable_from_mapping(cast(ConfigMap, value), kind)
     if not callable(value):
