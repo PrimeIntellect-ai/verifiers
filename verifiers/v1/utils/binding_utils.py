@@ -1,7 +1,8 @@
 import inspect
 from collections.abc import Mapping, Set
 from typing import Literal, TypeAlias, cast
-from ..types import ConfigMap, Handler, Objects
+from ..types import ConfigMap, Handler, ObjectLoader, Objects
+from .object_utils import validate_object_loader_spec
 
 
 BindingRoot: TypeAlias = Literal[
@@ -86,7 +87,8 @@ def normalize_object_map(value: object, field: str) -> Objects:
             raise TypeError(f"{field} keys must be strings.")
         if not raw_key:
             raise ValueError(f"{field} keys must be non-empty strings.")
-        result[raw_key] = source
+        validate_object_loader_spec(source, f"{field} entry {raw_key!r}")
+        result[raw_key] = cast(ObjectLoader, source)
     return result
 
 

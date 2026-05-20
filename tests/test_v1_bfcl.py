@@ -72,20 +72,13 @@ def test_bfcl_empty_completion_has_no_tool_calls() -> None:
 
 def test_bfcl_public_loader_is_v1_only(monkeypatch: pytest.MonkeyPatch) -> None:
     bfcl = load_bfcl_module()
-    seen_taskset_config: vf.TasksetConfig | None = None
     seen_harness_config: vf.HarnessConfig | None = None
-
-    def fake_taskset(config: vf.TasksetConfig) -> vf.Taskset:
-        nonlocal seen_taskset_config
-        seen_taskset_config = config
-        return vf.Taskset(source=[], config=config)
 
     def fake_harness(config: vf.HarnessConfig) -> vf.Harness:
         nonlocal seen_harness_config
         seen_harness_config = config
         return vf.Harness(config=config)
 
-    monkeypatch.setattr(bfcl, "load_taskset", fake_taskset)
     monkeypatch.setattr(bfcl, "load_harness", fake_harness)
 
     env = bfcl.load_environment(
@@ -99,10 +92,13 @@ def test_bfcl_public_loader_is_v1_only(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
     assert isinstance(env, vf.Env)
+    seen_taskset_config = env.taskset.config
     assert isinstance(seen_taskset_config, bfcl.BFCLTasksetConfig)
     assert isinstance(seen_harness_config, bfcl.BFCLHarnessConfig)
     assert seen_taskset_config.test_category == "simple_python"
     assert seen_taskset_config.examples_per_category == 0
+    assert "rewards" not in seen_taskset_config.model_fields_set
+    assert [reward.__name__ for reward in env.taskset.rewards] == ["bfcl_reward"]
     assert seen_harness_config.test_category == "simple_python"
     assert not hasattr(bfcl, "load_v1_environment")
 
@@ -111,20 +107,18 @@ def test_bfcl_loader_supports_category_groups(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     bfcl = load_bfcl_module()
-    seen_taskset_categories = []
     seen_harness_categories = []
 
-    def fake_taskset(config: vf.TasksetConfig) -> vf.Taskset:
-        assert isinstance(config, bfcl.BFCLTasksetConfig)
-        seen_taskset_categories.append(config.test_category)
-        return vf.Taskset(source=[{"question": "q", "answer": "a"}], config=config)
+    def fake_source(test_category: str, **kwargs: object):
+        _ = kwargs
+        return [{"question": test_category, "answer": "a"}]
 
     def fake_harness(config: vf.HarnessConfig) -> vf.Harness:
         assert isinstance(config, bfcl.BFCLHarnessConfig)
         seen_harness_categories.append(config.test_category)
         return vf.Harness(config=config)
 
-    monkeypatch.setattr(bfcl, "load_taskset", fake_taskset)
+    monkeypatch.setattr(bfcl.BFCLTaskset, "_default_source", fake_source)
     monkeypatch.setattr(bfcl, "load_harness", fake_harness)
 
     env = bfcl.load_environment(
@@ -139,5 +133,6 @@ def test_bfcl_loader_supports_category_groups(
 
     assert isinstance(env, root_vf.EnvGroup)
     assert env.env_names == ["simple_python", "simple_java"]
+    seen_taskset_categories = [item.taskset.config.test_category for item in env.envs]
     assert seen_taskset_categories == ["simple_python", "simple_java"]
     assert seen_harness_categories == ["simple_python", "simple_java"]

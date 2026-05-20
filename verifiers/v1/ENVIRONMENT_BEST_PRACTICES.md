@@ -14,16 +14,16 @@ proves the looser surface is needed.
    `EnvConfigType` is `vf.EnvConfig` for base taskset/harness configs, or an
    environment-local `vf.EnvConfig` subclass that binds concrete child config
    types.
-2. Environment modules SHOULD expose `load_taskset(config: TasksetConfigType)`
-   whenever the taskset has any reusable construction logic.
-3. Environment modules SHOULD expose `load_harness(config: HarnessConfigType)`
-   when the harness has reusable construction logic or a custom config type.
-   Environments using the default harness MAY construct `vf.Harness` directly in
-   `load_environment`.
-4. Public `load_taskset` and `load_harness` config parameters MUST be required
-   and typed as one concrete Pydantic config type. Defaults come from
-   `EnvConfig`; do not advertise unions of mappings, base configs, and specific
-   configs.
+2. Environment modules SHOULD construct explicit taskset/harness objects and
+   pass them to `vf.Env(taskset=..., harness=...)`. `vf.Env(config=...)` is a
+   convenience path for already-typed config envelopes, not the docs/templates
+   golden path.
+3. Environment modules SHOULD expose `load_taskset(config: TasksetConfigType)`
+   or `load_harness(config: HarnessConfigType)` only when reusable construction
+   logic cannot live on the class defaults.
+4. Public child loader config parameters MUST be typed as one concrete Pydantic
+   config type. Do not construct config objects in function signatures, and do
+   not advertise unions of mappings, base configs, and specific configs.
 5. `load_environment` MUST NOT mirror taskset or harness fields as keyword
    arguments. The root env loader receives the typed envelope; the child configs
    own all environment-specific settings.
@@ -44,10 +44,9 @@ your loader runs. The type annotation is not cosmetic.
    `harness` annotation.
 4. The config object that reaches `load_environment` is already validated and
    typed. Do not reconstruct child config objects just to recover their type.
-5. `load_taskset(config: MyTasksetConfig)` and
-   `load_harness(config: MyHarnessConfig)` make the reusable construction
-   contract explicit. They also give tests and examples one stable place to
-   exercise child config behavior.
+5. `vf.Env(taskset=MyTaskset(config=config.taskset), harness=MyHarness(config=config.harness))`
+   is the default construction path. Use child loader functions only when they
+   make that explicit object boundary clearer.
 6. Root env kwargs behave differently from TOML child sections. TOML
    `[env.taskset]` and `[env.harness]` route into the env config envelope; CLI
    `-a` passes loader kwargs. This is why CLI child config overrides must be
@@ -59,8 +58,8 @@ your loader runs. The type annotation is not cosmetic.
 
 ```python
 class MyEnvConfig(vf.EnvConfig):
-    taskset: MyTasksetConfig
-    harness: MyHarnessConfig
+    taskset: MyTasksetConfig = MyTasksetConfig()
+    harness: MyHarnessConfig = MyHarnessConfig()
 ```
 
 1. `EnvConfig.taskset` MUST be typed as a `vf.TasksetConfig` subclass.
@@ -70,9 +69,9 @@ class MyEnvConfig(vf.EnvConfig):
    owns the behavior.
 4. `taskset` and `harness` MUST NOT be `None`. Omit the section to use the
    default config.
-5. Annotation-only `vf.Config` fields default to their config class. Do not add
-   `Field(default_factory=...)` for nested `vf.Config` fields unless the default
-   must be something other than the annotated class.
+5. Nested config defaults should be explicit objects, e.g.
+   `harness: MyHarnessConfig = MyHarnessConfig()`. Do not use
+   `Field(default_factory=...)` for v1 config defaults.
 
 ## Ownership Rules
 
@@ -104,24 +103,40 @@ Use this when the taskset owns the environment and the base harness is enough.
 import verifiers as vf
 
 
+@vf.reward(weight=1.0)
+async def exact(task, state) -> float:
+    return float(state.get("answer") == task["answer"])
+
+
 class MyTasksetConfig(vf.TasksetConfig):
     split: str = "train"
 
 
+class MyTaskset(vf.Taskset[MyTasksetConfig]):
+    _default_rewards = (exact,)
+
+    def rows(self) -> list[dict[str, object]]:
+        rows = [
+            {
+                "prompt": [{"role": "user", "content": "What is 2 + 2?"}],
+                "answer": "4",
+                "split": "train",
+            }
+        ]
+        return [row for row in rows if row["split"] == self.config.split]
+
+
 class MyEnvConfig(vf.EnvConfig):
-    taskset: MyTasksetConfig
-    harness: vf.HarnessConfig
+    taskset: MyTasksetConfig = MyTasksetConfig()
+    harness: vf.HarnessConfig = vf.HarnessConfig()
 
 
-def load_taskset(config: MyTasksetConfig) -> vf.Taskset:
-    return vf.Taskset(source=..., config=config)
+def load_taskset(config: MyTasksetConfig) -> MyTaskset:
+    return MyTaskset(config=config)
 
 
 def load_environment(config: MyEnvConfig) -> vf.Env:
-    return vf.Env(
-        taskset=load_taskset(config=config.taskset),
-        harness=vf.Harness(config=config.harness),
-    )
+    return vf.Env(taskset=load_taskset(config.taskset))
 ```
 
 ### Custom Harness
@@ -132,31 +147,51 @@ Use this when the harness owns a reusable execution mechanism or config surface.
 import verifiers as vf
 
 
+async def run(task, state) -> vf.State:
+    return state
+
+
 class MyTasksetConfig(vf.TasksetConfig):
     split: str = "train"
+
+
+class MyTaskset(vf.Taskset[MyTasksetConfig]):
+    def rows(self) -> list[dict[str, object]]:
+        rows = [
+            {
+                "prompt": [{"role": "user", "content": "What is 2 + 2?"}],
+                "answer": "4",
+                "split": "train",
+            }
+        ]
+        return [row for row in rows if row["split"] == self.config.split]
 
 
 class MyHarnessConfig(vf.HarnessConfig):
     timeout_seconds: int = 120
 
 
+class MyHarness(vf.Harness[MyHarnessConfig]):
+    _default_program = run
+
+
 class MyEnvConfig(vf.EnvConfig):
-    taskset: MyTasksetConfig
-    harness: MyHarnessConfig
+    taskset: MyTasksetConfig = MyTasksetConfig()
+    harness: MyHarnessConfig = MyHarnessConfig()
 
 
-def load_taskset(config: MyTasksetConfig) -> vf.Taskset:
-    return vf.Taskset(source=..., config=config)
+def load_taskset(config: MyTasksetConfig) -> MyTaskset:
+    return MyTaskset(config=config)
 
 
-def load_harness(config: MyHarnessConfig) -> vf.Harness:
-    return vf.Harness(program=..., config=config)
+def load_harness(config: MyHarnessConfig) -> MyHarness:
+    return MyHarness(config=config)
 
 
 def load_environment(config: MyEnvConfig) -> vf.Env:
     return vf.Env(
-        taskset=load_taskset(config=config.taskset),
-        harness=load_harness(config=config.harness),
+        taskset=load_taskset(config.taskset),
+        harness=load_harness(config.harness),
     )
 ```
 
@@ -207,8 +242,11 @@ surfaces. Inside Python environment code, use typed config objects.
    and small policy choices that compose the two.
 2. Prefer v1-native framework objects over stdlib-shaped user code. User-facing
    environment code should read as Verifiers code first.
-3. Use `Taskset(objects=..., bindings=...)` for shared extractors, judges,
-   clients, and other dependencies that signal functions need.
+3. Keep shared dependencies behind the taskset or harness that owns them.
+   Bindings are the canonical injection path for shared resources. Prefer
+   serializable loader paths in config; no-arg loader callables are acceptable
+   for Python-only construction. Do not pass pre-initialized resource objects
+   through environment loaders.
 4. Compose related categories inside one taskset only when they share the same
    harness lifecycle and scoring contract.
 5. Expose explicit typed loaders for separate v1 envs when categories need

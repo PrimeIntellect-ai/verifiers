@@ -1,30 +1,88 @@
 import importlib
-import inspect
 from collections.abc import Mapping
-from typing import cast
+from typing import ClassVar, Generic, TypeVar, cast, get_args, get_origin
 
 from pydantic import BaseModel
 from pydantic_core import PydanticUndefined
-from ..types import ConfigData, ConfigFactory, ConfigInputMap, ConfigMap
+from ..types import ConfigData, ConfigInputMap
+
+ConfigT = TypeVar("ConfigT", bound=BaseModel)
+ConfigOwnerT = TypeVar("ConfigOwnerT", bound="ConfigBound")
+
+_CONFIG_OWNERS: dict[tuple[type[BaseModel], type[BaseModel]], type["ConfigBound"]] = {}
 
 
-CONFIG_REF_COLLECTION_FIELDS = {
-    "stops",
-    "setups",
-    "updates",
-    "metrics",
-    "rewards",
-    "advantages",
-    "cleanups",
-    "teardowns",
-}
+class ConfigBound(Generic[ConfigT]):
+    _config_base_cls: ClassVar[type[BaseModel]] = BaseModel
+    _config_cls: ClassVar[type[BaseModel]] = BaseModel
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)
+        explicit_config_cls = None
+        for base in cls.__dict__.get("__orig_bases__", ()):
+            origin = get_origin(base)
+            if isinstance(origin, type) and issubclass(origin, ConfigBound):
+                candidate = get_args(base)[0]
+                if not isinstance(candidate, TypeVar):
+                    explicit_config_cls = candidate
+                break
+        config_cls = explicit_config_cls or cls._config_cls
+        if not isinstance(config_cls, type) or not issubclass(
+            config_cls, cls._config_base_cls
+        ):
+            raise TypeError(
+                f"{cls.__name__} generic argument must be "
+                f"{cls._config_base_cls.__name__}."
+            )
+        cls._config_cls = config_cls
+        if explicit_config_cls is not None and config_cls is not cls._config_base_cls:
+            register_config_owner(
+                base_cls=cls._config_base_cls,
+                config_cls=config_cls,
+                owner_cls=cls,
+            )
+
+    @classmethod
+    def config_schema(cls) -> str:
+        return cls._config_cls.schema_text()  # type: ignore[attr-defined]
 
 
-def config_data(value: object, target: type[BaseModel] | None = None) -> ConfigData:
+def register_config_owner(
+    *,
+    base_cls: type[BaseModel],
+    config_cls: type[BaseModel],
+    owner_cls: type[ConfigOwnerT],
+) -> None:
+    key = (base_cls, config_cls)
+    existing = _CONFIG_OWNERS.get(key)
+    if existing is not None and existing is not owner_cls:
+        raise TypeError(
+            f"{config_cls.__name__} is already bound to {existing.__name__}; "
+            f"define a distinct config class for {owner_cls.__name__}."
+        )
+    _CONFIG_OWNERS[key] = owner_cls
+
+
+def config_owner(
+    config_cls: type[BaseModel],
+    base_cls: type[BaseModel],
+) -> type[ConfigBound] | None:
+    for candidate in config_cls.__mro__:
+        if not issubclass(candidate, BaseModel):
+            continue
+        owner = _CONFIG_OWNERS.get((base_cls, candidate))
+        if owner is not None:
+            return owner
+    return None
+
+
+def explicit_config_data(
+    value: object, target: type[BaseModel] | None = None
+) -> ConfigData:
     if value is None:
         data: ConfigData = {}
     elif isinstance(value, BaseModel):
-        data = model_config_data(value)
+        data = explicit_model_config_data(value)
         if target is not None:
             data = {
                 key: item for key, item in data.items() if key in target.model_fields
@@ -36,110 +94,51 @@ def config_data(value: object, target: type[BaseModel] | None = None) -> ConfigD
     return data
 
 
-def model_config_data(value: BaseModel) -> ConfigData:
+def coerce_config(config_cls: type[ConfigT], value: object = None) -> ConfigT:
+    if value is None:
+        return config_cls()
+    if isinstance(value, config_cls):
+        return value
+    return config_cls.model_validate(explicit_config_data(value))
+
+
+def resolved_config_data(
+    value: object, target: type[BaseModel] | None = None
+) -> ConfigData:
+    if value is None:
+        data: ConfigData = {}
+    elif isinstance(value, BaseModel):
+        data = cast(ConfigData, value.model_dump(exclude_none=True))
+        if target is not None:
+            data = {
+                key: item for key, item in data.items() if key in target.model_fields
+            }
+    elif isinstance(value, Mapping):
+        data = string_mapping(cast(ConfigInputMap, value))
+    else:
+        raise TypeError("Config must be a mapping or config object.")
+    return data
+
+
+def explicit_model_config_data(value: BaseModel) -> ConfigData:
     data: ConfigData = {}
     for key in value.model_fields_set:
         item = getattr(value, key)
-        if item is not None:
-            data[key] = config_dump_value(item)
+        data[key] = config_dump_value(item)
     return data
 
 
 def config_dump_value(value: object) -> object:
     if isinstance(value, BaseModel):
-        return model_config_data(value)
+        return explicit_model_config_data(value)
     if isinstance(value, Mapping):
         return {
             key: config_dump_value(item)
             for key, item in string_mapping(cast(ConfigInputMap, value)).items()
-            if item is not None
         }
     if isinstance(value, list | tuple):
         return [config_dump_value(item) for item in value]
     return value
-
-
-def omit_none(data: ConfigMap) -> ConfigData:
-    return {key: value for key, value in data.items() if value is not None}
-
-
-def merge_child_config(default: object, override: object) -> object:
-    merged = deep_merge(config_data(default), config_data(override))
-    if isinstance(default, BaseModel):
-        return cast(type[BaseModel], type(default)).model_validate(merged)
-    return merged
-
-
-def expand_config_ref(value: object | None, target: type[BaseModel]) -> object | None:
-    if not isinstance(value, Mapping):
-        return value
-    data = string_mapping(cast(ConfigInputMap, value))
-    config_ref = data.pop("config", None)
-    if config_ref is None:
-        return data
-    base = load_config_ref(config_ref)
-    base_data = config_data(base, target)
-    return merge_config_ref_overlay(base_data, data)
-
-
-def expand_config_ref_data(data: ConfigData, target: type[BaseModel]) -> ConfigData:
-    expanded = expand_config_ref(data, target)
-    if not isinstance(expanded, dict):
-        raise TypeError("config data must resolve to a mapping.")
-    return cast(ConfigData, expanded)
-
-
-def load_config_ref(config_ref: object) -> object:
-    value = resolve_config_object(config_ref)
-    if callable(value):
-        value = cast(ConfigFactory, value)()
-    if inspect.isawaitable(value):
-        raise TypeError("config refs must resolve synchronously.")
-    config_data(value)
-    return value
-
-
-def merge_config_ref_overlay(base: ConfigData, overlay: ConfigMap) -> ConfigData:
-    merged = dict(base)
-    for key, value in overlay.items():
-        existing = merged.get(key)
-        if (
-            key in CONFIG_REF_COLLECTION_FIELDS
-            and isinstance(existing, list)
-            and isinstance(value, list)
-        ):
-            merged[key] = [*existing, *value]
-        elif isinstance(existing, Mapping) and isinstance(value, Mapping):
-            merged[key] = deep_merge(
-                string_mapping(cast(ConfigInputMap, existing)),
-                string_mapping(cast(ConfigInputMap, value)),
-            )
-        else:
-            merged[key] = value
-    return merged
-
-
-def merge_config_value(value: object, config: object) -> object:
-    if config is None:
-        return value
-    if value is None:
-        return config
-    value_mapping = config_mapping(value)
-    config_mapping_value = config_mapping(config)
-    if value_mapping is not None and config_mapping_value is not None:
-        return deep_merge(
-            config_mapping_value,
-            value_mapping,
-        )
-    return value
-
-
-def config_mapping(value: object) -> ConfigData | None:
-    if isinstance(value, BaseModel):
-        return value.model_dump(exclude_none=True)
-    if isinstance(value, Mapping):
-        return string_mapping(cast(ConfigInputMap, value))
-    return None
 
 
 def resolve_config_object(value: object) -> object:
@@ -156,20 +155,6 @@ def import_config_ref(ref: str) -> object:
     for part in attr_path.split("."):
         obj = getattr(obj, part)
     return obj
-
-
-def deep_merge(base: ConfigData, overlay: ConfigMap) -> ConfigData:
-    merged: ConfigData = dict(base)
-    for key, value in overlay.items():
-        existing = merged.get(key)
-        if isinstance(existing, Mapping) and isinstance(value, Mapping):
-            merged[key] = deep_merge(
-                string_mapping(cast(ConfigInputMap, existing)),
-                string_mapping(cast(ConfigInputMap, value)),
-            )
-        else:
-            merged[key] = value
-    return merged
 
 
 def string_mapping(value: ConfigInputMap) -> ConfigData:

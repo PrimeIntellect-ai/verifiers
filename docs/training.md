@@ -98,6 +98,7 @@ split = "train"
 
 [env.taskset.toolsets.search]
 tools = ["my_env.tools:search"]
+objects = { index = "my_env.tools:load_index" }
 bindings = { "search.index" = "objects.index" }
 
 [[env.taskset.rewards]]

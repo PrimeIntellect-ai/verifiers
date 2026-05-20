@@ -73,7 +73,7 @@
   <g>
     <rect x="490" y="506" width="306" height="62" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="2"/>
     <text x="514" y="533" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="15" font-weight="700" fill="#0f172a">Eval / RL workers</text>
-    <text x="514" y="556" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#475569">Env(taskset, harness)</text>
+    <text x="514" y="556" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#475569">Env(config, taskset, harness)</text>
   </g>
   <g>
     <rect x="836" y="506" width="180" height="62" rx="10" fill="#f1f5f9" stroke="#cbd5e1" stroke-width="2"/>

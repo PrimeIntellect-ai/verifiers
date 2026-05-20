@@ -32,6 +32,7 @@ from .utils.binding_utils import (
     validate_bound_arg,
     validate_callable_source,
 )
+from .utils.config_utils import coerce_config
 from .utils.lifecycle_utils import (
     collect_handlers,
     handler_collection_attr,
@@ -1339,7 +1340,7 @@ class Runtime:
                         f"Task toolset {name!r} fn must return exactly one Toolset."
                     )
                 return toolsets[0]
-            return Toolset(config=ToolsetConfig.from_config(mapping))
+            return Toolset(config=coerce_config(ToolsetConfig, mapping))
         if callable(spec):
             result = await maybe_call_with_named_args(
                 cast(Handler, spec), task=task, state=state

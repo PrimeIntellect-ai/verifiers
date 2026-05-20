@@ -1,8 +1,9 @@
 import verifiers as vf
 
 
-async def ask_subagent(name: str, harness, state) -> str:
+async def ask_subagent(name: str, state) -> str:
     """Ask a child language-model harness to produce the greeting for one name."""
+    harness = load_child_harness()
     task = vf.Task(
         {
             "name": name,
@@ -61,41 +62,41 @@ def source():
 
 
 def load_child_harness():
-    return vf.Harness()
+    return vf.Harness(config=vf.HarnessConfig())
 
 
 def load_toolset():
     return vf.Toolset(
         tools=[ask_subagent],
-        objects={"harness": load_child_harness},
-        bindings={"ask_subagent.harness": "objects.harness"},
         scope="rollout",
     )
 
 
-def load_taskset(config: vf.TasksetConfig):
-    return vf.Taskset(
-        source=source,
-        system_prompt=(
-            "You are a parent coordinator. You must call ask_subagent once for "
-            "each requested name. After all tool results are available, join "
-            "the child answers with ', ' and output only that final joined text."
-        ),
-        rewards=[exact_answer],
-        config=config,
+class SubagentTasksetConfig(vf.TasksetConfig):
+    system_prompt: str = (
+        "You are a parent coordinator. You must call ask_subagent once for "
+        "each requested name. After all tool results are available, join "
+        "the child answers with ', ' and output only that final joined text."
     )
 
 
-def load_harness(config: vf.HarnessConfig):
-    return vf.Harness(
-        toolsets=[load_toolset()],
-        metrics=[subagent_calls],
-        config=config,
-    )
+class SubagentTaskset(vf.Taskset[SubagentTasksetConfig]):
+    _default_source = source
+    _default_rewards = (exact_answer,)
 
 
-def load_environment(config: vf.EnvConfig):
+class SubagentHarness(vf.Harness[vf.HarnessConfig]):
+    _default_toolsets = {"subagent": load_toolset}
+    _default_metrics = (subagent_calls,)
+
+
+class SubagentEnvConfig(vf.EnvConfig):
+    taskset: SubagentTasksetConfig = SubagentTasksetConfig()
+    harness: vf.HarnessConfig = vf.HarnessConfig()
+
+
+def load_environment(config: SubagentEnvConfig) -> vf.Env:
     return vf.Env(
-        taskset=load_taskset(config=config.taskset),
-        harness=load_harness(config=config.harness),
+        taskset=SubagentTaskset(config=config.taskset),
+        harness=SubagentHarness(config=config.harness),
     )

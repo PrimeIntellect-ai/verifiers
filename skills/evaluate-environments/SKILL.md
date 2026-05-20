@@ -104,7 +104,7 @@ prime eval run configs/eval/my-benchmark.toml
 ```bash
 prime eval run my-env -a '{"config":{"taskset":{"difficulty":"hard"},"harness":{"max_turns":20}}}'
 ```
-2. Override constructor kwargs:
+2. Override legacy/v0 constructor kwargs only when the environment still exposes them; for v1, use `config.taskset` and `config.harness` instead:
 ```bash
 prime eval run my-env -x '{"max_turns":20}'
 ```
