@@ -101,23 +101,9 @@ class RubricGroup(Rubric):
 
     async def cleanup(self, state: State):
         """Run cleanup for all rubrics in the group."""
-        cleanup_error: Exception | None = None
-        try:
-            await super().cleanup(state)
-        except Exception as e:
-            cleanup_error = e
+        await super().cleanup(state)
         for rubric in self.rubrics:
-            try:
-                await rubric.cleanup(state)
-            except Exception as e:
-                if cleanup_error is None:
-                    cleanup_error = e
-                self.logger.exception(
-                    "Cleanup for rubric %s failed",
-                    rubric.__class__.__name__,
-                )
-        if cleanup_error is not None:
-            raise cleanup_error
+            await rubric.cleanup(state)
 
     async def teardown(self):
         """Run teardown for all rubrics in the group."""

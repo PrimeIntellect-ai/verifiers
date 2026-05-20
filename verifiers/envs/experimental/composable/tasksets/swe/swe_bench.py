@@ -338,8 +338,8 @@ class SWEBenchRubric(vf.Rubric):
         if sandbox_client and sandbox_id:
             try:
                 await sandbox_client.delete(sandbox_id)
-            except Exception as e:
-                logger.warning(f"Failed to delete sandbox {sandbox_id}: {e}")
+            except Exception:
+                pass
 
 
 class SWEBenchTaskSet(SandboxTaskSet):
