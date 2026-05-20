@@ -181,14 +181,6 @@ class TrajectoryStep(TypedDict):
 
 A single turn in a multi-turn rollout.
 
-### RoutedExpertsPayload
-
-```python
-class RoutedExpertsPayload(TypedDict):
-    data: Any  # actually memoryview; kept opaque so Pydantic skips schema validation
-    shape: list[int]
-```
-
 ### TrajectoryStepTokens
 
 ```python
@@ -200,7 +192,7 @@ class TrajectoryStepTokens(TypedDict):
     completion_logprobs: list[float]
     overlong_prompt: bool
     is_truncated: bool
-    routed_experts: RoutedExpertsPayload | None
+    routed_experts: list[list[list[int]]] | None  # [seq_len, layers, topk] to enable router replay
     multi_modal_data: NotRequired[Any]  # renderers.MultiModalData sidecar (pixel_values, placeholder ranges) — set only on multimodal rollouts
 ```
 

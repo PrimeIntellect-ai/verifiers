@@ -1,6 +1,5 @@
 from typing import Any, cast
 
-import httpx
 import pytest
 
 from verifiers.clients.openai_chat_completions_client import OpenAIChatCompletionsClient
@@ -25,25 +24,7 @@ class _RecordingClient(_NoopClient):
         self, path: str, body: dict[str, Any], cast_to: type, **kwargs: Any
     ) -> Any:
         self.calls.append({"path": path, "body": body, "cast_to": cast_to})
-        return httpx.Response(
-            200,
-            json={
-                "id": path,
-                "object": "chat.completion",
-                "created": 1,
-                "model": body["model"],
-                "choices": [
-                    {
-                        "index": 0,
-                        "message": {"role": "assistant", "content": "ok"},
-                        "finish_reason": "stop",
-                    }
-                ],
-                "ok": True,
-                "path": path,
-                "body": body,
-            },
-        )
+        return {"ok": True, "path": path, "body": body}
 
 
 class _PromptIdTestClient(OpenAIChatCompletionsTokenClient):
@@ -289,7 +270,7 @@ async def test_get_native_response_uses_token_route_when_prompt_ids_available(
         state=state,
     )
 
-    assert response.model_extra["ok"] is True
+    assert response["ok"] is True
     assert len(recording_client.calls) == 1
     assert recording_client.calls[0]["path"] == "/chat/completions/tokens"
     assert recording_client.calls[0]["body"]["tokens"] == [10, 20]
