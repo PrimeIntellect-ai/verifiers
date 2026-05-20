@@ -574,9 +574,9 @@ signature.
 
 Reusable CLI programs should be packaged as `Harness` subclasses. Package
 implementations live under `verifiers.v1.packages` while the v1 API stabilizes,
-and are re-exported from `verifiers.v1` for normal use. `OpenCode`, `Pi`,
-`MiniSWEAgent`, `Terminus2`, and `RLM` are bundled `Harness` leaf wrappers for
-common coding-agent CLIs.
+and are re-exported from `verifiers.v1` for normal use. `OpenCode`,
+`ClaudeCode`, `Codex`, `Pi`, `MiniSWEAgent`, `Terminus2`, and `RLM` are
+bundled `Harness` leaf wrappers for common coding-agent CLIs.
 
 ```python
 import verifiers as vf
@@ -603,6 +603,8 @@ endpoint and, when tools are enabled, installs the Pi MCP adapter and writes a
 project `.mcp.json`. Neither side needs to know the other's private fields.
 `MiniSWEAgent` owns mini-swe-agent installation, config layering, endpoint env,
 and log/trajectory artifacts.
+`ClaudeCode` and `Codex` package the Claude Code and Codex CLI non-interactive
+modes with endpoint, MCP proxy, and log artifact wiring.
 `Terminus2` owns Harbor Terminus agent installation, endpoint env, and log
 artifacts.
 `RLM` follows the same boundary for recursive LLM runs: `HarborTaskset` owns
@@ -1243,8 +1245,8 @@ and harness config types for the loader.
 
 Reusable taskset environments can keep `harness` typed as `vf.HarnessConfig`.
 Then TOML may select a registered harness config with `type`, for example
-`type = "terminus2"` or `type = "pi"`, and pass that config's ordinary fields
-beside it. Use `harness = "pi"` when the selected harness needs no field
+`type = "codex"` or `type = "claude-code"`, and pass that config's ordinary
+fields beside it. Use `harness = "pi"` when the selected harness needs no field
 overrides.
 
 ```python

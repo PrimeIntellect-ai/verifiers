@@ -429,9 +429,9 @@ config surface; do not subclass `Env` just to bypass inference.
 
 Packaged CLI harnesses should use the same boundary. These implementations live
 under `verifiers.v1.packages` while the v1 surface stabilizes, and are
-re-exported through `verifiers.v1`. `OpenCode`, `Pi`, `MiniSWEAgent`,
-`Terminus2`, and `RLM` are bundled `Harness` leaf wrappers for common
-command-line agents:
+re-exported through `verifiers.v1`. `OpenCode`, `ClaudeCode`, `Codex`, `Pi`,
+`MiniSWEAgent`, `Terminus2`, and `RLM` are bundled `Harness` leaf wrappers for
+common command-line agents:
 
 ```python
 class HarborEnvConfig(vf.EnvConfig):
@@ -543,8 +543,8 @@ and harness config types for the loader.
 
 Reusable taskset environments can keep `harness` typed as `vf.HarnessConfig`.
 Then TOML may select a registered harness config with `type`, for example
-`type = "terminus2"` or `type = "pi"`, and pass that config's ordinary fields
-beside it. Use `harness = "pi"` when the selected harness needs no field
+`type = "codex"` or `type = "claude-code"`, and pass that config's ordinary
+fields beside it. Use `harness = "pi"` when the selected harness needs no field
 overrides.
 
 ```python

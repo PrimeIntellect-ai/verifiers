@@ -1008,9 +1008,9 @@ Nested config defaults should be explicit config objects, e.g.
 `taskset: MyTasksetConfig = MyTasksetConfig()`.
 
 When `harness` is typed as `HarnessConfig`, TOML can select a registered
-harness config with `type`, such as `type = "terminus2"` or `type = "pi"`, then
-pass the normal fields for that config in the same table. The shorthand form
-`harness = "pi"` is also accepted when no fields need to be overridden.
+harness config with `type`, such as `type = "codex"` or `type = "claude-code"`,
+then pass the normal fields for that config in the same table. The shorthand
+form `harness = "pi"` is also accepted when no fields need to be overridden.
 
 `Config` subclasses are strict Pydantic config models. Validate raw mappings
 with `MyConfig.model_validate(...)` or use the typed object directly.

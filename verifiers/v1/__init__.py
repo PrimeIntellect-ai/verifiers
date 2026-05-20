@@ -37,6 +37,10 @@ from .config import (
 from .env import Env
 from .harness import Harness
 from .packages.harnesses import (
+    ClaudeCode,
+    ClaudeCodeConfig,
+    Codex,
+    CodexConfig,
     MiniSWEAgent,
     MiniSWEAgentConfig,
     OpenCode,
@@ -80,6 +84,10 @@ from .user import User
 __all__ = [
     "ConfigData",
     "CallableConfig",
+    "ClaudeCode",
+    "ClaudeCodeConfig",
+    "Codex",
+    "CodexConfig",
     "Config",
     "ConfigMap",
     "Env",
