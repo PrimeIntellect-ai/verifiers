@@ -95,8 +95,7 @@ class SubagentEnvConfig(vf.EnvConfig):
     harness: vf.HarnessConfig = vf.HarnessConfig()
 
 
-def load_environment(config: SubagentEnvConfig | None = None) -> vf.Env:
-    config = config or SubagentEnvConfig()
+def load_environment(config: SubagentEnvConfig) -> vf.Env:
     return vf.Env(
         taskset=SubagentTaskset(config=config.taskset),
         harness=SubagentHarness(config=config.harness),

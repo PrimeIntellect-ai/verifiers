@@ -199,8 +199,7 @@ def load_toolset(
     )
 
 
-def load_environment(config: MathPythonEnvConfig | None = None) -> vf.Env:
-    config = config or MathPythonEnvConfig()
+def load_environment(config: MathPythonEnvConfig) -> vf.Env:
     return vf.Env(
         taskset=MathPythonTaskset(config=config.taskset),
         harness=MathPythonHarness(config=config.harness),

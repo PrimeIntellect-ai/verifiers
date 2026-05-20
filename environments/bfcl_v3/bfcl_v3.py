@@ -601,8 +601,7 @@ def load_harness(config: BFCLHarnessConfig | None = None) -> vf.Harness:
     return vf.Harness(config=config)
 
 
-def load_environment(config: BFCLEnvConfig | None = None) -> vf.Env | vf.EnvGroup:
-    config = coerce_config(BFCLEnvConfig, config)
+def load_environment(config: BFCLEnvConfig) -> vf.Env | vf.EnvGroup:
     taskset_template = config.taskset
     harness_template = config.harness
     categories = taskset_template.test_categories or [taskset_template.test_category]

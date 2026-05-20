@@ -339,8 +339,7 @@ class AlphabetSortTaskset(vf.Taskset[AlphabetSortTasksetConfig]):
         )
 
 
-def load_environment(config: AlphabetSortEnvConfig | None = None) -> vf.Env:
-    config = config or AlphabetSortEnvConfig()
+def load_environment(config: AlphabetSortEnvConfig) -> vf.Env:
     return vf.Env(
         taskset=AlphabetSortTaskset(config=config.taskset),
         harness=vf.Harness(config=config.harness),

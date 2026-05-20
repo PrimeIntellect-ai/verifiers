@@ -2027,6 +2027,25 @@ def test_load_environment_supplies_default_typed_env_config(
     assert env.env_args == {}
 
 
+def test_load_environment_rejects_none_typed_env_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_name = "none_typed_env_config"
+    module = types.ModuleType(module_name)
+
+    def load_environment(config: EnvConfig) -> Env:
+        return Env(
+            taskset=make_taskset(source=source_loader, config=config.taskset),
+            harness=make_harness(config=config.harness),
+        )
+
+    module.load_environment = load_environment
+    monkeypatch.setitem(sys.modules, module_name, module)
+
+    with pytest.raises(RuntimeError, match="concrete EnvConfig object"):
+        vf.load_environment("none-typed-env-config", config=None)
+
+
 def test_load_environment_leaves_untyped_config_arg_as_kwargs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2156,7 +2175,7 @@ def test_math_python_v1_wrapper_rejects_unsupported_sandbox_kwargs() -> None:
 def test_math_python_v1_prompt_tracks_harness_packages() -> None:
     module = importlib.import_module("environments.math_python.math_python_v1")
 
-    default_env = module.load_environment()
+    default_env = module.load_environment(config=module.MathPythonEnvConfig())
     assert "numpy sympy scipy" in default_env.taskset.config.system_prompt
 
     env = module.load_environment(

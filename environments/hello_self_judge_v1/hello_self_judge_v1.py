@@ -362,8 +362,7 @@ class SelfJudgeEnvConfig(vf.EnvConfig):
     harness: SelfJudgeHarnessConfig = SelfJudgeHarnessConfig()
 
 
-def load_environment(config: SelfJudgeEnvConfig | None = None) -> vf.Env:
-    config = config or SelfJudgeEnvConfig()
+def load_environment(config: SelfJudgeEnvConfig) -> vf.Env:
     return vf.Env(
         taskset=SelfJudgeTaskset(config=config.taskset),
         harness=SelfJudgeHarness(config=config.harness),

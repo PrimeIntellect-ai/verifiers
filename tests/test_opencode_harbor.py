@@ -28,7 +28,7 @@ def _load_opencode_module() -> Any:
 def test_load_environment_uses_v1_taskset_and_harness() -> None:
     module = _load_opencode_module()
 
-    env = module.load_environment()
+    env = module.load_environment(config=module.OpenCodeHarborEnvConfig())
 
     assert isinstance(env, vf.Env)
     assert isinstance(env.taskset, vf.HarborTaskset)
@@ -52,17 +52,17 @@ def test_load_environment_accepts_v1_taskset_and_harness_config() -> None:
     module = _load_opencode_module()
 
     env = module.load_environment(
-        config={
-            "taskset": {
-                "task_names": ["task-a"],
-                "cpu_cores": 1.5,
-            },
-            "harness": {
-                "agent_workdir": "/workspace",
-                "disabled_tools": ["webfetch"],
-                "max_turns": 2,
-            },
-        }
+        config=module.OpenCodeHarborEnvConfig(
+            taskset=module.vf.HarborTasksetConfig(
+                task_names=["task-a"],
+                cpu_cores=1.5,
+            ),
+            harness=module.vf.OpenCodeConfig(
+                agent_workdir="/workspace",
+                disabled_tools=["webfetch"],
+                max_turns=2,
+            ),
+        )
     )
 
     assert env.taskset.resolve_tasks_root() == Path(module.__file__).parent / "tasks"

@@ -696,6 +696,8 @@ The golden v1 shape is one taskset config, one taskset class bound to that
 config, and a tiny `load_environment(config)` that constructs explicit objects.
 Add a harness config and harness class only when the environment owns reusable
 rollout behavior; otherwise omit `harness=` and `vf.Env` uses the base harness.
+The loader's `config` parameter is a strict, non-optional config object supplied
+by the framework; do not accept `None` or write `config = config or MyEnvConfig()`.
 
 `EnvConfig` is a lightweight envelope for the two child configs. Put environment
 knobs on `TasksetConfig` or `HarnessConfig`, not on `EnvConfig` itself.

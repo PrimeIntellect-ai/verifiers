@@ -25,18 +25,66 @@ rules:
       exclude:
         - /verifiers/v1/config.py
         - /verifiers/v1/utils/**/*.py
-    patterns:
+    pattern-either:
+      - patterns:
+          - pattern: |
+              def $FUNC(..., config: $ANNOT, ...):
+                  ...
+          - metavariable-regex:
+              metavariable: $ANNOT
+              regex: "(Any|ConfigMap|Mapping\\[str, object\\]|dict\\[str, object\\]|.*\\|.*\\|.*)"
+      - patterns:
+          - pattern: |
+              def $FUNC(..., config: $ANNOT = $DEFAULT, ...):
+                  ...
+          - metavariable-regex:
+              metavariable: $ANNOT
+              regex: "(Any|ConfigMap|Mapping\\[str, object\\]|dict\\[str, object\\]|.*\\|.*\\|.*)"
+
+  - id: verifiers-v1-load-environment-config-required
+    languages: [python]
+    severity: ERROR
+    message: v1 load_environment must take a strict config object; do not accept None or synthesize config with config-or-Config fallback.
+    paths:
+      include:
+        - /environments/**/*.py
+    pattern-either:
       - pattern: |
-          def $FUNC(..., config: $ANNOT = None, ...):
+          def load_environment(..., config: $CONFIG = None, ...):
               ...
+      - pattern: |
+          def load_environment(..., config: $CONFIG | None, ...):
+              ...
+      - pattern: |
+          def load_environment(..., config: $CONFIG | None = $DEFAULT, ...):
+              ...
+      - pattern: |
+          def load_environment(..., config: Optional[$CONFIG], ...):
+              ...
+      - pattern: |
+          def load_environment(..., config: Optional[$CONFIG] = $DEFAULT, ...):
+              ...
+
+  - id: verifiers-v1-no-load-environment-config-fallback
+    languages: [python]
+    severity: ERROR
+    message: v1 load_environment receives a concrete config object from the framework; do not use config or Config() fallback.
+    paths:
+      include:
+        - /environments/**/*.py
+    patterns:
+      - pattern-inside: |
+          def load_environment(...):
+              ...
+      - pattern: $CONFIG = $CONFIG or $DEFAULT()
       - metavariable-regex:
-          metavariable: $ANNOT
-          regex: "(Any|ConfigMap|Mapping\\[str, object\\]|dict\\[str, object\\]|.*\\|.*\\|.*)"
+          metavariable: $DEFAULT
+          regex: ".*Config"
 
   - id: verifiers-v1-no-config-object-defaults
     languages: [python]
     severity: ERROR
-    message: Public v1 `config` parameters should default to None; do not construct config objects in function signatures.
+    message: Public v1 `config` parameters must be strict config objects; do not construct config objects in function signatures.
     paths:
       include:
         - /verifiers/v1/**/*.py

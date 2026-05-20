@@ -585,8 +585,7 @@ class WikispeediaEnvConfig(vf.EnvConfig):
     harness: WikispeediaHarnessConfig = WikispeediaHarnessConfig()
 
 
-def load_environment(config: WikispeediaEnvConfig | None = None) -> vf.Env:
-    config = config or WikispeediaEnvConfig()
+def load_environment(config: WikispeediaEnvConfig) -> vf.Env:
     return vf.Env(
         taskset=load_taskset(config=config.taskset),
         harness=load_harness(config=config.harness),

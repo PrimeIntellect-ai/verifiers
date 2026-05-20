@@ -1,8 +1,7 @@
 import importlib
 import inspect
 import logging
-from types import UnionType
-from typing import Callable, Union, get_args, get_origin, get_type_hints
+from typing import Callable, get_type_hints
 
 from verifiers.envs.environment import Environment
 from verifiers.utils.config_utils import MissingKeyError
@@ -110,6 +109,8 @@ def prepare_typed_env_config(
         return call_env_args
 
     config = env_args["config"]
+    if config is None:
+        raise TypeError("load_environment config must be a concrete EnvConfig object.")
     if isinstance(config, config_type):
         return env_args
 
@@ -133,13 +134,6 @@ def env_config_annotation(
 
 def env_config_type(annotation: object) -> type[EnvConfig] | None:
     if annotation is inspect.Parameter.empty:
-        return None
-    origin = get_origin(annotation)
-    if origin in (Union, UnionType):
-        for arg in get_args(annotation):
-            config_type = env_config_type(arg)
-            if config_type is not None:
-                return config_type
         return None
     if isinstance(annotation, type) and issubclass(annotation, EnvConfig):
         return annotation

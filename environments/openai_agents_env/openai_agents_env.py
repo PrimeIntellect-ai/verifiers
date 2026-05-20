@@ -132,8 +132,7 @@ class OpenAIAgentsEnvConfig(vf.EnvConfig):
     harness: vf.HarnessConfig = vf.HarnessConfig()
 
 
-def load_environment(config: OpenAIAgentsEnvConfig | None = None) -> vf.Env:
-    config = config or OpenAIAgentsEnvConfig()
+def load_environment(config: OpenAIAgentsEnvConfig) -> vf.Env:
     return vf.Env(
         taskset=OpenAIAgentsTaskset(config=config.taskset),
         harness=OpenAIAgentsHarness(config=config.harness),
