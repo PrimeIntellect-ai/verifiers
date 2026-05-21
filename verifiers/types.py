@@ -365,6 +365,7 @@ class ErrorInfo(TypedDict):
     error: str
     error_chain_repr: str
     error_chain_str: str
+    is_retryable: NotRequired[bool]
 
 
 class RolloutOutput(dict):

@@ -1,8 +1,12 @@
-from collections.abc import Mapping
 from typing import Callable, cast
 
 import verifiers as vf
 from verifiers.types import ErrorInfo
+
+DEFAULT_RETRYABLE_ERROR_TYPES: tuple[type[Exception], ...] = (
+    vf.InfraError,
+    vf.InvalidModelResponseError,
+)
 
 
 def get_error_chain(
@@ -56,32 +60,33 @@ class ErrorChain:
         return " -> ".join([repr(e) for e in self.chain])
 
 
+def is_retryable_error(
+    error: BaseException | ErrorInfo,
+    error_types: tuple[type[Exception], ...] = DEFAULT_RETRYABLE_ERROR_TYPES,
+) -> bool:
+    """Return whether a live or serialized error matches verifiers' retry policy."""
+    if isinstance(error, BaseException):
+        error_chain = ErrorChain(error)
+        return any(error_type in error_chain for error_type in error_types)
+
+    return error.get("is_retryable") is True
+
+
 def error_info(error: BaseException) -> ErrorInfo:
     error_chain = ErrorChain(error)
     return ErrorInfo(
         error=type(error).__name__,
         error_chain_repr=repr(error_chain),
         error_chain_str=str(error_chain),
+        is_retryable=any(
+            error_type in error_chain for error_type in DEFAULT_RETRYABLE_ERROR_TYPES
+        ),
     )
 
 
-def error_type_name(error: object) -> str | None:
+def error_type_name(error: BaseException | ErrorInfo | None) -> str | None:
+    if error is None:
+        return None
     if isinstance(error, BaseException):
         return type(error).__name__
-    if isinstance(error, Mapping):
-        raw_error = cast(Mapping[str, object], error).get("error")
-        if isinstance(raw_error, str):
-            return raw_error
-    return None
-
-
-def error_info_to_exception(
-    error: Mapping[str, object],
-    error_types: tuple[type[Exception], ...],
-) -> Exception | None:
-    chain = str(error.get("error_chain_str") or error.get("error") or "")
-    detail = str(error.get("error_chain_repr") or error.get("error") or "")
-    for error_type in error_types:
-        if error_type.__name__ in chain:
-            return error_type(detail)
-    return None
+    return error["error"]

@@ -2,7 +2,6 @@ import asyncio
 import inspect
 import logging
 from collections import deque
-from collections.abc import Mapping
 from collections.abc import Coroutine
 from time import perf_counter
 from typing import Any, AsyncContextManager, Callable, Optional, TypeVar
@@ -12,8 +11,9 @@ import tenacity as tc
 from pydantic import BaseModel
 
 import verifiers as vf
+from verifiers.types import ErrorInfo
 from verifiers.utils.error_utils import ErrorChain
-from verifiers.utils.error_utils import error_info_to_exception
+from verifiers.utils.error_utils import is_retryable_error
 from verifiers.utils.logging_utils import print_time
 
 logger = logging.getLogger(__name__)
@@ -169,25 +169,21 @@ def maybe_retry(
     if max_retries <= 0:
         return func
 
-    def reraise_error_from_state(result, error_types: tuple[type[Exception], ...]):
+    def reraise_error(err: BaseException | ErrorInfo | None) -> None:
+        if err is None or not is_retryable_error(err, error_types):
+            return
+        if isinstance(err, BaseException):
+            raise err
+        detail = str(err.get("error_chain_repr") or err.get("error") or "")
+        raise error_types[0](detail)
+
+    def reraise_error_from_state(result):
         """Re-raise specified errors from state(s) to trigger tenacity retry."""
         if isinstance(result, dict):
-            err = result.get("error")
-            if err and any(isinstance(err, err_type) for err_type in error_types):
-                raise err
-            if isinstance(err, Mapping):
-                retry_error = error_info_to_exception(err, error_types)
-                if retry_error is not None:
-                    raise retry_error
+            reraise_error(result.get("error"))
         elif isinstance(result, list):
             for state in result:
-                err = state.get("error")
-                if err and any(isinstance(err, err_type) for err_type in error_types):
-                    raise err
-                if isinstance(err, Mapping):
-                    retry_error = error_info_to_exception(err, error_types)
-                    if retry_error is not None:
-                        raise retry_error
+                reraise_error(state.get("error"))
 
     def log_retry(retry_state: tc.RetryCallState) -> None:
         """Log a warning with the exception and the number of attempts."""
@@ -230,7 +226,7 @@ def maybe_retry(
         nonlocal last_result
         result = await func(*args, **kwargs)
         last_result = result  # store result
-        reraise_error_from_state(result, error_types)
+        reraise_error_from_state(result)
         return result
 
     wrapper.__name__ = getattr(func, "__name__", "unknown")
