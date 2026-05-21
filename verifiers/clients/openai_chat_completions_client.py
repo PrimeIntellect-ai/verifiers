@@ -60,6 +60,7 @@ from verifiers.utils.client_utils import (
     post_chat_completion_with_routed_experts_sidecar,
     setup_openai_client,
 )
+from verifiers.utils.response_utils import parse_routed_experts
 
 
 def handle_openai_overlong_prompt(func):
@@ -486,13 +487,14 @@ class OpenAIChatCompletionsClient(
                 completion_logprobs = [token["logprob"] for token in logprobs_content]
 
             choice_extra = choice.model_extra or {}
+            routed_experts = parse_routed_experts(choice_extra.get("routed_experts"))
             return ResponseTokens(
                 prompt_ids=prompt_ids,
                 prompt_mask=prompt_mask,
                 completion_ids=completion_ids,
                 completion_mask=completion_mask,
                 completion_logprobs=completion_logprobs,
-                routed_experts=choice_extra.get("routed_experts"),
+                routed_experts=routed_experts,
             )
 
         def parse_reasoning_content_from_response(
