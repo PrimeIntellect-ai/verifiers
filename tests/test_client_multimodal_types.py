@@ -182,6 +182,33 @@ async def test_anthropic_from_native_response_extracts_usage():
 
 
 @pytest.mark.asyncio
+async def test_anthropic_from_native_response_extracts_cache_usage():
+    from verifiers.clients.anthropic_messages_client import AnthropicMessagesClient
+
+    client = AnthropicMessagesClient(object())
+    native_response = SimpleNamespace(
+        id="msg_cache",
+        model="claude-haiku-4-5",
+        stop_reason="end_turn",
+        content=[SimpleNamespace(type="text", text="Hello!")],
+        usage=SimpleNamespace(
+            input_tokens=42,
+            output_tokens=17,
+            cache_creation_input_tokens=8,
+            cache_read_input_tokens=100,
+        ),
+    )
+
+    response = await client.from_native_response(native_response)
+
+    assert response.usage is not None
+    assert response.usage.prompt_tokens == 50
+    assert response.usage.completion_tokens == 17
+    assert response.usage.cached_input_tokens == 100
+    assert response.usage.total_tokens == 67
+
+
+@pytest.mark.asyncio
 async def test_anthropic_from_native_response_always_parses_reasoning():
     pytest.importorskip("anthropic")
     from verifiers.clients.anthropic_messages_client import AnthropicMessagesClient

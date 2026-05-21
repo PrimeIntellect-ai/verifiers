@@ -1,11 +1,8 @@
 from collections.abc import Mapping
-from typing import Any, TypeVar
+from typing import Any
 from urllib.parse import urlsplit
 
 from verifiers.types import ClientConfig
-
-NativePromptT = TypeVar("NativePromptT")
-NativeToolsT = TypeVar("NativeToolsT")
 
 ANTHROPIC_ORIGINS = frozenset({"https://api.anthropic.com"})
 
@@ -39,21 +36,16 @@ def _cache_control_payload() -> dict[str, str]:
     return {"type": "ephemeral"}
 
 
-def apply_prompt_cache_to_request(
+def apply_prompt_cache_to_kwargs(
     *,
     config: ClientConfig | None,
-    model: str,
-    native_prompt: NativePromptT,
-    native_tools: NativeToolsT,
     sampling_args: Mapping[str, Any],
     extra_kwargs: Mapping[str, Any],
-) -> tuple[NativePromptT, NativeToolsT, dict[str, Any], dict[str, Any]]:
-    _ = model
-    updated_sampling_args = dict(sampling_args)
+) -> dict[str, Any]:
     updated_extra_kwargs = dict(extra_kwargs)
     if (
         uses_official_anthropic_messages(config)
-        and "cache_control" not in updated_sampling_args
+        and "cache_control" not in sampling_args
     ):
         updated_extra_kwargs.setdefault("cache_control", _cache_control_payload())
-    return native_prompt, native_tools, updated_sampling_args, updated_extra_kwargs
+    return updated_extra_kwargs

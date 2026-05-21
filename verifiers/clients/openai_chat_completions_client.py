@@ -99,30 +99,6 @@ def get_usage_field(usage: Any, key: str) -> Any:
     return getattr(usage, key, None)
 
 
-def get_usage_int_field(usage: Any, key: str) -> int | None:
-    value = get_usage_field(usage, key)
-    if isinstance(value, int) and not isinstance(value, bool):
-        return value
-    return None
-
-
-def get_first_usage_int_field(usage: Any, *keys: str) -> int | None:
-    for key in keys:
-        value = get_usage_int_field(usage, key)
-        if value is not None:
-            return value
-    return None
-
-
-def get_cached_prompt_tokens(usage: Any) -> int | None:
-    details = get_usage_field(usage, "prompt_tokens_details")
-    if details is None:
-        details = get_usage_field(usage, "input_tokens_details")
-    if details is None:
-        return None
-    return get_usage_int_field(details, "cached_tokens")
-
-
 def content_to_text(content: Any) -> str:
     """Get all text content from OAI message content."""
     if isinstance(content, str):
@@ -435,19 +411,32 @@ class OpenAIChatCompletionsClient(
             usage = getattr(response, "usage", None)
             if usage is None:
                 return None
-            prompt_tokens = get_first_usage_int_field(
-                usage, "prompt_tokens", "input_tokens"
-            )
-            completion_tokens = get_first_usage_int_field(
-                usage, "completion_tokens", "output_tokens"
-            )
-            if prompt_tokens is None or completion_tokens is None:
+            prompt_tokens = get_usage_field(usage, "prompt_tokens")
+            completion_tokens = get_usage_field(usage, "completion_tokens")
+            if not isinstance(prompt_tokens, int) or not isinstance(
+                completion_tokens, int
+            ):
+                prompt_tokens = get_usage_field(usage, "input_tokens")
+                completion_tokens = get_usage_field(usage, "output_tokens")
+            total_tokens = get_usage_field(usage, "total_tokens")
+            if not isinstance(prompt_tokens, int) or not isinstance(
+                completion_tokens, int
+            ):
                 return None
-            total_tokens = get_usage_int_field(usage, "total_tokens")
-            cached_tokens = get_cached_prompt_tokens(usage)
-            if cached_tokens is not None:
-                prompt_tokens = max(0, prompt_tokens - cached_tokens)
-            if total_tokens is None:
+            prompt_details = get_usage_field(usage, "prompt_tokens_details")
+            if prompt_details is None:
+                prompt_details = get_usage_field(usage, "input_tokens_details")
+            cached_tokens = None
+            if prompt_details is not None:
+                reported_cached_tokens = get_usage_field(
+                    prompt_details, "cached_tokens"
+                )
+                if isinstance(reported_cached_tokens, int) and not isinstance(
+                    reported_cached_tokens, bool
+                ):
+                    cached_tokens = reported_cached_tokens
+                    prompt_tokens = max(0, prompt_tokens - cached_tokens)
+            if not isinstance(total_tokens, int):
                 total_tokens = prompt_tokens + completion_tokens
             elif cached_tokens is not None:
                 total_tokens = max(0, total_tokens - cached_tokens)

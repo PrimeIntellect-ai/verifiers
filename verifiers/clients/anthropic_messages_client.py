@@ -472,9 +472,13 @@ class AnthropicMessagesClient(
         cache_creation_input_tokens = getattr(
             response.usage, "cache_creation_input_tokens", None
         )
-        if isinstance(cache_creation_input_tokens, int):
+        if isinstance(cache_creation_input_tokens, int) and not isinstance(
+            cache_creation_input_tokens, bool
+        ):
             input_tokens += cache_creation_input_tokens
-        if not isinstance(cached_input_tokens, int):
+        if not isinstance(cached_input_tokens, int) or isinstance(
+            cached_input_tokens, bool
+        ):
             cached_input_tokens = None
 
         return Response(

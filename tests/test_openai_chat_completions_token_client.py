@@ -1,4 +1,3 @@
-from types import SimpleNamespace
 from typing import Any, cast
 
 import httpx
@@ -294,37 +293,3 @@ async def test_get_native_response_uses_token_route_when_prompt_ids_available(
     assert len(recording_client.calls) == 1
     assert recording_client.calls[0]["path"] == "/chat/completions/tokens"
     assert recording_client.calls[0]["body"]["tokens"] == [10, 20]
-
-
-@pytest.mark.asyncio
-async def test_from_native_response_splits_cached_input_tokens():
-    client = OpenAIChatCompletionsTokenClient(_NoopClient())
-    message = SimpleNamespace(
-        content="ok",
-        tool_calls=None,
-        model_dump=lambda: {},
-    )
-    native_response = SimpleNamespace(
-        id="resp",
-        created=0,
-        model="test-model",
-        usage=SimpleNamespace(
-            prompt_tokens=100,
-            completion_tokens=5,
-            total_tokens=105,
-            prompt_tokens_details=SimpleNamespace(cached_tokens=80),
-        ),
-        choices=[
-            SimpleNamespace(
-                message=message,
-                finish_reason="stop",
-            )
-        ],
-    )
-
-    response = await client.from_native_response(native_response)
-
-    assert response.usage is not None
-    assert response.usage.prompt_tokens == 20
-    assert response.usage.cached_input_tokens == 80
-    assert response.usage.total_tokens == 25

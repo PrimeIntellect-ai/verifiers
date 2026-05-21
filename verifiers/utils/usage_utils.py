@@ -1,88 +1,7 @@
 from collections.abc import Mapping, Sequence
 from types import MappingProxyType
-from typing import Any, cast
 
 from verifiers.types import Response, TokenUsage, Usage
-
-
-def _get_field(obj: object, key: str) -> object:
-    if isinstance(obj, Mapping):
-        return cast(Mapping[str, object], obj).get(key)
-    return getattr(obj, key, None)
-
-
-def _as_token_count(value: object) -> int | None:
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int):
-        return max(0, value)
-    if isinstance(value, float) and value.is_integer():
-        return max(0, int(value))
-    return None
-
-
-def _response_usage(response: object) -> object | None:
-    return _get_field(response, "usage")
-
-
-def _nested_cached_tokens(usage: object) -> int | None:
-    for details_key in ("prompt_tokens_details", "input_tokens_details"):
-        details = _get_field(usage, details_key)
-        if details is None:
-            continue
-        cached = _as_token_count(_get_field(details, "cached_tokens"))
-        if cached is not None:
-            return cached
-    return None
-
-
-def _cache_creation_tokens(usage: object) -> int:
-    return _as_token_count(_get_field(usage, "cache_creation_input_tokens")) or 0
-
-
-def _direct_cached_tokens(usage: object) -> int | None:
-    cached = _as_token_count(_get_field(usage, "cached_input_tokens"))
-    if cached is not None:
-        return cached
-    return _as_token_count(_get_field(usage, "cache_read_input_tokens"))
-
-
-def extract_usage_token_details(response: object) -> dict[str, int] | None:
-    usage = _response_usage(response)
-    if usage is None:
-        return None
-
-    input_tokens = _as_token_count(_get_field(usage, "prompt_tokens"))
-    if input_tokens is None:
-        input_tokens = _as_token_count(_get_field(usage, "input_tokens"))
-    output_tokens = _as_token_count(_get_field(usage, "completion_tokens"))
-    if output_tokens is None:
-        output_tokens = _as_token_count(_get_field(usage, "output_tokens"))
-    if input_tokens is None or output_tokens is None:
-        return None
-
-    input_tokens += _cache_creation_tokens(usage)
-    details = {
-        "input_tokens": input_tokens,
-        "output_tokens": output_tokens,
-    }
-
-    cached_tokens = _direct_cached_tokens(usage)
-    if cached_tokens is not None:
-        details["cached_input_tokens"] = cached_tokens
-        return details
-
-    cached_tokens = _nested_cached_tokens(usage)
-    if cached_tokens is not None:
-        details["input_tokens"] = max(0, input_tokens - cached_tokens)
-        details["cached_input_tokens"] = cached_tokens
-    return details
-
-
-def usage_tokens(usage: Usage) -> tuple[int, int]:
-    if usage.prompt_tokens < 0 or usage.completion_tokens < 0:
-        raise ValueError("Response usage tokens must be non-negative.")
-    return usage.prompt_tokens, usage.completion_tokens
 
 
 def response_usage_tokens(response: Response) -> tuple[int, int]:
@@ -92,15 +11,10 @@ def response_usage_tokens(response: Response) -> tuple[int, int]:
     return usage_tokens(usage)
 
 
-def cast_token_usage(usage: Mapping[str, Any]) -> TokenUsage:
-    out: TokenUsage = {
-        "input_tokens": float(usage.get("input_tokens", 0.0)),
-        "output_tokens": float(usage.get("output_tokens", 0.0)),
-    }
-    cached = usage.get("cached_input_tokens")
-    if cached is not None:
-        out["cached_input_tokens"] = float(cached)
-    return out
+def usage_tokens(usage: Usage) -> tuple[int, int]:
+    if usage.prompt_tokens < 0 or usage.completion_tokens < 0:
+        raise ValueError("Response usage tokens must be non-negative.")
+    return usage.prompt_tokens, usage.completion_tokens
 
 
 class StateUsageTracker:
@@ -128,34 +42,42 @@ class StateUsageTracker:
         cached_input_tokens: int | float | None = None,
         mark_seen: bool = True,
     ) -> None:
-        deltas: dict[str, float] = {
-            "input_tokens": float(input_tokens or 0.0),
-            "output_tokens": float(output_tokens or 0.0),
-        }
-        if cached_input_tokens is not None:
-            deltas["cached_input_tokens"] = float(cached_input_tokens or 0.0)
-        if any(delta < 0 for delta in deltas.values()):
+        input_delta = float(input_tokens or 0.0)
+        output_delta = float(output_tokens or 0.0)
+        cached_input_delta = float(cached_input_tokens or 0.0)
+        if input_delta < 0 or output_delta < 0 or cached_input_delta < 0:
             raise ValueError("Token usage increments must be non-negative.")
         if mark_seen:
             self._usage_seen = True
-        for key, delta in deltas.items():
-            self._usage_totals[key] = self._usage_totals.get(key, 0.0) + delta
+        self._usage_totals["input_tokens"] += input_delta
+        self._usage_totals["output_tokens"] += output_delta
+        if cached_input_tokens is not None:
+            self._usage_totals["cached_input_tokens"] = (
+                self._usage_totals.get("cached_input_tokens", 0.0) + cached_input_delta
+            )
 
-    def increment_from_response(self, response: object) -> None:
-        details = extract_usage_token_details(response)
-        if details is None:
+    def increment_from_response(self, response: Response) -> None:
+        if response.usage is None:
             return
+        input_tokens, output_tokens = response_usage_tokens(response)
         self.increment(
-            details["input_tokens"],
-            details["output_tokens"],
-            cached_input_tokens=details.get("cached_input_tokens"),
+            input_tokens,
+            output_tokens,
+            cached_input_tokens=response.usage.cached_input_tokens,
             mark_seen=True,
         )
 
     def snapshot(self) -> TokenUsage | None:
         if not self._usage_seen:
             return None
-        return cast_token_usage(self._usage_totals)
+        usage: TokenUsage = {
+            "input_tokens": self._usage_totals["input_tokens"],
+            "output_tokens": self._usage_totals["output_tokens"],
+        }
+        cached_input_tokens = self._usage_totals.get("cached_input_tokens", 0.0)
+        if cached_input_tokens > 0:
+            usage["cached_input_tokens"] = cached_input_tokens
+        return usage
 
 
 def compute_context_token_metrics(
@@ -170,37 +92,45 @@ def compute_context_token_metrics(
     Returns a dict with:
         final_output_tokens: Model-generated tokens (sum of completion_tokens
             across all steps).
-        final_input_tokens: Non-model tokens in context (system prompts, user
-            messages, tool results, etc.).
+        final_input_tokens: Non-model tokens in context (last step's total
+            context minus final_output_tokens).
     """
-    zero = {"final_output_tokens": 0.0, "final_input_tokens": 0.0}
+    _zero: dict[str, float] = {
+        "final_output_tokens": 0,
+        "final_input_tokens": 0,
+    }
     if not trajectory:
-        return zero
+        return _zero
 
+    # Find the last step with usage data.
     last_step_total = 0
     found = False
     for step in reversed(trajectory):
-        details = extract_usage_token_details(step.get("response"))
-        if details is None:
+        response = step.get("response")
+        if not isinstance(response, Response) or response.usage is None:
             continue
+        prompt_tokens, completion_tokens = response_usage_tokens(response)
         last_step_total = (
-            details["input_tokens"]
-            + details.get("cached_input_tokens", 0)
-            + details["output_tokens"]
+            prompt_tokens
+            + (response.usage.cached_input_tokens or 0)
+            + completion_tokens
         )
         found = True
         break
 
     if not found:
-        return zero
+        return _zero
 
+    # Sum completion tokens across all steps with usage data.
     total_completion = 0
     for step in trajectory:
-        details = extract_usage_token_details(step.get("response"))
-        if details is not None:
-            total_completion += details["output_tokens"]
+        response = step.get("response")
+        if not isinstance(response, Response) or response.usage is None:
+            continue
+        _, completion_tokens = response_usage_tokens(response)
+        total_completion += completion_tokens
 
     return {
-        "final_output_tokens": float(total_completion),
-        "final_input_tokens": float(max(0, last_step_total - total_completion)),
+        "final_output_tokens": total_completion,
+        "final_input_tokens": max(0, last_step_total - total_completion),
     }
