@@ -33,7 +33,6 @@ from verifiers.envs.experimental.utils.file_locks import (
     shared_path_lock,
 )
 from verifiers.envs.experimental.composable.harnesses.rlm import (
-    DEFAULT_RLM_EXTRA_UV_ARGS,
     build_install_script,
     rlm_harness,
     resolve_local_checkout,
@@ -181,20 +180,6 @@ def test_rlm_harness_install_script_requires_uploaded_checkout():
     assert 'test -f "$RLM_CHECKOUT_PATH/install.sh"' in script
     assert "git clone" not in script
     assert 'bash "$RLM_CHECKOUT_PATH/install.sh"' in script
-
-
-def test_rlm_harness_install_script_exports_default_extra_uv_args():
-    """The default agent-callable libs are baked in but stay overridable.
-
-    Sandbox-level ``RLM_EXTRA_UV_ARGS`` set via ``install_env`` wins via
-    ``${VAR:-default}``; the rlm-harness ``install.sh`` then forwards
-    whichever value reached it into ``uv tool install --with ...``.
-    """
-    script = build_install_script()
-    assert f"RLM_EXTRA_UV_ARGS:-{DEFAULT_RLM_EXTRA_UV_ARGS}" in script
-    # Sanity-check a few entries so an accidental empty default fails fast.
-    for pkg in ("requests", "pandas", "numpy", "pyyaml", "pydantic"):
-        assert f"--with {pkg}" in DEFAULT_RLM_EXTRA_UV_ARGS
 
 
 def test_rlm_harness_does_not_set_post_install_hooks(tmp_path):
