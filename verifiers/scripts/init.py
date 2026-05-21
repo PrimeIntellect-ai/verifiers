@@ -140,6 +140,12 @@ from .{env_id} import load_environment
 __all__ = ["load_environment"]
 """
 
+V1_INIT_TEMPLATE = """\
+from .{env_id} import load_environment, load_harness, load_taskset
+
+__all__ = ["load_environment", "load_harness", "load_taskset"]
+"""
+
 ENVIRONMENT_TEMPLATE = """\
 import verifiers as vf
 
@@ -190,6 +196,46 @@ def load_environment(config: vf.EnvConfig) -> vf.Env:
 """
 
 HARNESS_ENVIRONMENT_TEMPLATE = ENVIRONMENT_TEMPLATE
+V1_ENVIRONMENT_TEMPLATE = ENVIRONMENT_TEMPLATE
+
+TASKSET_ENVIRONMENT_TEMPLATE = """\
+import verifiers as vf
+
+
+@vf.reward(weight=1.0)
+async def exact_answer(task, state) -> float:
+    return float(task["answer"] in str(state.get("completion") or ""))
+
+
+class EnvTasksetConfig(vf.TasksetConfig):
+    split: str = "train"
+
+
+class EnvTaskset(vf.Taskset[EnvTasksetConfig]):
+    _default_rewards = (exact_answer,)
+
+    def rows(self) -> list[dict[str, object]]:
+        rows = [
+            {
+                "prompt": [{"role": "user", "content": "Reverse abc."}],
+                "answer": "cba",
+                "split": "train",
+            }
+        ]
+        return [row for row in rows if row["split"] == self.config.split]
+
+
+class EnvConfig(vf.EnvConfig):
+    taskset: EnvTasksetConfig = EnvTasksetConfig()
+
+
+def load_taskset(config: EnvTasksetConfig) -> EnvTaskset:
+    return EnvTaskset(config=config)
+
+
+def load_environment(config: EnvConfig) -> vf.Env:
+    return vf.Env(taskset=load_taskset(config.taskset))
+"""
 
 OPENENV_ENVIRONMENT_TEMPLATE = """\
 import verifiers as vf
@@ -409,7 +455,8 @@ def init_environment(
     if multi_file:
         init_file = environment_dir / "__init__.py"
         if not init_file.exists():
-            init_file.write_text(INIT_TEMPLATE.format(env_id=env_id_underscore))
+            init_template = V1_INIT_TEMPLATE if v1 or with_harness else INIT_TEMPLATE
+            init_file.write_text(init_template.format(env_id=env_id_underscore))
         else:
             print(f"__init__.py already exists at {init_file}, skipping...")
 
@@ -418,8 +465,10 @@ def init_environment(
     if not environment_file.exists():
         if openenv:
             template = OPENENV_ENVIRONMENT_TEMPLATE
+        elif v1 or with_harness:
+            template = V1_ENVIRONMENT_TEMPLATE
         else:
-            template = ENVIRONMENT_TEMPLATE
+            template = TASKSET_ENVIRONMENT_TEMPLATE
         environment_file.write_text(template)
     else:
         print(

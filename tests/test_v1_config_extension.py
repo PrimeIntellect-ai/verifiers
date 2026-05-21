@@ -2382,6 +2382,18 @@ def test_v1_init_template_uses_component_loader_pattern(tmp_path) -> None:
     assert "vf.load_harness(config.harness)" in source
 
 
+def test_v1_multi_file_init_exports_component_loaders(tmp_path) -> None:
+    from verifiers.scripts.init import init_environment
+
+    env_dir = init_environment(
+        "sample-env", path=str(tmp_path), multi_file=True, v1=True
+    )
+    source = (env_dir / "sample_env" / "__init__.py").read_text()
+
+    assert "load_environment, load_harness, load_taskset" in source
+    assert '__all__ = ["load_environment", "load_harness", "load_taskset"]' in source
+
+
 def test_config_objects_are_strict_when_projected_to_base_config_fields() -> None:
     class LocalHarnessConfig(HarnessConfig):
         toolset: dict[str, object] | None = None

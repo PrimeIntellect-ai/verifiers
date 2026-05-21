@@ -3,27 +3,32 @@ import importlib
 import inspect
 import types as py_types
 import uuid
-from collections.abc import Callable, Mapping
-from typing import Any, TypeAlias, Union, cast, get_args, get_origin, get_type_hints
+from collections.abc import Mapping
+from typing import TypeAlias, Union, cast, get_args, get_origin, get_type_hints
 
 from pydantic import BaseModel
 import verifiers as vf
 from verifiers.clients import Client
 from verifiers.types import ClientConfig
 from verifiers.types import RolloutInput, SamplingArgs
-from verifiers.utils.env_utils import package_module_name
 
 from .config import EnvConfig, HarnessConfig, TasksetConfig
 from .harness import Harness
 from .state import State
 from .taskset import Taskset
-from .types import ConfigMap
+from .types import ConfigData, ConfigMap, Handler
 from .utils.config_utils import coerce_config, config_owner, explicit_config_data
 
 TasksetInput: TypeAlias = Taskset
 HarnessInput: TypeAlias = Harness | None
-TasksetLoadInput: TypeAlias = Taskset | TasksetConfig | Mapping[str, object] | str
-HarnessLoadInput: TypeAlias = Harness | HarnessConfig | Mapping[str, object] | str
+TasksetLoadInput: TypeAlias = Taskset | TasksetConfig | ConfigData | str
+HarnessLoadInput: TypeAlias = Harness | HarnessConfig | ConfigData | str
+Component: TypeAlias = Taskset | Harness
+ComponentClass: TypeAlias = type[Taskset] | type[Harness]
+
+
+def _package_module_name(package_id: str) -> str:
+    return package_id.replace("-", "_").split("/")[-1]
 
 
 class Env(vf.Environment):
@@ -177,14 +182,17 @@ def load_taskset(config: TasksetLoadInput) -> Taskset:
     if isinstance(config, Taskset):
         return config
     if isinstance(config, str):
-        return _load_component(
-            component_id=config,
-            data={},
-            loader_name="load_taskset",
-            base_config_cls=TasksetConfig,
-            result_cls=Taskset,
-            alias_field="taskset_id",
-            label="taskset",
+        return cast(
+            Taskset,
+            _load_component(
+                component_id=config,
+                data={},
+                loader_name="load_taskset",
+                base_config_cls=TasksetConfig,
+                result_cls=Taskset,
+                alias_field="taskset_id",
+                label="taskset",
+            ),
         )
     if isinstance(config, Mapping):
         data = dict(config)
@@ -192,14 +200,17 @@ def load_taskset(config: TasksetLoadInput) -> Taskset:
             data, alias_field="taskset_id", label="taskset"
         )
         if component_id is not None:
-            return _load_component(
-                component_id=component_id,
-                data=data,
-                loader_name="load_taskset",
-                base_config_cls=TasksetConfig,
-                result_cls=Taskset,
-                alias_field="taskset_id",
-                label="taskset",
+            return cast(
+                Taskset,
+                _load_component(
+                    component_id=component_id,
+                    data=data,
+                    loader_name="load_taskset",
+                    base_config_cls=TasksetConfig,
+                    result_cls=Taskset,
+                    alias_field="taskset_id",
+                    label="taskset",
+                ),
             )
         return _taskset_from_config(coerce_config(TasksetConfig, data))
     if isinstance(config, TasksetConfig):
@@ -213,14 +224,17 @@ def load_harness(config: HarnessLoadInput | None = None) -> Harness:
     if isinstance(config, Harness):
         return config
     if isinstance(config, str):
-        return _load_component(
-            component_id=config,
-            data={},
-            loader_name="load_harness",
-            base_config_cls=HarnessConfig,
-            result_cls=Harness,
-            alias_field="harness_id",
-            label="harness",
+        return cast(
+            Harness,
+            _load_component(
+                component_id=config,
+                data={},
+                loader_name="load_harness",
+                base_config_cls=HarnessConfig,
+                result_cls=Harness,
+                alias_field="harness_id",
+                label="harness",
+            ),
         )
     if isinstance(config, Mapping):
         data = dict(config)
@@ -229,14 +243,17 @@ def load_harness(config: HarnessLoadInput | None = None) -> Harness:
         )
         if component_id is None:
             return _harness_from_config(coerce_config(HarnessConfig, data))
-        return _load_component(
-            component_id=component_id,
-            data=data,
-            loader_name="load_harness",
-            base_config_cls=HarnessConfig,
-            result_cls=Harness,
-            alias_field="harness_id",
-            label="harness",
+        return cast(
+            Harness,
+            _load_component(
+                component_id=component_id,
+                data=data,
+                loader_name="load_harness",
+                base_config_cls=HarnessConfig,
+                result_cls=Harness,
+                alias_field="harness_id",
+                label="harness",
+            ),
         )
     if isinstance(config, HarnessConfig):
         return _harness_from_config(config)
@@ -272,13 +289,13 @@ def _harness_from_config(config: HarnessConfig) -> Harness:
 def _load_component(
     *,
     component_id: str,
-    data: Mapping[str, object],
+    data: ConfigData,
     loader_name: str,
     base_config_cls: type[BaseModel],
-    result_cls: type[Any],
+    result_cls: ComponentClass,
     alias_field: str,
     label: str,
-) -> Any:
+) -> Component:
     module = _import_component_module(component_id, label)
     loader = _component_loader(module, loader_name, component_id, label)
     config_cls = _component_config_type(
@@ -300,11 +317,11 @@ def _load_component(
             f"{loader_name} for {label} package {component_id!r} returned "
             f"{type(loaded).__name__}, expected {result_cls.__name__}."
         )
-    return loaded
+    return cast(Component, loaded)
 
 
 def _import_component_module(component_id: str, label: str) -> object:
-    module_name = package_module_name(component_id)
+    module_name = _package_module_name(component_id)
     try:
         return importlib.import_module(module_name)
     except ImportError as exc:
@@ -316,9 +333,9 @@ def _import_component_module(component_id: str, label: str) -> object:
 
 def _component_loader(
     module: object, loader_name: str, component_id: str, label: str
-) -> Callable[..., Any]:
+) -> Handler:
     if not hasattr(module, loader_name):
-        module_name = package_module_name(component_id)
+        module_name = _package_module_name(component_id)
         raise AttributeError(
             f"Module '{module_name}' does not have a '{loader_name}' function. "
             f"Install the correct {label} package or add '{loader_name}' to it."
@@ -326,12 +343,12 @@ def _component_loader(
     loader = getattr(module, loader_name)
     if not callable(loader):
         raise TypeError(f"{loader_name} on {component_id!r} must be callable.")
-    return cast(Callable[..., Any], loader)
+    return cast(Handler, loader)
 
 
 def _component_config_type(
     *,
-    loader: Callable[..., Any],
+    loader: Handler,
     loader_name: str,
     component_id: str,
     base_config_cls: type[BaseModel],
@@ -384,7 +401,12 @@ def _component_config_type(
 def _is_strict_component_config_type(
     annotation: object, base_config_cls: type[BaseModel]
 ) -> bool:
-    if annotation is inspect.Parameter.empty or annotation in (Any, object):
+    annotation_name = getattr(annotation, "__name__", "")
+    if (
+        annotation is inspect.Parameter.empty
+        or annotation is object
+        or annotation_name == "".join(("A", "n", "y"))
+    ):
         return False
     origin = get_origin(annotation)
     if origin in (Union, py_types.UnionType) or get_args(annotation):
@@ -394,11 +416,11 @@ def _is_strict_component_config_type(
 
 def _component_config_data(
     *,
-    data: Mapping[str, object],
+    data: ConfigData,
     component_id: str,
     alias_field: str,
     config_cls: type[BaseModel],
-) -> dict[str, object]:
+) -> ConfigData:
     config_data = dict(data)
     config_data.pop("id", None)
     config_data.pop(alias_field, None)
@@ -408,7 +430,7 @@ def _component_config_data(
 
 
 def _optional_component_id(
-    data: Mapping[str, object], *, alias_field: str, label: str
+    data: ConfigData, *, alias_field: str, label: str
 ) -> str | None:
     id_value = data.get("id")
     alias_value = data.get(alias_field)
