@@ -92,18 +92,13 @@ def error_type_name(error: object) -> str | None:
     return None
 
 
-def error_info_to_exception(
+def is_retryable_error_info(
     error: Mapping[str, object],
-    error_types: tuple[type[Exception], ...],
-) -> Exception | None:
+    error_types: tuple[type[Exception], ...] = DEFAULT_RETRYABLE_ERROR_TYPES,
+) -> bool:
+    """Return whether serialized ErrorInfo should trigger a retry."""
+    if error_types == DEFAULT_RETRYABLE_ERROR_TYPES:
+        return error.get("is_retryable") is True
+
     chain = str(error.get("error_chain_str") or error.get("error") or "")
-    detail = str(error.get("error_chain_repr") or error.get("error") or "")
-    if (
-        error_types == DEFAULT_RETRYABLE_ERROR_TYPES
-        and error.get("is_retryable") is True
-    ):
-        return vf.InfraError(detail)
-    for error_type in error_types:
-        if error_type.__name__ in chain:
-            return error_type(detail)
-    return None
+    return any(error_type.__name__ in chain for error_type in error_types)

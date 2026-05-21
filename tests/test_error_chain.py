@@ -4,9 +4,9 @@ import verifiers as vf
 from verifiers.utils.error_utils import (
     ErrorChain,
     error_info,
-    error_info_to_exception,
     get_vf_error_chain,
     is_retryable_error,
+    is_retryable_error_info,
 )
 
 
@@ -183,9 +183,7 @@ class TestErrorChain:
         assert info["is_retryable"] is False
         assert is_retryable_error(outer) is False
 
-    def test_error_info_to_exception_uses_retryable_flag_for_serialized_subclasses(
-        self,
-    ):
+    def test_is_retryable_error_info_uses_serialized_retryable_flag(self):
         """Serialized subclass names do not need to enumerate their base classes."""
         info = {
             "error": "SandboxError",
@@ -194,10 +192,20 @@ class TestErrorChain:
             "is_retryable": True,
         }
 
-        assert isinstance(
-            error_info_to_exception(
-                info,
-                (vf.InfraError, vf.InvalidModelResponseError),
-            ),
-            vf.InfraError,
+        assert is_retryable_error_info(
+            info,
+            (vf.InfraError, vf.InvalidModelResponseError),
+        )
+
+    def test_is_retryable_error_info_requires_flag_for_default_policy(self):
+        """Default serialized retryability comes from ErrorInfo, not class-name parsing."""
+        info = {
+            "error": "SandboxError",
+            "error_chain_repr": "SandboxError('sandbox unavailable')",
+            "error_chain_str": "SandboxError",
+        }
+
+        assert not is_retryable_error_info(
+            info,
+            (vf.InfraError, vf.InvalidModelResponseError),
         )
