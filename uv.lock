@@ -19,8 +19,6 @@ conflicts = [[
 ]]
 
 [options]
-exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for backwards compatibility when using relative exclude-newer values.
-exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
 prime-tunnel = false
@@ -6195,8 +6193,8 @@ wheels = [
 
 [[package]]
 name = "textarena"
-version = "0.7.4"
-source = { registry = "https://pypi.org/simple" }
+version = "0.7.3"
+source = { git = "https://github.com/nph4rd/TextArena.git?branch=fix%2Fkuhn-poker-phantom-ante#e3ab9a98faace0ac90fb80e5f6e886e269cf4d4d" }
 dependencies = [
     { name = "chess" },
     { name = "nltk" },
@@ -6205,10 +6203,6 @@ dependencies = [
     { name = "requests" },
     { name = "rich" },
     { name = "websockets" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/ba/04/4a3ca42093d0be2a9c377ae3335a6c6baac1d278ae932562ec69f339d172/textarena-0.7.4.tar.gz", hash = "sha256:28bb9170d7718f2ae05e4515bea82262422731e563fc7318a9e7983de0cadd4f", size = 954969, upload-time = "2025-10-16T14:41:55.981Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/26/b4/9a9ba65154aff853c75b3d7324319d168ad9c69c6097f4aa3c16da7d9ef3/textarena-0.7.4-py3-none-any.whl", hash = "sha256:684784e78278e518066f67557ee93b47c238d16cbbd15d3abdaa3147562d3024", size = 1073570, upload-time = "2025-10-16T14:41:53.965Z" },
 ]
 
 [[package]]
@@ -6895,7 +6889,7 @@ requires-dist = [
     { name = "setproctitle", specifier = ">=1.3.0" },
     { name = "stagehand", marker = "extra == 'browser'", specifier = ">=3.0.0" },
     { name = "tenacity", specifier = ">=8.5.0" },
-    { name = "textarena", marker = "extra == 'ta'" },
+    { name = "textarena", marker = "extra == 'ta'", git = "https://github.com/nph4rd/TextArena.git?branch=fix%2Fkuhn-poker-phantom-ante" },
     { name = "textual" },
     { name = "tomli", marker = "python_full_version < '3.11'" },
     { name = "torch", marker = "extra == 'rl'", specifier = ">=2.8.0,<2.9.0" },
@@ -6922,7 +6916,7 @@ dev = [
     { name = "renderers", specifier = ">=0.1.8.dev4" },
     { name = "ruff" },
     { name = "stagehand", specifier = ">=3.0.0" },
-    { name = "textarena" },
+    { name = "textarena", git = "https://github.com/nph4rd/TextArena.git?branch=fix%2Fkuhn-poker-phantom-ante" },
     { name = "ty", specifier = ">=0.0.1a29,<0.0.22" },
 ]
 policy = [{ name = "semgrep", specifier = ">=1.150.0" }]

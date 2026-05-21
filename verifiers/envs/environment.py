@@ -745,6 +745,7 @@ class Environment(ABC):
         max_retries: int = 0,
         state_columns: list[str] | None = None,
         env_client: EnvClient | None = None,
+        actor_models: dict[str, str] | None = None,
     ) -> RolloutOutput:
         """Generate and, optionally, score a rollout."""
 
@@ -765,6 +766,7 @@ class Environment(ABC):
                 sampling_args,
                 max_retries,
                 state_columns,
+                actor_models=actor_models,
             )
 
         resolved_client = resolve_client(client)
@@ -791,6 +793,7 @@ class Environment(ABC):
         max_retries: int = 0,
         state_columns: list[str] | None = None,
         env_client: EnvClient | None = None,
+        actor_models: dict[str, str] | None = None,
         **kwargs,
     ) -> list[RolloutOutput]:
         """Generate and, optionally, score one group."""
@@ -812,6 +815,7 @@ class Environment(ABC):
                 sampling_args,
                 max_retries,
                 state_columns,
+                actor_models=actor_models,
             )
 
         resolved_client = resolve_client(client)

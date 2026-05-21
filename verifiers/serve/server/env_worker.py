@@ -135,9 +135,14 @@ class EnvWorker:
             self.clients[key] = resolve_client(resolved)
         return self.clients[key]
 
+    def _set_actor_models(self, actor_models: dict[str, str] | None) -> None:
+        if actor_models is not None and hasattr(self.env, "actor_models"):
+            self.env.actor_models = actor_models
+
     async def handle_run_rollout(
         self, request: RunRolloutRequest
     ) -> RunRolloutResponse:
+        self._set_actor_models(request.actor_models)
         client = await self.resolve_client(request.client_config)
         output = await self.env.run_rollout(
             input=request.input,
@@ -146,10 +151,12 @@ class EnvWorker:
             sampling_args=request.sampling_args,
             max_retries=request.max_retries,
             state_columns=request.state_columns,
+            actor_models=request.actor_models,
         )
         return RunRolloutResponse(output=output)
 
     async def handle_run_group(self, request: RunGroupRequest) -> RunGroupResponse:
+        self._set_actor_models(request.actor_models)
         client = await self.resolve_client(request.client_config)
         outputs = await self.env.run_group(
             group_inputs=request.group_inputs,
@@ -158,6 +165,7 @@ class EnvWorker:
             sampling_args=request.sampling_args,
             max_retries=request.max_retries,
             state_columns=request.state_columns,
+            actor_models=request.actor_models,
         )
         return RunGroupResponse(outputs=outputs)
 
