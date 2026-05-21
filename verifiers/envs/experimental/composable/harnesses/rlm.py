@@ -29,7 +29,7 @@ DEFAULT_RLM_CHECKOUT_UPLOAD_NAME = "rlm_checkout"
 # ``ComposableEnv(install_env={"RLM_EXTRA_UV_ARGS": "..."})``.
 DEFAULT_RLM_EXTRA_UV_ARGS = (
     "--with requests --with httpx "
-    "--with pyyaml --with tomli --with python-dotenv "
+    "--with pyyaml --with tomli "
     "--with pandas --with numpy --with scipy "
     "--with beautifulsoup4 --with lxml "
     "--with pydantic"
