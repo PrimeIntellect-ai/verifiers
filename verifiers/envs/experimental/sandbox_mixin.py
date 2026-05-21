@@ -3,11 +3,12 @@ import io
 import logging
 import math
 import os
+import shlex
 import tarfile
 import tempfile
 import time
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Optional, cast
 
 import httpx
@@ -38,6 +39,17 @@ if _httpx_log_level:
     httpx_logger.setLevel(getattr(logging, _httpx_log_level, logging.DEBUG))
     httpcore_logger = logging.getLogger("httpcore")
     httpcore_logger.setLevel(getattr(logging, _httpx_log_level, logging.DEBUG))
+
+
+def _bundle_member_name(rel_path: str) -> str:
+    member_path = PurePosixPath(rel_path.replace("\\", "/"))
+    if (
+        member_path.is_absolute()
+        or ".." in member_path.parts
+        or member_path.as_posix() in {"", "."}
+    ):
+        raise ValueError(f"Unsafe bundle path: {rel_path}")
+    return member_path.as_posix()
 
 
 class SandboxCreationError(vf.SandboxError): ...
@@ -408,8 +420,9 @@ class SandboxMixin:
             buf = io.BytesIO()
             with tarfile.open(fileobj=buf, mode="w:gz") as tar:
                 for rel_path, content in file_map.items():
+                    member_name = _bundle_member_name(rel_path)
                     data = content.encode("utf-8")
-                    info = tarfile.TarInfo(name=rel_path)
+                    info = tarfile.TarInfo(name=member_name)
                     info.size = len(data)
                     tar.addfile(info, io.BytesIO(data))
             with tempfile.NamedTemporaryFile(delete=False, suffix=".tar.gz") as f:
@@ -423,11 +436,14 @@ class SandboxMixin:
         finally:
             await asyncio.to_thread(Path(tmp_path).unlink, missing_ok=True)
 
+        extract_script = (
+            f"import tarfile; "
+            f"tarfile.open({archive_remote!r}, 'r:gz').extractall({dest_dir!r})"
+        )
         extract_cmd = (
-            f"mkdir -p {dest_dir} && "
-            f'python3 -c "import tarfile; '
-            f"tarfile.open('{archive_remote}', 'r:gz').extractall('{dest_dir}')\" && "
-            f"rm -f {archive_remote}"
+            f"mkdir -p {shlex.quote(dest_dir)} && "
+            f"python3 -c {shlex.quote(extract_script)} && "
+            f"rm -f {shlex.quote(archive_remote)}"
         )
         result = await self.sandbox_client.execute_command(
             sandbox_id,

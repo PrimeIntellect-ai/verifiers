@@ -440,6 +440,33 @@ def test_upload_bundle_uses_extract_timeout(mixin):
     assert kwargs["timeout"] == mixin.timeouts.extract
 
 
+def test_upload_bundle_rejects_traversal_paths(mixin):
+    mixin.upload_file = AsyncMock()
+    mixin.sandbox_client.execute_command = AsyncMock()
+
+    with pytest.raises(ValueError, match="Unsafe bundle path"):
+        asyncio.run(mixin.upload_bundle("sb-1", {"../escape.txt": "x"}, "/tmp/dest"))
+
+    mixin.upload_file.assert_not_awaited()
+    mixin.sandbox_client.execute_command.assert_not_awaited()
+
+
+def test_upload_bundle_quotes_remote_paths(mixin):
+    async def _noop_upload(sandbox_id, remote_path, local_path):
+        return None
+
+    mixin.upload_file = _noop_upload
+    mixin.sandbox_client.execute_command = AsyncMock(
+        return_value=MagicMock(exit_code=0, stderr="")
+    )
+
+    asyncio.run(mixin.upload_bundle("sb-1", {"a.txt": "x"}, "/tmp/dest with spaces"))
+
+    _, command = mixin.sandbox_client.execute_command.await_args.args
+    assert "mkdir -p '/tmp/dest with spaces'" in command
+    assert "rm -f '/tmp/dest with spaces/_bundle.tar.gz'" in command
+
+
 def test_upload_bundle_respects_custom_extract_timeout():
     obj = ConcreteMixin(
         max_retries=1,
