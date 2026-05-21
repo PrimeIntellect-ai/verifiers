@@ -1,5 +1,5 @@
 from collections.abc import Mapping
-from typing import Callable, cast
+from typing import Callable, TypeGuard, cast
 
 import verifiers as vf
 from verifiers.types import ErrorInfo
@@ -85,15 +85,24 @@ def error_info(error: BaseException) -> ErrorInfo:
 def error_type_name(error: object) -> str | None:
     if isinstance(error, BaseException):
         return type(error).__name__
-    if isinstance(error, Mapping):
-        raw_error = cast(Mapping[str, object], error).get("error")
-        if isinstance(raw_error, str):
-            return raw_error
+    if is_error_info(error):
+        return error["error"]
     return None
 
 
+def is_error_info(error: object) -> TypeGuard[ErrorInfo]:
+    """Return whether an object has the runtime shape of serialized ErrorInfo."""
+    if not isinstance(error, Mapping):
+        return False
+    return (
+        isinstance(error.get("error"), str)
+        and isinstance(error.get("error_chain_repr"), str)
+        and isinstance(error.get("error_chain_str"), str)
+    )
+
+
 def is_retryable_error_info(
-    error: Mapping[str, object],
+    error: ErrorInfo,
     error_types: tuple[type[Exception], ...] = DEFAULT_RETRYABLE_ERROR_TYPES,
 ) -> bool:
     """Return whether serialized ErrorInfo should trigger a retry."""

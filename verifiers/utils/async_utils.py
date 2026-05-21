@@ -13,6 +13,7 @@ from pydantic import BaseModel
 
 import verifiers as vf
 from verifiers.utils.error_utils import ErrorChain
+from verifiers.utils.error_utils import is_error_info
 from verifiers.utils.error_utils import is_retryable_error_info
 from verifiers.utils.logging_utils import print_time
 
@@ -181,16 +182,14 @@ def maybe_retry(
             err = result.get("error")
             if err and any(isinstance(err, err_type) for err_type in error_types):
                 raise err
-            if isinstance(err, Mapping) and is_retryable_error_info(err, error_types):
+            if is_error_info(err) and is_retryable_error_info(err, error_types):
                 raise retry_exception_from_error_info(err, error_types)
         elif isinstance(result, list):
             for state in result:
                 err = state.get("error")
                 if err and any(isinstance(err, err_type) for err_type in error_types):
                     raise err
-                if isinstance(err, Mapping) and is_retryable_error_info(
-                    err, error_types
-                ):
+                if is_error_info(err) and is_retryable_error_info(err, error_types):
                     raise retry_exception_from_error_info(err, error_types)
 
     def log_retry(retry_state: tc.RetryCallState) -> None:

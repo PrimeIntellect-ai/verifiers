@@ -5,6 +5,7 @@ from verifiers.utils.error_utils import (
     ErrorChain,
     error_info,
     get_vf_error_chain,
+    is_error_info,
     is_retryable_error,
     is_retryable_error_info,
 )
@@ -209,3 +210,14 @@ class TestErrorChain:
             info,
             (vf.InfraError, vf.InvalidModelResponseError),
         )
+
+    def test_is_error_info_requires_serialized_error_shape(self):
+        assert is_error_info(
+            {
+                "error": "SandboxError",
+                "error_chain_repr": "SandboxError('sandbox unavailable')",
+                "error_chain_str": "SandboxError",
+            }
+        )
+        assert not is_error_info(vf.SandboxError("live exception"))
+        assert not is_error_info({"error": "SandboxError"})
