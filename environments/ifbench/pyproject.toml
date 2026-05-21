@@ -1,0 +1,28 @@
+[project]
+name = "ifbench"
+version = "0.1.0"
+description = "IFBench environment for precise instruction-following RLVR"
+tags = ["ifbench", "instruction-following", "rlvr", "single-turn", "train", "eval"]
+requires-python = ">=3.10,<3.14"
+dependencies = [
+    "datasets>=3.0.0",
+    "emoji>=2.0.0",
+    "nltk>=3.9.0",
+    "setuptools",
+    "syllapy>=0.7.0",
+    "verifiers>=0.1.8",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build]
+include = ["ifbench.py", "ifbench_official"]
+
+[tool.verifiers.eval]
+num_examples = 5
+rollouts_per_example = 3
