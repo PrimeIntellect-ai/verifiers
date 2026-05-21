@@ -1,11 +1,31 @@
 """Tests for the Rubric class."""
 
+from __future__ import annotations
+
 from typing import cast
 
 import pytest
 
 from verifiers import Parser, Rubric
 from verifiers.types import RewardFunc, RolloutInput, RolloutTiming, State
+
+
+# Regression for `_is_multiagent_func` mis-classifying functions defined under
+# ``from __future__ import annotations`` (PEP 563): the return annotation is
+# the string ``"dict[str, float]"`` rather than the resolved generic alias, so
+# ``get_origin(annotation)`` returns ``None`` and the function was routed
+# through the individual-reward path — where its dict return value got coerced
+# to 0 by ``float(dict)`` failing. ``_is_multiagent_func`` now uses
+# ``typing.get_type_hints`` to resolve the string.
+async def _multiagent_under_future_annotations(
+    state: State, **_kwargs
+) -> dict[str, float]:
+    return {"agent_a": 0.5, "agent_b": 1.0}
+
+
+def test_is_multiagent_func_handles_future_annotations():
+    rubric = Rubric()
+    assert rubric._is_multiagent_func(_multiagent_under_future_annotations) is True
 
 
 class TestRubric:

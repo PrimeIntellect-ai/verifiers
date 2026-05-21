@@ -2,7 +2,7 @@ import asyncio
 import inspect
 import logging
 from collections.abc import Callable, Mapping
-from typing import Any, cast, get_origin
+from typing import Any, cast, get_origin, get_type_hints
 
 import verifiers as vf
 from verifiers.decorators import discover_decorated
@@ -182,9 +182,24 @@ class Rubric:
         return None
 
     def _is_multiagent_func(self, func: RewardFunc) -> bool:
-        """Check if a function is a MultiAgentRewardFunc by inspecting its return annotation."""
-        sig = inspect.signature(func)
-        return_annotation = sig.return_annotation
+        """Check if a function is a MultiAgentRewardFunc by inspecting its return annotation.
+
+        Uses ``typing.get_type_hints`` so a function defined under
+        ``from __future__ import annotations`` (where annotations become
+        strings — PEP 563) is still classified correctly. ``inspect.signature``
+        alone returns the raw string form, and ``get_origin('dict[str, float]')``
+        is ``None`` — so the dict check would silently miss and the function
+        would be routed through the individual-reward path, where its dict
+        return value is coerced to 0.0 by ``float(dict_result)`` failing.
+        """
+        try:
+            hints = get_type_hints(func)
+        except Exception:
+            # Forward refs that fail to resolve (rare, e.g. when the function's
+            # globals don't contain a referenced name). Fall back to the raw
+            # annotation so we still classify when get_type_hints raises.
+            hints = {}
+        return_annotation = hints.get("return", inspect.signature(func).return_annotation)
         return return_annotation is dict or get_origin(return_annotation) is dict
 
     # individual-level reward helpers
