@@ -1,11 +1,25 @@
+from typing import Any
+
 from verifiers.types import (
     AssistantMessage,
     Messages,
     Response,
+    RoutedExpertsPayload,
     TrajectoryStepTokens,
 )
 
 ROUTED_EXPERTS_DATA_PREFIX = b'"routed_experts":{"data":"'
+
+
+def parse_routed_experts(raw: Any) -> RoutedExpertsPayload | None:
+    if raw is None:
+        return None
+    assert isinstance(raw, dict)
+    data = raw["data"]
+    shape = raw["shape"]
+    assert isinstance(data, (str, bytes, bytearray, memoryview))
+    assert isinstance(shape, list)
+    return {"data": data, "shape": [int(dim) for dim in shape]}
 
 
 def strip_routed_experts_data(raw: bytes) -> tuple[bytes, memoryview | None]:
