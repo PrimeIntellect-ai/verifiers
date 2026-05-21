@@ -33,10 +33,10 @@ def _select_examples(dataset: Dataset, count: int) -> Dataset:
 
 
 def _solution_integer(solution: str) -> str:
-    match = re.search(r"answer:\s*(-?\d+)", solution, flags=re.IGNORECASE)
-    if not match:
+    matches = re.findall(r"answer:\s*(-?\d+)", solution, flags=re.IGNORECASE)
+    if not matches:
         raise ValueError("Could not extract integer answer from GSM-Infinite solution")
-    return match.group(1)
+    return matches[-1]
 
 
 def _extract_integer_answer(text: str) -> str | None:
