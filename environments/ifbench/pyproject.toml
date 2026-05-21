@@ -21,7 +21,7 @@ build-backend = "hatchling.build"
 allow-direct-references = true
 
 [tool.hatch.build]
-include = ["ifbench.py", "ifbench_official"]
+include = ["ifbench.py", "ifbench_official", "pyproject.toml"]
 
 [tool.verifiers.eval]
 num_examples = 5
