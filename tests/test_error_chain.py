@@ -1,13 +1,12 @@
 """Tests for verifiers.utils.error_utils.ErrorChain."""
 
 import verifiers as vf
+from verifiers.types import ErrorInfo
 from verifiers.utils.error_utils import (
     ErrorChain,
     error_info,
     get_vf_error_chain,
-    is_error_info,
     is_retryable_error,
-    is_retryable_error_info,
 )
 
 
@@ -184,40 +183,29 @@ class TestErrorChain:
         assert info["is_retryable"] is False
         assert is_retryable_error(outer) is False
 
-    def test_is_retryable_error_info_uses_serialized_retryable_flag(self):
+    def test_is_retryable_error_uses_serialized_retryable_flag(self):
         """Serialized subclass names do not need to enumerate their base classes."""
-        info = {
+        info: ErrorInfo = {
             "error": "SandboxError",
             "error_chain_repr": "SandboxError('sandbox unavailable')",
             "error_chain_str": "SandboxError",
             "is_retryable": True,
         }
 
-        assert is_retryable_error_info(
+        assert is_retryable_error(
             info,
             (vf.InfraError, vf.InvalidModelResponseError),
         )
 
-    def test_is_retryable_error_info_requires_flag_for_default_policy(self):
+    def test_is_retryable_error_requires_flag_for_serialized_errors(self):
         """Default serialized retryability comes from ErrorInfo, not class-name parsing."""
-        info = {
+        info: ErrorInfo = {
             "error": "SandboxError",
             "error_chain_repr": "SandboxError('sandbox unavailable')",
             "error_chain_str": "SandboxError",
         }
 
-        assert not is_retryable_error_info(
+        assert not is_retryable_error(
             info,
             (vf.InfraError, vf.InvalidModelResponseError),
         )
-
-    def test_is_error_info_requires_serialized_error_shape(self):
-        assert is_error_info(
-            {
-                "error": "SandboxError",
-                "error_chain_repr": "SandboxError('sandbox unavailable')",
-                "error_chain_str": "SandboxError",
-            }
-        )
-        assert not is_error_info(vf.SandboxError("live exception"))
-        assert not is_error_info({"error": "SandboxError"})

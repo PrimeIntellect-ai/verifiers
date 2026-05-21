@@ -1,4 +1,3 @@
-from collections.abc import Mapping
 from typing import Callable, cast
 
 import verifiers as vf
@@ -62,12 +61,15 @@ class ErrorChain:
 
 
 def is_retryable_error(
-    error: BaseException,
+    error: BaseException | ErrorInfo,
     error_types: tuple[type[Exception], ...] = DEFAULT_RETRYABLE_ERROR_TYPES,
 ) -> bool:
-    """Return whether an error chain matches verifiers' retry policy."""
-    error_chain = ErrorChain(error)
-    return any(error_type in error_chain for error_type in error_types)
+    """Return whether a live or serialized error matches verifiers' retry policy."""
+    if isinstance(error, BaseException):
+        error_chain = ErrorChain(error)
+        return any(error_type in error_chain for error_type in error_types)
+
+    return error.get("is_retryable") is True
 
 
 def error_info(error: BaseException) -> ErrorInfo:
@@ -82,35 +84,9 @@ def error_info(error: BaseException) -> ErrorInfo:
     )
 
 
-def error_type_name(error: object) -> str | None:
+def error_type_name(error: BaseException | ErrorInfo | None) -> str | None:
+    if error is None:
+        return None
     if isinstance(error, BaseException):
         return type(error).__name__
-    if is_error_info(error):
-        return error["error"]
-    return None
-
-
-def is_error_info(error: object) -> bool:
-    """Return whether an object has the runtime shape of serialized ErrorInfo."""
-    if not isinstance(error, Mapping):
-        return False
-    return (
-        isinstance(error.get("error"), str)
-        and isinstance(error.get("error_chain_repr"), str)
-        and isinstance(error.get("error_chain_str"), str)
-    )
-
-
-def is_retryable_error_info(
-    error: object,
-    error_types: tuple[type[Exception], ...] = DEFAULT_RETRYABLE_ERROR_TYPES,
-) -> bool:
-    """Return whether serialized ErrorInfo should trigger a retry."""
-    if not is_error_info(error):
-        return False
-
-    if error_types == DEFAULT_RETRYABLE_ERROR_TYPES:
-        return error.get("is_retryable") is True
-
-    chain = str(error.get("error_chain_str") or error.get("error") or "")
-    return any(error_type.__name__ in chain for error_type in error_types)
+    return error["error"]
