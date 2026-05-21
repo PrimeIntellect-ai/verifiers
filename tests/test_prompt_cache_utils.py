@@ -233,6 +233,41 @@ async def test_openai_usage_splits_cached_input_tokens():
 
 
 @pytest.mark.asyncio
+async def test_openai_usage_handles_mixed_token_field_names():
+    client = OpenAIChatCompletionsClient(object())
+    message = SimpleNamespace(
+        content="ok",
+        tool_calls=None,
+        model_dump=lambda: {},
+    )
+    native_response = SimpleNamespace(
+        id="resp",
+        created=0,
+        model="gpt-5.4-mini",
+        usage=SimpleNamespace(
+            prompt_tokens=100,
+            output_tokens=5,
+            total_tokens=105,
+            prompt_tokens_details=SimpleNamespace(cached_tokens=80),
+        ),
+        choices=[
+            SimpleNamespace(
+                message=message,
+                finish_reason="stop",
+            )
+        ],
+    )
+
+    response = await client.from_native_response(native_response)
+
+    assert response.usage is not None
+    assert response.usage.prompt_tokens == 20
+    assert response.usage.completion_tokens == 5
+    assert response.usage.cached_input_tokens == 80
+    assert response.usage.total_tokens == 25
+
+
+@pytest.mark.asyncio
 async def test_anthropic_usage_splits_cache_read_and_write_tokens():
     client = AnthropicMessagesClient(object())
     native_response = SimpleNamespace(
@@ -298,6 +333,24 @@ def test_serialized_responses_usage_counts_input_token_cache_details():
             "input_tokens": 100,
             "output_tokens": 7,
             "input_tokens_details": {
+                "cached_tokens": 80,
+            },
+        }
+    }
+
+    assert extract_usage_token_details(response) == {
+        "input_tokens": 20,
+        "output_tokens": 7,
+        "cached_input_tokens": 80,
+    }
+
+
+def test_serialized_usage_handles_mixed_token_field_names():
+    response = {
+        "usage": {
+            "prompt_tokens": 100,
+            "output_tokens": 7,
+            "prompt_tokens_details": {
                 "cached_tokens": 80,
             },
         }

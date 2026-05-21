@@ -7,7 +7,8 @@ from verifiers.clients.client import Client
 from verifiers.clients.openai_chat_completions_client import (
     content_to_text,
     get_cached_prompt_tokens,
-    get_usage_field,
+    get_first_usage_int_field,
+    get_usage_int_field,
     handle_openai_overlong_prompt,
 )
 from verifiers.errors import (
@@ -113,22 +114,19 @@ class OpenAICompletionsClient(
             usage = getattr(response, "usage", None)
             if usage is None:
                 return None
-            prompt_tokens = get_usage_field(usage, "prompt_tokens")
-            completion_tokens = get_usage_field(usage, "completion_tokens")
-            if not isinstance(prompt_tokens, int) or not isinstance(
-                completion_tokens, int
-            ):
-                prompt_tokens = get_usage_field(usage, "input_tokens")
-                completion_tokens = get_usage_field(usage, "output_tokens")
-            total_tokens = get_usage_field(usage, "total_tokens")
-            if not isinstance(prompt_tokens, int) or not isinstance(
-                completion_tokens, int
-            ):
+            prompt_tokens = get_first_usage_int_field(
+                usage, "prompt_tokens", "input_tokens"
+            )
+            completion_tokens = get_first_usage_int_field(
+                usage, "completion_tokens", "output_tokens"
+            )
+            if prompt_tokens is None or completion_tokens is None:
                 return None
+            total_tokens = get_usage_int_field(usage, "total_tokens")
             cached_tokens = get_cached_prompt_tokens(usage)
             if cached_tokens is not None:
                 prompt_tokens = max(0, prompt_tokens - cached_tokens)
-            if not isinstance(total_tokens, int):
+            if total_tokens is None:
                 total_tokens = prompt_tokens + completion_tokens
             elif cached_tokens is not None:
                 total_tokens = max(0, total_tokens - cached_tokens)

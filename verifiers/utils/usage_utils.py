@@ -53,9 +53,10 @@ def extract_usage_token_details(response: object) -> dict[str, int] | None:
         return None
 
     input_tokens = _as_token_count(_get_field(usage, "prompt_tokens"))
-    output_tokens = _as_token_count(_get_field(usage, "completion_tokens"))
-    if input_tokens is None and output_tokens is None:
+    if input_tokens is None:
         input_tokens = _as_token_count(_get_field(usage, "input_tokens"))
+    output_tokens = _as_token_count(_get_field(usage, "completion_tokens"))
+    if output_tokens is None:
         output_tokens = _as_token_count(_get_field(usage, "output_tokens"))
     if input_tokens is None or output_tokens is None:
         return None
