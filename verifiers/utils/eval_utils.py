@@ -229,12 +229,6 @@ def _coerce_endpoint(raw_endpoint: object, source: str) -> Endpoint:
         if coerced_headers:
             endpoint["extra_headers"] = coerced_headers
 
-    raw_prompt_cache = raw_endpoint_dict.get("prompt_cache")
-    if raw_prompt_cache is not None:
-        if not isinstance(raw_prompt_cache, bool):
-            raise ValueError(f"Field 'prompt_cache' must be a boolean in {source}")
-        endpoint["prompt_cache"] = raw_prompt_cache
-
     return endpoint
 
 
@@ -561,7 +555,6 @@ def load_toml_config(
         "headers",
         "header_from_state",
         "headers_from_state",
-        "prompt_cache",
         # sampling
         "sampling_args",
         "max_tokens",

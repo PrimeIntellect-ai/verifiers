@@ -73,7 +73,7 @@ url = "https://api.openai.com/v1"
 key = "OPENAI_API_KEY"
 api_client_type = "openai_responses"
 ```
-9. Prompt caching is automatic for supported official providers inferred from the endpoint URL and API client type: OpenAI, Anthropic, and OpenRouter. Do not ask users to configure prompt caching for normal evals. Use `prompt_cache = false` on an endpoint row or `[[eval]]` entry only when a specific run needs to bypass provider prompt caching.
+9. Do not ask users to configure prompt caching for normal evals. Verifiers reports provider cache hits when usage data includes them, and official Anthropic Messages endpoints receive Anthropic's prompt-cache hint automatically.
 
 ## Publish Gate Before Large Runs
 1. After smoke tests pass and results look stable, proactively suggest pushing the environment to Hub before large eval sweeps or RL work.

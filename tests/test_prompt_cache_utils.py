@@ -1,6 +1,3 @@
-from __future__ import annotations
-
-import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -11,9 +8,9 @@ from verifiers.clients.client import Client
 from verifiers.clients.openai_chat_completions_client import OpenAIChatCompletionsClient
 from verifiers.types import ClientConfig, Response, ResponseMessage
 from verifiers.utils.prompt_cache_utils import (
-    EndpointIdentity,
     apply_prompt_cache_to_request,
-    resolve_prompt_cache_policy,
+    endpoint_origin,
+    uses_official_anthropic_messages,
 )
 from verifiers.utils.save_utils import state_to_output
 from verifiers.utils.usage_utils import extract_usage_token_details
@@ -66,127 +63,38 @@ class RecordingClient(Client):
         pass
 
 
-class ConcurrentStartClient(Client):
-    def __init__(self, config: ClientConfig):
-        super().__init__(config)
-        self.first_active = False
-        self.started_any = False
-        self.overlapped_first = False
+def test_endpoint_origin_normalizes_urls():
+    assert (
+        endpoint_origin("https://api.anthropic.com/v1") == "https://api.anthropic.com"
+    )
+    assert endpoint_origin("https://api.anthropic.com:443/v1") == (
+        "https://api.anthropic.com"
+    )
+    assert endpoint_origin("http://localhost:8080/v1") == "http://localhost:8080"
 
-    def setup_client(self, config):
-        return object()
 
-    async def get_response(self, prompt, model, sampling_args, tools=None, **kwargs):
-        _ = prompt, model, sampling_args, tools, kwargs
-        if self.first_active:
-            self.overlapped_first = True
-        elif not self.started_any:
-            self.started_any = True
-            self.first_active = True
-            await asyncio.sleep(0.01)
-            self.first_active = False
-        return Response(
-            id="resp",
-            created=0,
-            model="model",
-            usage=None,
-            message=ResponseMessage(
-                content="ok",
-                finish_reason="stop",
-                is_truncated=False,
-            ),
+def test_official_anthropic_messages_endpoint_is_cache_control_target():
+    assert uses_official_anthropic_messages(
+        ClientConfig(
+            client_type="anthropic_messages",
+            api_base_url="https://api.anthropic.com",
         )
-
-    async def to_native_tool(self, tool):
-        return tool
-
-    async def to_native_prompt(self, messages):
-        return messages, {}
-
-    async def get_native_response(
-        self, prompt, model, sampling_args, tools=None, **kwargs
-    ):
-        raise AssertionError("get_response is implemented directly")
-
-    async def raise_from_native_response(self, response):
-        _ = response
-
-    async def from_native_response(self, response):
-        _ = response
-
-    async def close(self) -> None:
-        pass
-
-
-def test_endpoint_identity_normalizes_official_origins():
-    identity = EndpointIdentity.from_url(
-        "https://api.openai.com/v1", "openai_chat_completions"
     )
-
-    assert identity is not None
-    assert identity.origin == "https://api.openai.com"
-    assert identity.host == "api.openai.com"
-    assert identity.path == "/v1"
-
-
-def test_prompt_cache_policy_is_inferred_from_url_and_type():
-    assert (
-        resolve_prompt_cache_policy(
-            ClientConfig(
-                client_type="openai_responses",
-                api_base_url="https://api.openai.com/v1",
-            ),
-            "gpt-5.4-mini",
-        ).mode
-        == "implicit"
-    )
-    assert (
-        resolve_prompt_cache_policy(
-            ClientConfig(
-                client_type="anthropic_messages",
-                api_base_url="https://api.anthropic.com",
-            ),
-            "claude-sonnet-4-5",
-        ).mode
-        == "anthropic_top_level"
-    )
-    assert (
-        resolve_prompt_cache_policy(
-            ClientConfig(
-                client_type="openai_chat_completions",
-                api_base_url="https://openrouter.ai/api/v1",
-            ),
-            "anthropic/claude-sonnet-4.5",
-        ).mode
-        == "openrouter_anthropic_top_level"
-    )
-    assert (
-        resolve_prompt_cache_policy(
-            ClientConfig(
-                client_type="openai_chat_completions",
-                api_base_url="https://api.example.com/v1",
-            ),
-            "model",
-        ).mode
-        == "disabled"
-    )
-
-
-def test_prompt_cache_false_disables_inferred_provider_policy():
-    policy = resolve_prompt_cache_policy(
+    assert not uses_official_anthropic_messages(
         ClientConfig(
             client_type="openai_chat_completions",
-            api_base_url="https://api.openai.com/v1",
-            prompt_cache=False,
-        ),
-        "gpt-5.4-mini",
+            api_base_url="https://api.anthropic.com",
+        )
+    )
+    assert not uses_official_anthropic_messages(
+        ClientConfig(
+            client_type="anthropic_messages",
+            api_base_url="https://api.pinference.ai/api/v1",
+        )
     )
 
-    assert policy.mode == "disabled"
-    assert not policy.enabled
 
-
-def test_anthropic_request_policy_adds_top_level_cache_control():
+def test_anthropic_request_adds_top_level_cache_control():
     native_prompt, native_tools, sampling_args, extra_kwargs = (
         apply_prompt_cache_to_request(
             config=ClientConfig(
@@ -207,31 +115,7 @@ def test_anthropic_request_policy_adds_top_level_cache_control():
     assert extra_kwargs["cache_control"] == {"type": "ephemeral"}
 
 
-def test_openrouter_anthropic_policy_uses_extra_body_cache_control():
-    native_prompt, native_tools, sampling_args, extra_kwargs = (
-        apply_prompt_cache_to_request(
-            config=ClientConfig(
-                client_type="openai_chat_completions",
-                api_base_url="https://openrouter.ai/api/v1",
-            ),
-            model="anthropic/claude-sonnet-4.5",
-            native_prompt=[{"role": "user", "content": "question"}],
-            native_tools=[],
-            sampling_args={"max_tokens": 16, "extra_body": {"foo": "bar"}},
-            extra_kwargs={},
-        )
-    )
-
-    assert native_prompt == [{"role": "user", "content": "question"}]
-    assert native_tools == []
-    assert extra_kwargs == {}
-    assert sampling_args["extra_body"] == {
-        "foo": "bar",
-        "cache_control": {"type": "ephemeral"},
-    }
-
-
-def test_openai_policy_does_not_mutate_request():
+def test_openai_request_does_not_mutate_request():
     native_prompt, native_tools, sampling_args, extra_kwargs = (
         apply_prompt_cache_to_request(
             config=ClientConfig(
@@ -252,8 +136,25 @@ def test_openai_policy_does_not_mutate_request():
     assert extra_kwargs == {}
 
 
+def test_non_official_anthropic_endpoint_does_not_add_cache_control():
+    _, _, sampling_args, extra_kwargs = apply_prompt_cache_to_request(
+        config=ClientConfig(
+            client_type="anthropic_messages",
+            api_base_url="https://api.pinference.ai/api/v1",
+        ),
+        model="claude-sonnet-4-5",
+        native_prompt=[],
+        native_tools=None,
+        sampling_args={"max_tokens": 16},
+        extra_kwargs={},
+    )
+
+    assert sampling_args == {"max_tokens": 16}
+    assert extra_kwargs == {}
+
+
 @pytest.mark.asyncio
-async def test_client_request_hook_applies_prompt_cache_policy():
+async def test_client_request_hook_applies_anthropic_cache_control():
     client = RecordingClient(
         ClientConfig(
             client_type="anthropic_messages",
@@ -268,35 +169,6 @@ async def test_client_request_hook_applies_prompt_cache_policy():
     )
 
     assert client.request["kwargs"]["cache_control"] == {"type": "ephemeral"}
-
-
-@pytest.mark.asyncio
-async def test_v1_group_rollouts_start_concurrently_for_cached_provider():
-    client = ConcurrentStartClient(
-        ClientConfig(
-            client_type="openai_chat_completions",
-            api_base_url="https://api.openai.com/v1",
-        )
-    )
-    env = vf.Env(
-        taskset=vf.Taskset(
-            config=vf.TasksetConfig.model_validate({"source": [{"question": "q"}]})
-        ),
-        harness=vf.Harness(config=vf.HarnessConfig.model_validate({"max_turns": 1})),
-    )
-
-    await env._run_group_states(
-        [
-            {"prompt": [{"role": "user", "content": "q"}], "example_id": 0},
-            {"prompt": [{"role": "user", "content": "q"}], "example_id": 0},
-            {"prompt": [{"role": "user", "content": "q"}], "example_id": 0},
-        ],
-        client,
-        "gpt-5.4-mini",
-        {},
-    )
-
-    assert client.overlapped_first
 
 
 @pytest.mark.asyncio

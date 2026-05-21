@@ -167,7 +167,7 @@ In `[[eval]]` TOML configs you can set extra headers as `headers = { ... }` and/
 
 For per-request headers that need to vary per rollout (e.g. sticky DP-aware routing keyed off `example_id` or `trajectory_id`), use `headers_from_state = { "X-Name" = "state_key" }` and/or `header_from_state = ["X-Name: state_key", ...]` (same form as repeated `--header-from-state`). The value for each request is resolved at send time as `state[state_key]`. If unset, `X-Session-ID` defaults to `example_id`.
 
-Prompt caching is automatic for supported official providers inferred from `url` and `api_client_type`: OpenAI (`https://api.openai.com`), Anthropic (`https://api.anthropic.com`), and OpenRouter (`https://openrouter.ai`). Unsupported providers run unchanged. Set `prompt_cache = false` on an endpoint row or `[[eval]]` only when you need to disable this behavior for a specific run.
+Provider prompt caches are managed by the upstream API. Verifiers reports provider cache hits as `cached_input_tokens` when they appear in usage data, and automatically sends Anthropic's prompt-cache hint for official Anthropic Messages endpoints.
 
 To define equivalent replicas, add multiple `[[endpoint]]` entries with the same `endpoint_id`.
 

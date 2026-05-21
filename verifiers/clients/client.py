@@ -51,10 +51,6 @@ class Client(ABC, Generic[ClientT, MessagesT, ResponseT, ToolT]):
     def client(self) -> ClientT:
         return self._client
 
-    @property
-    def config(self) -> ClientConfig | None:
-        return self._config
-
     @abstractmethod
     def setup_client(self, config: ClientConfig) -> ClientT: ...
 

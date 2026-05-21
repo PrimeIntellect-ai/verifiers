@@ -1,4 +1,3 @@
-import math
 from collections.abc import Mapping, Sequence
 from types import MappingProxyType
 from typing import Any, cast
@@ -6,110 +5,76 @@ from typing import Any, cast
 from verifiers.types import Response, TokenUsage, Usage
 
 
-def _get_usage_value(usage_obj: object, key: str) -> object:
-    if isinstance(usage_obj, Mapping):
-        usage_mapping = cast(Mapping[str, object], usage_obj)
-        return usage_mapping.get(key, 0)
-    return getattr(usage_obj, key, 0)
+def _get_field(obj: object, key: str) -> object:
+    if isinstance(obj, Mapping):
+        return cast(Mapping[str, object], obj).get(key)
+    return getattr(obj, key, None)
 
 
-def _get_optional_usage_value(usage_obj: object, key: str) -> object:
-    if isinstance(usage_obj, Mapping):
-        usage_mapping = cast(Mapping[str, object], usage_obj)
-        return usage_mapping.get(key)
-    return getattr(usage_obj, key, None)
-
-
-def _get_nested_usage_value(usage_obj: object, key: str) -> object:
-    value = _get_optional_usage_value(usage_obj, key)
-    if value is not None:
-        return value
-    for details_key in ("prompt_tokens_details", "input_tokens_details"):
-        details = _get_optional_usage_value(usage_obj, details_key)
-        if isinstance(details, Mapping):
-            details_mapping = cast(Mapping[str, object], details)
-            nested_value = details_mapping.get(key)
-            if nested_value is not None:
-                return nested_value
-        elif details is not None:
-            nested_value = getattr(details, key, None)
-            if nested_value is not None:
-                return nested_value
+def _as_token_count(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return max(0, value)
+    if isinstance(value, float) and value.is_integer():
+        return max(0, int(value))
     return None
 
 
-def _get_response_usage(response: object) -> object:
-    if isinstance(response, Mapping):
-        response_mapping = cast(Mapping[str, object], response)
-        return response_mapping.get("usage")
-    return getattr(response, "usage", None)
+def _response_usage(response: object) -> object | None:
+    return _get_field(response, "usage")
 
 
-def _coerce_usage_int(value: object) -> int:
-    """Best-effort usage coercion. Invalid values degrade to zero."""
-    if value is None:
-        return 0
-    if isinstance(value, bool):
-        return int(value)
-    if isinstance(value, int):
-        return max(0, value)
-    if isinstance(value, float):
-        if math.isnan(value) or math.isinf(value):
-            return 0
-        return max(0, int(value))
-    if isinstance(value, str):
-        stripped = value.strip()
-        if not stripped:
-            return 0
-        try:
-            return max(0, int(stripped))
-        except (TypeError, ValueError):
-            try:
-                parsed = float(stripped)
-                if math.isnan(parsed) or math.isinf(parsed):
-                    return 0
-                return max(0, int(parsed))
-            except (TypeError, ValueError):
-                return 0
-    return 0
+def _nested_cached_tokens(usage: object) -> int | None:
+    for details_key in ("prompt_tokens_details", "input_tokens_details"):
+        details = _get_field(usage, details_key)
+        if details is None:
+            continue
+        cached = _as_token_count(_get_field(details, "cached_tokens"))
+        if cached is not None:
+            return cached
+    return None
+
+
+def _cache_creation_tokens(usage: object) -> int:
+    return _as_token_count(_get_field(usage, "cache_creation_input_tokens")) or 0
+
+
+def _direct_cached_tokens(usage: object) -> int | None:
+    cached = _as_token_count(_get_field(usage, "cached_input_tokens"))
+    if cached is not None:
+        return cached
+    return _as_token_count(_get_field(usage, "cache_read_input_tokens"))
 
 
 def extract_usage_token_details(response: object) -> dict[str, int] | None:
-    usage = _get_response_usage(response)
+    usage = _response_usage(response)
     if usage is None:
         return None
 
-    prompt_tokens = _get_usage_value(usage, "prompt_tokens")
-    completion_tokens = _get_usage_value(usage, "completion_tokens")
-    if not prompt_tokens and not completion_tokens:
-        prompt_tokens = _get_usage_value(usage, "input_tokens")
-        completion_tokens = _get_usage_value(usage, "output_tokens")
+    input_tokens = _as_token_count(_get_field(usage, "prompt_tokens"))
+    output_tokens = _as_token_count(_get_field(usage, "completion_tokens"))
+    if input_tokens is None and output_tokens is None:
+        input_tokens = _as_token_count(_get_field(usage, "input_tokens"))
+        output_tokens = _as_token_count(_get_field(usage, "output_tokens"))
+    if input_tokens is None or output_tokens is None:
+        return None
+
+    input_tokens += _cache_creation_tokens(usage)
     details = {
-        "input_tokens": _coerce_usage_int(prompt_tokens),
-        "output_tokens": _coerce_usage_int(completion_tokens),
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
     }
 
-    subtract_cached_from_input = False
-    cached_input_tokens = _get_optional_usage_value(usage, "cached_input_tokens")
-    if cached_input_tokens is None:
-        cached_input_tokens = _get_optional_usage_value(
-            usage, "cache_read_input_tokens"
-        )
-    if cached_input_tokens is None:
-        cached_input_tokens = _get_nested_usage_value(usage, "cached_tokens")
-        subtract_cached_from_input = cached_input_tokens is not None
-    if cached_input_tokens is not None:
-        cached_int = _coerce_usage_int(cached_input_tokens)
-        details["cached_input_tokens"] = cached_int
-        if subtract_cached_from_input:
-            details["input_tokens"] = max(0, details["input_tokens"] - cached_int)
+    cached_tokens = _direct_cached_tokens(usage)
+    if cached_tokens is not None:
+        details["cached_input_tokens"] = cached_tokens
+        return details
 
-    cache_creation_input_tokens = _get_optional_usage_value(
-        usage, "cache_creation_input_tokens"
-    )
-    if cache_creation_input_tokens is not None:
-        details["input_tokens"] += _coerce_usage_int(cache_creation_input_tokens)
-
+    cached_tokens = _nested_cached_tokens(usage)
+    if cached_tokens is not None:
+        details["input_tokens"] = max(0, input_tokens - cached_tokens)
+        details["cached_input_tokens"] = cached_tokens
     return details
 
 
@@ -131,6 +96,17 @@ def response_usage_tokens(response: Response) -> tuple[int, int]:
     if usage is None:
         return 0, 0
     return usage_tokens(usage)
+
+
+def cast_token_usage(usage: Mapping[str, Any]) -> TokenUsage:
+    out: TokenUsage = {
+        "input_tokens": float(usage.get("input_tokens", 0.0)),
+        "output_tokens": float(usage.get("output_tokens", 0.0)),
+    }
+    cached = usage.get("cached_input_tokens")
+    if cached is not None:
+        out["cached_input_tokens"] = float(cached)
+    return out
 
 
 class StateUsageTracker:
@@ -172,8 +148,6 @@ class StateUsageTracker:
             self._usage_totals[key] = self._usage_totals.get(key, 0.0) + delta
 
     def increment_from_response(self, response: object) -> None:
-        if _get_response_usage(response) is None:
-            return
         details = extract_usage_token_details(response)
         if details is None:
             return
@@ -190,18 +164,6 @@ class StateUsageTracker:
         return cast_token_usage(self._usage_totals)
 
 
-def cast_token_usage(usage: Mapping[str, Any]) -> TokenUsage:
-    out: TokenUsage = {
-        "input_tokens": float(usage.get("input_tokens", 0.0)),
-        "output_tokens": float(usage.get("output_tokens", 0.0)),
-    }
-    for key in ("cached_input_tokens",):
-        value = usage.get(key)
-        if value is not None:
-            out[key] = float(value)
-    return out
-
-
 def compute_context_token_metrics(
     trajectory: Sequence[Mapping[str, object]],
 ) -> dict[str, float]:
@@ -214,44 +176,37 @@ def compute_context_token_metrics(
     Returns a dict with:
         final_output_tokens: Model-generated tokens (sum of completion_tokens
             across all steps).
-        final_input_tokens: Non-model tokens in context (last step's total
-            context minus final_output_tokens).
+        final_input_tokens: Non-model tokens in context (system prompts, user
+            messages, tool results, etc.).
     """
-    _zero: dict[str, float] = {
-        "final_output_tokens": 0,
-        "final_input_tokens": 0,
-    }
+    zero = {"final_output_tokens": 0.0, "final_input_tokens": 0.0}
     if not trajectory:
-        return _zero
+        return zero
 
     last_step_total = 0
     found = False
     for step in reversed(trajectory):
-        response = step.get("response")
-        if response is None or _get_response_usage(response) is None:
-            continue
-        details = extract_usage_token_details(response)
+        details = extract_usage_token_details(step.get("response"))
         if details is None:
             continue
-        prompt_tokens = details["input_tokens"] + details.get("cached_input_tokens", 0)
-        completion_tokens = details["output_tokens"]
-        last_step_total = prompt_tokens + completion_tokens
+        last_step_total = (
+            details["input_tokens"]
+            + details.get("cached_input_tokens", 0)
+            + details["output_tokens"]
+        )
         found = True
         break
 
     if not found:
-        return _zero
+        return zero
 
     total_completion = 0
     for step in trajectory:
-        response = step.get("response")
-        if response is None or _get_response_usage(response) is None:
-            continue
-        details = extract_usage_token_details(response)
+        details = extract_usage_token_details(step.get("response"))
         if details is not None:
             total_completion += details["output_tokens"]
 
     return {
-        "final_output_tokens": total_completion,
-        "final_input_tokens": max(0, last_step_total - total_completion),
+        "final_output_tokens": float(total_completion),
+        "final_input_tokens": float(max(0, last_step_total - total_completion)),
     }
