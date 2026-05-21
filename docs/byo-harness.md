@@ -528,7 +528,9 @@ rollouts_per_example = 3
 
 [[eval]]
 env_id = "my-v1-env"
-sampling_args = { max_tokens = 4096 }
+
+[eval.sampling]
+max_tokens = 4096
 
 [eval.harness]
 max_turns = 4
