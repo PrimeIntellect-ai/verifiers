@@ -1496,6 +1496,16 @@ def test_load_taskset_accepts_base_taskset_config() -> None:
     assert taskset.config.taskset_id == "plain"
 
 
+def test_component_loaders_reject_prebuilt_objects() -> None:
+    taskset = Taskset(config=TasksetConfig())
+    harness = Harness(config=HarnessConfig())
+
+    with pytest.raises(TypeError, match="TasksetConfig, mapping, or id"):
+        vf.load_taskset(taskset)
+    with pytest.raises(TypeError, match="HarnessConfig, mapping, or id"):
+        vf.load_harness(harness)
+
+
 def test_load_taskset_rejects_unbound_taskset_config_subclass() -> None:
     class UnboundTasksetConfig(TasksetConfig):
         split: str = "train"
