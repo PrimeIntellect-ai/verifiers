@@ -10,6 +10,7 @@ This folder contains installable example environments that showcase common usage
 ## Common usage patterns and examples
 
 ### SingleTurnEnv (prompt → single response)
+- **ifbench**: IFBench instruction-following tasks with strict/loose verifier rewards.
 - **gsm8k**: Classic QA with exact-match reward and optional response-format reward.
 - **reverse_text**: XML formatting with non-binary LCS reward + format reward.
 - **continuation_quality**: Completion-style generation (`message_type="completion"`) judged for prose quality with `JudgeRubric`.

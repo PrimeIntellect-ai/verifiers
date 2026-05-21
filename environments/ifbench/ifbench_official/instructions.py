@@ -954,11 +954,11 @@ class NthWordJapaneseChecker(Instruction):
 			self._japanese_position = random.randint(1, _NUM_WORD_CYCLE)
 
 		self._description_pattern = "Every {N}th word of your response must be in Japanese."
-		if N % 10 == 1:
+		if self._japanese_position % 10 == 1:
 			self._description_pattern = "Every {N}st of your response must be in Japanese."
-		if N % 10 == 2:
+		elif self._japanese_position % 10 == 2:
 			self._description_pattern = "Every {N}nd of your response must be in Japanese."
-		elif N % 10 == 3:
+		elif self._japanese_position % 10 == 3:
 			self._description_pattern = "Every {N}rd of your response must be in Japanese."
 		return self._description_pattern.format(N=self._japanese_position)
 
