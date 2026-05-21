@@ -22,6 +22,18 @@ DEFAULT_RLM_MAX_DEPTH = 0
 DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH = "/task/append_to_system_prompt.txt"
 DEFAULT_RLM_CHECKOUT_PATH = "/tmp/rlm-checkout"
 DEFAULT_RLM_CHECKOUT_UPLOAD_NAME = "rlm_checkout"
+# Forwarded by ``rlm-harness/install.sh`` into ``uv tool install --with ...``
+# so the agent's ipython kernel can ``import`` these without ``pip install``
+# mid-rollout. Word-split on spaces by the shell — keep specs unversioned
+# (no ``>=``). Callers override by passing
+# ``ComposableEnv(install_env={"RLM_EXTRA_UV_ARGS": "..."})``.
+DEFAULT_RLM_EXTRA_UV_ARGS = (
+    "--with requests --with httpx "
+    "--with pyyaml --with tomli --with python-dotenv "
+    "--with pandas --with numpy --with scipy "
+    "--with beautifulsoup4 --with lxml "
+    "--with pydantic"
+)
 DEFAULT_RLM_LOCAL_CHECKOUT_CACHE_ROOT = (
     Path.home() / ".cache" / "verifiers" / "rlm-checkouts"
 )
@@ -101,6 +113,7 @@ def build_install_script() -> str:
     script = f"""\
 set -eo pipefail
 export RLM_CHECKOUT_PATH={shlex.quote(DEFAULT_RLM_CHECKOUT_PATH)}
+export RLM_EXTRA_UV_ARGS="${{RLM_EXTRA_UV_ARGS:-{DEFAULT_RLM_EXTRA_UV_ARGS}}}"
 test -f "$RLM_CHECKOUT_PATH/install.sh"
 bash "$RLM_CHECKOUT_PATH/install.sh"
 """
