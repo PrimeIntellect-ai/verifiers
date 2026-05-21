@@ -1,0 +1,18 @@
+[project]
+name = "terminal-bench-sandbox"
+description = "Run Terminal-Bench tasks inside a Verifiers SandboxEnv"
+tags = ["terminal-bench", "sandbox", "multi-turn", "tools", "train", "eval"]
+requires-python = ">=3.11"
+version = "0.1.0"
+dependencies = [
+    "verifiers>=0.1.5.post0",
+    "datasets",
+    "terminal-bench>=0.2.18",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["terminal_bench.py"]
