@@ -114,6 +114,7 @@ rl = [
 [tool.uv]
 preview = true
 required-version = ">=0.11.1"
+exclude-newer = "7 days"
 conflicts = [
     [
         { extra = "openenv" },
@@ -124,7 +125,6 @@ conflicts = [
 name = "pypi"
 url = "https://pypi.org/simple"
 default = true
-exclude-newer = "7 days"
 
 [tool.uv.exclude-newer-package]
 # PrimeIntellect-published on PyPI (trusted publisher)
