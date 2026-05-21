@@ -176,41 +176,21 @@ def maybe_retry(
         detail = str(error.get("error_chain_repr") or error.get("error") or "")
         return error_types[0](detail)
 
+    def reraise_error(err: BaseException | ErrorInfo | None) -> None:
+        if isinstance(err, BaseException) and is_retryable_error(err, error_types):
+            raise err
+        if isinstance(err, Mapping):
+            error_info = cast(ErrorInfo, err)
+            if is_retryable_error(error_info, error_types):
+                raise retry_exception_from_error_info(error_info, error_types)
+
     def reraise_error_from_state(result, error_types: tuple[type[Exception], ...]):
         """Re-raise specified errors from state(s) to trigger tenacity retry."""
         if isinstance(result, dict):
-            err = result.get("error")
-            if isinstance(err, BaseException) and is_retryable_error(err, error_types):
-                raise err
-            if isinstance(err, Mapping):
-                serialized_error = cast(Mapping[str, str | bool], err)
-                if (
-                    isinstance(serialized_error.get("error"), str)
-                    and isinstance(serialized_error.get("error_chain_repr"), str)
-                    and isinstance(serialized_error.get("error_chain_str"), str)
-                ):
-                    error_info = cast(ErrorInfo, serialized_error)
-                    if is_retryable_error(error_info, error_types):
-                        raise retry_exception_from_error_info(error_info, error_types)
+            reraise_error(result.get("error"))
         elif isinstance(result, list):
             for state in result:
-                err = state.get("error")
-                if isinstance(err, BaseException) and is_retryable_error(
-                    err, error_types
-                ):
-                    raise err
-                if isinstance(err, Mapping):
-                    serialized_error = cast(Mapping[str, str | bool], err)
-                    if (
-                        isinstance(serialized_error.get("error"), str)
-                        and isinstance(serialized_error.get("error_chain_repr"), str)
-                        and isinstance(serialized_error.get("error_chain_str"), str)
-                    ):
-                        error_info = cast(ErrorInfo, serialized_error)
-                        if is_retryable_error(error_info, error_types):
-                            raise retry_exception_from_error_info(
-                                error_info, error_types
-                            )
+                reraise_error(state.get("error"))
 
     def log_retry(retry_state: tc.RetryCallState) -> None:
         """Log a warning with the exception and the number of attempts."""
