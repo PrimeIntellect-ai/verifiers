@@ -18,12 +18,13 @@ Environment Implementation:
   - on_turn_complete(state): Update game state after each turn
 """
 
+import asyncio
 from abc import abstractmethod
 
 import verifiers as vf
 from verifiers.envs.agent import Agent
 from verifiers.envs.multiturn_env import MultiTurnEnv
-from verifiers.envs.protocol import Protocol
+from verifiers.envs.protocol import Protocol, SpawningProtocol, SpawnResult, SpawnSpec
 from verifiers.types import Messages, State, TrajectoryStep
 from verifiers.utils.message_utils import normalize_messages
 
@@ -197,6 +198,11 @@ class MultiAgentEnv(MultiTurnEnv):
            c. Get model response
            d. Store in trajectory
            e. Process via on_turn_complete()
+           f. If protocol is a SpawningProtocol and should_spawn(state):
+              run child sub-rollouts in parallel, embed their trajectory
+              steps into the parent's trajectory tagged with the spec's
+              agent_id, and store SpawnResults in state["extras"]["spawns"]
+              for the rubric to consume.
         3. Return final state
         """
         state = await self.init_state(input, client, model, sampling_args)
@@ -233,7 +239,14 @@ class MultiAgentEnv(MultiTurnEnv):
                 # 4. Process turn (game logic)
                 await self.on_turn_complete(state)
 
-                # 5. Determine next agent (if game continues)
+                # 5. Spawn sub-rollouts if the protocol requests it.
+                if isinstance(self._protocol, SpawningProtocol) and (
+                    self._protocol.should_spawn(state)
+                ):
+                    specs = self._protocol.get_spawn_specs(state)
+                    await self._run_spawns(specs, state, client, model, sampling_args)
+
+                # 6. Determine next agent (if game continues)
                 if not await self.is_completed(state):
                     state["extras"]["current_agent_id"] = self.get_next_agent(state)
 
@@ -247,3 +260,78 @@ class MultiAgentEnv(MultiTurnEnv):
 
         await self.render_completion(state)
         return state
+
+    # -------------------------------------------------------------------------
+    # Spawning support (SpawningProtocol)
+    # -------------------------------------------------------------------------
+
+    async def _run_spawns(
+        self,
+        specs: list[SpawnSpec],
+        state: State,
+        client,
+        model,
+        sampling_args,
+    ) -> None:
+        """Execute SpawnSpecs in parallel, score each child, embed their
+        trajectory steps into the parent's trajectory, and record SpawnResults
+        in ``state["extras"]["spawns"]``.
+
+        Each child's trajectory steps are tagged with the spec's ``agent_id``
+        and ``is_trainable`` (setdefault, so a child env that already tagged
+        its own steps wins). This keeps existing per-agent advantage and
+        completion-masking machinery intact —
+        ``interleave_rollout(split_by_agent=True)`` and
+        ``MicroBatch.actor_ids`` work without modification.
+        """
+        state["extras"].setdefault("spawns", [])
+        # Outer loop is sequential across specs but inner inputs run in parallel.
+        # Most protocols emit a single spec per turn so this is essentially
+        # one gather() per spawning turn.
+        for spec in specs:
+            child_model = (
+                self.actor_models.get(spec.agent_id) if self.actor_models else model
+            )
+            child_states = await asyncio.gather(
+                *(
+                    self._run_one_child(spec, child_input, client, child_model, sampling_args)
+                    for child_input in spec.inputs
+                )
+            )
+            for child_state in child_states:
+                for step in child_state.get("trajectory", []):
+                    step.setdefault("extras", {})
+                    step["extras"].setdefault("agent_id", spec.agent_id)
+                    step["extras"].setdefault("is_trainable", spec.is_trainable)
+                    state["trajectory"].append(step)
+            state["extras"]["spawns"].append(
+                SpawnResult(spec=spec, states=list(child_states))
+            )
+
+    async def _run_one_child(
+        self,
+        spec: SpawnSpec,
+        child_input,
+        client,
+        child_model,
+        sampling_args,
+    ) -> State:
+        """Roll out a single child and score it so ``state["reward"]`` is
+        populated before the parent's reward funcs read it. Score failures
+        are logged and treated as zero — they should not bring down the
+        parent rollout."""
+        child_state = await spec.child_env.rollout(
+            child_input, client, child_model, sampling_args
+        )
+        rubric = getattr(spec.child_env, "rubric", None)
+        if rubric is not None:
+            try:
+                await rubric.score_rollout(child_state)
+            except Exception as e:  # pragma: no cover — defensive
+                self.logger.warning(
+                    "child rubric.score_rollout failed (agent_id=%s): %s: %s",
+                    spec.agent_id,
+                    type(e).__name__,
+                    e,
+                )
+        return child_state
