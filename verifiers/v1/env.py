@@ -20,10 +20,6 @@ from .types import ConfigData, ConfigMap, Handler
 from .utils.config_utils import coerce_config, config_owner, explicit_config_data
 
 
-def _package_module_name(package_id: str) -> str:
-    return package_id.replace("-", "_").split("/")[-1]
-
-
 class Env(vf.Environment):
     def __init__(
         self,
@@ -298,7 +294,7 @@ def _load_component(
 
 
 def _import_component_module(component_id: str, label: str) -> object:
-    module_name = _package_module_name(component_id)
+    module_name = component_id.replace("-", "_").split("/")[-1]
     try:
         return importlib.import_module(module_name)
     except ImportError as exc:
@@ -312,7 +308,7 @@ def _component_loader(
     module: object, loader_name: str, component_id: str, label: str
 ) -> Handler:
     if not hasattr(module, loader_name):
-        module_name = _package_module_name(component_id)
+        module_name = component_id.replace("-", "_").split("/")[-1]
         raise AttributeError(
             f"Module '{module_name}' does not have a '{loader_name}' function. "
             f"Install the correct {label} package or add '{loader_name}' to it."
