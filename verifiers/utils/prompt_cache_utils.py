@@ -18,10 +18,12 @@ def endpoint_origin(api_base_url: str) -> str | None:
     host = parsed.hostname.lower()
     port = parsed.port
     netloc = host
+    if ":" in host:
+        netloc = f"[{host}]"
     if port is not None and not (
         (scheme == "https" and port == 443) or (scheme == "http" and port == 80)
     ):
-        netloc = f"{host}:{port}"
+        netloc = f"{netloc}:{port}"
     return f"{scheme}://{netloc}"
 
 
@@ -47,7 +49,11 @@ def apply_prompt_cache_to_request(
     extra_kwargs: Mapping[str, Any],
 ) -> tuple[NativePromptT, NativeToolsT, dict[str, Any], dict[str, Any]]:
     _ = model
+    updated_sampling_args = dict(sampling_args)
     updated_extra_kwargs = dict(extra_kwargs)
-    if uses_official_anthropic_messages(config):
+    if (
+        uses_official_anthropic_messages(config)
+        and "cache_control" not in updated_sampling_args
+    ):
         updated_extra_kwargs.setdefault("cache_control", _cache_control_payload())
-    return native_prompt, native_tools, dict(sampling_args), updated_extra_kwargs
+    return native_prompt, native_tools, updated_sampling_args, updated_extra_kwargs

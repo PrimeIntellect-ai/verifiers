@@ -71,6 +71,7 @@ def test_endpoint_origin_normalizes_urls():
         "https://api.anthropic.com"
     )
     assert endpoint_origin("http://localhost:8080/v1") == "http://localhost:8080"
+    assert endpoint_origin("http://[::1]:8080/v1") == "http://[::1]:8080"
 
 
 def test_official_anthropic_messages_endpoint_is_cache_control_target():
@@ -113,6 +114,29 @@ def test_anthropic_request_adds_top_level_cache_control():
     assert native_tools is None
     assert sampling_args == {"max_tokens": 16}
     assert extra_kwargs["cache_control"] == {"type": "ephemeral"}
+
+
+def test_anthropic_request_preserves_sampling_args_cache_control():
+    _, _, sampling_args, extra_kwargs = apply_prompt_cache_to_request(
+        config=ClientConfig(
+            client_type="anthropic_messages",
+            api_base_url="https://api.anthropic.com",
+        ),
+        model="claude-sonnet-4-5",
+        native_prompt=[],
+        native_tools=None,
+        sampling_args={
+            "max_tokens": 16,
+            "cache_control": {"type": "custom"},
+        },
+        extra_kwargs={},
+    )
+
+    assert sampling_args == {
+        "max_tokens": 16,
+        "cache_control": {"type": "custom"},
+    }
+    assert extra_kwargs == {}
 
 
 def test_openai_request_does_not_mutate_request():

@@ -78,13 +78,6 @@ def extract_usage_token_details(response: object) -> dict[str, int] | None:
     return details
 
 
-def extract_usage_tokens(response: object) -> tuple[int, int]:
-    details = extract_usage_token_details(response)
-    if details is None:
-        return 0, 0
-    return details["input_tokens"], details["output_tokens"]
-
-
 def usage_tokens(usage: Usage) -> tuple[int, int]:
     if usage.prompt_tokens < 0 or usage.completion_tokens < 0:
         raise ValueError("Response usage tokens must be non-negative.")
