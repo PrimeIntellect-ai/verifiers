@@ -2,8 +2,8 @@ import logging
 
 import torch._dynamo
 
-from .config import RLConfig
-from .trainer import RLTrainer
+from .config import RLConfig, SFTConfig
+from .trainer import RLTrainer, SFTTrainer
 from .utils import get_model, get_model_and_tokenizer
 
 torch._dynamo.config.suppress_errors = True
@@ -31,6 +31,8 @@ def lora_defaults(**kwargs):
 __all__ = [
     "RLConfig",
     "RLTrainer",
+    "SFTConfig",
+    "SFTTrainer",
     "GRPOTrainer",
     "GRPOConfig",
     "grpo_defaults",
