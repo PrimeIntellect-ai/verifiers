@@ -74,6 +74,10 @@ class OpenCode(Harness[OpenCodeConfig]):
         }
 
 
+def load_harness(config: OpenCodeConfig) -> OpenCode:
+    return OpenCode(config=config)
+
+
 def build_install_script(
     release_repo: str,
     release_version: str,

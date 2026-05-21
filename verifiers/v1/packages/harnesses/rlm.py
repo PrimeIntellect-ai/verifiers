@@ -158,6 +158,10 @@ class RLM(Harness[RLMConfig]):
         self.program = program
 
 
+def load_harness(config: RLMConfig) -> RLM:
+    return RLM(config=config)
+
+
 def build_install_command() -> str:
     script = f"""
 set -eo pipefail

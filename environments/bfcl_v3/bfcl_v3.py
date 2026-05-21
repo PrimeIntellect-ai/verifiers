@@ -16,7 +16,7 @@ from verifiers.types import (
 from verifiers.utils.message_utils import message_role, normalize_messages
 
 from verifiers.v1.utils.endpoint_utils import assistant_completion_from_messages
-from verifiers.v1.utils.config_utils import coerce_config, explicit_config_data
+from verifiers.v1.utils.config_utils import explicit_config_data
 from verifiers.v1.utils.json_utils import json_args
 from verifiers.v1.types import ConfigMap
 
@@ -591,8 +591,7 @@ class BFCLTaskset(vf.Taskset[BFCLTasksetConfig]):
     _default_rewards = (bfcl_reward,)
 
 
-def load_harness(config: BFCLHarnessConfig | None = None) -> vf.Harness:
-    config = coerce_config(BFCLHarnessConfig, config)
+def load_harness(config: BFCLHarnessConfig) -> vf.Harness:
     patch_bfcl_eval()
     from bfcl_eval.utils import is_multi_turn
 

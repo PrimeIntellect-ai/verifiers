@@ -277,6 +277,7 @@ class TasksetConfig(LifecycleConfig):
 
 class HarnessConfig(LifecycleConfig):
     # Singleton fields describe one logical value owned by the harness.
+    harness_id: str | None = None
     program: ProgramConfig | str | None = None
     system_prompt: PromptInput | None = None
     system_prompt_merge: str = "reject"
@@ -295,9 +296,22 @@ class HarnessConfig(LifecycleConfig):
         return normalize_binding_map(value, "harness.bindings", allow_objects=False)
 
 
+def validate_component_id_aliases(
+    id_value: object, alias_value: object, *, field: str, alias: str
+) -> None:
+    if id_value is not None and not isinstance(id_value, str):
+        raise TypeError(f"{field}.id must be a string.")
+    if alias_value is not None and not isinstance(alias_value, str):
+        raise TypeError(f"{field}.{alias} must be a string.")
+    if id_value is not None and alias_value is not None and id_value != alias_value:
+        raise ValueError(
+            f"{field}.id and {field}.{alias} must match when both are provided."
+        )
+
+
 class EnvConfig(Config):
-    taskset: TasksetConfig = TasksetConfig()
-    harness: HarnessConfig = HarnessConfig()
+    taskset: ConfigData = {}
+    harness: ConfigData = {}
 
     @classmethod
     def __pydantic_init_subclass__(cls, **kwargs: object) -> None:
@@ -313,6 +327,8 @@ class EnvConfig(Config):
             ("taskset", TasksetConfig),
             ("harness", HarnessConfig),
         ):
+            if field_name not in cls.__dict__.get("__annotations__", {}):
+                continue
             annotation = cls.model_fields[field_name].annotation
             if not (
                 isinstance(annotation, type) and issubclass(annotation, expected_type)
@@ -331,10 +347,35 @@ class EnvConfig(Config):
                 "Omit the section to use the default config."
             )
         try:
-            explicit_config_data(value)
+            data = explicit_config_data(value)
         except TypeError as exc:
             raise ValueError(str(exc)) from exc
-        return value
+        validate_env_child_config(data, str(info.field_name))
+        return data
+
+
+def validate_env_child_config(data: ConfigData, field_name: str) -> None:
+    if field_name == "taskset":
+        validate_component_id_aliases(
+            data.get("id"),
+            data.get("taskset_id"),
+            field="taskset",
+            alias="taskset_id",
+        )
+    if field_name == "harness":
+        validate_component_id_aliases(
+            data.get("id"),
+            data.get("harness_id"),
+            field="harness",
+            alias="harness_id",
+        )
+    if "config" in data:
+        raise ValueError(
+            f"EnvConfig.{field_name}.config is not supported. "
+            "Put fields directly in the section."
+        )
+    for key, item in data.items():
+        validate_serializable_value(item, f"EnvConfig.{field_name}.{key}")
 
 
 def sandbox_config_mapping(

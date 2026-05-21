@@ -62,7 +62,7 @@ def write_harbor_package(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Mod
 import verifiers.v1 as vf
 
 
-def load_taskset(config: vf.HarborTasksetConfig | None = None):
+def load_taskset(config: vf.HarborTasksetConfig):
     return vf.HarborTaskset(config=config)
 
 
@@ -83,7 +83,7 @@ def test_harbor_taskset_loads_package_tasks_with_program_patch(
     package = write_harbor_package(tmp_path, monkeypatch)
     write_harbor_task(cast(Path, getattr(package, "tasks_root")))
 
-    taskset = getattr(package, "load_taskset")()
+    taskset = getattr(package, "load_taskset")(config=vf.HarborTasksetConfig())
     task = next(iter(taskset))
 
     assert task["taskset_id"] == "harbor"
@@ -119,7 +119,7 @@ def test_harbor_taskset_rejects_malformed_package_task(
     bad_task.mkdir()
     (bad_task / "task.toml").write_text('version = "1.0"')
 
-    taskset = getattr(package, "load_taskset")()
+    taskset = getattr(package, "load_taskset")(config=vf.HarborTasksetConfig())
 
     with pytest.raises(ValueError, match="Malformed Harbor task"):
         list(taskset)

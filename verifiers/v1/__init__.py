@@ -34,7 +34,7 @@ from .config import (
     ToolsetConfig,
     UserConfig,
 )
-from .env import Env
+from .env import Env, load_harness, load_taskset
 from .harness import Harness
 from .packages.harnesses import (
     MiniSWEAgent,
@@ -134,6 +134,8 @@ __all__ = [
     "discover_sibling_dir",
     "metric",
     "get_messages",
+    "load_harness",
+    "load_taskset",
     "reward",
     "score_group",
     "score_rollout",

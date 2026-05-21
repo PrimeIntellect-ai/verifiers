@@ -197,6 +197,10 @@ class HarborTaskset(Taskset[HarborTasksetConfig]):
         }
 
 
+def load_taskset(config: HarborTasksetConfig) -> HarborTaskset:
+    return HarborTaskset(config=config)
+
+
 def harbor_task_dirs(root: Path, task_names: Iterable[str] | None = None) -> list[Path]:
     selected = set(task_names or [])
     if not root.exists():

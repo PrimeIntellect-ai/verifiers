@@ -700,18 +700,17 @@ environments/my_env/
 
 ### v1 Env Shape
 
-The golden v1 shape is one taskset config, one taskset class bound to that
-config, and a tiny `load_environment(config)` that constructs explicit objects.
-Add a harness config and harness class only when the environment owns reusable
-rollout behavior; otherwise omit `harness=` and `vf.Env` uses the base harness.
-The loader's `config` parameter is a strict, non-optional config object supplied
-by the framework; do not accept `None` or write `config = config or MyEnvConfig()`.
+The golden v1 shape is one taskset config, one harness config, typed package
+loaders for each, and a tiny `load_environment(config)` that lets Verifiers
+resolve package IDs and validate the child config just in time. The loader's
+`config` parameter is a strict, non-optional config object supplied by the
+framework; do not accept `None` or write `config = config or MyConfig()`.
 
-`EnvConfig` is a lightweight envelope for the two child configs. Put environment
-knobs on `TasksetConfig` or `HarnessConfig`, not on `EnvConfig` itself.
-Environment packages should not subclass `Env`.
+`EnvConfig` is a lightweight envelope for unresolved taskset and harness package
+config. Put environment knobs on `TasksetConfig` or `HarnessConfig`, not on
+`EnvConfig` itself. Environment packages should not subclass `Env`.
 
-The taskset-only shape is:
+The canonical shape is:
 
 ```python
 import verifiers as vf
@@ -740,32 +739,12 @@ class MyTaskset(vf.Taskset[MyTasksetConfig]):
         return [row for row in rows if row["split"] == self.config.split]
 
 
-class MyEnvConfig(vf.EnvConfig):
-    taskset: MyTasksetConfig = MyTasksetConfig()
-
-
-def load_taskset(config: MyTasksetConfig) -> MyTaskset:
-    return MyTaskset(config=config)
-
-
-def load_environment(config: MyEnvConfig) -> vf.Env:
-    return vf.Env(taskset=load_taskset(config.taskset))
-```
-
-With a reusable harness, keep the same explicit object boundary:
-
-```python
 class MyHarnessConfig(vf.HarnessConfig):
     max_turns: int = 20
 
 
 class MyHarness(vf.Harness[MyHarnessConfig]):
     pass
-
-
-class MyEnvConfig(vf.EnvConfig):
-    taskset: MyTasksetConfig = MyTasksetConfig()
-    harness: MyHarnessConfig = MyHarnessConfig()
 
 
 def load_taskset(config: MyTasksetConfig) -> MyTaskset:
@@ -776,17 +755,16 @@ def load_harness(config: MyHarnessConfig) -> MyHarness:
     return MyHarness(config=config)
 
 
-def load_environment(config: MyEnvConfig) -> vf.Env:
-    return vf.Env(
-        taskset=load_taskset(config.taskset),
-        harness=load_harness(config.harness),
-    )
+def load_environment(config: vf.EnvConfig) -> vf.Env:
+    taskset = vf.load_taskset(config.taskset)
+    harness = vf.load_harness(config.harness)
+    return vf.Env(taskset=taskset, harness=harness)
 ```
 
-`vf.Env(config=config)` exists as a convenience for code that already has a fully
-typed `EnvConfig`, but environment docs and templates should use the explicit
-object shape above. Do not pass both `config=` and `taskset=`/`harness=` to
-`vf.Env`.
+`vf.Env(config=config)` exists as a convenience for code that already has an
+`EnvConfig`, but environment docs and templates should use the explicit
+package-loader shape above. Do not pass both `config=` and `taskset=`/`harness=`
+to `vf.Env`.
 
 Keep v1 dependencies behind the owning taskset or harness. Do not pass
 already-instantiated resource objects through environment loaders. Bindings are

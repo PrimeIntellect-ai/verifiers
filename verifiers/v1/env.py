@@ -1,21 +1,29 @@
 import asyncio
+import importlib
+import inspect
+import types as py_types
 import uuid
-from typing import TypeAlias, cast
+from collections.abc import Callable, Mapping
+from typing import Any, TypeAlias, Union, cast, get_args, get_origin, get_type_hints
 
+from pydantic import BaseModel
 import verifiers as vf
 from verifiers.clients import Client
 from verifiers.types import ClientConfig
 from verifiers.types import RolloutInput, SamplingArgs
+from verifiers.utils.env_utils import package_module_name
 
 from .config import EnvConfig, HarnessConfig, TasksetConfig
 from .harness import Harness
 from .state import State
 from .taskset import Taskset
 from .types import ConfigMap
-from .utils.config_utils import config_owner
+from .utils.config_utils import coerce_config, config_owner, explicit_config_data
 
-TasksetInput: TypeAlias = Taskset | TasksetConfig
-HarnessInput: TypeAlias = Harness | HarnessConfig | None
+TasksetInput: TypeAlias = Taskset
+HarnessInput: TypeAlias = Harness | None
+TasksetLoadInput: TypeAlias = Taskset | TasksetConfig | Mapping[str, object] | str
+HarnessLoadInput: TypeAlias = Harness | HarnessConfig | Mapping[str, object] | str
 
 
 class Env(vf.Environment):
@@ -29,15 +37,15 @@ class Env(vf.Environment):
         if config is not None and (taskset is not None or harness is not None):
             raise TypeError("Pass either config= or taskset=/harness=, not both.")
         if config is not None:
-            taskset = config.taskset
-            harness = config.harness
+            taskset = load_taskset(config.taskset)
+            harness = load_harness(config.harness)
         if taskset is None:
             raise TypeError("Env requires a taskset.")
         self.taskset = resolve_taskset(taskset)
         self.harness = resolve_harness(harness)
         self.config = EnvConfig(
-            taskset=cast(TasksetConfig, self.taskset.config),
-            harness=cast(HarnessConfig, self.harness.config),
+            taskset=explicit_config_data(self.taskset.config),
+            harness=explicit_config_data(self.harness.config),
         )
         self.harness.attach_taskset(self.taskset)
         super().__init__(
@@ -151,35 +159,265 @@ class Env(vf.Environment):
         return states
 
 
-def resolve_taskset(value: TasksetInput) -> Taskset:
+def resolve_taskset(value: object) -> Taskset:
     if isinstance(value, Taskset):
         return value
-    if not isinstance(value, TasksetConfig):
-        raise TypeError("Env taskset must be a Taskset or TasksetConfig.")
-    if type(value) is TasksetConfig:
-        return Taskset(config=value)
-    owner = config_owner(type(value), TasksetConfig)
-    if owner is None:
-        raise TypeError(
-            f"No Taskset class is bound to {type(value).__name__}; "
-            "instantiate the Taskset explicitly."
-        )
-    return cast(type[Taskset], owner)(config=value)
+    raise TypeError("Env taskset must be a Taskset object.")
 
 
-def resolve_harness(value: HarnessInput) -> Harness:
+def resolve_harness(value: object) -> Harness:
     if value is None:
         return Harness(config=HarnessConfig())
     if isinstance(value, Harness):
         return value
-    if not isinstance(value, HarnessConfig):
-        raise TypeError("Env harness must be a Harness or HarnessConfig.")
-    if type(value) is HarnessConfig:
-        return Harness(config=value)
-    owner = config_owner(type(value), HarnessConfig)
+    raise TypeError("Env harness must be a Harness object.")
+
+
+def load_taskset(config: TasksetLoadInput) -> Taskset:
+    if isinstance(config, Taskset):
+        return config
+    if isinstance(config, str):
+        return _load_component(
+            component_id=config,
+            data={},
+            loader_name="load_taskset",
+            base_config_cls=TasksetConfig,
+            result_cls=Taskset,
+            alias_field="taskset_id",
+            label="taskset",
+        )
+    if isinstance(config, Mapping):
+        data = dict(config)
+        component_id = _optional_component_id(
+            data, alias_field="taskset_id", label="taskset"
+        )
+        if component_id is not None:
+            return _load_component(
+                component_id=component_id,
+                data=data,
+                loader_name="load_taskset",
+                base_config_cls=TasksetConfig,
+                result_cls=Taskset,
+                alias_field="taskset_id",
+                label="taskset",
+            )
+        return _taskset_from_config(coerce_config(TasksetConfig, data))
+    if isinstance(config, TasksetConfig):
+        return _taskset_from_config(config)
+    raise TypeError("load_taskset expects a Taskset, TasksetConfig, mapping, or id.")
+
+
+def load_harness(config: HarnessLoadInput | None = None) -> Harness:
+    if config is None:
+        return Harness(config=HarnessConfig())
+    if isinstance(config, Harness):
+        return config
+    if isinstance(config, str):
+        return _load_component(
+            component_id=config,
+            data={},
+            loader_name="load_harness",
+            base_config_cls=HarnessConfig,
+            result_cls=Harness,
+            alias_field="harness_id",
+            label="harness",
+        )
+    if isinstance(config, Mapping):
+        data = dict(config)
+        component_id = _optional_component_id(
+            data, alias_field="harness_id", label="harness"
+        )
+        if component_id is None:
+            return _harness_from_config(coerce_config(HarnessConfig, data))
+        return _load_component(
+            component_id=component_id,
+            data=data,
+            loader_name="load_harness",
+            base_config_cls=HarnessConfig,
+            result_cls=Harness,
+            alias_field="harness_id",
+            label="harness",
+        )
+    if isinstance(config, HarnessConfig):
+        return _harness_from_config(config)
+    raise TypeError(
+        "load_harness expects a Harness, HarnessConfig, mapping, id, or None."
+    )
+
+
+def _taskset_from_config(config: TasksetConfig) -> Taskset:
+    if type(config) is TasksetConfig:
+        return Taskset(config=config)
+    owner = config_owner(type(config), TasksetConfig)
     if owner is None:
         raise TypeError(
-            f"No Harness class is bound to {type(value).__name__}; "
+            f"No Taskset class is bound to {type(config).__name__}; "
+            "instantiate the Taskset explicitly."
+        )
+    return cast(type[Taskset], owner)(config=config)
+
+
+def _harness_from_config(config: HarnessConfig) -> Harness:
+    if type(config) is HarnessConfig:
+        return Harness(config=config)
+    owner = config_owner(type(config), HarnessConfig)
+    if owner is None:
+        raise TypeError(
+            f"No Harness class is bound to {type(config).__name__}; "
             "instantiate the Harness explicitly."
         )
-    return cast(type[Harness], owner)(config=value)
+    return cast(type[Harness], owner)(config=config)
+
+
+def _load_component(
+    *,
+    component_id: str,
+    data: Mapping[str, object],
+    loader_name: str,
+    base_config_cls: type[BaseModel],
+    result_cls: type[Any],
+    alias_field: str,
+    label: str,
+) -> Any:
+    module = _import_component_module(component_id, label)
+    loader = _component_loader(module, loader_name, component_id, label)
+    config_cls = _component_config_type(
+        loader=loader,
+        loader_name=loader_name,
+        component_id=component_id,
+        base_config_cls=base_config_cls,
+        label=label,
+    )
+    config_data = _component_config_data(
+        data=data,
+        component_id=component_id,
+        alias_field=alias_field,
+        config_cls=config_cls,
+    )
+    loaded = loader(config=coerce_config(config_cls, config_data))
+    if not isinstance(loaded, result_cls):
+        raise TypeError(
+            f"{loader_name} for {label} package {component_id!r} returned "
+            f"{type(loaded).__name__}, expected {result_cls.__name__}."
+        )
+    return loaded
+
+
+def _import_component_module(component_id: str, label: str) -> object:
+    module_name = package_module_name(component_id)
+    try:
+        return importlib.import_module(module_name)
+    except ImportError as exc:
+        raise ValueError(
+            f"Could not import {label} package {component_id!r}. "
+            f"Ensure the '{component_id}' package is installed."
+        ) from exc
+
+
+def _component_loader(
+    module: object, loader_name: str, component_id: str, label: str
+) -> Callable[..., Any]:
+    if not hasattr(module, loader_name):
+        module_name = package_module_name(component_id)
+        raise AttributeError(
+            f"Module '{module_name}' does not have a '{loader_name}' function. "
+            f"Install the correct {label} package or add '{loader_name}' to it."
+        )
+    loader = getattr(module, loader_name)
+    if not callable(loader):
+        raise TypeError(f"{loader_name} on {component_id!r} must be callable.")
+    return cast(Callable[..., Any], loader)
+
+
+def _component_config_type(
+    *,
+    loader: Callable[..., Any],
+    loader_name: str,
+    component_id: str,
+    base_config_cls: type[BaseModel],
+    label: str,
+) -> type[BaseModel]:
+    sig = inspect.signature(loader)
+    param = sig.parameters.get("config")
+    if param is None:
+        raise TypeError(
+            f"{loader_name} for {label} package {component_id!r} must define a "
+            f"required 'config' parameter annotated as a {base_config_cls.__name__} subtype."
+        )
+    if param.default is not inspect.Parameter.empty:
+        raise TypeError(
+            f"{loader_name} for {label} package {component_id!r} must require "
+            "'config' rather than providing a default."
+        )
+    if param.kind not in (
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        inspect.Parameter.KEYWORD_ONLY,
+    ):
+        raise TypeError(
+            f"{loader_name} for {label} package {component_id!r} must accept "
+            "'config' as a normal or keyword-only parameter."
+        )
+    for name, extra_param in sig.parameters.items():
+        if name == "config":
+            continue
+        if extra_param.default is inspect.Parameter.empty and extra_param.kind in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        ):
+            raise TypeError(
+                f"{loader_name} for {label} package {component_id!r} must not "
+                f"require parameter {name!r} in addition to 'config'."
+            )
+    try:
+        annotation = get_type_hints(loader).get("config")
+    except Exception:
+        annotation = param.annotation
+    if not _is_strict_component_config_type(annotation, base_config_cls):
+        raise TypeError(
+            f"{loader_name} for {label} package {component_id!r} must annotate "
+            f"'config' as a {base_config_cls.__name__} subtype."
+        )
+    return cast(type[BaseModel], annotation)
+
+
+def _is_strict_component_config_type(
+    annotation: object, base_config_cls: type[BaseModel]
+) -> bool:
+    if annotation is inspect.Parameter.empty or annotation in (Any, object):
+        return False
+    origin = get_origin(annotation)
+    if origin in (Union, py_types.UnionType) or get_args(annotation):
+        return False
+    return isinstance(annotation, type) and issubclass(annotation, base_config_cls)
+
+
+def _component_config_data(
+    *,
+    data: Mapping[str, object],
+    component_id: str,
+    alias_field: str,
+    config_cls: type[BaseModel],
+) -> dict[str, object]:
+    config_data = dict(data)
+    config_data.pop("id", None)
+    config_data.pop(alias_field, None)
+    if alias_field in config_cls.model_fields and alias_field not in config_data:
+        config_data[alias_field] = component_id
+    return config_data
+
+
+def _optional_component_id(
+    data: Mapping[str, object], *, alias_field: str, label: str
+) -> str | None:
+    id_value = data.get("id")
+    alias_value = data.get(alias_field)
+    if id_value is not None and not isinstance(id_value, str):
+        raise TypeError(f"{label}.id must be a string.")
+    if alias_value is not None and not isinstance(alias_value, str):
+        raise TypeError(f"{label}.{alias_field} must be a string.")
+    if id_value is not None and alias_value is not None and id_value != alias_value:
+        raise ValueError(
+            f"{label}.id and {label}.{alias_field} must match when both are provided."
+        )
+    return id_value or alias_value

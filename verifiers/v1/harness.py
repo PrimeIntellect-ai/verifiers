@@ -82,6 +82,10 @@ class Harness(ConfigBound[HarnessConfigT], RuntimeOwnerMixin):
 
     def __init__(self, config: HarnessConfig | None = None):
         self.config = cast(HarnessConfigT, self._coerce_config(config))
+        resolved_harness_id = self.config.harness_id
+        if resolved_harness_id is not None and not isinstance(resolved_harness_id, str):
+            raise TypeError("harness_id must be a string.")
+        self.harness_id = resolved_harness_id or type(self).__name__
         program_config = self._defaulted("program", type(self)._default_program)
         program_value = resolve_config_object(program_config)
         if isinstance(program_value, ProgramConfig):

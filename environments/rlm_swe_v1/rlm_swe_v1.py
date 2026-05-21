@@ -458,16 +458,16 @@ def extract_gold_patch(
 
 
 def load_taskset(
-    config: RlmSweTasksetConfig | None = None,
+    config: RlmSweTasksetConfig,
 ) -> R2ESWETaskset:
     return R2ESWETaskset(config=config)
 
 
 def load_harness(
-    config: vf.RLMConfig | None = None,
+    config: vf.RLMConfig,
     taskset: R2ESWETaskset | None = None,
 ) -> vf.RLM:
-    user_config = coerce_config(vf.RLMConfig, config)
+    user_config = config
     base_data = vf.RLMConfig(
         workdir=DEFAULT_REPO_PATH,
         rlm_tools=list(DEFAULT_RLM_TOOLS),

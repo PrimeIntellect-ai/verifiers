@@ -48,13 +48,9 @@ Alternatively, add `verifiers` to an existing project:
 uv add verifiers && prime lab setup --skip-install
 ```
 
-Environments built with Verifiers are self-contained Python modules. To initialize a fresh environment template, do:
+Environments built with Verifiers are self-contained Python modules. To initialize a fresh v1 environment template, do:
 ```bash
-prime env init my-env # creates a new template in ./environments/my_env
-```
-Add an explicit harness loader when the environment owns harness behavior:
-```bash
-prime env init my-env --with-harness
+prime env init my-env --v1 # creates a new template in ./environments/my_env
 ```
 
 This will create a new module called `my_env` with a basic environment template.
@@ -111,16 +107,26 @@ class MyTaskset(vf.Taskset[MyTasksetConfig]):
         return [row for row in rows if row["split"] == self.config.split]
 
 
-class MyEnvConfig(vf.EnvConfig):
-    taskset: MyTasksetConfig = MyTasksetConfig()
-    harness: vf.HarnessConfig = vf.HarnessConfig()
+class MyHarnessConfig(vf.HarnessConfig):
+    pass
 
 
-def load_environment(config: MyEnvConfig) -> vf.Env:
-    return vf.Env(
-        taskset=MyTaskset(config=config.taskset),
-        harness=vf.Harness(config=config.harness),
-    )
+class MyHarness(vf.Harness[MyHarnessConfig]):
+    pass
+
+
+def load_taskset(config: MyTasksetConfig) -> MyTaskset:
+    return MyTaskset(config=config)
+
+
+def load_harness(config: MyHarnessConfig) -> MyHarness:
+    return MyHarness(config=config)
+
+
+def load_environment(config: vf.EnvConfig) -> vf.Env:
+    taskset = vf.load_taskset(config.taskset)
+    harness = vf.load_harness(config.harness)
+    return vf.Env(taskset=taskset, harness=harness)
 ```
 See [BYO Harness](byo-harness.md) for the advanced v1 taskset/harness API.
 Reusable v1 taskset and harness packages live under `verifiers.v1.packages`
