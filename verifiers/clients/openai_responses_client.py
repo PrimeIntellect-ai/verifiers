@@ -10,6 +10,7 @@ from verifiers.clients.openai_chat_completions_client import (
     content_to_text,
     get_cached_prompt_tokens,
     get_usage_field,
+    get_usage_int_field,
     handle_openai_overlong_prompt,
 )
 from verifiers.errors import EmptyModelResponseError, InvalidModelResponseError
@@ -373,27 +374,25 @@ class OpenAIResponsesClient(
             usage = getattr(response, "usage", None)
             if usage is None:
                 return None
-            prompt_tokens = get_usage_field(usage, "input_tokens")
-            completion_tokens = get_usage_field(usage, "output_tokens")
-            total_tokens = get_usage_field(usage, "total_tokens")
+            prompt_tokens = get_usage_int_field(usage, "input_tokens")
+            completion_tokens = get_usage_int_field(usage, "output_tokens")
+            total_tokens = get_usage_int_field(usage, "total_tokens")
             output_details = get_usage_field(usage, "output_tokens_details")
             reasoning_tokens = (
-                get_usage_field(output_details, "reasoning_tokens")
+                get_usage_int_field(output_details, "reasoning_tokens")
                 if output_details is not None
                 else 0
             )
-            if not isinstance(prompt_tokens, int) or not isinstance(
-                completion_tokens, int
-            ):
+            if prompt_tokens is None or completion_tokens is None:
                 return None
             cached_tokens = get_cached_prompt_tokens(usage)
             if cached_tokens is not None:
                 prompt_tokens = max(0, prompt_tokens - cached_tokens)
-            if not isinstance(total_tokens, int):
+            if total_tokens is None:
                 total_tokens = prompt_tokens + completion_tokens
             elif cached_tokens is not None:
                 total_tokens = max(0, total_tokens - cached_tokens)
-            if not isinstance(reasoning_tokens, int):
+            if reasoning_tokens is None:
                 reasoning_tokens = 0
             return Usage(
                 prompt_tokens=prompt_tokens,

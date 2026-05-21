@@ -237,6 +237,36 @@ async def test_from_native_response_parses_text_tool_usage_and_raw_output():
 
 
 @pytest.mark.asyncio
+async def test_from_native_response_rejects_bool_usage_counts():
+    native_response = SimpleNamespace(
+        id="resp_1",
+        created_at=123.0,
+        model="gpt-5.2",
+        status="completed",
+        incomplete_details=None,
+        usage={
+            "input_tokens": True,
+            "output_tokens": 7,
+            "total_tokens": 8,
+        },
+        output=[
+            {
+                "type": "message",
+                "id": "msg_1",
+                "role": "assistant",
+                "status": "completed",
+                "content": [{"type": "output_text", "text": "hello"}],
+            },
+        ],
+    )
+    client = OpenAIResponsesClient(object())
+
+    response = await client.from_native_response(native_response)
+
+    assert response.usage is None
+
+
+@pytest.mark.asyncio
 async def test_from_native_response_uses_none_content_for_tool_call_only_response():
     native_response = SimpleNamespace(
         id="resp_1",
