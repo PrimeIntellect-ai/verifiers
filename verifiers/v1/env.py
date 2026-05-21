@@ -401,7 +401,7 @@ def _component_config_data(
     config_data = dict(data)
     config_data.pop("id", None)
     config_data.pop(alias_field, None)
-    if alias_field in config_cls.model_fields and alias_field not in config_data:
+    if alias_field in config_cls.model_fields:
         config_data[alias_field] = component_id
     return config_data
 
