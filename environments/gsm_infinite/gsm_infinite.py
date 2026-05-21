@@ -60,9 +60,12 @@ def _extract_integer_answer(text: str) -> str | None:
 def _extract_symbolic_answer(text: str) -> list[str]:
     if "</think>" in text:
         text = text.split("</think>")[-1].strip()
-    if re.search(r"\bnone\b", text, flags=re.IGNORECASE):
+    variables = sorted(set(re.findall(r"\bV\d+\b", text)))
+    if variables:
+        return variables
+    if re.fullmatch(r"\W*none\W*", text, flags=re.IGNORECASE):
         return []
-    return sorted(set(re.findall(r"\bV\d+\b", text)))
+    return []
 
 
 def _format_row(example: dict[str, Any], subset: str) -> dict[str, Any]:
