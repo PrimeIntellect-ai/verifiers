@@ -11,7 +11,11 @@ import pytest
 
 import verifiers as root_vf
 import verifiers.v1 as vf
-from verifiers.v1.packages.harnesses.pi import pi_mcp_json, pi_models_json
+from verifiers.v1.packages.harnesses.pi import (
+    build_pi_mcp_setup_script,
+    pi_mcp_json,
+    pi_models_json,
+)
 from verifiers.v1.packages.harnesses.configs import (
     PI_DEFAULT_PACKAGE,
     TERMINUS_2_DEFAULT_API_BASE_URL,
@@ -245,6 +249,10 @@ def test_opencode_config_owns_opencode_harness_fields() -> None:
     assert "apt-get -o Acquire::Retries=3 install" in setup
     assert "/workspace" in cast(str, command[2])
     assert '"webfetch": false' in cast(str, mcp_setup)
+    assert 'if [ -z "$OPENCODE_WORKDIR" ]; then' in cast(str, command[2])
+    assert 'if [ -z "$OPENCODE_WORKDIR" ]; then' in cast(str, mcp_setup)
+    assert "[[ " not in cast(str, command[2])
+    assert "[[ " not in cast(str, mcp_setup)
     assert "/opencode/system.txt" not in cast(dict[str, object], program["files"])
 
 
@@ -285,16 +293,19 @@ def test_packaged_command_harnesses_defer_partial_program_overrides(
 def test_pi_harness_writes_intercepted_model_and_mcp_config() -> None:
     harness = vf.Pi()
     program = cast(dict[str, object], harness.program)
+    command = cast(list[object], program["command"])
     setup = cast(str, program["setup"])
-    models = json.loads(
-        pi_models_json(
-            {
-                "base_url": "http://127.0.0.1:1/rollout/key/v1",
-                "api_key": "secret",
-                "api_client_type": "openai_chat_completions",
-                "model": "openai/gpt-5.4-mini",
-            }
-        )
+    endpoint_config = {
+        "base_url": "http://127.0.0.1:1/rollout/key/v1",
+        "api_key": "secret",
+        "api_client_type": "openai_chat_completions",
+        "model": "openai/gpt-5.4-mini",
+    }
+    models = json.loads(pi_models_json(endpoint_config))
+    mcp_setup = build_pi_mcp_setup_script(
+        agent_workdir="/app",
+        endpoint_config=endpoint_config,
+        install_mcp_adapter=True,
     )
     mcp = json.loads(pi_mcp_json())
 
@@ -304,12 +315,17 @@ def test_pi_harness_writes_intercepted_model_and_mcp_config() -> None:
     assert PI_DEFAULT_PACKAGE == "@earendil-works/pi-coding-agent"
     assert f"npm install -g --ignore-scripts {PI_DEFAULT_PACKAGE}" in setup
     assert "mariozechner" not in setup
+    assert 'if [ -z "$PI_WORKDIR" ]; then' in cast(str, command[2])
     provider = models["providers"]["verifiers"]
     assert provider["baseUrl"] == "http://127.0.0.1:1/rollout/key/v1"
     assert provider["api"] == "openai-completions"
     assert provider["apiKey"] == "secret"
     assert provider["models"] == [{"id": "model", "name": "openai/gpt-5.4-mini"}]
     assert mcp["mcpServers"]["verifiers-tools"]["command"] == "python3"
+
+    assert 'if [ -z "$PI_WORKDIR" ]; then' in mcp_setup
+    assert "[[ " not in cast(str, command[2])
+    assert "[[ " not in mcp_setup
 
 
 def test_terminus_2_harness_builds_sandbox_program() -> None:
@@ -339,6 +355,8 @@ def test_terminus_2_harness_builds_sandbox_program() -> None:
 
     run_script = cast(str, command[2])
     assert "TERMINUS_2_WORKDIR=/workspace" in run_script
+    assert 'if [ -z "$TERMINUS_2_WORKDIR" ]; then' in run_script
+    assert "[[ " not in run_script
     assert f"--with {TERMINUS_2_DEFAULT_HARBOR_PACKAGE}" in run_script
     assert "git+https://github.com" not in run_script
     assert "max_turns=7" in run_script
