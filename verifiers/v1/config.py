@@ -5,6 +5,7 @@ from typing import Literal, TypeAlias, cast
 from pydantic import (
     BaseModel,
     Field,
+    PrivateAttr,
     ValidationInfo,
     field_validator,
     model_validator,
@@ -273,6 +274,8 @@ class LifecycleConfig(Config):
 
 
 class TasksetConfig(LifecycleConfig):
+    _vf_loader_id: str | None = PrivateAttr(default=None)
+
     # Singleton fields describe one logical value owned by the taskset.
     source: TaskSource | None = None
     eval_source: TaskSource | None = None
@@ -289,6 +292,8 @@ class TasksetConfig(LifecycleConfig):
 
 
 class HarnessConfig(LifecycleConfig):
+    _vf_loader_id: str | None = PrivateAttr(default=None)
+
     # Singleton fields describe one logical value owned by the harness.
     harness_id: str | None = None
     program: ProgramConfig | str | None = None
@@ -386,7 +391,7 @@ class EnvConfig(Config):
                     "package-selected tasksets."
                 )
             config_cls = package_config_cls
-            return coerce_config(
+            config = coerce_config(
                 config_cls,
                 component_config_data(
                     data=data,
@@ -395,6 +400,8 @@ class EnvConfig(Config):
                     config_cls=config_cls,
                 ),
             )
+            cast(TasksetConfig, config)._vf_loader_id = component_id
+            return config
         if (
             info.field_name == "harness"
             and isinstance(annotation, type)
@@ -430,7 +437,7 @@ class EnvConfig(Config):
                     "package-selected harnesses."
                 )
             config_cls = package_config_cls
-            return coerce_config(
+            config = coerce_config(
                 config_cls,
                 component_config_data(
                     data=data,
@@ -439,6 +446,8 @@ class EnvConfig(Config):
                     config_cls=config_cls,
                 ),
             )
+            cast(HarnessConfig, config)._vf_loader_id = component_id
+            return config
         return data
 
 

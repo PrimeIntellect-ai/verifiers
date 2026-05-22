@@ -24,7 +24,7 @@ from .utils.component_utils import (
     component_loader,
     import_component_module,
 )
-from .utils.config_utils import coerce_config, config_owner
+from .utils.config_utils import coerce_config, config_owner, explicit_config_data
 
 
 class Env(vf.Environment):
@@ -39,7 +39,7 @@ class Env(vf.Environment):
             raise TypeError("Pass either config= or taskset=/harness=, not both.")
         if config is not None:
             taskset = load_taskset(config.taskset)
-            harness = load_harness(config.harness, taskset=taskset)
+            harness = load_harness(config.harness)
         if taskset is None:
             raise TypeError("Env requires a taskset.")
         if not isinstance(taskset, Taskset):
@@ -185,12 +185,16 @@ def load_taskset(config: TasksetConfig | str) -> Taskset:
     if isinstance(config, TasksetConfig):
         if config.taskset_id == "":
             raise ValueError("taskset.taskset_id must be a non-empty string.")
+        component_id = config._vf_loader_id
+        if component_id is None and type(config) is TasksetConfig:
+            component_id = config.taskset_id
         loaded = _load_component_from_config(
             config=config,
-            component_id=config.taskset_id,
+            component_id=component_id,
             loader_name="load_taskset",
             base_config_cls=TasksetConfig,
             result_cls=Taskset,
+            alias_field="taskset_id",
             label="taskset",
         )
         if loaded is not None:
@@ -199,9 +203,7 @@ def load_taskset(config: TasksetConfig | str) -> Taskset:
     raise TypeError("load_taskset expects a TasksetConfig or id.")
 
 
-def load_harness(
-    config: HarnessConfig | str, *, taskset: Taskset | None = None
-) -> Harness:
+def load_harness(config: HarnessConfig | str) -> Harness:
     if isinstance(config, str):
         if not config:
             raise ValueError("harness.id must be a non-empty string.")
@@ -215,20 +217,22 @@ def load_harness(
                 result_cls=Harness,
                 alias_field="harness_id",
                 label="harness",
-                taskset=taskset,
             ),
         )
     if isinstance(config, HarnessConfig):
         if config.harness_id == "":
             raise ValueError("harness.harness_id must be a non-empty string.")
+        component_id = config._vf_loader_id
+        if component_id is None and type(config) is HarnessConfig:
+            component_id = config.harness_id
         loaded = _load_component_from_config(
             config=config,
-            component_id=config.harness_id,
+            component_id=component_id,
             loader_name="load_harness",
             base_config_cls=HarnessConfig,
             result_cls=Harness,
+            alias_field="harness_id",
             label="harness",
-            taskset=taskset,
         )
         if loaded is not None:
             return cast(Harness, loaded)
@@ -267,8 +271,8 @@ def _load_component_from_config(
     loader_name: str,
     base_config_cls: type[BaseModel],
     result_cls: type[Taskset] | type[Harness],
+    alias_field: str,
     label: str,
-    taskset: Taskset | None = None,
 ) -> Taskset | Harness | None:
     if component_id is None:
         return None
@@ -286,12 +290,23 @@ def _load_component_from_config(
         base_config_cls=base_config_cls,
         label=label,
     )
+    loader_config = config
     if not isinstance(config, config_cls):
-        raise TypeError(
-            f"{loader_name} for {label} package {component_id!r} expects "
-            f"{config_cls.__name__}, got {type(config).__name__}."
+        if type(config) is not base_config_cls:
+            raise TypeError(
+                f"{loader_name} for {label} package {component_id!r} expects "
+                f"{config_cls.__name__}, got {type(config).__name__}."
+            )
+        loader_config = coerce_config(
+            config_cls,
+            component_config_data(
+                data=explicit_config_data(config),
+                component_id=component_id,
+                alias_field=alias_field,
+                config_cls=config_cls,
+            ),
         )
-    loaded = call_component_loader(loader, config=config, taskset=taskset)
+    loaded = call_component_loader(loader, config=loader_config)
     if not isinstance(loaded, result_cls):
         raise TypeError(
             f"{loader_name} for {label} package {component_id!r} returned "
@@ -309,7 +324,6 @@ def _load_component(
     result_cls: type[Taskset] | type[Harness],
     alias_field: str,
     label: str,
-    taskset: Taskset | None = None,
 ) -> Taskset | Harness:
     module = import_component_module(component_id, label)
     loader = component_loader(module, loader_name, component_id, label)
@@ -327,7 +341,7 @@ def _load_component(
         config_cls=config_cls,
     )
     loaded = call_component_loader(
-        loader, config=coerce_config(config_cls, config_data), taskset=taskset
+        loader, config=coerce_config(config_cls, config_data)
     )
     if not isinstance(loaded, result_cls):
         raise TypeError(

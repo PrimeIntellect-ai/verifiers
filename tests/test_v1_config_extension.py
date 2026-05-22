@@ -1974,8 +1974,9 @@ def test_load_environment_coerces_typed_env_config_arg(
     def load_environment(split: str = "train", *, config: EnvConfig) -> Env:
         seen["split"] = split
         seen["config"] = config
+        taskset = vf.load_taskset(config.taskset)
         return Env(
-            taskset=vf.load_taskset(config.taskset),
+            taskset=taskset,
             harness=vf.load_harness(config.harness),
         )
 
@@ -2299,6 +2300,8 @@ def test_load_taskset_and_harness_use_leaf_module_from_package_id(
     taskset = vf.load_taskset(config.taskset)
     harness = vf.load_harness(config.harness)
     bare_taskset = vf.load_taskset(bare_config.taskset)
+    base_taskset = vf.load_taskset(TasksetConfig(taskset_id="leaf-taskset"))
+    base_harness = vf.load_harness(HarnessConfig(harness_id="leaf-harness"))
     string_taskset = vf.load_taskset("leaf-taskset")
 
     assert isinstance(taskset, LeafTaskset)
@@ -2310,77 +2313,77 @@ def test_load_taskset_and_harness_use_leaf_module_from_package_id(
     assert isinstance(bare_taskset, LeafTaskset)
     assert bare_taskset.config.taskset_id == "leaf-taskset"
     assert bare_taskset.config.split == "bare"
+    assert isinstance(base_taskset, LeafTaskset)
+    assert base_taskset.config.taskset_id == "leaf-taskset"
+    assert base_taskset.config.split == "train"
+    assert isinstance(base_harness, LeafHarness)
+    assert base_harness.config.harness_id == "leaf-harness"
+    assert base_harness.config.mode == "default"
     assert isinstance(string_taskset, LeafTaskset)
     assert string_taskset.config.taskset_id == "leaf-taskset"
     assert string_taskset.config.split == "train"
 
 
-def test_component_config_object_type_mismatch_is_rejected(
+def test_component_config_subclass_id_is_runtime_metadata(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     module = types.ModuleType("mismatch_taskset")
+    harness_module = types.ModuleType("mismatch_harness")
 
     class LocalTasksetConfig(TasksetConfig):
         pass
 
-    class PackageTasksetConfig(TasksetConfig):
+    class LocalTaskset(Taskset[LocalTasksetConfig]):
         pass
 
-    def load_taskset(config: PackageTasksetConfig) -> Taskset:
-        return Taskset(config=config)
+    class LocalHarnessConfig(HarnessConfig):
+        pass
+
+    class LocalHarness(Harness[LocalHarnessConfig]):
+        pass
+
+    def load_taskset(config: TasksetConfig) -> Taskset:
+        raise AssertionError("typed config taskset_id must not trigger package import")
+
+    def load_harness(config: HarnessConfig) -> Harness:
+        raise AssertionError("typed config harness_id must not trigger package import")
 
     module.load_taskset = load_taskset
+    harness_module.load_harness = load_harness
     monkeypatch.setitem(sys.modules, "mismatch_taskset", module)
+    monkeypatch.setitem(sys.modules, "mismatch_harness", harness_module)
 
-    with pytest.raises(
-        TypeError, match="expects PackageTasksetConfig, got LocalTasksetConfig"
-    ):
-        vf.load_taskset(LocalTasksetConfig(taskset_id="mismatch-taskset"))
+    taskset = vf.load_taskset(LocalTasksetConfig(taskset_id="mismatch-taskset"))
+    harness = vf.load_harness(LocalHarnessConfig(harness_id="mismatch-harness"))
+
+    assert isinstance(taskset, LocalTaskset)
+    assert taskset.config.taskset_id == "mismatch-taskset"
+    assert isinstance(harness, LocalHarness)
+    assert harness.config.harness_id == "mismatch-harness"
 
 
-def test_env_config_path_passes_taskset_to_harness_loader(
+def test_harness_loader_rejects_taskset_parameter(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    taskset_module = types.ModuleType("linked_taskset")
     harness_module = types.ModuleType("linked_harness")
-    seen: dict[str, object] = {}
-
-    class LinkedTasksetConfig(TasksetConfig):
-        pass
-
-    class LinkedTaskset(Taskset[LinkedTasksetConfig]):
-        pass
 
     class LinkedHarnessConfig(HarnessConfig):
         pass
 
+    def load_harness(
+        config: LinkedHarnessConfig, taskset: Taskset | None = None
+    ) -> Harness:
+        _ = taskset
+        return LinkedHarness(config=config)
+
     class LinkedHarness(Harness[LinkedHarnessConfig]):
         pass
 
-    def load_taskset(config: LinkedTasksetConfig) -> LinkedTaskset:
-        return LinkedTaskset(config=config)
-
-    def load_harness(
-        config: LinkedHarnessConfig, taskset: LinkedTaskset | None = None
-    ) -> LinkedHarness:
-        seen["taskset"] = taskset
-        return LinkedHarness(config=config)
-
-    taskset_module.load_taskset = load_taskset
     harness_module.load_harness = load_harness
-    monkeypatch.setitem(sys.modules, "linked_taskset", taskset_module)
     monkeypatch.setitem(sys.modules, "linked_harness", harness_module)
 
-    env = Env(
-        config=EnvConfig.model_validate(
-            {
-                "taskset": {"id": "linked-taskset"},
-                "harness": {"id": "linked-harness"},
-            }
-        )
-    )
-
-    assert seen["taskset"] is env.taskset
+    with pytest.raises(TypeError, match="must only define a 'config' parameter"):
+        vf.load_harness("linked-harness")
 
 
 def test_env_config_subclass_rejects_external_package_config_type(
@@ -2585,7 +2588,7 @@ def test_component_loaders_reject_extra_required_parameters(
     module.load_taskset = load_taskset
     monkeypatch.setitem(sys.modules, module_name, module)
 
-    with pytest.raises(TypeError, match="must not require parameter 'split'"):
+    with pytest.raises(TypeError, match="must only define a 'config' parameter"):
         vf.load_taskset(module_name)
 
 

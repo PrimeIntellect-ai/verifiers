@@ -1,6 +1,5 @@
 import json
 import logging
-import os
 import re
 import shlex
 from collections.abc import Iterable, Mapping
@@ -86,6 +85,11 @@ class R2ESWETaskset(vf.Taskset[RlmSweTasksetConfig]):
             row = dict(row)
             info = dict(row["info"])
             instruction = str(info["problem_statement"])
+            program_env = self.get_env_vars()
+            agent_path = program_env.pop("PATH", None)
+            if agent_path is not None:
+                program_env.setdefault("AGENT_PATH", agent_path)
+            program_env.setdefault("AGENT_WORKDIR", self.repo_path)
             task_row: vf.ConfigData = {
                 "example_id": index,
                 "task_id": info.get("instance_id") or index,
@@ -95,7 +99,7 @@ class R2ESWETaskset(vf.Taskset[RlmSweTasksetConfig]):
                 "answer": row.get("answer", ""),
                 "info": info,
                 "sandbox": self.sandbox_config(info),
-                "program": {"env": {"AGENT_WORKDIR": self.repo_path}},
+                "program": {"env": program_env},
             }
             rows.append(task_row)
         return rows
@@ -463,10 +467,7 @@ def load_taskset(
     return R2ESWETaskset(config=config)
 
 
-def load_harness(
-    config: vf.RLMConfig,
-    taskset: R2ESWETaskset | None = None,
-) -> vf.RLM:
+def load_harness(config: vf.RLMConfig) -> vf.RLM:
     user_config = config
     base_data = vf.RLMConfig(
         workdir=DEFAULT_REPO_PATH,
@@ -478,15 +479,6 @@ def load_harness(
             **user_config.model_dump(exclude_unset=True, exclude_none=True),
         }
     )
-    if taskset is not None:
-        config = vf.RLMConfig.model_validate(
-            {
-                **config.model_dump(),
-                "workdir": taskset.repo_path,
-                "gh_token": config.gh_token or os.environ.get("GH_TOKEN"),
-                "env_vars": {**taskset.get_env_vars(), **config.env_vars},
-            }
-        )
     return vf.RLM(
         config=config,
     )
@@ -499,5 +491,5 @@ class RlmSweEnvConfig(vf.EnvConfig):
 
 def load_environment(config: RlmSweEnvConfig) -> vf.Env:
     taskset = load_taskset(config=config.taskset)
-    harness = load_harness(config=config.harness, taskset=taskset)
+    harness = load_harness(config=config.harness)
     return vf.Env(taskset=taskset, harness=harness)

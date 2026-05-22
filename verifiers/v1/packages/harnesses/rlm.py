@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import random
 import shlex
 from collections.abc import Callable, Mapping
@@ -175,7 +176,7 @@ bash "$RLM_CHECKOUT_PATH/install.sh"
 def build_run_script(instruction_path: str, workdir: str) -> str:
     return f"""
 set -eo pipefail
-export PATH="$HOME/.local/bin:$PATH"
+export PATH="$HOME/.local/bin:${{AGENT_PATH:-$PATH}}"
 export RLM_MODEL="${{RLM_MODEL:-$OPENAI_MODEL}}"
 export OPENAI_API_KEY="${{OPENAI_API_KEY:-intercepted}}"
 export RLM_APPEND_TO_SYSTEM_PROMPT="$(cat {shlex.quote(RLM_DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH)} 2>/dev/null || true)"
@@ -206,7 +207,7 @@ def rlm_checkout_loader(
                 repo_url=rlm_repo_url,
                 ref=rlm_repo_ref,
                 cache_root=DEFAULT_RLM_LOCAL_CHECKOUT_CACHE_ROOT,
-                gh_token=gh_token,
+                gh_token=gh_token or os.environ.get("GH_TOKEN"),
                 required_files=REQUIRED_RLM_CHECKOUT_FILES,
             )
         return checkout

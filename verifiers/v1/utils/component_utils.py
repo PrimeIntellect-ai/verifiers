@@ -97,18 +97,13 @@ def component_config_type(
             f"{loader_name} for {label} package {component_id!r} must accept "
             "'config' as a normal or keyword-only parameter."
         )
-    for name, extra_param in sig.parameters.items():
+    for name in sig.parameters:
         if name == "config":
             continue
-        if extra_param.default is inspect.Parameter.empty and extra_param.kind in (
-            inspect.Parameter.POSITIONAL_ONLY,
-            inspect.Parameter.POSITIONAL_OR_KEYWORD,
-            inspect.Parameter.KEYWORD_ONLY,
-        ):
-            raise TypeError(
-                f"{loader_name} for {label} package {component_id!r} must not "
-                f"require parameter {name!r} in addition to 'config'."
-            )
+        raise TypeError(
+            f"{loader_name} for {label} package {component_id!r} must only "
+            "define a 'config' parameter."
+        )
     try:
         annotation = get_type_hints(loader).get("config")
     except Exception:
@@ -121,13 +116,8 @@ def component_config_type(
     return cast(type[BaseModel], annotation)
 
 
-def call_component_loader(
-    loader: Handler, *, config: BaseModel, taskset: object | None = None
-) -> object:
-    kwargs: ConfigData = {"config": config}
-    if taskset is not None and "taskset" in inspect.signature(loader).parameters:
-        kwargs["taskset"] = taskset
-    return loader(**kwargs)
+def call_component_loader(loader: Handler, *, config: BaseModel) -> object:
+    return loader(config=config)
 
 
 def is_strict_component_config_type(
