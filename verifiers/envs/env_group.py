@@ -291,22 +291,6 @@ class EnvGroup(vf.Environment):
         assert "prompt" in dataset.column_names
         return dataset
 
-    def _format_completion_dataset(
-        self, dataset: "Dataset", map_kwargs: dict = {}
-    ) -> "Dataset":
-        """Ensure unique example_ids across concatenated datasets."""
-        # ensure unique example_ids across concatenated datasets
-        if "example_id" in dataset.column_names:
-            dataset = dataset.remove_columns(["example_id"])
-
-        def add_example_id(example, i):
-            example["example_id"] = i
-            return example
-
-        dataset = dataset.map(add_example_id, with_indices=True, **map_kwargs)
-        assert "example_id" in dataset.column_names
-        return dataset
-
     @final
     async def run_rollout(  # type: ignore[override]
         self,

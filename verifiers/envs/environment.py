@@ -371,17 +371,6 @@ class Environment(ABC):
         )
         return dataset
 
-    def _format_completion_dataset(
-        self, dataset: "Dataset", map_kwargs: dict = {}
-    ) -> "Dataset":
-        """
-        Format dataset by creating example_id.
-        """
-        if "env_id" in dataset.column_names:
-            dataset = dataset.remove_columns(["env_id"])
-        dataset = self._ensure_example_id(dataset)
-        return dataset
-
     def _format_dataset_source(self, dataset: "Dataset") -> "Dataset":
         """Format a dataset as chat (messages); client maps to its format at request time."""
         return self._format_dataset(

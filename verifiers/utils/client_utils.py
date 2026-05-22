@@ -94,13 +94,6 @@ def _build_http_client(
     )
 
 
-def setup_http_client(config: ClientConfig) -> httpx.AsyncClient:
-    """Setup base HTTP client with timeouts, limits, and PRIME headers."""
-    resolved_config = resolve_client_config(config)
-    headers, _ = _build_headers_and_api_key(resolved_config)
-    return _build_http_client(resolved_config, headers)
-
-
 def parse_chat_completion_with_routed_experts_sidecar(raw: bytes) -> ChatCompletion:
     stripped, routed_data = strip_routed_experts_data(raw)
     response = ChatCompletion.model_validate_json(stripped)

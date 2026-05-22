@@ -1467,46 +1467,7 @@ class TestSubLLMTrajectorySteps:
 
 
 # =============================================================================
-# 13. Tunnel Utils (kept for coverage)
-# =============================================================================
-
-
-class TestExtractTunnelUrlFromLine:
-    def test_extract_valid_url(self):
-        from verifiers.utils.tunnel_utils import extract_tunnel_url_from_line
-
-        line = (
-            "2024-01-01 12:00:00 INF https://random-words.trycloudflare.com registered"
-        )
-        url = extract_tunnel_url_from_line(line)
-        assert url == "https://random-words.trycloudflare.com"
-
-    def test_return_none_for_no_url(self):
-        from verifiers.utils.tunnel_utils import extract_tunnel_url_from_line
-
-        line = "Starting cloudflared tunnel..."
-        url = extract_tunnel_url_from_line(line)
-        assert url is None
-
-    def test_handle_trailing_characters(self):
-        from verifiers.utils.tunnel_utils import extract_tunnel_url_from_line
-
-        line = "https://test-tunnel.trycloudflare.com/path?query=1 some text"
-        url = extract_tunnel_url_from_line(line)
-        assert url is not None
-        assert url.startswith("https://")
-        assert ".trycloudflare.com" in url
-
-    def test_no_https_prefix(self):
-        from verifiers.utils.tunnel_utils import extract_tunnel_url_from_line
-
-        line = "something.trycloudflare.com without https"
-        url = extract_tunnel_url_from_line(line)
-        assert url is None
-
-
-# =============================================================================
-# 14. RLM Exception Hierarchy
+# 13. RLM Exception Hierarchy
 # =============================================================================
 
 

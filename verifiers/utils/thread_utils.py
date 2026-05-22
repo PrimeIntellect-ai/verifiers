@@ -156,15 +156,3 @@ def install_default_executor() -> None:
             f"Installed default executor (max_workers={_default_executor._max_workers}) "
             f"on loop {id(loop)}"
         )
-
-
-def shutdown_executors() -> None:
-    """Shut down the default executor and all registered executors."""
-    global _default_executor, _target_concurrency
-    _target_concurrency = None
-    if _default_executor is not None:
-        _default_executor.shutdown(wait=False)
-        _default_executor = None
-    for executor, _ in _executor_registry.values():
-        executor.shutdown(wait=False)
-    _executor_registry.clear()
