@@ -6,7 +6,6 @@ from typing import Protocol, cast
 from datasets import Dataset
 
 import verifiers as vf
-from verifiers.v1.utils.config_utils import coerce_config
 from verifiers.v1.utils.prompt_utils import normalize_system_prompt
 
 if __package__:
@@ -483,9 +482,8 @@ def make_langchain_deep_agents_program(
 
 
 def load_taskset(
-    config: WikispeediaTasksetConfig | None = None,
+    config: WikispeediaTasksetConfig,
 ) -> WikispeediaTaskset:
-    config = coerce_config(WikispeediaTasksetConfig, config)
     pair_cache: dict[str, tuple[list[WikiPair], list[WikiPair]]] = {}
 
     def pairs() -> tuple[list[WikiPair], list[WikiPair]]:
@@ -566,9 +564,8 @@ def load_taskset(
 
 
 def load_harness(
-    config: WikispeediaHarnessConfig | None = None,
+    config: WikispeediaHarnessConfig,
 ) -> WikispeediaHarness:
-    config = coerce_config(WikispeediaHarnessConfig, config)
     harness = WikispeediaHarness(config=config)
     harness.add_update(restore_agent_completion)
     harness._configure_runtime(

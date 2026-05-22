@@ -60,6 +60,10 @@ class Terminus2(Harness[Terminus2Config]):
         }
 
 
+def load_harness(config: Terminus2Config) -> Terminus2:
+    return Terminus2(config=config)
+
+
 def build_terminus_2_install_script() -> str:
     return """\
 set -e

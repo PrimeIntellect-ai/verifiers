@@ -8,6 +8,7 @@ from datasets import Dataset
 
 import verifiers.v1 as vf
 from environments.rlm_swe_v1 import rlm_swe_v1
+from verifiers.v1.utils.program_utils import merge_task_program, merge_task_sandbox
 
 
 def as_mapping(value: object) -> Mapping[str, object]:
@@ -147,18 +148,22 @@ def test_rlm_swe_environment_uses_v1_r2e_taskset(monkeypatch):
         config=rlm_swe_v1.RlmSweEnvConfig(
             taskset=rlm_swe_v1.RlmSweTasksetConfig(
                 dataset_name="fake-r2e",
+                repo_path="/workspace/repo",
                 timeout_minutes=30,
-                env={"CUSTOM": "1", "PATH": "/task/bin"},
+                env={"CUSTOM": "1"},
             ),
             harness=vf.RLMConfig(
                 local_checkout="/tmp/checkout",
-                env_vars={"CALLER": "1", "PATH": "/caller/bin"},
+                env_vars={"CALLER": "1"},
             ),
         ),
     )
     task = next(iter(env.taskset))
     program = as_mapping(env.harness.program)
     program_env = as_mapping(program["env"])
+    merged_program = merge_task_program(program, task, kind="command")
+    merged_env = as_mapping(merged_program["env"])
+    merged_sandbox = merge_task_sandbox(as_mapping(env.harness.sandbox), task)
 
     assert isinstance(env, vf.Env)
     assert isinstance(env.taskset, rlm_swe_v1.R2ESWETaskset)
@@ -169,14 +174,22 @@ def test_rlm_swe_environment_uses_v1_r2e_taskset(monkeypatch):
     assert task["sandbox"]["image"] == (
         f"{rlm_swe_v1.REGISTRY_PREFIX}/r2e/image:latest"
     )
-    assert task["sandbox"]["workdir"] == "/testbed"
+    assert task["sandbox"]["workdir"] == "/workspace/repo"
     assert task["sandbox"]["timeout_minutes"] == 30
-    assert task["program"]["env"] == {"AGENT_WORKDIR": "/testbed"}
-    assert program_env["PATH"] == "/caller/bin"
-    assert program_env["CUSTOM"] == "1"
+    task_program_env = as_mapping(as_mapping(task["program"])["env"])
+    assert task_program_env["AGENT_WORKDIR"] == "/workspace/repo"
+    assert "/workspace/repo/.venv/bin" in task_program_env["AGENT_PATH"]
+    assert task_program_env["PAGER"] == "cat"
+    assert task_program_env["CUSTOM"] == "1"
+    assert "CUSTOM" not in program_env
     assert program_env["CALLER"] == "1"
-    assert program_env["PAGER"] == "cat"
     assert program_env["RLM_TOOLS"] == "bash,edit"
+    assert merged_sandbox["workdir"] == "/workspace/repo"
+    assert merged_env["AGENT_WORKDIR"] == "/workspace/repo"
+    assert "/workspace/repo/.venv/bin" in merged_env["AGENT_PATH"]
+    assert merged_env["PAGER"] == "cat"
+    assert merged_env["CUSTOM"] == "1"
+    assert merged_env["CALLER"] == "1"
 
 
 def test_rlm_swe_taskset_hooks_are_registered_with_runtime():

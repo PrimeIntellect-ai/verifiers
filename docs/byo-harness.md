@@ -22,8 +22,9 @@ v1 environments are composed from:
 - `Env`: adapter that makes a taskset/harness pair usable by eval and training
   workers.
 
-The smallest v1 environment only needs a taskset. If no harness is passed,
-`vf.Env` uses the base endpoint-backed harness.
+The canonical v1 environment defines both a taskset loader and a harness loader.
+Use the base `vf.Harness` class when the environment does not need custom
+harness behavior.
 
 Keep the boundary strict: if a tool defines the task's action space,
 observations, success condition, or domain state, put it on the `Taskset`.
@@ -61,16 +62,26 @@ class ReverseTaskset(vf.Taskset[ReverseTasksetConfig]):
         return [row for row in rows if row["split"] == self.config.split]
 
 
-class ReverseEnvConfig(vf.EnvConfig):
-    taskset: ReverseTasksetConfig = ReverseTasksetConfig()
-    harness: vf.HarnessConfig = vf.HarnessConfig()
+class ReverseHarnessConfig(vf.HarnessConfig):
+    pass
 
 
-def load_environment(config: ReverseEnvConfig) -> vf.Env:
-    return vf.Env(
-        taskset=ReverseTaskset(config=config.taskset),
-        harness=vf.Harness(config=config.harness),
-    )
+class ReverseHarness(vf.Harness[ReverseHarnessConfig]):
+    pass
+
+
+def load_taskset(config: ReverseTasksetConfig) -> ReverseTaskset:
+    return ReverseTaskset(config=config)
+
+
+def load_harness(config: ReverseHarnessConfig) -> ReverseHarness:
+    return ReverseHarness(config=config)
+
+
+def load_environment(config: vf.EnvConfig) -> vf.Env:
+    taskset = vf.load_taskset(config.taskset)
+    harness = vf.load_harness(config.harness)
+    return vf.Env(taskset=taskset, harness=harness)
 ```
 
 ## Tasksets
@@ -106,7 +117,7 @@ class GSM8KTaskset(vf.Taskset[GSM8KTasksetConfig]):
         ]
 
 
-def load_taskset(config: GSM8KTasksetConfig | None = None):
+def load_taskset(config: GSM8KTasksetConfig) -> GSM8KTaskset:
     return GSM8KTaskset(config=config)
 ```
 
@@ -169,16 +180,26 @@ class ExtractTaskset(vf.Taskset[ExtractTasksetConfig]):
         ]
 
 
-class ExtractEnvConfig(vf.EnvConfig):
-    taskset: ExtractTasksetConfig = ExtractTasksetConfig()
-    harness: vf.HarnessConfig = vf.HarnessConfig()
+class ExtractHarnessConfig(vf.HarnessConfig):
+    pass
 
 
-def load_environment(config: ExtractEnvConfig) -> vf.Env:
-    return vf.Env(
-        taskset=ExtractTaskset(config=config.taskset),
-        harness=vf.Harness(config=config.harness),
-    )
+class ExtractHarness(vf.Harness[ExtractHarnessConfig]):
+    pass
+
+
+def load_taskset(config: ExtractTasksetConfig) -> ExtractTaskset:
+    return ExtractTaskset(config=config)
+
+
+def load_harness(config: ExtractHarnessConfig) -> ExtractHarness:
+    return ExtractHarness(config=config)
+
+
+def load_environment(config: vf.EnvConfig) -> vf.Env:
+    taskset = vf.load_taskset(config.taskset)
+    harness = vf.load_harness(config.harness)
+    return vf.Env(taskset=taskset, harness=harness)
 ```
 
 Bindings are the canonical way to inject shared resources. Config object
@@ -340,16 +361,18 @@ class AgentHarness(vf.Harness[AgentHarnessConfig]):
     _default_program = run
 
 
-class AgentEnvConfig(vf.EnvConfig):
-    taskset: vf.TasksetConfig = vf.TasksetConfig()
-    harness: AgentHarnessConfig = AgentHarnessConfig()
+def load_taskset(config: vf.TasksetConfig) -> FetchTaskset:
+    return FetchTaskset(config=config)
 
 
-def load_environment(config: AgentEnvConfig) -> vf.Env:
-    return vf.Env(
-        taskset=FetchTaskset(config=config.taskset),
-        harness=AgentHarness(config=config.harness),
-    )
+def load_harness(config: AgentHarnessConfig) -> AgentHarness:
+    return AgentHarness(config=config)
+
+
+def load_environment(config: vf.EnvConfig) -> vf.Env:
+    taskset = vf.load_taskset(config.taskset)
+    harness = vf.load_harness(config.harness)
+    return vf.Env(taskset=taskset, harness=harness)
 ```
 
 `Harness.program` can be:
@@ -434,16 +457,22 @@ re-exported through `verifiers.v1`. `OpenCode`, `Pi`, `MiniSWEAgent`,
 command-line agents:
 
 ```python
-class HarborEnvConfig(vf.EnvConfig):
-    taskset: vf.HarborTasksetConfig = vf.HarborTasksetConfig()
-    harness: vf.OpenCodeConfig = vf.OpenCodeConfig()
+def load_environment(config: vf.EnvConfig) -> vf.Env:
+    taskset = vf.load_taskset(config.taskset)
+    harness = vf.load_harness(config.harness)
+    return vf.Env(taskset=taskset, harness=harness)
+```
 
+Then select component packages in TOML:
 
-def load_environment(config: HarborEnvConfig) -> vf.Env:
-    return vf.Env(
-        taskset=vf.HarborTaskset(config=config.taskset),
-        harness=vf.OpenCode(config=config.harness),
-    )
+```toml
+[eval.taskset]
+id = "harbor"
+dataset = "owner/name"
+
+[eval.harness]
+id = "opencode"
+max_turns = 20
 ```
 
 `HarborTaskset(config=vf.HarborTasksetConfig())` loads Harbor-format task
@@ -508,15 +537,22 @@ Eval and RL TOML own the outer run: model, endpoint, sampling, rollout count,
 and trainer/eval settings. v1 config owns taskset and harness behavior inside
 the environment package.
 
-The recommended loader takes one `config` object and routes its `taskset` and
-`harness` sections:
+The recommended loader keeps `EnvConfig` as the unresolved package envelope and
+lets the taskset/harness loaders validate their own typed config:
 
 ```python
-def load_environment(config: MyEnvConfig) -> vf.Env:
-    return vf.Env(
-        taskset=MyTaskset(config=config.taskset),
-        harness=MyHarness(config=config.harness),
-    )
+def load_taskset(config: MyTasksetConfig) -> MyTaskset:
+    return MyTaskset(config=config)
+
+
+def load_harness(config: MyHarnessConfig) -> MyHarness:
+    return MyHarness(config=config)
+
+
+def load_environment(config: vf.EnvConfig) -> vf.Env:
+    taskset = vf.load_taskset(config.taskset)
+    harness = vf.load_harness(config.harness)
+    return vf.Env(taskset=taskset, harness=harness)
 ```
 
 Eval config passes v1 config through the `taskset`/`harness` sections:
@@ -540,24 +576,24 @@ weight = 0.5
 ```
 
 For environment-specific settings, define leaf fields on the taskset or harness
-config that owns them. An `EnvConfig` subclass only fixes the concrete taskset
-and harness config types for the loader.
+config that owns them. The `load_taskset` and `load_harness` signatures determine
+which fields TOML supports.
 
 ```python
 class MyTasksetConfig(vf.TasksetConfig):
     split: str = "train"
 
 
-class MyEnvConfig(vf.EnvConfig):
-    taskset: MyTasksetConfig = MyTasksetConfig()
-    harness: vf.HarnessConfig = vf.HarnessConfig()
+class MyHarnessConfig(vf.HarnessConfig):
+    max_turns: int = 4
 
 
-def load_environment(config: MyEnvConfig) -> vf.Env:
-    return vf.Env(
-        taskset=MyTaskset(config=config.taskset),
-        harness=vf.Harness(config=config.harness),
-    )
+def load_taskset(config: MyTasksetConfig) -> MyTaskset:
+    return MyTaskset(config=config)
+
+
+def load_harness(config: MyHarnessConfig) -> MyHarness:
+    return MyHarness(config=config)
 ```
 
 RL and Hosted Training config uses the same shape under `env`:

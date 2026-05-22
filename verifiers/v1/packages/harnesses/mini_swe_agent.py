@@ -78,6 +78,10 @@ class MiniSWEAgent(Harness[MiniSWEAgentConfig]):
         }
 
 
+def load_harness(config: MiniSWEAgentConfig) -> MiniSWEAgent:
+    return MiniSWEAgent(config=config)
+
+
 def build_mini_swe_agent_install_script(
     package_version: str,
     package_sha256: str,

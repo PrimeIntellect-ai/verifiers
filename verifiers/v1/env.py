@@ -1,43 +1,58 @@
 import asyncio
 import uuid
-from typing import TypeAlias, cast
+from typing import cast
 
+from pydantic import BaseModel
 import verifiers as vf
 from verifiers.clients import Client
 from verifiers.types import ClientConfig
 from verifiers.types import RolloutInput, SamplingArgs
 
-from .config import EnvConfig, HarnessConfig, TasksetConfig
+from .config import (
+    EnvConfig,
+    HarnessConfig,
+    TasksetConfig,
+)
 from .harness import Harness
 from .state import State
 from .taskset import Taskset
-from .types import ConfigMap
-from .utils.config_utils import config_owner
-
-TasksetInput: TypeAlias = Taskset | TasksetConfig
-HarnessInput: TypeAlias = Harness | HarnessConfig | None
+from .types import ConfigData, ConfigMap
+from .utils.component_utils import (
+    call_component_loader,
+    component_config_data,
+    component_config_type,
+    component_loader,
+    import_component_module,
+)
+from .utils.config_utils import coerce_config, config_owner, explicit_config_data
 
 
 class Env(vf.Environment):
     def __init__(
         self,
         *,
-        taskset: TasksetInput | None = None,
-        harness: HarnessInput = None,
+        taskset: Taskset | None = None,
+        harness: Harness | None = None,
         config: EnvConfig | None = None,
     ):
         if config is not None and (taskset is not None or harness is not None):
             raise TypeError("Pass either config= or taskset=/harness=, not both.")
         if config is not None:
-            taskset = config.taskset
-            harness = config.harness
+            taskset = load_taskset(config.taskset)
+            harness = load_harness(config.harness)
         if taskset is None:
             raise TypeError("Env requires a taskset.")
-        self.taskset = resolve_taskset(taskset)
-        self.harness = resolve_harness(harness)
+        if not isinstance(taskset, Taskset):
+            raise TypeError("Env taskset must be a Taskset object.")
+        if harness is None:
+            harness = Harness(config=HarnessConfig())
+        elif not isinstance(harness, Harness):
+            raise TypeError("Env harness must be a Harness object.")
+        self.taskset = taskset
+        self.harness = harness
         self.config = EnvConfig(
-            taskset=cast(TasksetConfig, self.taskset.config),
-            harness=cast(HarnessConfig, self.harness.config),
+            taskset=self.taskset.config,
+            harness=self.harness.config,
         )
         self.harness.attach_taskset(self.taskset)
         super().__init__(
@@ -151,35 +166,186 @@ class Env(vf.Environment):
         return states
 
 
-def resolve_taskset(value: TasksetInput) -> Taskset:
-    if isinstance(value, Taskset):
-        return value
-    if not isinstance(value, TasksetConfig):
-        raise TypeError("Env taskset must be a Taskset or TasksetConfig.")
-    if type(value) is TasksetConfig:
-        return Taskset(config=value)
-    owner = config_owner(type(value), TasksetConfig)
+def load_taskset(config: TasksetConfig | str) -> Taskset:
+    if isinstance(config, str):
+        if not config:
+            raise ValueError("taskset.id must be a non-empty string.")
+        return cast(
+            Taskset,
+            _load_component(
+                component_id=config,
+                data={},
+                loader_name="load_taskset",
+                base_config_cls=TasksetConfig,
+                result_cls=Taskset,
+                alias_field="taskset_id",
+                label="taskset",
+            ),
+        )
+    if isinstance(config, TasksetConfig):
+        if config.taskset_id == "":
+            raise ValueError("taskset.taskset_id must be a non-empty string.")
+        component_id = config._vf_loader_id
+        if component_id is None and type(config) is TasksetConfig:
+            component_id = config.taskset_id
+        loaded = _load_component_from_config(
+            config=config,
+            component_id=component_id,
+            loader_name="load_taskset",
+            base_config_cls=TasksetConfig,
+            result_cls=Taskset,
+            alias_field="taskset_id",
+            label="taskset",
+        )
+        if loaded is not None:
+            return cast(Taskset, loaded)
+        return _taskset_from_config(config)
+    raise TypeError("load_taskset expects a TasksetConfig or id.")
+
+
+def load_harness(config: HarnessConfig | str) -> Harness:
+    if isinstance(config, str):
+        if not config:
+            raise ValueError("harness.id must be a non-empty string.")
+        return cast(
+            Harness,
+            _load_component(
+                component_id=config,
+                data={},
+                loader_name="load_harness",
+                base_config_cls=HarnessConfig,
+                result_cls=Harness,
+                alias_field="harness_id",
+                label="harness",
+            ),
+        )
+    if isinstance(config, HarnessConfig):
+        if config.harness_id == "":
+            raise ValueError("harness.harness_id must be a non-empty string.")
+        component_id = config._vf_loader_id
+        if component_id is None and type(config) is HarnessConfig:
+            component_id = config.harness_id
+        loaded = _load_component_from_config(
+            config=config,
+            component_id=component_id,
+            loader_name="load_harness",
+            base_config_cls=HarnessConfig,
+            result_cls=Harness,
+            alias_field="harness_id",
+            label="harness",
+        )
+        if loaded is not None:
+            return cast(Harness, loaded)
+        return _harness_from_config(config)
+    raise TypeError("load_harness expects a HarnessConfig or id.")
+
+
+def _taskset_from_config(config: TasksetConfig) -> Taskset:
+    if type(config) is TasksetConfig:
+        return Taskset(config=config)
+    owner = config_owner(type(config), TasksetConfig)
     if owner is None:
         raise TypeError(
-            f"No Taskset class is bound to {type(value).__name__}; "
+            f"No Taskset class is bound to {type(config).__name__}; "
             "instantiate the Taskset explicitly."
         )
-    return cast(type[Taskset], owner)(config=value)
+    return cast(type[Taskset], owner)(config=config)
 
 
-def resolve_harness(value: HarnessInput) -> Harness:
-    if value is None:
-        return Harness(config=HarnessConfig())
-    if isinstance(value, Harness):
-        return value
-    if not isinstance(value, HarnessConfig):
-        raise TypeError("Env harness must be a Harness or HarnessConfig.")
-    if type(value) is HarnessConfig:
-        return Harness(config=value)
-    owner = config_owner(type(value), HarnessConfig)
+def _harness_from_config(config: HarnessConfig) -> Harness:
+    if type(config) is HarnessConfig:
+        return Harness(config=config)
+    owner = config_owner(type(config), HarnessConfig)
     if owner is None:
         raise TypeError(
-            f"No Harness class is bound to {type(value).__name__}; "
+            f"No Harness class is bound to {type(config).__name__}; "
             "instantiate the Harness explicitly."
         )
-    return cast(type[Harness], owner)(config=value)
+    return cast(type[Harness], owner)(config=config)
+
+
+def _load_component_from_config(
+    *,
+    config: BaseModel,
+    component_id: str | None,
+    loader_name: str,
+    base_config_cls: type[BaseModel],
+    result_cls: type[Taskset] | type[Harness],
+    alias_field: str,
+    label: str,
+) -> Taskset | Harness | None:
+    if component_id is None:
+        return None
+    try:
+        module = import_component_module(component_id, label)
+        loader = component_loader(module, loader_name, component_id, label)
+    except (AttributeError, ValueError):
+        if config_owner(type(config), base_config_cls) is not None:
+            return None
+        raise
+    config_cls = component_config_type(
+        loader=loader,
+        loader_name=loader_name,
+        component_id=component_id,
+        base_config_cls=base_config_cls,
+        label=label,
+    )
+    loader_config = config
+    if not isinstance(config, config_cls):
+        if type(config) is not base_config_cls:
+            raise TypeError(
+                f"{loader_name} for {label} package {component_id!r} expects "
+                f"{config_cls.__name__}, got {type(config).__name__}."
+            )
+        loader_config = coerce_config(
+            config_cls,
+            component_config_data(
+                data=explicit_config_data(config),
+                component_id=component_id,
+                alias_field=alias_field,
+                config_cls=config_cls,
+            ),
+        )
+    loaded = call_component_loader(loader, config=loader_config)
+    if not isinstance(loaded, result_cls):
+        raise TypeError(
+            f"{loader_name} for {label} package {component_id!r} returned "
+            f"{type(loaded).__name__}, expected {result_cls.__name__}."
+        )
+    return cast(Taskset | Harness, loaded)
+
+
+def _load_component(
+    *,
+    component_id: str,
+    data: ConfigData,
+    loader_name: str,
+    base_config_cls: type[BaseModel],
+    result_cls: type[Taskset] | type[Harness],
+    alias_field: str,
+    label: str,
+) -> Taskset | Harness:
+    module = import_component_module(component_id, label)
+    loader = component_loader(module, loader_name, component_id, label)
+    config_cls = component_config_type(
+        loader=loader,
+        loader_name=loader_name,
+        component_id=component_id,
+        base_config_cls=base_config_cls,
+        label=label,
+    )
+    config_data = component_config_data(
+        data=data,
+        component_id=component_id,
+        alias_field=alias_field,
+        config_cls=config_cls,
+    )
+    loaded = call_component_loader(
+        loader, config=coerce_config(config_cls, config_data)
+    )
+    if not isinstance(loaded, result_cls):
+        raise TypeError(
+            f"{loader_name} for {label} package {component_id!r} returned "
+            f"{type(loaded).__name__}, expected {result_cls.__name__}."
+        )
+    return cast(Taskset | Harness, loaded)

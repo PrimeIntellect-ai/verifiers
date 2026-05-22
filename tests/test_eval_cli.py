@@ -843,8 +843,10 @@ def test_load_toml_config_with_args_taskset_harness():
             "[eval.args]\n"
             'split = "train"\n\n'
             "[eval.taskset]\n"
+            'id = "user/taskset-package"\n'
             "num_examples = 10\n\n"
             "[eval.harness]\n"
+            'id = "user/harness-package"\n'
             "max_turns = 5\n"
         )
         f.flush()
@@ -855,8 +857,8 @@ def test_load_toml_config_with_args_taskset_harness():
     assert result[0]["env_args"] == {
         "split": "train",
         "config": {
-            "taskset": {"num_examples": 10},
-            "harness": {"max_turns": 5},
+            "taskset": {"id": "user/taskset-package", "num_examples": 10},
+            "harness": {"id": "user/harness-package", "max_turns": 5},
         },
     }
     assert "args" not in result[0]

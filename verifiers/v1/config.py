@@ -2,7 +2,14 @@ from collections.abc import Mapping
 from os import PathLike
 from typing import Literal, TypeAlias, cast
 
-from pydantic import BaseModel, ValidationInfo, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    PrivateAttr,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 from pydantic_config import BaseConfig
 from typing_extensions import Self
 
@@ -22,6 +29,13 @@ from .utils.config_utils import (
     resolved_config_data,
     resolve_config_object as resolve_config_object,
     string_mapping,
+)
+from .utils.component_utils import (
+    component_config_data,
+    component_config_type,
+    component_id_from_data,
+    component_loader,
+    import_component_module,
 )
 from .utils.mcp_proxy_utils import validate_program_channels
 from verifiers.types import ClientConfig
@@ -260,6 +274,8 @@ class LifecycleConfig(Config):
 
 
 class TasksetConfig(LifecycleConfig):
+    _vf_loader_id: str | None = PrivateAttr(default=None)
+
     # Singleton fields describe one logical value owned by the taskset.
     source: TaskSource | None = None
     eval_source: TaskSource | None = None
@@ -276,7 +292,10 @@ class TasksetConfig(LifecycleConfig):
 
 
 class HarnessConfig(LifecycleConfig):
+    _vf_loader_id: str | None = PrivateAttr(default=None)
+
     # Singleton fields describe one logical value owned by the harness.
+    harness_id: str | None = None
     program: ProgramConfig | str | None = None
     system_prompt: PromptInput | None = None
     system_prompt_merge: str = "reject"
@@ -296,8 +315,8 @@ class HarnessConfig(LifecycleConfig):
 
 
 class EnvConfig(Config):
-    taskset: TasksetConfig = TasksetConfig()
-    harness: HarnessConfig = HarnessConfig()
+    taskset: TasksetConfig = Field(default_factory=TasksetConfig)
+    harness: HarnessConfig = Field(default_factory=HarnessConfig)
 
     @classmethod
     def __pydantic_init_subclass__(cls, **kwargs: object) -> None:
@@ -313,6 +332,8 @@ class EnvConfig(Config):
             ("taskset", TasksetConfig),
             ("harness", HarnessConfig),
         ):
+            if field_name not in cls.__dict__.get("__annotations__", {}):
+                continue
             annotation = cls.model_fields[field_name].annotation
             if not (
                 isinstance(annotation, type) and issubclass(annotation, expected_type)
@@ -331,10 +352,113 @@ class EnvConfig(Config):
                 "Omit the section to use the default config."
             )
         try:
-            explicit_config_data(value)
+            data = explicit_config_data(value)
         except TypeError as exc:
             raise ValueError(str(exc)) from exc
-        return value
+        annotation = cls.model_fields[str(info.field_name)].annotation
+        if (
+            info.field_name == "taskset"
+            and isinstance(annotation, type)
+            and issubclass(annotation, TasksetConfig)
+        ):
+            if isinstance(value, annotation):
+                return value
+            component_id = component_id_from_data(
+                data, alias_field="taskset_id", label="taskset"
+            )
+            validate_env_child_config(data, str(info.field_name))
+            if component_id is None:
+                return data
+            if cls is not EnvConfig and "id" not in data:
+                return data
+            config_cls: type[BaseModel] = annotation
+            module = import_component_module(component_id, "taskset")
+            loader = component_loader(module, "load_taskset", component_id, "taskset")
+            package_config_cls = component_config_type(
+                loader=loader,
+                loader_name="load_taskset",
+                component_id=component_id,
+                base_config_cls=TasksetConfig,
+                label="taskset",
+            )
+            if annotation is not TasksetConfig and not issubclass(
+                package_config_cls, annotation
+            ):
+                raise ValueError(
+                    f"{cls.__name__}.taskset is typed as {annotation.__name__}, "
+                    f"but taskset package {component_id!r} expects "
+                    f"{package_config_cls.__name__}. Use base vf.EnvConfig for "
+                    "package-selected tasksets."
+                )
+            config_cls = package_config_cls
+            config = coerce_config(
+                config_cls,
+                component_config_data(
+                    data=data,
+                    component_id=component_id,
+                    alias_field="taskset_id",
+                    config_cls=config_cls,
+                ),
+            )
+            cast(TasksetConfig, config)._vf_loader_id = component_id
+            return config
+        if (
+            info.field_name == "harness"
+            and isinstance(annotation, type)
+            and issubclass(annotation, HarnessConfig)
+        ):
+            if isinstance(value, annotation):
+                return value
+            component_id = component_id_from_data(
+                data, alias_field="harness_id", label="harness"
+            )
+            validate_env_child_config(data, str(info.field_name))
+            if component_id is None:
+                return data
+            if cls is not EnvConfig and "id" not in data:
+                return data
+            config_cls = annotation
+            module = import_component_module(component_id, "harness")
+            loader = component_loader(module, "load_harness", component_id, "harness")
+            package_config_cls = component_config_type(
+                loader=loader,
+                loader_name="load_harness",
+                component_id=component_id,
+                base_config_cls=HarnessConfig,
+                label="harness",
+            )
+            if annotation is not HarnessConfig and not issubclass(
+                package_config_cls, annotation
+            ):
+                raise ValueError(
+                    f"{cls.__name__}.harness is typed as {annotation.__name__}, "
+                    f"but harness package {component_id!r} expects "
+                    f"{package_config_cls.__name__}. Use base vf.EnvConfig for "
+                    "package-selected harnesses."
+                )
+            config_cls = package_config_cls
+            config = coerce_config(
+                config_cls,
+                component_config_data(
+                    data=data,
+                    component_id=component_id,
+                    alias_field="harness_id",
+                    config_cls=config_cls,
+                ),
+            )
+            cast(HarnessConfig, config)._vf_loader_id = component_id
+            return config
+        return data
+
+
+def validate_env_child_config(data: ConfigData, field_name: str) -> None:
+    if "config" in data:
+        raise ValueError(
+            f"EnvConfig.{field_name}.config is not supported. "
+            "Put fields directly in the section."
+        )
+    for key, item in data.items():
+        validate_serializable_value(item, f"EnvConfig.{field_name}.{key}")
 
 
 def sandbox_config_mapping(

@@ -67,6 +67,10 @@ class Pi(Harness[PiConfig]):
         return {"setup_pi.endpoint_config": pi_endpoint_config}
 
 
+def load_harness(config: PiConfig) -> Pi:
+    return Pi(config=config)
+
+
 def build_pi_install_script(package: str) -> str:
     return f"""\
 set -e
