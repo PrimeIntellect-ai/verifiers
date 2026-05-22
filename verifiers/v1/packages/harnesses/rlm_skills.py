@@ -17,7 +17,7 @@ from ...state import State
 from ...task import Task
 from ...types import ConfigMap
 
-RLM_SKILLS_CACHE_ROOT = Path.home() / ".cache" / "verifiers" / "rlm-skills"
+RLM_SKILLS_CACHE_ROOT: Path | None = None
 
 
 class SkillParam(TypedDict):
@@ -34,10 +34,14 @@ def stage_rlm_tool_skills(
     runtime: Runtime,
     *,
     source: Path | Traversable | str | None = None,
-    cache_root: Path = RLM_SKILLS_CACHE_ROOT,
+    cache_root: Path | None = None,
 ) -> Path:
-    task_id = str(task.get("task_id") or task.get("task_name") or "task")
-    key = str(state.get("trajectory_id") or id(state)).replace("/", "_")
+    if cache_root is None:
+        cache_root = (
+            RLM_SKILLS_CACHE_ROOT or Path.home() / ".cache" / "verifiers" / "rlm-skills"
+        )
+    task_id = cache_path_segment(task.get("task_id") or task.get("task_name") or "task")
+    key = cache_path_segment(state.get("trajectory_id") or id(state))
     target = cache_root / task_id / key
     if target.exists():
         shutil.rmtree(target)
@@ -50,6 +54,16 @@ def stage_rlm_tool_skills(
         if skill_name not in existing:
             write_tool_skill(target / skill_name, tool, skill_name)
     return target
+
+
+def cache_path_segment(value: object) -> str:
+    raw = str(value)
+    name = re.sub(r"[^A-Za-z0-9_.-]+", "_", raw).strip("._-")
+    name = name or "item"
+    if name == raw:
+        return name
+    digest = hashlib.sha1(raw.encode()).hexdigest()[:8]
+    return f"{name}_{digest}"
 
 
 def copy_skill_source(source: Path | Traversable | str, target: Path) -> None:
@@ -120,7 +134,7 @@ def params_from_schema(schema: ConfigMap) -> list[SkillParam]:
                 "default_literal": None if is_required else "None",
             }
         )
-    return params
+    return sorted(params, key=lambda param: not param["required"])
 
 
 def annotation_from_schema(schema: ConfigMap) -> str:

@@ -126,6 +126,36 @@ def test_rlm_harness_stages_taskset_and_endpoint_tool_skills(tmp_path: Path):
     compile(skill_source, str(staged / "greet" / "src" / "greet" / "greet.py"), "exec")
 
 
+def test_rlm_skill_staging_sanitizes_cache_paths(tmp_path: Path):
+    async def greet(name: str) -> str:
+        return f"Hello, {name}!"
+
+    taskset = vf.Taskset(
+        config=vf.TasksetConfig(
+            source=[{"task_id": "../outside/group", "question": "Say hi."}]
+        )
+    )
+    taskset.add_toolset(vf.Toolset(tools=[greet]))
+    env = vf.Env(
+        taskset=taskset,
+        harness=vf.RLM(config=vf.RLMConfig(local_checkout="/tmp/checkout")),
+    )
+    task = next(iter(env.taskset))
+    state = vf.State.for_task(task)
+    asyncio.run(env.harness.setup_state(task, state))
+
+    from verifiers.v1.packages.harnesses.rlm_skills import stage_rlm_tool_skills
+
+    cache_root = tmp_path / "cache"
+    staged = stage_rlm_tool_skills(
+        task, state, env.harness.runtime, cache_root=cache_root
+    )
+
+    assert staged.is_relative_to(cache_root)
+    assert not (tmp_path / "outside").exists()
+    assert (staged / "greet" / "SKILL.md").exists()
+
+
 def test_generated_rlm_skill_calls_v1_tool_endpoint(tmp_path: Path, monkeypatch):
     tool = Tool(
         name="greet",
@@ -188,6 +218,28 @@ def test_generated_rlm_skill_calls_v1_tool_endpoint(tmp_path: Path, monkeypatch)
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+
+
+def test_generated_rlm_skill_orders_required_params_first(tmp_path: Path):
+    tool = Tool(
+        name="mix",
+        description="Mix required and optional args.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "optional": {"type": "string"},
+                "required": {"type": "string"},
+            },
+            "required": ["required"],
+        },
+    )
+    from verifiers.v1.packages.harnesses.rlm_skills import write_tool_skill
+
+    write_tool_skill(tmp_path / "mix", tool, "mix")
+    source = (tmp_path / "mix" / "src" / "mix" / "mix.py").read_text()
+
+    assert "async def mix(required: str, optional: str | None = None):" in source
+    compile(source, str(tmp_path / "mix" / "src" / "mix" / "mix.py"), "exec")
 
 
 def test_taskset_discovers_sibling_skills_dir_by_default(
