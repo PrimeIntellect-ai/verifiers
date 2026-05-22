@@ -190,15 +190,19 @@ class EnvWorker:
                 pass
 
         try:
-            raw = msgpack.unpackb(payload_bytes, raw=False)
+            # R2: msgpack unpack + Pydantic validate run on the asyncio loop in
+            # the prior code path. Both are CPU-only and the request size is
+            # non-trivial (sampling_args + client_config + prompt). Offload so
+            # the loop stays responsive when many requests land at once.
+            raw = await asyncio.to_thread(msgpack.unpackb, payload_bytes, raw=False)
             request_type = raw.get("request_type")
             request_id = raw.get("request_id", request_id)
 
             if request_type == "run_rollout":
-                request = RunRolloutRequest.model_validate(raw)
+                request = await asyncio.to_thread(RunRolloutRequest.model_validate, raw)
                 response = await self.handle_run_rollout(request)
             elif request_type == "run_group":
-                request = RunGroupRequest.model_validate(raw)
+                request = await asyncio.to_thread(RunGroupRequest.model_validate, raw)
                 response = await self.handle_run_group(request)
             else:
                 self.logger.warning(f"Unknown request type: {request_type}")
@@ -361,8 +365,16 @@ class EnvWorker:
         if self.death_pipe is not None:
             monitor_death_pipe(self.death_pipe)
 
-        from verifiers.utils.thread_utils import install_default_executor
+        from verifiers.utils.thread_utils import install_default_executor, scale_executors
 
+        # R1: Scale the default executor BEFORE install_default_executor so the
+        # event loop actually picks up a properly-sized pool. Python's default
+        # `min(32, cpu_count+4)` is the floor under to_thread; with ~256
+        # concurrent rollouts per worker each calling
+        # asyncio.to_thread(parse_response_tokens), the wait queue would otherwise
+        # bottleneck even the threaded path. Empirically rollouts run at ~256
+        # in-flight per worker, so 512 gives a 2x headroom.
+        scale_executors(concurrency=512)
         install_default_executor()
 
         stop_event = asyncio.Event()

@@ -134,5 +134,13 @@ class EnvServer(ABC):
             uvloop.install()
         except ImportError:
             pass
+
+        # R1: same pool scaling as workers — the router is just one async
+        # loop juggling stats, response-receiving, and request-dispatching
+        # across all workers. Defaulting to 32 threads silently caps to_thread.
+        from verifiers.utils.thread_utils import scale_executors
+
+        scale_executors(concurrency=512)
+
         server = cls(*args, **kwargs)
         return asyncio.run(server.run())

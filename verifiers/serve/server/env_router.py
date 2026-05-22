@@ -249,6 +249,12 @@ class EnvRouter:
 
                 # ── worker responses ───────────────────────────────
                 if self.response_pull in events:
+                    # R4: drain all ready frames first, then dispatch on_response
+                    # concurrently. The prior serial loop awaited a TCP send per
+                    # response which compounds when 256 workers all finish near
+                    # simultaneously. asyncio.gather lets the loop pipeline the
+                    # frontend sends and return to the poller sooner.
+                    pending: list = []
                     while True:
                         try:
                             frames = await self.response_pull.recv_multipart(
@@ -260,7 +266,12 @@ class EnvRouter:
                             continue
                         client_id, request_id, response_bytes = frames
                         self.complete_request(request_id)
-                        await on_response(client_id, request_id, response_bytes)
+                        pending.append((client_id, request_id, response_bytes))
+                    if pending:
+                        await asyncio.gather(
+                            *(on_response(c, r, b) for c, r, b in pending),
+                            return_exceptions=True,
+                        )
 
                 # ── worker stats ───────────────────────────────────
                 if self.stats_pull in events:
