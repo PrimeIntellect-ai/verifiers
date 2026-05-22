@@ -1,6 +1,7 @@
 # rlm-swe-v1
 
-v1 RLM coding environment using the R2E-Gym SWE taskset and `vf.RLM` harness.
+v1 RLM coding environment using the reusable SWE taskset adapter and `vf.RLM`
+harness.
 
 ```python
 import verifiers as vf
@@ -22,11 +23,12 @@ env = load_environment(
 )
 ```
 
-The taskset is fully implemented in this environment package on the v1 stack.
-It loads the full `R2E-Gym/R2E-Gym-Subset` train split by default, converts each
-row into a v1 task, creates the per-instance sandbox config from the dataset
-image, stages hidden tests for scoring, runs `run_tests.sh`, and parses pytest
-output for reward.
+The taskset is implemented by `vf.SWETaskset`. It wraps the existing SWE
+tasksets on the v1 stack, converts each row into a v1 task, creates per-instance
+sandbox and program config, keeps hidden tests for scoring, and bridges the
+legacy SWE setup/reward hooks into v1 lifecycle handlers. The default backend is
+R2E-Gym; set `task_type` to select other SWE backends such as `swebench`,
+`multiswe`, `openswe`, `swelego-real`, `swerebench-v2`, or SWE-Smith variants.
 
 `RLM` owns the CLI program, intercepted endpoint config, RLM installation, and
 trajectory filtering. Harbor is not used here because the R2E setup is dataset
