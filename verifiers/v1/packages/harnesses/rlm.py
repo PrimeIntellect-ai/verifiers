@@ -110,7 +110,15 @@ class RLM(Harness[RLMConfig]):
                     "apt-get -o Acquire::Retries=3 update && "
                     "apt-get -o Acquire::Retries=3 install -y --no-install-recommends "
                     "ca-certificates curl git && rm -rf /var/lib/apt/lists/*",
-                    build_install_command(),
+                    "bash -lc "
+                    + shlex.quote(
+                        f"""
+set -eo pipefail
+export RLM_CHECKOUT_PATH={shlex.quote(DEFAULT_RLM_CHECKOUT_PATH)}
+test -f "$RLM_CHECKOUT_PATH/install.sh"
+bash "$RLM_CHECKOUT_PATH/install.sh"
+"""
+                    ),
                 ],
                 env=env,
                 artifacts={
@@ -161,16 +169,6 @@ class RLM(Harness[RLMConfig]):
 
 def load_harness(config: RLMConfig) -> RLM:
     return RLM(config=config)
-
-
-def build_install_command() -> str:
-    script = f"""
-set -eo pipefail
-export RLM_CHECKOUT_PATH={shlex.quote(DEFAULT_RLM_CHECKOUT_PATH)}
-test -f "$RLM_CHECKOUT_PATH/install.sh"
-bash "$RLM_CHECKOUT_PATH/install.sh"
-"""
-    return f"bash -lc {shlex.quote(script)}"
 
 
 def build_run_script(instruction_path: str, workdir: str) -> str:
@@ -278,13 +276,9 @@ def build_summarize_resolver(
             raise ValueError("summarize_at_tokens pair must satisfy 0 < lo <= hi")
 
         def sampled_threshold(state: State) -> str:
-            return str(draw_threshold(state, lo, hi))
+            prompt = json.dumps(state.get("prompt"), sort_keys=True, default=str)
+            digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+            return str(random.Random(int(digest[:16], 16)).randint(lo, hi))
 
         return sampled_threshold
     raise ValueError("summarize_at_tokens must be int, (lo, hi), or None")
-
-
-def draw_threshold(state: ConfigMap, lo: int, hi: int) -> int:
-    prompt = json.dumps(state.get("prompt"), sort_keys=True, default=str)
-    digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
-    return random.Random(int(digest[:16], 16)).randint(lo, hi)
