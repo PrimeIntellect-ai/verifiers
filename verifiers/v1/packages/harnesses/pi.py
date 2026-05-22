@@ -114,7 +114,7 @@ EOFMCP
 set -e
 
 PI_WORKDIR="${{AGENT_WORKDIR:-}}"
-if [[ -z "$PI_WORKDIR" ]]; then
+if [ -z "$PI_WORKDIR" ]; then
     PI_WORKDIR={shlex.quote(agent_workdir)}
 fi
 
@@ -145,7 +145,7 @@ def build_pi_run_script(
 set -eo pipefail
 
 PI_WORKDIR="${{AGENT_WORKDIR:-}}"
-if [[ -z "$PI_WORKDIR" ]]; then
+if [ -z "$PI_WORKDIR" ]; then
     PI_WORKDIR={shlex.quote(agent_workdir)}
 fi
 
