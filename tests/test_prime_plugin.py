@@ -48,7 +48,7 @@ def test_build_module_command_install_adds_workspace_env_path(
     workspace, env_dir = _make_workspace(tmp_path)
     plugin = prime_plugin.PrimeCLIPlugin()
 
-    monkeypatch.setattr(prime_plugin, "_current_cwd", lambda: env_dir)
+    monkeypatch.chdir(env_dir)
     monkeypatch.setattr(prime_plugin, "_resolve_workspace_python", lambda *_: "python")
 
     command = plugin.build_module_command(plugin.install_module, ["my-env"])
@@ -69,7 +69,7 @@ def test_build_module_command_eval_rewrites_relative_env_dir_path(
     workspace, env_dir = _make_workspace(tmp_path)
     plugin = prime_plugin.PrimeCLIPlugin()
 
-    monkeypatch.setattr(prime_plugin, "_current_cwd", lambda: env_dir)
+    monkeypatch.chdir(env_dir)
     monkeypatch.setattr(prime_plugin, "_resolve_workspace_python", lambda *_: "python")
 
     command = plugin.build_module_command(
@@ -93,7 +93,7 @@ def test_build_module_command_gepa_adds_workspace_env_dir_path(
     workspace, env_dir = _make_workspace(tmp_path)
     plugin = prime_plugin.PrimeCLIPlugin()
 
-    monkeypatch.setattr(prime_plugin, "_current_cwd", lambda: env_dir)
+    monkeypatch.chdir(env_dir)
     monkeypatch.setattr(prime_plugin, "_resolve_workspace_python", lambda *_: "python")
 
     command = plugin.build_module_command(plugin.gepa_module, ["my-env"])
@@ -114,7 +114,7 @@ def test_build_module_command_build_adds_workspace_env_path(
     workspace, env_dir = _make_workspace(tmp_path)
     plugin = prime_plugin.PrimeCLIPlugin()
 
-    monkeypatch.setattr(prime_plugin, "_current_cwd", lambda: env_dir)
+    monkeypatch.chdir(env_dir)
     monkeypatch.setattr(prime_plugin, "_resolve_workspace_python", lambda *_: "python")
 
     command = plugin.build_module_command(plugin.build_module, ["my-env"])
@@ -133,7 +133,7 @@ def test_build_module_command_init_adds_workspace_env_path(tmp_path: Path, monke
     workspace, env_dir = _make_workspace(tmp_path)
     plugin = prime_plugin.PrimeCLIPlugin()
 
-    monkeypatch.setattr(prime_plugin, "_current_cwd", lambda: env_dir)
+    monkeypatch.chdir(env_dir)
     monkeypatch.setattr(prime_plugin, "_resolve_workspace_python", lambda *_: "python")
 
     command = plugin.build_module_command(plugin.init_module, ["my-env"])

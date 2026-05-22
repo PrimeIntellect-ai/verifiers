@@ -18,7 +18,6 @@ from datasets.utils import logging as ds_logging
 
 import verifiers as vf
 from verifiers.types import (
-    ClientConfig,
     ClientType,
     Endpoint,
     Endpoints,
@@ -56,23 +55,6 @@ from verifiers.utils.save_utils import save_metadata
 logger = logging.getLogger(__name__)
 FREEFORM_ABLATION_SWEEP_FIELDS = {"args", "env_args"}
 CHAT_TEMPLATE_KWARG_FIELDS = ("reasoning_effort", "enable_thinking")
-
-
-def _client_config_uses_prime_inference(config: ClientConfig) -> bool:
-    if config.endpoint_configs:
-        urls = [endpoint.api_base_url for endpoint in config.endpoint_configs]
-    else:
-        urls = [config.api_base_url]
-
-    return bool(urls) and all(is_prime_inference_url(url) for url in urls)
-
-
-async def _resolve_model_pricing(config: EvalConfig) -> ModelPricing | None:
-    if not _client_config_uses_prime_inference(config.client_config):
-        return None
-
-    pricing_by_model = await fetch_prime_pricing()
-    return pricing_by_model.get(config.model)
 
 
 def _sum_output_usage(outputs: list[RolloutOutput]) -> TokenUsage | None:
@@ -788,14 +770,6 @@ def filter_inputs(
     return filtered_inputs
 
 
-def to_col_order(
-    list_of_dicts: list[Mapping[str, float]],
-) -> dict[str, list[float | None]]:
-    """Convert a list of mappings to a dictionary of lists."""
-    keys = sorted({key for mapping in list_of_dicts for key in mapping})
-    return {key: [mapping.get(key) for mapping in list_of_dicts] for key in keys}
-
-
 def output_env_id(output: Mapping[str, Any]) -> str:
     info = output.get("info") or {}
     if isinstance(info, str):
@@ -806,15 +780,6 @@ def output_env_id(output: Mapping[str, Any]) -> str:
     if value is not None:
         return str(value)
     return str(output.get("env_id", "default"))
-
-
-def get_env_outputs(results: GenerateOutputs, env_id: str) -> GenerateOutputs:
-    """Get only the rollouts for a given env_id."""
-    outputs = [o for o in results["outputs"] if output_env_id(o) == env_id]
-    return GenerateOutputs(
-        outputs=outputs,
-        metadata=results["metadata"],  # duplicate metadata
-    )
 
 
 def print_rewards(results: GenerateOutputs):
@@ -847,7 +812,10 @@ def print_rewards(results: GenerateOutputs):
         print(f"pass^k: {', '.join(parts)}")
 
     metrics = [o["metrics"] for o in results["outputs"]]
-    metrics_col = to_col_order(metrics)
+    metric_keys = sorted({key for mapping in metrics for key in mapping})
+    metrics_col = {
+        key: [mapping.get(key) for mapping in metrics] for key in metric_keys
+    }
     for k in metrics_col.keys():
         v = metrics_col[k]
         present_values = [value for value in v if value is not None]
@@ -1008,7 +976,14 @@ def print_results(results: GenerateOutputs, num_samples: int = 1):
     env_ids = {output_env_id(o) for o in results["outputs"]}
     if len(env_ids) > 1:
         for env_id in env_ids:
-            env_results = get_env_outputs(results, env_id)
+            env_results = GenerateOutputs(
+                outputs=[
+                    output
+                    for output in results["outputs"]
+                    if output_env_id(output) == env_id
+                ],
+                metadata=results["metadata"],
+            )
             print(f"\n--- {env_id} ---")
             print_rewards(env_results)
             print_info(env_results)
@@ -1052,7 +1027,15 @@ async def run_evaluation(
         vf_env.set_kwargs(**config.extra_env_kwargs)
 
     results_path = config.resume_path or get_eval_results_path(config)
-    model_pricing = await _resolve_model_pricing(config)
+    if config.client_config.endpoint_configs:
+        pricing_urls = [
+            endpoint.api_base_url for endpoint in config.client_config.endpoint_configs
+        ]
+    else:
+        pricing_urls = [config.client_config.api_base_url]
+    model_pricing = None
+    if pricing_urls and all(is_prime_inference_url(url) for url in pricing_urls):
+        model_pricing = (await fetch_prime_pricing()).get(config.model)
     on_progress = _with_eval_metadata(on_progress, model_pricing, config.name)
 
     try:

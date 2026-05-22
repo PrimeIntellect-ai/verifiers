@@ -48,7 +48,14 @@ class Terminus2(Harness[Terminus2Config]):
         ]
 
     def setup(self, config: Terminus2Config) -> str:
-        return build_terminus_2_install_script()
+        return """\
+set -e
+apt-get -o Acquire::Retries=3 update -qq
+apt-get -o Acquire::Retries=3 install -y -qq curl ca-certificates > /dev/null 2>&1
+if ! command -v uv >/dev/null 2>&1; then
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+fi
+"""
 
     def artifacts(self, config: Terminus2Config) -> ProgramOptionMap:
         return {
@@ -58,17 +65,6 @@ class Terminus2(Harness[Terminus2Config]):
                 "optional": True,
             }
         }
-
-
-def build_terminus_2_install_script() -> str:
-    return """\
-set -e
-apt-get -o Acquire::Retries=3 update -qq
-apt-get -o Acquire::Retries=3 install -y -qq curl ca-certificates > /dev/null 2>&1
-if ! command -v uv >/dev/null 2>&1; then
-  curl -LsSf https://astral.sh/uv/install.sh | sh
-fi
-"""
 
 
 def build_terminus_2_run_script(
@@ -247,7 +243,6 @@ asyncio.run(main())
 
 __all__ = [
     "Terminus2",
-    "build_terminus_2_install_script",
     "build_terminus_2_run_script",
     "terminus_2_agent_script",
 ]
