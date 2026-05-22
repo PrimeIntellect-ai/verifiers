@@ -767,7 +767,10 @@ class Environment(ABC):
             )
 
         state = await maybe_retry(run_rollout_attempt, max_retries=max_retries)()
-        output = state_to_output(state, state_columns or [])
+        # E2: state_to_output walks the full trajectory dict + sanitizes messages;
+        # per-rollout cost can be 100s of ms on long rollouts. Offload so it
+        # doesn't block the worker's event loop right before the response pack.
+        output = await asyncio.to_thread(state_to_output, state, state_columns or [])
         return output
 
     @final
@@ -814,10 +817,15 @@ class Environment(ABC):
             )
 
         group_states = await maybe_retry(run_group_attempt, max_retries=max_retries)()
-        outputs = [
-            state_to_output(state, state_columns or []) for state in group_states
-        ]
-        return outputs
+        # E2: same as run_rollout — offload the trajectory walk + message
+        # sanitization to a thread so the event loop stays responsive.
+        outputs = await asyncio.gather(
+            *(
+                asyncio.to_thread(state_to_output, state, state_columns or [])
+                for state in group_states
+            )
+        )
+        return list(outputs)
 
     async def generate(
         self,
