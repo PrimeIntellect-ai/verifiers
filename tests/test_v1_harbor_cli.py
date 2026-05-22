@@ -13,6 +13,7 @@ import verifiers as root_vf
 import verifiers.v1 as vf
 from verifiers.v1.packages.harnesses.pi import pi_mcp_json, pi_models_json
 from verifiers.v1.packages.harnesses.configs import (
+    PI_DEFAULT_PACKAGE,
     TERMINUS_2_DEFAULT_API_BASE_URL,
     TERMINUS_2_DEFAULT_HARBOR_PACKAGE,
     TERMINUS_2_DEFAULT_MODEL_NAME,
@@ -299,6 +300,10 @@ def test_pi_harness_writes_intercepted_model_and_mcp_config() -> None:
 
     assert "apt-get -o Acquire::Retries=3 update" in setup
     assert "apt-get -o Acquire::Retries=3 install" in setup
+    assert harness.config.package == PI_DEFAULT_PACKAGE
+    assert PI_DEFAULT_PACKAGE == "@earendil-works/pi-coding-agent"
+    assert f"npm install -g --ignore-scripts {PI_DEFAULT_PACKAGE}" in setup
+    assert "mariozechner" not in setup
     provider = models["providers"]["verifiers"]
     assert provider["baseUrl"] == "http://127.0.0.1:1/rollout/key/v1"
     assert provider["api"] == "openai-completions"

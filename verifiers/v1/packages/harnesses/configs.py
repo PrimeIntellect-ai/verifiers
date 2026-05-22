@@ -55,7 +55,7 @@ MINI_SWE_AGENT_DEFAULT_CONFIG_SPEC = "mini_textbased"
 MINI_SWE_AGENT_DEFAULT_MODEL_CLASS = "litellm_textbased"
 MINI_SWE_AGENT_DEFAULT_ENVIRONMENT_TIMEOUT = 120
 
-PI_DEFAULT_PACKAGE = "@mariozechner/pi-coding-agent"
+PI_DEFAULT_PACKAGE = "@earendil-works/pi-coding-agent"
 PI_DEFAULT_WORKDIR = "/app"
 PI_DEFAULT_INSTRUCTION_PATH = "/pi/instruction.txt"
 PI_DEFAULT_SYSTEM_PROMPT_PATH = "/pi/system.txt"
