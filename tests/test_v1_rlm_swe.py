@@ -8,6 +8,8 @@ from datasets import Dataset
 
 import verifiers.v1 as vf
 from environments.rlm_swe_v1 import rlm_swe_v1
+from verifiers.envs.experimental.composable.task import SandboxSpec
+from verifiers.v1.packages.tasksets import swe as v1_swe
 from verifiers.v1.utils.program_utils import merge_task_program, merge_task_sandbox
 
 
@@ -134,19 +136,45 @@ def test_rlm_harness_explicit_skills_override_taskset_skills(tmp_path: Path):
     assert dirs["/rlm/skills"] == explicit_skills
 
 
-def test_rlm_swe_environment_uses_v1_r2e_taskset(monkeypatch):
-    calls: dict[str, object] = {}
+def test_swe_taskset_builds_v1_rows_from_legacy_taskset(monkeypatch):
+    calls = patch_fake_swe_factory(monkeypatch)
 
-    def fake_load_dataset(dataset_name: str, **kwargs: object) -> Dataset:
-        calls["dataset_name"] = dataset_name
-        calls["kwargs"] = kwargs
-        return fake_r2e_dataset()
+    taskset = vf.SWETaskset(
+        config=vf.SWETasksetConfig(
+            task_type="r2e",
+            dataset_name="fake-r2e",
+            repo_path="/workspace/repo",
+            timeout_minutes=30,
+            env={"CUSTOM": "1"},
+        )
+    )
+    task = next(iter(taskset))
 
-    monkeypatch.setattr(rlm_swe_v1, "load_dataset", fake_load_dataset)
+    assert calls["backend"] == "r2e"
+    assert calls["kwargs"]["dataset_name"] == "fake-r2e"
+    assert calls["kwargs"]["repo_path"] == "/workspace/repo"
+    assert calls["kwargs"]["timeout_minutes"] == 30
+    assert task["taskset_id"] == "swe/fake"
+    assert task["instruction"] == "Fix repo-0."
+    assert task["sandbox"]["image"] == "fake/image:latest"
+    assert task["sandbox"]["workdir"] == "/workspace/repo"
+    assert task["sandbox"]["timeout_minutes"] == 30
+    program_env = as_mapping(as_mapping(task["program"])["env"])
+    assert program_env["AGENT_WORKDIR"] == "/workspace/repo"
+    assert "/workspace/repo/.venv/bin" in program_env["AGENT_PATH"]
+    assert program_env["PAGER"] == "cat"
+    assert program_env["CUSTOM"] == "1"
+    assert "PATH" not in program_env
+    assert "skills" in taskset.get_upload_dirs()
+
+
+def test_rlm_swe_environment_uses_v1_swe_taskset(monkeypatch):
+    calls = patch_fake_swe_factory(monkeypatch)
 
     env = rlm_swe_v1.load_environment(
         config=rlm_swe_v1.RlmSweEnvConfig(
             taskset=rlm_swe_v1.RlmSweTasksetConfig(
+                task_type="r2e",
                 dataset_name="fake-r2e",
                 repo_path="/workspace/repo",
                 timeout_minutes=30,
@@ -168,19 +196,12 @@ def test_rlm_swe_environment_uses_v1_r2e_taskset(monkeypatch):
     assert isinstance(env, vf.Env)
     assert isinstance(env.taskset, rlm_swe_v1.R2ESWETaskset)
     assert isinstance(env.harness, vf.RLM)
-    assert calls["dataset_name"] == "fake-r2e"
-    assert task["taskset_id"] == "swe/r2e"
+    assert calls["backend"] == "r2e"
+    assert task["taskset_id"] == "swe/fake"
     assert task["instruction"] == "Fix repo-0."
-    assert task["sandbox"]["image"] == (
-        f"{rlm_swe_v1.REGISTRY_PREFIX}/r2e/image:latest"
-    )
+    assert task["sandbox"]["image"] == "fake/image:latest"
     assert task["sandbox"]["workdir"] == "/workspace/repo"
     assert task["sandbox"]["timeout_minutes"] == 30
-    task_program_env = as_mapping(as_mapping(task["program"])["env"])
-    assert task_program_env["AGENT_WORKDIR"] == "/workspace/repo"
-    assert "/workspace/repo/.venv/bin" in task_program_env["AGENT_PATH"]
-    assert task_program_env["PAGER"] == "cat"
-    assert task_program_env["CUSTOM"] == "1"
     assert "CUSTOM" not in program_env
     assert program_env["CALLER"] == "1"
     assert program_env["RLM_TOOLS"] == "bash,edit"
@@ -192,8 +213,9 @@ def test_rlm_swe_environment_uses_v1_r2e_taskset(monkeypatch):
     assert merged_env["CALLER"] == "1"
 
 
-def test_rlm_swe_taskset_hooks_are_registered_with_runtime():
-    taskset = rlm_swe_v1.load_taskset(config=rlm_swe_v1.RlmSweTasksetConfig())
+def test_swe_taskset_hooks_are_registered_with_runtime(monkeypatch):
+    patch_fake_swe_factory(monkeypatch)
+    taskset = vf.SWETaskset(config=vf.SWETasksetConfig())
     env = vf.Env(taskset=taskset)
 
     setup_names = [handler.__name__ for handler in env.harness.runtime.rollout_setup]
@@ -202,189 +224,149 @@ def test_rlm_swe_taskset_hooks_are_registered_with_runtime():
     ]
     signal_names = {signal["name"] for signal in env.harness.runtime.rollout_signals}
 
-    assert setup_names.count("setup_r2e_sandbox") == 1
-    assert cleanup_names.count("cleanup_r2e_state") == 1
+    assert setup_names.count("setup_swe_sandbox") == 1
+    assert cleanup_names.count("cleanup_swe_state") == 1
     assert "solved" in signal_names
 
 
 @pytest.mark.asyncio
-async def test_rlm_swe_taskset_setup_and_reward(monkeypatch):
-    monkeypatch.setattr(
-        rlm_swe_v1, "load_dataset", lambda *args, **kwargs: fake_r2e_dataset()
-    )
-    taskset = rlm_swe_v1.load_taskset(
-        config=rlm_swe_v1.RlmSweTasksetConfig(timeout_minutes=30)
-    )
+async def test_swe_taskset_setup_reward_and_cleanup(monkeypatch):
+    patch_fake_swe_factory(monkeypatch)
+    taskset = vf.SWETaskset(config=vf.SWETasksetConfig(timeout_minutes=30))
     task = next(iter(taskset))
     state = vf.State.for_task(task)
     sandbox = FakeSandbox()
-    calls: dict[str, object] = {}
 
-    async def fake_setup_sandbox(sandbox_arg: object, state_arg: vf.State) -> None:
-        calls["setup_sandbox"] = sandbox_arg
-        calls["setup_state"] = state_arg
+    await taskset.setup_swe_sandbox(task, state, sandbox=sandbox)
+    reward = await next(
+        handler for handler in taskset.rewards if handler.__name__ == "solved"
+    )(task, state)
+    await taskset.cleanup_swe_state(task, state)
 
-    async def fake_run_tests(
-        sandbox_arg: object,
-        state_arg: vf.State,
-        test_timeout: int,
-    ) -> str:
-        calls["run_tests"] = (sandbox_arg, state_arg, test_timeout)
-        return """
-=========================== short test summary info ============================
-PASSED tests/test_example.py::test_fix
-"""
-
-    monkeypatch.setattr(taskset, "setup_sandbox", fake_setup_sandbox)
-    monkeypatch.setattr(taskset, "run_tests", fake_run_tests)
-
-    await taskset.setup_r2e_sandbox(task, state, sandbox=sandbox)
-    reward = await taskset.solved(task, state)
-    await taskset.cleanup_r2e_state(task, state)
-
-    assert calls["setup_sandbox"] is sandbox
-    assert calls["setup_state"] is state
-    assert calls["run_tests"] == (sandbox, state, 1800)
+    assert state["legacy_setup"] is True
     assert state["sandbox_id"] == "sandbox-1"
     assert state["test_timeout"] == 1800
+    assert state["test_output"] == "fake test output"
     assert reward == 1.0
     assert "sandbox_client" not in state
-    assert "_rlm_swe_sandbox" not in state
 
 
-@pytest.mark.asyncio
-async def test_rlm_swe_run_tests_quotes_env_values():
-    taskset = rlm_swe_v1.load_taskset(
-        config=rlm_swe_v1.RlmSweTasksetConfig(
-            hide_tests_from_agent=False,
-            env={"SAFE": "two words; $(echo nope)", "QUOTE": "it's ok"},
+def test_swe_taskset_rejects_split_for_non_split_backend(monkeypatch):
+    patch_fake_swe_factory(monkeypatch)
+
+    with pytest.raises(ValueError, match="does not accept split"):
+        vf.SWETaskset(config=vf.SWETasksetConfig(task_type="r2e", split="test"))
+
+
+def patch_fake_swe_factory(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
+    calls: dict[str, object] = {}
+
+    def fake_make_swe_taskset(backend: str, **kwargs: object) -> FakeLegacyTaskset:
+        taskset = FakeLegacyTaskset(kwargs)
+        calls["backend"] = backend
+        calls["kwargs"] = kwargs
+        calls["taskset"] = taskset
+        return taskset
+
+    monkeypatch.setattr(v1_swe, "make_swe_taskset", fake_make_swe_taskset)
+    return calls
+
+
+class FakeLegacyTaskset:
+    name = "swe/fake"
+    default_workdir = "/workspace/repo"
+
+    def __init__(self, kwargs: Mapping[str, object]):
+        self.kwargs = dict(kwargs)
+        self.setup_states: list[object] = []
+
+    def get_dataset(self) -> Dataset:
+        return Dataset.from_list(
+            [
+                {
+                    "question": f"Fix repo-{index}.",
+                    "answer": "",
+                    "info": {
+                        "instance_id": f"instance-{index}",
+                        "repo": "example/repo",
+                        "problem_statement": f"Fix repo-{index}.",
+                        "docker_image": "fake/image:latest",
+                        "timeout_minutes": self.kwargs.get("timeout_minutes"),
+                        "passes": True,
+                    },
+                }
+                for index in range(2)
+            ]
         )
-    )
-    sandbox = RecordingSandbox()
 
-    output = await taskset.run_tests(sandbox, {}, 123)
+    def get_instruction(self, info: Mapping[str, object]) -> str:
+        return str(info["problem_statement"])
 
-    assert output == "test output"
-    assert len(sandbox.background_jobs) == 1
-    command = sandbox.background_jobs[0]["command"]
-    assert "SAFE='two words; $(echo nope)'" in command
-    assert "QUOTE='it'\"'\"'s ok'" in command
-    assert command.endswith("/bin/bash run_tests.sh > test_output.txt 2>&1")
+    def get_sandbox_spec(self, info: Mapping[str, object]) -> SandboxSpec:
+        return SandboxSpec(
+            image=str(info["docker_image"]),
+            cpu_cores=4,
+            memory_gb=4,
+            disk_size_gb=10,
+            timeout_minutes=info.get("timeout_minutes"),
+        )
 
+    def get_workdir(self, info: Mapping[str, object]) -> str:
+        _ = info
+        return "/workspace/repo"
 
-def test_rlm_swe_get_env_vars_uses_configured_repo_path():
-    taskset = rlm_swe_v1.load_taskset(
-        config=rlm_swe_v1.RlmSweTasksetConfig(repo_path="/workspace/repo")
-    )
+    def get_env_vars(self) -> dict[str, str]:
+        return {
+            "PATH": (
+                "/opt/miniconda3/bin:/workspace/repo/.venv/bin:/root/.local/bin:"
+                "/usr/local/bin:/usr/bin:/bin"
+            ),
+            "PAGER": "cat",
+        }
 
-    path = taskset.get_env_vars()["PATH"]
+    async def setup(self, state: vf.ConfigMap) -> None:
+        self.setup_states.append(state)
+        assert state["sandbox_client"] is FakeSandbox.client
+        state["legacy_setup"] = True
 
-    assert "/workspace/repo/.venv/bin" in path
-    assert "/testbed/.venv/bin" not in path
+    def get_rubric(self) -> "FakeLegacyRubric":
+        return FakeLegacyRubric()
 
-
-def test_rlm_swe_reward_rejects_pytest_summary_without_nodeid():
-    taskset = rlm_swe_v1.load_taskset(config=rlm_swe_v1.RlmSweTasksetConfig())
-    test_output = """
-=========================== short test summary info ============================
-PASSED tests/test_example.py
-"""
-
-    reward = taskset.calculate_reward(
-        test_output,
-        {"expected_output_json": '{"test_fix": "PASSED"}'},
-    )
-    parsed = rlm_swe_v1.parse_log_pytest(test_output)
-
-    assert reward == 0.0
-    assert "" not in parsed
+    async def validate_instance(self, state: vf.ConfigMap) -> bool:
+        return bool(state.get("valid", True))
 
 
-def test_rlm_swe_parse_log_pytest_uses_leading_status_token():
-    test_output = """
-=========================== short test summary info ============================
-FAILED tests/test_PASSED_handler.py::test_fix - AssertionError
-PASSED tests/test_failed_handler.py::test_other
-ERROR tests/test_failed_handler.py::test_error - setup failed
-"""
+class FakeLegacyRubric:
+    def _get_group_reward_funcs(self) -> list[object]:
+        return []
 
-    parsed = rlm_swe_v1.parse_log_pytest(test_output)
+    def _get_individual_reward_funcs(self) -> list[object]:
+        return [fake_solved]
 
-    assert parsed == {
-        "test_fix": "FAILED",
-        "test_other": "PASSED",
-        "test_error": "ERROR",
-    }
+    def _get_individual_reward_weights(self) -> list[float]:
+        return [1.0]
 
-
-def fake_r2e_dataset() -> Dataset:
-    return Dataset.from_list(
-        [
-            {
-                "commit_hash": f"commit-{index}",
-                "repo_name": "example/repo",
-                "problem_statement": f"Fix repo-{index}.",
-                "docker_image": "r2e/image:latest",
-                "expected_output_json": '{"test_fix": "PASSED"}',
-                "parsed_commit_content": '{"file_diffs": []}',
-            }
-            for index in range(12)
-        ]
-    )
+    async def _call_individual_reward_func(
+        self, func: object, state: vf.ConfigMap
+    ) -> float:
+        return float(await func(state=state, info=state["info"]))
 
 
-class FakeLease:
-    client = object()
+async def fake_solved(state: vf.ConfigMap, info: Mapping[str, object]) -> float:
+    state["test_output"] = "fake test output"
+    return float(bool(info.get("passes")))
+
+
+fake_solved.__name__ = "solved"
 
 
 class FakeSandbox:
-    id = "sandbox-1"
-    lease = FakeLease()
+    client = object()
 
-
-class FakeCommandResult:
-    def __init__(
-        self,
-        stdout: str = "",
-        stderr: str = "",
-        exit_code: int = 0,
-    ):
-        self.stdout = stdout
-        self.stderr = stderr
-        self.exit_code = exit_code
-
-
-class RecordingSandbox:
     def __init__(self):
-        self.background_jobs: list[dict[str, object]] = []
-        self.commands: list[dict[str, object]] = []
+        self.id = "sandbox-1"
+        self.lease = FakeLease()
 
-    async def run_background_job(
-        self,
-        command: str,
-        timeout: int | None = None,
-        working_dir: str | None = None,
-    ) -> FakeCommandResult:
-        self.background_jobs.append(
-            {
-                "command": command,
-                "timeout": timeout,
-                "working_dir": working_dir,
-            }
-        )
-        return FakeCommandResult()
 
-    async def execute(
-        self,
-        command: str,
-        timeout: int | None = None,
-        working_dir: str | None = None,
-    ) -> FakeCommandResult:
-        self.commands.append(
-            {
-                "command": command,
-                "timeout": timeout,
-                "working_dir": working_dir,
-            }
-        )
-        return FakeCommandResult(stdout="test output")
+class FakeLease:
+    client = FakeSandbox.client

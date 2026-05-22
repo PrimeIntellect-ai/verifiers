@@ -63,6 +63,8 @@ from .taskset import Taskset, discover_sibling_dir
 from .packages.tasksets import (
     HarborTaskset,
     HarborTasksetConfig,
+    SWETaskset,
+    SWETasksetConfig,
 )
 from .toolset import MCPTool, Toolset
 from .types import (
@@ -110,6 +112,8 @@ __all__ = [
     "Terminus2Config",
     "SandboxConfig",
     "SignalConfig",
+    "SWETaskset",
+    "SWETasksetConfig",
     "State",
     "Task",
     "TaskRow",
