@@ -19,6 +19,8 @@ conflicts = [[
 ]]
 
 [options]
+exclude-newer = "2026-05-15T07:45:49.954584Z"
+exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
 prime-tunnel = false

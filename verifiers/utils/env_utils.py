@@ -155,10 +155,7 @@ def prepare_base_env_config(
         taskset_data["id"] = env_id
     data["taskset"] = taskset_data
     harness = data.get("harness")
-    harness_data = config_table(harness)
-    if "id" not in harness_data and "harness_id" not in harness_data:
-        harness_data["id"] = env_id
-    data["harness"] = harness_data
+    data["harness"] = config_table(harness)
     return data
 
 

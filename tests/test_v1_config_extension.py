@@ -2006,10 +2006,11 @@ def test_load_environment_coerces_typed_env_config_arg(
     assert isinstance(seen["config"], EnvConfig)
     seen_config = cast(EnvConfig, seen["config"])
     assert seen_config.taskset.source == []
+    assert seen_config.harness.model == "typed-model"
     assert seen["taskset_loader_config"] is seen_config.taskset
-    assert seen["harness_loader_config"] is seen_config.harness
+    assert "harness_loader_config" not in seen
     assert env.taskset.config.taskset_id == "typed-env-config"
-    assert env.harness.config.harness_id == "typed-env-config"
+    assert env.harness.config.harness_id is None
     assert env.harness.config.model == "typed-model"
     assert env.env_args == {
         "split": "test",
@@ -2153,7 +2154,7 @@ def test_load_environment_supplies_default_typed_env_config(
 
     assert isinstance(seen["config"], EnvConfig)
     assert env.taskset.config.taskset_id == "default-typed-env-config"
-    assert env.harness.config.harness_id == "default-typed-env-config"
+    assert env.harness.config.harness_id is None
     assert env.env_args == {}
 
 
@@ -2201,7 +2202,7 @@ def test_load_environment_leaves_untyped_config_arg_as_kwargs(
     assert seen["config"] == {"taskset": {"taskset_id": "raw"}}
 
 
-def test_load_environment_injects_component_ids_for_base_env_config(
+def test_load_environment_injects_taskset_id_for_base_env_config(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     module_name = "component_package"
@@ -2225,8 +2226,7 @@ def test_load_environment_injects_component_ids_for_base_env_config(
         return ComponentTaskset(config=config)
 
     def load_harness(config: ComponentHarnessConfig) -> ComponentHarness:
-        seen["harness_config"] = config
-        return ComponentHarness(config=config)
+        raise AssertionError("Harness package loading requires an explicit harness id")
 
     def load_environment(config: EnvConfig) -> Env:
         taskset = vf.load_taskset(config.taskset)
@@ -2242,20 +2242,66 @@ def test_load_environment_injects_component_ids_for_base_env_config(
         "user/component-package",
         config={
             "taskset": {"split": "eval"},
-            "harness": {"mode": "custom"},
+            "harness": {"max_turns": 4},
         },
     )
 
     taskset_config = cast(ComponentTasksetConfig, seen["taskset_config"])
-    harness_config = cast(ComponentHarnessConfig, seen["harness_config"])
 
     assert env.env_id == "user/component-package"
     assert taskset_config.taskset_id == "user/component-package"
     assert taskset_config.split == "eval"
-    assert harness_config.harness_id == "user/component-package"
-    assert harness_config.mode == "custom"
     assert env.taskset.taskset_id == "user/component-package"
-    assert env.harness.harness_id == "user/component-package"
+    assert env.harness.config.harness_id is None
+    assert env.harness.config.max_turns == 4
+
+
+def test_load_environment_does_not_bind_split_harness_to_env_package(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env_module = types.ModuleType("split_env")
+    taskset_module = types.ModuleType("external_taskset")
+    seen: dict[str, object] = {}
+
+    class ExternalTasksetConfig(TasksetConfig):
+        split: str = "train"
+
+    class ExternalTaskset(Taskset[ExternalTasksetConfig]):
+        pass
+
+    def load_taskset(config: ExternalTasksetConfig) -> ExternalTaskset:
+        seen["taskset_config"] = config
+        return ExternalTaskset(config=config)
+
+    def load_harness(config: HarnessConfig) -> Harness:
+        raise AssertionError("Harness should not default to the env package")
+
+    def load_environment(config: EnvConfig) -> Env:
+        return Env(
+            taskset=vf.load_taskset(config.taskset),
+            harness=vf.load_harness(config.harness),
+        )
+
+    taskset_module.load_taskset = load_taskset
+    env_module.load_harness = load_harness
+    env_module.load_environment = load_environment
+    monkeypatch.setitem(sys.modules, "external_taskset", taskset_module)
+    monkeypatch.setitem(sys.modules, "split_env", env_module)
+
+    env = vf.load_environment(
+        "split-env",
+        config={
+            "taskset": {"id": "external-taskset", "split": "eval"},
+            "harness": {"max_turns": 6},
+        },
+    )
+
+    taskset_config = cast(ExternalTasksetConfig, seen["taskset_config"])
+
+    assert taskset_config.taskset_id == "external-taskset"
+    assert taskset_config.split == "eval"
+    assert env.harness.config.harness_id is None
+    assert env.harness.config.max_turns == 6
 
 
 def test_load_taskset_and_harness_use_leaf_module_from_package_id(
