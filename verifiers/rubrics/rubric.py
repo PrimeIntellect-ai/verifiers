@@ -179,13 +179,6 @@ class Rubric:
         return None
 
     # individual-level reward helpers
-    def _get_individual_reward_func_names(self) -> list[str]:
-        return [
-            getattr(func, "__name__", repr(func))
-            for func in self.funcs
-            if not self._is_group_func(func)
-        ]
-
     def _get_individual_reward_funcs(self) -> list[RewardFunc]:
         return [func for func in self.funcs if not self._is_group_func(func)]
 
@@ -233,13 +226,6 @@ class Rubric:
         return ans
 
     # group-level reward helpers
-    def _get_group_reward_func_names(self) -> list[str]:
-        return [
-            getattr(func, "__name__", repr(func))
-            for func in self.funcs
-            if self._is_group_func(func)
-        ]
-
     def _get_group_reward_funcs(self) -> list[GroupRewardFunc]:
         return cast(
             list[GroupRewardFunc],
@@ -253,13 +239,6 @@ class Rubric:
     @property
     def has_advantages(self) -> bool:
         return False
-
-    def _get_group_reward_weights(self) -> list[float]:
-        return [
-            weight
-            for func, weight in zip(self.funcs, self.weights)
-            if self._is_group_func(func)
-        ]
 
     async def _call_group_reward_func(
         self,

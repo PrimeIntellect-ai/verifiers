@@ -259,19 +259,6 @@ def _is_valid_incremental_tail(messages: list[RendererMessage]) -> bool:
     return all(role == "tool" for role in roles)
 
 
-def _step_is_truncated(step: Any) -> bool:
-    if bool(_get_value(step, "is_truncated", False)):
-        return True
-
-    tokens = _get_value(step, "tokens")
-    if tokens is not None and bool(_get_value(tokens, "is_truncated", False)):
-        return True
-
-    response = _get_value(step, "response")
-    message = _get_value(response, "message")
-    return bool(_get_value(message, "is_truncated", False))
-
-
 def _step_token_ids(step: Any) -> tuple[list[int], list[int]] | None:
     # Prefer step.tokens (post-parse_response_tokens) when populated. In
     # multi-turn rollouts, parse_response_tokens zeroes out completion_ids

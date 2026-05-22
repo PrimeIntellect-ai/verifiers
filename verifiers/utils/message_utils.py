@@ -198,12 +198,6 @@ def message_role(message: MessageLike) -> str | None:
     return value if isinstance(value, str) else None
 
 
-def message_to_dict(message: MessageLike) -> dict[str, object]:
-    if isinstance(message, Mapping):
-        return dict(message)
-    return cast(dict[str, object], message.model_dump(exclude_none=True))
-
-
 def maybe_normalize_messages(
     value: Messages | str,
     *,
