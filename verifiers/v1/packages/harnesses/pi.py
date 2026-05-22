@@ -45,7 +45,7 @@ class Pi(Harness[PiConfig]):
         return f"""\
 set -e
 apt-get -o Acquire::Retries=3 update -qq && apt-get -o Acquire::Retries=3 install -y -qq curl ca-certificates nodejs npm > /dev/null 2>&1
-npm install -g {shlex.quote(config.package)}
+npm install -g --ignore-scripts {shlex.quote(config.package)}
 """
 
     def artifacts(self, config: PiConfig) -> ProgramOptionMap:
@@ -73,14 +73,6 @@ npm install -g {shlex.quote(config.package)}
 
 def load_harness(config: PiConfig) -> Pi:
     return Pi(config=config)
-
-
-def build_pi_install_script(package: str) -> str:
-    return f"""\
-set -e
-apt-get -o Acquire::Retries=3 update -qq && apt-get -o Acquire::Retries=3 install -y -qq curl ca-certificates nodejs npm > /dev/null 2>&1
-npm install -g --ignore-scripts {shlex.quote(package)}
-"""
 
 
 def build_pi_mcp_setup(
