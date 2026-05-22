@@ -110,6 +110,8 @@ class ScaleSWERubric(vf.Rubric):
 class ScaleSWETaskSet(SandboxTaskSet):
     """TaskSet for AweAI-Team/Scale-SWE."""
 
+    default_workdir = "/workspace"
+
     def __init__(
         self,
         dataset_name: str = DATASET_NAME,
