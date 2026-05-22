@@ -23,14 +23,13 @@ Use `prime eval` to execute rollouts against any supported model provider and re
 
 ## Basic Usage
 
-Environments must be installed as Python packages before evaluation. From a local environment:
+Run evaluations directly against a local or Hub environment:
 
 ```bash
-prime env install my-env           # installs ./environments/my_env as a package
 prime eval run my-env -m openai/gpt-4.1-mini -n 10
 ```
 
-`prime eval` imports the environment module using Python's import system, calls its `load_environment()` function, runs 5 examples with 3 rollouts each (the default), scores them using the environment's rubric, and prints aggregate metrics.
+`prime eval` resolves and installs the environment when needed, imports the environment module using Python's import system, calls its `load_environment()` function, runs 5 examples with 3 rollouts each (the default), scores them using the environment's rubric, and prints aggregate metrics.
 
 ## Hosted Evaluations
 
@@ -66,7 +65,7 @@ The positional argument accepts two formats:
 - **Single environment**: `gsm8k` — evaluates one environment
 - **TOML config path**: `configs/eval/benchmark.toml` — evaluates multiple environments defined in the config file
 
-Environment IDs are converted to Python module names (`my-env` → `my_env`) and imported. Modules must be installed (via `prime env install` or `uv pip install`).
+Environment IDs are converted to Python module names (`my-env` → `my_env`) and imported after `prime eval run` resolves the environment package.
 
 For legacy or direct-constructor environments, the `--env-args` flag passes
 arguments to your `load_environment()` function:
