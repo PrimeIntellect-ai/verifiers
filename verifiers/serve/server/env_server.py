@@ -125,5 +125,14 @@ class EnvServer(ABC):
 
     @classmethod
     def run_server(cls, *args, **kwargs):
+        # E4: env router shares one asyncio loop with the stats RX socket
+        # and the response RX from workers. Default selector loop is the
+        # latency floor for the "Server | Lag" metric we observe in prod;
+        # uvloop drops the floor materially.
+        try:
+            import uvloop  # type: ignore
+            uvloop.install()
+        except ImportError:
+            pass
         server = cls(*args, **kwargs)
         return asyncio.run(server.run())

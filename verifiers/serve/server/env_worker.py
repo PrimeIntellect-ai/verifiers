@@ -387,5 +387,14 @@ class EnvWorker:
 
     @classmethod
     def run_worker(cls, *args, **kwargs) -> None:
+        # E4: install uvloop. Lower scheduler overhead matters here because
+        # each worker juggles many concurrent rollouts × many turns; the
+        # default selector loop becomes a bottleneck before any single op
+        # does.
+        try:
+            import uvloop  # type: ignore
+            uvloop.install()
+        except ImportError:
+            pass
         worker = cls(*args, **kwargs)
         asyncio.run(worker.run())
