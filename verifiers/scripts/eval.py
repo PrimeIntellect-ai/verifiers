@@ -832,9 +832,11 @@ def main(argv: list[str] | None = None):
         )
 
     # Check Hub environments are installed before running
-    missing_envs = []
+    missing_envs: list[str] = []
     for raw in raw_eval_configs:
         env_id = raw["env_id"]
+        if not isinstance(env_id, str):
+            raise ValueError("All eval configs must contain a string env_id.")
         if not check_hub_env_installed(env_id):
             missing_envs.append(env_id)
 
