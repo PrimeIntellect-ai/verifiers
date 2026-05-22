@@ -18,9 +18,6 @@ Adapted from Harbor's own [`examples/tasks/hello-mcp`](https://github.com/laude-
 ## Running it
 
 ```bash
-# Install the env locally
-prime env install hello-mcp-harbor
-
 # Single rollout against your configured agent
 prime eval run hello-mcp-harbor
 ```
