@@ -485,7 +485,8 @@ prompt.
 Tasksets can expose package-owned upload directories with `get_upload_dirs()`.
 The base `Taskset` discovers a sibling `skills/` directory by default, and
 `RLM` uploads that directory to `/rlm/skills` unless `skills=` is passed
-explicitly to the harness.
+explicitly to the harness. When RLM uses taskset-discovered skills, it also
+stages generated endpoint-backed skills for resolved V1 tools.
 Use `RLMConfig` in `env.harness` for RLM-specific settings such as
 `rlm_repo_ref`, `rlm_tools`, `rlm_max_turns`, and `summarize_at_tokens`.
 

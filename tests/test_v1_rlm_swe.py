@@ -1,19 +1,26 @@
+import asyncio
+import importlib.util
+import json
 import sys
+import threading
 import types
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from typing import cast
 
 import pytest
 from datasets import Dataset
 
 import verifiers.v1 as vf
 from environments.rlm_swe_v1 import rlm_swe_v1
+from verifiers.types import Tool
 from verifiers.v1.utils.program_utils import merge_task_program, merge_task_sandbox
 
 
 def as_mapping(value: object) -> Mapping[str, object]:
     assert isinstance(value, Mapping)
-    return value
+    return cast(Mapping[str, object], value)
 
 
 def test_rlm_harness_builds_sandbox_program_without_eager_checkout():
@@ -23,7 +30,7 @@ def test_rlm_harness_builds_sandbox_program_without_eager_checkout():
     program = as_mapping(harness.program)
     program_env = as_mapping(program["env"])
     artifacts = as_mapping(program["artifacts"])
-    setup = program["setup"]
+    setup = cast(list[str], program["setup"])
 
     assert isinstance(harness, vf.Harness)
     assert program["sandbox"] is not False
@@ -31,6 +38,7 @@ def test_rlm_harness_builds_sandbox_program_without_eager_checkout():
     assert "apt-get -o Acquire::Retries=3 update" in setup[0]
     assert "apt-get -o Acquire::Retries=3 install" in setup[0]
     assert "RLM_MODEL" in program_env
+    assert program_env["VF_ENDPOINT_ROOT_URL"] == "state.endpoint_root_url"
     assert "rlm_metrics" in artifacts
 
 
@@ -68,23 +76,118 @@ def test_rlm_harness_can_upload_skills(tmp_path: Path):
     assert dirs["/rlm/skills"] == skills
 
 
-def test_rlm_harness_uploads_taskset_skills_by_default(tmp_path: Path):
+def test_rlm_harness_stages_taskset_and_endpoint_tool_skills(tmp_path: Path):
     skills = tmp_path / "taskset-skills"
-    skills.mkdir()
-    (skills / "SKILL.md").write_text("---\nname: taskset\n---\n")
+    (skills / "static").mkdir(parents=True)
+    (skills / "static" / "SKILL.md").write_text("---\nname: static\n---\n")
+
+    async def greet(name: str) -> str:
+        """Greet someone by name.
+
+        Args:
+            name: The person to greet.
+        """
+        return f"Hello, {name}!"
 
     class SkillTaskset(vf.Taskset):
         def get_upload_dirs(self):
             return {"skills": skills}
 
+    taskset = SkillTaskset(
+        config=vf.TasksetConfig(
+            source=[{"task_id": "hello", "question": "Say hi.", "answer": ""}]
+        )
+    )
+    taskset.add_toolset(vf.Toolset(tools=[greet]))
     env = vf.Env(
-        taskset=SkillTaskset(config=vf.TasksetConfig(source=[])),
+        taskset=taskset,
         harness=vf.RLM(config=vf.RLMConfig(local_checkout="/tmp/checkout")),
     )
+    task = next(iter(env.taskset))
+    state = vf.State.for_task(task)
+    asyncio.run(env.harness.setup_state(task, state))
     program = as_mapping(env.harness.program)
     dirs = as_mapping(program["dirs"])
+    loader = cast(Callable[[vf.Task, vf.State], Path], dirs["/rlm/skills"])
 
-    assert dirs["/rlm/skills"] == skills
+    staged = loader(task, state)
+
+    assert (staged / "static" / "SKILL.md").exists()
+    assert (
+        (staged / "greet" / "pyproject.toml")
+        .read_text()
+        .startswith('[project]\nname = "rlm-skill-greet"')
+    )
+    skill_source = (staged / "greet" / "src" / "greet" / "greet.py").read_text()
+    assert (
+        'TOOL_NAME = "greet"' in skill_source or "TOOL_NAME = 'greet'" in skill_source
+    )
+    assert '"User-Agent": "OpenAI/Python"' in skill_source
+    compile(skill_source, str(staged / "greet" / "src" / "greet" / "greet.py"), "exec")
+
+
+def test_generated_rlm_skill_calls_v1_tool_endpoint(tmp_path: Path, monkeypatch):
+    tool = Tool(
+        name="greet",
+        description="Greet someone by name.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "The person to greet."}
+            },
+            "required": ["name"],
+        },
+    )
+    from verifiers.v1.packages.harnesses.rlm_skills import write_tool_skill
+
+    write_tool_skill(tmp_path / "greet", tool, "greet")
+    received = {}
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", "0"))
+            received["path"] = self.path
+            received["authorization"] = self.headers.get("Authorization")
+            received["user_agent"] = self.headers.get("User-Agent")
+            received["body"] = json.loads(self.rfile.read(length).decode())
+            response = json.dumps({"result": "Hello, Alice!"}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(response)))
+            self.end_headers()
+            self.wfile.write(response)
+
+        def log_message(self, format, *args):
+            return
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        monkeypatch.setenv(
+            "VF_ENDPOINT_ROOT_URL",
+            f"http://127.0.0.1:{server.server_port}/rollout/test",
+        )
+        monkeypatch.setenv("OPENAI_API_KEY", "secret")
+        skill_path = tmp_path / "greet" / "src" / "greet" / "greet.py"
+        spec = importlib.util.spec_from_file_location("greet_skill", skill_path)
+        assert spec is not None
+        module = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(module)
+
+        result = asyncio.run(module.greet(name="Alice"))
+
+        assert result == "Hello, Alice!"
+        assert module.run is module.greet
+        assert received["path"] == "/rollout/test/vf/tools/greet"
+        assert received["authorization"] == "Bearer secret"
+        assert received["user_agent"] == "OpenAI/Python"
+        assert received["body"] == {"arguments": {"name": "Alice"}}
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
 
 
 def test_taskset_discovers_sibling_skills_dir_by_default(
@@ -178,7 +281,7 @@ def test_rlm_swe_environment_uses_v1_r2e_taskset(monkeypatch):
     assert task["sandbox"]["timeout_minutes"] == 30
     task_program_env = as_mapping(as_mapping(task["program"])["env"])
     assert task_program_env["AGENT_WORKDIR"] == "/workspace/repo"
-    assert "/workspace/repo/.venv/bin" in task_program_env["AGENT_PATH"]
+    assert "/workspace/repo/.venv/bin" in cast(str, task_program_env["AGENT_PATH"])
     assert task_program_env["PAGER"] == "cat"
     assert task_program_env["CUSTOM"] == "1"
     assert "CUSTOM" not in program_env
@@ -186,7 +289,7 @@ def test_rlm_swe_environment_uses_v1_r2e_taskset(monkeypatch):
     assert program_env["RLM_TOOLS"] == "bash,edit"
     assert merged_sandbox["workdir"] == "/workspace/repo"
     assert merged_env["AGENT_WORKDIR"] == "/workspace/repo"
-    assert "/workspace/repo/.venv/bin" in merged_env["AGENT_PATH"]
+    assert "/workspace/repo/.venv/bin" in cast(str, merged_env["AGENT_PATH"])
     assert merged_env["PAGER"] == "cat"
     assert merged_env["CUSTOM"] == "1"
     assert merged_env["CALLER"] == "1"
@@ -196,9 +299,13 @@ def test_rlm_swe_taskset_hooks_are_registered_with_runtime():
     taskset = rlm_swe_v1.load_taskset(config=rlm_swe_v1.RlmSweTasksetConfig())
     env = vf.Env(taskset=taskset)
 
-    setup_names = [handler.__name__ for handler in env.harness.runtime.rollout_setup]
+    setup_names = [
+        getattr(handler, "__name__", "")
+        for handler in env.harness.runtime.rollout_setup
+    ]
     cleanup_names = [
-        handler.__name__ for handler in env.harness.runtime.rollout_cleanup
+        getattr(handler, "__name__", "")
+        for handler in env.harness.runtime.rollout_cleanup
     ]
     signal_names = {signal["name"] for signal in env.harness.runtime.rollout_signals}
 
@@ -262,11 +369,15 @@ async def test_rlm_swe_run_tests_quotes_env_values():
     )
     sandbox = RecordingSandbox()
 
-    output = await taskset.run_tests(sandbox, {}, 123)
+    output = await taskset.run_tests(
+        cast(rlm_swe_v1.R2ESandbox, sandbox),
+        cast(vf.MutableConfigMap, {}),
+        123,
+    )
 
     assert output == "test output"
     assert len(sandbox.background_jobs) == 1
-    command = sandbox.background_jobs[0]["command"]
+    command = cast(str, sandbox.background_jobs[0]["command"])
     assert "SAFE='two words; $(echo nope)'" in command
     assert "QUOTE='it'\"'\"'s ok'" in command
     assert command.endswith("/bin/bash run_tests.sh > test_output.txt 2>&1")

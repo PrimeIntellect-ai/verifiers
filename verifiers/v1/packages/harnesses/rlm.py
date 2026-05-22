@@ -24,6 +24,7 @@ from .configs import (
     RLM_DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH,
     RLMConfig,
 )
+from .rlm_skills import stage_rlm_tool_skills
 from ...types import ConfigMap, ProgramCommand, ProgramValue
 
 DEFAULT_RLM_CHECKOUT_PATH = "/tmp/rlm-checkout"
@@ -32,7 +33,8 @@ DEFAULT_RLM_LOCAL_CHECKOUT_CACHE_ROOT = (
     Path.home() / ".cache" / "verifiers" / "rlm-checkouts"
 )
 REQUIRED_RLM_CHECKOUT_FILES = ("install.sh", "pyproject.toml")
-ProgramDir = str | Path | Traversable
+SkillSource = str | Path | Traversable
+ProgramDir = SkillSource | Callable[..., Path]
 
 
 class RLM(Harness[RLMConfig]):
@@ -51,6 +53,7 @@ class RLM(Harness[RLMConfig]):
         env: dict[str, ProgramValue] = {
             "PATH": "/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
             "OPENAI_MODEL": "runtime.model",
+            "VF_ENDPOINT_ROOT_URL": "state.endpoint_root_url",
             "RLM_MODEL": "runtime.model",
             "RLM_TOOLS": ",".join(harness_config.rlm_tools),
             "RLM_MAX_TURNS": str(harness_config.rlm_max_turns),
@@ -136,13 +139,24 @@ class RLM(Harness[RLMConfig]):
             upload_dirs = taskset.get_upload_dirs()
             if not isinstance(upload_dirs, Mapping):
                 raise TypeError("Taskset.get_upload_dirs() must return a mapping.")
-            skills = upload_dirs.get("skills")
+            source = upload_dirs.get("skills")
             self.set_program_dir(
                 DEFAULT_RLM_SKILLS_PATH,
-                cast(ProgramDir | None, skills),
+                self.skill_loader(cast(SkillSource | None, source)),
             )
         super().attach_taskset(taskset)
         self._program = self.compile_program(self.program)
+
+    def skill_loader(self, source: SkillSource | None) -> Callable[..., Path]:
+        def load(task: Task, state: State) -> Path:
+            return stage_rlm_tool_skills(
+                task,
+                state,
+                self.runtime,
+                source=source,
+            )
+
+        return load
 
     def set_program_dir(
         self, remote_path: str, local_source: ProgramDir | None
