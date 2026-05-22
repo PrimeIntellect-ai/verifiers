@@ -711,12 +711,13 @@ workers. Pass concrete `Taskset` and `Harness` objects directly, or pass
 nested package config.
 
 ```python
-def load_taskset(config: Taskset | TasksetConfig | Mapping[str, object] | str) -> Taskset: ...
-def load_harness(config: Harness | HarnessConfig | Mapping[str, object] | str = ...) -> Harness: ...
+def load_taskset(config: TasksetConfig | str) -> Taskset: ...
+def load_harness(config: HarnessConfig | str) -> Harness: ...
 ```
 
 Component package IDs accept either `package-name` or `user/package-name`; the
 loader imports the leaf package name with hyphens normalized to underscores.
+The package must already be importable in the current Python environment.
 Package loaders must define a required typed `config` parameter, such as
 `def load_taskset(config: MyTasksetConfig) -> MyTaskset`.
 
@@ -1015,10 +1016,13 @@ class HarnessConfig(Config):
     max_turns: int = 10
 ```
 
-`EnvConfig` is the v1 package-loading envelope. TOML `[env.taskset]` and
-`[env.harness]` sections are held as taskset and harness config objects that
-preserve explicit package fields until `vf.load_taskset` and `vf.load_harness`
-validate them against the package loader's typed `config` annotation.
+`EnvConfig` is the v1 package-loading envelope. For base `vf.EnvConfig`, TOML
+`[eval.taskset]` and `[eval.harness]` sections use `id` or `taskset_id` /
+`harness_id` to discover the package loader first, then validate the full
+section against the loader's typed `config` annotation. By the time
+`load_environment(config: vf.EnvConfig)` runs, `config.taskset` and
+`config.harness` are `TasksetConfig` / `HarnessConfig` objects, usually concrete
+subclasses from the selected packages.
 Environment-specific fields belong on the taskset or harness config that owns
 them.
 

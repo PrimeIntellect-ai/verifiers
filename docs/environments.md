@@ -699,6 +699,8 @@ loaders for each, and a tiny `load_environment(config)` that lets Verifiers
 resolve package IDs and validate the child config just in time. The loader's
 `config` parameter is a strict, non-optional config object supplied by the
 framework; do not accept `None` or write `config = config or MyConfig()`.
+Component package IDs resolve through Python imports, so those packages must be
+importable before the loader runs.
 
 `EnvConfig` is a lightweight envelope for unresolved taskset and harness package
 config. Put environment knobs on `TasksetConfig` or `HarnessConfig`, not on
