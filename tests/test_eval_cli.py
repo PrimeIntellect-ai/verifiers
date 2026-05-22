@@ -975,6 +975,16 @@ def test_cli_toml_ignores_cli_args(monkeypatch, run_cli):
         assert config.rollouts_per_example == 3  # DEFAULT_ROLLOUTS_PER_EXAMPLE
         assert config.max_concurrent == 32  # default
         assert config.sampling_args["max_tokens"] is None  # default
+        assert config.save_results is True
+
+
+def test_cli_toml_respects_save_results_false(monkeypatch, run_cli):
+    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
+        f.write('[[eval]]\nenv_id = "env1"\nsave_results = false\n')
+        f.flush()
+        captured = run_cli(monkeypatch, {"env_id_or_config": f.name})
+
+    assert captured["configs"][0].save_results is False
 
 
 def test_cli_toml_per_env_num_examples(monkeypatch, run_cli):
