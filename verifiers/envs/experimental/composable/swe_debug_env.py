@@ -164,12 +164,21 @@ class SWEDebugEnv(SandboxMixin, vf.MultiTurnEnv):
         if self.debug_step == "gold_patch":
             await self._apply_gold_patch(state)
         elif self.debug_step == "command":
-            valid = await self._run_debug_command(state, self.debug_command or "")
+            valid = await self._execute_debug_command(state, self.debug_command or "")
             if not valid:
                 state["body_s"] = time.perf_counter() - t0
                 return False
         elif self.debug_step == "script":
-            valid = await self._run_debug_script(state)
+            sandbox_id = state["sandbox_id"]
+            remote_path = "/tmp/swe_debug_script.sh"
+            if self.debug_script_path:
+                await self.upload_file(sandbox_id, remote_path, self.debug_script_path)
+            else:
+                await self.upload_content(
+                    sandbox_id, self.debug_script or "", remote_path
+                )
+            command = f"chmod +x {remote_path} && {shlex.quote(remote_path)}"
+            valid = await self._execute_debug_command(state, command)
             if not valid:
                 state["body_s"] = time.perf_counter() - t0
                 return False
@@ -190,25 +199,12 @@ class SWEDebugEnv(SandboxMixin, vf.MultiTurnEnv):
         await apply_gold_patch(state["sandbox_client"], state["sandbox_id"], state)
         state["gold_apply_s"] = time.perf_counter() - t0
 
-    async def _run_debug_command(self, state: State, command: str) -> bool:
-        return await self._execute_debug_command(state, command)
-
-    async def _run_debug_script(self, state: State) -> bool:
-        sandbox_id = state["sandbox_id"]
-        remote_path = "/tmp/swe_debug_script.sh"
-        if self.debug_script_path:
-            await self.upload_file(sandbox_id, remote_path, self.debug_script_path)
-        else:
-            await self.upload_content(sandbox_id, self.debug_script or "", remote_path)
-        command = f"chmod +x {remote_path} && {shlex.quote(remote_path)}"
-        return await self._execute_debug_command(state, command)
-
     async def _execute_debug_command(self, state: State, command: str) -> bool:
         t0 = time.perf_counter()
         result = await self.sandbox_client.execute_command(
             state["sandbox_id"],
             command,
-            working_dir=self._workdir(state),
+            working_dir=self.taskset.get_workdir(state.get("info") or {}),
             timeout=(
                 self.debug_timeout
                 if self.debug_timeout is not None
@@ -248,9 +244,6 @@ class SWEDebugEnv(SandboxMixin, vf.MultiTurnEnv):
         valid = reward > 0
         state["reason"] = "pass" if valid else "test_failed"
         return valid
-
-    def _workdir(self, state: State) -> str:
-        return self.taskset.get_workdir(state.get("info") or {})
 
     def _classify_outcome(
         self, valid: bool, exc: BaseException | None, state: State

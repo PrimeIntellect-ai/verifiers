@@ -190,11 +190,6 @@ def _split_imports_and_signature(stmt: str) -> tuple[str, str]:
     return stmt[: decl_match.start()].rstrip(), stmt[decl_match.start() :]
 
 
-def _wrap_with_lean_guard(signature: str) -> str:
-    """Wrap a normalized ``... := by`` signature with lean-guard markers."""
-    return f"{LEAN_GUARD_BEGIN_MARKER}\n{signature}\n{LEAN_GUARD_END_MARKER}\n  sorry\n"
-
-
 def _extract_protected_region(content: str) -> str | None:
     """Return the text from the begin marker through the end-of-end-line.
 
@@ -231,22 +226,13 @@ def _build_starter_file(info: dict) -> str:
         signature_raw = stmt
 
     signature = _normalize_signature(signature_raw)
-    wrapped = _wrap_with_lean_guard(signature)
+    wrapped = (
+        f"{LEAN_GUARD_BEGIN_MARKER}\n{signature}\n{LEAN_GUARD_END_MARKER}\n  sorry\n"
+    )
 
     if preamble:
         return preamble.rstrip() + "\n\n" + wrapped
     return wrapped
-
-
-def _expected_protected_region(info: dict) -> str:
-    """Compute the protected region for a task instance from its ``info`` dict.
-
-    Re-runs ``_build_starter_file`` so the rubric and the setup step share
-    the exact same wrapping logic — no separate state plumbing needed.
-    """
-    starter = _build_starter_file(info)
-    region = _extract_protected_region(starter)
-    return region or ""
 
 
 # ---------------------------------------------------------------------------
@@ -275,7 +261,8 @@ class LeanRubric(vf.Rubric):
         timeout = state.get("test_timeout", 900)
 
         info = state.get("info") or {}
-        expected_region = _expected_protected_region(info)
+        starter = _build_starter_file(info)
+        expected_region = _extract_protected_region(starter) or ""
         if expected_region:
             try:
                 cat_result = await sandbox_client.execute_command(

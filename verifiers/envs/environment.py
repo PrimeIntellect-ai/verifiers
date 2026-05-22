@@ -274,16 +274,6 @@ class Environment(ABC):
         )
         signal.signal(signal.SIGTERM, lambda _, __: (_sync_teardown(), exit(143)))
 
-    def _ensure_example_id(self, dataset: "Dataset") -> "Dataset":
-        """Ensure example_id column exists and is integer type."""
-        if "example_id" in dataset.column_names and not isinstance(
-            dataset["example_id"][0], int
-        ):
-            dataset = dataset.rename_column("example_id", "src_id")
-        if "example_id" not in dataset.column_names:
-            dataset = dataset.add_column("example_id", range(len(dataset)))
-        return dataset
-
     def _ensure_prompt(
         self,
         dataset: "Dataset",
@@ -365,7 +355,12 @@ class Environment(ABC):
         """
         if "env_id" in dataset.column_names:
             dataset = dataset.remove_columns(["env_id"])
-        dataset = self._ensure_example_id(dataset)
+        if "example_id" in dataset.column_names and not isinstance(
+            dataset["example_id"][0], int
+        ):
+            dataset = dataset.rename_column("example_id", "src_id")
+        if "example_id" not in dataset.column_names:
+            dataset = dataset.add_column("example_id", range(len(dataset)))
         dataset = self._ensure_prompt(
             dataset, system_prompt, few_shot, question_key, answer_key, map_kwargs
         )

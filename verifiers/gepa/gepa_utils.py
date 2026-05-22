@@ -97,15 +97,6 @@ def _normalize_parents(parents: Any, candidate_idx: int) -> list[int]:
     return normalized
 
 
-def _jsonable_scores(scores: dict[Any, Any]) -> dict[str, float]:
-    jsonable = {}
-    for key, value in scores.items():
-        score = _to_float(value)
-        if score is not None:
-            jsonable[str(key)] = score
-    return jsonable
-
-
 def _as_list(value: Any) -> list[Any]:
     if value is None:
         return []
@@ -136,11 +127,12 @@ def _build_candidate_records(
     for candidate_idx, candidate in enumerate(candidates):
         system_prompt = _prompt_from_candidate(candidate)
         score = _candidate_score(candidate_idx, val_scores, val_subscores)
-        subscores = (
-            _jsonable_scores(val_subscores[candidate_idx])
-            if candidate_idx < len(val_subscores)
-            else {}
-        )
+        subscores = {}
+        if candidate_idx < len(val_subscores):
+            for key, value in val_subscores[candidate_idx].items():
+                subscore = _to_float(value)
+                if subscore is not None:
+                    subscores[str(key)] = subscore
         info: dict[str, Any] = {
             "schema_version": GEPA_SCHEMA_VERSION,
             "eval_kind": GEPA_EVAL_KIND,

@@ -259,9 +259,20 @@ class ComposableEnv(CliAgentEnv):
         onto the installed agent."""
         sandbox_id = state["sandbox_id"]
 
-        await self._populate_sandbox_context(state)
+        state["sandbox_client"] = self.sandbox_client
+        spec = self._get_spec(state) or self.harness.sandbox_spec
+        if spec and spec.timeout_minutes is not None:
+            state["test_timeout"] = spec.timeout_minutes * 60
+        else:
+            state["test_timeout"] = self.compute_sandbox_timeout_minutes() * 60
         await self.taskset.setup(state)
-        await self._create_harness_input_dirs(sandbox_id)
+        dirs = {self.harness.instruction_path.rsplit("/", 1)[0]}
+        if self.harness.system_prompt:
+            dirs.add(self.harness.system_prompt_path.rsplit("/", 1)[0])
+        mkdir_args = " ".join(shlex.quote(path) for path in sorted(dirs))
+        await self.sandbox_client.execute_command(
+            sandbox_id, f"mkdir -p {mkdir_args}", timeout=self.timeouts.mkdir
+        )
         await self._upload_harness_inputs(sandbox_id, state)
         await self._after_harness_inputs_uploaded(state)
         await self._install_agent(sandbox_id)
@@ -291,25 +302,6 @@ class ComposableEnv(CliAgentEnv):
             await self._collect_harness_metrics(sandbox_id, state)
 
         await super().post_rollout(state)
-
-    async def _populate_sandbox_context(self, state: State) -> None:
-        """Populate sandbox-specific context used by setup/evaluate hooks."""
-        state["sandbox_client"] = self.sandbox_client
-        spec = self._get_spec(state) or self.harness.sandbox_spec
-        if spec and spec.timeout_minutes is not None:
-            state["test_timeout"] = spec.timeout_minutes * 60
-        else:
-            state["test_timeout"] = self.compute_sandbox_timeout_minutes() * 60
-
-    async def _create_harness_input_dirs(self, sandbox_id: str) -> None:
-        """Create parent directories for harness-managed task assets."""
-        dirs = {self.harness.instruction_path.rsplit("/", 1)[0]}
-        if self.harness.system_prompt:
-            dirs.add(self.harness.system_prompt_path.rsplit("/", 1)[0])
-        mkdir_args = " ".join(shlex.quote(path) for path in sorted(dirs))
-        await self.sandbox_client.execute_command(
-            sandbox_id, f"mkdir -p {mkdir_args}", timeout=self.timeouts.mkdir
-        )
 
     async def _upload_harness_inputs(self, sandbox_id: str, state: State) -> None:
         """Upload instruction and optional system prompt to harness-declared paths."""

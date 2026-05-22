@@ -93,12 +93,9 @@ class Taskset(ConfigBound[TasksetConfigT], RuntimeOwnerMixin):
         skills = self.get_skills_dir()
         return {} if skills is None else {"skills": skills}
 
-    def _refresh_attached_harnesses(self) -> None:
+    def _runtime_owner_changed(self) -> None:
         for harness in list(self._attached_harnesses):
             harness.runtime = harness.resolve_runtime()
-
-    def _runtime_owner_changed(self) -> None:
-        self._refresh_attached_harnesses()
 
     def rows(self) -> list[ConfigData]:
         if self._rows is None:

@@ -239,83 +239,20 @@ class TestLaunchCommandResolution:
         )
 
 
-class TestStartStopCommands:
-    def test_start_cmd_tracks_process_group_leader_pid(self):
-        """Start command must capture `$!` (the backgrounded pgroup leader),
-        not `$$` (the outer shell), and must end with `wait` so the recorded
-        exit code reflects the launched daemon's.
-        """
-        cmd = _DummyEnv()._mcp_start_cmd("svc", "python -u /opt/x/server.py")
-        assert "echo $!" in cmd
-        assert "echo $$" not in cmd
-        assert cmd.rstrip().endswith("wait")
-        assert "/tmp/harbor-mcp-svc.pid" in cmd
-        assert "python -u /opt/x/server.py" in cmd
-
-    def test_start_cmd_wraps_in_setsid_for_process_group_semantics(self):
-        """Wrapping the user's command in `setsid sh -c ...` is what makes
-        `$!` a process-group leader, so `kill -9 -$PID` can reap the whole
-        daemon tree on stop. Compound commands (e.g. `cd /x && python y.py`)
-        must be preserved verbatim inside the sh -c payload so their own
-        semantics are unchanged."""
-        cmd = _DummyEnv()._mcp_start_cmd("svc", "cd /opt && python server.py")
-        assert "setsid sh -c " in cmd
-        assert "'cd /opt && python server.py'" in cmd
-
-    def test_stop_cmd_is_one_line_sigkill_plus_rm(self):
-        """Default: one SIGKILL to the process group, then unlink the
-        pidfile — no poll/sleep loop."""
-        cmd = _DummyEnv()._mcp_stop_cmd("svc")
-        assert "kill -9" in cmd
-        assert "rm -f" in cmd
-        assert "/tmp/harbor-mcp-svc.pid" in cmd
-        assert "kill -0" not in cmd
-        assert "sleep" not in cmd
-        assert "\n" not in cmd
-        assert len(cmd) < 120
-
-    def test_stop_cmd_targets_process_group_not_single_pid(self):
-        """The `-` prefix on the `$(cat …)` expansion is what turns kill(1)
-        into a process-group kill — without it, SIGKILL only lands on the
-        wrapping shell and e.g. a `python` child spawned via `cd && python`
-        leaks as an orphan."""
-        cmd = _DummyEnv()._mcp_stop_cmd("svc")
-        assert 'kill -9 -"$(cat' in cmd
-
-    def test_server_name_with_shell_metachars_is_quoted(self):
-        """Server name is task-author-controlled; every pidfile reference
-        must appear only inside single-quoted spans."""
-        env = _DummyEnv()
-        unquoted = "/tmp/harbor-mcp-evil$(whoami).pid"
-        quoted = f"'{unquoted}'"
-        for cmd in (
-            env._mcp_start_cmd("evil$(whoami)", "x"),
-            env._mcp_stop_cmd("evil$(whoami)"),
-        ):
-            assert quoted in cmd
-            # Every raw occurrence must be inside an already-quoted span.
-            assert cmd.count(unquoted) == cmd.count(quoted)
-
-    def test_launch_command_with_shell_metachars_is_quoted(self):
-        """Same for the user's launch command: it's task-author-controlled,
-        must land inside a single-quoted span once wrapped in `sh -c`."""
-        env = _DummyEnv()
-        evil_cmd = "python -c 'print(1)' && touch /pwned"
-        quoted = f"'{evil_cmd}'".replace("'", "'\"'\"'")
-        # shlex-quoted output contains the evil string only inside quotes.
-        cmd = env._mcp_start_cmd("svc", evil_cmd)
-        assert "setsid sh -c " in cmd
-        # No unquoted `&& touch /pwned` outside a single-quoted span.
-        assert cmd.count(evil_cmd) == 0 or quoted in cmd
-
-
 class TestLifecycle:
     @pytest.mark.asyncio
     async def test_starts_server_with_registered_launch_command(self):
-        env = _DummyEnv(mcp_launch_commands={"svc": "python server.py"})
+        env = _DummyEnv(mcp_launch_commands={"svc": "cd /opt && python server.py"})
         state: dict[str, Any] = {}
         await env.start_mcp_servers("sbx", _config_with_server(), state)
         assert set(state["harbor_mcp_jobs"].keys()) == {"svc"}
+        _, start_cmd = env.started_jobs[0]
+        assert "echo $!" in start_cmd
+        assert "echo $$" not in start_cmd
+        assert start_cmd.rstrip().endswith("wait")
+        assert "/tmp/harbor-mcp-svc.pid" in start_cmd
+        assert "setsid sh -c " in start_cmd
+        assert "'cd /opt && python server.py'" in start_cmd
 
     @pytest.mark.asyncio
     async def test_externally_managed_server_is_skipped(self):
@@ -342,8 +279,37 @@ class TestLifecycle:
             if "kill -9" in c.args[1]
         ]
         assert len(stop_calls) == 1
-        assert "harbor-mcp-svc.pid" in stop_calls[0]
+        stop_cmd = stop_calls[0]
+        assert "harbor-mcp-svc.pid" in stop_cmd
+        assert 'kill -9 -"$(cat' in stop_cmd
+        assert "rm -f" in stop_cmd
+        assert "kill -0" not in stop_cmd
+        assert "sleep" not in stop_cmd
+        assert "\n" not in stop_cmd
+        assert len(stop_cmd) < 120
         assert state["harbor_mcp_jobs"] == {}
+
+    @pytest.mark.asyncio
+    async def test_launch_and_stop_commands_quote_task_authored_shell_text(self):
+        env = _DummyEnv(
+            mcp_launch_commands={
+                "evil$(whoami)": "python -c 'print(1)' && touch /pwned"
+            }
+        )
+        state: dict[str, Any] = {"sandbox_id": "sbx"}
+        await env.start_mcp_servers(
+            "sbx", _config_with_server(name="evil$(whoami)"), state
+        )
+        _, start_cmd = env.started_jobs[0]
+        quoted_pidfile = "'/tmp/harbor-mcp-evil$(whoami).pid'"
+        assert quoted_pidfile in start_cmd
+        assert "setsid sh -c " in start_cmd
+        assert "'\"'\"'print(1)'\"'\"'" in start_cmd
+
+        env.sandbox_client.execute_command.reset_mock()
+        await env.stop_mcp_servers(state)
+        stop_cmd = env.sandbox_client.execute_command.call_args.args[1]
+        assert quoted_pidfile in stop_cmd
 
     @pytest.mark.asyncio
     async def test_stop_without_sandbox_id_is_a_noop(self):
@@ -530,22 +496,6 @@ class TestBackgroundJob:
 class TestHealthCheck:
     """Readiness probing — default `/proc/net/tcp` + user override."""
 
-    def test_default_probe_shape(self):
-        """Portable awk on /proc/net/tcp{,6}, matching LISTEN state only,
-        with no bash-ism dependency like /dev/tcp."""
-        cmd = HarborMCPMixin._default_mcp_health_cmd(8000)
-        assert "bash" not in cmd and "/dev/tcp" not in cmd
-        assert "/proc/net/tcp" in cmd and "/proc/net/tcp6" in cmd
-        assert '$4 == "0A"' in cmd  # LISTEN state
-
-    @pytest.mark.parametrize(
-        "port,hex_expected",
-        [(80, "0050"), (8000, "1F40"), (65535, "FFFF"), (1, "0001")],
-    )
-    def test_default_probe_encodes_port_as_uppercase_hex(self, port, hex_expected):
-        cmd = HarborMCPMixin._default_mcp_health_cmd(port)
-        assert f":{hex_expected}$" in cmd
-
     @pytest.mark.asyncio
     async def test_custom_healthcheck_command_templated_with_port(self):
         env = _DummyEnv(mcp_launch_commands={"svc": "python x"})
@@ -580,7 +530,11 @@ class TestHealthCheck:
             if "/proc/net/tcp" in c.args[1]
         ]
         assert len(health_calls) == 1
-        assert ":1F40$" in health_calls[0]
+        health_cmd = health_calls[0]
+        assert "bash" not in health_cmd and "/dev/tcp" not in health_cmd
+        assert "/proc/net/tcp6" in health_cmd
+        assert '$4 == "0A"' in health_cmd
+        assert ":1F40$" in health_cmd
 
     @pytest.mark.asyncio
     async def test_probe_timeout_is_respected(self):

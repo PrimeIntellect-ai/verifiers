@@ -104,7 +104,11 @@ class Runtime:
         register_runtime(self.runtime_id, self)
         self.taskset = taskset
         self.harness = harness
-        self.toolsets = self._collect_toolsets()
+        owners = (self.taskset, self.harness)
+        self.toolsets = []
+        for owner in owners:
+            if owner is not None:
+                self.toolsets.extend(iter_toolsets(getattr(owner, "toolsets", ())))
         self.named_toolsets = self._collect_named_toolsets()
         self.rollout_toolsets: dict[str, list[Toolset]] = {}
         self.objects: dict[tuple[int, str, str], object] = {}
@@ -149,7 +153,10 @@ class Runtime:
             self.rollout_update, {"task", "state"}, "update", "rollout"
         )
         validate_handler_args(self.group_update, {"tasks", "states"}, "update", "group")
-        signals = self._build_signals()
+        signals = collect_signals(
+            self._owner_signals(self.taskset),
+            self._owner_signals(self.harness),
+        )
         self.rollout_signals = [
             signal for signal in signals if signal["stage"] == "rollout"
         ]
@@ -1083,7 +1090,14 @@ class Runtime:
         key = self.scope_key("rollout", state)
         if key in self.rollout_toolsets:
             return
-        self.rollout_toolsets[key] = await self._task_toolset_additions(task, state)
+        toolsets: list[Toolset] = []
+        for name, spec in self._task_toolsets_config(task).items():
+            if name in {"show", "hide"}:
+                continue
+            if name in self.named_toolsets:
+                raise ValueError(f"Task toolset {name!r} is already defined.")
+            toolsets.append(await self._runtime_named_toolset(name, spec, task, state))
+        self.rollout_toolsets[key] = toolsets
 
     def validate_bindings(self, state: State) -> None:
         for owner in (self.taskset, self.harness):
@@ -1118,7 +1132,10 @@ class Runtime:
                     "callable."
                 )
             target_kind, fn = target
-            protected_args = self._binding_target_framework_args(target_kind, fn)
+            stage = str(getattr(fn, f"{target_kind}_stage", "rollout"))
+            protected_args = (
+                GROUP_FRAMEWORK_ARGS if stage == "group" else ROLLOUT_FRAMEWORK_ARGS
+            )
             if arg_name in protected_args:
                 continue
             validate_bound_arg(
@@ -1141,10 +1158,6 @@ class Runtime:
                         f"Binding {binding_key!r} references unknown Taskset object "
                         f"{object_name!r}."
                     )
-
-    def _binding_target_framework_args(self, kind: str, fn: Handler) -> frozenset[str]:
-        stage = str(getattr(fn, f"{kind}_stage", "rollout"))
-        return GROUP_FRAMEWORK_ARGS if stage == "group" else ROLLOUT_FRAMEWORK_ARGS
 
     def _validate_toolset_bindings(self, toolset: Toolset) -> None:
         targets = self._toolset_binding_targets(toolset)
@@ -1304,17 +1317,6 @@ class Runtime:
             raise TypeError("task.toolsets must be a mapping.")
         return cast(ConfigMap, raw_toolsets)
 
-    async def _task_toolset_additions(self, task: Task, state: State) -> list[Toolset]:
-        toolsets: list[Toolset] = []
-        config = self._task_toolsets_config(task)
-        for name, spec in config.items():
-            if name in {"show", "hide"}:
-                continue
-            if name in self.named_toolsets:
-                raise ValueError(f"Task toolset {name!r} is already defined.")
-            toolsets.append(await self._runtime_named_toolset(name, spec, task, state))
-        return toolsets
-
     async def _runtime_named_toolset(
         self, name: str, spec: object, task: Task, state: State
     ) -> Toolset:
@@ -1393,20 +1395,6 @@ class Runtime:
                 raise KeyError(f"Unknown hidden toolsets: {unknown}.")
             return names - hidden
         return names
-
-    def _build_signals(self) -> list[SignalRecord]:
-        taskset_signals = self._owner_signals(self.taskset)
-        harness_signals = self._owner_signals(self.harness)
-        return collect_signals(taskset_signals, harness_signals)
-
-    def _collect_toolsets(self) -> list[Toolset]:
-        owners = (self.taskset, self.harness)
-        groups: list[Toolset] = []
-        for owner in owners:
-            if owner is None:
-                continue
-            groups.extend(iter_toolsets(getattr(owner, "toolsets", ())))
-        return groups
 
     def _collect_named_toolsets(self) -> dict[str, Toolset]:
         named: dict[str, Toolset] = {}

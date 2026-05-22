@@ -56,24 +56,6 @@ def _missing_openenv(component: str) -> ImportError:
     )
 
 
-def _generic_client_class() -> type[Any]:
-    if GenericEnvClient is None:
-        raise _missing_openenv("gym rollouts")
-    return GenericEnvClient
-
-
-def _mcp_client_class() -> type[Any]:
-    if MCPToolClient is None:
-        raise _missing_openenv("MCP rollouts")
-    return MCPToolClient
-
-
-def _call_tool_action_class() -> type[Any]:
-    if CallToolAction is None:
-        raise _missing_openenv("MCP tool calls")
-    return CallToolAction
-
-
 @dataclass
 class OpenEnvServer:
     sandbox_id: str
@@ -128,7 +110,16 @@ class OpenEnvEnv(vf.MultiTurnEnv):
         jitter: float = 1e-3,
         **kwargs: Any,
     ):
-        self.openenv_project = self._resolve_openenv_project(openenv_project)
+        if openenv_project is not None:
+            self.openenv_project = str(openenv_project)
+        else:
+            current_file = Path(__file__).resolve()
+            self.openenv_project = str(Path.cwd() / "proj")
+            for frame_info in inspect.stack()[1:]:
+                frame_path = Path(frame_info.filename).resolve()
+                if frame_path != current_file:
+                    self.openenv_project = str(frame_path.parent / "proj")
+                    break
         self.num_train_examples = num_train_examples
         self.num_eval_examples = num_eval_examples
         self.seed = seed
@@ -172,18 +163,6 @@ class OpenEnvEnv(vf.MultiTurnEnv):
             message_type="chat",
             **kwargs,
         )
-
-    def _resolve_openenv_project(self, openenv_project: str | Path | None) -> str:
-        if openenv_project is not None:
-            return str(openenv_project)
-
-        current_file = Path(__file__).resolve()
-        for frame_info in inspect.stack()[1:]:
-            frame_path = Path(frame_info.filename).resolve()
-            if frame_path != current_file:
-                return str(frame_path.parent / "proj")
-
-        return str(Path.cwd() / "proj")
 
     async def start_server(
         self,
@@ -271,10 +250,27 @@ class OpenEnvEnv(vf.MultiTurnEnv):
 
     async def setup_state(self, state: vf.State) -> vf.State:
         try:
-            server = await self._create_server()
+            project_path = Path(self.openenv_project).expanduser().resolve()
+            if not project_path.exists() or not project_path.is_dir():
+                raise ValueError(
+                    "OpenEnvEnv requires a local OpenEnv project directory. "
+                    f"Got: {self.openenv_project}"
+                )
+            image, port, start_command, contract = self._resolve_runtime_config(
+                project_path
+            )
+            server = await self._launch_image_server(
+                image, port, start_command, contract
+            )
+            self._active_servers[server.sandbox_id] = server
             state["openenv_server"] = server
             state["openenv_contract"] = server.contract
-            action_schema = await self._fetch_action_schema(server.base_url)
+            if self._action_schema is None:
+                schema = await self._fetch_schema(server.base_url)
+                self._action_schema = (
+                    schema.get("action", {}) if isinstance(schema, dict) else {}
+                )
+            action_schema = self._action_schema
             self._assert_contract_matches_schema(server.contract, action_schema)
             state["openenv_action_schema"] = action_schema
             if self._contract is None:
@@ -288,11 +284,16 @@ class OpenEnvEnv(vf.MultiTurnEnv):
                 seed = int(info.get("seed", 0))
 
             if server.contract == "mcp":
-                mcp_client = _mcp_client_class()(base_url=server.base_url)
+                if MCPToolClient is None:
+                    raise _missing_openenv("MCP rollouts")
+                mcp_client = MCPToolClient(base_url=server.base_url)
                 await mcp_client.connect()
                 state["openenv_mcp_client"] = mcp_client
                 if self._mcp_tools is None:
-                    self._mcp_tools = await self._mcp_list_tools(mcp_client)
+                    tools = await mcp_client.list_tools()
+                    if not isinstance(tools, list) or not tools:
+                        raise RuntimeError("MCP tools/list returned no usable tools.")
+                    self._mcp_tools = tools
                 state["tool_defs"] = self._convert_mcp_tools(self._mcp_tools)
                 result = await mcp_client.reset(seed=seed)
                 state["openenv_done"] = bool(result.done)
@@ -305,7 +306,9 @@ class OpenEnvEnv(vf.MultiTurnEnv):
                 )
                 return state
 
-            client = _generic_client_class()(base_url=server.base_url)
+            if GenericEnvClient is None:
+                raise _missing_openenv("gym rollouts")
+            client = GenericEnvClient(base_url=server.base_url)
             await client.connect()
             state["openenv_client"] = client
             result = await client.reset(seed=seed)
@@ -322,12 +325,6 @@ class OpenEnvEnv(vf.MultiTurnEnv):
             await self._cleanup_openenv_state(state)
             raise
 
-    def _make_user_message(self, content: str) -> Message:
-        return UserMessage(content=content)
-
-    def _make_tool_message(self, content: Any, tool_call_id: str) -> Message:
-        return ToolMessage(content=content, tool_call_id=tool_call_id)
-
     async def env_response(
         self, messages: vf.Messages, state: vf.State, **kwargs: Any
     ) -> vf.Messages:
@@ -342,7 +339,7 @@ class OpenEnvEnv(vf.MultiTurnEnv):
         assert isinstance(messages, list)
         last_msg = messages[-1]
         if not isinstance(last_msg, AssistantMessage):
-            return [self._make_user_message("Expected assistant response.")]
+            return [UserMessage(content="Expected assistant response.")]
 
         raw_text = str(last_msg.content or "").strip()
         action_schema = state.get("openenv_action_schema") or self._action_schema or {}
@@ -387,30 +384,31 @@ class OpenEnvEnv(vf.MultiTurnEnv):
                     raise ValueError("tool arguments must be an object")
                 if not tool_name:
                     raise ValueError("tool name cannot be empty")
-                result = await self._mcp_step_tool(
-                    mcp_client, tool_name=tool_name, arguments=tool_args
+                if CallToolAction is None:
+                    raise _missing_openenv("MCP tool calls")
+                result = await mcp_client.step(
+                    CallToolAction(tool_name=tool_name, arguments=tool_args)
                 )
                 if isinstance(result.reward, (int, float)):
                     total_reward += float(result.reward)
                 done = done or bool(result.done)
-                content = self._format_tool_content(
-                    self._extract_mcp_tool_content(result.observation)
-                )
+                content = self._extract_mcp_tool_content(result.observation)
+                if not is_valid_tool_content_parts(content):
+                    content = (
+                        content
+                        if isinstance(content, str)
+                        else json.dumps(content, ensure_ascii=True)
+                    )
             except Exception as e:
                 content = f"Error: {e}"
 
-            tool_messages.append(self._make_tool_message(content, tool_call_id))
+            tool_messages.append(
+                ToolMessage(content=content, tool_call_id=tool_call_id)
+            )
         if state["trajectory"]:
             state["trajectory"][-1]["reward"] = total_reward
         state["openenv_done"] = done
         return tool_messages
-
-    def _format_tool_content(self, result: Any) -> Any:
-        if is_valid_tool_content_parts(result):
-            return result
-        if isinstance(result, str):
-            return result
-        return json.dumps(result, ensure_ascii=True)
 
     @vf.stop
     async def openenv_done(self, state: vf.State) -> bool:
@@ -480,9 +478,6 @@ class OpenEnvEnv(vf.MultiTurnEnv):
             logs = await sandboxes.get_logs(sandbox_id)
         except Exception:
             return None
-        return self._trim_logs(logs)
-
-    def _trim_logs(self, logs: Any) -> str | None:
         if not logs:
             return None
         logs_str = str(logs)
@@ -521,24 +516,6 @@ class OpenEnvEnv(vf.MultiTurnEnv):
                 await self._cleanup_server(server)
             except Exception:
                 pass
-
-    async def _create_server(self) -> OpenEnvServer:
-        project_path = self._resolve_project_path()
-        image, port, start_command, contract = self._resolve_runtime_config(
-            project_path
-        )
-        server = await self._launch_image_server(image, port, start_command, contract)
-        self._active_servers[server.sandbox_id] = server
-        return server
-
-    def _resolve_project_path(self) -> Path:
-        path = Path(self.openenv_project).expanduser().resolve()
-        if path.exists() and path.is_dir():
-            return path
-        raise ValueError(
-            "OpenEnvEnv requires a local OpenEnv project directory. "
-            f"Got: {self.openenv_project}"
-        )
 
     def _resolve_runtime_config(self, project_path: Path) -> tuple[str, int, str, str]:
         manifest = self._read_build_manifest(project_path)
@@ -678,18 +655,6 @@ class OpenEnvEnv(vf.MultiTurnEnv):
             "OpenEnv sandbox exposure did not provide a usable endpoint URL."
         )
 
-    async def _mcp_list_tools(self, client: Any) -> list[Any]:
-        tools = await client.list_tools()
-        if not isinstance(tools, list) or not tools:
-            raise RuntimeError("MCP tools/list returned no usable tools.")
-        return tools
-
-    async def _mcp_step_tool(
-        self, client: Any, tool_name: str, arguments: dict[str, Any]
-    ) -> Any:
-        action = _call_tool_action_class()(tool_name=tool_name, arguments=arguments)
-        return await client.step(action)
-
     def _extract_mcp_tool_content(self, observation: Any) -> Any:
         if hasattr(observation, "model_dump"):
             try:
@@ -700,9 +665,7 @@ class OpenEnvEnv(vf.MultiTurnEnv):
             return observation
         if observation.get("error") is not None:
             return {"error": observation.get("error")}
-        return self._unwrap_mcp_result(observation.get("result"))
-
-    def _unwrap_mcp_result(self, value: Any) -> Any:
+        value = observation.get("result")
         if hasattr(value, "data"):
             return cast(Any, value).data
         if isinstance(value, dict) and "data" in value:
@@ -755,18 +718,17 @@ class OpenEnvEnv(vf.MultiTurnEnv):
         except Exception as e:
             return False, f"{type(e).__name__}: {e}"
 
-    async def _fetch_action_schema(self, base_url: str) -> dict[str, Any]:
-        if self._action_schema is not None:
-            return self._action_schema
-        schema = await self._fetch_schema(base_url)
-        action_schema = schema.get("action", {}) if isinstance(schema, dict) else {}
-        self._action_schema = action_schema
-        return action_schema
-
     def _assert_contract_matches_schema(
         self, contract: str, action_schema: dict[str, Any]
     ) -> None:
-        looks_mcp = self._looks_like_mcp_schema(action_schema)
+        props = (
+            action_schema.get("properties", {})
+            if isinstance(action_schema, dict)
+            else {}
+        )
+        looks_mcp = (
+            isinstance(props, dict) and "tool_name" in props and "arguments" in props
+        ) or self._schema_contains_values(action_schema, {"list_tools", "call_tool"})
         if contract == "mcp" and not looks_mcp:
             raise RuntimeError(
                 "OpenEnv contract mismatch: manifest contract is 'mcp' but action schema "
@@ -792,14 +754,6 @@ class OpenEnvEnv(vf.MultiTurnEnv):
 
         return await self._with_retry(_run_once)()
 
-    def _looks_like_mcp_schema(self, schema: dict[str, Any]) -> bool:
-        if not isinstance(schema, dict):
-            return False
-        props = schema.get("properties", {})
-        if isinstance(props, dict) and "tool_name" in props and "arguments" in props:
-            return True
-        return self._schema_contains_values(schema, {"list_tools", "call_tool"})
-
     def _schema_contains_values(self, obj: Any, values: set[str]) -> bool:
         if isinstance(obj, dict):
             for k, v in obj.items():
@@ -813,7 +767,10 @@ class OpenEnvEnv(vf.MultiTurnEnv):
         return False
 
     def _parse_action(self, text: str, schema: dict[str, Any]) -> dict[str, Any]:
-        cleaned = self._strip_code_fence(text)
+        if text.startswith("```") and text.endswith("```"):
+            cleaned = "\n".join(text.split("\n")[1:-1]).strip()
+        else:
+            cleaned = text
         try:
             action = json.loads(cleaned)
             if isinstance(action, dict):
@@ -827,11 +784,6 @@ class OpenEnvEnv(vf.MultiTurnEnv):
         raise ValueError(
             "Failed to parse action JSON. Provide a JSON object matching the action schema."
         )
-
-    def _strip_code_fence(self, text: str) -> str:
-        if text.startswith("```") and text.endswith("```"):
-            return "\n".join(text.split("\n")[1:-1]).strip()
-        return text
 
     def _single_string_field(self, schema: dict[str, Any]) -> str | None:
         if not isinstance(schema, dict):
@@ -856,14 +808,6 @@ class OpenEnvEnv(vf.MultiTurnEnv):
                 return field_name
         return None
 
-    def _normalize_observation(self, obs: Any) -> Any:
-        if hasattr(obs, "model_dump"):
-            try:
-                return obs.model_dump()
-            except Exception:
-                return obs
-        return obs
-
     def _render_observation_messages(
         self,
         obs: Any,
@@ -873,7 +817,12 @@ class OpenEnvEnv(vf.MultiTurnEnv):
         contract: str | None = None,
         seed: int | None = None,
     ) -> Messages:
-        normalized_obs = self._normalize_observation(obs)
+        normalized_obs = obs
+        if hasattr(obs, "model_dump"):
+            try:
+                normalized_obs = obs.model_dump()
+            except Exception:
+                normalized_obs = obs
         renderer_kwargs = {
             "context": context,
             "action_schema": action_schema,
