@@ -12,7 +12,13 @@ from verifiers.clients import Client
 from verifiers.types import ClientConfig
 from verifiers.types import RolloutInput, SamplingArgs
 
-from .config import EnvConfig, HarnessConfig, TasksetConfig
+from .config import (
+    EnvConfig,
+    HarnessConfig,
+    TasksetConfig,
+    UnresolvedHarnessConfig,
+    UnresolvedTasksetConfig,
+)
 from .harness import Harness
 from .state import State
 from .taskset import Taskset
@@ -44,8 +50,8 @@ class Env(vf.Environment):
         self.taskset = taskset
         self.harness = harness
         self.config = EnvConfig(
-            taskset=explicit_config_data(self.taskset.config),
-            harness=explicit_config_data(self.harness.config),
+            taskset=self.taskset.config,
+            harness=self.harness.config,
         )
         self.harness.attach_taskset(self.taskset)
         super().__init__(
@@ -173,8 +179,12 @@ def load_taskset(config: TasksetConfig | ConfigData | str) -> Taskset:
                 label="taskset",
             ),
         )
-    if isinstance(config, Mapping):
-        data = dict(config)
+    if isinstance(config, Mapping) or isinstance(config, UnresolvedTasksetConfig):
+        data = (
+            dict(config)
+            if isinstance(config, Mapping)
+            else explicit_config_data(config)
+        )
         component_id = _optional_component_id(
             data, alias_field="taskset_id", label="taskset"
         )
@@ -211,8 +221,12 @@ def load_harness(config: HarnessConfig | ConfigData | str) -> Harness:
                 label="harness",
             ),
         )
-    if isinstance(config, Mapping):
-        data = dict(config)
+    if isinstance(config, Mapping) or isinstance(config, UnresolvedHarnessConfig):
+        data = (
+            dict(config)
+            if isinstance(config, Mapping)
+            else explicit_config_data(config)
+        )
         component_id = _optional_component_id(
             data, alias_field="harness_id", label="harness"
         )

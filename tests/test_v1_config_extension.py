@@ -1519,8 +1519,8 @@ def test_env_config_tracks_prebuilt_children() -> None:
     harness = Harness(config=HarnessConfig(max_turns=3))
     env = Env(taskset=taskset, harness=harness)
 
-    assert env.config.taskset == {"taskset_id": "actual"}
-    assert env.config.harness == {"max_turns": 3}
+    assert explicit_config_data(env.config.taskset) == {"taskset_id": "actual"}
+    assert explicit_config_data(env.config.harness) == {"max_turns": 3}
 
 
 def test_env_rejects_taskset_builders() -> None:
@@ -1709,20 +1709,31 @@ def test_config_annotation_only_nested_config_defaults_recursively() -> None:
 def test_env_config_normalizes_mapping_config_to_attributes() -> None:
     config = EnvConfig.model_validate(
         {
-            "taskset": {"taskset_id": "dict"},
-            "harness": {"model": "configured-model"},
+            "taskset": {"id": "harbor", "dataset_id": "dataset"},
+            "harness": {"id": "opencode", "mode": "agent", "max_turns": 20},
         }
     )
 
-    assert config.taskset == {"taskset_id": "dict"}
-    assert config.harness == {"model": "configured-model"}
+    assert isinstance(config.taskset, TasksetConfig)
+    assert isinstance(config.harness, HarnessConfig)
+    assert explicit_config_data(config.taskset) == {
+        "id": "harbor",
+        "dataset_id": "dataset",
+    }
+    assert explicit_config_data(config.harness) == {
+        "id": "opencode",
+        "mode": "agent",
+        "max_turns": 20,
+    }
 
 
 def test_env_config_defaults_taskset_and_harness_to_base_configs() -> None:
     config = EnvConfig()
 
-    assert config.taskset == {}
-    assert config.harness == {}
+    assert isinstance(config.taskset, TasksetConfig)
+    assert isinstance(config.harness, HarnessConfig)
+    assert explicit_config_data(config.taskset) == {}
+    assert explicit_config_data(config.harness) == {}
 
 
 def test_env_config_rejects_unknown_top_level_sections() -> None:
@@ -1739,7 +1750,7 @@ def test_env_config_requires_child_sections_to_be_configs() -> None:
         EnvConfig(harness=None)
 
 
-def test_env_config_child_config_objects_are_serialized_as_raw_tables() -> None:
+def test_env_config_child_config_objects_preserve_explicit_data() -> None:
     class LocalTasksetConfig(TasksetConfig):
         split: str = "train"
 
@@ -1751,14 +1762,20 @@ def test_env_config_child_config_objects_are_serialized_as_raw_tables() -> None:
         harness=LocalHarnessConfig(mode="custom"),
     )
 
-    assert config.taskset == {"split": "test"}
-    assert config.harness == {"mode": "custom"}
+    assert isinstance(config.taskset, TasksetConfig)
+    assert isinstance(config.harness, HarnessConfig)
+    assert explicit_config_data(config.taskset) == {"split": "test"}
+    assert explicit_config_data(config.harness) == {"mode": "custom"}
 
     class LocalConfig(Config):
         split: str = "train"
 
-    assert EnvConfig(taskset=LocalConfig(split="custom")).taskset == {"split": "custom"}
-    assert EnvConfig(harness=LocalConfig(split="custom")).harness == {"split": "custom"}
+    assert explicit_config_data(
+        EnvConfig(taskset=LocalConfig(split="custom")).taskset
+    ) == {"split": "custom"}
+    assert explicit_config_data(
+        EnvConfig(harness=LocalConfig(split="custom")).harness
+    ) == {"split": "custom"}
 
 
 def test_env_config_validates_nested_sections_into_annotated_child_types() -> None:

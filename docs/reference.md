@@ -995,8 +995,8 @@ class Config(BaseModel):
     ...
 
 class EnvConfig(Config):
-    taskset: dict[str, object] = {}
-    harness: dict[str, object] = {}
+    taskset: TasksetConfig = TasksetConfig()
+    harness: HarnessConfig = HarnessConfig()
 
 class TasksetConfig(Config):
     taskset_id: str | None = None
@@ -1016,10 +1016,11 @@ class HarnessConfig(Config):
 ```
 
 `EnvConfig` is the v1 package-loading envelope. TOML `[env.taskset]` and
-`[env.harness]` sections are preserved as raw serializable tables until
-`vf.load_taskset` and `vf.load_harness` validate them against the package
-loader's typed `config` annotation. Environment-specific fields belong on the
-taskset or harness config that owns them.
+`[env.harness]` sections are held as taskset and harness config objects that
+preserve explicit package fields until `vf.load_taskset` and `vf.load_harness`
+validate them against the package loader's typed `config` annotation.
+Environment-specific fields belong on the taskset or harness config that owns
+them.
 
 `Config` subclasses are strict Pydantic config models. Validate raw mappings
 with `MyConfig.model_validate(...)` or use the typed object directly.

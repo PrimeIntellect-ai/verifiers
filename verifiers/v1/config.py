@@ -2,7 +2,14 @@ from collections.abc import Mapping
 from os import PathLike
 from typing import Literal, TypeAlias, cast
 
-from pydantic import BaseModel, ValidationInfo, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 from pydantic_config import BaseConfig
 from typing_extensions import Self
 
@@ -296,6 +303,14 @@ class HarnessConfig(LifecycleConfig):
         return normalize_binding_map(value, "harness.bindings", allow_objects=False)
 
 
+class UnresolvedTasksetConfig(TasksetConfig):
+    model_config = ConfigDict(extra="allow")
+
+
+class UnresolvedHarnessConfig(HarnessConfig):
+    model_config = ConfigDict(extra="allow")
+
+
 def validate_component_id_aliases(
     id_value: object, alias_value: object, *, field: str, alias: str
 ) -> None:
@@ -310,8 +325,8 @@ def validate_component_id_aliases(
 
 
 class EnvConfig(Config):
-    taskset: ConfigData = {}
-    harness: ConfigData = {}
+    taskset: TasksetConfig = Field(default_factory=UnresolvedTasksetConfig)
+    harness: HarnessConfig = Field(default_factory=UnresolvedHarnessConfig)
 
     @classmethod
     def __pydantic_init_subclass__(cls, **kwargs: object) -> None:
@@ -351,6 +366,11 @@ class EnvConfig(Config):
         except TypeError as exc:
             raise ValueError(str(exc)) from exc
         validate_env_child_config(data, str(info.field_name))
+        annotation = cls.model_fields[str(info.field_name)].annotation
+        if annotation is TasksetConfig:
+            return UnresolvedTasksetConfig.model_validate(data)
+        if annotation is HarnessConfig:
+            return UnresolvedHarnessConfig.model_validate(data)
         return data
 
 
