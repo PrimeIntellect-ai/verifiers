@@ -220,16 +220,6 @@ prime env install my-env
 
 For self-managed training launch commands, use the `prime-rl` documentation.
 
-To install the environment module into your project, do:
-```bash
-prime env install my-env # installs from ./environments/my_env
-```
-
-To install an environment from the Environments Hub into your project, do:
-```bash
-prime env install primeintellect/math-python
-```
-
 To run a local evaluation with any OpenAI-compatible model, do:
 ```bash
 prime eval run my-env -m openai/gpt-5-nano # run and save eval results locally

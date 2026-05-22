@@ -870,7 +870,7 @@ prime env install my-env                    # from ./environments/my_env
 prime env install my-env -p /path/to/environments   # custom path
 ```
 
-This runs `uv pip install -e` for local environments, making them importable by `prime eval run` and other integrations.
+This runs `uv pip install -e` for local environments when you want an explicit editable install for non-eval tooling. Evaluations do not require this separate step because environment resolution happens inside `prime eval run`.
 
 ## Environment Groups
 

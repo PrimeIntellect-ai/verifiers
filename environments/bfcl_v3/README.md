@@ -3,7 +3,6 @@
 Berkeley Function Calling Leaderboard v3 on the v1 Taskset/Harness runtime.
 
 ```bash
-prime env install bfcl-v3 --from-repo
 prime eval run bfcl-v3 -a '{"test_category": "simple_python"}'
 ```
 
