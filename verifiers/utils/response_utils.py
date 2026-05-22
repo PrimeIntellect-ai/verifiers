@@ -1,3 +1,6 @@
+import asyncio
+from typing import Any
+
 from verifiers.types import (
     AssistantMessage,
     Messages,
@@ -34,10 +37,12 @@ async def parse_response_message(response: Response) -> Messages:
     return [message]
 
 
-async def parse_response_tokens(
+def _parse_response_tokens_sync(
     response: Response, max_seq_len: int | None = None
 ) -> TrajectoryStepTokens | None:
-    """Parse token data from a vf.Response."""
+    """Synchronous body of parse_response_tokens. List slicing + dict build only;
+    no I/O, no awaits. Called from a worker thread to keep the event loop free
+    during multi-turn rollouts (E1)."""
     if response is None:
         return None
     tokens = response.message.tokens
@@ -92,3 +97,16 @@ async def parse_response_tokens(
     if routed_experts is not None:
         tokens.routed_experts = None
     return out
+
+
+async def parse_response_tokens(
+    response: Response, max_seq_len: int | None = None
+) -> TrajectoryStepTokens | None:
+    """Parse token data from a vf.Response.
+
+    E1: the actual parse is pure Python list slicing + dict build, but it runs
+    per-turn for every concurrent rollout (~100 turns × ~256 rollouts/worker),
+    so wall-clock contention on the event loop adds up. Offload the body to a
+    worker thread so the loop stays responsive for ZMQ I/O and other tasks.
+    """
+    return await asyncio.to_thread(_parse_response_tokens_sync, response, max_seq_len)
