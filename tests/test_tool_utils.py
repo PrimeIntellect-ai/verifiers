@@ -7,6 +7,10 @@ from pydantic import Field
 from verifiers.utils.tool_utils import convert_func_to_tool_def
 
 
+def tool_dump_without_strict(tool):
+    return tool.model_dump(exclude={"strict"}, exclude_none=True)
+
+
 class TestToolUtils:
     """Test cases for the tool_utils module."""
 
@@ -28,7 +32,8 @@ class TestToolUtils:
             return 1.0
 
         result = convert_func_to_tool_def(test_func)
-        assert result.model_dump(exclude_none=True) == {
+        assert result.strict is True
+        assert tool_dump_without_strict(result) == {
             "name": "test_func",
             "description": "This is a test function.",
             "parameters": {
@@ -63,7 +68,7 @@ class TestToolUtils:
             return 1.0
 
         result = convert_func_to_tool_def(test_func)
-        assert result.model_dump(exclude_none=True) == {
+        assert tool_dump_without_strict(result) == {
             "name": "test_func",
             "description": "",
             "parameters": {
@@ -94,7 +99,7 @@ class TestToolUtils:
             return None
 
         result = convert_func_to_tool_def(test_func)
-        assert result.model_dump(exclude_none=True) == {
+        assert tool_dump_without_strict(result) == {
             "name": "test_func",
             "description": "",
             "parameters": {
@@ -121,7 +126,7 @@ class TestToolUtils:
             return None
 
         result = convert_func_to_tool_def(test_func)
-        assert result.model_dump(exclude_none=True) == {
+        assert tool_dump_without_strict(result) == {
             "name": "test_func",
             "description": "",
             "parameters": {
@@ -147,7 +152,7 @@ class TestToolUtils:
             return None
 
         result = convert_func_to_tool_def(test_func)
-        assert result.model_dump(exclude_none=True) == {
+        assert tool_dump_without_strict(result) == {
             "name": "test_func",
             "description": "This is a test function.",
             "parameters": {
@@ -171,7 +176,7 @@ class TestToolUtils:
             return None
 
         result = convert_func_to_tool_def(test_func)
-        assert result.model_dump(exclude_none=True) == {
+        assert tool_dump_without_strict(result) == {
             "name": "test_func",
             "description": "Search pages.",
             "parameters": {
