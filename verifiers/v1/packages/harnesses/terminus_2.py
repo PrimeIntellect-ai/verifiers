@@ -95,7 +95,7 @@ set -eo pipefail
 export PATH={shlex.quote(SANDBOX_BIN_DIR)}:"$HOME/.local/bin:$PATH"
 
 TERMINUS_2_WORKDIR="${{AGENT_WORKDIR:-}}"
-if [[ -z "$TERMINUS_2_WORKDIR" ]]; then
+if [ -z "$TERMINUS_2_WORKDIR" ]; then
     TERMINUS_2_WORKDIR={shlex.quote(agent_workdir)}
 fi
 export AGENT_WORKDIR="$TERMINUS_2_WORKDIR"
