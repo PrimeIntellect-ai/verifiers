@@ -21,7 +21,6 @@ from ..runtime import Runtime
 from ..state import State
 from ..task import Task
 from .mcp_proxy_utils import validate_program_channels
-from .sandbox_python_utils import SANDBOX_DEFAULT_PATH
 from ..types import ConfigData, ConfigInputMap, ConfigMap, Handler, ProgramChannel
 from ..types import ProgramValue
 
@@ -114,8 +113,6 @@ async def command_env(
     include_base: bool,
 ) -> dict[str, str]:
     env = dict(os.environ) if include_base else {}
-    if not include_base:
-        env["PATH"] = SANDBOX_DEFAULT_PATH
     endpoint_base_url = state.get("endpoint_base_url")
     if isinstance(endpoint_base_url, str):
         api_key = endpoint_api_key(runtime)

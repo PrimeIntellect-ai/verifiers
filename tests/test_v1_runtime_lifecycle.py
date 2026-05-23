@@ -25,7 +25,6 @@ from verifiers.v1.utils.mcp_proxy_utils import MCP_PROXY_CONFIG_PATH, MCP_PROXY_
 from verifiers.v1.utils.mcp_proxy_utils import proxy_command, proxy_source
 from verifiers.v1.utils.program_utils import command_env
 from verifiers.v1.utils.sandbox_python_utils import (
-    SANDBOX_DEFAULT_PATH,
     SANDBOX_PYTHON,
     SANDBOX_UV,
     python_package_install_command,
@@ -912,9 +911,7 @@ async def test_command_env_exposes_model_endpoint_without_tool_payloads() -> Non
         "ANTHROPIC_BASE_URL",
         "OPENAI_API_KEY",
         "OPENAI_BASE_URL",
-        "PATH",
     }
-    assert env["PATH"] == SANDBOX_DEFAULT_PATH
 
 
 @pytest.mark.asyncio
@@ -1136,12 +1133,13 @@ def test_sandbox_python_program_installs_runtime_client_deps() -> None:
 def test_sandbox_package_install_bootstraps_managed_python() -> None:
     command = python_package_install_command("mcp>=1.14.1 requests")
 
-    assert "UV_NO_CONFIG=1" in command
+    assert "UV_NO_CONFIG=1" not in command
+    assert "UV_INDEX_URL" not in command
+    assert "PIP_INDEX_URL" not in command
     assert "https://astral.sh/uv/install.sh" in command
     assert '"$VF_UV" venv --python "$VF_PYTHON_VERSION"' in command
     assert '"$VF_UV" pip install --python "$VF_PYTHON"' in command
-    assert "VF_PYTHON_INDEX_URL=https://pypi.org/simple" in command
-    assert '--index-url "$VF_PYTHON_INDEX_URL"' in command
+    assert "--index-url" not in command
     assert SANDBOX_PYTHON in command
     assert SANDBOX_UV in command
     assert "mcp>=1.14.1 requests" in command

@@ -41,14 +41,11 @@ def python_package_list(value: object, field: str = "sandbox.packages") -> list[
 def sandbox_runtime_script() -> str:
     return (
         "set -e\n"
-        "export UV_NO_CONFIG=1\n"
         "export UV_NO_PROGRESS=1\n"
-        "unset UV_INDEX_URL UV_EXTRA_INDEX_URL PIP_INDEX_URL PIP_EXTRA_INDEX_URL\n"
         f"VF_BIN_DIR={shlex.quote(SANDBOX_BIN_DIR)}\n"
         f"VF_PYTHON_ROOT={shlex.quote(SANDBOX_PYTHON_ROOT)}\n"
         f"VF_PYTHON={shlex.quote(SANDBOX_PYTHON)}\n"
         f"VF_UV={shlex.quote(SANDBOX_UV)}\n"
-        "VF_PYTHON_INDEX_URL=https://pypi.org/simple\n"
         f"VF_PYTHON_VERSION={shlex.quote(SANDBOX_PYTHON_VERSION)}\n"
         'export PATH="$VF_PYTHON_ROOT/bin:$VF_BIN_DIR:$PATH"\n'
         'mkdir -p "$VF_BIN_DIR"\n'
@@ -89,8 +86,7 @@ def sandbox_runtime_script() -> str:
         "}\n"
         "vf_python_install() {\n"
         "vf_ensure_python\n"
-        '  "$VF_UV" pip install --python "$VF_PYTHON" '
-        '--index-url "$VF_PYTHON_INDEX_URL" "$@"\n'
+        '  "$VF_UV" pip install --python "$VF_PYTHON" "$@"\n'
         "}\n"
     )
 
