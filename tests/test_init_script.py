@@ -1,0 +1,80 @@
+from pathlib import Path
+
+import verifiers as vf
+from verifiers.scripts.init import init_environment
+
+
+def read_env_file(root: Path, env_id: str) -> str:
+    module_name = env_id.replace("-", "_")
+    return (root / module_name / f"{module_name}.py").read_text()
+
+
+def test_init_default_writes_v0_stub(tmp_path: Path) -> None:
+    root = init_environment("foo", path=str(tmp_path))
+    content = read_env_file(tmp_path, "foo")
+
+    assert root == tmp_path / "foo"
+    assert "def load_environment(**kwargs) -> vf.Environment:" in content
+    assert "NotImplementedError" in content
+    assert "load_taskset" not in content
+    assert "EnvTaskset" not in content
+
+
+def test_init_v1_writes_thin_taskset_template(tmp_path: Path) -> None:
+    init_environment("bar", path=str(tmp_path), v1=True)
+    content = read_env_file(tmp_path, "bar")
+
+    assert 'ENV_ID = "bar"' in content
+    assert "def load_tasks():" in content
+    assert "class EnvTasksetConfig(vf.TasksetConfig):" in content
+    assert 'source: str = "bar:load_tasks"' in content
+    assert 'rewards: list[str] = ["bar:exact_answer"]' in content
+    assert "def load_taskset(config: EnvTasksetConfig) -> vf.Taskset:" in content
+    assert "vf.load_taskset(ENV_ID, config=config.taskset)" in content
+    assert "class EnvTaskset(" not in content
+    assert "_default_" not in content
+    assert "assert isinstance" not in content
+
+
+def test_init_v1_template_loads_with_vf_load_environment(
+    tmp_path: Path, monkeypatch
+) -> None:
+    init_environment("loadable-v1", path=str(tmp_path), v1=True)
+    monkeypatch.syspath_prepend(str(tmp_path / "loadable_v1"))
+
+    env = vf.load_environment("loadable-v1")
+
+    assert isinstance(env, vf.Env)
+    assert env.taskset.rows()[0]["answer"] == "cba"
+    assert env.taskset.rewards[0].__name__ == "exact_answer"
+
+
+def test_init_v1_with_harness_writes_harness_stub(tmp_path: Path) -> None:
+    init_environment("baz", path=str(tmp_path), v1=True, with_harness=True)
+    content = read_env_file(tmp_path, "baz")
+
+    assert "class EnvHarnessConfig(vf.HarnessConfig):" in content
+    assert "class EnvHarness(vf.Harness):" in content
+    assert "def load_harness(config: EnvHarnessConfig) -> EnvHarness:" in content
+    assert "vf.load_harness(ENV_ID, config=config.harness)" in content
+
+
+def test_init_with_harness_without_v1_warns_and_uses_v0(tmp_path: Path, capsys) -> None:
+    init_environment("plain", path=str(tmp_path), with_harness=True)
+    content = read_env_file(tmp_path, "plain")
+    captured = capsys.readouterr()
+
+    assert "--with-harness only applies with --v1; ignoring." in captured.out
+    assert "def load_environment(**kwargs) -> vf.Environment:" in content
+    assert "load_harness" not in content
+
+
+def test_init_v1_multifile_exports_component_loaders(tmp_path: Path) -> None:
+    init_environment("pkg-env", path=str(tmp_path), v1=True, multi_file=True)
+    package_dir = tmp_path / "pkg_env" / "pkg_env"
+    init_content = (package_dir / "__init__.py").read_text()
+    env_content = (package_dir / "pkg_env.py").read_text()
+
+    assert "from .pkg_env import load_environment, load_taskset" in init_content
+    assert "__all__ = ['load_environment', 'load_taskset']" in init_content
+    assert 'source: str = "pkg_env.pkg_env:load_tasks"' in env_content

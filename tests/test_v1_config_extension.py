@@ -1694,6 +1694,7 @@ def test_config_schema_is_visible_from_primary_types() -> None:
     assert "toolsets" in Harness.config_schema()
     assert "source" in TasksetConfig.schema_text()
     assert "eval_source" in TasksetConfig.schema_text()
+    assert "- tasks:" not in TasksetConfig.schema_text()
     assert "program" in HarnessConfig.schema_text()
     assert "image" in vf.SandboxConfig.schema_text()
     assert "bindings" in vf.ToolsetConfig.schema_text()
@@ -2066,7 +2067,102 @@ def test_load_environment_uses_factory_annotations_for_child_config_types(
     assert env.harness.config.mode == "custom"
 
 
-def test_load_environment_rejects_mismatched_config_object_for_factory_annotation(
+def test_load_environment_keeps_environment_loader_authoritative(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_name = "explicit_env_loader_with_components"
+    module = types.ModuleType(module_name)
+    seen: dict[str, object] = {}
+
+    class LocalTasksetConfig(TasksetConfig):
+        split: str = "train"
+
+    def load_taskset(config: LocalTasksetConfig) -> Taskset:
+        raise AssertionError("load_environment should decide when to load components")
+
+    def load_environment(config: EnvConfig) -> Env:
+        seen["config"] = config
+        assert isinstance(config.taskset, LocalTasksetConfig)
+        return Env(
+            taskset=Taskset(
+                config=config.taskset.model_copy(
+                    update={"source": ref("source_loader")}
+                )
+            )
+        )
+
+    module.load_taskset = load_taskset
+    module.load_environment = load_environment
+    monkeypatch.setitem(sys.modules, module_name, module)
+
+    env = vf.load_environment(
+        "explicit-env-loader-with-components",
+        config={"taskset": {"split": "test"}},
+    )
+
+    assert isinstance(seen["config"], EnvConfig)
+    assert env.taskset.source is source_loader
+    assert env.taskset.config.split == "test"
+
+
+def test_public_component_loaders_coerce_factory_config_annotations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_name = "component_loader_config"
+    module = types.ModuleType(module_name)
+    seen: dict[str, object] = {}
+
+    class LocalTasksetConfig(TasksetConfig):
+        split: str = "train"
+
+    class LocalHarnessConfig(HarnessConfig):
+        mode: str = "default"
+
+    class LocalHarness(Harness):
+        config: LocalHarnessConfig
+
+    def load_taskset(config: LocalTasksetConfig) -> Taskset:
+        seen["taskset_config"] = config
+        return Taskset(config=config)
+
+    def load_harness(config: LocalHarnessConfig) -> LocalHarness:
+        seen["harness_config"] = config
+        return LocalHarness(config=config)
+
+    module.load_taskset = load_taskset
+    module.load_harness = load_harness
+    monkeypatch.setitem(sys.modules, module_name, module)
+
+    mapped = vf.load_taskset(
+        "component-loader-config",
+        config={"taskset_id": "mapped", "split": "test"},
+    )
+    base = vf.load_taskset(
+        "component-loader-config",
+        config=TasksetConfig(taskset_id="base"),
+    )
+    concrete = vf.load_taskset(
+        "component-loader-config",
+        config=LocalTasksetConfig(taskset_id="concrete", split="dev"),
+    )
+    harness = vf.load_harness(
+        "component-loader-config",
+        config={"model": "configured-model", "mode": "custom"},
+    )
+
+    assert isinstance(seen["taskset_config"], LocalTasksetConfig)
+    assert mapped.config.taskset_id == "mapped"
+    assert mapped.config.split == "test"
+    assert base.config.taskset_id == "base"
+    assert base.config.split == "train"
+    assert concrete.config.taskset_id == "concrete"
+    assert concrete.config.split == "dev"
+    assert isinstance(seen["harness_config"], LocalHarnessConfig)
+    assert harness.config.model == "configured-model"
+    assert harness.config.mode == "custom"
+
+
+def test_load_environment_coerces_base_env_config_with_factory_annotations(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     module_name = "factory_typed_child_config_object"
@@ -2079,19 +2175,19 @@ def test_load_environment_rejects_mismatched_config_object_for_factory_annotatio
         return Taskset(config=config)
 
     def load_environment(config: EnvConfig) -> Env:
-        taskset_config = config.taskset
-        assert isinstance(taskset_config, LocalTasksetConfig)
-        return Env(taskset=load_taskset(taskset_config))
+        return Env(taskset=vf.load_taskset(module_name, config=config.taskset))
 
     module.load_taskset = load_taskset
     module.load_environment = load_environment
     monkeypatch.setitem(sys.modules, module_name, module)
 
-    with pytest.raises(RuntimeError, match="config.taskset must be LocalTasksetConfig"):
-        vf.load_environment(
-            "factory-typed-child-config-object",
-            config=EnvConfig(taskset=TasksetConfig(taskset_id="typed")),
-        )
+    env = vf.load_environment(
+        "factory-typed-child-config-object",
+        config=EnvConfig(taskset=TasksetConfig(taskset_id="typed")),
+    )
+
+    assert isinstance(env.taskset.config, LocalTasksetConfig)
+    assert env.taskset.config.taskset_id == "typed"
 
 
 def test_load_environment_supplies_default_typed_env_config(
