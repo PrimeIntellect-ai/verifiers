@@ -721,14 +721,16 @@ class OpenEnvEnv(vf.MultiTurnEnv):
     def _assert_contract_matches_schema(
         self, contract: str, action_schema: dict[str, Any]
     ) -> None:
-        props = (
-            action_schema.get("properties", {})
-            if isinstance(action_schema, dict)
-            else {}
-        )
-        looks_mcp = (
-            isinstance(props, dict) and "tool_name" in props and "arguments" in props
-        ) or self._schema_contains_values(action_schema, {"list_tools", "call_tool"})
+        looks_mcp = False
+        if isinstance(action_schema, dict):
+            props = action_schema.get("properties", {})
+            looks_mcp = (
+                isinstance(props, dict)
+                and "tool_name" in props
+                and "arguments" in props
+            ) or self._schema_contains_values(
+                action_schema, {"list_tools", "call_tool"}
+            )
         if contract == "mcp" and not looks_mcp:
             raise RuntimeError(
                 "OpenEnv contract mismatch: manifest contract is 'mcp' but action schema "
