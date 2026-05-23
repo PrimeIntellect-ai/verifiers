@@ -17,6 +17,7 @@ from verifiers.utils.async_utils import maybe_call_with_named_args
 from .artifact_utils import artifact_format, artifact_key, artifact_optional
 from .artifact_utils import artifact_path
 from .program_utils import command_argv, command_env, float_config, int_config
+from .program_utils import program_channels
 from .program_utils import program_option_mapping, program_channel_setup
 from .program_utils import resolve_program_value
 from .program_utils import validate_program_bindings
@@ -338,6 +339,10 @@ async def run_sandbox_command(
         argv = await command_argv(program, task, state, runtime)
         env = await command_env(program, task, state, runtime, include_base=False)
         command = shlex.join(argv)
+        if "mcp" in program_channels(program):
+            command = (
+                f"export PATH={shlex.quote(SANDBOX_DEFAULT_PATH)}:$PATH\n{command}"
+            )
         command_timeout = cast(int | None, sandbox_config.get("command_timeout"))
         result = await lease.run_background_job(
             command,

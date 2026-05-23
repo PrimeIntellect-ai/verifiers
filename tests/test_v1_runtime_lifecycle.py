@@ -1279,7 +1279,11 @@ async def test_program_channels_mcp_setup_uses_bindings_after_setup_before_comma
     commands = [command for _, command in FakeSandboxClient.commands]
     setup_index = commands.index("echo setup")
     mcp_setup_index = commands.index("echo model=bound-model > /tmp/endpoint.txt")
-    command_index = commands.index("python -c 'print('\"'\"'ok'\"'\"')'")
+    command_index = next(
+        i
+        for i, command in enumerate(commands)
+        if command.endswith("python -c 'print('\"'\"'ok'\"'\"')'")
+    )
     assert setup_index < mcp_setup_index < command_index
 
 
