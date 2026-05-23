@@ -126,11 +126,8 @@ class AnthropicMessagesClient(
                     url = (
                         image_url.get("url") if isinstance(image_url, Mapping) else None
                     )
-                    if isinstance(url, str):
-                        if url.startswith("data:") and "," in url:
-                            header, data = url.split(",", 1)
-                        else:
-                            header, data = "", ""
+                    if isinstance(url, str) and url.startswith("data:") and "," in url:
+                        header, data = url.split(",", 1)
                         if ";base64" in header:
                             media_type = header[5:].split(";")[0] or "image/png"
                             blocks.append(
@@ -143,8 +140,6 @@ class AnthropicMessagesClient(
                                     },
                                 }
                             )
-                        else:
-                            blocks.append({"type": "text", "text": "[image]"})
                 elif part_type == "input_audio":
                     blocks.append({"type": "text", "text": "[audio]"})
                 else:
