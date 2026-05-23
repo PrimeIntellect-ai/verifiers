@@ -1,4 +1,24 @@
+import importlib
+import sys
+
 import verifiers
+
+
+def test_v1_taskset_imports_do_not_import_textarena():
+    textarena_module = "verifiers.v1.packages.tasksets.textarena"
+    sys.modules.pop(textarena_module, None)
+
+    tasksets = importlib.import_module("verifiers.v1.packages.tasksets")
+    tasksets.__dict__.pop("TextArenaTaskset", None)
+    tasksets.__dict__.pop("TextArenaTasksetConfig", None)
+    importlib.reload(tasksets)
+    assert textarena_module not in sys.modules
+
+    v1 = importlib.import_module("verifiers.v1")
+    v1.__dict__.pop("TextArenaTaskset", None)
+    v1.__dict__.pop("TextArenaTasksetConfig", None)
+    importlib.reload(v1)
+    assert textarena_module not in sys.modules
 
 
 class TestImports:

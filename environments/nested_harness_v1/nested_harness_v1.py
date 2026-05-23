@@ -11,7 +11,7 @@ async def child_program(task, state):
     return state
 
 
-class ChildHarness(vf.Harness[vf.HarnessConfig]):
+class ChildHarness(vf.Harness):
     _default_program = child_program
 
 
@@ -87,12 +87,12 @@ async def parent_program(task, state):
     return state
 
 
-class NestedTaskset(vf.Taskset[vf.TasksetConfig]):
+class NestedTaskset(vf.Taskset):
     _default_source = source
     _default_rewards = (exact_answer,)
 
 
-class NestedHarness(vf.Harness[NestedHarnessConfig]):
+class NestedHarness(vf.Harness):
     _default_program = parent_program
     _default_metrics = (child_calls,)
 

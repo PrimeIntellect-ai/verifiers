@@ -5,19 +5,20 @@ from importlib.abc import Traversable
 from collections.abc import Mapping
 from copy import deepcopy
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar, TypeVar, cast
+from typing import TYPE_CHECKING, ClassVar, cast
 
 from datasets import Dataset
 from verifiers.types import task_payload_from_info
 
 from .config import (
+    ConfigSource,
     TasksetConfig,
     resolve_config_object,
 )
 from .state import State
 from .task import Task
 from .utils.prompt_utils import normalize_system_prompt
-from .utils.config_utils import ConfigBound
+from .utils.config_utils import coerce_config
 from .utils.runtime_owner_utils import RuntimeOwnerMixin
 from .utils.taskset_utils import dataset_info_with_task, discover_sibling_dir
 from .utils.taskset_utils import rows_from_source
@@ -33,18 +34,15 @@ if TYPE_CHECKING:
 
 
 TaskSourceValue = TaskRowsSource | None
-TasksetConfigT = TypeVar("TasksetConfigT", bound=TasksetConfig)
 
 
-class Taskset(ConfigBound[TasksetConfigT], RuntimeOwnerMixin):
-    _config_base_cls: ClassVar[type[TasksetConfig]] = TasksetConfig
-    _config_cls: ClassVar[type[TasksetConfig]] = TasksetConfig
-    config: TasksetConfigT
+class Taskset(RuntimeOwnerMixin):
+    config: TasksetConfig
     _default_source: ClassVar[TaskSourceValue] = None
     _default_eval_source: ClassVar[TaskSourceValue] = None
 
-    def __init__(self, config: TasksetConfig | None = None):
-        self.config = cast(TasksetConfigT, self._coerce_config(config))
+    def __init__(self, config: ConfigSource = None):
+        self.config = coerce_config(TasksetConfig, config)
         source_config = self._defaulted("source", type(self)._default_source)
         source_value = resolve_config_object(source_config)
         self.source = cast(
@@ -82,6 +80,10 @@ class Taskset(ConfigBound[TasksetConfigT], RuntimeOwnerMixin):
         self._eval_dataset: Dataset | None = None
         self._attached_harnesses: weakref.WeakSet["Harness"] = weakref.WeakSet()
         self._configure_runtime_defaults()
+
+    @classmethod
+    def config_schema(cls) -> str:
+        return TasksetConfig.schema_text()
 
     def attach_harness(self, harness: "Harness") -> None:
         self._attached_harnesses.add(harness)

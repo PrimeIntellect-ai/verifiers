@@ -98,13 +98,13 @@ def answer_reward(task: vf.Task, state: vf.State) -> float:
     return answers_match(agent_answer, str(task.get("answer", "")))
 
 
-class DSPYRLMTaskset(vf.Taskset[DSPYRLMTasksetConfig]):
+class DSPYRLMTaskset(vf.Taskset):
     _default_source = load_train_rows
     _default_eval_source = load_eval_rows
     _default_rewards = (answer_reward,)
 
 
-class DSPYRLMHarness(vf.Harness[vf.HarnessConfig]):
+class DSPYRLMHarness(vf.Harness):
     _default_program = run_dspy_rlm_program
 
 

@@ -292,7 +292,7 @@ class WikiSearchEnvConfig(vf.EnvConfig):
     harness: vf.HarnessConfig = vf.HarnessConfig()
 
 
-class WikiSearchTaskset(vf.Taskset[WikiSearchTasksetConfig]):
+class WikiSearchTaskset(vf.Taskset):
     _default_source = source
 
     def _configure_runtime_defaults(self) -> None:

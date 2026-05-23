@@ -61,7 +61,7 @@ class ReverseTextTasksetConfig(vf.TasksetConfig):
     dataset_split: str = "train"
 
 
-class ReverseTextTaskset(vf.Taskset[ReverseTextTasksetConfig]):
+class ReverseTextTaskset(vf.Taskset):
     _default_source = source
     _default_rewards = (lcs_reward_func,)
 

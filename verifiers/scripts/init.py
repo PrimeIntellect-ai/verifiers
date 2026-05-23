@@ -140,12 +140,6 @@ from .{env_id} import load_environment
 __all__ = ["load_environment"]
 """
 
-V1_INIT_TEMPLATE = """\
-from .{env_id} import load_environment, load_harness, load_taskset
-
-__all__ = ["load_environment", "load_harness", "load_taskset"]
-"""
-
 ENVIRONMENT_TEMPLATE = """\
 import verifiers as vf
 
@@ -159,7 +153,47 @@ class EnvTasksetConfig(vf.TasksetConfig):
     split: str = "train"
 
 
-class EnvTaskset(vf.Taskset[EnvTasksetConfig]):
+class EnvTaskset(vf.Taskset):
+    config: EnvTasksetConfig
+    _default_rewards = (exact_answer,)
+
+    def rows(self) -> list[dict[str, object]]:
+        rows = [
+            {
+                "prompt": [{"role": "user", "content": "Reverse abc."}],
+                "answer": "cba",
+                "split": "train",
+            }
+        ]
+        return [row for row in rows if row["split"] == self.config.split]
+
+
+def load_taskset(config: EnvTasksetConfig) -> EnvTaskset:
+    assert isinstance(config, EnvTasksetConfig)
+    return EnvTaskset(config=config)
+
+
+def load_environment(config: vf.EnvConfig) -> vf.Env:
+    taskset_config = config.taskset
+    assert isinstance(taskset_config, EnvTasksetConfig)
+    return vf.Env(taskset=load_taskset(taskset_config))
+"""
+
+HARNESS_ENVIRONMENT_TEMPLATE = """\
+import verifiers as vf
+
+
+@vf.reward(weight=1.0)
+async def exact_answer(task, state) -> float:
+    return float(task["answer"] in str(state.get("completion") or ""))
+
+
+class EnvTasksetConfig(vf.TasksetConfig):
+    split: str = "train"
+
+
+class EnvTaskset(vf.Taskset):
+    config: EnvTasksetConfig
     _default_rewards = (exact_answer,)
 
     def rows(self) -> list[dict[str, object]]:
@@ -177,64 +211,30 @@ class EnvHarnessConfig(vf.HarnessConfig):
     pass
 
 
-class EnvHarness(vf.Harness[EnvHarnessConfig]):
+class EnvHarness(vf.Harness):
+    config: EnvHarnessConfig
     pass
 
 
 def load_taskset(config: EnvTasksetConfig) -> EnvTaskset:
+    assert isinstance(config, EnvTasksetConfig)
     return EnvTaskset(config=config)
 
 
 def load_harness(config: EnvHarnessConfig) -> EnvHarness:
+    assert isinstance(config, EnvHarnessConfig)
     return EnvHarness(config=config)
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
-    taskset = vf.load_taskset(config.taskset)
-    harness = vf.load_harness(config.harness)
-    return vf.Env(taskset=taskset, harness=harness)
-"""
-
-HARNESS_ENVIRONMENT_TEMPLATE = ENVIRONMENT_TEMPLATE
-V1_ENVIRONMENT_TEMPLATE = ENVIRONMENT_TEMPLATE
-
-TASKSET_ENVIRONMENT_TEMPLATE = """\
-import verifiers as vf
-
-
-@vf.reward(weight=1.0)
-async def exact_answer(task, state) -> float:
-    return float(task["answer"] in str(state.get("completion") or ""))
-
-
-class EnvTasksetConfig(vf.TasksetConfig):
-    split: str = "train"
-
-
-class EnvTaskset(vf.Taskset[EnvTasksetConfig]):
-    _default_rewards = (exact_answer,)
-
-    def rows(self) -> list[dict[str, object]]:
-        rows = [
-            {
-                "prompt": [{"role": "user", "content": "Reverse abc."}],
-                "answer": "cba",
-                "split": "train",
-            }
-        ]
-        return [row for row in rows if row["split"] == self.config.split]
-
-
-class EnvConfig(vf.EnvConfig):
-    taskset: EnvTasksetConfig = EnvTasksetConfig()
-
-
-def load_taskset(config: EnvTasksetConfig) -> EnvTaskset:
-    return EnvTaskset(config=config)
-
-
-def load_environment(config: EnvConfig) -> vf.Env:
-    return vf.Env(taskset=load_taskset(config.taskset))
+    taskset_config = config.taskset
+    harness_config = config.harness
+    assert isinstance(taskset_config, EnvTasksetConfig)
+    assert isinstance(harness_config, EnvHarnessConfig)
+    return vf.Env(
+        taskset=load_taskset(taskset_config),
+        harness=load_harness(harness_config),
+    )
 """
 
 OPENENV_ENVIRONMENT_TEMPLATE = """\
@@ -403,7 +403,6 @@ def init_environment(
     multi_file: bool = False,
     openenv: bool = False,
     with_harness: bool = False,
-    v1: bool = False,
 ) -> Path:
     """
     Initialize a new verifiers environment.
@@ -455,8 +454,7 @@ def init_environment(
     if multi_file:
         init_file = environment_dir / "__init__.py"
         if not init_file.exists():
-            init_template = V1_INIT_TEMPLATE if v1 or with_harness else INIT_TEMPLATE
-            init_file.write_text(init_template.format(env_id=env_id_underscore))
+            init_file.write_text(INIT_TEMPLATE.format(env_id=env_id_underscore))
         else:
             print(f"__init__.py already exists at {init_file}, skipping...")
 
@@ -465,10 +463,10 @@ def init_environment(
     if not environment_file.exists():
         if openenv:
             template = OPENENV_ENVIRONMENT_TEMPLATE
-        elif v1 or with_harness:
-            template = V1_ENVIRONMENT_TEMPLATE
+        elif with_harness:
+            template = HARNESS_ENVIRONMENT_TEMPLATE
         else:
-            template = TASKSET_ENVIRONMENT_TEMPLATE
+            template = ENVIRONMENT_TEMPLATE
         environment_file.write_text(template)
     else:
         print(
@@ -514,16 +512,10 @@ def main():
         help="Initialize with the enforced OpenEnv layout (proj/ + vf-build workflow).",
     )
     parser.add_argument(
-        "--v1",
-        action="store_true",
-        default=False,
-        help="Initialize the canonical v1 taskset+harness package template.",
-    )
-    parser.add_argument(
         "--with-harness",
         action="store_true",
         default=False,
-        help=argparse.SUPPRESS,
+        help="Include an explicit v1 load_harness stub.",
     )
     args = parser.parse_args()
 
@@ -534,7 +526,6 @@ def main():
         multi_file=args.multi_file,
         openenv=args.openenv,
         with_harness=args.with_harness,
-        v1=args.v1,
     )
 
 

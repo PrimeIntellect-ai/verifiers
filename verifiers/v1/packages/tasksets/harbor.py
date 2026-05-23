@@ -66,11 +66,13 @@ class HarborTasksetConfig(TasksetConfig):
     env: dict[str, str] = {}
 
 
-class HarborTaskset(Taskset[HarborTasksetConfig]):
+class HarborTaskset(Taskset):
     config: HarborTasksetConfig
 
     def __init__(self, config: HarborTasksetConfig | None = None):
-        self.config = cast(HarborTasksetConfig, self._coerce_config(config))
+        config = HarborTasksetConfig() if config is None else config
+        assert isinstance(config, HarborTasksetConfig)
+        self.config = config
         if self.config.dataset is not None and not isinstance(self.config.dataset, str):
             raise TypeError("HarborTaskset dataset must be a string.")
         self._bundle_package = (
