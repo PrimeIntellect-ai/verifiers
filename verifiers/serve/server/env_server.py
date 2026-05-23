@@ -127,6 +127,7 @@ class EnvServer(ABC):
     def run_server(cls, *args, **kwargs):
         try:
             import uvloop  # type: ignore
+
             uvloop.install()
         except ImportError:
             pass

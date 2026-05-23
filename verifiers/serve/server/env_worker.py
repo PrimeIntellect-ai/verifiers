@@ -365,7 +365,10 @@ class EnvWorker:
         if self.death_pipe is not None:
             monitor_death_pipe(self.death_pipe)
 
-        from verifiers.utils.thread_utils import install_default_executor, scale_executors
+        from verifiers.utils.thread_utils import (
+            install_default_executor,
+            scale_executors,
+        )
 
         # Scale the default executor BEFORE install_default_executor so the
         # event loop picks up a properly-sized pool. Python's default
@@ -402,6 +405,7 @@ class EnvWorker:
         # bottleneck before any single op does.
         try:
             import uvloop  # type: ignore
+
             uvloop.install()
         except ImportError:
             pass

@@ -1,5 +1,4 @@
 import asyncio
-from typing import Any
 
 from verifiers.types import (
     AssistantMessage,
@@ -77,7 +76,9 @@ async def parse_response_tokens(
                 is_truncated = True
                 completion_ids = tokens.completion_ids[: max_seq_len - prompt_len]
                 completion_mask = tokens.completion_mask[: max_seq_len - prompt_len]
-                completion_logprobs = tokens.completion_logprobs[: max_seq_len - prompt_len]
+                completion_logprobs = tokens.completion_logprobs[
+                    : max_seq_len - prompt_len
+                ]
             else:
                 is_truncated = False
         else:
