@@ -65,7 +65,7 @@ def test_rlm_harness_can_upload_skills(tmp_path: Path):
     program = as_mapping(harness.program)
     dirs = as_mapping(program["dirs"])
 
-    assert dirs["/rlm/skills"] == skills
+    assert dirs["/task/rlm-skills"] == skills
 
 
 def test_rlm_harness_uploads_taskset_skills_by_default(tmp_path: Path):
@@ -84,7 +84,7 @@ def test_rlm_harness_uploads_taskset_skills_by_default(tmp_path: Path):
     program = as_mapping(env.harness.program)
     dirs = as_mapping(program["dirs"])
 
-    assert dirs["/rlm/skills"] == skills
+    assert dirs["/task/rlm-skills"] == skills
 
 
 def test_taskset_discovers_sibling_skills_dir_by_default(
@@ -131,7 +131,7 @@ def test_rlm_harness_explicit_skills_override_taskset_skills(tmp_path: Path):
     program = as_mapping(env.harness.program)
     dirs = as_mapping(program["dirs"])
 
-    assert dirs["/rlm/skills"] == explicit_skills
+    assert dirs["/task/rlm-skills"] == explicit_skills
 
 
 def test_rlm_swe_environment_uses_v1_r2e_taskset(monkeypatch):

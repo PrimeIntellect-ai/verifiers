@@ -27,7 +27,7 @@ from .configs import (
 from ...types import ConfigMap, ProgramCommand, ProgramValue
 
 DEFAULT_RLM_CHECKOUT_PATH = "/tmp/rlm-checkout"
-DEFAULT_RLM_SKILLS_PATH = "/rlm/skills"
+DEFAULT_RLM_SKILLS_PATH = "/task/rlm-skills"
 DEFAULT_RLM_LOCAL_CHECKOUT_CACHE_ROOT = (
     Path.home() / ".cache" / "verifiers" / "rlm-checkouts"
 )
