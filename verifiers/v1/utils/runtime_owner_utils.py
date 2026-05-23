@@ -1,12 +1,11 @@
 from collections.abc import Iterable
 from typing import ClassVar
 
-from ..config import Config, ConfigSource
+from ..config import Config
 from ..toolset import Toolset, merge_toolsets, normalize_toolset_collection
 from ..types import Handler
 from ..user import normalize_user
 from .config_callable_utils import CallableKind, merge_config_handler_map
-from .config_utils import coerce_config
 
 
 _HANDLER_DEFAULTS: dict[CallableKind, tuple[str, str]] = {
@@ -22,7 +21,6 @@ _HANDLER_DEFAULTS: dict[CallableKind, tuple[str, str]] = {
 
 
 class RuntimeOwnerMixin:
-    _config_cls: ClassVar[type[Config]]
     _default_user: ClassVar[object | None] = None
     _default_toolsets: ClassVar[object] = ()
     _default_stops: ClassVar[tuple[Handler, ...]] = ()
@@ -45,9 +43,6 @@ class RuntimeOwnerMixin:
     advantages: list[Handler]
     cleanups: list[Handler]
     teardowns: list[Handler]
-
-    def _coerce_config(self, config: ConfigSource = None) -> Config:
-        return coerce_config(type(self)._config_cls, config)
 
     def _field_was_set(self, field: str) -> bool:
         return field in self.config.model_fields_set

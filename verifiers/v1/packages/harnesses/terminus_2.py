@@ -1,6 +1,5 @@
 import shlex
 from pathlib import PurePosixPath
-from typing import cast
 
 from .command import configure_command_harness
 from .configs import (
@@ -15,9 +14,10 @@ from ...harness import Harness
 from ...types import ProgramCommand, ProgramOptionMap
 
 
-class Terminus2(Harness[Terminus2Config]):
+class Terminus2(Harness):
     def __init__(self, config: Terminus2Config | None = None):
-        config = cast(Terminus2Config, self._coerce_config(config))
+        config = Terminus2Config() if config is None else config
+        assert isinstance(config, Terminus2Config)
         super().__init__(config=config.model_copy(update={"program": None}))
         self.config = config
         configure_command_harness(

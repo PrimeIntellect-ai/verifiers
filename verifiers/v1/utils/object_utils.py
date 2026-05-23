@@ -13,13 +13,15 @@ async def close_object(obj: object) -> None:
             return
 
 
-async def resolve_object_factory(spec: object, context: str) -> object:
+async def resolve_object_factory(
+    spec: object, context: str, kwargs: dict[str, object] | None = None
+) -> object:
     if not callable(spec):
-        raise TypeError(f"{context} must be an import ref or no-arg loader.")
+        raise TypeError(f"{context} must be an import ref or factory function.")
     if not (inspect.isfunction(spec) or inspect.isclass(spec)):
-        raise TypeError(f"{context} must be an importable no-arg loader.")
-    validate_no_arg_loader(spec, context)
-    value = cast(Callable[[], object | Awaitable[object]], spec)()
+        raise TypeError(f"{context} must be a factory function or class.")
+    validate_object_factory(spec, context, kwargs or {})
+    value = cast(Callable[..., object | Awaitable[object]], spec)(**(kwargs or {}))
     if inspect.isawaitable(value):
         return await cast(Awaitable[object], value)
     return value
@@ -29,24 +31,29 @@ def validate_object_loader_spec(spec: object, context: str) -> None:
     if isinstance(spec, str):
         return
     if not callable(spec):
-        raise TypeError(f"{context} must be an import ref or no-arg loader.")
+        raise TypeError(f"{context} must be an import ref or factory function.")
     if not (inspect.isfunction(spec) or inspect.isclass(spec)):
-        raise TypeError(f"{context} must be an importable no-arg loader.")
-    validate_no_arg_loader(spec, context)
+        raise TypeError(f"{context} must be a factory function or class.")
+    validate_object_factory_spec(spec, context)
 
 
-def validate_no_arg_loader(spec: object, context: str) -> None:
+def validate_object_factory_spec(spec: object, context: str) -> None:
     if not inspect.isclass(spec):
         name = getattr(spec, "__name__", "")
-        qualname = getattr(spec, "__qualname__", "")
-        module = getattr(spec, "__module__", "")
-        if name == "<lambda>" or "<locals>" in qualname or not module:
-            raise TypeError(f"{context} must be importable by module path.")
+        if name == "<lambda>":
+            raise TypeError(f"{context} must be a named factory function.")
     try:
-        signature = inspect.signature(cast(Callable[..., object], spec))
+        inspect.signature(cast(Callable[..., object], spec))
     except (TypeError, ValueError) as exc:
         raise TypeError(f"{context} factory signature cannot be inspected.") from exc
+
+
+def validate_object_factory(
+    spec: object, context: str, kwargs: dict[str, object]
+) -> None:
+    validate_object_factory_spec(spec, context)
+    signature = inspect.signature(cast(Callable[..., object], spec))
     try:
-        signature.bind()
+        signature.bind(**kwargs)
     except TypeError as exc:
-        raise TypeError(f"{context} factory must accept no arguments.") from exc
+        raise TypeError(f"{context} has unbound factory arguments.") from exc

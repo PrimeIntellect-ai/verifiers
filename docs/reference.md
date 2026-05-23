@@ -644,7 +644,7 @@ serialization boundary.
 #### Taskset
 
 ```python
-class Taskset(Generic[TasksetConfigT]):
+class Taskset:
     def __init__(config: TasksetConfig | None = None): ...
 
     def rows() -> list[dict[str, Any]]: ...
@@ -656,14 +656,13 @@ class Taskset(Generic[TasksetConfigT]):
     def get_eval_dataset() -> Dataset: ...
 ```
 
-Packages task rows and task-owned behavior. Subclasses usually bind a typed
-config with `Taskset[MyTasksetConfig]`, override `rows()`, and read typed values
-from `self.config`.
+Packages task rows and task-owned behavior. Subclasses usually annotate
+`config`, override `rows()`, and read typed values from `self.config`.
 
 #### Harness
 
 ```python
-class Harness(Generic[HarnessConfigT]):
+class Harness:
     def __init__(config: HarnessConfig | None = None): ...
 
     async def run(task: Task | Mapping[str, Any], state: State | None = None) -> State: ...
@@ -697,29 +696,12 @@ dependencies come from normal `[project.dependencies]`.
 
 ```python
 class Env(vf.Environment):
-    def __init__(
-        *,
-        taskset: Taskset | None = None,
-        harness: Harness | None = None,
-        config: EnvConfig | None = None,
-    ): ...
+    def __init__(config, *, taskset=Taskset, harness=Harness): ...
 ```
 
 Adapter that makes a v1 taskset/harness pair usable by eval and training
-workers. Pass concrete `Taskset` and `Harness` objects directly, or pass
-`config=EnvConfig(...)` and let `vf.load_taskset`/`vf.load_harness` resolve the
-nested package config.
-
-```python
-def load_taskset(config: TasksetConfig | str) -> Taskset: ...
-def load_harness(config: HarnessConfig | str) -> Harness: ...
-```
-
-Component package IDs accept either `package-name` or `user/package-name`; the
-loader imports the leaf package name with hyphens normalized to underscores.
-The package must already be importable in the current Python environment.
-Package loaders must define a required typed `config` parameter, such as
-`def load_taskset(config: MyTasksetConfig) -> MyTaskset`.
+workers. `config` is an `EnvConfig` object or mapping with nested `taskset` and
+`harness` sections.
 
 #### Toolset And MCPTool
 
@@ -996,8 +978,8 @@ class Config(BaseModel):
     ...
 
 class EnvConfig(Config):
-    taskset: TasksetConfig = TasksetConfig()
-    harness: HarnessConfig = HarnessConfig()
+    taskset: TasksetConfig
+    harness: HarnessConfig
 
 class TasksetConfig(Config):
     taskset_id: str | None = None
@@ -1007,7 +989,6 @@ class TasksetConfig(Config):
     user: object | None = None
 
 class HarnessConfig(Config):
-    harness_id: str | None = None
     program: object | None = None
     system_prompt: object | None = None
     sandbox: SandboxConfig | None = None
@@ -1016,15 +997,14 @@ class HarnessConfig(Config):
     max_turns: int = 10
 ```
 
-`EnvConfig` is the v1 package-loading envelope. For base `vf.EnvConfig`, TOML
-`[eval.taskset]` and `[eval.harness]` sections use `id` or `taskset_id` /
-`harness_id` to discover the package loader first, then validate the full
-section against the loader's typed `config` annotation. By the time
-`load_environment(config: vf.EnvConfig)` runs, `config.taskset` and
-`config.harness` are `TasksetConfig` / `HarnessConfig` objects, usually concrete
-subclasses from the selected packages.
+`EnvConfig` is the typed v1 loader envelope. TOML `[env.taskset]` and
+`[env.harness]` sections populate `EnvConfig.taskset` and `EnvConfig.harness`.
 Environment-specific fields belong on the taskset or harness config that owns
-them.
+them; `EnvConfig` subclasses only bind concrete child config types.
+`taskset` must be typed as a `TasksetConfig` subclass, and `harness` must be
+typed as a `HarnessConfig` subclass.
+Nested config defaults should be explicit config objects, e.g.
+`taskset: MyTasksetConfig = MyTasksetConfig()`.
 
 `Config` subclasses are strict Pydantic config models. Validate raw mappings
 with `MyConfig.model_validate(...)` or use the typed object directly.

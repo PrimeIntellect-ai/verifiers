@@ -151,7 +151,8 @@ class MyTasksetConfig(vf.TasksetConfig):
     split: str = "train"
 
 
-class MyTaskset(vf.Taskset[MyTasksetConfig]):
+class MyTaskset(vf.Taskset):
+    config: MyTasksetConfig
     _default_rewards = (contains_answer,)
 
     def rows(self) -> list[dict[str, object]]:
@@ -166,12 +167,15 @@ class MyTaskset(vf.Taskset[MyTasksetConfig]):
         return [row for row in rows if row["split"] == self.config.split]
 
 
-class MyEnvConfig(vf.EnvConfig):
-    taskset: MyTasksetConfig = MyTasksetConfig()
+def load_taskset(config: MyTasksetConfig) -> MyTaskset:
+    assert isinstance(config, MyTasksetConfig)
+    return MyTaskset(config=config)
 
 
-def load_environment(config: MyEnvConfig) -> vf.Env:
-    return vf.Env(taskset=MyTaskset(config=config.taskset))
+def load_environment(config: vf.EnvConfig) -> vf.Env:
+    taskset_config = config.taskset
+    assert isinstance(taskset_config, MyTasksetConfig)
+    return vf.Env(taskset=load_taskset(taskset_config))
 ```
 If no harness is passed, `vf.Env` uses the base endpoint-backed harness. See
 **[BYO Harness](docs/byo-harness.md)** for the advanced v1 taskset/harness API.

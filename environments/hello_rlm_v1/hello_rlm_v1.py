@@ -52,7 +52,7 @@ def source():
     ]
 
 
-class HelloRLMTaskset(vf.Taskset[vf.TasksetConfig]):
+class HelloRLMTaskset(vf.Taskset):
     _default_source = source
     _default_rewards = (exact_answer,)
 

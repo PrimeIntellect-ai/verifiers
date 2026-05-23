@@ -48,9 +48,13 @@ Alternatively, add `verifiers` to an existing project:
 uv add verifiers && prime lab setup --skip-install
 ```
 
-Environments built with Verifiers are self-contained Python modules. To initialize a fresh v1 environment template, do:
+Environments built with Verifiers are self-contained Python modules. To initialize a fresh environment template, do:
 ```bash
-prime env init my-env --v1 # creates a new template in ./environments/my_env
+prime env init my-env # creates a new template in ./environments/my_env
+```
+Add an explicit harness loader when the environment owns harness behavior:
+```bash
+prime env init my-env --with-harness
 ```
 
 This will create a new module called `my_env` with a basic environment template.
@@ -92,7 +96,8 @@ class MyTasksetConfig(vf.TasksetConfig):
     split: str = "train"
 
 
-class MyTaskset(vf.Taskset[MyTasksetConfig]):
+class MyTaskset(vf.Taskset):
+    config: MyTasksetConfig
     _default_rewards = (contains_answer,)
 
     def rows(self) -> list[dict[str, object]]:
@@ -107,26 +112,18 @@ class MyTaskset(vf.Taskset[MyTasksetConfig]):
         return [row for row in rows if row["split"] == self.config.split]
 
 
-class MyHarnessConfig(vf.HarnessConfig):
-    pass
-
-
-class MyHarness(vf.Harness[MyHarnessConfig]):
-    pass
-
-
 def load_taskset(config: MyTasksetConfig) -> MyTaskset:
+    assert isinstance(config, MyTasksetConfig)
     return MyTaskset(config=config)
 
 
-def load_harness(config: MyHarnessConfig) -> MyHarness:
-    return MyHarness(config=config)
-
-
 def load_environment(config: vf.EnvConfig) -> vf.Env:
-    taskset = vf.load_taskset(config.taskset)
-    harness = vf.load_harness(config.harness)
-    return vf.Env(taskset=taskset, harness=harness)
+    taskset_config = config.taskset
+    assert isinstance(taskset_config, MyTasksetConfig)
+    return vf.Env(
+        taskset=load_taskset(taskset_config),
+        harness=vf.Harness(config=config.harness),
+    )
 ```
 See [BYO Harness](byo-harness.md) for the advanced v1 taskset/harness API.
 Reusable v1 taskset and harness packages live under `verifiers.v1.packages`

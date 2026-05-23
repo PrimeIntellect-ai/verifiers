@@ -64,7 +64,7 @@ class R2ESandbox(Protocol):
     ) -> SandboxCommandResult: ...
 
 
-class R2ESWETaskset(vf.Taskset[RlmSweTasksetConfig]):
+class R2ESWETaskset(vf.Taskset):
     def __init__(self, config: RlmSweTasksetConfig | None = None):
         config = coerce_config(RlmSweTasksetConfig, config)
         self.dataset_name = config.dataset_name

@@ -37,7 +37,7 @@ DEFAULT_COMMAND_SANDBOX: ConfigData = {
 
 
 def configure_command_harness(
-    harness: Harness[ConfigT],
+    harness: Harness,
     config: ConfigT,
     *,
     command: ProgramCommand,

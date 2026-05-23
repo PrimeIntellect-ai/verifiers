@@ -1,7 +1,6 @@
 import json
 import shlex
 from pathlib import PurePosixPath
-from typing import cast
 
 from .command import configure_command_harness
 from .configs import PiConfig
@@ -12,9 +11,10 @@ from ...utils.binding_utils import Bindings
 from ...types import ConfigMap, ProgramChannels, ProgramCommand, ProgramOptionMap
 
 
-class Pi(Harness[PiConfig]):
+class Pi(Harness):
     def __init__(self, config: PiConfig | None = None):
-        config = cast(PiConfig, self._coerce_config(config))
+        config = PiConfig() if config is None else config
+        assert isinstance(config, PiConfig)
         super().__init__(config=config.model_copy(update={"program": None}))
         self.config = config
         configure_command_harness(
