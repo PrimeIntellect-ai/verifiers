@@ -345,7 +345,7 @@ def source(num_examples: int = -1):
         }
 
 
-class ParallelSandboxTaskset(vf.Taskset[ParallelSandboxTasksetConfig]):
+class ParallelSandboxTaskset(vf.Taskset):
     _default_source = source
     _default_toolsets = {
         "bash": vf.ToolsetConfig(
@@ -360,7 +360,7 @@ class ParallelSandboxTaskset(vf.Taskset[ParallelSandboxTasksetConfig]):
     _default_cleanups = (collect_program_sandbox_commands,)
 
 
-class ParallelSandboxHarness(vf.Harness[ParallelSandboxHarnessConfig]):
+class ParallelSandboxHarness(vf.Harness):
     _default_program = vf.ProgramConfig(sandbox=True, channels="callable")
 
 

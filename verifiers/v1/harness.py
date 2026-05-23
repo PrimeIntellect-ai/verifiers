@@ -1,5 +1,5 @@
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, ClassVar, TypeVar, cast
+from typing import TYPE_CHECKING, ClassVar, cast
 
 from verifiers.decorators import metric, update
 from verifiers.errors import Error, OverlongPromptError
@@ -16,6 +16,7 @@ from verifiers.utils.response_utils import parse_response_message
 from verifiers.utils.tool_utils import is_valid_tool_content_parts
 
 from .config import (
+    ConfigSource,
     HarnessConfig,
     PromptInput,
     ProgramConfig,
@@ -29,7 +30,7 @@ from .utils.endpoint_utils import (
     assistant_completion_from_messages,
     run_intercepted_program,
 )
-from .utils.config_utils import ConfigBound
+from .utils.config_utils import coerce_config
 from .utils.runtime_owner_utils import RuntimeOwnerMixin
 from .utils.json_utils import json_args
 from .utils.mcp_proxy_utils import (
@@ -71,21 +72,14 @@ class UnsetValue:
 
 
 UNSET = UnsetValue()
-HarnessConfigT = TypeVar("HarnessConfigT", bound=HarnessConfig)
 
 
-class Harness(ConfigBound[HarnessConfigT], RuntimeOwnerMixin):
-    _config_base_cls: ClassVar[type[HarnessConfig]] = HarnessConfig
-    _config_cls: ClassVar[type[HarnessConfig]] = HarnessConfig
-    config: HarnessConfigT
+class Harness(RuntimeOwnerMixin):
+    config: HarnessConfig
     _default_program: ClassVar[object | None] = None
 
-    def __init__(self, config: HarnessConfig | None = None):
-        self.config = cast(HarnessConfigT, self._coerce_config(config))
-        resolved_harness_id = self.config.harness_id
-        if resolved_harness_id is not None and not isinstance(resolved_harness_id, str):
-            raise TypeError("harness_id must be a string.")
-        self.harness_id = resolved_harness_id or type(self).__name__
+    def __init__(self, config: ConfigSource = None):
+        self.config = coerce_config(HarnessConfig, config)
         program_config = self._defaulted("program", type(self)._default_program)
         program_value = resolve_config_object(program_config)
         if isinstance(program_value, ProgramConfig):
@@ -119,6 +113,10 @@ class Harness(ConfigBound[HarnessConfigT], RuntimeOwnerMixin):
         self.runtime = self.resolve_runtime()
         self.endpoint = Endpoint(use_tunnel=self.program_uses_sandbox())
         self._program = self.compile_program(self.program)
+
+    @classmethod
+    def config_schema(cls) -> str:
+        return HarnessConfig.schema_text()
 
     def _configure_runtime(
         self,

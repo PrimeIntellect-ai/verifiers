@@ -1,5 +1,7 @@
 """Taskset/harness authoring API."""
 
+import importlib
+
 from verifiers.decorators import (
     advantage,
     cleanup,
@@ -34,7 +36,7 @@ from .config import (
     ToolsetConfig,
     UserConfig,
 )
-from .env import Env, load_harness, load_taskset
+from .env import Env
 from .harness import Harness
 from .packages.harnesses import (
     MiniSWEAgent,
@@ -108,6 +110,8 @@ __all__ = [
     "RLMConfig",
     "Terminus2",
     "Terminus2Config",
+    "TextArenaTaskset",
+    "TextArenaTasksetConfig",
     "SandboxConfig",
     "SignalConfig",
     "State",
@@ -134,8 +138,6 @@ __all__ = [
     "discover_sibling_dir",
     "metric",
     "get_messages",
-    "load_harness",
-    "load_taskset",
     "reward",
     "score_group",
     "score_rollout",
@@ -144,3 +146,10 @@ __all__ = [
     "teardown",
     "update",
 ]
+
+
+def __getattr__(name: str):
+    if name in ("TextArenaTaskset", "TextArenaTasksetConfig"):
+        module = importlib.import_module("verifiers.v1.packages.tasksets.textarena")
+        return getattr(module, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

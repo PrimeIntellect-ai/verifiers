@@ -50,5 +50,5 @@ ProgramChannel: TypeAlias = Literal["callable", "mcp"]
 ProgramChannelSpec: TypeAlias = ProgramChannel | ConfigMap
 ProgramChannels: TypeAlias = ProgramChannelSpec | list[ProgramChannelSpec]
 
-ObjectLoader: TypeAlias = str | Callable[[], object | Awaitable[object]]
+ObjectLoader: TypeAlias = str | Callable[..., object | Awaitable[object]]
 Objects: TypeAlias = dict[str, ObjectLoader]

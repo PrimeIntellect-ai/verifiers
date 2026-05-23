@@ -142,12 +142,12 @@ def source(
         }
 
 
-class MathPythonTaskset(vf.Taskset[MathPythonTasksetConfig]):
+class MathPythonTaskset(vf.Taskset):
     _default_source = source
     _default_rewards = (correct_answer,)
 
 
-class MathPythonHarness(vf.Harness[MathPythonHarnessConfig]):
+class MathPythonHarness(vf.Harness):
     def _configure_runtime_defaults(self) -> None:
         if "toolsets" in self.config.model_fields_set:
             return

@@ -117,9 +117,16 @@ across local Python programs, command programs, and sandboxed programs.
 `Env` is the eval/training adapter:
 
 ```python
-taskset = vf.load_taskset(config.taskset)
-harness = vf.load_harness(config.harness)
-env = vf.Env(taskset=taskset, harness=harness)
+env = vf.Env(
+    taskset=MyTaskset(config=config.taskset),
+    harness=MyHarness(config=config.harness),
+)
+```
+
+If `harness` is omitted, `Env` uses the base endpoint-backed `Harness`:
+
+```python
+env = vf.Env(taskset=MyTaskset(config=config.taskset))
 ```
 
 Normal v1 environment packages should not subclass `Env`. Define or configure a
@@ -140,7 +147,8 @@ class ReverseTasksetConfig(vf.TasksetConfig):
     split: str = "train"
 
 
-class ReverseTaskset(vf.Taskset[ReverseTasksetConfig]):
+class ReverseTaskset(vf.Taskset):
+    config: ReverseTasksetConfig
     _default_rewards = (contains_answer,)
 
     def rows(self) -> list[dict[str, object]]:
@@ -155,26 +163,15 @@ class ReverseTaskset(vf.Taskset[ReverseTasksetConfig]):
         return [row for row in rows if row["split"] == self.config.split]
 
 
-class ReverseHarnessConfig(vf.HarnessConfig):
-    pass
-
-
-class ReverseHarness(vf.Harness[ReverseHarnessConfig]):
-    pass
-
-
 def load_taskset(config: ReverseTasksetConfig) -> ReverseTaskset:
+    assert isinstance(config, ReverseTasksetConfig)
     return ReverseTaskset(config=config)
 
 
-def load_harness(config: ReverseHarnessConfig) -> ReverseHarness:
-    return ReverseHarness(config=config)
-
-
 def load_environment(config: vf.EnvConfig):
-    taskset = vf.load_taskset(config.taskset)
-    harness = vf.load_harness(config.harness)
-    return vf.Env(taskset=taskset, harness=harness)
+    taskset_config = config.taskset
+    assert isinstance(taskset_config, ReverseTasksetConfig)
+    return vf.Env(taskset=load_taskset(taskset_config))
 ```
 
 Standalone harness use is the same runner without the `Env` adapter:
@@ -214,7 +211,7 @@ class GSM8KTasksetConfig(vf.TasksetConfig):
     split: str = "train"
 
 
-class GSM8KTaskset(vf.Taskset[GSM8KTasksetConfig]):
+class GSM8KTaskset(vf.Taskset):
     def rows(self) -> list[dict[str, object]]:
         dataset = load_dataset(
             self.config.dataset_name,
@@ -231,7 +228,7 @@ class GSM8KTaskset(vf.Taskset[GSM8KTasksetConfig]):
         ]
 
 
-def load_taskset(config: GSM8KTasksetConfig) -> GSM8KTaskset:
+def load_taskset(config: GSM8KTasksetConfig | None = None):
     return GSM8KTaskset(config=config)
 ```
 
@@ -332,7 +329,7 @@ group, group-scoped seeds, or task variants that must be generated before
 rollout dispatch.
 
 ```python
-class MyTaskset(vf.Taskset[vf.TasksetConfig]):
+class MyTaskset(vf.Taskset):
     async def init_group(self, task, num_rollouts):
         tasks = []
         states = []
@@ -430,7 +427,8 @@ class ReplayTasksetConfig(vf.TasksetConfig):
     pass
 
 
-class ReplayTaskset(vf.Taskset[ReplayTasksetConfig]):
+class ReplayTaskset(vf.Taskset):
+    config: ReplayTasksetConfig
     _default_rewards = (exact,)
 
     def rows(self) -> list[dict[str, object]]:
@@ -442,7 +440,7 @@ class ReplayTaskset(vf.Taskset[ReplayTasksetConfig]):
         ]
 
 
-class ReplayHarness(vf.Harness[vf.HarnessConfig]):
+class ReplayHarness(vf.Harness):
     _default_program = replay_solution
 
 
@@ -583,10 +581,14 @@ common coding-agent CLIs.
 ```python
 import verifiers as vf
 
-def load_environment(config: vf.EnvConfig) -> vf.Env:
-    taskset = vf.load_taskset(config.taskset)
-    harness = vf.load_harness(config.harness)
-    return vf.Env(taskset=taskset, harness=harness)
+env = vf.Env(
+    vf.EnvConfig(
+        taskset=vf.HarborTasksetConfig(),
+        harness=vf.OpenCodeConfig(),
+    ),
+    taskset=vf.HarborTaskset,
+    harness=vf.OpenCode,
+)
 ```
 
 `vf.HarborTaskset` loads Harbor-format task
@@ -712,7 +714,7 @@ whitelist or blacklist that toolset's nested tool surface.
 Tasksets and harnesses can pass toolsets as a list or a mapping:
 
 ```python
-class WikiTaskset(vf.Taskset[vf.TasksetConfig]):
+class WikiTaskset(vf.Taskset):
     _default_toolsets = {
         "wiki": {"fn": "my_env:load_wiki_toolset"},
         "python": {"tools": ["my_env:python"]},
@@ -752,11 +754,13 @@ are injected automatically when a callable asks for them; runtime access goes
 through state helpers. `sandbox` is reserved for tools owned by a sandboxed
 toolset.
 
-`objects.*` is intentionally owner-private. Object factories are named zero-arg
-loaders for private dependencies owned by the same `Taskset`, `Toolset`, or
-`User`. If a hidden argument needs task or state data, bind it with a callable
-source instead of an object factory. Framework args such as `task`, `state`,
-`completion`, and `prompt` win over bindings when names collide.
+`objects.*` is intentionally owner-private. Object factories are named factory
+functions or classes for private dependencies owned by the same `Taskset`,
+`Toolset`, or `User`. Factory parameters are not framework-injected; required
+Taskset and Toolset factory parameters must be supplied through the owning
+object's bindings. User object factories must have no unbound required
+parameters. Framework args such as `task`, `state`, `completion`, and `prompt`
+win over bindings when names collide.
 
 String binding sources are always framework paths such as `task.answer` or
 `objects.index`. Bind literal strings with a callable source so typos in binding
@@ -1037,7 +1041,7 @@ class UserTasksetConfig(vf.TasksetConfig):
     user: str = "my_env:user"
 
 
-class UserTaskset(vf.Taskset[UserTasksetConfig]):
+class UserTaskset(vf.Taskset):
     def rows(self) -> list[dict[str, object]]:
         return [{"prompt": [{"role": "user", "content": "Try the task."}]}]
 
@@ -1178,9 +1182,8 @@ v1 has two config layers:
 2. v1 object config: `TasksetConfig` and `HarnessConfig` configure the taskset
    and harness inside that environment package.
 
-Environment packages keep `EnvConfig` as the unresolved package-loading
-envelope. The taskset and harness loaders determine the concrete config type
-from their typed `config` parameters:
+Environment packages choose how to route runner config into v1 objects. The
+recommended loader shape is:
 
 ```python
 import verifiers as vf
@@ -1190,7 +1193,8 @@ class MyTasksetConfig(vf.TasksetConfig):
     split: str = "train"
 
 
-class MyTaskset(vf.Taskset[MyTasksetConfig]):
+class MyTaskset(vf.Taskset):
+    config: MyTasksetConfig
     _default_rewards = (exact,)
 
     def rows(self) -> list[dict[str, object]]:
@@ -1204,26 +1208,15 @@ class MyTaskset(vf.Taskset[MyTasksetConfig]):
         return [row for row in rows if row["split"] == self.config.split]
 
 
-class MyHarnessConfig(vf.HarnessConfig):
-    max_turns: int = 4
-
-
-class MyHarness(vf.Harness[MyHarnessConfig]):
-    pass
-
-
 def load_taskset(config: MyTasksetConfig) -> MyTaskset:
+    assert isinstance(config, MyTasksetConfig)
     return MyTaskset(config=config)
 
 
-def load_harness(config: MyHarnessConfig) -> MyHarness:
-    return MyHarness(config=config)
-
-
 def load_environment(config: vf.EnvConfig):
-    taskset = vf.load_taskset(config.taskset)
-    harness = vf.load_harness(config.harness)
-    return vf.Env(taskset=taskset, harness=harness)
+    taskset_config = config.taskset
+    assert isinstance(taskset_config, MyTasksetConfig)
+    return vf.Env(taskset=load_taskset(taskset_config))
 ```
 
 With that loader, eval TOML routes v1 config through the `taskset`/`harness`
@@ -1250,24 +1243,23 @@ weight = 0.5
 ```
 
 For environment-specific settings, define leaf fields on the taskset or harness
-config that owns them. The loader signatures determine which fields TOML
-supports.
+config that owns them. The `load_taskset` and `load_harness` annotations fix the
+concrete child config types for the loader.
 
 ```python
 class MyTasksetConfig(vf.TasksetConfig):
     split: str = "train"
 
 
-class MyHarnessConfig(vf.HarnessConfig):
-    max_turns: int = 4
-
-
 def load_taskset(config: MyTasksetConfig) -> MyTaskset:
+    assert isinstance(config, MyTasksetConfig)
     return MyTaskset(config=config)
 
 
-def load_harness(config: MyHarnessConfig) -> MyHarness:
-    return MyHarness(config=config)
+def load_environment(config: vf.EnvConfig):
+    taskset_config = config.taskset
+    assert isinstance(taskset_config, MyTasksetConfig)
+    return vf.Env(taskset=load_taskset(taskset_config))
 ```
 
 RL and Hosted Training TOML uses the same split under `env`:
@@ -1393,7 +1385,7 @@ class DatasetTasksetConfig(vf.TasksetConfig):
     limit: int = 100
 
 
-class DatasetTaskset(vf.Taskset[DatasetTasksetConfig]):
+class DatasetTaskset(vf.Taskset):
     def rows(self) -> list[dict[str, object]]:
         dataset = load_dataset("my-org/my-dataset", split=self.config.split)
         return [
@@ -1574,7 +1566,7 @@ class WikiTasksetConfig(vf.TasksetConfig):
     db_path: str = "wiki.db"
 
 
-class WikiTaskset(vf.Taskset[WikiTasksetConfig]):
+class WikiTaskset(vf.Taskset):
     def rows(self) -> list[dict[str, object]]:
         return load_rows()
 

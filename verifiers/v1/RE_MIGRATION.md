@@ -57,7 +57,8 @@ class MyTasksetConfig(vf.TasksetConfig):
     system_prompt: str = SYSTEM_PROMPT
 
 
-class MyTaskset(vf.Taskset[MyTasksetConfig]):
+class MyTaskset(vf.Taskset):
+    config: MyTasksetConfig
     _default_rewards = (reward_fn,)
     _default_metrics = (metric_fn,)
 
@@ -65,13 +66,15 @@ class MyTaskset(vf.Taskset[MyTasksetConfig]):
         return load_rows(split=self.config.split)
 
 
-class MyEnvConfig(vf.EnvConfig):
-    taskset: MyTasksetConfig = MyTasksetConfig()
-    harness: vf.HarnessConfig = vf.HarnessConfig()
+def load_taskset(config: MyTasksetConfig) -> MyTaskset:
+    assert isinstance(config, MyTasksetConfig)
+    return MyTaskset(config=config)
 
 
-def load_environment(config: MyEnvConfig) -> vf.Env:
-    return vf.Env(taskset=MyTaskset(config=config.taskset))
+def load_environment(config: vf.EnvConfig) -> vf.Env:
+    taskset_config = config.taskset
+    assert isinstance(taskset_config, MyTasksetConfig)
+    return vf.Env(taskset=load_taskset(taskset_config))
 ```
 
 Rows should be plain serializable task data:
@@ -97,7 +100,7 @@ class PromptTasksetConfig(vf.TasksetConfig):
     system_prompt: str = "Answer concisely."
 
 
-class PromptTaskset(vf.Taskset[PromptTasksetConfig]):
+class PromptTaskset(vf.Taskset):
     def rows(self) -> list[dict[str, object]]:
         return [{"prompt": [{"role": "user", "content": "Question?"}]}]
 
@@ -156,7 +159,7 @@ class QATasksetConfig(vf.TasksetConfig):
     split: str = "train"
 
 
-class QATaskset(vf.Taskset[QATasksetConfig]):
+class QATaskset(vf.Taskset):
     _default_rewards = (exact,)
 
     def rows(self) -> list[dict[str, object]]:
@@ -171,12 +174,15 @@ class QATaskset(vf.Taskset[QATasksetConfig]):
         ]
 
 
-class QAEnvConfig(vf.EnvConfig):
-    taskset: QATasksetConfig = QATasksetConfig()
+def load_taskset(config: QATasksetConfig) -> QATaskset:
+    assert isinstance(config, QATasksetConfig)
+    return QATaskset(config=config)
 
 
-def load_environment(config: QAEnvConfig):
-    return vf.Env(taskset=QATaskset(config=config.taskset))
+def load_environment(config: vf.EnvConfig):
+    taskset_config = config.taskset
+    assert isinstance(taskset_config, QATasksetConfig)
+    return vf.Env(taskset=load_taskset(taskset_config))
 ```
 
 Gotchas:
@@ -206,7 +212,7 @@ class ExtractTasksetConfig(vf.TasksetConfig):
     }
 
 
-class ExtractTaskset(vf.Taskset[ExtractTasksetConfig]):
+class ExtractTaskset(vf.Taskset):
     _default_rewards = (exact,)
 
     def rows(self) -> list[dict[str, object]]:
@@ -270,7 +276,7 @@ class SearchTasksetConfig(vf.TasksetConfig):
     pass
 
 
-class SearchTaskset(vf.Taskset[SearchTasksetConfig]):
+class SearchTaskset(vf.Taskset):
     _default_rewards = (judge_reward,)
     _default_toolsets = (load_toolset(),)
 
@@ -291,8 +297,9 @@ Gotchas:
 - Tool functions should only expose model-visible arguments in their signature.
   Hidden args come from `bindings`.
 - Use `Toolset(objects={...})` for private dependencies owned by callable
-  tools. Values should be named zero-arg factory functions when construction is
-  deferred.
+  tools. Values should be named factory functions when construction is
+  deferred; required factory parameters must be supplied through Toolset
+  bindings.
 - Reward and metric functions should read serializable task/state data or call
   a bound tool; they should not reach into toolset dependencies directly.
 - For state-mutating tools such as `wikispeedia.click_link`, bind `state`

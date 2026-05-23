@@ -1,6 +1,5 @@
 import shlex
 from pathlib import PurePosixPath
-from typing import cast
 
 from .command import configure_command_harness
 from .configs import (
@@ -20,9 +19,10 @@ UV_PACKAGE_VERSION = "0.11.7"
 DEFAULT_LOG_DIR = "/logs/agent"
 
 
-class MiniSWEAgent(Harness[MiniSWEAgentConfig]):
+class MiniSWEAgent(Harness):
     def __init__(self, config: MiniSWEAgentConfig | None = None):
-        config = cast(MiniSWEAgentConfig, self._coerce_config(config))
+        config = MiniSWEAgentConfig() if config is None else config
+        assert isinstance(config, MiniSWEAgentConfig)
         super().__init__(config=config.model_copy(update={"program": None}))
         self.config = config
         configure_command_harness(

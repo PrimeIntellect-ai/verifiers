@@ -44,7 +44,7 @@ def config_data(config: object | None) -> dict[str, object]:
     if isinstance(config, BaseModel):
         return config.model_dump(exclude_none=True)
     if isinstance(config, dict):
-        return dict(config)
+        return {str(key): item for key, item in config.items()}
     raise TypeError("test config must be a mapping or config object")
 
 
@@ -59,6 +59,31 @@ def source_rows() -> list[dict[str, object]]:
             "prompt": [{"role": "user", "content": "reply ok"}],
             "answer": "ok",
         }
+    ]
+
+
+def prefixed_source_rows() -> list[dict[str, object]]:
+    return [
+        {
+            "prompt": [{"role": "user", "content": "reply ok"}],
+            "answer": "ok",
+            "prefix": "bound:",
+        }
+    ]
+
+
+def two_prefixed_source_rows() -> list[dict[str, object]]:
+    return [
+        {
+            "prompt": [{"role": "user", "content": "reply ok"}],
+            "answer": "ok",
+            "prefix": "first:",
+        },
+        {
+            "prompt": [{"role": "user", "content": "reply ok"}],
+            "answer": "ok",
+            "prefix": "second:",
+        },
     ]
 
 
@@ -94,6 +119,10 @@ def load_config_prefixer() -> Prefixer:
 
 
 def load_defaulted_prefixer(prefix: str = "defaulted:") -> Prefixer:
+    return Prefixer(prefix)
+
+
+def load_bound_prefixer(prefix: str) -> Prefixer:
     return Prefixer(prefix)
 
 
@@ -147,7 +176,7 @@ async def test_taskset_object_binding_rejects_live_instance() -> None:
         bindings={"prefix_reward.prefixer": "objects.prefixer"},
     )
 
-    with pytest.raises(TypeError, match="no-arg loader"):
+    with pytest.raises(TypeError, match="factory function or class"):
         await score_taskset(taskset)
 
 
@@ -185,6 +214,59 @@ async def test_taskset_object_factory_accepts_defaulted_arguments() -> None:
     state = await score_taskset(taskset)
 
     assert state["prefixed"] == "defaulted:ok"
+
+
+@pytest.mark.asyncio
+async def test_taskset_object_factory_accepts_bound_arguments() -> None:
+    taskset = make_taskset(
+        source=prefixed_source_rows,
+        rewards=[prefix_reward],
+        objects={"prefixer": dynamic_ref(load_bound_prefixer)},
+        bindings={
+            "prefixer.prefix": "task.prefix",
+            "prefix_reward.prefixer": "objects.prefixer",
+        },
+    )
+
+    state = await score_taskset(taskset)
+
+    assert state["prefixed"] == "bound:ok"
+
+
+@pytest.mark.asyncio
+async def test_taskset_object_factory_bindings_are_rollout_scoped() -> None:
+    taskset = make_taskset(
+        source=two_prefixed_source_rows,
+        rewards=[prefix_reward],
+        objects={"prefixer": dynamic_ref(load_bound_prefixer)},
+        bindings={
+            "prefixer.prefix": "task.prefix",
+            "prefix_reward.prefixer": "objects.prefixer",
+        },
+    )
+    env = vf.Env(taskset=taskset, harness=vf.Harness(config=vf.HarnessConfig()))
+    first, second = list(taskset)
+    first_state = await env.harness.setup_state(first, vf.State.for_task(first))
+    second_state = await env.harness.setup_state(second, vf.State.for_task(second))
+
+    await env.harness.runtime.score_rollout(first, first_state)
+    await env.harness.runtime.score_rollout(second, second_state)
+
+    assert first_state["prefixed"] == "first:ok"
+    assert second_state["prefixed"] == "second:ok"
+
+
+@pytest.mark.asyncio
+async def test_taskset_object_factory_rejects_unbound_arguments() -> None:
+    taskset = make_taskset(
+        source=prefixed_source_rows,
+        rewards=[prefix_reward],
+        objects={"prefixer": dynamic_ref(load_bound_prefixer)},
+        bindings={"prefix_reward.prefixer": "objects.prefixer"},
+    )
+
+    with pytest.raises(TypeError, match="unbound factory arguments"):
+        await score_taskset(taskset)
 
 
 @pytest.mark.asyncio
