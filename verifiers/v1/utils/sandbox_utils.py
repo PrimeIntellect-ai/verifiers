@@ -502,9 +502,8 @@ async def setup_sandbox(handle: SandboxLease, sandbox_config: ConfigMap) -> None
     if not isinstance(commands, list):
         raise TypeError("sandbox.setup_commands must be a list or string.")
     for command in commands:
-        command = f"export PATH={shlex.quote(SANDBOX_DEFAULT_PATH)}:$PATH\n{command}"
         result = await handle.execute(
-            command,
+            str(command),
             timeout=int_config(sandbox_config, "setup_timeout", 300),
         )
         if result.exit_code:
