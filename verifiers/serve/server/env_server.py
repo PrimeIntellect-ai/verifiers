@@ -125,19 +125,14 @@ class EnvServer(ABC):
 
     @classmethod
     def run_server(cls, *args, **kwargs):
-        # E4: env router shares one asyncio loop with the stats RX socket
-        # and the response RX from workers. Default selector loop is the
-        # latency floor for the "Server | Lag" metric we observe in prod;
-        # uvloop drops the floor materially.
         try:
             import uvloop  # type: ignore
             uvloop.install()
         except ImportError:
             pass
 
-        # R1: same pool scaling as workers — the router is just one async
-        # loop juggling stats, response-receiving, and request-dispatching
-        # across all workers. Defaulting to 32 threads silently caps to_thread.
+        # Router juggles stats, worker responses, and request dispatch on a
+        # single loop; the default 32-thread executor silently caps to_thread.
         from verifiers.utils.thread_utils import scale_executors
 
         scale_executors(concurrency=512)

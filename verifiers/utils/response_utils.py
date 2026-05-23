@@ -37,76 +37,71 @@ async def parse_response_message(response: Response) -> Messages:
     return [message]
 
 
-def _parse_response_tokens_sync(
-    response: Response, max_seq_len: int | None = None
-) -> TrajectoryStepTokens | None:
-    """Synchronous body of parse_response_tokens. List slicing + dict build only;
-    no I/O, no awaits. Called from a worker thread to keep the event loop free
-    during multi-turn rollouts (E1)."""
-    if response is None:
-        return None
-    tokens = response.message.tokens
-    if tokens is None:
-        return None
-    prompt_ids = tokens.prompt_ids
-    prompt_mask = tokens.prompt_mask
-    completion_ids = tokens.completion_ids
-    completion_mask = tokens.completion_mask
-    completion_logprobs = tokens.completion_logprobs
-    routed_experts = tokens.routed_experts
-    multi_modal_data = tokens.multi_modal_data
-
-    if max_seq_len is not None:
-        prompt_len = len(prompt_ids)
-        completion_len = len(completion_ids)
-        overlong_prompt = prompt_len > max_seq_len
-        if overlong_prompt:
-            is_truncated = True
-            prompt_ids = prompt_ids[:max_seq_len]
-            prompt_mask = prompt_mask[:max_seq_len]
-            completion_ids = []
-            completion_mask = []
-            completion_logprobs = []
-        elif prompt_len + completion_len > max_seq_len:
-            is_truncated = True
-            completion_ids = tokens.completion_ids[: max_seq_len - prompt_len]
-            completion_mask = tokens.completion_mask[: max_seq_len - prompt_len]
-            completion_logprobs = tokens.completion_logprobs[: max_seq_len - prompt_len]
-        else:
-            is_truncated = False
-    else:
-        overlong_prompt = False
-        is_truncated = False
-
-    out = TrajectoryStepTokens(
-        prompt_ids=prompt_ids,
-        prompt_mask=prompt_mask,
-        completion_ids=completion_ids,
-        completion_mask=completion_mask,
-        completion_logprobs=completion_logprobs,
-        overlong_prompt=overlong_prompt,
-        is_truncated=is_truncated,
-        routed_experts=routed_experts,
-    )
-    if multi_modal_data is not None:
-        out["multi_modal_data"] = multi_modal_data
-        # Move (not copy) the sidecar to its canonical home on the parsed
-        # step. Leaving it on ``response.message.tokens`` too means every
-        # downstream pass (msgpack, save) has to dedupe the duplicate.
-        tokens.multi_modal_data = None
-    if routed_experts is not None:
-        tokens.routed_experts = None
-    return out
-
-
 async def parse_response_tokens(
     response: Response, max_seq_len: int | None = None
 ) -> TrajectoryStepTokens | None:
     """Parse token data from a vf.Response.
 
-    E1: the actual parse is pure Python list slicing + dict build, but it runs
+    The actual parse is pure Python list slicing + dict build, but it runs
     per-turn for every concurrent rollout (~100 turns × ~256 rollouts/worker),
     so wall-clock contention on the event loop adds up. Offload the body to a
     worker thread so the loop stays responsive for ZMQ I/O and other tasks.
     """
-    return await asyncio.to_thread(_parse_response_tokens_sync, response, max_seq_len)
+
+    def _sync() -> TrajectoryStepTokens | None:
+        if response is None:
+            return None
+        tokens = response.message.tokens
+        if tokens is None:
+            return None
+        prompt_ids = tokens.prompt_ids
+        prompt_mask = tokens.prompt_mask
+        completion_ids = tokens.completion_ids
+        completion_mask = tokens.completion_mask
+        completion_logprobs = tokens.completion_logprobs
+        routed_experts = tokens.routed_experts
+        multi_modal_data = tokens.multi_modal_data
+
+        if max_seq_len is not None:
+            prompt_len = len(prompt_ids)
+            completion_len = len(completion_ids)
+            overlong_prompt = prompt_len > max_seq_len
+            if overlong_prompt:
+                is_truncated = True
+                prompt_ids = prompt_ids[:max_seq_len]
+                prompt_mask = prompt_mask[:max_seq_len]
+                completion_ids = []
+                completion_mask = []
+                completion_logprobs = []
+            elif prompt_len + completion_len > max_seq_len:
+                is_truncated = True
+                completion_ids = tokens.completion_ids[: max_seq_len - prompt_len]
+                completion_mask = tokens.completion_mask[: max_seq_len - prompt_len]
+                completion_logprobs = tokens.completion_logprobs[: max_seq_len - prompt_len]
+            else:
+                is_truncated = False
+        else:
+            overlong_prompt = False
+            is_truncated = False
+
+        out = TrajectoryStepTokens(
+            prompt_ids=prompt_ids,
+            prompt_mask=prompt_mask,
+            completion_ids=completion_ids,
+            completion_mask=completion_mask,
+            completion_logprobs=completion_logprobs,
+            overlong_prompt=overlong_prompt,
+            is_truncated=is_truncated,
+            routed_experts=routed_experts,
+        )
+        if multi_modal_data is not None:
+            out["multi_modal_data"] = multi_modal_data
+            # Move (not copy) the sidecar to its canonical home on the parsed
+            # step. Leaving it on ``response.message.tokens`` too means every
+            # downstream pass (msgpack, save) has to dedupe the duplicate.
+            tokens.multi_modal_data = None
+        if routed_experts is not None:
+            tokens.routed_experts = None
+        return out
+
+    return await asyncio.to_thread(_sync)
