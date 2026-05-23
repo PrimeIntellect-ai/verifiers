@@ -405,6 +405,23 @@ def _parse_finish_reason(raw: str | None) -> FinishReason:
             return None
 
 
+def _freeze_json_like(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return tuple(sorted((str(k), _freeze_json_like(v)) for k, v in value.items()))
+    if isinstance(value, list):
+        return tuple(_freeze_json_like(v) for v in value)
+    return value
+
+
+def _pop_chat_template_kwargs(sampling_params: dict[str, Any]) -> dict[str, Any]:
+    raw = sampling_params.pop("chat_template_kwargs", None)
+    if raw is None:
+        return {}
+    if not isinstance(raw, Mapping):
+        raise ValueError("extra_body.chat_template_kwargs must be a mapping")
+    return dict(raw)
+
+
 class RendererClient(
     Client[AsyncOpenAI, list[RendererMessage], dict[str, Any], ToolSpec]
 ):
@@ -418,13 +435,22 @@ class RendererClient(
     """
 
     # Cache key is (renderer_model_name, renderer_name, tool_parser,
-    # reasoning_parser, pool_size, preserve_all_thinking,
-    # preserve_thinking_between_tool_calls) so that different parser configs,
-    # pool sizes, or preserve-thinking bindings for the same model don't
-    # collide.
+    # reasoning_parser, pool_size, chat_template_kwargs,
+    # preserve_all_thinking, preserve_thinking_between_tool_calls) so that
+    # different parser configs, pool sizes, template kwargs, or
+    # preserve-thinking bindings for the same model don't collide.
     _shared_pools: ClassVar[
         dict[
-            tuple[str, str, str | None, str | None, int, bool, bool],
+            tuple[
+                str,
+                str,
+                str | None,
+                str | None,
+                int,
+                Any,
+                bool,
+                bool,
+            ],
             RendererPool,
         ]
     ] = {}
@@ -451,7 +477,9 @@ class RendererClient(
 
     # ── Renderer management ─────────────────────────────────────────
 
-    def _get_renderer_or_pool(self, model: str) -> Renderer | RendererPool:
+    def _get_renderer_or_pool(
+        self, model: str, chat_template_kwargs: dict[str, Any] | None = None
+    ) -> Renderer | RendererPool:
         if self._renderer is not None:
             return self._renderer
 
@@ -473,12 +501,14 @@ class RendererClient(
             if self._config is not None
             else False
         )
+        renderer_chat_template_kwargs = dict(chat_template_kwargs or {})
         cache_key = (
             renderer_model,
             renderer_name,
             tool_parser,
             reasoning_parser,
             self._pool_size,
+            _freeze_json_like(renderer_chat_template_kwargs),
             preserve_all_thinking,
             preserve_thinking_between_tool_calls,
         )
@@ -491,6 +521,7 @@ class RendererClient(
                     size=self._pool_size,
                     tool_parser=tool_parser,
                     reasoning_parser=reasoning_parser,
+                    chat_template_kwargs=renderer_chat_template_kwargs,
                     preserve_all_thinking=preserve_all_thinking,
                     preserve_thinking_between_tool_calls=preserve_thinking_between_tool_calls,
                 )
@@ -528,10 +559,10 @@ class RendererClient(
         tools: list[ToolSpec] | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
-        renderer = self._get_renderer_or_pool(model)
-
         args = dict(sampling_args)
         sampling_params: dict[str, Any] = dict(args.pop("extra_body", None) or {})
+        chat_template_kwargs = _pop_chat_template_kwargs(sampling_params)
+        renderer = self._get_renderer_or_pool(model, chat_template_kwargs)
         for key in (
             "temperature",
             "top_p",

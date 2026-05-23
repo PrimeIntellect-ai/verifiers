@@ -1,3 +1,4 @@
+import asyncio
 from functools import lru_cache
 from unittest.mock import patch
 
@@ -46,6 +47,7 @@ def test_renderer_client_honors_configured_renderer_name():
         size=1,
         tool_parser=None,
         reasoning_parser=None,
+        chat_template_kwargs={},
         preserve_all_thinking=False,
         preserve_thinking_between_tool_calls=False,
     )
@@ -77,9 +79,61 @@ def test_renderer_client_uses_renderer_model_name_override():
         size=1,
         tool_parser=None,
         reasoning_parser=None,
+        chat_template_kwargs={},
         preserve_all_thinking=False,
         preserve_thinking_between_tool_calls=False,
     )
+
+
+def test_renderer_client_consumes_sampling_chat_template_kwargs():
+    RendererClient._shared_pools.clear()
+
+    client = object.__new__(RendererClient)
+    client._renderer = None
+    client._pool_size = 1
+    client._config = vf.ClientConfig(client_type="renderer", renderer="qwen3")
+    client._client = object()  # type: ignore[attr-defined]
+
+    sentinel_pool = RendererPool.__new__(RendererPool)
+    captured: dict = {}
+
+    async def _fake_generate(**kwargs):
+        captured.update(kwargs)
+        return {"content": "ok"}
+
+    with (
+        patch(
+            "verifiers.clients.renderer_client.create_renderer_pool",
+            return_value=sentinel_pool,
+        ) as create_pool_mock,
+        patch("verifiers.clients.renderer_client.generate", side_effect=_fake_generate),
+    ):
+        response = asyncio.run(
+            client.get_native_response(
+                prompt=[{"role": "user", "content": "hi"}],
+                model="Qwen/Qwen3-8B",
+                sampling_args={
+                    "extra_body": {
+                        "chat_template_kwargs": {"enable_thinking": False},
+                        "top_k": 20,
+                    }
+                },
+                tools=None,
+            )
+        )
+
+    assert response == {"content": "ok"}
+    create_pool_mock.assert_called_once_with(
+        "Qwen/Qwen3-8B",
+        renderer="qwen3",
+        size=1,
+        tool_parser=None,
+        reasoning_parser=None,
+        chat_template_kwargs={"enable_thinking": False},
+        preserve_all_thinking=False,
+        preserve_thinking_between_tool_calls=False,
+    )
+    assert captured["sampling_params"] == {"top_k": 20}
 
 
 # Provenance: Eli's review on PR #1068, comment 3150580768.
