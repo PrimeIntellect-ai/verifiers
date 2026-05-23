@@ -1143,11 +1143,13 @@ class Runtime:
                     "callable or object factory."
                 )
             target_kind, fn = target
-            protected_args = (
-                frozenset()
-                if target_kind == "object"
-                else self._binding_target_framework_args(target_kind, fn)
-            )
+            if target_kind == "object":
+                protected_args = frozenset()
+            else:
+                stage = str(getattr(fn, f"{target_kind}_stage", "rollout"))
+                protected_args = (
+                    GROUP_FRAMEWORK_ARGS if stage == "group" else ROLLOUT_FRAMEWORK_ARGS
+                )
             if arg_name in protected_args:
                 continue
             validate_bound_arg(
