@@ -109,6 +109,7 @@ class AnthropicMessagesClient(
                 return str(content)
 
             blocks: list[dict[str, Any]] = []
+            has_unsupported_image = False
             for raw_part in content:
                 if isinstance(raw_part, Mapping):
                     part = dict(raw_part)
@@ -140,10 +141,14 @@ class AnthropicMessagesClient(
                                     },
                                 }
                             )
+                            continue
+                    has_unsupported_image = True
                 elif part_type == "input_audio":
                     blocks.append({"type": "text", "text": "[audio]"})
                 else:
                     blocks.append({"type": "text", "text": str(part)})
+            if not blocks and has_unsupported_image:
+                blocks.append({"type": "text", "text": "[image]"})
             return blocks
 
         def content_to_text_chunks(content: Any) -> list[str]:
