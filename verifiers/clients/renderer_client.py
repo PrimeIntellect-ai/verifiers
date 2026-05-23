@@ -8,7 +8,6 @@ A shared RendererPool (one per model) offloads sync tokenization to threads so
 concurrent rollouts tokenize in parallel instead of blocking the event loop.
 """
 
-import asyncio
 import json
 import threading
 from collections.abc import Mapping
@@ -31,7 +30,7 @@ from renderers import (
 )
 from renderers import ToolCall as RendererToolCall
 from renderers import ToolCallFunction
-from renderers.client import generate
+from renderers.client import _maybe_offload, generate
 
 from verifiers.clients.client import Client
 from verifiers.clients.openai_chat_completions_client import (
@@ -96,17 +95,6 @@ _DEFAULT_POOL_SIZE = 1
 
 
 # ── Helpers ─────────────────────────────────────────────────────────
-
-
-async def _maybe_offload(renderer: Renderer | RendererPool, fn):
-    """Run sync renderer work on a thread iff ``renderer`` is a pool.
-
-    Pool methods can block on the internal queue/lock; we offload to keep
-    the event loop responsive. A bare ``Renderer`` runs inline.
-    """
-    if isinstance(renderer, RendererPool):
-        return await asyncio.to_thread(fn)
-    return fn()
 
 
 def _get_value(obj: Any, key: str, default: Any = None) -> Any:
