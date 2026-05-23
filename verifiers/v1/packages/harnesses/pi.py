@@ -74,7 +74,10 @@ def load_harness(config: PiConfig) -> Pi:
 def build_pi_install_script(package: str) -> str:
     return f"""\
 set -e
-apt-get -o Acquire::Retries=3 update -qq && apt-get -o Acquire::Retries=3 install -y -qq curl ca-certificates nodejs npm > /dev/null 2>&1
+apt-get -o Acquire::Retries=3 update -qq && apt-get -o Acquire::Retries=3 install -y -qq curl ca-certificates nodejs npm xz-utils > /dev/null 2>&1
+npm install -g --ignore-scripts n
+n 22.19.0
+hash -r
 npm install -g --ignore-scripts {shlex.quote(package)}
 """
 
@@ -114,7 +117,7 @@ EOFMCP
 set -e
 
 PI_WORKDIR="${{AGENT_WORKDIR:-}}"
-if [[ -z "$PI_WORKDIR" ]]; then
+if [ -z "$PI_WORKDIR" ]; then
     PI_WORKDIR={shlex.quote(agent_workdir)}
 fi
 
