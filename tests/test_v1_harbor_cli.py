@@ -24,6 +24,7 @@ from verifiers.v1.packages.harnesses.terminus_2 import (
 )
 from verifiers.v1.packages.tasksets.harbor import harbor_reward
 from verifiers.v1.utils.program_utils import merge_task_program, merge_task_sandbox
+from verifiers.v1.utils.sandbox_python_utils import SANDBOX_PYTHON
 
 
 def write_harbor_task(root: Path, name: str = "task-a") -> Path:
@@ -309,7 +310,7 @@ def test_pi_harness_writes_intercepted_model_and_mcp_config() -> None:
     assert provider["api"] == "openai-completions"
     assert provider["apiKey"] == "secret"
     assert provider["models"] == [{"id": "model", "name": "openai/gpt-5.4-mini"}]
-    assert mcp["mcpServers"]["verifiers-tools"]["command"] == "python3"
+    assert mcp["mcpServers"]["verifiers-tools"]["command"] == SANDBOX_PYTHON
 
 
 def test_terminus_2_harness_builds_sandbox_program() -> None:

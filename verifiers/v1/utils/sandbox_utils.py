@@ -20,6 +20,11 @@ from .program_utils import command_argv, command_env, float_config, int_config
 from .program_utils import program_option_mapping, program_channel_setup
 from .program_utils import resolve_program_value
 from .program_utils import validate_program_bindings
+from .sandbox_python_utils import (
+    SANDBOX_DEFAULT_PATH,
+    python_package_install_command,
+    python_package_list,
+)
 from ..runtime import Runtime
 from ..state import State
 from ..task import Task
@@ -477,12 +482,8 @@ async def create_sandbox(client: SandboxClient, sandbox_config: ConfigMap) -> st
 
 
 async def setup_sandbox(handle: SandboxLease, sandbox_config: ConfigMap) -> None:
-    packages = sandbox_config.get("packages") or []
-    if isinstance(packages, str):
-        packages = shlex.split(packages)
+    packages = python_package_list(sandbox_config.get("packages"))
     if packages:
-        if not isinstance(packages, list):
-            raise TypeError("sandbox.packages must be a list or string.")
         package_args = " ".join(shlex.quote(str(package)) for package in packages)
         result = await handle.execute(
             python_package_install_command(package_args),
@@ -496,8 +497,10 @@ async def setup_sandbox(handle: SandboxLease, sandbox_config: ConfigMap) -> None
     if not isinstance(commands, list):
         raise TypeError("sandbox.setup_commands must be a list or string.")
     for command in commands:
+        command = f"export PATH={shlex.quote(SANDBOX_DEFAULT_PATH)}:$PATH\n{command}"
         result = await handle.execute(
-            str(command), timeout=int_config(sandbox_config, "setup_timeout", 300)
+            command,
+            timeout=int_config(sandbox_config, "setup_timeout", 300),
         )
         if result.exit_code:
             raise SandboxError(f"Sandbox setup command failed: {result.stderr}")
@@ -508,54 +511,6 @@ def sandbox_scope(sandbox_config: ConfigMap) -> str:
     if scope not in {"rollout", "group", "global"}:
         raise ValueError("sandbox.scope must be 'rollout', 'group', or 'global'.")
     return scope
-
-
-def python_package_install_command(package_args: str) -> str:
-    return (
-        "set -e\n"
-        "if command -v python3 >/dev/null 2>&1; then PYTHON=python3; "
-        "elif command -v python >/dev/null 2>&1; then PYTHON=python; "
-        "elif command -v apt-get >/dev/null 2>&1; then "
-        "apt-get -o Acquire::Retries=3 update && "
-        "apt-get -o Acquire::Retries=3 install -y python3 python3-pip && "
-        "PYTHON=python3; "
-        "else echo 'python is required to install sandbox packages' >&2; exit 127; fi\n"
-        "$PYTHON -m pip --version >/dev/null 2>&1 || "
-        "$PYTHON -m ensurepip --upgrade || "
-        "(command -v apt-get >/dev/null 2>&1 && "
-        "apt-get -o Acquire::Retries=3 update && "
-        "apt-get -o Acquire::Retries=3 install -y python3-pip)\n"
-        "$PYTHON -m pip install --disable-pip-version-check --break-system-packages "
-        f"{package_args} || "
-        "$PYTHON -m pip install --disable-pip-version-check "
-        f"{package_args}"
-    )
-
-
-def python_runtime_setup_command() -> str:
-    return (
-        "set -e\n"
-        "if command -v python3 >/dev/null 2>&1; then exit 0; fi\n"
-        "if command -v python >/dev/null 2>&1; then exit 0; fi\n"
-        "if command -v apt-get >/dev/null 2>&1; then "
-        "apt-get -o Acquire::Retries=3 update && "
-        "apt-get -o Acquire::Retries=3 install -y python3; exit 0; fi\n"
-        "echo 'python is required for sandbox Python programs' >&2\n"
-        "exit 127"
-    )
-
-
-def python_runtime_command(script_path: str, *args: str) -> list[str]:
-    command = (
-        "PYTHON=$(command -v python3 || command -v python || true); "
-        'if [ -z "$PYTHON" ]; then '
-        "echo 'python is required for sandbox Python programs' >&2; exit 127; "
-        "fi; "
-        f'exec "$PYTHON" {shlex.quote(script_path)}'
-    )
-    for arg in args:
-        command += f" {shlex.quote(arg)}"
-    return ["/bin/sh", "-lc", command]
 
 
 def attach_sandbox_ref(state: State, lease: SandboxLease) -> None:

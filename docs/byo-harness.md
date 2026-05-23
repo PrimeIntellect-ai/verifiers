@@ -386,6 +386,11 @@ into a sandbox. `program.channels` supports only the generic `callable` and `mcp
 channels. Harness-specific tool carriers, such as RLM skill uploads, should
 live on the taskset upload directory contract or the harness config.
 
+Sandbox package installs, sandboxed Python programs, and the MCP proxy share
+the managed Python runtime at `/opt/verifiers/python`. v1 installs or reuses a
+`uv` binary, creates that runtime as a Python 3.11 venv, and uses `uv pip` for
+package installs, so command harnesses should not add ad hoc MCP package setup.
+
 For sandboxed `program.fn` refs, v1 resolves the owning local package from the
 resolved module root: single-file modules use `pyproject.toml` in the same
 directory as the module file, and package modules use `pyproject.toml` inside
@@ -651,6 +656,12 @@ mcp = { fn = "my_env.cli:write_cli_config" }
 [env.harness.program.bindings]
 "write_cli_config.endpoint_config" = { fn = "my_env.cli:endpoint_config" }
 ```
+
+Skills follow the same ownership rule as other harness-specific carriers: keep
+generic tool channels under `program.channels`, and put skill uploads on the
+taskset upload directory contract or the harness config. If a skill runner needs
+Python packages in the sandbox, declare them through the sandbox package/setup
+path instead of baking MCP proxy setup into the skill.
 
 The implementation details for TOML refs, toolset tables, row loading, program
 bindings, and custom config subclasses are in

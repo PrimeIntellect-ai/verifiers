@@ -555,7 +555,8 @@ Common sandbox config keys:
 - `start_command`: process used to keep the sandbox alive;
 - `cpu_cores`, `memory_gb`, `disk_size_gb`, `gpu_count`;
 - `network_access`, `timeout_minutes`;
-- `packages`: Python packages installed before setup;
+- `packages`: Python packages installed before setup with the managed sandbox
+  Python runtime;
 - `setup_commands`: shell commands run once after package install;
 - `workdir`: working directory for the program command;
 - `command_timeout`, `install_timeout`, `setup_timeout`.
@@ -963,6 +964,12 @@ same directory as the module file, and package modules use `pyproject.toml`
 inside the package directory. v1 uploads that package root and installs it in
 the program sandbox before running the entrypoint. Dependencies are normal
 package dependencies.
+
+Sandbox Python package installs, sandboxed Python programs, and the MCP proxy
+share the managed sandbox Python runtime at `/opt/verifiers/python`. v1 installs
+or reuses a `uv` binary, creates that runtime as a Python 3.11 venv, and uses
+`uv pip` to install framework packages such as the MCP proxy. This keeps tool
+channels working on older task images without harness-specific setup.
 
 Command programs do not have a universal Python call surface. If
 `program.channels` requests `mcp`, v1 materializes an MCP proxy for the resolved
@@ -1456,10 +1463,11 @@ mcp = true
 "/task/instruction.md" = "task.instruction"
 ```
 
-`program.channels` is deliberately limited to `callable` and `mcp`.
-Harness-specific tool carriers belong on the harness or taskset contract; for
-example, RLM reads `Taskset.get_upload_dirs()["skills"]` and uploads it to
-`/rlm/skills`.
+`program.channels` is deliberately limited to `callable` and `mcp`. The MCP
+channel uses the same managed sandbox Python runtime described above.
+Harness-specific tool or skill carriers belong on the harness or taskset
+contract; for example, RLM reads `Taskset.get_upload_dirs()["skills"]` and
+uploads it to `/rlm/skills`.
 
 `program.setup` prepares the process. `program.channels.mcp` registers resolved
 tool or endpoint config after the interception endpoint is live and before the

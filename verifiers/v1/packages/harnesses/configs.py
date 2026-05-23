@@ -111,7 +111,6 @@ class MiniSWEAgentConfig(HarnessConfig):
     model_class: str = MINI_SWE_AGENT_DEFAULT_MODEL_CLASS
     environment_timeout: int = MINI_SWE_AGENT_DEFAULT_ENVIRONMENT_TIMEOUT
     extra_config_specs: list[str] | None = None
-    install_python: bool = True
     system_prompt: PromptInput | None = None
     sandbox: SandboxConfig | None = SandboxConfig()
     max_turns: int = 4
