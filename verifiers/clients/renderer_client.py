@@ -78,12 +78,6 @@ def reset_bridge_metrics() -> None:
             _bridge_metrics[k] = 0
 
 
-def _record_bridge(success: bool) -> None:
-    with _bridge_metrics_lock:
-        _bridge_metrics["attempts"] += 1
-        _bridge_metrics["successes" if success else "failures"] += 1
-
-
 # Size 1 by default. HF fast tokenizers encode a short chat prompt in a few
 # tens of microseconds, so even 2k rollouts tokenize serially in ~100ms — far
 # cheaper than dispatching each one through asyncio.to_thread and queueing on
@@ -232,16 +226,14 @@ def _coerce_renderer_message(message: Any) -> RendererMessage:
     return _to_renderer_message(cast(Message, message))
 
 
-def _message_role(message: Any) -> str | None:
-    role = _get_value(message, "role")
-    return role if isinstance(role, str) else None
-
-
 def _is_valid_incremental_tail(messages: list[RendererMessage]) -> bool:
     if not messages:
         return False
 
-    roles = [_message_role(message) for message in messages]
+    roles = []
+    for message in messages:
+        role = _get_value(message, "role")
+        roles.append(role if isinstance(role, str) else None)
     if roles[-1] == "user":
         return all(role == "tool" for role in roles[:-1])
     return all(role == "tool" for role in roles)
@@ -296,14 +288,6 @@ def _step_multi_modal_data(step: Any):
     return _get_value(raw_tokens, "multi_modal_data")
 
 
-def _step_rendered_messages(step: Any) -> list[RendererMessage]:
-    prompt = list(_get_value(step, "prompt", []) or [])
-    completion = list(_get_value(step, "completion", []) or [])
-    return _attach_tool_call_names(
-        [_coerce_renderer_message(message) for message in prompt + completion]
-    )
-
-
 async def _get_incremental_prompt_ids(
     *,
     renderer: Renderer | RendererPool,
@@ -336,7 +320,14 @@ async def _get_incremental_prompt_ids(
         if token_ids is None:
             continue
 
-        previous_messages = _step_rendered_messages(step)
+        step_prompt = list(_get_value(step, "prompt", []) or [])
+        step_completion = list(_get_value(step, "completion", []) or [])
+        previous_messages = _attach_tool_call_names(
+            [
+                _coerce_renderer_message(message)
+                for message in step_prompt + step_completion
+            ]
+        )
         if not previous_messages or len(previous_messages) >= len(prompt):
             continue
         prefix_len = len(previous_messages)
@@ -375,22 +366,12 @@ async def _get_incremental_prompt_ids(
                 tools=tools,
             )
         bridged = await _maybe_offload(renderer, bridge)
-        _record_bridge(success=bridged is not None)
+        with _bridge_metrics_lock:
+            _bridge_metrics["attempts"] += 1
+            _bridge_metrics["successes" if bridged is not None else "failures"] += 1
         return bridged
 
     return None
-
-
-def _parse_finish_reason(raw: str | None) -> FinishReason:
-    match raw:
-        case "stop":
-            return "stop"
-        case "length":
-            return "length"
-        case "tool_calls":
-            return "tool_calls"
-        case _:
-            return None
 
 
 class RendererClient(
@@ -600,7 +581,15 @@ class RendererClient(
         """Parse the generate() result dict into a verifiers Response."""
         content = response.get("content", "")
         reasoning_content = response.get("reasoning_content")
-        finish_reason = _parse_finish_reason(response.get("finish_reason"))
+        match response.get("finish_reason"):
+            case "stop":
+                finish_reason: FinishReason = "stop"
+            case "length":
+                finish_reason = "length"
+            case "tool_calls":
+                finish_reason = "tool_calls"
+            case _:
+                finish_reason = None
 
         # renderers >=0.1.8.dev1 emits ParsedToolCall dataclasses (with .name,
         # .arguments, .status, .id). Skip non-OK attempts — they're surfaced

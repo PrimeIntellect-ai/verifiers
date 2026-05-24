@@ -495,11 +495,6 @@ class OpenAIChatCompletionsClient(
                 routed_experts=choice_extra.get("routed_experts"),
             )
 
-        def parse_reasoning_content_from_response(
-            response: OpenAIChatResponse,
-        ) -> str | None:
-            return parse_reasoning_content(response.choices[0].message)
-
         response_id = getattr(response, "id", "")
         if not isinstance(response_id, str):
             response_id = ""
@@ -517,7 +512,7 @@ class OpenAIChatCompletionsClient(
             usage=parse_usage(response),
             message=ResponseMessage(
                 content=response.choices[0].message.content,
-                reasoning_content=parse_reasoning_content_from_response(response),
+                reasoning_content=parse_reasoning_content(response.choices[0].message),
                 finish_reason=parse_finish_reason(response),
                 is_truncated=parse_is_truncated(response),
                 tokens=parse_tokens(response),
