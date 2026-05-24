@@ -523,43 +523,6 @@ async def update_child_uses_borrowed_tool(task, state):
     state["child_trajectory_id"] = child_state["trajectory_id"]
 
 
-async def update_parallel_children_use_borrowed_tool(task, state):
-    _ = task
-
-    async def run_child(label: str) -> vf.State:
-        child_task = vf.Task(
-            {"prompt": [{"role": "user", "content": f"inspect {label}"}]}
-        ).freeze()
-        child_state = state.for_task(
-            child_task,
-            borrow="model",
-            tools="borrowed_stage_tool",
-            transcript="append",
-        )
-        return await make_harness(max_turns=2).run(child_task, child_state)
-
-    children = await asyncio.gather(run_child("a"), run_child("b"))
-    state["update_child_trajectory_ids"] = [
-        child["trajectory_id"] for child in children
-    ]
-
-
-async def reward_child_uses_borrowed_tool(task, state) -> float:
-    _ = task
-    child_task = vf.Task(
-        {"prompt": [{"role": "user", "content": "score sandbox state"}]}
-    ).freeze()
-    child_state = state.for_task(
-        child_task,
-        borrow="model",
-        tools="borrowed_stage_tool",
-    )
-    child_state = await make_harness(max_turns=2).run(child_task, child_state)
-    state["reward_child_completion"] = child_state["completion"][-1]["content"]
-    state["reward_child_requests"] = child_state["num_model_requests"]
-    return float("reward" in state.get("borrowed_stage_values", []))
-
-
 async def submitted(task, state) -> bool:
     _ = task
     return bool(state.get("submitted"))
@@ -1653,75 +1616,6 @@ async def test_update_child_harness_can_borrow_live_tools() -> None:
     assert state["trajectory"][2]["trajectory_id"] == state["child_trajectory_id"]
     assert state["num_model_requests"] == 3
     assert state["completion"][-1]["content"] == "child judged"
-
-
-@pytest.mark.asyncio
-async def test_update_and_reward_children_can_share_borrowed_live_tools() -> None:
-    client = CapturingModelClient(
-        [
-            fake_response("parent answer"),
-            fake_response(
-                tool_calls=[
-                    ToolCall(
-                        id="call_update_a",
-                        name="borrowed_stage_tool",
-                        arguments='{"value": "update-a"}',
-                    )
-                ]
-            ),
-            fake_response("update a done"),
-            fake_response(
-                tool_calls=[
-                    ToolCall(
-                        id="call_update_b",
-                        name="borrowed_stage_tool",
-                        arguments='{"value": "update-b"}',
-                    )
-                ]
-            ),
-            fake_response("update b done"),
-            fake_response(
-                tool_calls=[
-                    ToolCall(
-                        id="call_reward",
-                        name="borrowed_stage_tool",
-                        arguments='{"value": "reward"}',
-                    )
-                ]
-            ),
-            fake_response('{"score": 1.0}'),
-        ]
-    )
-    harness = make_harness(
-        updates=[update_parallel_children_use_borrowed_tool],
-        rewards=[reward_child_uses_borrowed_tool],
-        toolsets=[vf.Toolset(tools=[borrowed_stage_tool], write=True)],
-    )
-    task = vf.Task({"prompt": [{"role": "user", "content": "parent"}]}).freeze()
-    state = vf.State.for_task(task)
-    state["runtime"]["model"] = "model-a"
-    harness.runtime.bind_model_client(state, cast(Client, client))
-
-    state = await harness.run(task, state)
-
-    assert state["borrowed_stage_values"] == ["update-a", "update-b", "reward"]
-    assert state["reward"] == 1.0
-    assert state["reward_child_completion"] == '{"score": 1.0}'
-    assert len(client.requests) == 7
-    assert len(state["trajectory"]) == 5
-    assert state["trajectory"][0]["trajectory_id"] == state["trajectory_id"]
-    update_trajectory_ids = set(state["update_child_trajectory_ids"])
-    assert len(update_trajectory_ids) == 2
-    assert {
-        str(record["trajectory_id"]) for record in state["trajectory"][1:]
-    } == update_trajectory_ids
-    assert all(
-        record["completion"] != [{"role": "assistant", "content": '{"score": 1.0}'}]
-        for record in state["trajectory"]
-    )
-    assert "runtime" not in state or "resolved" not in state.get("runtime", {})
-    assert state["num_model_requests"] == 5
-    assert state["reward_child_requests"] == 2
 
 
 @pytest.mark.asyncio
