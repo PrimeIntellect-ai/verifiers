@@ -2,12 +2,18 @@ import hashlib
 import json
 import os
 import random
+import re
+import shutil
 import shlex
+import tempfile
+import textwrap
+from importlib import resources
 from collections.abc import Callable, Mapping
 from importlib.abc import Traversable
 from pathlib import Path
 from typing import cast
 
+from verifiers.types import Tool
 from verifiers.envs.experimental.utils.git_checkout_cache import (
     resolve_git_checkout,
     validate_git_checkout,
@@ -19,17 +25,21 @@ from ...state import State
 from ...task import Task
 from ...taskset import Taskset
 from ...utils.prompt_utils import task_text
+from ...utils.runtime_registry import load_runtime_from_state
 from .command import command_program
 from .configs import (
     RLM_DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH,
     RLMConfig,
 )
-from ...types import ConfigMap, ProgramCommand, ProgramValue
+from ...types import ConfigData, ConfigMap, ProgramCommand, ProgramValue
 
 DEFAULT_RLM_CHECKOUT_PATH = "/tmp/rlm-checkout"
 DEFAULT_RLM_SKILLS_PATH = "/task/rlm-skills"
 DEFAULT_RLM_LOCAL_CHECKOUT_CACHE_ROOT = (
     Path.home() / ".cache" / "verifiers" / "rlm-checkouts"
+)
+DEFAULT_RLM_VF_SKILLS_CACHE_ROOT = (
+    Path(tempfile.gettempdir()) / "verifiers-rlm-vf-skills"
 )
 REQUIRED_RLM_CHECKOUT_FILES = ("install.sh", "pyproject.toml")
 ProgramDir = str | Path | Traversable
@@ -88,9 +98,11 @@ class RLM(Harness):
                 gh_token=harness_config.gh_token,
             )
         }
-        if harness_config.skills is not None:
-            dirs[DEFAULT_RLM_SKILLS_PATH] = Path(harness_config.skills)
-        self._explicit_skills = harness_config.skills is not None
+        dirs[DEFAULT_RLM_SKILLS_PATH] = self.load_skills_dir
+        self._explicit_skills = (
+            Path(harness_config.skills) if harness_config.skills is not None else None
+        )
+        self._taskset_skills: ProgramDir | None = None
         command: ProgramCommand = [
             "bash",
             "-lc",
@@ -141,17 +153,23 @@ bash "$RLM_CHECKOUT_PATH/install.sh"
         )
 
     def attach_taskset(self, taskset: Taskset) -> None:
-        if not self._explicit_skills:
+        if self._explicit_skills is None:
             upload_dirs = taskset.get_upload_dirs()
             if not isinstance(upload_dirs, Mapping):
                 raise TypeError("Taskset.get_upload_dirs() must return a mapping.")
-            skills = upload_dirs.get("skills")
-            self.set_program_dir(
-                DEFAULT_RLM_SKILLS_PATH,
-                cast(ProgramDir | None, skills),
-            )
+            self._taskset_skills = cast(ProgramDir | None, upload_dirs.get("skills"))
         super().attach_taskset(taskset)
         self._program = self.compile_program(self.program)
+
+    def load_skills_dir(self, task: Task, state: State) -> Path:
+        _ = task
+        base_skills = self._explicit_skills or self._taskset_skills
+        tool_defs = load_runtime_from_state(state).tool_defs(state) or []
+        if not tool_defs:
+            if base_skills is None:
+                return empty_skills_dir()
+            return materialize_skills_dir(base_skills)
+        return build_vf_tool_skills_dir(tool_defs, base_skills)
 
     def set_program_dir(
         self, remote_path: str, local_source: ProgramDir | None
@@ -170,6 +188,313 @@ bash "$RLM_CHECKOUT_PATH/install.sh"
 
 def load_harness(config: RLMConfig) -> RLM:
     return RLM(config=config)
+
+
+def empty_skills_dir() -> Path:
+    path = DEFAULT_RLM_VF_SKILLS_CACHE_ROOT / "empty"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def materialize_skills_dir(source: ProgramDir) -> Path:
+    if isinstance(source, str):
+        return Path(source)
+    if isinstance(source, Path):
+        return source
+    with resources.as_file(source) as path:
+        return path
+
+
+def build_vf_tool_skills_dir(
+    tool_defs: list[Tool], base_skills: ProgramDir | None
+) -> Path:
+    key = vf_tool_skills_key(tool_defs, base_skills)
+    target = DEFAULT_RLM_VF_SKILLS_CACHE_ROOT / key
+    if target.exists():
+        return target
+    tmp = target.with_name(
+        f".{target.name}-{os.getpid()}-{random.randint(0, 1_000_000)}"
+    )
+    tmp.mkdir(parents=True, exist_ok=False)
+    if base_skills is not None:
+        copy_skill_packages(materialize_skills_dir(base_skills), tmp)
+    used_names: set[str] = set()
+    for tool_def in tool_defs:
+        write_vf_tool_skill(tmp, tool_def_mapping(tool_def), used_names)
+    tmp.rename(target)
+    return target
+
+
+def vf_tool_skills_key(tool_defs: list[Tool], base_skills: ProgramDir | None) -> str:
+    payload = {
+        "version": 4,
+        "tools": [tool_def_mapping(tool_def) for tool_def in tool_defs],
+        "base": str(base_skills) if base_skills is not None else None,
+    }
+    digest = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, default=str).encode()
+    ).hexdigest()
+    return digest[:16]
+
+
+def tool_def_mapping(tool_def: Tool | ConfigMap) -> ConfigData:
+    if isinstance(tool_def, Tool):
+        return cast(ConfigData, tool_def.model_dump())
+    return dict(tool_def)
+
+
+def copy_skill_packages(source: Path, target: Path) -> None:
+    if not source.exists():
+        return
+    for child in source.iterdir():
+        if child.is_dir():
+            shutil.copytree(child, target / child.name, dirs_exist_ok=True)
+        elif child.name == "SKILL.md":
+            shutil.copy2(child, target / child.name)
+
+
+def write_vf_tool_skill(root: Path, tool_def: ConfigData, used_names: set[str]) -> None:
+    tool_name = str(tool_def["name"])
+    skill_name = unique_skill_name(python_name(tool_name), used_names)
+    skill_dir = root / skill_name
+    package_dir = skill_dir / "src" / skill_name
+    package_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(render_skill_markdown(tool_def, skill_name))
+    (skill_dir / "pyproject.toml").write_text(render_skill_pyproject(skill_name))
+    (package_dir / "__init__.py").write_text(
+        f"from .{skill_name} import run\n\n__all__ = ['run']\n"
+    )
+    (package_dir / f"{skill_name}.py").write_text(render_skill_module(tool_def))
+
+
+def unique_skill_name(name: str, used_names: set[str]) -> str:
+    candidate = name
+    index = 2
+    while candidate in used_names:
+        candidate = f"{name}_{index}"
+        index += 1
+    used_names.add(candidate)
+    return candidate
+
+
+PYTHON_RESERVED_WORDS = {
+    "False",
+    "None",
+    "True",
+    "and",
+    "as",
+    "assert",
+    "async",
+    "await",
+    "break",
+    "class",
+    "continue",
+    "def",
+    "del",
+    "elif",
+    "else",
+    "except",
+    "finally",
+    "for",
+    "from",
+    "global",
+    "if",
+    "import",
+    "in",
+    "is",
+    "lambda",
+    "nonlocal",
+    "not",
+    "or",
+    "pass",
+    "raise",
+    "return",
+    "try",
+    "while",
+    "with",
+    "yield",
+}
+
+
+def python_name(name: str) -> str:
+    normalized = re.sub(r"\W", "_", name)
+    if not normalized or normalized[0].isdigit():
+        normalized = f"tool_{normalized}"
+    if normalized in PYTHON_RESERVED_WORDS:
+        normalized = f"{normalized}_tool"
+    return normalized
+
+
+def render_skill_pyproject(skill_name: str) -> str:
+    distribution_name = skill_name.replace("_", "-")
+    return textwrap.dedent(
+        f"""\
+        [project]
+        name = "rlm-skill-{distribution_name}"
+        version = "0.0.0"
+        dependencies = ["requests", "rlm"]
+
+        [project.scripts]
+        {skill_name} = "rlm.skill:cli"
+
+        [build-system]
+        requires = ["hatchling"]
+        build-backend = "hatchling.build"
+
+        [tool.hatch.build.targets.wheel]
+        packages = ["src/{skill_name}"]
+        """
+    )
+
+
+def render_skill_markdown(tool_def: ConfigMap, skill_name: str) -> str:
+    tool_name = str(tool_def["name"])
+    description = str(
+        tool_def.get("description") or f"Call the {tool_name} verifier tool."
+    )
+    schema = json.dumps(tool_def.get("parameters") or {}, indent=2, sort_keys=True)
+    return f"""# {skill_name}
+
+{description}
+
+This skill calls the Verifiers V1 tool `{tool_name}` for the current rollout.
+
+Use it from IPython:
+
+```python
+result = await {skill_name}(...)
+```
+
+Tool schema:
+
+```json
+{schema}
+```
+"""
+
+
+def render_skill_module(tool_def: ConfigMap) -> str:
+    tool_name = str(tool_def["name"])
+    signature, arguments = render_run_signature_and_arguments(tool_def)
+    description = str(tool_def.get("description") or f"Call {tool_name}.")
+    docstring = json.dumps(description)
+    return textwrap.dedent(
+        f"""\
+        from __future__ import annotations
+
+        import os
+        import requests
+
+
+        async def run({signature}):
+            {docstring}
+            return _call_vf_tool({tool_name!r}, {arguments})
+
+
+        def _call_vf_tool(name: str, arguments: dict):
+            root = _endpoint_root()
+            api_key = (
+                os.environ.get("OPENAI_API_KEY")
+                or os.environ.get("ANTHROPIC_API_KEY")
+                or "intercepted"
+            )
+            response = requests.post(
+                f"{{root}}/vf/tools/{{name}}",
+                json={{"arguments": arguments}},
+                headers={{"Authorization": f"Bearer {{api_key}}"}},
+                timeout=300,
+            )
+            response.raise_for_status()
+            payload = response.json() if response.content else {{}}
+            if "error" in payload:
+                raise RuntimeError(str(payload["error"]))
+            return payload.get("result")
+
+
+        def _endpoint_root() -> str:
+            base = os.environ.get("ANTHROPIC_BASE_URL") or os.environ.get(
+                "OPENAI_BASE_URL"
+            )
+            if not base:
+                raise RuntimeError("No Verifiers endpoint URL is configured.")
+            return base.rsplit("/v1", 1)[0].rstrip("/")
+        """
+    )
+
+
+def render_run_signature_and_arguments(
+    tool_def: ConfigMap,
+) -> tuple[str, str]:
+    parameters = cast(ConfigData, tool_def.get("parameters") or {})
+    properties = cast(ConfigData, parameters.get("properties") or {})
+    required = set(cast(list[str], parameters.get("required") or []))
+    if not properties:
+        return "", "{}"
+    if any(not valid_python_parameter(name) for name in properties):
+        return "arguments: dict", "arguments"
+    items = sorted(
+        properties.items(),
+        key=lambda item: (
+            "default" in cast(ConfigData, item[1]) or item[0] not in required
+        ),
+    )
+    signature_parts: list[str] = []
+    argument_parts: list[str] = []
+    for name, raw_schema in items:
+        schema = cast(ConfigData, raw_schema)
+        annotation = schema_annotation(schema)
+        if "default" in schema:
+            signature_parts.append(f"{name}: {annotation} = {schema['default']!r}")
+        elif schema_allows_null(schema):
+            signature_parts.append(f"{name}: {annotation} = None")
+        elif name not in required:
+            signature_parts.append(f"{name}: {annotation} | None = None")
+        else:
+            signature_parts.append(f"{name}: {annotation}")
+        argument_parts.append(f"{name!r}: {name}")
+    return ", ".join(signature_parts), "{" + ", ".join(argument_parts) + "}"
+
+
+def valid_python_parameter(name: str) -> bool:
+    return name.isidentifier() and name not in PYTHON_RESERVED_WORDS
+
+
+def schema_annotation(schema: ConfigMap) -> str:
+    any_of = schema.get("anyOf")
+    if isinstance(any_of, list):
+        annotations = [
+            schema_annotation(cast(ConfigData, item))
+            for item in any_of
+            if isinstance(item, Mapping) and cast(ConfigMap, item).get("type") != "null"
+        ]
+        if not annotations:
+            return "object"
+        annotation = (
+            annotations[0] if len(set(annotations)) == 1 else " | ".join(annotations)
+        )
+        return f"{annotation} | None" if schema_allows_null(schema) else annotation
+    schema_type = schema.get("type")
+    if schema_type == "string":
+        return "str"
+    if schema_type == "integer":
+        return "int"
+    if schema_type == "number":
+        return "float"
+    if schema_type == "boolean":
+        return "bool"
+    if schema_type == "array":
+        return "list"
+    if schema_type == "object":
+        return "dict"
+    return "object"
+
+
+def schema_allows_null(schema: ConfigMap) -> bool:
+    any_of = schema.get("anyOf")
+    return isinstance(any_of, list) and any(
+        isinstance(item, Mapping) and cast(ConfigMap, item).get("type") == "null"
+        for item in any_of
+    )
 
 
 def build_run_script(instruction_path: str, workdir: str) -> str:

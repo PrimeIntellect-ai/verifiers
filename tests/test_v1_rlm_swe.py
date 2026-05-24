@@ -65,7 +65,8 @@ def test_rlm_harness_can_upload_skills(tmp_path: Path):
     program = as_mapping(harness.program)
     dirs = as_mapping(program["dirs"])
 
-    assert dirs["/task/rlm-skills"] == skills
+    assert dirs["/task/rlm-skills"] == harness.load_skills_dir
+    assert harness._explicit_skills == skills
 
 
 def test_rlm_harness_uploads_taskset_skills_by_default(tmp_path: Path):
@@ -84,7 +85,44 @@ def test_rlm_harness_uploads_taskset_skills_by_default(tmp_path: Path):
     program = as_mapping(env.harness.program)
     dirs = as_mapping(program["dirs"])
 
-    assert dirs["/task/rlm-skills"] == skills
+    assert dirs["/task/rlm-skills"] == env.harness.load_skills_dir
+    assert env.harness._taskset_skills == skills
+
+
+@pytest.mark.asyncio
+async def test_rlm_harness_generates_skills_for_v1_tools():
+    async def lookup_order(order_id: str) -> str:
+        """Look up an order by ID."""
+        return f"order:{order_id}"
+
+    taskset = vf.Taskset(
+        config=vf.TasksetConfig(
+            source=[{"prompt": [{"role": "user", "content": "Find order A-1."}]}]
+        )
+    )
+    taskset.add_toolset(vf.Toolset(tools=[lookup_order]))
+    env = vf.Env(
+        taskset=taskset,
+        harness=vf.RLM(config=vf.RLMConfig(local_checkout="/tmp/checkout")),
+    )
+    task = next(iter(env.taskset))
+    state = vf.State({"task": dict(task), "runtime": {}, "prompt": task["prompt"]})
+
+    await env.harness.runtime.ensure_rollout_toolsets(task, state)
+    env.harness.runtime.prepare_state(task, state)
+    skills_dir = env.harness.load_skills_dir(task, state)
+
+    skill_module = (
+        skills_dir / "lookup_order" / "src" / "lookup_order" / "lookup_order.py"
+    )
+    assert skill_module.exists()
+    source = skill_module.read_text()
+    assert "async def run(order_id: str)" in source
+    assert "_call_vf_tool('lookup_order'" in source
+    assert (
+        "Look up an order by ID."
+        in (skills_dir / "lookup_order" / "SKILL.md").read_text()
+    )
 
 
 def test_taskset_discovers_sibling_skills_dir_by_default(
@@ -131,7 +169,9 @@ def test_rlm_harness_explicit_skills_override_taskset_skills(tmp_path: Path):
     program = as_mapping(env.harness.program)
     dirs = as_mapping(program["dirs"])
 
-    assert dirs["/task/rlm-skills"] == explicit_skills
+    assert dirs["/task/rlm-skills"] == env.harness.load_skills_dir
+    assert env.harness._explicit_skills == explicit_skills
+    assert env.harness._taskset_skills is None
 
 
 def test_rlm_swe_environment_uses_v1_r2e_taskset(monkeypatch):
