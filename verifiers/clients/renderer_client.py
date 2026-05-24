@@ -8,7 +8,6 @@ A shared RendererPool (one per model) offloads sync tokenization to threads so
 concurrent rollouts tokenize in parallel instead of blocking the event loop.
 """
 
-import asyncio
 import json
 import threading
 from collections.abc import Mapping
@@ -31,7 +30,7 @@ from renderers import (
 )
 from renderers import ToolCall as RendererToolCall
 from renderers import ToolCallFunction
-from renderers.client import generate
+from renderers.client import _maybe_offload, generate
 
 from verifiers.clients.client import Client
 from verifiers.clients.openai_chat_completions_client import (
@@ -366,10 +365,7 @@ async def _get_incremental_prompt_ids(
                 tail,
                 tools=tools,
             )
-        if isinstance(renderer, RendererPool):
-            bridged = await asyncio.to_thread(bridge)
-        else:
-            bridged = bridge()
+        bridged = await _maybe_offload(renderer, bridge)
         with _bridge_metrics_lock:
             _bridge_metrics["attempts"] += 1
             _bridge_metrics["successes" if bridged is not None else "failures"] += 1
