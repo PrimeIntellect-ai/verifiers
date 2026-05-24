@@ -1618,6 +1618,132 @@ async def test_update_child_harness_can_borrow_live_tools() -> None:
     assert state["completion"][-1]["content"] == "child judged"
 
 
+async def update_parallel_children_use_borrowed_tool(task, state):
+    _ = task
+
+    async def run_child(label: str) -> vf.State:
+        child_task = vf.Task(
+            {"prompt": [{"role": "user", "content": f"inspect {label}"}]}
+        ).freeze()
+        child_state = state.for_task(
+            child_task,
+            borrow="model",
+            tools="borrowed_stage_tool",
+            transcript="append",
+        )
+        return await make_harness(max_turns=2).run(child_task, child_state)
+
+    children = await asyncio.gather(run_child("a"), run_child("b"))
+    state["update_child_trajectory_ids"] = [
+        child["trajectory_id"] for child in children
+    ]
+
+
+async def reward_child_uses_borrowed_tool(task, state) -> float:
+    _ = task
+    child_task = vf.Task(
+        {"prompt": [{"role": "user", "content": "score sandbox state"}]}
+    ).freeze()
+    child_state = state.for_task(
+        child_task,
+        borrow="model",
+        tools="borrowed_stage_tool",
+    )
+    child_state = await make_harness(max_turns=2).run(child_task, child_state)
+    state["reward_child_completion"] = child_state["completion"][-1]["content"]
+    state["reward_child_requests"] = child_state["num_model_requests"]
+    return float("reward" in state.get("borrowed_stage_values", []))
+
+
+class RoutedModelClient:
+    """Routes responses by inspecting the request's conversation, not call order.
+
+    Robust to event-loop interleaving (e.g. asyncio.gather): each rollout's
+    request carries its own conversation context, so we never depend on which
+    coroutine happens to wake first.
+    """
+
+    def __init__(self) -> None:
+        self.requests: list[dict[str, object]] = []
+
+    async def get_response(self, **kwargs: object) -> Response:
+        prompt = kwargs.get("prompt") or []
+        self.requests.append(dict(kwargs))
+
+        # First user message identifies the rollout (parent / update-a / update-b / reward).
+        first_user = next(
+            (m.get("content") for m in prompt if m.get("role") == "user"), ""
+        )
+        # Presence of a tool-role message tells us we're past turn 1 (tool already executed).
+        has_tool_msg = any(m.get("role") == "tool" for m in prompt)
+
+        if first_user == "parent":
+            return fake_response("parent answer")
+        if first_user.startswith("inspect "):
+            label = first_user.split(" ", 1)[1]
+            if not has_tool_msg:
+                return fake_response(
+                    tool_calls=[
+                        ToolCall(
+                            id=f"call_update_{label}",
+                            name="borrowed_stage_tool",
+                            arguments=f'{{"value": "update-{label}"}}',
+                        )
+                    ]
+                )
+            return fake_response(f"update {label} done")
+        if first_user == "score sandbox state":
+            if not has_tool_msg:
+                return fake_response(
+                    tool_calls=[
+                        ToolCall(
+                            id="call_reward",
+                            name="borrowed_stage_tool",
+                            arguments='{"value": "reward"}',
+                        )
+                    ]
+                )
+            return fake_response('{"score": 1.0}')
+        raise AssertionError(f"Unexpected first_user: {first_user!r}")
+
+
+@pytest.mark.asyncio
+async def test_update_and_reward_children_can_share_borrowed_live_tools() -> None:
+    client = RoutedModelClient()
+    harness = make_harness(
+        updates=[update_parallel_children_use_borrowed_tool],
+        rewards=[reward_child_uses_borrowed_tool],
+        toolsets=[vf.Toolset(tools=[borrowed_stage_tool], write=True)],
+    )
+    task = vf.Task({"prompt": [{"role": "user", "content": "parent"}]}).freeze()
+    state = vf.State.for_task(task)
+    state["runtime"]["model"] = "model-a"
+    harness.runtime.bind_model_client(state, cast(Client, client))
+
+    state = await harness.run(task, state)
+
+    # All three borrowed-tool invocations should have landed; order is not
+    # asserted because parallel `asyncio.gather` may interleave them.
+    assert sorted(state["borrowed_stage_values"]) == ["reward", "update-a", "update-b"]
+    assert state["reward"] == 1.0
+    assert state["reward_child_completion"] == '{"score": 1.0}'
+    assert len(client.requests) == 7
+    assert len(state["trajectory"]) == 5
+    assert state["trajectory"][0]["trajectory_id"] == state["trajectory_id"]
+    update_trajectory_ids = set(state["update_child_trajectory_ids"])
+    assert len(update_trajectory_ids) == 2
+    assert {
+        str(record["trajectory_id"]) for record in state["trajectory"][1:]
+    } == update_trajectory_ids
+    assert all(
+        record["completion"] != [{"role": "assistant", "content": '{"score": 1.0}'}]
+        for record in state["trajectory"]
+    )
+    assert "runtime" not in state or "resolved" not in state.get("runtime", {})
+    assert state["num_model_requests"] == 5
+    assert state["reward_child_requests"] == 2
+
+
 @pytest.mark.asyncio
 async def test_toolset_can_contribute_stop_condition() -> None:
     harness = make_harness(
