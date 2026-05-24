@@ -1,4 +1,5 @@
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -112,6 +113,55 @@ def test_create_sandbox_max_retries_is_true_retry_count():
 
     assert result == "sb-retry"
     assert obj.sandbox_client.create.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_create_sandbox_cancellation_deletes_sandbox_created_after_cancel():
+    create_started = asyncio.Event()
+    create_future = asyncio.get_running_loop().create_future()
+    delete_started = asyncio.Event()
+    allow_delete = asyncio.Event()
+
+    class FakeSandboxClient:
+        async def create(self, _request):
+            create_started.set()
+            return await create_future
+
+    class ReproMixin(SandboxMixin):
+        def __init__(self):
+            def no_retry(fn):
+                return fn
+
+            self.sandbox_client = FakeSandboxClient()
+            self.with_retry = no_retry
+            self.sandbox_creation_rate_limiter = None
+            self.active_sandboxes = set()
+            self.logger = MagicMock()
+            self.deleted = []
+
+        async def delete_sandbox(self, sandbox_id):
+            delete_started.set()
+            await allow_delete.wait()
+            self.deleted.append(sandbox_id)
+            self.deregister_sandbox(sandbox_id)
+
+    mixin = ReproMixin()
+    create = asyncio.create_task(mixin.create_sandbox({}, request=object()))
+    await create_started.wait()
+
+    create.cancel()
+    await asyncio.sleep(0)
+    create_future.set_result(SimpleNamespace(id="sb-created"))
+    await asyncio.wait_for(delete_started.wait(), timeout=1)
+
+    assert not create.done()
+
+    allow_delete.set()
+    with pytest.raises(asyncio.CancelledError):
+        await create
+
+    assert mixin.deleted == ["sb-created"]
+    assert "sb-created" not in mixin.active_sandboxes
 
 
 def test_create_sandbox_not_ready(mixin):
@@ -244,8 +294,9 @@ def test_run_background_job_command_timeout(mixin):
     )
 
     state = {"sandbox_id": "sb-1"}
-    with pytest.raises(CommandTimeoutError):
+    with pytest.raises(vf.SandboxError):
         asyncio.run(mixin.run_background_job(state, command="cmd", timeout=10))
+    assert state["sandbox_timeout"] is True
 
 
 def test_run_background_job_oom(mixin):

@@ -336,6 +336,47 @@ class TestCleanupPriorityOrdering:
         assert env.seen_env is True
         assert env.seen_state is True
 
+    @pytest.mark.asyncio
+    async def test_cleanup_failure_does_not_skip_later_handler(self, mock_client):
+        class FailingCleanupEnv(vf.MultiTurnEnv):
+            def __init__(self, **kwargs):
+                super().__init__(max_turns=1, **kwargs)
+                self.destroyed = False
+
+            @vf.cleanup(priority=1)
+            async def failing_cleanup(self, state: State):
+                raise RuntimeError("early cleanup failed")
+
+            @vf.cleanup(priority=0)
+            async def destroy_sandbox(self, state: State):
+                self.destroyed = True
+
+            async def env_response(self, messages, state, **kwargs):
+                return []
+
+        dataset = Dataset.from_dict({"question": ["test"], "answer": ["test"]})
+        env = FailingCleanupEnv(
+            client=mock_client,
+            model="test-model",
+            dataset=dataset,
+            parser=vf.Parser(),
+            rubric=vf.Rubric(),
+        )
+        state = await env.init_state(
+            RolloutInput(
+                prompt=[{"role": "user", "content": "test"}],
+                answer="test",
+                example_id=0,
+            ),
+            client=mock_client,
+            model="test-model",
+        )
+
+        with pytest.raises(RuntimeError, match="early cleanup failed"):
+            await env.cleanup(state)
+
+        assert env.destroyed is True
+
 
 class TestTeardownPriorityOrdering:
     """Test teardown handler priority ordering."""
@@ -423,6 +464,25 @@ class TestRubricCleanupTeardown:
         rubric = MyRubric()
         asyncio.run(rubric.cleanup({"id": "a"}))
         assert rubric.cleaned == ["a"]
+
+    @pytest.mark.asyncio
+    async def test_rubric_cleanup_failure_does_not_skip_later_handler(self):
+        rubric = vf.Rubric()
+        state = {}
+
+        async def a_failing_cleanup(state: State):
+            raise RuntimeError("early rubric cleanup failed")
+
+        async def z_destroy_sandbox(state: State):
+            state["destroyed"] = True
+
+        rubric.add_cleanup_handler(a_failing_cleanup)
+        rubric.add_cleanup_handler(z_destroy_sandbox)
+
+        with pytest.raises(RuntimeError, match="early rubric cleanup failed"):
+            await rubric.cleanup(state)
+
+        assert state["destroyed"] is True
 
     def test_rubric_teardown_handlers(self):
         """Test that @vf.teardown decorated methods on a Rubric subclass are invoked."""
