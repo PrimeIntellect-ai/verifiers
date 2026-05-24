@@ -1133,6 +1133,9 @@ def test_sandbox_python_program_installs_runtime_client_deps() -> None:
 def test_sandbox_package_install_bootstraps_managed_python() -> None:
     command = python_package_install_command("mcp>=1.14.1 requests")
 
+    assert "/opt/verifiers" not in command
+    assert SANDBOX_PYTHON.startswith("/tmp/")
+    assert SANDBOX_UV.startswith("/tmp/")
     assert "UV_NO_CONFIG=1" not in command
     assert "UV_INDEX_URL" not in command
     assert "PIP_INDEX_URL" not in command

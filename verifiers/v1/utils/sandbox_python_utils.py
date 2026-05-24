@@ -1,8 +1,8 @@
 import shlex
 
 SANDBOX_PYTHON_VERSION = "3.11"
-SANDBOX_BIN_DIR = "/opt/verifiers/bin"
-SANDBOX_PYTHON_ROOT = "/opt/verifiers/python"
+SANDBOX_BIN_DIR = "/tmp/verifiers/bin"
+SANDBOX_PYTHON_ROOT = "/tmp/verifiers/python"
 SANDBOX_PYTHON_BIN_DIR = f"{SANDBOX_PYTHON_ROOT}/bin"
 SANDBOX_PYTHON = f"{SANDBOX_PYTHON_BIN_DIR}/python3"
 SANDBOX_UV = f"{SANDBOX_BIN_DIR}/uv"
