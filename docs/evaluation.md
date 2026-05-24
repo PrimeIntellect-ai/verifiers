@@ -126,6 +126,23 @@ env.set_concurrency(256)
 
 The `renderer` client type requires the optional renderer package. Install it with `uv add "verifiers[renderers]"` before running evals with `--api-client-type renderer`.
 
+#### Model precedence
+
+`--model` / `-m` sets the inference client's model. Custom environments that
+need to know that model can accept `model` in `load_environment()` / their
+constructor, or read the injected `model` environment kwarg, instead of
+requiring users to repeat the same value in `--env-args`.
+
+To use a different model inside the environment than the one driving inference,
+pass it explicitly via `--env-args`:
+
+```bash
+prime eval run my-env -m google/gemma-3-27b-it -a '{"model": "qwen/qwen3-14b"}'
+```
+
+That override changes only the environment's view of `model`; the inference
+client still uses `--model`.
+
 For convenience, define model endpoints in `./configs/endpoints.toml` to avoid repeating URL and key flags.
 
 ```toml
