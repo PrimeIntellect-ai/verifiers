@@ -275,8 +275,6 @@ class OpenEnvEnv(vf.MultiTurnEnv):
             state["openenv_action_schema"] = action_schema
             if self._contract is None:
                 self._contract = server.contract
-            if self._action_schema is None:
-                self._action_schema = action_schema
 
             seed = 0
             info = state.get("info")
