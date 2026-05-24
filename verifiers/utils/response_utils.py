@@ -39,13 +39,7 @@ async def parse_response_message(response: Response) -> Messages:
 async def parse_response_tokens(
     response: Response, max_seq_len: int | None = None
 ) -> TrajectoryStepTokens | None:
-    """Parse token data from a vf.Response.
-
-    The parse is pure Python list slicing + dict build but runs per-turn for
-    every concurrent rollout (~100 turns × ~256 rollouts/worker), so wallclock
-    contention on the event loop adds up. Offload the body to a worker thread
-    so the loop stays responsive for ZMQ I/O and other tasks.
-    """
+    """Parse token data from a vf.Response."""
 
     def _sync() -> TrajectoryStepTokens | None:
         if response is None:

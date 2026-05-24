@@ -190,10 +190,6 @@ class EnvWorker:
                 pass
 
         try:
-            # msgpack.unpackb + Pydantic model_validate are CPU-only and the
-            # request payload is non-trivial (sampling_args + client_config +
-            # prompt); keeping them off the asyncio loop stops the unpack
-            # stampede from blocking ZMQ recv when many requests land at once.
             raw = await asyncio.to_thread(msgpack.unpackb, payload_bytes, raw=False)
             request_type = raw.get("request_type")
             request_id = raw.get("request_id", request_id)
@@ -400,9 +396,6 @@ class EnvWorker:
 
     @classmethod
     def run_worker(cls, *args, **kwargs) -> None:
-        # Install uvloop. Each worker juggles many concurrent rollouts × many
-        # turns; default selector loop scheduler overhead becomes the
-        # bottleneck before any single op does.
         try:
             import uvloop  # type: ignore
 
