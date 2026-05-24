@@ -767,7 +767,7 @@ class Environment(ABC):
             )
 
         state = await maybe_retry(run_rollout_attempt, max_retries=max_retries)()
-        output = state_to_output(state, state_columns or [])
+        output = await asyncio.to_thread(state_to_output, state, state_columns or [])
         return output
 
     @final
@@ -814,10 +814,13 @@ class Environment(ABC):
             )
 
         group_states = await maybe_retry(run_group_attempt, max_retries=max_retries)()
-        outputs = [
-            state_to_output(state, state_columns or []) for state in group_states
-        ]
-        return outputs
+        outputs = await asyncio.gather(
+            *(
+                asyncio.to_thread(state_to_output, state, state_columns or [])
+                for state in group_states
+            )
+        )
+        return list(outputs)
 
     async def generate(
         self,
