@@ -125,7 +125,7 @@ TASKS: list[vf.ConfigData] = [
 ]
 
 
-class GroupRewardTaskset(vf.Taskset[GroupRewardTasksetConfig]):
+class GroupRewardTaskset(vf.Taskset):
     async def init_group(
         self, task: vf.Task, num_rollouts: int
     ) -> tuple[list[vf.Task], list[vf.State]]:
@@ -171,7 +171,7 @@ class GroupRewardTaskset(vf.Taskset[GroupRewardTasksetConfig]):
         return tasks, states
 
 
-class GroupRewardHarness(vf.Harness[GroupRewardHarnessConfig]):
+class GroupRewardHarness(vf.Harness):
     pass
 
 

@@ -1,6 +1,5 @@
 import shlex
 from pathlib import PurePosixPath
-from typing import cast
 
 from .command import configure_command_harness
 from .configs import (
@@ -15,9 +14,10 @@ from ...harness import Harness
 from ...types import ProgramCommand, ProgramOptionMap
 
 
-class Terminus2(Harness[Terminus2Config]):
+class Terminus2(Harness):
     def __init__(self, config: Terminus2Config | None = None):
-        config = cast(Terminus2Config, self._coerce_config(config))
+        config = Terminus2Config() if config is None else config
+        assert isinstance(config, Terminus2Config)
         super().__init__(config=config.model_copy(update={"program": None}))
         self.config = config
         configure_command_harness(
@@ -48,7 +48,14 @@ class Terminus2(Harness[Terminus2Config]):
         ]
 
     def setup(self, config: Terminus2Config) -> str:
-        return build_terminus_2_install_script()
+        return """\
+set -e
+apt-get -o Acquire::Retries=3 update -qq
+apt-get -o Acquire::Retries=3 install -y -qq curl ca-certificates > /dev/null 2>&1
+if ! command -v uv >/dev/null 2>&1; then
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+fi
+"""
 
     def artifacts(self, config: Terminus2Config) -> ProgramOptionMap:
         return {
@@ -62,17 +69,6 @@ class Terminus2(Harness[Terminus2Config]):
 
 def load_harness(config: Terminus2Config) -> Terminus2:
     return Terminus2(config=config)
-
-
-def build_terminus_2_install_script() -> str:
-    return """\
-set -e
-apt-get -o Acquire::Retries=3 update -qq
-apt-get -o Acquire::Retries=3 install -y -qq curl ca-certificates > /dev/null 2>&1
-if ! command -v uv >/dev/null 2>&1; then
-  curl -LsSf https://astral.sh/uv/install.sh | sh
-fi
-"""
 
 
 def build_terminus_2_run_script(
@@ -251,7 +247,6 @@ asyncio.run(main())
 
 __all__ = [
     "Terminus2",
-    "build_terminus_2_install_script",
     "build_terminus_2_run_script",
     "terminus_2_agent_script",
 ]

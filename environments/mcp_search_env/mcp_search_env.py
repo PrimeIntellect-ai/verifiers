@@ -77,7 +77,7 @@ class MCPSearchTasksetConfig(vf.TasksetConfig):
     examples: list[vf.ConfigData] | None = None
 
 
-class MCPSearchTaskset(vf.Taskset[MCPSearchTasksetConfig]):
+class MCPSearchTaskset(vf.Taskset):
     def _configure_runtime_defaults(self) -> None:
         if "toolsets" not in self.config.model_fields_set:
             self.add_toolset(load_toolset(mcp_servers=self.config.mcp_servers))

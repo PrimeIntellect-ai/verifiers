@@ -105,15 +105,6 @@ def check_hub_env_installed(env_id: str) -> bool:
     return is_installed(name, version)
 
 
-def _is_valid_url(url: str) -> bool:
-    """Check if a string is a valid HTTP(S) URL."""
-    try:
-        result = urlparse(url)
-        return all([result.scheme in ("http", "https"), result.netloc])
-    except Exception:
-        return False
-
-
 def install_from_hub(env_id: str) -> bool:
     """Install an environment from the Environments Hub.
 
@@ -143,8 +134,16 @@ def install_from_hub(env_id: str) -> bool:
 
     simple_index_url = details.get("simple_index_url")
     wheel_url = details.get("wheel_url")
-    if wheel_url and not _is_valid_url(wheel_url):
-        wheel_url = None
+    if wheel_url:
+        try:
+            parsed_wheel_url = urlparse(wheel_url)
+            if (
+                parsed_wheel_url.scheme not in ("http", "https")
+                or not parsed_wheel_url.netloc
+            ):
+                wheel_url = None
+        except Exception:
+            wheel_url = None
 
     if not simple_index_url and not wheel_url:
         if details.get("visibility") == "PRIVATE":

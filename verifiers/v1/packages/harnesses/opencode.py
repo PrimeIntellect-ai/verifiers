@@ -1,7 +1,6 @@
 import json
 import shlex
 from pathlib import PurePosixPath
-from typing import cast
 
 from .command import configure_command_harness
 from .configs import OpenCodeConfig
@@ -16,9 +15,10 @@ from ...types import (
 )
 
 
-class OpenCode(Harness[OpenCodeConfig]):
+class OpenCode(Harness):
     def __init__(self, config: OpenCodeConfig | None = None):
-        config = cast(OpenCodeConfig, self._coerce_config(config))
+        config = OpenCodeConfig() if config is None else config
+        assert isinstance(config, OpenCodeConfig)
         super().__init__(config=config.model_copy(update={"program": None}))
         self.config = config
         configure_command_harness(

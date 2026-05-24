@@ -2,24 +2,21 @@ import importlib
 import inspect
 import logging
 from collections.abc import Mapping
-from typing import Callable, get_type_hints
+from types import ModuleType, UnionType
+from typing import Callable, Union, get_args, get_origin, get_type_hints
 
 from pydantic import BaseModel
 from verifiers.envs.environment import Environment
 from verifiers.utils.config_utils import MissingKeyError
-from verifiers.v1.config import EnvConfig
-from verifiers.v1.utils.config_utils import coerce_config, explicit_config_data
-
-
-def package_module_name(package_id: str) -> str:
-    return package_id.replace("-", "_").split("/")[-1]
+from verifiers.v1.config import EnvConfig, HarnessConfig, TasksetConfig
+from verifiers.v1.utils.config_utils import explicit_config_data
 
 
 def load_environment(env_id: str, **env_args) -> Environment:
     logger = logging.getLogger("verifiers.utils.env_utils")
     logger.info(f"Loading environment: {env_id}")
 
-    module_name = package_module_name(env_id)
+    module_name = env_id.replace("-", "_").split("/")[-1]
     try:
         module = importlib.import_module(module_name)
 
@@ -75,9 +72,7 @@ def load_environment(env_id: str, **env_args) -> Environment:
             if default_values:
                 logger.info(f"Using default args: {', '.join(default_values)}")
 
-        call_env_args = prepare_typed_env_config(
-            env_load_func, sig, env_args, env_id=env_id
-        )
+        call_env_args = prepare_typed_env_config(module, env_load_func, sig, env_args)
         env_instance: Environment = env_load_func(**call_env_args)
         env_instance.env_id = env_instance.env_id or env_id
         env_instance.env_args = env_instance.env_args or env_args
@@ -103,75 +98,22 @@ def load_environment(env_id: str, **env_args) -> Environment:
 
 
 def prepare_typed_env_config(
+    module: ModuleType,
     env_load_func: Callable[..., Environment],
     sig: inspect.Signature,
     env_args: dict,
-    *,
-    env_id: str | None = None,
 ) -> dict:
     config_type = env_config_annotation(env_load_func, sig)
     if config_type is None:
         return env_args
 
-    if "config" not in env_args:
-        call_env_args = dict(env_args)
-        call_env_args["config"] = coerce_config(
-            config_type, prepare_base_env_config(config_type, {}, env_id=env_id)
-        )
-        return call_env_args
-
-    config = env_args["config"]
+    config = env_args.get("config", {})
     if config is None:
         raise TypeError("load_environment config must be a concrete EnvConfig object.")
-    if isinstance(config, config_type):
-        if config_type is EnvConfig:
-            call_env_args = dict(env_args)
-            call_env_args["config"] = coerce_config(
-                config_type,
-                prepare_base_env_config(config_type, config, env_id=env_id),
-            )
-            return call_env_args
-        return env_args
 
     call_env_args = dict(env_args)
-    call_env_args["config"] = coerce_config(
-        config_type, prepare_base_env_config(config_type, config, env_id=env_id)
-    )
+    call_env_args["config"] = load_env_config(module, config_type, config)
     return call_env_args
-
-
-def prepare_base_env_config(
-    config_type: type[EnvConfig],
-    config: object,
-    *,
-    env_id: str | None,
-) -> object:
-    if config_type is not EnvConfig or not env_id:
-        return config
-    data = explicit_config_data(config)
-    taskset = data.get("taskset")
-    taskset_data = config_table(taskset)
-    if "id" not in taskset_data and "taskset_id" not in taskset_data:
-        taskset_data["id"] = env_id
-    data["taskset"] = taskset_data
-    harness = data.get("harness")
-    data["harness"] = config_table(harness)
-    return data
-
-
-def config_table(value: object) -> dict[str, object]:
-    if value is None:
-        return {}
-    if isinstance(value, BaseModel):
-        return explicit_config_data(value)
-    if not isinstance(value, Mapping):
-        raise TypeError("EnvConfig child config must be a mapping or config object.")
-    data: dict[str, object] = {}
-    for key, item in value.items():
-        if not isinstance(key, str):
-            raise TypeError("EnvConfig child config keys must be strings.")
-        data[key] = item
-    return data
 
 
 def env_config_annotation(
@@ -181,7 +123,9 @@ def env_config_annotation(
     if "config" not in sig.parameters:
         return None
     try:
-        annotation = get_type_hints(env_load_func).get("config")
+        annotation = get_type_hints(env_load_func).get(
+            "config", sig.parameters["config"].annotation
+        )
     except Exception:
         annotation = sig.parameters["config"].annotation
     return env_config_type(annotation)
@@ -190,6 +134,126 @@ def env_config_annotation(
 def env_config_type(annotation: object) -> type[EnvConfig] | None:
     if annotation is inspect.Parameter.empty:
         return None
+    origin = get_origin(annotation)
+    if origin in (Union, UnionType):
+        args = [arg for arg in get_args(annotation) if arg is not type(None)]
+        if len(args) == 1:
+            annotation = args[0]
     if isinstance(annotation, type) and issubclass(annotation, EnvConfig):
         return annotation
     return None
+
+
+def load_env_config(
+    module: ModuleType,
+    config_type: type[EnvConfig],
+    value: object,
+) -> EnvConfig:
+    child_types: dict[str, type[BaseModel]] = {}
+    for field_name, factory_name, base_type in (
+        ("taskset", "load_taskset", TasksetConfig),
+        ("harness", "load_harness", HarnessConfig),
+    ):
+        field_type = config_type_from_annotation(
+            config_type.model_fields[field_name].annotation,
+            base_type,
+            f"{config_type.__name__}.{field_name}",
+        )
+        factory_type = factory_config_type(module, factory_name, base_type)
+        if factory_type is not None:
+            if not issubclass(factory_type, field_type):
+                raise TypeError(
+                    f"{module.__name__}.{factory_name} config type "
+                    f"{factory_type.__name__} does not match "
+                    f"{config_type.__name__}.{field_name}: {field_type.__name__}."
+                )
+            child_types[field_name] = factory_type
+        else:
+            child_types[field_name] = field_type
+
+    if isinstance(value, config_type):
+        for field_name, child_type in child_types.items():
+            child = getattr(value, field_name)
+            if not isinstance(child, child_type):
+                raise TypeError(
+                    f"config.{field_name} must be {child_type.__name__}; "
+                    f"got {type(child).__name__}."
+                )
+        return value
+    if isinstance(value, BaseModel):
+        raise TypeError(
+            f"load_environment config must be {config_type.__name__}; "
+            f"got {type(value).__name__}."
+        )
+    if not isinstance(value, Mapping):
+        raise TypeError("load_environment config must be a mapping or EnvConfig.")
+
+    data = explicit_config_data(value)
+    defaults: EnvConfig | None = None
+    for field_name, child_type in child_types.items():
+        if field_name not in data:
+            defaults = config_type() if defaults is None else defaults
+            child = getattr(defaults, field_name)
+            data[field_name] = child if isinstance(child, child_type) else child_type()
+            continue
+        child = data[field_name]
+        if isinstance(child, child_type):
+            continue
+        if isinstance(child, BaseModel):
+            raise TypeError(
+                f"config.{field_name} must be {child_type.__name__}; "
+                f"got {type(child).__name__}."
+            )
+        if child is None:
+            raise TypeError(f"config.{field_name} cannot be None.")
+        data[field_name] = child_type.model_validate(explicit_config_data(child))
+    config = config_type.model_validate(data)
+    for field_name, child_type in child_types.items():
+        child = getattr(config, field_name)
+        if not isinstance(child, child_type):
+            raise TypeError(
+                f"config.{field_name} must be {child_type.__name__}; "
+                f"got {type(child).__name__}."
+            )
+    return config
+
+
+def factory_config_type(
+    module: ModuleType,
+    factory_name: str,
+    base_type: type[BaseModel],
+) -> type[BaseModel] | None:
+    factory = getattr(module, factory_name, None)
+    if factory is None:
+        return None
+    signature = inspect.signature(factory)
+    if "config" not in signature.parameters:
+        raise TypeError(f"{module.__name__}.{factory_name} must accept config.")
+    try:
+        annotation = get_type_hints(factory).get(
+            "config", signature.parameters["config"].annotation
+        )
+    except Exception:
+        annotation = signature.parameters["config"].annotation
+    return config_type_from_annotation(
+        annotation,
+        base_type,
+        f"{module.__name__}.{factory_name}.config",
+    )
+
+
+def config_type_from_annotation(
+    annotation: object,
+    base_type: type[BaseModel],
+    context: str,
+) -> type[BaseModel]:
+    if annotation is inspect.Parameter.empty:
+        raise TypeError(f"{context} must be annotated.")
+    origin = get_origin(annotation)
+    if origin in (Union, UnionType):
+        args = [arg for arg in get_args(annotation) if arg is not type(None)]
+        if len(args) == 1:
+            annotation = args[0]
+    if isinstance(annotation, type) and issubclass(annotation, base_type):
+        return annotation
+    raise TypeError(f"{context} must be a {base_type.__name__} subclass.")

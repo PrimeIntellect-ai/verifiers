@@ -325,7 +325,7 @@ class AlphabetSortEnvConfig(vf.EnvConfig):
     harness: vf.HarnessConfig = vf.HarnessConfig()
 
 
-class AlphabetSortTaskset(vf.Taskset[AlphabetSortTasksetConfig]):
+class AlphabetSortTaskset(vf.Taskset):
     _default_source = source
     _default_rewards = (weighted_reward,)
     _default_user = alphabet_user

@@ -433,11 +433,6 @@ class BaseDisplay:
         fd = sys.stdin.fileno()
         old_settings = termios_module.tcgetattr(fd)
 
-        def drain_escape_sequence() -> None:
-            """Consume remaining chars of an escape sequence (mouse events, etc)."""
-            while select_module.select([sys.stdin], [], [], 0.01)[0]:
-                sys.stdin.read(1)
-
         try:
             # Use cbreak mode (not raw) - allows single char input without corrupting display
             tty_module.setcbreak(fd)
@@ -456,7 +451,8 @@ class BaseDisplay:
                         # Check if more chars follow (escape sequence vs standalone Esc)
                         if select_module.select([sys.stdin], [], [], 0.05)[0]:
                             # Escape sequence - drain it and ignore
-                            drain_escape_sequence()
+                            while select_module.select([sys.stdin], [], [], 0.01)[0]:
+                                sys.stdin.read(1)
                             continue
                         else:
                             # Standalone Escape key - exit

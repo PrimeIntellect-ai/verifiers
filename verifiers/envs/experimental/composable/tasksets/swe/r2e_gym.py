@@ -7,7 +7,7 @@ from typing import Any
 import verifiers as vf
 from verifiers.envs.experimental.composable import SandboxSpec, SandboxTaskSet
 
-from .log_parser import decolor_dict_keys, parse_log_fn
+from .log_parser import decolor_dict_keys, parse_log_pytest
 
 logger = logging.getLogger(__name__)
 
@@ -390,7 +390,7 @@ class R2EGymTaskSet(SandboxTaskSet):
 
     def _calculate_reward(self, test_output: str, info: dict) -> float:
         """Parse test log, compare to expected_output_json."""
-        parse = parse_log_fn(info["repo_name"])(test_output)
+        parse = parse_log_pytest(test_output)
         parse = decolor_dict_keys(parse)
         expected: dict = json.loads(info["expected_output_json"])
         expected = decolor_dict_keys(expected)

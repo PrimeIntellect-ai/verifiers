@@ -1,7 +1,6 @@
 import json
 import shlex
 from pathlib import PurePosixPath
-from typing import cast
 
 from .command import configure_command_harness
 from .configs import PiConfig
@@ -12,9 +11,10 @@ from ...utils.binding_utils import Bindings
 from ...types import ConfigMap, ProgramChannels, ProgramCommand, ProgramOptionMap
 
 
-class Pi(Harness[PiConfig]):
+class Pi(Harness):
     def __init__(self, config: PiConfig | None = None):
-        config = cast(PiConfig, self._coerce_config(config))
+        config = PiConfig() if config is None else config
+        assert isinstance(config, PiConfig)
         super().__init__(config=config.model_copy(update={"program": None}))
         self.config = config
         configure_command_harness(
@@ -42,7 +42,11 @@ class Pi(Harness[PiConfig]):
         ]
 
     def setup(self, config: PiConfig) -> str:
-        return build_pi_install_script(package=config.package)
+        return f"""\
+set -e
+apt-get -o Acquire::Retries=3 update -qq && apt-get -o Acquire::Retries=3 install -y -qq curl ca-certificates nodejs npm > /dev/null 2>&1
+npm install -g --ignore-scripts {shlex.quote(config.package)}
+"""
 
     def artifacts(self, config: PiConfig) -> ProgramOptionMap:
         return {
@@ -69,14 +73,6 @@ class Pi(Harness[PiConfig]):
 
 def load_harness(config: PiConfig) -> Pi:
     return Pi(config=config)
-
-
-def build_pi_install_script(package: str) -> str:
-    return f"""\
-set -e
-apt-get -o Acquire::Retries=3 update -qq && apt-get -o Acquire::Retries=3 install -y -qq curl ca-certificates nodejs npm > /dev/null 2>&1
-npm install -g {shlex.quote(package)}
-"""
 
 
 def build_pi_mcp_setup(

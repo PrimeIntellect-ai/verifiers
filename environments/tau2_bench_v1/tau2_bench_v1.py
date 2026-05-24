@@ -33,9 +33,9 @@ from tau2.user.user_simulator import UserSimulator, is_valid_user_history_messag
 from tau2.utils.utils import DATA_DIR, format_time, get_now
 from verifiers.utils.async_utils import maybe_call_with_named_args
 
-DEFAULT_USER_MODEL = "gpt-4.1"
-DEFAULT_USER_BASE_URL = "https://api.openai.com/v1"
-DEFAULT_USER_API_KEY_VAR = "OPENAI_API_KEY"
+DEFAULT_USER_MODEL = "openai/gpt-4.1-mini"
+DEFAULT_USER_BASE_URL = "https://api.pinference.ai/api/v1"
+DEFAULT_USER_API_KEY_VAR = "PRIME_API_KEY"
 
 
 def download_tau2_data() -> None:
@@ -594,8 +594,22 @@ def load_toolset(
 def tau2_user_args(
     user_args: ConfigMap, user_base_url: str, user_api_key_var: str
 ) -> vf.ConfigData:
+    resolved_args = dict(user_args)
+    if user_base_url == DEFAULT_USER_BASE_URL:
+        custom_provider = resolved_args.get("custom_llm_provider")
+        assert custom_provider in (None, "custom_openai")
+        resolved_args["custom_llm_provider"] = "custom_openai"
+    if user_api_key_var == "PRIME_API_KEY":
+        team_id = os.getenv("PRIME_TEAM_ID")
+        if team_id:
+            extra_headers = resolved_args.get("extra_headers") or {}
+            assert isinstance(extra_headers, dict)
+            resolved_args["extra_headers"] = {
+                **extra_headers,
+                "X-Prime-Team-ID": team_id,
+            }
     return {
-        **dict(user_args),
+        **resolved_args,
         "api_base": user_base_url,
         "api_key": os.getenv(user_api_key_var),
     }
@@ -689,7 +703,7 @@ class Tau2TasksetConfig(vf.TasksetConfig):
     max_turns: int = DEFAULT_MAX_STEPS
 
 
-class Tau2Taskset(vf.Taskset[Tau2TasksetConfig]):
+class Tau2Taskset(vf.Taskset):
     def __init__(
         self,
         config: Tau2TasksetConfig | None = None,

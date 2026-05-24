@@ -418,13 +418,13 @@ def stringify_nested(value: object) -> object:
     return str(value)
 
 
-class DSPyFlightsTaskset(vf.Taskset[vf.TasksetConfig]):
+class DSPyFlightsTaskset(vf.Taskset):
     _default_source = source
     _default_rewards = (expected_database_change,)
     _default_metrics = (dspy_calls,)
 
 
-class DSPyFlightsHarness(vf.Harness[DSPyFlightsHarnessConfig]):
+class DSPyFlightsHarness(vf.Harness):
     _default_program = vf.ProgramConfig(
         fn=f"{__name__}:run_dspy_flight_program",
         sandbox=True,

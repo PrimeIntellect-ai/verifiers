@@ -73,11 +73,11 @@ class WikispeediaHarnessConfig(vf.HarnessConfig):
     timeout_seconds: float = 1200.0
 
 
-class WikispeediaTaskset(vf.Taskset[WikispeediaTasksetConfig]):
+class WikispeediaTaskset(vf.Taskset):
     pass
 
 
-class WikispeediaHarness(vf.Harness[WikispeediaHarnessConfig]):
+class WikispeediaHarness(vf.Harness):
     pass
 
 

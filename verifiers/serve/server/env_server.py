@@ -125,5 +125,18 @@ class EnvServer(ABC):
 
     @classmethod
     def run_server(cls, *args, **kwargs):
+        try:
+            import uvloop  # type: ignore
+
+            uvloop.install()
+        except ImportError:
+            pass
+
+        # Router juggles stats, worker responses, and request dispatch on a
+        # single loop; the default 32-thread executor silently caps to_thread.
+        from verifiers.utils.thread_utils import scale_executors
+
+        scale_executors(concurrency=512)
+
         server = cls(*args, **kwargs)
         return asyncio.run(server.run())

@@ -117,13 +117,13 @@ def answer_reward(task: vf.Task, state: vf.State) -> float:
     return answers_match(agent_answer, str(task.get("answer", "")))
 
 
-class OpenAIAgentsTaskset(vf.Taskset[OpenAIAgentsTasksetConfig]):
+class OpenAIAgentsTaskset(vf.Taskset):
     _default_source = load_train_rows
     _default_eval_source = load_eval_rows
     _default_rewards = (answer_reward,)
 
 
-class OpenAIAgentsHarness(vf.Harness[vf.HarnessConfig]):
+class OpenAIAgentsHarness(vf.Harness):
     _default_program = run_openai_agents_program
 
 

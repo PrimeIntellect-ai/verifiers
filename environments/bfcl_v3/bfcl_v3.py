@@ -577,7 +577,7 @@ async def bfcl_multi_turn_program(
     return state
 
 
-class BFCLMultiTurnHarness(vf.Harness[BFCLHarnessConfig]):
+class BFCLMultiTurnHarness(vf.Harness):
     def __init__(self, config: BFCLHarnessConfig):
         super().__init__(config=config)
         self._configure_runtime(program=self.run_bfcl_multi_turn)
@@ -586,7 +586,7 @@ class BFCLMultiTurnHarness(vf.Harness[BFCLHarnessConfig]):
         return await bfcl_multi_turn_program(task, state, self)
 
 
-class BFCLTaskset(vf.Taskset[BFCLTasksetConfig]):
+class BFCLTaskset(vf.Taskset):
     _default_source = source
     _default_rewards = (bfcl_reward,)
 

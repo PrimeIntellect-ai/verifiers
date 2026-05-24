@@ -9,7 +9,6 @@ from prime_sandboxes import AsyncSandboxClient, CommandTimeoutError
 
 from verifiers.utils.thread_utils import (
     get_or_create_thread_attr,
-    get_or_create_thread_loop,
     register_executor,
     unregister_executor,
 )
@@ -61,7 +60,8 @@ class ThreadedAsyncSandboxClient:
         @functools.wraps(getattr(AsyncSandboxClient, name, lambda: None))
         async def wrapper(*args, **kwargs):
             def run_in_thread():
-                loop = get_or_create_thread_loop()
+                loop = get_or_create_thread_attr("loop", asyncio.new_event_loop)
+                asyncio.set_event_loop(loop)
                 sandbox_client = get_or_create_thread_attr(
                     "sandbox_client",
                     AsyncSandboxClient,

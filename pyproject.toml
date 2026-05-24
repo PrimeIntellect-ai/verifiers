@@ -54,6 +54,7 @@ dependencies = [
     "regex<2026.4.4",
     "httpx>=0.27.0",
     "prime-pydantic-config[toml]",
+    "uvloop>=0.21.0; sys_platform != 'win32' and sys_platform != 'cygwin' and platform_python_implementation != 'PyPy'",
 ]
 
 [dependency-groups]

@@ -345,7 +345,7 @@ def load_bash_toolset(config=None) -> vf.Toolset:
     )
 
 
-class SelfJudgeTaskset(vf.Taskset[SelfJudgeTasksetConfig]):
+class SelfJudgeTaskset(vf.Taskset):
     _default_source = source
     _default_toolsets = {"bash": load_bash_toolset}
     _default_updates = (sandbox_judge,)
@@ -353,7 +353,7 @@ class SelfJudgeTaskset(vf.Taskset[SelfJudgeTasksetConfig]):
     _default_metrics = (bash_calls,)
 
 
-class SelfJudgeHarness(vf.Harness[SelfJudgeHarnessConfig]):
+class SelfJudgeHarness(vf.Harness):
     pass
 
 
