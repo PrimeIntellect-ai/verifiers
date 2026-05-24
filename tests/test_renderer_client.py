@@ -348,7 +348,9 @@ async def test_get_incremental_prompt_ids_matches_tool_tail_without_rerendering_
     )
 
     assert result is not None
-    assert result.token_ids == [1, 2, 3, 99, 30, 40]
+    bridged, routed_experts_prompt_start = result
+    assert bridged.token_ids == [1, 2, 3, 99, 30, 40]
+    assert routed_experts_prompt_start == 3
     # The bridge stitches over the completion without re-rendering it —
     # one bridge call, zero render_ids calls (older diff-based bridges
     # called render_ids twice).
@@ -391,7 +393,9 @@ async def test_get_incremental_prompt_ids_accepts_tool_then_user_tail():
     )
 
     assert result is not None
-    assert result.token_ids == [1, 2, 3, 99, 40, 50]
+    bridged, routed_experts_prompt_start = result
+    assert bridged.token_ids == [1, 2, 3, 99, 40, 50]
+    assert routed_experts_prompt_start == 3
 
 
 @pytest.mark.asyncio
@@ -451,7 +455,9 @@ async def test_get_incremental_prompt_ids_accepts_multimodal_tool_user_tail():
     )
 
     assert result is not None
-    assert result.token_ids == [1, 2, 3, 99, 40, 50]
+    bridged, routed_experts_prompt_start = result
+    assert bridged.token_ids == [1, 2, 3, 99, 40, 50]
+    assert routed_experts_prompt_start == 3
 
 
 # ── Parity across real renderers: truncated most-recent step ──────────
@@ -557,7 +563,9 @@ async def test_get_incremental_prompt_ids_bridges_over_truncated_step(
 
     prefix = list(prev_prompt_ids) + list(prev_completion_ids)
     assert result is not None, f"{model_id}: bridge returned None on truncated anchor"
-    result_ids = result.token_ids
+    bridged, routed_experts_prompt_start = result
+    result_ids = bridged.token_ids
+    assert routed_experts_prompt_start == len(prefix) - 1
     assert result_ids[: len(prefix)] == prefix, (
         f"{model_id}: bridge result does not prefix-preserve "
         f"prev_prompt + prev_completion"

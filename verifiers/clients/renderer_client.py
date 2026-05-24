@@ -10,6 +10,7 @@ concurrent rollouts tokenize in parallel instead of blocking the event loop.
 
 import asyncio
 import json
+import logging
 import threading
 from collections.abc import Mapping
 from typing import Any, ClassVar, cast
@@ -57,6 +58,8 @@ from verifiers.types import (
     UserMessage,
 )
 from verifiers.utils.client_utils import setup_openai_client
+
+logger = logging.getLogger(__name__)
 
 # Module-level bridge counters. Incremented by every RendererClient instance
 # that tries to stitch a multi-turn prompt; callers (e.g. prime-rl's
@@ -322,8 +325,8 @@ async def _get_incremental_prompt_ids(
     prompt: list[RendererMessage],
     state: Any,
     tools: list[ToolSpec] | None,
-) -> "RenderedTokens | None":
-    """Return the bridged prompt for the next turn as ``RenderedTokens``.
+) -> "tuple[RenderedTokens, int] | None":
+    """Return the bridged prompt and routed-experts replay start.
 
     Returns ``None`` when no prior trajectory step lines up with the new
     prompt's prefix or the renderer's ``bridge_to_next_turn`` can't extend
@@ -388,7 +391,10 @@ async def _get_incremental_prompt_ids(
             )
         bridged = await _maybe_offload(renderer, bridge)
         _record_bridge(success=bridged is not None)
-        return bridged
+        if bridged is not None:
+            start = max(len(previous_prompt_ids) + len(previous_completion_ids) - 1, 0)
+            return bridged, start
+        return None
 
     return None
 
@@ -550,18 +556,29 @@ class RendererClient(
         if args.get("prompt_logprobs"):
             sampling_params["prompt_logprobs"] = 1
 
-        bridged = await _get_incremental_prompt_ids(
+        bridged_with_start = await _get_incremental_prompt_ids(
             renderer=renderer,
             prompt=prompt,
             state=kwargs.get("state"),
             tools=tools,
         )
-        # ``bridged`` is RenderedTokens | None. Unpack token_ids + mm_data
-        # so multimodal renderers thread per-image features through to
-        # /inference/v1/generate without re-rendering the whole turn.
-        if bridged is not None:
+        # ``bridged_with_start`` is (RenderedTokens, replay_start) | None.
+        # Unpack token_ids + mm_data so multimodal renderers thread per-image
+        # features through to /inference/v1/generate without re-rendering the
+        # whole turn.
+        if bridged_with_start is not None:
+            bridged, routed_experts_prompt_start = bridged_with_start
             prompt_ids = bridged.token_ids
             multi_modal_data = bridged.multi_modal_data
+            sampling_params["routed_experts_prompt_start"] = routed_experts_prompt_start
+            if routed_experts_prompt_start:
+                logger.info(
+                    "Using routed_experts_prompt_start=%d for bridged renderer prompt "
+                    "(prompt_len=%d, trajectory_len=%d)",
+                    routed_experts_prompt_start,
+                    len(prompt_ids),
+                    len(_get_value(kwargs.get("state"), "trajectory", []) or []),
+                )
         else:
             prompt_ids = None
             multi_modal_data = None
