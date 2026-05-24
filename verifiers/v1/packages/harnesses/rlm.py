@@ -69,6 +69,7 @@ class RLM(Harness):
         if summarize_resolver is not None:
             env["RLM_SUMMARIZE_AT_TOKENS"] = summarize_resolver
         sandbox_config: ConfigMap | SandboxConfig | bool
+        setup_timeout = max(harness_config.rlm_exec_timeout + 120, 600)
         sandbox_config = harness_config.sandbox or True
         if sandbox_config is True:
             sandbox_config = {
@@ -80,12 +81,17 @@ class RLM(Harness):
                 "network_access": True,
                 "timeout_minutes": 60,
                 "command_timeout": max(harness_config.rlm_exec_timeout + 120, 600),
+                "setup_timeout": setup_timeout,
             }
         elif sandbox_config is not False:
+            sandbox_options = sandbox_config_mapping(sandbox_config) or {}
+            if isinstance(sandbox_options.get("setup_timeout"), int):
+                setup_timeout = cast(int, sandbox_options["setup_timeout"])
             sandbox_config = {
                 "workdir": harness_config.workdir,
                 "command_timeout": max(harness_config.rlm_exec_timeout + 120, 600),
-                **(sandbox_config_mapping(sandbox_config) or {}),
+                "setup_timeout": setup_timeout,
+                **sandbox_options,
             }
         dirs: dict[str, ProgramValue] = {
             DEFAULT_RLM_CHECKOUT_PATH: rlm_checkout_loader(
@@ -105,50 +111,52 @@ class RLM(Harness):
             "-lc",
             build_run_script(harness_config.instruction_path, harness_config.workdir),
         ]
-        self._configure_runtime(
-            program=command_program(
-                command=command,
-                sandbox=sandbox_config,
-                files={
-                    harness_config.instruction_path: task_instruction_text,
-                    RLM_DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH: (
-                        harness_config.append_to_system_prompt
-                    ),
-                    DEFAULT_RLM_TOOL_SKILLS_ARCHIVE_PATH: self.vf_tool_skills_archive,
-                },
-                dirs=dirs,
-                setup=[
-                    "apt-get -o Acquire::Retries=3 update && "
-                    "apt-get -o Acquire::Retries=3 install -y --no-install-recommends "
-                    "ca-certificates curl git && rm -rf /var/lib/apt/lists/*",
-                    (
-                        f"if [ -s {shlex.quote(DEFAULT_RLM_TOOL_SKILLS_ARCHIVE_PATH)} ]; then "
-                        f"mkdir -p {shlex.quote(DEFAULT_RLM_SKILLS_PATH)} && "
-                        f"base64 -d {shlex.quote(DEFAULT_RLM_TOOL_SKILLS_ARCHIVE_PATH)} | "
-                        f"tar -xzf - -C {shlex.quote(DEFAULT_RLM_SKILLS_PATH)}; "
-                        "fi"
-                    ),
-                    "bash -lc "
-                    + shlex.quote(
-                        f"""
+        program = command_program(
+            command=command,
+            sandbox=sandbox_config,
+            files={
+                harness_config.instruction_path: task_instruction_text,
+                RLM_DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH: (
+                    harness_config.append_to_system_prompt
+                ),
+                DEFAULT_RLM_TOOL_SKILLS_ARCHIVE_PATH: self.vf_tool_skills_archive,
+            },
+            dirs=dirs,
+            setup=[
+                "apt-get -o Acquire::Retries=3 update && "
+                "apt-get -o Acquire::Retries=3 install -y --no-install-recommends "
+                "ca-certificates curl git && rm -rf /var/lib/apt/lists/*",
+                (
+                    f"if [ -s {shlex.quote(DEFAULT_RLM_TOOL_SKILLS_ARCHIVE_PATH)} ]; then "
+                    f"mkdir -p {shlex.quote(DEFAULT_RLM_SKILLS_PATH)} && "
+                    f"base64 -d {shlex.quote(DEFAULT_RLM_TOOL_SKILLS_ARCHIVE_PATH)} | "
+                    f"tar -xzf - -C {shlex.quote(DEFAULT_RLM_SKILLS_PATH)}; "
+                    "fi"
+                ),
+                "bash -lc "
+                + shlex.quote(
+                    f"""
 set -eo pipefail
 export RLM_CHECKOUT_PATH={shlex.quote(DEFAULT_RLM_CHECKOUT_PATH)}
 test -f "$RLM_CHECKOUT_PATH/install.sh"
 bash "$RLM_CHECKOUT_PATH/install.sh"
 """
-                    ),
-                ],
-                env=env,
-                artifacts={
-                    "rlm_metrics": {
-                        "path": f"{harness_config.workdir}/.rlm/sessions/*/meta.json",
-                        "format": "json",
-                        "key": "metrics",
-                        "optional": True,
-                    }
-                },
-                program=harness_config.program,
-            ),
+                ),
+            ],
+            env=env,
+            artifacts={
+                "rlm_metrics": {
+                    "path": f"{harness_config.workdir}/.rlm/sessions/*/meta.json",
+                    "format": "json",
+                    "key": "metrics",
+                    "optional": True,
+                }
+            },
+            program=harness_config.program,
+        )
+        program["setup_timeout"] = setup_timeout
+        self._configure_runtime(
+            program=program,
             sandbox=None if sandbox_config is False else sandbox_config,
             metrics=[
                 rlm_sub_llm_call_count,
@@ -216,6 +224,7 @@ bash "$RLM_CHECKOUT_PATH/install.sh"
                     if parameters.get("additionalProperties") is False
                     else None
                 )
+                signature, arguments = render_run_signature_and_arguments(tool_def)
                 module = textwrap.dedent(
                     f"""\
                     import os
@@ -225,9 +234,9 @@ bash "$RLM_CHECKOUT_PATH/install.sh"
                     TOOL_ALLOWED_ARGUMENTS = {allowed_arguments!r}
 
 
-                    async def run(arguments: dict | None = None, **kwargs):
+                    async def run({signature}):
                         {json.dumps(description)}
-                        arguments = _tool_arguments(arguments, kwargs)
+                        arguments = _tool_arguments({arguments}, kwargs)
                         base = os.environ.get("ANTHROPIC_BASE_URL") or os.environ.get("OPENAI_BASE_URL")
                         if not base:
                             raise RuntimeError("No Verifiers endpoint URL is configured.")
@@ -313,6 +322,46 @@ Tool schema:
                     info.size = len(data)
                     tar.addfile(info, io.BytesIO(data))
         return base64.b64encode(buffer.getvalue()).decode()
+
+
+def render_run_signature_and_arguments(tool_def: ConfigMap) -> tuple[str, str]:
+    parameters = cast(ConfigData, tool_def.get("parameters") or {})
+    properties = cast(ConfigData, parameters.get("properties") or {})
+    required = set(cast(list[str], parameters.get("required") or []))
+    if any(not valid_tool_parameter(name) for name in properties):
+        return "arguments: dict | None = None, **kwargs", "arguments"
+    items = sorted(
+        properties.items(),
+        key=lambda item: (
+            "default" in cast(ConfigData, item[1]) or item[0] not in required
+        ),
+    )
+    signature_parts: list[str] = []
+    argument_parts: list[str] = []
+    for name, raw_schema in items:
+        schema = cast(ConfigData, raw_schema)
+        if "default" in schema:
+            signature_parts.append(f"{name}={schema['default']!r}")
+        elif name in required:
+            signature_parts.append(name)
+        else:
+            signature_parts.append(f"{name}=None")
+        argument_parts.append(f"{name!r}: {name}")
+    signature_parts.append("**kwargs")
+    return ", ".join(signature_parts), "{" + ", ".join(argument_parts) + "}"
+
+
+def valid_tool_parameter(name: str) -> bool:
+    return (
+        name.isidentifier()
+        and not name.startswith("_")
+        and not keyword.iskeyword(name)
+        and name
+        not in {
+            "arguments",
+            "kwargs",
+        }
+    )
 
 
 def load_harness(config: RLMConfig) -> RLM:

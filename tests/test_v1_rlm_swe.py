@@ -1,5 +1,6 @@
 import base64
 import io
+import inspect
 import sys
 import tarfile
 import types
@@ -129,7 +130,7 @@ async def test_rlm_harness_generates_skills_for_v1_tools():
             .decode()
         )
         skill_markdown = tar.extractfile("lookup_order/SKILL.md").read().decode()
-    assert "async def run(arguments: dict | None = None, **kwargs)" in source
+    assert "async def run(order_id, **kwargs)" in source
     assert "/vf/tools/" in source
     assert "'lookup_order'" in source
     assert "Look up an order by ID." in skill_markdown
@@ -241,6 +242,7 @@ async def test_vf_tool_skill_filters_extra_kwargs_for_closed_schemas(
     monkeypatch.setenv("OPENAI_BASE_URL", "https://example.test/v1")
     module.requests = Requests
 
+    assert list(inspect.signature(module.run).parameters) == ["date", "kwargs"]
     result = await module.run(user="Alice", date="2025-07-14")
 
     assert result == "ok"
