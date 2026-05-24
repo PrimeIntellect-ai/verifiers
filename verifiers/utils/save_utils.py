@@ -209,6 +209,15 @@ def state_to_output(
     Raises:
         ValueError: If a state_columns value is not JSON-serializable.
     """
+    timing = state["timing"]
+    timing_model_dump = getattr(timing, "model_dump", None)
+    if callable(timing_model_dump):
+        timing_output = cast(dict[str, Any], timing_model_dump())
+    elif isinstance(timing, Mapping):
+        timing_output = dict(cast(Mapping[str, Any], timing))
+    else:
+        raise TypeError("state['timing'] must be a RolloutTiming or mapping.")
+
     output = RolloutOutput(
         example_id=state.get("example_id", 0),
         prompt=state.get("prompt"),
@@ -217,7 +226,7 @@ def state_to_output(
         info=state.get("info", {}),
         reward=state.get("reward", 0.0),
         error=state.get("error", None),
-        timing=serialize_timing(state["timing"]),
+        timing=timing_output,
         is_completed=state.get("is_completed", False),
         is_truncated=state.get("is_truncated", False),
         stop_condition=state.get("stop_condition", None),
@@ -510,15 +519,6 @@ def _diff_mm_data(mm: object, prior_hashes: dict[str, list[str]]) -> object:
         )
     except TypeError:
         return mm
-
-
-def serialize_timing(timing: object) -> dict[str, Any]:
-    model_dump = getattr(timing, "model_dump", None)
-    if callable(model_dump):
-        return cast(dict[str, Any], model_dump())
-    if isinstance(timing, Mapping):
-        return dict(cast(Mapping[str, Any], timing))
-    raise TypeError("state['timing'] must be a RolloutTiming or mapping.")
 
 
 def states_to_outputs(
@@ -845,22 +845,14 @@ def save_new_outputs(new_outputs: list[RolloutOutput], results_path: Path):
     save_outputs(new_outputs, results_path, mode="a")
 
 
-def sanitize_metadata(metadata: GenerateMetadata) -> dict:
-    """Sanitizes metadata before saving to disk."""
-
-    metadata_dict = dict(metadata)
-    metadata_dict.pop("path_to_save")
-    metadata_dict.pop("date")
-
-    return metadata_dict
-
-
 def save_metadata(metadata: GenerateMetadata, result_path: Path):
     """Saves metadata to disk."""
 
     result_path.mkdir(parents=True, exist_ok=True)
     metadata_path = result_path / "metadata.json"
-    metadata_dict = sanitize_metadata(metadata)
+    metadata_dict = dict(metadata)
+    metadata_dict.pop("path_to_save")
+    metadata_dict.pop("date")
     with open(metadata_path, "w") as f:
         try:
             json.dump(metadata_dict, f, default=make_serializable)

@@ -1,8 +1,5 @@
-import base64
-from io import BytesIO
-from typing import Any, cast
-
-import numpy as np
+import asyncio
+from typing import Any
 
 from verifiers.types import (
     AssistantMessage,
@@ -11,24 +8,19 @@ from verifiers.types import (
     TrajectoryStepTokens,
 )
 
-
-def parse_routed_experts(raw: Any) -> str | None:
-    if raw is None:
-        return None
-    return cast(str, raw)
+ROUTED_EXPERTS_DATA_PREFIX = b'"routed_experts":{"data":"'
 
 
-def truncate_routed_experts(routed_experts: str | None, seq_len: int) -> str | None:
-    if routed_experts is None:
-        return None
+def strip_routed_experts_data(raw: bytes) -> tuple[bytes, memoryview | None]:
+    data_start = raw.find(ROUTED_EXPERTS_DATA_PREFIX)
+    if data_start < 0:
+        return raw, None
 
-    array = np.load(BytesIO(base64.b64decode(routed_experts)), allow_pickle=False)
-    assert array.ndim == 3
-    assert 0 <= seq_len <= array.shape[0]
-
-    buffer = BytesIO()
-    np.save(buffer, np.ascontiguousarray(array[:seq_len]), allow_pickle=False)
-    return base64.b64encode(buffer.getvalue()).decode("ascii")
+    data_start += len(ROUTED_EXPERTS_DATA_PREFIX)
+    data_end = raw.index(b'"', data_start)
+    routed_data = memoryview(raw)[data_start:data_end]
+    stripped = raw[:data_start] + raw[data_end:]
+    return stripped, routed_data
 
 
 async def parse_response_message(response: Response) -> Messages:
@@ -56,8 +48,8 @@ def _truncate_prompt_attribution(attribution: Any, prompt_len: int) -> Any:
     tokens — ``message_indices[k]`` still points into the correct slot.
     ``multi_modal_data`` is left as-is for the same reason: callers
     truncate it themselves if they need exact byte-alignment against the
-    truncated prompt (matches the existing ``routed_experts`` policy
-    where the slicing happens in :func:`truncate_routed_experts`).
+    truncated prompt (matches the previous ``routed_experts`` policy,
+    now retired on main — routed_experts is no longer sliced here).
 
     Returns ``None`` for falsy input so callers can chain through
     ``attribution = _truncate_prompt_attribution(attribution, N)``
@@ -90,71 +82,76 @@ async def parse_response_tokens(
     response: Response, max_seq_len: int | None = None
 ) -> TrajectoryStepTokens | None:
     """Parse token data from a vf.Response."""
-    if response is None:
-        return None
-    tokens = response.message.tokens
-    if tokens is None:
-        return None
-    prompt_ids = tokens.prompt_ids
-    prompt_mask = tokens.prompt_mask
-    completion_ids = tokens.completion_ids
-    completion_mask = tokens.completion_mask
-    completion_logprobs = tokens.completion_logprobs
-    routed_experts = tokens.routed_experts
-    multi_modal_data = tokens.multi_modal_data
-    prompt_attribution = tokens.prompt_attribution
 
-    if max_seq_len is not None:
-        prompt_len = len(prompt_ids)
-        completion_len = len(completion_ids)
-        overlong_prompt = prompt_len > max_seq_len
-        if overlong_prompt:
-            is_truncated = True
-            prompt_ids = prompt_ids[:max_seq_len]
-            prompt_mask = prompt_mask[:max_seq_len]
-            completion_ids = []
-            completion_mask = []
-            completion_logprobs = []
-            routed_experts = truncate_routed_experts(routed_experts, len(prompt_ids))
-            prompt_attribution = _truncate_prompt_attribution(
-                prompt_attribution, len(prompt_ids)
-            )
-        elif prompt_len + completion_len > max_seq_len:
-            is_truncated = True
-            completion_ids = tokens.completion_ids[: max_seq_len - prompt_len]
-            completion_mask = tokens.completion_mask[: max_seq_len - prompt_len]
-            completion_logprobs = tokens.completion_logprobs[: max_seq_len - prompt_len]
-            routed_experts = truncate_routed_experts(
-                routed_experts, prompt_len + len(completion_ids)
-            )
-            # ``prompt_attribution`` covers only the prompt and the
-            # prompt itself wasn't truncated here, so no slicing needed.
+    def _sync() -> TrajectoryStepTokens | None:
+        if response is None:
+            return None
+        tokens = response.message.tokens
+        if tokens is None:
+            return None
+        prompt_ids = tokens.prompt_ids
+        prompt_mask = tokens.prompt_mask
+        completion_ids = tokens.completion_ids
+        completion_mask = tokens.completion_mask
+        completion_logprobs = tokens.completion_logprobs
+        routed_experts = tokens.routed_experts
+        multi_modal_data = tokens.multi_modal_data
+        prompt_attribution = tokens.prompt_attribution
+
+        if max_seq_len is not None:
+            prompt_len = len(prompt_ids)
+            completion_len = len(completion_ids)
+            overlong_prompt = prompt_len > max_seq_len
+            if overlong_prompt:
+                is_truncated = True
+                prompt_ids = prompt_ids[:max_seq_len]
+                prompt_mask = prompt_mask[:max_seq_len]
+                completion_ids = []
+                completion_mask = []
+                completion_logprobs = []
+                prompt_attribution = _truncate_prompt_attribution(
+                    prompt_attribution, len(prompt_ids)
+                )
+            elif prompt_len + completion_len > max_seq_len:
+                is_truncated = True
+                completion_ids = tokens.completion_ids[: max_seq_len - prompt_len]
+                completion_mask = tokens.completion_mask[: max_seq_len - prompt_len]
+                completion_logprobs = tokens.completion_logprobs[
+                    : max_seq_len - prompt_len
+                ]
+                # ``prompt_attribution`` covers only the prompt and the
+                # prompt itself wasn't truncated here, so no slicing needed.
+            else:
+                is_truncated = False
         else:
+            overlong_prompt = False
             is_truncated = False
-    else:
-        overlong_prompt = False
-        is_truncated = False
 
-    out = TrajectoryStepTokens(
-        prompt_ids=prompt_ids,
-        prompt_mask=prompt_mask,
-        completion_ids=completion_ids,
-        completion_mask=completion_mask,
-        completion_logprobs=completion_logprobs,
-        overlong_prompt=overlong_prompt,
-        is_truncated=is_truncated,
-        routed_experts=routed_experts,
-    )
-    if multi_modal_data is not None:
-        out["multi_modal_data"] = multi_modal_data
-        # Move (not copy) the sidecar to its canonical home on the parsed
-        # step. Leaving it on ``response.message.tokens`` too means every
-        # downstream pass (msgpack, save) has to dedupe the duplicate.
-        tokens.multi_modal_data = None
-    if prompt_attribution is not None:
-        out["prompt_attribution"] = prompt_attribution
-        # Same move-not-copy policy as ``multi_modal_data`` — the parsed
-        # step is the canonical home; clearing the response-side ref
-        # avoids duplicate serialisation on save / msgpack.
-        tokens.prompt_attribution = None
-    return out
+        out = TrajectoryStepTokens(
+            prompt_ids=prompt_ids,
+            prompt_mask=prompt_mask,
+            completion_ids=completion_ids,
+            completion_mask=completion_mask,
+            completion_logprobs=completion_logprobs,
+            overlong_prompt=overlong_prompt,
+            is_truncated=is_truncated,
+            routed_experts=routed_experts,
+        )
+        if multi_modal_data is not None:
+            out["multi_modal_data"] = multi_modal_data
+            # Move (not copy) the sidecar to its canonical home on the parsed
+            # step. Leaving it on ``response.message.tokens`` too means every
+            # downstream pass (msgpack, save) has to dedupe the duplicate.
+            tokens.multi_modal_data = None
+        if routed_experts is not None:
+            tokens.routed_experts = None
+        if prompt_attribution is not None:
+            out["prompt_attribution"] = prompt_attribution
+            # Same move-not-copy policy as ``multi_modal_data`` /
+            # ``routed_experts`` — the parsed step is the canonical home;
+            # clearing the response-side ref avoids duplicate
+            # serialisation on save / msgpack.
+            tokens.prompt_attribution = None
+        return out
+
+    return await asyncio.to_thread(_sync)

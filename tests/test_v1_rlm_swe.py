@@ -8,6 +8,7 @@ from datasets import Dataset
 
 import verifiers.v1 as vf
 from environments.rlm_swe_v1 import rlm_swe_v1
+from verifiers.v1.utils.program_utils import merge_task_program, merge_task_sandbox
 
 
 def as_mapping(value: object) -> Mapping[str, object]:
@@ -16,7 +17,9 @@ def as_mapping(value: object) -> Mapping[str, object]:
 
 
 def test_rlm_harness_builds_sandbox_program_without_eager_checkout():
-    harness = vf.RLM(local_checkout="/tmp/does-not-need-to-exist-yet")
+    harness = vf.RLM(
+        config=vf.RLMConfig(local_checkout="/tmp/does-not-need-to-exist-yet")
+    )
     program = as_mapping(harness.program)
     program_env = as_mapping(program["env"])
     artifacts = as_mapping(program["artifacts"])
@@ -56,11 +59,13 @@ def test_rlm_harness_can_upload_skills(tmp_path: Path):
     (skills / "edit").mkdir(parents=True)
     (skills / "edit" / "SKILL.md").write_text("---\nname: edit\n---\n")
 
-    harness = vf.RLM(local_checkout="/tmp/checkout", skills=skills)
+    harness = vf.RLM(
+        config=vf.RLMConfig(local_checkout="/tmp/checkout", skills=str(skills))
+    )
     program = as_mapping(harness.program)
     dirs = as_mapping(program["dirs"])
 
-    assert dirs["/rlm/skills"] == skills
+    assert dirs["/task/rlm-skills"] == skills
 
 
 def test_rlm_harness_uploads_taskset_skills_by_default(tmp_path: Path):
@@ -73,13 +78,13 @@ def test_rlm_harness_uploads_taskset_skills_by_default(tmp_path: Path):
             return {"skills": skills}
 
     env = vf.Env(
-        taskset=SkillTaskset(source=[]),
-        harness=vf.RLM(local_checkout="/tmp/checkout"),
+        taskset=SkillTaskset(config=vf.TasksetConfig(source=[])),
+        harness=vf.RLM(config=vf.RLMConfig(local_checkout="/tmp/checkout")),
     )
     program = as_mapping(env.harness.program)
     dirs = as_mapping(program["dirs"])
 
-    assert dirs["/rlm/skills"] == skills
+    assert dirs["/task/rlm-skills"] == skills
 
 
 def test_taskset_discovers_sibling_skills_dir_by_default(
@@ -99,7 +104,7 @@ def test_taskset_discovers_sibling_skills_dir_by_default(
         "SkillTaskset", (vf.Taskset,), {"__module__": module_name}
     )
 
-    taskset = skill_taskset_type(source=[])
+    taskset = skill_taskset_type(config=vf.TasksetConfig(source=[]))
 
     assert taskset.get_upload_dirs() == {"skills": skills}
 
@@ -115,13 +120,18 @@ def test_rlm_harness_explicit_skills_override_taskset_skills(tmp_path: Path):
             return {"skills": taskset_skills}
 
     env = vf.Env(
-        taskset=SkillTaskset(source=[]),
-        harness=vf.RLM(local_checkout="/tmp/checkout", skills=explicit_skills),
+        taskset=SkillTaskset(config=vf.TasksetConfig(source=[])),
+        harness=vf.RLM(
+            config=vf.RLMConfig(
+                local_checkout="/tmp/checkout",
+                skills=str(explicit_skills),
+            )
+        ),
     )
     program = as_mapping(env.harness.program)
     dirs = as_mapping(program["dirs"])
 
-    assert dirs["/rlm/skills"] == explicit_skills
+    assert dirs["/task/rlm-skills"] == explicit_skills
 
 
 def test_rlm_swe_environment_uses_v1_r2e_taskset(monkeypatch):
@@ -138,18 +148,22 @@ def test_rlm_swe_environment_uses_v1_r2e_taskset(monkeypatch):
         config=rlm_swe_v1.RlmSweEnvConfig(
             taskset=rlm_swe_v1.RlmSweTasksetConfig(
                 dataset_name="fake-r2e",
+                repo_path="/workspace/repo",
                 timeout_minutes=30,
-                env={"CUSTOM": "1", "PATH": "/task/bin"},
+                env={"CUSTOM": "1"},
             ),
             harness=vf.RLMConfig(
                 local_checkout="/tmp/checkout",
-                env_vars={"CALLER": "1", "PATH": "/caller/bin"},
+                env_vars={"CALLER": "1"},
             ),
         ),
     )
     task = next(iter(env.taskset))
     program = as_mapping(env.harness.program)
     program_env = as_mapping(program["env"])
+    merged_program = merge_task_program(program, task, kind="command")
+    merged_env = as_mapping(merged_program["env"])
+    merged_sandbox = merge_task_sandbox(as_mapping(env.harness.sandbox), task)
 
     assert isinstance(env, vf.Env)
     assert isinstance(env.taskset, rlm_swe_v1.R2ESWETaskset)
@@ -160,14 +174,22 @@ def test_rlm_swe_environment_uses_v1_r2e_taskset(monkeypatch):
     assert task["sandbox"]["image"] == (
         f"{rlm_swe_v1.REGISTRY_PREFIX}/r2e/image:latest"
     )
-    assert task["sandbox"]["workdir"] == "/testbed"
+    assert task["sandbox"]["workdir"] == "/workspace/repo"
     assert task["sandbox"]["timeout_minutes"] == 30
-    assert task["program"]["env"] == {"AGENT_WORKDIR": "/testbed"}
-    assert program_env["PATH"] == "/caller/bin"
-    assert program_env["CUSTOM"] == "1"
+    task_program_env = as_mapping(as_mapping(task["program"])["env"])
+    assert task_program_env["AGENT_WORKDIR"] == "/workspace/repo"
+    assert "/workspace/repo/.venv/bin" in task_program_env["AGENT_PATH"]
+    assert task_program_env["PAGER"] == "cat"
+    assert task_program_env["CUSTOM"] == "1"
+    assert "CUSTOM" not in program_env
     assert program_env["CALLER"] == "1"
-    assert program_env["PAGER"] == "cat"
     assert program_env["RLM_TOOLS"] == "bash,edit"
+    assert merged_sandbox["workdir"] == "/workspace/repo"
+    assert merged_env["AGENT_WORKDIR"] == "/workspace/repo"
+    assert "/workspace/repo/.venv/bin" in merged_env["AGENT_PATH"]
+    assert merged_env["PAGER"] == "cat"
+    assert merged_env["CUSTOM"] == "1"
+    assert merged_env["CALLER"] == "1"
 
 
 def test_rlm_swe_taskset_hooks_are_registered_with_runtime():

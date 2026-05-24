@@ -28,6 +28,7 @@ This guide walks through building environments in Verifiers, from simple single-
   - [Cleanup and Teardown](#cleanup-and-teardown)
   - [Signaling Early Termination](#signaling-early-termination)
 - [Developing Environments](#developing-environments)
+  - [v1 Env Shape](#v1-env-shape)
   - [pyproject.toml](#pyprojecttoml)
   - [Managing Dependencies](#managing-dependencies)
   - [Installation](#installation)
@@ -286,8 +287,13 @@ async def my_reward_func(completion, my_helper) -> float:
     return await my_helper.score(completion)
 ```
 
-For taskset/harness environments, use taskset-owned `objects` and `bindings` as
-shown in [BYO Harness](byo-harness.md#shared-dependencies).
+For taskset/harness environments, keep shared dependencies behind the taskset or
+harness that owns them. Bindings are the canonical way to inject shared
+resources into rewards, updates, tools, and programs. Configured binding
+objects should use serializable loader paths when they cross a TOML or CLI
+boundary; Python-only construction may use factory callables directly when a
+resource cannot be serialized. Required Taskset and Toolset factory parameters
+must be supplied through bindings.
 
 Judges are used for tasks where deterministic evaluation is impractical, and an
 LLM is used to score responses. **JudgeRubric** stores an LLM client inside the
@@ -687,19 +693,126 @@ environments/my_env/
 └── README.md          # documentation template
 ```
 
-The environment file exports a taskset-first v1 loader:
+### v1 Env Shape
+
+The golden v1 shape is one taskset config, one taskset class, and a typed
+`load_taskset(config: MyTasksetConfig)` factory. The factory signature defines
+the taskset config type. A tiny `load_environment(config: vf.EnvConfig)` asserts
+the child config type and constructs explicit objects.
+Add a harness config and harness class only when the environment owns reusable
+rollout behavior; otherwise omit `harness=` and `vf.Env` uses the base harness.
+The loader's `config` parameter is a strict, non-optional config object supplied
+by the framework; do not accept `None` or synthesize fallback configs.
+
+`EnvConfig` is a lightweight envelope for the two child configs. Put environment
+knobs on `TasksetConfig` or `HarnessConfig`, not on `EnvConfig` itself. Do not
+subclass `EnvConfig` just to narrow child config types. Environment packages
+should not subclass `Env`.
+
+The taskset-only shape is:
 
 ```python
 import verifiers as vf
 
 
-def load_taskset(config: vf.TasksetConfig) -> vf.Taskset:
-    return vf.Taskset(source=source, rewards=[reward_fn], config=config)
+@vf.reward(weight=1.0)
+async def reward_fn(task, state) -> float:
+    return float(task["answer"] in str(state.get("completion") or ""))
+
+
+class MyTasksetConfig(vf.TasksetConfig):
+    split: str = "train"
+
+
+class MyTaskset(vf.Taskset):
+    config: MyTasksetConfig
+    _default_rewards = (reward_fn,)
+
+    def rows(self) -> list[dict[str, object]]:
+        rows = [
+            {
+                "prompt": [{"role": "user", "content": "Reverse abc."}],
+                "answer": "cba",
+                "split": "train",
+            }
+        ]
+        return [row for row in rows if row["split"] == self.config.split]
+
+
+def load_taskset(config: MyTasksetConfig) -> MyTaskset:
+    assert isinstance(config, MyTasksetConfig)
+    return MyTaskset(config=config)
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
-    return vf.Env(taskset=load_taskset(config=config.taskset))
+    taskset_config = config.taskset
+    assert isinstance(taskset_config, MyTasksetConfig)
+    return vf.Env(taskset=load_taskset(taskset_config))
 ```
+
+With a reusable harness, keep the same explicit object boundary:
+
+```python
+class MyHarnessConfig(vf.HarnessConfig):
+    max_turns: int = 20
+
+
+class MyHarness(vf.Harness):
+    config: MyHarnessConfig
+    pass
+
+
+def load_taskset(config: MyTasksetConfig) -> MyTaskset:
+    assert isinstance(config, MyTasksetConfig)
+    return MyTaskset(config=config)
+
+
+def load_harness(config: MyHarnessConfig) -> MyHarness:
+    assert isinstance(config, MyHarnessConfig)
+    return MyHarness(config=config)
+
+
+def load_environment(config: vf.EnvConfig) -> vf.Env:
+    taskset_config = config.taskset
+    harness_config = config.harness
+    assert isinstance(taskset_config, MyTasksetConfig)
+    assert isinstance(harness_config, MyHarnessConfig)
+    return vf.Env(
+        taskset=load_taskset(taskset_config),
+        harness=load_harness(harness_config),
+    )
+```
+
+`vf.Env(config=config)` exists as a convenience for code that already has a fully
+typed `EnvConfig`, but environment docs and templates should use the explicit
+object shape above. Do not pass both `config=` and `taskset=`/`harness=` to
+`vf.Env`.
+
+Keep v1 dependencies behind the owning taskset or harness. Do not pass
+already-instantiated resource objects through environment loaders. Bindings are
+allowed wherever the owning taskset, toolset, user, program, or harness wires
+callables. `objects` entries should be loader specs: prefer serializable import
+paths in config, and use factory callables directly only for Python-only
+construction when the dependency cannot be serialized. Required Taskset and
+Toolset factory parameters must be supplied through bindings.
+
+Judge-style rewards should read endpoint details from the rollout state:
+
+```python
+@vf.reward(weight=1.0)
+async def judge_reward(task, state) -> float:
+    endpoint = state.get_endpoint_config(api="chat")
+    client = AsyncOpenAI(
+        base_url=endpoint["base_url"],
+        api_key=endpoint["api_key"],
+    )
+    model = str(task.get("judge_model") or endpoint["model"])
+    ...
+```
+
+Expose at most `judge_model: str | None = None` on the taskset config. Do not
+add judge endpoint URL/API-key fields or read `os.environ` inside reward/update
+handlers.
 
 ### pyproject.toml
 
@@ -777,7 +890,7 @@ prime env install my-env                    # from ./environments/my_env
 prime env install my-env -p /path/to/environments   # custom path
 ```
 
-This runs `uv pip install -e` for local environments, making them importable by `prime eval run` and other integrations.
+This runs `uv pip install -e` for local environments when you want an explicit editable install for non-eval tooling. Evaluations do not require this separate step because environment resolution happens inside `prime eval run`.
 
 ## Environment Groups
 

@@ -4,7 +4,6 @@ This folder contains installable example environments that showcase common usage
 
 ## Quick start
 
-- **Install an environment from this GitHub repo**: `prime env install math-python --from-repo`
 - **Evaluate**: `prime eval run math-python` (defaults to openai/gpt-4.1-mini, small sample)
 
 ## Common usage patterns and examples
@@ -23,6 +22,7 @@ This folder contains installable example environments that showcase common usage
 - **doublecheck**: Simple follow-up turn ("Are you sure?") with math rewards; minimal `is_completed`/`env_response` implementation.
 - **sentence_repeater**: Multi-turn Q/A over a paragraph; rewards compare assistant messages to expected answers.
 - **wordle**: Game-style interaction via `TextArenaEnv`; multiple rewards (correctness, partial credit, few-turn bonus) and XML formatting.
+- **wordle_v1**: Wordle on the reusable v1 `TextArenaTaskset`, with Wordle-specific prompt, feedback, and rewards kept in the environment package.
 - **openenv_echo**: OpenEnv MCP integration example using upstream `echo_env`.
 - **openenv_textarena**: OpenEnv gym integration example using upstream `textarena_env` (default `Wordle-v0`).
 
@@ -61,6 +61,7 @@ This folder contains installable example environments that showcase common usage
   - **dspy_flights**: Sandboxed DSPy flight-support `program.fn` entrypoint installed from its package `pyproject.toml` and configured against the v1 interception endpoint.
   - **hello_group_reward_v1**: Deterministic v1 reference for group updates, metrics, rewards, advantages, and cleanup.
   - **tau2_bench_v1**: `tau2-bench-v1` τ²-bench taskset/user/tool pattern on the v1 harness runtime.
+  - **wordle_v1**: TextArena Wordle through the packaged v1 `TextArenaTaskset` boundary.
 
 ### Composition
 - **EnvGroup**
@@ -94,7 +95,7 @@ This folder contains installable example environments that showcase common usage
 - **CLI agent sandboxes**: `opencode_harbor`, `terminus_harbor`, `hello_mcp_harbor`
 - **MCP integration**: `mcp_search_env`, `hello_mcp_harbor`
 - **RLM (recursive LLM)**: `rlm_secrets`
-- **Taskset/Harness v1**: use this pattern for new environments that need reusable tasksets, reusable harnesses, framework programs, endpoint interception, or sandboxed Python/command programs. Examples include `dspy_rlm`, `openai_agents_env`, `langchain_deep_agents_wikispeedia`, `reverse_text`, `alphabet_sort`, `wiki_search`, `math_python`, `mcp_search_env`, `opencode_harbor`, `bfcl_v3`, `hello_subagent_v1`, `nested_harness_v1`, `hello_self_judge_v1`, `hello_parallel_sandbox_v1`, `hello_group_reward_v1`, `hello_rlm_v1`, `rlm_swe_v1`, `dspy_flights`, and `tau2-bench-v1`.
+- **Taskset/Harness v1**: use this pattern for new environments that need reusable tasksets, reusable harnesses, framework programs, endpoint interception, or sandboxed Python/command programs. Examples include `dspy_rlm`, `openai_agents_env`, `langchain_deep_agents_wikispeedia`, `reverse_text`, `alphabet_sort`, `wiki_search`, `math_python`, `mcp_search_env`, `opencode_harbor`, `bfcl_v3`, `hello_subagent_v1`, `nested_harness_v1`, `hello_self_judge_v1`, `hello_parallel_sandbox_v1`, `hello_group_reward_v1`, `hello_rlm_v1`, `rlm_swe_v1`, `dspy_flights`, `tau2-bench-v1`, and `wordle-v1`.
   - `opencode_harbor` uses the packaged `vf.HarborTaskset` + `vf.OpenCode` boundary. These reusable implementations live under `verifiers.v1.packages` and are re-exported from `verifiers.v1`.
 - **Environment and rubric composition**: `math_group`, `math_python`, `wiki_search`
 - **Procedural datasets**: `reasoning_gym_env`
@@ -113,7 +114,6 @@ results = vf_env.evaluate(client=AsyncOpenAI(), model="gpt-4.1-mini", num_exampl
 
 CLI usage:
 ```bash
-prime env install reverse-text --from-repo
 prime eval run reverse-text -n 50 -r 1
 ```
 

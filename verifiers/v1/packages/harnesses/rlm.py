@@ -1,13 +1,12 @@
 import hashlib
 import json
+import os
 import random
 import shlex
 from collections.abc import Callable, Mapping
 from importlib.abc import Traversable
 from pathlib import Path
 from typing import cast
-
-from typing_extensions import Unpack
 
 from verifiers.envs.experimental.utils.git_checkout_cache import (
     resolve_git_checkout,
@@ -20,28 +19,15 @@ from ...state import State
 from ...task import Task
 from ...taskset import Taskset
 from ...utils.prompt_utils import task_text
-from .command import HarnessKwargs, command_program
+from .command import command_program
 from .configs import (
     RLM_DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH,
-    RLM_DEFAULT_EXEC_TIMEOUT,
-    RLM_DEFAULT_MAX_DEPTH,
-    RLM_DEFAULT_MAX_TURNS,
-    RLM_DEFAULT_REPO_REF,
-    RLM_DEFAULT_REPO_URL,
-    RLM_DEFAULT_INSTRUCTION_PATH,
     RLMConfig,
 )
-from ...types import ConfigMap, ProgramMap, ProgramOptionMap, ProgramValue
+from ...types import ConfigMap, ProgramCommand, ProgramValue
 
-DEFAULT_RLM_REPO_URL = RLM_DEFAULT_REPO_URL
-DEFAULT_RLM_REPO_REF = RLM_DEFAULT_REPO_REF
-DEFAULT_RLM_MAX_TURNS = RLM_DEFAULT_MAX_TURNS
-DEFAULT_RLM_EXEC_TIMEOUT = RLM_DEFAULT_EXEC_TIMEOUT
-DEFAULT_RLM_MAX_DEPTH = RLM_DEFAULT_MAX_DEPTH
-DEFAULT_RLM_INSTRUCTION_PATH = RLM_DEFAULT_INSTRUCTION_PATH
-DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH = RLM_DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH
 DEFAULT_RLM_CHECKOUT_PATH = "/tmp/rlm-checkout"
-DEFAULT_RLM_SKILLS_PATH = "/rlm/skills"
+DEFAULT_RLM_SKILLS_PATH = "/task/rlm-skills"
 DEFAULT_RLM_LOCAL_CHECKOUT_CACHE_ROOT = (
     Path.home() / ".cache" / "verifiers" / "rlm-checkouts"
 )
@@ -50,58 +36,20 @@ ProgramDir = str | Path | Traversable
 
 
 class RLM(Harness):
-    config_type = RLMConfig
-
-    def __init__(
-        self,
-        *,
-        workdir: str | None = None,
-        instruction_path: str | None = None,
-        rlm_repo_url: str | None = None,
-        rlm_repo_ref: str | None = None,
-        rlm_max_turns: int | None = None,
-        rlm_exec_timeout: int | None = None,
-        rlm_max_depth: int | None = None,
-        summarize_at_tokens: int | tuple[int, int] | list[int] | None = None,
-        include_sub_rlm_trajectories: bool | None = None,
-        append_to_system_prompt: str | None = None,
-        local_checkout: str | Path | None = None,
-        gh_token: str | None = None,
-        rlm_tools: list[str] | None = None,
-        env_vars: ProgramOptionMap | None = None,
-        skills: str | Path | None = None,
-        sandbox: bool | ConfigMap | SandboxConfig | None = None,
-        program: ProgramMap | None = None,
-        config: RLMConfig | None = None,
-        **kwargs: Unpack[HarnessKwargs],
-    ):
-        harness_config = RLMConfig.from_config(
-            config,
-            workdir=workdir,
-            instruction_path=instruction_path,
-            rlm_repo_url=rlm_repo_url,
-            rlm_repo_ref=rlm_repo_ref,
-            rlm_max_turns=rlm_max_turns,
-            rlm_exec_timeout=rlm_exec_timeout,
-            rlm_max_depth=rlm_max_depth,
-            summarize_at_tokens=summarize_at_tokens,
-            include_sub_rlm_trajectories=include_sub_rlm_trajectories,
-            append_to_system_prompt=append_to_system_prompt,
-            local_checkout=local_checkout,
-            gh_token=gh_token,
-            rlm_tools=rlm_tools,
-            env_vars=dict(env_vars) if env_vars is not None else None,
-            skills=skills,
-        )
+    def __init__(self, config: RLMConfig | None = None):
+        harness_config = RLMConfig() if config is None else config
+        assert isinstance(harness_config, RLMConfig)
+        super().__init__(config=harness_config.model_copy(update={"program": None}))
+        self.config = harness_config
         if (
             not harness_config.include_sub_rlm_trajectories
             and harness_config.keep_trajectory_step is None
         ):
-            harness_config.keep_trajectory_step = keep_only_parent_rlm_steps
+            self.keep_trajectory_step = keep_only_parent_rlm_steps
         summarize_resolver = build_summarize_resolver(
             harness_config.summarize_at_tokens
         )
-        env: ProgramOptionMap = {
+        env: dict[str, ProgramValue] = {
             "PATH": "/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
             "OPENAI_MODEL": "runtime.model",
             "RLM_MODEL": "runtime.model",
@@ -114,13 +62,7 @@ class RLM(Harness):
         if summarize_resolver is not None:
             env["RLM_SUMMARIZE_AT_TOKENS"] = summarize_resolver
         sandbox_config: ConfigMap | SandboxConfig | bool
-        sandbox_config = (
-            harness_config.sandbox
-            if sandbox is None and harness_config.sandbox is not None
-            else True
-        )
-        if sandbox is not None:
-            sandbox_config = sandbox
+        sandbox_config = harness_config.sandbox or True
         if sandbox_config is True:
             sandbox_config = {
                 "image": "python:3.11-slim",
@@ -149,18 +91,18 @@ class RLM(Harness):
         if harness_config.skills is not None:
             dirs[DEFAULT_RLM_SKILLS_PATH] = Path(harness_config.skills)
         self._explicit_skills = harness_config.skills is not None
-        command = [
+        command: ProgramCommand = [
             "bash",
             "-lc",
             build_run_script(harness_config.instruction_path, harness_config.workdir),
         ]
-        super().__init__(
+        self._configure_runtime(
             program=command_program(
                 command=command,
                 sandbox=sandbox_config,
                 files={
                     harness_config.instruction_path: task_instruction_text,
-                    DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH: (
+                    RLM_DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH: (
                         harness_config.append_to_system_prompt
                     ),
                 },
@@ -169,7 +111,15 @@ class RLM(Harness):
                     "apt-get -o Acquire::Retries=3 update && "
                     "apt-get -o Acquire::Retries=3 install -y --no-install-recommends "
                     "ca-certificates curl git && rm -rf /var/lib/apt/lists/*",
-                    build_install_command(),
+                    "bash -lc "
+                    + shlex.quote(
+                        f"""
+set -eo pipefail
+export RLM_CHECKOUT_PATH={shlex.quote(DEFAULT_RLM_CHECKOUT_PATH)}
+test -f "$RLM_CHECKOUT_PATH/install.sh"
+bash "$RLM_CHECKOUT_PATH/install.sh"
+"""
+                    ),
                 ],
                 env=env,
                 artifacts={
@@ -180,7 +130,7 @@ class RLM(Harness):
                         "optional": True,
                     }
                 },
-                program=program,
+                program=harness_config.program,
             ),
             sandbox=None if sandbox_config is False else sandbox_config,
             metrics=[
@@ -188,8 +138,6 @@ class RLM(Harness):
                 rlm_sub_llm_total_turns,
                 rlm_sub_llm_total_tool_calls,
             ],
-            config=harness_config,
-            **kwargs,
         )
 
     def attach_taskset(self, taskset: Taskset) -> None:
@@ -220,23 +168,17 @@ class RLM(Harness):
         self.program = program
 
 
-def build_install_command() -> str:
-    script = f"""
-set -eo pipefail
-export RLM_CHECKOUT_PATH={shlex.quote(DEFAULT_RLM_CHECKOUT_PATH)}
-test -f "$RLM_CHECKOUT_PATH/install.sh"
-bash "$RLM_CHECKOUT_PATH/install.sh"
-"""
-    return f"bash -lc {shlex.quote(script)}"
+def load_harness(config: RLMConfig) -> RLM:
+    return RLM(config=config)
 
 
 def build_run_script(instruction_path: str, workdir: str) -> str:
     return f"""
 set -eo pipefail
-export PATH="$HOME/.local/bin:$PATH"
+export PATH="$HOME/.local/bin:${{AGENT_PATH:-$PATH}}"
 export RLM_MODEL="${{RLM_MODEL:-$OPENAI_MODEL}}"
 export OPENAI_API_KEY="${{OPENAI_API_KEY:-intercepted}}"
-export RLM_APPEND_TO_SYSTEM_PROMPT="$(cat {shlex.quote(DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH)} 2>/dev/null || true)"
+export RLM_APPEND_TO_SYSTEM_PROMPT="$(cat {shlex.quote(RLM_DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH)} 2>/dev/null || true)"
 cd "${{AGENT_WORKDIR:-{workdir}}}"
 rlm "$(cat {shlex.quote(instruction_path)})"
 """
@@ -264,7 +206,7 @@ def rlm_checkout_loader(
                 repo_url=rlm_repo_url,
                 ref=rlm_repo_ref,
                 cache_root=DEFAULT_RLM_LOCAL_CHECKOUT_CACHE_ROOT,
-                gh_token=gh_token,
+                gh_token=gh_token or os.environ.get("GH_TOKEN"),
                 required_files=REQUIRED_RLM_CHECKOUT_FILES,
             )
         return checkout
@@ -335,13 +277,9 @@ def build_summarize_resolver(
             raise ValueError("summarize_at_tokens pair must satisfy 0 < lo <= hi")
 
         def sampled_threshold(state: State) -> str:
-            return str(draw_threshold(state, lo, hi))
+            prompt = json.dumps(state.get("prompt"), sort_keys=True, default=str)
+            digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+            return str(random.Random(int(digest[:16], 16)).randint(lo, hi))
 
         return sampled_threshold
     raise ValueError("summarize_at_tokens must be int, (lo, hi), or None")
-
-
-def draw_threshold(state: ConfigMap, lo: int, hi: int) -> int:
-    prompt = json.dumps(state.get("prompt"), sort_keys=True, default=str)
-    digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
-    return random.Random(int(digest[:16], 16)).randint(lo, hi)

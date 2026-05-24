@@ -1,4 +1,3 @@
-import importlib
 import inspect
 import time
 from collections.abc import (
@@ -368,18 +367,6 @@ def validate_required_kwargs(fn: Handler, kwargs: ConfigMap, context: str) -> No
 
 def signal_context(signal: SignalRecord) -> str:
     return f"{signal['kind']} signal {signal['name']!r}"
-
-
-def import_ref(ref: str | None) -> Handler:
-    if ref is None:
-        raise ValueError("Import ref is required.")
-    module_name, separator, attr_name = ref.partition(":")
-    if not separator:
-        raise ValueError(f"Signal ref {ref!r} must use 'module:object'.")
-    obj = getattr(importlib.import_module(module_name), attr_name)
-    if not callable(obj):
-        raise TypeError(f"Signal ref {ref!r} did not resolve to a callable.")
-    return cast(Handler, obj)
 
 
 def validate_signal_config(name: str, config: ConfigMap) -> None:

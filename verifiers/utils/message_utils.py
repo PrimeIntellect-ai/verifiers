@@ -8,7 +8,6 @@ from rich.text import Text
 
 from verifiers.types import (
     AssistantMessage,
-    ContentPart,
     ImageUrlContentPart,
     InputAudioContentPart,
     Message,
@@ -27,25 +26,21 @@ MessageInput: TypeAlias = str | Sequence[MessageLike]
 MessageRole: TypeAlias = Literal["text", "system", "user", "assistant", "tool"]
 
 
-def from_raw_content_part(part: dict[str, Any]) -> ContentPart:
-    """Convert a raw content-part dict to a typed content part when possible."""
-    part_type = part.get("type")
-    if part_type == "text":
-        return TextContentPart.model_validate(part)
-    if part_type == "image_url":
-        return ImageUrlContentPart.model_validate(part)
-    if part_type == "input_audio":
-        return InputAudioContentPart.model_validate(part)
-    return part
-
-
 def _normalize_raw_message_content(message: dict[str, Any]) -> dict[str, Any]:
     content = message.get("content")
     if isinstance(content, list):
         normalized_parts = []
         for part in content:
             if isinstance(part, dict):
-                normalized_parts.append(from_raw_content_part(part))
+                part_type = part.get("type")
+                if part_type == "text":
+                    normalized_parts.append(TextContentPart.model_validate(part))
+                elif part_type == "image_url":
+                    normalized_parts.append(ImageUrlContentPart.model_validate(part))
+                elif part_type == "input_audio":
+                    normalized_parts.append(InputAudioContentPart.model_validate(part))
+                else:
+                    normalized_parts.append(part)
             else:
                 normalized_parts.append(part)
         message = dict(message)
@@ -196,12 +191,6 @@ def message_role(message: MessageLike) -> str | None:
     else:
         value = getattr(message, "role", None)
     return value if isinstance(value, str) else None
-
-
-def message_to_dict(message: MessageLike) -> dict[str, object]:
-    if isinstance(message, Mapping):
-        return dict(message)
-    return cast(dict[str, object], message.model_dump(exclude_none=True))
 
 
 def maybe_normalize_messages(

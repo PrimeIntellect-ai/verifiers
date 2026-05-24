@@ -527,6 +527,14 @@ def main(argv: list[str] | None = None):
                 f"TOML config file not found: {path}\nPlease check the path is correct."
             )
         raw_eval_configs = load_toml_config(path)
+        raw_eval_configs = [
+            (
+                {**raw_config, "save_results": True}
+                if args.save_results or "save_results" not in raw_config
+                else raw_config
+            )
+            for raw_config in raw_eval_configs
+        ]
     else:
         # CLI path: convert args to dict
         raw_config = {"env_id": args.env_id_or_config}
@@ -824,9 +832,11 @@ def main(argv: list[str] | None = None):
         )
 
     # Check Hub environments are installed before running
-    missing_envs = []
+    missing_envs: list[str] = []
     for raw in raw_eval_configs:
         env_id = raw["env_id"]
+        if not isinstance(env_id, str):
+            raise ValueError("All eval configs must contain a string env_id.")
         if not check_hub_env_installed(env_id):
             missing_envs.append(env_id)
 

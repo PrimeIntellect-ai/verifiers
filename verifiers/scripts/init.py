@@ -144,58 +144,96 @@ ENVIRONMENT_TEMPLATE = """\
 import verifiers as vf
 
 
-def source():
-    return [
-        {
-            "prompt": [{"role": "user", "content": "Reverse abc."}],
-            "answer": "cba",
-        }
-    ]
-
-
 @vf.reward(weight=1.0)
 async def exact_answer(task, state) -> float:
     return float(task["answer"] in str(state.get("completion") or ""))
 
 
-def load_taskset(config: vf.TasksetConfig) -> vf.Taskset:
-    return vf.Taskset(source=source, rewards=[exact_answer], config=config)
+class EnvTasksetConfig(vf.TasksetConfig):
+    split: str = "train"
+
+
+class EnvTaskset(vf.Taskset):
+    config: EnvTasksetConfig
+    _default_rewards = (exact_answer,)
+
+    def rows(self) -> list[dict[str, object]]:
+        rows = [
+            {
+                "prompt": [{"role": "user", "content": "Reverse abc."}],
+                "answer": "cba",
+                "split": "train",
+            }
+        ]
+        return [row for row in rows if row["split"] == self.config.split]
+
+
+def load_taskset(config: EnvTasksetConfig) -> EnvTaskset:
+    assert isinstance(config, EnvTasksetConfig)
+    return EnvTaskset(config=config)
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
-    return vf.Env(taskset=load_taskset(config=config.taskset))
+    taskset_config = config.taskset
+    assert isinstance(taskset_config, EnvTasksetConfig)
+    return vf.Env(taskset=load_taskset(taskset_config))
 """
 
 HARNESS_ENVIRONMENT_TEMPLATE = """\
 import verifiers as vf
 
 
-def source():
-    return [
-        {
-            "prompt": [{"role": "user", "content": "Reverse abc."}],
-            "answer": "cba",
-        }
-    ]
-
-
 @vf.reward(weight=1.0)
 async def exact_answer(task, state) -> float:
     return float(task["answer"] in str(state.get("completion") or ""))
 
 
-def load_taskset(config: vf.TasksetConfig) -> vf.Taskset:
-    return vf.Taskset(source=source, rewards=[exact_answer], config=config)
+class EnvTasksetConfig(vf.TasksetConfig):
+    split: str = "train"
 
 
-def load_harness(config: vf.HarnessConfig) -> vf.Harness:
-    return vf.Harness(config=config)
+class EnvTaskset(vf.Taskset):
+    config: EnvTasksetConfig
+    _default_rewards = (exact_answer,)
+
+    def rows(self) -> list[dict[str, object]]:
+        rows = [
+            {
+                "prompt": [{"role": "user", "content": "Reverse abc."}],
+                "answer": "cba",
+                "split": "train",
+            }
+        ]
+        return [row for row in rows if row["split"] == self.config.split]
+
+
+class EnvHarnessConfig(vf.HarnessConfig):
+    pass
+
+
+class EnvHarness(vf.Harness):
+    config: EnvHarnessConfig
+    pass
+
+
+def load_taskset(config: EnvTasksetConfig) -> EnvTaskset:
+    assert isinstance(config, EnvTasksetConfig)
+    return EnvTaskset(config=config)
+
+
+def load_harness(config: EnvHarnessConfig) -> EnvHarness:
+    assert isinstance(config, EnvHarnessConfig)
+    return EnvHarness(config=config)
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
+    taskset_config = config.taskset
+    harness_config = config.harness
+    assert isinstance(taskset_config, EnvTasksetConfig)
+    assert isinstance(harness_config, EnvHarnessConfig)
     return vf.Env(
-        taskset=load_taskset(config=config.taskset),
-        harness=load_harness(config=config.harness),
+        taskset=load_taskset(taskset_config),
+        harness=load_harness(harness_config),
     )
 """
 

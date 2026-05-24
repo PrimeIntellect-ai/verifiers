@@ -254,14 +254,8 @@ uv run pytest tests/test_file.py::test_name -vvs --pdb
 ### Creating a New Environment Module
 
 ```bash
-# Initialize template
-prime env init my-environment
-
-# Include an explicit harness loader when needed
-prime env init my-environment --with-harness
-
-# Install locally for testing
-prime env install my-environment
+# Initialize canonical v1 taskset+harness template
+prime env init my-environment --v1
 
 # Test your environment
 prime eval run my-environment -m openai/gpt-4.1-mini -n 5
@@ -321,7 +315,6 @@ uv run ty check verifiers             # Type check (matches CI Ty target)
 
 # Environment tools
 prime env init new-env                       # Create taskset-first v1 environment
-prime env install new-env                    # Install environment
 prime eval run new-env -m openai/gpt-4.1-mini -n 5  # Test environment
 prime eval view                              # Browse evals in the tree browser
 ```

@@ -1,5 +1,6 @@
 import importlib.util
 import inspect
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,7 @@ def _load_mcp_search_module() -> Any:
     assert spec.loader is not None
 
     module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -39,10 +41,20 @@ def test_mcp_search_env_is_v1_only() -> None:
     assert env.taskset.config.max_turns == 4
 
 
+def test_mcp_search_env_preserves_harness_config() -> None:
+    module = _load_mcp_search_module()
+
+    env = module.load_environment(
+        config=module.MCPSearchEnvConfig(harness={"max_turns": 7})
+    )
+
+    assert env.harness.config.max_turns == 7
+
+
 def test_mcp_search_default_taskset_has_stable_non_doc_fixture() -> None:
     module = _load_mcp_search_module()
 
-    rows = module.load_taskset(config=module.MCPSearchTasksetConfig()).rows()
+    rows = module.MCPSearchTaskset(config=module.MCPSearchTasksetConfig()).rows()
 
     assert len(rows) >= 10
     assert len({row["answer"] for row in rows}) == len(rows)

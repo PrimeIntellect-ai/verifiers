@@ -11,6 +11,10 @@ async def child_program(task, state):
     return state
 
 
+class ChildHarness(vf.Harness):
+    _default_program = child_program
+
+
 async def call_harness(prompt, harness, state):
     _ = state
     task = vf.Task({"prompt": prompt}).freeze()
@@ -56,16 +60,17 @@ def source():
 
 
 def load_child_harness():
-    return vf.Harness(program=child_program)
+    return ChildHarness(config=vf.HarnessConfig())
 
 
 def load_toolset(config: vf.ToolsetConfig | None = None):
+    async def call_child_harness(prompt, state):
+        return await call_harness(prompt, load_child_harness(), state)
+
+    call_child_harness.__name__ = "call_harness"
+    call_child_harness.__doc__ = call_harness.__doc__
     return vf.Toolset(
-        tools=[call_harness],
-        objects={"child_harness": load_child_harness},
-        bindings={
-            "call_harness.harness": "objects.child_harness",
-        },
+        tools=[call_child_harness],
         config=config,
     )
 
@@ -82,25 +87,27 @@ async def parent_program(task, state):
     return state
 
 
-def load_taskset(config: vf.TasksetConfig):
-    return vf.Taskset(
-        source=source,
-        rewards=[exact_answer],
-        config=config,
-    )
+class NestedTaskset(vf.Taskset):
+    _default_source = source
+    _default_rewards = (exact_answer,)
 
 
-def load_harness(config: NestedHarnessConfig):
-    return vf.Harness(
-        program=parent_program,
-        toolsets=[load_toolset(config.toolset)],
-        metrics=[child_calls],
-        config=config,
-    )
+class NestedHarness(vf.Harness):
+    _default_program = parent_program
+    _default_metrics = (child_calls,)
+
+    def _configure_runtime_defaults(self) -> None:
+        if "toolsets" not in self.config.model_fields_set:
+            self.add_toolset({"nested": load_toolset(config=self.config.toolset)})
 
 
-def load_environment(config: vf.EnvConfig):
+class NestedEnvConfig(vf.EnvConfig):
+    taskset: vf.TasksetConfig = vf.TasksetConfig()
+    harness: NestedHarnessConfig = NestedHarnessConfig()
+
+
+def load_environment(config: NestedEnvConfig) -> vf.Env:
     return vf.Env(
-        taskset=load_taskset(config=config.taskset),
-        harness=load_harness(config=NestedHarnessConfig(config.harness)),
+        taskset=NestedTaskset(config=config.taskset),
+        harness=NestedHarness(config=config.harness),
     )

@@ -17,7 +17,6 @@ taskset then:
    score.
 
 ```bash
-prime env install hello-self-judge-v1
 prime eval run hello-self-judge-v1 -m openai/gpt-5.4-mini -n 3 -r 1 -t 4096
 ```
 

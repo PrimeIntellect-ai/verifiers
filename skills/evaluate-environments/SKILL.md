@@ -104,7 +104,7 @@ prime eval run configs/eval/my-benchmark.toml
 ```bash
 prime eval run my-env -a '{"config":{"taskset":{"difficulty":"hard"},"harness":{"max_turns":20}}}'
 ```
-2. Override constructor kwargs:
+2. Override legacy/v0 constructor kwargs only when the environment still exposes them; for v1, use `config.taskset` and `config.harness` instead:
 ```bash
 prime eval run my-env -x '{"max_turns":20}'
 ```
@@ -144,18 +144,30 @@ name = "reverse-text-long"
 [eval.args]
 max_length = 256
 ```
-9. Pass extra HTTP headers via CLI (repeatable):
+9. Put generation parameters in TOML sampling sections:
+```toml
+[sampling]
+max_tokens = 1024
+temperature = 0.7
+reasoning_effort = "medium"
+enable_thinking = true
+
+[[eval]]
+env_id = "my-env"
+```
+Use `[eval.sampling]` for per-eval overrides. `[sampling]` is shorthand for `sampling_args`; `reasoning_effort` and `enable_thinking` stay top-level and are mirrored into `extra_body.chat_template_kwargs`.
+10. Pass extra HTTP headers via CLI (repeatable):
 ```bash
 prime eval run my-env -m my-proxy --header "X-Custom-Header: value"
 ```
-10. Set headers in `[[eval]]` TOML configs as a table or list (merge order: registry row < `headers` table < `header` list / `--header`):
+11. Set headers in `[[eval]]` TOML configs as a table or list (merge order: registry row < `headers` table < `header` list / `--header`):
 ```toml
 [[eval]]
 env_id = "my-env"
 headers = { "X-Custom-Header" = "value" }
 header = ["X-Another: val"]
 ```
-11. Run ablation sweeps using `[[ablation]]` blocks in TOML configs:
+12. Run ablation sweeps using `[[ablation]]` blocks in TOML configs:
 ```toml
 [[ablation]]
 env_id = "my-env"

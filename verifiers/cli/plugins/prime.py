@@ -88,10 +88,6 @@ def _find_workspace_root(start: Path) -> Path | None:
     return None
 
 
-def _current_cwd() -> Path:
-    return Path.cwd().resolve()
-
-
 def _resolve_dir_arg(value: str, cwd: Path) -> str:
     path = Path(value)
     if path.is_absolute():
@@ -153,7 +149,7 @@ class PrimeCLIPlugin:
     def build_module_command(
         self, module_name: str, args: Sequence[str] | None = None
     ) -> list[str]:
-        cwd = _current_cwd()
+        cwd = Path.cwd().resolve()
         workspace_root = _find_workspace_root(cwd)
         workspace_env_dir: str | None = None
         if workspace_root is not None:

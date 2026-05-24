@@ -46,14 +46,6 @@ async def maybe_call_with_named_args(func: Callable, **objects):
     return await maybe_await(func, **allowed)
 
 
-class NullContext:
-    def __enter__(self):
-        return None
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        return False
-
-
 class NullAsyncContext:
     async def __aenter__(self):
         return None

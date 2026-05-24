@@ -3,8 +3,10 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import TypeAlias, cast
 
+from pydantic import BaseModel
+
 from .config import (
-    CallableConfigEntry,
+    CallableEntry,
     MCPToolConfig,
     SandboxConfig,
     ToolsetConfig,
@@ -14,7 +16,10 @@ from .config import (
 )
 from .utils.binding_utils import BindingMap, normalize_binding_map
 from .utils.binding_utils import normalize_object_map
+from .utils.config_utils import coerce_config, resolved_config_data
 from .types import ConfigMap, Handler, Objects, ToolSpec
+
+ToolsetCallableEntry: TypeAlias = CallableEntry | Handler
 
 
 @dataclass(frozen=True)
@@ -51,11 +56,11 @@ class Toolset:
         scope: str | None = None,
         sandbox: ConfigMap | SandboxConfig | str | None = None,
         # Lifecycle collections.
-        stops: Iterable[CallableConfigEntry] = (),
-        setups: Iterable[CallableConfigEntry] = (),
-        updates: Iterable[CallableConfigEntry] = (),
-        cleanups: Iterable[CallableConfigEntry] = (),
-        teardowns: Iterable[CallableConfigEntry] = (),
+        stops: Iterable[ToolsetCallableEntry] = (),
+        setups: Iterable[ToolsetCallableEntry] = (),
+        updates: Iterable[ToolsetCallableEntry] = (),
+        cleanups: Iterable[ToolsetCallableEntry] = (),
+        teardowns: Iterable[ToolsetCallableEntry] = (),
         # Config.
         config: ToolsetConfig | None = None,
     ):
@@ -70,12 +75,15 @@ class Toolset:
             config_bindings = normalize_binding_map(
                 config_map.get("bindings"), "Toolset bindings"
             )
-            config_objects = {
-                str(key): resolve_config_object(item)
-                for key, item in normalize_object_map(
-                    config_map.get("objects"), "Toolset objects"
-                ).items()
-            }
+            config_objects = cast(
+                Objects,
+                {
+                    str(key): resolve_config_object(item)
+                    for key, item in normalize_object_map(
+                        config_map.get("objects"), "Toolset objects"
+                    ).items()
+                },
+            )
             if "write" in config_map and write is None:
                 write_value = config_map["write"]
                 if not isinstance(write_value, bool):
@@ -108,6 +116,8 @@ class Toolset:
             ]
         if show is not None and hide is not None:
             raise ValueError("Toolset accepts show or hide, not both.")
+        if write is not None and not isinstance(write, bool):
+            raise TypeError("Toolset write must be a boolean.")
         object.__setattr__(self, "tools", tuple(tool_values))
         object.__setattr__(self, "show", tuple(show) if show is not None else None)
         object.__setattr__(self, "hide", tuple(hide) if hide is not None else None)
@@ -122,7 +132,18 @@ class Toolset:
         object.__setattr__(
             self,
             "objects",
-            {**config_objects, **normalize_object_map(objects, "Toolset objects")},
+            {
+                **config_objects,
+                **cast(
+                    Objects,
+                    {
+                        str(key): resolve_config_object(item)
+                        for key, item in normalize_object_map(
+                            objects, "Toolset objects"
+                        ).items()
+                    },
+                ),
+            },
         )
         object.__setattr__(self, "write", bool(write))
         if scope is not None and scope not in {"rollout", "group", "global"}:
@@ -214,7 +235,7 @@ def normalize_toolset_collection(
                 raise TypeError("Toolset names must be strings.")
             if key in named:
                 raise ValueError(f"Toolset {key!r} is defined twice.")
-            named[key] = named_toolset_from_config(key, item)
+            named[key] = named_toolset(key, item)
         return list(named.values()), named
     if isinstance(value, str):
         return [normalize_toolset(value)], {}
@@ -223,15 +244,17 @@ def normalize_toolset_collection(
     return normalize_toolsets(cast(Iterable[ToolEntry], value)), {}
 
 
-def named_toolset_from_config(name: str, value: object) -> Toolset:
+def named_toolset(name: str, value: object) -> Toolset:
     value = resolve_config_object(value)
     if isinstance(value, Toolset):
         return value
+    if isinstance(value, BaseModel):
+        value = value.model_dump(exclude_none=True)
     if isinstance(value, Mapping):
         spec = cast(ConfigMap, value)
         if "fn" in spec:
             return toolset_from_factory(name, spec)
-        return Toolset(config=ToolsetConfig.from_config(spec))
+        return toolset_from_mapping(spec)
     if callable(value):
         return call_toolset_factory(name, cast(Handler, value), {})
     return normalize_toolset(value)
@@ -276,7 +299,27 @@ def normalize_toolset(value: object) -> Toolset:
 
 
 def toolset_from_mapping(spec: ConfigMap) -> Toolset:
-    return Toolset(config=ToolsetConfig.from_config(spec))
+    extra_keys = set(spec) - set(ToolsetConfig.model_fields)
+    if extra_keys:
+        raise ValueError(f"Unknown toolset config keys: {sorted(extra_keys)}.")
+    write = spec.get("write")
+    if write is not None and not isinstance(write, bool):
+        raise TypeError("Toolset write must be a boolean.")
+    return Toolset(
+        tools=cast(ToolEntries | None, spec.get("tools", ())),
+        show=string_items(spec.get("show")),
+        hide=string_items(spec.get("hide")),
+        bindings=cast(BindingMap | None, spec.get("bindings")),
+        objects=cast(Objects | None, spec.get("objects")),
+        write=write,
+        scope=cast(str | None, spec.get("scope")),
+        sandbox=cast(ConfigMap | SandboxConfig | str | None, spec.get("sandbox")),
+        stops=cast(Iterable[ToolsetCallableEntry], spec.get("stops") or ()),
+        setups=cast(Iterable[ToolsetCallableEntry], spec.get("setups") or ()),
+        updates=cast(Iterable[ToolsetCallableEntry], spec.get("updates") or ()),
+        cleanups=cast(Iterable[ToolsetCallableEntry], spec.get("cleanups") or ()),
+        teardowns=cast(Iterable[ToolsetCallableEntry], spec.get("teardowns") or ()),
+    )
 
 
 def tool_items(value: object) -> "list[ToolEntry]":
@@ -294,10 +337,21 @@ def tool_item(value: object) -> "ToolEntry":
     if isinstance(value, Toolset | MCPTool):
         return value
     if isinstance(value, MCPToolConfig):
-        return MCPTool.from_mapping(value.model_dump(exclude_none=True))
+        return MCPTool(
+            command=value.command,
+            args=value.args,
+            env=value.env,
+            cwd=value.cwd,
+        )
     if isinstance(value, Mapping):
         if "command" in value:
-            return MCPTool.from_mapping(cast(ConfigMap, value))
+            config = coerce_config(MCPToolConfig, value)
+            return MCPTool(
+                command=config.command,
+                args=config.args,
+                env=config.env,
+                cwd=config.cwd,
+            )
         raise TypeError("Tool mapping specs require command.")
     if not callable(value):
         raise TypeError("Tool entries must be callables, Toolsets, or MCP tool specs.")
@@ -307,7 +361,7 @@ def tool_item(value: object) -> "ToolEntry":
 def toolset_config_mapping(config: ToolsetConfig | None) -> ConfigMap:
     if config is None:
         return {}
-    return ToolsetConfig.from_config(config).model_dump(exclude_none=True)
+    return resolved_config_data(coerce_config(ToolsetConfig, config))
 
 
 def string_items(value: object) -> list[str] | None:
@@ -353,16 +407,6 @@ class MCPTool:
         object.__setattr__(self, "args", tuple(args))
         object.__setattr__(self, "env", dict(env) if env is not None else None)
         object.__setattr__(self, "cwd", cwd)
-
-    @classmethod
-    def from_mapping(cls, spec: ConfigMap) -> "MCPTool":
-        config = MCPToolConfig.from_config(spec)
-        return cls(
-            command=config.command,
-            args=config.args,
-            env=config.env,
-            cwd=config.cwd,
-        )
 
 
 ToolEntry: TypeAlias = Handler | str | ConfigMap | Toolset | MCPTool | MCPToolConfig

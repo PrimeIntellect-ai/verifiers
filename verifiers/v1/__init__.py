@@ -1,5 +1,7 @@
 """Taskset/harness authoring API."""
 
+import importlib
+
 from verifiers.decorators import (
     advantage,
     cleanup,
@@ -22,12 +24,14 @@ from verifiers.types import (
 from verifiers.utils.message_utils import get_messages
 
 from .config import (
+    CallableConfig,
     Config,
     EnvConfig,
     HarnessConfig,
     MCPToolConfig,
     ProgramConfig,
     SandboxConfig,
+    SignalConfig,
     TasksetConfig,
     ToolsetConfig,
     UserConfig,
@@ -36,12 +40,15 @@ from .env import Env
 from .harness import Harness
 from .packages.harnesses import (
     MiniSWEAgent,
+    MiniSWEAgentConfig,
     OpenCode,
     OpenCodeConfig,
     Pi,
+    PiConfig,
     RLM,
     RLMConfig,
     Terminus2,
+    Terminus2Config,
 )
 from .utils.scoring_utils import (
     add_metric,
@@ -74,6 +81,7 @@ from .user import User
 
 __all__ = [
     "ConfigData",
+    "CallableConfig",
     "Config",
     "ConfigMap",
     "Env",
@@ -91,15 +99,21 @@ __all__ = [
     "Message",
     "Messages",
     "MiniSWEAgent",
+    "MiniSWEAgentConfig",
     "OpenCode",
     "OpenCodeConfig",
     "Objects",
     "Pi",
+    "PiConfig",
     "ProgramConfig",
     "RLM",
     "RLMConfig",
     "Terminus2",
+    "Terminus2Config",
+    "TextArenaTaskset",
+    "TextArenaTasksetConfig",
     "SandboxConfig",
+    "SignalConfig",
     "State",
     "Task",
     "TaskRow",
@@ -132,3 +146,10 @@ __all__ = [
     "teardown",
     "update",
 ]
+
+
+def __getattr__(name: str):
+    if name in ("TextArenaTaskset", "TextArenaTasksetConfig"):
+        module = importlib.import_module("verifiers.v1.packages.tasksets.textarena")
+        return getattr(module, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

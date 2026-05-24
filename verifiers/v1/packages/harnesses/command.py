@@ -1,25 +1,29 @@
 from collections.abc import Mapping
-from typing import cast
+from typing import TypeVar, cast
 
-from typing_extensions import NotRequired, TypedDict
+from pydantic import BaseModel
 
-from verifiers.clients import Client
-from verifiers.types import ClientConfig, SamplingArgs
-
-from ...config import SandboxConfig, sandbox_config_mapping
+from ...config import HarnessConfig, SandboxConfig, sandbox_config_mapping
+from ...harness import Harness
 from ...types import (
     ConfigData,
     ConfigMap,
-    Handler,
     ProgramCommand,
+    ProgramChannels,
     ProgramMap,
     ProgramOptionMap,
     ProgramSetup,
-    ProgramChannels,
+    ProgramValue,
 )
 from ...utils.binding_utils import Bindings
+from ...utils.config_utils import resolve_config_object
+from ...utils.prompt_utils import (
+    state_system_prompt_text,
+    task_text as task_instruction_text,
+)
 from ...utils.program_utils import program_list_items
-from ...toolset import ToolsetCollection
+
+ConfigT = TypeVar("ConfigT", bound=HarnessConfig)
 
 
 DEFAULT_COMMAND_SANDBOX: ConfigData = {
@@ -32,19 +36,50 @@ DEFAULT_COMMAND_SANDBOX: ConfigData = {
 }
 
 
-class HarnessKwargs(TypedDict):
-    user: NotRequired[Handler | str | ConfigMap | None]
-    client: NotRequired[Client | ClientConfig | None]
-    model: NotRequired[str | None]
-    sampling_args: NotRequired[SamplingArgs | None]
-    toolsets: NotRequired[ToolsetCollection | None]
-    stops: NotRequired[list[Handler] | None]
-    setups: NotRequired[list[Handler] | None]
-    updates: NotRequired[list[Handler] | None]
-    metrics: NotRequired[list[Handler] | None]
-    rewards: NotRequired[list[Handler] | None]
-    advantages: NotRequired[list[Handler] | None]
-    cleanups: NotRequired[list[Handler] | None]
+def configure_command_harness(
+    harness: Harness,
+    config: ConfigT,
+    *,
+    command: ProgramCommand,
+    sandbox: bool | ConfigMap | SandboxConfig | None = None,
+    files: ProgramOptionMap | None = None,
+    setup: ProgramSetup | None = None,
+    bindings: Bindings | None = None,
+    env: ProgramOptionMap | None = None,
+    artifacts: ProgramOptionMap | None = None,
+    channels: ProgramChannels | None = None,
+) -> None:
+    sandbox_value = (
+        sandbox
+        if sandbox is not None
+        else config.sandbox
+        if config.sandbox is not None
+        else True
+    )
+    program_files: ProgramOptionMap = {}
+    instruction_path = getattr(config, "instruction_path", None)
+    system_prompt_path = getattr(config, "system_prompt_path", None)
+    if instruction_path:
+        program_files[str(instruction_path)] = cast(ProgramValue, task_instruction_text)
+    if system_prompt_path and config.system_prompt is not None:
+        program_files[str(system_prompt_path)] = cast(
+            ProgramValue, state_system_prompt_text
+        )
+    harness._configure_runtime(
+        program=command_program(
+            command=command,
+            sandbox=sandbox_value,
+            files=files if files is not None else program_files,
+            setup=setup,
+            bindings=bindings,
+            env=env,
+            artifacts=artifacts,
+            channels=channels,
+            program=config.program,
+        ),
+        sandbox=command_sandbox(sandbox_value),
+        system_prompt=config.system_prompt,
+    )
 
 
 def command_program(
@@ -58,7 +93,7 @@ def command_program(
     env: ProgramOptionMap | None = None,
     artifacts: ProgramOptionMap | None = None,
     channels: ProgramChannels | None = None,
-    program: ProgramMap | None = None,
+    program: ProgramMap | BaseModel | str | None = None,
 ) -> ConfigData:
     config: ConfigData = {
         "command": command,
@@ -78,8 +113,17 @@ def command_program(
         config["artifacts"] = dict(artifacts)
     if channels is not None:
         config["channels"] = channels
-    if program is not None:
-        config = merge_program_defaults(config, program)
+    resolved_program = resolve_config_object(program)
+    if isinstance(resolved_program, BaseModel):
+        resolved_program = resolved_program.model_dump(
+            exclude_none=True,
+            exclude_unset=True,
+            exclude_defaults=True,
+        )
+    if resolved_program is not None:
+        if not isinstance(resolved_program, Mapping):
+            raise TypeError("program override must resolve to a mapping.")
+        config = merge_program_defaults(config, cast(ProgramMap, resolved_program))
     return config
 
 

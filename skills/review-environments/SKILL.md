@@ -16,7 +16,7 @@ Find correctness risks and regressions first, then assess maintainability and ec
 ## Review Workflow
 1. Identify environment contract:
 - `load_environment(...)`
-- base class and rollout behavior (`SingleTurnEnv`, `MultiTurnEnv`, `ToolEnv`/`MCPEnv`/`StatefulToolEnv`, `SandboxEnv`/`PythonEnv`, V1 `vf.Env` with `vf.Taskset`/`vf.Harness` for framework programs, `CliAgentEnv` for sandboxed agents)
+- base class and rollout behavior (`SingleTurnEnv`, `MultiTurnEnv`, `ToolEnv`/`MCPEnv`/`StatefulToolEnv`, `SandboxEnv`/`PythonEnv`, V1 `vf.Env` with explicit `vf.Taskset`/`vf.Harness` objects for framework programs, `CliAgentEnv` for sandboxed agents)
 - rubric and metrics
 2. Verify installability and runtime entrypoint with the canonical eval path. Do not add `--skip-upload` unless the user explicitly requests that deviation; standard runs save automatically for the private Evaluations tab and `prime eval view`:
 ```bash
@@ -42,8 +42,9 @@ prime eval run <env> -m openai/gpt-4.1-mini -n 5
 - Flag any requirement for user-managed background services before `load_environment()`.
 - Require environment-managed lifecycle for sandboxes/sessions.
 3. v1 taskset/harness contracts:
-- Expect new taskset/harness environments to use the v1 `vf.Env` / `vf.Taskset` / `vf.Harness` format.
+- Expect new taskset/harness environments to use the v1 `vf.Env(taskset=..., harness=...)` / `vf.Taskset` / `vf.Harness` format as the environment boundary, with `load_taskset(config: MyTasksetConfig)` and `load_harness(config: MyHarnessConfig)` defining child config types.
 - Expect tasksets to own task data, task-owned tools, user behavior, metrics, rewards, and task-specific config. Flag one-off harness classes that only wrap task behavior.
+- Expect shared dependencies to use bindings owned by the taskset, toolset, user, program, or harness that needs them. Flag pre-initialized resource objects passed through environment loaders; object entries should be serializable loader paths or no-arg loader callables.
 - Verify `Task` data is serializable, `state` remains serializable at rollout boundaries, and model/client controls flow through runtime state rather than top-level dataset columns.
 - For V1 harness programs, verify framework clients consume `state.get_endpoint_config(api="chat")` rather than hardcoding an upstream LLM endpoint. For `CliAgentEnv` agents, verify sandboxed agent code consumes the injected interception endpoint; the proxy is what makes rollouts visible to the rubric.
 4. Migration fidelity:

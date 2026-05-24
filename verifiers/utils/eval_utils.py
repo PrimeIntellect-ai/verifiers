@@ -18,7 +18,6 @@ from datasets.utils import logging as ds_logging
 
 import verifiers as vf
 from verifiers.types import (
-    ClientConfig,
     ClientType,
     Endpoint,
     Endpoints,
@@ -55,23 +54,7 @@ from verifiers.utils.save_utils import save_metadata
 
 logger = logging.getLogger(__name__)
 FREEFORM_ABLATION_SWEEP_FIELDS = {"args", "env_args"}
-
-
-def _client_config_uses_prime_inference(config: ClientConfig) -> bool:
-    if config.endpoint_configs:
-        urls = [endpoint.api_base_url for endpoint in config.endpoint_configs]
-    else:
-        urls = [config.api_base_url]
-
-    return bool(urls) and all(is_prime_inference_url(url) for url in urls)
-
-
-async def _resolve_model_pricing(config: EvalConfig) -> ModelPricing | None:
-    if not _client_config_uses_prime_inference(config.client_config):
-        return None
-
-    pricing_by_model = await fetch_prime_pricing()
-    return pricing_by_model.get(config.model)
+CHAT_TEMPLATE_KWARG_FIELDS = ("reasoning_effort", "enable_thinking")
 
 
 def _sum_output_usage(outputs: list[RolloutOutput]) -> TokenUsage | None:
@@ -455,6 +438,99 @@ def normalize_env_id_alias(config: Mapping[str, Any], section: str) -> dict[str,
     return normalized
 
 
+def _merge_sampling_arg_tables(
+    base: Mapping[str, Any],
+    override: Mapping[str, Any],
+) -> dict[str, Any]:
+    merged = {**dict(base), **dict(override)}
+    base_extra_body = base.get("extra_body")
+    override_extra_body = override.get("extra_body")
+    if isinstance(base_extra_body, Mapping) and isinstance(
+        override_extra_body, Mapping
+    ):
+        extra_body = {**dict(base_extra_body), **dict(override_extra_body)}
+        base_chat_template_kwargs = base_extra_body.get("chat_template_kwargs")
+        override_chat_template_kwargs = override_extra_body.get("chat_template_kwargs")
+        if isinstance(base_chat_template_kwargs, Mapping) and isinstance(
+            override_chat_template_kwargs, Mapping
+        ):
+            extra_body["chat_template_kwargs"] = {
+                **dict(base_chat_template_kwargs),
+                **dict(override_chat_template_kwargs),
+            }
+        merged["extra_body"] = extra_body
+    return merged
+
+
+def normalize_sampling_args(
+    sampling_args: Mapping[str, Any], section: str
+) -> dict[str, Any]:
+    normalized = dict(sampling_args)
+    chat_template_kwargs = {
+        key: normalized[key] for key in CHAT_TEMPLATE_KWARG_FIELDS if key in normalized
+    }
+    if not chat_template_kwargs:
+        return normalized
+
+    raw_extra_body = normalized.get("extra_body", {})
+    if raw_extra_body is None:
+        raw_extra_body = {}
+    if not isinstance(raw_extra_body, Mapping):
+        raise ValueError(f"{section}.extra_body must be a table.")
+    extra_body = dict(cast(Mapping[str, Any], raw_extra_body))
+
+    raw_chat_template_kwargs = extra_body.get("chat_template_kwargs", {})
+    if raw_chat_template_kwargs is None:
+        raw_chat_template_kwargs = {}
+    if not isinstance(raw_chat_template_kwargs, Mapping):
+        raise ValueError(f"{section}.extra_body.chat_template_kwargs must be a table.")
+    extra_body["chat_template_kwargs"] = {
+        **dict(cast(Mapping[str, Any], raw_chat_template_kwargs)),
+        **chat_template_kwargs,
+    }
+    normalized["extra_body"] = extra_body
+    return normalized
+
+
+def normalize_sampling_config(
+    config: Mapping[str, Any],
+    section: str,
+    *,
+    merge_sampling_with_existing: bool = False,
+) -> dict[str, Any]:
+    normalized = dict(config)
+    if "sampling_args" in normalized:
+        raw_sampling_args = normalized["sampling_args"]
+        if not isinstance(raw_sampling_args, Mapping):
+            raise ValueError(f"{section}.sampling_args must be a table.")
+        normalized["sampling_args"] = normalize_sampling_args(
+            cast(Mapping[str, Any], raw_sampling_args), f"{section}.sampling_args"
+        )
+
+    if "sampling" not in normalized:
+        return normalized
+
+    if "sampling_args" in normalized:
+        if not merge_sampling_with_existing:
+            raise ValueError(
+                f"{section} cannot contain both sampling and sampling_args."
+            )
+        existing_sampling_args = cast(Mapping[str, Any], normalized["sampling_args"])
+    else:
+        existing_sampling_args = {}
+
+    sampling = normalized.pop("sampling")
+    if not isinstance(sampling, Mapping):
+        raise ValueError(f"{section}.sampling must be a table.")
+    normalized["sampling_args"] = _merge_sampling_arg_tables(
+        existing_sampling_args,
+        normalize_sampling_args(
+            cast(Mapping[str, Any], sampling), f"{section}.sampling"
+        ),
+    )
+    return normalized
+
+
 def invalid_ablation_sweep_fields(
     sweep: Mapping[str, Any], valid_fields: set[str]
 ) -> set[str]:
@@ -556,6 +632,7 @@ def load_toml_config(
         "header_from_state",
         "headers_from_state",
         # sampling
+        "sampling",
         "sampling_args",
         "max_tokens",
         "temperature",
@@ -591,6 +668,7 @@ def load_toml_config(
                 f"Invalid global field(s) {invalid_global}. "
                 f"Valid fields are: {sorted(global_valid_fields)}"
             )
+    global_defaults = normalize_sampling_config(global_defaults, "global config")
 
     # merge global defaults with per-eval configs
     merged_eval_list: list[dict] = []
@@ -601,6 +679,9 @@ def load_toml_config(
                 f"Invalid field(s) {invalid_fields} for {eval_config.get('env_id', 'unknown')}. "
                 f"Valid fields are: {sorted(valid_fields)}"
             )
+        eval_config = normalize_sampling_config(
+            eval_config, f"[[eval]] {eval_config['env_id']}"
+        )
         # global defaults, then per-eval overrides
         merged = {**global_defaults, **eval_config}
         if "endpoint_id" in eval_config and "model" not in eval_config:
@@ -627,6 +708,7 @@ def load_toml_config(
                 f"Invalid field(s) {invalid_fields} in [[ablation]] block. "
                 f"Valid fields are: {sorted(valid_fields)}"
             )
+        ablation = normalize_sampling_config(ablation, "[[ablation]] block")
         # Validate sweep keys (except arg tables, which have freeform sub-keys)
         sweep = ablation.get("sweep", {})
         invalid_sweep = invalid_ablation_sweep_fields(sweep, valid_fields)
@@ -636,7 +718,13 @@ def load_toml_config(
                 f"Valid fields are: {sorted(valid_fields)}"
             )
         expanded = [
-            normalize_env_config_sections(config)
+            normalize_env_config_sections(
+                normalize_sampling_config(
+                    config,
+                    "expanded [[ablation]] config",
+                    merge_sampling_with_existing=True,
+                )
+            )
             for config in _expand_ablation(ablation, global_defaults)
         ]
         merged_eval_list.extend(expanded)
@@ -682,14 +770,6 @@ def filter_inputs(
     return filtered_inputs
 
 
-def to_col_order(
-    list_of_dicts: list[Mapping[str, float]],
-) -> dict[str, list[float | None]]:
-    """Convert a list of mappings to a dictionary of lists."""
-    keys = sorted({key for mapping in list_of_dicts for key in mapping})
-    return {key: [mapping.get(key) for mapping in list_of_dicts] for key in keys}
-
-
 def output_env_id(output: Mapping[str, Any]) -> str:
     info = output.get("info") or {}
     if isinstance(info, str):
@@ -700,15 +780,6 @@ def output_env_id(output: Mapping[str, Any]) -> str:
     if value is not None:
         return str(value)
     return str(output.get("env_id", "default"))
-
-
-def get_env_outputs(results: GenerateOutputs, env_id: str) -> GenerateOutputs:
-    """Get only the rollouts for a given env_id."""
-    outputs = [o for o in results["outputs"] if output_env_id(o) == env_id]
-    return GenerateOutputs(
-        outputs=outputs,
-        metadata=results["metadata"],  # duplicate metadata
-    )
 
 
 def print_rewards(results: GenerateOutputs):
@@ -741,7 +812,10 @@ def print_rewards(results: GenerateOutputs):
         print(f"pass^k: {', '.join(parts)}")
 
     metrics = [o["metrics"] for o in results["outputs"]]
-    metrics_col = to_col_order(metrics)
+    metric_keys = sorted({key for mapping in metrics for key in mapping})
+    metrics_col = {
+        key: [mapping.get(key) for mapping in metrics] for key in metric_keys
+    }
     for k in metrics_col.keys():
         v = metrics_col[k]
         present_values = [value for value in v if value is not None]
@@ -902,7 +976,14 @@ def print_results(results: GenerateOutputs, num_samples: int = 1):
     env_ids = {output_env_id(o) for o in results["outputs"]}
     if len(env_ids) > 1:
         for env_id in env_ids:
-            env_results = get_env_outputs(results, env_id)
+            env_results = GenerateOutputs(
+                outputs=[
+                    output
+                    for output in results["outputs"]
+                    if output_env_id(output) == env_id
+                ],
+                metadata=results["metadata"],
+            )
             print(f"\n--- {env_id} ---")
             print_rewards(env_results)
             print_info(env_results)
@@ -946,7 +1027,15 @@ async def run_evaluation(
         vf_env.set_kwargs(**config.extra_env_kwargs)
 
     results_path = config.resume_path or get_eval_results_path(config)
-    model_pricing = await _resolve_model_pricing(config)
+    if config.client_config.endpoint_configs:
+        pricing_urls = [
+            endpoint.api_base_url for endpoint in config.client_config.endpoint_configs
+        ]
+    else:
+        pricing_urls = [config.client_config.api_base_url]
+    model_pricing = None
+    if pricing_urls and all(is_prime_inference_url(url) for url in pricing_urls):
+        model_pricing = (await fetch_prime_pricing()).get(config.model)
     on_progress = _with_eval_metadata(on_progress, model_pricing, config.name)
 
     try:
