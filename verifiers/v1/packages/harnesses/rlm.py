@@ -209,15 +209,25 @@ bash "$RLM_CHECKOUT_PATH/install.sh"
                 schema = json.dumps(
                     tool_def.get("parameters") or {}, indent=2, sort_keys=True
                 )
+                parameters = cast(ConfigData, tool_def.get("parameters") or {})
+                properties = cast(ConfigData, parameters.get("properties") or {})
+                allowed_arguments = (
+                    sorted(properties)
+                    if parameters.get("additionalProperties") is False
+                    else None
+                )
                 module = textwrap.dedent(
                     f"""\
                     import os
                     import requests
 
 
+                    TOOL_ALLOWED_ARGUMENTS = {allowed_arguments!r}
+
+
                     async def run(arguments: dict | None = None, **kwargs):
                         {json.dumps(description)}
-                        arguments = {{**(arguments or {{}}), **kwargs}}
+                        arguments = _tool_arguments(arguments, kwargs)
                         base = os.environ.get("ANTHROPIC_BASE_URL") or os.environ.get("OPENAI_BASE_URL")
                         if not base:
                             raise RuntimeError("No Verifiers endpoint URL is configured.")
@@ -232,11 +242,26 @@ bash "$RLM_CHECKOUT_PATH/install.sh"
                             headers={{"Authorization": f"Bearer {{api_key}}"}},
                             timeout=300,
                         )
-                        response.raise_for_status()
-                        payload = response.json() if response.content else {{}}
+                        payload = _response_payload(response)
+                        return payload.get("result")
+
+
+                    def _tool_arguments(arguments: dict | None, kwargs: dict) -> dict:
+                        merged = {{**(arguments or {{}}), **kwargs}}
+                        if TOOL_ALLOWED_ARGUMENTS is None:
+                            return merged
+                        return {{key: merged[key] for key in TOOL_ALLOWED_ARGUMENTS if key in merged}}
+
+
+                    def _response_payload(response):
+                        if not response.content:
+                            response.raise_for_status()
+                            return {{}}
+                        payload = response.json()
                         if "error" in payload:
                             raise RuntimeError(str(payload["error"]))
-                        return payload.get("result")
+                        response.raise_for_status()
+                        return payload
                     """
                 )
                 distribution_name = skill_name.replace("_", "-")

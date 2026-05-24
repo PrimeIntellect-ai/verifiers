@@ -189,9 +189,111 @@ def test_vf_tool_skill_uses_arguments_dict_for_tool_parameters():
         )
 
     assert "async def run(arguments: dict | None = None, **kwargs)" in source
-    assert "arguments = {**(arguments or {}), **kwargs}" in source
+    assert "arguments = _tool_arguments(arguments, kwargs)" in source
     assert 'json={"arguments": arguments}' in source
     assert "limit=None" not in source
+
+
+@pytest.mark.asyncio
+async def test_vf_tool_skill_filters_extra_kwargs_for_closed_schemas(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = vf.RLM(config=vf.RLMConfig(local_checkout="/tmp/checkout"))
+    tool_def = Tool(
+        name="list_events",
+        description="List calendar events.",
+        parameters={
+            "type": "object",
+            "properties": {"date": {"type": "string"}},
+            "required": ["date"],
+            "additionalProperties": False,
+        },
+    )
+    setattr(harness.runtime, "tool_defs", lambda state: [tool_def])
+    archive = base64.b64decode(harness.vf_tool_skills_archive(vf.State({})))
+
+    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
+        source = (
+            tar.extractfile("list_events/src/list_events/list_events.py")
+            .read()
+            .decode()
+        )
+
+    module = types.ModuleType("list_events")
+    exec(source, module.__dict__)
+    calls: list[dict[str, object]] = []
+
+    class Response:
+        content = b"{}"
+
+        def json(self):
+            return {"result": "ok"}
+
+        def raise_for_status(self):
+            return None
+
+    class Requests:
+        @staticmethod
+        def post(url, json, headers, timeout):
+            calls.append(json)
+            return Response()
+
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://example.test/v1")
+    module.requests = Requests
+
+    result = await module.run(user="Alice", date="2025-07-14")
+
+    assert result == "ok"
+    assert calls == [{"arguments": {"date": "2025-07-14"}}]
+
+
+@pytest.mark.asyncio
+async def test_vf_tool_skill_surfaces_verifier_tool_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = vf.RLM(config=vf.RLMConfig(local_checkout="/tmp/checkout"))
+    tool_def = Tool(
+        name="list_events",
+        description="List calendar events.",
+        parameters={
+            "type": "object",
+            "properties": {"date": {"type": "string"}},
+            "required": ["date"],
+            "additionalProperties": False,
+        },
+    )
+    setattr(harness.runtime, "tool_defs", lambda state: [tool_def])
+    archive = base64.b64decode(harness.vf_tool_skills_archive(vf.State({})))
+
+    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
+        source = (
+            tar.extractfile("list_events/src/list_events/list_events.py")
+            .read()
+            .decode()
+        )
+
+    module = types.ModuleType("list_events")
+    exec(source, module.__dict__)
+
+    class Response:
+        content = b"{}"
+
+        def json(self):
+            return {"error": "unexpected keyword argument 'user'"}
+
+        def raise_for_status(self):
+            raise AssertionError("JSON tool errors should be raised first")
+
+    class Requests:
+        @staticmethod
+        def post(url, json, headers, timeout):
+            return Response()
+
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://example.test/v1")
+    module.requests = Requests
+
+    with pytest.raises(RuntimeError, match="unexpected keyword argument"):
+        await module.run(date="2025-07-14")
 
 
 def test_taskset_discovers_sibling_skills_dir_by_default(
