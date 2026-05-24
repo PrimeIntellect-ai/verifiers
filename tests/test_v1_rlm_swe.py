@@ -1,13 +1,20 @@
+import base64
+import io
 import sys
+import tarfile
 import types
 from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
 from datasets import Dataset
+from verifiers.types import Tool
 
 import verifiers.v1 as vf
 from environments.rlm_swe_v1 import rlm_swe_v1
+from verifiers.v1.packages.harnesses.rlm import (
+    DEFAULT_RLM_TOOL_SKILLS_ARCHIVE_PATH,
+)
 from verifiers.v1.utils.program_utils import merge_task_program, merge_task_sandbox
 
 
@@ -64,9 +71,13 @@ def test_rlm_harness_can_upload_skills(tmp_path: Path):
     )
     program = as_mapping(harness.program)
     dirs = as_mapping(program["dirs"])
+    files = as_mapping(program["files"])
+    setup = program["setup"]
 
-    assert dirs["/task/rlm-skills"] == harness.load_skills_dir
-    assert harness._explicit_skills == skills
+    assert dirs["/task/rlm-skills"] == skills
+    assert files[DEFAULT_RLM_TOOL_SKILLS_ARCHIVE_PATH] == harness.vf_tool_skills_archive
+    assert isinstance(setup, list)
+    assert DEFAULT_RLM_TOOL_SKILLS_ARCHIVE_PATH in setup[1]
 
 
 def test_rlm_harness_uploads_taskset_skills_by_default(tmp_path: Path):
@@ -85,8 +96,7 @@ def test_rlm_harness_uploads_taskset_skills_by_default(tmp_path: Path):
     program = as_mapping(env.harness.program)
     dirs = as_mapping(program["dirs"])
 
-    assert dirs["/task/rlm-skills"] == env.harness.load_skills_dir
-    assert env.harness._taskset_skills == skills
+    assert dirs["/task/rlm-skills"] == skills
 
 
 @pytest.mark.asyncio
@@ -110,19 +120,78 @@ async def test_rlm_harness_generates_skills_for_v1_tools():
 
     await env.harness.runtime.ensure_rollout_toolsets(task, state)
     env.harness.runtime.prepare_state(task, state)
-    skills_dir = env.harness.load_skills_dir(task, state)
+    archive = base64.b64decode(env.harness.vf_tool_skills_archive(state))
 
-    skill_module = (
-        skills_dir / "lookup_order" / "src" / "lookup_order" / "lookup_order.py"
+    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
+        source = (
+            tar.extractfile("lookup_order/src/lookup_order/lookup_order.py")
+            .read()
+            .decode()
+        )
+        skill_markdown = tar.extractfile("lookup_order/SKILL.md").read().decode()
+    assert "async def run(arguments: dict | None = None, **kwargs)" in source
+    assert "/vf/tools/" in source
+    assert "'lookup_order'" in source
+    assert "Look up an order by ID." in skill_markdown
+    assert "result = await lookup_order" in skill_markdown
+
+
+def test_vf_tool_skills_archive_avoids_base_skill_name_collisions(tmp_path: Path):
+    skills = tmp_path / "skills"
+    (skills / "lookup_order").mkdir(parents=True)
+    harness = vf.RLM(
+        config=vf.RLMConfig(local_checkout="/tmp/checkout", skills=str(skills))
     )
-    assert skill_module.exists()
-    source = skill_module.read_text()
-    assert "async def run(order_id: str)" in source
-    assert "_call_vf_tool('lookup_order'" in source
-    assert (
-        "Look up an order by ID."
-        in (skills_dir / "lookup_order" / "SKILL.md").read_text()
+    tool_def = Tool(
+        name="lookup_order",
+        description="Look up an order.",
+        parameters={"type": "object", "properties": {}},
     )
+    setattr(harness.runtime, "tool_defs", lambda state: [tool_def])
+
+    archive = base64.b64decode(harness.vf_tool_skills_archive(vf.State({})))
+
+    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
+        names = tar.getnames()
+        source = (
+            tar.extractfile("lookup_order_2/src/lookup_order_2/lookup_order_2.py")
+            .read()
+            .decode()
+        )
+
+    assert "lookup_order_2/SKILL.md" in names
+    assert "/vf/tools/" in source
+    assert "'lookup_order'" in source
+
+
+def test_vf_tool_skill_uses_arguments_dict_for_tool_parameters():
+    harness = vf.RLM(config=vf.RLMConfig(local_checkout="/tmp/checkout"))
+    tool_def = Tool(
+        name="reserved_param",
+        description="Reserved parameter.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "_call_vf_tool": {"type": "string"},
+                "limit": {"type": "integer", "default": 10},
+            },
+            "required": ["_call_vf_tool"],
+        },
+    )
+    setattr(harness.runtime, "tool_defs", lambda state: [tool_def])
+    archive = base64.b64decode(harness.vf_tool_skills_archive(vf.State({})))
+
+    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
+        source = (
+            tar.extractfile("reserved_param/src/reserved_param/reserved_param.py")
+            .read()
+            .decode()
+        )
+
+    assert "async def run(arguments: dict | None = None, **kwargs)" in source
+    assert "arguments = {**(arguments or {}), **kwargs}" in source
+    assert 'json={"arguments": arguments}' in source
+    assert "limit=None" not in source
 
 
 def test_taskset_discovers_sibling_skills_dir_by_default(
@@ -169,9 +238,7 @@ def test_rlm_harness_explicit_skills_override_taskset_skills(tmp_path: Path):
     program = as_mapping(env.harness.program)
     dirs = as_mapping(program["dirs"])
 
-    assert dirs["/task/rlm-skills"] == env.harness.load_skills_dir
-    assert env.harness._explicit_skills == explicit_skills
-    assert env.harness._taskset_skills is None
+    assert dirs["/task/rlm-skills"] == explicit_skills
 
 
 def test_rlm_swe_environment_uses_v1_r2e_taskset(monkeypatch):
