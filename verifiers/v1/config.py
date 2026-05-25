@@ -1,3 +1,4 @@
+import warnings
 from collections.abc import Mapping
 from os import PathLike
 from typing import Literal, TypeAlias, cast
@@ -36,7 +37,7 @@ ProgramSetup: TypeAlias = ProgramValue | list[ProgramValue]
 ProgramChannels: TypeAlias = str | JsonMap | list[str | JsonMap]
 PromptInput: TypeAlias = str | list[JsonMap]
 ToolsetSpecs: TypeAlias = str | JsonMap | list[str | JsonMap] | dict[str, str | JsonMap]
-TaskSource: TypeAlias = str | list[JsonMap]
+TaskLoaderRef: TypeAlias = str
 
 
 class Config(BaseConfig):
@@ -260,14 +261,35 @@ class LifecycleConfig(Config):
 
 
 class TasksetConfig(LifecycleConfig):
-    # Singleton fields describe one logical value owned by the taskset.
-    source: TaskSource | None = None
-    eval_source: TaskSource | None = None
+    # Core fields configure taskset-owned loaders and runtime behavior.
+    tasks: TaskLoaderRef | None = None
+    eval_tasks: TaskLoaderRef | None = None
     taskset_id: str | None = None
     system_prompt: PromptInput | None = None
     user: UserConfig | str | None = None
     bindings: Bindings = {}
     objects: dict[str, str] = {}
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_task_fields(cls, value: object) -> object:
+        if not isinstance(value, Mapping):
+            return value
+        data = dict(value)
+        for old, new in (("source", "tasks"), ("eval_source", "eval_tasks")):
+            if old not in data:
+                continue
+            if new in data:
+                raise ValueError(
+                    f"TasksetConfig received both {old!r} and {new!r}; use {new!r}."
+                )
+            warnings.warn(
+                f"TasksetConfig.{old} is deprecated; use TasksetConfig.{new}.",
+                DeprecationWarning,
+                stacklevel=3,
+            )
+            data[new] = data.pop(old)
+        return data
 
     @field_validator("bindings", mode="before")
     @classmethod
@@ -276,7 +298,7 @@ class TasksetConfig(LifecycleConfig):
 
 
 class HarnessConfig(LifecycleConfig):
-    # Singleton fields describe one logical value owned by the harness.
+    # Core fields configure harness-owned runtime behavior.
     program: ProgramConfig | str | None = None
     system_prompt: PromptInput | None = None
     system_prompt_merge: str = "reject"

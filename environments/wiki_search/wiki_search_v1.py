@@ -7,6 +7,8 @@ from chromadb.api.types import Embeddable, EmbeddingFunction
 from chromadb.utils import embedding_functions
 from datasets import load_dataset
 from openai import AsyncOpenAI
+from pydantic import model_validator
+from typing_extensions import Self
 
 import verifiers as vf
 
@@ -181,7 +183,7 @@ async def read_section(section_id: str, wiki) -> str:
     return "\n".join(lines[section_start : section_end or len(lines)])
 
 
-def source(
+def load_tasks(
     max_turns: int = 10,
     judge_model: str | None = None,
 ):
@@ -276,6 +278,8 @@ def load_toolset(
 
 
 class WikiSearchTasksetConfig(vf.TasksetConfig):
+    tasks: str = f"{__name__}:load_tasks"
+    rewards: list[str] = [f"{__name__}:judge_reward"]
     system_prompt: str = SYSTEM_PROMPT
     max_turns: int = 10
     corpus_dataset: str = "willcb/rare-wiki-pages"
@@ -286,6 +290,22 @@ class WikiSearchTasksetConfig(vf.TasksetConfig):
     embed_api_key_var: str = "OPENAI_API_KEY"
     judge_model: str | None = None
 
+    @model_validator(mode="after")
+    def configure_toolset(self) -> Self:
+        if "toolsets" not in self.model_fields_set:
+            self.toolsets = {
+                "wiki": {
+                    "fn": f"{__name__}:load_toolset",
+                    "corpus_dataset": self.corpus_dataset,
+                    "corpus_split": self.corpus_split,
+                    "chroma_db_dir": self.chroma_db_dir,
+                    "embed_model": self.embed_model,
+                    "embed_base_url": self.embed_base_url,
+                    "embed_api_key_var": self.embed_api_key_var,
+                }
+            }
+        return self
+
 
 class WikiSearchEnvConfig(vf.EnvConfig):
     taskset: WikiSearchTasksetConfig = WikiSearchTasksetConfig()
@@ -293,25 +313,7 @@ class WikiSearchEnvConfig(vf.EnvConfig):
 
 
 class WikiSearchTaskset(vf.Taskset):
-    _default_source = source
-
-    def _configure_runtime_defaults(self) -> None:
-        config = self.config
-        if "rewards" not in config.model_fields_set:
-            self.add_reward(judge_reward)
-        if "toolsets" not in config.model_fields_set:
-            self.add_toolset(
-                {
-                    "wiki": load_toolset(
-                        corpus_dataset=config.corpus_dataset,
-                        corpus_split=config.corpus_split,
-                        chroma_db_dir=config.chroma_db_dir,
-                        embed_model=config.embed_model,
-                        embed_base_url=config.embed_base_url,
-                        embed_api_key_var=config.embed_api_key_var,
-                    )
-                }
-            )
+    pass
 
 
 def load_environment(config: WikiSearchEnvConfig) -> vf.Env:

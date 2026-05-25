@@ -647,17 +647,15 @@ serialization boundary.
 class Taskset:
     def __init__(config: TasksetConfig | None = None): ...
 
-    def rows() -> list[dict[str, Any]]: ...
-    def eval_rows() -> list[dict[str, Any]]: ...
-    def task(row: Mapping[str, Any]) -> Task: ...
     def to_task(value: Mapping[str, Any] | Task | str) -> Task: ...
     async def init_group(task: Task, num_rollouts: int) -> tuple[list[Task], list[State]]: ...
     def get_dataset() -> Dataset: ...
     def get_eval_dataset() -> Dataset: ...
 ```
 
-Packages task rows and task-owned behavior. Subclasses usually annotate
-`config`, override `rows()`, and read typed values from `self.config`.
+Packages task rows and task-owned behavior. `TasksetConfig.tasks` and
+`TasksetConfig.eval_tasks` are import refs to module-level loaders returning
+`vf.Tasks`, which is `datasets.Dataset | Iterable[TaskRow]`.
 
 #### Harness
 
@@ -984,8 +982,8 @@ class EnvConfig(Config):
 class TasksetConfig(Config):
     taskset_id: str | None = None
     system_prompt: object | None = None
-    source: object | None = None
-    eval_source: object | None = None
+    tasks: str | None = None
+    eval_tasks: str | None = None
     user: object | None = None
 
 class HarnessConfig(Config):

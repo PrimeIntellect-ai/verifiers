@@ -89,10 +89,8 @@ custom harnesses, use the v1 Taskset/Harness path:
 # my_env.py
 import verifiers as vf
 
-ENV_ID = "my-env"
 
-
-def load_tasks(split: str = "train"):
+def load_tasks(split: str = "train") -> vf.Tasks:
     rows = [
         {
             "prompt": [{"role": "user", "content": "Reverse abc."}],
@@ -111,7 +109,7 @@ async def contains_answer(task, state) -> float:
 
 class MyTasksetConfig(vf.TasksetConfig):
     split: str = "train"
-    source: str = "my_env:load_tasks"
+    tasks: str = "my_env:load_tasks"
     rewards: list[str] = ["my_env:contains_answer"]
 
 
@@ -120,7 +118,7 @@ def load_taskset(config: MyTasksetConfig) -> vf.Taskset:
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
-    return vf.Env(taskset=vf.load_taskset(ENV_ID, config=config.taskset))
+    return vf.Env(taskset=vf.load_taskset(config=config.taskset))
 ```
 See [BYO Harness](byo-harness.md) for the advanced v1 taskset/harness API.
 Reusable v1 taskset and harness packages live under `verifiers.v1.packages`

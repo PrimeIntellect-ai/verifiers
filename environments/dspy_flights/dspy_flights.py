@@ -18,6 +18,10 @@ PROGRAM_SANDBOX = {
 
 
 class DSPyFlightsHarnessConfig(vf.HarnessConfig):
+    program: vf.ProgramConfig | None = vf.ProgramConfig(
+        fn=f"{__name__}:run_dspy_flight_program",
+        sandbox=True,
+    )
     sandbox: vf.SandboxConfig = vf.SandboxConfig(**PROGRAM_SANDBOX)
 
 
@@ -137,7 +141,7 @@ async def dspy_calls(task, state) -> float:
     return float(len(state.get("trajectory", [])))
 
 
-def source():
+def load_tasks():
     def row(
         example_id: int,
         user_request: str,
@@ -418,26 +422,23 @@ def stringify_nested(value: object) -> object:
     return str(value)
 
 
-class DSPyFlightsTaskset(vf.Taskset):
-    _default_source = source
-    _default_rewards = (expected_database_change,)
-    _default_metrics = (dspy_calls,)
+class DSPyFlightsTasksetConfig(vf.TasksetConfig):
+    tasks: str = f"{__name__}:load_tasks"
+    rewards: list[str] = [f"{__name__}:expected_database_change"]
+    metrics: list[str] = [f"{__name__}:dspy_calls"]
 
 
 class DSPyFlightsHarness(vf.Harness):
-    _default_program = vf.ProgramConfig(
-        fn=f"{__name__}:run_dspy_flight_program",
-        sandbox=True,
-    )
+    pass
 
 
 class DSPyFlightsEnvConfig(vf.EnvConfig):
-    taskset: vf.TasksetConfig = vf.TasksetConfig()
+    taskset: DSPyFlightsTasksetConfig = DSPyFlightsTasksetConfig()
     harness: DSPyFlightsHarnessConfig = DSPyFlightsHarnessConfig()
 
 
 def load_environment(config: DSPyFlightsEnvConfig) -> vf.Env:
     return vf.Env(
-        taskset=DSPyFlightsTaskset(config=config.taskset),
+        taskset=vf.Taskset(config=config.taskset),
         harness=DSPyFlightsHarness(config=config.harness),
     )

@@ -132,11 +132,26 @@ PROGRAM_SANDBOX = {
 
 
 class ParallelSandboxTasksetConfig(vf.TasksetConfig):
+    tasks: str = f"{__name__}:load_tasks"
+    toolsets: dict[str, vf.ToolsetConfig] = {
+        "bash": vf.ToolsetConfig(
+            tools=[f"{__name__}:bash"],
+            write=True,
+            sandbox="program",
+        )
+    }
+    updates: list[str] = [f"{__name__}:parallel_sandbox_audit"]
+    rewards: list[str] = [f"{__name__}:sandbox_stage_score"]
+    metrics: list[str] = [f"{__name__}:bash_calls", f"{__name__}:update_audits"]
+    cleanups: list[str] = [f"{__name__}:collect_program_sandbox_commands"]
     system_prompt: str = SYSTEM_PROMPT
     num_examples: int = -1
 
 
 class ParallelSandboxHarnessConfig(vf.HarnessConfig):
+    program: vf.ProgramConfig | None = vf.ProgramConfig(
+        sandbox=True, channels="callable"
+    )
     sandbox: vf.SandboxConfig = vf.SandboxConfig(**PROGRAM_SANDBOX)
     max_turns: int = 4
 
@@ -325,7 +340,7 @@ def reward_prompt(task: ConfigMap, state: ConfigMap) -> str:
     )
 
 
-def source(num_examples: int = -1):
+def load_tasks(num_examples: int = -1):
     rows = TASKS if num_examples < 0 else TASKS[:num_examples]
     for index, row in enumerate(rows):
         yield {
@@ -346,22 +361,11 @@ def source(num_examples: int = -1):
 
 
 class ParallelSandboxTaskset(vf.Taskset):
-    _default_source = source
-    _default_toolsets = {
-        "bash": vf.ToolsetConfig(
-            tools=[f"{__name__}:bash"],
-            write=True,
-            sandbox="program",
-        )
-    }
-    _default_updates = (parallel_sandbox_audit,)
-    _default_rewards = (sandbox_stage_score,)
-    _default_metrics = (bash_calls, update_audits)
-    _default_cleanups = (collect_program_sandbox_commands,)
+    pass
 
 
 class ParallelSandboxHarness(vf.Harness):
-    _default_program = vf.ProgramConfig(sandbox=True, channels="callable")
+    pass
 
 
 class ParallelSandboxEnvConfig(vf.EnvConfig):

@@ -27,6 +27,8 @@ BFCLRawTurn = str | ConfigMap | Sequence[BFCLRawMessage] | None
 
 
 class BFCLTasksetConfig(vf.TasksetConfig):
+    tasks: str = f"{__name__}:load_tasks"
+    rewards: list[str] = [f"{__name__}:bfcl_reward"]
     test_category: str = "simple_python"
     test_categories: list[str] | None = None
     examples_per_category: int = -1
@@ -133,8 +135,8 @@ def bfcl_missed_function(task: ConfigMap) -> ConfigMap:
     return cast(ConfigMap, value)
 
 
-def build_source(test_category: str, examples_per_category: int = -1):
-    def source():
+def build_task_loader(test_category: str, examples_per_category: int = -1):
+    def factory():
         patch_bfcl_eval()
         from bfcl_eval.utils import (
             is_multi_turn,
@@ -178,11 +180,11 @@ def build_source(test_category: str, examples_per_category: int = -1):
             rows.append(row)
         return rows
 
-    return source
+    return factory
 
 
-def source(test_category: str = "simple_python", examples_per_category: int = -1):
-    return build_source(test_category, examples_per_category)()
+def load_tasks(test_category: str = "simple_python", examples_per_category: int = -1):
+    return build_task_loader(test_category, examples_per_category)()
 
 
 def bfcl_row(
@@ -587,8 +589,7 @@ class BFCLMultiTurnHarness(vf.Harness):
 
 
 class BFCLTaskset(vf.Taskset):
-    _default_source = source
-    _default_rewards = (bfcl_reward,)
+    pass
 
 
 def load_harness(config: BFCLHarnessConfig) -> vf.Harness:

@@ -75,7 +75,7 @@ from .types import (
     MutableConfigMap,
     Objects,
     TaskRow,
-    TaskRows,
+    Tasks,
 )
 from .user import User
 
@@ -117,7 +117,7 @@ __all__ = [
     "State",
     "Task",
     "TaskRow",
-    "TaskRows",
+    "Tasks",
     "Taskset",
     "TasksetConfig",
     "SystemMessage",

@@ -153,6 +153,13 @@ TASKS: list[vf.ConfigData] = [
 
 
 class SelfJudgeTasksetConfig(vf.TasksetConfig):
+    tasks: str = f"{__name__}:load_tasks"
+    toolsets: dict[str, dict[str, str]] = {
+        "bash": {"fn": f"{__name__}:load_bash_toolset"}
+    }
+    updates: list[str] = [f"{__name__}:sandbox_judge"]
+    rewards: list[str] = [f"{__name__}:self_consistency_score"]
+    metrics: list[str] = [f"{__name__}:bash_calls"]
     system_prompt: str = SYSTEM_PROMPT
     num_examples: int = -1
 
@@ -306,7 +313,7 @@ def score_prompt(task: ConfigMap, findings: str) -> str:
     )
 
 
-def source(num_examples: int = -1):
+def load_tasks(num_examples: int = -1):
     rows = TASKS if num_examples < 0 else TASKS[:num_examples]
     for index, row in enumerate(rows):
         question = str(row["question"])
@@ -346,11 +353,7 @@ def load_bash_toolset(config=None) -> vf.Toolset:
 
 
 class SelfJudgeTaskset(vf.Taskset):
-    _default_source = source
-    _default_toolsets = {"bash": load_bash_toolset}
-    _default_updates = (sandbox_judge,)
-    _default_rewards = (self_consistency_score,)
-    _default_metrics = (bash_calls,)
+    pass
 
 
 class SelfJudgeHarness(vf.Harness):

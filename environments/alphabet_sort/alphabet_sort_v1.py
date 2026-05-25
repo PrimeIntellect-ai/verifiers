@@ -47,7 +47,7 @@ def _extract_last_name(combined_name: str) -> str:
     return ""
 
 
-def get_source(
+def build_task_loader(
     min_turns: int = 1,
     max_turns: int = 3,
     min_names_per_turn: int = 1,
@@ -58,7 +58,7 @@ def get_source(
     dataset_split: str = "train",
     seed: int = 1337420,
 ):
-    def source():
+    def loader():
         random.seed(seed)
 
         def get_random_turn_config():
@@ -185,10 +185,10 @@ These are in addition to the prior list. Mark any NEW names (that weren't in the
 
         return Dataset.from_list(data)
 
-    return source
+    return loader
 
 
-def source(
+def load_tasks(
     min_turns: int = 1,
     max_turns: int = 3,
     min_names_per_turn: int = 1,
@@ -205,7 +205,7 @@ def source(
         min_names_per_turn=min_names_per_turn,
         max_names_per_turn=max_names_per_turn,
     )
-    return get_source(
+    return build_task_loader(
         min_turns=min_turns,
         max_turns=max_turns,
         min_names_per_turn=min_names_per_turn,
@@ -309,6 +309,9 @@ async def alphabet_user(task, state, messages) -> list[dict[str, str]]:
 
 
 class AlphabetSortTasksetConfig(vf.TasksetConfig):
+    tasks: str = f"{__name__}:load_tasks"
+    rewards: list[str] = [f"{__name__}:weighted_reward"]
+    user: str | None = f"{__name__}:alphabet_user"
     min_turns: int = 1
     max_turns: int = 3
     min_names_per_turn: int = 1
@@ -326,10 +329,6 @@ class AlphabetSortEnvConfig(vf.EnvConfig):
 
 
 class AlphabetSortTaskset(vf.Taskset):
-    _default_source = source
-    _default_rewards = (weighted_reward,)
-    _default_user = alphabet_user
-
     def _configure_runtime_defaults(self) -> None:
         validate_parameters(
             min_turns=self.config.min_turns,

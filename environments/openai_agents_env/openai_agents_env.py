@@ -7,6 +7,9 @@ ANSWER_RE = re.compile(r"^\s*ANSWER\s*:?\s*(.+?)\s*$", re.IGNORECASE)
 
 
 class OpenAIAgentsTasksetConfig(vf.TasksetConfig):
+    tasks: str = f"{__name__}:load_tasks"
+    eval_tasks: str = f"{__name__}:load_eval_tasks"
+    rewards: list[str] = [f"{__name__}:answer_reward"]
     taskset_id: str = "gsm8k-openai-agents"
     num_train_examples: int = 50
     num_eval_examples: int = 20
@@ -68,17 +71,17 @@ async def run_openai_agents_program(task: vf.Task, state: vf.State) -> vf.State:
     return state
 
 
-def load_rows(split: str, num_examples: int):
+def gsm8k_task_rows(split: str, num_examples: int):
     n = num_examples if num_examples > 0 else None
     return load_example_dataset("gsm8k", split=split, n=n)
 
 
-def load_train_rows(num_train_examples: int = 50):
-    return load_rows("train", num_train_examples)
+def load_tasks(num_train_examples: int = 50):
+    return gsm8k_task_rows("train", num_train_examples)
 
 
-def load_eval_rows(num_eval_examples: int = 20):
-    return load_rows("test", num_eval_examples)
+def load_eval_tasks(num_eval_examples: int = 20):
+    return gsm8k_task_rows("test", num_eval_examples)
 
 
 def extract_answer(text: str) -> str:
@@ -118,22 +121,18 @@ def answer_reward(task: vf.Task, state: vf.State) -> float:
 
 
 class OpenAIAgentsTaskset(vf.Taskset):
-    _default_source = load_train_rows
-    _default_eval_source = load_eval_rows
-    _default_rewards = (answer_reward,)
-
-
-class OpenAIAgentsHarness(vf.Harness):
-    _default_program = run_openai_agents_program
+    pass
 
 
 class OpenAIAgentsEnvConfig(vf.EnvConfig):
     taskset: OpenAIAgentsTasksetConfig = OpenAIAgentsTasksetConfig()
-    harness: vf.HarnessConfig = vf.HarnessConfig()
+    harness: vf.HarnessConfig = vf.HarnessConfig(
+        program=f"{__name__}:run_openai_agents_program"
+    )
 
 
 def load_environment(config: OpenAIAgentsEnvConfig) -> vf.Env:
     return vf.Env(
         taskset=OpenAIAgentsTaskset(config=config.taskset),
-        harness=OpenAIAgentsHarness(config=config.harness),
+        harness=vf.Harness(config=config.harness),
     )

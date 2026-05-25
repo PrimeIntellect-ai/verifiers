@@ -89,8 +89,8 @@ def test_textarena_taskset_builds_train_and_eval_rows(fake_textarena):
         )
     )
 
-    rows = taskset.rows()
-    eval_rows = taskset.eval_rows()
+    rows = list(taskset.get_dataset())
+    eval_rows = list(taskset.get_eval_dataset())
 
     assert taskset.config.system_prompt is None
     assert [row["example_id"] for row in rows] == [0, 1]
@@ -98,9 +98,12 @@ def test_textarena_taskset_builds_train_and_eval_rows(fake_textarena):
     assert all(row["answer"] in FakeTextArenaEnv.word_list for row in rows)
     assert all(row["answer"] in FakeTextArenaEnv.word_list for row in eval_rows)
     assert rows[0]["prompt"] == [
-        vf.UserMessage(content="Guess the word. [GAME] Use <guess>[word]</guess>.")
+        {
+            "role": "user",
+            "content": "Guess the word. [GAME] Use <guess>[word]</guess>.",
+        }
     ]
-    assert fake_nltk.downloads == [
+    assert fake_nltk.downloads[:2] == [
         ("words", True),
         ("averaged_perceptron_tagger_eng", True),
     ]
@@ -124,7 +127,7 @@ def test_textarena_taskset_flattens_dict_word_list(fake_textarena, monkeypatch):
     )
 
     assert taskset.word_list == ["apple", "berry", "cider"]
-    assert all(row["answer"] in taskset.word_list for row in taskset.rows())
+    assert all(row["answer"] in taskset.word_list for row in taskset.get_dataset())
 
 
 def test_textarena_taskset_deepcopy_reuses_shared_memo(fake_textarena, monkeypatch):
@@ -166,7 +169,7 @@ async def test_textarena_user_steps_env_and_stops_when_game_finishes(fake_textar
             num_eval_examples=0,
         )
     )
-    task = taskset.task({"example_id": 0, "prompt": [], "answer": "apple"})
+    task = taskset.to_task({"example_id": 0, "prompt": [], "answer": "apple"})
     state = vf.State.for_task(task)
     state["completion"] = [
         vf.AssistantMessage(content="I will guess <guess>[apple]</guess>.")
@@ -197,7 +200,7 @@ async def test_textarena_user_returns_wordle_feedback_for_unfinished_game(
             num_eval_examples=0,
         )
     )
-    task = taskset.task({"example_id": 0, "prompt": [], "answer": "apple"})
+    task = taskset.to_task({"example_id": 0, "prompt": [], "answer": "apple"})
     state = vf.State.for_task(task)
     state["completion"] = [
         vf.AssistantMessage(content="I will guess <guess>[berry]</guess>.")

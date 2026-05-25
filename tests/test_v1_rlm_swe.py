@@ -78,7 +78,7 @@ def test_rlm_harness_uploads_taskset_skills_by_default(tmp_path: Path):
             return {"skills": skills}
 
     env = vf.Env(
-        taskset=SkillTaskset(config=vf.TasksetConfig(source=[])),
+        taskset=SkillTaskset(config=vf.TasksetConfig()),
         harness=vf.RLM(config=vf.RLMConfig(local_checkout="/tmp/checkout")),
     )
     program = as_mapping(env.harness.program)
@@ -104,7 +104,7 @@ def test_taskset_discovers_sibling_skills_dir_by_default(
         "SkillTaskset", (vf.Taskset,), {"__module__": module_name}
     )
 
-    taskset = skill_taskset_type(config=vf.TasksetConfig(source=[]))
+    taskset = skill_taskset_type(config=vf.TasksetConfig())
 
     assert taskset.get_upload_dirs() == {"skills": skills}
 
@@ -120,7 +120,7 @@ def test_rlm_harness_explicit_skills_override_taskset_skills(tmp_path: Path):
             return {"skills": taskset_skills}
 
     env = vf.Env(
-        taskset=SkillTaskset(config=vf.TasksetConfig(source=[])),
+        taskset=SkillTaskset(config=vf.TasksetConfig()),
         harness=vf.RLM(
             config=vf.RLMConfig(
                 local_checkout="/tmp/checkout",

@@ -36,10 +36,8 @@ runtime state instead of constructing its own copy.
 import verifiers as vf
 
 
-ENV_ID = "reverse-text"
 
-
-def load_tasks(split: str = "train"):
+def load_tasks(split: str = "train") -> vf.Tasks:
     rows = [
         {
             "system_prompt": "Reverse text exactly.",
@@ -59,7 +57,7 @@ async def contains_answer(task, state) -> float:
 
 class ReverseTasksetConfig(vf.TasksetConfig):
     split: str = "train"
-    source: str = "reverse_text:load_tasks"
+    tasks: str = "reverse_text:load_tasks"
     rewards: list[str] = ["reverse_text:contains_answer"]
 
 
@@ -69,16 +67,16 @@ def load_taskset(config: ReverseTasksetConfig) -> vf.Taskset:
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
     return vf.Env(
-        taskset=vf.load_taskset(ENV_ID, config=config.taskset),
+        taskset=vf.load_taskset(config=config.taskset),
         harness=vf.Harness(config=config.harness),
     )
 ```
 
 ## Tasksets
 
-Tasksets usually own row loading directly. Config should hold user-facing knobs,
-such as dataset name, split, or size limits; the taskset class should turn those
-values into rows.
+Tasksets own row loading through a module-level loader referenced by config.
+Config should hold user-facing knobs, such as dataset name, split, or size
+limits; the loader accepts those knobs and returns `vf.Tasks`.
 
 ```python
 from datasets import load_dataset
@@ -86,32 +84,25 @@ import verifiers as vf
 
 
 class GSM8KTasksetConfig(vf.TasksetConfig):
+    tasks: str = "my_env:load_tasks"
     dataset_name: str = "gsm8k"
     split: str = "train"
 
 
-class GSM8KTaskset(vf.Taskset):
-    config: GSM8KTasksetConfig
-
-    def rows(self) -> list[dict[str, object]]:
-        dataset = load_dataset(
-            self.config.dataset_name,
-            "main",
-            split=self.config.split,
-        )
-        return [
-            {
-                "example_id": index,
-                "prompt": [{"role": "user", "content": row["question"]}],
-                "answer": row["answer"],
-            }
-            for index, row in enumerate(dataset)
-        ]
+def load_tasks(dataset_name: str = "gsm8k", split: str = "train") -> vf.Tasks:
+    dataset = load_dataset(dataset_name, "main", split=split)
+    return (
+        {
+            "example_id": index,
+            "prompt": [{"role": "user", "content": row["question"]}],
+            "answer": row["answer"],
+        }
+        for index, row in enumerate(dataset)
+    )
 
 
-def load_taskset(config: GSM8KTasksetConfig) -> GSM8KTaskset:
-    assert isinstance(config, GSM8KTasksetConfig)
-    return GSM8KTaskset(config=config)
+def load_taskset(config: GSM8KTasksetConfig) -> vf.Taskset:
+    return vf.Taskset(config=config)
 ```
 
 Rows are JSON-serializable mappings. The base taskset normalizes each row into a
@@ -152,7 +143,18 @@ def build_answer_extractor() -> AnswerExtractor:
     return AnswerExtractor()
 
 
+def load_tasks() -> vf.Tasks:
+    return [
+        {
+            "prompt": [{"role": "user", "content": "What is 2 + 2?"}],
+            "answer": "4",
+        }
+    ]
+
+
 class ExtractTasksetConfig(vf.TasksetConfig):
+    tasks: str = "my_env:load_tasks"
+    rewards: list[str] = ["my_env:exact"]
     objects: dict[str, str] = {
         "extract_answer": "my_env:build_answer_extractor",
     }
@@ -161,22 +163,8 @@ class ExtractTasksetConfig(vf.TasksetConfig):
     }
 
 
-class ExtractTaskset(vf.Taskset):
-    config: ExtractTasksetConfig
-    _default_rewards = (exact,)
-
-    def rows(self) -> list[dict[str, object]]:
-        return [
-            {
-                "prompt": [{"role": "user", "content": "What is 2 + 2?"}],
-                "answer": "4",
-            }
-        ]
-
-
-def load_taskset(config: ExtractTasksetConfig) -> ExtractTaskset:
-    assert isinstance(config, ExtractTasksetConfig)
-    return ExtractTaskset(config=config)
+def load_taskset(config: ExtractTasksetConfig) -> vf.Taskset:
+    return vf.Taskset(config=config)
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
@@ -279,17 +267,17 @@ def search_tool(index_path: str):
 
 toolset = vf.Toolset(tools=[search_tool("wiki.index")])
 
-class SearchTaskset(vf.Taskset):
-    def rows(self) -> list[dict[str, object]]:
-        return [
-            {
-                "prompt": [{"role": "user", "content": "Search for docs."}],
-                "answer": "example",
-            }
-        ]
+
+def load_tasks() -> vf.Tasks:
+    return [
+        {
+            "prompt": [{"role": "user", "content": "Search for docs."}],
+            "answer": "example",
+        }
+    ]
 
 
-taskset = SearchTaskset(config=vf.TasksetConfig())
+taskset = vf.Taskset(config=vf.TasksetConfig(tasks="my_env:load_tasks"))
 taskset.add_toolset(toolset)
 ```
 
@@ -404,20 +392,18 @@ async def exact(task, state) -> float:
     return float(state.get("answer") == task.get("answer"))
 
 
+def load_tasks() -> vf.Tasks:
+    return [
+        {
+            "prompt": [{"role": "user", "content": "Say the answer."}],
+            "answer": "done",
+        }
+    ]
+
+
 class ReplayTasksetConfig(vf.TasksetConfig):
-    pass
-
-
-class ReplayTaskset(vf.Taskset):
-    _default_rewards = (exact,)
-
-    def rows(self) -> list[dict[str, object]]:
-        return [
-            {
-                "prompt": [{"role": "user", "content": "Say the answer."}],
-                "answer": "done",
-            }
-        ]
+    tasks: str = "my_env:load_tasks"
+    rewards: list[str] = ["my_env:exact"]
 
 
 class ReplayHarnessConfig(vf.HarnessConfig):
@@ -429,7 +415,7 @@ class ReplayHarness(vf.Harness):
 
 
 env = vf.Env(
-    taskset=ReplayTaskset(config=ReplayTasksetConfig()),
+    taskset=vf.Taskset(config=ReplayTasksetConfig()),
     harness=ReplayHarness(config=ReplayHarnessConfig()),
 )
 ```

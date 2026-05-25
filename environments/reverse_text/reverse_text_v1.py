@@ -29,7 +29,7 @@ async def lcs_reward_func(task, state) -> float:
     return SequenceMatcher(None, response, answer).ratio()
 
 
-def source(
+def load_tasks(
     dataset_name: str = "PrimeIntellect/Reverse-Text-RL",
     dataset_split: str = "train",
 ):
@@ -53,6 +53,8 @@ def source(
 
 
 class ReverseTextTasksetConfig(vf.TasksetConfig):
+    tasks: str = f"{__name__}:load_tasks"
+    rewards: list[str] = [f"{__name__}:lcs_reward_func"]
     system_prompt: str | None = (
         "Reverse the text character-by-character. Put your answer in "
         "<reversed_text> tags."
@@ -62,8 +64,7 @@ class ReverseTextTasksetConfig(vf.TasksetConfig):
 
 
 class ReverseTextTaskset(vf.Taskset):
-    _default_source = source
-    _default_rewards = (lcs_reward_func,)
+    pass
 
 
 class ReverseTextEnvConfig(vf.EnvConfig):

@@ -5,7 +5,7 @@ from importlib.abc import Traversable
 from collections.abc import Mapping
 from copy import deepcopy
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar, cast
+from typing import TYPE_CHECKING
 
 from datasets import Dataset
 from verifiers.types import task_payload_from_info
@@ -20,43 +20,27 @@ from .task import Task
 from .utils.prompt_utils import normalize_system_prompt
 from .utils.config_utils import coerce_config
 from .utils.runtime_owner_utils import RuntimeOwnerMixin
-from .utils.taskset_utils import dataset_info_with_task, discover_sibling_dir
-from .utils.taskset_utils import rows_from_source
+from .utils.taskset_utils import (
+    dataset_info_with_task,
+    discover_sibling_dir,
+    resolve_task_loader,
+    task_data_from_loader,
+)
 from .types import (
     ConfigData,
     ConfigMap,
     TaskRow,
-    TaskRowsSource,
 )
 
 if TYPE_CHECKING:
     from .harness import Harness
 
 
-TaskSourceValue = TaskRowsSource | None
-
-
 class Taskset(RuntimeOwnerMixin):
     config: TasksetConfig
-    _default_source: ClassVar[TaskSourceValue] = None
-    _default_eval_source: ClassVar[TaskSourceValue] = None
 
     def __init__(self, config: ConfigSource = None):
         self.config = coerce_config(TasksetConfig, config)
-        source_config = self._defaulted("source", type(self)._default_source)
-        source_value = resolve_config_object(source_config)
-        self.source = cast(
-            TaskSourceValue,
-            source_value,
-        )
-        eval_source_config = self._defaulted(
-            "eval_source", type(self)._default_eval_source
-        )
-        eval_source_value = resolve_config_object(eval_source_config)
-        self.eval_source = cast(
-            TaskSourceValue,
-            eval_source_value,
-        )
         resolved_taskset_id = self.config.taskset_id
         if resolved_taskset_id is not None and not isinstance(resolved_taskset_id, str):
             raise TypeError("taskset_id must be a string.")
@@ -74,8 +58,6 @@ class Taskset(RuntimeOwnerMixin):
         }
         self._init_runtime_toolsets()
         self._init_runtime_handlers()
-        self._rows: list[ConfigData] | None = None
-        self._eval_rows: list[ConfigData] | None = None
         self._dataset: Dataset | None = None
         self._eval_dataset: Dataset | None = None
         self._attached_harnesses: weakref.WeakSet["Harness"] = weakref.WeakSet()
@@ -99,29 +81,6 @@ class Taskset(RuntimeOwnerMixin):
         for harness in list(self._attached_harnesses):
             harness.runtime = harness.resolve_runtime()
 
-    def rows(self) -> list[ConfigData]:
-        if self._rows is None:
-            self._rows = rows_from_source(self.source, self.config)
-        return self._rows
-
-    def eval_rows(self) -> list[ConfigData]:
-        if self.eval_source is None:
-            return self.rows()
-        if self._eval_rows is None:
-            self._eval_rows = rows_from_source(self.eval_source, self.config)
-        return self._eval_rows
-
-    def task(self, row: ConfigMap) -> Task:
-        task = Task(row)
-        task["taskset_id"] = self.taskset_id
-        task_id = task.get("task_id")
-        if task_id is None:
-            task_id = task.get("id")
-        if task_id is None:
-            task_id = task.get("example_id")
-        task["task_id"] = str(task_id if task_id is not None else uuid.uuid4().hex)
-        return task.freeze()
-
     def to_task(self, value: ConfigMap | Task | str) -> Task:
         if isinstance(value, Task):
             return value
@@ -131,8 +90,16 @@ class Taskset(RuntimeOwnerMixin):
             raise TypeError("Taskset.to_task expects a mapping, Task, or JSON string.")
         serialized_task = task_payload_from_info(value.get("info"))
         if serialized_task is not None:
-            return self.task(serialized_task)
-        return self.task(value)
+            value = serialized_task
+        task = Task(value)
+        task["taskset_id"] = self.taskset_id
+        task_id = task.get("task_id")
+        if task_id is None:
+            task_id = task.get("id")
+        if task_id is None:
+            task_id = task.get("example_id")
+        task["task_id"] = str(task_id if task_id is not None else uuid.uuid4().hex)
+        return task.freeze()
 
     async def init_group(
         self, task: Task, num_rollouts: int
@@ -142,29 +109,30 @@ class Taskset(RuntimeOwnerMixin):
 
     def get_dataset(self) -> Dataset:
         if self._dataset is None:
+            load_tasks = resolve_task_loader("tasks", self.config.tasks)
+            tasks = task_data_from_loader(load_tasks, self.config)
             self._dataset = Dataset.from_list(
-                [self._dataset_row(row, index) for index, row in enumerate(self.rows())]
+                [self._dataset_row(row, index) for index, row in enumerate(tasks)]
             )
         return self._dataset
 
     def get_eval_dataset(self) -> Dataset:
-        if self.eval_source is None:
+        if self.config.eval_tasks is None:
             return self.get_dataset()
         if self._eval_dataset is None:
+            load_tasks = resolve_task_loader("eval_tasks", self.config.eval_tasks)
+            tasks = task_data_from_loader(load_tasks, self.config)
             self._eval_dataset = Dataset.from_list(
-                [
-                    self._dataset_row(row, index)
-                    for index, row in enumerate(self.eval_rows())
-                ]
+                [self._dataset_row(row, index) for index, row in enumerate(tasks)]
             )
         return self._eval_dataset
 
     def __iter__(self):
-        for row in self.rows():
-            yield self.task(row)
+        for row in self.get_dataset():
+            yield self.to_task(row)
 
     def __len__(self) -> int:
-        return len(self.rows())
+        return len(self.get_dataset())
 
     def _dataset_row(self, row: TaskRow, index: int) -> ConfigData:
         normalized = deepcopy(dict(row))
@@ -176,7 +144,7 @@ class Taskset(RuntimeOwnerMixin):
                 if question is not None
                 else []
             )
-        task_payload = dict(self.task(normalized))
+        task_payload = dict(self.to_task(normalized))
         dataset_row: ConfigData = {
             "prompt": task_payload["prompt"],
             "example_id": normalized["example_id"],

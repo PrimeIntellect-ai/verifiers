@@ -7,7 +7,7 @@ async def exact_answer(task, state) -> float:
     return float(str(task["answer"]).lower() in stdout.lower())
 
 
-def source():
+def load_tasks():
     return [
         {
             "question": "Reply with exactly hello rlm.",
@@ -53,12 +53,14 @@ def source():
 
 
 class HelloRLMTaskset(vf.Taskset):
-    _default_source = source
-    _default_rewards = (exact_answer,)
+    pass
 
 
 class HelloRLMEnvConfig(vf.EnvConfig):
-    taskset: vf.TasksetConfig = vf.TasksetConfig()
+    taskset: vf.TasksetConfig = vf.TasksetConfig(
+        tasks=f"{__name__}:load_tasks",
+        rewards=[f"{__name__}:exact_answer"],
+    )
     harness: vf.RLMConfig = vf.RLMConfig()
 
 

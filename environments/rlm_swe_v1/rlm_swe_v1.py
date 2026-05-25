@@ -2,9 +2,9 @@ import json
 import logging
 import re
 import shlex
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Protocol, cast
+from typing import Protocol
 
 from datasets import load_dataset
 import verifiers as vf
@@ -21,6 +21,7 @@ DEFAULT_RLM_TOOLS = ("bash", "edit")
 
 
 class RlmSweTasksetConfig(vf.TasksetConfig):
+    tasks: str = f"{__name__}:load_tasks"
     taskset_id: str = "swe/r2e"
     dataset_name: str = DEFAULT_DATASET_NAME
     repo_path: str = DEFAULT_REPO_PATH
@@ -64,6 +65,100 @@ class R2ESandbox(Protocol):
     ) -> SandboxCommandResult: ...
 
 
+def load_tasks(
+    dataset_name: str = DEFAULT_DATASET_NAME,
+    repo_path: str = DEFAULT_REPO_PATH,
+    filter_repos: list[str] | None = None,
+    ds_num_proc: int | None = None,
+    ds_keep_in_memory: bool = True,
+    timeout_minutes: int | None = None,
+    env: vf.ConfigData | None = None,
+) -> list[vf.ConfigData]:
+    dataset_kwargs = dict(
+        num_proc=ds_num_proc,
+        keep_in_memory=ds_keep_in_memory,
+        load_from_cache_file=False,
+    )
+    dataset = load_dataset(
+        dataset_name,
+        split="train",
+        keep_in_memory=ds_keep_in_memory,
+        num_proc=ds_num_proc,
+    )
+    if filter_repos:
+        filter_set = frozenset(filter_repos)
+        dataset = dataset.filter(
+            lambda row: row.get("repo_name") not in filter_set,
+            **dataset_kwargs,
+        )
+    dataset = dataset.map(
+        process_r2e_example,
+        remove_columns=dataset.column_names,
+        **dataset_kwargs,
+    )
+    task_env = dict(env or {})
+    rows: list[vf.ConfigData] = []
+    for index, row in enumerate(dataset):
+        row = dict(row)
+        info = dict(row["info"])
+        instruction = str(info["problem_statement"])
+        program_env = env_vars(repo_path=repo_path, env=task_env)
+        agent_path = program_env.pop("PATH", None)
+        if agent_path is not None:
+            program_env.setdefault("AGENT_PATH", agent_path)
+        program_env.setdefault("AGENT_WORKDIR", repo_path)
+        task_row: vf.ConfigData = {
+            "example_id": index,
+            "task_id": info.get("instance_id") or index,
+            "question": row.get("question", instruction),
+            "instruction": instruction,
+            "prompt": [{"role": "user", "content": instruction}],
+            "answer": row.get("answer", ""),
+            "info": info,
+            "sandbox": sandbox_config(
+                info=info,
+                repo_path=repo_path,
+                timeout_minutes=timeout_minutes,
+            ),
+            "program": {"env": program_env},
+        }
+        rows.append(task_row)
+    return rows
+
+
+def sandbox_config(
+    *, info: ConfigMap, repo_path: str, timeout_minutes: int | None
+) -> vf.ConfigData:
+    config: vf.ConfigData = {
+        "image": f"{REGISTRY_PREFIX}/{info['docker_image']}",
+        "cpu_cores": 4,
+        "memory_gb": 4,
+        "disk_size_gb": 10,
+        "gpu_count": 0,
+        "workdir": repo_path,
+        "scope": "rollout",
+    }
+    if timeout_minutes is not None:
+        config["timeout_minutes"] = timeout_minutes
+    return config
+
+
+def env_vars(*, repo_path: str, env: ConfigMap) -> dict[str, str]:
+    return {
+        "PATH": (
+            f"/opt/miniconda3/bin:{repo_path}/.venv/bin:/root/.local/bin:"
+            "/root/.cargo/bin:/go/bin:/usr/local/go/bin:/usr/local/cargo:"
+            "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+        ),
+        "PAGER": "cat",
+        "MANPAGER": "cat",
+        "LESS": "-R",
+        "PIP_PROGRESS_BAR": "off",
+        "TQDM_DISABLE": "1",
+        **{str(key): str(value) for key, value in env.items()},
+    }
+
+
 class R2ESWETaskset(vf.Taskset):
     def __init__(self, config: RlmSweTasksetConfig | None = None):
         config = coerce_config(RlmSweTasksetConfig, config)
@@ -77,88 +172,16 @@ class R2ESWETaskset(vf.Taskset):
         self.hide_tests_from_agent = config.hide_tests_from_agent
         self.env = dict(config.env or {})
         super().__init__(config=config)
-        self.source = self.load_rows
-
-    def load_rows(self) -> list[vf.ConfigData]:
-        rows: list[vf.ConfigData] = []
-        for index, row in enumerate(self.load_dataset_rows()):
-            row = dict(row)
-            info = dict(row["info"])
-            instruction = str(info["problem_statement"])
-            program_env = self.get_env_vars()
-            agent_path = program_env.pop("PATH", None)
-            if agent_path is not None:
-                program_env.setdefault("AGENT_PATH", agent_path)
-            program_env.setdefault("AGENT_WORKDIR", self.repo_path)
-            task_row: vf.ConfigData = {
-                "example_id": index,
-                "task_id": info.get("instance_id") or index,
-                "question": row.get("question", instruction),
-                "instruction": instruction,
-                "prompt": [{"role": "user", "content": instruction}],
-                "answer": row.get("answer", ""),
-                "info": info,
-                "sandbox": self.sandbox_config(info),
-                "program": {"env": program_env},
-            }
-            rows.append(task_row)
-        return rows
-
-    def load_dataset_rows(self) -> Iterable[ConfigMap]:
-        dataset_kwargs = dict(
-            num_proc=self.ds_num_proc,
-            keep_in_memory=self.ds_keep_in_memory,
-            load_from_cache_file=False,
-        )
-        dataset = load_dataset(
-            self.dataset_name,
-            split="train",
-            keep_in_memory=self.ds_keep_in_memory,
-            num_proc=self.ds_num_proc,
-        )
-        if self.filter_repos:
-            filter_set = frozenset(self.filter_repos)
-            dataset = dataset.filter(
-                lambda row: row.get("repo_name") not in filter_set,
-                **dataset_kwargs,
-            )
-        return cast(
-            Iterable[ConfigMap],
-            dataset.map(
-                process_r2e_example,
-                remove_columns=dataset.column_names,
-                **dataset_kwargs,
-            ),
-        )
 
     def sandbox_config(self, info: ConfigMap) -> vf.ConfigData:
-        config: vf.ConfigData = {
-            "image": f"{REGISTRY_PREFIX}/{info['docker_image']}",
-            "cpu_cores": 4,
-            "memory_gb": 4,
-            "disk_size_gb": 10,
-            "gpu_count": 0,
-            "workdir": self.repo_path,
-            "scope": "rollout",
-        }
-        if self.timeout_minutes is not None:
-            config["timeout_minutes"] = self.timeout_minutes
-        return config
+        return sandbox_config(
+            info=info,
+            repo_path=self.repo_path,
+            timeout_minutes=self.timeout_minutes,
+        )
 
     def get_env_vars(self) -> dict[str, str]:
-        return {
-            "PATH": (
-                f"/opt/miniconda3/bin:{self.repo_path}/.venv/bin:/root/.local/bin:"
-                "/root/.cargo/bin:/go/bin:/usr/local/go/bin:/usr/local/cargo:"
-                "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-            ),
-            "PAGER": "cat",
-            "MANPAGER": "cat",
-            "LESS": "-R",
-            "PIP_PROGRESS_BAR": "off",
-            "TQDM_DISABLE": "1",
-            **{str(key): str(value) for key, value in self.env.items()},
-        }
+        return env_vars(repo_path=self.repo_path, env=self.env)
 
     @vf.setup(priority=250)
     async def setup_r2e_sandbox(self, task, state, sandbox=None) -> None:
