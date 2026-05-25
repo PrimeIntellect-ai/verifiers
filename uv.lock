@@ -19,7 +19,7 @@ conflicts = [[
 ]]
 
 [options]
-exclude-newer = "2026-05-17T11:09:08.228102Z"
+exclude-newer = "2026-05-18T11:02:24.883518Z"
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
@@ -5313,7 +5313,8 @@ wheels = [
 
 [[package]]
 name = "renderers"
-source = { editable = "../renderers" }
+version = "0.1.8.dev26"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "fastokens" },
     { name = "jinja2" },
@@ -5323,28 +5324,9 @@ dependencies = [
     { name = "tiktoken" },
     { name = "transformers" },
 ]
-
-[package.metadata]
-requires-dist = [
-    { name = "fastokens", specifier = ">=0.2.0" },
-    { name = "jinja2" },
-    { name = "numpy" },
-    { name = "openai", specifier = ">=1.108.1" },
-    { name = "openai-harmony", specifier = ">=0.0.8" },
-    { name = "tiktoken" },
-    { name = "transformers", specifier = ">=4.50.0" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "pillow", specifier = ">=12.2.0" },
-    { name = "pre-commit" },
-    { name = "pytest", specifier = ">=7.0.0" },
-    { name = "pytest-asyncio", specifier = ">=0.21.0" },
-    { name = "ruff" },
-    { name = "torch", specifier = ">=2.11.0" },
-    { name = "torchvision", specifier = ">=0.26.0" },
-    { name = "ty", specifier = ">=0.0.1a29,<0.0.22" },
+sdist = { url = "https://files.pythonhosted.org/packages/bd/03/e6829bf6bc588dfebeea8af760f974dd2605bf0c88b07dc0ebcfddef9f82/renderers-0.1.8.dev26.tar.gz", hash = "sha256:27f0f98f9dbcdb74eb758d8b0e9e4b0d566a16ab448600d12fc8705a3248369d", size = 275285, upload-time = "2026-05-24T13:13:29.611Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/2c/e3/28f457dc085751e469d000267bd16b8e8a36c9dd671acd351c17eb3cc3ad/renderers-0.1.8.dev26-py3-none-any.whl", hash = "sha256:6f3ecaa80b7d77103881ed3c9e9285f305db37f4496ec4666b392a5216a4309b", size = 144900, upload-time = "2026-05-24T13:13:28.12Z" },
 ]
 
 [[package]]
@@ -6907,7 +6889,7 @@ requires-dist = [
     { name = "pyzmq", specifier = ">=27.1.0" },
     { name = "reasoning-gym", marker = "extra == 'rg'" },
     { name = "regex", specifier = "<2026.4.4" },
-    { name = "renderers", marker = "extra == 'renderers'", editable = "../renderers" },
+    { name = "renderers", marker = "extra == 'renderers'", specifier = ">=0.1.8.dev26" },
     { name = "requests" },
     { name = "requests", marker = "extra == 'rl'" },
     { name = "rich" },
@@ -6939,7 +6921,7 @@ dev = [
     { name = "pytest-xdist", specifier = ">=3.8.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
     { name = "reasoning-gym" },
-    { name = "renderers", editable = "../renderers" },
+    { name = "renderers", specifier = ">=0.1.8.dev26" },
     { name = "ruff" },
     { name = "stagehand", specifier = ">=3.0.0" },
     { name = "textarena" },
