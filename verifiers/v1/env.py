@@ -12,6 +12,7 @@ from .harness import Harness
 from .state import State
 from .taskset import Taskset
 from .types import ConfigMap
+from .utils.taskset_registry_utils import taskset_type_for_config
 
 TasksetInput: TypeAlias = Taskset | TasksetConfig
 HarnessInput: TypeAlias = Harness | HarnessConfig | None
@@ -155,7 +156,7 @@ def resolve_taskset(value: TasksetInput) -> Taskset:
         return value
     if not isinstance(value, TasksetConfig):
         raise TypeError("Env taskset must be a Taskset or TasksetConfig.")
-    if type(value) is TasksetConfig:
+    if type(value) is TasksetConfig or taskset_type_for_config(type(value)) is not None:
         return Taskset(config=value)
     raise TypeError(
         f"Env cannot construct a Taskset from {type(value).__name__}. "

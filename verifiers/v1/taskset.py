@@ -5,7 +5,7 @@ from importlib.abc import Traversable
 from collections.abc import Mapping
 from copy import deepcopy
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Generic, TypeVar, cast
 
 from datasets import Dataset
 from verifiers.types import task_payload_from_info
@@ -20,7 +20,14 @@ from .task import Task
 from .utils.prompt_utils import normalize_system_prompt
 from .utils.config_utils import coerce_config, config_ref_context
 from .utils.runtime_owner_utils import RuntimeOwnerMixin
+from .utils.taskset_registry_utils import (
+    register_taskset_type,
+    taskset_config_type,
+    taskset_config_type_from_class,
+    taskset_type_for_config,
+)
 from .utils.taskset_utils import (
+    call_loader_with_config,
     dataset_info_with_task,
     discover_sibling_dir,
     resolve_task_loader,
@@ -29,6 +36,8 @@ from .utils.taskset_utils import (
 from .types import (
     ConfigData,
     ConfigMap,
+    PromptInput,
+    TaskLoader,
     TaskRow,
 )
 
@@ -36,11 +45,39 @@ if TYPE_CHECKING:
     from .harness import Harness
 
 
-class Taskset(RuntimeOwnerMixin):
-    config: TasksetConfig
+ConfigT = TypeVar("ConfigT", bound=TasksetConfig)
+
+
+class TasksetMeta(type):
+    def __call__(cls, *args: object, **kwargs: object) -> object:
+        if cls is Taskset:
+            config = kwargs.get("config", args[0] if args else None)
+            if isinstance(config, TasksetConfig):
+                taskset_type = taskset_type_for_config(type(config))
+                if (
+                    taskset_type is not None
+                    and len(args) <= 1
+                    and set(kwargs) <= {"config"}
+                ):
+                    taskset_cls = cast(type["Taskset"], taskset_type)
+                    return taskset_cls(config=cast(ConfigSource, config))
+        return super().__call__(*args, **kwargs)
+
+
+class Taskset(RuntimeOwnerMixin, Generic[ConfigT], metaclass=TasksetMeta):
+    config: ConfigT
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)
+        config_type = taskset_config_type_from_class(
+            cls, inherited=False, taskset_base=Taskset
+        )
+        if config_type is not None:
+            register_taskset_type(config_type, cls)
 
     def __init__(self, config: ConfigSource = None):
-        self.config = coerce_config(TasksetConfig, config)
+        config_type = taskset_config_type(type(self), Taskset)
+        self.config = cast(ConfigT, coerce_config(config_type, config))
         with config_ref_context(self.config):
             resolved_taskset_id = self.config.taskset_id
             if resolved_taskset_id is not None and not isinstance(
@@ -49,7 +86,8 @@ class Taskset(RuntimeOwnerMixin):
                 raise TypeError("taskset_id must be a string.")
             self.taskset_id = resolved_taskset_id or type(self).__name__
             self.system_prompt = normalize_system_prompt(
-                self.config.system_prompt, field_name="taskset.system_prompt"
+                self._loader_backed_prompt("system_prompt", "load_system_prompt"),
+                field_name="taskset.system_prompt",
             )
             self._init_runtime_user()
             self.bindings = dict(self.config.bindings)
@@ -110,7 +148,7 @@ class Taskset(RuntimeOwnerMixin):
     def get_dataset(self) -> Dataset:
         if self._dataset is None:
             with config_ref_context(self.config):
-                load_tasks = resolve_task_loader("tasks", self.config.tasks)
+                load_tasks = self._task_loader("tasks", "load_tasks")
                 tasks = task_data_from_loader(load_tasks, self.config)
             self._dataset = Dataset.from_list(
                 [self._dataset_row(row, index) for index, row in enumerate(tasks)]
@@ -118,11 +156,12 @@ class Taskset(RuntimeOwnerMixin):
         return self._dataset
 
     def get_eval_dataset(self) -> Dataset:
-        if self.config.eval_tasks is None:
+        with config_ref_context(self.config):
+            load_tasks = self._task_loader("eval_tasks", "load_eval_tasks")
+        if load_tasks is None:
             return self.get_dataset()
         if self._eval_dataset is None:
             with config_ref_context(self.config):
-                load_tasks = resolve_task_loader("eval_tasks", self.config.eval_tasks)
                 tasks = task_data_from_loader(load_tasks, self.config)
             self._eval_dataset = Dataset.from_list(
                 [self._dataset_row(row, index) for index, row in enumerate(tasks)]
@@ -155,3 +194,22 @@ class Taskset(RuntimeOwnerMixin):
         if "answer" in normalized:
             dataset_row["answer"] = normalized["answer"]
         return dataset_row
+
+    def _task_loader(self, field: str, method_name: str) -> TaskLoader | None:
+        if field not in self.config.model_fields_set:
+            method = getattr(self, method_name, None)
+            if callable(method):
+                return cast(TaskLoader, method)
+        value = getattr(self.config, field)
+        return resolve_task_loader(field, cast(str | None, value))
+
+    def _loader_backed_prompt(self, field: str, method_name: str) -> PromptInput | None:
+        if field in self.config.model_fields_set:
+            return cast(PromptInput | None, getattr(self.config, field))
+        method = getattr(self, method_name, None)
+        if callable(method):
+            return cast(
+                PromptInput | None,
+                call_loader_with_config(method, self.config, method_name),
+            )
+        return cast(PromptInput | None, getattr(self.config, field))

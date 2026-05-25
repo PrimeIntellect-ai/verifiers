@@ -77,6 +77,19 @@ def varargs_load_tasks(
     return [{"config": config, "split": split}]
 
 
+def configured_load_tasks(
+    dataset_name: str,
+    dataset_split: str = "train",
+    limit: int = 1,
+) -> list[dict[str, object]]:
+    return [
+        {
+            "prompt": [],
+            "answer": f"{dataset_name}:{dataset_split}:{limit}",
+        }
+    ]
+
+
 @vf.metric
 async def config_metric(task: Mapping[str, object], state: dict[str, object]) -> float:
     return float(task.get("answer") == "ok" and state.get("answer") == "ok")
@@ -456,6 +469,20 @@ def test_load_tasks_filters_varargs_parameter_names() -> None:
     )
 
     assert rows == [{"config": (), "split": "eval"}]
+
+
+def test_load_tasks_uses_required_and_optional_config_fields() -> None:
+    rows = task_data_from_loader(
+        configured_load_tasks,
+        {"dataset_name": "dataset", "dataset_split": "eval", "limit": 3},
+    )
+
+    assert rows == [{"prompt": [], "answer": "dataset:eval:3"}]
+
+
+def test_load_tasks_reports_missing_required_config_fields() -> None:
+    with pytest.raises(TypeError, match="requires config field\\(s\\): 'dataset_name'"):
+        task_data_from_loader(configured_load_tasks, {"dataset_split": "eval"})
 
 
 def test_toolset_mapping_treats_show_hide_strings_as_tool_names() -> None:
@@ -1965,7 +1992,23 @@ def test_env_config_convenience_accepts_base_taskset_config() -> None:
     assert env.taskset.get_dataset()[0]["answer"] == "ok"
 
 
-def test_env_config_convenience_rejects_taskset_config_subclass() -> None:
+def test_env_config_convenience_accepts_registered_taskset_config_subclass() -> None:
+    class RegisteredTasksetConfig(TasksetConfig):
+        tasks: str | None = ref("load_tasks")
+        split: str = "train"
+
+    class RegisteredTaskset(Taskset[RegisteredTasksetConfig]):
+        pass
+
+    env = Env(config=EnvConfig(taskset=RegisteredTasksetConfig(split="eval")))
+
+    assert type(env.taskset) is RegisteredTaskset
+    assert isinstance(env.taskset.config, RegisteredTasksetConfig)
+    assert env.taskset.config.split == "eval"
+    assert env.taskset.get_dataset()[0]["answer"] == "ok"
+
+
+def test_env_config_convenience_rejects_unregistered_taskset_config_subclass() -> None:
     class UnboundTasksetConfig(TasksetConfig):
         split: str = "train"
 
@@ -2011,6 +2054,109 @@ def test_taskset_config_defaults_are_used_until_config_overrides() -> None:
     assert configured.get_dataset()[0]["answer"] == "eval ok"
     assert configured.rewards[0].__name__ == "updated_reward"
     assert disabled.rewards == []
+
+
+def test_taskset_generic_registers_config_type_for_base_constructor() -> None:
+    class RegisteredTasksetConfig(TasksetConfig):
+        tasks: str | None = None
+        dataset_name: str = "registered"
+        dataset_split: str = "train"
+        system_prompt: str | None = "default prompt"
+
+    class RegisteredTaskset(Taskset[RegisteredTasksetConfig]):
+        def load_tasks(
+            self, dataset_name: str, dataset_split: str = "train"
+        ) -> vf.Tasks:
+            return [
+                {
+                    "prompt": [],
+                    "answer": f"{dataset_name}:{dataset_split}",
+                }
+            ]
+
+        def load_system_prompt(self) -> str:
+            return "registered prompt"
+
+    taskset = Taskset(config=RegisteredTasksetConfig(dataset_split="eval"))
+
+    assert type(taskset) is RegisteredTaskset
+    assert isinstance(taskset.config, RegisteredTasksetConfig)
+    assert taskset.get_dataset()[0]["answer"] == "registered:eval"
+    assert taskset.system_prompt == [{"role": "system", "content": "registered prompt"}]
+
+
+def test_taskset_config_annotation_registers_config_type_at_runtime() -> None:
+    class AnnotatedTasksetConfig(TasksetConfig):
+        dataset_name: str = "annotated"
+
+    class AnnotatedTaskset(Taskset):
+        config: AnnotatedTasksetConfig
+
+        def load_tasks(self, dataset_name: str) -> vf.Tasks:
+            return [{"prompt": [], "answer": dataset_name}]
+
+    taskset = Taskset(config=AnnotatedTasksetConfig())
+
+    assert type(taskset) is AnnotatedTaskset
+    assert taskset.get_dataset()[0]["answer"] == "annotated"
+
+
+def test_taskset_subclasses_inherit_registered_config_type() -> None:
+    class BaseTasksetConfig(TasksetConfig):
+        tasks: str | None = ref("load_tasks")
+
+    class BaseTaskset(Taskset[BaseTasksetConfig]):
+        pass
+
+    class ChildTaskset(BaseTaskset):
+        pass
+
+    taskset = ChildTaskset(config={})
+
+    assert isinstance(taskset.config, BaseTasksetConfig)
+    assert taskset.get_dataset()[0]["answer"] == "ok"
+
+
+def test_taskset_class_loaders_override_config_defaults_not_explicit_values() -> None:
+    class LoaderTasksetConfig(TasksetConfig):
+        tasks: str | None = ref("load_tasks")
+        eval_tasks: str | None = ref("load_eval_tasks")
+        system_prompt: str | None = ref("load_system_prompt")
+
+    class LoaderTaskset(Taskset[LoaderTasksetConfig]):
+        def load_tasks(self) -> vf.Tasks:
+            return [{"prompt": [], "answer": "class tasks"}]
+
+        def load_eval_tasks(self) -> vf.Tasks:
+            return [{"prompt": [], "answer": "class eval"}]
+
+        def load_system_prompt(self) -> str:
+            return "class prompt"
+
+    defaulted = Taskset(config=LoaderTasksetConfig())
+    configured = Taskset(
+        config=LoaderTasksetConfig(
+            tasks=ref("load_tasks"),
+            eval_tasks=ref("load_eval_tasks"),
+            system_prompt=ref("load_system_prompt"),
+        )
+    )
+    disabled = Taskset(
+        config=LoaderTasksetConfig(tasks=None, eval_tasks=None, system_prompt=None)
+    )
+
+    assert type(defaulted) is LoaderTaskset
+    assert defaulted.get_dataset()[0]["answer"] == "class tasks"
+    assert defaulted.get_eval_dataset()[0]["answer"] == "class eval"
+    assert defaulted.system_prompt == [{"role": "system", "content": "class prompt"}]
+    assert configured.get_dataset()[0]["answer"] == "ok"
+    assert configured.get_eval_dataset()[0]["answer"] == "eval ok"
+    assert configured.system_prompt == [
+        {"role": "system", "content": "loaded system prompt"}
+    ]
+    assert len(disabled.get_dataset()) == 0
+    assert len(disabled.get_eval_dataset()) == 0
+    assert disabled.system_prompt == []
 
 
 def test_taskset_config_default_loader_can_be_disabled() -> None:
@@ -2554,6 +2700,56 @@ def load_environment(config: vf.EnvConfig) -> vf.Env:
     assert env.taskset.get_dataset()[0]["answer"] == "current"
     assert env.harness.config.model == "configured-model"
     assert env.harness.config.mode == "default"
+
+
+def test_load_environment_taskset_loader_uses_registered_taskset_class(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_name = "registered_taskset_component_loader"
+    module = types.ModuleType(module_name)
+    exec(
+        """
+import verifiers as vf
+
+
+def load_tasks() -> vf.Tasks:
+    return [{"prompt": [], "answer": "module"}]
+
+
+class LocalTasksetConfig(vf.TasksetConfig):
+    tasks: str | None = "load_tasks"
+    dataset_name: str = "configured"
+    dataset_split: str = "train"
+
+
+class LocalTaskset(vf.Taskset[LocalTasksetConfig]):
+    def load_tasks(self, dataset_name: str, dataset_split: str = "train") -> vf.Tasks:
+        return [{"prompt": [], "answer": f"{dataset_name}:{dataset_split}"}]
+
+
+def load_taskset(config: LocalTasksetConfig) -> vf.Taskset:
+    return vf.Taskset(config=config)
+
+
+def load_environment(config: vf.EnvConfig) -> vf.Env:
+    return vf.Env(taskset=vf.load_taskset(config=config.taskset))
+""",
+        module.__dict__,
+    )
+    monkeypatch.setitem(sys.modules, module_name, module)
+
+    env = vf.load_environment(
+        "registered-taskset-component-loader",
+        config={"taskset": {"dataset_split": "eval"}},
+    )
+    configured = vf.load_environment(
+        "registered-taskset-component-loader",
+        config={"taskset": {"tasks": "load_tasks"}},
+    )
+
+    assert type(env.taskset).__name__ == "LocalTaskset"
+    assert env.taskset.get_dataset()[0]["answer"] == "configured:eval"
+    assert configured.taskset.get_dataset()[0]["answer"] == "module"
 
 
 def test_load_environment_coerces_base_env_config_with_factory_annotations(
