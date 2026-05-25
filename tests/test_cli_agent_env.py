@@ -244,6 +244,11 @@ class TestCliAgentEnv:
                     "content": [{"type": "input_text", "text": "solve it"}],
                 },
                 {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"text": "", "output_text": "must not win"}],
+                },
+                {
                     "type": "function_call",
                     "call_id": "call_1",
                     "name": "shell",
@@ -259,10 +264,12 @@ class TestCliAgentEnv:
         assert messages[0]["content"] == "rules"
         assert messages[1]["role"] == "user"
         assert messages[1]["content"] == "solve it"
-        assert messages[2]["role"] == "assistant"
-        assert messages[2]["tool_calls"][0]["name"] == "shell"
-        assert messages[3]["role"] == "tool"
-        assert messages[3]["content"] == "ok"
+        assert messages[2]["role"] == "user"
+        assert messages[2]["content"] == ""
+        assert messages[3]["role"] == "assistant"
+        assert messages[3]["tool_calls"][0]["name"] == "shell"
+        assert messages[4]["role"] == "tool"
+        assert messages[4]["content"] == "ok"
 
 
 @pytest.mark.asyncio

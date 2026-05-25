@@ -73,13 +73,12 @@ def _response_input_content_to_text(content: Any) -> str:
             if isinstance(part, str):
                 parts.append(part)
             elif isinstance(part, dict):
-                text = (
-                    part.get("text")
-                    or part.get("output_text")
-                    or part.get("input_text")
-                )
-                if isinstance(text, str):
-                    parts.append(text)
+                for key in ("text", "output_text", "input_text"):
+                    text = part.get(key)
+                    if text is not None:
+                        if isinstance(text, str):
+                            parts.append(text)
+                        break
         return "\n".join(parts)
     return json.dumps(content, sort_keys=True)
 
