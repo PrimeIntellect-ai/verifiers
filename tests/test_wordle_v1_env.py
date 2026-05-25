@@ -21,6 +21,17 @@ def test_wordle_load_taskset_requires_wordle_config():
         )
 
 
+def test_wordle_taskset_config_uses_textarena_loaders():
+    from environments.wordle_v1 import wordle_v1
+
+    config = wordle_v1.WordleTasksetConfig()
+
+    assert config.tasks == "verifiers.v1.packages.tasksets.textarena:load_tasks"
+    assert (
+        config.eval_tasks == "verifiers.v1.packages.tasksets.textarena:load_eval_tasks"
+    )
+
+
 def test_wordle_v1_load_taskset_reads_system_prompt_path(tmp_path, monkeypatch):
     from environments.wordle_v1 import wordle_v1
 

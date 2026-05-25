@@ -1275,6 +1275,9 @@ nested harnesses, or explicit auxiliary-model workflows.
 `TasksetConfig` and `HarnessConfig` are Pydantic models. Constructors accept a
 single `config` object or mapping. TOML/config strings resolve as
 `"module:object"` refs where the field explicitly accepts import references.
+For `system_prompt`, use a prompt loader or text-file path for reusable
+environments; plain prose strings are treated as direct prompts only when they
+are not ref-shaped or path-shaped.
 
 ```python
 config = MyTasksetConfig.model_validate(

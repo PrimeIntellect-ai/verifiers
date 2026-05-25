@@ -61,6 +61,10 @@ def load_dataset_tasks() -> Dataset:
     )
 
 
+def load_system_prompt() -> str:
+    return "loaded system prompt"
+
+
 def positional_only_load_tasks(
     config: str = "positional-default", /, split: str = "train"
 ) -> list[dict[str, object]]:
@@ -362,6 +366,7 @@ ref_module = types.ModuleType(REF_MODULE)
 setattr(ref_module, "load_tasks", load_tasks)
 setattr(ref_module, "load_eval_tasks", load_eval_tasks)
 setattr(ref_module, "load_dataset_tasks", load_dataset_tasks)
+setattr(ref_module, "load_system_prompt", load_system_prompt)
 setattr(ref_module, "config_metric", config_metric)
 setattr(ref_module, "group_config_metric", group_config_metric)
 setattr(ref_module, "config_reward", config_reward)
@@ -645,6 +650,10 @@ async def user_fn(task: vf.Task, state: vf.State) -> list[dict[str, str]]:
 async def program_fn(task: vf.Task, state: vf.State) -> vf.State:
     state["program"] = "ok"
     return state
+
+
+def load_system_prompt() -> str:
+    return "loaded system prompt"
 
 
 def keep_step(step: dict[str, object]) -> bool:
@@ -1488,6 +1497,45 @@ async def test_harness_resolves_taskset_system_prompt() -> None:
 
     assert state["system_prompt"] == [{"role": "system", "content": "taskset sys"}]
     assert state["prompt"] == [{"role": "user", "content": "Say ok."}]
+
+
+def test_system_prompt_accepts_loader_ref() -> None:
+    taskset = make_taskset(
+        tasks=ref("load_tasks"), system_prompt=ref("load_system_prompt")
+    )
+
+    assert taskset.system_prompt == [
+        {"role": "system", "content": "loaded system prompt"}
+    ]
+
+
+def test_system_prompt_accepts_bare_loader_ref_from_config_module() -> None:
+    class PromptTasksetConfig(TasksetConfig):
+        tasks: str = ref("load_tasks")
+        system_prompt: str = "load_system_prompt"
+
+    taskset = Taskset(config=PromptTasksetConfig())
+
+    assert taskset.system_prompt == [
+        {"role": "system", "content": "loaded system prompt"}
+    ]
+
+
+def test_system_prompt_accepts_path(tmp_path) -> None:
+    prompt_path = tmp_path / "system_prompt.txt"
+    prompt_path.write_text("path system prompt", encoding="utf-8")
+
+    taskset = make_taskset(tasks=ref("load_tasks"), system_prompt=str(prompt_path))
+
+    assert taskset.system_prompt == [
+        {"role": "system", "content": "path system prompt"}
+    ]
+
+
+def test_system_prompt_direct_string_can_contain_colon() -> None:
+    taskset = make_taskset(tasks=ref("load_tasks"), system_prompt="Answer:yes")
+
+    assert taskset.system_prompt == [{"role": "system", "content": "Answer:yes"}]
 
 
 @pytest.mark.asyncio

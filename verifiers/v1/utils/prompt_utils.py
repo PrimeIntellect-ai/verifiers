@@ -1,12 +1,18 @@
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+import importlib.util
+from os import PathLike
+from pathlib import Path
+import re
 from typing import Literal, cast
 
 from verifiers.types import MessageContent, Messages, SystemMessage
 from verifiers.utils.message_utils import normalize_messages
 from ..types import ConfigData, ConfigMap, PromptInput
+from .config_utils import current_config_ref_module, import_config_ref
 
 
 SystemPromptMerge = Literal["reject", "concat", "task", "taskset", "harness"]
+SystemPromptLoader = Callable[[], PromptInput | PathLike[str] | None]
 
 
 def normalize_prompt(
@@ -25,6 +31,7 @@ def normalize_prompt(
 def normalize_system_prompt(
     value: PromptInput | None, field_name: str = "system_prompt"
 ) -> list[ConfigData]:
+    value = resolve_system_prompt_input(value, field_name=field_name)
     if value is None:
         return []
     if isinstance(value, str):
@@ -34,6 +41,88 @@ def normalize_system_prompt(
         if getattr(message, "role", None) != "system":
             raise ValueError(f"{field_name} accepts only system messages.")
     return dump_messages(messages)
+
+
+def resolve_system_prompt_input(
+    value: PromptInput | PathLike[str] | None,
+    *,
+    field_name: str,
+) -> PromptInput | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        if isinstance(value, PathLike):
+            path = Path(cast(PathLike[str], value))
+            return read_system_prompt_path(path, field_name=field_name)
+        return value
+    if is_system_prompt_path(value):
+        return read_system_prompt_path(resolve_system_prompt_path(value), field_name)
+    if is_system_prompt_ref(value):
+        resolved = import_config_ref(value)
+        if callable(resolved):
+            resolved = cast(SystemPromptLoader, resolved)()
+        if isinstance(resolved, PathLike):
+            path = Path(cast(PathLike[str], resolved))
+            return read_system_prompt_path(path, field_name=field_name)
+        return cast(PromptInput | None, resolved)
+    return value
+
+
+def is_system_prompt_ref(value: str) -> bool:
+    if any(character.isspace() for character in value):
+        return False
+    if re.fullmatch(
+        r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*:[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*",
+        value,
+    ):
+        _, _, attr_path = value.partition(":")
+        return is_system_prompt_ref_name(attr_path.rsplit(".", 1)[-1])
+    if current_config_ref_module() is None:
+        return False
+    if not re.fullmatch(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*", value):
+        return False
+    return is_system_prompt_ref_name(value.rsplit(".", 1)[-1])
+
+
+def is_system_prompt_ref_name(value: str) -> bool:
+    return (
+        value.startswith("load_")
+        or value.endswith("_prompt")
+        or value.endswith("_PROMPT")
+        or value.endswith("PROMPT")
+    )
+
+
+def is_system_prompt_path(value: str) -> bool:
+    if any(character.isspace() for character in value):
+        return False
+    path = Path(value).expanduser()
+    return (
+        path.is_absolute()
+        or value.startswith(("./", "../", "~/"))
+        or "/" in value
+        or path.suffix in {".txt", ".md", ".rst"}
+    )
+
+
+def resolve_system_prompt_path(value: str) -> Path:
+    path = Path(value).expanduser()
+    if path.is_absolute():
+        return path
+    module_name = current_config_ref_module()
+    if module_name is None:
+        return path
+    spec = importlib.util.find_spec(module_name)
+    if spec is None or spec.origin is None:
+        return path
+    return Path(spec.origin).parent / path
+
+
+def read_system_prompt_path(path: Path, field_name: str) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ValueError(f"{field_name} path {str(path)!r} could not be read.") from exc
 
 
 def resolve_system_prompt(

@@ -26,7 +26,9 @@ def test_init_v1_writes_thin_taskset_template(tmp_path: Path) -> None:
     content = read_env_file(tmp_path, "bar")
 
     assert "def load_tasks() -> vf.Tasks:" in content
+    assert "def load_system_prompt() -> str:" in content
     assert "class BarTasksetConfig(vf.TasksetConfig):" in content
+    assert 'system_prompt: str = "load_system_prompt"' in content
     assert 'tasks: str = "load_tasks"' in content
     assert 'rewards: list[str] = ["correct_answer"]' in content
     assert "def load_taskset(config: BarTasksetConfig) -> vf.Taskset:" in content
@@ -42,12 +44,8 @@ def test_init_v1_template_loads_with_vf_load_environment(
     init_environment("loadable-v1", path=str(tmp_path), v1=True)
     monkeypatch.syspath_prepend(str(tmp_path / "loadable_v1"))
 
-    env = vf.load_environment("loadable-v1")
-
-    assert isinstance(env, vf.Env)
-    assert env.taskset.rewards[0].__name__ == "correct_answer"
-    with pytest.raises(NotImplementedError, match="Load task rows"):
-        env.get_dataset()
+    with pytest.raises(RuntimeError, match="Load the system prompt"):
+        vf.load_environment("loadable-v1")
 
 
 def test_init_v1_with_harness_writes_harness_stub(tmp_path: Path) -> None:

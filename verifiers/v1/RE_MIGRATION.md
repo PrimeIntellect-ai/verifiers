@@ -52,12 +52,16 @@ Every migrated package should expose:
 import verifiers as vf
 
 
+def load_system_prompt() -> str:
+    return SYSTEM_PROMPT
+
+
 class MyTasksetConfig(vf.TasksetConfig):
     tasks: str = "load_tasks"
     rewards: list[str] = ["exact_answer"]
     metrics: list[str] = ["accuracy"]
     split: str = "train"
-    system_prompt: str = SYSTEM_PROMPT
+    system_prompt: str = "load_system_prompt"
 
 
 def load_tasks(split: str = "train") -> vf.Tasks:
@@ -91,9 +95,13 @@ live with the environment instead of the root `verifiers` package.
 Put system instructions in `system_prompt`, not in `prompt`:
 
 ```python
+def load_system_prompt() -> str:
+    return "Answer concisely."
+
+
 class PromptTasksetConfig(vf.TasksetConfig):
     tasks: str = "load_tasks"
-    system_prompt: str = "Answer concisely."
+    system_prompt: str = "load_system_prompt"
 
 
 def load_tasks() -> vf.Tasks:

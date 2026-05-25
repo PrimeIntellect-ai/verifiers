@@ -87,6 +87,10 @@ def resolve_config_object(value: object) -> object:
     return value
 
 
+def current_config_ref_module() -> str | None:
+    return _CONFIG_REF_MODULE.get()
+
+
 def import_config_ref(ref: str) -> object:
     module_name, attr_path = config_ref_parts(ref)
     obj: object = importlib.import_module(module_name)

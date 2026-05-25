@@ -14,6 +14,8 @@ In each turn, think step-by-step, then give your guess inside <guess>...</guess>
 
 
 class WordleTasksetConfig(TextArenaTasksetConfig):
+    tasks: str | None = "verifiers.v1.packages.tasksets.textarena:load_tasks"
+    eval_tasks: str | None = "verifiers.v1.packages.tasksets.textarena:load_eval_tasks"
     game: str = "Wordle-v0"
     answer_state_key: str = "secret_word"
     system_prompt: str | None = WORDLE_SYSTEM_PROMPT

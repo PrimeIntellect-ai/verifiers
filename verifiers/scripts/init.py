@@ -158,7 +158,8 @@ V1_ENVIRONMENT_TEMPLATE = """\
 import verifiers as vf
 
 
-SYSTEM_PROMPT = "Replace this with the task instructions."
+def load_system_prompt() -> str:
+    raise NotImplementedError("Load the system prompt for {env_id_dash}.")
 
 
 def load_tasks() -> vf.Tasks:
@@ -171,7 +172,7 @@ async def correct_answer(task: vf.Task, state: vf.State) -> float:
 
 
 class {taskset_config_name}(vf.TasksetConfig):
-    system_prompt: str = SYSTEM_PROMPT
+    system_prompt: str = "load_system_prompt"
     tasks: str = "load_tasks"
     rewards: list[str] = ["correct_answer"]
 
@@ -188,7 +189,8 @@ V1_HARNESS_ENVIRONMENT_TEMPLATE = """\
 import verifiers as vf
 
 
-SYSTEM_PROMPT = "Replace this with the task instructions."
+def load_system_prompt() -> str:
+    raise NotImplementedError("Load the system prompt for {env_id_dash}.")
 
 
 def load_tasks() -> vf.Tasks:
@@ -201,7 +203,7 @@ async def correct_answer(task: vf.Task, state: vf.State) -> float:
 
 
 class {taskset_config_name}(vf.TasksetConfig):
-    system_prompt: str = SYSTEM_PROMPT
+    system_prompt: str = "load_system_prompt"
     tasks: str = "load_tasks"
     rewards: list[str] = ["correct_answer"]
 
