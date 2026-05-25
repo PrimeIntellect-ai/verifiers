@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import io
+import inspect
 import json
 import keyword
 import os
@@ -25,6 +26,7 @@ from ...state import State
 from ...task import Task
 from ...taskset import Taskset
 from ...utils.prompt_utils import task_text
+from ...utils.program_utils import int_config
 from .command import command_program
 from .configs import (
     RLM_DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH,
@@ -35,6 +37,8 @@ from ...types import ConfigData, ConfigMap, ProgramCommand, ProgramValue
 DEFAULT_RLM_CHECKOUT_PATH = "/tmp/rlm-checkout"
 DEFAULT_RLM_SKILLS_PATH = "/task/rlm-skills"
 DEFAULT_RLM_TOOL_SKILLS_ARCHIVE_PATH = "/tmp/vf-rlm-tool-skills.tar.gz.b64"
+DEFAULT_RLM_TOOL_SKILLS_MANIFEST_NAME = ".vf-generated-tool-skills"
+DEFAULT_RLM_TOOL_SKILL_MARKER = ".vf-generated-tool-skill"
 DEFAULT_RLM_LOCAL_CHECKOUT_CACHE_ROOT = (
     Path.home() / ".cache" / "verifiers" / "rlm-checkouts"
 )
@@ -85,13 +89,18 @@ class RLM(Harness):
             }
         elif sandbox_config is not False:
             sandbox_options = sandbox_config_mapping(sandbox_config) or {}
-            if isinstance(sandbox_options.get("setup_timeout"), int):
-                setup_timeout = cast(int, sandbox_options["setup_timeout"])
+            explicit_sandbox_options = (
+                sandbox_config_mapping(sandbox_config, fill_defaults=False) or {}
+            )
+            if explicit_sandbox_options.get("setup_timeout") is not None:
+                setup_timeout = int_config(
+                    explicit_sandbox_options, "setup_timeout", setup_timeout
+                )
             sandbox_config = {
                 "workdir": harness_config.workdir,
                 "command_timeout": max(harness_config.rlm_exec_timeout + 120, 600),
-                "setup_timeout": setup_timeout,
                 **sandbox_options,
+                "setup_timeout": setup_timeout,
             }
         dirs: dict[str, ProgramValue] = {
             DEFAULT_RLM_CHECKOUT_PATH: rlm_checkout_loader(
@@ -104,6 +113,7 @@ class RLM(Harness):
         self._skills_dir: ProgramDir | None = (
             Path(harness_config.skills) if harness_config.skills is not None else None
         )
+        self._explicit_skills = self._skills_dir is not None
         if self._skills_dir is not None:
             dirs[DEFAULT_RLM_SKILLS_PATH] = self._skills_dir
         command: ProgramCommand = [
@@ -126,12 +136,33 @@ class RLM(Harness):
                 "apt-get -o Acquire::Retries=3 update && "
                 "apt-get -o Acquire::Retries=3 install -y --no-install-recommends "
                 "ca-certificates curl git && rm -rf /var/lib/apt/lists/*",
-                (
-                    f"if [ -s {shlex.quote(DEFAULT_RLM_TOOL_SKILLS_ARCHIVE_PATH)} ]; then "
-                    f"mkdir -p {shlex.quote(DEFAULT_RLM_SKILLS_PATH)} && "
-                    f"base64 -d {shlex.quote(DEFAULT_RLM_TOOL_SKILLS_ARCHIVE_PATH)} | "
-                    f"tar -xzf - -C {shlex.quote(DEFAULT_RLM_SKILLS_PATH)}; "
-                    "fi"
+                "bash -lc "
+                + shlex.quote(
+                    f"""
+set -eo pipefail
+skills_path={shlex.quote(DEFAULT_RLM_SKILLS_PATH)}
+archive_path={shlex.quote(DEFAULT_RLM_TOOL_SKILLS_ARCHIVE_PATH)}
+manifest_path="$skills_path/{DEFAULT_RLM_TOOL_SKILLS_MANIFEST_NAME}"
+mkdir -p "$skills_path"
+if [ -f "$manifest_path" ]; then
+  while IFS= read -r skill_name; do
+    case "$skill_name" in ""|.*|*/*|*..*) continue ;; esac
+    if [ -f "$skills_path/$skill_name/{DEFAULT_RLM_TOOL_SKILL_MARKER}" ]; then
+      rm -rf "$skills_path/$skill_name"
+    fi
+  done < "$manifest_path"
+  rm -f "$manifest_path"
+fi
+if [ -s "$archive_path" ]; then
+  tmp_archive="$(mktemp)"
+  trap 'rm -f "$tmp_archive"' EXIT
+  base64 -d "$archive_path" > "$tmp_archive"
+  tar -tzf "$tmp_archive" \\
+    | awk -F/ 'NF > 1 && $1 != "" {{print $1}}' \\
+    | sort -u > "$manifest_path"
+  tar -xzf "$tmp_archive" -C "$skills_path"
+fi
+"""
                 ),
                 "bash -lc "
                 + shlex.quote(
@@ -154,7 +185,7 @@ bash "$RLM_CHECKOUT_PATH/install.sh"
             },
             program=harness_config.program,
         )
-        program["setup_timeout"] = setup_timeout
+        program.setdefault("setup_timeout", setup_timeout)
         self._configure_runtime(
             program=program,
             sandbox=None if sandbox_config is False else sandbox_config,
@@ -166,19 +197,24 @@ bash "$RLM_CHECKOUT_PATH/install.sh"
         )
 
     def attach_taskset(self, taskset: Taskset) -> None:
-        if self._skills_dir is None:
+        if not self._explicit_skills:
             upload_dirs = taskset.get_upload_dirs()
             if not isinstance(upload_dirs, Mapping):
                 raise TypeError("Taskset.get_upload_dirs() must return a mapping.")
             self._skills_dir = cast(ProgramDir | None, upload_dirs.get("skills"))
-            if self._skills_dir is not None:
-                if not isinstance(self.program, Mapping):
-                    raise TypeError("RLM program must be a mapping.")
-                program = dict(cast(ConfigMap, self.program))
-                dirs = dict(cast(ConfigMap, program.get("dirs") or {}))
+            if not isinstance(self.program, Mapping):
+                raise TypeError("RLM program must be a mapping.")
+            program = dict(cast(ConfigMap, self.program))
+            dirs = dict(cast(ConfigMap, program.get("dirs") or {}))
+            if self._skills_dir is None:
+                dirs.pop(DEFAULT_RLM_SKILLS_PATH, None)
+            else:
                 dirs[DEFAULT_RLM_SKILLS_PATH] = self._skills_dir
+            if dirs:
                 program["dirs"] = dirs
-                self.program = program
+            else:
+                program.pop("dirs", None)
+            self.program = program
         super().attach_taskset(taskset)
         self._program = self.compile_program(self.program)
 
@@ -186,6 +222,7 @@ bash "$RLM_CHECKOUT_PATH/install.sh"
         tool_defs = self.runtime.tool_defs(state) or []
         if not tool_defs:
             return ""
+        tools = self.runtime.all_exposed_tools(state)
         used_names: set[str] = set()
         if self._skills_dir is not None:
             root = (
@@ -224,53 +261,175 @@ bash "$RLM_CHECKOUT_PATH/install.sh"
                     if parameters.get("additionalProperties") is False
                     else None
                 )
-                signature, arguments = render_run_signature_and_arguments(tool_def)
+                required = set(cast(list[str], parameters.get("required") or []))
+                type_names = {
+                    "array": "list",
+                    "boolean": "bool",
+                    "integer": "int",
+                    "null": "None",
+                    "number": "float",
+                    "object": "dict",
+                    "string": "str",
+                }
+                typed_parameters = all(
+                    name.isidentifier()
+                    and not name.startswith("_")
+                    and not keyword.iskeyword(name)
+                    and name
+                    not in {
+                        "arguments",
+                        "kwargs",
+                    }
+                    for name in properties
+                )
+                if typed_parameters:
+                    signature_parts: list[str] = []
+                    argument_lines = ["arguments = {}"]
+                    for name, raw_schema in sorted(
+                        properties.items(),
+                        key=lambda item: (
+                            "default" in cast(ConfigData, item[1])
+                            or item[0] not in required
+                        ),
+                    ):
+                        field_schema = cast(ConfigData, raw_schema)
+                        raw_type = field_schema.get("type")
+                        if isinstance(raw_type, str):
+                            annotation_parts = [type_names.get(raw_type, "object")]
+                        elif isinstance(raw_type, list):
+                            annotation_parts = [
+                                type_names.get(str(item), "object") for item in raw_type
+                            ]
+                        else:
+                            annotation_parts = ["object"]
+                        annotation = " | ".join(dict.fromkeys(annotation_parts))
+                        if name not in required and "default" not in field_schema:
+                            if "None" not in annotation_parts:
+                                annotation = f"{annotation} | None"
+                            signature_parts.append(f"{name}: {annotation} = None")
+                            argument_lines.append(f"if {name} is not None:")
+                            argument_lines.append(f"    arguments[{name!r}] = {name}")
+                        elif "default" in field_schema:
+                            default = field_schema["default"]
+                            if default is None and "None" not in annotation_parts:
+                                annotation = f"{annotation} | None"
+                            signature_parts.append(
+                                f"{name}: {annotation} = {default!r}"
+                            )
+                            argument_lines.append(f"arguments[{name!r}] = {name}")
+                        else:
+                            signature_parts.append(f"{name}: {annotation}")
+                            argument_lines.append(f"arguments[{name!r}] = {name}")
+                    signature_parts.append("**kwargs")
+                    signature = ", ".join(signature_parts)
+                    argument_lines.append("arguments.update(kwargs)")
+                    argument_source = textwrap.indent(
+                        "\n".join(argument_lines), " " * 24
+                    )
+                    call_example = f'result = await {skill_name}(argument_name="value")'
+                else:
+                    signature = "arguments: dict | None = None, **kwargs"
+                    argument_source = textwrap.indent(
+                        "arguments = {**(arguments or {}), **kwargs}", " " * 24
+                    )
+                    call_example = (
+                        f"result = await {skill_name}({{'argument_name': 'value'}})"
+                    )
+                local_tool_payload: str | None = None
+                tool = tools.get(tool_name)
+                owner = self.runtime.tool_owner(tool_name, state)
+                if owner is not None and owner.sandbox is None and callable(tool):
+                    try:
+                        tool_signature = inspect.signature(tool)
+                    except (TypeError, ValueError):
+                        tool_signature = None
+                    if tool_signature is not None and not any(
+                        binding_key.partition(".")[0] == tool_name
+                        for binding_key in owner.bindings
+                    ):
+                        hidden_args = self.runtime.hidden_tool_args(tool_name, state)
+                        if not any(
+                            arg_name in tool_signature.parameters
+                            for arg_name in hidden_args
+                        ):
+                            try:
+                                import dill
+
+                                local_tool_payload = base64.b64encode(
+                                    dill.dumps(tool)
+                                ).decode()
+                            except Exception:
+                                local_tool_payload = None
+                if local_tool_payload is None:
+                    module_imports = "os, requests"
+                    tool_setup = ""
+                    dependencies = ["requests", "rlm"]
+                    call_source = textwrap.indent(
+                        textwrap.dedent(
+                            f"""\
+                            base = os.environ.get("ANTHROPIC_BASE_URL") or os.environ.get("OPENAI_BASE_URL")
+                            if not base:
+                                raise RuntimeError("No Verifiers endpoint URL is configured.")
+                            api_key = (
+                                os.environ.get("OPENAI_API_KEY")
+                                or os.environ.get("ANTHROPIC_API_KEY")
+                                or "intercepted"
+                            )
+                            # Runtime-bound tools fall back to the verifier endpoint.
+                            response = requests.post(
+                                f"{{base.rsplit('/v1', 1)[0].rstrip('/')}}/vf/tools/" + {tool_name!r},
+                                json={{"arguments": arguments}},
+                                headers={{"Authorization": f"Bearer {{api_key}}"}},
+                                timeout=300,
+                            )
+                            if not response.content:
+                                response.raise_for_status()
+                                return None
+                            payload = response.json()
+                            if "error" in payload:
+                                raise RuntimeError(str(payload["error"]))
+                            response.raise_for_status()
+                            return payload.get("result")
+                            """
+                        ),
+                        " " * 24,
+                    )
+                else:
+                    module_imports = "base64, dill, inspect"
+                    tool_setup = (
+                        f"TOOL = dill.loads(base64.b64decode({local_tool_payload!r}))"
+                    )
+                    dependencies = ["dill", "rlm"]
+                    call_source = textwrap.indent(
+                        textwrap.dedent(
+                            """\
+                            result = TOOL(**arguments)
+                            if inspect.isawaitable(result):
+                                return await result
+                            return result
+                            """
+                        ),
+                        " " * 24,
+                    )
                 module = textwrap.dedent(
                     f"""\
-                    import os
-                    import requests
+                    import {module_imports}
 
 
                     TOOL_ALLOWED_ARGUMENTS = {allowed_arguments!r}
+                    {tool_setup}
 
 
-                    async def run({signature}):
+                    async def run({signature}) -> object:
                         {json.dumps(description)}
-                        arguments = _tool_arguments({arguments}, kwargs)
-                        base = os.environ.get("ANTHROPIC_BASE_URL") or os.environ.get("OPENAI_BASE_URL")
-                        if not base:
-                            raise RuntimeError("No Verifiers endpoint URL is configured.")
-                        api_key = (
-                            os.environ.get("OPENAI_API_KEY")
-                            or os.environ.get("ANTHROPIC_API_KEY")
-                            or "intercepted"
-                        )
-                        response = requests.post(
-                            f"{{base.rsplit('/v1', 1)[0].rstrip('/')}}/vf/tools/" + {tool_name!r},
-                            json={{"arguments": arguments}},
-                            headers={{"Authorization": f"Bearer {{api_key}}"}},
-                            timeout=300,
-                        )
-                        payload = _response_payload(response)
-                        return payload.get("result")
-
-
-                    def _tool_arguments(arguments: dict | None, kwargs: dict) -> dict:
-                        merged = {{**(arguments or {{}}), **kwargs}}
-                        if TOOL_ALLOWED_ARGUMENTS is None:
-                            return merged
-                        return {{key: merged[key] for key in TOOL_ALLOWED_ARGUMENTS if key in merged}}
-
-
-                    def _response_payload(response):
-                        if not response.content:
-                            response.raise_for_status()
-                            return {{}}
-                        payload = response.json()
-                        if "error" in payload:
-                            raise RuntimeError(str(payload["error"]))
-                        response.raise_for_status()
-                        return payload
+{argument_source}
+                        if TOOL_ALLOWED_ARGUMENTS is not None:
+                            arguments = {{
+                                key: arguments[key]
+                                for key in TOOL_ALLOWED_ARGUMENTS
+                                if key in arguments
+                            }}
+{call_source}
                     """
                 )
                 distribution_name = skill_name.replace("_", "-")
@@ -279,12 +438,12 @@ bash "$RLM_CHECKOUT_PATH/install.sh"
 
 {description}
 
-This skill calls the Verifiers V1 tool `{tool_name}` for the current rollout.
+This skill calls `{tool_name}`.
 
-Pass tool arguments as a dictionary:
+Call it with tool arguments:
 
 ```python
-result = await {skill_name}({{"argument_name": "value"}})
+{call_example}
 ```
 
 Tool schema:
@@ -293,12 +452,13 @@ Tool schema:
 {schema}
 ```
 """,
+                    f"{skill_name}/{DEFAULT_RLM_TOOL_SKILL_MARKER}": "1\n",
                     f"{skill_name}/pyproject.toml": textwrap.dedent(
                         f"""\
                         [project]
                         name = "rlm-skill-{distribution_name}"
                         version = "0.0.0"
-                        dependencies = ["requests", "rlm"]
+                        dependencies = {json.dumps(dependencies)}
 
                         [project.scripts]
                         {skill_name} = "rlm.skill:cli"
@@ -322,46 +482,6 @@ Tool schema:
                     info.size = len(data)
                     tar.addfile(info, io.BytesIO(data))
         return base64.b64encode(buffer.getvalue()).decode()
-
-
-def render_run_signature_and_arguments(tool_def: ConfigMap) -> tuple[str, str]:
-    parameters = cast(ConfigData, tool_def.get("parameters") or {})
-    properties = cast(ConfigData, parameters.get("properties") or {})
-    required = set(cast(list[str], parameters.get("required") or []))
-    if any(not valid_tool_parameter(name) for name in properties):
-        return "arguments: dict | None = None, **kwargs", "arguments"
-    items = sorted(
-        properties.items(),
-        key=lambda item: (
-            "default" in cast(ConfigData, item[1]) or item[0] not in required
-        ),
-    )
-    signature_parts: list[str] = []
-    argument_parts: list[str] = []
-    for name, raw_schema in items:
-        schema = cast(ConfigData, raw_schema)
-        if "default" in schema:
-            signature_parts.append(f"{name}={schema['default']!r}")
-        elif name in required:
-            signature_parts.append(name)
-        else:
-            signature_parts.append(f"{name}=None")
-        argument_parts.append(f"{name!r}: {name}")
-    signature_parts.append("**kwargs")
-    return ", ".join(signature_parts), "{" + ", ".join(argument_parts) + "}"
-
-
-def valid_tool_parameter(name: str) -> bool:
-    return (
-        name.isidentifier()
-        and not name.startswith("_")
-        and not keyword.iskeyword(name)
-        and name
-        not in {
-            "arguments",
-            "kwargs",
-        }
-    )
 
 
 def load_harness(config: RLMConfig) -> RLM:

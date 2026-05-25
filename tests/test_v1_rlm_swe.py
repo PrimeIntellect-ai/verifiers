@@ -14,7 +14,9 @@ from verifiers.types import Tool
 import verifiers.v1 as vf
 from environments.rlm_swe_v1 import rlm_swe_v1
 from verifiers.v1.packages.harnesses.rlm import (
+    DEFAULT_RLM_TOOL_SKILL_MARKER,
     DEFAULT_RLM_TOOL_SKILLS_ARCHIVE_PATH,
+    DEFAULT_RLM_TOOL_SKILLS_MANIFEST_NAME,
 )
 from verifiers.v1.utils.program_utils import merge_task_program, merge_task_sandbox
 
@@ -62,6 +64,44 @@ def test_rlm_harness_accepts_typed_config_surface():
     assert program_env["CUSTOM"] == "1"
 
 
+def test_rlm_harness_preserves_program_setup_timeout_override():
+    harness = vf.RLM(
+        config=vf.RLMConfig(
+            local_checkout="/tmp/checkout",
+            program={"setup_timeout": 123},
+        )
+    )
+    program = as_mapping(harness.program)
+
+    assert program["setup_timeout"] == 123
+
+
+def test_rlm_harness_uses_sandbox_setup_timeout_default():
+    harness = vf.RLM(
+        config=vf.RLMConfig(
+            local_checkout="/tmp/checkout",
+            sandbox={"setup_timeout": "777"},
+        )
+    )
+    program = as_mapping(harness.program)
+
+    assert program["setup_timeout"] == 777
+
+
+def test_rlm_harness_keeps_minimum_setup_timeout_for_default_sandbox_config():
+    harness = vf.RLM(
+        config=vf.RLMConfig(
+            local_checkout="/tmp/checkout",
+            sandbox=vf.SandboxConfig(),
+        )
+    )
+    program = as_mapping(harness.program)
+    sandbox = as_mapping(harness.sandbox)
+
+    assert program["setup_timeout"] == 600
+    assert sandbox["setup_timeout"] == 600
+
+
 def test_rlm_harness_can_upload_skills(tmp_path: Path):
     skills = tmp_path / "skills"
     (skills / "edit").mkdir(parents=True)
@@ -79,6 +119,10 @@ def test_rlm_harness_can_upload_skills(tmp_path: Path):
     assert files[DEFAULT_RLM_TOOL_SKILLS_ARCHIVE_PATH] == harness.vf_tool_skills_archive
     assert isinstance(setup, list)
     assert DEFAULT_RLM_TOOL_SKILLS_ARCHIVE_PATH in setup[1]
+    assert DEFAULT_RLM_TOOL_SKILLS_MANIFEST_NAME in setup[1]
+    assert DEFAULT_RLM_TOOL_SKILL_MARKER in setup[1]
+    assert "rm -rf" in setup[1]
+    assert "tar -tzf" in setup[1]
 
 
 def test_rlm_harness_uploads_taskset_skills_by_default(tmp_path: Path):
@@ -98,6 +142,39 @@ def test_rlm_harness_uploads_taskset_skills_by_default(tmp_path: Path):
     dirs = as_mapping(program["dirs"])
 
     assert dirs["/task/rlm-skills"] == skills
+
+
+def test_rlm_harness_recomputes_taskset_skills(tmp_path: Path):
+    first_skills = tmp_path / "first-skills"
+    second_skills = tmp_path / "second-skills"
+    first_skills.mkdir()
+    second_skills.mkdir()
+
+    class SkillTaskset(vf.Taskset):
+        def __init__(self, skills: Path):
+            super().__init__(config=vf.TasksetConfig(source=[]))
+            self.skills = skills
+
+        def get_upload_dirs(self):
+            return {"skills": self.skills}
+
+    class NoSkillTaskset(vf.Taskset):
+        def get_upload_dirs(self):
+            return {}
+
+    harness = vf.RLM(config=vf.RLMConfig(local_checkout="/tmp/checkout"))
+    vf.Env(taskset=SkillTaskset(first_skills), harness=harness)
+    vf.Env(taskset=SkillTaskset(second_skills), harness=harness)
+    program = as_mapping(harness.program)
+    dirs = as_mapping(program["dirs"])
+
+    assert dirs["/task/rlm-skills"] == second_skills
+
+    vf.Env(taskset=NoSkillTaskset(config=vf.TasksetConfig(source=[])), harness=harness)
+    program = as_mapping(harness.program)
+    dirs = as_mapping(program["dirs"])
+
+    assert "/task/rlm-skills" not in dirs
 
 
 @pytest.mark.asyncio
@@ -130,11 +207,55 @@ async def test_rlm_harness_generates_skills_for_v1_tools():
             .decode()
         )
         skill_markdown = tar.extractfile("lookup_order/SKILL.md").read().decode()
-    assert "async def run(order_id, **kwargs)" in source
-    assert "/vf/tools/" in source
-    assert "'lookup_order'" in source
+        marker = (
+            tar.extractfile(f"lookup_order/{DEFAULT_RLM_TOOL_SKILL_MARKER}")
+            .read()
+            .decode()
+        )
+    assert "async def run(order_id: str, **kwargs) -> object" in source
+    assert "/vf/tools/" not in source
+    assert "dill.loads" in source
     assert "Look up an order by ID." in skill_markdown
     assert "result = await lookup_order" in skill_markdown
+    assert marker == "1\n"
+
+    module = types.ModuleType("lookup_order")
+    exec(source, module.__dict__)
+    assert await module.run(order_id="A-1") == "order:A-1"
+
+
+@pytest.mark.asyncio
+async def test_vf_tool_skill_falls_back_for_runtime_bound_tools():
+    async def stateful_lookup(order_id: str, state: vf.State) -> str:
+        """Look up an order with rollout state."""
+        return f"{state['tenant']}:{order_id}"
+
+    taskset = vf.Taskset(
+        config=vf.TasksetConfig(
+            source=[{"prompt": [{"role": "user", "content": "Find order A-1."}]}]
+        )
+    )
+    taskset.add_toolset(vf.Toolset(tools=[stateful_lookup]))
+    env = vf.Env(
+        taskset=taskset,
+        harness=vf.RLM(config=vf.RLMConfig(local_checkout="/tmp/checkout")),
+    )
+    task = next(iter(env.taskset))
+    state = vf.State({"task": dict(task), "runtime": {}, "prompt": task["prompt"]})
+
+    await env.harness.runtime.ensure_rollout_toolsets(task, state)
+    env.harness.runtime.prepare_state(task, state)
+    archive = base64.b64decode(env.harness.vf_tool_skills_archive(state))
+
+    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
+        source = (
+            tar.extractfile("stateful_lookup/src/stateful_lookup/stateful_lookup.py")
+            .read()
+            .decode()
+        )
+
+    assert "/vf/tools/" in source
+    assert "dill.loads" not in source
 
 
 def test_vf_tool_skills_archive_avoids_base_skill_name_collisions(tmp_path: Path):
@@ -189,9 +310,10 @@ def test_vf_tool_skill_uses_arguments_dict_for_tool_parameters():
             .decode()
         )
 
-    assert "async def run(arguments: dict | None = None, **kwargs)" in source
-    assert "arguments = _tool_arguments(arguments, kwargs)" in source
+    assert "async def run(arguments: dict | None = None, **kwargs) -> object" in source
+    assert "arguments = {**(arguments or {}), **kwargs}" in source
     assert 'json={"arguments": arguments}' in source
+    assert "def _tool_arguments" not in source
     assert "limit=None" not in source
 
 
@@ -247,6 +369,63 @@ async def test_vf_tool_skill_filters_extra_kwargs_for_closed_schemas(
 
     assert result == "ok"
     assert calls == [{"arguments": {"date": "2025-07-14"}}]
+
+
+@pytest.mark.asyncio
+async def test_vf_tool_skill_omits_unset_optional_arguments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = vf.RLM(config=vf.RLMConfig(local_checkout="/tmp/checkout"))
+    tool_def = Tool(
+        name="search",
+        description="Search documents.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "limit": {"type": "integer"},
+            },
+            "required": ["query"],
+        },
+    )
+    setattr(harness.runtime, "tool_defs", lambda state: [tool_def])
+    archive = base64.b64decode(harness.vf_tool_skills_archive(vf.State({})))
+
+    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
+        source = tar.extractfile("search/src/search/search.py").read().decode()
+
+    module = types.ModuleType("search")
+    exec(source, module.__dict__)
+    calls: list[dict[str, object]] = []
+
+    class Response:
+        content = b"{}"
+
+        def json(self):
+            return {"result": "ok"}
+
+        def raise_for_status(self):
+            return None
+
+    class Requests:
+        @staticmethod
+        def post(url, json, headers, timeout):
+            calls.append(json)
+            return Response()
+
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://example.test/v1")
+    module.requests = Requests
+
+    assert (
+        "async def run(query: str, limit: int | None = None, **kwargs) -> object"
+        in source
+    )
+    assert "if limit is not None:" in source
+    assert "limit=None" not in source
+    result = await module.run(query="docs")
+
+    assert result == "ok"
+    assert calls == [{"arguments": {"query": "docs"}}]
 
 
 @pytest.mark.asyncio

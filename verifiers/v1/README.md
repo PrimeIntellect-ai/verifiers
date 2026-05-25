@@ -607,13 +607,16 @@ and log/trajectory artifacts.
 artifacts.
 `RLM` follows the same boundary for recursive LLM runs: `HarborTaskset` owns
 the task directory and tests, while `RLM` owns RLM installation, optional skill
-upload to `/rlm/skills`, endpoint wiring, and trajectory filtering.
+upload to `/task/rlm-skills`, generated tool skills, endpoint wiring, and
+trajectory filtering.
 Use `RLMConfig` in `env.harness` for RLM-specific settings such as
 `rlm_repo_ref`, `rlm_tools`, `rlm_max_turns`, and `summarize_at_tokens`.
 Tasksets can expose package-owned upload directories with `get_upload_dirs()`.
 The base `Taskset` discovers a sibling `skills/` directory by default, and
-`RLM` uploads that directory to `/rlm/skills` unless `skills=` is passed
-explicitly to the harness.
+`RLM` uploads that directory to `/task/rlm-skills` unless `skills=` is passed
+explicitly to the harness. Generated tool skills run simple callable tools
+inside the RLM sandbox by default and fall back to `/vf/tools` for tools that
+need verifier runtime resources.
 
 ## State Helpers
 
@@ -1459,7 +1462,7 @@ mcp = true
 `program.channels` is deliberately limited to `callable` and `mcp`.
 Harness-specific tool carriers belong on the harness or taskset contract; for
 example, RLM reads `Taskset.get_upload_dirs()["skills"]` and uploads it to
-`/rlm/skills`.
+`/task/rlm-skills`.
 
 `program.setup` prepares the process. `program.channels.mcp` registers resolved
 tool or endpoint config after the interception endpoint is live and before the
