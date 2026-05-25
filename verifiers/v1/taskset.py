@@ -84,8 +84,6 @@ class Taskset(RuntimeOwnerMixin):
             harness.runtime = harness.resolve_runtime()
 
     def to_task(self, value: ConfigMap | Task | str) -> Task:
-        if isinstance(value, Task):
-            return value
         if isinstance(value, str):
             value = json.loads(value)
         if not isinstance(value, Mapping):

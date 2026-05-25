@@ -564,6 +564,31 @@ def test_taskset_config_extends_constructor_surface() -> None:
     assert taskset.toolsets[0].bindings == {"config_tool.prefix": "task.answer"}
 
 
+def test_taskset_to_task_normalizes_task_input() -> None:
+    taskset = Taskset(config={"taskset_id": "configured"})
+    original = Task({"prompt": [], "taskset_id": "original", "example_id": 7})
+
+    task = taskset.to_task(original)
+
+    assert task is not original
+    assert task["taskset_id"] == "configured"
+    assert task["task_id"] == "7"
+    assert task.frozen
+    assert not original.frozen
+
+
+def test_taskset_to_task_copies_frozen_task_input() -> None:
+    taskset = Taskset(config={"taskset_id": "configured"})
+    original = Task({"prompt": [], "taskset_id": "original"}).freeze()
+
+    task = taskset.to_task(original)
+
+    assert task is not original
+    assert task["taskset_id"] == "configured"
+    assert task.frozen
+    assert original.frozen
+
+
 def test_taskset_config_tasks_fields_validate() -> None:
     config = TasksetConfig(
         tasks=ref("load_tasks"),
