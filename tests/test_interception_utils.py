@@ -309,3 +309,52 @@ async def test_non_streaming_response_future_failure_surfaces_to_state(monkeypat
     assert "Intercepted request failed" in msg
     assert "RuntimeError" in msg
     assert "vLLM raised" in msg
+
+
+async def test_synthesize_stream_emits_openai_responses_events():
+    chunk_queue: asyncio.Queue = asyncio.Queue()
+    response_future: asyncio.Future = asyncio.Future()
+    intercept = {
+        "protocol": "openai_responses",
+        "chunk_queue": chunk_queue,
+        "response_future": response_future,
+    }
+    response = Response(
+        id="resp_1",
+        created=123,
+        model="m",
+        usage=Usage(
+            prompt_tokens=1,
+            reasoning_tokens=0,
+            completion_tokens=1,
+            total_tokens=2,
+        ),
+        message=ResponseMessage(
+            content=None,
+            finish_reason="tool_calls",
+            is_truncated=False,
+            tool_calls=[ToolCall(id="call_1", name="search", arguments='{"q":"x"}')],
+        ),
+    )
+
+    await interception_utils.synthesize_stream(intercept, response)
+
+    events = []
+    while True:
+        event = await chunk_queue.get()
+        if event is None:
+            break
+        events.append(event)
+
+    assert [event["type"] for event in events] == [
+        "response.output_item.added",
+        "response.function_call_arguments.delta",
+        "response.function_call_arguments.done",
+        "response.output_item.done",
+        "response.completed",
+    ]
+    assert events[0]["item"]["type"] == "function_call"
+    assert events[2]["arguments"] == '{"q":"x"}'
+    assert events[-1]["response"]["object"] == "response"
+    assert response_future.done()
+    assert response_future.result() is response

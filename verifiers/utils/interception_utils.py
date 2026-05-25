@@ -587,6 +587,14 @@ async def synthesize_stream(
     if chunk_queue is None:
         raise RuntimeError("Missing chunk_queue for streaming interception")
 
+    if intercept.get("protocol") == "openai_responses":
+        for event in _openai_responses_stream_events(response):
+            await chunk_queue.put(event)
+        await chunk_queue.put(None)
+        if future and not future.done():
+            future.set_result(response)
+        return
+
     message = response.message
 
     # Chunk 1: content + tool_calls in delta
@@ -927,6 +935,93 @@ def serialize_openai_responses_response(response: Response) -> dict[str, Any]:
         "tools": [],
         "usage": usage,
     }
+
+
+def _openai_responses_stream_events(response: Response) -> list[dict[str, Any]]:
+    payload = serialize_openai_responses_response(response)
+    events: list[dict[str, Any]] = []
+    sequence_number = 1
+
+    def append(event: dict[str, Any]) -> None:
+        nonlocal sequence_number
+        event.setdefault("response_id", payload["id"])
+        event["sequence_number"] = sequence_number
+        sequence_number += 1
+        events.append(event)
+
+    for output_index, item in enumerate(payload.get("output") or []):
+        item_id = item.get("id")
+        if item.get("type") == "function_call":
+            pending_item = {**item, "status": "in_progress", "arguments": ""}
+            append(
+                {
+                    "type": "response.output_item.added",
+                    "output_index": output_index,
+                    "item": pending_item,
+                }
+            )
+            arguments = item.get("arguments") or ""
+            if arguments:
+                append(
+                    {
+                        "type": "response.function_call_arguments.delta",
+                        "item_id": item_id,
+                        "output_index": output_index,
+                        "delta": arguments,
+                    }
+                )
+            append(
+                {
+                    "type": "response.function_call_arguments.done",
+                    "item_id": item_id,
+                    "call_id": item.get("call_id"),
+                    "name": item.get("name"),
+                    "output_index": output_index,
+                    "arguments": arguments,
+                }
+            )
+        else:
+            pending_item = {**item, "status": "in_progress", "content": []}
+            append(
+                {
+                    "type": "response.output_item.added",
+                    "output_index": output_index,
+                    "item": pending_item,
+                }
+            )
+            for content_index, content in enumerate(item.get("content") or []):
+                if content.get("type") != "output_text":
+                    continue
+                text = content.get("text") or ""
+                if text:
+                    append(
+                        {
+                            "type": "response.output_text.delta",
+                            "item_id": item_id,
+                            "output_index": output_index,
+                            "content_index": content_index,
+                            "delta": text,
+                        }
+                    )
+                append(
+                    {
+                        "type": "response.output_text.done",
+                        "item_id": item_id,
+                        "output_index": output_index,
+                        "content_index": content_index,
+                        "text": text,
+                    }
+                )
+        append(
+            {
+                "type": "response.output_item.done",
+                "output_index": output_index,
+                "item": item,
+            }
+        )
+
+    append({"type": "response.completed", "response": payload})
+    return events
 
 
 def _log_request(rollout_id: str, body: dict) -> None:

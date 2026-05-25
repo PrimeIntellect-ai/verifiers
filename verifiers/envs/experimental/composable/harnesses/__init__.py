@@ -24,6 +24,12 @@ from verifiers.envs.experimental.composable.harnesses.mini_swe_agent import (
     build_mini_swe_agent_run_command,
     mini_swe_agent_harness,
 )
+from verifiers.envs.experimental.composable.harnesses.codex import (
+    DEFAULT_CODEX_VERSION,
+    build_codex_install_script,
+    build_codex_run_command,
+    codex_harness,
+)
 
 __all__ = [
     "rlm_harness",
@@ -46,4 +52,8 @@ __all__ = [
     "build_mini_swe_agent_run_command",
     "MINI_SWE_AGENT_INSTALL_SCRIPT",
     "MINI_SWE_AGENT_CONFIG",
+    "codex_harness",
+    "build_codex_install_script",
+    "build_codex_run_command",
+    "DEFAULT_CODEX_VERSION",
 ]
