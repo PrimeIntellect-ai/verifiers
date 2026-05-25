@@ -24,7 +24,7 @@ import pytest
 
 import verifiers as vf
 from datasets import Dataset
-from renderers import create_renderer
+from renderers import config_from_name, create_renderer
 from verifiers.clients.renderer_client import RendererClient, _to_renderer_message
 from verifiers.types import Messages, State
 
@@ -83,7 +83,7 @@ def _load(model_name: str, renderer_name: str):
         from transformers import AutoTokenizer
 
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-        renderer = create_renderer(tokenizer, renderer=renderer_name)
+        renderer = create_renderer(tokenizer, config_from_name(renderer_name))
         _renderer_cache[key] = (tokenizer, renderer)
     return _renderer_cache[key]
 

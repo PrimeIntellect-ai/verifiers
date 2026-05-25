@@ -18,6 +18,7 @@ from typing import (
 )
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
+from renderers import RendererConfig
 
 if TYPE_CHECKING:
     from anthropic.types import RedactedThinkingBlock
@@ -1018,13 +1019,17 @@ class ClientConfig(BaseModel):
 
     client_idx: int = 0
     client_type: ClientType = "openai_chat_completions"
-    renderer: str = "auto"
+    renderer_config: RendererConfig | None = None
+    """Typed renderer config (one of ``renderers.RendererConfig``'s variants).
+    Drives the renderer pool when ``client_type == "renderer"``. Defaults
+    to ``None`` so non-renderer clients aren't forced to declare it; the
+    renderer client treats ``None`` as ``AutoRendererConfig()``."""
     renderer_model_name: str | None = None
+    """Override the tokenizer model name used to instantiate the renderer
+    pool. Defaults to the model used in API requests."""
     renderer_pool_size: int | None = None
-    tool_parser: str | None = None
-    reasoning_parser: str | None = None
-    preserve_all_thinking: bool = False
-    preserve_thinking_between_tool_calls: bool = False
+    """Size of the shared renderer pool. ``None`` falls back to the
+    ``RendererClient`` default."""
     api_key_var: str = "PRIME_API_KEY"
     api_base_url: str = "https://api.pinference.ai/api/v1"
     endpoint_configs: list["EndpointClientConfig"] = Field(default_factory=list)
