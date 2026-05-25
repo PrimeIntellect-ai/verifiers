@@ -66,6 +66,12 @@ def positional_only_load_tasks(
     return [{"config": config, "split": split}]
 
 
+def varargs_load_tasks(
+    *config: object, split: str = "train"
+) -> list[dict[str, object]]:
+    return [{"config": config, "split": split}]
+
+
 @vf.metric
 async def config_metric(task: Mapping[str, object], state: dict[str, object]) -> float:
     return float(task.get("answer") == "ok" and state.get("answer") == "ok")
@@ -437,6 +443,15 @@ def test_load_tasks_filters_positional_only_config_names() -> None:
     assert rows == [{"config": "positional-default", "split": "eval"}]
 
 
+def test_load_tasks_filters_varargs_parameter_names() -> None:
+    rows = task_data_from_loader(
+        varargs_load_tasks,
+        {"config": "shadowed", "split": "eval"},
+    )
+
+    assert rows == [{"config": (), "split": "eval"}]
+
+
 def test_toolset_mapping_treats_show_hide_strings_as_tool_names() -> None:
     shown = normalize_toolset(
         {
@@ -672,6 +687,14 @@ def test_taskset_config_source_aliases_map_with_warning() -> None:
     assert "TasksetConfig.eval_source is deprecated" in messages[1]
     assert config.tasks == ref("load_tasks")
     assert config.eval_tasks == ref("load_eval_tasks")
+
+
+def test_taskset_config_source_alias_rejects_inline_rows() -> None:
+    with pytest.raises(ValueError, match="source.*Inline task rows"):
+        TasksetConfig.model_validate({"source": [{"prompt": [], "answer": "ok"}]})
+
+    with pytest.raises(ValueError, match="eval_source.*Inline task rows"):
+        TasksetConfig.model_validate({"tasks": ref("load_tasks"), "eval_source": []})
 
 
 def test_taskset_config_source_alias_conflicts_raise() -> None:

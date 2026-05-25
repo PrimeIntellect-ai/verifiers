@@ -156,6 +156,10 @@ def harbor_task_row(
         raise TypeError(f"{task_toml_path} [environment] must be a mapping.")
     agent_config = task_config.get("agent", {}) or {}
     verifier_config = task_config.get("verifier", {}) or {}
+    if not isinstance(agent_config, Mapping):
+        raise TypeError(f"{task_toml_path} [agent] must be a mapping.")
+    if not isinstance(verifier_config, Mapping):
+        raise TypeError(f"{task_toml_path} [verifier] must be a mapping.")
     instruction = instruction_path.read_text().strip()
     task_remote_dir = config.task_dir.rstrip("/") or "/task"
     sandbox = {

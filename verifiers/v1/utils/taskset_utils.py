@@ -48,7 +48,8 @@ def call_task_loader(
     keyword_names = {
         name
         for name, parameter in sig.parameters.items()
-        if parameter.kind != inspect.Parameter.POSITIONAL_ONLY
+        if parameter.kind
+        not in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.VAR_POSITIONAL)
     }
     allowed = {key: value for key, value in task_args.items() if key in keyword_names}
     return load_tasks(**allowed)

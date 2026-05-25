@@ -283,12 +283,19 @@ class TasksetConfig(LifecycleConfig):
                 raise ValueError(
                     f"TasksetConfig received both {old!r} and {new!r}; use {new!r}."
                 )
+            old_value = data.pop(old)
+            if old_value is not None and not isinstance(old_value, str):
+                raise ValueError(
+                    f"TasksetConfig.{old} must be an import ref string. "
+                    f"Inline task rows are not supported; define load_tasks() "
+                    f"and set TasksetConfig.{new} to its import ref."
+                )
             warnings.warn(
                 f"TasksetConfig.{old} is deprecated; use TasksetConfig.{new}.",
                 DeprecationWarning,
                 stacklevel=3,
             )
-            data[new] = data.pop(old)
+            data[new] = old_value
         return data
 
     @field_validator("bindings", mode="before")
