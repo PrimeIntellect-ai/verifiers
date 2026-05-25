@@ -431,7 +431,9 @@ class RendererClient(
             if self._config is not None and self._config.renderer_model_name is not None
             else model
         )
-        cfg_key = renderer_config.model_dump_json() if renderer_config is not None else None
+        cfg_key = (
+            renderer_config.model_dump_json() if renderer_config is not None else None
+        )
         cache_key = (renderer_model, self._pool_size, cfg_key)
 
         with self._shared_pools_lock:
