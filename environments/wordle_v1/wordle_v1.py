@@ -2,6 +2,10 @@ import re
 from pathlib import Path
 
 import verifiers as vf
+from verifiers.v1.packages.tasksets.textarena import (
+    TextArenaTaskset,
+    TextArenaTasksetConfig,
+)
 
 WORDLE_SYSTEM_PROMPT = """You are a competitive game player. \
 Make sure you read the game instructions carefully, and always follow the required format.
@@ -9,14 +13,14 @@ Make sure you read the game instructions carefully, and always follow the requir
 In each turn, think step-by-step, then give your guess inside <guess>...</guess> tags."""
 
 
-class WordleTasksetConfig(vf.TextArenaTasksetConfig):
+class WordleTasksetConfig(TextArenaTasksetConfig):
     game: str = "Wordle-v0"
     answer_state_key: str = "secret_word"
     system_prompt: str | None = WORDLE_SYSTEM_PROMPT
     path_to_system_prompt: str = ""
 
 
-class WordleTaskset(vf.TextArenaTaskset):
+class WordleTaskset(TextArenaTaskset):
     guess_pattern = r"<guess>(.*?)</guess>"
     config: WordleTasksetConfig
 

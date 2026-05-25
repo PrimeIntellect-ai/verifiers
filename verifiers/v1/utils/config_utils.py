@@ -88,6 +88,19 @@ def resolve_config_object(value: object) -> object:
 
 
 def import_config_ref(ref: str) -> object:
+    module_name, attr_path = config_ref_parts(ref)
+    obj: object = importlib.import_module(module_name)
+    for part in attr_path.split("."):
+        obj = getattr(obj, part)
+    return obj
+
+
+def qualified_config_ref(ref: str) -> str:
+    module_name, attr_path = config_ref_parts(ref)
+    return f"{module_name}:{attr_path}"
+
+
+def config_ref_parts(ref: str) -> tuple[str, str]:
     module_name, separator, attr_path = ref.partition(":")
     if separator:
         if not module_name or not attr_path:
@@ -99,10 +112,7 @@ def import_config_ref(ref: str) -> object:
             raise ValueError(
                 f"Config ref {ref!r} must use 'module:object' outside a config module."
             )
-    obj: object = importlib.import_module(module_name)
-    for part in attr_path.split("."):
-        obj = getattr(obj, part)
-    return obj
+    return module_name, attr_path
 
 
 @contextmanager

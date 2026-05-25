@@ -8,6 +8,7 @@ from typing import Protocol
 
 from datasets import load_dataset
 import verifiers as vf
+from verifiers.v1.packages.harnesses import RLM, RLMConfig
 from verifiers.v1.types import ConfigMap
 from verifiers.v1.utils.config_utils import coerce_config
 
@@ -490,26 +491,26 @@ def load_taskset(
     return R2ESWETaskset(config=config)
 
 
-def load_harness(config: vf.RLMConfig) -> vf.RLM:
+def load_harness(config: RLMConfig) -> RLM:
     user_config = config
-    base_data = vf.RLMConfig(
+    base_data = RLMConfig(
         workdir=DEFAULT_REPO_PATH,
         rlm_tools=list(DEFAULT_RLM_TOOLS),
     ).model_dump()
-    config = vf.RLMConfig.model_validate(
+    config = RLMConfig.model_validate(
         {
             **base_data,
             **user_config.model_dump(exclude_unset=True, exclude_none=True),
         }
     )
-    return vf.RLM(
+    return RLM(
         config=config,
     )
 
 
 class RlmSweEnvConfig(vf.EnvConfig):
     taskset: RlmSweTasksetConfig = RlmSweTasksetConfig()
-    harness: vf.RLMConfig = vf.RLMConfig()
+    harness: RLMConfig = RLMConfig()
 
 
 def load_environment(config: RlmSweEnvConfig) -> vf.Env:

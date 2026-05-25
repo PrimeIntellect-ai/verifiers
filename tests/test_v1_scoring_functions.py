@@ -4,7 +4,7 @@ from typing import Any, cast
 import pytest
 
 import verifiers as vf
-from verifiers.v1 import (
+from verifiers import (
     add_advantage,
     add_metric,
     add_reward,

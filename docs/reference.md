@@ -572,8 +572,8 @@ state, or output field.
 
 ### v1 Taskset/Harness Classes
 
-The v1 API is exposed as `verifiers.v1` and documented in
-[BYO Harness](byo-harness.md). Its core unit is:
+The v1 API is exposed from the top-level `verifiers` namespace and documented
+in [BYO Harness](byo-harness.md). Its core unit is:
 
 ```python
 state = await harness.run(task, state=None)

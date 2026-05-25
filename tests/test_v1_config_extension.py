@@ -9,7 +9,7 @@ from datasets import Dataset
 from pydantic import ValidationError
 
 import verifiers as vf
-from verifiers.v1 import (
+from verifiers import (
     Config,
     Env,
     EnvConfig,
@@ -22,6 +22,7 @@ from verifiers.v1 import (
     Toolset,
 )
 from verifiers.v1.toolset import normalize_toolset
+from verifiers.v1.packages.harnesses import OpenCode
 from verifiers.utils.import_utils import load_toml
 from verifiers.v1.utils.config_utils import coerce_config, explicit_config_data
 from verifiers.v1.utils.taskset_utils import task_config_args, task_data_from_loader
@@ -691,6 +692,46 @@ def load_harness(config: LocalHarnessConfig) -> vf.Harness:
     assert getattr(harness.metrics[-1], "__name__") == "metric_fn"
     assert getattr(harness.keep_trajectory_step, "__name__") == "keep_step"
     assert callable(harness._program)
+
+
+@pytest.mark.asyncio
+async def test_sandbox_program_ref_uses_config_module(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_run_sandbox_python_program(
+        *,
+        program: Mapping[str, object],
+        sandbox_config: Mapping[str, object],
+        task: Task,
+        state: State,
+        runtime: object,
+        mode: str,
+        fn_ref: str | None,
+        max_turns: int,
+    ) -> State:
+        _ = program, sandbox_config, task, runtime, mode, max_turns
+        captured["fn_ref"] = fn_ref
+        return state
+
+    monkeypatch.setattr(
+        "verifiers.v1.harness.run_sandbox_python_program",
+        fake_run_sandbox_python_program,
+    )
+
+    class SandboxHarnessConfig(HarnessConfig):
+        program: vf.ProgramConfig = vf.ProgramConfig(fn="program_fn", sandbox=True)
+        sandbox: vf.SandboxConfig = vf.SandboxConfig()
+
+    harness = Harness(config=SandboxHarnessConfig())
+    task = Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+    state = State.for_task(task)
+
+    result = await harness._program(task, state)
+
+    assert result is state
+    assert captured["fn_ref"] == f"{__name__}:program_fn"
 
 
 def test_taskset_config_rejects_inline_task_rows() -> None:
@@ -1417,7 +1458,7 @@ def test_constructor_scalar_kwargs_are_removed() -> None:
     with pytest.raises(TypeError):
         Taskset(tasks=ref("load_tasks"))
     with pytest.raises(TypeError):
-        vf.OpenCode(max_turns=9)
+        OpenCode(max_turns=9)
 
 
 def test_task_prompt_rejects_system_messages() -> None:

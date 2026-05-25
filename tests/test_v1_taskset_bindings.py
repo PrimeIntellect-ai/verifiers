@@ -5,7 +5,7 @@ from types import ModuleType
 import pytest
 from pydantic import BaseModel
 
-import verifiers.v1 as vf
+import verifiers as vf
 
 
 REF_MODULE = "v1_taskset_binding_refs"

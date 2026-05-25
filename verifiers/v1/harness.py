@@ -30,7 +30,7 @@ from .utils.endpoint_utils import (
     assistant_completion_from_messages,
     run_intercepted_program,
 )
-from .utils.config_utils import coerce_config, config_ref_context
+from .utils.config_utils import coerce_config, config_ref_context, qualified_config_ref
 from .utils.runtime_owner_utils import RuntimeOwnerMixin
 from .utils.json_utils import json_args
 from .utils.mcp_proxy_utils import (
@@ -315,7 +315,9 @@ class Harness(RuntimeOwnerMixin):
             if not isinstance(fn_ref, str):
                 raise TypeError("program.fn must be a string ref.")
             if sandbox_config is not None:
-                return self.sandbox_fn_program(program, sandbox_config, fn_ref)
+                return self.sandbox_fn_program(
+                    program, sandbox_config, qualified_config_ref(fn_ref)
+                )
             fn = import_config_ref(fn_ref)
             if not callable(fn):
                 raise TypeError("program.fn did not resolve to a callable.")

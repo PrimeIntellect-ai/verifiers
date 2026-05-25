@@ -208,9 +208,7 @@ surfaces. Inside Python environment code, use typed config objects.
 
 ## Type Boundaries
 
-1. Import the public API with `import verifiers as vf`. `verifiers.v1` remains
-   available for framework-internal tests and narrow module-level checks, but
-   user environment code should use the top-level namespace.
+1. Import the public API with `import verifiers as vf`.
 2. Use Pydantic config models for structured configuration.
 3. Treat `Mapping[str, object]` as an explicit boundary type. Accept it only for
    intentionally dynamic payloads such as task rows, protocol messages,

@@ -1,8 +1,9 @@
+import sys
+
 import pytest
 from typing import cast
 
 import verifiers as vf
-import verifiers.v1 as v1
 from verifiers.v1.packages.tasksets import textarena
 
 
@@ -67,14 +68,15 @@ class FakeTextArenaModule:
 def fake_textarena(monkeypatch):
     fake_nltk = FakeNltk()
     fake_ta = FakeTextArenaModule()
+    monkeypatch.setitem(sys.modules, textarena.__name__, textarena)
     monkeypatch.setattr(textarena, "nltk", fake_nltk)
     monkeypatch.setattr(textarena, "ta", fake_ta)
     return fake_nltk, fake_ta
 
 
-def test_textarena_taskset_exports_from_public_surfaces():
-    assert vf.TextArenaTaskset is v1.TextArenaTaskset
-    assert vf.TextArenaTasksetConfig is v1.TextArenaTasksetConfig
+def test_textarena_taskset_imports_from_package():
+    assert textarena.TextArenaTaskset
+    assert textarena.TextArenaTasksetConfig
 
 
 def test_textarena_taskset_builds_train_and_eval_rows(fake_textarena):

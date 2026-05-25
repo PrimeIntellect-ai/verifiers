@@ -561,25 +561,22 @@ signature.
 ### Packaged CLI Harnesses And Harbor
 
 Reusable CLI programs should be packaged as `Harness` subclasses. Package
-implementations live under `verifiers.v1.packages` while the v1 API stabilizes,
-and are re-exported from `verifiers.v1` for normal use. `OpenCode`, `Pi`,
+implementations live under `verifiers.v1.packages`. `OpenCode`, `Pi`,
 `MiniSWEAgent`, `Terminus2`, and `RLM` are bundled `Harness` leaf wrappers for
 common coding-agent CLIs.
 
 ```python
 import verifiers as vf
+from verifiers.v1.packages.harnesses import OpenCode, OpenCodeConfig
+from verifiers.v1.packages.tasksets import HarborTaskset, HarborTasksetConfig
 
 env = vf.Env(
-    vf.EnvConfig(
-        taskset=vf.HarborTasksetConfig(),
-        harness=vf.OpenCodeConfig(),
-    ),
-    taskset=vf.HarborTaskset,
-    harness=vf.OpenCode,
+    taskset=HarborTaskset(config=HarborTasksetConfig()),
+    harness=OpenCode(config=OpenCodeConfig()),
 )
 ```
 
-`vf.HarborTaskset` loads Harbor-format task
+`HarborTaskset` loads Harbor-format task
 directories from the environment package's reserved `tasks/` directory. Set
 `dataset = "owner/name"` on the config to fetch a Harbor Hub dataset. Harbor
 task rows contribute sandbox settings and

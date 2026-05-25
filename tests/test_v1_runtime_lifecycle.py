@@ -12,7 +12,7 @@ from typing import Any, cast
 import pytest
 from pydantic import BaseModel
 
-import verifiers.v1 as vf
+import verifiers as vf
 from verifiers.clients import Client
 from verifiers.types import ClientConfig
 from verifiers.types import Response, ResponseMessage, ToolCall

@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-import verifiers.v1 as vf
+import verifiers as vf
 
 
 def _load_mcp_search_module() -> Any:

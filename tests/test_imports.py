@@ -4,6 +4,37 @@ import sys
 import verifiers
 
 
+PACKAGE_SYMBOLS = {
+    "HarborTaskset",
+    "HarborTasksetConfig",
+    "MiniSWEAgent",
+    "MiniSWEAgentConfig",
+    "OpenCode",
+    "OpenCodeConfig",
+    "Pi",
+    "PiConfig",
+    "RLM",
+    "RLMConfig",
+    "Terminus2",
+    "Terminus2Config",
+    "TextArenaTaskset",
+    "TextArenaTasksetConfig",
+}
+
+
+def test_package_tasksets_and_harnesses_are_not_root_exports():
+    for name in PACKAGE_SYMBOLS:
+        assert name not in verifiers.__all__
+        assert not hasattr(verifiers, name)
+
+
+def test_package_tasksets_and_harnesses_are_not_v1_exports():
+    v1 = importlib.import_module("verifiers.v1")
+    for name in PACKAGE_SYMBOLS:
+        assert name not in v1.__all__
+        assert not hasattr(v1, name)
+
+
 def test_v1_taskset_imports_do_not_import_textarena():
     textarena_module = "verifiers.v1.packages.tasksets.textarena"
     sys.modules.pop(textarena_module, None)

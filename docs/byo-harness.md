@@ -431,40 +431,42 @@ validation. Subclass `Harness` only when packaging reusable behavior with a new
 config surface; do not subclass `Env` just to bypass inference.
 
 Packaged CLI harnesses should use the same boundary. These implementations live
-under `verifiers.v1.packages` while the v1 surface stabilizes, and are
-re-exported through `verifiers.v1`. `OpenCode`, `Pi`, `MiniSWEAgent`,
-`Terminus2`, and `RLM` are bundled `Harness` leaf wrappers for common
-command-line agents:
+under `verifiers.v1.packages`. `OpenCode`, `Pi`, `MiniSWEAgent`, `Terminus2`,
+and `RLM` are bundled `Harness` leaf wrappers for common command-line agents:
 
 ```python
-def load_taskset(config: vf.HarborTasksetConfig) -> vf.HarborTaskset:
-    assert isinstance(config, vf.HarborTasksetConfig)
-    return vf.HarborTaskset(config=config)
+from verifiers.v1.packages.harnesses import OpenCode, OpenCodeConfig
+from verifiers.v1.packages.tasksets import HarborTaskset, HarborTasksetConfig
 
 
-def load_harness(config: vf.OpenCodeConfig) -> vf.OpenCode:
-    assert isinstance(config, vf.OpenCodeConfig)
-    return vf.OpenCode(config=config)
+def load_taskset(config: HarborTasksetConfig) -> HarborTaskset:
+    assert isinstance(config, HarborTasksetConfig)
+    return HarborTaskset(config=config)
+
+
+def load_harness(config: OpenCodeConfig) -> OpenCode:
+    assert isinstance(config, OpenCodeConfig)
+    return OpenCode(config=config)
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
     taskset_config = config.taskset
     harness_config = config.harness
-    assert isinstance(taskset_config, vf.HarborTasksetConfig)
-    assert isinstance(harness_config, vf.OpenCodeConfig)
+    assert isinstance(taskset_config, HarborTasksetConfig)
+    assert isinstance(harness_config, OpenCodeConfig)
     return vf.Env(
         taskset=load_taskset(taskset_config),
         harness=load_harness(harness_config),
     )
 ```
 
-`HarborTaskset(config=vf.HarborTasksetConfig())` loads Harbor-format task
+`HarborTaskset(config=HarborTasksetConfig())` loads Harbor-format task
 directories from the environment package's reserved `tasks/` directory. Set
 `dataset = "owner/name"` on the config to fetch a Harbor Hub dataset. The
 taskset owns Harbor task loading, sandbox overrides, task uploads, and test
 scoring.
 
-`TextArenaTaskset(config=vf.TextArenaTasksetConfig(...))` wraps compatible
+`TextArenaTaskset(config=TextArenaTasksetConfig(...))` wraps compatible
 TextArena single-player text games as v1 task rows plus a taskset-owned user
 callback. The reusable taskset owns TextArena lifecycle, answer injection, row
 sampling, and `<guess>...</guess>` parsing. Environment packages own

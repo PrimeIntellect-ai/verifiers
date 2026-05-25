@@ -38,18 +38,6 @@ from .config import (
 )
 from .env import Env
 from .harness import Harness
-from .packages.harnesses import (
-    MiniSWEAgent,
-    MiniSWEAgentConfig,
-    OpenCode,
-    OpenCodeConfig,
-    Pi,
-    PiConfig,
-    RLM,
-    RLMConfig,
-    Terminus2,
-    Terminus2Config,
-)
 from .utils.scoring_utils import (
     add_metric,
     add_reward,
@@ -62,10 +50,6 @@ from .utils.scoring_utils import (
 from .state import State
 from .task import Task
 from .taskset import Taskset, discover_sibling_dir
-from .packages.tasksets import (
-    HarborTaskset,
-    HarborTasksetConfig,
-)
 from .toolset import MCPTool, Toolset
 from .types import (
     ConfigData,
@@ -90,28 +74,14 @@ __all__ = [
     "GroupHandler",
     "Harness",
     "HarnessConfig",
-    "HarborTaskset",
-    "HarborTasksetConfig",
     "Handler",
     "MutableConfigMap",
     "MCPTool",
     "MCPToolConfig",
     "Message",
     "Messages",
-    "MiniSWEAgent",
-    "MiniSWEAgentConfig",
-    "OpenCode",
-    "OpenCodeConfig",
     "Objects",
-    "Pi",
-    "PiConfig",
     "ProgramConfig",
-    "RLM",
-    "RLMConfig",
-    "Terminus2",
-    "Terminus2Config",
-    "TextArenaTaskset",
-    "TextArenaTasksetConfig",
     "SandboxConfig",
     "SignalConfig",
     "State",
@@ -153,8 +123,5 @@ __all__ = [
 def __getattr__(name: str):
     if name in ("load_harness", "load_taskset"):
         module = importlib.import_module("verifiers.utils.env_utils")
-        return getattr(module, name)
-    if name in ("TextArenaTaskset", "TextArenaTasksetConfig"):
-        module = importlib.import_module("verifiers.v1.packages.tasksets.textarena")
         return getattr(module, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
