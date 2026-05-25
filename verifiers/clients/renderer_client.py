@@ -500,6 +500,10 @@ class RendererClient(
         renderer = self._get_renderer_or_pool(model)
 
         args = dict(sampling_args)
+        extra_headers = {
+            **dict(args.pop("extra_headers", None) or {}),
+            **dict(kwargs.pop("extra_headers", None) or {}),
+        }
         sampling_params: dict[str, Any] = dict(args.pop("extra_body", None) or {})
         for key in (
             "temperature",
@@ -568,7 +572,7 @@ class RendererClient(
                 cache_salt=args.get("cache_salt")
                 or sampling_params.pop("cache_salt", None),
                 priority=args.get("priority") or sampling_params.pop("priority", None),
-                extra_headers=args.get("extra_headers"),
+                extra_headers=extra_headers or None,
             )
         except RendererOverlongPromptError as exc:
             raise OverlongPromptError(str(exc)) from exc

@@ -233,6 +233,38 @@ async def test_from_native_response_uses_request_id_and_token_lengths():
     assert response.usage.total_tokens == 5
 
 
+@pytest.mark.asyncio
+async def test_get_native_response_forwards_extra_headers_to_generate():
+    captured: dict = {}
+    client = object.__new__(RendererClient)
+    client._renderer = object()
+    client._pool_size = 1
+    client._config = vf.ClientConfig(client_type="renderer")
+    client._client = object()  # type: ignore[attr-defined]
+
+    async def _fake_generate(**kwargs):
+        captured.update(kwargs)
+        return {"content": "ok"}
+
+    with (
+        patch.object(RendererClient, "_get_renderer_or_pool", return_value=object()),
+        patch("verifiers.clients.renderer_client.generate", side_effect=_fake_generate),
+    ):
+        response = await client.get_native_response(
+            prompt=[{"role": "user", "content": "hi"}],
+            model="test-model",
+            sampling_args={"extra_headers": {"X-Static": "static"}},
+            tools=None,
+            extra_headers={"X-Session-ID": "trajectory-123", "X-Static": "state"},
+        )
+
+    assert response == {"content": "ok"}
+    assert captured["extra_headers"] == {
+        "X-Static": "state",
+        "X-Session-ID": "trajectory-123",
+    }
+
+
 class _BridgeRenderer:
     supports_tools = True
 
