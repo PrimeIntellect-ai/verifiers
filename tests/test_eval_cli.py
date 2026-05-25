@@ -288,6 +288,25 @@ def test_cli_headers_table_and_list_merge(monkeypatch, run_cli):
     }
 
 
+def test_cli_defaults_session_header_to_trajectory_id(monkeypatch, run_cli):
+    captured = run_cli(monkeypatch, {})
+
+    assert captured["configs"][0].client_config.extra_headers_from_state == {
+        "X-Session-ID": "trajectory_id"
+    }
+
+
+def test_cli_header_from_state_overrides_default_session_header(monkeypatch, run_cli):
+    captured = run_cli(
+        monkeypatch,
+        {"header_from_state": ["X-Session-ID: example_id"]},
+    )
+
+    assert captured["configs"][0].client_config.extra_headers_from_state == {
+        "X-Session-ID": "example_id"
+    }
+
+
 def test_cli_registry_headers_merged_with_eval_toml(tmp_path, monkeypatch, run_cli):
     cfg = tmp_path / "eval.toml"
     cfg.write_text(
