@@ -152,7 +152,7 @@ __all__ = [
 
 def __getattr__(name: str):
     if name in ("load_harness", "load_taskset"):
-        module = importlib.import_module("verifiers.v1.loader")
+        module = importlib.import_module("verifiers.utils.env_utils")
         return getattr(module, name)
     if name in ("TextArenaTaskset", "TextArenaTasksetConfig"):
         module = importlib.import_module("verifiers.v1.packages.tasksets.textarena")

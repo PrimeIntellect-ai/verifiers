@@ -176,8 +176,8 @@ _LAZY_IMPORTS = {
     "EnvGroup": "verifiers.envs.env_group:EnvGroup",
     "JudgeRubric": "verifiers.rubrics.judge_rubric:JudgeRubric",
     "load_environment": "verifiers.utils.env_utils:load_environment",
-    "load_harness": "verifiers.v1:load_harness",
-    "load_taskset": "verifiers.v1:load_taskset",
+    "load_harness": "verifiers.utils.env_utils:load_harness",
+    "load_taskset": "verifiers.utils.env_utils:load_taskset",
     "get_model": "verifiers_rl.rl.trainer.utils:get_model",
     "get_model_and_tokenizer": "verifiers_rl.rl.trainer.utils:get_model_and_tokenizer",
     "RLConfig": "verifiers_rl.rl.trainer:RLConfig",
@@ -307,7 +307,11 @@ if TYPE_CHECKING:
     from .envs.tool_env import ToolEnv  # noqa: F401
     from .rubrics.judge_rubric import JudgeRubric  # noqa: F401
     from .rubrics.math_rubric import MathRubric  # noqa: F401
-    from .utils.env_utils import load_environment  # noqa: F401
+    from .utils.env_utils import (  # noqa: F401
+        load_environment,
+        load_harness,
+        load_taskset,
+    )
     from .v1 import (  # noqa: F401
         Config,
         CallableConfig,
@@ -321,8 +325,6 @@ if TYPE_CHECKING:
         HarnessConfig,
         HarborTaskset,
         HarborTasksetConfig,
-        load_harness,
-        load_taskset,
         MCPTool,
         MCPToolConfig,
         MiniSWEAgent,
