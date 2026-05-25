@@ -140,6 +140,7 @@ class ProgramConfig(Config):
     files: ProgramOptionMap = {}
     dirs: ProgramOptionMap = {}
     setup: ProgramSetup = []
+    setup_timeout: int = 300
     bindings: Bindings = {}
     env: ProgramOptionMap = {}
     artifacts: ProgramOptionMap = {}

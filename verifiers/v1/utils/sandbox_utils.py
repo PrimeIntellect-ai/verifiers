@@ -807,6 +807,7 @@ async def run_program_items(
     error_prefix: str,
 ) -> None:
     env = await command_env(program, task, state, runtime, include_base=False)
+    timeout = int_config(program, "setup_timeout", 300)
     for command in items:
         command = await resolve_program_value(command, task, state, runtime, program)
         result = await maybe_call_with_named_args(
@@ -814,6 +815,7 @@ async def run_program_items(
             sandbox_id=sandbox_id,
             command=str(command),
             env=env,
+            timeout=timeout,
         )
         if result.exit_code:
             raise SandboxError(f"{error_prefix}: {result.stderr}")

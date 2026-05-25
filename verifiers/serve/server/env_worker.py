@@ -397,7 +397,7 @@ class EnvWorker:
     @classmethod
     def run_worker(cls, *args, **kwargs) -> None:
         try:
-            import uvloop  # type: ignore
+            import uvloop
 
             uvloop.install()
         except ImportError:
