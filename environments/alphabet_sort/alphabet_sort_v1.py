@@ -5,6 +5,7 @@ import random
 import re
 
 from datasets import Dataset, load_dataset
+from pydantic import model_validator
 
 import verifiers as vf
 
@@ -322,6 +323,16 @@ class AlphabetSortTasksetConfig(vf.TasksetConfig):
     dataset_split: str = "train"
     seed: int = 1337420
 
+    @model_validator(mode="after")
+    def validate_task_shape(self) -> "AlphabetSortTasksetConfig":
+        validate_parameters(
+            min_turns=self.min_turns,
+            max_turns=self.max_turns,
+            min_names_per_turn=self.min_names_per_turn,
+            max_names_per_turn=self.max_names_per_turn,
+        )
+        return self
+
 
 class AlphabetSortEnvConfig(vf.EnvConfig):
     taskset: AlphabetSortTasksetConfig = AlphabetSortTasksetConfig()
@@ -329,13 +340,7 @@ class AlphabetSortEnvConfig(vf.EnvConfig):
 
 
 class AlphabetSortTaskset(vf.Taskset):
-    def _configure_runtime_defaults(self) -> None:
-        validate_parameters(
-            min_turns=self.config.min_turns,
-            max_turns=self.config.max_turns,
-            min_names_per_turn=self.config.min_names_per_turn,
-            max_names_per_turn=self.config.max_names_per_turn,
-        )
+    pass
 
 
 def load_environment(config: AlphabetSortEnvConfig) -> vf.Env:

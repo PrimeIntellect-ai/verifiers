@@ -64,7 +64,6 @@ class Taskset(RuntimeOwnerMixin):
         self._dataset: Dataset | None = None
         self._eval_dataset: Dataset | None = None
         self._attached_harnesses: weakref.WeakSet["Harness"] = weakref.WeakSet()
-        self._configure_runtime_defaults()
 
     @classmethod
     def config_schema(cls) -> str:

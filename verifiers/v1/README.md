@@ -157,8 +157,8 @@ async def contains_answer(task, state) -> float:
 
 class ReverseTasksetConfig(vf.TasksetConfig):
     split: str = "train"
-    tasks: str = "reverse_text:load_tasks"
-    rewards: list[str] = ["reverse_text:contains_answer"]
+    tasks: str = "load_tasks"
+    rewards: list[str] = ["contains_answer"]
 
 
 def load_taskset(config: ReverseTasksetConfig) -> vf.Taskset:
@@ -202,7 +202,7 @@ import verifiers as vf
 
 
 class GSM8KTasksetConfig(vf.TasksetConfig):
-    tasks: str = "my_env:load_tasks"
+    tasks: str = "load_tasks"
     dataset_name: str = "gsm8k"
     split: str = "train"
 
@@ -424,17 +424,17 @@ def load_tasks() -> vf.Tasks:
 
 
 class ReplayTasksetConfig(vf.TasksetConfig):
-    tasks: str = "my_env:load_tasks"
-    rewards: list[str] = ["my_env:exact"]
+    tasks: str = "load_tasks"
+    rewards: list[str] = ["exact"]
 
 
-class ReplayHarness(vf.Harness):
-    _default_program = replay_solution
+class ReplayHarnessConfig(vf.HarnessConfig):
+    program: str | None = "replay_solution"
 
 
 env = vf.Env(
     taskset=vf.Taskset(config=ReplayTasksetConfig()),
-    harness=ReplayHarness(config=vf.HarnessConfig()),
+    harness=vf.Harness(config=ReplayHarnessConfig()),
 )
 ```
 
@@ -636,25 +636,15 @@ does not parse answers or define a generic completion-text policy; index or
 slice the returned list with ordinary Python, read `message.content` explicitly,
 or bind a task-specific extractor on the taskset.
 
-## Core Fields And Collections
+## Borrowed Runtime Handles
 
-v1 keeps a sharp distinction between core fields and collection fields.
-
-Core fields configure named taskset or harness behavior: task loaders
-(`tasks`, `eval_tasks`), `program`, `user`, `model`, `client`,
-`system_prompt`, and the primary program `sandbox`. Runtime resources such as
-the model client and sandbox may be borrowed across child harness calls when
-sharing is intentional:
+Runtime resources such as the model client and sandbox may be borrowed across
+child harness calls when sharing is intentional:
 
 ```python
 child_state = state.for_task(child_task, borrow="model")
 child_state = state.for_task(child_task, borrow=["model", "sandbox"])
 ```
-
-Collections are merged and extended: `toolsets`, `stops`, `setups`, `updates`,
-`metrics`, `rewards`, `advantages`, and `cleanups`. Decorators stay singular
-because each decorator marks one function, while constructor/config fields are
-plural because they hold many functions.
 
 Named tools can also be passed into a child state. The child sees the selected
 tool surface, while calls still execute against the source runtime and its
@@ -703,14 +693,15 @@ whitelist or blacklist that toolset's nested tool surface.
 Tasksets and harnesses can pass toolsets as a list or a mapping:
 
 ```python
-class WikiTaskset(vf.Taskset):
-    _default_toolsets = {
-        "wiki": {"fn": "my_env:load_wiki_toolset"},
-        "python": {"tools": ["my_env:python"]},
+class WikiTasksetConfig(vf.TasksetConfig):
+    tasks: str = "load_tasks"
+    toolsets: dict[str, dict[str, object]] = {
+        "wiki": {"fn": "load_wiki_toolset"},
+        "python": {"tools": ["python"]},
     }
 
 
-taskset = WikiTaskset()
+taskset = vf.Taskset(config=WikiTasksetConfig())
 ```
 
 Mapped toolsets are still active by default, but their keys become task-level
@@ -1031,8 +1022,8 @@ def load_tasks() -> vf.Tasks:
 
 
 class UserTasksetConfig(vf.TasksetConfig):
-    tasks: str = "my_env:load_tasks"
-    user: str = "my_env:user"
+    tasks: str = "load_tasks"
+    user: str = "user"
 
 
 taskset = vf.Taskset(config=UserTasksetConfig())
@@ -1195,8 +1186,8 @@ async def exact(task, state) -> float:
 
 
 class MyTasksetConfig(vf.TasksetConfig):
-    tasks: str = "my_env:load_tasks"
-    rewards: list[str] = ["my_env:exact"]
+    tasks: str = "load_tasks"
+    rewards: list[str] = ["exact"]
     split: str = "train"
 
 
@@ -1370,7 +1361,7 @@ import verifiers as vf
 
 
 class DatasetTasksetConfig(vf.TasksetConfig):
-    tasks: str = "my_env:load_tasks"
+    tasks: str = "load_tasks"
     split: str = "train"
     limit: int = 100
 
@@ -1546,9 +1537,9 @@ objects, live clients, and closures belong in code.
 
 ### Custom Config Surfaces
 
-Subclass `Taskset` or `Harness` when a package needs a reusable typed config
-surface or a different method implementation. Keep subclasses shallow and
-specific.
+Use a config subclass when a package needs a reusable typed config surface.
+Subclass `Taskset` or `Harness` only when the runtime methods themselves need a
+different implementation.
 
 ```python
 def load_tasks() -> vf.Tasks:
@@ -1556,15 +1547,15 @@ def load_tasks() -> vf.Tasks:
 
 
 class WikiTasksetConfig(vf.TasksetConfig):
-    tasks: str = "my_env:load_tasks"
+    tasks: str = "load_tasks"
     db_path: str = "wiki.db"
 
 
-class WikiTaskset(vf.Taskset):
-    def _configure_runtime_defaults(self) -> None:
-        search_tool = wiki_search_tool(self.config.db_path)
+def load_taskset(config: WikiTasksetConfig) -> vf.Taskset:
+    taskset = vf.Taskset(config=config)
+    taskset.add_toolset(vf.Toolset(tools=[wiki_search_tool(config.db_path)]))
+    return taskset
 
-        self.add_toolset(vf.Toolset(tools=[search_tool]))
 ```
 
 To inspect the active config shape:

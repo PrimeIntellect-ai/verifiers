@@ -1848,41 +1848,6 @@ def test_taskset_config_default_loader_can_be_disabled() -> None:
     assert len(disabled.get_dataset()) == 0
 
 
-def test_harness_class_defaults_are_used_until_config_overrides() -> None:
-    class LocalHarness(Harness):
-        _default_program = config_program
-        _default_metrics = (config_metric,)
-
-    harness = LocalHarness()
-    configured = LocalHarness(
-        config={
-            "program": ref("setup_aware_program"),
-            "metrics": [ref("group_config_metric")],
-        }
-    )
-
-    assert harness.program is config_program
-    assert config_metric in harness.metrics
-    assert configured.program is setup_aware_program
-    assert config_metric not in configured.metrics
-    assert configured.metrics[-1].__name__ == "group_config_metric"
-
-
-def test_harness_config_defaults_are_used_before_class_defaults() -> None:
-    class LocalHarnessConfig(HarnessConfig):
-        program: str | None = ref("config_program")
-
-    class LocalHarness(Harness):
-        config: LocalHarnessConfig
-        _default_program = setup_aware_program
-
-    harness = LocalHarness(config=LocalHarnessConfig())
-    disabled = LocalHarness(config=LocalHarnessConfig(program=None))
-
-    assert harness.program is config_program
-    assert disabled.program is None
-
-
 def test_config_schema_is_visible_from_primary_types() -> None:
     assert "toolsets" in Taskset.config_schema()
     assert "toolsets" in Harness.config_schema()

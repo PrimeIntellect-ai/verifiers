@@ -316,8 +316,9 @@ back to the taskset, then let the harness adapt the resolved callables.
 MCP servers are also tools:
 
 ```python
-class FetchTaskset(vf.Taskset):
-    _default_toolsets = (
+class FetchTasksetConfig(vf.TasksetConfig):
+    tasks: str = "load_tasks"
+    toolsets: tuple[dict[str, object], ...] = (
         {
             "tools": [
                 {"command": "uvx", "args": ["mcp-server-fetch"]},
@@ -325,7 +326,8 @@ class FetchTaskset(vf.Taskset):
         },
     )
 
-taskset = FetchTaskset()
+
+taskset = vf.Taskset(config=FetchTasksetConfig())
 ```
 
 ## Harnesses
@@ -335,25 +337,27 @@ the resolved taskset tools."
 
 ```python
 class AgentHarnessConfig(vf.HarnessConfig):
+    program: str | None = "run_agent_framework"
     timeout_seconds: int = 120
 
 
 class AgentHarness(vf.Harness):
     config: AgentHarnessConfig
-    _default_program = run
 
 
 def load_harness(config: AgentHarnessConfig) -> AgentHarness:
-    assert isinstance(config, AgentHarnessConfig)
     return AgentHarness(config=config)
 
 
-def load_environment(config: vf.EnvConfig) -> vf.Env:
-    harness_config = config.harness
-    assert isinstance(harness_config, AgentHarnessConfig)
+class AgentEnvConfig(vf.EnvConfig):
+    taskset: FetchTasksetConfig = FetchTasksetConfig()
+    harness: AgentHarnessConfig = AgentHarnessConfig()
+
+
+def load_environment(config: AgentEnvConfig) -> vf.Env:
     return vf.Env(
-        taskset=FetchTaskset(config=config.taskset),
-        harness=load_harness(harness_config),
+        taskset=vf.Taskset(config=config.taskset),
+        harness=load_harness(config.harness),
     )
 ```
 
@@ -413,16 +417,12 @@ class ReplayTasksetConfig(vf.TasksetConfig):
 
 
 class ReplayHarnessConfig(vf.HarnessConfig):
-    pass
-
-
-class ReplayHarness(vf.Harness):
-    _default_program = replay_solution
+    program: str | None = "replay_solution"
 
 
 env = vf.Env(
     taskset=vf.Taskset(config=ReplayTasksetConfig()),
-    harness=ReplayHarness(config=ReplayHarnessConfig()),
+    harness=vf.Harness(config=ReplayHarnessConfig()),
 )
 ```
 

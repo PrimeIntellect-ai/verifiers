@@ -181,7 +181,7 @@ def load_environment(config: vf.EnvConfig) -> vf.Env:
 ```
 
 Beginner templates should not subclass `EnvConfig`, pass loader functions to
-`vf.load_taskset`, assert child config types, use `_default_*` class variables,
+`vf.load_taskset`, assert child config types, put defaults on runtime subclasses,
 or pass constructor kwargs to `vf.Taskset(...)`.
 
 ## External Configuration

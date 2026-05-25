@@ -1,5 +1,5 @@
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, ClassVar, cast
+from typing import TYPE_CHECKING, cast
 
 from verifiers.decorators import metric, update
 from verifiers.errors import Error, OverlongPromptError
@@ -76,12 +76,11 @@ UNSET = UnsetValue()
 
 class Harness(RuntimeOwnerMixin):
     config: HarnessConfig
-    _default_program: ClassVar[object | None] = None
 
     def __init__(self, config: ConfigSource = None):
         self.config = coerce_config(HarnessConfig, config)
         with config_ref_context(self.config):
-            program_config = self._defaulted("program", type(self)._default_program)
+            program_config = self.config.program
             program_value = resolve_config_object(program_config)
             if isinstance(program_value, ProgramConfig):
                 program_value = program_value.model_dump(
@@ -109,7 +108,6 @@ class Harness(RuntimeOwnerMixin):
             if keep_step_value is not None and not callable(keep_step_value):
                 raise TypeError("keep_trajectory_step must be callable.")
             self.keep_trajectory_step = cast(Handler | None, keep_step_value)
-            self._configure_runtime_defaults()
             self.taskset: "Taskset | None" = None
             self.runtime = self.resolve_runtime()
             self.endpoint = Endpoint(use_tunnel=self.program_uses_sandbox())

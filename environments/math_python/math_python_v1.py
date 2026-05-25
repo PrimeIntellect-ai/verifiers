@@ -149,25 +149,7 @@ class MathPythonTaskset(vf.Taskset):
 
 
 class MathPythonHarness(vf.Harness):
-    def _configure_runtime_defaults(self) -> None:
-        if "toolsets" in self.config.model_fields_set:
-            return
-        config = self.config
-        self.add_toolset(
-            {
-                "python": load_toolset(
-                    pip_install_packages=config.pip_install_packages,
-                    sandbox_cpu_cores=config.sandbox_cpu_cores,
-                    sandbox_memory_gb=config.sandbox_memory_gb,
-                    sandbox_disk_size_gb=config.sandbox_disk_size_gb,
-                    sandbox_gpu_count=config.sandbox_gpu_count,
-                    sandbox_timeout_minutes=config.sandbox_timeout_minutes,
-                    sandbox_timeout_per_command_seconds=(
-                        config.sandbox_timeout_per_command_seconds
-                    ),
-                )
-            }
-        )
+    pass
 
 
 def load_toolset(
@@ -201,7 +183,24 @@ def load_toolset(
 
 
 def load_environment(config: MathPythonEnvConfig) -> vf.Env:
+    harness = MathPythonHarness(config=config.harness)
+    if "toolsets" not in config.harness.model_fields_set:
+        harness.add_toolset(
+            {
+                "python": load_toolset(
+                    pip_install_packages=config.harness.pip_install_packages,
+                    sandbox_cpu_cores=config.harness.sandbox_cpu_cores,
+                    sandbox_memory_gb=config.harness.sandbox_memory_gb,
+                    sandbox_disk_size_gb=config.harness.sandbox_disk_size_gb,
+                    sandbox_gpu_count=config.harness.sandbox_gpu_count,
+                    sandbox_timeout_minutes=config.harness.sandbox_timeout_minutes,
+                    sandbox_timeout_per_command_seconds=(
+                        config.harness.sandbox_timeout_per_command_seconds
+                    ),
+                )
+            }
+        )
     return vf.Env(
         taskset=MathPythonTaskset(config=config.taskset),
-        harness=MathPythonHarness(config=config.harness),
+        harness=harness,
     )
