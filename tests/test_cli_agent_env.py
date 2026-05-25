@@ -223,6 +223,47 @@ class TestCliAgentEnv:
         assert kwargs["tools"] is not None
         assert kwargs["tools"][0].name == "echo"
 
+    @pytest.mark.asyncio
+    async def test_get_prompt_messages_normalizes_openai_responses_input(
+        self, sample_dataset
+    ):
+        env = vf.CliAgentEnv(
+            run_command="python agent.py",
+            dataset=sample_dataset,
+            rubric=vf.Rubric(),
+        )
+        state = {"request_id_queue": asyncio.Queue()}
+        await state["request_id_queue"].put("req-responses")
+        env._interception_server.intercepts["req-responses"] = {
+            "protocol": "openai_responses",
+            "input": [
+                {"type": "message", "role": "developer", "content": "rules"},
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "solve it"}],
+                },
+                {
+                    "type": "function_call",
+                    "call_id": "call_1",
+                    "name": "shell",
+                    "arguments": '{"cmd":"ls"}',
+                },
+                {"type": "function_call_output", "call_id": "call_1", "output": "ok"},
+            ],
+        }
+
+        messages = await env.get_prompt_messages(state)
+
+        assert messages[0]["role"] == "system"
+        assert messages[0]["content"] == "rules"
+        assert messages[1]["role"] == "user"
+        assert messages[1]["content"] == "solve it"
+        assert messages[2]["role"] == "assistant"
+        assert messages[2]["tool_calls"][0]["name"] == "shell"
+        assert messages[3]["role"] == "tool"
+        assert messages[3]["content"] == "ok"
+
 
 @pytest.mark.asyncio
 async def test_cli_agent_env_delivers_intercepted_tool_call_response(

@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import os
 import time
@@ -59,6 +60,81 @@ def make_agent_error(state: State, message: str) -> AgentError:
     if instance_id:
         context_parts.append(f"instance_id={instance_id}")
     return AgentError(f"{message} ({', '.join(context_parts)})")
+
+
+def _response_input_content_to_text(content: Any) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for part in content:
+            if isinstance(part, str):
+                parts.append(part)
+            elif isinstance(part, dict):
+                text = (
+                    part.get("text")
+                    or part.get("output_text")
+                    or part.get("input_text")
+                )
+                if isinstance(text, str):
+                    parts.append(text)
+        return "\n".join(parts)
+    return json.dumps(content, sort_keys=True)
+
+
+def openai_responses_input_to_messages(value: Any) -> list[dict[str, Any]]:
+    """Normalize OpenAI Responses input items into chat-style messages."""
+    if isinstance(value, str):
+        return [{"role": "user", "content": value}]
+    if not isinstance(value, list):
+        return []
+
+    messages: list[dict[str, Any]] = []
+    for item in value:
+        if isinstance(item, str):
+            messages.append({"role": "user", "content": item})
+            continue
+        if not isinstance(item, dict):
+            continue
+        item_type = item.get("type")
+        role = item.get("role")
+        if role == "developer":
+            role = "system"
+        if item_type == "function_call":
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": item.get("call_id") or item.get("id") or "",
+                            "type": "function",
+                            "function": {
+                                "name": item.get("name") or "",
+                                "arguments": item.get("arguments") or "{}",
+                            },
+                        }
+                    ],
+                }
+            )
+        elif item_type == "function_call_output":
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": item.get("call_id") or item.get("id") or "",
+                    "content": _response_input_content_to_text(item.get("output")),
+                }
+            )
+        elif item_type == "message" or role:
+            messages.append(
+                {
+                    "role": role or "user",
+                    "content": _response_input_content_to_text(item.get("content")),
+                }
+            )
+    return messages
 
 
 class CliAgentMonitorRubric(vf.Rubric):
@@ -540,6 +616,10 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
 
         state["current_request_id"] = request_id
         intercept = interception_server.intercepts[request_id]
+        if intercept.get("protocol") == "openai_responses":
+            return await self.normalize_intercepted_messages(
+                openai_responses_input_to_messages(intercept.get("input"))
+            )
         return await self.normalize_intercepted_messages(intercept["messages"])
 
     async def get_model_response(
