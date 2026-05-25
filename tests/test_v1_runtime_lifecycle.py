@@ -109,6 +109,7 @@ class FakeSandboxClient:
     created: list[str] = []
     deleted: list[str] = []
     commands: list[tuple[str, str]] = []
+    command_timeouts: list[int | None] = []
     background_jobs: list[tuple[str, str, int | None, str | None]] = []
     uploads: list[tuple[str, str, bytes]] = []
 
@@ -117,6 +118,7 @@ class FakeSandboxClient:
         cls.created = []
         cls.deleted = []
         cls.commands = []
+        cls.command_timeouts = []
         cls.background_jobs = []
         cls.uploads = []
 
@@ -134,7 +136,9 @@ class FakeSandboxClient:
     ) -> FakeCommandResult:
         sandbox_id = str(kwargs.get("sandbox_id") or args[0])
         command = str(kwargs.get("command") or args[1])
+        timeout = cast(int | None, kwargs.get("timeout"))
         type(self).commands.append((sandbox_id, command))
+        type(self).command_timeouts.append(timeout)
         return FakeCommandResult()
 
     async def run_background_job(
@@ -1250,6 +1254,39 @@ async def test_rollout_setup_receives_program_sandbox_before_program_setup(
     assert state["early_setup_sandbox_id"] == "sbx-1"
     assert early_setup_index < program_setup_index
     assert program_setup_index < lifecycle_setup_index < command_index
+
+
+@pytest.mark.asyncio
+async def test_program_setup_uses_program_setup_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sandboxes(monkeypatch)
+    install_fake_endpoint_tunnel(monkeypatch)
+
+    harness = make_harness(
+        program={
+            "command": ["true"],
+            "sandbox": True,
+            "setup": "echo program-setup",
+            "setup_timeout": 777,
+        },
+        sandbox={"image": "python:3.11-slim"},
+    )
+    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+
+    await harness.run(task)
+
+    setup_commands = FakeSandboxClient.commands[
+        : len(FakeSandboxClient.command_timeouts)
+    ]
+    command_timeouts = dict(
+        zip(
+            [command for _, command in setup_commands],
+            FakeSandboxClient.command_timeouts,
+            strict=True,
+        )
+    )
+    assert command_timeouts["echo program-setup"] == 777
 
 
 @pytest.mark.asyncio

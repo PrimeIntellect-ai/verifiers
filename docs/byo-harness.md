@@ -483,8 +483,14 @@ CLI harnesses own CLI installation/config/run behavior and work with any
 taskset that supplies a prompt.
 Tasksets can expose package-owned upload directories with `get_upload_dirs()`.
 The base `Taskset` discovers a sibling `skills/` directory by default, and
-`RLM` uploads that directory to `/rlm/skills` unless `skills=` is passed
-explicitly to the harness.
+`RLM` uploads that directory to `/task/rlm-skills` unless `skills=` is passed
+explicitly to the harness. RLM also registers v1 rollout tools as generated
+skills in the same directory during setup. Generated skills run simple callable
+tools inside the RLM sandbox by default; tools that need verifier runtime state,
+toolset bindings, tool sandboxes, MCP sessions, borrowed handles, or other
+nonlocal resources fall back to `/vf/tools`. Explicit or taskset skill
+directories take precedence and generated tool skills get a suffixed name when
+there is a collision.
 Use `RLMConfig` in `env.harness` for RLM-specific settings such as
 `rlm_repo_ref`, `rlm_tools`, `rlm_max_turns`, and `summarize_at_tokens`.
 

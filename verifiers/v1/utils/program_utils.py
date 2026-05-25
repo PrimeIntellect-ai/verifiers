@@ -30,13 +30,14 @@ PROGRAM_OPTION_KEYS = {
     "files",
     "dirs",
     "setup",
+    "setup_timeout",
     "bindings",
     "env",
     "artifacts",
     "channels",
 }
 PROGRAM_KEYS = PROGRAM_KIND_KEYS | PROGRAM_OPTION_KEYS | {"args"}
-SANDBOX_ONLY_PROGRAM_KEYS = {"files", "dirs", "setup", "artifacts"}
+SANDBOX_ONLY_PROGRAM_KEYS = {"files", "dirs", "setup", "setup_timeout", "artifacts"}
 TASK_PROGRAM_KEYS = {
     "files",
     "dirs",
