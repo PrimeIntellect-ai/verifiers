@@ -40,10 +40,14 @@ def test_codex_run_command_uses_verifiers_proxy_and_prompt_stdin():
 
 
 def test_codex_goal_run_command_uses_goal_prompt():
-    command = build_codex_run_command(goal_mode=True, agent_workdir="/workspace/src")
+    command = build_codex_run_command(
+        goal_mode=True,
+        agent_workdir="/workspace/src",
+        goal_prompt="/goal Read /codex/goal.md and finish.",
+    )
 
     assert "--enable goals" in command
-    assert "/goal Read /codex/goal.md and complete the task." in command
+    assert "/goal Read /codex/goal.md and finish." in command
     assert "< /codex/prompt.md" not in command
 
 

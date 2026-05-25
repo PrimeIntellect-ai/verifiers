@@ -68,6 +68,7 @@ def build_codex_run_command(
     system_prompt_path: str = DEFAULT_SYSTEM_PROMPT_PATH,
     log_path: str = DEFAULT_LOG_PATH,
     goal_path: str = DEFAULT_GOAL_PATH,
+    goal_prompt: str | None = None,
     model_reasoning_effort: str | None = None,
     extra_args: list[str] | None = None,
 ) -> str:
@@ -79,10 +80,11 @@ def build_codex_run_command(
         workdir_assignment = f"CODEX_AGENT_WORKDIR={shlex.quote(agent_workdir)}"
 
     if goal_mode:
+        prompt = goal_prompt or f"/goal Read {goal_path} and complete the task."
         prompt_setup = (
             f"cat {shlex.quote(system_prompt_path)} {shlex.quote(instruction_path)} > "
             f"{shlex.quote(goal_path)}\n"
-            f"CODEX_PROMPT='/goal Read {goal_path} and complete the task.'"
+            f"CODEX_PROMPT={shlex.quote(prompt)}"
         )
         prompt_redirect = ""
         goals_arg = "  --enable goals \\\n"
@@ -142,6 +144,7 @@ def codex_harness(
     system_prompt_path: str = DEFAULT_SYSTEM_PROMPT_PATH,
     log_path: str = DEFAULT_LOG_PATH,
     goal_path: str = DEFAULT_GOAL_PATH,
+    goal_prompt: str | None = None,
     codex_version: str = DEFAULT_CODEX_VERSION,
     extra_args: list[str] | None = None,
 ) -> Harness:
@@ -157,6 +160,7 @@ def codex_harness(
             system_prompt_path=system_prompt_path,
             log_path=log_path,
             goal_path=goal_path,
+            goal_prompt=goal_prompt,
             model_reasoning_effort=model_reasoning_effort,
             extra_args=extra_args,
         ),
