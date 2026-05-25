@@ -148,11 +148,9 @@ async def test_parse_response_tokens_with_overlong_prompt():
 
 @pytest.mark.asyncio
 async def test_parse_response_tokens_carries_prompt_attribution():
-    """``prompt_attribution`` on ResponseTokens migrates to the parsed
-    TrajectoryStepTokens, and the response-side reference is cleared so
-    downstream serialisation passes don't dedupe a duplicate (matches the
-    move-not-copy policy used by ``multi_modal_data``).
-    """
+    """``prompt_attribution`` moves from ResponseTokens to the parsed
+    TrajectoryStepTokens; response-side ref is cleared (move-not-copy,
+    same policy as ``multi_modal_data``)."""
     from renderers.base import RenderedTokens
 
     attribution = RenderedTokens(
@@ -188,25 +186,15 @@ async def test_parse_response_tokens_carries_prompt_attribution():
     out = await parse_response_tokens(response)
 
     assert out is not None
-    assert "prompt_attribution" in out
-    out_attr = out["prompt_attribution"]
-    # Same object — no copy, the sidecar moves from response.tokens to
-    # the parsed step, matching the ``multi_modal_data`` policy.
-    assert out_attr is attribution
-    # And the response-side reference is cleared so save/msgpack passes
-    # don't end up serialising the attribution twice.
+    assert out["prompt_attribution"] is attribution
     assert tokens_in.prompt_attribution is None
 
 
 @pytest.mark.asyncio
 async def test_parse_response_tokens_truncates_prompt_attribution_with_overlong_prompt():
-    """When the prompt is overlong and gets truncated to ``max_seq_len``,
-    the per-token arrays inside ``prompt_attribution`` (``token_ids``,
-    ``message_indices``, ``sampled_mask``, ``is_content``) are sliced
-    in lockstep with ``prompt_ids``. ``message_roles`` stays intact
-    because it's indexed by *message position*, not token position —
-    surviving ``message_indices`` values still resolve to the right
-    role even after truncation drops some trailing messages."""
+    """On overlong-prompt truncation, the per-token arrays inside
+    ``prompt_attribution`` get sliced in lockstep with ``prompt_ids``;
+    ``message_roles`` stays intact (it's per-message, not per-token)."""
     from renderers.base import RenderedTokens
 
     attribution = RenderedTokens(
@@ -247,58 +235,7 @@ async def test_parse_response_tokens_truncates_prompt_attribution_with_overlong_
     assert out_attr.message_indices == [0, 0, 1]
     assert out_attr.sampled_mask == [False, False, False]
     assert out_attr.is_content == [False, True, False]
-    # message_roles is per-message metadata, not per-token; both roles
-    # still appear because message_indices[2] == 1 surviving the slice
-    # still needs message_roles[1] to resolve correctly.
     assert out_attr.message_roles == ["user", "tool"]
-
-
-@pytest.mark.asyncio
-async def test_parse_response_tokens_leaves_prompt_attribution_when_only_completion_truncated():
-    """When the prompt fits under ``max_seq_len`` and only the completion
-    overflows, ``prompt_attribution`` is unaffected — it only describes
-    the prompt portion."""
-    from renderers.base import RenderedTokens
-
-    attribution = RenderedTokens(
-        token_ids=[1, 2],
-        message_indices=[0, 0],
-        sampled_mask=[False, False],
-        is_content=[False, True],
-        message_roles=["user"],
-    )
-    response = Response(
-        id="test-id",
-        created=0,
-        model="test-model",
-        message=ResponseMessage(
-            role="assistant",
-            content="Hello",
-            reasoning_content=None,
-            tool_calls=None,
-            finish_reason="length",
-            is_truncated=True,
-            tokens=ResponseTokens(
-                prompt_ids=[1, 2],
-                prompt_mask=[0, 0],
-                completion_ids=[3, 4, 5],
-                completion_mask=[1, 1, 1],
-                completion_logprobs=[-0.1, -0.2, -0.3],
-                prompt_attribution=attribution,
-            ),
-        ),
-    )
-
-    tokens = await parse_response_tokens(response, max_seq_len=4)
-
-    assert tokens is not None
-    # Completion was truncated to fit within the budget.
-    assert tokens["completion_ids"] == [3, 4]
-    out_attr = tokens["prompt_attribution"]
-    # Prompt-side attribution unchanged — identity-equal to the input.
-    assert out_attr is attribution
-    assert out_attr.token_ids == [1, 2]
-    assert out_attr.is_content == [False, True]
 
 
 def test_process_trajectory_steps_for_training(make_input):

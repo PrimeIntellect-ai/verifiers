@@ -740,13 +740,9 @@ def test_get_native_response_translates_renderer_overlong_to_vf_overlong():
 
 @pytest.mark.asyncio
 async def test_get_native_response_threads_prompt_attribution_into_generate():
-    """When the bridge fires (a prior trajectory step lines up with the new
-    prompt), its :class:`RenderedTokens` carries the renderer's per-token
-    attribution for the new turn. ``get_native_response`` must pass that
-    object into ``renderers.client.generate(prompt_attribution=...)`` so
-    the downstream :class:`ResponseTokens` can carry the body/scaffold cut
-    forward without a second render pass.
-    """
+    """Bridge result's :class:`RenderedTokens` is passed through as
+    ``generate(prompt_attribution=...)`` and surfaces unchanged on the
+    result dict."""
     bridged = RenderedTokens(
         token_ids=[1, 2, 3, 4],
         message_indices=[-1, -1, 0, 0],
@@ -808,31 +804,32 @@ async def test_get_native_response_threads_prompt_attribution_into_generate():
             },
         )
 
-    # Bridge result flowed into generate's prompt_attribution kwarg
-    # (same object, no copy).
     assert captured.get("prompt_attribution") is bridged
     assert captured.get("prompt_ids") == list(bridged.token_ids)
-    # And the result dict carried prompt_attribution through unchanged.
     assert result["prompt_attribution"] is bridged
 
 
 @pytest.mark.asyncio
-async def test_from_native_response_carries_prompt_attribution():
+@pytest.mark.parametrize(
+    "attribution",
+    [
+        pytest.param(
+            RenderedTokens(
+                token_ids=[1, 2, 3],
+                message_indices=[0, 0, 0],
+                sampled_mask=[False, False, False],
+                is_content=[False, True, True],
+                message_roles=["user"],
+            ),
+            id="present",
+        ),
+        pytest.param(None, id="missing"),
+    ],
+)
+async def test_from_native_response_carries_prompt_attribution(attribution):
     """``from_native_response`` lifts ``prompt_attribution`` from the raw
-    ``generate`` result dict onto :class:`ResponseTokens` so the trajectory
-    step can later move it onto the step (see
-    ``test_parse_response_tokens_carries_prompt_attribution`` in
-    ``test_trajectory_processing.py`` for the move-not-copy step that
-    follows). Without this lift, the renderer's body/scaffold cut never
-    reaches the trainer."""
-    attribution = RenderedTokens(
-        token_ids=[1, 2, 3],
-        message_indices=[0, 0, 0],
-        sampled_mask=[False, False, False],
-        is_content=[False, True, True],
-        message_roles=["user"],
-    )
-
+    ``generate`` result dict onto :class:`ResponseTokens`. Missing key
+    resolves to ``None`` rather than ``KeyError``."""
     client = object.__new__(RendererClient)
     response_dict = {
         "request_id": "r-2",
@@ -845,37 +842,11 @@ async def test_from_native_response_carries_prompt_attribution():
         "completion_logprobs": [-0.1, -0.2],
         "routed_experts": None,
         "multi_modal_data": None,
-        "prompt_attribution": attribution,
     }
+    if attribution is not None:
+        response_dict["prompt_attribution"] = attribution
 
     response = await client.from_native_response(response_dict)
 
     assert response.message.tokens is not None
     assert response.message.tokens.prompt_attribution is attribution
-
-
-@pytest.mark.asyncio
-async def test_from_native_response_handles_missing_prompt_attribution():
-    """Older ``renderers.client.generate`` versions (or callers building
-    the result dict by hand) may omit ``prompt_attribution``.
-    ``from_native_response`` must fall back to ``None`` rather than
-    ``KeyError`` — every other token-bearing client (chat completions,
-    responses, Anthropic) leaves the field empty too."""
-    client = object.__new__(RendererClient)
-    response_dict = {
-        "request_id": "r-3",
-        "content": "ok",
-        "reasoning_content": None,
-        "tool_calls": [],
-        "finish_reason": "stop",
-        "prompt_ids": [1, 2],
-        "completion_ids": [3],
-        "completion_logprobs": [-0.1],
-        "routed_experts": None,
-        # No "prompt_attribution" key at all.
-    }
-
-    response = await client.from_native_response(response_dict)
-
-    assert response.message.tokens is not None
-    assert response.message.tokens.prompt_attribution is None

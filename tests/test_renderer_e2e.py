@@ -110,9 +110,9 @@ def tokenizer_and_renderer(model_family):
 
 @dataclass
 class _FakeHTTPResponse:
-    """Stand-in for the ``httpx.Response`` that ``renderers.client.generate``
-    now reads (via ``cast_to=httpx.Response``). Only ``.content`` (raw bytes)
-    is consumed downstream — it's fed straight into
+    """Stand-in for the ``httpx.Response`` that
+    ``renderers.client.generate`` reads (via ``cast_to=httpx.Response``).
+    Only ``.content`` (raw bytes) is consumed — it's fed into
     :func:`renderers.client.parse_generate_response`."""
 
     content: bytes
@@ -120,13 +120,9 @@ class _FakeHTTPResponse:
 
 class ScriptedVLLM:
     """Fake ``AsyncOpenAI``-compatible client serving canned
-    /inference/v1/generate responses (vllm 0.20 wire shape).
-
-    ``renderers.client.generate`` posts with ``cast_to=httpx.Response`` and
-    reads ``raw_response.content`` as bytes (since renderers 0.1.10 /
-    "Handle routed experts as response sidecar"). We return a
-    :class:`_FakeHTTPResponse` carrying the JSON-encoded payload so the
-    parse path matches the real wire shape.
+    /inference/v1/generate responses (vllm 0.20 wire shape). Returns
+    :class:`_FakeHTTPResponse` (not a plain dict) because
+    ``renderers.client.generate`` reads ``raw_response.content`` as bytes.
     """
 
     def __init__(self, completions: list[list[int]]):

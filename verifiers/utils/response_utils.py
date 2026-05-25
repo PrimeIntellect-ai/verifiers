@@ -39,26 +39,11 @@ async def parse_response_message(response: Response) -> Messages:
 
 def _truncate_prompt_attribution(attribution: Any, prompt_len: int) -> Any:
     """Slice a ``renderers.RenderedTokens`` prompt-attribution sidecar to
-    ``prompt_len`` tokens.
-
-    Only the per-token lists (``token_ids`` / ``message_indices`` /
-    ``sampled_mask`` / ``is_content``) need truncation; ``message_roles``
-    is indexed by message position (not token position), so it stays
-    intact even when some trailing messages contributed only truncated
-    tokens — ``message_indices[k]`` still points into the correct slot.
-    ``multi_modal_data`` is left as-is for the same reason: callers
-    truncate it themselves if they need exact byte-alignment against the
-    truncated prompt (matches the previous ``routed_experts`` policy,
-    now retired on main — routed_experts is no longer sliced here).
-
-    Returns ``None`` for falsy input so callers can chain through
-    ``attribution = _truncate_prompt_attribution(attribution, N)``
-    without branching.
+    ``prompt_len`` tokens. ``message_roles`` and ``multi_modal_data``
+    pass through — they're per-message / per-modality, not per-token.
     """
     if attribution is None:
         return None
-    # Lazy import — keeps the hard ``renderers`` dependency out of
-    # ``response_utils`` for clients that don't go through RendererClient.
     from renderers.base import RenderedTokens
 
     if not isinstance(attribution, RenderedTokens):
@@ -119,8 +104,6 @@ async def parse_response_tokens(
                 completion_logprobs = tokens.completion_logprobs[
                     : max_seq_len - prompt_len
                 ]
-                # ``prompt_attribution`` covers only the prompt and the
-                # prompt itself wasn't truncated here, so no slicing needed.
             else:
                 is_truncated = False
         else:
@@ -147,10 +130,6 @@ async def parse_response_tokens(
             tokens.routed_experts = None
         if prompt_attribution is not None:
             out["prompt_attribution"] = prompt_attribution
-            # Same move-not-copy policy as ``multi_modal_data`` /
-            # ``routed_experts`` — the parsed step is the canonical home;
-            # clearing the response-side ref avoids duplicate
-            # serialisation on save / msgpack.
             tokens.prompt_attribution = None
         return out
 
