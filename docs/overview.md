@@ -50,11 +50,12 @@ uv add verifiers && prime lab setup --skip-install
 
 Environments built with Verifiers are self-contained Python modules. To initialize a fresh environment template, do:
 ```bash
-prime env init my-env # creates a new template in ./environments/my_env
+prime env init my-env # creates a v0 stub in ./environments/my_env
 ```
-Add an explicit harness loader when the environment owns harness behavior:
+For the v1 Taskset/Harness authoring path:
 ```bash
-prime env init my-env --with-harness
+prime env init my-env --v1
+prime env init my-env --v1 --with-harness
 ```
 
 This will create a new module called `my_env` with a basic environment template.
@@ -88,42 +89,38 @@ custom harnesses, use the v1 Taskset/Harness path:
 # my_env.py
 import verifiers as vf
 
+ENV_ID = "my-env"
+
+
+def load_tasks(split: str = "train"):
+    rows = [
+        {
+            "prompt": [{"role": "user", "content": "Reverse abc."}],
+            "answer": "cba",
+            "split": "train",
+            "max_turns": 1,
+        }
+    ]
+    return [row for row in rows if row["split"] == split]
+
+
 @vf.reward(weight=1.0)
 async def contains_answer(task, state) -> float:
     return float(task["answer"] in str(state.get("completion") or ""))
 
+
 class MyTasksetConfig(vf.TasksetConfig):
     split: str = "train"
+    source: str = "my_env:load_tasks"
+    rewards: list[str] = ["my_env:contains_answer"]
 
 
-class MyTaskset(vf.Taskset):
-    config: MyTasksetConfig
-    _default_rewards = (contains_answer,)
-
-    def rows(self) -> list[dict[str, object]]:
-        rows = [
-            {
-                "prompt": [{"role": "user", "content": "Reverse abc."}],
-                "answer": "cba",
-                "split": "train",
-                "max_turns": 1,
-            }
-        ]
-        return [row for row in rows if row["split"] == self.config.split]
-
-
-def load_taskset(config: MyTasksetConfig) -> MyTaskset:
-    assert isinstance(config, MyTasksetConfig)
-    return MyTaskset(config=config)
+def load_taskset(config: MyTasksetConfig) -> vf.Taskset:
+    return vf.Taskset(config=config)
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
-    taskset_config = config.taskset
-    assert isinstance(taskset_config, MyTasksetConfig)
-    return vf.Env(
-        taskset=load_taskset(taskset_config),
-        harness=vf.Harness(config=config.harness),
-    )
+    return vf.Env(taskset=vf.load_taskset(ENV_ID, config=config.taskset))
 ```
 See [BYO Harness](byo-harness.md) for the advanced v1 taskset/harness API.
 Reusable v1 taskset and harness packages live under `verifiers.v1.packages`

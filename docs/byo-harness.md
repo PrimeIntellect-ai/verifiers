@@ -36,6 +36,22 @@ runtime state instead of constructing its own copy.
 import verifiers as vf
 
 
+ENV_ID = "reverse-text"
+
+
+def load_tasks(split: str = "train"):
+    rows = [
+        {
+            "system_prompt": "Reverse text exactly.",
+            "prompt": [{"role": "user", "content": "Reverse abc."}],
+            "answer": "cba",
+            "split": "train",
+            "max_turns": 1,
+        }
+    ]
+    return [row for row in rows if row["split"] == split]
+
+
 @vf.reward(weight=1.0)
 async def contains_answer(task, state) -> float:
     return float(task["answer"] in str(state.get("completion") or ""))
@@ -43,35 +59,17 @@ async def contains_answer(task, state) -> float:
 
 class ReverseTasksetConfig(vf.TasksetConfig):
     split: str = "train"
+    source: str = "reverse_text:load_tasks"
+    rewards: list[str] = ["reverse_text:contains_answer"]
 
 
-class ReverseTaskset(vf.Taskset):
-    config: ReverseTasksetConfig
-    _default_rewards = (contains_answer,)
-
-    def rows(self) -> list[dict[str, object]]:
-        rows = [
-            {
-                "system_prompt": "Reverse text exactly.",
-                "prompt": [{"role": "user", "content": "Reverse abc."}],
-                "answer": "cba",
-                "split": "train",
-                "max_turns": 1,
-            }
-        ]
-        return [row for row in rows if row["split"] == self.config.split]
-
-
-def load_taskset(config: ReverseTasksetConfig) -> ReverseTaskset:
-    assert isinstance(config, ReverseTasksetConfig)
-    return ReverseTaskset(config=config)
+def load_taskset(config: ReverseTasksetConfig) -> vf.Taskset:
+    return vf.Taskset(config=config)
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
-    taskset_config = config.taskset
-    assert isinstance(taskset_config, ReverseTasksetConfig)
     return vf.Env(
-        taskset=load_taskset(taskset_config),
+        taskset=vf.load_taskset(ENV_ID, config=config.taskset),
         harness=vf.Harness(config=config.harness),
     )
 ```

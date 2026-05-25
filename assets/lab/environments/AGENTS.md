@@ -688,7 +688,8 @@ prime lab setup
 The `prime env init` command initializes a new environment project:
 
 ```bash
-prime env init my-env
+prime env init my-env       # v0 stub
+prime env init my-env --v1  # v1 Taskset/Harness template
 ```
 
 This creates the following structure:
@@ -702,10 +703,11 @@ environments/my_env/
 
 ### v1 Env Shape
 
-The golden v1 shape is one taskset config, one taskset class, and a typed
-`load_taskset(config: MyTasksetConfig)` factory. The factory signature defines
-the taskset config type. A tiny `load_environment(config: vf.EnvConfig)` asserts
-the child config type and constructs explicit objects.
+The golden v1 shape is one taskset config, one typed
+`load_taskset(config: MyTasksetConfig)` factory, and a tiny
+`load_environment(config: vf.EnvConfig)` that calls
+`vf.load_taskset(ENV_ID, config=config.taskset)`. The factory signature defines
+the taskset config type.
 Add a harness config and harness class only when the environment owns reusable
 rollout behavior; otherwise omit `harness=` and `vf.Env` uses the base harness.
 The loader's `config` parameter is a strict, non-optional config object supplied
@@ -722,6 +724,20 @@ The taskset-only shape is:
 import verifiers as vf
 
 
+ENV_ID = "my-env"
+
+
+def load_tasks(split: str = "train"):
+    rows = [
+        {
+            "prompt": [{"role": "user", "content": "Reverse abc."}],
+            "answer": "cba",
+            "split": "train",
+        }
+    ]
+    return [row for row in rows if row["split"] == split]
+
+
 @vf.reward(weight=1.0)
 async def reward_fn(task, state) -> float:
     return float(task["answer"] in str(state.get("completion") or ""))
@@ -729,32 +745,16 @@ async def reward_fn(task, state) -> float:
 
 class MyTasksetConfig(vf.TasksetConfig):
     split: str = "train"
+    source: str = "my_env:load_tasks"
+    rewards: list[str] = ["my_env:reward_fn"]
 
 
-class MyTaskset(vf.Taskset):
-    config: MyTasksetConfig
-    _default_rewards = (reward_fn,)
-
-    def rows(self) -> list[dict[str, object]]:
-        rows = [
-            {
-                "prompt": [{"role": "user", "content": "Reverse abc."}],
-                "answer": "cba",
-                "split": "train",
-            }
-        ]
-        return [row for row in rows if row["split"] == self.config.split]
-
-
-def load_taskset(config: MyTasksetConfig) -> MyTaskset:
-    assert isinstance(config, MyTasksetConfig)
-    return MyTaskset(config=config)
+def load_taskset(config: MyTasksetConfig) -> vf.Taskset:
+    return vf.Taskset(config=config)
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
-    taskset_config = config.taskset
-    assert isinstance(taskset_config, MyTasksetConfig)
-    return vf.Env(taskset=load_taskset(taskset_config))
+    return vf.Env(taskset=vf.load_taskset(ENV_ID, config=config.taskset))
 ```
 
 With a reusable harness, keep the same explicit object boundary:
@@ -769,30 +769,24 @@ class MyHarness(vf.Harness):
     pass
 
 
-def load_taskset(config: MyTasksetConfig) -> MyTaskset:
-    assert isinstance(config, MyTasksetConfig)
-    return MyTaskset(config=config)
+def load_taskset(config: MyTasksetConfig) -> vf.Taskset:
+    return vf.Taskset(config=config)
 
 
 def load_harness(config: MyHarnessConfig) -> MyHarness:
-    assert isinstance(config, MyHarnessConfig)
     return MyHarness(config=config)
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
-    taskset_config = config.taskset
-    harness_config = config.harness
-    assert isinstance(taskset_config, MyTasksetConfig)
-    assert isinstance(harness_config, MyHarnessConfig)
     return vf.Env(
-        taskset=load_taskset(taskset_config),
-        harness=load_harness(harness_config),
+        taskset=vf.load_taskset(ENV_ID, config=config.taskset),
+        harness=vf.load_harness(ENV_ID, config=config.harness),
     )
 ```
 
 `vf.Env(config=config)` exists as a convenience for code that already has a fully
-typed `EnvConfig`, but environment docs and templates should use the explicit
-object shape above. Do not pass both `config=` and `taskset=`/`harness=` to
+typed `EnvConfig`, but environment docs and templates should use the component
+loader shape above. Do not pass both `config=` and `taskset=`/`harness=` to
 `vf.Env`.
 
 Keep v1 dependencies behind the owning taskset or harness. Do not pass
