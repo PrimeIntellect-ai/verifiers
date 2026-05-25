@@ -1,5 +1,4 @@
-from verifiers.utils.env_utils import load_harness as _load_harness
-from verifiers.utils.env_utils import load_taskset as _load_taskset
+from verifiers.utils import env_utils
 
 from .config import HarnessConfig, TasksetConfig
 from .harness import Harness
@@ -13,7 +12,7 @@ def load_taskset(
     config: TasksetConfig | ConfigMap | None = None,
 ) -> Taskset:
     """Load a taskset by env id using the package load_taskset annotation."""
-    return _load_taskset(env_id, config=config)
+    return env_utils.load_taskset(env_id, config=config)
 
 
 def load_harness(
@@ -22,4 +21,4 @@ def load_harness(
     config: HarnessConfig | ConfigMap | None = None,
 ) -> Harness:
     """Load a harness by env id using the package load_harness annotation."""
-    return _load_harness(env_id, config=config)
+    return env_utils.load_harness(env_id, config=config)
