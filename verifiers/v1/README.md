@@ -1368,13 +1368,14 @@ class DatasetTasksetConfig(vf.TasksetConfig):
 
 def load_tasks(split: str = "train", limit: int = 100) -> vf.Tasks:
     dataset = load_dataset("my-org/my-dataset", split=split)
-    return [
-        {
+    if limit > 0:
+        dataset = dataset.select(range(min(limit, len(dataset))))
+    return dataset.map(
+        lambda row: {
             "prompt": [{"role": "user", "content": row["question"]}],
             "answer": row["answer"],
         }
-        for row in dataset.select(range(limit))
-    ]
+    )
 ```
 
 ### Toolsets
