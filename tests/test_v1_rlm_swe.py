@@ -26,6 +26,14 @@ def as_mapping(value: object) -> Mapping[str, object]:
     return value
 
 
+def load_order_task() -> vf.Tasks:
+    return [{"prompt": [{"role": "user", "content": "Find order A-1."}]}]
+
+
+class OrderTasksetConfig(vf.TasksetConfig):
+    tasks: str = "load_order_task"
+
+
 def test_rlm_harness_builds_sandbox_program_without_eager_checkout():
     harness = vf.RLM(
         config=vf.RLMConfig(local_checkout="/tmp/does-not-need-to-exist-yet")
@@ -152,7 +160,7 @@ def test_rlm_harness_recomputes_taskset_skills(tmp_path: Path):
 
     class SkillTaskset(vf.Taskset):
         def __init__(self, skills: Path):
-            super().__init__(config=vf.TasksetConfig(source=[]))
+            super().__init__(config=vf.TasksetConfig())
             self.skills = skills
 
         def get_upload_dirs(self):
@@ -170,7 +178,7 @@ def test_rlm_harness_recomputes_taskset_skills(tmp_path: Path):
 
     assert dirs["/task/rlm-skills"] == second_skills
 
-    vf.Env(taskset=NoSkillTaskset(config=vf.TasksetConfig(source=[])), harness=harness)
+    vf.Env(taskset=NoSkillTaskset(config=vf.TasksetConfig()), harness=harness)
     program = as_mapping(harness.program)
     dirs = as_mapping(program["dirs"])
 
@@ -183,11 +191,7 @@ async def test_rlm_harness_generates_skills_for_v1_tools():
         """Look up an order by ID."""
         return f"order:{order_id}"
 
-    taskset = vf.Taskset(
-        config=vf.TasksetConfig(
-            source=[{"prompt": [{"role": "user", "content": "Find order A-1."}]}]
-        )
-    )
+    taskset = vf.Taskset(config=OrderTasksetConfig())
     taskset.add_toolset(vf.Toolset(tools=[lookup_order]))
     env = vf.Env(
         taskset=taskset,
@@ -230,11 +234,7 @@ async def test_vf_tool_skill_falls_back_for_runtime_bound_tools():
         """Look up an order with rollout state."""
         return f"{state['tenant']}:{order_id}"
 
-    taskset = vf.Taskset(
-        config=vf.TasksetConfig(
-            source=[{"prompt": [{"role": "user", "content": "Find order A-1."}]}]
-        )
-    )
+    taskset = vf.Taskset(config=OrderTasksetConfig())
     taskset.add_toolset(vf.Toolset(tools=[stateful_lookup]))
     env = vf.Env(
         taskset=taskset,
