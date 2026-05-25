@@ -277,26 +277,45 @@ class TasksetConfig(LifecycleConfig):
         if not isinstance(value, Mapping):
             return value
         data = dict(value)
-        for old, new in (("source", "tasks"), ("eval_source", "eval_tasks")):
-            if old not in data:
-                continue
-            if new in data:
+
+        def map_aliases(field: str, aliases: tuple[tuple[str, bool], ...]) -> None:
+            present = [
+                name for name in (field, *(name for name, _ in aliases)) if name in data
+            ]
+            if len(present) > 1:
+                names = ", ".join(repr(name) for name in sorted(present))
                 raise ValueError(
-                    f"TasksetConfig received both {old!r} and {new!r}; use {new!r}."
+                    f"TasksetConfig received multiple values for {field!r}: "
+                    f"{names}; use {field!r}."
                 )
-            old_value = data.pop(old)
-            if old_value is not None and not isinstance(old_value, str):
-                raise ValueError(
-                    f"TasksetConfig.{old} must be an import ref string. "
-                    f"Inline task rows are not supported; define load_tasks() "
-                    f"and set TasksetConfig.{new} to its import ref."
-                )
-            warnings.warn(
-                f"TasksetConfig.{old} is deprecated; use TasksetConfig.{new}.",
-                DeprecationWarning,
-                stacklevel=3,
-            )
-            data[new] = old_value
+            for alias, deprecated in aliases:
+                if alias not in data:
+                    continue
+                alias_value = data.pop(alias)
+                if alias_value is not None and not isinstance(alias_value, str):
+                    raise ValueError(
+                        f"TasksetConfig.{alias} must be an import ref string. "
+                        f"Inline task rows are not supported; define load_tasks() "
+                        f"and set TasksetConfig.{field} to its import ref."
+                    )
+                if deprecated:
+                    warnings.warn(
+                        f"TasksetConfig.{alias} is deprecated; "
+                        f"use TasksetConfig.{field}.",
+                        DeprecationWarning,
+                        stacklevel=3,
+                    )
+                data[field] = alias_value
+                return
+
+        map_aliases(
+            "tasks",
+            (("source", True), ("train_tasks", False)),
+        )
+        map_aliases(
+            "eval_tasks",
+            (("eval_source", True),),
+        )
         return data
 
     @field_validator("bindings", mode="before")

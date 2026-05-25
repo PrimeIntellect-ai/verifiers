@@ -764,6 +764,13 @@ def test_taskset_config_source_aliases_map_with_warning() -> None:
     assert config.eval_tasks == ref("load_eval_tasks")
 
 
+def test_taskset_config_train_tasks_alias_maps_without_warning(recwarn) -> None:
+    config = TasksetConfig.model_validate({"train_tasks": ref("load_tasks")})
+
+    assert config.tasks == ref("load_tasks")
+    assert not recwarn
+
+
 def test_taskset_config_source_alias_rejects_inline_rows() -> None:
     with pytest.raises(ValueError, match="source.*Inline task rows"):
         TasksetConfig.model_validate({"source": [{"prompt": [], "answer": "ok"}]})
@@ -771,13 +778,26 @@ def test_taskset_config_source_alias_rejects_inline_rows() -> None:
     with pytest.raises(ValueError, match="eval_source.*Inline task rows"):
         TasksetConfig.model_validate({"tasks": ref("load_tasks"), "eval_source": []})
 
+    with pytest.raises(ValueError, match="train_tasks.*Inline task rows"):
+        TasksetConfig.model_validate({"train_tasks": [{"prompt": [], "answer": "ok"}]})
+
 
 def test_taskset_config_source_alias_conflicts_raise() -> None:
-    with pytest.raises(ValueError, match="'source'.*'tasks'"):
+    with pytest.raises(ValueError, match="multiple values for 'tasks'.*'source'"):
         TasksetConfig.model_validate(
             {"source": ref("load_tasks"), "tasks": ref("load_tasks")}
         )
-    with pytest.raises(ValueError, match="'eval_source'.*'eval_tasks'"):
+    with pytest.raises(ValueError, match="multiple values for 'tasks'.*'train_tasks'"):
+        TasksetConfig.model_validate(
+            {"tasks": ref("load_tasks"), "train_tasks": ref("load_tasks")}
+        )
+    with pytest.raises(
+        ValueError, match="multiple values for 'tasks'.*'source'.*'train_tasks'"
+    ):
+        TasksetConfig.model_validate(
+            {"source": ref("load_tasks"), "train_tasks": ref("load_tasks")}
+        )
+    with pytest.raises(ValueError, match="multiple values for 'eval_tasks'"):
         TasksetConfig.model_validate(
             {
                 "eval_source": ref("load_eval_tasks"),
@@ -805,6 +825,13 @@ def test_taskset_source_config_still_loads_with_warning() -> None:
     assert taskset.get_dataset()[0]["answer"] == "ok"
 
 
+def test_taskset_train_tasks_config_loads_without_warning(recwarn) -> None:
+    taskset = Taskset(config={"train_tasks": ref("load_tasks")})
+
+    assert taskset.get_dataset()[0]["answer"] == "ok"
+    assert not recwarn
+
+
 def test_taskset_source_toml_still_loads_with_warning(tmp_path) -> None:
     config_path = tmp_path / "env.toml"
     config_path.write_text(
@@ -818,6 +845,21 @@ def test_taskset_source_toml_still_loads_with_warning(tmp_path) -> None:
 
     taskset = make_taskset(config=taskset_config)
     assert taskset.get_dataset()[0]["answer"] == "ok"
+
+
+def test_taskset_train_tasks_toml_loads_without_warning(tmp_path, recwarn) -> None:
+    config_path = tmp_path / "env.toml"
+    config_path.write_text(
+        "\n".join(["[env.taskset]", f'train_tasks = "{ref("load_tasks")}"'])
+    )
+
+    with config_path.open("rb") as f:
+        data = load_toml(f)["env"]
+    taskset_config = TasksetConfig.model_validate(data["taskset"])
+
+    taskset = make_taskset(config=taskset_config)
+    assert taskset.get_dataset()[0]["answer"] == "ok"
+    assert not recwarn
 
 
 def test_taskset_get_eval_dataset_uses_eval_tasks() -> None:
