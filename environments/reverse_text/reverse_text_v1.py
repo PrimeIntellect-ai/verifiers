@@ -53,8 +53,8 @@ def load_tasks(
 
 
 class ReverseTextTasksetConfig(vf.TasksetConfig):
-    tasks: str = f"{__name__}:load_tasks"
-    rewards: list[str] = [f"{__name__}:lcs_reward_func"]
+    tasks: str = "load_tasks"
+    rewards: list[str] = ["lcs_reward_func"]
     system_prompt: str | None = (
         "Reverse the text character-by-character. Put your answer in "
         "<reversed_text> tags."

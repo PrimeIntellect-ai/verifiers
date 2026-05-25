@@ -309,9 +309,9 @@ async def alphabet_user(task, state, messages) -> list[dict[str, str]]:
 
 
 class AlphabetSortTasksetConfig(vf.TasksetConfig):
-    tasks: str = f"{__name__}:load_tasks"
-    rewards: list[str] = [f"{__name__}:weighted_reward"]
-    user: str | None = f"{__name__}:alphabet_user"
+    tasks: str = "load_tasks"
+    rewards: list[str] = ["weighted_reward"]
+    user: str | None = "alphabet_user"
     min_turns: int = 1
     max_turns: int = 3
     min_names_per_turn: int = 1

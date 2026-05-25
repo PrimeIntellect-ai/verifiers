@@ -18,7 +18,7 @@ from .config import (
 from .state import State
 from .task import Task
 from .utils.prompt_utils import normalize_system_prompt
-from .utils.config_utils import coerce_config
+from .utils.config_utils import coerce_config, config_ref_context
 from .utils.runtime_owner_utils import RuntimeOwnerMixin
 from .utils.taskset_utils import (
     dataset_info_with_task,
@@ -41,23 +41,26 @@ class Taskset(RuntimeOwnerMixin):
 
     def __init__(self, config: ConfigSource = None):
         self.config = coerce_config(TasksetConfig, config)
-        resolved_taskset_id = self.config.taskset_id
-        if resolved_taskset_id is not None and not isinstance(resolved_taskset_id, str):
-            raise TypeError("taskset_id must be a string.")
-        self.taskset_id = resolved_taskset_id or type(self).__name__
-        self.system_prompt = normalize_system_prompt(
-            self.config.system_prompt, field_name="taskset.system_prompt"
-        )
-        self._init_runtime_user()
-        self.bindings = dict(self.config.bindings)
-        self.objects = {
-            **{
-                str(key): resolve_config_object(item)
-                for key, item in self.config.objects.items()
+        with config_ref_context(self.config):
+            resolved_taskset_id = self.config.taskset_id
+            if resolved_taskset_id is not None and not isinstance(
+                resolved_taskset_id, str
+            ):
+                raise TypeError("taskset_id must be a string.")
+            self.taskset_id = resolved_taskset_id or type(self).__name__
+            self.system_prompt = normalize_system_prompt(
+                self.config.system_prompt, field_name="taskset.system_prompt"
+            )
+            self._init_runtime_user()
+            self.bindings = dict(self.config.bindings)
+            self.objects = {
+                **{
+                    str(key): resolve_config_object(item)
+                    for key, item in self.config.objects.items()
+                }
             }
-        }
-        self._init_runtime_toolsets()
-        self._init_runtime_handlers()
+            self._init_runtime_toolsets()
+            self._init_runtime_handlers()
         self._dataset: Dataset | None = None
         self._eval_dataset: Dataset | None = None
         self._attached_harnesses: weakref.WeakSet["Harness"] = weakref.WeakSet()
@@ -109,8 +112,9 @@ class Taskset(RuntimeOwnerMixin):
 
     def get_dataset(self) -> Dataset:
         if self._dataset is None:
-            load_tasks = resolve_task_loader("tasks", self.config.tasks)
-            tasks = task_data_from_loader(load_tasks, self.config)
+            with config_ref_context(self.config):
+                load_tasks = resolve_task_loader("tasks", self.config.tasks)
+                tasks = task_data_from_loader(load_tasks, self.config)
             self._dataset = Dataset.from_list(
                 [self._dataset_row(row, index) for index, row in enumerate(tasks)]
             )
@@ -120,8 +124,9 @@ class Taskset(RuntimeOwnerMixin):
         if self.config.eval_tasks is None:
             return self.get_dataset()
         if self._eval_dataset is None:
-            load_tasks = resolve_task_loader("eval_tasks", self.config.eval_tasks)
-            tasks = task_data_from_loader(load_tasks, self.config)
+            with config_ref_context(self.config):
+                load_tasks = resolve_task_loader("eval_tasks", self.config.eval_tasks)
+                tasks = task_data_from_loader(load_tasks, self.config)
             self._eval_dataset = Dataset.from_list(
                 [self._dataset_row(row, index) for index, row in enumerate(tasks)]
             )

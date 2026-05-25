@@ -12,25 +12,25 @@ Return the assigned candidate exactly.
 
 
 class GroupRewardTasksetConfig(vf.TasksetConfig):
-    tasks: str = f"{__name__}:load_tasks"
+    tasks: str = "load_tasks"
     metrics: list[str] = [
-        f"{__name__}:answer_length",
-        f"{__name__}:group_quality",
-        f"{__name__}:group_rank",
+        "answer_length",
+        "group_quality",
+        "group_rank",
     ]
     rewards: list[str] = [
-        f"{__name__}:rollout_similarity",
-        f"{__name__}:relative_group_reward",
+        "rollout_similarity",
+        "relative_group_reward",
     ]
-    advantages: list[str] = [f"{__name__}:centered_group_advantage"]
-    updates: list[str] = [f"{__name__}:summarize_group"]
-    cleanups: list[str] = [f"{__name__}:mark_group_cleaned"]
+    advantages: list[str] = ["centered_group_advantage"]
+    updates: list[str] = ["summarize_group"]
+    cleanups: list[str] = ["mark_group_cleaned"]
     system_prompt: str = SYSTEM_PROMPT
     num_examples: int = -1
 
 
 class GroupRewardHarnessConfig(vf.HarnessConfig):
-    program: str | None = f"{__name__}:candidate_program"
+    program: str | None = "candidate_program"
     max_turns: int = 1
 
 

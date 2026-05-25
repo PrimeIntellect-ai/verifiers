@@ -53,9 +53,9 @@ import verifiers as vf
 
 
 class MyTasksetConfig(vf.TasksetConfig):
-    tasks: str = "my_env:load_tasks"
-    rewards: list[str] = ["my_env:reward_fn"]
-    metrics: list[str] = ["my_env:metric_fn"]
+    tasks: str = "load_tasks"
+    rewards: list[str] = ["exact_answer"]
+    metrics: list[str] = ["accuracy"]
     split: str = "train"
     system_prompt: str = SYSTEM_PROMPT
 
@@ -92,7 +92,7 @@ Put system instructions in `system_prompt`, not in `prompt`:
 
 ```python
 class PromptTasksetConfig(vf.TasksetConfig):
-    tasks: str = "my_env:load_tasks"
+    tasks: str = "load_tasks"
     system_prompt: str = "Answer concisely."
 
 
@@ -152,8 +152,8 @@ async def exact(task, state) -> float:
 
 
 class QATasksetConfig(vf.TasksetConfig):
-    tasks: str = "my_env:load_tasks"
-    rewards: list[str] = ["my_env:exact"]
+    tasks: str = "load_tasks"
+    rewards: list[str] = ["exact"]
     split: str = "train"
 
 
@@ -196,10 +196,10 @@ async def exact(task, state, extract_answer) -> float:
 
 
 class ExtractTasksetConfig(vf.TasksetConfig):
-    tasks: str = "my_env:load_tasks"
-    rewards: list[str] = ["my_env:exact"]
+    tasks: str = "load_tasks"
+    rewards: list[str] = ["exact"]
     objects: dict[str, str] = {
-        "extract_answer": "my_env:build_answer_extractor",
+        "extract_answer": "build_answer_extractor",
     }
     bindings: dict[str, str] = {
         "exact.extract_answer": "objects.extract_answer",
@@ -264,8 +264,8 @@ def load_toolset(config=None):
 
 
 class SearchTasksetConfig(vf.TasksetConfig):
-    tasks: str = "my_env:load_tasks"
-    rewards: list[str] = ["my_env:judge_reward"]
+    tasks: str = "load_tasks"
+    rewards: list[str] = ["judge_reward"]
 
 
 def load_tasks() -> vf.Tasks:

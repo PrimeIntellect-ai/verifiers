@@ -7,9 +7,9 @@ ANSWER_RE = re.compile(r"^\s*ANSWER\s*:?\s*(.+?)\s*$", re.IGNORECASE)
 
 
 class OpenAIAgentsTasksetConfig(vf.TasksetConfig):
-    tasks: str = f"{__name__}:load_tasks"
-    eval_tasks: str = f"{__name__}:load_eval_tasks"
-    rewards: list[str] = [f"{__name__}:answer_reward"]
+    tasks: str = "load_tasks"
+    eval_tasks: str = "load_eval_tasks"
+    rewards: list[str] = ["answer_reward"]
     taskset_id: str = "gsm8k-openai-agents"
     num_train_examples: int = 50
     num_eval_examples: int = 20
@@ -124,11 +124,13 @@ class OpenAIAgentsTaskset(vf.Taskset):
     pass
 
 
+class OpenAIAgentsHarnessConfig(vf.HarnessConfig):
+    program: str | None = "run_openai_agents_program"
+
+
 class OpenAIAgentsEnvConfig(vf.EnvConfig):
     taskset: OpenAIAgentsTasksetConfig = OpenAIAgentsTasksetConfig()
-    harness: vf.HarnessConfig = vf.HarnessConfig(
-        program=f"{__name__}:run_openai_agents_program"
-    )
+    harness: OpenAIAgentsHarnessConfig = OpenAIAgentsHarnessConfig()
 
 
 def load_environment(config: OpenAIAgentsEnvConfig) -> vf.Env:

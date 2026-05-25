@@ -19,7 +19,7 @@ PROGRAM_SANDBOX = {
 
 class DSPyFlightsHarnessConfig(vf.HarnessConfig):
     program: vf.ProgramConfig | None = vf.ProgramConfig(
-        fn=f"{__name__}:run_dspy_flight_program",
+        fn="run_dspy_flight_program",
         sandbox=True,
     )
     sandbox: vf.SandboxConfig = vf.SandboxConfig(**PROGRAM_SANDBOX)
@@ -423,9 +423,9 @@ def stringify_nested(value: object) -> object:
 
 
 class DSPyFlightsTasksetConfig(vf.TasksetConfig):
-    tasks: str = f"{__name__}:load_tasks"
-    rewards: list[str] = [f"{__name__}:expected_database_change"]
-    metrics: list[str] = [f"{__name__}:dspy_calls"]
+    tasks: str = "load_tasks"
+    rewards: list[str] = ["expected_database_change"]
+    metrics: list[str] = ["dspy_calls"]
 
 
 class DSPyFlightsHarness(vf.Harness):

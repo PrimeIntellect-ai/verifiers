@@ -2,9 +2,13 @@ import verifiers as vf
 
 
 class NestedHarnessConfig(vf.HarnessConfig):
-    program: str | None = f"{__name__}:parent_program"
-    toolsets: dict[str, dict[str, str]] = {"nested": {"fn": f"{__name__}:load_toolset"}}
-    metrics: list[str] = [f"{__name__}:child_calls"]
+    program: str | None = "parent_program"
+    toolsets: dict[str, dict[str, str]] = {"nested": {"fn": "load_toolset"}}
+    metrics: list[str] = ["child_calls"]
+
+
+class ChildHarnessConfig(vf.HarnessConfig):
+    program: str | None = "child_program"
 
 
 async def child_program(task, state):
@@ -58,7 +62,7 @@ def load_tasks():
 
 
 def load_child_harness():
-    return vf.Harness(config=vf.HarnessConfig(program=f"{__name__}:child_program"))
+    return vf.Harness(config=ChildHarnessConfig())
 
 
 def load_toolset(config: vf.ToolsetConfig | None = None):
@@ -93,11 +97,13 @@ class NestedHarness(vf.Harness):
     pass
 
 
+class NestedTasksetConfig(vf.TasksetConfig):
+    tasks: str = "load_tasks"
+    rewards: list[str] = ["exact_answer"]
+
+
 class NestedEnvConfig(vf.EnvConfig):
-    taskset: vf.TasksetConfig = vf.TasksetConfig(
-        tasks=f"{__name__}:load_tasks",
-        rewards=[f"{__name__}:exact_answer"],
-    )
+    taskset: NestedTasksetConfig = NestedTasksetConfig()
     harness: NestedHarnessConfig = NestedHarnessConfig()
 
 

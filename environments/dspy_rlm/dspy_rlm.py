@@ -5,9 +5,9 @@ from verifiers.utils.data_utils import load_example_dataset
 
 
 class DSPYRLMTasksetConfig(vf.TasksetConfig):
-    tasks: str = f"{__name__}:load_tasks"
-    eval_tasks: str = f"{__name__}:load_eval_tasks"
-    rewards: list[str] = [f"{__name__}:answer_reward"]
+    tasks: str = "load_tasks"
+    eval_tasks: str = "load_eval_tasks"
+    rewards: list[str] = ["answer_reward"]
     taskset_id: str = "gsm8k-dspy-rlm"
     num_train_examples: int = 50
     num_eval_examples: int = 20
@@ -105,11 +105,13 @@ class DSPYRLMTaskset(vf.Taskset):
     pass
 
 
+class DSPYRLMHarnessConfig(vf.HarnessConfig):
+    program: str | None = "run_dspy_rlm_program"
+
+
 class DSPYRLMEnvConfig(vf.EnvConfig):
     taskset: DSPYRLMTasksetConfig = DSPYRLMTasksetConfig()
-    harness: vf.HarnessConfig = vf.HarnessConfig(
-        program=f"{__name__}:run_dspy_rlm_program"
-    )
+    harness: DSPYRLMHarnessConfig = DSPYRLMHarnessConfig()
 
 
 def load_environment(config: DSPYRLMEnvConfig) -> vf.Env:

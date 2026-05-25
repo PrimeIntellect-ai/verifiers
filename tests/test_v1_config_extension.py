@@ -559,6 +559,100 @@ def test_taskset_config_tasks_fields_validate() -> None:
     assert config.eval_tasks == ref("load_eval_tasks")
 
 
+def test_config_refs_resolve_from_config_module(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_name = "v1_relative_config_refs"
+    module = types.ModuleType(module_name)
+    monkeypatch.setitem(sys.modules, module_name, module)
+    exec(
+        """
+import verifiers as vf
+
+
+def load_tasks() -> vf.Tasks:
+    return [{"prompt": [], "answer": "train"}]
+
+
+def load_eval_tasks() -> vf.Tasks:
+    return [{"prompt": [], "answer": "eval"}]
+
+
+@vf.reward
+async def exact_answer(task: vf.Task, state: vf.State) -> float:
+    return 1.0
+
+
+@vf.metric
+async def metric_fn(task: vf.Task, state: vf.State) -> float:
+    return 1.0
+
+
+def local_tool() -> str:
+    return "ok"
+
+
+def load_toolset(prefix: str) -> vf.Toolset:
+    _ = prefix
+    return vf.Toolset(tools=[local_tool])
+
+
+async def user_fn(task: vf.Task, state: vf.State) -> list[dict[str, str]]:
+    return []
+
+
+async def program_fn(task: vf.Task, state: vf.State) -> vf.State:
+    state["program"] = "ok"
+    return state
+
+
+def keep_step(step: dict[str, object]) -> bool:
+    return True
+
+
+class LocalTasksetConfig(vf.TasksetConfig):
+    tasks: str = "load_tasks"
+    eval_tasks: str = "load_eval_tasks"
+    rewards: list[str] = ["exact_answer"]
+    user: str = "user_fn"
+    objects: dict[str, str] = {"loader": "load_tasks"}
+    toolsets: dict[str, dict[str, object]] = {
+        "local": {"fn": "load_toolset", "prefix": "cfg"}
+    }
+
+
+class LocalHarnessConfig(vf.HarnessConfig):
+    program: vf.ProgramConfig = vf.ProgramConfig(fn="program_fn")
+    metrics: list[str] = ["metric_fn"]
+    keep_trajectory_step: str = "keep_step"
+
+
+def load_taskset(config: LocalTasksetConfig) -> vf.Taskset:
+    return vf.Taskset(config=config)
+
+
+def load_harness(config: LocalHarnessConfig) -> vf.Harness:
+    return vf.Harness(config=config)
+""",
+        module.__dict__,
+    )
+
+    taskset = vf.load_taskset(module_name, config={})
+    harness = vf.load_harness(module_name, config={})
+
+    assert taskset.get_dataset()[0]["answer"] == "train"
+    assert taskset.get_eval_dataset()[0]["answer"] == "eval"
+    assert getattr(taskset.rewards[0], "__name__") == "exact_answer"
+    assert taskset.user is not None
+    assert getattr(taskset.user.fn, "__name__") == "user_fn"
+    assert taskset.objects["loader"] is module.load_tasks
+    assert taskset.named_toolsets["local"].tools == (module.local_tool,)
+    assert harness.program == {"fn": "program_fn"}
+    assert getattr(harness.metrics[-1], "__name__") == "metric_fn"
+    assert getattr(harness.keep_trajectory_step, "__name__") == "keep_step"
+    assert callable(harness._program)
+
+
 def test_taskset_config_rejects_inline_task_rows() -> None:
     with pytest.raises(ValidationError):
         TasksetConfig(tasks=[{"prompt": [], "answer": "ok"}])
@@ -2264,14 +2358,17 @@ def test_public_component_loaders_default_to_caller_module(
 ) -> None:
     module_name = "current_module_component_loader"
     module = types.ModuleType(module_name)
-    module.TASKS_REF = ref("load_tasks")
     exec(
         """
 import verifiers as vf
 
 
+def load_tasks() -> vf.Tasks:
+    return [{"prompt": [], "answer": "current"}]
+
+
 class LocalTasksetConfig(vf.TasksetConfig):
-    tasks: str | None = TASKS_REF
+    tasks: str | None = "load_tasks"
     split: str = "train"
 
 
@@ -2310,6 +2407,7 @@ def load_environment(config: vf.EnvConfig) -> vf.Env:
 
     assert env.taskset.config.taskset_id == "current"
     assert env.taskset.config.split == "train"
+    assert env.taskset.get_dataset()[0]["answer"] == "current"
     assert env.harness.config.model == "configured-model"
     assert env.harness.config.mode == "default"
 

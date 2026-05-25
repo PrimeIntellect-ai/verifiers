@@ -693,13 +693,13 @@ async def tau2_num_user_tool_calls(task, state) -> float:
 
 
 class Tau2TasksetConfig(vf.TasksetConfig):
-    tasks: str = f"{__name__}:load_tasks"
-    rewards: list[str] = [f"{__name__}:tau2_reward"]
+    tasks: str = "load_tasks"
+    rewards: list[str] = ["tau2_reward"]
     metrics: list[str] = [
-        f"{__name__}:tau2_num_errors",
-        f"{__name__}:tau2_num_steps",
-        f"{__name__}:tau2_num_assistant_tool_calls",
-        f"{__name__}:tau2_num_user_tool_calls",
+        "tau2_num_errors",
+        "tau2_num_steps",
+        "tau2_num_assistant_tool_calls",
+        "tau2_num_user_tool_calls",
     ]
     domain: str = "telecom"
     user_model: str = DEFAULT_USER_MODEL

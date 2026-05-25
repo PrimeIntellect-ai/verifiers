@@ -27,8 +27,8 @@ BFCLRawTurn = str | ConfigMap | Sequence[BFCLRawMessage] | None
 
 
 class BFCLTasksetConfig(vf.TasksetConfig):
-    tasks: str = f"{__name__}:load_tasks"
-    rewards: list[str] = [f"{__name__}:bfcl_reward"]
+    tasks: str = "load_tasks"
+    rewards: list[str] = ["bfcl_reward"]
     test_category: str = "simple_python"
     test_categories: list[str] | None = None
     examples_per_category: int = -1

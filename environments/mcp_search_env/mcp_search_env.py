@@ -74,8 +74,8 @@ DEFAULT_MCP_SERVERS: list[vf.ConfigData] = [
 
 
 class MCPSearchTasksetConfig(vf.TasksetConfig):
-    tasks: str = f"{__name__}:load_tasks"
-    rewards: list[str] = [f"{__name__}:exact_title_reward"]
+    tasks: str = "load_tasks"
+    rewards: list[str] = ["exact_title_reward"]
     system_prompt: str = SYSTEM_PROMPT
     mcp_servers: list[vf.ConfigData] | None = None
     max_turns: int = 6
@@ -86,7 +86,7 @@ class MCPSearchTasksetConfig(vf.TasksetConfig):
         if "toolsets" not in self.model_fields_set:
             self.toolsets = {
                 "records": {
-                    "fn": f"{__name__}:load_toolset",
+                    "fn": "load_toolset",
                     "mcp_servers": self.mcp_servers,
                 }
             }

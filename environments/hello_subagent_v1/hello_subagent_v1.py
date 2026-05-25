@@ -73,8 +73,8 @@ def load_toolset():
 
 
 class SubagentTasksetConfig(vf.TasksetConfig):
-    tasks: str = f"{__name__}:load_tasks"
-    rewards: list[str] = [f"{__name__}:exact_answer"]
+    tasks: str = "load_tasks"
+    rewards: list[str] = ["exact_answer"]
     system_prompt: str = (
         "You are a parent coordinator. You must call ask_subagent once for "
         "each requested name. After all tool results are available, join "
@@ -83,10 +83,8 @@ class SubagentTasksetConfig(vf.TasksetConfig):
 
 
 class SubagentHarnessConfig(vf.HarnessConfig):
-    toolsets: dict[str, dict[str, str]] = {
-        "subagent": {"fn": f"{__name__}:load_toolset"}
-    }
-    metrics: list[str] = [f"{__name__}:subagent_calls"]
+    toolsets: dict[str, dict[str, str]] = {"subagent": {"fn": "load_toolset"}}
+    metrics: list[str] = ["subagent_calls"]
 
 
 class SubagentTaskset(vf.Taskset):

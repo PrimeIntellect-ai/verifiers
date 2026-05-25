@@ -278,8 +278,8 @@ def load_toolset(
 
 
 class WikiSearchTasksetConfig(vf.TasksetConfig):
-    tasks: str = f"{__name__}:load_tasks"
-    rewards: list[str] = [f"{__name__}:judge_reward"]
+    tasks: str = "load_tasks"
+    rewards: list[str] = ["judge_reward"]
     system_prompt: str = SYSTEM_PROMPT
     max_turns: int = 10
     corpus_dataset: str = "willcb/rare-wiki-pages"
@@ -295,7 +295,7 @@ class WikiSearchTasksetConfig(vf.TasksetConfig):
         if "toolsets" not in self.model_fields_set:
             self.toolsets = {
                 "wiki": {
-                    "fn": f"{__name__}:load_toolset",
+                    "fn": "load_toolset",
                     "corpus_dataset": self.corpus_dataset,
                     "corpus_split": self.corpus_split,
                     "chroma_db_dir": self.chroma_db_dir,

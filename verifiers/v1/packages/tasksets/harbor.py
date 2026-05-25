@@ -49,8 +49,8 @@ def _bundle_tasks_root(module_name: str) -> Path:
 
 
 class HarborTasksetConfig(TasksetConfig):
-    tasks: str | None = f"{__name__}:load_tasks"
-    rewards: list[CallableEntry] = [f"{__name__}:harbor_reward"]
+    tasks: str | None = "load_tasks"
+    rewards: list[CallableEntry] = ["harbor_reward"]
     dataset: str | None = None
     bundle_package: str | None = None
     task_names: list[str] | None = None

@@ -54,8 +54,8 @@ SYSTEM_PROMPT = system_prompt()
 
 
 class WikispeediaTasksetConfig(vf.TasksetConfig):
-    tasks: str | None = f"{__name__}:load_tasks"
-    eval_tasks: str | None = f"{__name__}:load_eval_tasks"
+    tasks: str | None = "load_tasks"
+    eval_tasks: str | None = "load_eval_tasks"
     cache_dir: str | None = None
     min_path_length: int = 3
     max_path_length: int = 6

@@ -42,8 +42,8 @@ class TextArenaEnv(Protocol):
 
 
 class TextArenaTasksetConfig(TasksetConfig):
-    tasks: str | None = f"{__name__}:load_tasks"
-    eval_tasks: str | None = f"{__name__}:load_eval_tasks"
+    tasks: str | None = "load_tasks"
+    eval_tasks: str | None = "load_eval_tasks"
     game: str
     num_train_examples: int = 2000
     num_eval_examples: int = 20

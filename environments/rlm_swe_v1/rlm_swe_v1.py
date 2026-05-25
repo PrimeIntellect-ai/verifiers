@@ -21,7 +21,7 @@ DEFAULT_RLM_TOOLS = ("bash", "edit")
 
 
 class RlmSweTasksetConfig(vf.TasksetConfig):
-    tasks: str = f"{__name__}:load_tasks"
+    tasks: str = "load_tasks"
     taskset_id: str = "swe/r2e"
     dataset_name: str = DEFAULT_DATASET_NAME
     repo_path: str = DEFAULT_REPO_PATH

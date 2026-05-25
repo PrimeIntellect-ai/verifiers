@@ -27,8 +27,8 @@ def test_init_v1_writes_thin_taskset_template(tmp_path: Path) -> None:
 
     assert "def load_tasks() -> vf.Tasks:" in content
     assert "class BarTasksetConfig(vf.TasksetConfig):" in content
-    assert 'tasks: str = "bar:load_tasks"' in content
-    assert 'rewards: list[str] = ["bar:correct_answer"]' in content
+    assert 'tasks: str = "load_tasks"' in content
+    assert 'rewards: list[str] = ["correct_answer"]' in content
     assert "def load_taskset(config: BarTasksetConfig) -> vf.Taskset:" in content
     assert "vf.load_taskset(config=config.taskset)" in content
     assert "class EnvTaskset(" not in content
@@ -78,4 +78,4 @@ def test_init_v1_multifile_exports_component_loaders(tmp_path: Path) -> None:
 
     assert "from .pkg_env import load_environment, load_taskset" in init_content
     assert "__all__ = ['load_environment', 'load_taskset']" in init_content
-    assert 'tasks: str = "pkg_env.pkg_env:load_tasks"' in env_content
+    assert 'tasks: str = "load_tasks"' in env_content

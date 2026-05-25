@@ -736,14 +736,14 @@ def load_tasks(split: str = "train") -> vf.Tasks:
 
 
 @vf.reward(weight=1.0)
-async def reward_fn(task, state) -> float:
+async def contains_answer(task, state) -> float:
     return float(task["answer"] in str(state.get("completion") or ""))
 
 
 class MyTasksetConfig(vf.TasksetConfig):
     split: str = "train"
-    tasks: str = "my_env:load_tasks"
-    rewards: list[str] = ["my_env:reward_fn"]
+    tasks: str = "load_tasks"
+    rewards: list[str] = ["contains_answer"]
 
 
 def load_taskset(config: MyTasksetConfig) -> vf.Taskset:

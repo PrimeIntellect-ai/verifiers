@@ -30,7 +30,7 @@ from .utils.endpoint_utils import (
     assistant_completion_from_messages,
     run_intercepted_program,
 )
-from .utils.config_utils import coerce_config
+from .utils.config_utils import coerce_config, config_ref_context
 from .utils.runtime_owner_utils import RuntimeOwnerMixin
 from .utils.json_utils import json_args
 from .utils.mcp_proxy_utils import (
@@ -80,39 +80,40 @@ class Harness(RuntimeOwnerMixin):
 
     def __init__(self, config: ConfigSource = None):
         self.config = coerce_config(HarnessConfig, config)
-        program_config = self._defaulted("program", type(self)._default_program)
-        program_value = resolve_config_object(program_config)
-        if isinstance(program_value, ProgramConfig):
-            program_value = program_value.model_dump(
-                exclude_none=True,
-                exclude_unset=True,
-                exclude_defaults=True,
+        with config_ref_context(self.config):
+            program_config = self._defaulted("program", type(self)._default_program)
+            program_value = resolve_config_object(program_config)
+            if isinstance(program_value, ProgramConfig):
+                program_value = program_value.model_dump(
+                    exclude_none=True,
+                    exclude_unset=True,
+                    exclude_defaults=True,
+                )
+            self.program = cast(Handler | ProgramMap | None, program_value)
+            self.system_prompt = normalize_system_prompt(
+                self.config.system_prompt, field_name="harness.system_prompt"
             )
-        self.program = cast(Handler | ProgramMap | None, program_value)
-        self.system_prompt = normalize_system_prompt(
-            self.config.system_prompt, field_name="harness.system_prompt"
-        )
-        self.system_prompt_merge = self.config.system_prompt_merge
-        self._init_runtime_user()
-        self.bindings = dict(self.config.bindings)
-        self.sandbox = sandbox_config_mapping(self.config.sandbox)
-        self.client = cast(
-            ModelClient | None,
-            resolve_config_object(self.config.client),
-        )
-        self.model = self.config.model
-        self.sampling_args = cast(SamplingArgs, self.config.sampling_args)
-        self._init_runtime_toolsets()
-        self._init_runtime_handlers(base_metrics=(num_turns,))
-        keep_step_value = resolve_config_object(self.config.keep_trajectory_step)
-        if keep_step_value is not None and not callable(keep_step_value):
-            raise TypeError("keep_trajectory_step must be callable.")
-        self.keep_trajectory_step = cast(Handler | None, keep_step_value)
-        self._configure_runtime_defaults()
-        self.taskset: "Taskset | None" = None
-        self.runtime = self.resolve_runtime()
-        self.endpoint = Endpoint(use_tunnel=self.program_uses_sandbox())
-        self._program = self.compile_program(self.program)
+            self.system_prompt_merge = self.config.system_prompt_merge
+            self._init_runtime_user()
+            self.bindings = dict(self.config.bindings)
+            self.sandbox = sandbox_config_mapping(self.config.sandbox)
+            self.client = cast(
+                ModelClient | None,
+                resolve_config_object(self.config.client),
+            )
+            self.model = self.config.model
+            self.sampling_args = cast(SamplingArgs, self.config.sampling_args)
+            self._init_runtime_toolsets()
+            self._init_runtime_handlers(base_metrics=(num_turns,))
+            keep_step_value = resolve_config_object(self.config.keep_trajectory_step)
+            if keep_step_value is not None and not callable(keep_step_value):
+                raise TypeError("keep_trajectory_step must be callable.")
+            self.keep_trajectory_step = cast(Handler | None, keep_step_value)
+            self._configure_runtime_defaults()
+            self.taskset: "Taskset | None" = None
+            self.runtime = self.resolve_runtime()
+            self.endpoint = Endpoint(use_tunnel=self.program_uses_sandbox())
+            self._program = self.compile_program(self.program)
 
     @classmethod
     def config_schema(cls) -> str:

@@ -153,13 +153,11 @@ TASKS: list[vf.ConfigData] = [
 
 
 class SelfJudgeTasksetConfig(vf.TasksetConfig):
-    tasks: str = f"{__name__}:load_tasks"
-    toolsets: dict[str, dict[str, str]] = {
-        "bash": {"fn": f"{__name__}:load_bash_toolset"}
-    }
-    updates: list[str] = [f"{__name__}:sandbox_judge"]
-    rewards: list[str] = [f"{__name__}:self_consistency_score"]
-    metrics: list[str] = [f"{__name__}:bash_calls"]
+    tasks: str = "load_tasks"
+    toolsets: dict[str, dict[str, str]] = {"bash": {"fn": "load_bash_toolset"}}
+    updates: list[str] = ["sandbox_judge"]
+    rewards: list[str] = ["self_consistency_score"]
+    metrics: list[str] = ["bash_calls"]
     system_prompt: str = SYSTEM_PROMPT
     num_examples: int = -1
 

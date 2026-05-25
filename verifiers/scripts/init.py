@@ -172,8 +172,8 @@ async def correct_answer(task: vf.Task, state: vf.State) -> float:
 
 class {taskset_config_name}(vf.TasksetConfig):
     system_prompt: str = SYSTEM_PROMPT
-    tasks: str = "{module_name}:load_tasks"
-    rewards: list[str] = ["{module_name}:correct_answer"]
+    tasks: str = "load_tasks"
+    rewards: list[str] = ["correct_answer"]
 
 
 def load_taskset(config: {taskset_config_name}) -> vf.Taskset:
@@ -202,8 +202,8 @@ async def correct_answer(task: vf.Task, state: vf.State) -> float:
 
 class {taskset_config_name}(vf.TasksetConfig):
     system_prompt: str = SYSTEM_PROMPT
-    tasks: str = "{module_name}:load_tasks"
-    rewards: list[str] = ["{module_name}:correct_answer"]
+    tasks: str = "load_tasks"
+    rewards: list[str] = ["correct_answer"]
 
 
 class {harness_config_name}(vf.HarnessConfig):
@@ -419,9 +419,6 @@ def init_environment(
 
     env_id_dash = env.replace("_", "-")
     env_id_underscore = env_id_dash.replace("-", "_")
-    module_name = (
-        f"{env_id_underscore}.{env_id_underscore}" if multi_file else env_id_underscore
-    )
     taskset_config_name = _class_name(env_id_underscore, "TasksetConfig")
     harness_config_name = _class_name(env_id_underscore, "HarnessConfig")
     harness_name = _class_name(env_id_underscore, "Harness")
@@ -493,7 +490,6 @@ def init_environment(
             template = V0_ENVIRONMENT_TEMPLATE
         environment_file.write_text(
             template.replace("{env_id_dash}", env_id_dash)
-            .replace("{module_name}", module_name)
             .replace("{taskset_config_name}", taskset_config_name)
             .replace("{harness_config_name}", harness_config_name)
             .replace("{harness_name}", harness_name)

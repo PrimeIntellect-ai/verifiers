@@ -56,11 +56,13 @@ class HelloRLMTaskset(vf.Taskset):
     pass
 
 
+class HelloRLMTasksetConfig(vf.TasksetConfig):
+    tasks: str = "load_tasks"
+    rewards: list[str] = ["exact_answer"]
+
+
 class HelloRLMEnvConfig(vf.EnvConfig):
-    taskset: vf.TasksetConfig = vf.TasksetConfig(
-        tasks=f"{__name__}:load_tasks",
-        rewards=[f"{__name__}:exact_answer"],
-    )
+    taskset: HelloRLMTasksetConfig = HelloRLMTasksetConfig()
     harness: vf.RLMConfig = vf.RLMConfig()
 
 

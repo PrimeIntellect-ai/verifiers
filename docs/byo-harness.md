@@ -57,8 +57,8 @@ async def contains_answer(task, state) -> float:
 
 class ReverseTasksetConfig(vf.TasksetConfig):
     split: str = "train"
-    tasks: str = "reverse_text:load_tasks"
-    rewards: list[str] = ["reverse_text:contains_answer"]
+    tasks: str = "load_tasks"
+    rewards: list[str] = ["contains_answer"]
 
 
 def load_taskset(config: ReverseTasksetConfig) -> vf.Taskset:
@@ -76,7 +76,9 @@ def load_environment(config: vf.EnvConfig) -> vf.Env:
 
 Tasksets own row loading through a module-level loader referenced by config.
 Config should hold user-facing knobs, such as dataset name, split, or size
-limits; the loader accepts those knobs and returns `vf.Tasks`.
+limits; the loader accepts those knobs and returns `vf.Tasks`. Bare refs such
+as `"load_tasks"` resolve from the module that defines the config class; use
+`"package.module:load_tasks"` only when pointing at another module.
 
 ```python
 from datasets import load_dataset
@@ -84,7 +86,7 @@ import verifiers as vf
 
 
 class GSM8KTasksetConfig(vf.TasksetConfig):
-    tasks: str = "my_env:load_tasks"
+    tasks: str = "load_tasks"
     dataset_name: str = "gsm8k"
     split: str = "train"
 
@@ -153,10 +155,10 @@ def load_tasks() -> vf.Tasks:
 
 
 class ExtractTasksetConfig(vf.TasksetConfig):
-    tasks: str = "my_env:load_tasks"
-    rewards: list[str] = ["my_env:exact"]
+    tasks: str = "load_tasks"
+    rewards: list[str] = ["exact"]
     objects: dict[str, str] = {
-        "extract_answer": "my_env:build_answer_extractor",
+        "extract_answer": "build_answer_extractor",
     }
     bindings: dict[str, str] = {
         "exact.extract_answer": "objects.extract_answer",
@@ -277,7 +279,11 @@ def load_tasks() -> vf.Tasks:
     ]
 
 
-taskset = vf.Taskset(config=vf.TasksetConfig(tasks="my_env:load_tasks"))
+class SearchTasksetConfig(vf.TasksetConfig):
+    tasks: str = "load_tasks"
+
+
+taskset = vf.Taskset(config=SearchTasksetConfig())
 taskset.add_toolset(toolset)
 ```
 
@@ -402,8 +408,8 @@ def load_tasks() -> vf.Tasks:
 
 
 class ReplayTasksetConfig(vf.TasksetConfig):
-    tasks: str = "my_env:load_tasks"
-    rewards: list[str] = ["my_env:exact"]
+    tasks: str = "load_tasks"
+    rewards: list[str] = ["exact"]
 
 
 class ReplayHarnessConfig(vf.HarnessConfig):

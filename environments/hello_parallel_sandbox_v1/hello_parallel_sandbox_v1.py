@@ -132,18 +132,18 @@ PROGRAM_SANDBOX = {
 
 
 class ParallelSandboxTasksetConfig(vf.TasksetConfig):
-    tasks: str = f"{__name__}:load_tasks"
+    tasks: str = "load_tasks"
     toolsets: dict[str, vf.ToolsetConfig] = {
         "bash": vf.ToolsetConfig(
-            tools=[f"{__name__}:bash"],
+            tools=["bash"],
             write=True,
             sandbox="program",
         )
     }
-    updates: list[str] = [f"{__name__}:parallel_sandbox_audit"]
-    rewards: list[str] = [f"{__name__}:sandbox_stage_score"]
-    metrics: list[str] = [f"{__name__}:bash_calls", f"{__name__}:update_audits"]
-    cleanups: list[str] = [f"{__name__}:collect_program_sandbox_commands"]
+    updates: list[str] = ["parallel_sandbox_audit"]
+    rewards: list[str] = ["sandbox_stage_score"]
+    metrics: list[str] = ["bash_calls", "update_audits"]
+    cleanups: list[str] = ["collect_program_sandbox_commands"]
     system_prompt: str = SYSTEM_PROMPT
     num_examples: int = -1
 

@@ -163,8 +163,8 @@ async def contains_answer(task, state) -> float:
 
 class MyTasksetConfig(vf.TasksetConfig):
     split: str = "train"
-    tasks: str = "my_env:load_tasks"
-    rewards: list[str] = ["my_env:contains_answer"]
+    tasks: str = "load_tasks"
+    rewards: list[str] = ["contains_answer"]
 
 
 def load_taskset(config: MyTasksetConfig) -> vf.Taskset:
