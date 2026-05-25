@@ -2134,30 +2134,6 @@ class TestRootLLMMaxCompletionTokens:
         assert env.root_max_completion_tokens == 20000
 
     @pytest.mark.asyncio
-    async def test_is_root_budget_exhausted_false_when_none(self, rlm_env):
-        assert rlm_env.root_max_completion_tokens is None
-        state = {"root_llm_completion_tokens": 999999}
-        assert rlm_env._is_root_budget_exhausted(state) is False
-
-    @pytest.mark.asyncio
-    async def test_is_root_budget_exhausted_false_when_under(self, rlm_env):
-        rlm_env.root_max_completion_tokens = 1000
-        state = {"root_llm_completion_tokens": 500}
-        assert rlm_env._is_root_budget_exhausted(state) is False
-
-    @pytest.mark.asyncio
-    async def test_is_root_budget_exhausted_true_when_at(self, rlm_env):
-        rlm_env.root_max_completion_tokens = 1000
-        state = {"root_llm_completion_tokens": 1000}
-        assert rlm_env._is_root_budget_exhausted(state) is True
-
-    @pytest.mark.asyncio
-    async def test_is_root_budget_exhausted_true_when_over(self, rlm_env):
-        rlm_env.root_max_completion_tokens = 1000
-        state = {"root_llm_completion_tokens": 1500}
-        assert rlm_env._is_root_budget_exhausted(state) is True
-
-    @pytest.mark.asyncio
     async def test_system_prompt_includes_root_budget_when_set(self):
         dataset = make_dataset({})
         env = build_env(

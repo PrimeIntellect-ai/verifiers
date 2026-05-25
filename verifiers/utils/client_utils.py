@@ -94,16 +94,6 @@ def _build_http_client(
     )
 
 
-def parse_chat_completion_with_routed_experts_sidecar(raw: bytes) -> ChatCompletion:
-    stripped, routed_data = strip_routed_experts_data(raw)
-    response = ChatCompletion.model_validate_json(stripped)
-    if routed_data is not None:
-        choice_extra = response.choices[0].model_extra
-        assert choice_extra is not None
-        choice_extra["routed_experts"]["data"] = routed_data
-    return response
-
-
 async def post_chat_completion_with_routed_experts_sidecar(
     client: AsyncOpenAI,
     path: str,
@@ -117,36 +107,34 @@ async def post_chat_completion_with_routed_experts_sidecar(
         cast_to=httpx.Response,
         options={"headers": extra_headers} if extra_headers else {},
     )
-    return parse_chat_completion_with_routed_experts_sidecar(raw_response.content)
-
-
-def _setup_openai_client_from_resolved(config: ClientConfig) -> AsyncOpenAI:
-    headers, api_key = _build_headers_and_api_key(config)
-    return AsyncOpenAI(
-        api_key=api_key or "EMPTY",
-        base_url=config.api_base_url,
-        max_retries=config.max_retries,
-        http_client=_build_http_client(config, headers),
-    )
+    stripped, routed_data = strip_routed_experts_data(raw_response.content)
+    response = ChatCompletion.model_validate_json(stripped)
+    if routed_data is not None:
+        choice_extra = response.choices[0].model_extra
+        assert choice_extra is not None
+        choice_extra["routed_experts"]["data"] = routed_data
+    return response
 
 
 def setup_openai_client(config: ClientConfig) -> AsyncOpenAI:
     """Setup an AsyncOpenAI client from config."""
     resolved_config = resolve_client_config(config)
-    return _setup_openai_client_from_resolved(resolved_config)
-
-
-def _setup_anthropic_client_from_resolved(config: ClientConfig) -> AsyncAnthropic:
-    headers, api_key = _build_headers_and_api_key(config)
-    return AsyncAnthropic(
+    headers, api_key = _build_headers_and_api_key(resolved_config)
+    return AsyncOpenAI(
         api_key=api_key or "EMPTY",
-        base_url=config.api_base_url,
-        max_retries=config.max_retries,
-        http_client=_build_http_client(config, headers),
+        base_url=resolved_config.api_base_url,
+        max_retries=resolved_config.max_retries,
+        http_client=_build_http_client(resolved_config, headers),
     )
 
 
 def setup_anthropic_client(config: ClientConfig) -> AsyncAnthropic:
     """Setup an AsyncAnthropic client from config."""
     resolved_config = resolve_client_config(config)
-    return _setup_anthropic_client_from_resolved(resolved_config)
+    headers, api_key = _build_headers_and_api_key(resolved_config)
+    return AsyncAnthropic(
+        api_key=api_key or "EMPTY",
+        base_url=resolved_config.api_base_url,
+        max_retries=resolved_config.max_retries,
+        http_client=_build_http_client(resolved_config, headers),
+    )

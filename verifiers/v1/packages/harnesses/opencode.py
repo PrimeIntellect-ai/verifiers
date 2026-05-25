@@ -222,7 +222,7 @@ set -e
 export PATH="$HOME/.opencode/bin:$PATH"
 
 OPENCODE_WORKDIR="${{AGENT_WORKDIR:-}}"
-if [[ -z "$OPENCODE_WORKDIR" ]]; then
+if [ -z "$OPENCODE_WORKDIR" ]; then
     OPENCODE_WORKDIR={shlex.quote(agent_workdir)}
 fi
 

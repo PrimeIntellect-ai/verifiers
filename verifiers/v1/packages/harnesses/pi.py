@@ -42,7 +42,11 @@ class Pi(Harness):
         ]
 
     def setup(self, config: PiConfig) -> str:
-        return build_pi_install_script(package=config.package)
+        return f"""\
+set -e
+apt-get -o Acquire::Retries=3 update -qq && apt-get -o Acquire::Retries=3 install -y -qq curl ca-certificates nodejs npm > /dev/null 2>&1
+npm install -g --ignore-scripts {shlex.quote(config.package)}
+"""
 
     def artifacts(self, config: PiConfig) -> ProgramOptionMap:
         return {
@@ -69,14 +73,6 @@ class Pi(Harness):
 
 def load_harness(config: PiConfig) -> Pi:
     return Pi(config=config)
-
-
-def build_pi_install_script(package: str) -> str:
-    return f"""\
-set -e
-apt-get -o Acquire::Retries=3 update -qq && apt-get -o Acquire::Retries=3 install -y -qq curl ca-certificates nodejs npm > /dev/null 2>&1
-npm install -g --ignore-scripts {shlex.quote(package)}
-"""
 
 
 def build_pi_mcp_setup(
@@ -114,7 +110,7 @@ EOFMCP
 set -e
 
 PI_WORKDIR="${{AGENT_WORKDIR:-}}"
-if [[ -z "$PI_WORKDIR" ]]; then
+if [ -z "$PI_WORKDIR" ]; then
     PI_WORKDIR={shlex.quote(agent_workdir)}
 fi
 

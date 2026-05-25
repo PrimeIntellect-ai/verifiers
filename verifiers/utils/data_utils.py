@@ -29,33 +29,26 @@ def extract_boxed_answer(text: str, strict: bool = False) -> str:
             as a general text extractor).
     """
 
-    def find_matching_brace(s: str, start: int) -> int:
-        count = 1
-        i = start
-        while i < len(s) and count > 0:
-            if s[i] == "{":
-                count += 1
-            elif s[i] == "}":
-                count -= 1
-            i += 1
-        return i - 1 if count == 0 else -1
-
     # Find last \boxed{
     boxed_start = text.rfind("\\boxed{")
     if boxed_start == -1:
         return "" if strict else text
     # Find the content between the braces
     content_start = boxed_start + 7  # len('\\boxed{')
-    closing_brace = find_matching_brace(text, content_start)
+    brace_count = 1
+    closing_brace = content_start
+    while closing_brace < len(text) and brace_count > 0:
+        if text[closing_brace] == "{":
+            brace_count += 1
+        elif text[closing_brace] == "}":
+            brace_count -= 1
+        closing_brace += 1
+    closing_brace = closing_brace - 1 if brace_count == 0 else -1
 
     if closing_brace == -1:
         return "" if strict else text
 
     return text[content_start:closing_brace]
-
-
-def strip_non_numeric(text: str) -> str:
-    return "".join(c for c in text if c.isdigit() or c == ".")
 
 
 def extract_hash_answer(text: str) -> str:
@@ -79,7 +72,7 @@ def get_preprocess_fn(name: str) -> Callable[[dict], dict]:
         def preprocess_aime2025(x: dict[str, Any]) -> dict[str, Any]:
             return {
                 "question": x["question"],
-                "answer": strip_non_numeric(x["answer"]),
+                "answer": "".join(c for c in x["answer"] if c.isdigit() or c == "."),
             }
 
         return preprocess_aime2025
