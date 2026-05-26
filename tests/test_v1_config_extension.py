@@ -1136,7 +1136,7 @@ def test_taskset_load_toolsets_adds_class_owned_toolsets() -> None:
     assert taskset.named_toolsets["direct"].tools == (direct_tool,)
 
 
-def test_taskset_config_toolsets_extend_class_owned_toolsets() -> None:
+def test_taskset_config_toolsets_collects_class_and_config_toolsets() -> None:
     class ToolsetTaskset(Taskset):
         def load_toolsets(self) -> vf.Toolsets:
             return {"direct": Toolset(tools=[direct_tool])}
@@ -1164,7 +1164,7 @@ def test_taskset_explicit_none_toolsets_disables_class_owned_toolsets() -> None:
     assert taskset.named_toolsets == {}
 
 
-def test_taskset_duplicate_toolsets_raise_between_class_and_config() -> None:
+def test_taskset_duplicate_toolset_names_raise_between_class_and_config() -> None:
     class ToolsetTaskset(Taskset):
         def load_toolsets(self) -> vf.Toolsets:
             return {"direct": Toolset(tools=[direct_tool])}

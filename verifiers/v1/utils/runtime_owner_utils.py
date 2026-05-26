@@ -1,7 +1,7 @@
 from collections.abc import Iterable
 
 from ..config import Config
-from ..toolset import Toolset, Toolsets, merge_toolsets, normalize_toolset_collection
+from ..toolset import Toolset, Toolsets, collect_toolsets, normalize_toolset_collection
 from ..types import Handler
 from ..user import normalize_user
 from .config_callable_utils import CallableKind, merge_config_handler_map
@@ -45,7 +45,7 @@ class RuntimeOwnerMixin:
         load_toolsets = getattr(self, "load_toolsets", None)
         if callable(load_toolsets):
             class_toolsets = load_toolsets()
-        self.toolsets, self.named_toolsets = merge_toolsets(
+        self.toolsets, self.named_toolsets = collect_toolsets(
             class_toolsets, config_toolsets
         )
 
