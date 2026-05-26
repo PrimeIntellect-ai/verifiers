@@ -23,7 +23,6 @@ from renderers import (
     RenderedTokens,
     Renderer,
     RendererPool,
-    ToolCallParseStatus,
     ToolSpec,
     create_renderer_pool,
     is_multimodal,
@@ -579,20 +578,18 @@ class RendererClient(
             case _:
                 finish_reason = None
 
-        # renderers >=0.1.8.dev1 emits ParsedToolCall dataclasses (with .name,
-        # .arguments, .status, .id). Skip non-OK attempts — they're surfaced
-        # on the parsed response so trainers can inspect, but verifiers'
-        # tool-loop only acts on well-formed calls.
+        # Forward any ``ParsedToolCall`` with a ``name`` regardless of
+        # ``.status``: argument errors surface to the model as tool-role
+        # validation messages via the env's ``call_tool`` for self-
+        # correction, instead of an empty ``tool_calls`` that terminates
+        # the rollout via ``no_tools_called``. ``status`` stays on each
+        # call for downstream filtering.
         tool_calls = None
         raw_tcs = response.get("tool_calls") or []
-        ok_tcs = [
-            tc
-            for tc in raw_tcs
-            if isinstance(tc, ParsedToolCall)
-            and tc.status == ToolCallParseStatus.OK
-            and tc.name
+        usable_tcs = [
+            tc for tc in raw_tcs if isinstance(tc, ParsedToolCall) and tc.name
         ]
-        if ok_tcs:
+        if usable_tcs:
             tool_calls = [
                 ToolCall(
                     id=tc.id or f"call_{i}",
@@ -603,7 +600,7 @@ class RendererClient(
                         else json.dumps(tc.arguments or {})
                     ),
                 )
-                for i, tc in enumerate(ok_tcs)
+                for i, tc in enumerate(usable_tcs)
             ]
 
         prompt_ids = response.get("prompt_ids", [])
