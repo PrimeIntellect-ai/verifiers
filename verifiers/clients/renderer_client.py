@@ -15,8 +15,6 @@ from typing import Any, ClassVar, cast
 
 from openai import AsyncOpenAI
 
-from pydantic import ValidationError
-
 from renderers import Message as RendererMessage
 from renderers import OverlongPromptError as RendererOverlongPromptError
 from renderers import (
@@ -405,28 +403,20 @@ def _resolve_renderer_config(
 
     # Resolve auto → concrete (mirrors ``renderers._resolve_auto``) so
     # ``enable_thinking`` etc. validate against the right schema instead of
-    # ``AutoRendererConfig``'s minimal one.
+    # ``AutoRendererConfig``'s minimal one. Carries ``preserve_*`` across.
     if base is None or isinstance(base, AutoRendererConfig):
         renderer_name = MODEL_RENDERER_MAP.get(model, "default")
-        resolved = config_from_name(renderer_name)
-        assert resolved is not None  # only "auto" returns None; excluded above
+        concrete = config_from_name(renderer_name)
         if isinstance(base, AutoRendererConfig):
-            resolved = type(resolved).model_validate(
-                {
-                    **resolved.model_dump(),
+            concrete = concrete.model_copy(
+                update={
                     "preserve_all_thinking": base.preserve_all_thinking,
                     "preserve_thinking_between_tool_calls": base.preserve_thinking_between_tool_calls,
                 }
             )
-        base = resolved
+        base = concrete
 
-    merged = {**base.model_dump(), **chat_template_kwargs}
-    try:
-        return type(base).model_validate(merged)
-    except ValidationError as e:
-        raise ValueError(
-            f"chat_template_kwargs are incompatible with {type(base).__name__}: {e}"
-        ) from e
+    return type(base).model_validate({**base.model_dump(), **chat_template_kwargs})
 
 
 class RendererClient(

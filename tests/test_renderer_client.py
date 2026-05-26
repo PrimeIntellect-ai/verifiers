@@ -82,108 +82,32 @@ def test_renderer_client_uses_renderer_model_name_override():
     )
 
 
-def test_renderer_client_merges_chat_template_kwargs_into_renderer_config():
-    """``sampling_args.extra_body.chat_template_kwargs`` flow into the typed
-    RendererConfig (the renderer pool is built with the merged config) and
-    are stripped from the params forwarded to /generate."""
-    from renderers import Qwen3RendererConfig
-
-    RendererClient._shared_pools.clear()
-
-    base_cfg = Qwen3RendererConfig(enable_thinking=True)
-    client = object.__new__(RendererClient)
-    client._renderer = None
-    client._pool_size = 1
-    client._config = vf.ClientConfig(client_type="renderer", renderer_config=base_cfg)
-    client._client = object()  # type: ignore[attr-defined]
-
-    sentinel_pool = RendererPool.__new__(RendererPool)
-    captured: dict = {}
-
-    async def _fake_generate(**kwargs):
-        captured.update(kwargs)
-        return {"content": "ok"}
-
-    with (
-        patch(
-            "verifiers.clients.renderer_client.create_renderer_pool",
-            return_value=sentinel_pool,
-        ) as create_pool_mock,
-        patch("verifiers.clients.renderer_client.generate", side_effect=_fake_generate),
-    ):
-        asyncio.run(
-            client.get_native_response(
-                prompt=[{"role": "user", "content": "hi"}],
-                model="Qwen/Qwen3-8B",
-                sampling_args={
-                    "extra_body": {
-                        "chat_template_kwargs": {"enable_thinking": False},
-                        "top_k": 20,
-                    }
-                },
-                tools=None,
-            )
-        )
-
-    create_pool_mock.assert_called_once_with(
-        "Qwen/Qwen3-8B",
-        Qwen3RendererConfig(enable_thinking=False),
-        size=1,
-    )
-    assert captured["sampling_params"] == {"top_k": 20}
-
-
-def test_renderer_client_rejects_invalid_chat_template_kwargs():
-    """Unknown / mistyped chat_template_kwargs surface as a clear ValueError
-    via pydantic's ``extra="forbid"`` on the typed RendererConfig."""
-    from renderers import Qwen3RendererConfig
-
-    RendererClient._shared_pools.clear()
-
-    client = object.__new__(RendererClient)
-    client._renderer = None
-    client._pool_size = 1
-    client._config = vf.ClientConfig(
-        client_type="renderer", renderer_config=Qwen3RendererConfig()
-    )
-    client._client = object()  # type: ignore[attr-defined]
-
-    with pytest.raises(ValueError, match="Qwen3RendererConfig"):
-        asyncio.run(
-            client.get_native_response(
-                prompt=[{"role": "user", "content": "hi"}],
-                model="Qwen/Qwen3-8B",
-                sampling_args={
-                    "extra_body": {
-                        "chat_template_kwargs": {"enable_thinkng": False},  # typo
-                    }
-                },
-                tools=None,
-            )
-        )
-
-
-def test_renderer_client_auto_resolves_for_chat_template_kwargs():
-    """With no explicit ``renderer_config`` (or ``AutoRendererConfig`` —
-    the prime-rl default), chat_template_kwargs still flow through:
-    ``MODEL_RENDERER_MAP`` is consulted up front so kwargs validate against
-    the concrete renderer's schema (``Qwen3RendererConfig`` here)."""
+def test_renderer_client_threads_chat_template_kwargs_into_pool():
+    """``sampling_args.extra_body.chat_template_kwargs`` land on the
+    concrete RendererConfig (resolving Auto/None against
+    ``MODEL_RENDERER_MAP`` when needed) and are stripped from the params
+    forwarded to /generate. Covers explicit / Auto / None bases."""
     from renderers import AutoRendererConfig, Qwen3RendererConfig
 
-    for base in (None, AutoRendererConfig(preserve_all_thinking=True)):
+    bases = [
+        Qwen3RendererConfig(enable_thinking=True),
+        AutoRendererConfig(preserve_all_thinking=True),
+        None,
+    ]
+    for base in bases:
         RendererClient._shared_pools.clear()
 
         client = object.__new__(RendererClient)
         client._renderer = None
         client._pool_size = 1
-        client._config = vf.ClientConfig(
-            client_type="renderer", renderer_config=base
-        )
+        client._config = vf.ClientConfig(client_type="renderer", renderer_config=base)
         client._client = object()  # type: ignore[attr-defined]
 
         sentinel_pool = RendererPool.__new__(RendererPool)
+        captured: dict = {}
 
         async def _fake_generate(**kwargs):
+            captured.update(kwargs)
             return {"content": "ok"}
 
         with (
@@ -202,7 +126,8 @@ def test_renderer_client_auto_resolves_for_chat_template_kwargs():
                     model="Qwen/Qwen3-8B",
                     sampling_args={
                         "extra_body": {
-                            "chat_template_kwargs": {"enable_thinking": False}
+                            "chat_template_kwargs": {"enable_thinking": False},
+                            "top_k": 20,
                         }
                     },
                     tools=None,
@@ -210,7 +135,9 @@ def test_renderer_client_auto_resolves_for_chat_template_kwargs():
             )
 
         expected_preserve_all = (
-            base.preserve_all_thinking if base is not None else False
+            base.preserve_all_thinking
+            if isinstance(base, AutoRendererConfig)
+            else False
         )
         create_pool_mock.assert_called_once_with(
             "Qwen/Qwen3-8B",
@@ -219,6 +146,38 @@ def test_renderer_client_auto_resolves_for_chat_template_kwargs():
                 preserve_all_thinking=expected_preserve_all,
             ),
             size=1,
+        )
+        assert captured["sampling_params"] == {"top_k": 20}
+
+
+def test_renderer_client_rejects_invalid_chat_template_kwargs():
+    """Unknown / mistyped chat_template_kwargs surface as a pydantic
+    ``ValidationError`` (``extra="forbid"`` on the typed RendererConfig)."""
+    from pydantic import ValidationError
+    from renderers import Qwen3RendererConfig
+
+    RendererClient._shared_pools.clear()
+
+    client = object.__new__(RendererClient)
+    client._renderer = None
+    client._pool_size = 1
+    client._config = vf.ClientConfig(
+        client_type="renderer", renderer_config=Qwen3RendererConfig()
+    )
+    client._client = object()  # type: ignore[attr-defined]
+
+    with pytest.raises(ValidationError, match="enable_thinkng"):
+        asyncio.run(
+            client.get_native_response(
+                prompt=[{"role": "user", "content": "hi"}],
+                model="Qwen/Qwen3-8B",
+                sampling_args={
+                    "extra_body": {
+                        "chat_template_kwargs": {"enable_thinkng": False},  # typo
+                    }
+                },
+                tools=None,
+            )
         )
 
 
