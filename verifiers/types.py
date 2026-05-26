@@ -257,8 +257,12 @@ class TrajectoryStepTokens(TypedDict):
     # ``NotRequired`` because text-only rollouts (and non-renderer client
     # types) never populate it.
     multi_modal_data: NotRequired[Any]
-    # Renderer-emitted prompt attribution
-    # (``renderers.base.RenderedTokens``); ``NotRequired`` because only
+    # Renderer-emitted prompt attribution: ``dict`` form of
+    # ``renderers.base.RenderedTokens`` (converted via
+    # ``dataclasses.asdict`` at the ``parse_response_tokens`` boundary so
+    # the trajectory survives ``State.assert_serializable``'s
+    # ``json.dumps`` gate in the v1 contract). Downstream consumers
+    # rehydrate via ``RenderedTokens(**d)``. ``NotRequired`` because only
     # ``RendererClient`` rollouts populate it.
     prompt_attribution: NotRequired[Any]
 

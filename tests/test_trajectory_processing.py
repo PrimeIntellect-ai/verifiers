@@ -149,8 +149,12 @@ async def test_parse_response_tokens_with_overlong_prompt():
 @pytest.mark.asyncio
 async def test_parse_response_tokens_carries_prompt_attribution():
     """``prompt_attribution`` moves from ResponseTokens to the parsed
-    TrajectoryStepTokens; response-side ref is cleared (move-not-copy,
-    same policy as ``multi_modal_data``)."""
+    TrajectoryStepTokens as a JSON-safe ``dict`` (so ``state.trajectory``
+    survives ``State.assert_serializable`` in the v1 contract); the
+    response-side ref is cleared (move-not-copy, same policy as
+    ``multi_modal_data``)."""
+    import json
+
     from renderers.base import RenderedTokens
 
     attribution = RenderedTokens(
@@ -186,7 +190,20 @@ async def test_parse_response_tokens_carries_prompt_attribution():
     out = await parse_response_tokens(response)
 
     assert out is not None
-    assert out["prompt_attribution"] is attribution
+    out_attr = out["prompt_attribution"]
+    assert isinstance(out_attr, dict)
+    assert out_attr == {
+        "token_ids": [1, 2, 3, 4],
+        "message_indices": [0, 0, 1, 1],
+        "sampled_mask": [False, False, False, False],
+        "is_content": [False, True, False, True],
+        "message_roles": ["user", "tool"],
+        "multi_modal_data": None,
+    }
+    # JSON-serializable end-to-end (the whole point of the conversion).
+    json.dumps(out_attr)
+    # Round-trips back to the dataclass for downstream consumers.
+    assert RenderedTokens(**out_attr) == attribution
     assert tokens_in.prompt_attribution is None
 
 
@@ -231,11 +248,12 @@ async def test_parse_response_tokens_truncates_prompt_attribution_with_overlong_
     assert tokens is not None
     assert tokens["overlong_prompt"] is True
     out_attr = tokens["prompt_attribution"]
-    assert out_attr.token_ids == [10, 11, 12]
-    assert out_attr.message_indices == [0, 0, 1]
-    assert out_attr.sampled_mask == [False, False, False]
-    assert out_attr.is_content == [False, True, False]
-    assert out_attr.message_roles == ["user", "tool"]
+    assert isinstance(out_attr, dict)
+    assert out_attr["token_ids"] == [10, 11, 12]
+    assert out_attr["message_indices"] == [0, 0, 1]
+    assert out_attr["sampled_mask"] == [False, False, False]
+    assert out_attr["is_content"] == [False, True, False]
+    assert out_attr["message_roles"] == ["user", "tool"]
 
 
 def test_process_trajectory_steps_for_training(make_input):
