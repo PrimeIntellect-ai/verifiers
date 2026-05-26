@@ -594,19 +594,12 @@ class RendererClient(
             case _:
                 finish_reason = None
 
-        # renderers >=0.1.8.dev1 emits ParsedToolCall dataclasses (with .name,
-        # .arguments, .status, .id). Pass through any call the parser
-        # extracted a ``name`` for, regardless of ``status``: the env's
-        # ``call_tool`` will Pydantic-validate the arguments and surface
-        # any failure as a tool-role error message, which the model is
-        # trained to read and self-correct from. Silently dropping a
-        # parsed call instead terminates the rollout via the
-        # ``no_tools_called`` stop predicate (env sees empty
-        # ``tool_calls`` and ends the trajectory), which is strictly
-        # worse than letting the env surface the error. ``status`` is
-        # retained on each ``ParsedToolCall`` for trainer telemetry —
-        # callers wanting strict OK-only training data can still filter
-        # on it themselves.
+        # Forward any ``ParsedToolCall`` with a ``name`` regardless of
+        # ``.status``: argument errors surface to the model as tool-role
+        # validation messages via the env's ``call_tool`` for self-
+        # correction, instead of an empty ``tool_calls`` that terminates
+        # the rollout via ``no_tools_called``. ``status`` stays on each
+        # call for downstream filtering.
         tool_calls = None
         raw_tcs = response.get("tool_calls") or []
         usable_tcs = [
