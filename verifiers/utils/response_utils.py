@@ -1,4 +1,5 @@
 import asyncio
+from typing import Any
 
 from verifiers.types import (
     AssistantMessage,
@@ -36,6 +37,32 @@ async def parse_response_message(response: Response) -> Messages:
     return [message]
 
 
+def _truncate_prompt_attribution(attribution: Any, prompt_len: int) -> Any:
+    """Slice a ``renderers.RenderedTokens`` prompt-attribution sidecar to
+    ``prompt_len`` tokens. ``message_roles`` and ``multi_modal_data``
+    pass through — they're per-message / per-modality, not per-token.
+    """
+    if attribution is None:
+        return None
+    from renderers.base import RenderedTokens
+
+    if not isinstance(attribution, RenderedTokens):
+        return attribution
+
+    return RenderedTokens(
+        token_ids=list(attribution.token_ids[:prompt_len]),
+        message_indices=list(attribution.message_indices[:prompt_len]),
+        sampled_mask=list(attribution.sampled_mask[:prompt_len])
+        if attribution.sampled_mask
+        else [],
+        is_content=list(attribution.is_content[:prompt_len])
+        if attribution.is_content
+        else [],
+        message_roles=list(attribution.message_roles),
+        multi_modal_data=attribution.multi_modal_data,
+    )
+
+
 async def parse_response_tokens(
     response: Response, max_seq_len: int | None = None
 ) -> TrajectoryStepTokens | None:
@@ -54,6 +81,7 @@ async def parse_response_tokens(
         completion_logprobs = tokens.completion_logprobs
         routed_experts = tokens.routed_experts
         multi_modal_data = tokens.multi_modal_data
+        prompt_attribution = tokens.prompt_attribution
 
         if max_seq_len is not None:
             prompt_len = len(prompt_ids)
@@ -66,6 +94,9 @@ async def parse_response_tokens(
                 completion_ids = []
                 completion_mask = []
                 completion_logprobs = []
+                prompt_attribution = _truncate_prompt_attribution(
+                    prompt_attribution, len(prompt_ids)
+                )
             elif prompt_len + completion_len > max_seq_len:
                 is_truncated = True
                 completion_ids = tokens.completion_ids[: max_seq_len - prompt_len]
@@ -97,6 +128,9 @@ async def parse_response_tokens(
             tokens.multi_modal_data = None
         if routed_experts is not None:
             tokens.routed_experts = None
+        if prompt_attribution is not None:
+            out["prompt_attribution"] = prompt_attribution
+            tokens.prompt_attribution = None
         return out
 
     return await asyncio.to_thread(_sync)

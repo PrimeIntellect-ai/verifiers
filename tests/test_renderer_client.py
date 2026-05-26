@@ -730,3 +730,122 @@ def test_get_native_response_translates_renderer_overlong_to_vf_overlong():
                     tools=None,
                 )
             )
+
+
+# ---------------------------------------------------------------------------
+# Renderer prompt_attribution pass-through.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_native_response_threads_prompt_attribution_into_generate():
+    """Bridge result's :class:`RenderedTokens` is passed through as
+    ``generate(prompt_attribution=...)`` and surfaces unchanged on the
+    result dict."""
+    bridged = RenderedTokens(
+        token_ids=[1, 2, 3, 4],
+        message_indices=[-1, -1, 0, 0],
+        sampled_mask=[False, False, False, False],
+        is_content=[False, False, False, True],
+        message_roles=["tool"],
+    )
+    captured: dict = {}
+
+    async def _fake_get_incremental(**kwargs):
+        return bridged
+
+    async def _fake_generate(**kwargs):
+        captured.update(kwargs)
+        return {
+            "request_id": "r-1",
+            "prompt_ids": list(bridged.token_ids),
+            "completion_ids": [5, 6],
+            "completion_logprobs": [-0.1, -0.2],
+            "content": "ok",
+            "reasoning_content": None,
+            "tool_calls": [],
+            "finish_reason": "stop",
+            "routed_experts": None,
+            "multi_modal_data": None,
+            "prompt_attribution": bridged,
+        }
+
+    client = object.__new__(RendererClient)
+    client._renderer = object()
+    client._pool_size = 1
+    client._config = vf.ClientConfig(client_type="renderer")
+    client._client = object()  # type: ignore[attr-defined]
+
+    with (
+        patch.object(RendererClient, "_get_renderer_or_pool", return_value=object()),
+        patch(
+            "verifiers.clients.renderer_client._get_incremental_prompt_ids",
+            side_effect=_fake_get_incremental,
+        ),
+        patch("verifiers.clients.renderer_client.generate", side_effect=_fake_generate),
+    ):
+        result = await client.get_native_response(
+            prompt=[
+                {"role": "user", "content": "first"},
+                {"role": "assistant", "content": "ok"},
+                {"role": "user", "content": "second"},
+            ],
+            model="test-model",
+            sampling_args={},
+            tools=None,
+            state={
+                "trajectory": [
+                    {
+                        "prompt": [{"role": "user", "content": "first"}],
+                        "completion": [{"role": "assistant", "content": "ok"}],
+                    }
+                ]
+            },
+        )
+
+    assert captured.get("prompt_attribution") is bridged
+    assert captured.get("prompt_ids") == list(bridged.token_ids)
+    assert result["prompt_attribution"] is bridged
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "attribution",
+    [
+        pytest.param(
+            RenderedTokens(
+                token_ids=[1, 2, 3],
+                message_indices=[0, 0, 0],
+                sampled_mask=[False, False, False],
+                is_content=[False, True, True],
+                message_roles=["user"],
+            ),
+            id="present",
+        ),
+        pytest.param(None, id="missing"),
+    ],
+)
+async def test_from_native_response_carries_prompt_attribution(attribution):
+    """``from_native_response`` lifts ``prompt_attribution`` from the raw
+    ``generate`` result dict onto :class:`ResponseTokens`. Missing key
+    resolves to ``None`` rather than ``KeyError``."""
+    client = object.__new__(RendererClient)
+    response_dict = {
+        "request_id": "r-2",
+        "content": "ok",
+        "reasoning_content": None,
+        "tool_calls": [],
+        "finish_reason": "stop",
+        "prompt_ids": [1, 2, 3],
+        "completion_ids": [4, 5],
+        "completion_logprobs": [-0.1, -0.2],
+        "routed_experts": None,
+        "multi_modal_data": None,
+    }
+    if attribution is not None:
+        response_dict["prompt_attribution"] = attribution
+
+    response = await client.from_native_response(response_dict)
+
+    assert response.message.tokens is not None
+    assert response.message.tokens.prompt_attribution is attribution

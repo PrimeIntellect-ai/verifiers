@@ -211,6 +211,10 @@ class ResponseTokens(CustomBaseModel):
     # multimodal-aware renderer; ``None`` otherwise. Stored as ``Any`` to
     # avoid a hard import dependency on ``renderers`` at this layer.
     multi_modal_data: Any | None = None
+    # Renderer-emitted per-token prompt attribution
+    # (``renderers.base.RenderedTokens``); ``None`` for non-renderer
+    # clients. ``Any`` for the same reason as ``multi_modal_data``.
+    prompt_attribution: Any | None = None
 
 
 FinishReason = Literal["stop", "length", "tool_calls"] | None
@@ -253,6 +257,10 @@ class TrajectoryStepTokens(TypedDict):
     # ``NotRequired`` because text-only rollouts (and non-renderer client
     # types) never populate it.
     multi_modal_data: NotRequired[Any]
+    # Renderer-emitted prompt attribution
+    # (``renderers.base.RenderedTokens``); ``NotRequired`` because only
+    # ``RendererClient`` rollouts populate it.
+    prompt_attribution: NotRequired[Any]
 
 
 class TokenUsage(TypedDict):
