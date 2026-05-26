@@ -20,6 +20,7 @@ from pydantic import ValidationError
 from renderers import Message as RendererMessage
 from renderers import OverlongPromptError as RendererOverlongPromptError
 from renderers import (
+    AutoRendererConfig,
     MultimodalRenderer,
     ParsedToolCall,
     RenderedTokens,
@@ -28,11 +29,13 @@ from renderers import (
     RendererPool,
     ToolCallParseStatus,
     ToolSpec,
+    config_from_name,
     create_renderer_pool,
     is_multimodal,
 )
 from renderers import ToolCall as RendererToolCall
 from renderers import ToolCallFunction
+from renderers.base import MODEL_RENDERER_MAP
 from renderers.client import _maybe_offload, generate
 
 from verifiers.clients.client import Client
@@ -380,23 +383,43 @@ async def _get_incremental_prompt_ids(
 def _resolve_renderer_config(
     base: RendererConfig | None,
     chat_template_kwargs: Mapping[str, Any] | None,
+    *,
+    model: str,
 ) -> RendererConfig | None:
     """Merge ``chat_template_kwargs`` into a typed ``RendererConfig``.
 
-    Pydantic re-validates the merged dict against the discriminated-union
-    variant: typed configs (``extra="forbid"``) reject unknown keys with a
-    field-path error; ``DefaultRendererConfig`` (``extra="allow"``) accepts
-    arbitrary jinja kwargs. Kwargs override fields with the same name on
-    the base config.
+    When ``base`` is ``None`` or ``AutoRendererConfig`` (would auto-resolve
+    inside ``renderers.create_renderer``), we pull resolution forward via
+    ``MODEL_RENDERER_MAP`` so kwargs land on the concrete config variant
+    and pydantic validates them against the actual renderer's schema —
+    ``AutoRendererConfig`` intentionally carries only ``preserve_*`` and
+    would reject template kwargs like ``enable_thinking``.
+
+    Kwargs override fields with the same name on the (resolved) base.
+    Typed configs (``extra="forbid"``) reject unknown keys with a
+    field-path error; ``DefaultRendererConfig`` (``extra="allow"``) keeps
+    the escape hatch for arbitrary jinja kwargs.
     """
     if not chat_template_kwargs:
         return base
-    if base is None:
-        raise ValueError(
-            "sampling_args.extra_body.chat_template_kwargs require a typed "
-            "renderer_config; set ClientConfig.renderer_config to use them "
-            "on the renderer route."
-        )
+
+    # Resolve auto → concrete (mirrors ``renderers._resolve_auto``) so
+    # ``enable_thinking`` etc. validate against the right schema instead of
+    # ``AutoRendererConfig``'s minimal one.
+    if base is None or isinstance(base, AutoRendererConfig):
+        renderer_name = MODEL_RENDERER_MAP.get(model, "default")
+        resolved = config_from_name(renderer_name)
+        assert resolved is not None  # only "auto" returns None; excluded above
+        if isinstance(base, AutoRendererConfig):
+            resolved = type(resolved).model_validate(
+                {
+                    **resolved.model_dump(),
+                    "preserve_all_thinking": base.preserve_all_thinking,
+                    "preserve_thinking_between_tool_calls": base.preserve_thinking_between_tool_calls,
+                }
+            )
+        base = resolved
+
     merged = {**base.model_dump(), **chat_template_kwargs}
     try:
         return type(base).model_validate(merged)
@@ -530,6 +553,7 @@ class RendererClient(
         effective_cfg = _resolve_renderer_config(
             self._config.renderer_config if self._config is not None else None,
             chat_template_kwargs,
+            model=model,
         )
         renderer = self._get_renderer_or_pool(model, renderer_config=effective_cfg)
 

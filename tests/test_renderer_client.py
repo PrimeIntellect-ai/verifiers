@@ -163,6 +163,65 @@ def test_renderer_client_rejects_invalid_chat_template_kwargs():
         )
 
 
+def test_renderer_client_auto_resolves_for_chat_template_kwargs():
+    """With no explicit ``renderer_config`` (or ``AutoRendererConfig`` —
+    the prime-rl default), chat_template_kwargs still flow through:
+    ``MODEL_RENDERER_MAP`` is consulted up front so kwargs validate against
+    the concrete renderer's schema (``Qwen3RendererConfig`` here)."""
+    from renderers import AutoRendererConfig, Qwen3RendererConfig
+
+    for base in (None, AutoRendererConfig(preserve_all_thinking=True)):
+        RendererClient._shared_pools.clear()
+
+        client = object.__new__(RendererClient)
+        client._renderer = None
+        client._pool_size = 1
+        client._config = vf.ClientConfig(
+            client_type="renderer", renderer_config=base
+        )
+        client._client = object()  # type: ignore[attr-defined]
+
+        sentinel_pool = RendererPool.__new__(RendererPool)
+
+        async def _fake_generate(**kwargs):
+            return {"content": "ok"}
+
+        with (
+            patch(
+                "verifiers.clients.renderer_client.create_renderer_pool",
+                return_value=sentinel_pool,
+            ) as create_pool_mock,
+            patch(
+                "verifiers.clients.renderer_client.generate",
+                side_effect=_fake_generate,
+            ),
+        ):
+            asyncio.run(
+                client.get_native_response(
+                    prompt=[{"role": "user", "content": "hi"}],
+                    model="Qwen/Qwen3-8B",
+                    sampling_args={
+                        "extra_body": {
+                            "chat_template_kwargs": {"enable_thinking": False}
+                        }
+                    },
+                    tools=None,
+                )
+            )
+
+        expected_preserve_all = (
+            base.preserve_all_thinking if base is not None else False
+        )
+        create_pool_mock.assert_called_once_with(
+            "Qwen/Qwen3-8B",
+            Qwen3RendererConfig(
+                enable_thinking=False,
+                preserve_all_thinking=expected_preserve_all,
+            ),
+            size=1,
+        )
+
+
 # Provenance: Eli's review on PR #1068, comment 3150580768.
 #   "RendererClient parses the GPT-OSS assistant tool call into ToolCall(name=...),
 #   but ToolEnv returns ToolMessage with only content/tool_call_id, and
