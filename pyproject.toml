@@ -147,8 +147,8 @@ exclude = [
 ]
 
 [project.scripts]
-vf-eval = "verifiers.scripts.eval:main"
-vf-eval-v1 = "verifiers.scripts.eval_v1:main"
+vf-eval = "verifiers.scripts.eval_v1:main"
+vf-eval-legacy = "verifiers.scripts.eval:main"
 vf-gepa = "verifiers.scripts.gepa:main"
 vf-init = "verifiers.scripts.init:main"
 vf-install = "verifiers.scripts.install:main"

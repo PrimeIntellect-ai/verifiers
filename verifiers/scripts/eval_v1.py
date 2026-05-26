@@ -1,22 +1,29 @@
-"""``vf-eval-v1`` — evaluation CLI for v1 taskset/harness environments.
+"""``vf-eval`` — evaluation CLI for v1 taskset/harness environments.
 
-This CLI is built around the ``verifiers.v1`` taskset/harness model. Compared
-to the legacy ``vf-eval`` it:
+The CLI is shaped around two positionals and dotted overrides:
 
-* assumes the env module exposes ``load_taskset(config: TasksetConfig)``;
-* runs in the env's *default harness* when nothing is configured (matching
-  the legacy behavior);
-* allows overriding any field on the default harness's config via
-  ``--harness.<field>`` (e.g. ``--harness.max-turns 5``);
-* allows swapping the harness class entirely via ``--harness.name`` (e.g.
-  ``--harness.name rlm`` or any ``pkg.mod:Class`` import ref);
-* keeps a v0 fallback: when the module only exposes ``load_environment`` the
-  CLI calls it with ``--env-args`` and never tries to touch the bundled
-  harness.
+::
 
-The full config surface is a :class:`EvalV1Config` Pydantic model. Anything
-that can be set on the CLI can equally be loaded from TOML via the
-``@ path/to/config.toml`` mechanism provided by ``pydantic-config``.
+    vf-eval <task> [<harness>] [--taskset.<field> ...] [--harness.<field> ...]
+
+- ``<task>`` is an installed env module name. The module must expose
+  ``load_taskset(config: TasksetConfig)``; nothing else is required.
+- ``<harness>`` is optional. If omitted the harness auto-resolves to the
+  env's own ``load_harness`` if present, otherwise to the base
+  ``verifiers.v1.Harness``. If provided it can be a registry alias
+  (``rlm``, ``opencode``, ``pi``, ``terminus-2``, ``mini-swe-agent``,
+  ``base``) or a ``pkg.mod:Class`` import ref.
+- ``--taskset.<field>`` flows into the env's actual ``TasksetConfig``
+  subclass, ``--harness.<field>`` into the resolved ``HarnessConfig``
+  subclass. Both are typed: invalid fields fail at CLI-parse time, with
+  the actual config schema rendered in ``--help``.
+
+Anything settable on the CLI can equally be loaded from TOML via
+``vf-eval @ path/to/eval.toml``.
+
+The v0 fallback (modules that only expose ``load_environment``) keeps
+working: the CLI calls the bundled loader with ``--env-args`` and rejects
+``--taskset.*`` / ``--harness.*`` overrides for those envs.
 """
 
 import asyncio
@@ -24,10 +31,11 @@ import json
 import logging
 import os
 import sys
+import tomllib
 from pathlib import Path
 from typing import Any, cast
 
-from pydantic import AliasChoices, ConfigDict, Field, field_validator
+from pydantic import AliasChoices, Field, create_model, field_validator
 from pydantic_config import BaseConfig, cli
 
 from verifiers import setup_logging
@@ -37,7 +45,10 @@ from verifiers.types import (
     EvalConfig,
     EvalRunConfig,
 )
-from verifiers.utils.env_utils import import_env_module
+from verifiers.utils.env_utils import (
+    factory_config_type,
+    import_env_module,
+)
 from verifiers.utils.eval_utils import (
     get_log_level,
     run_evaluations,
@@ -48,8 +59,11 @@ from verifiers.utils.v1_loader_utils import (
     HARNESS_ALIASES,
     V1_HARNESS_KEY,
     V1_TASKSET_KEY,
+    harness_config_type_from_class,
     module_supports_v1_loader,
+    resolve_harness_class,
 )
+from verifiers.v1.config import HarnessConfig, TasksetConfig
 
 logger = logging.getLogger(__name__)
 
@@ -77,46 +91,16 @@ DEFAULT_PROVIDER = "prime"
 
 
 # ---------------------------------------------------------------------------
-# Config model
+# Static config base (shared between v0 and v1 dispatch).
 # ---------------------------------------------------------------------------
 
 
-class TasksetSpec(BaseConfig):
-    """Taskset config overrides.
+class EvalConfigBase(BaseConfig):
+    """Run/model/UI knobs shared by every ``vf-eval`` invocation.
 
-    Sub-fields are validated against the env's actual ``TasksetConfig``
-    subclass at runtime, so e.g. ``--taskset.dataset-split test`` works
-    whenever ``dataset_split`` exists on the env's taskset config.
+    The taskset and harness fields are added per-invocation by
+    :func:`_build_v1_eval_config`, so their types match the actual env.
     """
-
-    model_config = ConfigDict(extra="allow")
-
-
-class HarnessSpec(BaseConfig):
-    """Harness selection and config overrides.
-
-    By default (``name=None``) the env's own ``load_harness`` is used if
-    present, otherwise the base ``verifiers.v1.Harness`` with
-    ``HarnessConfig()`` defaults. Any extra fields are merged into the
-    harness's actual config at runtime.
-    """
-
-    model_config = ConfigDict(extra="allow")
-
-    name: str | None = Field(
-        None,
-        description=(
-            "Harness identifier — alias from the built-in registry "
-            "(e.g. ``rlm``, ``opencode``, ``pi``, ``terminus-2``, "
-            "``mini-swe-agent``, ``base``) or a ``pkg.mod:Class`` import "
-            "ref. When unset, falls back to the env's ``load_harness`` if "
-            "present, otherwise the base ``verifiers.v1.Harness``."
-        ),
-    )
-
-
-class EvalV1Config(BaseConfig):
-    """``vf-eval-v1`` configuration."""
 
     env: str = Field(
         description=(
@@ -124,28 +108,18 @@ class EvalV1Config(BaseConfig):
             "interchangeable)."
         ),
     )
-    name: str | None = Field(
-        None, description="Optional human-readable run name (saved in metadata)."
-    )
-
-    taskset: TasksetSpec = TasksetSpec()
-    """Overrides for the env's taskset config."""
-
-    harness: HarnessSpec = HarnessSpec()
-    """Selection + overrides for the env's harness."""
-
-    env_args: dict = Field(
-        default_factory=dict,
-        validation_alias=AliasChoices("env_args", "a"),
+    harness_name: str | None = Field(
+        None,
         description=(
-            "Extra kwargs passed to ``load_environment`` for v0 envs (the "
-            "harness bundled by a v0 env is not swappable; use ``--harness`` "
-            "instead for v1 tasksets)."
+            "Harness identifier — registry alias (``rlm``, ``opencode``, "
+            "``pi``, ``terminus-2``, ``mini-swe-agent``, ``base``) or a "
+            "``pkg.mod:Class`` import ref. Settable as the second positional. "
+            "When unset, auto-resolves to the env's ``load_harness`` if "
+            "present, otherwise the base ``verifiers.v1.Harness``."
         ),
     )
-    env_dir_path: str = Field(
-        "./environments",
-        description="Directory used by ``prime env install`` for local envs.",
+    name: str | None = Field(
+        None, description="Optional human-readable run name (saved in metadata)."
     )
 
     # ---- model / inference --------------------------------------------------
@@ -231,16 +205,13 @@ class EvalV1Config(BaseConfig):
         False, description="Run rollouts in-process instead of starting env workers."
     )
 
-    # ---- scoring ------------------------------------------------------------
+    # ---- scoring + saving + UI ---------------------------------------------
 
     independent_scoring: bool = Field(
         False,
         validation_alias=AliasChoices("independent_scoring", "i"),
         description="Score each rollout individually instead of by group.",
     )
-
-    # ---- output -------------------------------------------------------------
-
     output_dir: str | None = Field(
         None,
         validation_alias=AliasChoices("output_dir", "o"),
@@ -271,9 +242,6 @@ class EvalV1Config(BaseConfig):
         validation_alias=AliasChoices("hf_hub_dataset_name", "D"),
         description="Hugging Face Hub dataset name (with --save-to-hf-hub).",
     )
-
-    # ---- UI -----------------------------------------------------------------
-
     verbose: bool = Field(
         False,
         validation_alias=AliasChoices("verbose", "v"),
@@ -308,10 +276,196 @@ class EvalV1Config(BaseConfig):
         return value
 
 
+class EvalV0Config(EvalConfigBase):
+    """Eval config for v0 envs (modules that expose only ``load_environment``)."""
+
+    env_args: dict = Field(
+        default_factory=dict,
+        validation_alias=AliasChoices("env_args", "a"),
+        description=(
+            "Extra kwargs passed to ``load_environment`` for v0 envs (the "
+            "harness bundled by a v0 env is not swappable)."
+        ),
+    )
+
+    @field_validator("harness_name")
+    @classmethod
+    def _v0_rejects_harness_name(cls, value: str | None) -> str | None:
+        if value is not None:
+            raise ValueError(
+                "Env is a v0 module (no load_taskset); harness selection is "
+                "not supported. The bundled harness in load_environment is "
+                "not swappable."
+            )
+        return value
+
+
 # ---------------------------------------------------------------------------
-# Spec -> dict helpers (collapse explicit fields + ``extra="allow"`` extras
-# into a plain mapping that survives JSON serialization, so we can hand it to
-# worker subprocesses through ``env_args``).
+# Dynamic v1 EvalConfig: typed taskset/harness fields per env.
+# ---------------------------------------------------------------------------
+
+
+def _build_v1_eval_config(
+    taskset_cls: type[TasksetConfig],
+    harness_cls: type[HarnessConfig],
+) -> type[BaseConfig]:
+    """Subclass ``EvalConfigBase`` with typed ``taskset`` and ``harness`` fields.
+
+    The dynamic class is what ``pydantic_config.cli()`` validates against, so
+    ``--taskset.<field>`` and ``--harness.<field>`` are checked against the
+    env's actual ``TasksetConfig`` / ``HarnessConfig`` subclasses at parse
+    time.
+    """
+    return create_model(
+        "ResolvedEvalConfig",
+        __base__=EvalConfigBase,
+        taskset=(taskset_cls, Field(default_factory=taskset_cls)),
+        harness=(harness_cls, Field(default_factory=harness_cls)),
+    )
+
+
+def _resolve_taskset_config_class(env_module: Any) -> type[TasksetConfig]:
+    config_type = factory_config_type(env_module, "load_taskset", TasksetConfig)
+    if config_type is None:
+        raise TypeError(
+            f"{env_module.__name__}.load_taskset must accept a typed config."
+        )
+    return cast(type[TasksetConfig], config_type)
+
+
+def _resolve_harness_config_class(
+    env_module: Any, harness_name: str | None
+) -> type[HarnessConfig]:
+    if harness_name is not None:
+        harness_cls = resolve_harness_class(harness_name)
+        return harness_config_type_from_class(harness_cls)
+    if hasattr(env_module, "load_harness"):
+        factory_type = factory_config_type(env_module, "load_harness", HarnessConfig)
+        return cast(type[HarnessConfig], factory_type or HarnessConfig)
+    return HarnessConfig
+
+
+# ---------------------------------------------------------------------------
+# Argv preprocessing: positional <task> [<harness>] + @ file.toml peek.
+# ---------------------------------------------------------------------------
+
+
+def _peek_toml(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {}
+    try:
+        with path.open("rb") as f:
+            return tomllib.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def _extract_initial_args(
+    argv: list[str],
+) -> tuple[list[str], str | None, str | None]:
+    """Pull leading positionals + ``--env`` / ``--harness-name`` out of ``argv``.
+
+    Returns ``(cleaned_argv, env_id, harness_name)``.
+
+    Positionals are recognised at the front of the argv only: scanning stops
+    at the first ``-``/``--``/``@`` token. The bare positionals are dropped
+    from the cleaned argv and re-injected as ``--env`` / ``--harness-name``
+    flags so the downstream pydantic-config parse sees them as ordinary
+    fields.
+
+    Also reads ``--env`` / ``--harness-name`` explicit flags from anywhere
+    in argv, and peeks at any ``@ path/to.toml`` argument to backfill
+    env/harness_name when the user hasn't already set them on the command
+    line. Explicit flags / positionals win over TOML values.
+    """
+    env_id: str | None = None
+    harness_name: str | None = None
+
+    # Pass 1: leading positionals (stop at first non-positional).
+    consumed_positionals = 0
+    cursor = 1
+    while cursor < len(argv):
+        token = argv[cursor]
+        if token.startswith("-") or token.startswith("@"):
+            break
+        if consumed_positionals == 0:
+            env_id = token
+        elif consumed_positionals == 1:
+            harness_name = token
+        else:
+            raise SystemExit(
+                "vf-eval takes at most two positionals (task + optional "
+                f"harness); got {token!r}."
+            )
+        consumed_positionals += 1
+        cursor += 1
+
+    rest = argv[cursor:]
+    cleaned = [argv[0], *rest]
+
+    # Pass 2: explicit --env / --harness-name flags anywhere in the rest.
+    j = 0
+    while j < len(rest):
+        token = rest[j]
+        for flag, setter in (
+            ("--env", "env"),
+            ("--harness-name", "harness"),
+        ):
+            if token == flag and j + 1 < len(rest):
+                if setter == "env":
+                    env_id = rest[j + 1]
+                else:
+                    harness_name = rest[j + 1]
+                break
+            if token.startswith(flag + "="):
+                value = token.split("=", 1)[1]
+                if setter == "env":
+                    env_id = value
+                else:
+                    harness_name = value
+                break
+        j += 1
+
+    # Pass 3: TOML peek for any @ file references that don't already cover
+    # env / harness_name.
+    j = 0
+    while j < len(rest):
+        token = rest[j]
+        toml_path: Path | None = None
+        if token == "@" and j + 1 < len(rest):
+            toml_path = Path(rest[j + 1])
+            j += 2
+        elif token.startswith("@") and token != "@":
+            toml_path = Path(token[1:])
+            j += 1
+        else:
+            j += 1
+            continue
+        if toml_path is None:
+            continue
+        data = _peek_toml(toml_path)
+        if env_id is None and isinstance(data.get("env"), str):
+            env_id = data["env"]
+        if harness_name is None and isinstance(data.get("harness_name"), str):
+            harness_name = data["harness_name"]
+
+    # Re-inject the positionals as explicit flags if they aren't already on
+    # the command line. The explicit flag form wins on conflict because
+    # we already updated env_id / harness_name from it in pass 2.
+    has_env_flag = any(a == "--env" or a.startswith("--env=") for a in cleaned[1:])
+    has_harness_flag = any(
+        a == "--harness-name" or a.startswith("--harness-name=") for a in cleaned[1:]
+    )
+    if env_id is not None and not has_env_flag:
+        cleaned.extend(["--env", env_id])
+    if harness_name is not None and not has_harness_flag:
+        cleaned.extend(["--harness-name", harness_name])
+
+    return cleaned, env_id, harness_name
+
+
+# ---------------------------------------------------------------------------
+# Helpers shared between v0 and v1 dispatch.
 # ---------------------------------------------------------------------------
 
 
@@ -327,26 +481,7 @@ def _maybe_parse_json(value: Any) -> Any:
         return value
 
 
-def _spec_to_dict(
-    spec: BaseConfig, *, drop_none: tuple[str, ...] = ()
-) -> dict[str, Any]:
-    data: dict[str, Any] = {}
-    for name in spec.model_fields_set:
-        value = getattr(spec, name)
-        if name in drop_none and value is None:
-            continue
-        data[name] = value
-    for name, value in (spec.model_extra or {}).items():
-        data[name] = _maybe_parse_json(value)
-    return data
-
-
-# ---------------------------------------------------------------------------
-# Eval pipeline glue
-# ---------------------------------------------------------------------------
-
-
-def _resolve_client_config(config: EvalV1Config) -> ClientConfig:
+def _resolve_client_config(config: EvalConfigBase) -> ClientConfig:
     provider = config.provider or DEFAULT_PROVIDER
     provider_cfg = PROVIDERS[provider]
     api_base_url = config.base_url or provider_cfg["url"]
@@ -364,7 +499,7 @@ def _resolve_client_config(config: EvalV1Config) -> ClientConfig:
     )
 
 
-def _resolve_sampling_args(config: EvalV1Config) -> dict[str, Any]:
+def _resolve_sampling_args(config: EvalConfigBase) -> dict[str, Any]:
     sampling_args: dict[str, Any] = dict(config.sampling_args or {})
     if config.max_tokens is not None and "max_tokens" not in sampling_args:
         sampling_args["max_tokens"] = config.max_tokens
@@ -373,45 +508,31 @@ def _resolve_sampling_args(config: EvalV1Config) -> dict[str, Any]:
     return sampling_args
 
 
-def _resolve_env_args(config: EvalV1Config) -> dict[str, Any]:
-    """Build the env_args dict handed to ``vf.load_environment``.
+def _v1_env_args(config: BaseConfig) -> dict[str, Any]:
+    """Build the env_args dict for a v1 dispatch.
 
-    For v1 envs, taskset/harness overrides are dispatched through the
-    reserved ``__vf_v1_taskset__`` / ``__vf_v1_harness__`` keys so that worker
-    subprocesses re-materialize the same env. For v0 envs, the user's
-    ``--env-args`` is forwarded verbatim.
+    Carries the typed taskset/harness configs through the reserved
+    ``__vf_v1_taskset__`` / ``__vf_v1_harness__`` keys so worker
+    subprocesses can rebuild the exact same env in every process.
     """
-    env_module = import_env_module(config.env)
-    taskset_overrides = _spec_to_dict(config.taskset)
-    harness_overrides = _spec_to_dict(config.harness, drop_none=("name",))
-
-    if module_supports_v1_loader(env_module):
-        if config.env_args:
-            raise ValueError(
-                f"Env {config.env!r} is a v1 env (load_taskset detected); use "
-                "--taskset.* / --harness.* rather than --env-args."
-            )
-        env_args: dict[str, Any] = {}
-        if taskset_overrides:
-            env_args[V1_TASKSET_KEY] = taskset_overrides
-        if harness_overrides:
-            env_args[V1_HARNESS_KEY] = harness_overrides
-        return env_args
-
-    if taskset_overrides:
-        raise ValueError(
-            f"Env {config.env!r} only exposes load_environment; --taskset.* "
-            "overrides are not supported for v0 envs."
-        )
-    if harness_overrides:
-        raise ValueError(
-            f"Env {config.env!r} only exposes load_environment; --harness.* "
-            "overrides are not supported for v0 envs."
-        )
-    return dict(config.env_args)
+    env_args: dict[str, Any] = {}
+    taskset_data = cast(BaseConfig, config.taskset).model_dump(  # type: ignore[attr-defined]
+        exclude_unset=True, exclude_defaults=True
+    )
+    if taskset_data:
+        env_args[V1_TASKSET_KEY] = taskset_data
+    harness_data = cast(BaseConfig, config.harness).model_dump(  # type: ignore[attr-defined]
+        exclude_unset=True, exclude_defaults=True
+    )
+    harness_name = cast(str | None, config.harness_name)  # type: ignore[attr-defined]
+    if harness_name is not None:
+        harness_data["name"] = harness_name
+    if harness_data:
+        env_args[V1_HARNESS_KEY] = harness_data
+    return env_args
 
 
-def _build_eval_config(config: EvalV1Config) -> EvalConfig:
+def _build_eval_config(config: EvalConfigBase, env_args: dict[str, Any]) -> EvalConfig:
     extra_env_kwargs: dict[str, Any] = {}
     if config.timeout is not None:
         extra_env_kwargs["timeout_seconds"] = config.timeout
@@ -419,8 +540,8 @@ def _build_eval_config(config: EvalV1Config) -> EvalConfig:
     return EvalConfig(
         env_id=config.env,
         name=config.name,
-        env_args=_resolve_env_args(config),
-        env_dir_path=config.env_dir_path,
+        env_args=env_args,
+        env_dir_path="./environments",
         model=config.model,
         client_config=_resolve_client_config(config),
         sampling_args=_resolve_sampling_args(config),
@@ -448,26 +569,39 @@ def _build_eval_config(config: EvalV1Config) -> EvalConfig:
 # ---------------------------------------------------------------------------
 
 
-def _preprocess_argv(argv: list[str]) -> list[str]:
-    """Promote a bare leading positional to ``--env <value>`` for ergonomics."""
-    if len(argv) <= 1:
-        return argv
-    first = argv[1]
-    if first.startswith("-") or first.startswith("@") or first == "@":
-        return argv
-    return [argv[0], "--env", first, *argv[2:]]
+def _resolve_config_class(
+    env_id: str | None, harness_name: str | None
+) -> type[BaseConfig]:
+    """Pick the right BaseConfig subclass for this invocation."""
+    if env_id is None:
+        # No env yet — fall back to the base. cli() will report --env as
+        # required (or render the top-level --help).
+        return EvalConfigBase
+    env_module = import_env_module(env_id)
+    if module_supports_v1_loader(env_module):
+        taskset_cls = _resolve_taskset_config_class(env_module)
+        harness_cls = _resolve_harness_config_class(env_module, harness_name)
+        return _build_v1_eval_config(taskset_cls, harness_cls)
+    return EvalV0Config
 
 
 def main(argv: list[str] | None = None) -> None:
     raw_argv = list(sys.argv) if argv is None else [sys.argv[0], *argv]
-    pruned_argv = _preprocess_argv(raw_argv)
+    cleaned_argv, env_id, harness_name = _extract_initial_args(raw_argv)
 
     os.environ.setdefault("TOKENIZERS_PARALLELISM", "true")
 
+    if env_id is not None and not check_hub_env_installed(env_id):
+        raise SystemExit(
+            f"Environment {env_id!r} is not installed.\n  prime env install {env_id}"
+        )
+
+    config_cls = _resolve_config_class(env_id, harness_name)
+
     saved_argv = sys.argv
-    sys.argv = pruned_argv
+    sys.argv = cleaned_argv
     try:
-        config = cli(EvalV1Config)
+        config = cli(config_cls)
     finally:
         sys.argv = saved_argv
 
@@ -475,17 +609,20 @@ def main(argv: list[str] | None = None) -> None:
         raise SystemExit(
             "error: --disable-tui and --fullscreen are mutually exclusive."
         )
-
     if config.disable_tui:
         setup_logging(get_log_level(config.verbose))
 
-    if not check_hub_env_installed(config.env):
+    # Build env_args based on the dispatch path.
+    if isinstance(config, EvalV0Config):
+        env_args = dict(config.env_args)
+    elif isinstance(config, EvalConfigBase):
+        env_args = _v1_env_args(config)
+    else:  # pragma: no cover — exhaustive
         raise SystemExit(
-            f"Environment {config.env!r} is not installed.\n"
-            f"  prime env install {config.env}"
+            f"Unexpected config type {type(config).__name__}; please report this."
         )
 
-    eval_config = _build_eval_config(config)
+    eval_config = _build_eval_config(config, env_args)
     eval_run_config = EvalRunConfig(
         evals=[eval_config], heartbeat_url=config.heartbeat_url
     )
@@ -503,9 +640,8 @@ def main(argv: list[str] | None = None) -> None:
 
 
 __all__ = [
-    "EvalV1Config",
-    "HarnessSpec",
-    "TasksetSpec",
+    "EvalConfigBase",
+    "EvalV0Config",
     "HARNESS_ALIASES",
     "main",
 ]

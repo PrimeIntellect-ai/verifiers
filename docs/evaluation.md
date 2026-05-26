@@ -31,16 +31,25 @@ prime eval run my-env -m openai/gpt-4.1-mini -n 10
 
 `prime eval` resolves and installs the environment when needed, imports the environment module using Python's import system, calls its `load_environment()` function, runs 5 examples with 3 rollouts each (the default), scores them using the environment's rubric, and prints aggregate metrics.
 
-### vf-eval-v1 (preview)
+### vf-eval (v1 taskset/harness)
 
-For v1 taskset/harness environments, the `vf-eval-v1` command is a leaner
-parallel CLI built on [`pydantic-config`](https://github.com/PrimeIntellect-ai/pydantic-config).
-It picks up `load_taskset(config: TasksetConfig)` directly (no
-`load_environment` or `EnvConfig` required), runs in the env's default
-harness when nothing else is configured, and lets the harness either be
-tweaked or swapped on the fly.
+`vf-eval` is built around the v1 taskset/harness model and takes two
+positionals:
 
-A v1 env can stop at the taskset surface:
+```
+vf-eval <task> [<harness>] [--taskset.<field> ...] [--harness.<field> ...]
+```
+
+`<task>` is an installed env module that exposes
+`load_taskset(config: TasksetConfig)`. `<harness>` is optional — when
+omitted, the harness auto-resolves to the env's own `load_harness` if
+present, otherwise the base `verifiers.v1.Harness`. When provided, it can
+be a registry alias (`rlm`, `opencode`, `pi`, `terminus-2`,
+`mini-swe-agent`, `base`) or a `pkg.mod:Class` import ref pointing at a
+`verifiers.v1.Harness` subclass.
+
+A v1 env can stop at the taskset surface — no `EnvConfig` subclass and no
+`load_environment` are required:
 
 ```python
 # environments/my_env/my_env.py
@@ -60,34 +69,38 @@ def load_taskset(config: MyTasksetConfig) -> MyTaskset:
     return MyTaskset(config=config)
 ```
 
-That's enough: `vf-eval-v1` and `vf.load_environment` will auto-build a
-`vf.Env` with the base `verifiers.v1.Harness`. Add `load_harness(config: ...)`
-if your env wants a non-base default harness; no `EnvConfig` subclass or
-`load_environment` shim is needed in either case.
+`vf-eval` resolves the env's `TasksetConfig` subclass and the selected
+harness's `HarnessConfig` subclass at parse time, and validates
+`--taskset.*` / `--harness.*` against those typed schemas. `--help` shows
+the actual fields available for the resolved task and harness.
 
 ```bash
-# run in the env's default harness
-vf-eval-v1 my-env --num-examples 5 --model openai/gpt-4.1-mini
+# default harness, default config
+vf-eval my-env --num-examples 5 --model openai/gpt-4.1-mini
 
-# override fields on the default harness's config
-vf-eval-v1 my-env --harness.max-turns 5 --harness.system-prompt-merge harness
+# override fields on the env's default harness
+vf-eval my-env --harness.max-turns 5 --harness.system-prompt-merge harness
 
-# swap the harness class entirely (alias or pkg.mod:Class import ref)
-vf-eval-v1 my-env --harness.name rlm --harness.rlm-max-turns 50
+# swap the harness class (positional, with harness-specific overrides)
+vf-eval my-env rlm --harness.rlm-max-turns 50
 
-# tweak the taskset config from the CLI
-vf-eval-v1 my-env --taskset.split test
+# tweak the taskset config (typed against the env's TasksetConfig)
+vf-eval my-env --taskset.split test
 
-# load everything from TOML; CLI overrides still win
-vf-eval-v1 @ configs/eval/my-env-rlm.toml --num-examples 10
+# load everything from TOML; CLI args layered on top win on conflict
+vf-eval @ configs/eval/my-env-rlm.toml --num-examples 10
 ```
 
-`vf-eval-v1` keeps a v0 fallback: when the env only exposes
-`load_environment`, the CLI calls it with `--env-args` and refuses
-`--taskset.*` / `--harness.*` overrides (the bundled harness is not
-swappable in that case). Built-in harness aliases include `base`, `rlm`,
-`opencode`, `pi`, `mini-swe-agent`, and `terminus-2`; any `pkg.mod:Class`
-import ref pointing at a `verifiers.v1.Harness` subclass also works.
+For convenience, the harness identifier can equally be given as a flag —
+`vf-eval my-env --harness-name rlm` is identical to `vf-eval my-env rlm`.
+
+`vf-eval` keeps a v0 fallback: when the env only exposes
+`load_environment`, the CLI calls it with `--env-args` and refuses both
+the harness positional and `--taskset.*` / `--harness.*` overrides (the
+bundled harness in a v0 env is not swappable).
+
+The legacy multi-env / ablation-sweep CLI remains accessible as
+`vf-eval-legacy` while parity is being worked out.
 
 ## Hosted Evaluations
 
