@@ -18,17 +18,21 @@ from openai import AsyncOpenAI
 from renderers import Message as RendererMessage
 from renderers import OverlongPromptError as RendererOverlongPromptError
 from renderers import (
+    AutoRendererConfig,
     MultimodalRenderer,
     ParsedToolCall,
     RenderedTokens,
     Renderer,
+    RendererConfig,
     RendererPool,
     ToolSpec,
+    config_from_name,
     create_renderer_pool,
     is_multimodal,
 )
 from renderers import ToolCall as RendererToolCall
 from renderers import ToolCallFunction
+from renderers.base import MODEL_RENDERER_MAP
 from renderers.client import _maybe_offload, generate
 
 from verifiers.clients.client import Client
@@ -373,6 +377,53 @@ async def _get_incremental_prompt_ids(
     return None
 
 
+def _resolve_renderer_config(
+    base: RendererConfig | None,
+    chat_template_kwargs: Mapping[str, Any] | None,
+    *,
+    renderer_model: str,
+) -> RendererConfig | None:
+    """Merge ``chat_template_kwargs`` into a typed ``RendererConfig``.
+
+    When ``base`` is ``None`` or ``AutoRendererConfig`` (would auto-resolve
+    inside ``renderers.create_renderer``), we pull resolution forward via
+    ``MODEL_RENDERER_MAP`` so kwargs land on the concrete config variant
+    and pydantic validates them against the actual renderer's schema —
+    ``AutoRendererConfig`` intentionally carries only ``preserve_*`` and
+    would reject template kwargs like ``enable_thinking``. ``renderer_model``
+    must match what the pool will tokenize with (i.e.
+    ``ClientConfig.renderer_model_name`` when set, else the request model),
+    so resolution agrees with the tokenizer the renderer will hold.
+
+    Kwargs override fields with the same name on the (resolved) base.
+    Typed configs (``extra="forbid"``) reject unknown keys with a
+    field-path error; ``DefaultRendererConfig`` (``extra="allow"``) keeps
+    the escape hatch for arbitrary jinja kwargs.
+    """
+    if not chat_template_kwargs:
+        return base
+
+    # Resolve auto → concrete (mirrors ``renderers._resolve_auto``) so
+    # ``enable_thinking`` etc. validate against the right schema instead of
+    # ``AutoRendererConfig``'s minimal one. Carries ``preserve_*`` across.
+    if base is None or isinstance(base, AutoRendererConfig):
+        renderer_name = MODEL_RENDERER_MAP.get(renderer_model, "default")
+        # ``config_from_name`` returns ``None`` only for ``"auto"``, which
+        # ``MODEL_RENDERER_MAP.get(..., "default")`` excludes — assert for ty.
+        concrete = config_from_name(renderer_name)
+        assert concrete is not None
+        if isinstance(base, AutoRendererConfig):
+            concrete = concrete.model_copy(
+                update={
+                    "preserve_all_thinking": base.preserve_all_thinking,
+                    "preserve_thinking_between_tool_calls": base.preserve_thinking_between_tool_calls,
+                }
+            )
+        base = cast(RendererConfig, concrete)
+
+    return type(base).model_validate({**base.model_dump(), **chat_template_kwargs})
+
+
 class RendererClient(
     Client[AsyncOpenAI, list[RendererMessage], dict[str, Any], ToolSpec]
 ):
@@ -418,13 +469,19 @@ class RendererClient(
 
     # ── Renderer management ─────────────────────────────────────────
 
-    def _get_renderer_or_pool(self, model: str) -> Renderer | RendererPool:
+    def _get_renderer_or_pool(
+        self,
+        model: str,
+        *,
+        renderer_config: RendererConfig | None = None,
+    ) -> Renderer | RendererPool:
         if self._renderer is not None:
             return self._renderer
 
-        renderer_config = (
-            self._config.renderer_config if self._config is not None else None
-        )
+        if renderer_config is None:
+            renderer_config = (
+                self._config.renderer_config if self._config is not None else None
+            )
         renderer_model = (
             self._config.renderer_model_name
             if self._config is not None and self._config.renderer_model_name is not None
@@ -476,14 +533,33 @@ class RendererClient(
         tools: list[ToolSpec] | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
-        renderer = self._get_renderer_or_pool(model)
-
         args = dict(sampling_args)
         extra_headers = {
             **dict(args.pop("extra_headers", None) or {}),
             **dict(kwargs.pop("extra_headers", None) or {}),
         }
         sampling_params: dict[str, Any] = dict(args.pop("extra_body", None) or {})
+
+        # ``chat_template_kwargs`` belong to the renderer, not the engine —
+        # peel them off the per-request sampling and fold them into the
+        # typed RendererConfig. Pool cache key already includes the
+        # effective config so identical kwargs reuse the same renderer.
+        chat_template_kwargs = sampling_params.pop("chat_template_kwargs", None)
+        # Auto-resolution must agree with the model the pool will tokenize
+        # against — ``renderer_model_name`` overrides the request ``model``
+        # when set (same precedence ``_get_renderer_or_pool`` uses below).
+        renderer_model = (
+            self._config.renderer_model_name
+            if self._config is not None and self._config.renderer_model_name is not None
+            else model
+        )
+        effective_cfg = _resolve_renderer_config(
+            self._config.renderer_config if self._config is not None else None,
+            chat_template_kwargs,
+            renderer_model=renderer_model,
+        )
+        renderer = self._get_renderer_or_pool(model, renderer_config=effective_cfg)
+
         for key in (
             "temperature",
             "top_p",

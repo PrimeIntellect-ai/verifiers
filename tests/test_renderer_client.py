@@ -1,3 +1,4 @@
+import asyncio
 from functools import lru_cache
 from unittest.mock import patch
 
@@ -79,6 +80,155 @@ def test_renderer_client_uses_renderer_model_name_override():
         cfg,
         size=1,
     )
+
+
+def test_renderer_client_threads_chat_template_kwargs_into_pool():
+    """``sampling_args.extra_body.chat_template_kwargs`` land on the
+    concrete RendererConfig (resolving Auto/None against
+    ``MODEL_RENDERER_MAP`` when needed) and are stripped from the params
+    forwarded to /generate. Covers explicit / Auto / None bases."""
+    from renderers import AutoRendererConfig, Qwen3RendererConfig
+
+    bases = [
+        Qwen3RendererConfig(enable_thinking=True),
+        AutoRendererConfig(preserve_all_thinking=True),
+        None,
+    ]
+    for base in bases:
+        RendererClient._shared_pools.clear()
+
+        client = object.__new__(RendererClient)
+        client._renderer = None
+        client._pool_size = 1
+        client._config = vf.ClientConfig(client_type="renderer", renderer_config=base)
+        client._client = object()  # type: ignore[attr-defined]
+
+        sentinel_pool = RendererPool.__new__(RendererPool)
+        captured: dict = {}
+
+        async def _fake_generate(**kwargs):
+            captured.update(kwargs)
+            return {"content": "ok"}
+
+        with (
+            patch(
+                "verifiers.clients.renderer_client.create_renderer_pool",
+                return_value=sentinel_pool,
+            ) as create_pool_mock,
+            patch(
+                "verifiers.clients.renderer_client.generate",
+                side_effect=_fake_generate,
+            ),
+        ):
+            asyncio.run(
+                client.get_native_response(
+                    prompt=[{"role": "user", "content": "hi"}],
+                    model="Qwen/Qwen3-8B",
+                    sampling_args={
+                        "extra_body": {
+                            "chat_template_kwargs": {"enable_thinking": False},
+                            "top_k": 20,
+                        }
+                    },
+                    tools=None,
+                )
+            )
+
+        expected_preserve_all = (
+            base.preserve_all_thinking
+            if isinstance(base, AutoRendererConfig)
+            else False
+        )
+        create_pool_mock.assert_called_once_with(
+            "Qwen/Qwen3-8B",
+            Qwen3RendererConfig(
+                enable_thinking=False,
+                preserve_all_thinking=expected_preserve_all,
+            ),
+            size=1,
+        )
+        assert captured["sampling_params"] == {"top_k": 20}
+
+
+def test_renderer_client_auto_resolves_against_renderer_model_name_override():
+    """When ``ClientConfig.renderer_model_name`` overrides the API request
+    model, auto-resolution looks up the OVERRIDE in ``MODEL_RENDERER_MAP``
+    (it's what loads the tokenizer the renderer holds) — not the request
+    model, which may not be in the map at all."""
+    from renderers import Qwen3RendererConfig
+
+    RendererClient._shared_pools.clear()
+
+    client = object.__new__(RendererClient)
+    client._renderer = None
+    client._pool_size = 1
+    client._config = vf.ClientConfig(
+        client_type="renderer",
+        renderer_model_name="Qwen/Qwen3-8B",  # override
+    )
+    client._client = object()  # type: ignore[attr-defined]
+
+    sentinel_pool = RendererPool.__new__(RendererPool)
+
+    async def _fake_generate(**kwargs):
+        return {"content": "ok"}
+
+    with (
+        patch(
+            "verifiers.clients.renderer_client.create_renderer_pool",
+            return_value=sentinel_pool,
+        ) as create_pool_mock,
+        patch("verifiers.clients.renderer_client.generate", side_effect=_fake_generate),
+    ):
+        asyncio.run(
+            client.get_native_response(
+                prompt=[{"role": "user", "content": "hi"}],
+                model="r8-smoke",  # not in MODEL_RENDERER_MAP
+                sampling_args={
+                    "extra_body": {"chat_template_kwargs": {"enable_thinking": False}}
+                },
+                tools=None,
+            )
+        )
+
+    # Resolves against renderer_model_name (Qwen/Qwen3-8B → "qwen3") rather
+    # than the request "r8-smoke" (which would fall through to default).
+    create_pool_mock.assert_called_once_with(
+        "Qwen/Qwen3-8B",
+        Qwen3RendererConfig(enable_thinking=False),
+        size=1,
+    )
+
+
+def test_renderer_client_rejects_invalid_chat_template_kwargs():
+    """Unknown / mistyped chat_template_kwargs surface as a pydantic
+    ``ValidationError`` (``extra="forbid"`` on the typed RendererConfig)."""
+    from pydantic import ValidationError
+    from renderers import Qwen3RendererConfig
+
+    RendererClient._shared_pools.clear()
+
+    client = object.__new__(RendererClient)
+    client._renderer = None
+    client._pool_size = 1
+    client._config = vf.ClientConfig(
+        client_type="renderer", renderer_config=Qwen3RendererConfig()
+    )
+    client._client = object()  # type: ignore[attr-defined]
+
+    with pytest.raises(ValidationError, match="enable_thinkng"):
+        asyncio.run(
+            client.get_native_response(
+                prompt=[{"role": "user", "content": "hi"}],
+                model="Qwen/Qwen3-8B",
+                sampling_args={
+                    "extra_body": {
+                        "chat_template_kwargs": {"enable_thinkng": False},  # typo
+                    }
+                },
+                tools=None,
+            )
+        )
 
 
 # Provenance: Eli's review on PR #1068, comment 3150580768.
