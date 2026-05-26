@@ -31,6 +31,38 @@ prime eval run my-env -m openai/gpt-4.1-mini -n 10
 
 `prime eval` resolves and installs the environment when needed, imports the environment module using Python's import system, calls its `load_environment()` function, runs 5 examples with 3 rollouts each (the default), scores them using the environment's rubric, and prints aggregate metrics.
 
+### vf-eval-v1 (preview)
+
+For v1 taskset/harness environments, the `vf-eval-v1` command is a leaner
+parallel CLI built on [`pydantic-config`](https://github.com/PrimeIntellect-ai/pydantic-config).
+It picks up `load_taskset(config: TasksetConfig)` directly (no
+`load_environment` required), runs in the env's default harness when nothing
+else is configured, and lets the harness either be tweaked or swapped on
+the fly.
+
+```bash
+# run in the env's default harness
+vf-eval-v1 reverse-text-v1 --num-examples 5 --model openai/gpt-4.1-mini
+
+# override fields on the env's default harness config
+vf-eval-v1 reverse-text-v1 --harness.max-turns 5 --harness.system-prompt-merge harness
+
+# swap the harness class entirely (alias or pkg.mod:Class import ref)
+vf-eval-v1 reverse-text-v1 \
+    --harness.ref rlm \
+    --harness.rlm-max-turns 50
+
+# load everything from TOML; CLI overrides still win
+vf-eval-v1 @ configs/eval/reverse-text-rlm.toml --num-examples 10
+```
+
+`vf-eval-v1` keeps a v0 fallback: when the env only exposes
+`load_environment`, the CLI calls it with `--env-args` and refuses
+`--taskset.*` / `--harness.*` overrides (the bundled harness is not
+swappable in that case). Built-in harness aliases include `base`, `rlm`,
+`opencode`, `pi`, `mini-swe-agent`, and `terminus-2`; any `pkg.mod:Class`
+import ref pointing at a `verifiers.v1.Harness` subclass also works.
+
 ## Hosted Evaluations
 
 You can also run evaluations on Prime-managed infrastructure with `prime eval run --hosted`. Hosted evaluations require an environment that has already been published to the Environments Hub, and they are useful when you want Prime to manage execution, monitor logs remotely, or run against a shared Hub environment slug instead of a local package.

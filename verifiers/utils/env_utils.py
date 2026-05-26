@@ -23,7 +23,48 @@ def load_environment(env_id: str, **env_args) -> Environment:
     try:
         module = import_env_module(env_id)
 
+        # v1 dispatch: when the caller carries taskset/harness override markers
+        # (set by ``vf-eval-v1``) or the module only exposes a v1 ``load_taskset``,
+        # build the env via the v1 taskset/harness path instead of looking for
+        # a ``load_environment`` function.
+        from verifiers.utils.v1_loader_utils import (
+            build_v1_env,
+            has_v1_overrides,
+            module_supports_v1_loader,
+            pop_v1_overrides,
+        )
+
+        if has_v1_overrides(env_args):
+            original_env_args = dict(env_args)
+            taskset_overrides, harness_spec = pop_v1_overrides(env_args)
+            if env_args:
+                raise TypeError(
+                    "v1 dispatch does not accept additional env_args; "
+                    f"got {sorted(env_args)}."
+                )
+            env_instance = build_v1_env(
+                env_id,
+                taskset_overrides=taskset_overrides,
+                harness_spec=harness_spec,
+            )
+            # Preserve the dispatch markers so env-server workers re-build the
+            # same taskset/harness pair when they call load_environment again.
+            env_instance.env_args = original_env_args
+            logger.info(f"Successfully loaded environment '{env_id}' (v1 dispatch).")
+            return env_instance
+
         if not hasattr(module, "load_environment"):
+            if module_supports_v1_loader(module):
+                if env_args:
+                    raise TypeError(
+                        f"Env {env_id!r} only exposes load_taskset; pass v1 "
+                        "overrides via vf-eval-v1 rather than positional env_args."
+                    )
+                env_instance = build_v1_env(env_id)
+                logger.info(
+                    f"Successfully loaded environment '{env_id}' (v1 default harness)."
+                )
+                return env_instance
             raise AttributeError(
                 f"Module '{module_name}' does not have a 'load_environment' function. "
                 f"This usually means there's a package name collision. Please either:\n"
