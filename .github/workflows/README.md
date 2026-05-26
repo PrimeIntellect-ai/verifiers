@@ -17,7 +17,23 @@ This directory contains automated workflows for the verifiers project.
 - Runs Semgrep policy checks through pre-commit's isolated hook environment.
 - Uses configuration from `pyproject.toml`, `.pre-commit-config.yaml`, and `.semgrep/verifiers.yml`
 
-### 2. Test (`test.yml`)
+### 2. DevX Tag (`devx_tag.yml`)
+**Purpose**: Automatically publish a `.devN` release for every push to `main`.
+
+**Triggers**:
+- Pushes to `main`
+- Manual dispatch
+
+**What it does**:
+- Computes the next dev tag from the most recent `v*` tag.
+- Builds a synthetic commit on top of `main` HEAD that bumps `verifiers/__init__.py` and writes `assets/release/RELEASE_<tag>.md`.
+- Annotates and pushes the tag (the bump commit is never pushed back to `main`).
+- Dispatches `tag-and-release.yml` for that tag so the build + PyPI publish + GitHub Release jobs run unchanged.
+- Skips itself when the push already modifies `verifiers/__init__.py` (deferring to `tag-and-release.yml`'s `auto-tag-on-main` job for manual release-prep PRs).
+
+See `assets/release/release_workflow.md` for the full release workflow.
+
+### 3. Test (`test.yml`)
 **Purpose**: Comprehensive testing with coverage reports.
 
 **Triggers**:
