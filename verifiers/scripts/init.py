@@ -158,7 +158,7 @@ V1_ENVIRONMENT_TEMPLATE = """\
 import verifiers as vf
 
 
-def load_system_prompt() -> str:
+def load_system_prompt() -> vf.SystemPrompt:
     raise NotImplementedError("Load the system prompt for {env_id_dash}.")
 
 
@@ -189,7 +189,7 @@ V1_HARNESS_ENVIRONMENT_TEMPLATE = """\
 import verifiers as vf
 
 
-def load_system_prompt() -> str:
+def load_system_prompt() -> vf.SystemPrompt:
     raise NotImplementedError("Load the system prompt for {env_id_dash}.")
 
 

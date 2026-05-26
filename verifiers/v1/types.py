@@ -32,6 +32,7 @@ TaskLoader: TypeAlias = Callable[..., Tasks]
 
 PromptMessage: TypeAlias = Message | ConfigMap
 PromptInput: TypeAlias = str | Sequence[PromptMessage]
+SystemPrompt: TypeAlias = PromptInput | PathLike[str]
 ToolSpec: TypeAlias = Handler | str | ConfigMap
 ToolSpecs: TypeAlias = ToolSpec | Sequence[ToolSpec]
 ToolsetSpecs: TypeAlias = ToolSpec | Sequence[ToolSpec] | ConfigMap

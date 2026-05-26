@@ -71,7 +71,7 @@ def load_dataset_tasks() -> Dataset:
     )
 
 
-def load_system_prompt() -> str:
+def load_system_prompt() -> vf.SystemPrompt:
     return "loaded system prompt"
 
 
@@ -690,7 +690,7 @@ async def program_fn(task: vf.Task, state: vf.State) -> vf.State:
     return state
 
 
-def load_system_prompt() -> str:
+def load_system_prompt() -> vf.SystemPrompt:
     return "loaded system prompt"
 
 
@@ -1941,7 +1941,7 @@ def test_taskset_generic_sets_subclass_config_type() -> None:
                 }
             ]
 
-        def load_system_prompt(self) -> str:
+        def load_system_prompt(self) -> vf.SystemPrompt:
             return "registered prompt"
 
     taskset = RegisteredTaskset(config=RegisteredTasksetConfig(dataset_split="eval"))
@@ -1997,7 +1997,7 @@ def test_taskset_class_loaders_override_config_defaults_not_explicit_values() ->
         def load_eval_tasks(self) -> vf.Tasks:
             return [{"prompt": [], "answer": "class eval"}]
 
-        def load_system_prompt(self) -> str:
+        def load_system_prompt(self) -> vf.SystemPrompt:
             return "class prompt"
 
     defaulted = LoaderTaskset(config=LoaderTasksetConfig())

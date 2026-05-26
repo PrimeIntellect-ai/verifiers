@@ -64,6 +64,23 @@ SamplingArgs = dict[str, Any]
 
 Generation parameters passed to the inference server (e.g., `temperature`, `top_p`, `max_tokens`).
 
+### Tasks
+
+```python
+TaskRow = Mapping[str, object]
+Tasks = datasets.Dataset | Iterable[TaskRow]
+```
+
+v1 task loader return types. `load_tasks(...)` and `load_eval_tasks(...)` should return `vf.Tasks`.
+
+### SystemPrompt
+
+```python
+SystemPrompt = str | Sequence[Message | Mapping[str, object]] | os.PathLike[str]
+```
+
+v1 system prompt loader return type. `load_system_prompt(...)` should return `vf.SystemPrompt`.
+
 ### RewardFunc
 
 ```python

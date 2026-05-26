@@ -52,7 +52,7 @@ Every migrated package should expose:
 import verifiers as vf
 
 
-def load_system_prompt() -> str:
+def load_system_prompt() -> vf.SystemPrompt:
     return SYSTEM_PROMPT
 
 
@@ -95,7 +95,7 @@ live with the environment instead of the root `verifiers` package.
 Put system instructions in `system_prompt`, not in `prompt`:
 
 ```python
-def load_system_prompt() -> str:
+def load_system_prompt() -> vf.SystemPrompt:
     return "Answer concisely."
 
 

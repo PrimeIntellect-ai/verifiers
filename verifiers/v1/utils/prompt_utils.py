@@ -7,12 +7,12 @@ from typing import Literal, cast
 
 from verifiers.types import MessageContent, Messages, SystemMessage
 from verifiers.utils.message_utils import normalize_messages
-from ..types import ConfigData, ConfigMap, PromptInput
+from ..types import ConfigData, ConfigMap, PromptInput, SystemPrompt
 from .config_utils import current_config_ref_module, import_config_ref
 
 
 SystemPromptMerge = Literal["reject", "concat", "task", "taskset", "harness"]
-SystemPromptLoader = Callable[[], PromptInput | PathLike[str] | None]
+SystemPromptLoader = Callable[[], SystemPrompt | None]
 
 
 def normalize_prompt(

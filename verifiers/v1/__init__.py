@@ -58,6 +58,7 @@ from .types import (
     Handler,
     MutableConfigMap,
     Objects,
+    SystemPrompt,
     TaskRow,
     Tasks,
 )
@@ -85,6 +86,7 @@ __all__ = [
     "SandboxConfig",
     "SignalConfig",
     "State",
+    "SystemPrompt",
     "Task",
     "TaskRow",
     "Tasks",

@@ -26,7 +26,7 @@ def test_init_v1_writes_thin_taskset_template(tmp_path: Path) -> None:
     content = read_env_file(tmp_path, "bar")
 
     assert "def load_tasks() -> vf.Tasks:" in content
-    assert "def load_system_prompt() -> str:" in content
+    assert "def load_system_prompt() -> vf.SystemPrompt:" in content
     assert "class BarTasksetConfig(vf.TasksetConfig):" in content
     assert 'system_prompt: str = "load_system_prompt"' in content
     assert 'tasks: str = "load_tasks"' in content
