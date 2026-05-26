@@ -386,14 +386,13 @@ class RendererClient(
     so that concurrent rollouts tokenize in parallel threads.
     """
 
-    # Cache key is (renderer_model_name, renderer_name, tool_parser,
-    # reasoning_parser, pool_size, preserve_all_thinking,
-    # preserve_thinking_between_tool_calls) so that different parser configs,
-    # pool sizes, or preserve-thinking bindings for the same model don't
-    # collide.
+    # Cache key is ``(renderer_model_name, pool_size, renderer_config_json)``.
+    # ``renderer_config`` is a frozen pydantic model so it's hashable directly,
+    # but we serialize it via ``model_dump_json()`` for a stable, deterministic
+    # key shape that's safe across pydantic version bumps.
     _shared_pools: ClassVar[
         dict[
-            tuple[str, str, str | None, str | None, int, bool, bool],
+            tuple[str, int, str | None],
             RendererPool,
         ]
     ] = {}
@@ -424,44 +423,25 @@ class RendererClient(
         if self._renderer is not None:
             return self._renderer
 
-        renderer_name = self._config.renderer if self._config is not None else "auto"
+        renderer_config = (
+            self._config.renderer_config if self._config is not None else None
+        )
         renderer_model = (
             self._config.renderer_model_name
             if self._config is not None and self._config.renderer_model_name is not None
             else model
         )
-        tool_parser = self._config.tool_parser if self._config is not None else None
-        reasoning_parser = (
-            self._config.reasoning_parser if self._config is not None else None
+        cfg_key = (
+            renderer_config.model_dump_json() if renderer_config is not None else None
         )
-        preserve_all_thinking = (
-            self._config.preserve_all_thinking if self._config is not None else False
-        )
-        preserve_thinking_between_tool_calls = (
-            self._config.preserve_thinking_between_tool_calls
-            if self._config is not None
-            else False
-        )
-        cache_key = (
-            renderer_model,
-            renderer_name,
-            tool_parser,
-            reasoning_parser,
-            self._pool_size,
-            preserve_all_thinking,
-            preserve_thinking_between_tool_calls,
-        )
+        cache_key = (renderer_model, self._pool_size, cfg_key)
 
         with self._shared_pools_lock:
             if cache_key not in self._shared_pools:
                 self._shared_pools[cache_key] = create_renderer_pool(
                     renderer_model,
-                    renderer=renderer_name,
+                    renderer_config,
                     size=self._pool_size,
-                    tool_parser=tool_parser,
-                    reasoning_parser=reasoning_parser,
-                    preserve_all_thinking=preserve_all_thinking,
-                    preserve_thinking_between_tool_calls=preserve_thinking_between_tool_calls,
                 )
 
         return self._shared_pools[cache_key]

@@ -12,11 +12,24 @@ Return the assigned candidate exactly.
 
 
 class GroupRewardTasksetConfig(vf.TasksetConfig):
+    metrics: list[str] = [
+        "answer_length",
+        "group_quality",
+        "group_rank",
+    ]
+    rewards: list[str] = [
+        "rollout_similarity",
+        "relative_group_reward",
+    ]
+    advantages: list[str] = ["centered_group_advantage"]
+    updates: list[str] = ["summarize_group"]
+    cleanups: list[str] = ["mark_group_cleaned"]
     system_prompt: str = SYSTEM_PROMPT
     num_examples: int = -1
 
 
 class GroupRewardHarnessConfig(vf.HarnessConfig):
+    program: str | None = "candidate_program"
     max_turns: int = 1
 
 
@@ -125,7 +138,10 @@ TASKS: list[vf.ConfigData] = [
 ]
 
 
-class GroupRewardTaskset(vf.Taskset):
+class GroupRewardTaskset(vf.Taskset[GroupRewardTasksetConfig]):
+    def load_tasks(self) -> vf.Tasks:
+        return load_tasks(num_examples=self.config.num_examples)
+
     async def init_group(
         self, task: vf.Task, num_rollouts: int
     ) -> tuple[list[vf.Task], list[vf.State]]:
@@ -291,7 +307,7 @@ def dense_ranks(values: list[float]) -> list[int]:
     return [ordered.index(value) + 1 for value in values]
 
 
-def source(num_examples: int = -1):
+def load_tasks(num_examples: int = -1):
     rows = TASKS if num_examples < 0 else TASKS[:num_examples]
     for index, row in enumerate(rows):
         yield {
@@ -306,15 +322,6 @@ def source(num_examples: int = -1):
             ],
             "max_turns": 1,
         }
-
-
-GroupRewardTaskset._default_source = source
-GroupRewardTaskset._default_metrics = (answer_length, group_quality, group_rank)
-GroupRewardTaskset._default_rewards = (rollout_similarity, relative_group_reward)
-GroupRewardTaskset._default_advantages = (centered_group_advantage,)
-GroupRewardTaskset._default_updates = (summarize_group,)
-GroupRewardTaskset._default_cleanups = (mark_group_cleaned,)
-GroupRewardHarness._default_program = candidate_program
 
 
 class GroupRewardEnvConfig(vf.EnvConfig):

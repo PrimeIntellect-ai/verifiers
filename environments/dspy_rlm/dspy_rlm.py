@@ -5,6 +5,7 @@ from verifiers.utils.data_utils import load_example_dataset
 
 
 class DSPYRLMTasksetConfig(vf.TasksetConfig):
+    rewards: list[str] = ["answer_reward"]
     taskset_id: str = "gsm8k-dspy-rlm"
     num_train_examples: int = 50
     num_eval_examples: int = 20
@@ -39,17 +40,17 @@ async def run_dspy_rlm_program(task: vf.Task, state: vf.State) -> vf.State:
     return state
 
 
-def load_rows(split: str, num_examples: int):
+def load_gsm8k_tasks(split: str, num_examples: int):
     n = num_examples if num_examples > 0 else None
     return load_example_dataset("gsm8k", split=split, n=n)
 
 
-def load_train_rows(num_train_examples: int = 50):
-    return load_rows("train", num_train_examples)
+def load_tasks(num_train_examples: int = 50):
+    return load_gsm8k_tasks("train", num_train_examples)
 
 
-def load_eval_rows(num_eval_examples: int = 20):
-    return load_rows("test", num_eval_examples)
+def load_eval_tasks(num_eval_examples: int = 20):
+    return load_gsm8k_tasks("test", num_eval_examples)
 
 
 def extract_dspy_answer(text: str) -> str:
@@ -98,23 +99,25 @@ def answer_reward(task: vf.Task, state: vf.State) -> float:
     return answers_match(agent_answer, str(task.get("answer", "")))
 
 
-class DSPYRLMTaskset(vf.Taskset):
-    _default_source = load_train_rows
-    _default_eval_source = load_eval_rows
-    _default_rewards = (answer_reward,)
+class DSPYRLMTaskset(vf.Taskset[DSPYRLMTasksetConfig]):
+    def load_tasks(self) -> vf.Tasks:
+        return load_tasks(num_train_examples=self.config.num_train_examples)
+
+    def load_eval_tasks(self) -> vf.Tasks:
+        return load_eval_tasks(num_eval_examples=self.config.num_eval_examples)
 
 
-class DSPYRLMHarness(vf.Harness):
-    _default_program = run_dspy_rlm_program
+class DSPYRLMHarnessConfig(vf.HarnessConfig):
+    program: str | None = "run_dspy_rlm_program"
 
 
 class DSPYRLMEnvConfig(vf.EnvConfig):
     taskset: DSPYRLMTasksetConfig = DSPYRLMTasksetConfig()
-    harness: vf.HarnessConfig = vf.HarnessConfig()
+    harness: DSPYRLMHarnessConfig = DSPYRLMHarnessConfig()
 
 
 def load_environment(config: DSPYRLMEnvConfig) -> vf.Env:
     return vf.Env(
         taskset=DSPYRLMTaskset(config=config.taskset),
-        harness=DSPYRLMHarness(config=config.harness),
+        harness=vf.Harness(config=config.harness),
     )

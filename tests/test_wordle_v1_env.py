@@ -13,12 +13,21 @@ def test_wordle_format_observation_extracts_latest_feedback():
 
 def test_wordle_load_taskset_requires_wordle_config():
     from environments.wordle_v1 import wordle_v1
-    import verifiers as vf
+    from verifiers.v1.packages.tasksets.textarena import TextArenaTasksetConfig
 
     with pytest.raises(AssertionError):
         wordle_v1.load_taskset(
-            vf.TextArenaTasksetConfig(game="Wordle-v0", answer_state_key="secret_word")
+            TextArenaTasksetConfig(game="Wordle-v0", answer_state_key="secret_word")
         )
+
+
+def test_wordle_taskset_uses_textarena_loaders():
+    from environments.wordle_v1 import wordle_v1
+
+    taskset = wordle_v1.WordleTaskset(config=wordle_v1.WordleTasksetConfig())
+
+    assert callable(taskset.load_tasks)
+    assert callable(taskset.load_eval_tasks)
 
 
 def test_wordle_v1_load_taskset_reads_system_prompt_path(tmp_path, monkeypatch):

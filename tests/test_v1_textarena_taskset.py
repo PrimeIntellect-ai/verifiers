@@ -1,8 +1,9 @@
+import sys
+
 import pytest
 from typing import cast
 
 import verifiers as vf
-import verifiers.v1 as v1
 from verifiers.v1.packages.tasksets import textarena
 
 
@@ -67,14 +68,28 @@ class FakeTextArenaModule:
 def fake_textarena(monkeypatch):
     fake_nltk = FakeNltk()
     fake_ta = FakeTextArenaModule()
+    monkeypatch.setitem(sys.modules, textarena.__name__, textarena)
     monkeypatch.setattr(textarena, "nltk", fake_nltk)
     monkeypatch.setattr(textarena, "ta", fake_ta)
     return fake_nltk, fake_ta
 
 
-def test_textarena_taskset_exports_from_public_surfaces():
-    assert vf.TextArenaTaskset is v1.TextArenaTaskset
-    assert vf.TextArenaTasksetConfig is v1.TextArenaTasksetConfig
+def test_textarena_taskset_imports_from_package():
+    assert textarena.TextArenaTaskset
+    assert textarena.TextArenaTasksetConfig
+
+
+def test_textarena_taskset_is_generic_over_config_type(fake_textarena):
+    class CustomTextArenaConfig(textarena.TextArenaTasksetConfig):
+        game: str = "FakeWordle-v0"
+        answer_state_key: str = "secret_word"
+
+    class CustomTextArenaTaskset(textarena.TextArenaTaskset[CustomTextArenaConfig]):
+        pass
+
+    taskset = CustomTextArenaTaskset(config=CustomTextArenaConfig())
+
+    assert isinstance(taskset.config, CustomTextArenaConfig)
 
 
 def test_textarena_taskset_builds_train_and_eval_rows(fake_textarena):
@@ -89,8 +104,8 @@ def test_textarena_taskset_builds_train_and_eval_rows(fake_textarena):
         )
     )
 
-    rows = taskset.rows()
-    eval_rows = taskset.eval_rows()
+    rows = list(taskset.get_dataset())
+    eval_rows = list(taskset.get_eval_dataset())
 
     assert taskset.config.system_prompt is None
     assert [row["example_id"] for row in rows] == [0, 1]
@@ -98,9 +113,12 @@ def test_textarena_taskset_builds_train_and_eval_rows(fake_textarena):
     assert all(row["answer"] in FakeTextArenaEnv.word_list for row in rows)
     assert all(row["answer"] in FakeTextArenaEnv.word_list for row in eval_rows)
     assert rows[0]["prompt"] == [
-        vf.UserMessage(content="Guess the word. [GAME] Use <guess>[word]</guess>.")
+        {
+            "role": "user",
+            "content": "Guess the word. [GAME] Use <guess>[word]</guess>.",
+        }
     ]
-    assert fake_nltk.downloads == [
+    assert fake_nltk.downloads[:2] == [
         ("words", True),
         ("averaged_perceptron_tagger_eng", True),
     ]
@@ -124,7 +142,7 @@ def test_textarena_taskset_flattens_dict_word_list(fake_textarena, monkeypatch):
     )
 
     assert taskset.word_list == ["apple", "berry", "cider"]
-    assert all(row["answer"] in taskset.word_list for row in taskset.rows())
+    assert all(row["answer"] in taskset.word_list for row in taskset.get_dataset())
 
 
 def test_textarena_taskset_deepcopy_reuses_shared_memo(fake_textarena, monkeypatch):
@@ -166,7 +184,7 @@ async def test_textarena_user_steps_env_and_stops_when_game_finishes(fake_textar
             num_eval_examples=0,
         )
     )
-    task = taskset.task({"example_id": 0, "prompt": [], "answer": "apple"})
+    task = taskset.to_task({"example_id": 0, "prompt": [], "answer": "apple"})
     state = vf.State.for_task(task)
     state["completion"] = [
         vf.AssistantMessage(content="I will guess <guess>[apple]</guess>.")
@@ -197,7 +215,7 @@ async def test_textarena_user_returns_wordle_feedback_for_unfinished_game(
             num_eval_examples=0,
         )
     )
-    task = taskset.task({"example_id": 0, "prompt": [], "answer": "apple"})
+    task = taskset.to_task({"example_id": 0, "prompt": [], "answer": "apple"})
     state = vf.State.for_task(task)
     state["completion"] = [
         vf.AssistantMessage(content="I will guess <guess>[berry]</guess>.")

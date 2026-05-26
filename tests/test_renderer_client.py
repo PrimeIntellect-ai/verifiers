@@ -5,6 +5,7 @@ import pytest
 
 import verifiers as vf
 from renderers import RendererPool
+from renderers import config_from_name
 from renderers.base import ParsedResponse, RenderedTokens, create_renderer
 from verifiers.clients.renderer_client import (
     RendererClient,
@@ -24,13 +25,16 @@ from verifiers.types import (
 )
 
 
-def test_renderer_client_honors_configured_renderer_name():
+def test_renderer_client_honors_configured_renderer_config():
+    from renderers import Qwen3VLRendererConfig
+
     RendererClient._shared_pools.clear()
 
+    cfg = Qwen3VLRendererConfig()
     client = object.__new__(RendererClient)
     client._renderer = None
     client._pool_size = 1
-    client._config = vf.ClientConfig(client_type="renderer", renderer="qwen3_vl")
+    client._config = vf.ClientConfig(client_type="renderer", renderer_config=cfg)
 
     sentinel_pool = RendererPool.__new__(RendererPool)
     with patch(
@@ -42,24 +46,23 @@ def test_renderer_client_honors_configured_renderer_name():
     assert pool is sentinel_pool
     create_pool_mock.assert_called_once_with(
         "Qwen/Qwen3-VL-4B-Instruct",
-        renderer="qwen3_vl",
+        cfg,
         size=1,
-        tool_parser=None,
-        reasoning_parser=None,
-        preserve_all_thinking=False,
-        preserve_thinking_between_tool_calls=False,
     )
 
 
 def test_renderer_client_uses_renderer_model_name_override():
+    from renderers import Qwen3VLRendererConfig
+
     RendererClient._shared_pools.clear()
 
+    cfg = Qwen3VLRendererConfig()
     client = object.__new__(RendererClient)
     client._renderer = None
     client._pool_size = 1
     client._config = vf.ClientConfig(
         client_type="renderer",
-        renderer="qwen3_vl",
+        renderer_config=cfg,
         renderer_model_name="Qwen/Qwen3-VL-4B-Instruct",
     )
 
@@ -73,12 +76,8 @@ def test_renderer_client_uses_renderer_model_name_override():
     assert pool is sentinel_pool
     create_pool_mock.assert_called_once_with(
         "Qwen/Qwen3-VL-4B-Instruct",
-        renderer="qwen3_vl",
+        cfg,
         size=1,
-        tool_parser=None,
-        reasoning_parser=None,
-        preserve_all_thinking=False,
-        preserve_thinking_between_tool_calls=False,
     )
 
 
@@ -524,7 +523,7 @@ def _load_tokenizer_and_renderer(model_name: str, renderer_name: str):
     from transformers import AutoTokenizer
 
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-    renderer = create_renderer(tokenizer, renderer=renderer_name)
+    renderer = create_renderer(tokenizer, config_from_name(renderer_name))
     return tokenizer, renderer
 
 

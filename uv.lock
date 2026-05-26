@@ -19,7 +19,7 @@ conflicts = [[
 ]]
 
 [options]
-exclude-newer = "2026-05-18T11:02:24.883518Z"
+exclude-newer = "2026-05-18T23:52:58.317507426Z"
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
@@ -4202,15 +4202,14 @@ wheels = [
 
 [[package]]
 name = "prime-pydantic-config"
-version = "0.3.0.dev78"
+version = "0.3.0.dev83"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pydantic" },
-    { name = "tyro" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/78/b7/ae107f1b8e4a99c20bba6a54fdbfd50af5a35639d524eec5036e6e8f2574/prime_pydantic_config-0.3.0.dev78.tar.gz", hash = "sha256:4e03cb96b1ce743faf822cdc6d95139eb50859f9d52fc84c9127d63631beb6e7", size = 45277, upload-time = "2026-05-19T03:52:43.663Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/b3/4e/bcdb244336d3abae60c7767626aaf635ef724bdc3f2cb46e317d11b23d91/prime_pydantic_config-0.3.0.dev83.tar.gz", hash = "sha256:7446e6439ba6de2f2c332acb292ba5b53da7c1a4ad60e4a25b78393b17859fdd", size = 73322, upload-time = "2026-05-24T02:58:49.485Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/09/6c/ee4d5478d821a26190405dc9f36543ccf4216a429159c75c82f4ceea153d/prime_pydantic_config-0.3.0.dev78-py3-none-any.whl", hash = "sha256:ae5b568955918b200b5eb1ec616b199335252b2326bf5c10d51b20facb8b6ecc", size = 15542, upload-time = "2026-05-19T03:52:42.787Z" },
+    { url = "https://files.pythonhosted.org/packages/1a/6b/372380c6f5cc3a6f0b6690acb453e9aa9d848e8c1ec421e883c1c3c7a293/prime_pydantic_config-0.3.0.dev83-py3-none-any.whl", hash = "sha256:91a8d883181aff069a4a07f56b636c399c32f1814d8177b9e167a8398643e313", size = 26259, upload-time = "2026-05-24T02:58:48.432Z" },
 ]
 
 [package.optional-dependencies]
@@ -5313,7 +5312,7 @@ wheels = [
 
 [[package]]
 name = "renderers"
-version = "0.1.8.dev26"
+version = "0.1.8.dev28"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "fastokens" },
@@ -5321,12 +5320,13 @@ dependencies = [
     { name = "numpy" },
     { name = "openai" },
     { name = "openai-harmony" },
+    { name = "prime-pydantic-config" },
     { name = "tiktoken" },
     { name = "transformers" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/bd/03/e6829bf6bc588dfebeea8af760f974dd2605bf0c88b07dc0ebcfddef9f82/renderers-0.1.8.dev26.tar.gz", hash = "sha256:27f0f98f9dbcdb74eb758d8b0e9e4b0d566a16ab448600d12fc8705a3248369d", size = 275285, upload-time = "2026-05-24T13:13:29.611Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ea/73/44de1aaf8e2e1f891d7773760cf6fb9049009aee9f70904ccb4505210762/renderers-0.1.8.dev28.tar.gz", hash = "sha256:0dd6c74173d78f181411250815f3eeac85c1e9edee5c9d9ad2648842460b903f", size = 293084, upload-time = "2026-05-25T23:51:49.913Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/2c/e3/28f457dc085751e469d000267bd16b8e8a36c9dd671acd351c17eb3cc3ad/renderers-0.1.8.dev26-py3-none-any.whl", hash = "sha256:6f3ecaa80b7d77103881ed3c9e9285f305db37f4496ec4666b392a5216a4309b", size = 144900, upload-time = "2026-05-24T13:13:28.12Z" },
+    { url = "https://files.pythonhosted.org/packages/4f/e7/a15449f2e9b223867c9d628b662b93f88f719ea1cc532ea16f7728d9b513/renderers-0.1.8.dev28-py3-none-any.whl", hash = "sha256:53574dfb3ee71c4589153fb693343d032f44f08b11ea693167ff1b3e3a254329", size = 153774, upload-time = "2026-05-25T23:51:48.541Z" },
 ]
 
 [[package]]
@@ -6602,18 +6602,6 @@ wheels = [
 ]
 
 [[package]]
-name = "typeguard"
-version = "4.5.1"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "typing-extensions" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/2b/e8/66e25efcc18542d58706ce4e50415710593721aae26e794ab1dec34fb66f/typeguard-4.5.1.tar.gz", hash = "sha256:f6f8ecbbc819c9bc749983cc67c02391e16a9b43b8b27f15dc70ed7c4a007274", size = 80121, upload-time = "2026-02-19T16:09:03.392Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/91/88/b55b3117287a8540b76dbdd87733808d4d01c8067a3b339408c250bb3600/typeguard-4.5.1-py3-none-any.whl", hash = "sha256:44d2bf329d49a244110a090b55f5f91aa82d9a9834ebfd30bcc73651e4a8cc40", size = 36745, upload-time = "2026-02-19T16:09:01.6Z" },
-]
-
-[[package]]
 name = "typer"
 version = "0.23.1"
 source = { registry = "https://pypi.org/simple" }
@@ -6659,20 +6647,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/55/e3/70399cb7dd41c10ac53367ae42139cf4b1ca5f36bb3dc6c9d33acdb43655/typing_inspection-0.4.2.tar.gz", hash = "sha256:ba561c48a67c5958007083d386c3295464928b01faa735ab8547c5692e87f464", size = 75949, upload-time = "2025-10-01T02:14:41.687Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/dc/9b/47798a6c91d8bdb567fe2698fe81e0c6b7cb7ef4d13da4114b41d239f65d/typing_inspection-0.4.2-py3-none-any.whl", hash = "sha256:4ed1cacbdc298c220f1bd249ed5287caa16f34d44ef4e9c3d0cbad5b521545e7", size = 14611, upload-time = "2025-10-01T02:14:40.154Z" },
-]
-
-[[package]]
-name = "tyro"
-version = "1.0.13"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "docstring-parser" },
-    { name = "typeguard" },
-    { name = "typing-extensions" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/24/d6/7126f9e7de139632134d59b5d1972e93c610ee2cb13829e8f4f48f6613cb/tyro-1.0.13.tar.gz", hash = "sha256:731a90c9836b77fffe7c3fa0477ef2d3b6fa91252ddc0bb4d32dadd4fcc143d4", size = 489479, upload-time = "2026-04-14T18:21:52.888Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/93/4f/c43a0a8f0c66fd40a1d6cc47332a5a1d1043e9b331f7070ea701b91a7598/tyro-1.0.13-py3-none-any.whl", hash = "sha256:a0bdb8462c551dd84fc00a76916ce4d37e879c84eefaf34e2165312407cc6c09", size = 185221, upload-time = "2026-04-14T18:21:54.328Z" },
 ]
 
 [[package]]
@@ -6889,7 +6863,7 @@ requires-dist = [
     { name = "pyzmq", specifier = ">=27.1.0" },
     { name = "reasoning-gym", marker = "extra == 'rg'" },
     { name = "regex", specifier = "<2026.4.4" },
-    { name = "renderers", marker = "extra == 'renderers'", specifier = ">=0.1.8.dev26" },
+    { name = "renderers", marker = "extra == 'renderers'", specifier = ">=0.1.8.dev28" },
     { name = "requests" },
     { name = "requests", marker = "extra == 'rl'" },
     { name = "rich" },
@@ -6921,7 +6895,7 @@ dev = [
     { name = "pytest-xdist", specifier = ">=3.8.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
     { name = "reasoning-gym" },
-    { name = "renderers", specifier = ">=0.1.8.dev26" },
+    { name = "renderers", specifier = ">=0.1.8.dev28" },
     { name = "ruff" },
     { name = "stagehand", specifier = ">=3.0.0" },
     { name = "textarena" },

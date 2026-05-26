@@ -47,7 +47,7 @@ agent_workdir = "/app"
 ```
 
 This environment does not set a custom disabled-tool list. It inherits the
-`vf.OpenCodeConfig` defaults.
+packaged `OpenCodeConfig` defaults.
 
 ### Metrics
 Summarize key metrics your rubric emits and how they’re interpreted.
@@ -59,15 +59,15 @@ Summarize key metrics your rubric emits and how they’re interpreted.
 
 ## How It Works
 
-1. `vf.HarborTaskset` loads Harbor task rows and contributes sandbox settings,
+1. `HarborTaskset` loads Harbor task rows and contributes sandbox settings,
    task uploads, env vars, and the Harbor reward.
-2. `vf.OpenCode` contributes the reusable OpenCode CLI program, install/setup,
+2. `OpenCode` contributes the reusable OpenCode CLI program, install/setup,
    intercepted endpoint config, MCP tool proxy, and log artifact collection.
 3. The v1 runtime resolves both sides into one sandboxed command program at rollout time.
 4. Reward is computed by running the Harbor test scripts after the rollout.
 
 `HarborTaskset` and `OpenCode` are packaged under `verifiers.v1.packages` and
-re-exported from `verifiers.v1`.
+imported by the environment package.
 
 ## Requirements
 

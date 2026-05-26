@@ -138,20 +138,12 @@ taskset and harness, then compose them.
 import verifiers as vf
 
 
-@vf.reward(weight=1.0)
-async def contains_answer(task, state) -> float:
-    return float(task["answer"] in str(state.get("completion") or ""))
-
-
 class ReverseTasksetConfig(vf.TasksetConfig):
     split: str = "train"
 
 
-class ReverseTaskset(vf.Taskset):
-    config: ReverseTasksetConfig
-    _default_rewards = (contains_answer,)
-
-    def rows(self) -> list[dict[str, object]]:
+class ReverseTaskset(vf.Taskset[ReverseTasksetConfig]):
+    def load_tasks(self) -> vf.Tasks:
         rows = [
             {
                 "prompt": [{"role": "user", "content": "Reverse abc."}],
@@ -162,16 +154,17 @@ class ReverseTaskset(vf.Taskset):
         ]
         return [row for row in rows if row["split"] == self.config.split]
 
+    @vf.reward(weight=1.0)
+    async def contains_answer(self, task, state) -> float:
+        return float(task["answer"] in str(state.get("completion") or ""))
+
 
 def load_taskset(config: ReverseTasksetConfig) -> ReverseTaskset:
-    assert isinstance(config, ReverseTasksetConfig)
     return ReverseTaskset(config=config)
 
 
 def load_environment(config: vf.EnvConfig):
-    taskset_config = config.taskset
-    assert isinstance(taskset_config, ReverseTasksetConfig)
-    return vf.Env(taskset=load_taskset(taskset_config))
+    return vf.Env(taskset=vf.load_taskset(config=config.taskset))
 ```
 
 Standalone harness use is the same runner without the `Env` adapter:
@@ -197,9 +190,10 @@ state = await harness.run(
 
 ## Tasksets And Datasets
 
-Tasksets should usually own row loading directly. Config should hold
-user-facing knobs, such as dataset name, split, or size limits; the taskset
-class should turn those values into rows.
+Tasksets own row loading through `load_tasks()` and `load_eval_tasks()` methods.
+Config should hold user-facing knobs, such as dataset name, split, or size
+limits; taskset methods read those values from `self.config` and return
+`vf.Tasks`.
 
 ```python
 from datasets import load_dataset
@@ -211,29 +205,29 @@ class GSM8KTasksetConfig(vf.TasksetConfig):
     split: str = "train"
 
 
-class GSM8KTaskset(vf.Taskset):
-    def rows(self) -> list[dict[str, object]]:
+class GSM8KTaskset(vf.Taskset[GSM8KTasksetConfig]):
+    def load_tasks(self) -> vf.Tasks:
         dataset = load_dataset(
             self.config.dataset_name,
             "main",
             split=self.config.split,
         )
-        return [
+        return (
             {
                 "example_id": index,
                 "prompt": [{"role": "user", "content": row["question"]}],
                 "answer": row["answer"],
             }
             for index, row in enumerate(dataset)
-        ]
+        )
 
 
-def load_taskset(config: GSM8KTasksetConfig | None = None):
+def load_taskset(config: GSM8KTasksetConfig) -> GSM8KTaskset:
     return GSM8KTaskset(config=config)
 ```
 
-Override `eval_rows()` only when the evaluation split needs different rows from
-`rows()`.
+Set `eval_tasks` only when the evaluation split needs a different loader from
+`tasks`.
 
 Every task receives:
 
@@ -418,20 +412,12 @@ async def replay_solution(task, state):
     return state
 
 
-@vf.reward
-async def exact(task, state) -> float:
-    return float(state.get("answer") == task.get("answer"))
-
-
 class ReplayTasksetConfig(vf.TasksetConfig):
     pass
 
 
-class ReplayTaskset(vf.Taskset):
-    config: ReplayTasksetConfig
-    _default_rewards = (exact,)
-
-    def rows(self) -> list[dict[str, object]]:
+class ReplayTaskset(vf.Taskset[ReplayTasksetConfig]):
+    def load_tasks(self) -> vf.Tasks:
         return [
             {
                 "prompt": [{"role": "user", "content": "Replay the answer."}],
@@ -439,14 +425,18 @@ class ReplayTaskset(vf.Taskset):
             }
         ]
 
+    @vf.reward
+    async def exact(self, task, state) -> float:
+        return float(state.get("answer") == task.get("answer"))
 
-class ReplayHarness(vf.Harness):
-    _default_program = replay_solution
+
+class ReplayHarnessConfig(vf.HarnessConfig):
+    program: str | None = "replay_solution"
 
 
 env = vf.Env(
     taskset=ReplayTaskset(config=ReplayTasksetConfig()),
-    harness=ReplayHarness(config=vf.HarnessConfig()),
+    harness=vf.Harness(config=ReplayHarnessConfig()),
 )
 ```
 
@@ -573,25 +563,22 @@ signature.
 ### Packaged CLI Harnesses And Harbor
 
 Reusable CLI programs should be packaged as `Harness` subclasses. Package
-implementations live under `verifiers.v1.packages` while the v1 API stabilizes,
-and are re-exported from `verifiers.v1` for normal use. `OpenCode`, `Pi`,
+implementations live under `verifiers.v1.packages`. `OpenCode`, `Pi`,
 `MiniSWEAgent`, `Terminus2`, and `RLM` are bundled `Harness` leaf wrappers for
 common coding-agent CLIs.
 
 ```python
 import verifiers as vf
+from verifiers.v1.packages.harnesses import OpenCode, OpenCodeConfig
+from verifiers.v1.packages.tasksets import HarborTaskset, HarborTasksetConfig
 
 env = vf.Env(
-    vf.EnvConfig(
-        taskset=vf.HarborTasksetConfig(),
-        harness=vf.OpenCodeConfig(),
-    ),
-    taskset=vf.HarborTaskset,
-    harness=vf.OpenCode,
+    taskset=HarborTaskset(config=HarborTasksetConfig()),
+    harness=OpenCode(config=OpenCodeConfig()),
 )
 ```
 
-`vf.HarborTaskset` loads Harbor-format task
+`HarborTaskset` loads Harbor-format task
 directories from the environment package's reserved `tasks/` directory. Set
 `dataset = "owner/name"` on the config to fetch a Harbor Hub dataset. Harbor
 task rows contribute sandbox settings and
@@ -607,13 +594,16 @@ and log/trajectory artifacts.
 artifacts.
 `RLM` follows the same boundary for recursive LLM runs: `HarborTaskset` owns
 the task directory and tests, while `RLM` owns RLM installation, optional skill
-upload to `/rlm/skills`, endpoint wiring, and trajectory filtering.
+upload to `/task/rlm-skills`, generated tool skills, endpoint wiring, and
+trajectory filtering.
 Use `RLMConfig` in `env.harness` for RLM-specific settings such as
 `rlm_repo_ref`, `rlm_tools`, `rlm_max_turns`, and `summarize_at_tokens`.
 Tasksets can expose package-owned upload directories with `get_upload_dirs()`.
 The base `Taskset` discovers a sibling `skills/` directory by default, and
-`RLM` uploads that directory to `/rlm/skills` unless `skills=` is passed
-explicitly to the harness.
+`RLM` uploads that directory to `/task/rlm-skills` unless `skills=` is passed
+explicitly to the harness. Generated tool skills run simple callable tools
+inside the RLM sandbox by default and fall back to `/vf/tools` for tools that
+need verifier runtime resources.
 
 ## State Helpers
 
@@ -648,24 +638,15 @@ does not parse answers or define a generic completion-text policy; index or
 slice the returned list with ordinary Python, read `message.content` explicitly,
 or bind a task-specific extractor on the taskset.
 
-## Singletons And Collections
+## Borrowed Runtime Handles
 
-v1 keeps a sharp distinction between singleton fields and collection fields.
-
-Singletons describe one logical value for a taskset, harness, or rollout:
-`source`, `eval_source`, `program`, `user`, `model`, `client`, `system_prompt`,
-and the primary program `sandbox`. Singleton runtime resources may be borrowed
-across child harness calls when sharing is intentional:
+Runtime resources such as the model client and sandbox may be borrowed across
+child harness calls when sharing is intentional:
 
 ```python
 child_state = state.for_task(child_task, borrow="model")
 child_state = state.for_task(child_task, borrow=["model", "sandbox"])
 ```
-
-Collections are merged and extended: `toolsets`, `stops`, `setups`, `updates`,
-`metrics`, `rewards`, `advantages`, and `cleanups`. Decorators stay singular
-because each decorator marks one function, while constructor/config fields are
-plural because they hold many functions.
 
 Named tools can also be passed into a child state. The child sees the selected
 tool surface, while calls still execute against the source runtime and its
@@ -714,14 +695,19 @@ whitelist or blacklist that toolset's nested tool surface.
 Tasksets and harnesses can pass toolsets as a list or a mapping:
 
 ```python
-class WikiTaskset(vf.Taskset):
-    _default_toolsets = {
-        "wiki": {"fn": "my_env:load_wiki_toolset"},
-        "python": {"tools": ["my_env:python"]},
+class WikiTasksetConfig(vf.TasksetConfig):
+    toolsets: dict[str, dict[str, object]] = {
+        "wiki": {"fn": "load_wiki_toolset"},
+        "python": {"tools": ["python"]},
     }
 
 
-taskset = WikiTaskset()
+class WikiTaskset(vf.Taskset[WikiTasksetConfig]):
+    def load_tasks(self) -> vf.Tasks:
+        return [{"prompt": [{"role": "user", "content": "Search the wiki."}]}]
+
+
+taskset = WikiTaskset(config=WikiTasksetConfig())
 ```
 
 Mapped toolsets are still active by default, but their keys become task-level
@@ -1038,11 +1024,11 @@ async def user(task, state, messages):
 
 
 class UserTasksetConfig(vf.TasksetConfig):
-    user: str = "my_env:user"
+    user: str = "user"
 
 
-class UserTaskset(vf.Taskset):
-    def rows(self) -> list[dict[str, object]]:
+class UserTaskset(vf.Taskset[UserTasksetConfig]):
+    def load_tasks(self) -> vf.Tasks:
         return [{"prompt": [{"role": "user", "content": "Try the task."}]}]
 
 
@@ -1193,11 +1179,8 @@ class MyTasksetConfig(vf.TasksetConfig):
     split: str = "train"
 
 
-class MyTaskset(vf.Taskset):
-    config: MyTasksetConfig
-    _default_rewards = (exact,)
-
-    def rows(self) -> list[dict[str, object]]:
+class MyTaskset(vf.Taskset[MyTasksetConfig]):
+    def load_tasks(self) -> vf.Tasks:
         rows = [
             {
                 "prompt": [{"role": "user", "content": "What is 2 + 2?"}],
@@ -1207,16 +1190,17 @@ class MyTaskset(vf.Taskset):
         ]
         return [row for row in rows if row["split"] == self.config.split]
 
+    @vf.reward(weight=1.0)
+    async def exact(self, task, state) -> float:
+        return float(str(task["answer"]) in str(state.get("completion") or ""))
+
 
 def load_taskset(config: MyTasksetConfig) -> MyTaskset:
-    assert isinstance(config, MyTasksetConfig)
     return MyTaskset(config=config)
 
 
 def load_environment(config: vf.EnvConfig):
-    taskset_config = config.taskset
-    assert isinstance(taskset_config, MyTasksetConfig)
-    return vf.Env(taskset=load_taskset(taskset_config))
+    return vf.Env(taskset=vf.load_taskset(config=config.taskset))
 ```
 
 With that loader, eval TOML routes v1 config through the `taskset`/`harness`
@@ -1295,6 +1279,9 @@ nested harnesses, or explicit auxiliary-model workflows.
 `TasksetConfig` and `HarnessConfig` are Pydantic models. Constructors accept a
 single `config` object or mapping. TOML/config strings resolve as
 `"module:object"` refs where the field explicitly accepts import references.
+For `system_prompt`, use a prompt loader or text-file path for reusable
+environments; plain prose strings are treated as direct prompts only when they
+are not ref-shaped or path-shaped.
 
 ```python
 config = MyTasksetConfig.model_validate(
@@ -1385,16 +1372,17 @@ class DatasetTasksetConfig(vf.TasksetConfig):
     limit: int = 100
 
 
-class DatasetTaskset(vf.Taskset):
-    def rows(self) -> list[dict[str, object]]:
+class DatasetTaskset(vf.Taskset[DatasetTasksetConfig]):
+    def load_tasks(self) -> vf.Tasks:
         dataset = load_dataset("my-org/my-dataset", split=self.config.split)
-        return [
-            {
+        if self.config.limit > 0:
+            dataset = dataset.select(range(min(self.config.limit, len(dataset))))
+        return dataset.map(
+            lambda row: {
                 "prompt": [{"role": "user", "content": row["question"]}],
                 "answer": row["answer"],
             }
-            for row in dataset.select(range(self.config.limit))
-        ]
+        )
 ```
 
 ### Toolsets
@@ -1459,7 +1447,7 @@ mcp = true
 `program.channels` is deliberately limited to `callable` and `mcp`.
 Harness-specific tool carriers belong on the harness or taskset contract; for
 example, RLM reads `Taskset.get_upload_dirs()["skills"]` and uploads it to
-`/rlm/skills`.
+`/task/rlm-skills`.
 
 `program.setup` prepares the process. `program.channels.mcp` registers resolved
 tool or endpoint config after the interception endpoint is live and before the
@@ -1557,23 +1545,25 @@ objects, live clients, and closures belong in code.
 
 ### Custom Config Surfaces
 
-Subclass `Taskset` or `Harness` when a package needs a reusable typed config
-surface or a different method implementation. Keep subclasses shallow and
-specific.
+Use a config subclass when a package needs a reusable typed config surface.
+Subclass `Taskset` or `Harness` only when the runtime methods themselves need a
+different implementation.
 
 ```python
 class WikiTasksetConfig(vf.TasksetConfig):
     db_path: str = "wiki.db"
 
 
-class WikiTaskset(vf.Taskset):
-    def rows(self) -> list[dict[str, object]]:
-        return load_rows()
+class WikiTaskset(vf.Taskset[WikiTasksetConfig]):
+    def load_tasks(self) -> vf.Tasks:
+        raise NotImplementedError(f"Load tasks from {self.config.db_path}.")
 
-    def _configure_runtime_defaults(self) -> None:
-        search_tool = wiki_search_tool(self.config.db_path)
 
-        self.add_toolset(vf.Toolset(tools=[search_tool]))
+def load_taskset(config: WikiTasksetConfig) -> WikiTaskset:
+    taskset = WikiTaskset(config=config)
+    taskset.add_toolset(vf.Toolset(tools=[wiki_search_tool(config.db_path)]))
+    return taskset
+
 ```
 
 To inspect the active config shape:
