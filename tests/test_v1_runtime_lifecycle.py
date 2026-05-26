@@ -44,6 +44,9 @@ from verifiers.v1.utils.sandbox_utils import (
     VF_STATE_INPUT_PATH_KEY,
     collect_sandbox_artifacts,
     run_sandbox_command,
+    run_sandbox_background_command,
+    wait_for_sandbox_ready,
+    wait_for_sandbox_running,
 )
 
 PROGRAM_REF_MODULE = "v1_runtime_lifecycle_refs"
@@ -100,14 +103,21 @@ class FakeCreateSandboxRequest:
 
 
 class FakeSandboxResult:
+    status = "RUNNING"
+
     def __init__(self, sandbox_id: str):
         self.id = sandbox_id
 
 
 class FakeCommandResult:
+    completed = True
     exit_code = 0
     stdout = "ok\n"
     stderr = ""
+
+
+class FakeBackgroundJob:
+    job_id = "job-1"
 
 
 class FakeSandboxClient:
@@ -136,6 +146,9 @@ class FakeSandboxClient:
     async def wait_for_creation(self, sandbox_id: str) -> None:
         _ = sandbox_id
 
+    async def get(self, sandbox_id: str) -> FakeSandboxResult:
+        return FakeSandboxResult(sandbox_id)
+
     async def execute_command(
         self, *args: object, **kwargs: object
     ) -> FakeCommandResult:
@@ -157,6 +170,22 @@ class FakeSandboxClient:
         type(self).background_jobs.append((sandbox_id, command, timeout, working_dir))
         return FakeCommandResult()
 
+    async def start_background_job(
+        self, *args: object, **kwargs: object
+    ) -> FakeBackgroundJob:
+        sandbox_id = str(kwargs.get("sandbox_id") or args[0])
+        command = str(kwargs.get("command") or args[1])
+        working_dir = cast(str | None, kwargs.get("working_dir"))
+        type(self).commands.append((sandbox_id, command))
+        type(self).background_jobs.append((sandbox_id, command, None, working_dir))
+        return FakeBackgroundJob()
+
+    async def get_background_job(
+        self, *args: object, **kwargs: object
+    ) -> FakeCommandResult:
+        _ = args, kwargs
+        return FakeCommandResult()
+
     async def upload_bytes(self, *args: object, **kwargs: object) -> None:
         sandbox_id = str(kwargs.get("sandbox_id") or args[0])
         path = str(kwargs.get("file_path") or kwargs.get("path") or args[1])
@@ -175,6 +204,18 @@ class FakeSandboxClient:
 
     async def aclose(self) -> None:
         pass
+
+
+class RateLimitedSandboxClient(FakeSandboxClient):
+    def __init__(self, failures: int = 1):
+        self.failures = failures
+        self.get_calls = 0
+
+    async def get(self, sandbox_id: str) -> FakeSandboxResult:
+        self.get_calls += 1
+        if self.get_calls <= self.failures:
+            raise RuntimeError("HTTP 429: Rate exceeded.")
+        return FakeSandboxResult(sandbox_id)
 
 
 async def echo_tool(query: str) -> str:
@@ -1308,7 +1349,7 @@ async def test_rollout_setup_receives_program_sandbox_before_program_setup(
 
 
 @pytest.mark.asyncio
-async def test_program_setup_uses_program_setup_timeout(
+async def test_program_setup_runs_as_background_job(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     install_fake_sandboxes(monkeypatch)
@@ -1327,17 +1368,22 @@ async def test_program_setup_uses_program_setup_timeout(
 
     await harness.run(task)
 
-    setup_commands = FakeSandboxClient.commands[
-        : len(FakeSandboxClient.command_timeouts)
-    ]
-    command_timeouts = dict(
-        zip(
-            [command for _, command in setup_commands],
-            FakeSandboxClient.command_timeouts,
-            strict=True,
-        )
+    assert any(
+        "echo program-setup" in command for _, command in FakeSandboxClient.commands
     )
-    assert command_timeouts["echo program-setup"] == 777
+
+
+@pytest.mark.asyncio
+async def test_sandbox_background_command_times_out() -> None:
+    from prime_sandboxes import CommandTimeoutError
+
+    with pytest.raises(CommandTimeoutError):
+        await run_sandbox_background_command(
+            FakeSandboxClient(),
+            sandbox_id="sbx-1",
+            command="echo never-finishes",
+            timeout=0,
+        )
 
 
 @pytest.mark.asyncio
@@ -1390,7 +1436,80 @@ async def test_task_command_uses_background_job(
 
     await harness.run(task)
 
-    assert ("sbx-1", "sleep 120", 120, "/app") in FakeSandboxClient.background_jobs
+    assert any(
+        "sleep 120" in command and "cd /app" in command
+        for _, command in FakeSandboxClient.commands
+    )
+
+
+@pytest.mark.asyncio
+async def test_wait_for_sandbox_running_retries_rate_limited_get(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fast_sleep(delay: float) -> None:
+        _ = delay
+
+    monkeypatch.setattr("verifiers.v1.utils.sandbox_utils.asyncio.sleep", fast_sleep)
+    client = RateLimitedSandboxClient(failures=2)
+
+    await wait_for_sandbox_running(client, "sbx-1", timeout=1, stability_checks=1)
+
+    assert client.get_calls == 3
+
+
+@pytest.mark.asyncio
+async def test_wait_for_sandbox_ready_retries_rate_limited_get(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fast_sleep(delay: float) -> None:
+        _ = delay
+
+    monkeypatch.setattr("verifiers.v1.utils.sandbox_utils.asyncio.sleep", fast_sleep)
+    client = RateLimitedSandboxClient(failures=2)
+
+    await wait_for_sandbox_ready(client, "sbx-1", timeout=1)
+
+    assert client.get_calls == 3
+
+
+@pytest.mark.asyncio
+async def test_program_sandbox_rollout_scope_creates_concurrently(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sandboxes(monkeypatch)
+    install_fake_endpoint_tunnel(monkeypatch)
+
+    active_creates = 0
+    max_active_creates = 0
+    original_create = FakeSandboxClient.create
+
+    async def slow_create(
+        self: FakeSandboxClient, request: FakeCreateSandboxRequest
+    ) -> FakeSandboxResult:
+        nonlocal active_creates, max_active_creates
+        active_creates += 1
+        max_active_creates = max(max_active_creates, active_creates)
+        try:
+            await asyncio.sleep(0.05)
+            return await original_create(self, request)
+        finally:
+            active_creates -= 1
+
+    monkeypatch.setattr(FakeSandboxClient, "create", slow_create)
+
+    harness = make_harness(
+        program={"command": ["true"], "sandbox": True},
+        sandbox={"image": "python:3.11-slim", "scope": "rollout"},
+    )
+    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+
+    await asyncio.gather(
+        harness.run(task, vf.State.for_task(task)),
+        harness.run(task, vf.State.for_task(task)),
+    )
+
+    assert FakeSandboxClient.created == ["sbx-1", "sbx-2"]
+    assert max_active_creates == 2
 
 
 @pytest.mark.asyncio

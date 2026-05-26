@@ -83,6 +83,8 @@ async def run_sandbox_python_program(
     )
     command_record = state.get("command")
     await run_sandbox_command(runner_program, sandbox_config, task, state, runtime)
+    if state.get("stop_condition") == "command_timeout":
+        return state
     output = state.get("artifacts", {}).pop(STATE_ARTIFACT, None)
     if not isinstance(output, Mapping):
         raise RuntimeError("Sandbox Python program did not return state.")

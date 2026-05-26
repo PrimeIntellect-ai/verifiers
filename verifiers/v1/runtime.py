@@ -118,6 +118,7 @@ class Runtime:
         self.owned_model_clients: set[str] = set()
         self.sandbox_leases: dict[tuple[str, str], SandboxLease] = {}
         self.sandbox_lock = asyncio.Lock()
+        self.sandbox_acquire_locks: dict[tuple[str, str], asyncio.Lock] = {}
         self.mcp_exit_stacks: dict[str, AsyncExitStack] = {}
         self.mcp_tools: dict[str, ConfigData] = {}
         self.exposed_mcp_tools: dict[str, ConfigData] = {}
@@ -1694,11 +1695,9 @@ class Runtime:
                 return SandboxHandle(lease, state)
         scope = sandbox_scope(sandbox_config)
         key = (self.scope_key(scope, state), tool_sandbox_key(toolset))
-        async with self.sandbox_lock:
-            lease = self.sandbox_leases.get(key)
-            if lease is None:
-                lease = await create_tool_sandbox_lease(toolset)
-                self.sandbox_leases[key] = lease
+        lease = await self._get_or_create_sandbox_lease(
+            key, lambda: create_tool_sandbox_lease(toolset)
+        )
         return SandboxHandle(lease, state)
 
     def _active_program_sandbox_lease(self, state: State) -> "SandboxLease | None":
@@ -1737,12 +1736,10 @@ class Runtime:
             return self._sandbox_lease_from_handle(sandbox_handle, "sandbox")
         scope = sandbox_scope(sandbox_config)
         key = (self.scope_key(scope, state), program_sandbox_key(sandbox_config))
-        async with self.sandbox_lock:
-            lease = self.sandbox_leases.get(key)
-            if lease is None:
-                lease = await create_sandbox_lease(sandbox_config, key[1])
-                self.sandbox_leases[key] = lease
-            setattr(lease, "scope_key", key[0])
+        lease = await self._get_or_create_sandbox_lease(
+            key, lambda: create_sandbox_lease(sandbox_config, key[1])
+        )
+        setattr(lease, "scope_key", key[0])
         return lease
 
     def _sandbox_lease_from_handle(
@@ -1765,6 +1762,24 @@ class Runtime:
         setattr(lease, "scope_key", resolved_lease_key[0])
         return lease
 
+    async def _get_or_create_sandbox_lease(
+        self,
+        key: tuple[str, str],
+        factory: Callable[[], Awaitable["SandboxLease"]],
+    ) -> "SandboxLease":
+        async with self.sandbox_lock:
+            key_lock = self.sandbox_acquire_locks.get(key)
+            if key_lock is None:
+                key_lock = asyncio.Lock()
+                self.sandbox_acquire_locks[key] = key_lock
+
+        async with key_lock:
+            lease = self.sandbox_leases.get(key)
+            if lease is None:
+                lease = await factory()
+                self.sandbox_leases[key] = lease
+            return lease
+
     async def resolve_user_sandbox(
         self, user: User, task: Task, state: State
     ) -> object:
@@ -1781,11 +1796,9 @@ class Runtime:
             raise TypeError("User sandbox must be a mapping.")
         scope = sandbox_scope(sandbox)
         key = (self.scope_key(scope, state), sandbox_owner_key(user))
-        async with self.sandbox_lock:
-            lease = self.sandbox_leases.get(key)
-            if lease is None:
-                lease = await create_scoped_sandbox_lease(user, key[1])
-                self.sandbox_leases[key] = lease
+        lease = await self._get_or_create_sandbox_lease(
+            key, lambda: create_scoped_sandbox_lease(user, key[1])
+        )
         return SandboxHandle(lease, state)
 
     async def release_sandboxes(self, scope: str, state: State) -> None:
@@ -1797,8 +1810,18 @@ class Runtime:
             handle_scope = getattr(handle, "scope", None)
             if handle_scope != scope:
                 continue
-            await maybe_call_with_named_args(getattr(handle, "delete"))
+            try:
+                await maybe_call_with_named_args(getattr(handle, "delete"))
+            except Exception as e:
+                state.setdefault("cleanup_errors", []).append(
+                    {
+                        "type": type(e).__name__,
+                        "message": str(e),
+                        "scope": scope,
+                    }
+                )
             del self.sandbox_leases[key]
+            self.sandbox_acquire_locks.pop(key, None)
 
     async def ensure_global_sandboxes(self, state: State | None = None) -> None:
         from .utils.sandbox_utils import (
