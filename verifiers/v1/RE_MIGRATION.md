@@ -74,11 +74,13 @@ class MyTaskset(vf.Taskset[MyTasksetConfig]):
 
 def load_taskset(config: MyTasksetConfig) -> MyTaskset:
     return MyTaskset(config=config)
-
-
-def load_environment(config: vf.EnvConfig) -> vf.Env:
-    return vf.Env(taskset=vf.load_taskset(config=config.taskset))
 ```
+
+No `EnvConfig` subclass or `load_environment` shim is required: the
+loaders (`vf.load_environment`, `vf-eval-v1`, `prime eval run`) auto-build
+a `vf.Env` around the taskset and use the base `verifiers.v1.Harness`.
+Add a `load_harness(config: ...)` factory next to `load_taskset` only when
+the env wants a non-base default harness.
 
 Rows should be plain serializable task data:
 

@@ -63,17 +63,5 @@ class ReverseTextTaskset(vf.Taskset[ReverseTextTasksetConfig]):
         return SequenceMatcher(None, response, answer).ratio()
 
 
-class ReverseTextEnvConfig(vf.EnvConfig):
-    taskset: ReverseTextTasksetConfig = ReverseTextTasksetConfig()
-    harness: vf.HarnessConfig = vf.HarnessConfig()
-
-
 def load_taskset(config: ReverseTextTasksetConfig) -> ReverseTextTaskset:
     return ReverseTextTaskset(config=config)
-
-
-def load_environment(config: ReverseTextEnvConfig) -> vf.Env:
-    return vf.Env(
-        taskset=vf.load_taskset(config=config.taskset),
-        harness=vf.Harness(config=config.harness),
-    )

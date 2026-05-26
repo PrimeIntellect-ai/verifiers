@@ -11,18 +11,17 @@ def load_environment(
     v1: bool = False,
 ) -> vf.Environment:
     if v1:
-        from reverse_text_v1 import (
-            ReverseTextEnvConfig,
-            ReverseTextTasksetConfig,
-            load_environment as load_v1,
-        )
+        # The v1 module is intentionally lean (Taskset + load_taskset only);
+        # the system prompt now lives on the taskset, so this kwarg is
+        # accepted for backward compatibility but no longer threaded through.
+        _ = system_prompt
+        from reverse_text_v1 import ReverseTextTasksetConfig, load_taskset
 
-        return load_v1(
-            config=ReverseTextEnvConfig(
-                taskset=ReverseTextTasksetConfig(
+        return vf.Env(
+            taskset=load_taskset(
+                ReverseTextTasksetConfig(
                     dataset_name=dataset_name,
                     dataset_split=dataset_split,
-                    system_prompt=system_prompt,
                 )
             )
         )

@@ -73,6 +73,33 @@ V1_ENV_SOURCE = textwrap.dedent(
 )
 
 
+# Lean v1 env: just a Taskset + load_taskset. No EnvConfig, no
+# load_environment, no load_harness. Everything else auto-resolves.
+LEAN_V1_ENV_SOURCE = textwrap.dedent(
+    """
+    import verifiers as vf
+
+
+    class LeanTasksetConfig(vf.TasksetConfig):
+        difficulty: str = "easy"
+
+
+    class LeanTaskset(vf.Taskset[LeanTasksetConfig]):
+        def load_tasks(self) -> vf.Tasks:
+            return [
+                {
+                    "prompt": [{"role": "user", "content": "Say ok."}],
+                    "answer": "ok",
+                }
+            ]
+
+
+    def load_taskset(config: LeanTasksetConfig) -> LeanTaskset:
+        return LeanTaskset(config=config)
+    """
+)
+
+
 V0_ENV_SOURCE = textwrap.dedent(
     """
     import verifiers as vf
@@ -111,6 +138,14 @@ def dummy_v1_env(tmp_path: Path, monkeypatch):
 def dummy_v0_env(tmp_path: Path, monkeypatch):
     name = "dummy_v0_env"
     _install_module(tmp_path, monkeypatch, name, V0_ENV_SOURCE)
+    yield name
+    sys.modules.pop(name, None)
+
+
+@pytest.fixture
+def lean_v1_env(tmp_path: Path, monkeypatch):
+    name = "lean_v1_env"
+    _install_module(tmp_path, monkeypatch, name, LEAN_V1_ENV_SOURCE)
     yield name
     sys.modules.pop(name, None)
 
@@ -355,3 +390,44 @@ def test_build_v1_env_explicit_base_harness(dummy_v1_env: str):
     env = build_v1_env(dummy_v1_env, harness_spec={"ref": "base", "max_turns": 2})
     assert type(env.harness) is Harness
     assert env.harness.config.max_turns == 2
+
+
+# ---------------------------------------------------------------------------
+# Lean v1 envs: no EnvConfig, no load_environment, no load_harness.
+# Everything beyond the Taskset auto-resolves through vf.load_environment +
+# vf-eval-v1.
+# ---------------------------------------------------------------------------
+
+
+def test_lean_v1_env_auto_resolves_base_harness(lean_v1_env: str):
+    env = vf.load_environment(lean_v1_env)
+    assert type(env.taskset).__name__ == "LeanTaskset"
+    assert type(env.harness) is Harness
+    assert isinstance(env.harness.config, HarnessConfig)
+
+
+def test_lean_v1_env_load_environment_rejects_extra_kwargs(lean_v1_env: str):
+    # Module exposes neither load_environment nor v1 dispatch markers; extra
+    # kwargs are not deliverable anywhere and should fail clearly.
+    with pytest.raises(Exception, match="load_taskset"):
+        vf.load_environment(lean_v1_env, foo=1)
+
+
+def test_lean_v1_env_dispatch_with_harness_override(lean_v1_env: str):
+    env = vf.load_environment(
+        lean_v1_env,
+        **{V1_HARNESS_KEY: {"ref": "verifiers.v1:Harness", "max_turns": 3}},
+    )
+    assert type(env.harness) is Harness
+    assert env.harness.config.max_turns == 3
+
+
+def test_lean_v1_env_eval_v1_resolves_env_args(lean_v1_env: str):
+    cfg = ev1.EvalV1Config(
+        env=lean_v1_env,
+        taskset=ev1.TasksetSpec.model_validate({"difficulty": "hard"}),
+        harness=ev1.HarnessSpec.model_validate({"max_turns": 7}),
+    )
+    env_args = ev1._resolve_env_args(cfg)
+    assert env_args[V1_TASKSET_KEY] == {"difficulty": "hard"}
+    assert env_args[V1_HARNESS_KEY] == {"max_turns": 7}

@@ -36,24 +36,50 @@ prime eval run my-env -m openai/gpt-4.1-mini -n 10
 For v1 taskset/harness environments, the `vf-eval-v1` command is a leaner
 parallel CLI built on [`pydantic-config`](https://github.com/PrimeIntellect-ai/pydantic-config).
 It picks up `load_taskset(config: TasksetConfig)` directly (no
-`load_environment` required), runs in the env's default harness when nothing
-else is configured, and lets the harness either be tweaked or swapped on
-the fly.
+`load_environment` or `EnvConfig` required), runs in the env's default
+harness when nothing else is configured, and lets the harness either be
+tweaked or swapped on the fly.
+
+A v1 env can stop at the taskset surface:
+
+```python
+# environments/my_env/my_env.py
+import verifiers as vf
+
+
+class MyTasksetConfig(vf.TasksetConfig):
+    split: str = "train"
+
+
+class MyTaskset(vf.Taskset[MyTasksetConfig]):
+    def load_tasks(self) -> vf.Tasks:
+        return [{"prompt": [{"role": "user", "content": "..."}], "answer": "..."}]
+
+
+def load_taskset(config: MyTasksetConfig) -> MyTaskset:
+    return MyTaskset(config=config)
+```
+
+That's enough: `vf-eval-v1` and `vf.load_environment` will auto-build a
+`vf.Env` with the base `verifiers.v1.Harness`. Add `load_harness(config: ...)`
+if your env wants a non-base default harness; no `EnvConfig` subclass or
+`load_environment` shim is needed in either case.
 
 ```bash
 # run in the env's default harness
-vf-eval-v1 reverse-text-v1 --num-examples 5 --model openai/gpt-4.1-mini
+vf-eval-v1 my-env --num-examples 5 --model openai/gpt-4.1-mini
 
-# override fields on the env's default harness config
-vf-eval-v1 reverse-text-v1 --harness.max-turns 5 --harness.system-prompt-merge harness
+# override fields on the default harness's config
+vf-eval-v1 my-env --harness.max-turns 5 --harness.system-prompt-merge harness
 
 # swap the harness class entirely (alias or pkg.mod:Class import ref)
-vf-eval-v1 reverse-text-v1 \
-    --harness.ref rlm \
-    --harness.rlm-max-turns 50
+vf-eval-v1 my-env --harness.ref rlm --harness.rlm-max-turns 50
+
+# tweak the taskset config from the CLI
+vf-eval-v1 my-env --taskset.split test
 
 # load everything from TOML; CLI overrides still win
-vf-eval-v1 @ configs/eval/reverse-text-rlm.toml --num-examples 10
+vf-eval-v1 @ configs/eval/my-env-rlm.toml --num-examples 10
 ```
 
 `vf-eval-v1` keeps a v0 fallback: when the env only exposes
