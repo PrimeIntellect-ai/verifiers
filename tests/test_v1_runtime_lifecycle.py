@@ -1117,7 +1117,7 @@ def test_sandbox_package_install_bootstraps_managed_python() -> None:
     assert "UV_INDEX_URL" not in command
     assert "PIP_INDEX_URL" not in command
     assert "https://astral.sh/uv/install.sh" in command
-    assert '"$VF_UV" venv --python "$VF_PYTHON_VERSION"' in command
+    assert '"$VF_UV" venv --seed --python "$VF_PYTHON_VERSION"' in command
     assert '"$VF_UV" pip install --python "$VF_PYTHON"' in command
     assert "--index-url" not in command
     assert SANDBOX_PYTHON in command
@@ -1257,8 +1257,14 @@ async def test_program_channels_mcp_setup_uses_bindings_after_setup_before_comma
     await harness.run(task)
 
     commands = [command for _, command in FakeSandboxClient.commands]
-    setup_index = commands.index("echo setup")
-    mcp_setup_index = commands.index("echo model=bound-model > /tmp/endpoint.txt")
+    setup_index = next(
+        i for i, command in enumerate(commands) if command.endswith("echo setup")
+    )
+    mcp_setup_index = next(
+        i
+        for i, command in enumerate(commands)
+        if command.endswith("echo model=bound-model > /tmp/endpoint.txt")
+    )
     command_index = next(
         i
         for i, command in enumerate(commands)
@@ -1413,7 +1419,10 @@ async def test_program_channels_mcp_setup_accepts_config_ref_mappings(
     await harness.run(task)
 
     commands = [command for _, command in FakeSandboxClient.commands]
-    assert "echo ref-model=toml-model > /tmp/ref_endpoint.txt" in commands
+    assert any(
+        command.endswith("echo ref-model=toml-model > /tmp/ref_endpoint.txt")
+        for command in commands
+    )
 
 
 def test_program_bindings_must_match_owned_callables() -> None:

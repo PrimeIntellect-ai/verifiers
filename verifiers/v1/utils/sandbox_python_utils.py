@@ -28,6 +28,10 @@ def python_package_install_command(package_args: str = "") -> str:
     return command
 
 
+def sandbox_python_path_command(command: str) -> str:
+    return f"export PATH={shlex.quote(SANDBOX_DEFAULT_PATH)}:$PATH\n{command}"
+
+
 def python_package_list(value: object, field: str = "sandbox.packages") -> list[str]:
     if value is None:
         return []
@@ -75,7 +79,7 @@ def sandbox_runtime_script() -> str:
         "vf_ensure_python() {\n"
         "vf_ensure_uv\n"
         'if [ ! -x "$VF_PYTHON" ]; then\n'
-        '  "$VF_UV" venv --python "$VF_PYTHON_VERSION" "$VF_PYTHON_ROOT"\n'
+        '  "$VF_UV" venv --seed --python "$VF_PYTHON_VERSION" "$VF_PYTHON_ROOT"\n'
         "fi\n"
         'if [ ! -x "$VF_PYTHON" ] && [ -x "$VF_PYTHON_ROOT/bin/python" ]; then\n'
         '  ln -sfn "$VF_PYTHON_ROOT/bin/python" "$VF_PYTHON"\n'
