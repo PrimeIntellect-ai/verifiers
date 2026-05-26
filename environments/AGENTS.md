@@ -982,9 +982,10 @@ unregister_executor("my-env-client")
 self.my_executor.shutdown()
 ```
 
-In practice, you rarely need to call `set_concurrency()` yourself. Both `prime eval run` and `prime-rl` automatically compute the right worker count from the concurrency level. If you wish to override the automatic value during evaluation, you can do so with the `--extra-env-kwargs` flag:
+In practice, you rarely need to call `set_concurrency()` yourself. Both `prime eval run` and `prime-rl` automatically compute the right worker count from the concurrency level. If you wish to override the automatic value during evaluation, you can do so with `--extra-env-kwargs.concurrency` or the legacy JSON `--extra-env-kwargs` flag:
 
 ```bash
+prime eval run my-env --extra-env-kwargs.concurrency 256
 prime eval run my-env -x '{"concurrency": 256}'
 ```
 

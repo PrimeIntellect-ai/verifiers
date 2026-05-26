@@ -26,6 +26,7 @@ def run_cli(make_metadata, make_state, make_input):
     def _run_cli(
         monkeypatch,
         overrides,
+        config_args: list[str] | None = None,
         capture_all_configs: bool = False,
         endpoints: dict | None = None,
         fail_on_load_endpoints: bool = False,
@@ -78,8 +79,8 @@ def run_cli(make_metadata, make_state, make_input):
 
         monkeypatch.setattr(
             argparse.ArgumentParser,
-            "parse_args",
-            lambda self: args_namespace,
+            "parse_known_args",
+            lambda self: (args_namespace, config_args or []),
         )
         monkeypatch.setattr(vf_eval, "setup_logging", lambda *_, **__: None)
         if fail_on_load_endpoints:
@@ -173,8 +174,48 @@ def test_get_env_eval_defaults_for_single_file_module(tmp_path: Path, monkeypatc
     assert defaults == {"num_examples": 20, "rollouts_per_example": 6}
 
 
-def test_cli_sampling_args_precedence_over_flags(monkeypatch, run_cli):
-    """sampling_args JSON takes precedence over individual flags."""
+def test_cli_sampling_section_precedence_over_flags(monkeypatch, run_cli):
+    """Dotted sampling config takes precedence over individual flags."""
+    captured = run_cli(
+        monkeypatch,
+        {
+            "max_tokens": 42,
+            "temperature": 0.9,
+        },
+        config_args=[
+            "--sampling.enable-thinking",
+            "false",
+            "--sampling.max-tokens",
+            "77",
+            "--sampling.temperature",
+            "0.1",
+        ],
+    )
+
+    sa = captured["sampling_args"]
+    assert sa["max_tokens"] == 77
+    assert sa["temperature"] == 0.1
+    assert sa["enable_thinking"] is False
+
+
+def test_cli_sampling_config_fills_from_flags_when_missing(monkeypatch, run_cli):
+    """Flags fill in missing dotted sampling config values."""
+    captured = run_cli(
+        monkeypatch,
+        {
+            "max_tokens": 55,
+            "temperature": 0.8,
+        },
+        config_args=["--sampling.enable-thinking", "true"],
+    )
+
+    sa = captured["sampling_args"]
+    assert sa["max_tokens"] == 55
+    assert sa["temperature"] == 0.8
+    assert sa["enable_thinking"] is True
+
+
+def test_cli_legacy_sampling_args_json_still_works(monkeypatch, run_cli):
     captured = run_cli(
         monkeypatch,
         {
@@ -192,29 +233,11 @@ def test_cli_sampling_args_precedence_over_flags(monkeypatch, run_cli):
     assert sa["enable_thinking"] is False
 
 
-def test_cli_sampling_args_fill_from_flags_when_missing(monkeypatch, run_cli):
-    """Flags fill in missing sampling_args values."""
-    captured = run_cli(
-        monkeypatch,
-        {
-            "sampling_args": {"enable_thinking": True},
-            "max_tokens": 55,
-            "temperature": 0.8,
-        },
-    )
-
-    sa = captured["sampling_args"]
-    assert sa["max_tokens"] == 55
-    assert sa["temperature"] == 0.8
-    assert sa["enable_thinking"] is True
-
-
 def test_cli_no_sampling_args_uses_flags(monkeypatch, run_cli):
     """When no sampling_args provided, uses flag values."""
     captured = run_cli(
         monkeypatch,
         {
-            "sampling_args": None,
             "max_tokens": 128,
             "temperature": 0.5,
         },
@@ -230,7 +253,6 @@ def test_cli_temperature_not_added_when_none(monkeypatch, run_cli):
     captured = run_cli(
         monkeypatch,
         {
-            "sampling_args": None,
             "max_tokens": 100,
             "temperature": None,
         },
@@ -244,9 +266,13 @@ def test_cli_temperature_not_added_when_none(monkeypatch, run_cli):
 def test_cli_extra_env_kwargs_support_timeout_seconds(monkeypatch, run_cli):
     captured = run_cli(
         monkeypatch,
-        {
-            "extra_env_kwargs": {"timeout_seconds": 30, "foo": "bar"},
-        },
+        {},
+        config_args=[
+            "--extra-env-kwargs.timeout-seconds",
+            "30",
+            "--extra-env-kwargs.foo",
+            "bar",
+        ],
     )
 
     assert captured["configs"][0].extra_env_kwargs == {
@@ -260,13 +286,65 @@ def test_cli_timeout_flag_overrides_extra_env_kwargs(monkeypatch, run_cli):
     captured = run_cli(
         monkeypatch,
         {
-            "extra_env_kwargs": {"timeout_seconds": 30, "foo": "bar"},
             "timeout": 600,
         },
+        config_args=[
+            "--extra-env-kwargs.timeout-seconds",
+            "30",
+            "--extra-env-kwargs.foo",
+            "bar",
+        ],
     )
 
     assert captured["configs"][0].extra_env_kwargs == {
         "timeout_seconds": 600,
+        "foo": "bar",
+    }
+
+
+def test_cli_dotted_env_config_sections(monkeypatch, run_cli):
+    captured = run_cli(
+        monkeypatch,
+        {},
+        config_args=[
+            "--args.split",
+            "train",
+            "--harness.max-turns",
+            "5",
+            "--taskset.scoring.exact-answer.weight",
+            "0.5",
+        ],
+    )
+
+    assert captured["configs"][0].env_args == {
+        "split": "train",
+        "config": {
+            "taskset": {"scoring": {"exact_answer": {"weight": "0.5"}}},
+            "harness": {"max_turns": 5},
+        },
+    }
+
+
+def test_cli_legacy_env_args_json_still_works(monkeypatch, run_cli):
+    captured = run_cli(
+        monkeypatch,
+        {"env_args": {"difficulty": "hard", "num_examples": 100}},
+    )
+
+    assert captured["configs"][0].env_args == {
+        "difficulty": "hard",
+        "num_examples": 100,
+    }
+
+
+def test_cli_legacy_extra_env_kwargs_json_still_works(monkeypatch, run_cli):
+    captured = run_cli(
+        monkeypatch,
+        {"extra_env_kwargs": {"timeout_seconds": 30, "foo": "bar"}},
+    )
+
+    assert captured["configs"][0].extra_env_kwargs == {
+        "timeout_seconds": 30,
         "foo": "bar",
     }
 

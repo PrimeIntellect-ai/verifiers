@@ -56,9 +56,13 @@ For the full hosted workflow and hosted-only flags such as `--follow`, `--timeou
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
 | `env_id_or_path` | (positional) | — | Environment ID(s) or path to TOML config |
-| `--env-args` | `-a` | `{}` | JSON object passed to `load_environment()` |
-| `--extra-env-kwargs` | `-x` | `{}` | JSON object passed to environment constructor |
-| `--timeout` | — | `None` | Per-rollout wall-clock timeout in seconds. Wins over equivalent values in `--extra-env-kwargs` or TOML `[eval.extra_env_kwargs]`. Bounds generation only — scoring is not bounded. |
+| `--args.<key>` | — | — | Argument passed to `load_environment()` |
+| `--env-args` | `-a` | `{}` | Legacy JSON object passed to `load_environment()` |
+| `--taskset.<key>` | — | — | v1 taskset config passed through `EnvConfig.taskset` |
+| `--harness.<key>` | — | — | v1 harness config passed through `EnvConfig.harness` |
+| `--extra-env-kwargs.<key>` | — | — | Argument passed to the loaded environment via `set_kwargs()` |
+| `--extra-env-kwargs` | `-x` | `{}` | Legacy JSON object passed to the loaded environment via `set_kwargs()` |
+| `--timeout` | — | `None` | Per-rollout wall-clock timeout in seconds. Wins over equivalent values in `--extra-env-kwargs.*`, `--extra-env-kwargs`, or TOML `[eval.extra_env_kwargs]`. Bounds generation only — scoring is not bounded. |
 | `--env-dir-path` | `-p` | `./environments` | Base path for saving output files |
 
 The positional argument accepts two formats:
@@ -67,20 +71,40 @@ The positional argument accepts two formats:
 
 Environment IDs are converted to Python module names (`my-env` → `my_env`) and imported after `prime eval run` resolves the environment package.
 
-For legacy or direct-constructor environments, the `--env-args` flag passes
+For legacy or direct-constructor environments, dotted `--args.*` flags pass
 arguments to your `load_environment()` function:
+
+```bash
+prime eval run my-env --args.difficulty hard --args.num-examples 100
+```
+
+The legacy JSON form remains accepted:
 
 ```bash
 prime eval run my-env -a '{"difficulty": "hard", "num_examples": 100}'
 ```
 
-The `--extra-env-kwargs` flag passes arguments directly to the environment constructor, useful for overriding defaults like `max_turns` which may not be exposed via `load_environment()`:
+For v1 environments, dotted `--taskset.*` and `--harness.*` flags populate the
+same config sections as TOML:
+
+```bash
+prime eval run my-v1-env --taskset.split test --harness.max-turns 4
+```
+
+The `--extra-env-kwargs.*` flags pass arguments to `set_kwargs()` on the loaded
+environment:
+
+```bash
+prime eval run my-env --extra-env-kwargs.max-turns 20
+```
+
+The legacy JSON form remains accepted:
 
 ```bash
 prime eval run my-env -x '{"max_turns": 20}'
 ```
 
-For per-rollout wall-clock timeouts, use the dedicated `--timeout` flag. It **wins over** equivalent values set via `--extra-env-kwargs` or TOML's `[eval.extra_env_kwargs]`:
+For per-rollout wall-clock timeouts, use the dedicated `--timeout` flag. It **wins over** equivalent values set via `--extra-env-kwargs.*`, `--extra-env-kwargs`, or TOML's `[eval.extra_env_kwargs]`:
 
 ```bash
 prime eval run my-env --timeout 600
@@ -98,12 +122,12 @@ timeout = 600
 
 #### Executor autoscaling
 
-Thread-pool executors are automatically sized to match the evaluation concurrency. During `prime eval run`, if `concurrency` is not explicitly provided via `--extra-env-kwargs`, it is computed from the concurrency level (`max_concurrent`, or `num_examples * rollouts_per_example` when unlimited) using `recommended_max_workers()`. This value is passed to `Environment.set_concurrency()`, which resizes both the default event-loop executor and all registered executors.
+Thread-pool executors are automatically sized to match the evaluation concurrency. During `prime eval run`, if `concurrency` is not explicitly provided via `--extra-env-kwargs.concurrency`, it is computed from the concurrency level (`max_concurrent`, or `num_examples * rollouts_per_example` when unlimited) using `recommended_max_workers()`. This value is passed to `Environment.set_concurrency()`, which resizes both the default event-loop executor and all registered executors.
 
 To override the automatic value:
 
 ```bash
-prime eval run my-env -x '{"concurrency": 256}'
+prime eval run my-env --extra-env-kwargs.concurrency 256
 ```
 
 You can also call `set_concurrency()` directly at runtime:
@@ -186,9 +210,16 @@ When using eval TOML configs, you can set `endpoint_id` in `[[eval]]` sections t
 |------|-------|---------|-------------|
 | `--max-tokens` | `-t` | model default | Maximum tokens to generate |
 | `--temperature` | `-T` | model default | Sampling temperature |
-| `--sampling-args` | `-S` | — | JSON object for additional sampling parameters |
+| `--sampling.<key>` | — | — | Additional sampling parameter |
+| `--sampling-args` | `-S` | — | Legacy JSON object for additional sampling parameters |
 
-The `--sampling-args` flag accepts any parameters supported by the model's API:
+The `--sampling.*` flags accept any parameters supported by the model's API:
+
+```bash
+prime eval run my-env --sampling.temperature 0.7 --sampling.top-p 0.9
+```
+
+The legacy JSON form remains accepted:
 
 ```bash
 prime eval run my-env -S '{"temperature": 0.7, "top_p": 0.9}'
@@ -297,7 +328,7 @@ If all rollouts are already complete, the evaluation returns immediately with th
 
 **Configuration compatibility:**
 
-When resuming, the current run configuration should match the original run. Mismatches in parameters like `--model`, `--env-args`, or `--rollouts-per-example` can lead to undefined behavior. For reliable results, resume with the same configuration used to create the checkpoint, only increasing `--num-examples` if you need additional rollouts beyond the original target.
+When resuming, the current run configuration should match the original run. Mismatches in parameters like `--model`, `--args.*` / `--env-args`, or `--rollouts-per-example` can lead to undefined behavior. For reliable results, resume with the same configuration used to create the checkpoint, only increasing `--num-examples` if you need additional rollouts beyond the original target.
 
 **Example workflow:**
 

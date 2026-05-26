@@ -193,8 +193,13 @@ split = "eval"
 max_turns = 20
 ```
 
-CLI `-a` passes loader kwargs. For v1 child config overrides, nest under the
-`config` loader argument:
+For direct CLI runs, use dotted v1 child config flags:
+
+```bash
+prime eval run my-env --taskset.split eval --harness.max-turns 20
+```
+
+The legacy JSON loader-args form remains accepted:
 
 ```bash
 prime eval run my-env -a '{"config":{"taskset":{"split":"eval"},"harness":{"max_turns":20}}}'

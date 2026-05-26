@@ -13,8 +13,11 @@ import asyncio
 import importlib.util
 import json
 import logging
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, cast
+
+from pydantic_config import BaseConfig, ConfigFileError, cli as config_cli
 
 from verifiers import setup_logging
 from verifiers.types import (
@@ -30,10 +33,12 @@ from verifiers.utils.eval_utils import (
     get_log_level,
     load_endpoints,
     load_toml_config,
+    normalize_sampling_config,
     resolve_endpoints_file,
     run_evaluations,
     run_evaluations_tui,
 )
+from verifiers.utils.env_config_utils import normalize_env_config_sections
 from verifiers.utils.import_utils import load_toml
 from verifiers.utils.install_utils import check_hub_env_installed
 
@@ -88,6 +93,16 @@ PROVIDER_CONFIGS: dict[str, dict[str, str]] = {
     },
 }
 DEFAULT_PROVIDER = "prime"
+
+
+class DirectEvalConfig(BaseConfig):
+    args: dict[str, Any] = {}
+    env_args: dict[str, Any] = {}
+    taskset: dict[str, Any] = {}
+    harness: dict[str, Any] = {}
+    sampling: dict[str, Any] = {}
+    sampling_args: dict[str, Any] = {}
+    extra_env_kwargs: dict[str, Any] = {}
 
 
 def merge_sampling_args(
@@ -449,7 +464,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--timeout",
         type=float,
         default=None,
-        help="Per-rollout wall-clock timeout in seconds. Overrides timeout_seconds in --extra-env-kwargs.",
+        help="Per-rollout wall-clock timeout in seconds. Overrides timeout_seconds in --extra-env-kwargs.timeout-seconds.",
     )
     parser.add_argument(
         "--fullscreen",
@@ -499,6 +514,34 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def parse_direct_eval_config(args: list[str]) -> dict[str, Any]:
+    if not args:
+        return {}
+    try:
+        config = config_cli(DirectEvalConfig, args=args)
+    except ConfigFileError as exc:
+        raise SystemExit(f"error: {exc.message}") from exc
+    return config.model_dump(exclude_unset=True)
+
+
+def merge_direct_eval_config(
+    raw_config: dict[str, Any], config_args: list[str]
+) -> dict[str, Any]:
+    config = parse_direct_eval_config(config_args)
+    for key in ("env_args", "sampling_args", "extra_env_kwargs"):
+        old_value = raw_config.get(key)
+        new_value = config.get(key)
+        if isinstance(old_value, Mapping) and isinstance(new_value, Mapping):
+            config[key] = {**old_value, **new_value}
+    merged = {**raw_config, **config}
+    if merged.get("sampling_args") is None:
+        merged.pop("sampling_args")
+    merged = normalize_sampling_config(
+        merged, "CLI config", merge_sampling_with_existing=True
+    )
+    return normalize_env_config_sections(merged)
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = build_parser()
     if argv is None:
@@ -506,8 +549,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def parse_known_args(
+    argv: list[str] | None = None,
+) -> tuple[argparse.Namespace, list[str]]:
+    parser = build_parser()
+    if argv is None:
+        return parser.parse_known_args()
+    return parser.parse_known_args(argv)
+
+
 def main(argv: list[str] | None = None):
-    args = parse_args(argv)
+    args, config_args = parse_known_args(argv)
 
     if args.disable_tui and args.fullscreen:
         raise SystemExit(
@@ -521,6 +573,8 @@ def main(argv: list[str] | None = None):
 
     # Build raw configs: both paths produce list[dict]
     if args.env_id_or_config.endswith(".toml"):
+        if config_args:
+            raise SystemExit(f"error: unrecognized arguments: {' '.join(config_args)}")
         path = Path(args.env_id_or_config)
         if not path.is_file():
             raise FileNotFoundError(
@@ -539,6 +593,7 @@ def main(argv: list[str] | None = None):
         # CLI path: convert args to dict
         raw_config = {"env_id": args.env_id_or_config}
         raw_config.update(vars(args))
+        raw_config = merge_direct_eval_config(raw_config, config_args)
         raw_eval_configs = [raw_config]
 
     def build_eval_config(raw: dict) -> EvalConfig:
