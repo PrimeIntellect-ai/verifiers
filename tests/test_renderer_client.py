@@ -150,6 +150,56 @@ def test_renderer_client_threads_chat_template_kwargs_into_pool():
         assert captured["sampling_params"] == {"top_k": 20}
 
 
+def test_renderer_client_auto_resolves_against_renderer_model_name_override():
+    """When ``ClientConfig.renderer_model_name`` overrides the API request
+    model, auto-resolution looks up the OVERRIDE in ``MODEL_RENDERER_MAP``
+    (it's what loads the tokenizer the renderer holds) — not the request
+    model, which may not be in the map at all."""
+    from renderers import Qwen3RendererConfig
+
+    RendererClient._shared_pools.clear()
+
+    client = object.__new__(RendererClient)
+    client._renderer = None
+    client._pool_size = 1
+    client._config = vf.ClientConfig(
+        client_type="renderer",
+        renderer_model_name="Qwen/Qwen3-8B",  # override
+    )
+    client._client = object()  # type: ignore[attr-defined]
+
+    sentinel_pool = RendererPool.__new__(RendererPool)
+
+    async def _fake_generate(**kwargs):
+        return {"content": "ok"}
+
+    with (
+        patch(
+            "verifiers.clients.renderer_client.create_renderer_pool",
+            return_value=sentinel_pool,
+        ) as create_pool_mock,
+        patch("verifiers.clients.renderer_client.generate", side_effect=_fake_generate),
+    ):
+        asyncio.run(
+            client.get_native_response(
+                prompt=[{"role": "user", "content": "hi"}],
+                model="r8-smoke",  # not in MODEL_RENDERER_MAP
+                sampling_args={
+                    "extra_body": {"chat_template_kwargs": {"enable_thinking": False}}
+                },
+                tools=None,
+            )
+        )
+
+    # Resolves against renderer_model_name (Qwen/Qwen3-8B → "qwen3") rather
+    # than the request "r8-smoke" (which would fall through to default).
+    create_pool_mock.assert_called_once_with(
+        "Qwen/Qwen3-8B",
+        Qwen3RendererConfig(enable_thinking=False),
+        size=1,
+    )
+
+
 def test_renderer_client_rejects_invalid_chat_template_kwargs():
     """Unknown / mistyped chat_template_kwargs surface as a pydantic
     ``ValidationError`` (``extra="forbid"`` on the typed RendererConfig)."""

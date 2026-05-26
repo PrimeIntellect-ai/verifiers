@@ -382,7 +382,7 @@ def _resolve_renderer_config(
     base: RendererConfig | None,
     chat_template_kwargs: Mapping[str, Any] | None,
     *,
-    model: str,
+    renderer_model: str,
 ) -> RendererConfig | None:
     """Merge ``chat_template_kwargs`` into a typed ``RendererConfig``.
 
@@ -391,7 +391,10 @@ def _resolve_renderer_config(
     ``MODEL_RENDERER_MAP`` so kwargs land on the concrete config variant
     and pydantic validates them against the actual renderer's schema —
     ``AutoRendererConfig`` intentionally carries only ``preserve_*`` and
-    would reject template kwargs like ``enable_thinking``.
+    would reject template kwargs like ``enable_thinking``. ``renderer_model``
+    must match what the pool will tokenize with (i.e.
+    ``ClientConfig.renderer_model_name`` when set, else the request model),
+    so resolution agrees with the tokenizer the renderer will hold.
 
     Kwargs override fields with the same name on the (resolved) base.
     Typed configs (``extra="forbid"``) reject unknown keys with a
@@ -405,8 +408,11 @@ def _resolve_renderer_config(
     # ``enable_thinking`` etc. validate against the right schema instead of
     # ``AutoRendererConfig``'s minimal one. Carries ``preserve_*`` across.
     if base is None or isinstance(base, AutoRendererConfig):
-        renderer_name = MODEL_RENDERER_MAP.get(model, "default")
+        renderer_name = MODEL_RENDERER_MAP.get(renderer_model, "default")
+        # ``config_from_name`` returns ``None`` only for ``"auto"``, which
+        # ``MODEL_RENDERER_MAP.get(..., "default")`` excludes — assert for ty.
         concrete = config_from_name(renderer_name)
+        assert concrete is not None
         if isinstance(base, AutoRendererConfig):
             concrete = concrete.model_copy(
                 update={
@@ -414,7 +420,7 @@ def _resolve_renderer_config(
                     "preserve_thinking_between_tool_calls": base.preserve_thinking_between_tool_calls,
                 }
             )
-        base = concrete
+        base = cast(RendererConfig, concrete)
 
     return type(base).model_validate({**base.model_dump(), **chat_template_kwargs})
 
@@ -540,10 +546,18 @@ class RendererClient(
         # typed RendererConfig. Pool cache key already includes the
         # effective config so identical kwargs reuse the same renderer.
         chat_template_kwargs = sampling_params.pop("chat_template_kwargs", None)
+        # Auto-resolution must agree with the model the pool will tokenize
+        # against — ``renderer_model_name`` overrides the request ``model``
+        # when set (same precedence ``_get_renderer_or_pool`` uses below).
+        renderer_model = (
+            self._config.renderer_model_name
+            if self._config is not None and self._config.renderer_model_name is not None
+            else model
+        )
         effective_cfg = _resolve_renderer_config(
             self._config.renderer_config if self._config is not None else None,
             chat_template_kwargs,
-            model=model,
+            renderer_model=renderer_model,
         )
         renderer = self._get_renderer_or_pool(model, renderer_config=effective_cfg)
 
