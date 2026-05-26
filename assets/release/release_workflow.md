@@ -13,22 +13,32 @@ environment, OIDC). Trusted Publisher entries on PyPI must exist for
 
 ## Automatic dev releases (`devx_tag.yml`)
 
+`verifiers/__init__.py`'s `__version__` is treated as the **latest
+stable release version** and is only ever changed by a stable
+release-prep PR (see below). The dev flow leaves it alone.
+
 `devx_tag.yml` runs on every push to `main`. For each push it:
 
-1. Computes the next dev tag from the most recent `v*` tag. If the latest
-   tag is stable (`vX.Y.Z`) the next dev tag is `vX.Y.(Z+1).dev1`. If the
-   latest tag is already a dev release (`vX.Y.Z.devN`) the next dev tag
-   is `vX.Y.Z.dev(N+1)`.
-2. Creates a synthetic commit on top of the current `main` HEAD that
-   bumps `verifiers/__init__.py` to the new version. The commit is the
-   parent of the annotated tag — it is **not** pushed back to `main`.
-3. Pushes the tag, then checks out the tagged commit, runs `uv build`,
-   and publishes the wheel + sdist to PyPI.
+1. Computes the next dev tag from the most recent `v*` tag. If the
+   latest tag is stable (`vX.Y.Z`) the next dev tag is
+   `vX.Y.(Z+1).dev1`. If the latest tag is already a dev release
+   (`vX.Y.Z.devN`) the next dev tag is `vX.Y.Z.dev(N+1)`.
+2. Creates a lightweight tag pointing directly at the current `main`
+   HEAD. No commit is created and `main` is not modified.
+3. Checks out the tag, overrides `verifiers/__init__.py`'s `__version__`
+   to the dev version **in the workflow checkout only** (uncommitted),
+   runs `uv build`, and publishes the wheel + sdist to PyPI via Trusted
+   Publisher.
 
 Dev releases intentionally do **not** create a GitHub Release and do
 **not** require a hand-curated release-notes file. They are best
 consumed via `pip install verifiers==X.Y.Z.devN` or
 `pip install verifiers --pre`.
+
+Because the override is never committed, a `git checkout vX.Y.Z.devN`
+will show `__version__` equal to the latest stable, not the dev value.
+That is intentional — the only place the dev version exists is on the
+published wheel.
 
 `devx_tag.yml` defers to the stable flow when a push already modifies
 `verifiers/__init__.py`, so a release-prep PR never produces two tags
@@ -73,8 +83,10 @@ skips this push (because `__init__.py` changed) and resumes producing
   contains the built `dist/` artifacts.
 - Draft follow-up communication (blog post, changelog announcement) if
   needed.
-- No follow-up bump PR is required — the next push to `main` will
-  create the first `vX.Y.(Z+1).devN` tag automatically.
+- Leave `verifiers/__init__.py` at the just-published stable version —
+  it should always reflect the latest stable release. The next push to
+  `main` will automatically produce the first `vX.Y.(Z+1).devN` tag
+  without modifying the file.
 
 ## Troubleshooting
 

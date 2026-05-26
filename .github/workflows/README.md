@@ -26,10 +26,12 @@ This directory contains automated workflows for the verifiers project.
 
 **What it does**:
 - Computes the next dev tag from the most recent `v*` tag.
-- Builds a synthetic commit on top of `main` HEAD that bumps `verifiers/__init__.py` to the new version, then annotates and pushes the tag (the bump commit is never pushed back to `main`).
-- Checks out the tag, runs `uv build`, and publishes the wheel + sdist to PyPI via Trusted Publisher (`pypi-prod` environment, OIDC).
+- Creates a lightweight tag pointing directly at `main` HEAD (no commit, no modification to `main`).
+- Checks out the tag, overrides `verifiers/__init__.py`'s `__version__` to the dev version **in the workflow checkout only** (uncommitted), runs `uv build`, and publishes the wheel + sdist to PyPI via Trusted Publisher (`pypi-prod` environment, OIDC).
 - Does **not** create a GitHub Release and does **not** require a hand-curated `assets/release/RELEASE_<tag>.md` file — those are reserved for stable releases.
 - Skips itself when the push already modifies `verifiers/__init__.py` (deferring to `tag-and-release.yml`'s `auto-tag-on-main` job for stable release-prep PRs).
+
+`verifiers/__init__.py`'s `__version__` is treated as the latest stable release version and is never modified by this workflow.
 
 See `assets/release/release_workflow.md` for the full release workflow.
 

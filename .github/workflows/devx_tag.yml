@@ -7,11 +7,11 @@ name: DevX Tag
 # `assets/release/RELEASE_<tag>.md` file — that flow is reserved for
 # stable releases in `tag-and-release.yml`.
 #
-# The dev tag is an annotated tag pointing at a synthetic commit whose
-# parent is the current `main` HEAD. The synthetic commit only bumps
-# `verifiers/__init__.py` so that the wheel built from the tag carries
-# the correct version. The bump commit is never pushed back to `main`,
-# which keeps the branch free of bot churn and merge conflicts.
+# `verifiers/__init__.py`'s `__version__` is treated as the latest
+# *stable* release version and is never touched by this workflow. The
+# dev wheel built from each tag patches `__init__.py` in the workflow
+# checkout only (uncommitted) so the wheel carries the dev version,
+# while `main` keeps reporting the stable version for source installs.
 
 on:
   push:
@@ -19,7 +19,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -30,6 +30,8 @@ jobs:
     name: Create .dev tag
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     outputs:
       created: ${{ steps.tag.outputs.created }}
       tag: ${{ steps.tag.outputs.tag }}
@@ -60,13 +62,14 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Compute next dev version
+      - name: Compute next dev tag and create it
         if: steps.skip.outputs.skip != 'true'
-        id: ver
+        id: tag
         uses: actions/github-script@v7
         with:
           script: |
             const { owner, repo } = context.repo;
+            const sha = context.sha;
 
             const refs = await github.paginate(github.rest.git.listMatchingRefs, {
               owner,
@@ -90,7 +93,7 @@ jobs:
 
             if (parsed.length === 0) {
               core.notice("No v* tags found; skipping .dev tag creation.");
-              core.setOutput("skipped", "true");
+              core.setOutput("created", "false");
               return;
             }
 
@@ -122,41 +125,69 @@ jobs:
             const escapeRegex = (v) => v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
             const devPattern = new RegExp(`^refs/tags/${escapeRegex(base)}\\.dev(\\d+)$`);
 
-            const existingDevRefs = await github.paginate(github.rest.git.listMatchingRefs, {
-              owner,
-              repo,
-              ref: `tags/${devPrefix}`,
-            });
-            let maxDev = startDev - 1;
-            for (const ref of existingDevRefs) {
-              const m = devPattern.exec(ref.ref);
-              if (m) {
-                const n = Number.parseInt(m[1], 10);
-                if (n > maxDev) maxDev = n;
+            for (let attempt = 0; attempt < 5; attempt += 1) {
+              const existingDevRefs = await github.paginate(github.rest.git.listMatchingRefs, {
+                owner,
+                repo,
+                ref: `tags/${devPrefix}`,
+              });
+              let maxDev = startDev - 1;
+              for (const ref of existingDevRefs) {
+                const m = devPattern.exec(ref.ref);
+                if (m) {
+                  const n = Number.parseInt(m[1], 10);
+                  if (n > maxDev) maxDev = n;
+                }
               }
+
+              const tag = `${devPrefix}${maxDev + 1}`;
+              const version = tag.replace(/^v/, "");
+
+              try {
+                await github.rest.git.createRef({
+                  owner,
+                  repo,
+                  ref: `refs/tags/${tag}`,
+                  sha,
+                });
+              } catch (error) {
+                if (error.status === 422) {
+                  core.warning(`Tag ${tag} already exists, retrying...`);
+                  continue;
+                }
+                throw error;
+              }
+
+              core.notice(`Created tag ${tag} at ${sha}`);
+              core.setOutput("created", "true");
+              core.setOutput("tag", tag);
+              core.setOutput("version", version);
+              return;
             }
 
-            const tag = `${devPrefix}${maxDev + 1}`;
-            const version = tag.replace(/^v/, "");
-            core.setOutput("skipped", "false");
-            core.setOutput("tag", tag);
-            core.setOutput("version", version);
-            core.notice(`Next dev tag: ${tag}`);
+            core.setFailed("Could not create a unique .dev tag after retries.");
 
-      - name: Build release commit and push tag
-        if: steps.skip.outputs.skip != 'true' && steps.ver.outputs.skipped != 'true'
-        id: tag
+  build-dev:
+    name: Build dev wheel
+    needs: create-dev-tag
+    if: needs.create-dev-tag.outputs.created == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout dev tag
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ needs.create-dev-tag.outputs.tag }}
+
+      - name: Override __version__ for dev build
         env:
-          TAG: ${{ steps.ver.outputs.tag }}
-          VERSION: ${{ steps.ver.outputs.version }}
+          VERSION: ${{ needs.create-dev-tag.outputs.version }}
         run: |
-          set -euo pipefail
-
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          git checkout --detach HEAD
-
+          # `verifiers/__init__.py` on `main` tracks the latest stable
+          # version. Patch it in the workflow checkout only (uncommitted)
+          # so the wheel built from this tag is labeled with the dev
+          # version. The patch is never pushed anywhere.
           python - <<'PY'
           from pathlib import Path
           import os, re, sys
@@ -173,28 +204,6 @@ jobs:
               sys.exit("Failed to locate __version__ in verifiers/__init__.py")
           path.write_text(new_text)
           PY
-
-          git add verifiers/__init__.py
-          git commit -m "Prepare ${TAG} release"
-          git tag -a "${TAG}" -m "Release ${TAG}"
-          git push origin "refs/tags/${TAG}"
-
-          echo "created=true" >> "$GITHUB_OUTPUT"
-          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-
-  build-dev:
-    name: Build dev wheel
-    needs: create-dev-tag
-    if: needs.create-dev-tag.outputs.created == 'true'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout dev tag
-        uses: actions/checkout@v4
-        with:
-          ref: refs/tags/${{ needs.create-dev-tag.outputs.tag }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
