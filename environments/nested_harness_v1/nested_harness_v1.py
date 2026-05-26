@@ -89,17 +89,17 @@ async def parent_program(task, state):
     return state
 
 
-class NestedTaskset(vf.Taskset):
-    pass
-
-
 class NestedHarness(vf.Harness):
     pass
 
 
 class NestedTasksetConfig(vf.TasksetConfig):
-    tasks: str = "load_tasks"
     rewards: list[str] = ["exact_answer"]
+
+
+class NestedTaskset(vf.Taskset[NestedTasksetConfig]):
+    def load_tasks(self) -> vf.Tasks:
+        return load_tasks()
 
 
 class NestedEnvConfig(vf.EnvConfig):

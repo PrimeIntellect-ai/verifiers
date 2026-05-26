@@ -27,7 +27,6 @@ BFCLRawTurn = str | ConfigMap | Sequence[BFCLRawMessage] | None
 
 
 class BFCLTasksetConfig(vf.TasksetConfig):
-    tasks: str = "load_tasks"
     rewards: list[str] = ["bfcl_reward"]
     test_category: str = "simple_python"
     test_categories: list[str] | None = None
@@ -588,8 +587,12 @@ class BFCLMultiTurnHarness(vf.Harness):
         return await bfcl_multi_turn_program(task, state, self)
 
 
-class BFCLTaskset(vf.Taskset):
-    pass
+class BFCLTaskset(vf.Taskset[BFCLTasksetConfig]):
+    def load_tasks(self) -> vf.Tasks:
+        return load_tasks(
+            test_category=self.config.test_category,
+            examples_per_category=self.config.examples_per_category,
+        )
 
 
 def load_harness(config: BFCLHarnessConfig) -> vf.Harness:

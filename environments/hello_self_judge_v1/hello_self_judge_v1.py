@@ -153,7 +153,6 @@ TASKS: list[vf.ConfigData] = [
 
 
 class SelfJudgeTasksetConfig(vf.TasksetConfig):
-    tasks: str = "load_tasks"
     toolsets: dict[str, dict[str, str]] = {"bash": {"fn": "load_bash_toolset"}}
     updates: list[str] = ["sandbox_judge"]
     rewards: list[str] = ["self_consistency_score"]
@@ -350,9 +349,7 @@ def load_bash_toolset(config=None) -> vf.Toolset:
     )
 
 
-class SelfJudgeTaskset(vf.Taskset):
-    config: SelfJudgeTasksetConfig
-
+class SelfJudgeTaskset(vf.Taskset[SelfJudgeTasksetConfig]):
     def load_tasks(self) -> vf.Tasks:
         return load_tasks(num_examples=self.config.num_examples)
 

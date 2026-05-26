@@ -53,13 +53,13 @@ def load_tasks():
     ]
 
 
-class HelloRLMTaskset(vf.Taskset):
-    pass
-
-
 class HelloRLMTasksetConfig(vf.TasksetConfig):
-    tasks: str = "load_tasks"
     rewards: list[str] = ["exact_answer"]
+
+
+class HelloRLMTaskset(vf.Taskset[HelloRLMTasksetConfig]):
+    def load_tasks(self) -> vf.Tasks:
+        return load_tasks()
 
 
 class HelloRLMEnvConfig(vf.EnvConfig):

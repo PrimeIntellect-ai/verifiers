@@ -310,7 +310,6 @@ async def alphabet_user(task, state, messages) -> list[dict[str, str]]:
 
 
 class AlphabetSortTasksetConfig(vf.TasksetConfig):
-    tasks: str = "load_tasks"
     rewards: list[str] = ["weighted_reward"]
     user: str | None = "alphabet_user"
     min_turns: int = 1
@@ -339,8 +338,19 @@ class AlphabetSortEnvConfig(vf.EnvConfig):
     harness: vf.HarnessConfig = vf.HarnessConfig()
 
 
-class AlphabetSortTaskset(vf.Taskset):
-    pass
+class AlphabetSortTaskset(vf.Taskset[AlphabetSortTasksetConfig]):
+    def load_tasks(self) -> vf.Tasks:
+        return load_tasks(
+            min_turns=self.config.min_turns,
+            max_turns=self.config.max_turns,
+            min_names_per_turn=self.config.min_names_per_turn,
+            max_names_per_turn=self.config.max_names_per_turn,
+            similarity_power=self.config.similarity_power,
+            power_per_turn=self.config.power_per_turn,
+            dataset_name=self.config.dataset_name,
+            dataset_split=self.config.dataset_split,
+            seed=self.config.seed,
+        )
 
 
 def load_environment(config: AlphabetSortEnvConfig) -> vf.Env:

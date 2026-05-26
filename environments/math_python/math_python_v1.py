@@ -90,7 +90,6 @@ def build_system_prompt(pip_install_packages: str = "numpy sympy scipy") -> str:
 
 
 class MathPythonTasksetConfig(vf.TasksetConfig):
-    tasks: str = "load_tasks"
     rewards: list[str] = ["correct_answer"]
     system_prompt: str | None = None
     dataset_name: str = "math"
@@ -144,8 +143,13 @@ def load_tasks(
         }
 
 
-class MathPythonTaskset(vf.Taskset):
-    pass
+class MathPythonTaskset(vf.Taskset[MathPythonTasksetConfig]):
+    def load_tasks(self) -> vf.Tasks:
+        return load_tasks(
+            dataset_name=self.config.dataset_name,
+            dataset_split=self.config.dataset_split,
+            num_train_examples=self.config.num_train_examples,
+        )
 
 
 class MathPythonHarness(vf.Harness):

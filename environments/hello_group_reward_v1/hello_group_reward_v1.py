@@ -12,7 +12,6 @@ Return the assigned candidate exactly.
 
 
 class GroupRewardTasksetConfig(vf.TasksetConfig):
-    tasks: str = "load_tasks"
     metrics: list[str] = [
         "answer_length",
         "group_quality",
@@ -139,7 +138,10 @@ TASKS: list[vf.ConfigData] = [
 ]
 
 
-class GroupRewardTaskset(vf.Taskset):
+class GroupRewardTaskset(vf.Taskset[GroupRewardTasksetConfig]):
+    def load_tasks(self) -> vf.Tasks:
+        return load_tasks(num_examples=self.config.num_examples)
+
     async def init_group(
         self, task: vf.Task, num_rollouts: int
     ) -> tuple[list[vf.Task], list[vf.State]]:

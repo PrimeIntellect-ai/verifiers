@@ -693,7 +693,6 @@ async def tau2_num_user_tool_calls(task, state) -> float:
 
 
 class Tau2TasksetConfig(vf.TasksetConfig):
-    tasks: str = "load_tasks"
     rewards: list[str] = ["tau2_reward"]
     metrics: list[str] = [
         "tau2_num_errors",
@@ -711,7 +710,7 @@ class Tau2TasksetConfig(vf.TasksetConfig):
     max_turns: int = DEFAULT_MAX_STEPS
 
 
-class Tau2Taskset(vf.Taskset):
+class Tau2Taskset(vf.Taskset[Tau2TasksetConfig]):
     def __init__(
         self,
         config: Tau2TasksetConfig | None = None,
@@ -748,6 +747,9 @@ class Tau2Taskset(vf.Taskset):
             self.add_toolset(toolset)
         if "user" not in self.config.model_fields_set:
             self.user = vf.User(make_tau2_user(session_factory))
+
+    def load_tasks(self) -> vf.Tasks:
+        return load_tasks(domain=self.config.domain, max_turns=self.config.max_turns)
 
 
 class Tau2EnvConfig(vf.EnvConfig):

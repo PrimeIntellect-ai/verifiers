@@ -114,8 +114,8 @@ def test_wiki_search_v1_default_and_explicit_toolsets(
         config=module.WikiSearchTasksetConfig(toolsets={"custom": {"tools": []}})
     )
 
-    assert list(taskset.named_toolsets) == ["custom"]
-    assert len(taskset.toolsets) == 1
+    assert list(taskset.named_toolsets) == ["wiki", "custom"]
+    assert len(taskset.toolsets) == 2
 
     configured_env = module.load_environment(
         config=module.WikiSearchEnvConfig(harness={"max_turns": 7})

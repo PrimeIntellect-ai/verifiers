@@ -3,9 +3,6 @@ from pathlib import Path
 import sys
 from typing import cast
 
-from pydantic import model_validator
-from typing_extensions import Self
-
 import verifiers as vf
 
 SYSTEM_PROMPT = "Use the available MCP tools to answer the question."
@@ -74,27 +71,23 @@ DEFAULT_MCP_SERVERS: list[vf.ConfigData] = [
 
 
 class MCPSearchTasksetConfig(vf.TasksetConfig):
-    tasks: str = "load_tasks"
     rewards: list[str] = ["exact_title_reward"]
-    system_prompt: str = SYSTEM_PROMPT
     mcp_servers: list[vf.ConfigData] | None = None
     max_turns: int = 6
     examples: list[vf.ConfigData] | None = None
 
-    @model_validator(mode="after")
-    def configure_toolset(self) -> Self:
-        if "toolsets" not in self.model_fields_set:
-            self.toolsets = {
-                "records": {
-                    "fn": "load_toolset",
-                    "mcp_servers": self.mcp_servers,
-                }
-            }
-        return self
 
+class MCPSearchTaskset(vf.Taskset[MCPSearchTasksetConfig]):
+    def load_tasks(self) -> vf.Tasks:
+        return load_tasks(
+            examples=self.config.examples, max_turns=self.config.max_turns
+        )
 
-class MCPSearchTaskset(vf.Taskset):
-    pass
+    def load_system_prompt(self) -> vf.SystemPrompt:
+        return SYSTEM_PROMPT
+
+    def load_toolsets(self) -> vf.Toolsets:
+        return {"records": load_toolset(mcp_servers=self.config.mcp_servers)}
 
 
 def load_tasks(

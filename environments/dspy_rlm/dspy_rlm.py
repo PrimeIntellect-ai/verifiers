@@ -5,8 +5,6 @@ from verifiers.utils.data_utils import load_example_dataset
 
 
 class DSPYRLMTasksetConfig(vf.TasksetConfig):
-    tasks: str = "load_tasks"
-    eval_tasks: str = "load_eval_tasks"
     rewards: list[str] = ["answer_reward"]
     taskset_id: str = "gsm8k-dspy-rlm"
     num_train_examples: int = 50
@@ -101,8 +99,12 @@ def answer_reward(task: vf.Task, state: vf.State) -> float:
     return answers_match(agent_answer, str(task.get("answer", "")))
 
 
-class DSPYRLMTaskset(vf.Taskset):
-    pass
+class DSPYRLMTaskset(vf.Taskset[DSPYRLMTasksetConfig]):
+    def load_tasks(self) -> vf.Tasks:
+        return load_tasks(num_train_examples=self.config.num_train_examples)
+
+    def load_eval_tasks(self) -> vf.Tasks:
+        return load_eval_tasks(num_eval_examples=self.config.num_eval_examples)
 
 
 class DSPYRLMHarnessConfig(vf.HarnessConfig):

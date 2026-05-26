@@ -49,7 +49,6 @@ def _bundle_tasks_root(module_name: str) -> Path:
 
 
 class HarborTasksetConfig(TasksetConfig):
-    tasks: str | None = "load_tasks"
     rewards: list[CallableEntry] = ["harbor_reward"]
     dataset: str | None = None
     bundle_package: str | None = None
@@ -69,9 +68,7 @@ class HarborTasksetConfig(TasksetConfig):
     env: dict[str, str] = {}
 
 
-class HarborTaskset(Taskset):
-    config: HarborTasksetConfig
-
+class HarborTaskset(Taskset[HarborTasksetConfig]):
     def __init__(self, config: HarborTasksetConfig | None = None):
         config = HarborTasksetConfig() if config is None else config
         assert isinstance(config, HarborTasksetConfig)
@@ -100,6 +97,9 @@ class HarborTaskset(Taskset):
 
     def resolve_tasks_root(self) -> Path:
         return resolve_tasks_root(self.config, cache_dir=self._cache_dir)
+
+    def load_tasks(self) -> list[ConfigData]:
+        return load_tasks(self.config)
 
 
 def load_taskset(config: HarborTasksetConfig) -> HarborTaskset:

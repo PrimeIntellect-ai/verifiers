@@ -7,8 +7,6 @@ from chromadb.api.types import Embeddable, EmbeddingFunction
 from chromadb.utils import embedding_functions
 from datasets import load_dataset
 from openai import AsyncOpenAI
-from pydantic import model_validator
-from typing_extensions import Self
 
 import verifiers as vf
 
@@ -278,9 +276,7 @@ def load_toolset(
 
 
 class WikiSearchTasksetConfig(vf.TasksetConfig):
-    tasks: str = "load_tasks"
     rewards: list[str] = ["judge_reward"]
-    system_prompt: str = SYSTEM_PROMPT
     max_turns: int = 10
     corpus_dataset: str = "willcb/rare-wiki-pages"
     corpus_split: str = "train"
@@ -290,30 +286,33 @@ class WikiSearchTasksetConfig(vf.TasksetConfig):
     embed_api_key_var: str = "OPENAI_API_KEY"
     judge_model: str | None = None
 
-    @model_validator(mode="after")
-    def configure_toolset(self) -> Self:
-        if "toolsets" not in self.model_fields_set:
-            self.toolsets = {
-                "wiki": {
-                    "fn": "load_toolset",
-                    "corpus_dataset": self.corpus_dataset,
-                    "corpus_split": self.corpus_split,
-                    "chroma_db_dir": self.chroma_db_dir,
-                    "embed_model": self.embed_model,
-                    "embed_base_url": self.embed_base_url,
-                    "embed_api_key_var": self.embed_api_key_var,
-                }
-            }
-        return self
-
 
 class WikiSearchEnvConfig(vf.EnvConfig):
     taskset: WikiSearchTasksetConfig = WikiSearchTasksetConfig()
     harness: vf.HarnessConfig = vf.HarnessConfig()
 
 
-class WikiSearchTaskset(vf.Taskset):
-    pass
+class WikiSearchTaskset(vf.Taskset[WikiSearchTasksetConfig]):
+    def load_tasks(self) -> vf.Tasks:
+        return load_tasks(
+            max_turns=self.config.max_turns,
+            judge_model=self.config.judge_model,
+        )
+
+    def load_system_prompt(self) -> vf.SystemPrompt:
+        return SYSTEM_PROMPT
+
+    def load_toolsets(self) -> vf.Toolsets:
+        return {
+            "wiki": load_toolset(
+                corpus_dataset=self.config.corpus_dataset,
+                corpus_split=self.config.corpus_split,
+                chroma_db_dir=self.config.chroma_db_dir,
+                embed_model=self.config.embed_model,
+                embed_base_url=self.config.embed_base_url,
+                embed_api_key_var=self.config.embed_api_key_var,
+            )
+        }
 
 
 def load_environment(config: WikiSearchEnvConfig) -> vf.Env:

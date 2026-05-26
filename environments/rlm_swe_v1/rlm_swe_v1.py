@@ -22,7 +22,6 @@ DEFAULT_RLM_TOOLS = ("bash", "edit")
 
 
 class RlmSweTasksetConfig(vf.TasksetConfig):
-    tasks: str = "load_tasks"
     taskset_id: str = "swe/r2e"
     dataset_name: str = DEFAULT_DATASET_NAME
     repo_path: str = DEFAULT_REPO_PATH
@@ -160,7 +159,7 @@ def env_vars(*, repo_path: str, env: ConfigMap) -> dict[str, str]:
     }
 
 
-class R2ESWETaskset(vf.Taskset):
+class R2ESWETaskset(vf.Taskset[RlmSweTasksetConfig]):
     def __init__(self, config: RlmSweTasksetConfig | None = None):
         config = coerce_config(RlmSweTasksetConfig, config)
         self.dataset_name = config.dataset_name
@@ -183,6 +182,17 @@ class R2ESWETaskset(vf.Taskset):
 
     def get_env_vars(self) -> dict[str, str]:
         return env_vars(repo_path=self.repo_path, env=self.env)
+
+    def load_tasks(self) -> vf.Tasks:
+        return load_tasks(
+            dataset_name=self.dataset_name,
+            repo_path=self.repo_path,
+            filter_repos=self.filter_repos,
+            ds_num_proc=self.ds_num_proc,
+            ds_keep_in_memory=self.ds_keep_in_memory,
+            timeout_minutes=self.timeout_minutes,
+            env=self.env,
+        )
 
     @vf.setup(priority=250)
     async def setup_r2e_sandbox(self, task, state, sandbox=None) -> None:

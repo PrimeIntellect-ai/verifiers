@@ -423,9 +423,13 @@ def stringify_nested(value: object) -> object:
 
 
 class DSPyFlightsTasksetConfig(vf.TasksetConfig):
-    tasks: str = "load_tasks"
     rewards: list[str] = ["expected_database_change"]
     metrics: list[str] = ["dspy_calls"]
+
+
+class DSPyFlightsTaskset(vf.Taskset[DSPyFlightsTasksetConfig]):
+    def load_tasks(self) -> vf.Tasks:
+        return load_tasks()
 
 
 class DSPyFlightsHarness(vf.Harness):
@@ -439,6 +443,6 @@ class DSPyFlightsEnvConfig(vf.EnvConfig):
 
 def load_environment(config: DSPyFlightsEnvConfig) -> vf.Env:
     return vf.Env(
-        taskset=vf.Taskset(config=config.taskset),
+        taskset=DSPyFlightsTaskset(config=config.taskset),
         harness=DSPyFlightsHarness(config=config.harness),
     )

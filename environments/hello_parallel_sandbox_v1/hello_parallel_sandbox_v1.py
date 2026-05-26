@@ -132,7 +132,6 @@ PROGRAM_SANDBOX = {
 
 
 class ParallelSandboxTasksetConfig(vf.TasksetConfig):
-    tasks: str = "load_tasks"
     toolsets: dict[str, vf.ToolsetConfig] = {
         "bash": vf.ToolsetConfig(
             tools=["bash"],
@@ -360,8 +359,9 @@ def load_tasks(num_examples: int = -1):
         }
 
 
-class ParallelSandboxTaskset(vf.Taskset):
-    pass
+class ParallelSandboxTaskset(vf.Taskset[ParallelSandboxTasksetConfig]):
+    def load_tasks(self) -> vf.Tasks:
+        return load_tasks(num_examples=self.config.num_examples)
 
 
 class ParallelSandboxHarness(vf.Harness):

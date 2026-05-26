@@ -54,8 +54,6 @@ SYSTEM_PROMPT = system_prompt()
 
 
 class WikispeediaTasksetConfig(vf.TasksetConfig):
-    tasks: str | None = "load_tasks"
-    eval_tasks: str | None = "load_eval_tasks"
     cache_dir: str | None = None
     min_path_length: int = 3
     max_path_length: int = 6
@@ -75,8 +73,12 @@ class WikispeediaHarnessConfig(vf.HarnessConfig):
     timeout_seconds: float = 1200.0
 
 
-class WikispeediaTaskset(vf.Taskset):
-    pass
+class WikispeediaTaskset(vf.Taskset[WikispeediaTasksetConfig]):
+    def load_tasks(self) -> vf.Tasks:
+        return load_tasks(self.config)
+
+    def load_eval_tasks(self) -> vf.Tasks:
+        return load_eval_tasks(self.config)
 
 
 class WikispeediaHarness(vf.Harness):

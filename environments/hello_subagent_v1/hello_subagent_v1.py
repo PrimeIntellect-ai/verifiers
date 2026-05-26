@@ -73,7 +73,6 @@ def load_toolset():
 
 
 class SubagentTasksetConfig(vf.TasksetConfig):
-    tasks: str = "load_tasks"
     rewards: list[str] = ["exact_answer"]
     system_prompt: str = (
         "You are a parent coordinator. You must call ask_subagent once for "
@@ -87,8 +86,9 @@ class SubagentHarnessConfig(vf.HarnessConfig):
     metrics: list[str] = ["subagent_calls"]
 
 
-class SubagentTaskset(vf.Taskset):
-    pass
+class SubagentTaskset(vf.Taskset[SubagentTasksetConfig]):
+    def load_tasks(self) -> vf.Tasks:
+        return load_tasks()
 
 
 class SubagentHarness(vf.Harness):
