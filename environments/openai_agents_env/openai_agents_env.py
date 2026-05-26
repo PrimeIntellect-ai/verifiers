@@ -71,17 +71,17 @@ async def run_openai_agents_program(task: vf.Task, state: vf.State) -> vf.State:
     return state
 
 
-def gsm8k_task_rows(split: str, num_examples: int):
+def load_gsm8k_tasks(split: str, num_examples: int):
     n = num_examples if num_examples > 0 else None
     return load_example_dataset("gsm8k", split=split, n=n)
 
 
 def load_tasks(num_train_examples: int = 50):
-    return gsm8k_task_rows("train", num_train_examples)
+    return load_gsm8k_tasks("train", num_train_examples)
 
 
 def load_eval_tasks(num_eval_examples: int = 20):
-    return gsm8k_task_rows("test", num_eval_examples)
+    return load_gsm8k_tasks("test", num_eval_examples)
 
 
 def extract_answer(text: str) -> str:

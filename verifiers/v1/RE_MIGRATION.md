@@ -65,7 +65,7 @@ class MyTasksetConfig(vf.TasksetConfig):
 
 
 def load_tasks(split: str = "train") -> vf.Tasks:
-    return build_rows(split=split)
+    return build_tasks(split=split)
 
 
 def load_taskset(config: MyTasksetConfig) -> vf.Taskset:

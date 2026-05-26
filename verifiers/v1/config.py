@@ -1,4 +1,3 @@
-import warnings
 from collections.abc import Mapping
 from os import PathLike
 from typing import Literal, TypeAlias, cast
@@ -273,49 +272,26 @@ class TasksetConfig(LifecycleConfig):
 
     @model_validator(mode="before")
     @classmethod
-    def migrate_task_fields(cls, value: object) -> object:
+    def normalize_task_fields(cls, value: object) -> object:
         if not isinstance(value, Mapping):
             return value
         data = dict(value)
-
-        def map_aliases(field: str, aliases: tuple[tuple[str, bool], ...]) -> None:
-            present = [
-                name for name in (field, *(name for name, _ in aliases)) if name in data
-            ]
-            if len(present) > 1:
-                names = ", ".join(repr(name) for name in sorted(present))
-                raise ValueError(
-                    f"TasksetConfig received multiple values for {field!r}: "
-                    f"{names}; use {field!r}."
-                )
-            for alias, deprecated in aliases:
-                if alias not in data:
-                    continue
-                alias_value = data.pop(alias)
-                if alias_value is not None and not isinstance(alias_value, str):
-                    raise ValueError(
-                        f"TasksetConfig.{alias} must be an import ref string. "
-                        f"Inline task rows are not supported; define load_tasks() "
-                        f"and set TasksetConfig.{field} to its import ref."
-                    )
-                if deprecated:
-                    warnings.warn(
-                        f"TasksetConfig.{alias} is deprecated; "
-                        f"use TasksetConfig.{field}.",
-                        DeprecationWarning,
-                        stacklevel=3,
-                    )
-                data[field] = alias_value
-                return
-
-        map_aliases(
-            "tasks",
-            (("source", True), ("train_tasks", False)),
-        )
-        map_aliases(
-            "eval_tasks",
-            (("eval_source", True),),
-        )
+        if "train_tasks" not in data:
+            return data
+        if "tasks" in data:
+            raise ValueError(
+                "TasksetConfig received multiple values for 'tasks': "
+                "'tasks', 'train_tasks'; provide only one."
+            )
+        train_tasks = data.pop("train_tasks")
+        if train_tasks is not None and not isinstance(train_tasks, str):
+            raise ValueError(
+                "TasksetConfig.train_tasks must be an import ref string. "
+                "Inline task rows are not supported; define load_train_tasks() "
+                "or load_tasks() and set TasksetConfig.train_tasks or "
+                "TasksetConfig.tasks to its import ref."
+            )
+        data["tasks"] = train_tasks
         return data
 
     @field_validator("bindings", mode="before")

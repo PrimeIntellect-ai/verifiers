@@ -7,41 +7,30 @@ from ..config import TasksetConfig
 TasksetType = type[object]
 
 
-_TASKSET_REGISTRY: dict[type[TasksetConfig], TasksetType] = {}
+_TASKSET_CONFIG_TYPES: dict[TasksetType, type[TasksetConfig]] = {}
 
 
-def register_taskset_type(
-    config_type: type[TasksetConfig],
+def register_taskset_config_type(
     taskset_type: TasksetType,
-) -> None:
-    existing = _TASKSET_REGISTRY.get(config_type)
-    if existing is not None and existing is not taskset_type:
-        raise TypeError(
-            f"{config_type.__name__} is already registered to {existing.__name__}."
-        )
-    _TASKSET_REGISTRY[config_type] = taskset_type
-
-
-def taskset_type_for_config(
     config_type: type[TasksetConfig],
-) -> TasksetType | None:
-    for candidate in config_type.__mro__:
-        if not issubclass(candidate, TasksetConfig):
-            continue
-        taskset_type = _TASKSET_REGISTRY.get(candidate)
-        if taskset_type is not None:
-            return taskset_type
-    return None
+) -> None:
+    existing = _TASKSET_CONFIG_TYPES.get(taskset_type)
+    if existing is not None and existing is not config_type:
+        raise TypeError(
+            f"{taskset_type.__name__} is already registered to {existing.__name__}."
+        )
+    _TASKSET_CONFIG_TYPES[taskset_type] = config_type
 
 
 def taskset_config_type(
     taskset_type: TasksetType,
     taskset_base: TasksetType,
 ) -> type[TasksetConfig]:
-    config_type = taskset_config_type_from_class(
-        taskset_type, inherited=True, taskset_base=taskset_base
-    )
-    return config_type or TasksetConfig
+    for candidate in taskset_type.__mro__:
+        config_type = _TASKSET_CONFIG_TYPES.get(candidate)
+        if config_type is not None:
+            return config_type
+    return TasksetConfig
 
 
 def taskset_config_type_from_class(

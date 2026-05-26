@@ -1546,8 +1546,8 @@ Subclass `Taskset` or `Harness` only when the runtime methods themselves need a
 different implementation.
 
 ```python
-def load_tasks() -> vf.Tasks:
-    return load_wiki_rows()
+def load_tasks(db_path: str = "wiki.db") -> vf.Tasks:
+    raise NotImplementedError(f"Load tasks from {db_path}.")
 
 
 class WikiTasksetConfig(vf.TasksetConfig):

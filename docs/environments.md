@@ -775,11 +775,6 @@ def load_environment(config: vf.EnvConfig) -> vf.Env:
     )
 ```
 
-`vf.Env(config=config)` exists as a convenience for code that already has a fully
-typed `EnvConfig`, but environment docs and templates should use the component
-loader shape above. Do not pass both `config=` and `taskset=`/`harness=` to
-`vf.Env`.
-
 Keep v1 dependencies behind the owning taskset or harness. Do not pass
 already-instantiated resource objects through environment loaders. Bindings are
 allowed wherever the owning taskset, toolset, user, program, or harness wires

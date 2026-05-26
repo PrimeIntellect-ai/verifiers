@@ -12,10 +12,9 @@ from .harness import Harness
 from .state import State
 from .taskset import Taskset
 from .types import ConfigMap
-from .utils.taskset_registry_utils import taskset_type_for_config
 
-TasksetInput: TypeAlias = Taskset | TasksetConfig
-HarnessInput: TypeAlias = Harness | HarnessConfig | None
+TasksetInput: TypeAlias = Taskset
+HarnessInput: TypeAlias = Harness | None
 
 
 class Env(vf.Environment):
@@ -24,13 +23,7 @@ class Env(vf.Environment):
         *,
         taskset: TasksetInput | None = None,
         harness: HarnessInput = None,
-        config: EnvConfig | None = None,
     ):
-        if config is not None and (taskset is not None or harness is not None):
-            raise TypeError("Pass either config= or taskset=/harness=, not both.")
-        if config is not None:
-            taskset = config.taskset
-            harness = config.harness
         if taskset is None:
             raise TypeError("Env requires a taskset.")
         self.taskset = resolve_taskset(taskset)
@@ -154,15 +147,7 @@ class Env(vf.Environment):
 def resolve_taskset(value: TasksetInput) -> Taskset:
     if isinstance(value, Taskset):
         return value
-    if not isinstance(value, TasksetConfig):
-        raise TypeError("Env taskset must be a Taskset or TasksetConfig.")
-    if type(value) is TasksetConfig or taskset_type_for_config(type(value)) is not None:
-        return Taskset(config=value)
-    raise TypeError(
-        f"Env cannot construct a Taskset from {type(value).__name__}. "
-        "Instantiate the matching Taskset subclass in load_environment "
-        "and pass the Taskset object."
-    )
+    raise TypeError("Env taskset must be a Taskset.")
 
 
 def resolve_harness(value: HarnessInput) -> Harness:
@@ -170,12 +155,4 @@ def resolve_harness(value: HarnessInput) -> Harness:
         return Harness(config=HarnessConfig())
     if isinstance(value, Harness):
         return value
-    if not isinstance(value, HarnessConfig):
-        raise TypeError("Env harness must be a Harness or HarnessConfig.")
-    if type(value) is HarnessConfig:
-        return Harness(config=value)
-    raise TypeError(
-        f"Env cannot construct a Harness from {type(value).__name__}. "
-        "Instantiate the matching Harness subclass in load_environment "
-        "and pass the Harness object."
-    )
+    raise TypeError("Env harness must be a Harness.")

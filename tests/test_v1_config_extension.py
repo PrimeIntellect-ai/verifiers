@@ -41,6 +41,16 @@ def load_tasks() -> list[dict[str, object]]:
     ]
 
 
+def load_train_tasks() -> list[dict[str, object]]:
+    return [
+        {
+            "example_id": 0,
+            "prompt": [{"role": "user", "content": "Say train ok."}],
+            "answer": "train ok",
+        }
+    ]
+
+
 def load_eval_tasks() -> list[dict[str, object]]:
     return [
         {
@@ -377,6 +387,7 @@ def load_another_harness_config() -> HarnessConfig:
 
 ref_module = types.ModuleType(REF_MODULE)
 setattr(ref_module, "load_tasks", load_tasks)
+setattr(ref_module, "load_train_tasks", load_train_tasks)
 setattr(ref_module, "load_eval_tasks", load_eval_tasks)
 setattr(ref_module, "load_dataset_tasks", load_dataset_tasks)
 setattr(ref_module, "load_system_prompt", load_system_prompt)
@@ -775,61 +786,22 @@ def test_taskset_config_rejects_inline_task_rows() -> None:
         TasksetConfig(tasks=[{"prompt": [], "answer": "ok"}])
 
 
-def test_taskset_config_source_aliases_map_with_warning() -> None:
-    with pytest.warns(DeprecationWarning) as warnings:
-        config = TasksetConfig.model_validate(
-            {
-                "source": ref("load_tasks"),
-                "eval_source": ref("load_eval_tasks"),
-            }
-        )
-
-    messages = [str(warning.message) for warning in warnings]
-    assert "TasksetConfig.source is deprecated" in messages[0]
-    assert "TasksetConfig.eval_source is deprecated" in messages[1]
-    assert config.tasks == ref("load_tasks")
-    assert config.eval_tasks == ref("load_eval_tasks")
-
-
 def test_taskset_config_train_tasks_alias_maps_without_warning(recwarn) -> None:
-    config = TasksetConfig.model_validate({"train_tasks": ref("load_tasks")})
+    config = TasksetConfig.model_validate({"train_tasks": ref("load_train_tasks")})
 
-    assert config.tasks == ref("load_tasks")
+    assert config.tasks == ref("load_train_tasks")
     assert not recwarn
 
 
-def test_taskset_config_source_alias_rejects_inline_rows() -> None:
-    with pytest.raises(ValueError, match="source.*Inline task rows"):
-        TasksetConfig.model_validate({"source": [{"prompt": [], "answer": "ok"}]})
-
-    with pytest.raises(ValueError, match="eval_source.*Inline task rows"):
-        TasksetConfig.model_validate({"tasks": ref("load_tasks"), "eval_source": []})
-
+def test_taskset_config_train_tasks_alias_rejects_inline_rows() -> None:
     with pytest.raises(ValueError, match="train_tasks.*Inline task rows"):
         TasksetConfig.model_validate({"train_tasks": [{"prompt": [], "answer": "ok"}]})
 
 
-def test_taskset_config_source_alias_conflicts_raise() -> None:
-    with pytest.raises(ValueError, match="multiple values for 'tasks'.*'source'"):
-        TasksetConfig.model_validate(
-            {"source": ref("load_tasks"), "tasks": ref("load_tasks")}
-        )
+def test_taskset_config_train_tasks_alias_conflicts_raise() -> None:
     with pytest.raises(ValueError, match="multiple values for 'tasks'.*'train_tasks'"):
         TasksetConfig.model_validate(
             {"tasks": ref("load_tasks"), "train_tasks": ref("load_tasks")}
-        )
-    with pytest.raises(
-        ValueError, match="multiple values for 'tasks'.*'source'.*'train_tasks'"
-    ):
-        TasksetConfig.model_validate(
-            {"source": ref("load_tasks"), "train_tasks": ref("load_tasks")}
-        )
-    with pytest.raises(ValueError, match="multiple values for 'eval_tasks'"):
-        TasksetConfig.model_validate(
-            {
-                "eval_source": ref("load_eval_tasks"),
-                "eval_tasks": ref("load_eval_tasks"),
-            }
         )
 
 
@@ -845,39 +817,17 @@ def test_taskset_tasks_loader_can_return_dataset() -> None:
     assert taskset.get_dataset()[0]["answer"] == "dataset ok"
 
 
-def test_taskset_source_config_still_loads_with_warning() -> None:
-    with pytest.warns(DeprecationWarning, match="TasksetConfig.source"):
-        taskset = Taskset(config={"source": ref("load_tasks")})
-
-    assert taskset.get_dataset()[0]["answer"] == "ok"
-
-
 def test_taskset_train_tasks_config_loads_without_warning(recwarn) -> None:
-    taskset = Taskset(config={"train_tasks": ref("load_tasks")})
+    taskset = Taskset(config={"train_tasks": ref("load_train_tasks")})
 
-    assert taskset.get_dataset()[0]["answer"] == "ok"
+    assert taskset.get_dataset()[0]["answer"] == "train ok"
     assert not recwarn
-
-
-def test_taskset_source_toml_still_loads_with_warning(tmp_path) -> None:
-    config_path = tmp_path / "env.toml"
-    config_path.write_text(
-        "\n".join(["[env.taskset]", f'source = "{ref("load_tasks")}"'])
-    )
-
-    with config_path.open("rb") as f:
-        data = load_toml(f)["env"]
-    with pytest.warns(DeprecationWarning, match="TasksetConfig.source"):
-        taskset_config = TasksetConfig.model_validate(data["taskset"])
-
-    taskset = make_taskset(config=taskset_config)
-    assert taskset.get_dataset()[0]["answer"] == "ok"
 
 
 def test_taskset_train_tasks_toml_loads_without_warning(tmp_path, recwarn) -> None:
     config_path = tmp_path / "env.toml"
     config_path.write_text(
-        "\n".join(["[env.taskset]", f'train_tasks = "{ref("load_tasks")}"'])
+        "\n".join(["[env.taskset]", f'train_tasks = "{ref("load_train_tasks")}"'])
     )
 
     with config_path.open("rb") as f:
@@ -885,7 +835,7 @@ def test_taskset_train_tasks_toml_loads_without_warning(tmp_path, recwarn) -> No
     taskset_config = TasksetConfig.model_validate(data["taskset"])
 
     taskset = make_taskset(config=taskset_config)
-    assert taskset.get_dataset()[0]["answer"] == "ok"
+    assert taskset.get_dataset()[0]["answer"] == "train ok"
     assert not recwarn
 
 
@@ -1869,22 +1819,6 @@ def test_taskset_and_harness_preserve_explicit_config_subtypes() -> None:
     assert harness.config.mode == "custom"
 
 
-def test_env_constructor_rejects_mixed_config_and_children() -> None:
-    class LocalTasksetConfig(TasksetConfig):
-        split: str = "train"
-
-    class LocalTaskset(Taskset):
-        pass
-
-    config = EnvConfig(
-        taskset=LocalTasksetConfig(split="eval"),
-        harness=HarnessConfig(max_turns=3),
-    )
-
-    with pytest.raises(TypeError, match="either config= or taskset=/harness="):
-        Env(config=config, taskset=LocalTaskset(config=config.taskset))
-
-
 def test_env_constructor_requires_required_child_configs() -> None:
     class RequiredTasksetConfig(TasksetConfig):
         dataset: str
@@ -1908,7 +1842,7 @@ def test_env_constructor_requires_required_child_configs() -> None:
     assert prebuilt_env.taskset.config.dataset == "prebuilt-train"
     assert prebuilt_env.harness.config.endpoint == "prebuilt"
 
-    with pytest.raises(TypeError, match="cannot construct a Taskset"):
+    with pytest.raises(TypeError, match="Env taskset must be a Taskset"):
         Env(
             taskset=RequiredTasksetConfig(dataset="train"),
             harness=RequiredHarnessConfig(endpoint="local"),
@@ -1918,22 +1852,6 @@ def test_env_constructor_requires_required_child_configs() -> None:
 def test_env_requires_taskset() -> None:
     with pytest.raises(TypeError, match="requires a taskset"):
         Env()
-
-
-def test_env_accepts_base_taskset_config() -> None:
-    env = Env(taskset=TasksetConfig(taskset_id="plain"))
-
-    assert type(env.taskset) is Taskset
-    assert env.taskset.config.taskset_id == "plain"
-    assert env.config.taskset is env.taskset.config
-
-
-def test_env_rejects_unbound_taskset_config_subclass() -> None:
-    class UnboundTasksetConfig(TasksetConfig):
-        split: str = "train"
-
-    with pytest.raises(TypeError, match="cannot construct a Taskset"):
-        Env(taskset=UnboundTasksetConfig())
 
 
 def test_env_config_tracks_prebuilt_children() -> None:
@@ -1951,7 +1869,7 @@ def test_env_rejects_taskset_builders() -> None:
     def load_taskset() -> Taskset:
         return Taskset(config=TasksetConfig())
 
-    with pytest.raises(TypeError, match="Taskset or TasksetConfig"):
+    with pytest.raises(TypeError, match="Env taskset must be a Taskset"):
         Env(taskset=load_taskset)
 
 
@@ -1961,63 +1879,8 @@ def test_env_rejects_harness_builders() -> None:
     def load_harness(config: HarnessConfig | None = None) -> Harness:
         return Harness(config=config)
 
-    with pytest.raises(TypeError, match="Harness or HarnessConfig"):
+    with pytest.raises(TypeError, match="Env harness must be a Harness"):
         Env(taskset=taskset, harness=load_harness)
-
-
-def test_env_config_convenience_rejects_child_config_subclasses() -> None:
-    class LocalTasksetConfig(TasksetConfig):
-        split: str = "train"
-
-    class LocalHarnessConfig(HarnessConfig):
-        mode: str = "default"
-
-    class LocalEnvConfig(EnvConfig):
-        taskset: LocalTasksetConfig = LocalTasksetConfig()
-        harness: LocalHarnessConfig = LocalHarnessConfig()
-
-    with pytest.raises(TypeError, match="cannot construct a Taskset"):
-        Env(
-            config=LocalEnvConfig(
-                taskset=LocalTasksetConfig(split="eval"),
-                harness=LocalHarnessConfig(mode="mapping"),
-            )
-        )
-
-
-def test_env_config_convenience_accepts_base_taskset_config() -> None:
-    env = Env(config=EnvConfig(taskset=TasksetConfig(tasks=ref("load_tasks"))))
-
-    assert type(env.taskset) is Taskset
-    assert env.taskset.get_dataset()[0]["answer"] == "ok"
-
-
-def test_env_config_convenience_accepts_registered_taskset_config_subclass() -> None:
-    class RegisteredTasksetConfig(TasksetConfig):
-        tasks: str | None = ref("load_tasks")
-        split: str = "train"
-
-    class RegisteredTaskset(Taskset[RegisteredTasksetConfig]):
-        pass
-
-    env = Env(config=EnvConfig(taskset=RegisteredTasksetConfig(split="eval")))
-
-    assert type(env.taskset) is RegisteredTaskset
-    assert isinstance(env.taskset.config, RegisteredTasksetConfig)
-    assert env.taskset.config.split == "eval"
-    assert env.taskset.get_dataset()[0]["answer"] == "ok"
-
-
-def test_env_config_convenience_rejects_unregistered_taskset_config_subclass() -> None:
-    class UnboundTasksetConfig(TasksetConfig):
-        split: str = "train"
-
-    class UnboundEnvConfig(EnvConfig):
-        taskset: UnboundTasksetConfig = UnboundTasksetConfig()
-        harness: HarnessConfig = HarnessConfig()
-
-    with pytest.raises(TypeError, match="cannot construct a Taskset"):
-        Env(config=UnboundEnvConfig())
 
 
 def test_package_harness_requires_package_config_subtype() -> None:
@@ -2056,7 +1919,7 @@ def test_taskset_config_defaults_are_used_until_config_overrides() -> None:
     assert disabled.rewards == []
 
 
-def test_taskset_generic_registers_config_type_for_base_constructor() -> None:
+def test_taskset_generic_sets_subclass_config_type() -> None:
     class RegisteredTasksetConfig(TasksetConfig):
         tasks: str | None = None
         dataset_name: str = "registered"
@@ -2064,6 +1927,10 @@ def test_taskset_generic_registers_config_type_for_base_constructor() -> None:
         system_prompt: str | None = "default prompt"
 
     class RegisteredTaskset(Taskset[RegisteredTasksetConfig]):
+        def __init__(self, config: RegisteredTasksetConfig):
+            super().__init__(config=config)
+            self.initialized = True
+
         def load_tasks(
             self, dataset_name: str, dataset_split: str = "train"
         ) -> vf.Tasks:
@@ -2077,10 +1944,10 @@ def test_taskset_generic_registers_config_type_for_base_constructor() -> None:
         def load_system_prompt(self) -> str:
             return "registered prompt"
 
-    taskset = Taskset(config=RegisteredTasksetConfig(dataset_split="eval"))
+    taskset = RegisteredTaskset(config=RegisteredTasksetConfig(dataset_split="eval"))
 
-    assert type(taskset) is RegisteredTaskset
     assert isinstance(taskset.config, RegisteredTasksetConfig)
+    assert taskset.initialized is True
     assert taskset.get_dataset()[0]["answer"] == "registered:eval"
     assert taskset.system_prompt == [{"role": "system", "content": "registered prompt"}]
 
@@ -2095,9 +1962,9 @@ def test_taskset_config_annotation_registers_config_type_at_runtime() -> None:
         def load_tasks(self, dataset_name: str) -> vf.Tasks:
             return [{"prompt": [], "answer": dataset_name}]
 
-    taskset = Taskset(config=AnnotatedTasksetConfig())
+    taskset = AnnotatedTaskset(config=AnnotatedTasksetConfig())
 
-    assert type(taskset) is AnnotatedTaskset
+    assert isinstance(taskset.config, AnnotatedTasksetConfig)
     assert taskset.get_dataset()[0]["answer"] == "annotated"
 
 
@@ -2111,7 +1978,7 @@ def test_taskset_subclasses_inherit_registered_config_type() -> None:
     class ChildTaskset(BaseTaskset):
         pass
 
-    taskset = ChildTaskset(config={})
+    taskset = ChildTaskset(config=BaseTasksetConfig())
 
     assert isinstance(taskset.config, BaseTasksetConfig)
     assert taskset.get_dataset()[0]["answer"] == "ok"
@@ -2133,19 +2000,18 @@ def test_taskset_class_loaders_override_config_defaults_not_explicit_values() ->
         def load_system_prompt(self) -> str:
             return "class prompt"
 
-    defaulted = Taskset(config=LoaderTasksetConfig())
-    configured = Taskset(
+    defaulted = LoaderTaskset(config=LoaderTasksetConfig())
+    configured = LoaderTaskset(
         config=LoaderTasksetConfig(
             tasks=ref("load_tasks"),
             eval_tasks=ref("load_eval_tasks"),
             system_prompt=ref("load_system_prompt"),
         )
     )
-    disabled = Taskset(
+    disabled = LoaderTaskset(
         config=LoaderTasksetConfig(tasks=None, eval_tasks=None, system_prompt=None)
     )
 
-    assert type(defaulted) is LoaderTaskset
     assert defaulted.get_dataset()[0]["answer"] == "class tasks"
     assert defaulted.get_eval_dataset()[0]["answer"] == "class eval"
     assert defaulted.system_prompt == [{"role": "system", "content": "class prompt"}]
@@ -2157,6 +2023,44 @@ def test_taskset_class_loaders_override_config_defaults_not_explicit_values() ->
     assert len(disabled.get_dataset()) == 0
     assert len(disabled.get_eval_dataset()) == 0
     assert disabled.system_prompt == []
+
+
+def test_taskset_load_train_tasks_matches_tasks_loader() -> None:
+    class TrainTasksetConfig(TasksetConfig):
+        tasks: str | None = None
+
+    class TrainTaskset(Taskset[TrainTasksetConfig]):
+        def load_train_tasks(self) -> vf.Tasks:
+            return [{"prompt": [], "answer": "train"}]
+
+    defaulted = TrainTaskset(config=TrainTasksetConfig())
+    configured = TrainTaskset(config=TrainTasksetConfig(tasks=ref("load_tasks")))
+    aliased = TrainTaskset(
+        config=TrainTasksetConfig.model_validate(
+            {"train_tasks": ref("load_train_tasks")}
+        )
+    )
+
+    assert defaulted.get_dataset()[0]["answer"] == "train"
+    assert configured.get_dataset()[0]["answer"] == "ok"
+    assert aliased.get_dataset()[0]["answer"] == "train ok"
+
+
+def test_taskset_load_tasks_and_load_train_tasks_conflict() -> None:
+    class TrainTasksetConfig(TasksetConfig):
+        tasks: str | None = None
+
+    class TrainTaskset(Taskset[TrainTasksetConfig]):
+        def load_tasks(self) -> vf.Tasks:
+            return [{"prompt": [], "answer": "tasks"}]
+
+        def load_train_tasks(self) -> vf.Tasks:
+            return [{"prompt": [], "answer": "train_tasks"}]
+
+    taskset = TrainTaskset(config=TrainTasksetConfig())
+
+    with pytest.raises(ValueError, match="multiple class loaders for tasks"):
+        taskset.get_dataset()
 
 
 def test_taskset_config_default_loader_can_be_disabled() -> None:
@@ -2728,7 +2632,7 @@ class LocalTaskset(vf.Taskset[LocalTasksetConfig]):
 
 
 def load_taskset(config: LocalTasksetConfig) -> vf.Taskset:
-    return vf.Taskset(config=config)
+    return LocalTaskset(config=config)
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
