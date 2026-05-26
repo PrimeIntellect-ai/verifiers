@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Protocol, cast
 
 from prime_sandboxes import CommandTimeoutError
 
-from verifiers.errors import SandboxError
+from verifiers.errors import Error, SandboxError
 from verifiers.utils.async_utils import maybe_call_with_named_args
 from verifiers.utils.error_utils import error_info
 
@@ -497,18 +497,21 @@ def _program_setup_handler(
     use_sandbox_python_path: bool = False,
 ) -> Handler:
     async def handler(task: Task, state: State) -> None:
-        if use_sandbox_python_path:
-            await fn(
-                lease.client,
-                lease.id,
-                program,
-                task,
-                state,
-                runtime,
-                use_sandbox_python_path=True,
+        try:
+            await maybe_call_with_named_args(
+                fn,
+                client=lease.client,
+                sandbox_id=lease.id,
+                program=program,
+                task=task,
+                state=state,
+                runtime=runtime,
+                use_sandbox_python_path=use_sandbox_python_path,
             )
-            return
-        await fn(lease.client, lease.id, program, task, state, runtime)
+        except Error:
+            raise
+        except Exception as exc:
+            raise SandboxError(f"Sandbox setup handler {name} failed: {exc}") from exc
 
     handler.__name__ = name
     setattr(handler, "setup", True)
@@ -526,17 +529,23 @@ def _program_channel_setup_handler(
     use_sandbox_python_path: bool = False,
 ) -> Handler:
     async def handler(task: Task, state: State) -> None:
-        await run_program_items(
-            lease.client,
-            lease.id,
-            program,
-            task,
-            state,
-            runtime,
-            items=[setup_item],
-            error_prefix=f"Program {channel} channel setup failed",
-            use_sandbox_python_path=use_sandbox_python_path,
-        )
+        name = f"program_{channel}_channel_setup"
+        try:
+            await run_program_items(
+                lease.client,
+                lease.id,
+                program,
+                task,
+                state,
+                runtime,
+                items=[setup_item],
+                error_prefix=f"Program {channel} channel setup failed",
+                use_sandbox_python_path=use_sandbox_python_path,
+            )
+        except Error:
+            raise
+        except Exception as exc:
+            raise SandboxError(f"Sandbox setup handler {name} failed: {exc}") from exc
 
     handler.__name__ = f"program_{channel}_channel_setup"
     setattr(handler, "setup", True)
@@ -791,7 +800,8 @@ async def upload_program_files(
         if not isinstance(content, str):
             content = str(content)
         await maybe_call_with_named_args(
-            getattr(client, "upload_bytes"),
+            upload_sandbox_bytes,
+            client=client,
             sandbox_id=sandbox_id,
             file_path=path,
             file_bytes=content.encode(),
@@ -1138,15 +1148,18 @@ async def collect_sandbox_artifacts(
                 continue
             raise
         format_name = artifact_format(spec)
-        if format_name == "json":
-            value: object = json.loads(content)
-        elif format_name == "text":
-            value = content
-        else:
-            raise ValueError(f"Unsupported artifact format: {format_name!r}")
-        key = artifact_key(spec)
-        if key is not None:
-            value = cast(ConfigMap, value)[key]
+        try:
+            if format_name == "json":
+                value: object = json.loads(content)
+            elif format_name == "text":
+                value = content
+            else:
+                raise ValueError(f"Unsupported artifact format: {format_name!r}")
+            key = artifact_key(spec)
+            if key is not None:
+                value = cast(ConfigMap, value)[key]
+        except Exception as exc:
+            raise SandboxError(f"Sandbox artifact parsing failed: {name}") from exc
         state["artifacts"][name] = value
 
 
@@ -1166,11 +1179,17 @@ async def read_sandbox_artifact(client: object, sandbox_id: str, path: str) -> s
         f'exec "$PYTHON" -c {shlex.quote(script)}'
     )
     command = sandbox_python_path_command(command)
-    result = await maybe_call_with_named_args(
-        getattr(client, "execute_command"),
-        sandbox_id=sandbox_id,
-        command=command,
-    )
+    try:
+        result = await maybe_call_with_named_args(
+            getattr(client, "execute_command"),
+            sandbox_id=sandbox_id,
+            command=command,
+            timeout=60,
+        )
+    except Error:
+        raise
+    except Exception as exc:
+        raise SandboxError(f"Sandbox artifact reader failed: {path}") from exc
     if result.exit_code == 2:
         raise FileNotFoundError(f"Sandbox artifact not found: {path}")
     if result.exit_code:
