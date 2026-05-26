@@ -71,7 +71,7 @@ Override the default harness from the CLI without touching the env code:
 
 ```bash
 vf-eval-v1 my-env --harness.max-turns 5            # tweak the base harness
-vf-eval-v1 my-env --harness.ref rlm                # swap in a different one
+vf-eval-v1 my-env --harness.name rlm               # swap in a different one
 ```
 
 ## Tasksets

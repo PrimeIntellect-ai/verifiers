@@ -194,12 +194,12 @@ def test_cli_basic_flags():
     assert config.temperature == 0.5
 
 
-def test_cli_harness_ref_and_extras():
+def test_cli_harness_name_and_extras():
     config = _parse(
         [
             "--env",
             "any",
-            "--harness.ref",
+            "--harness.name",
             "rlm",
             "--harness.rlm-max-turns",
             "12",
@@ -207,7 +207,7 @@ def test_cli_harness_ref_and_extras():
             "hi",
         ]
     )
-    assert config.harness.ref == "rlm"
+    assert config.harness.name == "rlm"
     extras = config.harness.model_extra or {}
     assert extras["rlm_max_turns"] == "12"
     assert extras["system_prompt"] == "hi"
@@ -253,7 +253,7 @@ def test_cli_toml_load(tmp_path: Path):
             model = "gpt-toml"
 
             [harness]
-            ref = "verifiers.v1:Harness"
+            name = "verifiers.v1:Harness"
             max_turns = 9
             """
         )
@@ -262,7 +262,7 @@ def test_cli_toml_load(tmp_path: Path):
     assert config.env == "from-toml"
     assert config.num_examples == 4
     assert config.model == "gpt-toml"
-    assert config.harness.ref == "verifiers.v1:Harness"
+    assert config.harness.name == "verifiers.v1:Harness"
     assert (config.harness.model_extra or {})["max_turns"] == 9
 
 
@@ -304,7 +304,7 @@ def test_resolve_env_args_v0_rejects_taskset_override(dummy_v0_env: str):
 def test_resolve_env_args_v0_rejects_harness_override(dummy_v0_env: str):
     cfg = ev1.EvalV1Config(
         env=dummy_v0_env,
-        harness=ev1.HarnessSpec.model_validate({"ref": "rlm"}),
+        harness=ev1.HarnessSpec.model_validate({"name": "rlm"}),
     )
     with pytest.raises(ValueError, match="v0 envs"):
         ev1._resolve_env_args(cfg)
@@ -341,12 +341,12 @@ def test_load_environment_v1_harness_override(dummy_v1_env: str):
     assert env.harness.config.max_turns == 99
 
 
-def test_load_environment_v1_harness_ref_swap(dummy_v1_env: str):
+def test_load_environment_v1_harness_name_swap(dummy_v1_env: str):
     env = vf.load_environment(
         dummy_v1_env,
-        **{V1_HARNESS_KEY: {"ref": "verifiers.v1:Harness", "max_turns": 4}},
+        **{V1_HARNESS_KEY: {"name": "verifiers.v1:Harness", "max_turns": 4}},
     )
-    # ref points at the base Harness class explicitly
+    # name points at the base Harness class explicitly
     assert type(env.harness) is Harness
     assert isinstance(env.harness.config, HarnessConfig)
     assert env.harness.config.max_turns == 4
@@ -387,7 +387,7 @@ def test_build_v1_env_uses_env_load_harness(dummy_v1_env: str):
 
 
 def test_build_v1_env_explicit_base_harness(dummy_v1_env: str):
-    env = build_v1_env(dummy_v1_env, harness_spec={"ref": "base", "max_turns": 2})
+    env = build_v1_env(dummy_v1_env, harness_spec={"name": "base", "max_turns": 2})
     assert type(env.harness) is Harness
     assert env.harness.config.max_turns == 2
 
@@ -416,7 +416,7 @@ def test_lean_v1_env_load_environment_rejects_extra_kwargs(lean_v1_env: str):
 def test_lean_v1_env_dispatch_with_harness_override(lean_v1_env: str):
     env = vf.load_environment(
         lean_v1_env,
-        **{V1_HARNESS_KEY: {"ref": "verifiers.v1:Harness", "max_turns": 3}},
+        **{V1_HARNESS_KEY: {"name": "verifiers.v1:Harness", "max_turns": 3}},
     )
     assert type(env.harness) is Harness
     assert env.harness.config.max_turns == 3

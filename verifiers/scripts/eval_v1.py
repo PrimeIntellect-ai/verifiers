@@ -8,8 +8,8 @@ to the legacy ``vf-eval`` it:
   the legacy behavior);
 * allows overriding any field on the default harness's config via
   ``--harness.<field>`` (e.g. ``--harness.max-turns 5``);
-* allows swapping the harness class entirely via ``--harness.ref`` (e.g.
-  ``--harness.ref rlm`` or any ``pkg.mod:Class`` import ref);
+* allows swapping the harness class entirely via ``--harness.name`` (e.g.
+  ``--harness.name rlm`` or any ``pkg.mod:Class`` import ref);
 * keeps a v0 fallback: when the module only exposes ``load_environment`` the
   CLI calls it with ``--env-args`` and never tries to touch the bundled
   harness.
@@ -95,7 +95,7 @@ class TasksetSpec(BaseConfig):
 class HarnessSpec(BaseConfig):
     """Harness selection and config overrides.
 
-    By default (``ref=None``) the env's own ``load_harness`` is used if
+    By default (``name=None``) the env's own ``load_harness`` is used if
     present, otherwise the base ``verifiers.v1.Harness`` with
     ``HarnessConfig()`` defaults. Any extra fields are merged into the
     harness's actual config at runtime.
@@ -103,14 +103,14 @@ class HarnessSpec(BaseConfig):
 
     model_config = ConfigDict(extra="allow")
 
-    ref: str | None = Field(
+    name: str | None = Field(
         None,
         description=(
-            "Harness class import ref (``pkg.mod:Class``) or alias from the "
-            "built-in registry (e.g. ``rlm``, ``opencode``, ``pi``, "
-            "``terminus-2``, ``mini-swe-agent``, ``base``). When unset, falls "
-            "back to the env's ``load_harness`` if present, otherwise the "
-            "base ``verifiers.v1.Harness``."
+            "Harness identifier — alias from the built-in registry "
+            "(e.g. ``rlm``, ``opencode``, ``pi``, ``terminus-2``, "
+            "``mini-swe-agent``, ``base``) or a ``pkg.mod:Class`` import "
+            "ref. When unset, falls back to the env's ``load_harness`` if "
+            "present, otherwise the base ``verifiers.v1.Harness``."
         ),
     )
 
@@ -383,7 +383,7 @@ def _resolve_env_args(config: EvalV1Config) -> dict[str, Any]:
     """
     env_module = import_env_module(config.env)
     taskset_overrides = _spec_to_dict(config.taskset)
-    harness_overrides = _spec_to_dict(config.harness, drop_none=("ref",))
+    harness_overrides = _spec_to_dict(config.harness, drop_none=("name",))
 
     if module_supports_v1_loader(env_module):
         if config.env_args:

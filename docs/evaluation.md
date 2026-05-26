@@ -73,7 +73,7 @@ vf-eval-v1 my-env --num-examples 5 --model openai/gpt-4.1-mini
 vf-eval-v1 my-env --harness.max-turns 5 --harness.system-prompt-merge harness
 
 # swap the harness class entirely (alias or pkg.mod:Class import ref)
-vf-eval-v1 my-env --harness.ref rlm --harness.rlm-max-turns 50
+vf-eval-v1 my-env --harness.name rlm --harness.rlm-max-turns 50
 
 # tweak the taskset config from the CLI
 vf-eval-v1 my-env --taskset.split test

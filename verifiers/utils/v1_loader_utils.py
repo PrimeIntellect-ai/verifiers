@@ -6,7 +6,7 @@ Two private kwargs are reserved on ``vf.load_environment(env_id, **env_args)``:
 
 * ``__vf_v1_taskset__`` — dict merged into the env's TasksetConfig subclass.
 * ``__vf_v1_harness__`` — dict describing the harness selection + overrides.
-  Recognised shape: ``{"ref": "<alias-or-import-ref>"|None, **overrides}``.
+  Recognised shape: ``{"name": "<alias-or-import-ref>"|None, **overrides}``.
 
 The CLI emits those when the user customises a v1 env. Workers see the same
 ``env_args`` and re-run the same builder, so a configured taskset/harness pair
@@ -27,7 +27,7 @@ V1_TASKSET_KEY = "__vf_v1_taskset__"
 V1_HARNESS_KEY = "__vf_v1_harness__"
 
 # Short aliases for harnesses bundled under ``verifiers.v1.packages.harnesses``.
-# Any ``pkg.mod:Class`` import ref is also accepted on ``--harness.ref``.
+# Any ``pkg.mod:Class`` import ref is also accepted on ``--harness.name``.
 HARNESS_ALIASES: dict[str, str] = {
     "base": "verifiers.v1:Harness",
     "rlm": "verifiers.v1.packages.harnesses:RLM",
@@ -47,17 +47,17 @@ def module_supports_v1_loader(module) -> bool:
     return hasattr(module, "load_taskset")
 
 
-def resolve_harness_class(ref: str) -> type[Harness]:
-    target = HARNESS_ALIASES.get(ref, ref)
+def resolve_harness_class(name: str) -> type[Harness]:
+    target = HARNESS_ALIASES.get(name, name)
     if ":" not in target:
         raise ValueError(
-            f"harness ref {ref!r} must be a registry alias "
+            f"harness name {name!r} must be a registry alias "
             f"({sorted(HARNESS_ALIASES)}) or a 'pkg.mod:Class' import ref."
         )
     obj = import_config_ref(target)
     if not (isinstance(obj, type) and issubclass(obj, Harness)):
         raise TypeError(
-            f"harness ref {ref!r} resolved to {obj!r}, which is not a "
+            f"harness name {name!r} resolved to {obj!r}, which is not a "
             f"verifiers.v1.Harness subclass."
         )
     return obj
@@ -111,9 +111,9 @@ def build_v1_taskset(env_module, overrides: dict[str, Any]) -> Taskset:
 
 def build_v1_harness(env_module, harness_spec: dict[str, Any]) -> Harness:
     spec = dict(harness_spec)
-    ref = spec.pop("ref", None)
-    if ref:
-        harness_cls = resolve_harness_class(ref)
+    name = spec.pop("name", None)
+    if name:
+        harness_cls = resolve_harness_class(name)
         config_type = harness_config_type_from_class(harness_cls)
         config = config_type.model_validate(spec)
         harness = harness_cls(config=config)
