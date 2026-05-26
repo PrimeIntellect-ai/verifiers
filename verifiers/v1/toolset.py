@@ -177,6 +177,7 @@ ToolsetItem: TypeAlias = Toolset | ToolSpec
 ToolsetCollection: TypeAlias = (
     ToolsetItem | Iterable[ToolsetItem] | dict[str, ToolsetItem | ConfigMap]
 )
+Toolsets: TypeAlias = ToolsetCollection | None
 
 
 def flatten_toolsets(

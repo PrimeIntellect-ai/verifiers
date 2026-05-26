@@ -50,7 +50,7 @@ from .utils.scoring_utils import (
 from .state import State
 from .task import Task
 from .taskset import Taskset, discover_sibling_dir
-from .toolset import MCPTool, Toolset
+from .toolset import MCPTool, Toolset, Toolsets
 from .types import (
     ConfigData,
     ConfigMap,
@@ -96,6 +96,7 @@ __all__ = [
     "TextMessage",
     "Toolset",
     "ToolsetConfig",
+    "Toolsets",
     "ToolMessage",
     "User",
     "UserMessage",

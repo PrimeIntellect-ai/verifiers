@@ -1,7 +1,7 @@
 from collections.abc import Iterable
 
 from ..config import Config
-from ..toolset import Toolset, merge_toolsets, normalize_toolset_collection
+from ..toolset import Toolset, Toolsets, merge_toolsets, normalize_toolset_collection
 from ..types import Handler
 from ..user import normalize_user
 from .config_callable_utils import CallableKind, merge_config_handler_map
@@ -36,8 +36,17 @@ class RuntimeOwnerMixin:
         self.user = normalize_user(getattr(self.config, "user"))
 
     def _init_runtime_toolsets(self) -> None:
+        config_toolsets = getattr(self.config, "toolsets")
+        if config_toolsets is None:
+            self.toolsets = []
+            self.named_toolsets = {}
+            return
+        class_toolsets: Toolsets = None
+        load_toolsets = getattr(self, "load_toolsets", None)
+        if callable(load_toolsets):
+            class_toolsets = load_toolsets()
         self.toolsets, self.named_toolsets = merge_toolsets(
-            (), getattr(self.config, "toolsets")
+            class_toolsets, config_toolsets
         )
 
     def _init_runtime_handlers(self, *, base_metrics: Iterable[Handler] = ()) -> None:

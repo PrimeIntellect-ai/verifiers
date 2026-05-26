@@ -52,24 +52,28 @@ Every migrated package should expose:
 import verifiers as vf
 
 
-def load_system_prompt() -> vf.SystemPrompt:
-    return SYSTEM_PROMPT
-
-
 class MyTasksetConfig(vf.TasksetConfig):
-    tasks: str = "load_tasks"
-    rewards: list[str] = ["exact_answer"]
-    metrics: list[str] = ["accuracy"]
     split: str = "train"
-    system_prompt: str = "load_system_prompt"
 
 
-def load_tasks(split: str = "train") -> vf.Tasks:
-    return build_tasks(split=split)
+class MyTaskset(vf.Taskset[MyTasksetConfig]):
+    def load_system_prompt(self) -> vf.SystemPrompt:
+        return SYSTEM_PROMPT
+
+    def load_tasks(self) -> vf.Tasks:
+        return build_tasks(split=self.config.split)
+
+    @vf.reward(weight=1.0)
+    async def exact_answer(self, task, state) -> float:
+        ...
+
+    @vf.metric
+    async def accuracy(self, task, state) -> float:
+        ...
 
 
-def load_taskset(config: MyTasksetConfig) -> vf.Taskset:
-    return vf.Taskset(config=config)
+def load_taskset(config: MyTasksetConfig) -> MyTaskset:
+    return MyTaskset(config=config)
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
@@ -95,20 +99,19 @@ live with the environment instead of the root `verifiers` package.
 Put system instructions in `system_prompt`, not in `prompt`:
 
 ```python
-def load_system_prompt() -> vf.SystemPrompt:
-    return "Answer concisely."
-
-
 class PromptTasksetConfig(vf.TasksetConfig):
-    tasks: str = "load_tasks"
-    system_prompt: str = "load_system_prompt"
+    pass
 
 
-def load_tasks() -> vf.Tasks:
-    return [{"prompt": [{"role": "user", "content": "Question?"}]}]
+class PromptTaskset(vf.Taskset[PromptTasksetConfig]):
+    def load_system_prompt(self) -> vf.SystemPrompt:
+        return "Answer concisely."
+
+    def load_tasks(self) -> vf.Tasks:
+        return [{"prompt": [{"role": "user", "content": "Question?"}]}]
 
 
-taskset = vf.Taskset(config=PromptTasksetConfig())
+taskset = PromptTaskset(config=PromptTasksetConfig())
 ```
 
 or per task:
@@ -160,25 +163,30 @@ async def exact(task, state) -> float:
 
 
 class QATasksetConfig(vf.TasksetConfig):
-    tasks: str = "load_tasks"
-    rewards: list[str] = ["exact"]
     split: str = "train"
 
 
-def load_tasks(split: str = "train") -> vf.Tasks:
-    return [
-        {
-            "prompt": [{"role": "user", "content": row["question"]}],
-            "answer": row["answer"],
-            "info": {"id": row["id"]},
-            "max_turns": 1,
-        }
-        for row in load_dataset(..., split=split)
-    ]
+class QATaskset(vf.Taskset[QATasksetConfig]):
+    def load_tasks(self) -> vf.Tasks:
+        return [
+            {
+                "prompt": [{"role": "user", "content": row["question"]}],
+                "answer": row["answer"],
+                "info": {"id": row["id"]},
+                "max_turns": 1,
+            }
+            for row in load_dataset(..., split=self.config.split)
+        ]
+
+    @vf.reward
+    async def exact(self, task, state) -> float:
+        messages = vf.get_messages(state.get("completion") or [], role="assistant")
+        response = str(messages[-1].content or "") if messages else ""
+        return float(str(task["answer"]).strip() in response)
 
 
-def load_taskset(config: QATasksetConfig) -> vf.Taskset:
-    return vf.Taskset(config=config)
+def load_taskset(config: QATasksetConfig) -> QATaskset:
+    return QATaskset(config=config)
 
 
 def load_environment(config: vf.EnvConfig):
@@ -198,14 +206,7 @@ class AnswerExtractor:
         ...
 
 
-@vf.reward
-async def exact(task, state, extract_answer) -> float:
-    return float(extract_answer(state.get("completion") or []) == task["answer"])
-
-
 class ExtractTasksetConfig(vf.TasksetConfig):
-    tasks: str = "load_tasks"
-    rewards: list[str] = ["exact"]
     objects: dict[str, str] = {
         "extract_answer": "build_answer_extractor",
     }
@@ -214,11 +215,16 @@ class ExtractTasksetConfig(vf.TasksetConfig):
     }
 
 
-def load_tasks() -> vf.Tasks:
-    return [{"prompt": [{"role": "user", "content": "Question?"}], "answer": "A"}]
+class ExtractTaskset(vf.Taskset[ExtractTasksetConfig]):
+    def load_tasks(self) -> vf.Tasks:
+        return [{"prompt": [{"role": "user", "content": "Question?"}], "answer": "A"}]
+
+    @vf.reward
+    async def exact(self, task, state, extract_answer) -> float:
+        return float(extract_answer(state.get("completion") or []) == task["answer"])
 
 
-taskset = vf.Taskset(config=ExtractTasksetConfig())
+taskset = ExtractTaskset(config=ExtractTasksetConfig())
 ```
 
 - Judge metrics are regular reward/metric functions. Instantiate judge clients
@@ -272,20 +278,24 @@ def load_toolset(config=None):
 
 
 class SearchTasksetConfig(vf.TasksetConfig):
-    tasks: str = "load_tasks"
-    rewards: list[str] = ["judge_reward"]
+    pass
 
 
-def load_tasks() -> vf.Tasks:
-    return [
-        {
-            "prompt": [{"role": "user", "content": "Search the web."}],
-            "answer": "example",
-        }
-    ]
+class SearchTaskset(vf.Taskset[SearchTasksetConfig]):
+    def load_tasks(self) -> vf.Tasks:
+        return [
+            {
+                "prompt": [{"role": "user", "content": "Search the web."}],
+                "answer": "example",
+            }
+        ]
+
+    @vf.reward
+    async def judge_reward(self, task, state) -> float:
+        ...
 
 
-taskset = vf.Taskset(config=SearchTasksetConfig())
+taskset = SearchTaskset(config=SearchTasksetConfig())
 taskset.add_toolset(load_toolset())
 env = vf.Env(taskset=taskset)
 ```

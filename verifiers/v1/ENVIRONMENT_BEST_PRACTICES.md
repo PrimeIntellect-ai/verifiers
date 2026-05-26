@@ -96,31 +96,28 @@ Use this when the taskset owns the environment and the base harness is enough.
 import verifiers as vf
 
 
-
-def load_tasks(split: str = "train") -> vf.Tasks:
-    rows = [
-        {
-            "prompt": [{"role": "user", "content": "What is 2 + 2?"}],
-            "answer": "4",
-            "split": "train",
-        }
-    ]
-    return [row for row in rows if row["split"] == split]
-
-
-@vf.reward(weight=1.0)
-async def exact(task, state) -> float:
-    return float(state.get("answer") == task["answer"])
-
-
 class MyTasksetConfig(vf.TasksetConfig):
     split: str = "train"
-    tasks: str = "my_env:load_tasks"
-    rewards: list[str] = ["my_env:exact"]
 
 
-def load_taskset(config: MyTasksetConfig) -> vf.Taskset:
-    return vf.Taskset(config=config)
+class MyTaskset(vf.Taskset[MyTasksetConfig]):
+    def load_tasks(self) -> vf.Tasks:
+        rows = [
+            {
+                "prompt": [{"role": "user", "content": "What is 2 + 2?"}],
+                "answer": "4",
+                "split": "train",
+            }
+        ]
+        return [row for row in rows if row["split"] == self.config.split]
+
+    @vf.reward(weight=1.0)
+    async def exact(self, task, state) -> float:
+        return float(state.get("answer") == task["answer"])
+
+
+def load_taskset(config: MyTasksetConfig) -> MyTaskset:
+    return MyTaskset(config=config)
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
@@ -140,20 +137,20 @@ async def run(task, state) -> vf.State:
     return state
 
 
-def load_tasks(split: str = "train") -> vf.Tasks:
-    rows = [
-        {
-            "prompt": [{"role": "user", "content": "What is 2 + 2?"}],
-            "answer": "4",
-            "split": "train",
-        }
-    ]
-    return [row for row in rows if row["split"] == split]
-
-
 class MyTasksetConfig(vf.TasksetConfig):
     split: str = "train"
-    tasks: str = "my_env:load_tasks"
+
+
+class MyTaskset(vf.Taskset[MyTasksetConfig]):
+    def load_tasks(self) -> vf.Tasks:
+        rows = [
+            {
+                "prompt": [{"role": "user", "content": "What is 2 + 2?"}],
+                "answer": "4",
+                "split": "train",
+            }
+        ]
+        return [row for row in rows if row["split"] == self.config.split]
 
 
 class MyHarnessConfig(vf.HarnessConfig):
@@ -165,8 +162,8 @@ class MyHarness(vf.Harness):
     config: MyHarnessConfig
 
 
-def load_taskset(config: MyTasksetConfig) -> vf.Taskset:
-    return vf.Taskset(config=config)
+def load_taskset(config: MyTasksetConfig) -> MyTaskset:
+    return MyTaskset(config=config)
 
 
 def load_harness(config: MyHarnessConfig) -> MyHarness:

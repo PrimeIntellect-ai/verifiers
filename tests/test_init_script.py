@@ -25,17 +25,19 @@ def test_init_v1_writes_thin_taskset_template(tmp_path: Path) -> None:
     init_environment("bar", path=str(tmp_path), v1=True)
     content = read_env_file(tmp_path, "bar")
 
-    assert "def load_tasks() -> vf.Tasks:" in content
-    assert "def load_system_prompt() -> vf.SystemPrompt:" in content
     assert "class BarTasksetConfig(vf.TasksetConfig):" in content
-    assert 'system_prompt: str = "load_system_prompt"' in content
-    assert 'tasks: str = "load_tasks"' in content
-    assert 'rewards: list[str] = ["correct_answer"]' in content
-    assert "def load_taskset(config: BarTasksetConfig) -> vf.Taskset:" in content
+    assert "class BarTaskset(vf.Taskset[BarTasksetConfig]):" in content
+    assert "def load_tasks(self) -> vf.Tasks:" in content
+    assert "def load_system_prompt(self) -> vf.SystemPrompt:" in content
+    assert "async def correct_answer(self, task: vf.Task, state: vf.State)" in content
+    assert "def load_taskset(config: BarTasksetConfig) -> BarTaskset:" in content
+    assert "return BarTaskset(config=config)" in content
     assert "vf.load_taskset(config=config.taskset)" in content
     assert "class EnvTaskset(" not in content
     assert "_default_" not in content
     assert "assert isinstance" not in content
+    assert 'tasks: str = "load_tasks"' not in content
+    assert 'rewards: list[str] = ["correct_answer"]' not in content
 
 
 def test_init_v1_template_loads_with_vf_load_environment(
@@ -52,6 +54,7 @@ def test_init_v1_with_harness_writes_harness_stub(tmp_path: Path) -> None:
     init_environment("baz", path=str(tmp_path), v1=True, with_harness=True)
     content = read_env_file(tmp_path, "baz")
 
+    assert "class BazTaskset(vf.Taskset[BazTasksetConfig]):" in content
     assert "class BazHarnessConfig(vf.HarnessConfig):" in content
     assert "class BazHarness(vf.Harness):" in content
     assert "def load_harness(config: BazHarnessConfig) -> BazHarness:" in content
@@ -76,4 +79,5 @@ def test_init_v1_multifile_exports_component_loaders(tmp_path: Path) -> None:
 
     assert "from .pkg_env import load_environment, load_taskset" in init_content
     assert "__all__ = ['load_environment', 'load_taskset']" in init_content
-    assert 'tasks: str = "load_tasks"' in env_content
+    assert "class PkgEnvTaskset(vf.Taskset[PkgEnvTasksetConfig]):" in env_content
+    assert "return PkgEnvTaskset(config=config)" in env_content

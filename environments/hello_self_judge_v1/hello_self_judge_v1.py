@@ -351,7 +351,10 @@ def load_bash_toolset(config=None) -> vf.Toolset:
 
 
 class SelfJudgeTaskset(vf.Taskset):
-    pass
+    config: SelfJudgeTasksetConfig
+
+    def load_tasks(self) -> vf.Tasks:
+        return load_tasks(num_examples=self.config.num_examples)
 
 
 class SelfJudgeHarness(vf.Harness):

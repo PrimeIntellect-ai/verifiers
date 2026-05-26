@@ -59,8 +59,19 @@ def taskset_config_type_from_orig_bases(
         if not isinstance(origin, type) or not issubclass(origin, taskset_base):
             continue
         args = get_args(base)
-        if args and isinstance(args[0], type) and issubclass(args[0], TasksetConfig):
-            return args[0]
+        if args:
+            config_type = taskset_config_type_from_type_arg(args[0])
+            if config_type is not None:
+                return config_type
+    return None
+
+
+def taskset_config_type_from_type_arg(arg: object) -> type[TasksetConfig] | None:
+    if isinstance(arg, type) and issubclass(arg, TasksetConfig):
+        return arg
+    bound = getattr(arg, "__bound__", None)
+    if isinstance(bound, type) and issubclass(bound, TasksetConfig):
+        return bound
     return None
 
 

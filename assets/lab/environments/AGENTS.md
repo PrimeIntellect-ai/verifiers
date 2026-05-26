@@ -724,31 +724,28 @@ The taskset-only shape is:
 import verifiers as vf
 
 
-
-def load_tasks(split: str = "train") -> vf.Tasks:
-    rows = [
-        {
-            "prompt": [{"role": "user", "content": "Reverse abc."}],
-            "answer": "cba",
-            "split": "train",
-        }
-    ]
-    return [row for row in rows if row["split"] == split]
-
-
-@vf.reward(weight=1.0)
-async def contains_answer(task, state) -> float:
-    return float(task["answer"] in str(state.get("completion") or ""))
-
-
 class MyTasksetConfig(vf.TasksetConfig):
     split: str = "train"
-    tasks: str = "load_tasks"
-    rewards: list[str] = ["contains_answer"]
 
 
-def load_taskset(config: MyTasksetConfig) -> vf.Taskset:
-    return vf.Taskset(config=config)
+class MyTaskset(vf.Taskset[MyTasksetConfig]):
+    def load_tasks(self) -> vf.Tasks:
+        rows = [
+            {
+                "prompt": [{"role": "user", "content": "Reverse abc."}],
+                "answer": "cba",
+                "split": "train",
+            }
+        ]
+        return [row for row in rows if row["split"] == self.config.split]
+
+    @vf.reward(weight=1.0)
+    async def contains_answer(self, task, state) -> float:
+        return float(task["answer"] in str(state.get("completion") or ""))
+
+
+def load_taskset(config: MyTasksetConfig) -> MyTaskset:
+    return MyTaskset(config=config)
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:

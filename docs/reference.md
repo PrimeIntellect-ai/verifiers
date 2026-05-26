@@ -670,9 +670,10 @@ class Taskset:
     def get_eval_dataset() -> Dataset: ...
 ```
 
-Packages task rows and task-owned behavior. `TasksetConfig.tasks` and
-`TasksetConfig.eval_tasks` are import refs to module-level loaders returning
-`vf.Tasks`, which is `datasets.Dataset | Iterable[TaskRow]`.
+Packages task rows and task-owned behavior. Tasksets usually define
+`load_tasks()` and optional `load_eval_tasks()` methods returning `vf.Tasks`,
+which is `datasets.Dataset | Iterable[TaskRow]`. `TasksetConfig.tasks` and
+`TasksetConfig.eval_tasks` remain explicit import-ref override fields.
 
 #### Harness
 

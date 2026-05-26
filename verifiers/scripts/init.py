@@ -158,27 +158,24 @@ V1_ENVIRONMENT_TEMPLATE = """\
 import verifiers as vf
 
 
-def load_system_prompt() -> vf.SystemPrompt:
-    raise NotImplementedError("Load the system prompt for {env_id_dash}.")
-
-
-def load_tasks() -> vf.Tasks:
-    raise NotImplementedError("Load task rows for {env_id_dash}.")
-
-
-@vf.reward(weight=1.0)
-async def correct_answer(task: vf.Task, state: vf.State) -> float:
-    raise NotImplementedError("Score a completed rollout for {env_id_dash}.")
-
-
 class {taskset_config_name}(vf.TasksetConfig):
-    system_prompt: str = "load_system_prompt"
-    tasks: str = "load_tasks"
-    rewards: list[str] = ["correct_answer"]
+    pass
 
 
-def load_taskset(config: {taskset_config_name}) -> vf.Taskset:
-    return vf.Taskset(config=config)
+class {taskset_name}(vf.Taskset[{taskset_config_name}]):
+    def load_system_prompt(self) -> vf.SystemPrompt:
+        raise NotImplementedError("Load the system prompt for {env_id_dash}.")
+
+    def load_tasks(self) -> vf.Tasks:
+        raise NotImplementedError("Load task rows for {env_id_dash}.")
+
+    @vf.reward(weight=1.0)
+    async def correct_answer(self, task: vf.Task, state: vf.State) -> float:
+        raise NotImplementedError("Score a completed rollout for {env_id_dash}.")
+
+
+def load_taskset(config: {taskset_config_name}) -> {taskset_name}:
+    return {taskset_name}(config=config)
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
@@ -189,23 +186,20 @@ V1_HARNESS_ENVIRONMENT_TEMPLATE = """\
 import verifiers as vf
 
 
-def load_system_prompt() -> vf.SystemPrompt:
-    raise NotImplementedError("Load the system prompt for {env_id_dash}.")
-
-
-def load_tasks() -> vf.Tasks:
-    raise NotImplementedError("Load task rows for {env_id_dash}.")
-
-
-@vf.reward(weight=1.0)
-async def correct_answer(task: vf.Task, state: vf.State) -> float:
-    raise NotImplementedError("Score a completed rollout for {env_id_dash}.")
-
-
 class {taskset_config_name}(vf.TasksetConfig):
-    system_prompt: str = "load_system_prompt"
-    tasks: str = "load_tasks"
-    rewards: list[str] = ["correct_answer"]
+    pass
+
+
+class {taskset_name}(vf.Taskset[{taskset_config_name}]):
+    def load_system_prompt(self) -> vf.SystemPrompt:
+        raise NotImplementedError("Load the system prompt for {env_id_dash}.")
+
+    def load_tasks(self) -> vf.Tasks:
+        raise NotImplementedError("Load task rows for {env_id_dash}.")
+
+    @vf.reward(weight=1.0)
+    async def correct_answer(self, task: vf.Task, state: vf.State) -> float:
+        raise NotImplementedError("Score a completed rollout for {env_id_dash}.")
 
 
 class {harness_config_name}(vf.HarnessConfig):
@@ -216,8 +210,8 @@ class {harness_name}(vf.Harness):
     config: {harness_config_name}
 
 
-def load_taskset(config: {taskset_config_name}) -> vf.Taskset:
-    return vf.Taskset(config=config)
+def load_taskset(config: {taskset_config_name}) -> {taskset_name}:
+    return {taskset_name}(config=config)
 
 
 def load_harness(config: {harness_config_name}) -> {harness_name}:
@@ -422,6 +416,7 @@ def init_environment(
     env_id_dash = env.replace("_", "-")
     env_id_underscore = env_id_dash.replace("-", "_")
     taskset_config_name = _class_name(env_id_underscore, "TasksetConfig")
+    taskset_name = _class_name(env_id_underscore, "Taskset")
     harness_config_name = _class_name(env_id_underscore, "HarnessConfig")
     harness_name = _class_name(env_id_underscore, "Harness")
     if with_harness and not v1:
@@ -493,6 +488,7 @@ def init_environment(
         environment_file.write_text(
             template.replace("{env_id_dash}", env_id_dash)
             .replace("{taskset_config_name}", taskset_config_name)
+            .replace("{taskset_name}", taskset_name)
             .replace("{harness_config_name}", harness_config_name)
             .replace("{harness_name}", harness_name)
         )

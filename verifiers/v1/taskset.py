@@ -26,7 +26,6 @@ from .utils.taskset_registry_utils import (
     taskset_config_type_from_class,
 )
 from .utils.taskset_utils import (
-    call_loader_with_config,
     dataset_info_with_task,
     discover_sibling_dir,
     resolve_task_loader,
@@ -134,7 +133,7 @@ class Taskset(RuntimeOwnerMixin, Generic[ConfigT]):
                 load_tasks = self._task_loader(
                     "tasks", ("load_tasks", "load_train_tasks")
                 )
-                tasks = task_data_from_loader(load_tasks, self.config)
+                tasks = task_data_from_loader(load_tasks)
             self._dataset = Dataset.from_list(
                 [self._dataset_row(row, index) for index, row in enumerate(tasks)]
             )
@@ -147,7 +146,7 @@ class Taskset(RuntimeOwnerMixin, Generic[ConfigT]):
             return self.get_dataset()
         if self._eval_dataset is None:
             with config_ref_context(self.config):
-                tasks = task_data_from_loader(load_tasks, self.config)
+                tasks = task_data_from_loader(load_tasks)
             self._eval_dataset = Dataset.from_list(
                 [self._dataset_row(row, index) for index, row in enumerate(tasks)]
             )
@@ -204,8 +203,5 @@ class Taskset(RuntimeOwnerMixin, Generic[ConfigT]):
             return cast(PromptInput | None, self.config.system_prompt)
         method = getattr(self, "load_system_prompt", None)
         if callable(method):
-            return cast(
-                PromptInput | None,
-                call_loader_with_config(method, self.config, "load_system_prompt"),
-            )
+            return cast(PromptInput | None, method())
         return cast(PromptInput | None, self.config.system_prompt)

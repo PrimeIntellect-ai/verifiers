@@ -14,15 +14,13 @@ In each turn, think step-by-step, then give your guess inside <guess>...</guess>
 
 
 class WordleTasksetConfig(TextArenaTasksetConfig):
-    tasks: str | None = "verifiers.v1.packages.tasksets.textarena:load_tasks"
-    eval_tasks: str | None = "verifiers.v1.packages.tasksets.textarena:load_eval_tasks"
     game: str = "Wordle-v0"
     answer_state_key: str = "secret_word"
     system_prompt: str | None = WORDLE_SYSTEM_PROMPT
     path_to_system_prompt: str = ""
 
 
-class WordleTaskset(TextArenaTaskset):
+class WordleTaskset(TextArenaTaskset[WordleTasksetConfig]):
     guess_pattern = r"<guess>(.*?)</guess>"
     config: WordleTasksetConfig
 
@@ -134,9 +132,7 @@ def load_taskset(config: WordleTasksetConfig) -> WordleTaskset:
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
-    taskset_config = config.taskset
-    assert isinstance(taskset_config, WordleTasksetConfig)
     return vf.Env(
-        taskset=load_taskset(taskset_config),
+        taskset=vf.load_taskset(config=config.taskset),
         harness=vf.Harness(config=config.harness),
     )

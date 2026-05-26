@@ -25,7 +25,6 @@ from verifiers.v1.toolset import normalize_toolset
 from verifiers.v1.packages.harnesses import OpenCode
 from verifiers.utils.import_utils import load_toml
 from verifiers.v1.utils.config_utils import coerce_config, explicit_config_data
-from verifiers.v1.utils.taskset_utils import task_config_args, task_data_from_loader
 
 
 REF_MODULE = "v1_config_extension_refs"
@@ -73,31 +72,6 @@ def load_dataset_tasks() -> Dataset:
 
 def load_system_prompt() -> vf.SystemPrompt:
     return "loaded system prompt"
-
-
-def positional_only_load_tasks(
-    config: str = "positional-default", /, split: str = "train"
-) -> list[dict[str, object]]:
-    return [{"config": config, "split": split}]
-
-
-def varargs_load_tasks(
-    *config: object, split: str = "train"
-) -> list[dict[str, object]]:
-    return [{"config": config, "split": split}]
-
-
-def configured_load_tasks(
-    dataset_name: str,
-    dataset_split: str = "train",
-    limit: int = 1,
-) -> list[dict[str, object]]:
-    return [
-        {
-            "prompt": [],
-            "answer": f"{dataset_name}:{dataset_split}:{limit}",
-        }
-    ]
 
 
 @vf.metric
@@ -429,20 +403,6 @@ setattr(ref_module, "load_another_harness_config", load_another_harness_config)
 sys.modules[REF_MODULE] = ref_module
 
 
-def test_task_config_args_preserve_config_object_aliases() -> None:
-    raw_config = {
-        "config": "shadowed",
-        "taskset_config": "also-shadowed",
-        "split": "eval",
-    }
-
-    args = task_config_args(raw_config)
-
-    assert args["config"] is raw_config
-    assert args["taskset_config"] is raw_config
-    assert args["split"] == "eval"
-
-
 def test_explicit_config_data_preserves_explicit_none_values() -> None:
     class NestedConfig(Config):
         sandbox: vf.SandboxConfig | None = None
@@ -462,38 +422,6 @@ def test_explicit_config_data_preserves_explicit_none_values() -> None:
         "nested": {"sandbox": {"image": "python:3.12-slim", "workdir": None}},
         "label": None,
     }
-
-
-def test_load_tasks_filters_positional_only_config_names() -> None:
-    rows = task_data_from_loader(
-        positional_only_load_tasks,
-        {"config": "shadowed", "split": "eval"},
-    )
-
-    assert rows == [{"config": "positional-default", "split": "eval"}]
-
-
-def test_load_tasks_filters_varargs_parameter_names() -> None:
-    rows = task_data_from_loader(
-        varargs_load_tasks,
-        {"config": "shadowed", "split": "eval"},
-    )
-
-    assert rows == [{"config": (), "split": "eval"}]
-
-
-def test_load_tasks_uses_required_and_optional_config_fields() -> None:
-    rows = task_data_from_loader(
-        configured_load_tasks,
-        {"dataset_name": "dataset", "dataset_split": "eval", "limit": 3},
-    )
-
-    assert rows == [{"prompt": [], "answer": "dataset:eval:3"}]
-
-
-def test_load_tasks_reports_missing_required_config_fields() -> None:
-    with pytest.raises(TypeError, match="requires config field\\(s\\): 'dataset_name'"):
-        task_data_from_loader(configured_load_tasks, {"dataset_split": "eval"})
 
 
 def test_toolset_mapping_treats_show_hide_strings_as_tool_names() -> None:
@@ -1195,6 +1123,59 @@ def test_toolsets_config_accepts_addressable_map_and_fn_tables() -> None:
     prefix = taskset.toolsets[1].bindings["config_tool.prefix"]
     assert callable(prefix)
     assert prefix() == "configured"
+
+
+def test_taskset_load_toolsets_adds_class_owned_toolsets() -> None:
+    class ToolsetTaskset(Taskset):
+        def load_toolsets(self) -> vf.Toolsets:
+            return {"direct": Toolset(tools=[direct_tool])}
+
+    taskset = ToolsetTaskset(config={"tasks": ref("load_tasks")})
+
+    assert set(taskset.named_toolsets) == {"direct"}
+    assert taskset.named_toolsets["direct"].tools == (direct_tool,)
+
+
+def test_taskset_config_toolsets_extend_class_owned_toolsets() -> None:
+    class ToolsetTaskset(Taskset):
+        def load_toolsets(self) -> vf.Toolsets:
+            return {"direct": Toolset(tools=[direct_tool])}
+
+    taskset = ToolsetTaskset(
+        config={
+            "tasks": ref("load_tasks"),
+            "toolsets": {"configured": {"tools": [ref("config_tool")]}},
+        }
+    )
+
+    assert set(taskset.named_toolsets) == {"direct", "configured"}
+    assert taskset.named_toolsets["direct"].tools == (direct_tool,)
+    assert taskset.named_toolsets["configured"].tools == (config_tool,)
+
+
+def test_taskset_explicit_none_toolsets_disables_class_owned_toolsets() -> None:
+    class ToolsetTaskset(Taskset):
+        def load_toolsets(self) -> vf.Toolsets:
+            return {"direct": Toolset(tools=[direct_tool])}
+
+    taskset = ToolsetTaskset(config={"tasks": ref("load_tasks"), "toolsets": None})
+
+    assert taskset.toolsets == []
+    assert taskset.named_toolsets == {}
+
+
+def test_taskset_duplicate_toolsets_raise_between_class_and_config() -> None:
+    class ToolsetTaskset(Taskset):
+        def load_toolsets(self) -> vf.Toolsets:
+            return {"direct": Toolset(tools=[direct_tool])}
+
+    with pytest.raises(ValueError, match="Toolsets are defined twice"):
+        ToolsetTaskset(
+            config={
+                "tasks": ref("load_tasks"),
+                "toolsets": {"direct": {"tools": [ref("config_tool")]}},
+            }
+        )
 
 
 @pytest.mark.asyncio
@@ -1931,13 +1912,11 @@ def test_taskset_generic_sets_subclass_config_type() -> None:
             super().__init__(config=config)
             self.initialized = True
 
-        def load_tasks(
-            self, dataset_name: str, dataset_split: str = "train"
-        ) -> vf.Tasks:
+        def load_tasks(self) -> vf.Tasks:
             return [
                 {
                     "prompt": [],
-                    "answer": f"{dataset_name}:{dataset_split}",
+                    "answer": f"{self.config.dataset_name}:{self.config.dataset_split}",
                 }
             ]
 
@@ -1959,8 +1938,8 @@ def test_taskset_config_annotation_registers_config_type_at_runtime() -> None:
     class AnnotatedTaskset(Taskset):
         config: AnnotatedTasksetConfig
 
-        def load_tasks(self, dataset_name: str) -> vf.Tasks:
-            return [{"prompt": [], "answer": dataset_name}]
+        def load_tasks(self) -> vf.Tasks:
+            return [{"prompt": [], "answer": self.config.dataset_name}]
 
     taskset = AnnotatedTaskset(config=AnnotatedTasksetConfig())
 
@@ -2627,8 +2606,13 @@ class LocalTasksetConfig(vf.TasksetConfig):
 
 
 class LocalTaskset(vf.Taskset[LocalTasksetConfig]):
-    def load_tasks(self, dataset_name: str, dataset_split: str = "train") -> vf.Tasks:
-        return [{"prompt": [], "answer": f"{dataset_name}:{dataset_split}"}]
+    def load_tasks(self) -> vf.Tasks:
+        return [
+            {
+                "prompt": [],
+                "answer": f"{self.config.dataset_name}:{self.config.dataset_split}",
+            }
+        ]
 
 
 def load_taskset(config: LocalTasksetConfig) -> vf.Taskset:

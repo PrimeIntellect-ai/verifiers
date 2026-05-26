@@ -1,6 +1,5 @@
 import importlib
 import importlib.resources as resources
-import inspect
 import json
 from collections.abc import Iterable
 from importlib.abc import Traversable
@@ -8,10 +7,9 @@ from pathlib import Path
 from typing import cast
 
 from datasets import Dataset
-from pydantic import BaseModel
 
 from ..config import resolve_config_object
-from ..types import ConfigData, ConfigMap, Handler, TaskLoader, Tasks
+from ..types import ConfigData, ConfigMap, TaskLoader, Tasks
 
 
 def dataset_info_with_task(task: ConfigMap) -> ConfigData:
@@ -29,45 +27,11 @@ def resolve_task_loader(field: str, ref: str | None) -> TaskLoader | None:
 
 def task_data_from_loader(
     load_tasks: TaskLoader | None,
-    config: object | None = None,
 ) -> list[ConfigData]:
     if load_tasks is None:
         return []
-    result = cast(Tasks, call_loader_with_config(load_tasks, config, "Task loader"))
+    result = cast(Tasks, load_tasks())
     return task_data_from_result(result)
-
-
-def call_loader_with_config(
-    loader: Handler,
-    config: object | None,
-    context: str = "Loader",
-) -> object:
-    task_args = task_config_args(config)
-    sig = inspect.signature(loader)
-    if any(p.kind == p.VAR_KEYWORD for p in sig.parameters.values()):
-        return loader(**task_args)
-    keyword_names = {
-        name
-        for name, parameter in sig.parameters.items()
-        if parameter.kind
-        not in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.VAR_POSITIONAL)
-    }
-    missing = [
-        name
-        for name, parameter in sig.parameters.items()
-        if parameter.default is inspect.Parameter.empty
-        and parameter.kind
-        in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
-        and name not in task_args
-    ]
-    if missing:
-        loader_name = getattr(loader, "__name__", type(loader).__name__)
-        raise TypeError(
-            f"{context} {loader_name!r} requires config field(s): "
-            f"{', '.join(repr(name) for name in missing)}."
-        )
-    allowed = {key: value for key, value in task_args.items() if key in keyword_names}
-    return loader(**allowed)
 
 
 def task_data_from_result(result: Tasks) -> list[ConfigData]:
@@ -79,18 +43,6 @@ def task_data_from_result(result: Tasks) -> list[ConfigData]:
     raise TypeError(
         "Task loader must return a datasets.Dataset or an iterable of mappings."
     )
-
-
-def task_config_args(config: object | None) -> ConfigData:
-    if config is None:
-        return {}
-    if isinstance(config, BaseModel):
-        data = config.model_dump(mode="python")
-    elif isinstance(config, dict):
-        data = dict(config)
-    else:
-        return {"config": config, "taskset_config": config}
-    return {**data, "config": config, "taskset_config": config}
 
 
 def discover_sibling_dir(

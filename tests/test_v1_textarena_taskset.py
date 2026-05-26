@@ -79,6 +79,19 @@ def test_textarena_taskset_imports_from_package():
     assert textarena.TextArenaTasksetConfig
 
 
+def test_textarena_taskset_is_generic_over_config_type(fake_textarena):
+    class CustomTextArenaConfig(textarena.TextArenaTasksetConfig):
+        game: str = "FakeWordle-v0"
+        answer_state_key: str = "secret_word"
+
+    class CustomTextArenaTaskset(textarena.TextArenaTaskset[CustomTextArenaConfig]):
+        pass
+
+    taskset = CustomTextArenaTaskset(config=CustomTextArenaConfig())
+
+    assert isinstance(taskset.config, CustomTextArenaConfig)
+
+
 def test_textarena_taskset_builds_train_and_eval_rows(fake_textarena):
     fake_nltk, _ = fake_textarena
     taskset = textarena.TextArenaTaskset(

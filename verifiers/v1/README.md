@@ -138,31 +138,29 @@ taskset and harness, then compose them.
 import verifiers as vf
 
 
-def load_tasks(split: str = "train") -> vf.Tasks:
-    rows = [
-        {
-            "prompt": [{"role": "user", "content": "Reverse abc."}],
-            "answer": "cba",
-            "split": "train",
-            "max_turns": 1,
-        }
-    ]
-    return [row for row in rows if row["split"] == split]
-
-
-@vf.reward(weight=1.0)
-async def contains_answer(task, state) -> float:
-    return float(task["answer"] in str(state.get("completion") or ""))
-
-
 class ReverseTasksetConfig(vf.TasksetConfig):
     split: str = "train"
-    tasks: str = "load_tasks"
-    rewards: list[str] = ["contains_answer"]
 
 
-def load_taskset(config: ReverseTasksetConfig) -> vf.Taskset:
-    return vf.Taskset(config=config)
+class ReverseTaskset(vf.Taskset[ReverseTasksetConfig]):
+    def load_tasks(self) -> vf.Tasks:
+        rows = [
+            {
+                "prompt": [{"role": "user", "content": "Reverse abc."}],
+                "answer": "cba",
+                "split": "train",
+                "max_turns": 1,
+            }
+        ]
+        return [row for row in rows if row["split"] == self.config.split]
+
+    @vf.reward(weight=1.0)
+    async def contains_answer(self, task, state) -> float:
+        return float(task["answer"] in str(state.get("completion") or ""))
+
+
+def load_taskset(config: ReverseTasksetConfig) -> ReverseTaskset:
+    return ReverseTaskset(config=config)
 
 
 def load_environment(config: vf.EnvConfig):
@@ -192,9 +190,10 @@ state = await harness.run(
 
 ## Tasksets And Datasets
 
-Tasksets own row loading through a module-level loader referenced by config.
+Tasksets own row loading through `load_tasks()` and `load_eval_tasks()` methods.
 Config should hold user-facing knobs, such as dataset name, split, or size
-limits; the loader accepts those values and returns `vf.Tasks`.
+limits; taskset methods read those values from `self.config` and return
+`vf.Tasks`.
 
 ```python
 from datasets import load_dataset
@@ -202,25 +201,29 @@ import verifiers as vf
 
 
 class GSM8KTasksetConfig(vf.TasksetConfig):
-    tasks: str = "load_tasks"
     dataset_name: str = "gsm8k"
     split: str = "train"
 
 
-def load_tasks(dataset_name: str = "gsm8k", split: str = "train") -> vf.Tasks:
-    dataset = load_dataset(dataset_name, "main", split=split)
-    return (
-        {
-            "example_id": index,
-            "prompt": [{"role": "user", "content": row["question"]}],
-            "answer": row["answer"],
-        }
-        for index, row in enumerate(dataset)
-    )
+class GSM8KTaskset(vf.Taskset[GSM8KTasksetConfig]):
+    def load_tasks(self) -> vf.Tasks:
+        dataset = load_dataset(
+            self.config.dataset_name,
+            "main",
+            split=self.config.split,
+        )
+        return (
+            {
+                "example_id": index,
+                "prompt": [{"role": "user", "content": row["question"]}],
+                "answer": row["answer"],
+            }
+            for index, row in enumerate(dataset)
+        )
 
 
-def load_taskset(config: GSM8KTasksetConfig) -> vf.Taskset:
-    return vf.Taskset(config=config)
+def load_taskset(config: GSM8KTasksetConfig) -> GSM8KTaskset:
+    return GSM8KTaskset(config=config)
 ```
 
 Set `eval_tasks` only when the evaluation split needs a different loader from
@@ -409,23 +412,22 @@ async def replay_solution(task, state):
     return state
 
 
-@vf.reward
-async def exact(task, state) -> float:
-    return float(state.get("answer") == task.get("answer"))
-
-
-def load_tasks() -> vf.Tasks:
-    return [
-        {
-            "prompt": [{"role": "user", "content": "Replay the answer."}],
-            "answer": "done",
-        }
-    ]
-
-
 class ReplayTasksetConfig(vf.TasksetConfig):
-    tasks: str = "load_tasks"
-    rewards: list[str] = ["exact"]
+    pass
+
+
+class ReplayTaskset(vf.Taskset[ReplayTasksetConfig]):
+    def load_tasks(self) -> vf.Tasks:
+        return [
+            {
+                "prompt": [{"role": "user", "content": "Replay the answer."}],
+                "answer": "done",
+            }
+        ]
+
+    @vf.reward
+    async def exact(self, task, state) -> float:
+        return float(state.get("answer") == task.get("answer"))
 
 
 class ReplayHarnessConfig(vf.HarnessConfig):
@@ -433,7 +435,7 @@ class ReplayHarnessConfig(vf.HarnessConfig):
 
 
 env = vf.Env(
-    taskset=vf.Taskset(config=ReplayTasksetConfig()),
+    taskset=ReplayTaskset(config=ReplayTasksetConfig()),
     harness=vf.Harness(config=ReplayHarnessConfig()),
 )
 ```
@@ -694,14 +696,18 @@ Tasksets and harnesses can pass toolsets as a list or a mapping:
 
 ```python
 class WikiTasksetConfig(vf.TasksetConfig):
-    tasks: str = "load_tasks"
     toolsets: dict[str, dict[str, object]] = {
         "wiki": {"fn": "load_wiki_toolset"},
         "python": {"tools": ["python"]},
     }
 
 
-taskset = vf.Taskset(config=WikiTasksetConfig())
+class WikiTaskset(vf.Taskset[WikiTasksetConfig]):
+    def load_tasks(self) -> vf.Tasks:
+        return [{"prompt": [{"role": "user", "content": "Search the wiki."}]}]
+
+
+taskset = WikiTaskset(config=WikiTasksetConfig())
 ```
 
 Mapped toolsets are still active by default, but their keys become task-level
@@ -1017,16 +1023,16 @@ async def user(task, state, messages):
     return [{"role": "user", "content": "Try one more time."}]
 
 
-def load_tasks() -> vf.Tasks:
-    return [{"prompt": [{"role": "user", "content": "Try the task."}]}]
-
-
 class UserTasksetConfig(vf.TasksetConfig):
-    tasks: str = "load_tasks"
     user: str = "user"
 
 
-taskset = vf.Taskset(config=UserTasksetConfig())
+class UserTaskset(vf.Taskset[UserTasksetConfig]):
+    def load_tasks(self) -> vf.Tasks:
+        return [{"prompt": [{"role": "user", "content": "Try the task."}]}]
+
+
+taskset = UserTaskset(config=UserTasksetConfig())
 ```
 
 Use `vf.UserConfig(...)` when the user needs scope, sandboxing, or serialized
@@ -1169,30 +1175,28 @@ recommended loader shape is:
 import verifiers as vf
 
 
-def load_tasks(split: str = "train") -> vf.Tasks:
-    rows = [
-        {
-            "prompt": [{"role": "user", "content": "What is 2 + 2?"}],
-            "answer": "4",
-            "split": "train",
-        }
-    ]
-    return [row for row in rows if row["split"] == split]
-
-
-@vf.reward(weight=1.0)
-async def exact(task, state) -> float:
-    return float(str(task["answer"]) in str(state.get("completion") or ""))
-
-
 class MyTasksetConfig(vf.TasksetConfig):
-    tasks: str = "load_tasks"
-    rewards: list[str] = ["exact"]
     split: str = "train"
 
 
-def load_taskset(config: MyTasksetConfig) -> vf.Taskset:
-    return vf.Taskset(config=config)
+class MyTaskset(vf.Taskset[MyTasksetConfig]):
+    def load_tasks(self) -> vf.Tasks:
+        rows = [
+            {
+                "prompt": [{"role": "user", "content": "What is 2 + 2?"}],
+                "answer": "4",
+                "split": "train",
+            }
+        ]
+        return [row for row in rows if row["split"] == self.config.split]
+
+    @vf.reward(weight=1.0)
+    async def exact(self, task, state) -> float:
+        return float(str(task["answer"]) in str(state.get("completion") or ""))
+
+
+def load_taskset(config: MyTasksetConfig) -> MyTaskset:
+    return MyTaskset(config=config)
 
 
 def load_environment(config: vf.EnvConfig):
@@ -1364,21 +1368,21 @@ import verifiers as vf
 
 
 class DatasetTasksetConfig(vf.TasksetConfig):
-    tasks: str = "load_tasks"
     split: str = "train"
     limit: int = 100
 
 
-def load_tasks(split: str = "train", limit: int = 100) -> vf.Tasks:
-    dataset = load_dataset("my-org/my-dataset", split=split)
-    if limit > 0:
-        dataset = dataset.select(range(min(limit, len(dataset))))
-    return dataset.map(
-        lambda row: {
-            "prompt": [{"role": "user", "content": row["question"]}],
-            "answer": row["answer"],
-        }
-    )
+class DatasetTaskset(vf.Taskset[DatasetTasksetConfig]):
+    def load_tasks(self) -> vf.Tasks:
+        dataset = load_dataset("my-org/my-dataset", split=self.config.split)
+        if self.config.limit > 0:
+            dataset = dataset.select(range(min(self.config.limit, len(dataset))))
+        return dataset.map(
+            lambda row: {
+                "prompt": [{"role": "user", "content": row["question"]}],
+                "answer": row["answer"],
+            }
+        )
 ```
 
 ### Toolsets
@@ -1546,17 +1550,17 @@ Subclass `Taskset` or `Harness` only when the runtime methods themselves need a
 different implementation.
 
 ```python
-def load_tasks(db_path: str = "wiki.db") -> vf.Tasks:
-    raise NotImplementedError(f"Load tasks from {db_path}.")
-
-
 class WikiTasksetConfig(vf.TasksetConfig):
-    tasks: str = "load_tasks"
     db_path: str = "wiki.db"
 
 
-def load_taskset(config: WikiTasksetConfig) -> vf.Taskset:
-    taskset = vf.Taskset(config=config)
+class WikiTaskset(vf.Taskset[WikiTasksetConfig]):
+    def load_tasks(self) -> vf.Tasks:
+        raise NotImplementedError(f"Load tasks from {self.config.db_path}.")
+
+
+def load_taskset(config: WikiTasksetConfig) -> WikiTaskset:
+    taskset = WikiTaskset(config=config)
     taskset.add_toolset(vf.Toolset(tools=[wiki_search_tool(config.db_path)]))
     return taskset
 

@@ -2,7 +2,7 @@ import asyncio
 import random
 import re
 from copy import deepcopy
-from typing import Protocol, cast
+from typing import Generic, Protocol, TypeVar, cast
 
 from verifiers.types import UserMessage
 from verifiers.utils.message_utils import get_messages
@@ -42,8 +42,6 @@ class TextArenaEnv(Protocol):
 
 
 class TextArenaTasksetConfig(TasksetConfig):
-    tasks: str | None = "load_tasks"
-    eval_tasks: str | None = "load_eval_tasks"
     game: str
     num_train_examples: int = 2000
     num_eval_examples: int = 20
@@ -51,10 +49,13 @@ class TextArenaTasksetConfig(TasksetConfig):
     answer_state_key: str
 
 
-class TextArenaTaskset(Taskset):
-    config: TextArenaTasksetConfig
+ConfigT = TypeVar("ConfigT", bound=TextArenaTasksetConfig)
 
-    def __init__(self, config: TextArenaTasksetConfig):
+
+class TextArenaTaskset(Taskset[ConfigT], Generic[ConfigT]):
+    config: ConfigT
+
+    def __init__(self, config: ConfigT):
         assert isinstance(config, TextArenaTasksetConfig)
 
         self.template, self.initial_prompt, self.word_list = textarena_context(config)
@@ -83,6 +84,12 @@ class TextArenaTaskset(Taskset):
                 objects={"ta_env": load_ta_env},
                 bindings={"ta_env": "objects.ta_env"},
             )
+
+    def load_tasks(self) -> list[ConfigData]:
+        return load_tasks(config=self.config)
+
+    def load_eval_tasks(self) -> list[ConfigData]:
+        return load_eval_tasks(config=self.config)
 
     def format_observation(self, observation: str) -> str:
         return observation
