@@ -17,6 +17,7 @@ Parametrized over five model families so each renderer's render/parse paths
 are exercised. Tokenizers come from the local HF cache; no network.
 """
 
+import json
 import logging
 from typing import Any
 
@@ -106,6 +107,13 @@ def tokenizer_and_renderer(model_family):
 # ── Scripted vLLM stand-in ───────────────────────────────────────────
 
 
+class _ScriptedResponse:
+    """httpx.Response stand-in: ``parse_generate_response`` reads ``.content`` as bytes."""
+
+    def __init__(self, payload: dict[str, Any]):
+        self.content = json.dumps(payload).encode()
+
+
 class ScriptedVLLM:
     """Fake ``AsyncOpenAI``-compatible client serving canned
     /inference/v1/generate responses (vllm 0.20 wire shape).
@@ -124,22 +132,24 @@ class ScriptedVLLM:
         assert self._completions, "ScriptedVLLM ran out of canned completions"
         completion_ids = self._completions.pop(0)
 
-        return {
-            "request_id": f"resp-{len(self.requests)}",
-            "choices": [
-                {
-                    "index": 0,
-                    "token_ids": list(completion_ids),
-                    "logprobs": {
-                        "content": [
-                            {"token": f"token_id:{tid}", "logprob": -0.1}
-                            for tid in completion_ids
-                        ]
-                    },
-                    "finish_reason": "stop",
-                }
-            ],
-        }
+        return _ScriptedResponse(
+            {
+                "request_id": f"resp-{len(self.requests)}",
+                "choices": [
+                    {
+                        "index": 0,
+                        "token_ids": list(completion_ids),
+                        "logprobs": {
+                            "content": [
+                                {"token": f"token_id:{tid}", "logprob": -0.1}
+                                for tid in completion_ids
+                            ]
+                        },
+                        "finish_reason": "stop",
+                    }
+                ],
+            }
+        )
 
     async def close(self):
         pass
