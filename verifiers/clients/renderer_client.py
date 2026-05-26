@@ -15,6 +15,8 @@ from typing import Any, ClassVar, cast
 
 from openai import AsyncOpenAI
 
+from pydantic import ValidationError
+
 from renderers import Message as RendererMessage
 from renderers import OverlongPromptError as RendererOverlongPromptError
 from renderers import (
@@ -22,6 +24,7 @@ from renderers import (
     ParsedToolCall,
     RenderedTokens,
     Renderer,
+    RendererConfig,
     RendererPool,
     ToolCallParseStatus,
     ToolSpec,
@@ -374,6 +377,35 @@ async def _get_incremental_prompt_ids(
     return None
 
 
+def _resolve_renderer_config(
+    base: RendererConfig | None,
+    chat_template_kwargs: Mapping[str, Any] | None,
+) -> RendererConfig | None:
+    """Merge ``chat_template_kwargs`` into a typed ``RendererConfig``.
+
+    Pydantic re-validates the merged dict against the discriminated-union
+    variant: typed configs (``extra="forbid"``) reject unknown keys with a
+    field-path error; ``DefaultRendererConfig`` (``extra="allow"``) accepts
+    arbitrary jinja kwargs. Kwargs override fields with the same name on
+    the base config.
+    """
+    if not chat_template_kwargs:
+        return base
+    if base is None:
+        raise ValueError(
+            "sampling_args.extra_body.chat_template_kwargs require a typed "
+            "renderer_config; set ClientConfig.renderer_config to use them "
+            "on the renderer route."
+        )
+    merged = {**base.model_dump(), **chat_template_kwargs}
+    try:
+        return type(base).model_validate(merged)
+    except ValidationError as e:
+        raise ValueError(
+            f"chat_template_kwargs are incompatible with {type(base).__name__}: {e}"
+        ) from e
+
+
 class RendererClient(
     Client[AsyncOpenAI, list[RendererMessage], dict[str, Any], ToolSpec]
 ):
@@ -419,13 +451,19 @@ class RendererClient(
 
     # ── Renderer management ─────────────────────────────────────────
 
-    def _get_renderer_or_pool(self, model: str) -> Renderer | RendererPool:
+    def _get_renderer_or_pool(
+        self,
+        model: str,
+        *,
+        renderer_config: RendererConfig | None = None,
+    ) -> Renderer | RendererPool:
         if self._renderer is not None:
             return self._renderer
 
-        renderer_config = (
-            self._config.renderer_config if self._config is not None else None
-        )
+        if renderer_config is None:
+            renderer_config = (
+                self._config.renderer_config if self._config is not None else None
+            )
         renderer_model = (
             self._config.renderer_model_name
             if self._config is not None and self._config.renderer_model_name is not None
@@ -477,14 +515,24 @@ class RendererClient(
         tools: list[ToolSpec] | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
-        renderer = self._get_renderer_or_pool(model)
-
         args = dict(sampling_args)
         extra_headers = {
             **dict(args.pop("extra_headers", None) or {}),
             **dict(kwargs.pop("extra_headers", None) or {}),
         }
         sampling_params: dict[str, Any] = dict(args.pop("extra_body", None) or {})
+
+        # ``chat_template_kwargs`` belong to the renderer, not the engine —
+        # peel them off the per-request sampling and fold them into the
+        # typed RendererConfig. Pool cache key already includes the
+        # effective config so identical kwargs reuse the same renderer.
+        chat_template_kwargs = sampling_params.pop("chat_template_kwargs", None)
+        effective_cfg = _resolve_renderer_config(
+            self._config.renderer_config if self._config is not None else None,
+            chat_template_kwargs,
+        )
+        renderer = self._get_renderer_or_pool(model, renderer_config=effective_cfg)
+
         for key in (
             "temperature",
             "top_p",
