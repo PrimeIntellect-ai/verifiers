@@ -1,8 +1,8 @@
 import json
-import shlex
 from collections.abc import Mapping
 from typing import cast
 from ..types import ConfigData, ConfigMap, ProgramChannel
+from .sandbox_python_utils import SANDBOX_PYTHON, python_package_list
 
 
 MCP_PROXY_PATH = "/tmp/vf_mcp_tools.py"
@@ -69,28 +69,18 @@ def proxy_program(
 
 
 def proxy_command() -> list[str]:
-    return ["python3", MCP_PROXY_PATH, MCP_PROXY_CONFIG_PATH]
+    return [SANDBOX_PYTHON, MCP_PROXY_PATH, MCP_PROXY_CONFIG_PATH]
 
 
 def proxy_sandbox(sandbox_config: ConfigMap) -> ConfigData:
     config = dict(sandbox_config)
-    packages = package_list(config.get("packages"))
+    packages = python_package_list(config.get("packages"))
     if not any(str(package).startswith("mcp") for package in packages):
         packages.append(MCP_PACKAGE)
     if not any(str(package).startswith("requests") for package in packages):
         packages.append(REQUESTS_PACKAGE)
     config["packages"] = packages
     return config
-
-
-def package_list(value: object) -> list[str]:
-    if value is None:
-        return []
-    if isinstance(value, str):
-        return shlex.split(value)
-    if isinstance(value, list):
-        return [str(item) for item in value]
-    raise TypeError("sandbox.packages must be a list or string.")
 
 
 def proxy_source() -> str:

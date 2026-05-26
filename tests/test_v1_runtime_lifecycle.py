@@ -24,6 +24,11 @@ from verifiers.v1.utils import mcp_utils
 from verifiers.v1.utils.mcp_proxy_utils import MCP_PROXY_CONFIG_PATH, MCP_PROXY_PATH
 from verifiers.v1.utils.mcp_proxy_utils import proxy_command, proxy_source
 from verifiers.v1.utils.program_utils import command_env
+from verifiers.v1.utils.sandbox_python_utils import (
+    SANDBOX_PYTHON,
+    SANDBOX_UV,
+    python_package_install_command,
+)
 from verifiers.v1.utils.sandbox_program_utils import (
     PACKAGE_ROOT,
     RUNNER_CONFIG_PATH,
@@ -996,7 +1001,12 @@ build-backend = "hatchling.build"
     assert env["PYTHONPATH"] == "/custom"
     assert "pip install" in setup[1]
     assert shlex.quote(PACKAGE_ROOT) in setup[1]
-    assert command[2].endswith(" /tmp/vf_program_runner.py fn local_program:run")
+    assert command == [
+        SANDBOX_PYTHON,
+        "/tmp/vf_program_runner.py",
+        "fn",
+        "local_program:run",
+    ]
 
 
 def test_sandbox_fn_program_resolves_local_module_package(
@@ -1100,6 +1110,21 @@ def test_sandbox_python_program_installs_runtime_client_deps() -> None:
     assert packages == ["numpy", "openai", "anthropic", "requests"]
 
 
+def test_sandbox_package_install_bootstraps_managed_python() -> None:
+    command = python_package_install_command("mcp>=1.14.1 requests")
+
+    assert "UV_NO_CONFIG=1" not in command
+    assert "UV_INDEX_URL" not in command
+    assert "PIP_INDEX_URL" not in command
+    assert "https://astral.sh/uv/install.sh" in command
+    assert '"$VF_UV" venv --seed --python "$VF_PYTHON_VERSION"' in command
+    assert '"$VF_UV" pip install --python "$VF_PYTHON"' in command
+    assert "--index-url" not in command
+    assert SANDBOX_PYTHON in command
+    assert SANDBOX_UV in command
+    assert "mcp>=1.14.1 requests" in command
+
+
 @pytest.mark.asyncio
 async def test_sandbox_base_program_max_turns_zero_is_unbounded(
     tmp_path: Path,
@@ -1188,7 +1213,7 @@ def test_program_channels_mcp_injects_proxy_into_sandbox_program() -> None:
         "tool_base_url": "http://127.0.0.1:1/rollout/test/vf/tools",
         "tool_api_key": harness.endpoint.secret,
     }
-    assert proxy_command() == ["python3", MCP_PROXY_PATH, MCP_PROXY_CONFIG_PATH]
+    assert proxy_command() == [SANDBOX_PYTHON, MCP_PROXY_PATH, MCP_PROXY_CONFIG_PATH]
     packages = sandbox["packages"]
     assert isinstance(packages, list)
     assert "mcp>=1.14.1" in packages
@@ -1232,9 +1257,19 @@ async def test_program_channels_mcp_setup_uses_bindings_after_setup_before_comma
     await harness.run(task)
 
     commands = [command for _, command in FakeSandboxClient.commands]
-    setup_index = commands.index("echo setup")
-    mcp_setup_index = commands.index("echo model=bound-model > /tmp/endpoint.txt")
-    command_index = commands.index("python -c 'print('\"'\"'ok'\"'\"')'")
+    setup_index = next(
+        i for i, command in enumerate(commands) if command.endswith("echo setup")
+    )
+    mcp_setup_index = next(
+        i
+        for i, command in enumerate(commands)
+        if command.endswith("echo model=bound-model > /tmp/endpoint.txt")
+    )
+    command_index = next(
+        i
+        for i, command in enumerate(commands)
+        if command.endswith("python -c 'print('\"'\"'ok'\"'\"')'")
+    )
     assert setup_index < mcp_setup_index < command_index
 
 
@@ -1384,7 +1419,10 @@ async def test_program_channels_mcp_setup_accepts_config_ref_mappings(
     await harness.run(task)
 
     commands = [command for _, command in FakeSandboxClient.commands]
-    assert "echo ref-model=toml-model > /tmp/ref_endpoint.txt" in commands
+    assert any(
+        command.endswith("echo ref-model=toml-model > /tmp/ref_endpoint.txt")
+        for command in commands
+    )
 
 
 def test_program_bindings_must_match_owned_callables() -> None:
@@ -1526,7 +1564,7 @@ async def test_real_sandbox_command_program_uses_mcp_tool_proxy() -> None:
             "files": {"/tmp/call_mcp.py": REAL_MCP_PROXY_SCRIPT},
         },
         sandbox={
-            "image": "python:3.11-slim",
+            "image": "python:3.9-slim",
             "network_access": True,
             "timeout_minutes": 20,
             "command_timeout": 120,

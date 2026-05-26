@@ -12,6 +12,7 @@ from .configs import (
 )
 from ...harness import Harness
 from ...types import ProgramCommand, ProgramOptionMap
+from ...utils.sandbox_python_utils import SANDBOX_BIN_DIR, uv_setup_command
 
 
 class Terminus2(Harness):
@@ -48,14 +49,7 @@ class Terminus2(Harness):
         ]
 
     def setup(self, config: Terminus2Config) -> str:
-        return """\
-set -e
-apt-get -o Acquire::Retries=3 update -qq
-apt-get -o Acquire::Retries=3 install -y -qq curl ca-certificates > /dev/null 2>&1
-if ! command -v uv >/dev/null 2>&1; then
-  curl -LsSf https://astral.sh/uv/install.sh | sh
-fi
-"""
+        return uv_setup_command()
 
     def artifacts(self, config: Terminus2Config) -> ProgramOptionMap:
         return {
@@ -94,10 +88,10 @@ def build_terminus_2_run_script(
     )
     return f"""\
 set -eo pipefail
-export PATH="$HOME/.local/bin:$PATH"
+export PATH={shlex.quote(SANDBOX_BIN_DIR)}:"$HOME/.local/bin:$PATH"
 
 TERMINUS_2_WORKDIR="${{AGENT_WORKDIR:-}}"
-if [[ -z "$TERMINUS_2_WORKDIR" ]]; then
+if [ -z "$TERMINUS_2_WORKDIR" ]; then
     TERMINUS_2_WORKDIR={shlex.quote(agent_workdir)}
 fi
 export AGENT_WORKDIR="$TERMINUS_2_WORKDIR"

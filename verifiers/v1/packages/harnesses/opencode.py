@@ -191,7 +191,7 @@ export OPENCODE_DISABLE_FILETIME_CHECK=true
 export ALLOW_GIT={"1" if allow_git else "0"}
 
 OPENCODE_WORKDIR="${{AGENT_WORKDIR:-}}"
-if [[ -z "$OPENCODE_WORKDIR" ]]; then
+if [ -z "$OPENCODE_WORKDIR" ]; then
     OPENCODE_WORKDIR={shlex.quote(agent_workdir)}
 fi
 

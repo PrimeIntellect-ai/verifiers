@@ -17,9 +17,15 @@ from verifiers.utils.async_utils import maybe_call_with_named_args
 from .artifact_utils import artifact_format, artifact_key, artifact_optional
 from .artifact_utils import artifact_path
 from .program_utils import command_argv, command_env, float_config, int_config
+from .program_utils import program_channels
 from .program_utils import program_option_mapping, program_channel_setup
 from .program_utils import resolve_program_value
 from .program_utils import validate_program_bindings
+from .sandbox_python_utils import (
+    python_package_install_command,
+    python_package_list,
+    sandbox_python_path_command,
+)
 from ..runtime import Runtime
 from ..state import State
 from ..task import Task
@@ -319,10 +325,18 @@ async def run_sandbox_command(
             "lease_key": [lease_scope_key, lease.key],
         }
         handle = SandboxHandle(lease, state)
+        use_sandbox_python_path = bool(
+            python_package_list(sandbox_config.get("packages"))
+        )
         await runtime.setup_rollout(
             task,
             state,
-            setup_handlers=program_setup_handlers(lease, program, runtime),
+            setup_handlers=program_setup_handlers(
+                lease,
+                program,
+                runtime,
+                use_sandbox_python_path=use_sandbox_python_path,
+            ),
             sandbox=handle,
         )
         workdir = cast(str | None, sandbox_config.get("workdir"))
@@ -333,6 +347,8 @@ async def run_sandbox_command(
         argv = await command_argv(program, task, state, runtime)
         env = await command_env(program, task, state, runtime, include_base=False)
         command = shlex.join(argv)
+        if use_sandbox_python_path or "mcp" in program_channels(program):
+            command = sandbox_python_path_command(command)
         command_timeout = cast(int | None, sandbox_config.get("command_timeout"))
         result = await lease.run_background_job(
             command,
@@ -359,7 +375,11 @@ async def run_sandbox_command(
 
 
 def program_setup_handlers(
-    lease: SandboxLease, program: ConfigMap, runtime: Runtime
+    lease: SandboxLease,
+    program: ConfigMap,
+    runtime: Runtime,
+    *,
+    use_sandbox_python_path: bool = False,
 ) -> list[Handler]:
     handlers: list[Handler] = [
         _program_setup_handler(
@@ -385,6 +405,7 @@ def program_setup_handlers(
             run_program_setup,
             "program_setup",
             100,
+            use_sandbox_python_path=use_sandbox_python_path,
         ),
         _program_setup_handler(
             lease,
@@ -404,6 +425,7 @@ def program_setup_handlers(
                 str(channel),
                 setup_item,
                 priority,
+                use_sandbox_python_path=use_sandbox_python_path,
             )
         )
     return handlers
@@ -416,8 +438,20 @@ def _program_setup_handler(
     fn: Callable[..., Awaitable[None]],
     name: str,
     priority: int,
+    use_sandbox_python_path: bool = False,
 ) -> Handler:
     async def handler(task: Task, state: State) -> None:
+        if use_sandbox_python_path:
+            await fn(
+                lease.client,
+                lease.id,
+                program,
+                task,
+                state,
+                runtime,
+                use_sandbox_python_path=True,
+            )
+            return
         await fn(lease.client, lease.id, program, task, state, runtime)
 
     handler.__name__ = name
@@ -433,6 +467,7 @@ def _program_channel_setup_handler(
     channel: str,
     setup_item: ProgramValue,
     priority: int,
+    use_sandbox_python_path: bool = False,
 ) -> Handler:
     async def handler(task: Task, state: State) -> None:
         await run_program_items(
@@ -444,6 +479,7 @@ def _program_channel_setup_handler(
             runtime,
             items=[setup_item],
             error_prefix=f"Program {channel} channel setup failed",
+            use_sandbox_python_path=use_sandbox_python_path,
         )
 
     handler.__name__ = f"program_{channel}_channel_setup"
@@ -477,12 +513,8 @@ async def create_sandbox(client: SandboxClient, sandbox_config: ConfigMap) -> st
 
 
 async def setup_sandbox(handle: SandboxLease, sandbox_config: ConfigMap) -> None:
-    packages = sandbox_config.get("packages") or []
-    if isinstance(packages, str):
-        packages = shlex.split(packages)
+    packages = python_package_list(sandbox_config.get("packages"))
     if packages:
-        if not isinstance(packages, list):
-            raise TypeError("sandbox.packages must be a list or string.")
         package_args = " ".join(shlex.quote(str(package)) for package in packages)
         result = await handle.execute(
             python_package_install_command(package_args),
@@ -495,9 +527,14 @@ async def setup_sandbox(handle: SandboxLease, sandbox_config: ConfigMap) -> None
         commands = [commands]
     if not isinstance(commands, list):
         raise TypeError("sandbox.setup_commands must be a list or string.")
+    use_sandbox_python_path = bool(packages)
     for command in commands:
+        command = str(command)
+        if use_sandbox_python_path:
+            command = sandbox_python_path_command(command)
         result = await handle.execute(
-            str(command), timeout=int_config(sandbox_config, "setup_timeout", 300)
+            command,
+            timeout=int_config(sandbox_config, "setup_timeout", 300),
         )
         if result.exit_code:
             raise SandboxError(f"Sandbox setup command failed: {result.stderr}")
@@ -508,54 +545,6 @@ def sandbox_scope(sandbox_config: ConfigMap) -> str:
     if scope not in {"rollout", "group", "global"}:
         raise ValueError("sandbox.scope must be 'rollout', 'group', or 'global'.")
     return scope
-
-
-def python_package_install_command(package_args: str) -> str:
-    return (
-        "set -e\n"
-        "if command -v python3 >/dev/null 2>&1; then PYTHON=python3; "
-        "elif command -v python >/dev/null 2>&1; then PYTHON=python; "
-        "elif command -v apt-get >/dev/null 2>&1; then "
-        "apt-get -o Acquire::Retries=3 update && "
-        "apt-get -o Acquire::Retries=3 install -y python3 python3-pip && "
-        "PYTHON=python3; "
-        "else echo 'python is required to install sandbox packages' >&2; exit 127; fi\n"
-        "$PYTHON -m pip --version >/dev/null 2>&1 || "
-        "$PYTHON -m ensurepip --upgrade || "
-        "(command -v apt-get >/dev/null 2>&1 && "
-        "apt-get -o Acquire::Retries=3 update && "
-        "apt-get -o Acquire::Retries=3 install -y python3-pip)\n"
-        "$PYTHON -m pip install --disable-pip-version-check --break-system-packages "
-        f"{package_args} || "
-        "$PYTHON -m pip install --disable-pip-version-check "
-        f"{package_args}"
-    )
-
-
-def python_runtime_setup_command() -> str:
-    return (
-        "set -e\n"
-        "if command -v python3 >/dev/null 2>&1; then exit 0; fi\n"
-        "if command -v python >/dev/null 2>&1; then exit 0; fi\n"
-        "if command -v apt-get >/dev/null 2>&1; then "
-        "apt-get -o Acquire::Retries=3 update && "
-        "apt-get -o Acquire::Retries=3 install -y python3; exit 0; fi\n"
-        "echo 'python is required for sandbox Python programs' >&2\n"
-        "exit 127"
-    )
-
-
-def python_runtime_command(script_path: str, *args: str) -> list[str]:
-    command = (
-        "PYTHON=$(command -v python3 || command -v python || true); "
-        'if [ -z "$PYTHON" ]; then '
-        "echo 'python is required for sandbox Python programs' >&2; exit 127; "
-        "fi; "
-        f'exec "$PYTHON" {shlex.quote(script_path)}'
-    )
-    for arg in args:
-        command += f" {shlex.quote(arg)}"
-    return ["/bin/sh", "-lc", command]
 
 
 def attach_sandbox_ref(state: State, lease: SandboxLease) -> None:
@@ -729,6 +718,7 @@ async def run_program_setup(
     task: Task,
     state: State,
     runtime: Runtime,
+    use_sandbox_python_path: bool = False,
 ) -> None:
     await run_program_commands(
         client,
@@ -739,6 +729,7 @@ async def run_program_setup(
         runtime,
         key="setup",
         error_prefix="Program setup failed",
+        use_sandbox_python_path=use_sandbox_python_path,
     )
 
 
@@ -775,6 +766,7 @@ async def run_program_commands(
     *,
     key: str,
     error_prefix: str,
+    use_sandbox_python_path: bool = False,
 ) -> None:
     raw_setup = program.get(key) or []
     if isinstance(raw_setup, str):
@@ -792,6 +784,7 @@ async def run_program_commands(
         runtime,
         items=setup,
         error_prefix=error_prefix,
+        use_sandbox_python_path=use_sandbox_python_path,
     )
 
 
@@ -805,15 +798,19 @@ async def run_program_items(
     *,
     items: list[ProgramValue],
     error_prefix: str,
+    use_sandbox_python_path: bool = False,
 ) -> None:
     env = await command_env(program, task, state, runtime, include_base=False)
     timeout = int_config(program, "setup_timeout", 300)
     for command in items:
         command = await resolve_program_value(command, task, state, runtime, program)
+        command = str(command)
+        if use_sandbox_python_path:
+            command = sandbox_python_path_command(command)
         result = await maybe_call_with_named_args(
             getattr(client, "execute_command"),
             sandbox_id=sandbox_id,
-            command=str(command),
+            command=command,
             env=env,
             timeout=timeout,
         )
@@ -871,6 +868,7 @@ async def read_sandbox_artifact(client: object, sandbox_id: str, path: str) -> s
         "fi; "
         f'exec "$PYTHON" -c {shlex.quote(script)}'
     )
+    command = sandbox_python_path_command(command)
     result = await maybe_call_with_named_args(
         getattr(client, "execute_command"),
         sandbox_id=sandbox_id,
