@@ -17,6 +17,7 @@ Parametrized over five model families so each renderer's render/parse paths
 are exercised. Tokenizers come from the local HF cache; no network.
 """
 
+import json
 import logging
 from typing import Any
 
@@ -24,7 +25,7 @@ import pytest
 
 import verifiers as vf
 from datasets import Dataset
-from renderers import create_renderer
+from renderers import config_from_name, create_renderer
 from verifiers.clients.renderer_client import RendererClient, _to_renderer_message
 from verifiers.types import Messages, State
 
@@ -83,7 +84,7 @@ def _load(model_name: str, renderer_name: str):
         from transformers import AutoTokenizer
 
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-        renderer = create_renderer(tokenizer, renderer=renderer_name)
+        renderer = create_renderer(tokenizer, config_from_name(renderer_name))
         _renderer_cache[key] = (tokenizer, renderer)
     return _renderer_cache[key]
 
@@ -106,6 +107,13 @@ def tokenizer_and_renderer(model_family):
 # ── Scripted vLLM stand-in ───────────────────────────────────────────
 
 
+class _ScriptedResponse:
+    """httpx.Response stand-in: ``parse_generate_response`` reads ``.content`` as bytes."""
+
+    def __init__(self, payload: dict[str, Any]):
+        self.content = json.dumps(payload).encode()
+
+
 class ScriptedVLLM:
     """Fake ``AsyncOpenAI``-compatible client serving canned
     /inference/v1/generate responses (vllm 0.20 wire shape).
@@ -124,22 +132,24 @@ class ScriptedVLLM:
         assert self._completions, "ScriptedVLLM ran out of canned completions"
         completion_ids = self._completions.pop(0)
 
-        return {
-            "request_id": f"resp-{len(self.requests)}",
-            "choices": [
-                {
-                    "index": 0,
-                    "token_ids": list(completion_ids),
-                    "logprobs": {
-                        "content": [
-                            {"token": f"token_id:{tid}", "logprob": -0.1}
-                            for tid in completion_ids
-                        ]
-                    },
-                    "finish_reason": "stop",
-                }
-            ],
-        }
+        return _ScriptedResponse(
+            {
+                "request_id": f"resp-{len(self.requests)}",
+                "choices": [
+                    {
+                        "index": 0,
+                        "token_ids": list(completion_ids),
+                        "logprobs": {
+                            "content": [
+                                {"token": f"token_id:{tid}", "logprob": -0.1}
+                                for tid in completion_ids
+                            ]
+                        },
+                        "finish_reason": "stop",
+                    }
+                ],
+            }
+        )
 
     async def close(self):
         pass

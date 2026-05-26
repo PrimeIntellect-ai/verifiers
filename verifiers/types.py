@@ -23,12 +23,21 @@ if TYPE_CHECKING:
     from anthropic.types import RedactedThinkingBlock
     from anthropic.types import ThinkingBlock as AnthropicThinkingBlock
     from datasets import Dataset
+    from renderers import RendererConfig
 
     from verifiers.clients import Client
     from verifiers.errors import Error
 else:
     RedactedThinkingBlock = Any
     AnthropicThinkingBlock = Any
+    # ``renderers`` is an optional extra (``verifiers[renderers]``). When
+    # absent, fall back to ``Any`` so ``ClientConfig`` still imports and
+    # validates non-renderer fields; the renderer client re-validates the
+    # field through the real discriminated union when it's actually used.
+    try:
+        from renderers import RendererConfig
+    except ImportError:
+        RendererConfig = Any
 
 if sys.version_info < (3, 12):
     from typing_extensions import NotRequired, TypedDict
@@ -1018,13 +1027,17 @@ class ClientConfig(BaseModel):
 
     client_idx: int = 0
     client_type: ClientType = "openai_chat_completions"
-    renderer: str = "auto"
+    renderer_config: RendererConfig | None = None
+    """Typed renderer config (one of ``renderers.RendererConfig``'s variants).
+    Drives the renderer pool when ``client_type == "renderer"``. Defaults
+    to ``None`` so non-renderer clients aren't forced to declare it; the
+    renderer client treats ``None`` as ``AutoRendererConfig()``."""
     renderer_model_name: str | None = None
+    """Override the tokenizer model name used to instantiate the renderer
+    pool. Defaults to the model used in API requests."""
     renderer_pool_size: int | None = None
-    tool_parser: str | None = None
-    reasoning_parser: str | None = None
-    preserve_all_thinking: bool = False
-    preserve_thinking_between_tool_calls: bool = False
+    """Size of the shared renderer pool. ``None`` falls back to the
+    ``RendererClient`` default."""
     api_key_var: str = "PRIME_API_KEY"
     api_base_url: str = "https://api.pinference.ai/api/v1"
     endpoint_configs: list["EndpointClientConfig"] = Field(default_factory=list)
