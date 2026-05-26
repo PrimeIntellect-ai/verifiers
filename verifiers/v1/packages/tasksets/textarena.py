@@ -2,7 +2,7 @@ import asyncio
 import random
 import re
 from copy import deepcopy
-from typing import Protocol, cast
+from typing import Generic, Protocol, TypeVar, cast
 
 from verifiers.types import UserMessage
 from verifiers.utils.message_utils import get_messages
@@ -49,31 +49,16 @@ class TextArenaTasksetConfig(TasksetConfig):
     answer_state_key: str
 
 
-class TextArenaTaskset(Taskset):
-    config: TextArenaTasksetConfig
+ConfigT = TypeVar("ConfigT", bound=TextArenaTasksetConfig)
 
-    def __init__(self, config: TextArenaTasksetConfig):
+
+class TextArenaTaskset(Taskset[ConfigT], Generic[ConfigT]):
+    config: ConfigT
+
+    def __init__(self, config: ConfigT):
         assert isinstance(config, TextArenaTasksetConfig)
 
-        nltk.download("words", quiet=True)
-        nltk.download("averaged_perceptron_tagger_eng", quiet=True)
-
-        self.template = cast(TextArenaEnv, ta.make(env_id=config.game))
-        assert isinstance(self.template, ta.Env)
-        self.template.reset(num_players=1)
-        _, initial_prompt = self.template.get_observation()
-        assert isinstance(initial_prompt, str)
-        assert initial_prompt
-        self.initial_prompt = initial_prompt
-        words = self.template.word_list
-        if isinstance(words, dict):
-            words = [
-                word
-                for values in words.values()
-                for word in (values if isinstance(values, (list, tuple)) else [values])
-            ]
-        self.word_list = [str(word) for word in words]
-        assert self.word_list
+        self.template, self.initial_prompt, self.word_list = textarena_context(config)
 
         template = self.template
         shared_memo = {}
@@ -93,35 +78,18 @@ class TextArenaTaskset(Taskset):
             return env
 
         super().__init__(config=config)
-        self.source = self.build_train_rows
-        self.eval_source = (
-            self.build_eval_rows if self.config.num_eval_examples > 0 else None
-        )
-        self.user = User(
-            fn=self.textarena_user,
-            objects={"ta_env": load_ta_env},
-            bindings={"ta_env": "objects.ta_env"},
-        )
+        if "user" not in self.config.model_fields_set:
+            self.user = User(
+                fn=self.textarena_user,
+                objects={"ta_env": load_ta_env},
+                bindings={"ta_env": "objects.ta_env"},
+            )
 
-    def build_train_rows(self) -> list[ConfigData]:
-        rng = random.Random(self.config.seed)
-        return [self.row(rng, index) for index in range(self.config.num_train_examples)]
+    def load_tasks(self) -> list[ConfigData]:
+        return load_tasks(config=self.config)
 
-    def build_eval_rows(self) -> list[ConfigData]:
-        rng = random.Random(self.config.seed)
-        for _ in range(self.config.num_train_examples):
-            rng.choice(self.word_list)
-        return [
-            self.row(rng, index + self.config.num_train_examples)
-            for index in range(self.config.num_eval_examples)
-        ]
-
-    def row(self, rng: random.Random, index: int) -> ConfigData:
-        return {
-            "example_id": index,
-            "prompt": [UserMessage(content=self.initial_prompt)],
-            "answer": rng.choice(self.word_list),
-        }
+    def load_eval_tasks(self) -> list[ConfigData]:
+        return load_eval_tasks(config=self.config)
 
     def format_observation(self, observation: str) -> str:
         return observation
@@ -151,3 +119,59 @@ class TextArenaTaskset(Taskset):
         _, observation = await asyncio.to_thread(ta_env.get_observation)
         assert isinstance(observation, str)
         return [UserMessage(content=self.format_observation(str(observation)))]
+
+
+def textarena_context(
+    config: TextArenaTasksetConfig,
+) -> tuple[TextArenaEnv, str, list[str]]:
+    nltk.download("words", quiet=True)
+    nltk.download("averaged_perceptron_tagger_eng", quiet=True)
+
+    template = cast(TextArenaEnv, ta.make(env_id=config.game))
+    assert isinstance(template, ta.Env)
+    template.reset(num_players=1)
+    _, initial_prompt = template.get_observation()
+    assert isinstance(initial_prompt, str)
+    assert initial_prompt
+    words = template.word_list
+    if isinstance(words, dict):
+        words = [
+            word
+            for values in words.values()
+            for word in (values if isinstance(values, (list, tuple)) else [values])
+        ]
+    word_list = [str(word) for word in words]
+    assert word_list
+    return template, initial_prompt, word_list
+
+
+def textarena_row(
+    initial_prompt: str, word_list: list[str], rng: random.Random, index: int
+) -> ConfigData:
+    return {
+        "example_id": index,
+        "prompt": [UserMessage(content=initial_prompt)],
+        "answer": rng.choice(word_list),
+    }
+
+
+def load_tasks(config: TextArenaTasksetConfig) -> list[ConfigData]:
+    _, initial_prompt, word_list = textarena_context(config)
+    rng = random.Random(config.seed)
+    return [
+        textarena_row(initial_prompt, word_list, rng, index)
+        for index in range(config.num_train_examples)
+    ]
+
+
+def load_eval_tasks(config: TextArenaTasksetConfig) -> list[ConfigData]:
+    if config.num_eval_examples <= 0:
+        return load_tasks(config=config)
+    _, initial_prompt, word_list = textarena_context(config)
+    rng = random.Random(config.seed)
+    for _ in range(config.num_train_examples):
+        rng.choice(word_list)
+    return [
+        textarena_row(initial_prompt, word_list, rng, index + config.num_train_examples)
+        for index in range(config.num_eval_examples)
+    ]

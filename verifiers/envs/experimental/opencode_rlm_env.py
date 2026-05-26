@@ -267,10 +267,6 @@ class OpenCodeRLMEnv(OpenCodeEnv):
         state.setdefault("_sub_llm_tasks", set())
         return state
 
-    @staticmethod
-    def _is_sub_llm_request(intercept: dict[str, Any]) -> bool:
-        return intercept.get("headers", {}).get("x-rlm-role") == "sub"
-
     async def get_prompt_messages(self, state: State) -> Messages:
         """Extends parent to route sub-LLM requests concurrently.
 
@@ -291,7 +287,7 @@ class OpenCodeRLMEnv(OpenCodeEnv):
 
             intercept = interception_server.intercepts[request_id]
 
-            if self._is_sub_llm_request(intercept):
+            if intercept.get("headers", {}).get("x-rlm-role") == "sub":
                 task = asyncio.create_task(
                     self._handle_sub_llm_request(state, request_id, intercept)
                 )
@@ -362,7 +358,14 @@ class OpenCodeRLMEnv(OpenCodeEnv):
                 raise error
 
             if response is not None:
-                self._update_sub_metrics(state, response)
+                prompt_tokens, completion_tokens = self._extract_token_counts(response)
+                state["sub_llm_turns"] = state.get("sub_llm_turns", 0) + 1
+                state["sub_llm_prompt_tokens"] = (
+                    state.get("sub_llm_prompt_tokens", 0) + prompt_tokens
+                )
+                state["sub_llm_completion_tokens"] = (
+                    state.get("sub_llm_completion_tokens", 0) + completion_tokens
+                )
                 if self.include_sub_llm_in_trajectory:
                     completion = [response.message] if response.message else []
                     prompt_tokens, completion_tokens = self._extract_token_counts(
@@ -423,14 +426,4 @@ class OpenCodeRLMEnv(OpenCodeEnv):
         return (
             int(getattr(usage, "prompt_tokens", 0) or 0),
             int(getattr(usage, "completion_tokens", 0) or 0),
-        )
-
-    def _update_sub_metrics(self, state: State, response: Response) -> None:
-        prompt_tokens, completion_tokens = self._extract_token_counts(response)
-        state["sub_llm_turns"] = state.get("sub_llm_turns", 0) + 1
-        state["sub_llm_prompt_tokens"] = (
-            state.get("sub_llm_prompt_tokens", 0) + prompt_tokens
-        )
-        state["sub_llm_completion_tokens"] = (
-            state.get("sub_llm_completion_tokens", 0) + completion_tokens
         )

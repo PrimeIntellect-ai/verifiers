@@ -49,12 +49,27 @@ def configure_command_harness(
     artifacts: ProgramOptionMap | None = None,
     channels: ProgramChannels | None = None,
 ) -> None:
-    sandbox_value = command_sandbox_value(config, sandbox)
+    sandbox_value = (
+        sandbox
+        if sandbox is not None
+        else config.sandbox
+        if config.sandbox is not None
+        else True
+    )
+    program_files: ProgramOptionMap = {}
+    instruction_path = getattr(config, "instruction_path", None)
+    system_prompt_path = getattr(config, "system_prompt_path", None)
+    if instruction_path:
+        program_files[str(instruction_path)] = cast(ProgramValue, task_instruction_text)
+    if system_prompt_path and config.system_prompt is not None:
+        program_files[str(system_prompt_path)] = cast(
+            ProgramValue, state_system_prompt_text
+        )
     harness._configure_runtime(
         program=command_program(
             command=command,
             sandbox=sandbox_value,
-            files=files if files is not None else command_files(config),
+            files=files if files is not None else program_files,
             setup=setup,
             bindings=bindings,
             env=env,
@@ -65,25 +80,6 @@ def configure_command_harness(
         sandbox=command_sandbox(sandbox_value),
         system_prompt=config.system_prompt,
     )
-
-
-def command_sandbox_value(
-    config: HarnessConfig, sandbox: bool | ConfigMap | SandboxConfig | None = None
-) -> bool | ConfigMap | SandboxConfig:
-    if sandbox is not None:
-        return sandbox
-    return config.sandbox if config.sandbox is not None else True
-
-
-def command_files(config: HarnessConfig) -> ProgramOptionMap:
-    files: ProgramOptionMap = {}
-    instruction_path = getattr(config, "instruction_path", None)
-    system_prompt_path = getattr(config, "system_prompt_path", None)
-    if instruction_path:
-        files[str(instruction_path)] = cast(ProgramValue, task_instruction_text)
-    if system_prompt_path and config.system_prompt is not None:
-        files[str(system_prompt_path)] = cast(ProgramValue, state_system_prompt_text)
-    return files
 
 
 def command_program(

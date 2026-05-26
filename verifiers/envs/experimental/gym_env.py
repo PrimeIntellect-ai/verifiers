@@ -30,27 +30,10 @@ class StepResetEnv(Protocol):
     step: Callable[..., Any]
 
 
-ResetOut: TypeAlias = Any | tuple[Any, dict[str, Any]]
 StepOut: TypeAlias = (
     tuple[Any, float, bool, bool, dict[str, Any]]
     | tuple[Any, float, bool, dict[str, Any]]
 )
-
-
-def normalize_reset(out: ResetOut) -> tuple[Any, dict[str, Any]]:
-    if isinstance(out, tuple) and len(out) == 2:
-        return cast(tuple[Any, dict[str, Any]], out)
-    return out, {}
-
-
-def normalize_step(out: StepOut) -> tuple[Any, float, bool, bool, dict[str, Any]]:
-    assert isinstance(out, (tuple, list)) and len(out) in (4, 5), (
-        f"env.step() returned {type(out)} of length {len(out) if isinstance(out, (tuple, list)) else 'N/A'}, expected tuple of length 4 or 5"
-    )
-    if len(out) == 5:
-        return cast(tuple[Any, float, bool, bool, dict[str, Any]], out)
-    obs, reward, done, info = cast(tuple[Any, float, bool, dict[str, Any]], out)
-    return obs, float(reward), bool(done), False, info
 
 
 def sum_step_rewards(state: State) -> float:
@@ -118,7 +101,11 @@ class GymEnv(vf.MultiTurnEnv):
 
         try:
             for i in range(total):
-                obs, _ = normalize_reset(env.reset(seed=self.seed + i))
+                reset_out = env.reset(seed=self.seed + i)
+                if isinstance(reset_out, tuple) and len(reset_out) == 2:
+                    obs, _ = reset_out
+                else:
+                    obs = reset_out
                 question = self.obs_to_text(obs)
                 row = {"question": question, "answer": str(self.seed + i)}
                 if i < self.num_train_episodes:
@@ -171,7 +158,23 @@ class GymEnv(vf.MultiTurnEnv):
             err_text = f"Action Parsing Error: {e}"
             return self.wrap_response(err_text)
 
-        obs, reward, term, trunc, info = normalize_step(env.step(action))
+        step_out = env.step(action)
+        assert isinstance(step_out, (tuple, list)) and len(step_out) in (4, 5), (
+            f"env.step() returned {type(step_out)} of length "
+            f"{len(step_out) if isinstance(step_out, (tuple, list)) else 'N/A'}, "
+            "expected tuple of length 4 or 5"
+        )
+        if len(step_out) == 5:
+            obs, reward, term, trunc, info = cast(
+                tuple[Any, float, bool, bool, dict[str, Any]], step_out
+            )
+        else:
+            obs, reward, term, info = cast(
+                tuple[Any, float, bool, dict[str, Any]], step_out
+            )
+            reward = float(reward)
+            term = bool(term)
+            trunc = False
 
         state["trajectory"][-1]["reward"] = reward
         state["trajectory"][-1]["extras"]["gym_info"] = info

@@ -9,8 +9,18 @@ from uuid import uuid4
 
 import pytest
 
-import verifiers as root_vf
-import verifiers.v1 as vf
+import verifiers as vf
+from verifiers.v1.packages.harnesses import (
+    MiniSWEAgent,
+    MiniSWEAgentConfig,
+    OpenCode,
+    OpenCodeConfig,
+    Pi,
+    PiConfig,
+    RLM,
+    RLMConfig,
+    Terminus2Config,
+)
 from verifiers.v1.packages.harnesses.pi import pi_mcp_json, pi_models_json
 from verifiers.v1.packages.harnesses.configs import (
     PI_DEFAULT_PACKAGE,
@@ -22,7 +32,8 @@ from verifiers.v1.packages.harnesses.terminus_2 import (
     Terminus2,
     terminus_2_agent_script,
 )
-from verifiers.v1.packages.tasksets.harbor import harbor_reward
+from verifiers.v1.packages.tasksets import HarborTaskset, HarborTasksetConfig
+from verifiers.v1.packages.tasksets.harbor import harbor_reward, harbor_task_row
 from verifiers.v1.utils.program_utils import merge_task_program, merge_task_sandbox
 from verifiers.v1.utils.sandbox_python_utils import SANDBOX_PYTHON
 
@@ -61,15 +72,17 @@ def write_harbor_package(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Mod
     tasks_root.mkdir(parents=True)
     (package_dir / "__init__.py").write_text(
         """
-import verifiers.v1 as vf
+import verifiers as vf
+from verifiers.v1.packages.harnesses import OpenCode, OpenCodeConfig
+from verifiers.v1.packages.tasksets import HarborTaskset, HarborTasksetConfig
 
 
-def load_taskset(config: vf.HarborTasksetConfig):
-    return vf.HarborTaskset(config=config)
+def load_taskset(config: HarborTasksetConfig):
+    return HarborTaskset(config=config)
 
 
 def load_env():
-    return vf.Env(taskset=vf.HarborTaskset(config=vf.HarborTasksetConfig()), harness=vf.OpenCode(config=vf.OpenCodeConfig()))
+    return vf.Env(taskset=HarborTaskset(config=HarborTasksetConfig()), harness=OpenCode(config=OpenCodeConfig()))
 """.lstrip()
     )
     monkeypatch.syspath_prepend(str(tmp_path))
@@ -85,7 +98,7 @@ def test_harbor_taskset_loads_package_tasks_with_program_patch(
     package = write_harbor_package(tmp_path, monkeypatch)
     write_harbor_task(cast(Path, getattr(package, "tasks_root")))
 
-    taskset = getattr(package, "load_taskset")(config=vf.HarborTasksetConfig())
+    taskset = getattr(package, "load_taskset")(config=HarborTasksetConfig())
     task = next(iter(taskset))
 
     assert task["taskset_id"] == "harbor"
@@ -121,10 +134,29 @@ def test_harbor_taskset_rejects_malformed_package_task(
     bad_task.mkdir()
     (bad_task / "task.toml").write_text('version = "1.0"')
 
-    taskset = getattr(package, "load_taskset")(config=vf.HarborTasksetConfig())
+    taskset = getattr(package, "load_taskset")(config=HarborTasksetConfig())
 
     with pytest.raises(ValueError, match="Malformed Harbor task"):
         list(taskset)
+
+
+@pytest.mark.parametrize("section", ["agent", "verifier"])
+def test_harbor_task_row_rejects_non_mapping_agent_sections(
+    tmp_path: Path, section: str
+) -> None:
+    task_dir = write_harbor_task(tmp_path)
+    (task_dir / "task.toml").write_text(
+        f"""
+version = "1.0"
+{section} = "invalid"
+
+[environment]
+docker_image = "ubuntu:24.04"
+""".strip()
+    )
+
+    with pytest.raises(TypeError, match=rf"\[{section}\] must be a mapping"):
+        harbor_task_row(HarborTasksetConfig(), task_dir, 0)
 
 
 def test_harbor_taskset_constructs_env_with_opencode(
@@ -138,7 +170,7 @@ def test_harbor_taskset_constructs_env_with_opencode(
     row = env.get_dataset()[0]
     task = env.taskset.to_task(row)
     assert task["task_name"] == "task-a"
-    assert isinstance(env.harness, vf.OpenCode)
+    assert isinstance(env.harness, OpenCode)
     assert "task_dir" not in cast(dict[str, object], env.harness.program)
 
 
@@ -212,21 +244,17 @@ async def test_harbor_reward_uses_background_job_for_tests(
     assert ("bash test.sh", 120, "/tests") not in client.execute_commands
 
 
-def test_packaged_harbor_and_opencode_imports_are_reexported() -> None:
-    from verifiers.v1.packages.harnesses import OpenCode, OpenCodeConfig, Pi
-    from verifiers.v1.packages.tasksets import HarborTaskset
-
-    assert vf.OpenCode is OpenCode
-    assert vf.OpenCodeConfig is OpenCodeConfig
-    assert vf.Pi is Pi
-    assert vf.Terminus2 is Terminus2
-    assert root_vf.Terminus2 is Terminus2
-    assert vf.HarborTaskset is HarborTaskset
+def test_packaged_harbor_and_opencode_imports_are_available_from_packages() -> None:
+    assert OpenCode
+    assert OpenCodeConfig
+    assert Pi
+    assert Terminus2
+    assert HarborTaskset
 
 
 def test_opencode_config_owns_opencode_harness_fields() -> None:
-    harness = vf.OpenCode(
-        config=vf.OpenCodeConfig(
+    harness = OpenCode(
+        config=OpenCodeConfig(
             agent_workdir="/workspace",
             disabled_tools=["webfetch"],
             system_prompt=None,
@@ -252,11 +280,11 @@ def test_opencode_config_owns_opencode_harness_fields() -> None:
 @pytest.mark.parametrize(
     ("harness_cls", "config_cls"),
     [
-        (vf.OpenCode, vf.OpenCodeConfig),
-        (vf.MiniSWEAgent, vf.MiniSWEAgentConfig),
-        (vf.Pi, vf.PiConfig),
-        (vf.RLM, vf.RLMConfig),
-        (vf.Terminus2, vf.Terminus2Config),
+        (OpenCode, OpenCodeConfig),
+        (MiniSWEAgent, MiniSWEAgentConfig),
+        (Pi, PiConfig),
+        (RLM, RLMConfig),
+        (Terminus2, Terminus2Config),
     ],
 )
 def test_packaged_command_harnesses_defer_partial_program_overrides(
@@ -284,7 +312,7 @@ def test_packaged_command_harnesses_defer_partial_program_overrides(
 
 
 def test_pi_harness_writes_intercepted_model_and_mcp_config() -> None:
-    harness = vf.Pi()
+    harness = Pi()
     program = cast(dict[str, object], harness.program)
     setup = cast(str, program["setup"])
     models = json.loads(
@@ -314,8 +342,8 @@ def test_pi_harness_writes_intercepted_model_and_mcp_config() -> None:
 
 
 def test_terminus_2_harness_builds_sandbox_program() -> None:
-    harness = vf.Terminus2(
-        config=vf.Terminus2Config(
+    harness = Terminus2(
+        config=Terminus2Config(
             system_prompt="extra system prompt",
             agent_workdir="/workspace",
             max_turns=7,

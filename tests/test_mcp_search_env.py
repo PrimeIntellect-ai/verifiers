@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-import verifiers.v1 as vf
+import verifiers as vf
 
 
 def _load_mcp_search_module() -> Any:
@@ -54,7 +54,7 @@ def test_mcp_search_env_preserves_harness_config() -> None:
 def test_mcp_search_default_taskset_has_stable_non_doc_fixture() -> None:
     module = _load_mcp_search_module()
 
-    rows = module.MCPSearchTaskset(config=module.MCPSearchTasksetConfig()).rows()
+    rows = list(module.load_tasks())
 
     assert len(rows) >= 10
     assert len({row["answer"] for row in rows}) == len(rows)
@@ -68,7 +68,7 @@ def test_mcp_search_taskset_accepts_v1_taskset_config() -> None:
     env = module.load_environment(
         config=module.MCPSearchEnvConfig(taskset={"max_turns": 3}),
     )
-    rows = env.taskset.rows()
+    rows = [env.taskset.to_task(row) for row in env.taskset.get_dataset()]
 
     assert env.taskset.config.max_turns == 3
     assert all(row["max_turns"] == 3 for row in rows)

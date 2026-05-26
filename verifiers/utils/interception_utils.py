@@ -60,16 +60,6 @@ class InterceptionError(InfraError):
     """
 
 
-def protocol_from_path(path: str) -> str:
-    if path.endswith("/v1/messages"):
-        return "anthropic_messages"
-    if path.endswith("/v1/responses"):
-        return "openai_responses"
-    if path.endswith("/v1/completions"):
-        return "openai_completions"
-    return "openai_chat_completions"
-
-
 class InterceptionServer:
     """
     HTTP server that intercepts API requests from agents.
@@ -261,7 +251,15 @@ class InterceptionServer:
             asyncio.Queue() if is_streaming else None
         )
 
-        protocol = protocol_from_path(str(request.path))
+        path = str(request.path)
+        if path.endswith("/v1/messages"):
+            protocol = "anthropic_messages"
+        elif path.endswith("/v1/responses"):
+            protocol = "openai_responses"
+        elif path.endswith("/v1/completions"):
+            protocol = "openai_completions"
+        else:
+            protocol = "openai_chat_completions"
         intercept = {
             "request_id": request_id,
             "rollout_id": rollout_id,

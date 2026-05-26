@@ -99,6 +99,31 @@ async def test_anthropic_to_native_prompt_with_typed_multimodal_content_parts():
 
 
 @pytest.mark.asyncio
+async def test_anthropic_to_native_prompt_marks_unsupported_images_in_mixed_content():
+    pytest.importorskip("anthropic")
+    from verifiers.clients.anthropic_messages_client import AnthropicMessagesClient
+
+    client = AnthropicMessagesClient(object())
+    messages = [
+        UserMessage(
+            content=[
+                TextContentPart(text="describe this"),
+                ImageUrlContentPart(
+                    image_url=ImageUrlSource(url="https://example.com/image.png")
+                ),
+            ]
+        )
+    ]
+
+    prompt, kwargs = await client.to_native_prompt(messages)
+    assert kwargs["system"] == ""
+    assert prompt[0]["content"] == [
+        {"type": "text", "text": "describe this"},
+        {"type": "text", "text": "[image]"},
+    ]
+
+
+@pytest.mark.asyncio
 async def test_anthropic_assistant_tool_calls_use_text_chunks_not_model_repr():
     pytest.importorskip("anthropic")
     from verifiers.clients.anthropic_messages_client import AnthropicMessagesClient

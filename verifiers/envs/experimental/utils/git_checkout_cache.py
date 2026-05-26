@@ -46,28 +46,12 @@ def validate_git_checkout(
     return path
 
 
-def _slugify_cache_component(text: str) -> str:
-    slug = "".join(char.lower() if char.isalnum() else "-" for char in text)
-    slug = slug.strip("-")
-    return slug or "repo"
-
-
-def _repo_cache_dir(cache_root: Path, repo_url: str) -> Path:
-    repo_name = repo_url.rstrip("/").rsplit("/", 1)[-1].removesuffix(".git")
-    fingerprint = hashlib.sha256(repo_url.encode()).hexdigest()[:12]
-    return cache_root / f"{_slugify_cache_component(repo_name)}-{fingerprint}"
-
-
 def _mirror_dir(repo_cache_dir: Path) -> Path:
     return repo_cache_dir / "mirror.git"
 
 
 def _worktrees_dir(repo_cache_dir: Path) -> Path:
     return repo_cache_dir / "worktrees"
-
-
-def _checkout_dir_for_commit(repo_cache_dir: Path, commit_sha: str) -> Path:
-    return _worktrees_dir(repo_cache_dir) / commit_sha.lower()
 
 
 def _build_clone_url(repo_url: str, gh_token: str | None = None) -> str:
@@ -101,17 +85,6 @@ def _redact_clone_error_detail(detail: str, gh_token: str | None = None) -> str:
     return redacted
 
 
-def _git_env(gh_token: str | None) -> dict[str, str]:
-    env = os.environ.copy()
-    if gh_token:
-        env.setdefault("GH_TOKEN", gh_token)
-    return env
-
-
-def _git_required_error() -> RuntimeError:
-    return RuntimeError("git is required to populate the local checkout cache")
-
-
 def _run_git(
     args: list[str],
     *,
@@ -120,16 +93,21 @@ def _run_git(
     failure: str,
 ) -> subprocess.CompletedProcess[str]:
     try:
+        env = os.environ.copy()
+        if gh_token:
+            env.setdefault("GH_TOKEN", gh_token)
         return subprocess.run(
             args,
             cwd=cwd,
             check=True,
             capture_output=True,
             text=True,
-            env=_git_env(gh_token),
+            env=env,
         )
     except FileNotFoundError as exc:
-        raise _git_required_error() from exc
+        raise RuntimeError(
+            "git is required to populate the local checkout cache"
+        ) from exc
     except subprocess.CalledProcessError as exc:
         detail = exc.stderr.strip() or exc.stdout.strip() or str(exc)
         detail = _redact_clone_error_detail(detail, gh_token)
@@ -270,7 +248,7 @@ def _materialize_worktree(
     required_files: tuple[str, ...] = (),
 ) -> Path:
     mirror_dir = _mirror_dir(repo_cache_dir)
-    checkout_dir = _checkout_dir_for_commit(repo_cache_dir, commit_sha)
+    checkout_dir = _worktrees_dir(repo_cache_dir) / commit_sha.lower()
     try:
         return validate_git_checkout(checkout_dir, required_files=required_files)
     except ValueError:
@@ -387,7 +365,11 @@ def resolve_git_checkout(
             Path(local_checkout), required_files=required_files
         )
 
-    repo_cache_dir = _repo_cache_dir(cache_root.expanduser().resolve(), repo_url)
+    repo_name = repo_url.rstrip("/").rsplit("/", 1)[-1].removesuffix(".git")
+    slug = "".join(char.lower() if char.isalnum() else "-" for char in repo_name)
+    slug = slug.strip("-") or "repo"
+    fingerprint = hashlib.sha256(repo_url.encode()).hexdigest()[:12]
+    repo_cache_dir = cache_root.expanduser().resolve() / f"{slug}-{fingerprint}"
     repo_cache_dir.mkdir(parents=True, exist_ok=True)
     with exclusive_file_lock(repo_cache_dir / ".repo.lock"):
         mirror_dir = _ensure_mirror(

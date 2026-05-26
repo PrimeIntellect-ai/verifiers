@@ -8,7 +8,6 @@ A shared RendererPool (one per model) offloads sync tokenization to threads so
 concurrent rollouts tokenize in parallel instead of blocking the event loop.
 """
 
-import asyncio
 import json
 import threading
 from collections.abc import Mapping
@@ -31,7 +30,7 @@ from renderers import (
 )
 from renderers import ToolCall as RendererToolCall
 from renderers import ToolCallFunction
-from renderers.client import generate
+from renderers.client import _maybe_offload, generate
 
 from verifiers.clients.client import Client
 from verifiers.clients.openai_chat_completions_client import (
@@ -79,12 +78,6 @@ def reset_bridge_metrics() -> None:
             _bridge_metrics[k] = 0
 
 
-def _record_bridge(success: bool) -> None:
-    with _bridge_metrics_lock:
-        _bridge_metrics["attempts"] += 1
-        _bridge_metrics["successes" if success else "failures"] += 1
-
-
 # Size 1 by default. HF fast tokenizers encode a short chat prompt in a few
 # tens of microseconds, so even 2k rollouts tokenize serially in ~100ms — far
 # cheaper than dispatching each one through asyncio.to_thread and queueing on
@@ -96,17 +89,6 @@ _DEFAULT_POOL_SIZE = 1
 
 
 # ── Helpers ─────────────────────────────────────────────────────────
-
-
-async def _maybe_offload(renderer: Renderer | RendererPool, fn):
-    """Run sync renderer work on a thread iff ``renderer`` is a pool.
-
-    Pool methods can block on the internal queue/lock; we offload to keep
-    the event loop responsive. A bare ``Renderer`` runs inline.
-    """
-    if isinstance(renderer, RendererPool):
-        return await asyncio.to_thread(fn)
-    return fn()
 
 
 def _get_value(obj: Any, key: str, default: Any = None) -> Any:
@@ -244,16 +226,14 @@ def _coerce_renderer_message(message: Any) -> RendererMessage:
     return _to_renderer_message(cast(Message, message))
 
 
-def _message_role(message: Any) -> str | None:
-    role = _get_value(message, "role")
-    return role if isinstance(role, str) else None
-
-
 def _is_valid_incremental_tail(messages: list[RendererMessage]) -> bool:
     if not messages:
         return False
 
-    roles = [_message_role(message) for message in messages]
+    roles = []
+    for message in messages:
+        role = _get_value(message, "role")
+        roles.append(role if isinstance(role, str) else None)
     if roles[-1] == "user":
         return all(role == "tool" for role in roles[:-1])
     return all(role == "tool" for role in roles)
@@ -308,14 +288,6 @@ def _step_multi_modal_data(step: Any):
     return _get_value(raw_tokens, "multi_modal_data")
 
 
-def _step_rendered_messages(step: Any) -> list[RendererMessage]:
-    prompt = list(_get_value(step, "prompt", []) or [])
-    completion = list(_get_value(step, "completion", []) or [])
-    return _attach_tool_call_names(
-        [_coerce_renderer_message(message) for message in prompt + completion]
-    )
-
-
 async def _get_incremental_prompt_ids(
     *,
     renderer: Renderer | RendererPool,
@@ -348,7 +320,14 @@ async def _get_incremental_prompt_ids(
         if token_ids is None:
             continue
 
-        previous_messages = _step_rendered_messages(step)
+        step_prompt = list(_get_value(step, "prompt", []) or [])
+        step_completion = list(_get_value(step, "completion", []) or [])
+        previous_messages = _attach_tool_call_names(
+            [
+                _coerce_renderer_message(message)
+                for message in step_prompt + step_completion
+            ]
+        )
         if not previous_messages or len(previous_messages) >= len(prompt):
             continue
         prefix_len = len(previous_messages)
@@ -387,22 +366,12 @@ async def _get_incremental_prompt_ids(
                 tools=tools,
             )
         bridged = await _maybe_offload(renderer, bridge)
-        _record_bridge(success=bridged is not None)
+        with _bridge_metrics_lock:
+            _bridge_metrics["attempts"] += 1
+            _bridge_metrics["successes" if bridged is not None else "failures"] += 1
         return bridged
 
     return None
-
-
-def _parse_finish_reason(raw: str | None) -> FinishReason:
-    match raw:
-        case "stop":
-            return "stop"
-        case "length":
-            return "length"
-        case "tool_calls":
-            return "tool_calls"
-        case _:
-            return None
 
 
 class RendererClient(
@@ -417,14 +386,13 @@ class RendererClient(
     so that concurrent rollouts tokenize in parallel threads.
     """
 
-    # Cache key is (renderer_model_name, renderer_name, tool_parser,
-    # reasoning_parser, pool_size, preserve_all_thinking,
-    # preserve_thinking_between_tool_calls) so that different parser configs,
-    # pool sizes, or preserve-thinking bindings for the same model don't
-    # collide.
+    # Cache key is ``(renderer_model_name, pool_size, renderer_config_json)``.
+    # ``renderer_config`` is a frozen pydantic model so it's hashable directly,
+    # but we serialize it via ``model_dump_json()`` for a stable, deterministic
+    # key shape that's safe across pydantic version bumps.
     _shared_pools: ClassVar[
         dict[
-            tuple[str, str, str | None, str | None, int, bool, bool],
+            tuple[str, int, str | None],
             RendererPool,
         ]
     ] = {}
@@ -455,44 +423,25 @@ class RendererClient(
         if self._renderer is not None:
             return self._renderer
 
-        renderer_name = self._config.renderer if self._config is not None else "auto"
+        renderer_config = (
+            self._config.renderer_config if self._config is not None else None
+        )
         renderer_model = (
             self._config.renderer_model_name
             if self._config is not None and self._config.renderer_model_name is not None
             else model
         )
-        tool_parser = self._config.tool_parser if self._config is not None else None
-        reasoning_parser = (
-            self._config.reasoning_parser if self._config is not None else None
+        cfg_key = (
+            renderer_config.model_dump_json() if renderer_config is not None else None
         )
-        preserve_all_thinking = (
-            self._config.preserve_all_thinking if self._config is not None else False
-        )
-        preserve_thinking_between_tool_calls = (
-            self._config.preserve_thinking_between_tool_calls
-            if self._config is not None
-            else False
-        )
-        cache_key = (
-            renderer_model,
-            renderer_name,
-            tool_parser,
-            reasoning_parser,
-            self._pool_size,
-            preserve_all_thinking,
-            preserve_thinking_between_tool_calls,
-        )
+        cache_key = (renderer_model, self._pool_size, cfg_key)
 
         with self._shared_pools_lock:
             if cache_key not in self._shared_pools:
                 self._shared_pools[cache_key] = create_renderer_pool(
                     renderer_model,
-                    renderer=renderer_name,
+                    renderer_config,
                     size=self._pool_size,
-                    tool_parser=tool_parser,
-                    reasoning_parser=reasoning_parser,
-                    preserve_all_thinking=preserve_all_thinking,
-                    preserve_thinking_between_tool_calls=preserve_thinking_between_tool_calls,
                 )
 
         return self._shared_pools[cache_key]
@@ -531,6 +480,10 @@ class RendererClient(
         renderer = self._get_renderer_or_pool(model)
 
         args = dict(sampling_args)
+        extra_headers = {
+            **dict(args.pop("extra_headers", None) or {}),
+            **dict(kwargs.pop("extra_headers", None) or {}),
+        }
         sampling_params: dict[str, Any] = dict(args.pop("extra_body", None) or {})
         for key in (
             "temperature",
@@ -588,7 +541,7 @@ class RendererClient(
                 cache_salt=args.get("cache_salt")
                 or sampling_params.pop("cache_salt", None),
                 priority=args.get("priority") or sampling_params.pop("priority", None),
-                extra_headers=args.get("extra_headers"),
+                extra_headers=extra_headers or None,
             )
         except RendererOverlongPromptError as exc:
             raise OverlongPromptError(str(exc)) from exc
@@ -612,7 +565,15 @@ class RendererClient(
         """Parse the generate() result dict into a verifiers Response."""
         content = response.get("content", "")
         reasoning_content = response.get("reasoning_content")
-        finish_reason = _parse_finish_reason(response.get("finish_reason"))
+        match response.get("finish_reason"):
+            case "stop":
+                finish_reason: FinishReason = "stop"
+            case "length":
+                finish_reason = "length"
+            case "tool_calls":
+                finish_reason = "tool_calls"
+            case _:
+                finish_reason = None
 
         # renderers >=0.1.8.dev1 emits ParsedToolCall dataclasses (with .name,
         # .arguments, .status, .id). Skip non-OK attempts — they're surfaced

@@ -91,8 +91,8 @@ def test_wikispeedia_env_config_reaches_taskset_and_harness(
         )
     )
 
-    train_rows = list(env.taskset.source())
-    eval_rows = list(env.taskset.eval_source())
+    train_rows = [env.taskset.to_task(row) for row in env.taskset.get_dataset()]
+    eval_rows = [env.taskset.to_task(row) for row in env.taskset.get_eval_dataset()]
 
     assert len(train_rows) == 2
     assert len(eval_rows) == 1
@@ -136,8 +136,8 @@ def test_wikispeedia_taskset_sources_use_disjoint_target_split(
         )
     )
 
-    train_rows = list(taskset.source())
-    eval_rows = list(taskset.eval_source())
+    train_rows = [taskset.to_task(row) for row in taskset.get_dataset()]
+    eval_rows = [taskset.to_task(row) for row in taskset.get_eval_dataset()]
 
     assert len(train_rows) == 2
     assert len(eval_rows) == 1
@@ -218,7 +218,7 @@ async def test_wikispeedia_tools_resolve_through_v1_runtime(
         ),
         harness=module.load_harness(config=module.WikispeediaHarnessConfig()),
     )
-    task = module.vf.Task(list(env.taskset.source())[0]).freeze()
+    task = env.taskset.to_task(env.taskset.get_dataset()[0])
     state = module.vf.State.for_task(task)
     state = await env.harness.setup_state(task, state)
 

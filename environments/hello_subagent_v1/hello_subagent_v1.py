@@ -50,7 +50,7 @@ NAME_GROUPS = [
 ]
 
 
-def source():
+def load_tasks():
     return [
         {
             "names": names,
@@ -73,6 +73,7 @@ def load_toolset():
 
 
 class SubagentTasksetConfig(vf.TasksetConfig):
+    rewards: list[str] = ["exact_answer"]
     system_prompt: str = (
         "You are a parent coordinator. You must call ask_subagent once for "
         "each requested name. After all tool results are available, join "
@@ -80,19 +81,23 @@ class SubagentTasksetConfig(vf.TasksetConfig):
     )
 
 
-class SubagentTaskset(vf.Taskset):
-    _default_source = source
-    _default_rewards = (exact_answer,)
+class SubagentHarnessConfig(vf.HarnessConfig):
+    toolsets: dict[str, dict[str, str]] = {"subagent": {"fn": "load_toolset"}}
+    metrics: list[str] = ["subagent_calls"]
+
+
+class SubagentTaskset(vf.Taskset[SubagentTasksetConfig]):
+    def load_tasks(self) -> vf.Tasks:
+        return load_tasks()
 
 
 class SubagentHarness(vf.Harness):
-    _default_toolsets = {"subagent": load_toolset}
-    _default_metrics = (subagent_calls,)
+    pass
 
 
 class SubagentEnvConfig(vf.EnvConfig):
     taskset: SubagentTasksetConfig = SubagentTasksetConfig()
-    harness: vf.HarnessConfig = vf.HarnessConfig()
+    harness: SubagentHarnessConfig = SubagentHarnessConfig()
 
 
 def load_environment(config: SubagentEnvConfig) -> vf.Env:

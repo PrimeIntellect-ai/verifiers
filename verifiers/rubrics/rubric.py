@@ -179,16 +179,6 @@ class Rubric:
         return None
 
     # individual-level reward helpers
-    def _get_individual_reward_funcs(self) -> list[RewardFunc]:
-        return [func for func in self.funcs if not self._is_group_func(func)]
-
-    def _get_individual_reward_weights(self) -> list[float]:
-        return [
-            weight
-            for func, weight in zip(self.funcs, self.weights)
-            if not self._is_group_func(func)
-        ]
-
     async def _call_individual_reward_func(
         self,
         func: RewardFunc,
@@ -328,7 +318,7 @@ class Rubric:
         """
         Evaluate all reward functions for a single rollout.
         """
-        reward_funcs = self._get_individual_reward_funcs()
+        reward_funcs = [func for func in self.funcs if not self._is_group_func(func)]
         group_reward_funcs = self._get_group_reward_funcs()
         assert len(reward_funcs) > 0 and len(group_reward_funcs) == 0, (
             "Rubric.score_rollout requires at least one individual-level reward function and no group-level reward functions"
@@ -350,7 +340,12 @@ class Rubric:
                 [
                     reward * weight
                     for reward, weight in zip(
-                        reward_scores, self._get_individual_reward_weights()
+                        reward_scores,
+                        [
+                            weight
+                            for func, weight in zip(self.funcs, self.weights)
+                            if not self._is_group_func(func)
+                        ],
                     )
                 ]
             ),
