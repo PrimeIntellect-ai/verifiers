@@ -1,17 +1,17 @@
 name: DevX Tag
 
-# Automatically create and publish a `.devN` release for every push to
-# `main`. The dev tag is created as an annotated tag pointing at a
-# synthetic commit (parent = current `main` HEAD) that bumps
-# `verifiers/__init__.py` to the new dev version and adds a stub
-# release-notes file at `assets/release/RELEASE_<tag>.md`. The tag is
-# then handed off to `tag-and-release.yml` via `workflow_dispatch` so the
-# build + PyPI publish + GitHub Release jobs run unchanged.
+# Automatically publish a `.devN` release to PyPI on every push to `main`.
 #
-# The bump commit only lives as the tag target; it is NOT pushed back to
-# `main`. The `main` branch's `__version__` therefore lags behind the
-# latest published dev tag by one increment, which is acceptable for dev
-# releases and avoids spurious commits / merge conflicts on the branch.
+# Dev releases are intentionally minimal: a git tag plus a PyPI upload.
+# They do not produce a GitHub Release and do not require a hand-curated
+# `assets/release/RELEASE_<tag>.md` file — that flow is reserved for
+# stable releases in `tag-and-release.yml`.
+#
+# The dev tag is an annotated tag pointing at a synthetic commit whose
+# parent is the current `main` HEAD. The synthetic commit only bumps
+# `verifiers/__init__.py` so that the wheel built from the tag carries
+# the correct version. The bump commit is never pushed back to `main`,
+# which keeps the branch free of bot churn and merge conflicts.
 
 on:
   push:
@@ -20,7 +20,6 @@ on:
 
 permissions:
   contents: write
-  actions: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -31,6 +30,10 @@ jobs:
     name: Create .dev tag
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    outputs:
+      created: ${{ steps.tag.outputs.created }}
+      tag: ${{ steps.tag.outputs.tag }}
+      version: ${{ steps.tag.outputs.version }}
     steps:
       - name: Checkout main
         uses: actions/checkout@v4
@@ -42,17 +45,16 @@ jobs:
         env:
           BEFORE_SHA: ${{ github.event.before }}
         run: |
-          # When a maintainer lands a manual release-prep PR (either a
-          # stable bump like `0.1.15` or a legacy `Prepare vX.Y.devN`
-          # PR), `tag-and-release.yml`'s `auto-tag-on-main` job already
-          # tags and publishes that version. Skip the auto-dev tag in
-          # that case so we do not create a second tag for the same SHA.
+          # When a maintainer lands a stable release-prep PR,
+          # `tag-and-release.yml`'s `auto-tag-on-main` job tags and
+          # publishes that version. Skip the auto-dev tag in that case
+          # so we do not create a second tag for the same SHA.
           if [ -z "$BEFORE_SHA" ] || [ "$BEFORE_SHA" = "0000000000000000000000000000000000000000" ]; then
             echo "skip=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           if git diff --name-only "$BEFORE_SHA" HEAD | grep -qx 'verifiers/__init__.py'; then
-            echo "verifiers/__init__.py was modified in this push; deferring to tag-and-release auto-tag flow."
+            echo "verifiers/__init__.py was modified in this push; deferring to tag-and-release."
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
@@ -78,7 +80,6 @@ jobs:
               const m = semverRe.exec(ref.ref);
               if (!m) continue;
               parsed.push({
-                raw: ref.ref.replace("refs/tags/", ""),
                 prefix: m[1] || "v",
                 major: Number.parseInt(m[2], 10),
                 minor: Number.parseInt(m[3], 10),
@@ -140,22 +141,20 @@ jobs:
             core.setOutput("skipped", "false");
             core.setOutput("tag", tag);
             core.setOutput("version", version);
-            core.setOutput("previous_tag", latest.raw);
-            core.notice(`Next dev tag: ${tag} (previous: ${latest.raw})`);
+            core.notice(`Next dev tag: ${tag}`);
 
       - name: Build release commit and push tag
         if: steps.skip.outputs.skip != 'true' && steps.ver.outputs.skipped != 'true'
+        id: tag
         env:
           TAG: ${{ steps.ver.outputs.tag }}
           VERSION: ${{ steps.ver.outputs.version }}
-          PREVIOUS_TAG: ${{ steps.ver.outputs.previous_tag }}
         run: |
           set -euo pipefail
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Detach so the bump commit lives only as the tag target.
           git checkout --detach HEAD
 
           python - <<'PY'
@@ -175,52 +174,60 @@ jobs:
           path.write_text(new_text)
           PY
 
-          mkdir -p assets/release
-          NOTES_PATH="assets/release/RELEASE_${TAG}.md"
-          DATE=$(date -u +%Y-%m-%d)
-          {
-            echo "# Verifiers ${TAG} Release Notes"
-            echo
-            echo "*Date:* ${DATE}"
-            echo
-            echo "Auto-generated dev release (see \`.github/workflows/devx_tag.yml\`)."
-            echo
-            if [ -n "${PREVIOUS_TAG}" ] && git rev-parse -q --verify "refs/tags/${PREVIOUS_TAG}" >/dev/null; then
-              echo "## Changes since ${PREVIOUS_TAG}"
-              echo
-              git log --no-merges --format='- %s' "${PREVIOUS_TAG}..HEAD" || true
-              echo
-              echo "**Full Changelog**: https://github.com/${GITHUB_REPOSITORY}/compare/${PREVIOUS_TAG}...${TAG}"
-            fi
-          } > "${NOTES_PATH}"
-
-          git add verifiers/__init__.py "${NOTES_PATH}"
+          git add verifiers/__init__.py
           git commit -m "Prepare ${TAG} release"
           git tag -a "${TAG}" -m "Release ${TAG}"
-
-          # Push the tag (which also publishes the bump commit as its
-          # target). GITHUB_TOKEN-created tags do not retrigger
-          # workflows, so the build/publish flow is dispatched
-          # explicitly in the next step.
           git push origin "refs/tags/${TAG}"
 
-      - name: Dispatch tag-and-release for new tag
-        if: steps.skip.outputs.skip != 'true' && steps.ver.outputs.skipped != 'true'
-        uses: actions/github-script@v7
-        env:
-          TAG: ${{ steps.ver.outputs.tag }}
+          echo "created=true" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+  build-dev:
+    name: Build dev wheel
+    needs: create-dev-tag
+    if: needs.create-dev-tag.outputs.created == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout dev tag
+        uses: actions/checkout@v4
         with:
-          script: |
-            const tag = process.env.TAG;
-            try {
-              await github.rest.actions.createWorkflowDispatch({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                workflow_id: "tag-and-release.yml",
-                ref: "main",
-                inputs: { tag },
-              });
-              core.notice(`Dispatched tag-and-release.yml for ${tag}`);
-            } catch (error) {
-              core.setFailed(`Failed to dispatch tag-and-release.yml: ${error.message}`);
-            }
+          ref: refs/tags/${{ needs.create-dev-tag.outputs.tag }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Build sdist and wheel
+        run: uv build
+
+      - name: Upload dist artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish-dev:
+    name: Publish dev to PyPI
+    needs: [create-dev-tag, build-dev]
+    runs-on: ubuntu-latest
+    environment: pypi-prod
+    permissions:
+      id-token: write
+    steps:
+      - name: Download dist artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0

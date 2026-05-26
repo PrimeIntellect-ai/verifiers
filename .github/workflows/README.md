@@ -18,7 +18,7 @@ This directory contains automated workflows for the verifiers project.
 - Uses configuration from `pyproject.toml`, `.pre-commit-config.yaml`, and `.semgrep/verifiers.yml`
 
 ### 2. DevX Tag (`devx_tag.yml`)
-**Purpose**: Automatically publish a `.devN` release for every push to `main`.
+**Purpose**: Automatically publish a `vX.Y.Z.devN` release to PyPI on every push to `main`.
 
 **Triggers**:
 - Pushes to `main`
@@ -26,14 +26,26 @@ This directory contains automated workflows for the verifiers project.
 
 **What it does**:
 - Computes the next dev tag from the most recent `v*` tag.
-- Builds a synthetic commit on top of `main` HEAD that bumps `verifiers/__init__.py` and writes `assets/release/RELEASE_<tag>.md`.
-- Annotates and pushes the tag (the bump commit is never pushed back to `main`).
-- Dispatches `tag-and-release.yml` for that tag so the build + PyPI publish + GitHub Release jobs run unchanged.
-- Skips itself when the push already modifies `verifiers/__init__.py` (deferring to `tag-and-release.yml`'s `auto-tag-on-main` job for manual release-prep PRs).
+- Builds a synthetic commit on top of `main` HEAD that bumps `verifiers/__init__.py` to the new version, then annotates and pushes the tag (the bump commit is never pushed back to `main`).
+- Checks out the tag, runs `uv build`, and publishes the wheel + sdist to PyPI via Trusted Publisher (`pypi-prod` environment, OIDC).
+- Does **not** create a GitHub Release and does **not** require a hand-curated `assets/release/RELEASE_<tag>.md` file — those are reserved for stable releases.
+- Skips itself when the push already modifies `verifiers/__init__.py` (deferring to `tag-and-release.yml`'s `auto-tag-on-main` job for stable release-prep PRs).
 
 See `assets/release/release_workflow.md` for the full release workflow.
 
-### 3. Test (`test.yml`)
+### 3. Tag and Release (`tag-and-release.yml`)
+**Purpose**: Publish a stable `vX.Y.Z` release to PyPI and create a GitHub Release.
+
+**Triggers**:
+- Pushes to `main` that change `verifiers/__init__.py` to a non-dev version (auto-tags `vX.Y.Z`).
+- Pushes of `v*` tags **excluding** `v*.dev*`.
+- Manual dispatch with an existing stable tag.
+
+**What it does**:
+- Validates that the tag does not contain `.dev` (dev releases are handled by `devx_tag.yml`).
+- Runs `uv build`, publishes to PyPI via Trusted Publisher (`pypi-prod` environment, OIDC), and creates a GitHub Release using `assets/release/RELEASE_<tag>.md` plus the built `dist/` artifacts.
+
+### 4. Test (`test.yml`)
 **Purpose**: Comprehensive testing with coverage reports.
 
 **Triggers**:
