@@ -391,7 +391,7 @@ channels. Harness-specific tool carriers, such as RLM skill uploads, should
 live on the taskset upload directory contract or the harness config.
 
 Sandbox package installs, sandboxed Python programs, and the MCP proxy share
-the managed Python runtime at `/opt/verifiers/python`. v1 installs or reuses a
+the managed Python runtime at `/tmp/verifiers/python`. v1 installs or reuses a
 `uv` binary, creates that runtime as a Python 3.11 venv, and uses `uv pip` for
 package installs, so command harnesses should not add ad hoc MCP package setup.
 
