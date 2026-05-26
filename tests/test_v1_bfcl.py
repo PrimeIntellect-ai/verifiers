@@ -1,11 +1,11 @@
 import importlib.util
+import sys
 from pathlib import Path
 from types import ModuleType
 
 import pytest
 
-import verifiers as root_vf
-import verifiers.v1 as vf
+import verifiers as vf
 
 
 def load_bfcl_module() -> ModuleType:
@@ -14,6 +14,7 @@ def load_bfcl_module() -> ModuleType:
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -109,7 +110,7 @@ def test_bfcl_loader_supports_category_groups(
     bfcl = load_bfcl_module()
     seen_harness_categories = []
 
-    def fake_source(test_category: str, **kwargs: object):
+    def fake_load_tasks(test_category: str, **kwargs: object):
         _ = kwargs
         return [{"question": test_category, "answer": "a"}]
 
@@ -118,7 +119,7 @@ def test_bfcl_loader_supports_category_groups(
         seen_harness_categories.append(config.test_category)
         return vf.Harness(config=config)
 
-    monkeypatch.setattr(bfcl.BFCLTaskset, "_default_source", fake_source)
+    monkeypatch.setattr(bfcl, "load_tasks", fake_load_tasks)
     monkeypatch.setattr(bfcl, "load_harness", fake_harness)
 
     env = bfcl.load_environment(
@@ -131,7 +132,7 @@ def test_bfcl_loader_supports_category_groups(
         )
     )
 
-    assert isinstance(env, root_vf.EnvGroup)
+    assert isinstance(env, vf.EnvGroup)
     assert env.env_names == ["simple_python", "simple_java"]
     seen_taskset_categories = [item.taskset.config.test_category for item in env.envs]
     assert seen_taskset_categories == ["simple_python", "simple_java"]

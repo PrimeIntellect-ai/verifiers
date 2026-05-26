@@ -5,7 +5,7 @@ from importlib.abc import Traversable
 from collections.abc import Mapping
 from copy import deepcopy
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar, cast
+from typing import TYPE_CHECKING, Generic, TypeVar, cast
 
 from datasets import Dataset
 from verifiers.types import task_payload_from_info
@@ -18,68 +18,72 @@ from .config import (
 from .state import State
 from .task import Task
 from .utils.prompt_utils import normalize_system_prompt
-from .utils.config_utils import coerce_config
+from .utils.config_utils import coerce_config, config_ref_context
 from .utils.runtime_owner_utils import RuntimeOwnerMixin
-from .utils.taskset_utils import dataset_info_with_task, discover_sibling_dir
-from .utils.taskset_utils import rows_from_source
+from .utils.taskset_registry_utils import (
+    register_taskset_config_type,
+    taskset_config_type,
+    taskset_config_type_from_class,
+)
+from .utils.taskset_utils import (
+    dataset_info_with_task,
+    discover_sibling_dir,
+    resolve_task_loader,
+    task_data_from_loader,
+)
 from .types import (
     ConfigData,
     ConfigMap,
+    PromptInput,
+    TaskLoader,
     TaskRow,
-    TaskRowsSource,
 )
 
 if TYPE_CHECKING:
     from .harness import Harness
 
 
-TaskSourceValue = TaskRowsSource | None
+ConfigT = TypeVar("ConfigT", bound=TasksetConfig)
 
 
-class Taskset(RuntimeOwnerMixin):
-    config: TasksetConfig
-    _default_source: ClassVar[TaskSourceValue] = None
-    _default_eval_source: ClassVar[TaskSourceValue] = None
+class Taskset(RuntimeOwnerMixin, Generic[ConfigT]):
+    config: ConfigT
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)
+        config_type = taskset_config_type_from_class(
+            cls, inherited=False, taskset_base=Taskset
+        )
+        if config_type is not None:
+            register_taskset_config_type(cls, config_type)
 
     def __init__(self, config: ConfigSource = None):
-        self.config = coerce_config(TasksetConfig, config)
-        source_config = self._defaulted("source", type(self)._default_source)
-        source_value = resolve_config_object(source_config)
-        self.source = cast(
-            TaskSourceValue,
-            source_value,
-        )
-        eval_source_config = self._defaulted(
-            "eval_source", type(self)._default_eval_source
-        )
-        eval_source_value = resolve_config_object(eval_source_config)
-        self.eval_source = cast(
-            TaskSourceValue,
-            eval_source_value,
-        )
-        resolved_taskset_id = self.config.taskset_id
-        if resolved_taskset_id is not None and not isinstance(resolved_taskset_id, str):
-            raise TypeError("taskset_id must be a string.")
-        self.taskset_id = resolved_taskset_id or type(self).__name__
-        self.system_prompt = normalize_system_prompt(
-            self.config.system_prompt, field_name="taskset.system_prompt"
-        )
-        self._init_runtime_user()
-        self.bindings = dict(self.config.bindings)
-        self.objects = {
-            **{
-                str(key): resolve_config_object(item)
-                for key, item in self.config.objects.items()
+        config_type = taskset_config_type(type(self), Taskset)
+        self.config = cast(ConfigT, coerce_config(config_type, config))
+        with config_ref_context(self.config):
+            resolved_taskset_id = self.config.taskset_id
+            if resolved_taskset_id is not None and not isinstance(
+                resolved_taskset_id, str
+            ):
+                raise TypeError("taskset_id must be a string.")
+            self.taskset_id = resolved_taskset_id or type(self).__name__
+            self.system_prompt = normalize_system_prompt(
+                self._system_prompt_input(),
+                field_name="taskset.system_prompt",
+            )
+            self._init_runtime_user()
+            self.bindings = dict(self.config.bindings)
+            self.objects = {
+                **{
+                    str(key): resolve_config_object(item)
+                    for key, item in self.config.objects.items()
+                }
             }
-        }
-        self._init_runtime_toolsets()
-        self._init_runtime_handlers()
-        self._rows: list[ConfigData] | None = None
-        self._eval_rows: list[ConfigData] | None = None
+            self._init_runtime_toolsets()
+            self._init_runtime_handlers()
         self._dataset: Dataset | None = None
         self._eval_dataset: Dataset | None = None
         self._attached_harnesses: weakref.WeakSet["Harness"] = weakref.WeakSet()
-        self._configure_runtime_defaults()
 
     @classmethod
     def config_schema(cls) -> str:
@@ -99,20 +103,15 @@ class Taskset(RuntimeOwnerMixin):
         for harness in list(self._attached_harnesses):
             harness.runtime = harness.resolve_runtime()
 
-    def rows(self) -> list[ConfigData]:
-        if self._rows is None:
-            self._rows = rows_from_source(self.source, self.config)
-        return self._rows
-
-    def eval_rows(self) -> list[ConfigData]:
-        if self.eval_source is None:
-            return self.rows()
-        if self._eval_rows is None:
-            self._eval_rows = rows_from_source(self.eval_source, self.config)
-        return self._eval_rows
-
-    def task(self, row: ConfigMap) -> Task:
-        task = Task(row)
+    def to_task(self, value: ConfigMap | Task | str) -> Task:
+        if isinstance(value, str):
+            value = json.loads(value)
+        if not isinstance(value, Mapping):
+            raise TypeError("Taskset.to_task expects a mapping, Task, or JSON string.")
+        serialized_task = task_payload_from_info(value.get("info"))
+        if serialized_task is not None:
+            value = serialized_task
+        task = Task(value)
         task["taskset_id"] = self.taskset_id
         task_id = task.get("task_id")
         if task_id is None:
@@ -122,18 +121,6 @@ class Taskset(RuntimeOwnerMixin):
         task["task_id"] = str(task_id if task_id is not None else uuid.uuid4().hex)
         return task.freeze()
 
-    def to_task(self, value: ConfigMap | Task | str) -> Task:
-        if isinstance(value, Task):
-            return value
-        if isinstance(value, str):
-            value = json.loads(value)
-        if not isinstance(value, Mapping):
-            raise TypeError("Taskset.to_task expects a mapping, Task, or JSON string.")
-        serialized_task = task_payload_from_info(value.get("info"))
-        if serialized_task is not None:
-            return self.task(serialized_task)
-        return self.task(value)
-
     async def init_group(
         self, task: Task, num_rollouts: int
     ) -> tuple[list[Task], list[State]]:
@@ -142,29 +129,35 @@ class Taskset(RuntimeOwnerMixin):
 
     def get_dataset(self) -> Dataset:
         if self._dataset is None:
+            with config_ref_context(self.config):
+                load_tasks = self._task_loader(
+                    "tasks", ("load_tasks", "load_train_tasks")
+                )
+                tasks = task_data_from_loader(load_tasks)
             self._dataset = Dataset.from_list(
-                [self._dataset_row(row, index) for index, row in enumerate(self.rows())]
+                [self._dataset_row(row, index) for index, row in enumerate(tasks)]
             )
         return self._dataset
 
     def get_eval_dataset(self) -> Dataset:
-        if self.eval_source is None:
+        with config_ref_context(self.config):
+            load_tasks = self._task_loader("eval_tasks", ("load_eval_tasks",))
+        if load_tasks is None:
             return self.get_dataset()
         if self._eval_dataset is None:
+            with config_ref_context(self.config):
+                tasks = task_data_from_loader(load_tasks)
             self._eval_dataset = Dataset.from_list(
-                [
-                    self._dataset_row(row, index)
-                    for index, row in enumerate(self.eval_rows())
-                ]
+                [self._dataset_row(row, index) for index, row in enumerate(tasks)]
             )
         return self._eval_dataset
 
     def __iter__(self):
-        for row in self.rows():
-            yield self.task(row)
+        for row in self.get_dataset():
+            yield self.to_task(row)
 
     def __len__(self) -> int:
-        return len(self.rows())
+        return len(self.get_dataset())
 
     def _dataset_row(self, row: TaskRow, index: int) -> ConfigData:
         normalized = deepcopy(dict(row))
@@ -176,7 +169,7 @@ class Taskset(RuntimeOwnerMixin):
                 if question is not None
                 else []
             )
-        task_payload = dict(self.task(normalized))
+        task_payload = dict(self.to_task(normalized))
         dataset_row: ConfigData = {
             "prompt": task_payload["prompt"],
             "example_id": normalized["example_id"],
@@ -185,3 +178,30 @@ class Taskset(RuntimeOwnerMixin):
         if "answer" in normalized:
             dataset_row["answer"] = normalized["answer"]
         return dataset_row
+
+    def _task_loader(
+        self, field: str, method_names: tuple[str, ...]
+    ) -> TaskLoader | None:
+        if field not in self.config.model_fields_set:
+            methods = [
+                getattr(self, method_name)
+                for method_name in method_names
+                if callable(getattr(self, method_name, None))
+            ]
+            if len(methods) > 1:
+                raise ValueError(
+                    f"Taskset defines multiple class loaders for {field}: "
+                    f"{', '.join(method_names)}."
+                )
+            if methods:
+                return cast(TaskLoader, methods[0])
+        value = getattr(self.config, field)
+        return resolve_task_loader(field, cast(str | None, value))
+
+    def _system_prompt_input(self) -> PromptInput | None:
+        if "system_prompt" in self.config.model_fields_set:
+            return cast(PromptInput | None, self.config.system_prompt)
+        method = getattr(self, "load_system_prompt", None)
+        if callable(method):
+            return cast(PromptInput | None, method())
+        return cast(PromptInput | None, self.config.system_prompt)

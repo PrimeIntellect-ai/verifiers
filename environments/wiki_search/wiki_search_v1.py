@@ -181,7 +181,7 @@ async def read_section(section_id: str, wiki) -> str:
     return "\n".join(lines[section_start : section_end or len(lines)])
 
 
-def source(
+def load_tasks(
     max_turns: int = 10,
     judge_model: str | None = None,
 ):
@@ -276,7 +276,7 @@ def load_toolset(
 
 
 class WikiSearchTasksetConfig(vf.TasksetConfig):
-    system_prompt: str = SYSTEM_PROMPT
+    rewards: list[str] = ["judge_reward"]
     max_turns: int = 10
     corpus_dataset: str = "willcb/rare-wiki-pages"
     corpus_split: str = "train"
@@ -292,26 +292,27 @@ class WikiSearchEnvConfig(vf.EnvConfig):
     harness: vf.HarnessConfig = vf.HarnessConfig()
 
 
-class WikiSearchTaskset(vf.Taskset):
-    _default_source = source
+class WikiSearchTaskset(vf.Taskset[WikiSearchTasksetConfig]):
+    def load_tasks(self) -> vf.Tasks:
+        return load_tasks(
+            max_turns=self.config.max_turns,
+            judge_model=self.config.judge_model,
+        )
 
-    def _configure_runtime_defaults(self) -> None:
-        config = self.config
-        if "rewards" not in config.model_fields_set:
-            self.add_reward(judge_reward)
-        if "toolsets" not in config.model_fields_set:
-            self.add_toolset(
-                {
-                    "wiki": load_toolset(
-                        corpus_dataset=config.corpus_dataset,
-                        corpus_split=config.corpus_split,
-                        chroma_db_dir=config.chroma_db_dir,
-                        embed_model=config.embed_model,
-                        embed_base_url=config.embed_base_url,
-                        embed_api_key_var=config.embed_api_key_var,
-                    )
-                }
+    def load_system_prompt(self) -> vf.SystemPrompt:
+        return SYSTEM_PROMPT
+
+    def load_toolsets(self) -> vf.Toolsets:
+        return {
+            "wiki": load_toolset(
+                corpus_dataset=self.config.corpus_dataset,
+                corpus_split=self.config.corpus_split,
+                chroma_db_dir=self.config.chroma_db_dir,
+                embed_model=self.config.embed_model,
+                embed_base_url=self.config.embed_base_url,
+                embed_api_key_var=self.config.embed_api_key_var,
             )
+        }
 
 
 def load_environment(config: WikiSearchEnvConfig) -> vf.Env:

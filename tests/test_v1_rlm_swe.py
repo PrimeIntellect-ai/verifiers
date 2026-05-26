@@ -11,8 +11,9 @@ import pytest
 from datasets import Dataset
 from verifiers.types import Tool
 
-import verifiers.v1 as vf
+import verifiers as vf
 from environments.rlm_swe_v1 import rlm_swe_v1
+from verifiers.v1.packages.harnesses import RLM, RLMConfig
 from verifiers.v1.packages.harnesses.rlm import (
     DEFAULT_RLM_TOOL_SKILL_MARKER,
     DEFAULT_RLM_TOOL_SKILLS_ARCHIVE_PATH,
@@ -26,10 +27,16 @@ def as_mapping(value: object) -> Mapping[str, object]:
     return value
 
 
+def load_order_task() -> vf.Tasks:
+    return [{"prompt": [{"role": "user", "content": "Find order A-1."}]}]
+
+
+class OrderTasksetConfig(vf.TasksetConfig):
+    tasks: str = "load_order_task"
+
+
 def test_rlm_harness_builds_sandbox_program_without_eager_checkout():
-    harness = vf.RLM(
-        config=vf.RLMConfig(local_checkout="/tmp/does-not-need-to-exist-yet")
-    )
+    harness = RLM(config=RLMConfig(local_checkout="/tmp/does-not-need-to-exist-yet"))
     program = as_mapping(harness.program)
     program_env = as_mapping(program["env"])
     artifacts = as_mapping(program["artifacts"])
@@ -45,8 +52,8 @@ def test_rlm_harness_builds_sandbox_program_without_eager_checkout():
 
 
 def test_rlm_harness_accepts_typed_config_surface():
-    harness = vf.RLM(
-        config=vf.RLMConfig(
+    harness = RLM(
+        config=RLMConfig(
             local_checkout="/tmp/checkout",
             rlm_tools=["bash", "edit"],
             rlm_max_turns=7,
@@ -65,8 +72,8 @@ def test_rlm_harness_accepts_typed_config_surface():
 
 
 def test_rlm_harness_preserves_program_setup_timeout_override():
-    harness = vf.RLM(
-        config=vf.RLMConfig(
+    harness = RLM(
+        config=RLMConfig(
             local_checkout="/tmp/checkout",
             program={"setup_timeout": 123},
         )
@@ -77,8 +84,8 @@ def test_rlm_harness_preserves_program_setup_timeout_override():
 
 
 def test_rlm_harness_uses_sandbox_setup_timeout_default():
-    harness = vf.RLM(
-        config=vf.RLMConfig(
+    harness = RLM(
+        config=RLMConfig(
             local_checkout="/tmp/checkout",
             sandbox={"setup_timeout": "777"},
         )
@@ -89,8 +96,8 @@ def test_rlm_harness_uses_sandbox_setup_timeout_default():
 
 
 def test_rlm_harness_keeps_minimum_setup_timeout_for_default_sandbox_config():
-    harness = vf.RLM(
-        config=vf.RLMConfig(
+    harness = RLM(
+        config=RLMConfig(
             local_checkout="/tmp/checkout",
             sandbox=vf.SandboxConfig(),
         )
@@ -107,9 +114,7 @@ def test_rlm_harness_can_upload_skills(tmp_path: Path):
     (skills / "edit").mkdir(parents=True)
     (skills / "edit" / "SKILL.md").write_text("---\nname: edit\n---\n")
 
-    harness = vf.RLM(
-        config=vf.RLMConfig(local_checkout="/tmp/checkout", skills=str(skills))
-    )
+    harness = RLM(config=RLMConfig(local_checkout="/tmp/checkout", skills=str(skills)))
     program = as_mapping(harness.program)
     dirs = as_mapping(program["dirs"])
     files = as_mapping(program["files"])
@@ -135,8 +140,8 @@ def test_rlm_harness_uploads_taskset_skills_by_default(tmp_path: Path):
             return {"skills": skills}
 
     env = vf.Env(
-        taskset=SkillTaskset(config=vf.TasksetConfig(source=[])),
-        harness=vf.RLM(config=vf.RLMConfig(local_checkout="/tmp/checkout")),
+        taskset=SkillTaskset(config=vf.TasksetConfig()),
+        harness=RLM(config=RLMConfig(local_checkout="/tmp/checkout")),
     )
     program = as_mapping(env.harness.program)
     dirs = as_mapping(program["dirs"])
@@ -152,7 +157,7 @@ def test_rlm_harness_recomputes_taskset_skills(tmp_path: Path):
 
     class SkillTaskset(vf.Taskset):
         def __init__(self, skills: Path):
-            super().__init__(config=vf.TasksetConfig(source=[]))
+            super().__init__(config=vf.TasksetConfig())
             self.skills = skills
 
         def get_upload_dirs(self):
@@ -162,7 +167,7 @@ def test_rlm_harness_recomputes_taskset_skills(tmp_path: Path):
         def get_upload_dirs(self):
             return {}
 
-    harness = vf.RLM(config=vf.RLMConfig(local_checkout="/tmp/checkout"))
+    harness = RLM(config=RLMConfig(local_checkout="/tmp/checkout"))
     vf.Env(taskset=SkillTaskset(first_skills), harness=harness)
     vf.Env(taskset=SkillTaskset(second_skills), harness=harness)
     program = as_mapping(harness.program)
@@ -170,7 +175,7 @@ def test_rlm_harness_recomputes_taskset_skills(tmp_path: Path):
 
     assert dirs["/task/rlm-skills"] == second_skills
 
-    vf.Env(taskset=NoSkillTaskset(config=vf.TasksetConfig(source=[])), harness=harness)
+    vf.Env(taskset=NoSkillTaskset(config=vf.TasksetConfig()), harness=harness)
     program = as_mapping(harness.program)
     dirs = as_mapping(program["dirs"])
 
@@ -183,15 +188,11 @@ async def test_rlm_harness_generates_skills_for_v1_tools():
         """Look up an order by ID."""
         return f"order:{order_id}"
 
-    taskset = vf.Taskset(
-        config=vf.TasksetConfig(
-            source=[{"prompt": [{"role": "user", "content": "Find order A-1."}]}]
-        )
-    )
+    taskset = vf.Taskset(config=OrderTasksetConfig())
     taskset.add_toolset(vf.Toolset(tools=[lookup_order]))
     env = vf.Env(
         taskset=taskset,
-        harness=vf.RLM(config=vf.RLMConfig(local_checkout="/tmp/checkout")),
+        harness=RLM(config=RLMConfig(local_checkout="/tmp/checkout")),
     )
     task = next(iter(env.taskset))
     state = vf.State({"task": dict(task), "runtime": {}, "prompt": task["prompt"]})
@@ -230,15 +231,11 @@ async def test_vf_tool_skill_falls_back_for_runtime_bound_tools():
         """Look up an order with rollout state."""
         return f"{state['tenant']}:{order_id}"
 
-    taskset = vf.Taskset(
-        config=vf.TasksetConfig(
-            source=[{"prompt": [{"role": "user", "content": "Find order A-1."}]}]
-        )
-    )
+    taskset = vf.Taskset(config=OrderTasksetConfig())
     taskset.add_toolset(vf.Toolset(tools=[stateful_lookup]))
     env = vf.Env(
         taskset=taskset,
-        harness=vf.RLM(config=vf.RLMConfig(local_checkout="/tmp/checkout")),
+        harness=RLM(config=RLMConfig(local_checkout="/tmp/checkout")),
     )
     task = next(iter(env.taskset))
     state = vf.State({"task": dict(task), "runtime": {}, "prompt": task["prompt"]})
@@ -261,9 +258,7 @@ async def test_vf_tool_skill_falls_back_for_runtime_bound_tools():
 def test_vf_tool_skills_archive_avoids_base_skill_name_collisions(tmp_path: Path):
     skills = tmp_path / "skills"
     (skills / "lookup_order").mkdir(parents=True)
-    harness = vf.RLM(
-        config=vf.RLMConfig(local_checkout="/tmp/checkout", skills=str(skills))
-    )
+    harness = RLM(config=RLMConfig(local_checkout="/tmp/checkout", skills=str(skills)))
     tool_def = Tool(
         name="lookup_order",
         description="Look up an order.",
@@ -287,7 +282,7 @@ def test_vf_tool_skills_archive_avoids_base_skill_name_collisions(tmp_path: Path
 
 
 def test_vf_tool_skill_uses_arguments_dict_for_tool_parameters():
-    harness = vf.RLM(config=vf.RLMConfig(local_checkout="/tmp/checkout"))
+    harness = RLM(config=RLMConfig(local_checkout="/tmp/checkout"))
     tool_def = Tool(
         name="reserved_param",
         description="Reserved parameter.",
@@ -321,7 +316,7 @@ def test_vf_tool_skill_uses_arguments_dict_for_tool_parameters():
 async def test_vf_tool_skill_filters_extra_kwargs_for_closed_schemas(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    harness = vf.RLM(config=vf.RLMConfig(local_checkout="/tmp/checkout"))
+    harness = RLM(config=RLMConfig(local_checkout="/tmp/checkout"))
     tool_def = Tool(
         name="list_events",
         description="List calendar events.",
@@ -375,7 +370,7 @@ async def test_vf_tool_skill_filters_extra_kwargs_for_closed_schemas(
 async def test_vf_tool_skill_omits_unset_optional_arguments(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    harness = vf.RLM(config=vf.RLMConfig(local_checkout="/tmp/checkout"))
+    harness = RLM(config=RLMConfig(local_checkout="/tmp/checkout"))
     tool_def = Tool(
         name="search",
         description="Search documents.",
@@ -432,7 +427,7 @@ async def test_vf_tool_skill_omits_unset_optional_arguments(
 async def test_vf_tool_skill_surfaces_verifier_tool_errors(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    harness = vf.RLM(config=vf.RLMConfig(local_checkout="/tmp/checkout"))
+    harness = RLM(config=RLMConfig(local_checkout="/tmp/checkout"))
     tool_def = Tool(
         name="list_events",
         description="List calendar events.",
@@ -494,7 +489,7 @@ def test_taskset_discovers_sibling_skills_dir_by_default(
         "SkillTaskset", (vf.Taskset,), {"__module__": module_name}
     )
 
-    taskset = skill_taskset_type(config=vf.TasksetConfig(source=[]))
+    taskset = skill_taskset_type(config=vf.TasksetConfig())
 
     assert taskset.get_upload_dirs() == {"skills": skills}
 
@@ -510,9 +505,9 @@ def test_rlm_harness_explicit_skills_override_taskset_skills(tmp_path: Path):
             return {"skills": taskset_skills}
 
     env = vf.Env(
-        taskset=SkillTaskset(config=vf.TasksetConfig(source=[])),
-        harness=vf.RLM(
-            config=vf.RLMConfig(
+        taskset=SkillTaskset(config=vf.TasksetConfig()),
+        harness=RLM(
+            config=RLMConfig(
                 local_checkout="/tmp/checkout",
                 skills=str(explicit_skills),
             )
@@ -542,7 +537,7 @@ def test_rlm_swe_environment_uses_v1_r2e_taskset(monkeypatch):
                 timeout_minutes=30,
                 env={"CUSTOM": "1"},
             ),
-            harness=vf.RLMConfig(
+            harness=RLMConfig(
                 local_checkout="/tmp/checkout",
                 env_vars={"CALLER": "1"},
             ),
@@ -557,7 +552,7 @@ def test_rlm_swe_environment_uses_v1_r2e_taskset(monkeypatch):
 
     assert isinstance(env, vf.Env)
     assert isinstance(env.taskset, rlm_swe_v1.R2ESWETaskset)
-    assert isinstance(env.harness, vf.RLM)
+    assert isinstance(env.harness, RLM)
     assert calls["dataset_name"] == "fake-r2e"
     assert task["taskset_id"] == "swe/r2e"
     assert task["instruction"] == "Fix repo-0."

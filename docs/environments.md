@@ -699,7 +699,7 @@ environments/my_env/
 The golden v1 shape is one taskset config, one typed
 `load_taskset(config: MyTasksetConfig)` factory, and a tiny
 `load_environment(config: vf.EnvConfig)` that calls
-`vf.load_taskset(ENV_ID, config=config.taskset)`. The factory signature defines
+`vf.load_taskset(config=config.taskset)`. The factory signature defines
 the taskset config type.
 Add a harness config and harness class only when the environment owns reusable
 rollout behavior; otherwise omit `harness=` and `vf.Env` uses the base harness.
@@ -717,37 +717,32 @@ The taskset-only shape is:
 import verifiers as vf
 
 
-ENV_ID = "my-env"
-
-
-def load_tasks(split: str = "train"):
-    rows = [
-        {
-            "prompt": [{"role": "user", "content": "Reverse abc."}],
-            "answer": "cba",
-            "split": "train",
-        }
-    ]
-    return [row for row in rows if row["split"] == split]
-
-
-@vf.reward(weight=1.0)
-async def reward_fn(task, state) -> float:
-    return float(task["answer"] in str(state.get("completion") or ""))
-
-
 class MyTasksetConfig(vf.TasksetConfig):
     split: str = "train"
-    source: str = "my_env:load_tasks"
-    rewards: list[str] = ["my_env:reward_fn"]
 
 
-def load_taskset(config: MyTasksetConfig) -> vf.Taskset:
-    return vf.Taskset(config=config)
+class MyTaskset(vf.Taskset[MyTasksetConfig]):
+    def load_tasks(self) -> vf.Tasks:
+        rows = [
+            {
+                "prompt": [{"role": "user", "content": "Reverse abc."}],
+                "answer": "cba",
+                "split": "train",
+            }
+        ]
+        return [row for row in rows if row["split"] == self.config.split]
+
+    @vf.reward(weight=1.0)
+    async def contains_answer(self, task, state) -> float:
+        return float(task["answer"] in str(state.get("completion") or ""))
+
+
+def load_taskset(config: MyTasksetConfig) -> MyTaskset:
+    return MyTaskset(config=config)
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
-    return vf.Env(taskset=vf.load_taskset(ENV_ID, config=config.taskset))
+    return vf.Env(taskset=vf.load_taskset(config=config.taskset))
 ```
 
 With a reusable harness, keep the same explicit object boundary:
@@ -772,15 +767,10 @@ def load_harness(config: MyHarnessConfig) -> MyHarness:
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
     return vf.Env(
-        taskset=vf.load_taskset(ENV_ID, config=config.taskset),
-        harness=vf.load_harness(ENV_ID, config=config.harness),
+        taskset=vf.load_taskset(config=config.taskset),
+        harness=vf.load_harness(config=config.harness),
     )
 ```
-
-`vf.Env(config=config)` exists as a convenience for code that already has a fully
-typed `EnvConfig`, but environment docs and templates should use the component
-loader shape above. Do not pass both `config=` and `taskset=`/`harness=` to
-`vf.Env`.
 
 Keep v1 dependencies behind the owning taskset or harness. Do not pass
 already-instantiated resource objects through environment loaders. Bindings are

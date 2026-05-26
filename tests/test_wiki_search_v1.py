@@ -103,7 +103,7 @@ def test_wiki_search_v1_default_and_explicit_toolsets(
         "load_dataset",
         lambda *args, **kwargs: [{"question": "question?", "answer": "answer"}],
     )
-    rows = list(module.source(max_turns=3))
+    rows = list(module.load_tasks(max_turns=3))
 
     assert rows[0]["max_turns"] == 3
     assert "judge_model" not in rows[0]
@@ -114,8 +114,8 @@ def test_wiki_search_v1_default_and_explicit_toolsets(
         config=module.WikiSearchTasksetConfig(toolsets={"custom": {"tools": []}})
     )
 
-    assert list(taskset.named_toolsets) == ["custom"]
-    assert len(taskset.toolsets) == 1
+    assert list(taskset.named_toolsets) == ["wiki", "custom"]
+    assert len(taskset.toolsets) == 2
 
     configured_env = module.load_environment(
         config=module.WikiSearchEnvConfig(harness={"max_turns": 7})

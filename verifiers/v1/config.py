@@ -36,7 +36,7 @@ ProgramSetup: TypeAlias = ProgramValue | list[ProgramValue]
 ProgramChannels: TypeAlias = str | JsonMap | list[str | JsonMap]
 PromptInput: TypeAlias = str | list[JsonMap]
 ToolsetSpecs: TypeAlias = str | JsonMap | list[str | JsonMap] | dict[str, str | JsonMap]
-TaskSource: TypeAlias = str | list[JsonMap]
+TaskLoaderRef: TypeAlias = str
 
 
 class Config(BaseConfig):
@@ -261,14 +261,38 @@ class LifecycleConfig(Config):
 
 
 class TasksetConfig(LifecycleConfig):
-    # Singleton fields describe one logical value owned by the taskset.
-    source: TaskSource | None = None
-    eval_source: TaskSource | None = None
+    # Core fields configure taskset-owned loaders and runtime behavior.
+    tasks: TaskLoaderRef | None = None
+    eval_tasks: TaskLoaderRef | None = None
     taskset_id: str | None = None
     system_prompt: PromptInput | None = None
     user: UserConfig | str | None = None
     bindings: Bindings = {}
     objects: dict[str, str] = {}
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_task_fields(cls, value: object) -> object:
+        if not isinstance(value, Mapping):
+            return value
+        data = dict(value)
+        if "train_tasks" not in data:
+            return data
+        if "tasks" in data:
+            raise ValueError(
+                "TasksetConfig received multiple values for 'tasks': "
+                "'tasks', 'train_tasks'; provide only one."
+            )
+        train_tasks = data.pop("train_tasks")
+        if train_tasks is not None and not isinstance(train_tasks, str):
+            raise ValueError(
+                "TasksetConfig.train_tasks must be an import ref string. "
+                "Inline task rows are not supported; define load_train_tasks() "
+                "or load_tasks() and set TasksetConfig.train_tasks or "
+                "TasksetConfig.tasks to its import ref."
+            )
+        data["tasks"] = train_tasks
+        return data
 
     @field_validator("bindings", mode="before")
     @classmethod
@@ -277,7 +301,7 @@ class TasksetConfig(LifecycleConfig):
 
 
 class HarnessConfig(LifecycleConfig):
-    # Singleton fields describe one logical value owned by the harness.
+    # Core fields configure harness-owned runtime behavior.
     program: ProgramConfig | str | None = None
     system_prompt: PromptInput | None = None
     system_prompt_merge: str = "reject"

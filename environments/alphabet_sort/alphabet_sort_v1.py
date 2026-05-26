@@ -5,6 +5,7 @@ import random
 import re
 
 from datasets import Dataset, load_dataset
+from pydantic import model_validator
 
 import verifiers as vf
 
@@ -47,7 +48,7 @@ def _extract_last_name(combined_name: str) -> str:
     return ""
 
 
-def get_source(
+def build_task_loader(
     min_turns: int = 1,
     max_turns: int = 3,
     min_names_per_turn: int = 1,
@@ -58,7 +59,7 @@ def get_source(
     dataset_split: str = "train",
     seed: int = 1337420,
 ):
-    def source():
+    def loader():
         random.seed(seed)
 
         def get_random_turn_config():
@@ -185,10 +186,10 @@ These are in addition to the prior list. Mark any NEW names (that weren't in the
 
         return Dataset.from_list(data)
 
-    return source
+    return loader
 
 
-def source(
+def load_tasks(
     min_turns: int = 1,
     max_turns: int = 3,
     min_names_per_turn: int = 1,
@@ -205,7 +206,7 @@ def source(
         min_names_per_turn=min_names_per_turn,
         max_names_per_turn=max_names_per_turn,
     )
-    return get_source(
+    return build_task_loader(
         min_turns=min_turns,
         max_turns=max_turns,
         min_names_per_turn=min_names_per_turn,
@@ -309,6 +310,8 @@ async def alphabet_user(task, state, messages) -> list[dict[str, str]]:
 
 
 class AlphabetSortTasksetConfig(vf.TasksetConfig):
+    rewards: list[str] = ["weighted_reward"]
+    user: str | None = "alphabet_user"
     min_turns: int = 1
     max_turns: int = 3
     min_names_per_turn: int = 1
@@ -319,23 +322,34 @@ class AlphabetSortTasksetConfig(vf.TasksetConfig):
     dataset_split: str = "train"
     seed: int = 1337420
 
+    @model_validator(mode="after")
+    def validate_task_shape(self) -> "AlphabetSortTasksetConfig":
+        validate_parameters(
+            min_turns=self.min_turns,
+            max_turns=self.max_turns,
+            min_names_per_turn=self.min_names_per_turn,
+            max_names_per_turn=self.max_names_per_turn,
+        )
+        return self
+
 
 class AlphabetSortEnvConfig(vf.EnvConfig):
     taskset: AlphabetSortTasksetConfig = AlphabetSortTasksetConfig()
     harness: vf.HarnessConfig = vf.HarnessConfig()
 
 
-class AlphabetSortTaskset(vf.Taskset):
-    _default_source = source
-    _default_rewards = (weighted_reward,)
-    _default_user = alphabet_user
-
-    def _configure_runtime_defaults(self) -> None:
-        validate_parameters(
+class AlphabetSortTaskset(vf.Taskset[AlphabetSortTasksetConfig]):
+    def load_tasks(self) -> vf.Tasks:
+        return load_tasks(
             min_turns=self.config.min_turns,
             max_turns=self.config.max_turns,
             min_names_per_turn=self.config.min_names_per_turn,
             max_names_per_turn=self.config.max_names_per_turn,
+            similarity_power=self.config.similarity_power,
+            power_per_turn=self.config.power_per_turn,
+            dataset_name=self.config.dataset_name,
+            dataset_split=self.config.dataset_split,
+            seed=self.config.seed,
         )
 
 

@@ -3,7 +3,9 @@ import sys
 from pathlib import Path
 from typing import Any, cast
 
-import verifiers.v1 as vf
+import verifiers as vf
+from verifiers.v1.packages.harnesses import OpenCode, OpenCodeConfig
+from verifiers.v1.packages.tasksets import HarborTaskset
 
 
 def _load_opencode_module() -> Any:
@@ -31,14 +33,14 @@ def test_load_environment_uses_v1_taskset_and_harness() -> None:
     env = module.load_environment(config=module.OpenCodeHarborEnvConfig())
 
     assert isinstance(env, vf.Env)
-    assert isinstance(env.taskset, vf.HarborTaskset)
-    assert isinstance(env.harness, vf.OpenCode)
-    assert isinstance(env.harness.config, vf.OpenCodeConfig)
+    assert isinstance(env.taskset, HarborTaskset)
+    assert isinstance(env.harness, OpenCode)
+    assert isinstance(env.harness.config, OpenCodeConfig)
     assert not hasattr(module, "OpenCodeHarborHarnessConfig")
     assert not hasattr(module, "TERMINAL_BENCH_SAMPLE_TASKS")
     assert env.taskset.resolve_tasks_root() == Path(module.__file__).parent / "tasks"
     assert env.harness.config.max_turns == 4
-    assert env.harness.config.disabled_tools == vf.OpenCodeConfig().disabled_tools
+    assert env.harness.config.disabled_tools == OpenCodeConfig().disabled_tools
     assert "webfetch" in env.harness.config.disabled_tools
     assert "question" in env.harness.config.disabled_tools
 
@@ -53,11 +55,11 @@ def test_load_environment_accepts_v1_taskset_and_harness_config() -> None:
 
     env = module.load_environment(
         config=module.OpenCodeHarborEnvConfig(
-            taskset=module.vf.HarborTasksetConfig(
+            taskset=module.HarborTasksetConfig(
                 task_names=["task-a"],
                 cpu_cores=1.5,
             ),
-            harness=module.vf.OpenCodeConfig(
+            harness=module.OpenCodeConfig(
                 agent_workdir="/workspace",
                 disabled_tools=["webfetch"],
                 max_turns=2,

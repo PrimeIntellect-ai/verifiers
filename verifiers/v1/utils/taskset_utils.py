@@ -1,60 +1,48 @@
 import importlib
 import importlib.resources as resources
-import inspect
 import json
-from collections.abc import Callable, Iterable
+from collections.abc import Iterable
 from importlib.abc import Traversable
 from pathlib import Path
 from typing import cast
 
-from pydantic import BaseModel
+from datasets import Dataset
 
-from ..types import ConfigData, ConfigMap
+from ..config import resolve_config_object
+from ..types import ConfigData, ConfigMap, TaskLoader, Tasks
 
 
 def dataset_info_with_task(task: ConfigMap) -> ConfigData:
     return {"task": json.dumps(task)}
 
 
-def rows_from_source(
-    source: Iterable[ConfigMap] | Callable[[], Iterable[ConfigMap]] | None,
-    config: object | None = None,
+def resolve_task_loader(field: str, ref: str | None) -> TaskLoader | None:
+    if ref is None:
+        return None
+    loader = resolve_config_object(ref)
+    if not callable(loader):
+        raise TypeError(f"TasksetConfig.{field} must resolve to a callable.")
+    return cast(TaskLoader, loader)
+
+
+def task_data_from_loader(
+    load_tasks: TaskLoader | None,
 ) -> list[ConfigData]:
-    if source is None:
+    if load_tasks is None:
         return []
-    if callable(source):
-        source_loader = cast(Callable[..., Iterable[ConfigMap]], source)
-        return [dict(row) for row in load_source_rows(source_loader, config)]
-    return [dict(row) for row in source]
+    result = cast(Tasks, load_tasks())
+    return task_data_from_result(result)
 
 
-def load_source_rows(
-    source_loader: Callable[..., Iterable[ConfigMap]],
-    config: object | None,
-) -> Iterable[ConfigMap]:
-    source_args = source_config_args(config)
-    sig = inspect.signature(source_loader)
-    if any(p.kind == p.VAR_KEYWORD for p in sig.parameters.values()):
-        return source_loader(**source_args)
-    keyword_names = {
-        name
-        for name, parameter in sig.parameters.items()
-        if parameter.kind != inspect.Parameter.POSITIONAL_ONLY
-    }
-    allowed = {key: value for key, value in source_args.items() if key in keyword_names}
-    return source_loader(**allowed)
-
-
-def source_config_args(config: object | None) -> ConfigData:
-    if config is None:
-        return {}
-    if isinstance(config, BaseModel):
-        data = config.model_dump(mode="python")
-    elif isinstance(config, dict):
-        data = dict(config)
-    else:
-        return {"config": config, "taskset_config": config}
-    return {**data, "config": config, "taskset_config": config}
+def task_data_from_result(result: Tasks) -> list[ConfigData]:
+    if isinstance(result, Dataset):
+        return [dict(row) for row in result]
+    if isinstance(result, Iterable):
+        rows = cast(Iterable[ConfigMap], result)
+        return [dict(row) for row in rows]
+    raise TypeError(
+        "Task loader must return a datasets.Dataset or an iterable of mappings."
+    )
 
 
 def discover_sibling_dir(

@@ -28,7 +28,7 @@ from tau2.environment.environment import Environment as TauEnvironment
 from tau2.evaluator.evaluator import EvaluationType, evaluate_simulation
 from tau2.orchestrator.orchestrator import DEFAULT_FIRST_AGENT_MESSAGE, Role
 from tau2.registry import registry
-from tau2.run import load_tasks
+from tau2.run import load_tasks as load_tau2_tasks
 from tau2.user.user_simulator import UserSimulator, is_valid_user_history_message
 from tau2.utils.utils import DATA_DIR, format_time, get_now
 from verifiers.utils.async_utils import maybe_call_with_named_args
@@ -479,7 +479,7 @@ def add_timestamps(message_history: list[Message]) -> list[Message]:
     return message_history
 
 
-def source(domain: str, max_turns: int):
+def load_tasks(domain: str, max_turns: int):
     download_tau2_data()
     environment_constructor = registry.get_env_constructor(domain)
     environment = environment_constructor()
@@ -488,7 +488,7 @@ def source(domain: str, max_turns: int):
         domain_policy=environment.policy,
     )
     for index, task in enumerate(
-        load_tasks(task_set_name=domain, task_split_name="base")
+        load_tau2_tasks(task_set_name=domain, task_split_name="base")
     ):
         yield {
             "example_id": index,
@@ -693,6 +693,13 @@ async def tau2_num_user_tool_calls(task, state) -> float:
 
 
 class Tau2TasksetConfig(vf.TasksetConfig):
+    rewards: list[str] = ["tau2_reward"]
+    metrics: list[str] = [
+        "tau2_num_errors",
+        "tau2_num_steps",
+        "tau2_num_assistant_tool_calls",
+        "tau2_num_user_tool_calls",
+    ]
     domain: str = "telecom"
     user_model: str = DEFAULT_USER_MODEL
     user_args: vf.ConfigData | None = None
@@ -703,7 +710,7 @@ class Tau2TasksetConfig(vf.TasksetConfig):
     max_turns: int = DEFAULT_MAX_STEPS
 
 
-class Tau2Taskset(vf.Taskset):
+class Tau2Taskset(vf.Taskset[Tau2TasksetConfig]):
     def __init__(
         self,
         config: Tau2TasksetConfig | None = None,
@@ -732,23 +739,17 @@ class Tau2Taskset(vf.Taskset):
             session_factory=session_factory,
         )
 
-        def load_rows():
-            return source(config.domain, max_turns=config.max_turns)
-
         super().__init__(config=config)
-        self.source = load_rows
         self.taskset_id = f"tau2_{config.domain}"
-        self.add_setup(make_tau2_setup(session_factory))
-        self.add_reward(tau2_reward)
-        for metric in (
-            tau2_num_errors,
-            tau2_num_steps,
-            tau2_num_assistant_tool_calls,
-            tau2_num_user_tool_calls,
-        ):
-            self.add_metric(metric)
-        self.add_toolset(toolset)
-        self.user = vf.User(make_tau2_user(session_factory))
+        if "setups" not in self.config.model_fields_set:
+            self.add_setup(make_tau2_setup(session_factory))
+        if "toolsets" not in self.config.model_fields_set:
+            self.add_toolset(toolset)
+        if "user" not in self.config.model_fields_set:
+            self.user = vf.User(make_tau2_user(session_factory))
+
+    def load_tasks(self) -> vf.Tasks:
+        return load_tasks(domain=self.config.domain, max_turns=self.config.max_turns)
 
 
 class Tau2EnvConfig(vf.EnvConfig):

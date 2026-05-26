@@ -19,7 +19,7 @@
 - **Rubric overview**: Exact match on numeric answer extracted from `ANSWER: <value>` pattern
 
 ### How it works
-The taskset owns GSM8K source/eval rows and reward logic. The harness runs an in-process OpenAI Agents SDK program, builds its client from `state.get_endpoint_config(api="chat")`, and routes every model call through the V1 interception endpoint.
+The taskset owns GSM8K train/eval task loading and reward logic. The harness runs an in-process OpenAI Agents SDK program, builds its client from `state.get_endpoint_config(api="chat")`, and routes every model call through the V1 interception endpoint.
 
 ### Quickstart
 Run an evaluation with default settings:

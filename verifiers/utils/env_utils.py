@@ -1,6 +1,7 @@
 import importlib
 import inspect
 import logging
+import sys
 from collections.abc import Mapping
 from types import ModuleType, UnionType
 from typing import Callable, Union, cast, get_args, get_origin, get_type_hints
@@ -107,21 +108,37 @@ def import_env_module(env_id: str) -> ModuleType:
     return importlib.import_module(env_module_name(env_id))
 
 
+def caller_module() -> ModuleType:
+    frame = inspect.currentframe()
+    try:
+        if frame is None or frame.f_back is None or frame.f_back.f_back is None:
+            raise RuntimeError("Could not resolve caller module.")
+        module_name = frame.f_back.f_back.f_globals.get("__name__")
+        if not isinstance(module_name, str):
+            raise RuntimeError("Caller module has no __name__.")
+        module = sys.modules.get(module_name)
+        if not isinstance(module, ModuleType):
+            raise RuntimeError(f"Caller module {module_name!r} is not loaded.")
+        return module
+    finally:
+        del frame
+
+
 def load_taskset(
-    env_id: str,
+    env_id: str | None = None,
     *,
     config: TasksetConfig | Mapping[str, object] | None = None,
 ) -> Taskset:
-    module = import_env_module(env_id)
+    module = caller_module() if env_id is None else import_env_module(env_id)
     return load_taskset_from_module(module, config=config)
 
 
 def load_harness(
-    env_id: str,
+    env_id: str | None = None,
     *,
     config: HarnessConfig | Mapping[str, object] | None = None,
 ) -> Harness:
-    module = import_env_module(env_id)
+    module = caller_module() if env_id is None else import_env_module(env_id)
     return load_harness_from_module(module, config=config)
 
 

@@ -158,83 +158,70 @@ V1_ENVIRONMENT_TEMPLATE = """\
 import verifiers as vf
 
 
-ENV_ID = "{env_id_dash}"
+class {taskset_config_name}(vf.TasksetConfig):
+    pass
 
 
-def load_tasks():
-    return [
-        {
-            "prompt": [{"role": "user", "content": "Reverse abc."}],
-            "answer": "cba",
-        }
-    ]
+class {taskset_name}(vf.Taskset[{taskset_config_name}]):
+    def load_system_prompt(self) -> vf.SystemPrompt:
+        raise NotImplementedError("Load the system prompt for {env_id_dash}.")
+
+    def load_tasks(self) -> vf.Tasks:
+        raise NotImplementedError("Load task rows for {env_id_dash}.")
+
+    @vf.reward(weight=1.0)
+    async def correct_answer(self, task: vf.Task, state: vf.State) -> float:
+        raise NotImplementedError("Score a completed rollout for {env_id_dash}.")
 
 
-@vf.reward(weight=1.0)
-async def exact_answer(task, state) -> float:
-    return float(task["answer"] in str(state.get("completion") or ""))
-
-
-class EnvTasksetConfig(vf.TasksetConfig):
-    source: str = "{module_name}:load_tasks"
-    rewards: list[str] = ["{module_name}:exact_answer"]
-
-
-def load_taskset(config: EnvTasksetConfig) -> vf.Taskset:
-    return vf.Taskset(config=config)
+def load_taskset(config: {taskset_config_name}) -> {taskset_name}:
+    return {taskset_name}(config=config)
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
-    # vf.load_taskset resolves this env's load_taskset and coerces config.taskset.
-    return vf.Env(taskset=vf.load_taskset(ENV_ID, config=config.taskset))
+    return vf.Env(taskset=vf.load_taskset(config=config.taskset))
 """
 
 V1_HARNESS_ENVIRONMENT_TEMPLATE = """\
 import verifiers as vf
 
 
-ENV_ID = "{env_id_dash}"
-
-
-def load_tasks():
-    return [
-        {
-            "prompt": [{"role": "user", "content": "Reverse abc."}],
-            "answer": "cba",
-        }
-    ]
-
-
-@vf.reward(weight=1.0)
-async def exact_answer(task, state) -> float:
-    return float(task["answer"] in str(state.get("completion") or ""))
-
-
-class EnvTasksetConfig(vf.TasksetConfig):
-    source: str = "{module_name}:load_tasks"
-    rewards: list[str] = ["{module_name}:exact_answer"]
-
-
-class EnvHarnessConfig(vf.HarnessConfig):
+class {taskset_config_name}(vf.TasksetConfig):
     pass
 
 
-class EnvHarness(vf.Harness):
-    config: EnvHarnessConfig
+class {taskset_name}(vf.Taskset[{taskset_config_name}]):
+    def load_system_prompt(self) -> vf.SystemPrompt:
+        raise NotImplementedError("Load the system prompt for {env_id_dash}.")
+
+    def load_tasks(self) -> vf.Tasks:
+        raise NotImplementedError("Load task rows for {env_id_dash}.")
+
+    @vf.reward(weight=1.0)
+    async def correct_answer(self, task: vf.Task, state: vf.State) -> float:
+        raise NotImplementedError("Score a completed rollout for {env_id_dash}.")
 
 
-def load_taskset(config: EnvTasksetConfig) -> vf.Taskset:
-    return vf.Taskset(config=config)
+class {harness_config_name}(vf.HarnessConfig):
+    pass
 
 
-def load_harness(config: EnvHarnessConfig) -> EnvHarness:
-    return EnvHarness(config=config)
+class {harness_name}(vf.Harness):
+    config: {harness_config_name}
+
+
+def load_taskset(config: {taskset_config_name}) -> {taskset_name}:
+    return {taskset_name}(config=config)
+
+
+def load_harness(config: {harness_config_name}) -> {harness_name}:
+    return {harness_name}(config=config)
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
     return vf.Env(
-        taskset=vf.load_taskset(ENV_ID, config=config.taskset),
-        harness=vf.load_harness(ENV_ID, config=config.harness),
+        taskset=vf.load_taskset(config=config.taskset),
+        harness=vf.load_harness(config=config.harness),
     )
 """
 
@@ -397,6 +384,15 @@ def _init_openenv_proj(
     _write_if_missing(server_dir / "__init__.py", "")
 
 
+def _class_name(env_id_underscore: str, suffix: str) -> str:
+    prefix = "".join(
+        part[:1].upper() + part[1:] for part in env_id_underscore.split("_") if part
+    )
+    if not prefix or not prefix[0].isalpha():
+        prefix = f"Env{prefix}"
+    return f"{prefix}{suffix}"
+
+
 def init_environment(
     env: str,
     path: str = "./environments",
@@ -419,9 +415,10 @@ def init_environment(
 
     env_id_dash = env.replace("_", "-")
     env_id_underscore = env_id_dash.replace("-", "_")
-    module_name = (
-        f"{env_id_underscore}.{env_id_underscore}" if multi_file else env_id_underscore
-    )
+    taskset_config_name = _class_name(env_id_underscore, "TasksetConfig")
+    taskset_name = _class_name(env_id_underscore, "Taskset")
+    harness_config_name = _class_name(env_id_underscore, "HarnessConfig")
+    harness_name = _class_name(env_id_underscore, "Harness")
     if with_harness and not v1:
         print("--with-harness only applies with --v1; ignoring.")
         with_harness = False
@@ -489,9 +486,11 @@ def init_environment(
         else:
             template = V0_ENVIRONMENT_TEMPLATE
         environment_file.write_text(
-            template.replace("{env_id_dash}", env_id_dash).replace(
-                "{module_name}", module_name
-            )
+            template.replace("{env_id_dash}", env_id_dash)
+            .replace("{taskset_config_name}", taskset_config_name)
+            .replace("{taskset_name}", taskset_name)
+            .replace("{harness_config_name}", harness_config_name)
+            .replace("{harness_name}", harness_name)
         )
     else:
         print(

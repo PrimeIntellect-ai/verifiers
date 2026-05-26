@@ -2,17 +2,19 @@ import verifiers as vf
 
 
 class NestedHarnessConfig(vf.HarnessConfig):
-    toolset: vf.ToolsetConfig | None = None
+    program: str | None = "parent_program"
+    toolsets: dict[str, dict[str, str]] = {"nested": {"fn": "load_toolset"}}
+    metrics: list[str] = ["child_calls"]
+
+
+class ChildHarnessConfig(vf.HarnessConfig):
+    program: str | None = "child_program"
 
 
 async def child_program(task, state):
     state["answer"] = str(task["prompt"]).upper()
     state["completion"] = [{"role": "assistant", "content": state["answer"]}]
     return state
-
-
-class ChildHarness(vf.Harness):
-    _default_program = child_program
 
 
 async def call_harness(prompt, harness, state):
@@ -46,7 +48,7 @@ CHILD_PROMPT_GROUPS = [
 ]
 
 
-def source():
+def load_tasks():
     return [
         {
             "prompt": (
@@ -60,7 +62,7 @@ def source():
 
 
 def load_child_harness():
-    return ChildHarness(config=vf.HarnessConfig())
+    return vf.Harness(config=ChildHarnessConfig())
 
 
 def load_toolset(config: vf.ToolsetConfig | None = None):
@@ -87,22 +89,21 @@ async def parent_program(task, state):
     return state
 
 
-class NestedTaskset(vf.Taskset):
-    _default_source = source
-    _default_rewards = (exact_answer,)
-
-
 class NestedHarness(vf.Harness):
-    _default_program = parent_program
-    _default_metrics = (child_calls,)
+    pass
 
-    def _configure_runtime_defaults(self) -> None:
-        if "toolsets" not in self.config.model_fields_set:
-            self.add_toolset({"nested": load_toolset(config=self.config.toolset)})
+
+class NestedTasksetConfig(vf.TasksetConfig):
+    rewards: list[str] = ["exact_answer"]
+
+
+class NestedTaskset(vf.Taskset[NestedTasksetConfig]):
+    def load_tasks(self) -> vf.Tasks:
+        return load_tasks()
 
 
 class NestedEnvConfig(vf.EnvConfig):
-    taskset: vf.TasksetConfig = vf.TasksetConfig()
+    taskset: NestedTasksetConfig = NestedTasksetConfig()
     harness: NestedHarnessConfig = NestedHarnessConfig()
 
 

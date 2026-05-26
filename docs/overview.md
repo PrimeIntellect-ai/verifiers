@@ -89,49 +89,47 @@ custom harnesses, use the v1 Taskset/Harness path:
 # my_env.py
 import verifiers as vf
 
-ENV_ID = "my-env"
-
-
-def load_tasks(split: str = "train"):
-    rows = [
-        {
-            "prompt": [{"role": "user", "content": "Reverse abc."}],
-            "answer": "cba",
-            "split": "train",
-            "max_turns": 1,
-        }
-    ]
-    return [row for row in rows if row["split"] == split]
-
-
-@vf.reward(weight=1.0)
-async def contains_answer(task, state) -> float:
-    return float(task["answer"] in str(state.get("completion") or ""))
-
 
 class MyTasksetConfig(vf.TasksetConfig):
     split: str = "train"
-    source: str = "my_env:load_tasks"
-    rewards: list[str] = ["my_env:contains_answer"]
 
 
-def load_taskset(config: MyTasksetConfig) -> vf.Taskset:
-    return vf.Taskset(config=config)
+class MyTaskset(vf.Taskset[MyTasksetConfig]):
+    def load_tasks(self) -> vf.Tasks:
+        rows = [
+            {
+                "prompt": [{"role": "user", "content": "Reverse abc."}],
+                "answer": "cba",
+                "split": "train",
+                "max_turns": 1,
+            }
+        ]
+        return [row for row in rows if row["split"] == self.config.split]
+
+    @vf.reward(weight=1.0)
+    async def contains_answer(self, task, state) -> float:
+        return float(task["answer"] in str(state.get("completion") or ""))
+
+
+def load_taskset(config: MyTasksetConfig) -> MyTaskset:
+    return MyTaskset(config=config)
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
-    return vf.Env(taskset=vf.load_taskset(ENV_ID, config=config.taskset))
+    return vf.Env(taskset=vf.load_taskset(config=config.taskset))
 ```
 See [BYO Harness](byo-harness.md) for the advanced v1 taskset/harness API.
-Reusable v1 taskset and harness packages live under `verifiers.v1.packages`
-while the API stabilizes, and are re-exported from `verifiers.v1` for normal
-use. For example, Harbor task directories can run through the bundled OpenCode
-CLI harness with:
+Reusable v1 taskset and harness packages live under `verifiers.v1.packages`.
+For example, Harbor task directories can run through the bundled OpenCode CLI
+harness with:
 
 ```python
+from verifiers.v1.packages.harnesses import OpenCode, OpenCodeConfig
+from verifiers.v1.packages.tasksets import HarborTaskset, HarborTasksetConfig
+
 env = vf.Env(
-    taskset=vf.HarborTaskset(config=vf.HarborTasksetConfig()),
-    harness=vf.OpenCode(config=vf.OpenCodeConfig()),
+    taskset=HarborTaskset(config=HarborTasksetConfig()),
+    harness=OpenCode(config=OpenCodeConfig()),
 )
 ```
 
