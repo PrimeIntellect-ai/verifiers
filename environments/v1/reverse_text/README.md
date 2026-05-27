@@ -20,6 +20,10 @@ class ReverseTextTaskset(vf.Taskset[ReverseTextTasksetConfig]):
     def load_tasks(self) -> vf.Tasks: ...
     def load_system_prompt(self) -> vf.SystemPrompt: ...
 
+    def harness_defaults(self) -> dict:
+        # Single-turn task; applies whichever harness the user picks.
+        return {"max_turns": 1}
+
     @vf.reward(weight=1.0)
     async def lcs_reward(self, task, state) -> float: ...
 

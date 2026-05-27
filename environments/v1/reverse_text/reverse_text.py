@@ -69,6 +69,13 @@ class ReverseTextTaskset(vf.Taskset[ReverseTextTasksetConfig]):
             "<reversed_text> tags."
         )
 
+    def harness_defaults(self) -> vf.ConfigData:
+        # Reverse-text is single-turn: whichever harness the user picks,
+        # stop after one model turn. The default ``system_prompt_merge``
+        # is "reject", which is fine here — only the taskset sets a
+        # system prompt, so there's nothing to merge.
+        return {"max_turns": 1}
+
     @vf.reward(weight=1.0)
     async def lcs_reward(self, task, state) -> float:
         response = REVERSED_TEXT_EXTRACTOR(state.get("completion") or [])

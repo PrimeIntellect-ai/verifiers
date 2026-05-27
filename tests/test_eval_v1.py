@@ -566,3 +566,117 @@ def test_has_v1_overrides():
     assert not has_v1_overrides({"foo": 1})
     assert has_v1_overrides({V1_TASKSET_KEY: {}})
     assert has_v1_overrides({V1_HARNESS_KEY: {}})
+
+
+# ---------------------------------------------------------------------------
+# Taskset.harness_defaults() — taskset-supplied harness opinions
+# ---------------------------------------------------------------------------
+
+
+OPINIONATED_TASKSET_SOURCE = textwrap.dedent(
+    """
+    import verifiers as vf
+
+
+    class OpinionatedTasksetConfig(vf.TasksetConfig):
+        pass
+
+
+    class OpinionatedTaskset(vf.Taskset[OpinionatedTasksetConfig]):
+        def load_tasks(self) -> vf.Tasks:
+            return [{"prompt": [{"role": "user", "content": "x"}], "answer": "x"}]
+
+        def harness_defaults(self) -> dict:
+            return {"max_turns": 1, "system_prompt_merge": "harness"}
+
+
+    def load_taskset(config: OpinionatedTasksetConfig) -> OpinionatedTaskset:
+        return OpinionatedTaskset(config=config)
+    """
+)
+
+
+BAD_DEFAULTS_TASKSET_SOURCE = textwrap.dedent(
+    """
+    import verifiers as vf
+
+
+    class BadDefaultsTasksetConfig(vf.TasksetConfig):
+        pass
+
+
+    class BadDefaultsTaskset(vf.Taskset[BadDefaultsTasksetConfig]):
+        def load_tasks(self) -> vf.Tasks:
+            return [{"prompt": [{"role": "user", "content": "x"}], "answer": "x"}]
+
+        def harness_defaults(self) -> dict:
+            # Field does not exist on base HarnessConfig — should fail loudly.
+            return {"bogus_field": 1}
+
+
+    def load_taskset(config: BadDefaultsTasksetConfig) -> BadDefaultsTaskset:
+        return BadDefaultsTaskset(config=config)
+    """
+)
+
+
+@pytest.fixture
+def opinionated_taskset(tmp_path: Path, monkeypatch):
+    name = "opinionated_taskset"
+    _install_module(tmp_path, monkeypatch, name, OPINIONATED_TASKSET_SOURCE)
+    yield name
+    sys.modules.pop(name, None)
+
+
+@pytest.fixture
+def bad_defaults_taskset(tmp_path: Path, monkeypatch):
+    name = "bad_defaults_taskset"
+    _install_module(tmp_path, monkeypatch, name, BAD_DEFAULTS_TASKSET_SOURCE)
+    yield name
+    sys.modules.pop(name, None)
+
+
+def test_taskset_defaults_applied_to_base_harness(opinionated_taskset: str):
+    env = build_v1_env(opinionated_taskset)
+    assert env.harness.config.max_turns == 1
+    assert env.harness.config.system_prompt_merge == "harness"
+
+
+def test_taskset_defaults_applied_to_external_harness(
+    opinionated_taskset: str, external_harness: str
+):
+    env = build_v1_env(opinionated_taskset, harness_spec={"name": external_harness})
+    # ExtHarnessConfig inherits HarnessConfig.max_turns, which the taskset opined.
+    assert env.harness.config.max_turns == 1
+    assert env.harness.config.system_prompt_merge == "harness"
+
+
+def test_cli_overrides_win_over_taskset_defaults(opinionated_taskset: str):
+    env = build_v1_env(opinionated_taskset, harness_spec={"max_turns": 7})
+    # CLI override beats taskset default
+    assert env.harness.config.max_turns == 7
+    # taskset default still applies for fields the user didn't set
+    assert env.harness.config.system_prompt_merge == "harness"
+
+
+def test_taskset_defaults_round_trip_through_load_environment(
+    opinionated_taskset: str,
+):
+    """Workers re-run build_v1_env from env_args; taskset defaults must
+    re-apply because they live on the Taskset class."""
+    env = vf.load_environment(opinionated_taskset)
+    assert env.harness.config.max_turns == 1
+
+
+def test_bad_taskset_defaults_fail_loudly(bad_defaults_taskset: str):
+    with pytest.raises(Exception, match="bogus_field"):
+        build_v1_env(bad_defaults_taskset)
+
+
+def test_base_taskset_harness_defaults_empty(dummy_taskset: str):
+    """Tasksets that don't override harness_defaults() return an empty dict."""
+    import importlib
+
+    module = importlib.import_module(dummy_taskset)
+    taskset = module.load_taskset(module.DummyTasksetConfig())
+    assert taskset.harness_defaults() == {}

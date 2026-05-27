@@ -75,6 +75,21 @@ vf-eval-v1 my-taskset --harness.max-turns 5    # tweak the default harness's con
 vf-eval-v1 my-taskset rlm                       # swap in another harness module
 ```
 
+When the taskset has opinions of its own about the harness — say, a
+single-turn task wanting `max_turns=1` regardless of which harness is
+picked — express them on the Taskset class:
+
+```python
+class MyTaskset(vf.Taskset[MyTasksetConfig]):
+    def harness_defaults(self) -> dict:
+        return {"max_turns": 1}
+```
+
+Precedence is `HarnessConfig defaults < taskset.harness_defaults() <
+CLI overrides`. The dict is validated against the resolved
+`HarnessConfig` subclass after the merge, so a taskset asking for a
+field that doesn't exist on the chosen harness fails loudly.
+
 ## Tasksets
 
 Tasksets own row loading through `load_tasks()` and `load_eval_tasks()` methods.
