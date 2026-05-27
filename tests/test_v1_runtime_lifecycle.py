@@ -1199,6 +1199,82 @@ async def test_sandbox_base_program_max_turns_zero_is_unbounded(
     assert result["stop_condition"] == "no_tools"
 
 
+@pytest.mark.asyncio
+async def test_sandbox_base_program_uses_raw_chat_completion_response(
+    tmp_path: Path,
+) -> None:
+    namespace: dict[str, object] = {}
+    source = runner_source().rsplit("asyncio.run(main())", 1)[0]
+    exec(source, namespace)
+    tool_defs_path = tmp_path / "tool_defs_by_protocol.json"
+    tool_defs_path.write_text(json.dumps({"openai_chat_completions": []}))
+    namespace["TOOL_DEFS_BY_PROTOCOL_PATH"] = str(tool_defs_path)
+
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def post_json(url: str, payload: dict[str, object]) -> dict[str, object]:
+        calls.append((url, payload))
+        return {
+            "choices": [
+                {
+                    "finish_reason": None,
+                    "message": {
+                        "role": "assistant",
+                        "tool_calls": [
+                            {
+                                "id": "call-1",
+                                "type": "function",
+                                "function": {
+                                    "name": "echo_tool",
+                                    "arguments": '{"query":"hi"}',
+                                },
+                            }
+                        ],
+                    },
+                }
+            ]
+        }
+
+    namespace["post_json"] = post_json
+    create_model_message = cast(Any, namespace["create_model_message"])
+    client = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(
+                create=lambda **_: pytest.fail("SDK chat client should not be called")
+            )
+        )
+    )
+    state = {
+        "endpoint_base_url": "http://endpoint/v1",
+        "runtime": {
+            "client_type": "openai_chat_completions",
+            "model": "qwen",
+            "sampling_args": {},
+        },
+    }
+
+    message = await create_model_message(
+        state, [{"role": "user", "content": "hi"}], client
+    )
+
+    assert calls == [
+        (
+            "http://endpoint/v1/chat/completions",
+            {"model": "qwen", "messages": [{"role": "user", "content": "hi"}]},
+        )
+    ]
+    assert message == {
+        "role": "assistant",
+        "tool_calls": [
+            {
+                "id": "call-1",
+                "type": "function",
+                "function": {"name": "echo_tool", "arguments": '{"query":"hi"}'},
+            }
+        ],
+    }
+
+
 def test_sandbox_program_patch_cannot_set_lifecycle_fields() -> None:
     state = vf.State.for_task(vf.Task({"prompt": []}).freeze())
 
