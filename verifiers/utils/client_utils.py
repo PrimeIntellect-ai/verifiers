@@ -62,9 +62,10 @@ def load_prime_config() -> dict:
     return {}
 
 
-def _build_headers_and_api_key(
+def build_headers_and_api_key(
     config: ClientConfig,
 ) -> tuple[dict[str, str], str | None]:
+    """Build request headers and API key for a resolved client config."""
     headers = dict(config.extra_headers)
     api_key = os.getenv(config.api_key_var)
 
@@ -134,7 +135,7 @@ def normalize_chat_completion_data(data: dict[str, Any]) -> dict[str, Any]:
 def setup_openai_client(config: ClientConfig) -> AsyncOpenAI:
     """Setup an AsyncOpenAI client from config."""
     resolved_config = resolve_client_config(config)
-    headers, api_key = _build_headers_and_api_key(resolved_config)
+    headers, api_key = build_headers_and_api_key(resolved_config)
     return AsyncOpenAI(
         api_key=api_key or "EMPTY",
         base_url=resolved_config.api_base_url,
@@ -146,7 +147,7 @@ def setup_openai_client(config: ClientConfig) -> AsyncOpenAI:
 def setup_anthropic_client(config: ClientConfig) -> AsyncAnthropic:
     """Setup an AsyncAnthropic client from config."""
     resolved_config = resolve_client_config(config)
-    headers, api_key = _build_headers_and_api_key(resolved_config)
+    headers, api_key = build_headers_and_api_key(resolved_config)
     return AsyncAnthropic(
         api_key=api_key or "EMPTY",
         base_url=resolved_config.api_base_url,

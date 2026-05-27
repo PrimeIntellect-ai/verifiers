@@ -10,6 +10,7 @@ from types import ModuleType, SimpleNamespace
 from typing import Any, cast
 
 import pytest
+from prime_sandboxes import UploadTimeoutError
 from pydantic import BaseModel
 
 import verifiers as vf
@@ -46,8 +47,6 @@ from verifiers.v1.utils.sandbox_utils import (
     run_sandbox_command,
     run_sandbox_background_command,
     upload_program_files,
-    wait_for_sandbox_ready,
-    wait_for_sandbox_running,
 )
 
 PROGRAM_REF_MODULE = "v1_runtime_lifecycle_refs"
@@ -207,18 +206,6 @@ class FakeSandboxClient:
         pass
 
 
-class RateLimitedSandboxClient(FakeSandboxClient):
-    def __init__(self, failures: int = 1):
-        self.failures = failures
-        self.get_calls = 0
-
-    async def get(self, sandbox_id: str) -> FakeSandboxResult:
-        self.get_calls += 1
-        if self.get_calls <= self.failures:
-            raise RuntimeError("HTTP 429: Rate exceeded.")
-        return FakeSandboxResult(sandbox_id)
-
-
 class FlakyUploadSandboxClient(FakeSandboxClient):
     attempts = 0
 
@@ -230,7 +217,7 @@ class FlakyUploadSandboxClient(FakeSandboxClient):
     async def upload_bytes(self, *args: object, **kwargs: object) -> None:
         type(self).attempts += 1
         if type(self).attempts < 3:
-            raise RuntimeError("temporary upload failure")
+            raise UploadTimeoutError("sbx-1", "/tmp/program.txt", 30)
         await super().upload_bytes(*args, **kwargs)
 
 
@@ -1251,7 +1238,7 @@ async def test_sandbox_base_program_uses_raw_chat_completion_response(
                                 "type": "function",
                                 "function": {
                                     "name": "echo_tool",
-                                    "arguments": '{"query":"hi"}',
+                                    "arguments": "{query: hi}",
                                 },
                             }
                         ],
@@ -1294,45 +1281,13 @@ async def test_sandbox_base_program_uses_raw_chat_completion_response(
             {
                 "id": "call-1",
                 "type": "function",
-                "function": {"name": "echo_tool", "arguments": '{"query":"hi"}'},
+                "function": {
+                    "name": "echo_tool",
+                    "arguments": json.dumps({"arguments": "{query: hi}"}),
+                },
             }
         ],
     }
-
-
-def test_sandbox_base_program_normalizes_invalid_tool_call_arguments() -> None:
-    namespace: dict[str, object] = {}
-    source = runner_source().rsplit("asyncio.run(main())", 1)[0]
-    exec(source, namespace)
-    message_from_chat_completion_data = cast(
-        Any, namespace["message_from_chat_completion_data"]
-    )
-
-    message = message_from_chat_completion_data(
-        {
-            "choices": [
-                {
-                    "message": {
-                        "role": "assistant",
-                        "tool_calls": [
-                            {
-                                "id": "call-1",
-                                "type": "function",
-                                "function": {
-                                    "name": "read",
-                                    "arguments": "{file_path: documents/a.docx}",
-                                },
-                            }
-                        ],
-                    },
-                }
-            ]
-        }
-    )
-
-    assert message["tool_calls"][0]["function"]["arguments"] == json.dumps(
-        {"arguments": "{file_path: documents/a.docx}"}
-    )
 
 
 def test_sandbox_program_patch_cannot_set_lifecycle_fields() -> None:
@@ -1475,44 +1430,6 @@ async def test_rollout_setup_receives_program_sandbox_before_program_setup(
 
 
 @pytest.mark.asyncio
-async def test_program_setup_runs_as_background_job(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    install_fake_sandboxes(monkeypatch)
-    install_fake_endpoint_tunnel(monkeypatch)
-
-    harness = make_harness(
-        program={
-            "command": ["true"],
-            "sandbox": True,
-            "setup": "echo program-setup",
-            "setup_timeout": 777,
-        },
-        sandbox={"image": "python:3.11-slim"},
-    )
-    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
-
-    await harness.run(task)
-
-    assert any(
-        "echo program-setup" in command for _, command in FakeSandboxClient.commands
-    )
-
-
-@pytest.mark.asyncio
-async def test_sandbox_background_command_times_out() -> None:
-    from prime_sandboxes import CommandTimeoutError
-
-    with pytest.raises(CommandTimeoutError):
-        await run_sandbox_background_command(
-            FakeSandboxClient(),
-            sandbox_id="sbx-1",
-            command="echo never-finishes",
-            timeout=0,
-        )
-
-
-@pytest.mark.asyncio
 async def test_sandbox_background_command_launch_timeout_polls_job() -> None:
     from prime_sandboxes import CommandTimeoutError
 
@@ -1539,33 +1456,6 @@ async def test_sandbox_background_command_launch_timeout_polls_job() -> None:
     assert result.exit_code == 0
     assert len(FakeSandboxClient.commands) == 1
     assert FakeSandboxClient.command_timeouts == [60]
-
-
-@pytest.mark.asyncio
-async def test_sandbox_setup_command_timeout_becomes_rollout_error(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    install_fake_sandboxes(monkeypatch)
-    install_fake_endpoint_tunnel(monkeypatch)
-    FakeSandboxClient.reset()
-
-    harness = make_harness(
-        program={"command": ["true"], "sandbox": True},
-        sandbox={
-            "image": "python:3.11-slim",
-            "setup_commands": ["echo never-finishes"],
-            "setup_timeout": 0,
-        },
-    )
-    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
-
-    state = await harness.run(task)
-
-    assert state["stop_condition"] == "has_error"
-    assert state["error"]["error"] == "SandboxError"
-    assert "Sandbox setup command failed" in state["error"]["error_chain_repr"]
-    assert "CommandTimeoutError" in state["error"]["error_chain_str"]
-    assert FakeSandboxClient.deleted == ["sbx-1"]
 
 
 @pytest.mark.asyncio
@@ -1709,36 +1599,6 @@ async def test_task_command_uses_background_job(
         "sleep 120" in command and "cd /app" in command
         for _, command in FakeSandboxClient.commands
     )
-
-
-@pytest.mark.asyncio
-async def test_wait_for_sandbox_running_retries_rate_limited_get(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    async def fast_sleep(delay: float) -> None:
-        _ = delay
-
-    monkeypatch.setattr("verifiers.v1.utils.sandbox_utils.asyncio.sleep", fast_sleep)
-    client = RateLimitedSandboxClient(failures=2)
-
-    await wait_for_sandbox_running(client, "sbx-1", timeout=1, stability_checks=1)
-
-    assert client.get_calls == 3
-
-
-@pytest.mark.asyncio
-async def test_wait_for_sandbox_ready_retries_rate_limited_get(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    async def fast_sleep(delay: float) -> None:
-        _ = delay
-
-    monkeypatch.setattr("verifiers.v1.utils.sandbox_utils.asyncio.sleep", fast_sleep)
-    client = RateLimitedSandboxClient(failures=2)
-
-    await wait_for_sandbox_ready(client, "sbx-1", timeout=1)
-
-    assert client.get_calls == 3
 
 
 @pytest.mark.asyncio

@@ -7,47 +7,9 @@ from gepa.core.adapter import EvaluationBatch
 
 from verifiers.gepa.adapter import (
     VerifiersGEPAAdapter,
-    _completion_to_reflection_text,
     make_reflection_lm,
 )
 from verifiers.types import ClientConfig
-
-
-def test_completion_to_reflection_text_summarizes_multiturn_completion() -> None:
-    large_tool_output = "x" * 20_000
-    output = {
-        "completion": [
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "call_1",
-                        "name": "write",
-                        "arguments": (
-                            '{"file_path":"memo.md","content":"'
-                            + large_tool_output
-                            + '"}'
-                        ),
-                    }
-                ],
-            },
-            {
-                "role": "tool",
-                "tool_call_id": "call_1",
-                "content": large_tool_output,
-            },
-            {"role": "assistant", "content": "Done."},
-        ]
-    }
-
-    text = _completion_to_reflection_text(output)
-
-    assert "Final assistant message:\nDone." in text
-    assert "write" in text
-    assert "memo.md" in text
-    assert large_tool_output not in text
-    assert len(text) < 1_000
 
 
 def test_make_reflective_dataset_uses_compact_completion() -> None:

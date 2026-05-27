@@ -18,7 +18,7 @@ from verifiers.types import (
     SamplingArgs,
 )
 from verifiers.utils.client_utils import (
-    _build_headers_and_api_key,
+    build_headers_and_api_key,
     resolve_client_config,
 )
 from verifiers.utils.message_utils import message_to_printable
@@ -41,7 +41,7 @@ def make_reflection_lm(
     GEPA expects: reflection_lm(prompt: str) -> str
     """
     resolved_client_config = resolve_client_config(client_config)
-    headers, api_key = _build_headers_and_api_key(resolved_client_config)
+    headers, api_key = build_headers_and_api_key(resolved_client_config)
     timeout = httpx.Timeout(
         resolved_client_config.timeout,
         connect=resolved_client_config.connect_timeout,

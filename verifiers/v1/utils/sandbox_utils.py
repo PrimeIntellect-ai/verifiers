@@ -2,7 +2,6 @@ import asyncio
 import hashlib
 import importlib.resources as resources
 import json
-import random
 import shlex
 import tarfile
 import tempfile
@@ -10,9 +9,16 @@ import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from importlib.abc import Traversable
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, cast
+from typing import TYPE_CHECKING, Protocol, TypeVar, cast
 
-from prime_sandboxes import CommandTimeoutError
+import httpx
+import tenacity as tc
+from prime_sandboxes import (
+    APIError,
+    CommandTimeoutError,
+    DownloadTimeoutError,
+    UploadTimeoutError,
+)
 
 from verifiers.errors import Error, SandboxError
 from verifiers.utils.async_utils import maybe_call_with_named_args
@@ -38,7 +44,8 @@ if TYPE_CHECKING:
     from ..toolset import Toolset
 
 VF_STATE_INPUT_PATH_KEY = "_vf_state_input_path"
-SANDBOX_CREATE_RATE_LIMIT_ATTEMPTS = 6
+SANDBOX_RETRY_ATTEMPTS = 6
+T = TypeVar("T")
 
 
 class SandboxRecord(Protocol):
@@ -53,6 +60,9 @@ class SandboxCommandResult(Protocol):
 
 class SandboxBackgroundJob(Protocol):
     job_id: str
+    stdout_log_file: str
+    stderr_log_file: str
+    exit_file: str
 
 
 class SandboxBackgroundJobStatus(SandboxCommandResult, Protocol):
@@ -78,12 +88,69 @@ class SandboxBackgroundJobRecord:
         self.exit_file = exit_file
 
 
+def is_retryable_sandbox_api_error(exception: BaseException) -> bool:
+    retry_tokens = (
+        "HTTP 429",
+        "Rate exceeded",
+        "HTTP 502",
+        "HTTP 503",
+        "ConnectError",
+        "Read file timed out",
+        "Temporary failure in name resolution",
+    )
+    current: BaseException | None = exception
+    while current is not None:
+        if isinstance(current, APIError):
+            message = str(current)
+            if any(token in message for token in retry_tokens):
+                return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def is_retryable_sandbox_transfer_error(exception: BaseException) -> bool:
+    return isinstance(
+        exception,
+        (
+            httpx.ReadTimeout,
+            CommandTimeoutError,
+            UploadTimeoutError,
+            DownloadTimeoutError,
+        ),
+    ) or is_retryable_sandbox_api_error(exception)
+
+
+async def with_sandbox_retry(
+    fn: Callable[[], Awaitable[T]],
+    *,
+    retry_transfer_errors: bool = False,
+) -> T:
+    retry_predicate = (
+        is_retryable_sandbox_transfer_error
+        if retry_transfer_errors
+        else is_retryable_sandbox_api_error
+    )
+    async for attempt in tc.AsyncRetrying(
+        retry=tc.retry_if_exception(retry_predicate),
+        stop=tc.stop_after_attempt(SANDBOX_RETRY_ATTEMPTS),
+        wait=tc.wait_exponential_jitter(initial=1, max=30),
+        reraise=True,
+    ):
+        with attempt:
+            return await fn()
+    raise AssertionError("unreachable")
+
+
 class SandboxClient(Protocol):
     async def create(self, request: object) -> SandboxRecord: ...
 
-    async def wait_for_creation(self, sandbox_id: str) -> object: ...
-
-    async def get(self, sandbox_id: str) -> object: ...
+    async def wait_for_creation(
+        self,
+        sandbox_id: str,
+        *,
+        max_attempts: int = 120,
+        stability_checks: int = 1,
+    ) -> object: ...
 
     async def delete(self, sandbox_id: str) -> object: ...
 
@@ -129,14 +196,16 @@ class SandboxClient(Protocol):
 
     async def read_file(self, sandbox_id: str, path: str) -> object: ...
 
-    async def start_background_job(
+    async def run_background_job(
         self,
         sandbox_id: str,
         command: str,
         *,
+        timeout: int | None = None,
         working_dir: str | None = None,
         env: dict[str, str] | None = None,
-    ) -> SandboxBackgroundJob: ...
+        poll_interval: int = 3,
+    ) -> SandboxCommandResult: ...
 
     async def get_background_job(
         self,
@@ -570,8 +639,7 @@ async def create_sandbox(client: SandboxClient, sandbox_config: ConfigMap) -> st
     sandbox = await create_sandbox_record(client, request)
     sandbox_id = str(sandbox.id)
     try:
-        await wait_for_sandbox_running(client, sandbox_id, timeout=300)
-        await wait_for_sandbox_ready(client, sandbox_id, timeout=300)
+        await wait_for_sandbox_creation(client, sandbox_id)
     except BaseException:
         try:
             await client.delete(sandbox_id)
@@ -584,106 +652,20 @@ async def create_sandbox(client: SandboxClient, sandbox_config: ConfigMap) -> st
 async def create_sandbox_record(
     client: SandboxClient, request: object
 ) -> SandboxRecord:
-    for attempt in range(SANDBOX_CREATE_RATE_LIMIT_ATTEMPTS):
-        try:
-            return await client.create(request)
-        except Exception as exc:
-            final_attempt = attempt + 1 == SANDBOX_CREATE_RATE_LIMIT_ATTEMPTS
-            if final_attempt or not sandbox_rate_limited(exc):
-                raise
-            delay = min(5 * 2**attempt, 60) + random.uniform(0, 2)
-            await asyncio.sleep(delay)
-    raise AssertionError("unreachable")
+    result = await with_sandbox_retry(lambda: client.create(request))
+    return cast(SandboxRecord, result)
 
 
-def sandbox_rate_limited(exc: BaseException) -> bool:
-    current: BaseException | None = exc
-    while current is not None:
-        message = str(current)
-        if "HTTP 429" in message or "Rate exceeded" in message:
-            return True
-        current = current.__cause__ or current.__context__
-    return False
-
-
-async def wait_for_sandbox_running(
-    client: SandboxClient,
-    sandbox_id: str,
-    timeout: int = 300,
-    stability_checks: int = 3,
-) -> None:
-    deadline = asyncio.get_running_loop().time() + timeout
-    stable_checks = 0
-    last_error: BaseException | None = None
-    while asyncio.get_running_loop().time() < deadline:
-        try:
-            sandbox = await maybe_call_with_named_args(
-                getattr(client, "get"),
-                sandbox_id=sandbox_id,
-            )
-        except BaseException as exc:
-            if not sandbox_rate_limited(exc):
-                raise
-            last_error = exc
-            await asyncio.sleep(2)
-            continue
-
-        status = str(getattr(sandbox, "status", "") or "")
-        if status == "RUNNING":
-            stable_checks += 1
-            if stable_checks >= stability_checks:
-                return
-        else:
-            stable_checks = 0
-            if status in {"ERROR", "TERMINATED", "TIMEOUT"}:
-                raise SandboxError(f"Sandbox {sandbox_id} entered status {status}.")
-        await asyncio.sleep(2)
-    if last_error is not None:
-        raise SandboxError(
-            f"Sandbox {sandbox_id} did not reach RUNNING."
-        ) from last_error
-    raise SandboxError(f"Sandbox {sandbox_id} did not reach RUNNING.")
-
-
-async def wait_for_sandbox_ready(
-    client: SandboxClient, sandbox_id: str, timeout: int = 180
-) -> None:
-    deadline = asyncio.get_running_loop().time() + timeout
-    last_error: BaseException | None = None
-    while asyncio.get_running_loop().time() < deadline:
-        try:
-            sandbox = await maybe_call_with_named_args(
-                getattr(client, "get"),
-                sandbox_id=sandbox_id,
-            )
-        except BaseException as exc:
-            if not sandbox_rate_limited(exc):
-                raise
-            last_error = exc
-            await asyncio.sleep(2)
-            continue
-        status = str(getattr(sandbox, "status", "") or "")
-        if status == "RUNNING":
-            try:
-                result = await maybe_call_with_named_args(
-                    getattr(client, "execute_command"),
-                    sandbox_id=sandbox_id,
-                    command="true",
-                    timeout=10,
-                )
-                result = cast(SandboxCommandResult, result)
-                if result.exit_code == 0:
-                    return
-            except BaseException as exc:
-                last_error = exc
-        elif status in {"ERROR", "TERMINATED", "TIMEOUT"}:
-            raise SandboxError(f"Sandbox {sandbox_id} entered status {status}.")
-        await asyncio.sleep(2)
-    if last_error is not None:
-        raise SandboxError(
-            f"Sandbox {sandbox_id} was not command-ready."
-        ) from last_error
-    raise SandboxError(f"Sandbox {sandbox_id} was not command-ready.")
+async def wait_for_sandbox_creation(client: SandboxClient, sandbox_id: str) -> None:
+    await with_sandbox_retry(
+        lambda: maybe_call_with_named_args(
+            getattr(client, "wait_for_creation"),
+            sandbox_id=sandbox_id,
+            max_attempts=120,
+            stability_checks=1,
+        ),
+        retry_transfer_errors=True,
+    )
 
 
 async def setup_sandbox(handle: SandboxLease, sandbox_config: ConfigMap) -> None:
@@ -948,26 +930,22 @@ async def upload_sandbox_bytes(
     file_path: str,
     file_bytes: bytes,
     filename: str,
-    attempts: int = 10,
     timeout: int = 30,
 ) -> object:
-    last_error: Exception | None = None
-    for attempt in range(attempts):
-        try:
-            return await maybe_call_with_named_args(
+    try:
+        return await with_sandbox_retry(
+            lambda: maybe_call_with_named_args(
                 getattr(client, "upload_bytes"),
                 sandbox_id=sandbox_id,
                 file_path=file_path,
                 file_bytes=file_bytes,
                 filename=filename,
                 timeout=timeout,
-            )
-        except Exception as exc:
-            last_error = exc
-            if attempt + 1 == attempts:
-                break
-            await asyncio.sleep(min(2 + attempt, 10))
-    raise SandboxError(f"Sandbox upload failed: {file_path}") from last_error
+            ),
+            retry_transfer_errors=True,
+        )
+    except Exception as exc:
+        raise SandboxError(f"Sandbox upload failed: {file_path}") from exc
 
 
 async def run_program_commands(
@@ -1042,7 +1020,7 @@ async def run_sandbox_background_command(
     env: dict[str, str] | None = None,
 ) -> SandboxCommandResult:
     wait_seconds = timeout if timeout is not None else 900
-    poll_interval = 1
+    poll_interval = 3
     job_id = uuid.uuid4().hex[:8]
     pid_file = f"/tmp/job_{job_id}.pid"
     stdout_log_file = f"/tmp/job_{job_id}.stdout.log"
@@ -1107,18 +1085,24 @@ async def run_sandbox_background_command(
             )
 
     while asyncio.get_running_loop().time() < deadline:
-        status = await maybe_call_with_named_args(
-            getattr(client, "get_background_job"),
-            sandbox_id=sandbox_id,
-            job=job,
-            timeout=30,
+        status = await with_sandbox_retry(
+            lambda: maybe_call_with_named_args(
+                getattr(client, "get_background_job"),
+                sandbox_id=sandbox_id,
+                job=job,
+                timeout=30,
+            ),
+            retry_transfer_errors=True,
         )
         status = cast(SandboxBackgroundJobStatus, status)
         if status.completed:
             return status
         await asyncio.sleep(poll_interval)
 
-    await terminate_sandbox_background_job(client, sandbox_id, job)
+    try:
+        await terminate_sandbox_background_job(client, sandbox_id, job)
+    except Exception:
+        pass
     raise CommandTimeoutError(sandbox_id, command, wait_seconds)
 
 
