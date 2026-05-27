@@ -219,7 +219,7 @@ class TrajectoryStepTokens(TypedDict):
     is_truncated: bool
     routed_experts: RoutedExpertsPayload | None
     multi_modal_data: NotRequired[Any]  # renderers.MultiModalData sidecar (pixel_values, placeholder ranges) — set only on multimodal rollouts
-    prompt_attribution: NotRequired[Any]  # renderers.RenderedTokens sidecar (per-token is_content / sampled_mask / message_indices / message_roles) — set only on RendererClient rollouts
+    prompt_attribution: NotRequired[Any]  # renderers.RenderedTokens fields as a dict (per-token is_content / sampled_mask / message_indices / message_roles) — set only on RendererClient rollouts
 ```
 
 Token-level data for training.
