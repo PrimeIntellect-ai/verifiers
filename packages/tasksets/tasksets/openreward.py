@@ -1,9 +1,20 @@
 import asyncio
 import json
 from collections.abc import Iterable, Mapping
-from importlib import import_module
-from typing import Protocol, cast
+from typing import cast
 
+from openreward import OpenReward
+from openreward.api.environments.client import (
+    Environment as OpenRewardEnvironment,
+    Session as OpenRewardSession,
+)
+from openreward.api.environments.types import (
+    ImageBlock as OpenRewardImageBlock,
+    JSONObject as OpenRewardJSONObject,
+    Task as OpenRewardTask,
+    TextBlock as OpenRewardTextBlock,
+    ToolOutput as OpenRewardToolOutput,
+)
 from pydantic import field_validator
 from verifiers.decorators import cleanup, reward, setup, stop
 from verifiers.types import Message, MessageContent, Tool
@@ -17,49 +28,6 @@ from verifiers.v1.toolset import Toolset
 from verifiers.v1.types import ConfigData, ConfigMap
 from verifiers.v1.utils.config_utils import coerce_config
 from verifiers.v1.utils.serialization_utils import serializable
-
-
-class OpenRewardSession(Protocol):
-    def get_prompt(self) -> object: ...
-
-    def call_tool(self, tool_name: str, input: ConfigMap) -> object: ...
-
-
-class OpenRewardSessionContext(Protocol):
-    def __enter__(self) -> OpenRewardSession: ...
-
-    def __exit__(self, *exc: object) -> object: ...
-
-
-class OpenRewardEnvironment(Protocol):
-    def list_tasks(self, split: str) -> list[object]: ...
-
-    def get_task_range(
-        self, split: str, start: int | None = None, stop: int | None = None
-    ) -> list[object]: ...
-
-    def list_tools(self, format: str | None = None) -> list[object]: ...
-
-    def session(self, task: object) -> OpenRewardSessionContext: ...
-
-
-class OpenRewardEnvironmentsAPI(Protocol):
-    def get(
-        self,
-        name: str,
-        variant: str | None = None,
-        base_url: str | None = None,
-    ) -> OpenRewardEnvironment: ...
-
-
-class OpenRewardClient(Protocol):
-    environments: OpenRewardEnvironmentsAPI
-
-    def __enter__(self) -> "OpenRewardClient": ...
-
-    def __exit__(self, *exc: object) -> object: ...
-
-    def close(self) -> object: ...
 
 
 class OpenRewardTasksetConfig(TasksetConfig):
@@ -93,13 +61,8 @@ class OpenRewardTaskset(Taskset[OpenRewardTasksetConfig]):
 
     @setup
     async def setup_openreward(self, task: Task, state: State) -> None:
-        session = await asyncio.to_thread(openreward_session, task)
-        entered_session = await asyncio.to_thread(session.__enter__)
-        state["openreward_session"] = entered_session
-        state["openreward_session_context"] = session
-        prompt = await asyncio.to_thread(
-            cast(OpenRewardSession, entered_session).get_prompt
-        )
+        session = await ensure_openreward_session(task, state)
+        prompt = await asyncio.to_thread(session.get_prompt)
         state["prompt"] = openreward_prompt_messages(prompt)
 
     @cleanup
@@ -108,9 +71,7 @@ class OpenRewardTaskset(Taskset[OpenRewardTasksetConfig]):
         state.pop("openreward_session", None)
         if session_context is None:
             return
-        exit_fn = getattr(session_context, "__exit__", None)
-        if callable(exit_fn):
-            await asyncio.to_thread(exit_fn, None, None, None)
+        await asyncio.to_thread(session_context.__exit__, None, None, None)
 
     @stop
     async def openreward_done(self, state: State) -> bool:
@@ -135,25 +96,14 @@ class OpenRewardTool:
         self.__doc__ = tool_def.description
 
     async def __call__(self, state: State, **kwargs: object) -> MessageContent:
-        session = state.get("openreward_session")
-        if session is None:
-            raise RuntimeError("OpenReward session is not initialized.")
+        session = openreward_session_from_state(state)
         result = await asyncio.to_thread(
-            cast(OpenRewardSession, session).call_tool,
+            session.call_tool,
             self.name,
-            kwargs,
+            openreward_json_object(kwargs, "OpenReward tool input"),
         )
-        reward_value = getattr(result, "reward", None)
-        if isinstance(reward_value, int | float):
-            record_openreward_step_reward(state, reward_value)
-        finished = bool(getattr(result, "finished", False))
-        state["openreward_finished"] = finished
-        if finished:
-            state.stop("openreward_done")
-        metadata = getattr(result, "metadata", None)
-        if metadata is not None:
-            state["openreward_metadata"] = serializable(metadata)
-        content = openreward_blocks_content(getattr(result, "blocks", []))
+        record_openreward_tool_output(state, result)
+        content = openreward_blocks_content(result.blocks)
         if is_valid_tool_content_parts(content):
             return cast(MessageContent, content)
         if isinstance(content, str):
@@ -183,14 +133,15 @@ def load_eval_tasks(config: OpenRewardTasksetConfig) -> list[ConfigData]:
     )
 
 
-def openreward_toolset(task: Task, state: State) -> Toolset:
-    del state
-    spec = openreward_task_spec(task)
-    tool_defs_value = spec.get("tools")
-    if not isinstance(tool_defs_value, list):
-        raise TypeError("OpenReward task data must include a tools list.")
-    tool_defs = [openreward_tool_def(tool) for tool in tool_defs_value]
-    return Toolset(tools=[OpenRewardTool(tool_def) for tool_def in tool_defs])
+async def openreward_toolset(task: Task, state: State) -> Toolset:
+    session = await ensure_openreward_session(task, state)
+    tool_specs = await asyncio.to_thread(session.list_tools, "openai")
+    return Toolset(
+        tools=[
+            OpenRewardTool(openreward_tool_def(cast(ConfigMap, tool_spec)))
+            for tool_spec in tool_specs
+        ]
+    )
 
 
 def openreward_rows(
@@ -198,36 +149,30 @@ def openreward_rows(
     split: str,
     num_examples: int | None,
 ) -> list[ConfigData]:
-    with openreward_client() as client:
+    with OpenReward() as client:
         environment = client.environments.get(
             name=config.environment,
             variant=config.variant,
             base_url=config.base_url,
         )
         tasks = openreward_tasks(environment, split, num_examples)
-        tools = environment.list_tools(format="openai")
     return [
-        openreward_row(config, split, task, tools, index)
-        for index, task in enumerate(tasks)
+        openreward_row(config, split, task, index) for index, task in enumerate(tasks)
     ]
 
 
 def openreward_tasks(
     environment: OpenRewardEnvironment, split: str, num_examples: int | None
-) -> list[object]:
+) -> list[OpenRewardTask]:
     if num_examples is None:
-        return cast(list[object], environment.list_tasks(split=split))
-    return cast(
-        list[object],
-        environment.get_task_range(split=split, start=0, stop=num_examples),
-    )
+        return environment.list_tasks(split=split)
+    return environment.get_task_range(split=split, start=0, stop=num_examples)
 
 
 def openreward_row(
     config: OpenRewardTasksetConfig,
     split: str,
-    task: object,
-    tools: Iterable[object],
+    task: OpenRewardTask,
     index: int,
 ) -> ConfigData:
     return {
@@ -244,20 +189,54 @@ def openreward_row(
             "base_url": config.base_url,
             "split": split,
             "task": openreward_task_data(task),
-            "tools": [serializable_openreward_tool(tool) for tool in tools],
         },
         "toolsets": {"openreward": {"fn": "tasksets.openreward:openreward_toolset"}},
     }
 
 
-def openreward_client() -> OpenRewardClient:
-    client_type = openreward_type("openreward", "OpenReward")
-    if client_type is None:
-        raise ImportError(
-            "OpenRewardTaskset requires openreward. "
-            "Install with: uv add 'tasksets[openreward]'"
-        )
-    return cast(OpenRewardClient, client_type())
+async def ensure_openreward_session(task: Task, state: State) -> OpenRewardSession:
+    session = state.get("openreward_session")
+    if session is not None:
+        return cast(OpenRewardSession, session)
+    session_context = await asyncio.to_thread(openreward_session_context, task)
+    entered_session = await asyncio.to_thread(session_context.__enter__)
+    state["openreward_session"] = entered_session
+    state["openreward_session_context"] = session_context
+    return entered_session
+
+
+def openreward_session_from_state(state: State) -> OpenRewardSession:
+    session = state.get("openreward_session")
+    if session is None:
+        raise RuntimeError("OpenReward session is not initialized.")
+    return cast(OpenRewardSession, session)
+
+
+def openreward_session_context(task: Task) -> "OpenRewardClientSession":
+    spec = openreward_task_spec(task)
+    client = OpenReward()
+    environment = client.environments.get(
+        name=str(spec["environment"]),
+        variant=cast(str | None, spec.get("variant")),
+        base_url=cast(str | None, spec.get("base_url")),
+    )
+    session = environment.session(task=openreward_task_object(spec["task"]))
+    return OpenRewardClientSession(client, session)
+
+
+class OpenRewardClientSession:
+    def __init__(self, client: OpenReward, session: OpenRewardSession):
+        self.client = client
+        self.session = session
+
+    def __enter__(self) -> OpenRewardSession:
+        return self.session.__enter__()
+
+    def __exit__(self, *exc: object) -> object:
+        try:
+            return self.session.__exit__(*exc)
+        finally:
+            self.client.close()
 
 
 def openreward_task_spec(task: Task) -> ConfigMap:
@@ -267,137 +246,104 @@ def openreward_task_spec(task: Task) -> ConfigMap:
     return cast(ConfigMap, spec)
 
 
-def openreward_session(task: Task) -> OpenRewardSessionContext:
-    spec = openreward_task_spec(task)
-    config = OpenRewardTasksetConfig(
-        environment=str(spec["environment"]),
-        variant=cast(str | None, spec.get("variant")),
-        base_url=cast(str | None, spec.get("base_url")),
-    )
-    client = openreward_client()
-    environment = client.environments.get(
-        name=config.environment,
-        variant=config.variant,
-        base_url=config.base_url,
-    )
-    session = environment.session(task=openreward_task_object(spec["task"]))
-    return OpenRewardClientSession(client, session)
+def openreward_task_data(task: OpenRewardTask) -> ConfigData:
+    task_spec = serializable(task.task_spec)
+    if not isinstance(task_spec, Mapping):
+        raise TypeError("OpenReward task_spec must serialize to a mapping.")
+    return {
+        "server_name": task.server_name,
+        "environment_name": task.environment_name,
+        "namespace": task.namespace,
+        "task_spec": {str(key): value for key, value in task_spec.items()},
+    }
 
 
-class OpenRewardClientSession:
-    def __init__(self, client: OpenRewardClient, session: OpenRewardSessionContext):
-        self.client = client
-        self.session = session
-        self.entered_session: object | None = None
-
-    def __enter__(self) -> OpenRewardSession:
-        entered = self.session.__enter__()
-        self.entered_session = entered
-        return entered
-
-    def __exit__(self, *exc: object) -> object:
-        try:
-            return self.session.__exit__(*exc)
-        finally:
-            close = getattr(self.client, "close", None)
-            if callable(close):
-                close()
-
-
-def openreward_task_data(task: object) -> ConfigData:
-    value = serializable_object_mapping(task)
-    if not isinstance(value, Mapping):
-        raise TypeError("OpenReward task must serialize to a mapping.")
-    data = {str(key): item for key, item in value.items()}
-    if "task_spec" not in data:
-        return {"task_spec": dict(data)}
-    return data
-
-
-def openreward_task_object(value: object) -> object:
+def openreward_task_object(value: object) -> OpenRewardTask:
     if not isinstance(value, Mapping):
         raise TypeError("OpenReward task payload must be a mapping.")
     data = {str(key): item for key, item in value.items()}
-    task_type = openreward_type("openreward.api.environments.types", "Task")
-    required = {"server_name", "environment_name", "task_spec", "namespace"}
-    if task_type is not None and required.issubset(data):
-        return task_type(
-            server_name=data["server_name"],
-            environment_name=data["environment_name"],
-            task_spec=data["task_spec"],
-            namespace=data["namespace"],
-        )
-    return data.get("task_spec", data)
+    missing = sorted(
+        {"server_name", "environment_name", "namespace", "task_spec"} - set(data)
+    )
+    if missing:
+        raise ValueError(f"OpenReward task payload missing fields: {missing}.")
+    task_spec = data["task_spec"]
+    if not isinstance(task_spec, Mapping):
+        raise TypeError("OpenReward task payload task_spec must be a mapping.")
+    task_spec_data = {str(key): item for key, item in task_spec.items()}
+    namespace = data["namespace"]
+    if namespace is not None and not isinstance(namespace, str):
+        raise TypeError("OpenReward task payload namespace must be a string or None.")
+    return OpenRewardTask(
+        server_name=str(data["server_name"]),
+        environment_name=str(data["environment_name"]),
+        namespace=namespace,
+        task_spec=openreward_json_object(task_spec_data, "OpenReward task_spec"),
+    )
 
 
 def openreward_prompt_messages(prompt: object) -> list[Message]:
     blocks = openreward_blocks_content(prompt)
-    if isinstance(blocks, str):
-        return normalize_messages(
-            [{"role": "user", "content": blocks}], field_name="openreward.prompt"
-        )
     return normalize_messages(
         [{"role": "user", "content": blocks}], field_name="openreward.prompt"
     )
 
 
+def record_openreward_tool_output(state: State, output: OpenRewardToolOutput) -> None:
+    if output.reward is not None:
+        record_openreward_step_reward(state, output.reward)
+    state["openreward_finished"] = output.finished
+    if output.finished:
+        state.stop("openreward_done")
+    if output.metadata is not None:
+        state["openreward_metadata"] = serializable(output.metadata)
+
+
 def openreward_blocks_content(blocks: object) -> object:
+    if isinstance(blocks, OpenRewardTextBlock | OpenRewardImageBlock):
+        return openreward_block_content(blocks)
     if not isinstance(blocks, Iterable) or isinstance(blocks, str | bytes | Mapping):
-        return block_content(blocks)
-    content: list[object] = []
-    for block in blocks:
-        content.append(block_content(block))
+        return openreward_block_content(blocks)
+    content = [openreward_block_content(block) for block in blocks]
     text_blocks = [item for item in content if isinstance(item, str)]
     if len(text_blocks) == len(content):
         return "\n".join(text_blocks)
     return content
 
 
-def block_content(block: object) -> object:
-    block_type = getattr(block, "type", None)
-    if block_type is None and isinstance(block, Mapping):
+def openreward_block_content(block: object) -> object:
+    if isinstance(block, OpenRewardTextBlock):
+        return block.text
+    if isinstance(block, OpenRewardImageBlock):
+        return openreward_image_content(block.data, block.mimeType)
+    if isinstance(block, Mapping):
         block_map = cast(ConfigMap, block)
         block_type = block_map.get("type")
-    if block_type == "text":
-        text = getattr(block, "text", None)
-        if text is None and isinstance(block, Mapping):
-            block_map = cast(ConfigMap, block)
-            text = block_map.get("text")
-        return str(text or "")
-    if block_type == "image":
-        data = getattr(block, "data", None)
-        mime_type = getattr(block, "mimeType", None)
-        if isinstance(block, Mapping):
-            block_map = cast(ConfigMap, block)
-            data = block_map.get("data", data)
-            mime_type = block_map.get("mimeType", mime_type)
-        return {
-            "type": "image_url",
-            "image_url": {"url": f"data:{mime_type};base64,{data}"},
-        }
-    mapped = serializable_object_mapping(block)
-    if isinstance(mapped, Mapping):
-        return {str(key): item for key, item in mapped.items()}
+        if block_type == "text":
+            return str(block_map.get("text") or "")
+        if block_type == "image":
+            return openreward_image_content(
+                str(block_map.get("data") or ""),
+                str(block_map.get("mimeType") or ""),
+            )
+        return {str(key): value for key, value in block_map.items()}
     return str(block)
 
 
-def serializable_openreward_tool(tool: object) -> ConfigData:
-    data = serializable_object_mapping(tool)
-    if not isinstance(data, Mapping):
-        raise TypeError("OpenReward tool must serialize to a mapping.")
-    return {str(key): item for key, item in data.items()}
+def openreward_image_content(data: str, mime_type: str) -> ConfigData:
+    return {
+        "type": "image_url",
+        "image_url": {"url": f"data:{mime_type};base64,{data}"},
+    }
 
 
-def openreward_tool_def(tool: object) -> Tool:
-    if not isinstance(tool, Mapping):
-        raise TypeError("OpenReward tool data must be a mapping.")
-    tool_map = cast(ConfigMap, tool)
-    data = {str(key): value for key, value in tool_map.items()}
+def openreward_tool_def(tool: ConfigMap) -> Tool:
+    data = {str(key): value for key, value in tool.items()}
     function_data = data.get("function")
     if isinstance(function_data, Mapping):
         data = {str(key): value for key, value in function_data.items()}
-        if "parameters" not in data and "parameters" in tool_map:
-            data["parameters"] = tool_map["parameters"]
+        if "parameters" not in data and "parameters" in tool:
+            data["parameters"] = tool["parameters"]
     name = data.get("name")
     if not isinstance(name, str) or not name:
         raise ValueError("OpenReward tool is missing a name.")
@@ -416,6 +362,15 @@ def openreward_tool_def(tool: object) -> Tool:
     )
 
 
+def openreward_json_object(
+    value: Mapping[str, object], context: str
+) -> OpenRewardJSONObject:
+    data = serializable(value)
+    if not isinstance(data, Mapping):
+        raise TypeError(f"{context} must serialize to a JSON object.")
+    return cast(OpenRewardJSONObject, {str(key): item for key, item in data.items()})
+
+
 def record_openreward_step_reward(
     state: State, reward_value: float | int | None
 ) -> None:
@@ -429,20 +384,3 @@ def record_openreward_step_reward(
         return
     current = float(step.get("reward", 0.0) or 0.0)
     step["reward"] = current + float(reward_value)
-
-
-def openreward_type(module_name: str, attr: str) -> type[object] | None:
-    try:
-        return cast(type[object], getattr(import_module(module_name), attr))
-    except ImportError:
-        return None
-
-
-def serializable_object_mapping(value: object) -> object:
-    dumped = serializable(value)
-    if isinstance(dumped, Mapping):
-        return dumped
-    try:
-        return serializable(vars(value))
-    except TypeError:
-        return dumped

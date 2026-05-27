@@ -21,6 +21,13 @@ class OpenEnvStepResult:
 class FakeGenericEnvClient:
     instances: list["FakeGenericEnvClient"] = []
 
+    @classmethod
+    async def from_docker_image(cls, *args: object, **kwargs: object):
+        del args, kwargs
+        client = cls(base_url="http://localhost:8000")
+        await client.connect()
+        return client
+
     def __init__(self, base_url: str):
         self.base_url = base_url
         self.connected = False
@@ -47,6 +54,13 @@ class FakeGenericEnvClient:
 class FakeMCPToolClient:
     instances: list["FakeMCPToolClient"] = []
 
+    @classmethod
+    async def from_docker_image(cls, *args: object, **kwargs: object):
+        del args, kwargs
+        client = cls(base_url="http://localhost:8000")
+        await client.connect()
+        return client
+
     def __init__(self, base_url: str):
         self.base_url = base_url
         self.connected = False
@@ -60,17 +74,17 @@ class FakeMCPToolClient:
     async def reset(self, *, seed: int) -> OpenEnvStepResult:
         return OpenEnvStepResult({"prompt": f"mcp-{seed}"}, None, False)
 
-    async def list_tools(self) -> list[dict[str, object]]:
+    async def list_tools(self) -> list[openenv.OpenEnvToolSpec]:
         return [
-            {
-                "name": "echo",
-                "description": "Echo a message",
-                "input_schema": {
+            openenv.OpenEnvToolSpec(
+                name="echo",
+                description="Echo a message",
+                input_schema={
                     "type": "object",
                     "properties": {"message": {"type": "string"}},
                     "required": ["message"],
                 },
-            }
+            )
         ]
 
     async def step(self, action: object) -> OpenEnvStepResult:
@@ -81,10 +95,14 @@ class FakeMCPToolClient:
         self.closed = True
 
 
-class FakeCallToolAction:
-    def __init__(self, tool_name: str, arguments: dict[str, object]):
-        self.tool_name = tool_name
-        self.arguments = arguments
+class FakeOpenEnvProvider:
+    def __init__(self, spec: openenv.OpenEnvRuntimeSpec):
+        self.spec = spec
+        self.base_url = "http://localhost:8000"
+        self.stopped = False
+
+    def stop_container(self) -> None:
+        self.stopped = True
 
 
 def openenv_prompt_renderer(observation: object, **kwargs: object) -> list[vf.Message]:
@@ -99,16 +117,7 @@ def fake_openenv_runtime(monkeypatch):
     FakeGenericEnvClient.instances.clear()
     FakeMCPToolClient.instances.clear()
 
-    async def launch_server(spec: openenv.OpenEnvRuntimeSpec) -> openenv.OpenEnvServer:
-        return openenv.OpenEnvServer(
-            sandbox_id="sandbox",
-            exposure_id="exposure",
-            base_url="http://localhost:8000",
-            port=spec.port,
-            contract=spec.contract,
-        )
-
-    async def fetch_schema(
+    def fetch_schema(
         base_url: str, spec: openenv.OpenEnvRuntimeSpec
     ) -> dict[str, object]:
         del base_url
@@ -127,28 +136,10 @@ def fake_openenv_runtime(monkeypatch):
             }
         }
 
-    async def cleanup_server(server: openenv.OpenEnvServer) -> None:
-        del server
-
-    def optional_type(module_name: str, attr: str) -> type[object] | None:
-        if (module_name, attr) == (
-            "openenv.core.generic_client",
-            "GenericEnvClient",
-        ):
-            return FakeGenericEnvClient
-        if (module_name, attr) == ("openenv.core.mcp_client", "MCPToolClient"):
-            return FakeMCPToolClient
-        if (module_name, attr) == (
-            "openenv.core.env_server.mcp_types",
-            "CallToolAction",
-        ):
-            return FakeCallToolAction
-        return None
-
-    monkeypatch.setattr(openenv, "launch_openenv_server", launch_server)
+    monkeypatch.setattr(openenv, "PrimeSandboxOpenEnvProvider", FakeOpenEnvProvider)
+    monkeypatch.setattr(openenv, "GenericEnvClient", FakeGenericEnvClient)
+    monkeypatch.setattr(openenv, "MCPToolClient", FakeMCPToolClient)
     monkeypatch.setattr(openenv, "fetch_openenv_schema", fetch_schema)
-    monkeypatch.setattr(openenv, "cleanup_openenv_server", cleanup_server)
-    monkeypatch.setattr(openenv, "openenv_type", optional_type)
 
 
 def write_openenv_manifest(project: Path, contract: str) -> None:
@@ -233,9 +224,9 @@ async def test_openenv_taskset_exposes_mcp_tools(tmp_path, fake_openenv_runtime)
     )
     result = await tool(message="hello")
 
-    action = cast(FakeCallToolAction, client.actions[0])
-    assert action.tool_name == "echo"
-    assert action.arguments == {"message": "hello"}
+    action = client.actions[0]
+    assert getattr(action, "tool_name") == "echo"
+    assert getattr(action, "arguments") == {"message": "hello"}
     assert result == "ok"
     assert state["trajectory"][-1]["reward"] == 0.5
     assert state["openenv_done"] is True

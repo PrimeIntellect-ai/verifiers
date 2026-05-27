@@ -66,7 +66,7 @@ OPENENV_README_TEMPLATE = """\
 
 ### Overview
 - **Environment ID**: `{env_id_dash}`
-- **Short description**: OpenEnv-backed environment using `vf.OpenEnvEnv`.
+- **Short description**: OpenEnv-backed environment using `tasksets.OpenEnvTaskset`.
 - **Tags**: openenv, tools, multi-turn
 
 ### Structure
@@ -120,6 +120,7 @@ version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = [
     "verifiers>={vf.__version__}",
+    "tasksets>=0.1.0.post0",
 ]
 
 [build-system]
@@ -227,32 +228,15 @@ def load_environment(config: vf.EnvConfig) -> vf.Env:
 
 OPENENV_ENVIRONMENT_TEMPLATE = """\
 import verifiers as vf
-from verifiers.types import Messages, UserMessage
+from tasksets.openenv import OpenEnvTaskset, OpenEnvTasksetConfig
 
 
-class OpenEnvPromptRenderer:
-    def __call__(self, observation: object) -> Messages:
-        if isinstance(observation, dict):
-            prompt = observation.get("prompt")
-            if isinstance(prompt, str) and prompt.strip():
-                return [UserMessage(content=prompt)]
-        raise RuntimeError(
-            "OpenEnv observation did not include a renderable prompt. "
-            "Update OpenEnvPromptRenderer for your project's observation schema."
-        )
+def load_taskset(config: OpenEnvTasksetConfig) -> OpenEnvTaskset:
+    return OpenEnvTaskset(config=config)
 
 
-def load_environment(
-    num_train_examples: int = 100,
-    num_eval_examples: int = 50,
-    seed: int = 0,
-):
-    return vf.OpenEnvEnv(
-        num_train_examples=num_train_examples,
-        num_eval_examples=num_eval_examples,
-        seed=seed,
-        prompt_renderer=OpenEnvPromptRenderer(),
-    )
+def load_environment(config: vf.EnvConfig) -> vf.Env:
+    return vf.Env(taskset=vf.load_taskset(config=config.taskset))
 """
 
 OPENENV_PROJ_README_TEMPLATE = """\
@@ -419,6 +403,8 @@ def init_environment(
     taskset_name = _class_name(env_id_underscore, "Taskset")
     harness_config_name = _class_name(env_id_underscore, "HarnessConfig")
     harness_name = _class_name(env_id_underscore, "Harness")
+    if openenv:
+        v1 = True
     if with_harness and not v1:
         print("--with-harness only applies with --v1; ignoring.")
         with_harness = False
@@ -460,7 +446,7 @@ def init_environment(
         init_file = environment_dir / "__init__.py"
         if not init_file.exists():
             exports = ["load_environment"]
-            if v1 and not openenv:
+            if v1:
                 exports.append("load_taskset")
             if v1 and with_harness and not openenv:
                 exports.append("load_harness")

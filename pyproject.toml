@@ -87,7 +87,7 @@ rg = [
     "reasoning-gym",
 ]
 ta = [
-    "tasksets[textarena]>=0.1.0.post0",
+    "tasksets>=0.1.0.post0",
 ]
 tasksets = [
     "tasksets>=0.1.0.post0",
@@ -105,11 +105,10 @@ browser = [
     "python-dotenv>=1.0.0",
 ]
 openenv = [
-    "openenv-core>=0.3.0",
-    "tasksets[openenv]>=0.1.0.post0",
+    "tasksets>=0.1.0.post0",
 ]
 openreward = [
-    "tasksets[openreward]>=0.1.0.post0",
+    "tasksets>=0.1.0.post0",
 ]
 renderers = [
     "renderers>=0.1.8.dev28",
@@ -134,6 +133,26 @@ exclude-newer = "7 days"
 conflicts = [
     [
         { extra = "openenv" },
+        { group = "policy" },
+    ],
+    [
+        { extra = "ta" },
+        { group = "policy" },
+    ],
+    [
+        { extra = "tasksets" },
+        { group = "policy" },
+    ],
+    [
+        { extra = "packages" },
+        { group = "policy" },
+    ],
+    [
+        { extra = "openreward" },
+        { group = "policy" },
+    ],
+    [
+        { group = "dev" },
         { group = "policy" },
     ],
 ]

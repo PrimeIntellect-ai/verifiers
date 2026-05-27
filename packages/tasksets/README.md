@@ -8,20 +8,8 @@ from tasksets import HarborTaskset, HarborTasksetConfig
 taskset = HarborTaskset(config=HarborTasksetConfig())
 ```
 
-Install TextArena-backed tasksets with:
+Bundled tasksets include their upstream runtime dependencies by default:
 
 ```bash
-uv add "tasksets[textarena]"
-```
-
-Install OpenEnv-backed tasksets with:
-
-```bash
-uv add "tasksets[openenv]"
-```
-
-Install OpenReward-backed tasksets with:
-
-```bash
-uv add "tasksets[openreward]"
+uv add tasksets
 ```

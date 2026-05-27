@@ -1,18 +1,25 @@
 import asyncio
 import inspect
 import json
-from collections.abc import Iterable, Mapping, Sequence
+import time
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from importlib import import_module
 from pathlib import Path
-from typing import Protocol, cast
+from typing import cast
 
 import requests
 import tenacity as tc
+from openenv.core.containers.runtime.providers import ContainerProvider
+from openenv.core.env_server.mcp_types import (
+    CallToolAction,
+    CallToolObservation,
+    Tool as OpenEnvToolSpec,
+)
+from openenv.core.generic_client import GenericEnvClient
+from openenv.core.mcp_client import MCPToolClient
 from pydantic import field_validator
 from verifiers.decorators import cleanup, reward, setup, stop
-from verifiers.types import Message, MessageContent, Tool
-from verifiers.types import UserMessage
+from verifiers.types import Message, MessageContent, Tool, UserMessage
 from verifiers.utils.message_utils import get_messages, normalize_messages
 from verifiers.utils.tool_utils import is_valid_tool_content_parts
 from verifiers.v1.config import ConfigSource, import_config_ref
@@ -23,43 +30,7 @@ from verifiers.v1.toolset import Toolset
 from verifiers.v1.types import ConfigData, ConfigMap, Handler, PromptInput
 from verifiers.v1.user import User
 from verifiers.v1.utils.config_utils import coerce_config
-
-
-class OpenEnvStepResult(Protocol):
-    observation: object
-    reward: float | int | None
-    done: bool
-
-
-class OpenEnvGenericClient(Protocol):
-    async def connect(self) -> None: ...
-
-    async def reset(self, *, seed: int) -> OpenEnvStepResult: ...
-
-    async def step(self, action: ConfigMap) -> OpenEnvStepResult: ...
-
-    async def close(self) -> None: ...
-
-
-class OpenEnvMCPClient(Protocol):
-    async def connect(self) -> None: ...
-
-    async def reset(self, *, seed: int) -> OpenEnvStepResult: ...
-
-    async def list_tools(self) -> list[object]: ...
-
-    async def step(self, action: object) -> OpenEnvStepResult: ...
-
-    async def close(self) -> None: ...
-
-
-@dataclass
-class OpenEnvServer:
-    sandbox_id: str
-    exposure_id: str
-    base_url: str
-    port: int
-    contract: str
+from verifiers.v1.utils.serialization_utils import serializable
 
 
 @dataclass(frozen=True)
@@ -84,7 +55,7 @@ class OpenEnvRuntimeSpec:
 
 
 class OpenEnvTasksetConfig(TasksetConfig):
-    prompt_renderer: str
+    prompt_renderer: str = "tasksets.openenv:default_openenv_prompt_renderer"
     openenv_project: str | None = None
     num_train_examples: int = 100
     num_eval_examples: int = 50
@@ -129,13 +100,8 @@ class OpenEnvTaskset(Taskset[OpenEnvTasksetConfig]):
     @setup
     async def setup_openenv(self, task: Task, state: State) -> None:
         spec = openenv_runtime_spec(task)
-        await ensure_openenv_runtime(spec, state)
-        if spec.contract == "mcp":
-            client = openenv_mcp_client_from_state(state)
-            result = await client.reset(seed=spec.seed)
-        else:
-            client = openenv_generic_client_from_state(state)
-            result = await client.reset(seed=spec.seed)
+        client = await ensure_openenv_runtime(spec, state)
+        result = await client.reset(seed=spec.seed)
         state["openenv_done"] = bool(result.done)
         state["prompt"] = await render_openenv_observation_messages(
             result.observation,
@@ -146,7 +112,11 @@ class OpenEnvTaskset(Taskset[OpenEnvTasksetConfig]):
 
     @cleanup
     async def cleanup_openenv(self, state: State) -> None:
-        await cleanup_openenv_state(state)
+        client = state.pop("openenv_client", None)
+        state.pop("openenv_action_schema", None)
+        state.pop("openenv_contract", None)
+        if client is not None:
+            await close_openenv_client(client)
 
     @stop
     async def openenv_done(self, state: State) -> bool:
@@ -212,8 +182,9 @@ async def openenv_toolset(task: Task, state: State) -> Toolset:
     spec = openenv_runtime_spec(task)
     if spec.contract != "mcp":
         return Toolset()
-    await ensure_openenv_runtime(spec, state)
-    client = openenv_mcp_client_from_state(state)
+    client = await ensure_openenv_runtime(spec, state)
+    if not isinstance(client, MCPToolClient):
+        raise RuntimeError("OpenEnv MCP task did not initialize an MCPToolClient.")
     tool_defs = convert_openenv_mcp_tools(await client.list_tools())
     return Toolset(tools=[OpenEnvMCPTool(tool_def) for tool_def in tool_defs])
 
@@ -227,12 +198,9 @@ class OpenEnvMCPTool:
 
     async def __call__(self, state: State, **kwargs: object) -> MessageContent:
         client = openenv_mcp_client_from_state(state)
-        action_type = openenv_type(
-            "openenv.core.env_server.mcp_types", "CallToolAction"
+        result = await client.step(
+            CallToolAction(tool_name=self.name, arguments=dict(kwargs))
         )
-        if action_type is None:
-            raise missing_openenv("MCP tool calls")
-        result = await client.step(action_type(tool_name=self.name, arguments=kwargs))
         record_openenv_step_reward(state, result.reward)
         state["openenv_done"] = bool(result.done)
         if result.done:
@@ -379,102 +347,159 @@ def openenv_runtime_spec(task: Task) -> OpenEnvRuntimeSpec:
     )
 
 
-async def ensure_openenv_runtime(spec: OpenEnvRuntimeSpec, state: State) -> None:
-    if state.get("openenv_server") is not None:
-        return
+async def ensure_openenv_runtime(
+    spec: OpenEnvRuntimeSpec, state: State
+) -> GenericEnvClient | MCPToolClient:
+    existing = state.get("openenv_client")
+    if isinstance(existing, GenericEnvClient | MCPToolClient):
+        return existing
+    provider = PrimeSandboxOpenEnvProvider(spec)
+    client_type = MCPToolClient if spec.contract == "mcp" else GenericEnvClient
     try:
-        server = await launch_openenv_server(spec)
-        state["openenv_server"] = server
-        state["openenv_contract"] = server.contract
-        schema = await fetch_openenv_schema(server.base_url, spec)
+        client = await client_type.from_docker_image(
+            spec.image,
+            provider=provider,
+            port=spec.port,
+            start_command=spec.start_command,
+            env_vars={"ENABLE_WEB_INTERFACE": "false"},
+        )
+        schema = await asyncio.to_thread(fetch_openenv_schema, provider.base_url, spec)
         action_schema = schema.get("action", {}) if isinstance(schema, Mapping) else {}
         if not isinstance(action_schema, Mapping):
             action_schema = {}
         assert_openenv_contract_matches_schema(
-            server.contract, cast(ConfigMap, action_schema)
+            spec.contract, cast(ConfigMap, action_schema)
         )
-        state["openenv_action_schema"] = dict(action_schema)
-        if server.contract == "mcp":
-            client_type = openenv_type("openenv.core.mcp_client", "MCPToolClient")
-            if client_type is None:
-                raise missing_openenv("MCP rollouts")
-            client = cast(
-                OpenEnvMCPClient,
-                client_type(base_url=server.base_url),
-            )
-            await client.connect()
-            state["openenv_mcp_client"] = client
-            return
-        client_type = openenv_type("openenv.core.generic_client", "GenericEnvClient")
-        if client_type is None:
-            raise missing_openenv("gym rollouts")
-        client = cast(OpenEnvGenericClient, client_type(base_url=server.base_url))
-        await client.connect()
         state["openenv_client"] = client
+        state["openenv_contract"] = spec.contract
+        state["openenv_action_schema"] = dict(action_schema)
+        return client
     except Exception:
-        await cleanup_openenv_state(state)
+        try:
+            provider.stop_container()
+        except Exception:
+            pass
         raise
 
 
-async def launch_openenv_server(spec: OpenEnvRuntimeSpec) -> OpenEnvServer:
-    from prime_sandboxes import AsyncSandboxClient, CreateSandboxRequest
+class PrimeSandboxOpenEnvProvider(ContainerProvider):
+    def __init__(self, spec: OpenEnvRuntimeSpec):
+        self.spec = spec
+        self.sandbox_id: str | None = None
+        self.exposure_id: str | None = None
+        self._base_url: str | None = None
+        self._client: object | None = None
 
-    retry = openenv_retry(spec)
-    async with AsyncSandboxClient() as sandboxes:
+    @property
+    def base_url(self) -> str:
+        if self._base_url is None:
+            raise RuntimeError("OpenEnv sandbox has not started.")
+        return self._base_url
+
+    def start_container(
+        self,
+        image: str,
+        port: int | None = None,
+        env_vars: dict[str, str] | None = None,
+        **kwargs: object,
+    ) -> str:
+        from prime_sandboxes import APIClient, CreateSandboxRequest, SandboxClient
+
+        api_client = APIClient()
+        client = SandboxClient(api_client)
+        self._client = client
+        start_command = kwargs.get("start_command")
+        if not isinstance(start_command, str) or not start_command:
+            start_command = self.spec.start_command
+        container_port = port or self.spec.port
+        environment_vars = {"ENABLE_WEB_INTERFACE": "false", **dict(env_vars or {})}
         request = CreateSandboxRequest(
             name="openenv-env",
-            docker_image=spec.image,
-            start_command=spec.start_command,
+            docker_image=image,
+            start_command=start_command,
             cpu_cores=2,
             memory_gb=4,
             disk_size_gb=10,
             timeout_minutes=60,
-            environment_vars={"ENABLE_WEB_INTERFACE": "false"},
+            environment_vars=environment_vars,
         )
+        sandbox_id: str | None = None
+        exposure_id: str | None = None
         try:
-            sandbox = await retry(sandboxes.create, request)
-        except Exception as exc:
-            raise RuntimeError(
-                f"Failed to create OpenEnv sandbox for image {spec.image}."
-            ) from exc
-        exposure = None
-        try:
-            await sandboxes.wait_for_creation(
-                sandbox.id,
-                max_attempts=spec.wait_for_creation_max_attempts,
+            sandbox = openenv_retry_sync(self.spec, client.create, request)
+            sandbox_id = sandbox_handle_id(sandbox)
+            self.sandbox_id = sandbox_id
+            client.wait_for_creation(
+                sandbox_id,
+                max_attempts=self.spec.wait_for_creation_max_attempts,
             )
-            exposure = await sandboxes.expose(
-                sandbox.id,
-                port=spec.port,
+            exposure = client.expose(
+                sandbox_id,
+                port=container_port,
                 name="openenv-env",
                 protocol="TCP",
             )
-            server = OpenEnvServer(
-                sandbox_id=sandbox.id,
-                exposure_id=exposure.exposure_id,
-                base_url=openenv_exposure_base_url(exposure),
-                port=spec.port,
-                contract=spec.contract,
-            )
-            await wait_for_openenv_ready(server.base_url, spec)
-            return server
+            exposure_id = exposure_handle_id(exposure)
+            self.exposure_id = exposure_id
+            self._base_url = openenv_exposure_base_url(exposure)
+            return self._base_url
         except Exception as exc:
-            if exposure is not None:
+            details = (
+                openenv_sandbox_failure_details(client, sandbox_id, container_port)
+                if sandbox_id is not None
+                else None
+            )
+            if sandbox_id is not None:
+                if exposure_id is not None:
+                    try:
+                        client.unexpose(sandbox_id, exposure_id)
+                    except Exception:
+                        pass
                 try:
-                    await sandboxes.unexpose(sandbox.id, exposure.exposure_id)
+                    client.delete(sandbox_id)
                 except Exception:
                     pass
+            message = f"OpenEnv sandbox failed during startup for image {image}."
+            if details:
+                message = f"{message}\n{details}"
+            raise RuntimeError(message) from exc
+
+    def stop_container(self) -> None:
+        client = self._client
+        if client is None:
+            return
+        if self.sandbox_id is not None and self.exposure_id is not None:
+            unexpose = getattr(client, "unexpose", None)
             try:
-                await sandboxes.delete(sandbox.id)
+                if callable(unexpose):
+                    unexpose(self.sandbox_id, self.exposure_id)
             except Exception:
                 pass
-            raise RuntimeError(
-                f"OpenEnv sandbox {sandbox.id} failed during startup."
-            ) from exc
+        if self.sandbox_id is not None:
+            delete = getattr(client, "delete", None)
+            try:
+                if callable(delete):
+                    delete(self.sandbox_id)
+            except Exception:
+                pass
+        api_client = getattr(client, "client", None)
+        close = getattr(api_client, "close", None)
+        if callable(close):
+            close()
+        self.sandbox_id = None
+        self.exposure_id = None
+        self._base_url = None
+        self._client = None
+
+    def wait_for_ready(self, base_url: str, timeout_s: float = 30.0) -> None:
+        del timeout_s
+        wait_for_openenv_ready(base_url, self.spec)
 
 
-def openenv_retry(spec: OpenEnvRuntimeSpec):
-    retrying = tc.AsyncRetrying(
+def openenv_retry_sync(
+    spec: OpenEnvRuntimeSpec, fn: Callable[..., object], *args: object
+) -> object:
+    retrying = tc.Retrying(
         stop=tc.stop_after_attempt(spec.max_retries),
         wait=tc.wait_exponential_jitter(
             initial=spec.base_delay,
@@ -484,17 +509,21 @@ def openenv_retry(spec: OpenEnvRuntimeSpec):
         ),
         reraise=True,
     )
+    return retrying(fn, *args)
 
-    async def call(fn: Handler, *args: object, **kwargs: object) -> object:
-        async for attempt in retrying:
-            with attempt:
-                result = fn(*args, **kwargs)
-                if inspect.isawaitable(result):
-                    return await result
-                return result
-        raise RuntimeError("OpenEnv retry exhausted.")
 
-    return call
+def sandbox_handle_id(sandbox: object) -> str:
+    sandbox_id = getattr(sandbox, "id", None)
+    if not isinstance(sandbox_id, str) or not sandbox_id:
+        raise RuntimeError("Prime sandbox response did not include an id.")
+    return sandbox_id
+
+
+def exposure_handle_id(exposure: object) -> str:
+    exposure_id = getattr(exposure, "exposure_id", None)
+    if not isinstance(exposure_id, str) or not exposure_id:
+        raise RuntimeError("Prime sandbox exposure response did not include an id.")
+    return exposure_id
 
 
 def openenv_exposure_base_url(exposure: object) -> str:
@@ -511,16 +540,15 @@ def openenv_exposure_base_url(exposure: object) -> str:
     raise RuntimeError("OpenEnv sandbox exposure did not provide a usable URL.")
 
 
-async def wait_for_openenv_ready(base_url: str, spec: OpenEnvRuntimeSpec) -> None:
-    loop = asyncio.get_running_loop()
-    start = loop.time()
+def wait_for_openenv_ready(base_url: str, spec: OpenEnvRuntimeSpec) -> None:
+    start_time = time.monotonic()
     last_error = "no attempts"
-    while loop.time() - start < spec.startup_timeout_seconds:
-        ok, detail = await asyncio.to_thread(check_openenv_health, base_url, spec)
+    while time.monotonic() - start_time < spec.startup_timeout_seconds:
+        ok, detail = check_openenv_health(base_url, spec)
         if ok:
             return
         last_error = detail
-        await asyncio.sleep(spec.startup_poll_interval_seconds)
+        time.sleep(spec.startup_poll_interval_seconds)
     raise RuntimeError(
         "OpenEnv server not ready. "
         f"Health timeout={spec.startup_timeout_seconds}s, "
@@ -541,7 +569,41 @@ def check_openenv_health(base_url: str, spec: OpenEnvRuntimeSpec) -> tuple[bool,
         return False, f"{type(exc).__name__}: {exc}"
 
 
-async def fetch_openenv_schema(base_url: str, spec: OpenEnvRuntimeSpec) -> ConfigData:
+def openenv_sandbox_failure_details(
+    client: object, sandbox_id: str, port: int | None
+) -> str | None:
+    details: list[str] = []
+    get_logs = getattr(client, "get_logs", None)
+    if callable(get_logs):
+        try:
+            logs = str(get_logs(sandbox_id) or "")
+        except Exception:
+            logs = ""
+        if logs:
+            details.append(f"Logs tail:\n{logs[-4000:]}")
+    execute_command = getattr(client, "execute_command", None)
+    if callable(execute_command) and port is not None:
+        try:
+            result = execute_command(
+                sandbox_id,
+                f'sh -lc "curl -sS -m 2 http://localhost:{int(port)}/health 2>&1 || true"',
+                timeout=5,
+            )
+        except Exception as exc:
+            details.append(f"Local /health probe failed: {type(exc).__name__}: {exc}")
+        else:
+            stdout = str(getattr(result, "stdout", "") or "").strip()
+            stderr = str(getattr(result, "stderr", "") or "").strip()
+            if stdout:
+                details.append(f"Local /health probe stdout: {stdout}")
+            if stderr:
+                details.append(f"Local /health probe stderr: {stderr}")
+            if not stdout and not stderr:
+                details.append("Local /health probe returned no output.")
+    return "\n".join(details) or None
+
+
+def fetch_openenv_schema(base_url: str, spec: OpenEnvRuntimeSpec) -> ConfigData:
     def request_schema() -> ConfigData:
         response = requests.get(
             f"{base_url}/schema",
@@ -553,8 +615,7 @@ async def fetch_openenv_schema(base_url: str, spec: OpenEnvRuntimeSpec) -> Confi
             raise TypeError("OpenEnv /schema must return a JSON object.")
         return {str(key): value for key, value in data.items()}
 
-    retry = openenv_retry(spec)
-    return cast(ConfigData, await retry(lambda: asyncio.to_thread(request_schema)))
+    return cast(ConfigData, openenv_retry_sync(spec, request_schema))
 
 
 def assert_openenv_contract_matches_schema(
@@ -589,56 +650,27 @@ def schema_contains_openenv_values(value: object, values: set[str]) -> bool:
     return False
 
 
-async def cleanup_openenv_state(state: State) -> None:
-    generic_client = state.pop("openenv_client", None)
-    if generic_client is not None:
-        await close_openenv_client(generic_client)
-    mcp_client = state.pop("openenv_mcp_client", None)
-    if mcp_client is not None:
-        await close_openenv_client(mcp_client)
-    server = state.pop("openenv_server", None)
-    if isinstance(server, OpenEnvServer):
-        await cleanup_openenv_server(server)
-
-
 async def close_openenv_client(client: object) -> None:
     close = getattr(client, "close", None)
     if not callable(close):
         return
-    try:
-        result = close()
-        if inspect.isawaitable(result):
-            await result
-    except Exception:
-        pass
+    result = close()
+    if inspect.isawaitable(result):
+        await result
 
 
-async def cleanup_openenv_server(server: OpenEnvServer) -> None:
-    from prime_sandboxes import AsyncSandboxClient
-
-    async with AsyncSandboxClient() as sandboxes:
-        try:
-            await sandboxes.unexpose(server.sandbox_id, server.exposure_id)
-        except Exception:
-            pass
-        try:
-            await sandboxes.delete(server.sandbox_id)
-        except Exception:
-            pass
-
-
-def openenv_generic_client_from_state(state: State) -> OpenEnvGenericClient:
+def openenv_generic_client_from_state(state: State) -> GenericEnvClient:
     client = state.get("openenv_client")
-    if client is None:
+    if not isinstance(client, GenericEnvClient):
         raise RuntimeError("OpenEnv gym client is not initialized.")
-    return cast(OpenEnvGenericClient, client)
+    return client
 
 
-def openenv_mcp_client_from_state(state: State) -> OpenEnvMCPClient:
-    client = state.get("openenv_mcp_client")
-    if client is None:
+def openenv_mcp_client_from_state(state: State) -> MCPToolClient:
+    client = state.get("openenv_client")
+    if not isinstance(client, MCPToolClient):
         raise RuntimeError("OpenEnv MCP client is not initialized.")
-    return cast(OpenEnvMCPClient, client)
+    return client
 
 
 def openenv_action_schema(state: State) -> ConfigMap:
@@ -675,6 +707,23 @@ async def render_openenv_observation_messages(
                 f"at index {index}."
             )
     return messages
+
+
+def default_openenv_prompt_renderer(observation: object, **kwargs: object) -> object:
+    del kwargs
+    if isinstance(observation, str):
+        return [{"role": "user", "content": observation}]
+    if isinstance(observation, Mapping):
+        observation_map = cast(ConfigMap, observation)
+        messages = observation_map.get("messages")
+        if messages is not None:
+            return messages
+        for key in ("prompt", "question", "instruction", "content", "text"):
+            value = observation_map.get(key)
+            if isinstance(value, str) and value.strip():
+                return [{"role": "user", "content": value}]
+        return [{"role": "user", "content": json.dumps(serializable(observation))}]
+    return [{"role": "user", "content": str(observation)}]
 
 
 async def call_openenv_renderer(
@@ -751,57 +800,32 @@ def single_openenv_string_field(schema: ConfigMap) -> str | None:
     return None
 
 
-def convert_openenv_mcp_tools(tools: Iterable[object]) -> list[Tool]:
+def convert_openenv_mcp_tools(tools: Iterable[OpenEnvToolSpec]) -> list[Tool]:
     tool_defs: list[Tool] = []
     for tool in tools:
-        data = tool_data(tool)
-        name = data.get("name")
-        if not isinstance(name, str) or not name:
-            raise ValueError("OpenEnv MCP tool is missing a name.")
-        description = data.get("description")
-        schema = data.get("input_schema") or data.get("inputSchema")
-        if schema is None:
-            schema = {"type": "object", "properties": {}}
-        if not isinstance(schema, Mapping):
-            raise TypeError(f"OpenEnv MCP tool {name!r} schema must be a mapping.")
+        schema = tool.input_schema or {"type": "object", "properties": {}}
         tool_defs.append(
             Tool(
-                name=name,
-                description=str(description or ""),
+                name=tool.name,
+                description=tool.description,
                 parameters={str(key): value for key, value in schema.items()},
             )
         )
     return tool_defs
 
 
-def tool_data(tool: object) -> ConfigData:
-    model_dump = getattr(tool, "model_dump", None)
-    if callable(model_dump):
-        data = model_dump()
-        if isinstance(data, Mapping):
-            return {str(key): value for key, value in data.items()}
-    if isinstance(tool, Mapping):
-        return {str(key): value for key, value in tool.items()}
-    return {
-        "name": getattr(tool, "name", ""),
-        "description": getattr(tool, "description", ""),
-        "input_schema": getattr(tool, "input_schema", None),
-    }
-
-
 def extract_openenv_mcp_tool_content(observation: object) -> object:
-    model_dump = getattr(observation, "model_dump", None)
-    if callable(model_dump):
-        try:
-            observation = model_dump()
-        except Exception:
-            pass
-    if not isinstance(observation, Mapping):
+    if isinstance(observation, CallToolObservation):
+        if observation.error is not None:
+            return {"error": observation.error.message}
+        result = observation.result
+    elif isinstance(observation, Mapping):
+        observation_map = cast(ConfigMap, observation)
+        if observation_map.get("error") is not None:
+            return {"error": observation_map.get("error")}
+        result = observation_map.get("result")
+    else:
         return observation
-    observation_map = cast(ConfigMap, observation)
-    if observation_map.get("error") is not None:
-        return {"error": observation_map.get("error")}
-    result = observation_map.get("result")
     data = getattr(result, "data", None)
     if data is not None:
         return data
@@ -823,17 +847,3 @@ def record_openenv_step_reward(state: State, reward_value: float | int | None) -
         return
     current = float(step.get("reward", 0.0) or 0.0)
     step["reward"] = current + float(reward_value)
-
-
-def openenv_type(module_name: str, attr: str) -> type[object] | None:
-    try:
-        return cast(type[object], getattr(import_module(module_name), attr))
-    except ImportError:
-        return None
-
-
-def missing_openenv(component: str) -> ImportError:
-    return ImportError(
-        f"OpenEnvTaskset requires openenv-core for {component}. "
-        "Install with: uv add 'tasksets[openenv]'"
-    )

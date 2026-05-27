@@ -17,8 +17,7 @@ try:
     import textarena as ta
 except ImportError as e:
     raise ImportError(
-        "TextArenaTaskset requires nltk and textarena. "
-        "Install with: uv add 'tasksets[textarena]'"
+        "TextArenaTaskset requires nltk and textarena. Install with: uv add tasksets"
     ) from e
 
 

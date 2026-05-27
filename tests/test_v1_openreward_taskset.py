@@ -7,23 +7,8 @@ import verifiers as vf
 from tasksets import openreward
 
 
-class FakeTextBlock:
-    type = "text"
-
-    def __init__(self, text: str):
-        self.text = text
-
-
-class FakeToolOutput:
-    def __init__(self, text: str, reward: float, finished: bool):
-        self.blocks = [FakeTextBlock(text)]
-        self.reward = reward
-        self.finished = finished
-        self.metadata = {"status": "ok"}
-
-
 class FakeOpenRewardSession:
-    def __init__(self, task: object):
+    def __init__(self, task: openreward.OpenRewardTask):
         self.task = task
         self.entered = False
         self.exited = False
@@ -36,27 +21,8 @@ class FakeOpenRewardSession:
     def __exit__(self, *exc: object) -> None:
         self.exited = True
 
-    def get_prompt(self) -> list[FakeTextBlock]:
-        return [FakeTextBlock("Solve the task.")]
-
-    def call_tool(self, tool_name: str, input: dict[str, object]) -> FakeToolOutput:
-        self.calls.append((tool_name, input))
-        return FakeToolOutput("Correct.", 1.0, True)
-
-
-class FakeOpenRewardEnvironment:
-    def __init__(self):
-        self.sessions: list[FakeOpenRewardSession] = []
-        self.task_range_calls: list[tuple[str, int | None, int | None]] = []
-
-    def list_tasks(self, split: str) -> list[dict[str, object]]:
-        return [{"id": f"{split}-0"}]
-
-    def get_task_range(
-        self, split: str, start: int | None = None, stop: int | None = None
-    ) -> list[dict[str, object]]:
-        self.task_range_calls.append((split, start, stop))
-        return [{"id": f"{split}-{index}"} for index in range(start or 0, stop or 0)]
+    def get_prompt(self) -> list[openreward.OpenRewardTextBlock]:
+        return [openreward.OpenRewardTextBlock(text="Solve the task.")]
 
     def list_tools(self, format: str | None = None) -> list[dict[str, object]]:
         assert format == "openai"
@@ -73,7 +39,48 @@ class FakeOpenRewardEnvironment:
             }
         ]
 
-    def session(self, task: object) -> FakeOpenRewardSession:
+    def call_tool(
+        self, tool_name: str, input: dict[str, object]
+    ) -> openreward.OpenRewardToolOutput:
+        self.calls.append((tool_name, input))
+        return openreward.OpenRewardToolOutput(
+            blocks=[openreward.OpenRewardTextBlock(text="Correct.")],
+            reward=1.0,
+            finished=True,
+            metadata={"status": "ok"},
+        )
+
+
+class FakeOpenRewardEnvironment:
+    def __init__(self):
+        self.sessions: list[FakeOpenRewardSession] = []
+        self.task_range_calls: list[tuple[str, int | None, int | None]] = []
+
+    def list_tasks(self, split: str) -> list[openreward.OpenRewardTask]:
+        return [
+            openreward.OpenRewardTask(
+                server_name="owner/env",
+                environment_name="env",
+                namespace="owner",
+                task_spec={"id": f"{split}-0"},
+            )
+        ]
+
+    def get_task_range(
+        self, split: str, start: int | None = None, stop: int | None = None
+    ) -> list[openreward.OpenRewardTask]:
+        self.task_range_calls.append((split, start, stop))
+        return [
+            openreward.OpenRewardTask(
+                server_name="owner/env",
+                environment_name="env",
+                namespace="owner",
+                task_spec={"id": f"{split}-{index}"},
+            )
+            for index in range(start or 0, stop or 0)
+        ]
+
+    def session(self, task: openreward.OpenRewardTask) -> FakeOpenRewardSession:
         session = FakeOpenRewardSession(task)
         self.sessions.append(session)
         return session
@@ -120,7 +127,7 @@ def fake_openreward_client(monkeypatch):
     def client_factory():
         return FakeOpenRewardClient(environment)
 
-    monkeypatch.setattr(openreward, "openreward_client", client_factory)
+    monkeypatch.setattr(openreward, "OpenReward", client_factory)
     return environment
 
 
@@ -138,8 +145,12 @@ def test_openreward_taskset_loads_serializable_rows(fake_openreward_client):
 
     assert fake_openreward_client.task_range_calls == [("train", 0, 2)]
     assert task["openreward"]["environment"] == "owner/env"
-    assert task["openreward"]["task"] == {"task_spec": {"id": "train-0"}}
-    assert task["openreward"]["tools"][0]["name"] == "answer"
+    assert task["openreward"]["task"] == {
+        "server_name": "owner/env",
+        "environment_name": "env",
+        "namespace": "owner",
+        "task_spec": {"id": "train-0"},
+    }
     assert task["toolsets"]["openreward"]["fn"] == (
         "tasksets.openreward:openreward_toolset"
     )

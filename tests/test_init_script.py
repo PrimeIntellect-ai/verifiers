@@ -81,3 +81,34 @@ def test_init_v1_multifile_exports_component_loaders(tmp_path: Path) -> None:
     assert "__all__ = ['load_environment', 'load_taskset']" in init_content
     assert "class PkgEnvTaskset(vf.Taskset[PkgEnvTasksetConfig]):" in env_content
     assert "return PkgEnvTaskset(config=config)" in env_content
+
+
+def test_init_openenv_writes_v1_taskset_template(tmp_path: Path) -> None:
+    init_environment("openenv-sample", path=str(tmp_path), openenv=True)
+    content = read_env_file(tmp_path, "openenv-sample")
+    pyproject = (tmp_path / "openenv_sample" / "pyproject.toml").read_text()
+
+    assert (
+        "from tasksets.openenv import OpenEnvTaskset, OpenEnvTasksetConfig" in content
+    )
+    assert (
+        "def load_taskset(config: OpenEnvTasksetConfig) -> OpenEnvTaskset:" in content
+    )
+    assert "return vf.Env(taskset=vf.load_taskset(config=config.taskset))" in content
+    assert "vf.OpenEnvEnv" not in content
+    assert '"tasksets>=0.1.0.post0"' in pyproject
+
+
+def test_init_openenv_multifile_exports_taskset_loader(tmp_path: Path) -> None:
+    init_environment(
+        "openenv-pkg",
+        path=str(tmp_path),
+        openenv=True,
+        multi_file=True,
+    )
+    init_content = (
+        tmp_path / "openenv_pkg" / "openenv_pkg" / "__init__.py"
+    ).read_text()
+
+    assert "from .openenv_pkg import load_environment, load_taskset" in init_content
+    assert "__all__ = ['load_environment', 'load_taskset']" in init_content

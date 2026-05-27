@@ -6,7 +6,7 @@ version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
     "verifiers>=0.1.15.dev7",
-    "tasksets[textarena]>=0.1.0.post0",
+    "tasksets>=0.1.0.post0",
 ]
 
 [build-system]
