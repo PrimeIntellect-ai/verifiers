@@ -690,10 +690,15 @@ async def setup_sandbox(handle: SandboxLease, sandbox_config: ConfigMap) -> None
     packages = python_package_list(sandbox_config.get("packages"))
     if packages:
         package_args = " ".join(shlex.quote(str(package)) for package in packages)
-        result = await handle.run_background_job(
-            python_package_install_command(package_args),
-            timeout=int_config(sandbox_config, "install_timeout", 300),
-        )
+        try:
+            result = await handle.run_background_job(
+                python_package_install_command(package_args),
+                timeout=int_config(sandbox_config, "install_timeout", 300),
+            )
+        except Error:
+            raise
+        except Exception as exc:
+            raise SandboxError(f"Sandbox package install failed: {exc}") from exc
         if result.exit_code:
             raise SandboxError(f"Sandbox package install failed: {result.stderr}")
     commands = sandbox_config.get("setup_commands") or []
@@ -706,10 +711,14 @@ async def setup_sandbox(handle: SandboxLease, sandbox_config: ConfigMap) -> None
         command = str(command)
         if use_sandbox_python_path:
             command = sandbox_python_path_command(command)
-        result = await handle.run_background_job(
-            command,
-            timeout=int_config(sandbox_config, "setup_timeout", 300),
-        )
+        try:
+            result = await handle.run_background_job(
+                command, timeout=int_config(sandbox_config, "setup_timeout", 300)
+            )
+        except Error:
+            raise
+        except Exception as exc:
+            raise SandboxError(f"Sandbox setup command failed: {exc}") from exc
         if result.exit_code:
             raise SandboxError(f"Sandbox setup command failed: {result.stderr}")
 
