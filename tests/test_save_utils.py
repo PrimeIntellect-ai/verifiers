@@ -972,6 +972,41 @@ class TestDeltaIntermediateMmData:
             == 20
         )
 
+    def test_descriptor_only_items_delta_correctly(self):
+        """Descriptor-only mm_items (``image_grid_thw`` but no ``pixel_values``)
+        — the memory-lean shape the env worker now retains — still delta and
+        reindex correctly. The diff is hash-driven and reindexes items
+        opaquely, so dropping ``pixel_values`` must not change the outcome.
+        """
+        from renderers.base import MultiModalData, PlaceholderRange
+
+        def desc_step(*hashes: str):
+            return {
+                "tokens": {
+                    "multi_modal_data": MultiModalData(
+                        mm_hashes={"image": list(hashes)},
+                        mm_placeholders={
+                            "image": [
+                                PlaceholderRange(offset=i * 10, length=4)
+                                for i in range(len(hashes))
+                            ]
+                        },
+                        mm_items={
+                            "image": [{"image_grid_thw": [1, 4, 4]} for _ in hashes]
+                        },
+                    )
+                }
+            }
+
+        traj = [desc_step("A"), desc_step("A", "B"), desc_step("A", "B", "C")]
+        out = _delta_intermediate_mm_data(traj)
+
+        assert out[1]["tokens"]["multi_modal_data"].mm_hashes == {"image": ["B"]}
+        assert out[2]["tokens"]["multi_modal_data"].mm_hashes == {"image": ["C"]}
+        items1 = out[1]["tokens"]["multi_modal_data"].mm_items["image"]
+        assert items1 == [{"image_grid_thw": [1, 4, 4]}]
+        assert all("pixel_values" not in it for it in items1)
+
     def test_compaction_two_training_samples_assemble_correctly(self):
         """Rollout with one compaction event → two TrainingSamples.
 
