@@ -87,7 +87,10 @@ class ScaleSWERubric(vf.Rubric):
             return 0.0
         try:
             test_output = await self.taskset._run_tests(
-                sandbox_client, sandbox_id, state, state.get("test_timeout", 900)
+                sandbox_client,
+                sandbox_id,
+                state,
+                state.get("test_timeout", self.taskset.default_test_timeout),
             )
             state["test_output"] = test_output
         except Exception as e:
@@ -111,6 +114,7 @@ class ScaleSWETaskSet(SandboxTaskSet):
     """TaskSet for AweAI-Team/Scale-SWE."""
 
     default_workdir = "/workspace"
+    default_test_timeout = 20 * 60
 
     def __init__(
         self,
@@ -165,6 +169,9 @@ class ScaleSWETaskSet(SandboxTaskSet):
         sandbox_client = state["sandbox_client"]
         sandbox_id = state["sandbox_id"]
         info = state["info"]
+        state["test_timeout"] = max(
+            int(state.get("test_timeout") or 0), self.default_test_timeout
+        )
         workdir = self.get_workdir(info)
         pre_commands = _normalize_pre_commands(info.get("pre_commands", ""))
         if not pre_commands:
@@ -428,7 +435,10 @@ exit "$fail"
         sandbox_id = state["sandbox_id"]
         await self._apply_gold_patch(sandbox_client, sandbox_id, state)
         test_output = await self._run_tests(
-            sandbox_client, sandbox_id, state, state.get("test_timeout", 900)
+            sandbox_client,
+            sandbox_id,
+            state,
+            state.get("test_timeout", self.default_test_timeout),
         )
         state["test_output"] = test_output
         info = state.get("info") or {}
