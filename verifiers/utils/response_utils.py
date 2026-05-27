@@ -64,24 +64,6 @@ def _truncate_prompt_attribution(attribution: Any, prompt_len: int) -> Any:
     )
 
 
-def _prompt_attribution_to_jsonable(attribution: Any) -> Any:
-    """Convert a ``renderers.base.RenderedTokens`` dataclass to a plain
-    ``dict`` so the parsed step survives ``State.assert_serializable``
-    (``json.dumps``-based) in the v1 contract. Idempotent: non-dataclass
-    inputs (already-dict, ``None``, etc.) pass through unchanged.
-
-    ``dataclasses.asdict`` recurses into nested dataclasses, so a
-    nested ``multi_modal_data`` MultiModalData is flattened in the same
-    pass. Note that the top-level ``multi_modal_data`` sidecar on the
-    step is left as-is — ``save_utils._delta_intermediate_mm_data``
-    reads its fields via ``getattr``, so converting it here would break
-    the per-step delta optimization for multimodal trajectories.
-    """
-    if dataclasses.is_dataclass(attribution) and not isinstance(attribution, type):
-        return dataclasses.asdict(attribution)
-    return attribution
-
-
 async def parse_response_tokens(
     response: Response, max_seq_len: int | None = None
 ) -> TrajectoryStepTokens | None:
@@ -148,9 +130,10 @@ async def parse_response_tokens(
         if routed_experts is not None:
             tokens.routed_experts = None
         if prompt_attribution is not None:
-            out["prompt_attribution"] = _prompt_attribution_to_jsonable(
-                prompt_attribution
-            )
+            # Dataclass → dict so v1 State.assert_serializable (json.dumps) clears.
+            if dataclasses.is_dataclass(prompt_attribution):
+                prompt_attribution = dataclasses.asdict(prompt_attribution)
+            out["prompt_attribution"] = prompt_attribution
             tokens.prompt_attribution = None
         return out
 

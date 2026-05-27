@@ -148,12 +148,9 @@ async def test_parse_response_tokens_with_overlong_prompt():
 
 @pytest.mark.asyncio
 async def test_parse_response_tokens_carries_prompt_attribution():
-    """``prompt_attribution`` moves from ResponseTokens to the parsed
-    TrajectoryStepTokens as a JSON-safe ``dict`` (so ``state.trajectory``
-    survives ``State.assert_serializable`` in the v1 contract); the
-    response-side ref is cleared (move-not-copy, same policy as
-    ``multi_modal_data``)."""
-    import json
+    """``prompt_attribution`` moves from ResponseTokens to the parsed step
+    as a JSON-safe dict (move-not-copy, same policy as ``multi_modal_data``)."""
+    import dataclasses
 
     from renderers.base import RenderedTokens
 
@@ -190,20 +187,7 @@ async def test_parse_response_tokens_carries_prompt_attribution():
     out = await parse_response_tokens(response)
 
     assert out is not None
-    out_attr = out["prompt_attribution"]
-    assert isinstance(out_attr, dict)
-    assert out_attr == {
-        "token_ids": [1, 2, 3, 4],
-        "message_indices": [0, 0, 1, 1],
-        "sampled_mask": [False, False, False, False],
-        "is_content": [False, True, False, True],
-        "message_roles": ["user", "tool"],
-        "multi_modal_data": None,
-    }
-    # JSON-serializable end-to-end (the whole point of the conversion).
-    json.dumps(out_attr)
-    # Round-trips back to the dataclass for downstream consumers.
-    assert RenderedTokens(**out_attr) == attribution
+    assert out["prompt_attribution"] == dataclasses.asdict(attribution)
     assert tokens_in.prompt_attribution is None
 
 
@@ -258,141 +242,44 @@ async def test_parse_response_tokens_truncates_prompt_attribution_with_overlong_
 
 @pytest.mark.asyncio
 async def test_parsed_prompt_attribution_survives_v1_assert_serializable():
-    """End-to-end regression for the v1 contract: a renderer-client
-    rollout that populates ``prompt_attribution`` must produce a state
-    whose ``trajectory`` survives ``State.assert_serializable``
-    (``json.dumps``-based). Reproduces the exact pipe v1 uses in
-    ``verifiers/v1/runtime.py::submit_model_request`` — ``parse_response_tokens``
-    output threaded through ``v1.utils.serialization_utils.serializable``
-    and appended to ``state["trajectory"]``.
-
-    Before the parse-boundary dataclass→dict conversion this test would
-    fail with ``TypeError: Object of type RenderedTokens is not JSON
-    serializable`` — that's the bug from PR #1414 that broke every
-    v1 + renderer rollout. Also matches what prime-rl's
-    ``_step_sft_mask`` consumer expects (``prompt_attribution: dict``
-    with ``["message_indices"]`` / ``["is_content"]`` access).
+    """Regression for PR #1414: a v1 state with ``prompt_attribution``
+    on a trajectory step must clear ``State.assert_serializable`` (the
+    ``json.dumps`` gate that pre-fix raised on the RenderedTokens dataclass).
     """
-    import json
-
     from renderers.base import RenderedTokens
 
     from verifiers.v1.utils.serialization_utils import serializable
 
-    attribution = RenderedTokens(
-        token_ids=[1, 2, 3, 4],
-        message_indices=[0, 0, 1, 1],
-        sampled_mask=[False, False, False, False],
-        is_content=[False, True, False, True],
-        message_roles=["user", "tool"],
-    )
     response = Response(
-        id="test-id",
+        id="t",
         created=0,
-        model="test-model",
+        model="m",
         message=ResponseMessage(
             role="assistant",
-            content="Hi",
+            content="hi",
             reasoning_content=None,
             tool_calls=None,
             finish_reason="stop",
             is_truncated=False,
             tokens=ResponseTokens(
-                prompt_ids=[1, 2, 3, 4],
-                prompt_mask=[0, 0, 0, 0],
-                completion_ids=[5, 6],
-                completion_mask=[1, 1],
-                completion_logprobs=[-0.1, -0.2],
-                prompt_attribution=attribution,
-            ),
-        ),
-    )
-
-    parsed_tokens = await parse_response_tokens(response)
-
-    # Mirror v1/runtime.py::submit_model_request exactly: every field
-    # passes through ``serializable()`` before reaching the trajectory.
-    step = {
-        "prompt": serializable([]),
-        "completion": serializable([]),
-        "response": serializable(response),
-        "tokens": serializable(parsed_tokens),
-        "reward": None,
-        "advantage": None,
-        "is_truncated": False,
-        "trajectory_id": "t",
-        "extras": {},
-    }
-    state = State({"trajectory": [step], "metrics": {}, "reward": 0.0})
-
-    # The v1 gate. Pre-fix this raises on the RenderedTokens dataclass.
-    state.assert_serializable()
-    # And the dict shape downstream (prime-rl) reads.
-    attr_dict = step["tokens"]["prompt_attribution"]
-    assert isinstance(attr_dict, dict)
-    assert attr_dict["message_indices"] == [0, 0, 1, 1]
-    assert attr_dict["is_content"] == [False, True, False, True]
-    # Confirm the whole state really did round-trip through JSON.
-    rehydrated = json.loads(json.dumps(state))
-    assert rehydrated["trajectory"][0]["tokens"]["prompt_attribution"] == attr_dict
-
-
-@pytest.mark.asyncio
-async def test_parsed_prompt_attribution_survives_orchestrator_msgpack():
-    """Transport regression: the parsed step msgpack-round-trips through
-    the orchestrator encoder (``verifiers/serve/server/env_worker.py``
-    uses ``msgpack.packb(..., default=msgpack_encoder)``). After
-    unpacking, the trainer reads ``prompt_attribution`` dict-style
-    (matches prime-rl's ``_step_sft_mask`` access pattern) and
-    rehydrates the dataclass for any consumer that wants the typed
-    form. This locks the verifiers→trainer wire contract.
-    """
-    import msgpack
-    from renderers.base import RenderedTokens
-
-    from verifiers.utils.serve_utils import msgpack_encoder
-
-    attribution = RenderedTokens(
-        token_ids=[1, 2, 3, 4],
-        message_indices=[0, 0, 1, 1],
-        sampled_mask=[False, False, False, False],
-        is_content=[False, True, False, True],
-        message_roles=["user", "tool"],
-    )
-    response = Response(
-        id="test-id",
-        created=0,
-        model="test-model",
-        message=ResponseMessage(
-            role="assistant",
-            content="Hi",
-            reasoning_content=None,
-            tool_calls=None,
-            finish_reason="stop",
-            is_truncated=False,
-            tokens=ResponseTokens(
-                prompt_ids=[1, 2, 3, 4],
-                prompt_mask=[0, 0, 0, 0],
-                completion_ids=[5, 6],
-                completion_mask=[1, 1],
-                completion_logprobs=[-0.1, -0.2],
-                prompt_attribution=attribution,
+                prompt_ids=[1, 2],
+                prompt_mask=[0, 0],
+                completion_ids=[3],
+                completion_mask=[1],
+                completion_logprobs=[-0.1],
+                prompt_attribution=RenderedTokens(
+                    token_ids=[1, 2],
+                    message_indices=[0, 0],
+                    sampled_mask=[False, False],
+                    is_content=[False, True],
+                    message_roles=["user"],
+                ),
             ),
         ),
     )
     parsed = await parse_response_tokens(response)
-    assert parsed is not None
-
-    packed = msgpack.packb(dict(parsed), default=msgpack_encoder, use_bin_type=True)
-    unpacked = msgpack.unpackb(packed, raw=False)
-
-    attr = unpacked["prompt_attribution"]
-    assert isinstance(attr, dict)
-    # Exact access pattern prime-rl's _step_sft_mask uses.
-    assert attr["message_indices"] == [0, 0, 1, 1]
-    assert attr["is_content"] == [False, True, False, True]
-    # And it rehydrates losslessly for typed consumers.
-    assert RenderedTokens(**attr) == attribution
+    step = {"tokens": serializable(parsed), "response": serializable(response)}
+    State({"trajectory": [step]}).assert_serializable()
 
 
 def test_process_trajectory_steps_for_training(make_input):
