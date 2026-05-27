@@ -910,7 +910,7 @@ async def test_get_native_response_threads_prompt_attribution_into_generate():
     captured: dict = {}
 
     async def _fake_get_incremental(**kwargs):
-        return bridged
+        return bridged, 2
 
     async def _fake_generate(**kwargs):
         captured.update(kwargs)
@@ -963,6 +963,7 @@ async def test_get_native_response_threads_prompt_attribution_into_generate():
 
     assert captured.get("prompt_attribution") is bridged
     assert captured.get("prompt_ids") == list(bridged.token_ids)
+    assert captured["sampling_params"]["routed_experts_prompt_start"] == 2
     assert result["prompt_attribution"] is bridged
 
 
