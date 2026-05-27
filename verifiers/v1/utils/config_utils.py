@@ -1,5 +1,8 @@
 import importlib
+from collections.abc import Iterator
 from collections.abc import Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import TypeVar, cast
 
 from pydantic import BaseModel
@@ -8,6 +11,9 @@ from pydantic_core import PydanticUndefined
 from ..types import ConfigData, ConfigInputMap
 
 ConfigT = TypeVar("ConfigT", bound=BaseModel)
+_CONFIG_REF_MODULE: ContextVar[str | None] = ContextVar(
+    "CONFIG_REF_MODULE", default=None
+)
 
 
 def explicit_config_data(
@@ -81,14 +87,57 @@ def resolve_config_object(value: object) -> object:
     return value
 
 
+def current_config_ref_module() -> str | None:
+    return _CONFIG_REF_MODULE.get()
+
+
 def import_config_ref(ref: str) -> object:
-    module_name, separator, attr_path = ref.partition(":")
-    if not separator or not module_name or not attr_path:
-        raise ValueError(f"Config ref {ref!r} must use 'module:object'.")
+    module_name, attr_path = config_ref_parts(ref)
     obj: object = importlib.import_module(module_name)
     for part in attr_path.split("."):
         obj = getattr(obj, part)
     return obj
+
+
+def qualified_config_ref(ref: str) -> str:
+    module_name, attr_path = config_ref_parts(ref)
+    return f"{module_name}:{attr_path}"
+
+
+def config_ref_parts(ref: str) -> tuple[str, str]:
+    module_name, separator, attr_path = ref.partition(":")
+    if separator:
+        if not module_name or not attr_path:
+            raise ValueError(f"Config ref {ref!r} must use 'module:object'.")
+    else:
+        module_name = _CONFIG_REF_MODULE.get()
+        attr_path = ref
+        if module_name is None or not attr_path:
+            raise ValueError(
+                f"Config ref {ref!r} must use 'module:object' outside a config module."
+            )
+    return module_name, attr_path
+
+
+@contextmanager
+def config_ref_context(config: object) -> Iterator[None]:
+    module_name = config_ref_module(config)
+    if module_name is None:
+        yield
+        return
+    token = _CONFIG_REF_MODULE.set(module_name)
+    try:
+        yield
+    finally:
+        _CONFIG_REF_MODULE.reset(token)
+
+
+def config_ref_module(config: object) -> str | None:
+    if isinstance(config, BaseModel):
+        module_name = type(config).__module__
+        if module_name != "verifiers.v1.config":
+            return module_name
+    return None
 
 
 def string_mapping(value: ConfigInputMap) -> ConfigData:

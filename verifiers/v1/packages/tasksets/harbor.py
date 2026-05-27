@@ -14,7 +14,7 @@ from typing import cast
 
 from verifiers.utils.import_utils import load_toml
 
-from ...config import TasksetConfig
+from ...config import CallableEntry, TasksetConfig
 from ...taskset import Taskset
 from ...utils.sandbox_utils import SandboxClient
 from verifiers.decorators import reward
@@ -49,7 +49,9 @@ def _bundle_tasks_root(module_name: str) -> Path:
 
 
 class HarborTasksetConfig(TasksetConfig):
+    rewards: list[CallableEntry] = ["harbor_reward"]
     dataset: str | None = None
+    bundle_package: str | None = None
     task_names: list[str] | None = None
     cache_dir: str | None = None
     refresh: bool = False
@@ -66,28 +68,24 @@ class HarborTasksetConfig(TasksetConfig):
     env: dict[str, str] = {}
 
 
-class HarborTaskset(Taskset):
-    config: HarborTasksetConfig
-
+class HarborTaskset(Taskset[HarborTasksetConfig]):
     def __init__(self, config: HarborTasksetConfig | None = None):
         config = HarborTasksetConfig() if config is None else config
         assert isinstance(config, HarborTasksetConfig)
-        self.config = config
-        if self.config.dataset is not None and not isinstance(self.config.dataset, str):
+        if config.dataset is not None and not isinstance(config.dataset, str):
             raise TypeError("HarborTaskset dataset must be a string.")
-        self._bundle_package = (
-            _resolve_caller_package() if self.config.dataset is None else None
-        )
-        cache_dir_value = self.config.cache_dir
+        if config.dataset is None and config.bundle_package is None:
+            config = config.model_copy(
+                update={"bundle_package": _resolve_caller_package()}
+            )
+        cache_dir_value = config.cache_dir
         self._cache_dir = (
             Path(str(cache_dir_value)).expanduser() if cache_dir_value else None
         )
-        if self.config.scope not in {"rollout", "group", "global"}:
+        if config.scope not in {"rollout", "group", "global"}:
             raise ValueError("HarborTaskset scope must be rollout, group, or global.")
-        super().__init__(config=self.config)
-        self.source = self.load_rows
+        super().__init__(config=config)
         self.taskset_id = self.config.taskset_id or "harbor"
-        self.rewards.insert(0, harbor_reward)
 
     @property
     def task_names(self) -> list[str]:
@@ -97,110 +95,125 @@ class HarborTaskset(Taskset):
     def cpu_cores(self) -> float:
         return self.config.cpu_cores
 
-    def load_rows(self) -> list[ConfigData]:
-        root = self.resolve_tasks_root()
-        task_dirs = harbor_task_dirs(root, list(self.config.task_names or []))
-        rows = [
-            self.task_row(task_dir, index) for index, task_dir in enumerate(task_dirs)
-        ]
-        if not rows:
-            raise ValueError(f"No valid Harbor tasks found in {root}.")
-        return rows
-
     def resolve_tasks_root(self) -> Path:
-        if self.config.dataset is not None:
-            return download_harbor_dataset(
-                self.config.dataset,
-                cache_dir=self._cache_dir,
-                refresh=self.config.refresh,
-            )
-        if self._bundle_package is None:
-            raise RuntimeError(
-                "HarborTaskset() without a dataset must be constructed from inside "
-                "an installed Python package. Pass dataset='...' to fetch from "
-                "Harbor Hub, or construct it from a packaged environment."
-            )
-        root = _bundle_tasks_root(self._bundle_package)
-        if not root.exists():
-            raise FileNotFoundError(
-                "HarborTaskset() without a dataset requires "
-                f"{self._bundle_package}/{TASKS_SUBDIR}/ to contain Harbor task "
-                f"directories. Not found: {root}"
-            )
-        return root
+        return resolve_tasks_root(self.config, cache_dir=self._cache_dir)
 
-    def task_row(self, task_dir: Path, index: int) -> ConfigData:
-        task_toml_path = task_dir / "task.toml"
-        instruction_path = task_dir / "instruction.md"
-        with task_toml_path.open("rb") as f:
-            config = load_toml(f)
-        environment = config.get("environment", {}) or {}
-        if not isinstance(environment, Mapping):
-            raise TypeError(f"{task_toml_path} [environment] must be a mapping.")
-        agent_config = config.get("agent", {}) or {}
-        verifier_config = config.get("verifier", {}) or {}
-        instruction = instruction_path.read_text().strip()
-        task_remote_dir = self.config.task_dir.rstrip("/") or "/task"
-        sandbox = {
-            "image": environment.get("docker_image") or self.config.docker_image,
-            "cpu_cores": parse_number(environment.get("cpus"), self.config.cpu_cores),
-            "memory_gb": parse_gb(environment.get("memory"), self.config.memory_gb),
-            "disk_size_gb": parse_gb(
-                environment.get("storage"), self.config.disk_size_gb
-            ),
-            "timeout_minutes": self.config.timeout_minutes,
-            "command_timeout": int(
-                parse_number(
-                    agent_config.get("timeout_sec"), self.config.agent_timeout_seconds
-                )
-            ),
-            "workdir": self.config.workdir,
-            "scope": self.config.scope,
-        }
-        if "allow_internet" in environment:
-            sandbox["network_access"] = bool(environment["allow_internet"])
-        return {
-            "example_id": index,
-            "task_name": task_dir.name,
-            "instruction": instruction,
-            "task_toml": task_toml_path.read_text(),
-            "task_dir": str(task_dir),
-            "prompt": [{"role": "user", "content": instruction}],
-            "sandbox": sandbox,
-            "program": {
-                "files": {
-                    f"{task_remote_dir}/instruction.md": {"task": "instruction"},
-                    f"{task_remote_dir}/task.toml": {"task": "task_toml"},
-                },
-                "env": {
-                    "HARBOR_TASK_NAME": task_dir.name,
-                    "HARBOR_TASK_DIR": task_remote_dir,
-                    "HARBOR_INSTRUCTION_PATH": f"{task_remote_dir}/instruction.md",
-                    "AGENT_WORKDIR": self.config.workdir,
-                    **self.config.env,
-                },
-            },
-            "harbor": {
-                "task_dir": str(task_dir),
-                "task_name": task_dir.name,
-                "config": config,
-                "docker_image": environment.get("docker_image"),
-                "test_timeout": parse_number(
-                    verifier_config.get("timeout_sec"),
-                    self.config.verifier_timeout_seconds,
-                ),
-            },
-            "info": {
-                "harbor": {
-                    "task_name": task_dir.name,
-                    "docker_image": environment.get("docker_image"),
-                }
-            },
-        }
+    def load_tasks(self) -> list[ConfigData]:
+        return load_tasks(self.config)
 
 
 def load_taskset(config: HarborTasksetConfig) -> HarborTaskset:
     return HarborTaskset(config=config)
+
+
+def load_tasks(config: HarborTasksetConfig) -> list[ConfigData]:
+    cache_dir = Path(str(config.cache_dir)).expanduser() if config.cache_dir else None
+    root = resolve_tasks_root(config, cache_dir=cache_dir)
+    task_dirs = harbor_task_dirs(root, list(config.task_names or []))
+    rows = [
+        harbor_task_row(config, task_dir, index)
+        for index, task_dir in enumerate(task_dirs)
+    ]
+    if not rows:
+        raise ValueError(f"No valid Harbor tasks found in {root}.")
+    return rows
+
+
+def resolve_tasks_root(
+    config: HarborTasksetConfig, *, cache_dir: Path | None = None
+) -> Path:
+    if config.dataset is not None:
+        return download_harbor_dataset(
+            config.dataset,
+            cache_dir=cache_dir,
+            refresh=config.refresh,
+        )
+    if config.bundle_package is None:
+        raise RuntimeError(
+            "HarborTaskset() without a dataset must be constructed from inside "
+            "an installed Python package. Pass dataset='...' to fetch from "
+            "Harbor Hub, or construct it from a packaged environment."
+        )
+    root = _bundle_tasks_root(config.bundle_package)
+    if not root.exists():
+        raise FileNotFoundError(
+            "HarborTaskset() without a dataset requires "
+            f"{config.bundle_package}/{TASKS_SUBDIR}/ to contain Harbor task "
+            f"directories. Not found: {root}"
+        )
+    return root
+
+
+def harbor_task_row(
+    config: HarborTasksetConfig, task_dir: Path, index: int
+) -> ConfigData:
+    task_toml_path = task_dir / "task.toml"
+    instruction_path = task_dir / "instruction.md"
+    with task_toml_path.open("rb") as f:
+        task_config = load_toml(f)
+    environment = task_config.get("environment", {}) or {}
+    if not isinstance(environment, Mapping):
+        raise TypeError(f"{task_toml_path} [environment] must be a mapping.")
+    agent_config = task_config.get("agent", {}) or {}
+    verifier_config = task_config.get("verifier", {}) or {}
+    if not isinstance(agent_config, Mapping):
+        raise TypeError(f"{task_toml_path} [agent] must be a mapping.")
+    if not isinstance(verifier_config, Mapping):
+        raise TypeError(f"{task_toml_path} [verifier] must be a mapping.")
+    instruction = instruction_path.read_text().strip()
+    task_remote_dir = config.task_dir.rstrip("/") or "/task"
+    sandbox = {
+        "image": environment.get("docker_image") or config.docker_image,
+        "cpu_cores": parse_number(environment.get("cpus"), config.cpu_cores),
+        "memory_gb": parse_gb(environment.get("memory"), config.memory_gb),
+        "disk_size_gb": parse_gb(environment.get("storage"), config.disk_size_gb),
+        "timeout_minutes": config.timeout_minutes,
+        "command_timeout": int(
+            parse_number(agent_config.get("timeout_sec"), config.agent_timeout_seconds)
+        ),
+        "workdir": config.workdir,
+        "scope": config.scope,
+    }
+    if "allow_internet" in environment:
+        sandbox["network_access"] = bool(environment["allow_internet"])
+    return {
+        "example_id": index,
+        "task_name": task_dir.name,
+        "instruction": instruction,
+        "task_toml": task_toml_path.read_text(),
+        "task_dir": str(task_dir),
+        "prompt": [{"role": "user", "content": instruction}],
+        "sandbox": sandbox,
+        "program": {
+            "files": {
+                f"{task_remote_dir}/instruction.md": {"task": "instruction"},
+                f"{task_remote_dir}/task.toml": {"task": "task_toml"},
+            },
+            "env": {
+                "HARBOR_TASK_NAME": task_dir.name,
+                "HARBOR_TASK_DIR": task_remote_dir,
+                "HARBOR_INSTRUCTION_PATH": f"{task_remote_dir}/instruction.md",
+                "AGENT_WORKDIR": config.workdir,
+                **config.env,
+            },
+        },
+        "harbor": {
+            "task_dir": str(task_dir),
+            "task_name": task_dir.name,
+            "config": task_config,
+            "docker_image": environment.get("docker_image"),
+            "test_timeout": parse_number(
+                verifier_config.get("timeout_sec"),
+                config.verifier_timeout_seconds,
+            ),
+        },
+        "info": {
+            "harbor": {
+                "task_name": task_dir.name,
+                "docker_image": environment.get("docker_image"),
+            }
+        },
+    }
 
 
 def harbor_task_dirs(root: Path, task_names: Iterable[str] | None = None) -> list[Path]:

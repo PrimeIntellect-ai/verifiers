@@ -87,6 +87,10 @@ class EnvServer(ABC):
 
     async def run(self) -> None:
         """Run the server with signal-based graceful shutdown."""
+        from verifiers.utils.thread_utils import install_default_executor
+
+        install_default_executor()
+
         if self.death_pipe is not None:
             monitor_death_pipe(self.death_pipe)
 
@@ -126,7 +130,7 @@ class EnvServer(ABC):
     @classmethod
     def run_server(cls, *args, **kwargs):
         try:
-            import uvloop  # type: ignore
+            import uvloop
 
             uvloop.install()
         except ImportError:

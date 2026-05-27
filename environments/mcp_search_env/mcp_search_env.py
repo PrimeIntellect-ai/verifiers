@@ -71,19 +71,26 @@ DEFAULT_MCP_SERVERS: list[vf.ConfigData] = [
 
 
 class MCPSearchTasksetConfig(vf.TasksetConfig):
-    system_prompt: str = SYSTEM_PROMPT
+    rewards: list[str] = ["exact_title_reward"]
     mcp_servers: list[vf.ConfigData] | None = None
     max_turns: int = 6
     examples: list[vf.ConfigData] | None = None
 
 
-class MCPSearchTaskset(vf.Taskset):
-    def _configure_runtime_defaults(self) -> None:
-        if "toolsets" not in self.config.model_fields_set:
-            self.add_toolset(load_toolset(mcp_servers=self.config.mcp_servers))
+class MCPSearchTaskset(vf.Taskset[MCPSearchTasksetConfig]):
+    def load_tasks(self) -> vf.Tasks:
+        return load_tasks(
+            examples=self.config.examples, max_turns=self.config.max_turns
+        )
+
+    def load_system_prompt(self) -> vf.SystemPrompt:
+        return SYSTEM_PROMPT
+
+    def load_toolsets(self) -> vf.Toolsets:
+        return {"records": load_toolset(mcp_servers=self.config.mcp_servers)}
 
 
-def source(
+def load_tasks(
     examples: Iterable[vf.ConfigMap] | None = None,
     *,
     max_turns: int = 6,
@@ -126,14 +133,13 @@ async def exact_title_reward(task: vf.Task, state: vf.State) -> float:
     return float(str(task["answer"]).lower() in response.lower())
 
 
-MCPSearchTaskset._default_source = source
-MCPSearchTaskset._default_rewards = (exact_title_reward,)
-
-
 def load_toolset(
     mcp_servers: Iterable[vf.ConfigMap] | None = None,
+    taskset_config: MCPSearchTasksetConfig | None = None,
     config: vf.ToolsetConfig | None = None,
 ) -> vf.Toolset:
+    if mcp_servers is None and taskset_config is not None:
+        mcp_servers = taskset_config.mcp_servers
     servers = mcp_servers or [dict(server) for server in DEFAULT_MCP_SERVERS]
     return vf.Toolset(
         tools=[mcp_tool(server) for server in servers],

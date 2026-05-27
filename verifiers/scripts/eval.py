@@ -330,7 +330,7 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Per-request HTTP header whose value is read from the rollout state. "
             "'Name: state_key' (e.g. 'X-Session-ID: trajectory_id'). Repeatable. "
-            "Defaults to X-Session-ID=example_id if unset."
+            "Defaults to X-Session-ID=trajectory_id if unset."
         ),
     )
     parser.add_argument(
@@ -711,10 +711,10 @@ def main(argv: list[str] | None = None):
         )
         # Build headers: registry < [[eval]] headers table < header list / --header
         eval_headers_merged = build_extra_headers(raw)
-        # Default X-Session-ID → example_id for sticky DP-aware routing;
+        # Default X-Session-ID → trajectory_id for sticky DP-aware routing;
         # user-supplied headers_from_state / --header-from-state override.
         eval_headers_from_state = {
-            "X-Session-ID": "example_id",
+            "X-Session-ID": "trajectory_id",
             **build_extra_headers_from_state(raw),
         }
 

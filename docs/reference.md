@@ -64,6 +64,23 @@ SamplingArgs = dict[str, Any]
 
 Generation parameters passed to the inference server (e.g., `temperature`, `top_p`, `max_tokens`).
 
+### Tasks
+
+```python
+TaskRow = Mapping[str, object]
+Tasks = datasets.Dataset | Iterable[TaskRow]
+```
+
+v1 task loader return types. `load_tasks(...)` and `load_eval_tasks(...)` should return `vf.Tasks`.
+
+### SystemPrompt
+
+```python
+SystemPrompt = str | Sequence[Message | Mapping[str, object]] | os.PathLike[str]
+```
+
+v1 system prompt loader return type. `load_system_prompt(...)` should return `vf.SystemPrompt`.
+
 ### RewardFunc
 
 ```python
@@ -203,6 +220,7 @@ class TrajectoryStepTokens(TypedDict):
     is_truncated: bool
     routed_experts: RoutedExpertsPayload | None
     multi_modal_data: NotRequired[Any]  # renderers.MultiModalData sidecar (pixel_values, placeholder ranges) — set only on multimodal rollouts
+    prompt_attribution: NotRequired[Any]  # renderers.RenderedTokens fields as a dict (per-token is_content / sampled_mask / message_indices / message_roles) — set only on RendererClient rollouts
 ```
 
 Token-level data for training.
@@ -573,8 +591,8 @@ state, or output field.
 
 ### v1 Taskset/Harness Classes
 
-The v1 API is exposed as `verifiers.v1` and documented in
-[BYO Harness](byo-harness.md). Its core unit is:
+The v1 API is exposed from the top-level `verifiers` namespace and documented
+in [BYO Harness](byo-harness.md). Its core unit is:
 
 ```python
 state = await harness.run(task, state=None)
@@ -648,17 +666,16 @@ serialization boundary.
 class Taskset:
     def __init__(config: TasksetConfig | None = None): ...
 
-    def rows() -> list[dict[str, Any]]: ...
-    def eval_rows() -> list[dict[str, Any]]: ...
-    def task(row: Mapping[str, Any]) -> Task: ...
     def to_task(value: Mapping[str, Any] | Task | str) -> Task: ...
     async def init_group(task: Task, num_rollouts: int) -> tuple[list[Task], list[State]]: ...
     def get_dataset() -> Dataset: ...
     def get_eval_dataset() -> Dataset: ...
 ```
 
-Packages task rows and task-owned behavior. Subclasses usually annotate
-`config`, override `rows()`, and read typed values from `self.config`.
+Packages task rows and task-owned behavior. Tasksets usually define
+`load_tasks()` and optional `load_eval_tasks()` methods returning `vf.Tasks`,
+which is `datasets.Dataset | Iterable[TaskRow]`. `TasksetConfig.tasks` and
+`TasksetConfig.eval_tasks` remain explicit import-ref override fields.
 
 #### Harness
 
@@ -985,8 +1002,8 @@ class EnvConfig(Config):
 class TasksetConfig(Config):
     taskset_id: str | None = None
     system_prompt: object | None = None
-    source: object | None = None
-    eval_source: object | None = None
+    tasks: str | None = None
+    eval_tasks: str | None = None
     user: object | None = None
 
 class HarnessConfig(Config):

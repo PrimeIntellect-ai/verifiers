@@ -9,7 +9,6 @@ concurrent rollouts tokenize in parallel instead of blocking the event loop.
 """
 
 import json
-import logging
 import threading
 from collections.abc import Mapping
 from typing import Any, ClassVar, cast
@@ -19,18 +18,21 @@ from openai import AsyncOpenAI
 from renderers import Message as RendererMessage
 from renderers import OverlongPromptError as RendererOverlongPromptError
 from renderers import (
+    AutoRendererConfig,
     MultimodalRenderer,
     ParsedToolCall,
     RenderedTokens,
     Renderer,
+    RendererConfig,
     RendererPool,
-    ToolCallParseStatus,
     ToolSpec,
+    config_from_name,
     create_renderer_pool,
     is_multimodal,
 )
 from renderers import ToolCall as RendererToolCall
 from renderers import ToolCallFunction
+from renderers.base import MODEL_RENDERER_MAP
 from renderers.client import _maybe_offload, generate
 
 from verifiers.clients.client import Client
@@ -57,8 +59,6 @@ from verifiers.types import (
     UserMessage,
 )
 from verifiers.utils.client_utils import setup_openai_client
-
-logger = logging.getLogger(__name__)
 
 # Module-level bridge counters. Incremented by every RendererClient instance
 # that tries to stitch a multi-turn prompt; callers (e.g. prime-rl's
@@ -380,6 +380,53 @@ async def _get_incremental_prompt_ids(
     return None
 
 
+def _resolve_renderer_config(
+    base: RendererConfig | None,
+    chat_template_kwargs: Mapping[str, Any] | None,
+    *,
+    renderer_model: str,
+) -> RendererConfig | None:
+    """Merge ``chat_template_kwargs`` into a typed ``RendererConfig``.
+
+    When ``base`` is ``None`` or ``AutoRendererConfig`` (would auto-resolve
+    inside ``renderers.create_renderer``), we pull resolution forward via
+    ``MODEL_RENDERER_MAP`` so kwargs land on the concrete config variant
+    and pydantic validates them against the actual renderer's schema —
+    ``AutoRendererConfig`` intentionally carries only ``preserve_*`` and
+    would reject template kwargs like ``enable_thinking``. ``renderer_model``
+    must match what the pool will tokenize with (i.e.
+    ``ClientConfig.renderer_model_name`` when set, else the request model),
+    so resolution agrees with the tokenizer the renderer will hold.
+
+    Kwargs override fields with the same name on the (resolved) base.
+    Typed configs (``extra="forbid"``) reject unknown keys with a
+    field-path error; ``DefaultRendererConfig`` (``extra="allow"``) keeps
+    the escape hatch for arbitrary jinja kwargs.
+    """
+    if not chat_template_kwargs:
+        return base
+
+    # Resolve auto → concrete (mirrors ``renderers._resolve_auto``) so
+    # ``enable_thinking`` etc. validate against the right schema instead of
+    # ``AutoRendererConfig``'s minimal one. Carries ``preserve_*`` across.
+    if base is None or isinstance(base, AutoRendererConfig):
+        renderer_name = MODEL_RENDERER_MAP.get(renderer_model, "default")
+        # ``config_from_name`` returns ``None`` only for ``"auto"``, which
+        # ``MODEL_RENDERER_MAP.get(..., "default")`` excludes — assert for ty.
+        concrete = config_from_name(renderer_name)
+        assert concrete is not None
+        if isinstance(base, AutoRendererConfig):
+            concrete = concrete.model_copy(
+                update={
+                    "preserve_all_thinking": base.preserve_all_thinking,
+                    "preserve_thinking_between_tool_calls": base.preserve_thinking_between_tool_calls,
+                }
+            )
+        base = cast(RendererConfig, concrete)
+
+    return type(base).model_validate({**base.model_dump(), **chat_template_kwargs})
+
+
 class RendererClient(
     Client[AsyncOpenAI, list[RendererMessage], dict[str, Any], ToolSpec]
 ):
@@ -392,14 +439,13 @@ class RendererClient(
     so that concurrent rollouts tokenize in parallel threads.
     """
 
-    # Cache key is (renderer_model_name, renderer_name, tool_parser,
-    # reasoning_parser, pool_size, preserve_all_thinking,
-    # preserve_thinking_between_tool_calls) so that different parser configs,
-    # pool sizes, or preserve-thinking bindings for the same model don't
-    # collide.
+    # Cache key is ``(renderer_model_name, pool_size, renderer_config_json)``.
+    # ``renderer_config`` is a frozen pydantic model so it's hashable directly,
+    # but we serialize it via ``model_dump_json()`` for a stable, deterministic
+    # key shape that's safe across pydantic version bumps.
     _shared_pools: ClassVar[
         dict[
-            tuple[str, str, str | None, str | None, int, bool, bool],
+            tuple[str, int, str | None],
             RendererPool,
         ]
     ] = {}
@@ -426,48 +472,35 @@ class RendererClient(
 
     # ── Renderer management ─────────────────────────────────────────
 
-    def _get_renderer_or_pool(self, model: str) -> Renderer | RendererPool:
+    def _get_renderer_or_pool(
+        self,
+        model: str,
+        *,
+        renderer_config: RendererConfig | None = None,
+    ) -> Renderer | RendererPool:
         if self._renderer is not None:
             return self._renderer
 
-        renderer_name = self._config.renderer if self._config is not None else "auto"
+        if renderer_config is None:
+            renderer_config = (
+                self._config.renderer_config if self._config is not None else None
+            )
         renderer_model = (
             self._config.renderer_model_name
             if self._config is not None and self._config.renderer_model_name is not None
             else model
         )
-        tool_parser = self._config.tool_parser if self._config is not None else None
-        reasoning_parser = (
-            self._config.reasoning_parser if self._config is not None else None
+        cfg_key = (
+            renderer_config.model_dump_json() if renderer_config is not None else None
         )
-        preserve_all_thinking = (
-            self._config.preserve_all_thinking if self._config is not None else False
-        )
-        preserve_thinking_between_tool_calls = (
-            self._config.preserve_thinking_between_tool_calls
-            if self._config is not None
-            else False
-        )
-        cache_key = (
-            renderer_model,
-            renderer_name,
-            tool_parser,
-            reasoning_parser,
-            self._pool_size,
-            preserve_all_thinking,
-            preserve_thinking_between_tool_calls,
-        )
+        cache_key = (renderer_model, self._pool_size, cfg_key)
 
         with self._shared_pools_lock:
             if cache_key not in self._shared_pools:
                 self._shared_pools[cache_key] = create_renderer_pool(
                     renderer_model,
-                    renderer=renderer_name,
+                    renderer_config,
                     size=self._pool_size,
-                    tool_parser=tool_parser,
-                    reasoning_parser=reasoning_parser,
-                    preserve_all_thinking=preserve_all_thinking,
-                    preserve_thinking_between_tool_calls=preserve_thinking_between_tool_calls,
                 )
 
         return self._shared_pools[cache_key]
@@ -503,10 +536,33 @@ class RendererClient(
         tools: list[ToolSpec] | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
-        renderer = self._get_renderer_or_pool(model)
-
         args = dict(sampling_args)
+        extra_headers = {
+            **dict(args.pop("extra_headers", None) or {}),
+            **dict(kwargs.pop("extra_headers", None) or {}),
+        }
         sampling_params: dict[str, Any] = dict(args.pop("extra_body", None) or {})
+
+        # ``chat_template_kwargs`` belong to the renderer, not the engine —
+        # peel them off the per-request sampling and fold them into the
+        # typed RendererConfig. Pool cache key already includes the
+        # effective config so identical kwargs reuse the same renderer.
+        chat_template_kwargs = sampling_params.pop("chat_template_kwargs", None)
+        # Auto-resolution must agree with the model the pool will tokenize
+        # against — ``renderer_model_name`` overrides the request ``model``
+        # when set (same precedence ``_get_renderer_or_pool`` uses below).
+        renderer_model = (
+            self._config.renderer_model_name
+            if self._config is not None and self._config.renderer_model_name is not None
+            else model
+        )
+        effective_cfg = _resolve_renderer_config(
+            self._config.renderer_config if self._config is not None else None,
+            chat_template_kwargs,
+            renderer_model=renderer_model,
+        )
+        renderer = self._get_renderer_or_pool(model, renderer_config=effective_cfg)
+
         for key in (
             "temperature",
             "top_p",
@@ -532,25 +588,20 @@ class RendererClient(
             tools=tools,
         )
         # ``bridged_with_start`` is (RenderedTokens, replay_start) | None.
-        # Unpack token_ids + mm_data so multimodal renderers thread per-image
-        # features through to /inference/v1/generate without re-rendering the
-        # whole turn.
+        # Unpack token_ids + mm_data (multimodal feature pass-through) and
+        # prompt_attribution (per-token mask sidecar). On the first turn
+        # (``bridged_with_start is None``), ``generate`` renders and emits the
+        # attribution itself.
         if bridged_with_start is not None:
             bridged, routed_experts_prompt_start = bridged_with_start
             prompt_ids = bridged.token_ids
             multi_modal_data = bridged.multi_modal_data
+            prompt_attribution = bridged
             sampling_params["routed_experts_prompt_start"] = routed_experts_prompt_start
-            if routed_experts_prompt_start:
-                logger.info(
-                    "Using routed_experts_prompt_start=%d for bridged renderer prompt "
-                    "(prompt_len=%d, trajectory_len=%d)",
-                    routed_experts_prompt_start,
-                    len(prompt_ids),
-                    len(_get_value(kwargs.get("state"), "trajectory", []) or []),
-                )
         else:
             prompt_ids = None
             multi_modal_data = None
+            prompt_attribution = None
 
         # ``renderers.client.generate`` discovers the engine's context-length
         # cap on its own (via ``GET /v1/models``, cached) and raises
@@ -569,12 +620,13 @@ class RendererClient(
                 model=model,
                 prompt_ids=prompt_ids,
                 multi_modal_data=multi_modal_data,
+                prompt_attribution=prompt_attribution,
                 tools=tools,
                 sampling_params=sampling_params,
                 cache_salt=args.get("cache_salt")
                 or sampling_params.pop("cache_salt", None),
                 priority=args.get("priority") or sampling_params.pop("priority", None),
-                extra_headers=args.get("extra_headers"),
+                extra_headers=extra_headers or None,
             )
         except RendererOverlongPromptError as exc:
             raise OverlongPromptError(str(exc)) from exc
@@ -608,20 +660,18 @@ class RendererClient(
             case _:
                 finish_reason = None
 
-        # renderers >=0.1.8.dev1 emits ParsedToolCall dataclasses (with .name,
-        # .arguments, .status, .id). Skip non-OK attempts — they're surfaced
-        # on the parsed response so trainers can inspect, but verifiers'
-        # tool-loop only acts on well-formed calls.
+        # Forward any ``ParsedToolCall`` with a ``name`` regardless of
+        # ``.status``: argument errors surface to the model as tool-role
+        # validation messages via the env's ``call_tool`` for self-
+        # correction, instead of an empty ``tool_calls`` that terminates
+        # the rollout via ``no_tools_called``. ``status`` stays on each
+        # call for downstream filtering.
         tool_calls = None
         raw_tcs = response.get("tool_calls") or []
-        ok_tcs = [
-            tc
-            for tc in raw_tcs
-            if isinstance(tc, ParsedToolCall)
-            and tc.status == ToolCallParseStatus.OK
-            and tc.name
+        usable_tcs = [
+            tc for tc in raw_tcs if isinstance(tc, ParsedToolCall) and tc.name
         ]
-        if ok_tcs:
+        if usable_tcs:
             tool_calls = [
                 ToolCall(
                     id=tc.id or f"call_{i}",
@@ -632,7 +682,7 @@ class RendererClient(
                         else json.dumps(tc.arguments or {})
                     ),
                 )
-                for i, tc in enumerate(ok_tcs)
+                for i, tc in enumerate(usable_tcs)
             ]
 
         prompt_ids = response.get("prompt_ids", [])
@@ -647,6 +697,7 @@ class RendererClient(
             completion_logprobs=completion_logprobs,
             routed_experts=response.get("routed_experts"),
             multi_modal_data=response.get("multi_modal_data"),
+            prompt_attribution=response.get("prompt_attribution"),
         )
 
         # /inference/v1/generate doesn't return usage; reconstruct from tokens.

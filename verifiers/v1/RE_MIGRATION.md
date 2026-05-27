@@ -54,27 +54,30 @@ import verifiers as vf
 
 class MyTasksetConfig(vf.TasksetConfig):
     split: str = "train"
-    system_prompt: str = SYSTEM_PROMPT
 
 
-class MyTaskset(vf.Taskset):
-    config: MyTasksetConfig
-    _default_rewards = (reward_fn,)
-    _default_metrics = (metric_fn,)
+class MyTaskset(vf.Taskset[MyTasksetConfig]):
+    def load_system_prompt(self) -> vf.SystemPrompt:
+        return SYSTEM_PROMPT
 
-    def rows(self) -> list[dict[str, object]]:
-        return load_rows(split=self.config.split)
+    def load_tasks(self) -> vf.Tasks:
+        return build_tasks(split=self.config.split)
+
+    @vf.reward(weight=1.0)
+    async def exact_answer(self, task, state) -> float:
+        ...
+
+    @vf.metric
+    async def accuracy(self, task, state) -> float:
+        ...
 
 
 def load_taskset(config: MyTasksetConfig) -> MyTaskset:
-    assert isinstance(config, MyTasksetConfig)
     return MyTaskset(config=config)
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
-    taskset_config = config.taskset
-    assert isinstance(taskset_config, MyTasksetConfig)
-    return vf.Env(taskset=load_taskset(taskset_config))
+    return vf.Env(taskset=vf.load_taskset(config=config.taskset))
 ```
 
 Rows should be plain serializable task data:
@@ -97,11 +100,14 @@ Put system instructions in `system_prompt`, not in `prompt`:
 
 ```python
 class PromptTasksetConfig(vf.TasksetConfig):
-    system_prompt: str = "Answer concisely."
+    pass
 
 
-class PromptTaskset(vf.Taskset):
-    def rows(self) -> list[dict[str, object]]:
+class PromptTaskset(vf.Taskset[PromptTasksetConfig]):
+    def load_system_prompt(self) -> vf.SystemPrompt:
+        return "Answer concisely."
+
+    def load_tasks(self) -> vf.Tasks:
         return [{"prompt": [{"role": "user", "content": "Question?"}]}]
 
 
@@ -138,9 +144,10 @@ Use this for:
 
 Migration:
 
-1. Convert the old dataset builder into `Taskset.rows()`.
+1. Convert the old dataset builder into `load_tasks()`.
 2. Convert each reward or metric into `@vf.reward` / `@vf.metric`.
-3. Return `vf.Env(taskset=TasksetClass(config=config.taskset))`.
+3. Reference task loaders and handlers from `TasksetConfig`.
+4. Return `vf.Env(taskset=vf.load_taskset(...))`.
 
 Example:
 
@@ -159,10 +166,8 @@ class QATasksetConfig(vf.TasksetConfig):
     split: str = "train"
 
 
-class QATaskset(vf.Taskset):
-    _default_rewards = (exact,)
-
-    def rows(self) -> list[dict[str, object]]:
+class QATaskset(vf.Taskset[QATasksetConfig]):
+    def load_tasks(self) -> vf.Tasks:
         return [
             {
                 "prompt": [{"role": "user", "content": row["question"]}],
@@ -173,16 +178,19 @@ class QATaskset(vf.Taskset):
             for row in load_dataset(..., split=self.config.split)
         ]
 
+    @vf.reward
+    async def exact(self, task, state) -> float:
+        messages = vf.get_messages(state.get("completion") or [], role="assistant")
+        response = str(messages[-1].content or "") if messages else ""
+        return float(str(task["answer"]).strip() in response)
+
 
 def load_taskset(config: QATasksetConfig) -> QATaskset:
-    assert isinstance(config, QATasksetConfig)
     return QATaskset(config=config)
 
 
 def load_environment(config: vf.EnvConfig):
-    taskset_config = config.taskset
-    assert isinstance(taskset_config, QATasksetConfig)
-    return vf.Env(taskset=load_taskset(taskset_config))
+    return vf.Env(taskset=vf.load_taskset(config=config.taskset))
 ```
 
 Gotchas:
@@ -198,25 +206,22 @@ class AnswerExtractor:
         ...
 
 
-@vf.reward
-async def exact(task, state, extract_answer) -> float:
-    return float(extract_answer(state.get("completion") or []) == task["answer"])
-
-
 class ExtractTasksetConfig(vf.TasksetConfig):
     objects: dict[str, str] = {
-        "extract_answer": "my_env:build_answer_extractor",
+        "extract_answer": "build_answer_extractor",
     }
     bindings: dict[str, str] = {
         "exact.extract_answer": "objects.extract_answer",
     }
 
 
-class ExtractTaskset(vf.Taskset):
-    _default_rewards = (exact,)
-
-    def rows(self) -> list[dict[str, object]]:
+class ExtractTaskset(vf.Taskset[ExtractTasksetConfig]):
+    def load_tasks(self) -> vf.Tasks:
         return [{"prompt": [{"role": "user", "content": "Question?"}], "answer": "A"}]
+
+    @vf.reward
+    async def exact(self, task, state, extract_answer) -> float:
+        return float(extract_answer(state.get("completion") or []) == task["answer"])
 
 
 taskset = ExtractTaskset(config=ExtractTasksetConfig())
@@ -276,11 +281,8 @@ class SearchTasksetConfig(vf.TasksetConfig):
     pass
 
 
-class SearchTaskset(vf.Taskset):
-    _default_rewards = (judge_reward,)
-    _default_toolsets = (load_toolset(),)
-
-    def rows(self) -> list[dict[str, object]]:
+class SearchTaskset(vf.Taskset[SearchTasksetConfig]):
+    def load_tasks(self) -> vf.Tasks:
         return [
             {
                 "prompt": [{"role": "user", "content": "Search the web."}],
@@ -288,8 +290,14 @@ class SearchTaskset(vf.Taskset):
             }
         ]
 
+    @vf.reward
+    async def judge_reward(self, task, state) -> float:
+        ...
 
-env = vf.Env(taskset=SearchTaskset(config=vf.TasksetConfig()))
+
+taskset = SearchTaskset(config=SearchTasksetConfig())
+taskset.add_toolset(load_toolset())
+env = vf.Env(taskset=taskset)
 ```
 
 Gotchas:
@@ -406,13 +414,12 @@ directories, and other sandboxed CLI programs. Prefer packaged harnesses when
 the format already matches:
 
 ```python
+from verifiers.v1.packages.harnesses import OpenCode, OpenCodeConfig
+from verifiers.v1.packages.tasksets import HarborTaskset, HarborTasksetConfig
+
 env = vf.Env(
-    vf.EnvConfig(
-        taskset=vf.HarborTasksetConfig(),
-        harness=vf.OpenCodeConfig(),
-    ),
-    taskset=vf.HarborTaskset,
-    harness=vf.OpenCode,
+    taskset=HarborTaskset(config=HarborTasksetConfig()),
+    harness=OpenCode(config=OpenCodeConfig()),
 )
 ```
 

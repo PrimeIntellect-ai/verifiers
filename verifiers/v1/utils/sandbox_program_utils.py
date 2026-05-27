@@ -17,10 +17,13 @@ from ..task import Task
 from .serialization_utils import serializable
 from .sandbox_utils import (
     VF_STATE_INPUT_PATH_KEY,
+    run_sandbox_command,
+)
+from .sandbox_python_utils import (
+    python_package_list,
     python_package_install_command,
     python_runtime_command,
     python_runtime_setup_command,
-    run_sandbox_command,
 )
 from .program_utils import program_list_items, program_option_mapping
 from ..types import ConfigData, ConfigMap
@@ -39,13 +42,7 @@ PACKAGE_ROOT = "/tmp/vf_program_package"
 
 def python_program_sandbox(sandbox_config: ConfigMap) -> ConfigData:
     config = dict(sandbox_config)
-    raw_packages = config.get("packages") or []
-    if isinstance(raw_packages, str):
-        packages = shlex.split(raw_packages)
-    elif isinstance(raw_packages, list):
-        packages = [str(package) for package in raw_packages]
-    else:
-        raise TypeError("sandbox.packages must be a list or string.")
+    packages = python_package_list(config.get("packages"))
     for package in PYTHON_PROGRAM_PACKAGES:
         if not any(is_python_package(existing, package) for existing in packages):
             packages.append(package)

@@ -177,6 +177,7 @@ ToolsetItem: TypeAlias = Toolset | ToolSpec
 ToolsetCollection: TypeAlias = (
     ToolsetItem | Iterable[ToolsetItem] | dict[str, ToolsetItem | ConfigMap]
 )
+Toolsets: TypeAlias = ToolsetCollection | None
 
 
 def flatten_toolsets(
@@ -211,7 +212,7 @@ def normalize_toolsets(toolsets: "Iterable[ToolEntry]") -> list[Toolset]:
     return [normalize_toolset(toolset) for toolset in toolsets]
 
 
-def merge_toolsets(
+def collect_toolsets(
     values: object,
     config: object,
 ) -> tuple[list[Toolset], dict[str, Toolset]]:

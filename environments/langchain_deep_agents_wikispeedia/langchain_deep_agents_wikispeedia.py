@@ -73,8 +73,12 @@ class WikispeediaHarnessConfig(vf.HarnessConfig):
     timeout_seconds: float = 1200.0
 
 
-class WikispeediaTaskset(vf.Taskset):
-    pass
+class WikispeediaTaskset(vf.Taskset[WikispeediaTasksetConfig]):
+    def load_tasks(self) -> vf.Tasks:
+        return load_tasks(self.config)
+
+    def load_eval_tasks(self) -> vf.Tasks:
+        return load_eval_tasks(self.config)
 
 
 class WikispeediaHarness(vf.Harness):
@@ -314,6 +318,40 @@ def build_dataset(
     return Dataset.from_list(records)
 
 
+def split_pairs(
+    config: WikispeediaTasksetConfig,
+) -> tuple[list[WikiPair], list[WikiPair]]:
+    return load_wiki_graph(config.cache_dir).split_pairs(
+        train_size=config.train_size,
+        eval_size=config.eval_size,
+        min_dist=config.min_path_length,
+        max_dist=config.max_path_length,
+        eval_target_fraction=config.eval_target_fraction,
+        seed=config.split_seed,
+        stratify=config.stratify_path_length,
+    )
+
+
+def load_tasks(config: WikispeediaTasksetConfig) -> Dataset:
+    train, _ = split_pairs(config)
+    return build_dataset(
+        load_wiki_graph(config.cache_dir),
+        train,
+        links_only=config.links_only,
+        max_turns=config.max_turns,
+    )
+
+
+def load_eval_tasks(config: WikispeediaTasksetConfig) -> Dataset:
+    _, eval_ = split_pairs(config)
+    return build_dataset(
+        load_wiki_graph(config.cache_dir),
+        eval_,
+        links_only=config.links_only,
+        max_turns=config.max_turns,
+    )
+
+
 def serialize_agent_completion(
     messages: Sequence[AgentMessage | vf.ConfigMap],
 ) -> list[vf.ConfigData]:
@@ -484,39 +522,6 @@ def make_langchain_deep_agents_program(
 def load_taskset(
     config: WikispeediaTasksetConfig,
 ) -> WikispeediaTaskset:
-    pair_cache: dict[str, tuple[list[WikiPair], list[WikiPair]]] = {}
-
-    def pairs() -> tuple[list[WikiPair], list[WikiPair]]:
-        if "pairs" not in pair_cache:
-            pair_cache["pairs"] = load_wiki_graph(config.cache_dir).split_pairs(
-                train_size=config.train_size,
-                eval_size=config.eval_size,
-                min_dist=config.min_path_length,
-                max_dist=config.max_path_length,
-                eval_target_fraction=config.eval_target_fraction,
-                seed=config.split_seed,
-                stratify=config.stratify_path_length,
-            )
-        return pair_cache["pairs"]
-
-    def build_train() -> Dataset:
-        train, _ = pairs()
-        return build_dataset(
-            load_wiki_graph(config.cache_dir),
-            train,
-            links_only=config.links_only,
-            max_turns=config.max_turns,
-        )
-
-    def build_eval() -> Dataset:
-        _, eval_ = pairs()
-        return build_dataset(
-            load_wiki_graph(config.cache_dir),
-            eval_,
-            links_only=config.links_only,
-            max_turns=config.max_turns,
-        )
-
     rewards = [reached_target]
     metrics = [
         path_length,
@@ -543,8 +548,6 @@ def load_taskset(
         metrics.insert(0, path_efficiency)
 
     taskset = WikispeediaTaskset(config=config)
-    taskset.source = build_train
-    taskset.eval_source = build_eval
     taskset.taskset_id = "langchain-deep-agents-wikispeedia"
     taskset.system_prompt = normalize_system_prompt(
         system_prompt(allow_go_back=config.allow_go_back),
