@@ -41,7 +41,7 @@ from renderers import ToolCall as RendererToolCall
 from renderers import ToolCallFunction
 from renderers.base import MODEL_RENDERER_MAP
 import renderers.client as _renderer_client_module
-from renderers.client import _maybe_offload, generate as _renderer_generate
+from renderers.client import _maybe_offload, generate
 
 from verifiers.clients.client import Client
 from verifiers.clients.openai_chat_completions_client import (
@@ -105,9 +105,14 @@ _lru_cache_disable_hits: ContextVar[bool] = ContextVar(
 _lru_cache_used_hits: ContextVar[bool] = ContextVar(
     "renderer_lru_cache_used_hits", default=False
 )
+_lru_cache_request_id: ContextVar[int | None] = ContextVar(
+    "renderer_lru_cache_request_id", default=None
+)
 _lru_cache_request_counter = 0
 _lru_cache_inflight = 0
 _lru_cache_counter_lock = threading.Lock()
+_HASH_PREVIEW_CHARS = 8
+_HASH_PREVIEW_LIMIT = 8
 
 
 def get_bridge_metrics() -> dict[str, int]:
@@ -198,7 +203,10 @@ async def _resolve_vllm_lru_cache_config(client: AsyncOpenAI) -> _VllmLruCacheCo
         f"{mode_source}-force+" if force_enabled else ""
     )
 
-    base = str(client.base_url).rstrip("/").removesuffix("/v1")
+    base_url = getattr(client, "base_url", None)
+    if base_url is None:
+        return _VllmLruCacheConfig(False, None, "missing-base-url")
+    base = str(base_url).rstrip("/").removesuffix("/v1")
     cache_key = f"{base}|force={force_enabled}"
     if cache_key in _lru_cache_config_by_base:
         return _lru_cache_config_by_base[cache_key]
@@ -294,6 +302,50 @@ def _features_encoded_mb(features: Mapping[str, Any] | None) -> float:
     if not isinstance(kwargs_data, Mapping):
         return 0.0
     return _value_nbytes(kwargs_data) / (1024.0 * 1024.0)
+
+
+def _preview_hashes(hashes: list[str]) -> str:
+    if not hashes:
+        return "-"
+    clipped = [str(h)[:_HASH_PREVIEW_CHARS] for h in hashes[:_HASH_PREVIEW_LIMIT]]
+    suffix = (
+        f",+{len(hashes) - _HASH_PREVIEW_LIMIT}"
+        if len(hashes) > _HASH_PREVIEW_LIMIT
+        else ""
+    )
+    return ",".join(clipped) + suffix
+
+
+def _sent_hash_count_and_preview() -> tuple[int, str]:
+    sent = _lru_cache_sent_hashes.get() or {}
+    return len(sent), _preview_hashes(list(sent.keys()))
+
+
+def _image_cache_feature_summary(
+    features: Mapping[str, Any] | None,
+) -> tuple[int, int, str, str]:
+    if not features:
+        return 0, 0, "-", "-"
+    hashes = list((features.get("mm_hashes") or {}).get("image") or [])
+    kwargs_data = features.get("kwargs_data")
+    hit_hashes: list[str] = []
+    new_hashes: list[str] = []
+    if hashes and isinstance(kwargs_data, Mapping):
+        image_payloads = kwargs_data.get("image")
+        if isinstance(image_payloads, list):
+            for i, h in enumerate(hashes):
+                if i < len(image_payloads) and image_payloads[i] is not None:
+                    new_hashes.append(h)
+                else:
+                    hit_hashes.append(h)
+    elif hashes and kwargs_data is None:
+        hit_hashes = hashes
+    return (
+        len(new_hashes),
+        len(hit_hashes),
+        _preview_hashes(new_hashes),
+        _preview_hashes(hit_hashes),
+    )
 
 
 def _configure_local_lru_capacity(capacity_bytes: int | None) -> None:
@@ -510,33 +562,28 @@ def _install_vllm_lru_cache_patch() -> None:
 
         def wrapped_build_qwen_vl_features(mm_data: Any, *, spatial_merge_size: int):
             images, mm_mb = _mm_data_stats(mm_data)
-            before = _rss_mb()
             t0 = time.monotonic()
             features = _build_qwen_vl_features_with_lru_hits(
                 mm_data, spatial_merge_size=spatial_merge_size
             )
             elapsed_ms = (time.monotonic() - t0) * 1000.0
             encoded_mb = _features_encoded_mb(features)
-            kwargs_data = features.get("kwargs_data") if features else None
-            cache_hits = 0
-            new_items = 0
-            if isinstance(kwargs_data, Mapping):
-                for items in kwargs_data.values():
-                    if isinstance(items, list):
-                        cache_hits += sum(1 for item in items if item is None)
-                        new_items += sum(1 for item in items if item is not None)
-            else:
-                cache_hits = images
-            _lru_cache_logger.debug(
-                "renderer_lru_features images=%d new_items=%d cache_hits=%d "
-                "mm_data_mb=%.1f kwargs_data_mb=%.1f rss_before_mb=%.1f "
-                "rss_after_mb=%.1f threads=%d elapsed_ms=%.1f",
+            new_items, cache_hits, new_hashes, hit_hashes = (
+                _image_cache_feature_summary(features)
+            )
+            _lru_cache_logger.info(
+                "renderer_lru_features req=%s images=%d new=%d hits=%d "
+                "new_hashes=%s hit_hashes=%s mm_mb=%.1f payload_mb=%.1f "
+                "cached_total=%d rss_mb=%.1f threads=%d elapsed_ms=%.1f",
+                _lru_cache_request_id.get() or "-",
                 images,
                 new_items,
                 cache_hits,
+                new_hashes,
+                hit_hashes,
                 mm_mb,
                 encoded_mb,
-                before,
+                _local_lru_len(),
                 _rss_mb(),
                 _os_thread_count(),
                 elapsed_ms,
@@ -574,7 +621,7 @@ async def _generate_with_optional_vllm_lru_cache(**kwargs: Any) -> dict[str, Any
     client = cast(AsyncOpenAI, kwargs["client"])
     config = await _resolve_vllm_lru_cache_config(client)
     if not config.enabled:
-        return await _renderer_generate(**kwargs)
+        return await generate(**kwargs)
 
     _configure_local_lru_capacity(config.capacity_bytes)
     _install_vllm_lru_cache_patch()
@@ -587,6 +634,7 @@ async def _generate_with_optional_vllm_lru_cache(**kwargs: Any) -> dict[str, Any
     sent_token = _lru_cache_sent_hashes.set({})
     disable_token = _lru_cache_disable_hits.set(False)
     used_token = _lru_cache_used_hits.set(False)
+    req_token = _lru_cache_request_id.set(req_id)
     start_rss = _rss_mb()
     start = time.monotonic()
     try:
@@ -604,9 +652,21 @@ async def _generate_with_optional_vllm_lru_cache(**kwargs: Any) -> dict[str, Any
             else round(config.capacity_bytes / (1024 * 1024)),
         )
         try:
-            result = await _renderer_generate(**kwargs)
+            result = await generate(**kwargs)
         except Exception as exc:
-            if _lru_cache_used_hits.get() and _is_retryable_cache_hit_failure(exc):
+            retryable = _is_retryable_cache_hit_failure(exc)
+            sent_count, sent_hashes = _sent_hash_count_and_preview()
+            _lru_cache_logger.info(
+                "renderer_lru_exception req=%d parent_used_hits=%d "
+                "retryable=%d sent=%d sent_hashes=%s exc_type=%s",
+                req_id,
+                int(_lru_cache_used_hits.get()),
+                int(retryable),
+                sent_count,
+                sent_hashes,
+                type(exc).__name__,
+            )
+            if _lru_cache_used_hits.get() and retryable:
                 _lru_cache_logger.warning(
                     "renderer_lru_cache_hit_failed req=%d; clearing local "
                     "MM cache mirror and retrying with full payloads: %r",
@@ -617,10 +677,22 @@ async def _generate_with_optional_vllm_lru_cache(**kwargs: Any) -> dict[str, Any
                 _lru_cache_disable_hits.set(True)
                 _lru_cache_used_hits.set(False)
                 _lru_cache_sent_hashes.set({})
-                result = await _renderer_generate(**kwargs)
+                result = await generate(**kwargs)
             else:
                 raise
-        if _lru_cache_used_hits.get() and _is_empty_model_result(result):
+        empty_result = _is_empty_model_result(result)
+        sent_count, sent_hashes = _sent_hash_count_and_preview()
+        _lru_cache_logger.info(
+            "renderer_lru_result req=%d empty=%d parent_used_hits=%d "
+            "sent=%d sent_hashes=%s cached_total=%d",
+            req_id,
+            int(empty_result),
+            int(_lru_cache_used_hits.get()),
+            sent_count,
+            sent_hashes,
+            _local_lru_len(),
+        )
+        if _lru_cache_used_hits.get() and empty_result:
             _lru_cache_logger.warning(
                 "renderer_lru_cache_hit_empty_response req=%d; clearing local "
                 "MM cache mirror and retrying with full payloads",
@@ -630,14 +702,31 @@ async def _generate_with_optional_vllm_lru_cache(**kwargs: Any) -> dict[str, Any
             _lru_cache_disable_hits.set(True)
             _lru_cache_used_hits.set(False)
             _lru_cache_sent_hashes.set({})
-            result = await _renderer_generate(**kwargs)
+            result = await generate(**kwargs)
+            empty_result = _is_empty_model_result(result)
+            sent_count, sent_hashes = _sent_hash_count_and_preview()
+            _lru_cache_logger.info(
+                "renderer_lru_retry_result req=%d empty=%d "
+                "parent_used_hits=%d sent=%d sent_hashes=%s cached_total=%d",
+                req_id,
+                int(empty_result),
+                int(_lru_cache_used_hits.get()),
+                sent_count,
+                sent_hashes,
+                _local_lru_len(),
+            )
         newly_confirmed = _confirm_sent_mm_hashes()
         if newly_confirmed:
-            _lru_cache_logger.debug(
-                "renderer_lru_confirm req=%d newly_confirmed=%d cached_total=%d",
+            sent_count, sent_hashes = _sent_hash_count_and_preview()
+            _lru_cache_logger.info(
+                "renderer_lru_confirm req=%d confirmed=%d sent=%d "
+                "sent_hashes=%s cached_total=%d empty=%d",
                 req_id,
                 newly_confirmed,
+                sent_count,
+                sent_hashes,
                 _local_lru_len(),
+                int(empty_result),
             )
         return result
     finally:
@@ -657,6 +746,7 @@ async def _generate_with_optional_vllm_lru_cache(**kwargs: Any) -> dict[str, Any
         _lru_cache_used_hits.reset(used_token)
         _lru_cache_disable_hits.reset(disable_token)
         _lru_cache_sent_hashes.reset(sent_token)
+        _lru_cache_request_id.reset(req_token)
 
 
 def _get_value(obj: Any, key: str, default: Any = None) -> Any:
