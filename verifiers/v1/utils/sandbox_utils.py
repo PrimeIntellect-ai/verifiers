@@ -16,7 +16,6 @@ from prime_sandboxes import CommandTimeoutError
 
 from verifiers.errors import Error, SandboxError
 from verifiers.utils.async_utils import maybe_call_with_named_args
-from verifiers.utils.error_utils import error_info
 
 from .artifact_utils import artifact_format, artifact_key, artifact_optional
 from .artifact_utils import artifact_path
@@ -393,7 +392,8 @@ async def run_sandbox_command(
                 "stderr": stderr,
             }
             state["completion"] = [{"role": "assistant", "content": ""}]
-            state._set_error(error_info(SandboxError(stderr)))
+            state["command_timeout"] = True
+            state._set_truncated(True)
             state._set_stop_condition("command_timeout")
             return state
         state["command"] = {

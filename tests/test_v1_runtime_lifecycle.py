@@ -1544,6 +1544,28 @@ async def test_sandbox_setup_command_timeout_becomes_rollout_error(
 
 
 @pytest.mark.asyncio
+async def test_sandbox_command_timeout_is_terminal_not_rollout_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sandboxes(monkeypatch)
+    install_fake_endpoint_tunnel(monkeypatch)
+    FakeSandboxClient.reset()
+
+    harness = make_harness(
+        program={"command": ["sleep", "120"], "sandbox": True},
+        sandbox={"image": "python:3.11-slim", "command_timeout": 0},
+    )
+    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+
+    state = await harness.run(task)
+
+    assert state["stop_condition"] == "command_timeout"
+    assert state["error"] is None
+    assert state["command_timeout"] is True
+    assert state["is_truncated"] is True
+
+
+@pytest.mark.asyncio
 async def test_program_file_upload_uses_retry_wrapper(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
