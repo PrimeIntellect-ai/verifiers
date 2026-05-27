@@ -491,6 +491,7 @@ def _program_channel_setup_handler(
 async def create_sandbox(client: SandboxClient, sandbox_config: ConfigMap) -> str:
     from prime_sandboxes import CreateSandboxRequest
 
+    labels = sandbox_config.get("labels")
     request = CreateSandboxRequest(
         name=f"vf-v1-{uuid.uuid4().hex[:8]}",
         docker_image=str(sandbox_config.get("image") or "python:3.11-slim"),
@@ -501,6 +502,7 @@ async def create_sandbox(client: SandboxClient, sandbox_config: ConfigMap) -> st
         gpu_count=int_config(sandbox_config, "gpu_count", 0),
         network_access=bool(sandbox_config.get("network_access", True)),
         timeout_minutes=int_config(sandbox_config, "timeout_minutes", 60),
+        labels=[str(label) for label in labels] if isinstance(labels, list) else [],
     )
     sandbox = await client.create(request)
     sandbox_id = str(sandbox.id)
