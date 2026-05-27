@@ -17,6 +17,14 @@ PROGRAM_SANDBOX = {
 }
 
 
+class DSPyFlightsHarnessConfig(vf.HarnessConfig):
+    program: vf.ProgramConfig | None = vf.ProgramConfig(
+        fn="run_dspy_flight_program",
+        sandbox=True,
+    )
+    sandbox: vf.SandboxConfig = vf.SandboxConfig(**PROGRAM_SANDBOX)
+
+
 class Date(BaseModel):
     # Somehow LLM is bad at specifying `datetime.datetime`, so
     # we define a custom class to represent the date.
@@ -133,7 +141,7 @@ async def dspy_calls(task, state) -> float:
     return float(len(state.get("trajectory", [])))
 
 
-def source():
+def load_tasks():
     def row(
         example_id: int,
         user_request: str,
@@ -414,25 +422,27 @@ def stringify_nested(value: object) -> object:
     return str(value)
 
 
-def load_taskset(config: vf.TasksetConfig):
-    return vf.Taskset(
-        source=source,
-        rewards=[expected_database_change],
-        metrics=[dspy_calls],
-        config=config,
-    )
+class DSPyFlightsTasksetConfig(vf.TasksetConfig):
+    rewards: list[str] = ["expected_database_change"]
+    metrics: list[str] = ["dspy_calls"]
 
 
-def load_harness(config: vf.HarnessConfig):
-    return vf.Harness(
-        program={"fn": "dspy_flights:run_dspy_flight_program", "sandbox": True},
-        sandbox=PROGRAM_SANDBOX,
-        config=config,
-    )
+class DSPyFlightsTaskset(vf.Taskset[DSPyFlightsTasksetConfig]):
+    def load_tasks(self) -> vf.Tasks:
+        return load_tasks()
 
 
-def load_environment(config: vf.EnvConfig):
+class DSPyFlightsHarness(vf.Harness):
+    pass
+
+
+class DSPyFlightsEnvConfig(vf.EnvConfig):
+    taskset: DSPyFlightsTasksetConfig = DSPyFlightsTasksetConfig()
+    harness: DSPyFlightsHarnessConfig = DSPyFlightsHarnessConfig()
+
+
+def load_environment(config: DSPyFlightsEnvConfig) -> vf.Env:
     return vf.Env(
-        taskset=load_taskset(config=config.taskset),
-        harness=load_harness(config=config.harness),
+        taskset=DSPyFlightsTaskset(config=config.taskset),
+        harness=DSPyFlightsHarness(config=config.harness),
     )

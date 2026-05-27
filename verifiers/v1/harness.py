@@ -1,5 +1,5 @@
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, ClassVar, cast
+from typing import TYPE_CHECKING, cast
 
 from verifiers.decorators import metric, update
 from verifiers.errors import Error, OverlongPromptError
@@ -16,20 +16,22 @@ from verifiers.utils.response_utils import parse_response_message
 from verifiers.utils.tool_utils import is_valid_tool_content_parts
 
 from .config import (
+    ConfigSource,
     HarnessConfig,
+    PromptInput,
+    ProgramConfig,
     SandboxConfig,
     import_config_ref,
-    merge_config_handler_map,
-    merge_config_value,
     resolve_config_object,
     sandbox_config_mapping,
 )
-from .utils.binding_utils import BindingMap, normalize_binding_map
 from .utils.endpoint_utils import (
     Endpoint,
     assistant_completion_from_messages,
     run_intercepted_program,
 )
+from .utils.config_utils import coerce_config, config_ref_context, qualified_config_ref
+from .utils.runtime_owner_utils import RuntimeOwnerMixin
 from .utils.json_utils import json_args
 from .utils.mcp_proxy_utils import (
     proxy_program,
@@ -59,141 +61,87 @@ from .utils.tool_utils import tool_error_content
 from .utils.trajectory_utils import has_borrowed_trajectory, sync_trajectory
 from .state import State
 from .task import Task
-from .toolset import ToolsetCollection, merge_toolsets, normalize_toolset_collection
-from .user import normalize_user
-from .types import ConfigData, ConfigMap, Handler, ModelClient, ProgramMap, PromptInput
+from .types import ConfigData, ConfigMap, Handler, ModelClient, ProgramMap
 
 if TYPE_CHECKING:
     from .taskset import Taskset
 
 
-class Harness:
-    config_type: ClassVar[type[HarnessConfig]] = HarnessConfig
+class UnsetValue:
+    pass
 
-    def __init__(
+
+UNSET = UnsetValue()
+
+
+class Harness(RuntimeOwnerMixin):
+    config: HarnessConfig
+
+    def __init__(self, config: ConfigSource = None):
+        self.config = coerce_config(HarnessConfig, config)
+        with config_ref_context(self.config):
+            program_config = self.config.program
+            program_value = resolve_config_object(program_config)
+            if isinstance(program_value, ProgramConfig):
+                program_value = program_value.model_dump(
+                    exclude_none=True,
+                    exclude_unset=True,
+                    exclude_defaults=True,
+                )
+            self.program = cast(Handler | ProgramMap | None, program_value)
+            self.system_prompt = normalize_system_prompt(
+                self.config.system_prompt, field_name="harness.system_prompt"
+            )
+            self.system_prompt_merge = self.config.system_prompt_merge
+            self._init_runtime_user()
+            self.bindings = dict(self.config.bindings)
+            self.sandbox = sandbox_config_mapping(self.config.sandbox)
+            self.client = cast(
+                ModelClient | None,
+                resolve_config_object(self.config.client),
+            )
+            self.model = self.config.model
+            self.sampling_args = cast(SamplingArgs, self.config.sampling_args)
+            self._init_runtime_toolsets()
+            self._init_runtime_handlers(base_metrics=(num_turns,))
+            keep_step_value = resolve_config_object(self.config.keep_trajectory_step)
+            if keep_step_value is not None and not callable(keep_step_value):
+                raise TypeError("keep_trajectory_step must be callable.")
+            self.keep_trajectory_step = cast(Handler | None, keep_step_value)
+            self.taskset: "Taskset | None" = None
+            self.runtime = self.resolve_runtime()
+            self.endpoint = Endpoint(use_tunnel=self.program_uses_sandbox())
+            self._program = self.compile_program(self.program)
+
+    @classmethod
+    def config_schema(cls) -> str:
+        return HarnessConfig.schema_text()
+
+    def _configure_runtime(
         self,
-        # Singleton fields.
-        program: Handler | ProgramMap | None = None,
-        system_prompt: PromptInput | None = None,
-        user: Handler | str | ConfigMap | None = None,
-        bindings: BindingMap | None = None,
-        sandbox: ConfigMap | SandboxConfig | None = None,
-        client: ModelClient | None = None,
-        model: str | None = None,
-        sampling_args: SamplingArgs | None = None,
-        max_turns: int | None = None,
-        # Collection fields.
-        toolsets: ToolsetCollection | None = None,
-        stops: list[Handler] | None = None,
-        setups: list[Handler] | None = None,
-        updates: list[Handler] | None = None,
+        *,
+        program: Handler | ProgramMap | None | UnsetValue = UNSET,
+        sandbox: ConfigMap | None | UnsetValue = UNSET,
+        system_prompt: PromptInput | None | UnsetValue = UNSET,
         metrics: list[Handler] | None = None,
-        rewards: list[Handler] | None = None,
-        advantages: list[Handler] | None = None,
-        cleanups: list[Handler] | None = None,
-        # Config.
-        config: HarnessConfig | None = None,
-    ):
-        self.config = type(self).config_type.from_config(config)
-        if max_turns is not None:
-            self.config.max_turns = max_turns
-        program_value = resolve_config_object(
-            merge_config_value(program, self.config.program)
-        )
-        self.program = cast(Handler | ProgramMap | None, program_value)
-        system_prompt_value = cast(
-            PromptInput | None,
-            merge_config_value(system_prompt, self.config.system_prompt),
-        )
-        self.system_prompt = normalize_system_prompt(
-            system_prompt_value, field_name="harness.system_prompt"
-        )
-        self.system_prompt_merge = self.config.system_prompt_merge
-        self.user = normalize_user(merge_config_value(user, self.config.user))
-        self.bindings = {
-            **self.config.bindings,
-            **normalize_binding_map(bindings, "Harness bindings", allow_objects=False),
-        }
-        self.sandbox = sandbox_config_mapping(
-            merge_config_value(sandbox, self.config.sandbox)
-        )
-        self.client = cast(
-            ModelClient | None,
-            resolve_config_object(merge_config_value(client, self.config.client)),
-        )
-        self.model = cast(str | None, merge_config_value(model, self.config.model))
-        self.sampling_args = cast(
-            SamplingArgs,
-            merge_config_value(sampling_args, self.config.sampling_args),
-        )
-        self.toolsets, self.named_toolsets = merge_toolsets(
-            toolsets or (), self.config.toolsets
-        )
-        handlers = merge_config_handler_map(
-            {
-                "stop": stops or (),
-                "setup": setups or (),
-                "update": updates or (),
-                "metric": [num_turns, *(metrics or [])],
-                "reward": rewards or (),
-                "advantage": advantages or (),
-                "cleanup": cleanups or (),
-            },
-            self.config,
-        )
-        self.stops = handlers["stop"]
-        self.setups = handlers["setup"]
-        self.updates = handlers["update"]
-        self.metrics = handlers["metric"]
-        self.rewards = handlers["reward"]
-        self.advantages = handlers["advantage"]
-        self.cleanups = handlers["cleanup"]
-        keep_step_value = resolve_config_object(self.config.keep_trajectory_step)
-        if keep_step_value is not None and not callable(keep_step_value):
-            raise TypeError("keep_trajectory_step must be callable.")
-        self.keep_trajectory_step = cast(Handler | None, keep_step_value)
-        self.taskset: "Taskset | None" = None
+    ) -> None:
+        if not isinstance(program, UnsetValue):
+            self.program = cast(Handler | ProgramMap | None, program)
+        if not isinstance(sandbox, UnsetValue):
+            self.sandbox = sandbox
+        if not isinstance(system_prompt, UnsetValue):
+            self.system_prompt = normalize_system_prompt(
+                system_prompt, field_name="harness.system_prompt"
+            )
+        if metrics:
+            self.metrics.extend(metrics)
         self.runtime = self.resolve_runtime()
         self.endpoint = Endpoint(use_tunnel=self.program_uses_sandbox())
         self._program = self.compile_program(self.program)
 
-    @classmethod
-    def config_schema(cls) -> str:
-        return cls.config_type.schema_text()
-
-    def _add_handler(self, handlers: list[Handler], fn: Handler) -> None:
-        handlers.append(fn)
-        self.runtime = self.resolve_runtime()
-
-    def add_metric(self, fn: Handler) -> None:
-        self._add_handler(self.metrics, fn)
-
-    def add_reward(self, fn: Handler) -> None:
-        self._add_handler(self.rewards, fn)
-
-    def add_advantage(self, fn: Handler) -> None:
-        self._add_handler(self.advantages, fn)
-
-    def add_toolset(self, toolset: object) -> None:
-        toolsets, named_toolsets = normalize_toolset_collection(toolset)
-        duplicate = set(self.named_toolsets) & set(named_toolsets)
-        if duplicate:
-            raise ValueError(f"Toolsets are defined twice: {sorted(duplicate)}.")
-        self.toolsets.extend(toolsets)
-        self.named_toolsets.update(named_toolsets)
-        self.runtime = self.resolve_runtime()
-
-    def add_stop(self, fn: Handler) -> None:
-        self._add_handler(self.stops, fn)
-
-    def add_setup(self, fn: Handler) -> None:
-        self._add_handler(self.setups, fn)
-
-    def add_update(self, fn: Handler) -> None:
-        self._add_handler(self.updates, fn)
-
-    def add_cleanup(self, fn: Handler) -> None:
-        self._add_handler(self.cleanups, fn)
+    def _runtime_owner_changed(self) -> None:
+        if hasattr(self, "runtime"):
+            self.runtime = self.resolve_runtime()
 
     def attach_taskset(self, taskset: "Taskset") -> None:
         self.taskset = taskset
@@ -367,7 +315,9 @@ class Harness:
             if not isinstance(fn_ref, str):
                 raise TypeError("program.fn must be a string ref.")
             if sandbox_config is not None:
-                return self.sandbox_fn_program(program, sandbox_config, fn_ref)
+                return self.sandbox_fn_program(
+                    program, sandbox_config, qualified_config_ref(fn_ref)
+                )
             fn = import_config_ref(fn_ref)
             if not callable(fn):
                 raise TypeError("program.fn did not resolve to a callable.")

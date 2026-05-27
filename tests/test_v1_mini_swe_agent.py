@@ -5,7 +5,8 @@ from typing import Any, cast
 from uuid import uuid4
 
 import pytest
-import verifiers.v1 as vf
+import verifiers as vf
+from verifiers.v1.packages.harnesses import MiniSWEAgent, MiniSWEAgentConfig
 
 
 def write_harbor_task(root: Path) -> Path:
@@ -42,11 +43,13 @@ def write_harbor_package(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Mod
     tasks_root.mkdir(parents=True)
     (package_dir / "__init__.py").write_text(
         """
-import verifiers.v1 as vf
+import verifiers as vf
+from verifiers.v1.packages.harnesses import MiniSWEAgent, MiniSWEAgentConfig
+from verifiers.v1.packages.tasksets import HarborTaskset, HarborTasksetConfig
 
 
 def load_env():
-    return vf.Env(taskset=vf.HarborTaskset(), harness=vf.MiniSWEAgent())
+    return vf.Env(taskset=HarborTaskset(config=HarborTasksetConfig()), harness=MiniSWEAgent(config=MiniSWEAgentConfig()))
 """.lstrip()
     )
     monkeypatch.syspath_prepend(str(tmp_path))
@@ -57,7 +60,12 @@ def load_env():
 
 
 def test_mini_swe_agent_builds_sandbox_program():
-    harness = vf.MiniSWEAgent(system_prompt="Use tests.", agent_workdir="/app")
+    harness = MiniSWEAgent(
+        config=MiniSWEAgentConfig(
+            system_prompt="Use tests.",
+            agent_workdir="/app",
+        )
+    )
     program = cast(dict[str, Any], harness.program)
 
     assert isinstance(harness, vf.Harness)
@@ -80,12 +88,10 @@ def test_mini_swe_agent_composes_with_harbor_taskset(
     row = env.get_dataset()[0]
     task = env.taskset.to_task(row)
 
-    assert isinstance(env.harness, vf.MiniSWEAgent)
+    assert isinstance(env.harness, MiniSWEAgent)
     assert task["taskset_id"] == "harbor"
     assert task["instruction"] == "Fix the bug."
 
 
-def test_mini_swe_agent_is_reexported():
-    from verifiers.v1.packages.harnesses import MiniSWEAgent
-
-    assert vf.MiniSWEAgent is MiniSWEAgent
+def test_mini_swe_agent_imports_from_package():
+    assert MiniSWEAgent

@@ -136,10 +136,6 @@ class MultiTurnEnv(vf.Environment):
         """Override to set intermediate rewards, advantages, or extra metadata."""
         state["trajectory"].append(trajectory_step)
 
-    async def _finalize_rollout(self, state: State) -> None:
-        """Finalize rollout state and run cleanup handlers exactly once."""
-        await self.cleanup(state)
-
     async def add_model_response(
         self,
         state: State,
@@ -222,5 +218,5 @@ class MultiTurnEnv(vf.Environment):
         except asyncio.TimeoutError:
             self.mark_timed_out(state)
         finally:
-            await self._finalize_rollout(state)
+            await self.cleanup(state)
         return state

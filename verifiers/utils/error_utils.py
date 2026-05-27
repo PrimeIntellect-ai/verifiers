@@ -65,16 +65,6 @@ def error_info(error: BaseException) -> ErrorInfo:
     )
 
 
-def error_type_name(error: object) -> str | None:
-    if isinstance(error, BaseException):
-        return type(error).__name__
-    if isinstance(error, Mapping):
-        raw_error = cast(Mapping[str, object], error).get("error")
-        if isinstance(raw_error, str):
-            return raw_error
-    return None
-
-
 def error_info_to_exception(
     error: Mapping[str, object],
     error_types: tuple[type[Exception], ...],

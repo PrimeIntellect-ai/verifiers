@@ -7,7 +7,7 @@ from typing import Any
 import verifiers as vf
 from verifiers.envs.experimental.composable import SandboxSpec, SandboxTaskSet
 
-from .log_parser import decolor_dict_keys, parse_log_fn
+from .log_parser import decolor_dict_keys, parse_log_pytest
 
 logger = logging.getLogger(__name__)
 
@@ -140,7 +140,7 @@ class R2ERubric(vf.Rubric):
         self.add_reward_func(self.solved)
 
     async def solved(self, state, info, **kwargs) -> float:
-        if isinstance(state.get("error"), vf.InfraError):
+        if state.get("error") is not None:
             return 0.0
         sandbox_client = state.get("sandbox_client")
         sandbox_id = state.get("sandbox_id")
@@ -390,7 +390,7 @@ class R2EGymTaskSet(SandboxTaskSet):
 
     def _calculate_reward(self, test_output: str, info: dict) -> float:
         """Parse test log, compare to expected_output_json."""
-        parse = parse_log_fn(info["repo_name"])(test_output)
+        parse = parse_log_pytest(test_output)
         parse = decolor_dict_keys(parse)
         expected: dict = json.loads(info["expected_output_json"])
         expected = decolor_dict_keys(expected)

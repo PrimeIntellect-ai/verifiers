@@ -3,7 +3,6 @@ from typing import Any, Optional, cast
 
 from openai import AsyncOpenAI, BaseModel
 from openai.types.chat import (
-    ChatCompletion,
     ChatCompletionAssistantMessageParam,
 )
 from openai.types.chat.chat_completion_message_function_tool_call_param import (
@@ -20,6 +19,9 @@ from verifiers.clients.openai_chat_completions_client import (
     handle_openai_overlong_prompt,
 )
 from verifiers.types import SamplingArgs, State
+from verifiers.utils.client_utils import (
+    post_chat_completion_with_routed_experts_sidecar,
+)
 
 
 def _has_multimodal_content(messages) -> bool:
@@ -38,21 +40,6 @@ def _has_multimodal_content(messages) -> bool:
                 ):
                     return True
     return False
-
-
-def _get_role(msg) -> str | None:
-    return msg.get("role") if hasattr(msg, "get") else getattr(msg, "role", None)
-
-
-def _is_valid_env_tail(messages: list) -> bool:
-    """Validate that messages follow env response patterns:
-    all tool messages, with optionally a single user message last."""
-    if not messages:
-        return False
-    for msg in messages[:-1]:
-        if _get_role(msg) != "tool":
-            return False
-    return _get_role(messages[-1]) in ("tool", "user")
 
 
 # copy from vllm/entrypoints/openai/protocol.py
@@ -140,20 +127,20 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
             )
 
         extra_body = sampling_args.pop("extra_body", {})
-        body = dict(
-            model=model,
-            messages=prompt,
-            tools=tools,
-            tokens=prompt_ids,
+        body = {
+            "model": model,
+            "messages": prompt,
+            "tools": tools,
+            "tokens": prompt_ids,
             **sampling_args,
             **extra_body,
-        )
+        }
 
-        return await self.client.post(
+        return await post_chat_completion_with_routed_experts_sidecar(
+            self.client,
             "/chat/completions/tokens",
             body=body,
-            cast_to=ChatCompletion,
-            options={"headers": extra_headers} if extra_headers else {},
+            extra_headers=extra_headers,
         )
 
     async def get_prompt_ids(
@@ -251,7 +238,16 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
 
         # The env messages are everything after the prefix match.
         env_messages: OpenAIChatMessages = list(prompt_messages[prefix_len:])
-        if not _is_valid_env_tail(env_messages):
+        if not env_messages:
+            return None
+        env_roles = [
+            msg.get("role") if hasattr(msg, "get") else getattr(msg, "role", None)
+            for msg in env_messages
+        ]
+        if any(role != "tool" for role in env_roles[:-1]) or env_roles[-1] not in (
+            "tool",
+            "user",
+        ):
             return None
 
         # Extract the bridge tokens using a minimal dual-tokenization that
@@ -270,7 +266,10 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
         # follow an assistant message with a tool call").
         tool_call_ids: list[str] = []
         for msg in env_messages:
-            if _get_role(msg) != "tool":
+            role = (
+                msg.get("role") if hasattr(msg, "get") else getattr(msg, "role", None)
+            )
+            if role != "tool":
                 break
             tc_id = (
                 msg.get("tool_call_id")

@@ -503,16 +503,6 @@ def parse_log_ruby_v1(log: str) -> dict[str, str]:
 
     severity_rank = {"PASSED": 0, "SKIPPED": 0, "FAILED": 1, "ERROR": 2}
 
-    def norm(status: str) -> str:
-        s = status.upper()
-        if s in ("PASS", "PASSED"):
-            return "PASSED"
-        if s in ("FAIL", "FAILURE"):
-            return "FAILED"
-        if s in ("SKIP", "SKIPPED"):
-            return "SKIPPED"
-        return s  # ERROR
-
     current_suite: str | None = None
 
     for raw in log.splitlines():
@@ -530,7 +520,13 @@ def parse_log_ruby_v1(log: str) -> dict[str, str]:
             continue
         test_name, status_token = m.group(1).strip(), m.group(2)
         full_name = f"{current_suite}::{test_name}" if current_suite else test_name
-        status_norm = norm(status_token)
+        status_norm = status_token.upper()
+        if status_norm in ("PASS", "PASSED"):
+            status_norm = "PASSED"
+        elif status_norm in ("FAIL", "FAILURE"):
+            status_norm = "FAILED"
+        elif status_norm in ("SKIP", "SKIPPED"):
+            status_norm = "SKIPPED"
         prev = results.get(full_name)
         if prev is None or severity_rank.get(status_norm, 0) > severity_rank.get(
             prev, 0
@@ -1065,15 +1061,6 @@ def parse_log_p5js(log: str) -> dict[str, str]:
             match = xml_pat.search(log_content)
         return log_content
 
-    def is_valid_fail(match: re.Match) -> bool:
-        last_line_indent = 0
-        for line in match.group(2).split("\n"):
-            line_indent = len(line) - len(line.lstrip())
-            if line_indent <= last_line_indent:
-                return False
-            last_line_indent = line_indent
-        return True
-
     log = ansi_escape(log)
     log = remove_json_blocks(log)
     log = remove_xml_blocks(log)
@@ -1082,7 +1069,15 @@ def parse_log_p5js(log: str) -> dict[str, str]:
     # Parse failing tests
     fail_pattern = re.compile(r"^\s*(\d+)\)(.{0,1000}?):", re.MULTILINE | re.DOTALL)
     for match in fail_pattern.finditer(log):
-        if is_valid_fail(match):
+        last_line_indent = 0
+        valid_fail = True
+        for line in match.group(2).split("\n"):
+            line_indent = len(line) - len(line.lstrip())
+            if line_indent <= last_line_indent:
+                valid_fail = False
+                break
+            last_line_indent = line_indent
+        if valid_fail:
             test_names = list(map(str.strip, match.group(2).split("\n")))
             full_name = ":".join(test_names)
             test_results[full_name] = TestStatus.FAILED.value
@@ -1513,26 +1508,6 @@ def parse_lue_nvim(log: str) -> dict[str, str]:
     return results
 
 
-def _mvn_failure_status(line: str) -> str:
-    if "Exception" in line and "AssertionError" not in line:
-        return TestStatus.ERROR.value
-    return TestStatus.FAILED.value
-
-
-def _mvn_summary_class(line: str, current_running: str | None) -> str | None:
-    if " in " in line:
-        return line.rsplit(" in ", 1)[-1].strip().rstrip(".:;")
-    return current_running
-
-
-def _mvn_status_from_summary_counts(failures: int, errors: int, skipped: int) -> str:
-    if failures == 0 and errors == 0:
-        if skipped == 0:
-            return TestStatus.PASSED.value
-        return TestStatus.SKIPPED.value
-    return TestStatus.FAILED.value
-
-
 def parse_java_mvn(log: str) -> dict[str, str]:
     """Parse Maven logs into {identifier: status}.
 
@@ -1572,16 +1547,31 @@ def parse_java_mvn(log: str) -> dict[str, str]:
             clazz = fm.group("class")
             method = fm.group("method")
             test_id = f"{clazz}.{method}"
-            results[test_id] = _mvn_failure_status(line)
+            results[test_id] = (
+                TestStatus.ERROR.value
+                if "Exception" in line and "AssertionError" not in line
+                else TestStatus.FAILED.value
+            )
             results.setdefault(clazz, TestStatus.FAILED.value)
             continue
 
         sm = summary_re.search(line)
         if sm:
             _tests_run, failures, errors, skipped = map(int, sm.groups())
-            clazz = _mvn_summary_class(line, current_running)
+            clazz = (
+                line.rsplit(" in ", 1)[-1].strip().rstrip(".:;")
+                if " in " in line
+                else current_running
+            )
             if clazz:
-                status = _mvn_status_from_summary_counts(failures, errors, skipped)
+                if failures == 0 and errors == 0:
+                    status = (
+                        TestStatus.PASSED.value
+                        if skipped == 0
+                        else TestStatus.SKIPPED.value
+                    )
+                else:
+                    status = TestStatus.FAILED.value
                 results.setdefault(clazz, status)
             current_running = None
 

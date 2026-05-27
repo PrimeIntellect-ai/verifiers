@@ -14,6 +14,7 @@ import verifiers as core_vf
 import verifiers as vf
 from verifiers.types import Tool
 from verifiers.v1.types import ConfigMap
+from verifiers.v1.utils.config_utils import coerce_config
 
 from tau2.agent.llm_agent import AGENT_INSTRUCTION, SYSTEM_PROMPT, LLMAgent
 from tau2.agent.llm_agent import is_valid_agent_history_message
@@ -27,14 +28,14 @@ from tau2.environment.environment import Environment as TauEnvironment
 from tau2.evaluator.evaluator import EvaluationType, evaluate_simulation
 from tau2.orchestrator.orchestrator import DEFAULT_FIRST_AGENT_MESSAGE, Role
 from tau2.registry import registry
-from tau2.run import load_tasks
+from tau2.run import load_tasks as load_tau2_tasks
 from tau2.user.user_simulator import UserSimulator, is_valid_user_history_message
 from tau2.utils.utils import DATA_DIR, format_time, get_now
 from verifiers.utils.async_utils import maybe_call_with_named_args
 
-DEFAULT_USER_MODEL = "gpt-4.1"
-DEFAULT_USER_BASE_URL = "https://api.openai.com/v1"
-DEFAULT_USER_API_KEY_VAR = "OPENAI_API_KEY"
+DEFAULT_USER_MODEL = "openai/gpt-4.1-mini"
+DEFAULT_USER_BASE_URL = "https://api.pinference.ai/api/v1"
+DEFAULT_USER_API_KEY_VAR = "PRIME_API_KEY"
 
 
 def download_tau2_data() -> None:
@@ -478,7 +479,7 @@ def add_timestamps(message_history: list[Message]) -> list[Message]:
     return message_history
 
 
-def source(domain: str, max_turns: int):
+def load_tasks(domain: str, max_turns: int):
     download_tau2_data()
     environment_constructor = registry.get_env_constructor(domain)
     environment = environment_constructor()
@@ -487,7 +488,7 @@ def source(domain: str, max_turns: int):
         domain_policy=environment.policy,
     )
     for index, task in enumerate(
-        load_tasks(task_set_name=domain, task_split_name="base")
+        load_tau2_tasks(task_set_name=domain, task_split_name="base")
     ):
         yield {
             "example_id": index,
@@ -531,8 +532,14 @@ def load_session_factory(
     return load_session
 
 
-def make_tau2_tool(name: str, schema: ConfigMap) -> vf.Handler:
-    async def tool(session: Tau2Session, state, **arguments) -> str:
+def make_tau2_tool(
+    name: str, schema: ConfigMap, session_factory: Callable[..., Tau2Session]
+) -> vf.Handler:
+    async def tool(task, state, **arguments) -> str:
+        session = cast(
+            Tau2Session,
+            await maybe_call_with_named_args(session_factory, task=task, state=state),
+        )
         return await session.call_agent_tool(name, arguments, state)
 
     function_schema = cast(ConfigMap, schema["function"])
@@ -561,13 +568,6 @@ def load_toolset(
     environment_constructor = registry.get_env_constructor(domain)
     environment = cast(TauEnvironment, environment_constructor())
     schemas = [tool.openai_schema for tool in environment.get_tools()]
-    tools = [
-        make_tau2_tool(
-            str(cast(ConfigMap, schema["function"])["name"]),
-            schema,
-        )
-        for schema in schemas
-    ]
     if session_factory is None:
         session_factory = load_session_factory(
             domain=domain,
@@ -576,9 +576,16 @@ def load_toolset(
             max_steps=max_steps,
             max_errors=max_errors,
         )
+    tools = [
+        make_tau2_tool(
+            str(cast(ConfigMap, schema["function"])["name"]),
+            schema,
+            session_factory,
+        )
+        for schema in schemas
+    ]
     return vf.Toolset(
         tools=tools,
-        bindings={f"{tool.__name__}.session": session_factory for tool in tools},
         write=True,
         scope="rollout",
     )
@@ -587,16 +594,36 @@ def load_toolset(
 def tau2_user_args(
     user_args: ConfigMap, user_base_url: str, user_api_key_var: str
 ) -> vf.ConfigData:
+    resolved_args = dict(user_args)
+    if user_base_url == DEFAULT_USER_BASE_URL:
+        custom_provider = resolved_args.get("custom_llm_provider")
+        assert custom_provider in (None, "custom_openai")
+        resolved_args["custom_llm_provider"] = "custom_openai"
+    if user_api_key_var == "PRIME_API_KEY":
+        team_id = os.getenv("PRIME_TEAM_ID")
+        if team_id:
+            extra_headers = resolved_args.get("extra_headers") or {}
+            assert isinstance(extra_headers, dict)
+            resolved_args["extra_headers"] = {
+                **extra_headers,
+                "X-Prime-Team-ID": team_id,
+            }
     return {
-        **dict(user_args),
+        **resolved_args,
         "api_base": user_base_url,
         "api_key": os.getenv(user_api_key_var),
     }
 
 
-async def tau2_user(session: Tau2Session, state, transcript) -> list[vf.ConfigData]:
-    _ = transcript
-    return await session.user_messages(state)
+def make_tau2_user(session_factory: Callable[..., Tau2Session]) -> vf.Handler:
+    async def tau2_user(task, state) -> list[vf.ConfigData]:
+        session = cast(
+            Tau2Session,
+            await maybe_call_with_named_args(session_factory, task=task, state=state),
+        )
+        return await session.user_messages(state)
+
+    return tau2_user
 
 
 @vf.reward(weight=1.0)
@@ -666,6 +693,13 @@ async def tau2_num_user_tool_calls(task, state) -> float:
 
 
 class Tau2TasksetConfig(vf.TasksetConfig):
+    rewards: list[str] = ["tau2_reward"]
+    metrics: list[str] = [
+        "tau2_num_errors",
+        "tau2_num_steps",
+        "tau2_num_assistant_tool_calls",
+        "tau2_num_user_tool_calls",
+    ]
     domain: str = "telecom"
     user_model: str = DEFAULT_USER_MODEL
     user_args: vf.ConfigData | None = None
@@ -676,33 +710,12 @@ class Tau2TasksetConfig(vf.TasksetConfig):
     max_turns: int = DEFAULT_MAX_STEPS
 
 
-class Tau2Taskset(vf.Taskset):
-    config_type = Tau2TasksetConfig
-
+class Tau2Taskset(vf.Taskset[Tau2TasksetConfig]):
     def __init__(
         self,
-        domain: str | None = None,
-        *,
-        user_model: str | None = None,
-        user_args: ConfigMap | None = None,
-        user_base_url: str | None = None,
-        user_api_key_var: str | None = None,
-        max_steps: int | None = None,
-        max_errors: int | None = None,
-        max_turns: int | None = None,
         config: Tau2TasksetConfig | None = None,
     ):
-        config = Tau2TasksetConfig(
-            config,
-            domain=domain,
-            user_model=user_model,
-            user_args=dict(user_args) if user_args is not None else None,
-            user_base_url=user_base_url,
-            user_api_key_var=user_api_key_var,
-            max_steps=max_steps,
-            max_errors=max_errors,
-            max_turns=max_turns,
-        )
+        config = coerce_config(Tau2TasksetConfig, config)
         resolved_user_args = (
             DEFAULT_LLM_ARGS_USER if config.user_args is None else config.user_args
         )
@@ -726,58 +739,26 @@ class Tau2Taskset(vf.Taskset):
             session_factory=session_factory,
         )
 
-        def load_rows():
-            return source(config.domain, max_turns=config.max_turns)
+        super().__init__(config=config)
+        self.taskset_id = f"tau2_{config.domain}"
+        if "setups" not in self.config.model_fields_set:
+            self.add_setup(make_tau2_setup(session_factory))
+        if "toolsets" not in self.config.model_fields_set:
+            self.add_toolset(toolset)
+        if "user" not in self.config.model_fields_set:
+            self.user = vf.User(make_tau2_user(session_factory))
 
-        super().__init__(
-            source=load_rows,
-            taskset_id=f"tau2_{config.domain}",
-            setups=[make_tau2_setup(session_factory)],
-            rewards=[tau2_reward],
-            metrics=[
-                tau2_num_errors,
-                tau2_num_steps,
-                tau2_num_assistant_tool_calls,
-                tau2_num_user_tool_calls,
-            ],
-            toolsets=[toolset],
-            user=vf.User(tau2_user, bindings={"session": session_factory}),
-            config=config,
-        )
+    def load_tasks(self) -> vf.Tasks:
+        return load_tasks(domain=self.config.domain, max_turns=self.config.max_turns)
 
 
 class Tau2EnvConfig(vf.EnvConfig):
-    taskset: Tau2TasksetConfig
-    harness: vf.HarnessConfig
+    taskset: Tau2TasksetConfig = Tau2TasksetConfig()
+    harness: vf.HarnessConfig = vf.HarnessConfig()
 
 
-def load_taskset(
-    domain: str | None = None,
-    *,
-    user_model: str | None = None,
-    user_args: ConfigMap | None = None,
-    user_base_url: str | None = None,
-    user_api_key_var: str | None = None,
-    max_steps: int | None = None,
-    max_errors: int | None = None,
-    max_turns: int | None = None,
-    config: Tau2TasksetConfig,
-) -> Tau2Taskset:
-    return Tau2Taskset(
-        domain=domain,
-        user_model=user_model,
-        user_args=user_args,
-        user_base_url=user_base_url,
-        user_api_key_var=user_api_key_var,
-        max_steps=max_steps,
-        max_errors=max_errors,
-        max_turns=max_turns,
-        config=config,
+def load_environment(config: Tau2EnvConfig) -> vf.Env:
+    return vf.Env(
+        taskset=Tau2Taskset(config=config.taskset),
+        harness=vf.Harness(config=config.harness),
     )
-
-
-def load_environment(
-    config: Tau2EnvConfig,
-) -> vf.Env:
-    taskset = load_taskset(config=config.taskset)
-    return vf.Env(taskset=taskset, harness=vf.Harness(config=config.harness))

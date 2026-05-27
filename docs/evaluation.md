@@ -23,14 +23,13 @@ Use `prime eval` to execute rollouts against any supported model provider and re
 
 ## Basic Usage
 
-Environments must be installed as Python packages before evaluation. From a local environment:
+Run evaluations directly against a local or Hub environment:
 
 ```bash
-prime env install my-env           # installs ./environments/my_env as a package
 prime eval run my-env -m openai/gpt-4.1-mini -n 10
 ```
 
-`prime eval` imports the environment module using Python's import system, calls its `load_environment()` function, runs 5 examples with 3 rollouts each (the default), scores them using the environment's rubric, and prints aggregate metrics.
+`prime eval` resolves and installs the environment when needed, imports the environment module using Python's import system, calls its `load_environment()` function, runs 5 examples with 3 rollouts each (the default), scores them using the environment's rubric, and prints aggregate metrics.
 
 ## Hosted Evaluations
 
@@ -66,7 +65,7 @@ The positional argument accepts two formats:
 - **Single environment**: `gsm8k` — evaluates one environment
 - **TOML config path**: `configs/eval/benchmark.toml` — evaluates multiple environments defined in the config file
 
-Environment IDs are converted to Python module names (`my-env` → `my_env`) and imported. Modules must be installed (via `prime env install` or `uv pip install`).
+Environment IDs are converted to Python module names (`my-env` → `my_env`) and imported after `prime eval run` resolves the environment package.
 
 For legacy or direct-constructor environments, the `--env-args` flag passes
 arguments to your `load_environment()` function:
@@ -194,6 +193,24 @@ The `--sampling-args` flag accepts any parameters supported by the model's API:
 ```bash
 prime eval run my-env -S '{"temperature": 0.7, "top_p": 0.9}'
 ```
+
+In eval TOML configs, put generation parameters under `[sampling]`:
+
+```toml
+[sampling]
+max_tokens = 1024
+temperature = 0.7
+reasoning_effort = "medium"
+enable_thinking = true
+
+[[eval]]
+id = "my-env"
+```
+
+`reasoning_effort` and `enable_thinking` stay in `sampling_args` and are also
+mirrored into `extra_body.chat_template_kwargs` for OpenAI-compatible servers
+that read chat template options there. Keeping the top-level values lets the
+client translate them for the selected provider.
 
 ### Evaluation Scope
 
@@ -381,6 +398,7 @@ optional:
 | `extra_env_kwargs` | table | Arguments passed to environment constructor |
 | `model` | string | Model to evaluate |
 | `endpoint_id` | string | Endpoint registry id (requires TOML `endpoints_path`) |
+| `sampling` | table | Shorthand for `sampling_args` generation parameters |
 
 Use `name` to run the same environment more than once with different args:
 
@@ -418,7 +436,9 @@ For v1 BYO Harness environments, pass taskset/harness config through sibling
 ```toml
 [[eval]]
 id = "my-v1-env"
-sampling_args = { max_tokens = 4096 }
+
+[eval.sampling]
+max_tokens = 4096
 
 [eval.harness]
 max_turns = 4
@@ -429,6 +449,9 @@ weight = 0.5
 
 See [BYO Harness](byo-harness.md#toml-config) for the matching RL config shape
 and v1 callable/toolset patterns.
+
+The legacy inline `sampling_args = { ... }` spelling is still accepted and
+normalizes the same way as `[sampling]` / `[eval.sampling]`.
 
 ### Ablation Sweeps
 

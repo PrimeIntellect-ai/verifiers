@@ -15,42 +15,42 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 STATIC_SOURCES = [
     (
         "environments.mcp_search_env.mcp_search_env",
-        "source",
+        "load_tasks",
         "question",
     ),
     (
         "environments.hello_subagent_v1.hello_subagent_v1",
-        "source",
+        "load_tasks",
         "prompt",
     ),
     (
         "environments.nested_harness_v1.nested_harness_v1",
-        "source",
+        "load_tasks",
         "prompt",
     ),
     (
         "environments.hello_rlm_v1.hello_rlm_v1",
-        "source",
+        "load_tasks",
         "question",
     ),
     (
         "environments.hello_parallel_sandbox_v1.hello_parallel_sandbox_v1",
-        "source",
+        "load_tasks",
         "instruction",
     ),
     (
         "environments.hello_group_reward_v1.hello_group_reward_v1",
-        "source",
+        "load_tasks",
         "question",
     ),
     (
         "environments.hello_self_judge_v1.hello_self_judge_v1",
-        "source",
+        "load_tasks",
         "question",
     ),
     (
         "environments.dspy_flights.dspy_flights",
-        "source",
+        "load_tasks",
         "user_request",
     ),
 ]
@@ -60,9 +60,9 @@ DEFAULT_EVAL_ROLLOUTS_PER_EXAMPLE = 3
 
 
 def test_static_v1_example_sources_have_at_least_ten_unique_problems() -> None:
-    for module_name, source_name, key in STATIC_SOURCES:
+    for module_name, loader_name, key in STATIC_SOURCES:
         module = importlib.import_module(module_name)
-        rows = list(getattr(module, source_name)())
+        rows = list(getattr(module, loader_name)())
         problems = {problem_text(row, key) for row in rows}
 
         assert len(rows) >= 10, module_name

@@ -29,4 +29,5 @@ def convert_func_to_tool_def(func: Any) -> Tool:
         name=func.__name__,
         description=function_schema_obj.description or "",
         parameters=function_schema_obj.params_json_schema,
+        strict=function_schema_obj.strict_json_schema,
     )

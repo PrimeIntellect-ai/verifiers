@@ -16,6 +16,7 @@ from verifiers.types import (
 from verifiers.utils.message_utils import message_role, normalize_messages
 
 from verifiers.v1.utils.endpoint_utils import assistant_completion_from_messages
+from verifiers.v1.utils.config_utils import explicit_config_data
 from verifiers.v1.utils.json_utils import json_args
 from verifiers.v1.types import ConfigMap
 
@@ -26,6 +27,7 @@ BFCLRawTurn = str | ConfigMap | Sequence[BFCLRawMessage] | None
 
 
 class BFCLTasksetConfig(vf.TasksetConfig):
+    rewards: list[str] = ["bfcl_reward"]
     test_category: str = "simple_python"
     test_categories: list[str] | None = None
     examples_per_category: int = -1
@@ -36,8 +38,8 @@ class BFCLHarnessConfig(vf.HarnessConfig):
 
 
 class BFCLEnvConfig(vf.EnvConfig):
-    taskset: BFCLTasksetConfig
-    harness: BFCLHarnessConfig
+    taskset: BFCLTasksetConfig = BFCLTasksetConfig()
+    harness: BFCLHarnessConfig = BFCLHarnessConfig()
 
 
 def modded_convert_func_name(function_name: str, model_name: str) -> str:
@@ -132,8 +134,8 @@ def bfcl_missed_function(task: ConfigMap) -> ConfigMap:
     return cast(ConfigMap, value)
 
 
-def build_source(test_category: str, examples_per_category: int = -1):
-    def source():
+def build_task_loader(test_category: str, examples_per_category: int = -1):
+    def factory():
         patch_bfcl_eval()
         from bfcl_eval.utils import (
             is_multi_turn,
@@ -177,7 +179,11 @@ def build_source(test_category: str, examples_per_category: int = -1):
             rows.append(row)
         return rows
 
-    return source
+    return factory
+
+
+def load_tasks(test_category: str = "simple_python", examples_per_category: int = -1):
+    return build_task_loader(test_category, examples_per_category)()
 
 
 def bfcl_row(
@@ -574,18 +580,19 @@ async def bfcl_multi_turn_program(
 
 class BFCLMultiTurnHarness(vf.Harness):
     def __init__(self, config: BFCLHarnessConfig):
-        super().__init__(program=self.run_bfcl_multi_turn, config=config)
+        super().__init__(config=config)
+        self._configure_runtime(program=self.run_bfcl_multi_turn)
 
     async def run_bfcl_multi_turn(self, task: vf.Task, state: vf.State) -> vf.State:
         return await bfcl_multi_turn_program(task, state, self)
 
 
-def load_taskset(config: BFCLTasksetConfig) -> vf.Taskset:
-    return vf.Taskset(
-        source=build_source(config.test_category, config.examples_per_category),
-        rewards=[bfcl_reward],
-        config=config,
-    )
+class BFCLTaskset(vf.Taskset[BFCLTasksetConfig]):
+    def load_tasks(self) -> vf.Tasks:
+        return load_tasks(
+            test_category=self.config.test_category,
+            examples_per_category=self.config.examples_per_category,
+        )
 
 
 def load_harness(config: BFCLHarnessConfig) -> vf.Harness:
@@ -598,21 +605,29 @@ def load_harness(config: BFCLHarnessConfig) -> vf.Harness:
 
 
 def load_environment(config: BFCLEnvConfig) -> vf.Env | vf.EnvGroup:
-    base_taskset_config = config.taskset
-    base_harness_config = config.harness
-    categories = base_taskset_config.test_categories or [
-        base_taskset_config.test_category
-    ]
+    taskset_template = config.taskset
+    harness_template = config.harness
+    categories = taskset_template.test_categories or [taskset_template.test_category]
     envs: list[vf.Env] = []
     for category in categories:
-        taskset_config = BFCLTasksetConfig(base_taskset_config, test_category=category)
-        harness_config = BFCLHarnessConfig(base_harness_config, test_category=category)
+        taskset_config = BFCLTasksetConfig.model_validate(
+            {
+                **explicit_config_data(taskset_template),
+                "test_category": category,
+            }
+        )
+        harness_config = BFCLHarnessConfig.model_validate(
+            {
+                **explicit_config_data(harness_template),
+                "test_category": category,
+            }
+        )
         envs.append(
             vf.Env(
-                taskset=load_taskset(config=taskset_config),
+                taskset=BFCLTaskset(config=taskset_config),
                 harness=load_harness(config=harness_config),
             )
         )
-    if base_taskset_config.test_categories is not None:
+    if taskset_template.test_categories is not None:
         return vf.EnvGroup(envs=envs, env_names=categories)
     return envs[0]

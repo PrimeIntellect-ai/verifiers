@@ -13,20 +13,47 @@ async def close_object(obj: object) -> None:
             return
 
 
-async def resolve_object_factory(spec: object, context: str) -> object:
+async def resolve_object_factory(
+    spec: object, context: str, kwargs: dict[str, object] | None = None
+) -> object:
     if not callable(spec):
-        return spec
-    if not (
-        inspect.isfunction(spec) or inspect.ismethod(spec) or inspect.isclass(spec)
-    ):
-        return spec
-    try:
-        signature = inspect.signature(spec)
-    except (TypeError, ValueError) as exc:
-        raise TypeError(f"{context} factory signature cannot be inspected.") from exc
-    if signature.parameters:
-        raise TypeError(f"{context} factory must accept no arguments.")
-    value = cast(Callable[[], object | Awaitable[object]], spec)()
+        raise TypeError(f"{context} must be an import ref or factory function.")
+    if not (inspect.isfunction(spec) or inspect.isclass(spec)):
+        raise TypeError(f"{context} must be a factory function or class.")
+    validate_object_factory(spec, context, kwargs or {})
+    value = cast(Callable[..., object | Awaitable[object]], spec)(**(kwargs or {}))
     if inspect.isawaitable(value):
         return await cast(Awaitable[object], value)
     return value
+
+
+def validate_object_loader_spec(spec: object, context: str) -> None:
+    if isinstance(spec, str):
+        return
+    if not callable(spec):
+        raise TypeError(f"{context} must be an import ref or factory function.")
+    if not (inspect.isfunction(spec) or inspect.isclass(spec)):
+        raise TypeError(f"{context} must be a factory function or class.")
+    validate_object_factory_spec(spec, context)
+
+
+def validate_object_factory_spec(spec: object, context: str) -> None:
+    if not inspect.isclass(spec):
+        name = getattr(spec, "__name__", "")
+        if name == "<lambda>":
+            raise TypeError(f"{context} must be a named factory function.")
+    try:
+        inspect.signature(cast(Callable[..., object], spec))
+    except (TypeError, ValueError) as exc:
+        raise TypeError(f"{context} factory signature cannot be inspected.") from exc
+
+
+def validate_object_factory(
+    spec: object, context: str, kwargs: dict[str, object]
+) -> None:
+    validate_object_factory_spec(spec, context)
+    signature = inspect.signature(cast(Callable[..., object], spec))
+    try:
+        signature.bind(**kwargs)
+    except TypeError as exc:
+        raise TypeError(f"{context} has unbound factory arguments.") from exc

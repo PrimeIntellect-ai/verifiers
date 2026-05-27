@@ -64,6 +64,23 @@ SamplingArgs = dict[str, Any]
 
 Generation parameters passed to the inference server (e.g., `temperature`, `top_p`, `max_tokens`).
 
+### Tasks
+
+```python
+TaskRow = Mapping[str, object]
+Tasks = datasets.Dataset | Iterable[TaskRow]
+```
+
+v1 task loader return types. `load_tasks(...)` and `load_eval_tasks(...)` should return `vf.Tasks`.
+
+### SystemPrompt
+
+```python
+SystemPrompt = str | Sequence[Message | Mapping[str, object]] | os.PathLike[str]
+```
+
+v1 system prompt loader return type. `load_system_prompt(...)` should return `vf.SystemPrompt`.
+
 ### RewardFunc
 
 ```python
@@ -181,6 +198,14 @@ class TrajectoryStep(TypedDict):
 
 A single turn in a multi-turn rollout.
 
+### RoutedExpertsPayload
+
+```python
+class RoutedExpertsPayload(TypedDict):
+    data: Any  # actually memoryview; kept opaque so Pydantic skips schema validation
+    shape: list[int]
+```
+
 ### TrajectoryStepTokens
 
 ```python
@@ -192,8 +217,9 @@ class TrajectoryStepTokens(TypedDict):
     completion_logprobs: list[float]
     overlong_prompt: bool
     is_truncated: bool
-    routed_experts: list[list[list[int]]] | None  # [seq_len, layers, topk] to enable router replay
+    routed_experts: RoutedExpertsPayload | None
     multi_modal_data: NotRequired[Any]  # renderers.MultiModalData sidecar (pixel_values, placeholder ranges) — set only on multimodal rollouts
+    prompt_attribution: NotRequired[Any]  # renderers.RenderedTokens fields as a dict (per-token is_content / sampled_mask / message_indices / message_roles) — set only on RendererClient rollouts
 ```
 
 Token-level data for training.
@@ -564,8 +590,8 @@ state, or output field.
 
 ### v1 Taskset/Harness Classes
 
-The v1 API is exposed as `verifiers.v1` and documented in
-[BYO Harness](byo-harness.md). Its core unit is:
+The v1 API is exposed from the top-level `verifiers` namespace and documented
+in [BYO Harness](byo-harness.md). Its core unit is:
 
 ```python
 state = await harness.run(task, state=None)
@@ -637,59 +663,24 @@ serialization boundary.
 
 ```python
 class Taskset:
-    def __init__(
-        source=None,
-        eval_source=None,
-        taskset_id: str | None = None,
-        system_prompt=None,
-        user=None,
-        toolsets=(),
-        stops=(),
-        setups=(),
-        updates=(),
-        metrics=(),
-        rewards=(),
-        advantages=(),
-        cleanups=(),
-        config: TasksetConfig | Mapping[str, object] | None = None,
-    ): ...
+    def __init__(config: TasksetConfig | None = None): ...
 
-    def rows() -> list[dict[str, Any]]: ...
-    def eval_rows() -> list[dict[str, Any]]: ...
-    def task(row: Mapping[str, Any]) -> Task: ...
     def to_task(value: Mapping[str, Any] | Task | str) -> Task: ...
     async def init_group(task: Task, num_rollouts: int) -> tuple[list[Task], list[State]]: ...
     def get_dataset() -> Dataset: ...
     def get_eval_dataset() -> Dataset: ...
 ```
 
-Packages task rows and task-owned behavior. `source` and `eval_source` may be
-iterables or zero-argument loaders. Loaders should close over resolved config
-instead of accepting runtime kwargs.
+Packages task rows and task-owned behavior. Tasksets usually define
+`load_tasks()` and optional `load_eval_tasks()` methods returning `vf.Tasks`,
+which is `datasets.Dataset | Iterable[TaskRow]`. `TasksetConfig.tasks` and
+`TasksetConfig.eval_tasks` remain explicit import-ref override fields.
 
 #### Harness
 
 ```python
 class Harness:
-    def __init__(
-        program=None,
-        system_prompt=None,
-        user=None,
-        sandbox=None,
-        client=None,
-        model: str | None = None,
-        sampling_args: SamplingArgs | None = None,
-        max_turns: int | None = None,
-        toolsets=None,
-        stops=None,
-        setups=None,
-        updates=None,
-        metrics=None,
-        rewards=None,
-        advantages=None,
-        cleanups=None,
-        config: HarnessConfig | Mapping[str, object] | None = None,
-    ): ...
+    def __init__(config: HarnessConfig | None = None): ...
 
     async def run(task: Task | Mapping[str, Any], state: State | None = None) -> State: ...
     async def score_group(tasks: list[Task], states: list[State]) -> list[State]: ...
@@ -722,11 +713,12 @@ dependencies come from normal `[project.dependencies]`.
 
 ```python
 class Env(vf.Environment):
-    def __init__(taskset: Taskset, harness: Harness | None = None): ...
+    def __init__(config, *, taskset=Taskset, harness=Harness): ...
 ```
 
 Adapter that makes a v1 taskset/harness pair usable by eval and training
-workers. If `harness` is omitted, `Env` uses the base `Harness`.
+workers. `config` is an `EnvConfig` object or mapping with nested `taskset` and
+`harness` sections.
 
 #### Toolset And MCPTool
 
@@ -762,17 +754,18 @@ callable sources.
 #### v1 Config Models
 
 ```python
-TasksetConfig.from_toml(path, section=None)
-HarnessConfig.from_toml(path, section=None)
+TasksetConfig(...)
+HarnessConfig(...)
 ToolsetConfig(...)
 SandboxConfig(...)
 UserConfig(...)
 MCPToolConfig(...)
 ```
 
-v1 config models are Pydantic models. Constructors accept config objects or
-plain mappings; TOML config uses `"module:object"` refs for Python callables and
-loaders. Unknown fields fail validation.
+v1 config models are strict Pydantic models. Python code builds them directly,
+and TOML config validates into the same models at the loader boundary. TOML
+uses `"module:object"` refs for Python callables and loaders. Unknown fields
+fail validation.
 
 ---
 
@@ -999,15 +992,7 @@ Provider-agnostic tool definition. Environments define tools using this type; ea
 
 ```python
 class Config(BaseModel):
-    def __init__(self, config: object | None = None, /, **data: object): ...
-
-    @classmethod
-    def from_config(cls, config: object | None = None, /, **data: object) -> Self: ...
-
-    @classmethod
-    def from_toml(
-        cls, path: str | Path, section: str | Iterable[str] | None = None
-    ) -> Self: ...
+    ...
 
 class EnvConfig(Config):
     taskset: TasksetConfig
@@ -1016,8 +1001,8 @@ class EnvConfig(Config):
 class TasksetConfig(Config):
     taskset_id: str | None = None
     system_prompt: object | None = None
-    source: object | None = None
-    eval_source: object | None = None
+    tasks: str | None = None
+    eval_tasks: str | None = None
     user: object | None = None
 
 class HarnessConfig(Config):
@@ -1035,12 +1020,11 @@ Environment-specific fields belong on the taskset or harness config that owns
 them; `EnvConfig` subclasses only bind concrete child config types.
 `taskset` must be typed as a `TasksetConfig` subclass, and `harness` must be
 typed as a `HarnessConfig` subclass.
-Annotation-only `Config` fields on `Config` subclasses default to their config
-class, so nested config objects do not need `Field(default_factory=...)`.
+Nested config defaults should be explicit config objects, e.g.
+`taskset: MyTasksetConfig = MyTasksetConfig()`.
 
-`Config` subclasses accept a positional source config plus direct keyword
-overrides. The source object is positional-only so subclasses can define a real
-field named `config`.
+`Config` subclasses are strict Pydantic config models. Validate raw mappings
+with `MyConfig.model_validate(...)` or use the typed object directly.
 
 ### ClientConfig
 

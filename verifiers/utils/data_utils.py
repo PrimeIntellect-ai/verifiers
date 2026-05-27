@@ -3,8 +3,6 @@
 import random
 from typing import TYPE_CHECKING, Any, Callable, cast
 
-from verifiers.types import Messages
-
 if TYPE_CHECKING:
     from datasets import Dataset
 
@@ -20,56 +18,6 @@ BOXED_SYSTEM_PROMPT = (
 ###############
 
 
-def format_dataset(
-    dataset: "Dataset",
-    system_prompt: str | None = None,
-    few_shot: Messages | None = None,
-    question_key: str = "question",
-    answer_key: str = "answer",
-    map_kwargs: dict = {},
-) -> "Dataset":
-    """
-    Create `example_id` and `prompt` columns if not present.
-    """
-    # if "id" column is present and not int, rename it to "src_id"
-    if "example_id" in dataset.column_names and not isinstance(
-        dataset["example_id"][0], int
-    ):
-        dataset = dataset.rename_column("example_id", "src_id")
-    if "example_id" not in dataset.column_names:
-        dataset = dataset.add_column("example_id", range(len(dataset)))
-
-    # extract format_prompt as a standalone function to avoid capturing self
-    def format_prompt_fn(prompt_str: str) -> Messages:
-        messages = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-        if few_shot:
-            messages.extend(few_shot)
-        messages.append({"role": "user", "content": prompt_str})
-        return messages
-
-    if "prompt" not in dataset.column_names:
-        if answer_key == "answer":
-            dataset = dataset.map(
-                lambda x: {
-                    "prompt": format_prompt_fn(x[question_key]),
-                },
-                **map_kwargs,
-            )
-        else:
-            dataset = dataset.map(
-                lambda x: {
-                    "prompt": format_prompt_fn(x[question_key]),
-                    "answer": x[answer_key],
-                },
-                **map_kwargs,
-            )
-    assert "example_id" in dataset.column_names
-    assert "prompt" in dataset.column_names
-    return dataset
-
-
 def extract_boxed_answer(text: str, strict: bool = False) -> str:
     """Extract the last \\boxed{...} answer from text.
 
@@ -81,33 +29,26 @@ def extract_boxed_answer(text: str, strict: bool = False) -> str:
             as a general text extractor).
     """
 
-    def find_matching_brace(s: str, start: int) -> int:
-        count = 1
-        i = start
-        while i < len(s) and count > 0:
-            if s[i] == "{":
-                count += 1
-            elif s[i] == "}":
-                count -= 1
-            i += 1
-        return i - 1 if count == 0 else -1
-
     # Find last \boxed{
     boxed_start = text.rfind("\\boxed{")
     if boxed_start == -1:
         return "" if strict else text
     # Find the content between the braces
     content_start = boxed_start + 7  # len('\\boxed{')
-    closing_brace = find_matching_brace(text, content_start)
+    brace_count = 1
+    closing_brace = content_start
+    while closing_brace < len(text) and brace_count > 0:
+        if text[closing_brace] == "{":
+            brace_count += 1
+        elif text[closing_brace] == "}":
+            brace_count -= 1
+        closing_brace += 1
+    closing_brace = closing_brace - 1 if brace_count == 0 else -1
 
     if closing_brace == -1:
         return "" if strict else text
 
     return text[content_start:closing_brace]
-
-
-def strip_non_numeric(text: str) -> str:
-    return "".join(c for c in text if c.isdigit() or c == ".")
 
 
 def extract_hash_answer(text: str) -> str:
@@ -131,7 +72,7 @@ def get_preprocess_fn(name: str) -> Callable[[dict], dict]:
         def preprocess_aime2025(x: dict[str, Any]) -> dict[str, Any]:
             return {
                 "question": x["question"],
-                "answer": strip_non_numeric(x["answer"]),
+                "answer": "".join(c for c in x["answer"] if c.isdigit() or c == "."),
             }
 
         return preprocess_aime2025

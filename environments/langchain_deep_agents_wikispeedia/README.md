@@ -20,11 +20,6 @@ LangChain deep-agents trained on Wikispeedia navigation through a v1 `Taskset`/`
 
 ### Quickstart
 
-Install the env locally:
-```bash
-prime env install ./environments/langchain_deep_agents_wikispeedia
-```
-
 Run an evaluation with default settings:
 ```bash
 prime eval run langchain-deep-agents-wikispeedia

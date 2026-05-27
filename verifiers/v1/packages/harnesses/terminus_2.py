@@ -1,112 +1,81 @@
 import shlex
 from pathlib import PurePosixPath
 
-from typing_extensions import Unpack
-
-from .command import HarnessKwargs, command_program, command_sandbox
-from ...config import SandboxConfig
-from ...harness import Harness
-from ...utils.prompt_utils import (
-    state_system_prompt_text,
-    task_text as task_instruction_text,
+from .command import configure_command_harness
+from .configs import (
+    TERMINUS_2_DEFAULT_AGENT_WORKDIR,
+    TERMINUS_2_DEFAULT_API_BASE_URL,
+    TERMINUS_2_DEFAULT_INSTRUCTION_PATH,
+    TERMINUS_2_DEFAULT_MODEL_NAME,
+    TERMINUS_2_DEFAULT_SYSTEM_PROMPT_PATH,
+    Terminus2Config,
 )
-from ...types import ConfigMap, ProgramMap, ProgramOptionMap, ProgramValue, PromptInput
-
-DEFAULT_AGENT_WORKDIR = "/app"
-DEFAULT_INSTRUCTION_PATH = "/terminus_2/instruction.md"
-DEFAULT_SYSTEM_PROMPT_PATH = "/terminus_2/system_prompt.txt"
-DEFAULT_LOG_PATH = "/logs/agent/terminus_2.log"
-DEFAULT_HARBOR_PACKAGE = "harbor==0.6.6"
-DEFAULT_PYTHON_VERSION = "3.12"
-DEFAULT_MODEL_NAME = "openai/gpt-4.1-mini"
-DEFAULT_API_BASE_URL = "https://api.pinference.ai/api/v1"
+from ...harness import Harness
+from ...types import ProgramCommand, ProgramOptionMap
+from ...utils.sandbox_python_utils import SANDBOX_BIN_DIR, uv_setup_command
 
 
 class Terminus2(Harness):
-    def __init__(
-        self,
-        *,
-        agent_workdir: str = DEFAULT_AGENT_WORKDIR,
-        instruction_path: str = DEFAULT_INSTRUCTION_PATH,
-        system_prompt_path: str = DEFAULT_SYSTEM_PROMPT_PATH,
-        log_path: str = DEFAULT_LOG_PATH,
-        harbor_package: str = DEFAULT_HARBOR_PACKAGE,
-        python_version: str = DEFAULT_PYTHON_VERSION,
-        model_name: str = DEFAULT_MODEL_NAME,
-        api_base_url: str = DEFAULT_API_BASE_URL,
-        system_prompt: PromptInput | None = None,
-        sandbox: bool | ConfigMap | SandboxConfig = True,
-        program: ProgramMap | None = None,
-        max_turns: int | None = 4,
-        **kwargs: Unpack[HarnessKwargs],
-    ):
-        files: dict[str, ProgramValue] = {
-            instruction_path: task_instruction_text,
-        }
-        if system_prompt is not None:
-            files[system_prompt_path] = state_system_prompt_text
-        artifacts: ProgramOptionMap = {
+    def __init__(self, config: Terminus2Config | None = None):
+        config = Terminus2Config() if config is None else config
+        assert isinstance(config, Terminus2Config)
+        super().__init__(config=config.model_copy(update={"program": None}))
+        self.config = config
+        configure_command_harness(
+            self,
+            config,
+            command=self.command(config),
+            setup=self.setup(config),
+            artifacts=self.artifacts(config),
+        )
+
+    def command(self, config: Terminus2Config) -> ProgramCommand:
+        return [
+            "bash",
+            "-lc",
+            build_terminus_2_run_script(
+                agent_workdir=config.agent_workdir,
+                instruction_path=config.instruction_path,
+                system_prompt_path=config.system_prompt_path
+                if config.system_prompt is not None
+                else None,
+                log_path=config.log_path,
+                harbor_package=config.harbor_package,
+                python_version=config.python_version,
+                model_name=config.model_name,
+                api_base_url=config.api_base_url,
+                max_turns=config.max_turns,
+            ),
+        ]
+
+    def setup(self, config: Terminus2Config) -> str:
+        return uv_setup_command()
+
+    def artifacts(self, config: Terminus2Config) -> ProgramOptionMap:
+        return {
             "terminus_2_log": {
-                "path": log_path,
+                "path": config.log_path,
                 "format": "text",
                 "optional": True,
             }
         }
-        command = [
-            "bash",
-            "-lc",
-            build_terminus_2_run_script(
-                agent_workdir=agent_workdir,
-                instruction_path=instruction_path,
-                system_prompt_path=system_prompt_path
-                if system_prompt is not None
-                else None,
-                log_path=log_path,
-                harbor_package=harbor_package,
-                python_version=python_version,
-                model_name=model_name,
-                api_base_url=api_base_url,
-                max_turns=max_turns,
-            ),
-        ]
-        super().__init__(
-            program=command_program(
-                command=command,
-                sandbox=sandbox,
-                files=files,
-                setup=build_terminus_2_install_script(),
-                artifacts=artifacts,
-                program=program,
-            ),
-            sandbox=command_sandbox(sandbox),
-            system_prompt=system_prompt,
-            max_turns=max_turns,
-            **kwargs,
-        )
 
 
-def build_terminus_2_install_script() -> str:
-    return """\
-set -e
-apt-get -o Acquire::Retries=3 update -qq
-apt-get -o Acquire::Retries=3 install -y -qq curl ca-certificates > /dev/null 2>&1
-if ! command -v uv >/dev/null 2>&1; then
-  curl -LsSf https://astral.sh/uv/install.sh | sh
-fi
-"""
+def load_harness(config: Terminus2Config) -> Terminus2:
+    return Terminus2(config=config)
 
 
 def build_terminus_2_run_script(
     *,
-    agent_workdir: str = DEFAULT_AGENT_WORKDIR,
-    instruction_path: str = DEFAULT_INSTRUCTION_PATH,
-    system_prompt_path: str | None = DEFAULT_SYSTEM_PROMPT_PATH,
-    log_path: str = DEFAULT_LOG_PATH,
-    harbor_package: str = DEFAULT_HARBOR_PACKAGE,
-    python_version: str = DEFAULT_PYTHON_VERSION,
-    model_name: str = DEFAULT_MODEL_NAME,
-    api_base_url: str = DEFAULT_API_BASE_URL,
-    max_turns: int | None = 4,
+    agent_workdir: str,
+    instruction_path: str,
+    system_prompt_path: str | None,
+    log_path: str,
+    harbor_package: str,
+    python_version: str,
+    model_name: str,
+    api_base_url: str,
+    max_turns: int | None,
 ) -> str:
     log_dir = str(PurePosixPath(log_path).parent)
     agent_script = terminus_2_agent_script(
@@ -119,10 +88,10 @@ def build_terminus_2_run_script(
     )
     return f"""\
 set -eo pipefail
-export PATH="$HOME/.local/bin:$PATH"
+export PATH={shlex.quote(SANDBOX_BIN_DIR)}:"$HOME/.local/bin:$PATH"
 
 TERMINUS_2_WORKDIR="${{AGENT_WORKDIR:-}}"
-if [[ -z "$TERMINUS_2_WORKDIR" ]]; then
+if [ -z "$TERMINUS_2_WORKDIR" ]; then
     TERMINUS_2_WORKDIR={shlex.quote(agent_workdir)}
 fi
 export AGENT_WORKDIR="$TERMINUS_2_WORKDIR"
@@ -140,11 +109,11 @@ PY
 
 def terminus_2_agent_script(
     *,
-    instruction_path: str = DEFAULT_INSTRUCTION_PATH,
-    system_prompt_path: str | None = DEFAULT_SYSTEM_PROMPT_PATH,
+    instruction_path: str = TERMINUS_2_DEFAULT_INSTRUCTION_PATH,
+    system_prompt_path: str | None = TERMINUS_2_DEFAULT_SYSTEM_PROMPT_PATH,
     log_dir: str = "/logs/agent",
-    model_name: str = DEFAULT_MODEL_NAME,
-    api_base_url: str = DEFAULT_API_BASE_URL,
+    model_name: str = TERMINUS_2_DEFAULT_MODEL_NAME,
+    api_base_url: str = TERMINUS_2_DEFAULT_API_BASE_URL,
     max_turns: int | None = 4,
 ) -> str:
     system_prompt_block = ""
@@ -249,7 +218,7 @@ class LocalEnvironment(BaseEnvironment):
 
 
 async def main() -> None:
-    workdir = Path(os.environ.get("AGENT_WORKDIR") or {DEFAULT_AGENT_WORKDIR!r})
+    workdir = Path(os.environ.get("AGENT_WORKDIR") or {TERMINUS_2_DEFAULT_AGENT_WORKDIR!r})
     logs_dir = Path({log_dir!r})
     instruction = Path({instruction_path!r}).read_text()
 {system_prompt_block}    env = LocalEnvironment(workdir=workdir, logs_dir=logs_dir)
@@ -271,16 +240,7 @@ asyncio.run(main())
 
 
 __all__ = [
-    "DEFAULT_AGENT_WORKDIR",
-    "DEFAULT_API_BASE_URL",
-    "DEFAULT_HARBOR_PACKAGE",
-    "DEFAULT_INSTRUCTION_PATH",
-    "DEFAULT_LOG_PATH",
-    "DEFAULT_MODEL_NAME",
-    "DEFAULT_PYTHON_VERSION",
-    "DEFAULT_SYSTEM_PROMPT_PATH",
     "Terminus2",
-    "build_terminus_2_install_script",
     "build_terminus_2_run_script",
     "terminus_2_agent_script",
 ]

@@ -56,8 +56,10 @@ from verifiers.types import (
     Usage,
     UserMessage,
 )
-from verifiers.utils.client_utils import setup_openai_client
-from verifiers.utils.response_utils import parse_routed_experts
+from verifiers.utils.client_utils import (
+    post_chat_completion_with_routed_experts_sidecar,
+    setup_openai_client,
+)
 
 
 def handle_openai_overlong_prompt(func):
@@ -300,23 +302,24 @@ class OpenAIChatCompletionsClient(
             sampling_args = {**sampling_args, "modalities": ["text"]}
 
         extra_headers = kwargs.pop("extra_headers", None)
+        request_args = normalize_sampling_args(sampling_args)
+        extra_body = request_args.pop("extra_body", {})
 
+        body: dict[str, Any] = {
+            "model": model,
+            "messages": prompt,
+            **request_args,
+            **extra_body,
+        }
         if tools:
-            response = await self.client.chat.completions.create(
-                model=model,
-                messages=prompt,
-                tools=tools,
-                extra_headers=extra_headers,
-                **normalize_sampling_args(sampling_args),
-            )
-        else:
-            response = await self.client.chat.completions.create(
-                model=model,
-                messages=prompt,
-                extra_headers=extra_headers,
-                **normalize_sampling_args(sampling_args),
-            )
-        return response
+            body["tools"] = tools
+
+        return await post_chat_completion_with_routed_experts_sidecar(
+            self.client,
+            "/chat/completions",
+            body=body,
+            extra_headers=extra_headers,
+        )
 
     async def raise_from_native_response(self, response: OpenAIChatResponse) -> None:
         if response is None:
@@ -483,20 +486,14 @@ class OpenAIChatCompletionsClient(
                 completion_logprobs = [token["logprob"] for token in logprobs_content]
 
             choice_extra = choice.model_extra or {}
-            routed_experts = parse_routed_experts(choice_extra.get("routed_experts"))
             return ResponseTokens(
                 prompt_ids=prompt_ids,
                 prompt_mask=prompt_mask,
                 completion_ids=completion_ids,
                 completion_mask=completion_mask,
                 completion_logprobs=completion_logprobs,
-                routed_experts=routed_experts,
+                routed_experts=choice_extra.get("routed_experts"),
             )
-
-        def parse_reasoning_content_from_response(
-            response: OpenAIChatResponse,
-        ) -> str | None:
-            return parse_reasoning_content(response.choices[0].message)
 
         response_id = getattr(response, "id", "")
         if not isinstance(response_id, str):
@@ -515,7 +512,7 @@ class OpenAIChatCompletionsClient(
             usage=parse_usage(response),
             message=ResponseMessage(
                 content=response.choices[0].message.content,
-                reasoning_content=parse_reasoning_content_from_response(response),
+                reasoning_content=parse_reasoning_content(response.choices[0].message),
                 finish_reason=parse_finish_reason(response),
                 is_truncated=parse_is_truncated(response),
                 tokens=parse_tokens(response),
