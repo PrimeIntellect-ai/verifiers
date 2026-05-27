@@ -1,4 +1,4 @@
-"""Tests for ``vf-eval`` (verifiers.scripts.eval_v1)."""
+"""Tests for ``vf-eval-v1`` (verifiers.scripts.eval_v1)."""
 
 import sys
 import textwrap

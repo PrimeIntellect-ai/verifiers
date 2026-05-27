@@ -6,9 +6,9 @@ The whole env surface is a Taskset + a ``load_taskset`` factory. There is no
 base ``verifiers.v1.Harness`` (or any harness selected via the second
 positional / ``--harness.name``).
 
-Only loadable through the v1 CLI: ``vf-eval reverse-text`` or
-``vf.load_environment("reverse-text")``. The legacy ``vf-eval-legacy``
-expects a ``load_environment`` function and will not find one here.
+Loadable through the v1 CLI (``vf-eval-v1 reverse-text``) or
+``vf.load_environment("reverse-text")``. The legacy ``vf-eval`` expects a
+``load_environment`` function and will not find one here.
 """
 
 import re

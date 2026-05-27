@@ -24,11 +24,12 @@ v1 environments are composed from:
 
 The smallest v1 environment only needs a `Taskset` subclass plus a
 `load_taskset(config: ...)` factory. No `EnvConfig` subclass and no
-`load_environment` shim are required: `vf-eval`, `vf.load_environment`,
-and `prime eval run` all auto-build a `vf.Env` around the taskset and pair
-it with the base endpoint-backed harness by default. Add a
-`load_harness(config: ...)` factory next to it when the env wants a
-non-base default harness; the loaders pick it up automatically.
+`load_environment` shim are required: `vf-eval-v1`,
+`vf.load_environment`, and `prime eval run` all auto-build a `vf.Env`
+around the taskset and pair it with the base endpoint-backed harness by
+default. Add a `load_harness(config: ...)` factory next to it when the
+env wants a non-base default harness; the loaders pick it up
+automatically.
 
 Keep the boundary strict: if a tool defines the task's action space,
 observations, success condition, or domain state, put it on the `Taskset`.
@@ -70,8 +71,8 @@ def load_taskset(config: ReverseTasksetConfig) -> ReverseTaskset:
 Override the default harness from the CLI without touching the env code:
 
 ```bash
-vf-eval my-env --harness.max-turns 5    # tweak the default harness's config
-vf-eval my-env rlm                       # swap in a different harness class
+vf-eval-v1 my-env --harness.max-turns 5    # tweak the default harness's config
+vf-eval-v1 my-env rlm                       # swap in a different harness class
 ```
 
 ## Tasksets

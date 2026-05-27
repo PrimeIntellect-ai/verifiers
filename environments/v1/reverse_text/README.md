@@ -30,21 +30,21 @@ def load_taskset(config: ReverseTextTasksetConfig) -> ReverseTextTaskset:
 
 ### Quickstart
 
-Only loadable through the v1 CLI (`vf-eval`). The legacy `vf-eval-legacy` expects a `load_environment` function and will fail on this env.
+Loadable through `vf-eval-v1` (the v1 CLI) or `vf.load_environment`. The legacy `vf-eval` does not understand v1 envs that omit `load_environment`.
 
 ```bash
 # default harness
-vf-eval reverse-text -m openai/gpt-4.1-mini --num-examples 5
+vf-eval-v1 reverse-text -m openai/gpt-4.1-mini --num-examples 5
 
 # swap to RLM via the second positional
-vf-eval reverse-text rlm --harness.rlm-max-turns 25 --harness.system-prompt-merge harness
+vf-eval-v1 reverse-text rlm --harness.rlm-max-turns 25 --harness.system-prompt-merge harness
 
 # override the taskset config
-vf-eval reverse-text --taskset.dataset-split test
+vf-eval-v1 reverse-text --taskset.dataset-split test
 ```
 
 ### Conflict with the legacy `reverse-text` package
 
 This package and the legacy `environments/reverse_text/` package both publish under the env id `reverse-text` and both install a top-level Python module called `reverse_text`. They cannot be installed simultaneously: pick one.
 
-Use this package (`environments/v1/reverse_text/`) when running through `vf-eval`. Use the legacy `environments/reverse_text/` package when running through `vf-eval-legacy` (multi-env evaluations, ablation sweeps, short flags like `-n / -r / -m`).
+Install this package (`environments/v1/reverse_text/`) when running through `vf-eval-v1`. Install the legacy `environments/reverse_text/` package when running through `vf-eval` (multi-env evaluations, ablation sweeps, short flags like `-n / -r / -m`).

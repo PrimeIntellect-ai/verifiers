@@ -1,10 +1,10 @@
-"""``vf-eval`` — evaluation CLI for v1 taskset/harness environments.
+"""``vf-eval-v1`` — evaluation CLI for v1 taskset/harness environments.
 
 The CLI is shaped around two positionals and dotted overrides:
 
 ::
 
-    vf-eval <task> [<harness>] [--taskset.<field> ...] [--harness.<field> ...]
+    vf-eval-v1 <task> [<harness>] [--taskset.<field> ...] [--harness.<field> ...]
 
 - ``<task>`` is an installed env module name. The module must expose
   ``load_taskset(config: TasksetConfig)``; nothing else is required.
@@ -19,7 +19,7 @@ The CLI is shaped around two positionals and dotted overrides:
   the actual config schema rendered in ``--help``.
 
 Anything settable on the CLI can equally be loaded from TOML via
-``vf-eval @ path/to/eval.toml``.
+``vf-eval-v1 @ path/to/eval.toml``.
 
 The v0 fallback (modules that only expose ``load_environment``) keeps
 working: the CLI calls the bundled loader with ``--env-args`` and rejects
@@ -377,6 +377,8 @@ def _extract_initial_args(
     in argv, and peeks at any ``@ path/to.toml`` argument to backfill
     env/harness_name when the user hasn't already set them on the command
     line. Explicit flags / positionals win over TOML values.
+
+    Raises ``SystemExit`` if more than two bare positionals appear.
     """
     env_id: str | None = None
     harness_name: str | None = None
@@ -394,7 +396,7 @@ def _extract_initial_args(
             harness_name = token
         else:
             raise SystemExit(
-                "vf-eval takes at most two positionals (task + optional "
+                "vf-eval-v1 takes at most two positionals (task + optional "
                 f"harness); got {token!r}."
             )
         consumed_positionals += 1
