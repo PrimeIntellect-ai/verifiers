@@ -49,6 +49,14 @@ class EnvWorkerStats(BaseModel):
         return " | ".join(parts) if parts else "no lag data"
 
 
+def _cap_native_threads() -> None:
+    """Best-effort runtime cap for env-worker native thread pools."""
+
+    from verifiers.utils.native_threads import configure_runtime_native_threads
+
+    configure_runtime_native_threads()
+
+
 class EnvWorker:
     """Executes environment logic."""
 
@@ -70,6 +78,7 @@ class EnvWorker:
         death_pipe: Connection | None = None,
     ):
         set_proc_title(f"EnvWorker{worker_id}")
+        _cap_native_threads()
         self.death_pipe = death_pipe
         self.env_id = env_id
         self.worker_id = worker_id
@@ -366,12 +375,18 @@ class EnvWorker:
             scale_executors,
         )
 
+        from verifiers.utils.native_threads import env_worker_max_threads
+
         # Scale the default executor BEFORE install_default_executor so the
-        # event loop picks up a properly-sized pool. Python's default
-        # `min(32, cpu_count+4)` caps to_thread; with ~256 concurrent rollouts
-        # per worker each calling asyncio.to_thread(parse_response_tokens),
-        # the wait queue bottlenecks the threaded path. 512 gives 2x headroom.
-        scale_executors(concurrency=512)
+        # event loop picks up a properly-sized pool. Keep this bounded because
+        # multimodal renderers use asyncio.to_thread for large image buffers;
+        # hundreds of simultaneous preprocessing jobs can create a high RSS
+        # watermark even when native BLAS/OpenMP teams are capped.
+        max_threads = env_worker_max_threads()
+        self.logger.info(
+            f"Setting env-worker default executor max_workers={max_threads}"
+        )
+        scale_executors(concurrency=max_threads)
         install_default_executor()
 
         stop_event = asyncio.Event()
