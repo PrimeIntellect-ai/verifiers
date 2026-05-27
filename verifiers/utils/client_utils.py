@@ -108,12 +108,27 @@ async def post_chat_completion_with_routed_experts_sidecar(
         options={"headers": extra_headers} if extra_headers else {},
     )
     stripped, routed_data = strip_routed_experts_data(raw_response.content)
-    response = ChatCompletion.model_validate_json(stripped)
+    response_data = normalize_chat_completion_data(json.loads(stripped))
+    response = ChatCompletion.model_validate(response_data)
     if routed_data is not None:
         choice_extra = response.choices[0].model_extra
         assert choice_extra is not None
         choice_extra["routed_experts"]["data"] = routed_data
     return response
+
+
+def normalize_chat_completion_data(data: dict[str, Any]) -> dict[str, Any]:
+    for choice in data.get("choices") or []:
+        if not isinstance(choice, dict):
+            continue
+        if choice.get("finish_reason") is not None:
+            continue
+        message = choice.get("message") or {}
+        if isinstance(message, dict) and message.get("tool_calls"):
+            choice["finish_reason"] = "tool_calls"
+        else:
+            choice["finish_reason"] = "stop"
+    return data
 
 
 def setup_openai_client(config: ClientConfig) -> AsyncOpenAI:
