@@ -131,8 +131,12 @@ async def parse_response_tokens(
             tokens.routed_experts = None
         if prompt_attribution is not None:
             # Dataclass → dict so v1 State.assert_serializable (json.dumps) clears.
+            # ``multi_modal_data`` zeroed first: its tensors aren't JSON-native and
+            # the canonical copy already lives at ``out["multi_modal_data"]``.
             if dataclasses.is_dataclass(prompt_attribution):
-                prompt_attribution = dataclasses.asdict(prompt_attribution)
+                prompt_attribution = dataclasses.asdict(
+                    dataclasses.replace(prompt_attribution, multi_modal_data=None)
+                )
             out["prompt_attribution"] = prompt_attribution
             tokens.prompt_attribution = None
         return out
