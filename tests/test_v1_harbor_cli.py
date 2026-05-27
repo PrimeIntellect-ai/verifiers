@@ -181,12 +181,10 @@ class FakeHarborCommandResult:
         exit_code: int = 0,
         stdout: str = "",
         stderr: str = "",
-        completed: bool = True,
     ):
         self.exit_code = exit_code
         self.stdout = stdout
         self.stderr = stderr
-        self.completed = completed
 
 
 class FakeHarborSandboxClient:
@@ -203,21 +201,22 @@ class FakeHarborSandboxClient:
     async def execute_command(
         self, *args: object, **kwargs: object
     ) -> FakeHarborCommandResult:
-        sandbox_id = str(kwargs.get("sandbox_id") or args[0])
         command = str(kwargs.get("command") or args[1])
         timeout = cast(int | None, kwargs.get("timeout"))
         working_dir = cast(str | None, kwargs.get("working_dir"))
         self.execute_commands.append((command, timeout, working_dir))
-        if "bash test.sh" in command and "cd /tests" in command:
-            self.background_jobs.append((sandbox_id, "bash test.sh", timeout, "/tests"))
         if "reward.txt" in command:
             return FakeHarborCommandResult(stdout="1\n")
         return FakeHarborCommandResult()
 
-    async def get_background_job(
+    async def run_background_job(
         self, *args: object, **kwargs: object
     ) -> FakeHarborCommandResult:
-        _ = args, kwargs
+        sandbox_id = str(kwargs.get("sandbox_id") or args[0])
+        command = str(kwargs.get("command") or args[1])
+        timeout = cast(int | None, kwargs.get("timeout"))
+        working_dir = cast(str | None, kwargs.get("working_dir"))
+        self.background_jobs.append((sandbox_id, command, timeout, working_dir))
         return FakeHarborCommandResult(stdout="tests passed")
 
     async def aclose(self) -> None:

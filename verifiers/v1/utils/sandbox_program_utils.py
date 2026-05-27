@@ -442,53 +442,11 @@ def message_from_response(response):
                 "type": getattr(call, "type", "function"),
                 "function": {
                     "name": call.function.name,
-                    "arguments": normalize_tool_call_arguments(
-                        call.function.arguments
-                    ),
+                    "arguments": call.function.arguments,
                 },
             }
             for call in tool_calls
         ]
-    return data
-
-
-def normalize_tool_call_arguments(arguments):
-    if arguments is None:
-        return "{}"
-    if isinstance(arguments, str):
-        try:
-            json.loads(arguments)
-            return arguments
-        except json.JSONDecodeError:
-            return json.dumps({"arguments": arguments})
-    return json.dumps(arguments)
-
-
-def message_from_chat_completion_data(response):
-    choice = (response.get("choices") or [{}])[0]
-    message = choice.get("message") or {}
-    data = {"role": message.get("role") or "assistant"}
-    content = message.get("content")
-    if content is not None:
-        data["content"] = content
-    tool_calls = message.get("tool_calls") or []
-    if tool_calls:
-        parsed_tool_calls = []
-        for call in tool_calls:
-            function = call.get("function") or {}
-            parsed_tool_calls.append(
-                {
-                    "id": call["id"],
-                    "type": call.get("type") or "function",
-                    "function": {
-                        "name": function["name"],
-                        "arguments": normalize_tool_call_arguments(
-                            function.get("arguments")
-                        ),
-                    },
-                }
-            )
-        data["tool_calls"] = parsed_tool_calls
     return data
 
 
@@ -690,12 +648,8 @@ async def create_model_message(state, messages, client):
         tool_defs = load_tool_defs(protocol)
         if tool_defs:
             payload["tools"] = tool_defs
-        response = await asyncio.to_thread(
-            post_json,
-            f"{state['endpoint_base_url'].rstrip('/')}/chat/completions",
-            payload,
-        )
-        return message_from_chat_completion_data(response)
+        response = await client.chat.completions.create(**payload)
+        return message_from_response(response)
     if protocol == "openai_responses":
         payload = {"model": model, "input": response_input(messages), **sampling}
         tool_defs = load_tool_defs(protocol)

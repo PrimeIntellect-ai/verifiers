@@ -16,7 +16,7 @@ from verifiers.utils.import_utils import load_toml
 
 from ...config import CallableEntry, TasksetConfig
 from ...taskset import Taskset
-from ...utils.sandbox_utils import SandboxClient, run_sandbox_background_command
+from ...utils.sandbox_utils import SandboxClient
 from verifiers.decorators import reward
 from ...types import ConfigData
 
@@ -337,8 +337,7 @@ async def harbor_reward(task, state) -> float:
     try:
         await upload_harbor_tests(client, sandbox_id, task_dir)
         test_timeout = int(parse_number(harbor.get("test_timeout"), 900))
-        result = await run_sandbox_background_command(
-            client,
+        result = await client.run_background_job(
             sandbox_id=sandbox_id,
             command="bash test.sh",
             working_dir="/tests",

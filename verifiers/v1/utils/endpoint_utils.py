@@ -30,6 +30,8 @@ from verifiers.utils.interception_utils import (
     synthesize_stream,
 )
 from verifiers.utils.message_utils import normalize_messages
+from verifiers.utils.serve_utils import get_free_port
+
 from ..runtime import Runtime
 from ..state import State
 from ..task import Task
@@ -134,7 +136,7 @@ class Endpoint:
         use_tunnel: bool = False,
         logger: logging.Logger | None = None,
     ):
-        self.port = 0 if port is None else port
+        self.port = get_free_port() if port is None else port
         self.use_tunnel = use_tunnel
         self.logger = logger or logging.getLogger(__name__)
         self.server = InterceptionServer(
@@ -148,7 +150,6 @@ class Endpoint:
 
     async def start(self) -> None:
         await self.server.start()
-        self.port = self.server.port
 
     async def register_rollout(
         self,
@@ -232,7 +233,6 @@ class Endpoint:
 
     async def get_tunnel_url(self) -> str:
         from prime_tunnel import Tunnel
-        from prime_tunnel.exceptions import TunnelTimeoutError
 
         async with self._tunnel_lock:
             tunnel = self._tunnel
@@ -251,15 +251,7 @@ class Endpoint:
 
             if self._tunnel is None:
                 tunnel = cast(TunnelHandle, Tunnel(local_port=self.port))
-                for attempt in range(3):
-                    try:
-                        url = await tunnel.start()
-                        break
-                    except TunnelTimeoutError:
-                        if attempt == 2:
-                            raise
-                        tunnel.sync_stop()
-                        await asyncio.sleep(2**attempt)
+                url = await tunnel.start()
                 self._tunnel = tunnel
                 self._tunnel_last_checked = time.time()
                 return str(url)

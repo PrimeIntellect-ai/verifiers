@@ -134,6 +134,7 @@ async def with_sandbox_retry(
         retry=tc.retry_if_exception(retry_predicate),
         stop=tc.stop_after_attempt(SANDBOX_RETRY_ATTEMPTS),
         wait=tc.wait_exponential_jitter(initial=1, max=30),
+        sleep=asyncio.sleep,
         reraise=True,
     ):
         with attempt:
@@ -309,7 +310,7 @@ class SandboxLease:
             return
         self.deleted = True
         try:
-            await self.client.delete(self.id)
+            await with_sandbox_retry(lambda: self.client.delete(self.id))
         finally:
             aclose = getattr(self.client, "aclose", None)
             if callable(aclose):
@@ -468,7 +469,11 @@ async def run_sandbox_command(
                 env=env,
             )
         except CommandTimeoutError as e:
-            timeout_seconds = command_timeout or getattr(e, "timeout", None)
+            timeout_seconds = (
+                command_timeout
+                if command_timeout is not None
+                else getattr(e, "timeout", None)
+            )
             stderr = f"Command timed out after {timeout_seconds}s"
             state["command"] = {
                 "argv": argv,
@@ -642,7 +647,7 @@ async def create_sandbox(client: SandboxClient, sandbox_config: ConfigMap) -> st
         await wait_for_sandbox_creation(client, sandbox_id)
     except BaseException:
         try:
-            await client.delete(sandbox_id)
+            await with_sandbox_retry(lambda: client.delete(sandbox_id))
         except BaseException:
             pass
         raise
@@ -944,6 +949,8 @@ async def upload_sandbox_bytes(
             ),
             retry_transfer_errors=True,
         )
+    except Error:
+        raise
     except Exception as exc:
         raise SandboxError(f"Sandbox upload failed: {file_path}") from exc
 
