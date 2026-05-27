@@ -1300,6 +1300,41 @@ async def test_sandbox_base_program_uses_raw_chat_completion_response(
     }
 
 
+def test_sandbox_base_program_normalizes_invalid_tool_call_arguments() -> None:
+    namespace: dict[str, object] = {}
+    source = runner_source().rsplit("asyncio.run(main())", 1)[0]
+    exec(source, namespace)
+    message_from_chat_completion_data = cast(
+        Any, namespace["message_from_chat_completion_data"]
+    )
+
+    message = message_from_chat_completion_data(
+        {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "tool_calls": [
+                            {
+                                "id": "call-1",
+                                "type": "function",
+                                "function": {
+                                    "name": "read",
+                                    "arguments": "{file_path: documents/a.docx}",
+                                },
+                            }
+                        ],
+                    },
+                }
+            ]
+        }
+    )
+
+    assert message["tool_calls"][0]["function"]["arguments"] == json.dumps(
+        {"arguments": "{file_path: documents/a.docx}"}
+    )
+
+
 def test_sandbox_program_patch_cannot_set_lifecycle_fields() -> None:
     state = vf.State.for_task(vf.Task({"prompt": []}).freeze())
 
