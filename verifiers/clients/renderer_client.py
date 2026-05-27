@@ -8,9 +8,16 @@ A shared RendererPool (one per model) offloads sync tokenization to threads so
 concurrent rollouts tokenize in parallel instead of blocking the event loop.
 """
 
+import asyncio
 import json
+import logging
+import os
 import threading
+import time
+from collections import OrderedDict
 from collections.abc import Mapping
+from contextvars import ContextVar
+from dataclasses import dataclass
 from typing import Any, ClassVar, cast
 
 from openai import AsyncOpenAI
@@ -33,7 +40,8 @@ from renderers import (
 from renderers import ToolCall as RendererToolCall
 from renderers import ToolCallFunction
 from renderers.base import MODEL_RENDERER_MAP
-from renderers.client import _maybe_offload, generate
+import renderers.client as _renderer_client_module
+from renderers.client import _maybe_offload, generate as _renderer_generate
 
 from verifiers.clients.client import Client
 from verifiers.clients.openai_chat_completions_client import (
@@ -67,6 +75,40 @@ from verifiers.utils.client_utils import setup_openai_client
 _bridge_metrics_lock = threading.Lock()
 _bridge_metrics: dict[str, int] = {"attempts": 0, "successes": 0, "failures": 0}
 
+_lru_cache_logger = logging.getLogger("verifiers.clients.renderer_lru_cache")
+_lru_cache_patch_installed = False
+_lru_cache_patch_lock = threading.Lock()
+_GIB = 1024**3
+_DEFAULT_VLLM_LRU_CACHE_GB = 16.0
+_DEFAULT_VLLM_LRU_CACHE_MODE = "lru"
+
+
+@dataclass(frozen=True)
+class _VllmLruCacheConfig:
+    enabled: bool
+    capacity_bytes: int | None
+    source: str
+
+
+_lru_cache_config_lock = asyncio.Lock()
+_lru_cache_config_by_base: dict[str, _VllmLruCacheConfig] = {}
+_lru_cache_entries_lock = threading.Lock()
+_lru_cache_entries: OrderedDict[str, int] = OrderedDict()
+_lru_cache_bytes = 0
+_lru_cache_capacity_bytes: int | None = None
+_lru_cache_sent_hashes: ContextVar[dict[str, int] | None] = ContextVar(
+    "renderer_lru_cache_sent_hashes", default=None
+)
+_lru_cache_disable_hits: ContextVar[bool] = ContextVar(
+    "renderer_lru_cache_disable_hits", default=False
+)
+_lru_cache_used_hits: ContextVar[bool] = ContextVar(
+    "renderer_lru_cache_used_hits", default=False
+)
+_lru_cache_request_counter = 0
+_lru_cache_inflight = 0
+_lru_cache_counter_lock = threading.Lock()
+
 
 def get_bridge_metrics() -> dict[str, int]:
     """Snapshot the in-memory bridge counters (attempts/successes/failures)."""
@@ -92,6 +134,508 @@ _DEFAULT_POOL_SIZE = 1
 
 
 # ── Helpers ─────────────────────────────────────────────────────────
+
+
+def _env_flag(name: str) -> str:
+    return os.environ.get(name, "").strip().lower()
+
+
+def _find_key_recursive(value: Any, key: str) -> Any:
+    if isinstance(value, Mapping):
+        if key in value:
+            return value[key]
+        for child in value.values():
+            found = _find_key_recursive(child, key)
+            if found is not None:
+                return found
+    elif isinstance(value, list):
+        for child in value:
+            found = _find_key_recursive(child, key)
+            if found is not None:
+                return found
+    return None
+
+
+def _capacity_from_env() -> int | None:
+    raw_gb = os.environ.get("VF_RENDERER_VLLM_CACHE_GB")
+    if raw_gb:
+        try:
+            return max(0, int(float(raw_gb) * _GIB))
+        except ValueError:
+            _lru_cache_logger.warning(
+                "Ignoring invalid VF_RENDERER_VLLM_CACHE_GB=%r", raw_gb
+            )
+    raw_bytes = os.environ.get("VF_RENDERER_VLLM_CACHE_BYTES")
+    if raw_bytes:
+        try:
+            return max(0, int(raw_bytes))
+        except ValueError:
+            _lru_cache_logger.warning(
+                "Ignoring invalid VF_RENDERER_VLLM_CACHE_BYTES=%r", raw_bytes
+            )
+    return int(_DEFAULT_VLLM_LRU_CACHE_GB * _GIB)
+
+
+def _capacity_with_safety(cache_gb: float | int | None) -> int | None:
+    if cache_gb is None:
+        return _capacity_from_env()
+    try:
+        safety = float(os.environ.get("VF_RENDERER_VLLM_CACHE_SAFETY", "0.75"))
+    except ValueError:
+        safety = 0.75
+    safety = min(max(safety, 0.05), 1.0)
+    return max(0, int(float(cache_gb) * _GIB * safety))
+
+
+async def _resolve_vllm_lru_cache_config(client: AsyncOpenAI) -> _VllmLruCacheConfig:
+    configured_mode = _env_flag("VF_RENDERER_VLLM_CACHE_MODE")
+    mode = configured_mode or _DEFAULT_VLLM_LRU_CACHE_MODE
+    mode_source = "env" if configured_mode else "default"
+    if mode in {"0", "false", "off", "disabled", "none"}:
+        return _VllmLruCacheConfig(False, None, f"{mode_source}-off")
+    force_enabled = mode in {"1", "true", "on", "lru", "enabled"}
+    force_prefix = (
+        f"{mode_source}-force+" if force_enabled else ""
+    )
+
+    base = str(client.base_url).rstrip("/").removesuffix("/v1")
+    cache_key = f"{base}|force={force_enabled}"
+    if cache_key in _lru_cache_config_by_base:
+        return _lru_cache_config_by_base[cache_key]
+    if not force_enabled and base in _lru_cache_config_by_base:
+        return _lru_cache_config_by_base[base]
+
+    async with _lru_cache_config_lock:
+        if cache_key in _lru_cache_config_by_base:
+            return _lru_cache_config_by_base[cache_key]
+        if not force_enabled and base in _lru_cache_config_by_base:
+            return _lru_cache_config_by_base[base]
+        try:
+            payload = await client.get(
+                f"{base}/server_info?config_format=json",
+                cast_to=cast(Any, dict[str, Any]),
+            )
+            cache_type = _find_key_recursive(payload, "mm_processor_cache_type")
+            cache_gb = _find_key_recursive(payload, "mm_processor_cache_gb")
+            enabled = force_enabled or cache_type == "lru"
+            config = _VllmLruCacheConfig(
+                enabled,
+                _capacity_with_safety(cache_gb) if enabled else None,
+                f"{force_prefix}server_info:{cache_type or 'unknown'}",
+            )
+        except Exception as exc:
+            _lru_cache_logger.debug("Could not resolve vLLM cache mode: %s", exc)
+            config = _VllmLruCacheConfig(
+                force_enabled,
+                _capacity_from_env() if force_enabled else None,
+                f"{force_prefix}server_info-failed"
+                if force_enabled
+                else "server_info-failed",
+            )
+        _lru_cache_config_by_base[cache_key if force_enabled else base] = config
+        _lru_cache_logger.info(
+            "renderer_lru_cache mode=%s source=%s capacity_mb=%s",
+            "enabled" if config.enabled else "disabled",
+            config.source,
+            None
+            if config.capacity_bytes is None
+            else round(config.capacity_bytes / (1024 * 1024)),
+        )
+        return config
+
+
+def _rss_mb() -> float:
+    try:
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1]) / 1024.0
+    except OSError:
+        pass
+    return 0.0
+
+
+def _os_thread_count() -> int:
+    try:
+        return len(os.listdir("/proc/self/task"))
+    except OSError:
+        return 0
+
+
+def _value_nbytes(value: Any) -> int:
+    nbytes = getattr(value, "nbytes", None)
+    if isinstance(nbytes, int):
+        return nbytes
+    element_size = getattr(value, "element_size", None)
+    nelement = getattr(value, "nelement", None)
+    if callable(element_size) and callable(nelement):
+        try:
+            return int(element_size() * nelement())
+        except Exception:
+            return 0
+    if isinstance(value, (bytes, bytearray, memoryview, str)):
+        return len(value)
+    if isinstance(value, Mapping):
+        return sum(_value_nbytes(v) for v in value.values())
+    if isinstance(value, (list, tuple)):
+        return sum(_value_nbytes(v) for v in value)
+    return 0
+
+
+def _mm_data_stats(mm_data: Any) -> tuple[int, float]:
+    image_items = getattr(mm_data, "mm_items", {}).get("image") or []
+    return len(image_items), _value_nbytes(image_items) / (1024.0 * 1024.0)
+
+
+def _features_encoded_mb(features: Mapping[str, Any] | None) -> float:
+    if not features:
+        return 0.0
+    kwargs_data = features.get("kwargs_data")
+    if not isinstance(kwargs_data, Mapping):
+        return 0.0
+    return _value_nbytes(kwargs_data) / (1024.0 * 1024.0)
+
+
+def _configure_local_lru_capacity(capacity_bytes: int | None) -> None:
+    global _lru_cache_capacity_bytes
+    with _lru_cache_entries_lock:
+        if _lru_cache_capacity_bytes == capacity_bytes:
+            return
+        _lru_cache_capacity_bytes = capacity_bytes
+        _evict_local_lru_locked()
+
+
+def _evict_local_lru_locked() -> None:
+    global _lru_cache_bytes
+    if _lru_cache_capacity_bytes is None:
+        return
+    while _lru_cache_entries and _lru_cache_bytes > _lru_cache_capacity_bytes:
+        _, size = _lru_cache_entries.popitem(last=False)
+        _lru_cache_bytes -= size
+
+
+def _local_lru_len() -> int:
+    with _lru_cache_entries_lock:
+        return len(_lru_cache_entries)
+
+
+def _is_local_lru_hit(mm_hash: str) -> bool:
+    if _lru_cache_disable_hits.get():
+        return False
+    with _lru_cache_entries_lock:
+        if mm_hash not in _lru_cache_entries:
+            return False
+        _lru_cache_entries.move_to_end(mm_hash)
+    _lru_cache_used_hits.set(True)
+    return True
+
+
+def _remember_sent_mm_hash(mm_hash: str, size_bytes: int) -> None:
+    bucket = _lru_cache_sent_hashes.get()
+    if bucket is not None:
+        bucket[mm_hash] = max(size_bytes, 1)
+
+
+def _confirm_sent_mm_hashes() -> int:
+    global _lru_cache_bytes
+    sent = _lru_cache_sent_hashes.get()
+    if not sent:
+        return 0
+    with _lru_cache_entries_lock:
+        before = len(_lru_cache_entries)
+        for mm_hash, size in sent.items():
+            old_size = _lru_cache_entries.pop(mm_hash, None)
+            if old_size is not None:
+                _lru_cache_bytes -= old_size
+            _lru_cache_entries[mm_hash] = size
+            _lru_cache_bytes += size
+        _evict_local_lru_locked()
+        return len(_lru_cache_entries) - before
+
+
+def _clear_local_lru_cache() -> None:
+    global _lru_cache_bytes
+    with _lru_cache_entries_lock:
+        _lru_cache_entries.clear()
+        _lru_cache_bytes = 0
+
+
+def _materialize_pixels_for_lru_cache(renderer: Any, mm_data: Any, messages: list[Any]):
+    from dataclasses import replace
+
+    from renderers.qwen3_vl import _grids_equal, _iter_image_parts
+
+    image_items = getattr(mm_data, "mm_items", {}).get("image") or []
+    if not image_items:
+        return mm_data
+    hashes = list(getattr(mm_data, "mm_hashes", {}).get("image") or [])
+    if len(hashes) != len(image_items):
+        raise ValueError(
+            "materialize_pixels: mm_hashes/mm_items length mismatch "
+            f"({len(hashes)} vs {len(image_items)})"
+        )
+
+    missing = {
+        hashes[i]
+        for i, item in enumerate(image_items)
+        if not _is_local_lru_hit(hashes[i]) and item.get("pixel_values") is None
+    }
+
+    resolved: dict[str, dict[str, Any]] = {}
+    if missing:
+        for part in _iter_image_parts(messages):
+            if not missing:
+                break
+            _, out, _, h = renderer._process_image(part)
+            if h in missing:
+                resolved[h] = out
+                missing.discard(h)
+        if missing:
+            raise ValueError(
+                f"materialize_pixels: {len(missing)} image hash(es) not "
+                "found in messages; cannot reconstruct pixel_values"
+            )
+
+    new_image_items: list[dict[str, Any]] = []
+    for i, item in enumerate(image_items):
+        h = hashes[i]
+        if _is_local_lru_hit(h):
+            new_image_items.append(
+                {k: v for k, v in item.items() if k != "pixel_values"}
+            )
+            continue
+        if item.get("pixel_values") is not None:
+            new_image_items.append(item)
+            continue
+        out = resolved[h]
+        if not _grids_equal(out["image_grid_thw"], item.get("image_grid_thw")):
+            raise ValueError(
+                "materialize_pixels: reconstructed image_grid_thw "
+                f"{out['image_grid_thw']!r} != descriptor "
+                f"{item.get('image_grid_thw')!r}"
+            )
+        new_image_items.append(
+            {
+                "pixel_values": out["pixel_values"],
+                "image_grid_thw": out["image_grid_thw"],
+            }
+        )
+
+    new_items = dict(mm_data.mm_items)
+    new_items["image"] = new_image_items
+    return replace(mm_data, mm_items=new_items)
+
+
+def _build_qwen_vl_features_with_lru_hits(
+    mm_data: Any, *, spatial_merge_size: int
+) -> dict[str, Any]:
+    try:
+        import torch
+        from transformers.feature_extraction_utils import BatchFeature
+        from vllm.entrypoints.serve.disagg.mm_serde import encode_mm_kwargs_item
+        from vllm.model_executor.models.qwen2_vl import _create_qwen2vl_field_factory
+        from vllm.multimodal.cache import MultiModalCache
+        from vllm.multimodal.inputs import MultiModalKwargsItems
+    except ImportError as exc:
+        raise RuntimeError(
+            "Multimodal generate via /inference/v1/generate requires `vllm` "
+            "and `torch` to encode the features payload."
+        ) from exc
+
+    out: dict[str, Any] = {
+        "mm_hashes": {},
+        "mm_placeholders": {},
+        "kwargs_data": {},
+    }
+
+    image_items = mm_data.mm_items.get("image") or []
+    if image_items:
+        hashes = list(mm_data.mm_hashes.get("image") or [])
+        encoded: list[str | None] = [None] * len(image_items)
+        encode_indices: list[int] = []
+        encode_items: list[dict[str, Any]] = []
+        for i, item in enumerate(image_items):
+            if item.get("pixel_values") is None:
+                continue
+            encode_indices.append(i)
+            encode_items.append(item)
+
+        if encode_items:
+            pixel_values = torch.cat(
+                [torch.as_tensor(it["pixel_values"]) for it in encode_items], dim=0
+            )
+            image_grid_thw = torch.cat(
+                [torch.as_tensor(it["image_grid_thw"]) for it in encode_items], dim=0
+            )
+            hf_inputs = BatchFeature(
+                data={"pixel_values": pixel_values, "image_grid_thw": image_grid_thw}
+            )
+            config = _create_qwen2vl_field_factory(spatial_merge_size)(hf_inputs)
+            kwargs_items = MultiModalKwargsItems.from_hf_inputs(hf_inputs, config)
+            encoded_items = [encode_mm_kwargs_item(it) for it in kwargs_items["image"]]
+            for i, encoded_item, kwargs_item in zip(
+                encode_indices, encoded_items, kwargs_items["image"]
+            ):
+                encoded[i] = encoded_item
+                if i < len(hashes):
+                    _remember_sent_mm_hash(
+                        hashes[i], MultiModalCache.get_item_size(kwargs_item)
+                    )
+
+        out["kwargs_data"]["image"] = encoded
+        out["mm_hashes"]["image"] = hashes
+        out["mm_placeholders"]["image"] = [
+            {"offset": p.offset, "length": p.length}
+            for p in mm_data.mm_placeholders.get("image") or []
+        ]
+
+    if not any(
+        any(item is not None for item in items) for items in out["kwargs_data"].values()
+    ):
+        out["kwargs_data"] = None
+
+    return out
+
+
+def _install_vllm_lru_cache_patch() -> None:
+    global _lru_cache_patch_installed
+    if _lru_cache_patch_installed:
+        return
+    with _lru_cache_patch_lock:
+        if _lru_cache_patch_installed:
+            return
+
+        from renderers.qwen3_vl import Qwen3VLRenderer
+        from renderers.qwen35 import Qwen35Renderer
+
+        def wrapped_build_qwen_vl_features(mm_data: Any, *, spatial_merge_size: int):
+            images, mm_mb = _mm_data_stats(mm_data)
+            before = _rss_mb()
+            t0 = time.monotonic()
+            features = _build_qwen_vl_features_with_lru_hits(
+                mm_data, spatial_merge_size=spatial_merge_size
+            )
+            elapsed_ms = (time.monotonic() - t0) * 1000.0
+            encoded_mb = _features_encoded_mb(features)
+            kwargs_data = features.get("kwargs_data") if features else None
+            cache_hits = 0
+            new_items = 0
+            if isinstance(kwargs_data, Mapping):
+                for items in kwargs_data.values():
+                    if isinstance(items, list):
+                        cache_hits += sum(1 for item in items if item is None)
+                        new_items += sum(1 for item in items if item is not None)
+            else:
+                cache_hits = images
+            _lru_cache_logger.debug(
+                "renderer_lru_features images=%d new_items=%d cache_hits=%d "
+                "mm_data_mb=%.1f kwargs_data_mb=%.1f rss_before_mb=%.1f "
+                "rss_after_mb=%.1f threads=%d elapsed_ms=%.1f",
+                images,
+                new_items,
+                cache_hits,
+                mm_mb,
+                encoded_mb,
+                before,
+                _rss_mb(),
+                _os_thread_count(),
+                elapsed_ms,
+            )
+            return features
+
+        _renderer_client_module._build_qwen_vl_features = wrapped_build_qwen_vl_features
+        Qwen35Renderer.materialize_pixels = _materialize_pixels_for_lru_cache
+        Qwen3VLRenderer.materialize_pixels = _materialize_pixels_for_lru_cache
+        _lru_cache_patch_installed = True
+
+
+def _is_retryable_cache_hit_failure(exc: Exception) -> bool:
+    status = getattr(exc, "status_code", None)
+    response = getattr(exc, "response", None)
+    if status is None and response is not None:
+        status = getattr(response, "status_code", None)
+    if isinstance(status, int) and status >= 500:
+        return True
+    text = repr(exc)
+    return "Expected a cached item" in text or "mm_hash" in text
+
+
+async def _generate_with_optional_vllm_lru_cache(**kwargs: Any) -> dict[str, Any]:
+    client = cast(AsyncOpenAI, kwargs["client"])
+    config = await _resolve_vllm_lru_cache_config(client)
+    if not config.enabled:
+        return await _renderer_generate(**kwargs)
+
+    _configure_local_lru_capacity(config.capacity_bytes)
+    _install_vllm_lru_cache_patch()
+    global _lru_cache_request_counter, _lru_cache_inflight
+    with _lru_cache_counter_lock:
+        _lru_cache_request_counter += 1
+        req_id = _lru_cache_request_counter
+        _lru_cache_inflight += 1
+        inflight = _lru_cache_inflight
+    sent_token = _lru_cache_sent_hashes.set({})
+    disable_token = _lru_cache_disable_hits.set(False)
+    used_token = _lru_cache_used_hits.set(False)
+    start_rss = _rss_mb()
+    start = time.monotonic()
+    try:
+        _lru_cache_logger.debug(
+            "renderer_lru_generate_start req=%d inflight=%d rss_mb=%.1f "
+            "threads=%d cached_hashes=%d source=%s capacity_mb=%s",
+            req_id,
+            inflight,
+            start_rss,
+            _os_thread_count(),
+            _local_lru_len(),
+            config.source,
+            None
+            if config.capacity_bytes is None
+            else round(config.capacity_bytes / (1024 * 1024)),
+        )
+        try:
+            result = await _renderer_generate(**kwargs)
+        except Exception as exc:
+            if _lru_cache_used_hits.get() and _is_retryable_cache_hit_failure(exc):
+                _lru_cache_logger.warning(
+                    "renderer_lru_cache_hit_failed req=%d; clearing local "
+                    "MM cache mirror and retrying with full payloads: %r",
+                    req_id,
+                    exc,
+                )
+                _clear_local_lru_cache()
+                _lru_cache_disable_hits.set(True)
+                _lru_cache_used_hits.set(False)
+                _lru_cache_sent_hashes.set({})
+                result = await _renderer_generate(**kwargs)
+            else:
+                raise
+        newly_confirmed = _confirm_sent_mm_hashes()
+        if newly_confirmed:
+            _lru_cache_logger.debug(
+                "renderer_lru_confirm req=%d newly_confirmed=%d cached_total=%d",
+                req_id,
+                newly_confirmed,
+                _local_lru_len(),
+            )
+        return result
+    finally:
+        with _lru_cache_counter_lock:
+            _lru_cache_inflight -= 1
+            inflight = _lru_cache_inflight
+        _lru_cache_logger.debug(
+            "renderer_lru_generate_end req=%d inflight=%d elapsed_s=%.1f "
+            "rss_start_mb=%.1f rss_end_mb=%.1f threads=%d",
+            req_id,
+            inflight,
+            time.monotonic() - start,
+            start_rss,
+            _rss_mb(),
+            _os_thread_count(),
+        )
+        _lru_cache_used_hits.reset(used_token)
+        _lru_cache_disable_hits.reset(disable_token)
+        _lru_cache_sent_hashes.reset(sent_token)
 
 
 def _get_value(obj: Any, key: str, default: Any = None) -> Any:
@@ -607,7 +1151,7 @@ class RendererClient(
         # 4xx → vf.OverlongPromptError) for engines whose ``/v1/models``
         # doesn't expose ``max_model_len``.
         try:
-            return await generate(
+            return await _generate_with_optional_vllm_lru_cache(
                 client=self.client,
                 renderer=renderer,
                 messages=prompt,
