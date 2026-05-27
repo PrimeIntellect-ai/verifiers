@@ -1377,6 +1377,33 @@ async def test_sandbox_background_command_times_out() -> None:
 
 
 @pytest.mark.asyncio
+async def test_sandbox_setup_command_timeout_becomes_rollout_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sandboxes(monkeypatch)
+    install_fake_endpoint_tunnel(monkeypatch)
+    FakeSandboxClient.reset()
+
+    harness = make_harness(
+        program={"command": ["true"], "sandbox": True},
+        sandbox={
+            "image": "python:3.11-slim",
+            "setup_commands": ["echo never-finishes"],
+            "setup_timeout": 0,
+        },
+    )
+    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+
+    state = await harness.run(task)
+
+    assert state["stop_condition"] == "has_error"
+    assert state["error"]["error"] == "SandboxError"
+    assert "Sandbox setup command failed" in state["error"]["error_chain_repr"]
+    assert "CommandTimeoutError" in state["error"]["error_chain_str"]
+    assert FakeSandboxClient.deleted == ["sbx-1"]
+
+
+@pytest.mark.asyncio
 async def test_program_file_upload_uses_retry_wrapper(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
