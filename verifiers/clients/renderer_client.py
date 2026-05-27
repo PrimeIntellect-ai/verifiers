@@ -90,6 +90,11 @@ class _VllmLruCacheConfig:
     source: str
 
 
+@dataclass
+class _LruCacheAttemptState:
+    used_hits: bool = False
+
+
 _lru_cache_config_lock = asyncio.Lock()
 _lru_cache_config_by_base: dict[str, _VllmLruCacheConfig] = {}
 _lru_cache_entries_lock = threading.Lock()
@@ -102,8 +107,8 @@ _lru_cache_sent_hashes: ContextVar[dict[str, int] | None] = ContextVar(
 _lru_cache_disable_hits: ContextVar[bool] = ContextVar(
     "renderer_lru_cache_disable_hits", default=False
 )
-_lru_cache_used_hits: ContextVar[bool] = ContextVar(
-    "renderer_lru_cache_used_hits", default=False
+_lru_cache_attempt_state: ContextVar[_LruCacheAttemptState | None] = ContextVar(
+    "renderer_lru_cache_attempt_state", default=None
 )
 _lru_cache_request_id: ContextVar[int | None] = ContextVar(
     "renderer_lru_cache_request_id", default=None
@@ -378,8 +383,25 @@ def _is_local_lru_hit(mm_hash: str) -> bool:
         if mm_hash not in _lru_cache_entries:
             return False
         _lru_cache_entries.move_to_end(mm_hash)
-    _lru_cache_used_hits.set(True)
+    _mark_lru_cache_used_hit()
     return True
+
+
+def _mark_lru_cache_used_hit() -> None:
+    state = _lru_cache_attempt_state.get()
+    if state is not None:
+        state.used_hits = True
+
+
+def _lru_cache_used_hit() -> bool:
+    state = _lru_cache_attempt_state.get()
+    return bool(state and state.used_hits)
+
+
+def _reset_lru_cache_used_hit() -> None:
+    state = _lru_cache_attempt_state.get()
+    if state is not None:
+        state.used_hits = False
 
 
 def _remember_sent_mm_hash(mm_hash: str, size_bytes: int) -> None:
@@ -633,7 +655,7 @@ async def _generate_with_optional_vllm_lru_cache(**kwargs: Any) -> dict[str, Any
         inflight = _lru_cache_inflight
     sent_token = _lru_cache_sent_hashes.set({})
     disable_token = _lru_cache_disable_hits.set(False)
-    used_token = _lru_cache_used_hits.set(False)
+    state_token = _lru_cache_attempt_state.set(_LruCacheAttemptState())
     req_token = _lru_cache_request_id.set(req_id)
     start_rss = _rss_mb()
     start = time.monotonic()
@@ -660,13 +682,13 @@ async def _generate_with_optional_vllm_lru_cache(**kwargs: Any) -> dict[str, Any
                 "renderer_lru_exception req=%d parent_used_hits=%d "
                 "retryable=%d sent=%d sent_hashes=%s exc_type=%s",
                 req_id,
-                int(_lru_cache_used_hits.get()),
+                int(_lru_cache_used_hit()),
                 int(retryable),
                 sent_count,
                 sent_hashes,
                 type(exc).__name__,
             )
-            if _lru_cache_used_hits.get() and retryable:
+            if _lru_cache_used_hit() and retryable:
                 _lru_cache_logger.warning(
                     "renderer_lru_cache_hit_failed req=%d; clearing local "
                     "MM cache mirror and retrying with full payloads: %r",
@@ -675,7 +697,7 @@ async def _generate_with_optional_vllm_lru_cache(**kwargs: Any) -> dict[str, Any
                 )
                 _clear_local_lru_cache()
                 _lru_cache_disable_hits.set(True)
-                _lru_cache_used_hits.set(False)
+                _reset_lru_cache_used_hit()
                 _lru_cache_sent_hashes.set({})
                 result = await generate(**kwargs)
             else:
@@ -687,12 +709,12 @@ async def _generate_with_optional_vllm_lru_cache(**kwargs: Any) -> dict[str, Any
             "sent=%d sent_hashes=%s cached_total=%d",
             req_id,
             int(empty_result),
-            int(_lru_cache_used_hits.get()),
+            int(_lru_cache_used_hit()),
             sent_count,
             sent_hashes,
             _local_lru_len(),
         )
-        if _lru_cache_used_hits.get() and empty_result:
+        if _lru_cache_used_hit() and empty_result:
             _lru_cache_logger.warning(
                 "renderer_lru_cache_hit_empty_response req=%d; clearing local "
                 "MM cache mirror and retrying with full payloads",
@@ -700,7 +722,7 @@ async def _generate_with_optional_vllm_lru_cache(**kwargs: Any) -> dict[str, Any
             )
             _clear_local_lru_cache()
             _lru_cache_disable_hits.set(True)
-            _lru_cache_used_hits.set(False)
+            _reset_lru_cache_used_hit()
             _lru_cache_sent_hashes.set({})
             result = await generate(**kwargs)
             empty_result = _is_empty_model_result(result)
@@ -710,24 +732,35 @@ async def _generate_with_optional_vllm_lru_cache(**kwargs: Any) -> dict[str, Any
                 "parent_used_hits=%d sent=%d sent_hashes=%s cached_total=%d",
                 req_id,
                 int(empty_result),
-                int(_lru_cache_used_hits.get()),
+                int(_lru_cache_used_hit()),
                 sent_count,
                 sent_hashes,
                 _local_lru_len(),
             )
-        newly_confirmed = _confirm_sent_mm_hashes()
-        if newly_confirmed:
+        if empty_result:
             sent_count, sent_hashes = _sent_hash_count_and_preview()
             _lru_cache_logger.info(
-                "renderer_lru_confirm req=%d confirmed=%d sent=%d "
-                "sent_hashes=%s cached_total=%d empty=%d",
+                "renderer_lru_skip_confirm req=%d empty=1 sent=%d "
+                "sent_hashes=%s cached_total=%d",
                 req_id,
-                newly_confirmed,
                 sent_count,
                 sent_hashes,
                 _local_lru_len(),
-                int(empty_result),
             )
+        else:
+            newly_confirmed = _confirm_sent_mm_hashes()
+            if newly_confirmed:
+                sent_count, sent_hashes = _sent_hash_count_and_preview()
+                _lru_cache_logger.info(
+                    "renderer_lru_confirm req=%d confirmed=%d sent=%d "
+                    "sent_hashes=%s cached_total=%d empty=%d",
+                    req_id,
+                    newly_confirmed,
+                    sent_count,
+                    sent_hashes,
+                    _local_lru_len(),
+                    int(empty_result),
+                )
         return result
     finally:
         with _lru_cache_counter_lock:
@@ -743,7 +776,7 @@ async def _generate_with_optional_vllm_lru_cache(**kwargs: Any) -> dict[str, Any
             _rss_mb(),
             _os_thread_count(),
         )
-        _lru_cache_used_hits.reset(used_token)
+        _lru_cache_attempt_state.reset(state_token)
         _lru_cache_disable_hits.reset(disable_token)
         _lru_cache_sent_hashes.reset(sent_token)
         _lru_cache_request_id.reset(req_token)
