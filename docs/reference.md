@@ -204,6 +204,7 @@ A single turn in a multi-turn rollout.
 class RoutedExpertsPayload(TypedDict):
     data: Any  # actually memoryview; kept opaque so Pydantic skips schema validation
     shape: list[int]
+    start: int
 ```
 
 ### TrajectoryStepTokens
