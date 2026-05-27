@@ -354,7 +354,7 @@ class SelfJudgeTaskset(vf.Taskset[SelfJudgeTasksetConfig]):
         return load_tasks(num_examples=self.config.num_examples)
 
 
-class SelfJudgeHarness(vf.Harness):
+class SelfJudgeHarness(vf.Harness[SelfJudgeHarnessConfig]):
     pass
 
 

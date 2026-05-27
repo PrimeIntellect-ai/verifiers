@@ -36,8 +36,8 @@ This directory contains automated workflows for the verifiers project.
 
 **Workflows**:
 - `tag-and-release.yml` publishes `verifiers` from `v*` tags with trusted publishing.
-- `publish-tasksets.yml` publishes `tasksets` from `tasksets-v*` tags with trusted publishing.
-- `publish-harnesses.yml` publishes `harnesses` from `harnesses-v*` tags with trusted publishing.
+- `publish-tasksets.yml` publishes `tasksets` from `tasksets-v*` tags with `PYPI_TOKEN_TASKSETS`.
+- `publish-harnesses.yml` publishes `harnesses` from `harnesses-v*` tags with `PYPI_TOKEN_HARNESSES`.
 - `publish-verifiers-rl.yml` publishes `verifiers-rl` from `verifiers-rl-v*` tags.
 
 ## Setting Up

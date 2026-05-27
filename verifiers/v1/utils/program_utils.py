@@ -15,7 +15,6 @@ from .binding_utils import (
     read_path,
     validate_binding_source,
     validate_bound_arg,
-    validate_callable_source,
 )
 from ..runtime import Runtime
 from ..state import State
@@ -142,10 +141,17 @@ async def resolve_program_value(
     runtime: Runtime,
     program: ConfigMap | None = None,
 ) -> object:
-    fn = program_value_callable(value)
-    if fn is not None:
+    callable_spec = program_value_callable(value)
+    if callable_spec is not None:
+        fn, configured_kwargs = callable_spec
         kwargs = await program_binding_kwargs(fn, program, task, state, runtime)
-        return await maybe_call_with_named_args(fn, task=task, state=state, **kwargs)
+        for key, item in configured_kwargs.items():
+            kwargs[key] = await resolve_program_value(
+                item, task, state, runtime, program
+            )
+        return await maybe_call_with_named_args(
+            fn, task=task, state=state, runtime=runtime, **kwargs
+        )
     if isinstance(value, str):
         root, separator, tail = value.partition(".")
         if separator and root == "task":
@@ -168,17 +174,25 @@ async def resolve_program_value(
     return value
 
 
-def program_value_callable(value: object) -> Handler | None:
-    if callable(value):
-        return cast(Handler, value)
+def program_value_callable(value: object) -> tuple[Handler, ConfigMap] | None:
     if isinstance(value, Mapping) and "fn" in value:
         spec = cast(ConfigMap, value)
-        validate_callable_source(spec, "Program callable value")
+        validate_program_callable_source(spec)
         fn = resolve_config_object(spec["fn"])
         if not callable(fn):
             raise TypeError("Program callable value requires callable fn.")
-        return cast(Handler, fn)
+        kwargs = {key: item for key, item in spec.items() if key != "fn"}
+        return cast(Handler, fn), kwargs
     return None
+
+
+def validate_program_callable_source(source: ConfigMap) -> None:
+    fn = source.get("fn")
+    if not isinstance(fn, str):
+        raise TypeError("Program callable value fn must be an import ref string.")
+    for key in source:
+        if not isinstance(key, str) or not key:
+            raise TypeError("Program callable value keys must be non-empty strings.")
 
 
 async def program_binding_kwargs(
@@ -243,9 +257,10 @@ def program_binding_targets(
     targets: dict[str, Handler] = {}
 
     def add(value: object) -> None:
-        fn = program_value_callable(value)
-        if fn is None:
+        callable_spec = program_value_callable(value)
+        if callable_spec is None:
             return
+        fn, _ = callable_spec
         name = function_name(fn)
         existing = targets.get(name)
         if existing is not None and existing is not fn:
@@ -279,8 +294,9 @@ def program_setup_callable_names(program: ConfigMap) -> set[str]:
     setup = program.get("setup")
     items = setup if isinstance(setup, list) else [setup]
     for item in items:
-        fn = program_value_callable(item)
-        if fn is not None:
+        callable_spec = program_value_callable(item)
+        if callable_spec is not None:
+            fn, _ = callable_spec
             names.add(function_name(fn))
     return names
 

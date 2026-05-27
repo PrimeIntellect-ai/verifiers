@@ -155,10 +155,10 @@ class MyTaskset(vf.Taskset[MyTasksetConfig]):
 
 class MyHarnessConfig(vf.HarnessConfig):
     timeout_seconds: int = 120
-    program: str = "my_env:run"
+    program: vf.ProgramConfig = vf.ProgramConfig(fn="my_env:run")
 
 
-class MyHarness(vf.Harness):
+class MyHarness(vf.Harness[MyHarnessConfig]):
     config: MyHarnessConfig
 
 

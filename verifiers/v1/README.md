@@ -361,15 +361,15 @@ flow through scoring and cleanup. Other exceptions raise after cleanup.
 
 ### Program Forms
 
-`Harness.program` can be:
+`HarnessConfig.program` is a `ProgramConfig`. Dict/TOML inputs are accepted as
+shorthand for the same config object:
 
 | Form | Meaning |
 | --- | --- |
-| `None` | default endpoint-backed tool loop |
-| callable | Python program called in-process through the interception endpoint |
-| `{"base": True, ...}` | explicit default loop, usually to set sandbox options |
-| `{"fn": "pkg.module:run", ...}` | importable Python program |
-| `{"command": ["cmd", "arg"], ...}` | local or sandboxed command |
+| `vf.ProgramConfig()` | default endpoint-backed tool loop |
+| `vf.ProgramConfig(base=True, ...)` | explicit default loop, usually to set sandbox options |
+| `vf.ProgramConfig(fn="pkg.module:run", ...)` | importable Python program |
+| `vf.ProgramConfig(command=["cmd", "arg"], ...)` | local or sandboxed command |
 
 Mapping programs must specify exactly one of `base=true`, `fn`, or
 `command`. An option-only mapping such as `{"sandbox": True}` resolves to the
@@ -431,7 +431,7 @@ class ReplayTaskset(vf.Taskset[ReplayTasksetConfig]):
 
 
 class ReplayHarnessConfig(vf.HarnessConfig):
-    program: str | None = "replay_solution"
+    program: vf.ProgramConfig = vf.ProgramConfig(fn="replay_solution")
 
 
 env = vf.Env(
@@ -469,13 +469,17 @@ the program by itself.
 
 ```python
 # Local command.
-vf.Harness(config=vf.HarnessConfig(program={"command": ["python", "run.py"]}))
+vf.Harness(
+    config=vf.HarnessConfig(
+        program=vf.ProgramConfig(command=["python", "run.py"])
+    )
+)
 
 # Sandboxed command using Harness.sandbox.
 vf.Harness(
     config=vf.HarnessConfig(
         sandbox={"image": "python:3.11-slim"},
-        program={"sandbox": True, "command": ["python", "run.py"]},
+        program=vf.ProgramConfig(sandbox=True, command=["python", "run.py"]),
     )
 )
 
@@ -483,17 +487,17 @@ vf.Harness(
 vf.Harness(
     config=vf.HarnessConfig(
         sandbox={"image": "python:3.11-slim"},
-        program={"sandbox": True},
+        program=vf.ProgramConfig(sandbox=True),
     )
 )
 
 # Sandboxed importable Python program.
 vf.Harness(
     config=vf.HarnessConfig(
-        program={
-            "fn": "my_env.program:run",
-            "sandbox": {"image": "python:3.11-slim"},
-        }
+        program=vf.ProgramConfig(
+            fn="my_env.program:run",
+            sandbox={"image": "python:3.11-slim"},
+        )
     )
 )
 ```
@@ -502,9 +506,9 @@ Sandboxed programs support:
 
 - `env`: environment variables for the program process;
 - `files`: remote path -> literal string, `task.*` / `state.*` path, or
-  callable value;
+  callable value ref;
 - `dirs`: remote path -> local path or importlib resource directory;
-- `setup`: commands contributed to the rollout setup queue;
+- `setup`: shell commands or callable value refs contributed to the rollout setup queue;
 - `channels`: program-facing tool channels, optionally with late setup commands;
 - `artifacts`: text/JSON files read back into `state["artifacts"]`.
 
@@ -937,8 +941,8 @@ async def program(task, state):
 ```
 
 Sandboxed base and Python entrypoint programs use the callable channel by
-default. Set `program={"sandbox": True, "channels": "callable"}` when the config
-should make that channel explicit.
+default. Set `program=vf.ProgramConfig(sandbox=True, channels="callable")` when
+the config should make that channel explicit.
 `program.channels` supports only the generic `callable` and `mcp` channels.
 Harness-specific tool carriers, such as RLM skill uploads, should live on the
 taskset upload directory contract or the harness config.
@@ -957,8 +961,9 @@ server to their own config, so the golden path is to put that setup under the
 `mcp` key.
 
 The channel setup entry is a late rollout setup contribution that runs inside
-the program sandbox before the command. It may be a shell string or callable;
-callables can request non-`task` / `state` args only through `program.bindings`.
+the program sandbox before the command. It may be a shell string or callable
+value ref; callable refs can request non-`task` / `state` args only through
+`program.bindings`.
 
 ```python
 import json
@@ -979,16 +984,16 @@ EOF
 
 harness = vf.Harness(
     config=vf.HarnessConfig(
-        program={
-            "command": ["my-cli", "run", "/task/instruction.md"],
-            "sandbox": True,
-            "bindings": {
+        program=vf.ProgramConfig(
+            command=["my-cli", "run", "/task/instruction.md"],
+            sandbox=True,
+            bindings={
                 "write_cli_config.endpoint_config": {
                     "fn": "my_env.cli:endpoint_config"
                 },
             },
-            "channels": {"mcp": {"fn": "my_env.cli:write_cli_config"}},
-        },
+            channels={"mcp": {"fn": "my_env.cli:write_cli_config"}},
+        ),
         sandbox={"image": "python:3.11-slim"},
     )
 )
@@ -999,7 +1004,7 @@ is for registering resolved runtime surfaces such as MCP tools or intercepted
 model endpoints. Both participate in the same priority-ordered setup stage as
 `@vf.setup` handlers; built-in program uploads run early, `program.setup` runs
 before ordinary priority-0 setup handlers, and channel setup runs late.
-`program.setup` callables should only request `task` and `state`; use
+`program.setup` callable refs should only request `task` and `state`; use
 `program.channels.<channel>` when setup needs bound runtime values such as an
 endpoint config.
 
@@ -1488,7 +1493,7 @@ callable `{ fn = "module:object" }` source. They cannot access Toolset
 `objects.*`; toolset objects are private to their owning tools.
 
 Command programs usually receive API keys through `program.env`. Values can be
-plain strings, `task.*` / `state.*` paths, or callables:
+plain strings, `task.*` / `state.*` paths, or callable value refs:
 
 ```python
 def openai_key(state):
@@ -1497,11 +1502,11 @@ def openai_key(state):
 
 vf.Harness(
     config=vf.HarnessConfig(
-        program={
-            "command": ["my-cli", "run"],
-            "sandbox": True,
-            "env": {"OPENAI_API_KEY": {"fn": "my_env.cli:openai_key"}},
-        },
+        program=vf.ProgramConfig(
+            command=["my-cli", "run"],
+            sandbox=True,
+            env={"OPENAI_API_KEY": {"fn": "my_env.cli:openai_key"}},
+        ),
         sandbox={"image": "python:3.11-slim"},
     )
 )

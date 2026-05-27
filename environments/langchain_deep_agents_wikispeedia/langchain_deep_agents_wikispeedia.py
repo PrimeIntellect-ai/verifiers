@@ -81,8 +81,9 @@ class WikispeediaTaskset(vf.Taskset[WikispeediaTasksetConfig]):
         return load_eval_tasks(self.config)
 
 
-class WikispeediaHarness(vf.Harness):
-    pass
+class WikispeediaHarness(vf.Harness[WikispeediaHarnessConfig]):
+    def load_program(self) -> vf.Program:
+        return vf.Program({"fn": "run_langchain_deep_agents_wikispeedia_program"})
 
 
 def format_article(wiki: WikiGraph, article: str, links_only: bool = False) -> str:
@@ -519,6 +520,15 @@ def make_langchain_deep_agents_program(
     return run_langchain_deep_agents_wikispeedia_program
 
 
+async def run_langchain_deep_agents_wikispeedia_program(
+    task: vf.Task, state: vf.State, harness: WikispeediaHarness
+) -> vf.State:
+    return await make_langchain_deep_agents_program(
+        max_turns=harness.config.max_turns,
+        timeout_seconds=harness.config.timeout_seconds,
+    )(task, state)
+
+
 def load_taskset(
     config: WikispeediaTasksetConfig,
 ) -> WikispeediaTaskset:
@@ -571,12 +581,6 @@ def load_harness(
 ) -> WikispeediaHarness:
     harness = WikispeediaHarness(config=config)
     harness.add_update(restore_agent_completion)
-    harness._configure_runtime(
-        program=make_langchain_deep_agents_program(
-            max_turns=config.max_turns,
-            timeout_seconds=config.timeout_seconds,
-        )
-    )
     return harness
 
 

@@ -6,6 +6,7 @@ import tarfile
 import types
 from collections.abc import Mapping
 from pathlib import Path
+from typing import cast
 
 import pytest
 from datasets import Dataset
@@ -18,13 +19,14 @@ from harnesses.rlm import (
     DEFAULT_RLM_TOOL_SKILL_MARKER,
     DEFAULT_RLM_TOOL_SKILLS_ARCHIVE_PATH,
     DEFAULT_RLM_TOOL_SKILLS_MANIFEST_NAME,
+    rlm_tool_skills_archive,
 )
 from verifiers.v1.utils.program_utils import merge_task_program, merge_task_sandbox
 
 
 def as_mapping(value: object) -> Mapping[str, object]:
     assert isinstance(value, Mapping)
-    return value
+    return cast(Mapping[str, object], value)
 
 
 def load_order_task() -> vf.Tasks:
@@ -35,12 +37,16 @@ class OrderTasksetConfig(vf.TasksetConfig):
     tasks: str = "load_order_task"
 
 
+def tool_skills_archive(harness: vf.Harness, state: vf.State) -> bytes:
+    return base64.b64decode(rlm_tool_skills_archive(state, harness.runtime))
+
+
 def test_rlm_harness_builds_sandbox_program_without_eager_checkout():
     harness = RLM(config=RLMConfig(local_checkout="/tmp/does-not-need-to-exist-yet"))
     program = as_mapping(harness.program)
     program_env = as_mapping(program["env"])
     artifacts = as_mapping(program["artifacts"])
-    setup = program["setup"]
+    setup = cast(list[str], program["setup"])
 
     assert isinstance(harness, vf.Harness)
     assert program["sandbox"] is not False
@@ -75,7 +81,7 @@ def test_rlm_harness_preserves_program_setup_timeout_override():
     harness = RLM(
         config=RLMConfig(
             local_checkout="/tmp/checkout",
-            program={"setup_timeout": 123},
+            program=vf.ProgramConfig(setup_timeout=123),
         )
     )
     program = as_mapping(harness.program)
@@ -87,7 +93,7 @@ def test_rlm_harness_uses_sandbox_setup_timeout_default():
     harness = RLM(
         config=RLMConfig(
             local_checkout="/tmp/checkout",
-            sandbox={"setup_timeout": "777"},
+            sandbox=vf.SandboxConfig(setup_timeout=777),
         )
     )
     program = as_mapping(harness.program)
@@ -118,10 +124,12 @@ def test_rlm_harness_can_upload_skills(tmp_path: Path):
     program = as_mapping(harness.program)
     dirs = as_mapping(program["dirs"])
     files = as_mapping(program["files"])
-    setup = program["setup"]
+    setup = cast(list[str], program["setup"])
 
-    assert dirs["/task/rlm-skills"] == skills
-    assert files[DEFAULT_RLM_TOOL_SKILLS_ARCHIVE_PATH] == harness.vf_tool_skills_archive
+    assert dirs["/task/rlm-skills"] == str(skills)
+    assert files[DEFAULT_RLM_TOOL_SKILLS_ARCHIVE_PATH] == {
+        "fn": "harnesses.rlm:rlm_tool_skills_archive"
+    }
     assert isinstance(setup, list)
     assert DEFAULT_RLM_TOOL_SKILLS_ARCHIVE_PATH in setup[1]
     assert DEFAULT_RLM_TOOL_SKILLS_MANIFEST_NAME in setup[1]
@@ -199,7 +207,7 @@ async def test_rlm_harness_generates_skills_for_v1_tools():
 
     await env.harness.runtime.ensure_rollout_toolsets(task, state)
     env.harness.runtime.prepare_state(task, state)
-    archive = base64.b64decode(env.harness.vf_tool_skills_archive(state))
+    archive = tool_skills_archive(env.harness, state)
 
     with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
         source = (
@@ -242,7 +250,7 @@ async def test_vf_tool_skill_falls_back_for_runtime_bound_tools():
 
     await env.harness.runtime.ensure_rollout_toolsets(task, state)
     env.harness.runtime.prepare_state(task, state)
-    archive = base64.b64decode(env.harness.vf_tool_skills_archive(state))
+    archive = tool_skills_archive(env.harness, state)
 
     with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
         source = (
@@ -255,7 +263,7 @@ async def test_vf_tool_skill_falls_back_for_runtime_bound_tools():
     assert "dill.loads" not in source
 
 
-def test_vf_tool_skills_archive_avoids_base_skill_name_collisions(tmp_path: Path):
+def test_rlm_tool_skills_archive_avoids_base_skill_name_collisions(tmp_path: Path):
     skills = tmp_path / "skills"
     (skills / "lookup_order").mkdir(parents=True)
     harness = RLM(config=RLMConfig(local_checkout="/tmp/checkout", skills=str(skills)))
@@ -266,7 +274,7 @@ def test_vf_tool_skills_archive_avoids_base_skill_name_collisions(tmp_path: Path
     )
     setattr(harness.runtime, "tool_defs", lambda state: [tool_def])
 
-    archive = base64.b64decode(harness.vf_tool_skills_archive(vf.State({})))
+    archive = tool_skills_archive(harness, vf.State({}))
 
     with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
         names = tar.getnames()
@@ -296,7 +304,7 @@ def test_vf_tool_skill_uses_arguments_dict_for_tool_parameters():
         },
     )
     setattr(harness.runtime, "tool_defs", lambda state: [tool_def])
-    archive = base64.b64decode(harness.vf_tool_skills_archive(vf.State({})))
+    archive = tool_skills_archive(harness, vf.State({}))
 
     with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
         source = (
@@ -328,7 +336,7 @@ async def test_vf_tool_skill_filters_extra_kwargs_for_closed_schemas(
         },
     )
     setattr(harness.runtime, "tool_defs", lambda state: [tool_def])
-    archive = base64.b64decode(harness.vf_tool_skills_archive(vf.State({})))
+    archive = tool_skills_archive(harness, vf.State({}))
 
     with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
         source = (
@@ -384,7 +392,7 @@ async def test_vf_tool_skill_omits_unset_optional_arguments(
         },
     )
     setattr(harness.runtime, "tool_defs", lambda state: [tool_def])
-    archive = base64.b64decode(harness.vf_tool_skills_archive(vf.State({})))
+    archive = tool_skills_archive(harness, vf.State({}))
 
     with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
         source = tar.extractfile("search/src/search/search.py").read().decode()
@@ -439,7 +447,7 @@ async def test_vf_tool_skill_surfaces_verifier_tool_errors(
         },
     )
     setattr(harness.runtime, "tool_defs", lambda state: [tool_def])
-    archive = base64.b64decode(harness.vf_tool_skills_archive(vf.State({})))
+    archive = tool_skills_archive(harness, vf.State({}))
 
     with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
         source = (
@@ -516,7 +524,7 @@ def test_rlm_harness_explicit_skills_override_taskset_skills(tmp_path: Path):
     program = as_mapping(env.harness.program)
     dirs = as_mapping(program["dirs"])
 
-    assert dirs["/task/rlm-skills"] == explicit_skills
+    assert dirs["/task/rlm-skills"] == str(explicit_skills)
 
 
 def test_rlm_swe_environment_uses_v1_r2e_taskset(monkeypatch):

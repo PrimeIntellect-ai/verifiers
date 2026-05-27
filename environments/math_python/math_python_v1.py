@@ -152,7 +152,7 @@ class MathPythonTaskset(vf.Taskset[MathPythonTasksetConfig]):
         )
 
 
-class MathPythonHarness(vf.Harness):
+class MathPythonHarness(vf.Harness[MathPythonHarnessConfig]):
     pass
 
 

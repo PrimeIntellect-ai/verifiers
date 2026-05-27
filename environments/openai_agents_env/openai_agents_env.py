@@ -127,7 +127,7 @@ class OpenAIAgentsTaskset(vf.Taskset[OpenAIAgentsTasksetConfig]):
 
 
 class OpenAIAgentsHarnessConfig(vf.HarnessConfig):
-    program: str | None = "run_openai_agents_program"
+    program: vf.ProgramConfig = vf.ProgramConfig(fn="run_openai_agents_program")
 
 
 class OpenAIAgentsEnvConfig(vf.EnvConfig):

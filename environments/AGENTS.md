@@ -758,8 +758,7 @@ class MyHarnessConfig(vf.HarnessConfig):
     max_turns: int = 20
 
 
-class MyHarness(vf.Harness):
-    config: MyHarnessConfig
+class MyHarness(vf.Harness[MyHarnessConfig]):
     pass
 
 

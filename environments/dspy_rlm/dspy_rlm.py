@@ -108,7 +108,7 @@ class DSPYRLMTaskset(vf.Taskset[DSPYRLMTasksetConfig]):
 
 
 class DSPYRLMHarnessConfig(vf.HarnessConfig):
-    program: str | None = "run_dspy_rlm_program"
+    program: vf.ProgramConfig = vf.ProgramConfig(fn="run_dspy_rlm_program")
 
 
 class DSPYRLMEnvConfig(vf.EnvConfig):

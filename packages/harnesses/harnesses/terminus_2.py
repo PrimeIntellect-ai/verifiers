@@ -1,68 +1,114 @@
 import shlex
 from pathlib import PurePosixPath
 
-from .command import configure_command_harness
-from .configs import (
-    TERMINUS_2_DEFAULT_AGENT_WORKDIR,
-    TERMINUS_2_DEFAULT_API_BASE_URL,
-    TERMINUS_2_DEFAULT_INSTRUCTION_PATH,
-    TERMINUS_2_DEFAULT_MODEL_NAME,
-    TERMINUS_2_DEFAULT_SYSTEM_PROMPT_PATH,
-    Terminus2Config,
-)
+from verifiers.v1.config import HarnessConfig, PromptInput, SandboxConfig
 from verifiers.v1.harness import Harness
-from verifiers.v1.types import ProgramCommand, ProgramOptionMap
+from verifiers.v1.program import Program
+from verifiers.v1.types import (
+    ConfigData,
+    ConfigMap,
+    ProgramCommand,
+    ProgramOptionMap,
+    ProgramValue,
+)
 from verifiers.v1.utils.sandbox_python_utils import SANDBOX_BIN_DIR, uv_setup_command
 
+TERMINUS_2_DEFAULT_AGENT_WORKDIR = "/app"
+TERMINUS_2_DEFAULT_INSTRUCTION_PATH = "/terminus_2/instruction.md"
+TERMINUS_2_DEFAULT_SYSTEM_PROMPT_PATH = "/terminus_2/system_prompt.txt"
+TERMINUS_2_DEFAULT_LOG_PATH = "/logs/agent/terminus_2.log"
+TERMINUS_2_DEFAULT_HARBOR_PACKAGE = "harbor==0.6.6"
+TERMINUS_2_DEFAULT_PYTHON_VERSION = "3.12"
+TERMINUS_2_DEFAULT_MODEL_NAME = "openai/gpt-4.1-mini"
+TERMINUS_2_DEFAULT_API_BASE_URL = "https://api.pinference.ai/api/v1"
 
-class Terminus2(Harness):
-    def __init__(self, config: Terminus2Config | None = None):
-        config = Terminus2Config() if config is None else config
-        assert isinstance(config, Terminus2Config)
-        super().__init__(config=config.model_copy(update={"program": None}))
-        self.config = config
-        configure_command_harness(
-            self,
-            config,
-            command=self.command(config),
-            setup=self.setup(config),
-            artifacts=self.artifacts(config),
-        )
 
-    def command(self, config: Terminus2Config) -> ProgramCommand:
-        return [
-            "bash",
-            "-lc",
-            build_terminus_2_run_script(
-                agent_workdir=config.agent_workdir,
-                instruction_path=config.instruction_path,
-                system_prompt_path=config.system_prompt_path
-                if config.system_prompt is not None
-                else None,
-                log_path=config.log_path,
-                harbor_package=config.harbor_package,
-                python_version=config.python_version,
-                model_name=config.model_name,
-                api_base_url=config.api_base_url,
-                max_turns=config.max_turns,
-            ),
-        ]
+class Terminus2Config(HarnessConfig):
+    agent_workdir: str = TERMINUS_2_DEFAULT_AGENT_WORKDIR
+    instruction_path: str = TERMINUS_2_DEFAULT_INSTRUCTION_PATH
+    system_prompt_path: str = TERMINUS_2_DEFAULT_SYSTEM_PROMPT_PATH
+    log_path: str = TERMINUS_2_DEFAULT_LOG_PATH
+    harbor_package: str = TERMINUS_2_DEFAULT_HARBOR_PACKAGE
+    python_version: str = TERMINUS_2_DEFAULT_PYTHON_VERSION
+    model_name: str = TERMINUS_2_DEFAULT_MODEL_NAME
+    api_base_url: str = TERMINUS_2_DEFAULT_API_BASE_URL
+    system_prompt: PromptInput | None = None
+    sandbox: SandboxConfig | None = SandboxConfig()
+    max_turns: int = 4
 
-    def setup(self, config: Terminus2Config) -> str:
-        return uv_setup_command()
 
-    def artifacts(self, config: Terminus2Config) -> ProgramOptionMap:
-        return {
-            "terminus_2_log": {
-                "path": config.log_path,
-                "format": "text",
-                "optional": True,
-            }
-        }
+class Terminus2(Harness[Terminus2Config]):
+    config: Terminus2Config
+
+    def load_program(self) -> Program:
+        program, _ = terminus_2_program_config(self.config)
+        return program
+
+    def load_sandbox(self) -> ConfigMap | None:
+        _, sandbox = terminus_2_program_config(self.config)
+        return sandbox
 
 
 def load_harness(config: Terminus2Config) -> Terminus2:
     return Terminus2(config=config)
+
+
+def terminus_2_program_config(
+    config: Terminus2Config,
+) -> tuple[Program, ConfigData | None]:
+    return Harness.command_program_config(
+        config,
+        command=terminus_2_command(config),
+        files=terminus_2_files(config),
+        setup=terminus_2_setup(config),
+        artifacts=terminus_2_artifacts(config),
+    )
+
+
+def terminus_2_command(config: Terminus2Config) -> ProgramCommand:
+    return [
+        "bash",
+        "-lc",
+        build_terminus_2_run_script(
+            agent_workdir=config.agent_workdir,
+            instruction_path=config.instruction_path,
+            system_prompt_path=config.system_prompt_path
+            if config.system_prompt is not None
+            else None,
+            log_path=config.log_path,
+            harbor_package=config.harbor_package,
+            python_version=config.python_version,
+            model_name=config.model_name,
+            api_base_url=config.api_base_url,
+            max_turns=config.max_turns,
+        ),
+    ]
+
+
+def terminus_2_setup(config: Terminus2Config) -> str:
+    _ = config
+    return uv_setup_command()
+
+
+def terminus_2_files(config: Terminus2Config) -> ProgramOptionMap:
+    files: dict[str, ProgramValue] = {
+        config.instruction_path: {"fn": "verifiers.v1.utils.prompt_utils:task_text"},
+    }
+    if config.system_prompt is not None:
+        files[config.system_prompt_path] = {
+            "fn": "verifiers.v1.utils.prompt_utils:state_system_prompt_text"
+        }
+    return files
+
+
+def terminus_2_artifacts(config: Terminus2Config) -> ProgramOptionMap:
+    return {
+        "terminus_2_log": {
+            "path": config.log_path,
+            "format": "text",
+            "optional": True,
+        }
+    }
 
 
 def build_terminus_2_run_script(

@@ -1,6 +1,6 @@
 from collections.abc import Mapping
 from os import PathLike
-from typing import Literal, TypeAlias, cast
+from typing import Any, Literal, TypeAlias, cast
 
 from pydantic import BaseModel, ValidationInfo, field_validator, model_validator
 from pydantic_config import BaseConfig
@@ -29,9 +29,9 @@ from verifiers.types import ClientConfig
 
 JsonMap: TypeAlias = ConfigData
 ConfigSource: TypeAlias = BaseModel | ConfigMap | None
-ProgramValue: TypeAlias = object
+ProgramValue: TypeAlias = Any
 ProgramCommand: TypeAlias = str | list[ProgramValue]
-ProgramOptionMap: TypeAlias = ConfigData
+ProgramOptionMap: TypeAlias = dict[str, ProgramValue]
 ProgramSetup: TypeAlias = ProgramValue | list[ProgramValue]
 ProgramChannels: TypeAlias = str | JsonMap | list[str | JsonMap]
 PromptInput: TypeAlias = str | list[JsonMap]
@@ -45,9 +45,12 @@ class Config(BaseConfig):
     @model_validator(mode="after")
     def validate_serializable_config(self) -> Self:
         for name in type(self).model_fields:
-            validate_serializable_value(
-                getattr(self, name), f"{type(self).__name__}.{name}"
-            )
+            try:
+                validate_serializable_value(
+                    getattr(self, name), f"{type(self).__name__}.{name}"
+                )
+            except TypeError as exc:
+                raise ValueError(str(exc)) from exc
         return self
 
     @classmethod
@@ -157,8 +160,16 @@ class ProgramConfig(Config):
     @classmethod
     def validate_env(cls, value: object) -> object:
         if isinstance(value, Mapping):
-            return {str(key): str(item) for key, item in value.items()}
+            return {str(key): item for key, item in value.items()}
         return value
+
+    @field_validator("env")
+    @classmethod
+    def normalize_env_values(cls, value: ProgramOptionMap) -> ProgramOptionMap:
+        return {
+            key: item if isinstance(item, Mapping) else str(item)
+            for key, item in value.items()
+        }
 
     @field_validator("bindings", mode="before")
     @classmethod
@@ -303,7 +314,7 @@ class TasksetConfig(LifecycleConfig):
 
 class HarnessConfig(LifecycleConfig):
     # Core fields configure harness-owned runtime behavior.
-    program: ProgramConfig | str | None = None
+    program: ProgramConfig = ProgramConfig()
     system_prompt: PromptInput | None = None
     system_prompt_merge: str = "reject"
     sandbox: SandboxConfig | None = None

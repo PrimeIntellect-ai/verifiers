@@ -92,7 +92,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: pypi-prod
     permissions:
-      id-token: write
+      contents: read
     steps:
       - name: Download dist artifacts
         uses: actions/download-artifact@v4
@@ -104,3 +104,5 @@ jobs:
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
         with:
           packages-dir: dist/
+          user: __token__
+          password: ${{ secrets.PYPI_TOKEN_HARNESSES }}

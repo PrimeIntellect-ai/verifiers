@@ -29,7 +29,7 @@ class GroupRewardTasksetConfig(vf.TasksetConfig):
 
 
 class GroupRewardHarnessConfig(vf.HarnessConfig):
-    program: str | None = "candidate_program"
+    program: vf.ProgramConfig = vf.ProgramConfig(fn="candidate_program")
     max_turns: int = 1
 
 
@@ -187,7 +187,7 @@ class GroupRewardTaskset(vf.Taskset[GroupRewardTasksetConfig]):
         return tasks, states
 
 
-class GroupRewardHarness(vf.Harness):
+class GroupRewardHarness(vf.Harness[GroupRewardHarnessConfig]):
     pass
 
 

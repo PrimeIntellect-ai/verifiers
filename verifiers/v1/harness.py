@@ -1,5 +1,5 @@
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Generic, TypeVar, cast
 
 from verifiers.decorators import metric, update
 from verifiers.errors import Error, OverlongPromptError
@@ -25,6 +25,7 @@ from .config import (
     resolve_config_object,
     sandbox_config_mapping,
 )
+from .program import Program, program_config_data
 from .utils.endpoint_utils import (
     Endpoint,
     assistant_completion_from_messages,
@@ -32,12 +33,22 @@ from .utils.endpoint_utils import (
 )
 from .utils.config_utils import coerce_config, config_ref_context, qualified_config_ref
 from .utils.runtime_owner_utils import RuntimeOwnerMixin
+from .utils.harness_registry_utils import (
+    harness_config_type,
+    harness_config_type_from_class,
+    register_harness_config_type,
+)
 from .utils.json_utils import json_args
 from .utils.mcp_proxy_utils import (
     proxy_program,
     proxy_sandbox,
 )
-from .utils.program_utils import endpoint_api_key, program_channels, run_local_command
+from .utils.program_utils import (
+    endpoint_api_key,
+    program_channels,
+    program_list_items,
+    run_local_command,
+)
 from .utils.program_utils import (
     merge_task_program,
     merge_task_sandbox,
@@ -62,40 +73,66 @@ from .utils.trajectory_utils import has_borrowed_trajectory, sync_trajectory
 from .state import State
 from .task import Task
 from .types import ConfigData, ConfigMap, Handler, ModelClient, ProgramMap
+from .types import (
+    ProgramChannels,
+    ProgramCommand,
+    ProgramOptionMap,
+    ProgramSetup,
+)
 
 if TYPE_CHECKING:
     from .taskset import Taskset
 
 
-class UnsetValue:
-    pass
+ConfigT = TypeVar("ConfigT", bound=HarnessConfig)
 
 
-UNSET = UnsetValue()
+COMMAND_SANDBOX_DEFAULTS: ConfigData = {
+    "image": "python:3.11-slim",
+    "workdir": "/app",
+    "scope": "rollout",
+    "timeout_minutes": 120,
+    "command_timeout": 900,
+    "network_access": True,
+}
+COMMAND_PROGRAM_PATCH_KEYS = {
+    "files",
+    "dirs",
+    "setup",
+    "setup_timeout",
+    "bindings",
+    "env",
+    "artifacts",
+    "args",
+}
+COMMAND_PROGRAM_MAP_PATCH_KEYS = {"files", "dirs", "bindings", "env", "artifacts"}
+COMMAND_PROGRAM_LIST_PATCH_KEYS = {"setup", "args"}
 
 
-class Harness(RuntimeOwnerMixin):
-    config: HarnessConfig
+class Harness(RuntimeOwnerMixin, Generic[ConfigT]):
+    config: ConfigT
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)
+        config_type = harness_config_type_from_class(
+            cls, inherited=False, harness_base=Harness
+        )
+        if config_type is not None:
+            register_harness_config_type(cls, config_type)
 
     def __init__(self, config: ConfigSource = None):
-        self.config = coerce_config(HarnessConfig, config)
+        config_type = harness_config_type(type(self), Harness)
+        self.config = cast(ConfigT, coerce_config(config_type, config))
         with config_ref_context(self.config):
-            program_config = self.config.program
-            program_value = resolve_config_object(program_config)
-            if isinstance(program_value, ProgramConfig):
-                program_value = program_value.model_dump(
-                    exclude_none=True,
-                    exclude_unset=True,
-                    exclude_defaults=True,
-                )
-            self.program = cast(Handler | ProgramMap | None, program_value)
+            self.program = self.program_data(self.load_program())
+            system_prompt_value = self.load_system_prompt()
             self.system_prompt = normalize_system_prompt(
-                self.config.system_prompt, field_name="harness.system_prompt"
+                system_prompt_value, field_name="harness.system_prompt"
             )
             self.system_prompt_merge = self.config.system_prompt_merge
             self._init_runtime_user()
             self.bindings = dict(self.config.bindings)
-            self.sandbox = sandbox_config_mapping(self.config.sandbox)
+            self.sandbox = self.load_sandbox()
             self.client = cast(
                 ModelClient | None,
                 resolve_config_object(self.config.client),
@@ -117,27 +154,122 @@ class Harness(RuntimeOwnerMixin):
     def config_schema(cls) -> str:
         return HarnessConfig.schema_text()
 
-    def _configure_runtime(
-        self,
+    def load_program(self) -> Program:
+        return Program(self.config.program)
+
+    def load_sandbox(self) -> ConfigMap | None:
+        return sandbox_config_mapping(self.config.sandbox)
+
+    def load_system_prompt(self) -> PromptInput | None:
+        return self.config.system_prompt
+
+    @staticmethod
+    def program_data(program: Program) -> ConfigData:
+        return program.data()
+
+    @staticmethod
+    def program_config_data(program: ProgramConfig) -> ConfigData:
+        return program_config_data(program)
+
+    @classmethod
+    def command_program_config(
+        cls,
+        config: HarnessConfig,
         *,
-        program: Handler | ProgramMap | None | UnsetValue = UNSET,
-        sandbox: ConfigMap | None | UnsetValue = UNSET,
-        system_prompt: PromptInput | None | UnsetValue = UNSET,
-        metrics: list[Handler] | None = None,
-    ) -> None:
-        if not isinstance(program, UnsetValue):
-            self.program = cast(Handler | ProgramMap | None, program)
-        if not isinstance(sandbox, UnsetValue):
-            self.sandbox = sandbox
-        if not isinstance(system_prompt, UnsetValue):
-            self.system_prompt = normalize_system_prompt(
-                system_prompt, field_name="harness.system_prompt"
+        command: ProgramCommand,
+        sandbox: bool | ConfigMap | SandboxConfig | None = None,
+        sandbox_defaults: ConfigMap | None = None,
+        files: ProgramOptionMap | None = None,
+        dirs: ProgramOptionMap | None = None,
+        setup: ProgramSetup | None = None,
+        setup_timeout: int | None = None,
+        bindings: ConfigMap | None = None,
+        env: ProgramOptionMap | None = None,
+        artifacts: ProgramOptionMap | None = None,
+        channels: ProgramChannels | None = None,
+        args: list[object] | None = None,
+    ) -> tuple[Program, ConfigData | None]:
+        sandbox_value = (
+            sandbox
+            if sandbox is not None
+            else config.sandbox
+            if config.sandbox is not None
+            else True
+        )
+        program: ConfigData = {
+            "command": command,
+            "sandbox": sandbox_value is not False,
+        }
+        if files is not None:
+            program["files"] = dict(files)
+        if dirs is not None:
+            program["dirs"] = dict(dirs)
+        if setup is not None:
+            program["setup"] = setup
+        if setup_timeout is not None:
+            program["setup_timeout"] = setup_timeout
+        if bindings is not None:
+            program["bindings"] = dict(bindings)
+        if env is not None:
+            program["env"] = dict(env)
+        if artifacts is not None:
+            program["artifacts"] = dict(artifacts)
+        if channels is not None:
+            program["channels"] = channels
+        if args is not None:
+            program["args"] = list(args)
+        with config_ref_context(config):
+            merged_program = cls.merge_command_program_config(program, config.program)
+        return (
+            Program(merged_program),
+            cls.command_sandbox_config(sandbox_value, defaults=sandbox_defaults),
+        )
+
+    @classmethod
+    def command_sandbox_config(
+        cls,
+        sandbox: bool | ConfigMap | SandboxConfig,
+        *,
+        defaults: ConfigMap | None = None,
+    ) -> ConfigData | None:
+        if sandbox is False:
+            return None
+        base = {**COMMAND_SANDBOX_DEFAULTS, **dict(defaults or {})}
+        if sandbox is True:
+            return base
+        return {**base, **(sandbox_config_mapping(sandbox) or {})}
+
+    @classmethod
+    def merge_command_program_config(
+        cls, program: ConfigMap, patch_config: ProgramConfig
+    ) -> ConfigData:
+        patch = cls.program_config_data(patch_config)
+        unknown = sorted(set(patch) - COMMAND_PROGRAM_PATCH_KEYS)
+        if unknown:
+            allowed = ", ".join(sorted(COMMAND_PROGRAM_PATCH_KEYS))
+            raise ValueError(
+                "Command harness config.program can only define "
+                f"{allowed}; got {unknown}."
             )
-        if metrics:
-            self.metrics.extend(metrics)
-        self.runtime = self.resolve_runtime()
-        self.endpoint = Endpoint(use_tunnel=self.program_uses_sandbox())
-        self._program = self.compile_program(self.program)
+        merged: ConfigData = dict(program)
+        for key, value in patch.items():
+            if key in COMMAND_PROGRAM_MAP_PATCH_KEYS:
+                if not isinstance(value, Mapping):
+                    raise TypeError(f"config.program.{key} must be a mapping.")
+                base = merged.get(key, {})
+                if base is None:
+                    base = {}
+                if not isinstance(base, Mapping):
+                    raise TypeError(f"program.{key} must be a mapping.")
+                merged[key] = {**dict(base), **dict(value)}
+            elif key in COMMAND_PROGRAM_LIST_PATCH_KEYS:
+                merged[key] = [
+                    *program_list_items(merged.get(key), f"program.{key}"),
+                    *program_list_items(value, f"config.program.{key}"),
+                ]
+            else:
+                merged[key] = value
+        return merged
 
     def _runtime_owner_changed(self) -> None:
         if hasattr(self, "runtime"):
@@ -294,13 +426,11 @@ class Harness(RuntimeOwnerMixin):
             raise RuntimeError("Resolved endpoint handle has no live endpoint.")
         return endpoint
 
-    def compile_program(self, program: Handler | ProgramMap | None) -> Handler:
+    def compile_program(self, program: ProgramMap | None) -> Handler:
         if program is None:
             return self.base_program
-        if callable(program):
-            return self.local_callable_program(program)
         if not isinstance(program, Mapping):
-            raise TypeError("program must be None, callable, or a mapping.")
+            raise TypeError("program must be None or a mapping.")
         kind = program_kind(program)
         if kind == "base":
             sandbox_config = self.program_sandbox_config(program)
@@ -331,7 +461,9 @@ class Harness(RuntimeOwnerMixin):
     def local_callable_program(self, fn: Handler) -> Handler:
         async def run(task: Task, state: State) -> object:
             await self.runtime.setup_rollout(task, state)
-            return await maybe_call_with_named_args(fn, task=task, state=state)
+            return await maybe_call_with_named_args(
+                fn, task=task, state=state, runtime=self.runtime, harness=self
+            )
 
         return run
 

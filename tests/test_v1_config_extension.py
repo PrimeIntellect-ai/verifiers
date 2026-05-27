@@ -779,7 +779,7 @@ def test_env_passes_taskset_eval_dataset_to_environment() -> None:
         taskset=make_taskset(
             tasks=ref("load_tasks"), eval_tasks=ref("load_eval_tasks")
         ),
-        harness=make_harness(program=ref("config_program")),
+        harness=make_harness(program={"fn": ref("config_program")}),
     )
 
     assert env.get_dataset()[0]["answer"] == "ok"
@@ -798,25 +798,25 @@ def test_env_defaults_to_base_harness() -> None:
 def test_env_capabilities_follow_v1_group_runtime_signals() -> None:
     rollout_env = Env(
         taskset=make_taskset(tasks=ref("load_tasks"), rewards=[ref("config_reward")]),
-        harness=make_harness(program=ref("config_program")),
+        harness=make_harness(program={"fn": ref("config_program")}),
     )
     group_metric_env = Env(
         taskset=make_taskset(
             tasks=ref("load_tasks"), metrics=[ref("group_config_metric")]
         ),
-        harness=make_harness(program=ref("config_program")),
+        harness=make_harness(program={"fn": ref("config_program")}),
     )
     group_reward_env = Env(
         taskset=make_taskset(
             tasks=ref("load_tasks"), rewards=[ref("group_config_reward")]
         ),
-        harness=make_harness(program=ref("config_program")),
+        harness=make_harness(program={"fn": ref("config_program")}),
     )
     advantage_env = Env(
         taskset=make_taskset(
             tasks=ref("load_tasks"), advantages=[ref("config_advantage")]
         ),
-        harness=make_harness(program=ref("config_program")),
+        harness=make_harness(program={"fn": ref("config_program")}),
     )
 
     assert not rollout_env.requires_group_rollouts
@@ -834,13 +834,13 @@ def test_env_capabilities_follow_group_lifecycle_handlers() -> None:
         taskset=make_taskset(
             tasks=ref("load_tasks"), updates=[ref("config_group_update")]
         ),
-        harness=make_harness(program=ref("config_program")),
+        harness=make_harness(program={"fn": ref("config_program")}),
     )
     group_cleanup_env = Env(
         taskset=make_taskset(
             tasks=ref("load_tasks"), cleanups=[ref("config_group_cleanup")]
         ),
-        harness=make_harness(program=ref("config_program")),
+        harness=make_harness(program={"fn": ref("config_program")}),
     )
 
     assert group_update_env.requires_group_rollouts
@@ -855,7 +855,7 @@ async def test_group_lifecycle_handlers_require_bound_extra_args() -> None:
         taskset=make_taskset(
             tasks=ref("load_tasks"), updates=[ref("bad_group_update")]
         ),
-        harness=make_harness(program=ref("config_program")),
+        harness=make_harness(program={"fn": ref("config_program")}),
     )
     task = Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
     state = State.for_task(task)
@@ -873,7 +873,7 @@ def test_env_capabilities_follow_custom_taskset_init_group() -> None:
 
     env = Env(
         taskset=GroupSetupTaskset(config=TasksetConfig(tasks=ref("load_tasks"))),
-        harness=make_harness(program=ref("config_program")),
+        harness=make_harness(program={"fn": ref("config_program")}),
     )
 
     assert env.requires_group_rollouts
@@ -884,7 +884,7 @@ def test_harness_config_extends_constructor_surface() -> None:
     direct_toolset = Toolset(tools=[direct_tool])
     harness = make_harness(
         config={
-            "program": ref("config_program"),
+            "program": {"fn": ref("config_program")},
             "metrics": [ref("config_metric")],
             "rewards": [ref("config_reward")],
             "advantages": [ref("config_advantage")],
@@ -903,7 +903,7 @@ def test_harness_config_extends_constructor_surface() -> None:
     )
     harness.add_toolset(direct_toolset)
 
-    assert harness.program is config_program
+    assert harness.program == {"fn": ref("config_program")}
     assert harness.config.max_turns == 3
     assert [metric.__name__ for metric in harness.metrics] == [
         "num_turns",
@@ -921,7 +921,7 @@ def test_harness_config_extends_constructor_surface() -> None:
 
 
 def test_harness_owns_default_render_completion_update() -> None:
-    harness = make_harness(program=ref("config_program"))
+    harness = make_harness(program={"fn": ref("config_program")})
 
     assert any(
         getattr(handler, "__self__", None) is harness
@@ -931,7 +931,7 @@ def test_harness_owns_default_render_completion_update() -> None:
 
 
 def test_harness_owns_default_num_turns_metric() -> None:
-    harness = make_harness(program=ref("config_program"))
+    harness = make_harness(program={"fn": ref("config_program")})
 
     assert any(
         signal["name"] == "num_turns" for signal in harness.runtime.rollout_signals
@@ -941,7 +941,7 @@ def test_harness_owns_default_num_turns_metric() -> None:
 @pytest.mark.asyncio
 async def test_update_config_runs_before_rollout_scoring() -> None:
     harness = make_harness(
-        program=ref("config_program"),
+        program={"fn": ref("config_program")},
         config={
             "updates": [{"fn": ref("config_update"), "priority": 5}],
             "rewards": [{"fn": ref("updated_reward"), "weight": 0.75}],
@@ -965,7 +965,7 @@ async def test_scoring_config_entries_feed_runtime_as_mappings() -> None:
         rewards=[ref("config_reward")],
         scoring={"config_reward": vf.SignalConfig(weight=0.5)},
     )
-    harness = make_harness(program=ref("config_program"))
+    harness = make_harness(program={"fn": ref("config_program")})
     Env(taskset=taskset, harness=harness)
 
     task = next(iter(taskset))
@@ -978,7 +978,7 @@ async def test_scoring_config_entries_feed_runtime_as_mappings() -> None:
 @pytest.mark.asyncio
 async def test_harness_scoring_config_entries_feed_runtime_as_mappings() -> None:
     harness = make_harness(
-        program=ref("config_program"),
+        program={"fn": ref("config_program")},
         config={
             "rewards": [ref("config_reward")],
             "scoring": {"config_reward": {"weight": 0.5}},
@@ -998,7 +998,7 @@ async def test_harness_scoring_config_entries_feed_runtime_as_mappings() -> None
 async def test_setup_config_runs_before_program() -> None:
     harness = make_harness(
         config={
-            "program": ref("setup_aware_program"),
+            "program": {"fn": ref("setup_aware_program")},
             "setups": [{"fn": ref("config_setup"), "priority": 20}],
         },
     )
@@ -1016,7 +1016,7 @@ async def test_setup_config_runs_before_program() -> None:
 @pytest.mark.asyncio
 async def test_taskset_setup_runs_before_program() -> None:
     taskset = make_taskset(tasks=ref("load_tasks"), setups=[ref("config_setup")])
-    harness = make_harness(program=ref("setup_aware_program"))
+    harness = make_harness(program={"fn": ref("setup_aware_program")})
     Env(taskset=taskset, harness=harness)
     task = next(iter(taskset))
 
@@ -1490,7 +1490,7 @@ def test_task_system_prompt_is_normalized() -> None:
 @pytest.mark.asyncio
 async def test_harness_resolves_taskset_system_prompt() -> None:
     taskset = make_taskset(tasks=ref("load_tasks"), system_prompt="taskset sys")
-    harness = make_harness(program=ref("config_program"))
+    harness = make_harness(program={"fn": ref("config_program")})
     Env(taskset=taskset, harness=harness)
     task = next(iter(taskset))
     state = await harness.setup_state(task, State.for_task(task))
@@ -1541,7 +1541,9 @@ def test_system_prompt_direct_string_can_contain_colon() -> None:
 @pytest.mark.asyncio
 async def test_harness_rejects_multiple_system_prompt_sources_by_default() -> None:
     taskset = make_taskset(tasks=ref("load_tasks"), system_prompt="taskset sys")
-    harness = make_harness(program=ref("config_program"), system_prompt="harness sys")
+    harness = make_harness(
+        program={"fn": ref("config_program")}, system_prompt="harness sys"
+    )
     Env(taskset=taskset, harness=harness)
     task = next(iter(taskset))
 
@@ -1718,7 +1720,7 @@ async def test_configured_program_scores_and_cleans_rollout() -> None:
     taskset = make_taskset(tasks=ref("load_tasks"))
     harness = make_harness(
         config={
-            "program": ref("config_program"),
+            "program": {"fn": ref("config_program")},
             "rewards": [ref("config_reward")],
             "cleanups": [ref("config_cleanup")],
         }
@@ -1736,7 +1738,7 @@ async def test_configured_program_scores_and_cleans_rollout() -> None:
 @pytest.mark.asyncio
 async def test_harness_run_releases_group_scope_when_no_group_boundary() -> None:
     harness = make_harness(
-        program=ref("config_program"), cleanups=[ref("config_group_cleanup")]
+        program={"fn": ref("config_program")}, cleanups=[ref("config_group_cleanup")]
     )
     task = Task(
         {"prompt": [{"role": "user", "content": "hi"}], "answer": "ok"}
@@ -1750,7 +1752,7 @@ async def test_harness_run_releases_group_scope_when_no_group_boundary() -> None
 @pytest.mark.asyncio
 async def test_harness_run_defers_group_cleanup_when_group_boundary_exists() -> None:
     harness = make_harness(
-        program=ref("config_program"), cleanups=[ref("config_group_cleanup")]
+        program={"fn": ref("config_program")}, cleanups=[ref("config_group_cleanup")]
     )
     task = Task(
         {"prompt": [{"role": "user", "content": "hi"}], "answer": "ok"}
@@ -1872,8 +1874,10 @@ def test_package_harness_requires_package_config_subtype() -> None:
 
     assert config.model == "configured-model"
     assert config.max_turns == OpenCodeConfig().max_turns
-    with pytest.raises(AssertionError):
-        OpenCode(config=HarnessConfig(model="configured-model"))  # type: ignore[arg-type]
+    base_config = OpenCode(config=HarnessConfig(model="configured-model")).config
+
+    assert isinstance(base_config, OpenCodeConfig)
+    assert base_config.model == "configured-model"
 
 
 def test_taskset_config_defaults_are_used_until_config_overrides() -> None:
@@ -2198,6 +2202,10 @@ def test_config_rejects_live_python_objects() -> None:
     with pytest.raises(ValueError):
         HarnessConfig(
             program=config_program,
+        )
+    with pytest.raises(ValueError):
+        HarnessConfig(
+            program={"env": {"DYNAMIC_VALUE": {"fn": config_program}}},
         )
     with pytest.raises(ValueError):
         TasksetConfig(

@@ -206,8 +206,8 @@ class {harness_config_name}(vf.HarnessConfig):
     pass
 
 
-class {harness_name}(vf.Harness):
-    config: {harness_config_name}
+class {harness_name}(vf.Harness[{harness_config_name}]):
+    pass
 
 
 def load_taskset(config: {taskset_config_name}) -> {taskset_name}:

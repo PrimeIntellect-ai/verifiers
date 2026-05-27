@@ -500,7 +500,7 @@ async def child_program(task, state):
 
 
 async def parent_program(task, state):
-    child = make_harness(program=program_ref("child_program"))
+    child = make_harness(program={"fn": program_ref("child_program")})
     child_task = vf.Task({"prompt": [{"role": "user", "content": "child"}]}).freeze()
     child_state = state.for_task(child_task, borrow="model")
     child_state = await child.run(child_task, child_state)
@@ -515,7 +515,7 @@ async def mark_submitted(task, state):
 
 async def parent_calls_owned_child_program(task, state):
     child = make_harness(
-        program=program_ref("child_program"),
+        program={"fn": program_ref("child_program")},
         client=cast(Client, FakeClient()),
         model="child-model",
     )
@@ -664,7 +664,7 @@ def test_v1_state_does_not_copy_task_answer_to_top_level() -> None:
 @pytest.mark.asyncio
 async def test_endpoint_exposes_tool_user_and_stop_surfaces() -> None:
     harness = make_harness(
-        program=program_ref("endpoint_program"),
+        program={"fn": program_ref("endpoint_program")},
         model="test-model",
         toolsets=[vf.Toolset(tools=[echo_tool])],
         user=program_ref("endpoint_user"),
@@ -693,7 +693,7 @@ async def test_endpoint_exposes_tool_user_and_stop_surfaces() -> None:
 @pytest.mark.asyncio
 async def test_state_helpers_load_runtime_tools_while_rollout_is_active() -> None:
     harness = make_harness(
-        program=program_ref("state_tools_program"),
+        program={"fn": program_ref("state_tools_program")},
         toolsets=[vf.Toolset(tools=[echo_tool])],
     )
     task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
@@ -708,7 +708,7 @@ async def test_state_helpers_load_runtime_tools_while_rollout_is_active() -> Non
 @pytest.mark.asyncio
 async def test_entrypoint_program_uses_state_tools_helper() -> None:
     harness = make_harness(
-        program=program_ref("state_tool_program"),
+        program={"fn": program_ref("state_tool_program")},
         toolsets=[vf.Toolset(tools=[echo_tool])],
     )
     task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
@@ -725,7 +725,7 @@ async def test_offline_replay_program_scores_without_model_client() -> None:
         tasks=program_ref("replay_tasks"),
         rewards=[program_ref("replay_reward")],
     )
-    harness = make_harness(program=program_ref("replay_answer_program"))
+    harness = make_harness(program={"fn": program_ref("replay_answer_program")})
     harness.attach_taskset(taskset)
     task = next(iter(taskset))
 
@@ -882,7 +882,7 @@ async def test_callable_tool_rejects_reserved_hidden_args() -> None:
 @pytest.mark.asyncio
 async def test_callable_tools_are_available_through_mcp_proxy() -> None:
     harness = make_harness(
-        program=program_ref("mcp_proxy_program"),
+        program={"fn": program_ref("mcp_proxy_program")},
         toolsets=[vf.Toolset(tools=[echo_tool])],
     )
     task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
@@ -1626,7 +1626,7 @@ async def test_real_sandbox_command_program_uses_mcp_tool_proxy() -> None:
 
 @pytest.mark.asyncio
 async def test_nested_harness_uses_explicit_child_model_controls() -> None:
-    harness = make_harness(program=program_ref("parent_program"))
+    harness = make_harness(program={"fn": program_ref("parent_program")})
     task = vf.Task({"prompt": [{"role": "user", "content": "parent"}]}).freeze()
     state = vf.State.for_task(task)
     state["runtime"]["model"] = "model-a"
@@ -1646,7 +1646,7 @@ async def test_nested_harness_uses_explicit_child_model_controls() -> None:
 
 @pytest.mark.asyncio
 async def test_state_finalize_strips_nested_runtime_handles() -> None:
-    harness = make_harness(program=program_ref("parent_program"))
+    harness = make_harness(program={"fn": program_ref("parent_program")})
     task = vf.Task({"prompt": [{"role": "user", "content": "parent"}]}).freeze()
     state = vf.State.for_task(task)
     state["runtime"]["model"] = "model-a"
@@ -1672,7 +1672,9 @@ async def test_state_finalize_strips_nested_runtime_handles() -> None:
 
 @pytest.mark.asyncio
 async def test_nested_harness_can_use_own_model_controls() -> None:
-    harness = make_harness(program=program_ref("parent_calls_owned_child_program"))
+    harness = make_harness(
+        program={"fn": program_ref("parent_calls_owned_child_program")}
+    )
     task = vf.Task({"prompt": [{"role": "user", "content": "parent"}]}).freeze()
     state = vf.State.for_task(task)
     state["runtime"]["model"] = "parent-model"
@@ -1887,7 +1889,7 @@ async def test_update_and_reward_children_can_share_borrowed_live_tools() -> Non
 @pytest.mark.asyncio
 async def test_toolset_can_contribute_stop_condition() -> None:
     harness = make_harness(
-        program=program_ref("mark_submitted"),
+        program={"fn": program_ref("mark_submitted")},
         toolsets=[vf.Toolset(stops=[submitted])],
     )
     task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
@@ -2254,7 +2256,7 @@ async def test_child_state_can_borrow_primary_program_sandbox(
         sandbox={"image": "python:3.11-slim", "scope": "group"},
     )
     child = make_harness(
-        program=program_ref("child_reads_program_sandbox"),
+        program={"fn": program_ref("child_reads_program_sandbox")},
         toolsets=[vf.Toolset(tools=[program_sandbox_id], sandbox="program")],
     )
     parent_task = vf.Task({"prompt": [{"role": "user", "content": "parent"}]}).freeze()

@@ -38,6 +38,7 @@ from .config import (
 )
 from .env import Env
 from .harness import Harness
+from .program import Program
 from .utils.scoring_utils import (
     add_metric,
     add_reward,
@@ -82,6 +83,7 @@ __all__ = [
     "Message",
     "Messages",
     "Objects",
+    "Program",
     "ProgramConfig",
     "SandboxConfig",
     "SignalConfig",

@@ -345,11 +345,11 @@ the resolved taskset tools."
 
 ```python
 class AgentHarnessConfig(vf.HarnessConfig):
-    program: str | None = "run_agent_framework"
+    program: vf.ProgramConfig = vf.ProgramConfig(fn="run_agent_framework")
     timeout_seconds: int = 120
 
 
-class AgentHarness(vf.Harness):
+class AgentHarness(vf.Harness[AgentHarnessConfig]):
     config: AgentHarnessConfig
 
 
@@ -369,26 +369,27 @@ def load_environment(config: AgentEnvConfig) -> vf.Env:
     )
 ```
 
-`Harness.program` can be:
+`HarnessConfig.program` is a `ProgramConfig`. Dict/TOML inputs are accepted as
+shorthand for the same config object:
 
 | Form | Meaning |
 | --- | --- |
-| `None` | default endpoint-backed tool loop |
-| callable | Python program called in-process |
-| `{"fn": "pkg.module:run"}` | importable Python program |
-| `{"command": ["cmd", "arg"]}` | local or sandboxed command |
-| `{"sandbox": True}` | sandboxed default loop |
+| `vf.ProgramConfig()` | default endpoint-backed tool loop |
+| `vf.ProgramConfig(fn="pkg.module:run")` | importable Python program |
+| `vf.ProgramConfig(command=["cmd", "arg"])` | local or sandboxed command |
+| `vf.ProgramConfig(sandbox=True)` | sandboxed default loop |
 
 All model calls go through the v1 interception endpoint so trajectory capture,
 tool forwarding, and protocol translation share one path.
 
 Sandbox command programs can request the resolved tools as an MCP server with
-`program={"command": [...], "sandbox": True, "channels": "mcp"}`. Python programs
-receive callable tool handles by default, or can set
-`program={"sandbox": True, "channels": "callable"}` when the base loop is moved
-into a sandbox. `program.channels` supports only the generic `callable` and `mcp`
-channels. Harness-specific tool carriers, such as RLM skill uploads, should
-live on the taskset upload directory contract or the harness config.
+`program=vf.ProgramConfig(command=[...], sandbox=True, channels="mcp")`.
+Python programs receive callable tool handles by default, or can set
+`program=vf.ProgramConfig(sandbox=True, channels="callable")` when the base loop
+is moved into a sandbox. `program.channels` supports only the generic
+`callable` and `mcp` channels. Harness-specific tool carriers, such as RLM skill
+uploads, should live on the taskset upload directory contract or the harness
+config.
 
 Sandbox package installs, sandboxed Python programs, and the MCP proxy share
 the managed Python runtime at `/tmp/verifiers/python`. v1 installs or reuses a
@@ -429,7 +430,7 @@ class ReplayTaskset(vf.Taskset[ReplayTasksetConfig]):
 
 
 class ReplayHarnessConfig(vf.HarnessConfig):
-    program: str | None = "replay_solution"
+    program: vf.ProgramConfig = vf.ProgramConfig(fn="replay_solution")
 
 
 env = vf.Env(
@@ -489,6 +490,14 @@ observation formatting, and rewards.
 
 CLI harnesses own CLI installation/config/run behavior and work with any
 taskset that supplies a prompt.
+Their typed config fields generate the command, channels, and sandbox
+placement. `config.program` is an extension patch for `files`, `dirs`, `setup`,
+`setup_timeout`, `bindings`, `env`, `artifacts`, and `args`; it cannot replace
+the command, channel wiring, or sandbox placement owned by the harness type.
+Mapping patches override harness defaults for the same key, while `setup` and
+`args` append after the harness defaults. Task rows can still add
+`task.program` values, but task rows cannot change harness-owned command
+behavior and duplicate upload/env/artifact/binding keys fail.
 Tasksets can expose package-owned upload directories with `get_upload_dirs()`.
 The base `Taskset` discovers a sibling `skills/` directory by default, and
 `RLM` uploads that directory to `/task/rlm-skills` unless `skills=` is passed

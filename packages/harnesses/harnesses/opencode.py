@@ -2,80 +2,161 @@ import json
 import shlex
 from pathlib import PurePosixPath
 
-from .command import configure_command_harness
-from .configs import OpenCodeConfig
+from verifiers.v1.config import HarnessConfig, PromptInput
 from verifiers.v1.harness import Harness
+from verifiers.v1.program import Program
 from verifiers.v1.types import (
     ConfigData,
+    ConfigMap,
     ProgramChannels,
     ProgramCommand,
     ProgramOptionMap,
     ProgramSetup,
+    ProgramValue,
 )
 from verifiers.v1.utils.mcp_proxy_utils import proxy_command
 
+OPENCODE_DEFAULT_RELEASE_REPO = "PrimeIntellect-ai/opencode"
+OPENCODE_DEFAULT_RELEASE_VERSION = "1.1.63-rl2"
+OPENCODE_DEFAULT_RELEASE_SHA256 = (
+    "47f4102796da50769e27d2c9ea6a9cf7941f76898390cb497278cab39c4b6ed4"
+)
+OPENCODE_DEFAULT_AGENT_WORKDIR = "/app"
+OPENCODE_DEFAULT_INSTRUCTION_PATH = "/opencode/instruction.txt"
+OPENCODE_DEFAULT_SYSTEM_PROMPT_PATH = "/opencode/system.txt"
+OPENCODE_DEFAULT_LOG_PATH = "/logs/agent/opencode.txt"
+OPENCODE_DEFAULT_SYSTEM_PROMPT = """\
+You are OpenCode, an interactive CLI tool that helps users with tasks.
 
-class OpenCode(Harness):
-    def __init__(self, config: OpenCodeConfig | None = None):
-        config = OpenCodeConfig() if config is None else config
-        assert isinstance(config, OpenCodeConfig)
-        super().__init__(config=config.model_copy(update={"program": None}))
-        self.config = config
-        configure_command_harness(
-            self,
-            config,
-            command=self.command(config),
-            setup=self.setup(config),
-            artifacts=self.artifacts(config),
-            channels=self.channels(config),
-        )
+Your output is displayed in a command line interface. Be concise and direct.
+Use tools to complete tasks. Do not use shell commands or code comments as a
+way to communicate with the user.
+"""
+OPENCODE_DEFAULT_DISABLED_TOOLS = [
+    "apply_patch",
+    "write",
+    "multiedit",
+    "glob",
+    "todowrite",
+    "todoread",
+    "websearch",
+    "task",
+    "batch",
+    "list",
+    "read",
+    "question",
+    "webfetch",
+    "grep",
+    "plan_exit",
+    "plan_enter",
+    "lsp",
+    "codesearch",
+    "skill",
+]
 
-    def command(self, config: OpenCodeConfig) -> ProgramCommand:
-        return [
-            "bash",
-            "-lc",
-            build_opencode_run_script(
-                agent_workdir=config.agent_workdir,
-                instruction_path=config.instruction_path,
-                log_path=config.log_path,
-                allow_git=config.allow_git,
-            ),
-        ]
 
-    def setup(self, config: OpenCodeConfig) -> ProgramSetup:
-        return build_install_script(
-            release_repo=config.release_repo,
-            release_version=config.release_version,
-            release_sha256=config.release_sha256,
-            install_ripgrep=config.install_ripgrep,
-        )
+class OpenCodeConfig(HarnessConfig):
+    agent_workdir: str = OPENCODE_DEFAULT_AGENT_WORKDIR
+    instruction_path: str = OPENCODE_DEFAULT_INSTRUCTION_PATH
+    system_prompt_path: str = OPENCODE_DEFAULT_SYSTEM_PROMPT_PATH
+    log_path: str = OPENCODE_DEFAULT_LOG_PATH
+    system_prompt: PromptInput | None = OPENCODE_DEFAULT_SYSTEM_PROMPT
+    disabled_tools: list[str] = OPENCODE_DEFAULT_DISABLED_TOOLS
+    allow_git: bool = False
+    disable_compaction: bool = True
+    release_repo: str = OPENCODE_DEFAULT_RELEASE_REPO
+    release_version: str = OPENCODE_DEFAULT_RELEASE_VERSION
+    release_sha256: str = OPENCODE_DEFAULT_RELEASE_SHA256
+    install_ripgrep: bool = True
+    provider_timeout_ms: int = 3_600_000
+    max_turns: int = 4
 
-    def artifacts(self, config: OpenCodeConfig) -> ProgramOptionMap:
-        return {
-            "opencode_log": {
-                "path": config.log_path,
-                "format": "text",
-                "optional": True,
-            }
-        }
 
-    def channels(self, config: OpenCodeConfig) -> ProgramChannels:
-        return {
-            "mcp": build_opencode_mcp_setup_script(
-                agent_workdir=config.agent_workdir,
-                system_prompt_path=config.system_prompt_path
-                if config.system_prompt is not None
-                else None,
-                log_path=config.log_path,
-                disabled_tools=config.disabled_tools,
-                disable_compaction=config.disable_compaction,
-                provider_timeout_ms=config.provider_timeout_ms,
-            )
-        }
+class OpenCode(Harness[OpenCodeConfig]):
+    config: OpenCodeConfig
+
+    def load_program(self) -> Program:
+        program, _ = opencode_program_config(self.config)
+        return program
+
+    def load_sandbox(self) -> ConfigMap | None:
+        _, sandbox = opencode_program_config(self.config)
+        return sandbox
 
 
 def load_harness(config: OpenCodeConfig) -> OpenCode:
     return OpenCode(config=config)
+
+
+def opencode_program_config(
+    config: OpenCodeConfig,
+) -> tuple[Program, ConfigData | None]:
+    return Harness.command_program_config(
+        config,
+        command=opencode_command(config),
+        files=opencode_files(config),
+        setup=opencode_setup(config),
+        artifacts=opencode_artifacts(config),
+        channels=opencode_channels(config),
+    )
+
+
+def opencode_command(config: OpenCodeConfig) -> ProgramCommand:
+    return [
+        "bash",
+        "-lc",
+        build_opencode_run_script(
+            agent_workdir=config.agent_workdir,
+            instruction_path=config.instruction_path,
+            log_path=config.log_path,
+            allow_git=config.allow_git,
+        ),
+    ]
+
+
+def opencode_setup(config: OpenCodeConfig) -> ProgramSetup:
+    return build_install_script(
+        release_repo=config.release_repo,
+        release_version=config.release_version,
+        release_sha256=config.release_sha256,
+        install_ripgrep=config.install_ripgrep,
+    )
+
+
+def opencode_files(config: OpenCodeConfig) -> ProgramOptionMap:
+    files: dict[str, ProgramValue] = {
+        config.instruction_path: {"fn": "verifiers.v1.utils.prompt_utils:task_text"},
+    }
+    if config.system_prompt is not None:
+        files[config.system_prompt_path] = {
+            "fn": "verifiers.v1.utils.prompt_utils:state_system_prompt_text"
+        }
+    return files
+
+
+def opencode_artifacts(config: OpenCodeConfig) -> ProgramOptionMap:
+    return {
+        "opencode_log": {
+            "path": config.log_path,
+            "format": "text",
+            "optional": True,
+        }
+    }
+
+
+def opencode_channels(config: OpenCodeConfig) -> ProgramChannels:
+    return {
+        "mcp": build_opencode_mcp_setup_script(
+            agent_workdir=config.agent_workdir,
+            system_prompt_path=config.system_prompt_path
+            if config.system_prompt is not None
+            else None,
+            log_path=config.log_path,
+            disabled_tools=config.disabled_tools,
+            disable_compaction=config.disable_compaction,
+            provider_timeout_ms=config.provider_timeout_ms,
+        )
+    }
 
 
 def build_install_script(

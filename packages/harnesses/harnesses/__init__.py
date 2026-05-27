@@ -1,15 +1,8 @@
-from .configs import (
-    MiniSWEAgentConfig,
-    OpenCodeConfig,
-    PiConfig,
-    RLMConfig,
-    Terminus2Config,
-)
-from .mini_swe_agent import MiniSWEAgent
-from .opencode import OpenCode
-from .pi import Pi
-from .rlm import RLM
-from .terminus_2 import Terminus2
+from .mini_swe_agent import MiniSWEAgent, MiniSWEAgentConfig
+from .opencode import OpenCode, OpenCodeConfig
+from .pi import Pi, PiConfig
+from .rlm import RLM, RLMConfig
+from .terminus_2 import Terminus2, Terminus2Config
 
 __all__ = [
     "MiniSWEAgent",

@@ -56,7 +56,7 @@ def test_init_v1_with_harness_writes_harness_stub(tmp_path: Path) -> None:
 
     assert "class BazTaskset(vf.Taskset[BazTasksetConfig]):" in content
     assert "class BazHarnessConfig(vf.HarnessConfig):" in content
-    assert "class BazHarness(vf.Harness):" in content
+    assert "class BazHarness(vf.Harness[BazHarnessConfig]):" in content
     assert "def load_harness(config: BazHarnessConfig) -> BazHarness:" in content
     assert "vf.load_harness(config=config.harness)" in content
 

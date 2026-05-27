@@ -22,13 +22,11 @@ from harnesses import (
     Terminus2Config,
 )
 from harnesses.pi import pi_mcp_json, pi_models_json
-from harnesses.configs import (
-    PI_DEFAULT_PACKAGE,
+from harnesses.pi import PI_DEFAULT_PACKAGE
+from harnesses.terminus_2 import (
     TERMINUS_2_DEFAULT_API_BASE_URL,
     TERMINUS_2_DEFAULT_HARBOR_PACKAGE,
     TERMINUS_2_DEFAULT_MODEL_NAME,
-)
-from harnesses.terminus_2 import (
     Terminus2,
     terminus_2_agent_script,
 )
@@ -303,12 +301,40 @@ def test_packaged_command_harnesses_defer_partial_program_overrides(
 
     assert program["command"]
     assert env["CALLER"] == "1"
-    assert "echo caller" in setup
-    assert "--caller" in args
+    assert setup[-1] == "echo caller"
+    assert args[-1] == "--caller"
     assert isinstance(harness.config.program, vf.ProgramConfig)
     assert harness.config.program.env == {"CALLER": "1"}
     assert harness.config.program.setup == override["setup"]
     assert harness.config.program.args == override["args"]
+
+
+def test_packaged_command_harness_config_program_patch_precedence() -> None:
+    harness = MiniSWEAgent(
+        config=MiniSWEAgentConfig(
+            program=vf.ProgramConfig(env={"OPENAI_MODEL": "caller-model"})
+        )
+    )
+    program = cast(dict[str, object], harness.program)
+    env = cast(dict[str, object], program["env"])
+
+    assert env["OPENAI_MODEL"] == "caller-model"
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("command", ["other"]),
+        ("sandbox", {"image": "python:3.12-slim"}),
+        ("channels", "mcp"),
+    ],
+)
+def test_packaged_command_harness_config_program_rejects_owned_keys(
+    key: str, value: object
+) -> None:
+    program = vf.ProgramConfig.model_validate({key: value})
+    with pytest.raises(ValueError, match="Command harness config.program can only"):
+        OpenCode(config=OpenCodeConfig(program=program))
 
 
 def test_pi_harness_writes_intercepted_model_and_mcp_config() -> None:
@@ -385,17 +411,17 @@ def test_terminus_2_harness_builds_sandbox_program() -> None:
 def test_task_program_merges_into_command_program_without_collisions() -> None:
     harness = vf.Harness(
         config=vf.HarnessConfig(
-            program={
-                "command": ["tool"],
-                "sandbox": True,
-                "files": {"/harness.txt": "harness"},
-                "setup": "echo harness",
-                "channels": {"mcp": "echo harness tools"},
-                "env": {"HARNESS": "1"},
-                "artifacts": {"log": {"path": "/logs/harness.log", "format": "text"}},
-                "args": ["--base"],
-            },
-            sandbox={"image": "python:3.11-slim"},
+            program=vf.ProgramConfig(
+                command=["tool"],
+                sandbox=True,
+                files={"/harness.txt": "harness"},
+                setup="echo harness",
+                channels={"mcp": "echo harness tools"},
+                env={"HARNESS": "1"},
+                artifacts={"log": {"path": "/logs/harness.log", "format": "text"}},
+                args=["--base"],
+            ),
+            sandbox=vf.SandboxConfig(image="python:3.11-slim"),
         )
     )
     task = vf.Task(
@@ -429,11 +455,21 @@ def test_task_program_merges_into_command_program_without_collisions() -> None:
     }
 
 
+def test_command_program_patch_preserves_explicit_default_values() -> None:
+    program, _ = vf.Harness.command_program_config(
+        vf.HarnessConfig(program=vf.ProgramConfig(setup_timeout=300)),
+        command=["tool"],
+        setup_timeout=600,
+    )
+
+    assert program.data()["setup_timeout"] == 300
+
+
 def test_task_program_rejects_harness_owned_keys() -> None:
     harness = vf.Harness(
         config=vf.HarnessConfig(
-            program={"command": ["tool"], "sandbox": True},
-            sandbox={"image": "python:3.11-slim"},
+            program=vf.ProgramConfig(command=["tool"], sandbox=True),
+            sandbox=vf.SandboxConfig(image="python:3.11-slim"),
         )
     )
     task = vf.Task({"prompt": [], "program": {"command": ["other"]}}).freeze()
@@ -447,12 +483,12 @@ def test_task_program_rejects_harness_owned_keys() -> None:
 def test_task_program_rejects_colliding_upload_paths() -> None:
     harness = vf.Harness(
         config=vf.HarnessConfig(
-            program={
-                "command": ["tool"],
-                "sandbox": True,
-                "files": {"/task/instruction.md": "harness"},
-            },
-            sandbox={"image": "python:3.11-slim"},
+            program=vf.ProgramConfig(
+                command=["tool"],
+                sandbox=True,
+                files={"/task/instruction.md": "harness"},
+            ),
+            sandbox=vf.SandboxConfig(image="python:3.11-slim"),
         )
     )
     task = vf.Task(

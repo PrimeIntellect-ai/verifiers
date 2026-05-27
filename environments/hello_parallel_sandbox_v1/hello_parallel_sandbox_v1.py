@@ -148,9 +148,7 @@ class ParallelSandboxTasksetConfig(vf.TasksetConfig):
 
 
 class ParallelSandboxHarnessConfig(vf.HarnessConfig):
-    program: vf.ProgramConfig | None = vf.ProgramConfig(
-        sandbox=True, channels="callable"
-    )
+    program: vf.ProgramConfig = vf.ProgramConfig(sandbox=True, channels="callable")
     sandbox: vf.SandboxConfig = vf.SandboxConfig(**PROGRAM_SANDBOX)
     max_turns: int = 4
 
@@ -364,7 +362,7 @@ class ParallelSandboxTaskset(vf.Taskset[ParallelSandboxTasksetConfig]):
         return load_tasks(num_examples=self.config.num_examples)
 
 
-class ParallelSandboxHarness(vf.Harness):
+class ParallelSandboxHarness(vf.Harness[ParallelSandboxHarnessConfig]):
     pass
 
 

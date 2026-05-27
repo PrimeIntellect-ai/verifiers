@@ -694,15 +694,15 @@ trajectory capture, sampling args, tool forwarding, and protocol translation use
 one path across local Python, sandboxed Python, command programs, and the base
 tool loop.
 
-`program` forms:
+`HarnessConfig.program` is a `ProgramConfig`. Dict/TOML inputs are accepted as
+shorthand for the same config object:
 
 | Form | Meaning |
 |------|---------|
-| `None` | Default endpoint-backed tool loop. |
-| callable | In-process Python program with `task, state`. |
-| `{"base": true, ...}` | Explicit default loop, usually with sandbox options. |
-| `{"fn": "pkg.module:run", ...}` | Importable Python program. |
-| `{"command": ["cmd", "arg"], ...}` | Local or sandboxed command. |
+| `ProgramConfig()` | Default endpoint-backed tool loop. |
+| `ProgramConfig(base=True, ...)` | Explicit default loop, usually with sandbox options. |
+| `ProgramConfig(fn="pkg.module:run", ...)` | Importable Python program. |
+| `ProgramConfig(command=["cmd", "arg"], ...)` | Local or sandboxed command. |
 
 Sandboxed `program.fn` refs resolve their owning local package from the resolved
 module root: single-file modules use `pyproject.toml` in the same directory as
@@ -1007,7 +1007,7 @@ class TasksetConfig(Config):
     user: object | None = None
 
 class HarnessConfig(Config):
-    program: object | None = None
+    program: ProgramConfig = ProgramConfig()
     system_prompt: object | None = None
     sandbox: SandboxConfig | None = None
     model: str | None = None

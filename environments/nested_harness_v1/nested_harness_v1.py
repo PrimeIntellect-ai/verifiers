@@ -2,13 +2,13 @@ import verifiers as vf
 
 
 class NestedHarnessConfig(vf.HarnessConfig):
-    program: str | None = "parent_program"
+    program: vf.ProgramConfig = vf.ProgramConfig(fn="parent_program")
     toolsets: dict[str, dict[str, str]] = {"nested": {"fn": "load_toolset"}}
     metrics: list[str] = ["child_calls"]
 
 
 class ChildHarnessConfig(vf.HarnessConfig):
-    program: str | None = "child_program"
+    program: vf.ProgramConfig = vf.ProgramConfig(fn="child_program")
 
 
 async def child_program(task, state):
@@ -89,7 +89,7 @@ async def parent_program(task, state):
     return state
 
 
-class NestedHarness(vf.Harness):
+class NestedHarness(vf.Harness[NestedHarnessConfig]):
     pass
 
 

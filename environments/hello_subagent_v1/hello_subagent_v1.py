@@ -91,7 +91,7 @@ class SubagentTaskset(vf.Taskset[SubagentTasksetConfig]):
         return load_tasks()
 
 
-class SubagentHarness(vf.Harness):
+class SubagentHarness(vf.Harness[SubagentHarnessConfig]):
     pass
 
 

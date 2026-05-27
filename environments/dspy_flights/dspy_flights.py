@@ -18,7 +18,7 @@ PROGRAM_SANDBOX = {
 
 
 class DSPyFlightsHarnessConfig(vf.HarnessConfig):
-    program: vf.ProgramConfig | None = vf.ProgramConfig(
+    program: vf.ProgramConfig = vf.ProgramConfig(
         fn="run_dspy_flight_program",
         sandbox=True,
     )
@@ -432,7 +432,7 @@ class DSPyFlightsTaskset(vf.Taskset[DSPyFlightsTasksetConfig]):
         return load_tasks()
 
 
-class DSPyFlightsHarness(vf.Harness):
+class DSPyFlightsHarness(vf.Harness[DSPyFlightsHarnessConfig]):
     pass
 
 
