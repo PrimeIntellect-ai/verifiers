@@ -1,6 +1,6 @@
 # tasksets
 
-Reusable Verifiers v1 tasksets.
+Reusable tasksets for Verifiers.
 
 ```python
 from tasksets import HarborTaskset, HarborTasksetConfig

@@ -1,6 +1,6 @@
 # harnesses
 
-Reusable Verifiers v1 harnesses.
+Reusable harnesses for Verifiers.
 
 ```python
 from harnesses import OpenCode, OpenCodeConfig

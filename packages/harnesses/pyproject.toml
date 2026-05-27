@@ -8,7 +8,7 @@ version = "0.1.0.post0"
 authors = [
     {name = "William Brown", email = "williambrown97@gmail.com"},
 ]
-description = "Reusable Verifiers v1 harnesses"
+description = "Reusable harnesses for Verifiers"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10,<3.14"
