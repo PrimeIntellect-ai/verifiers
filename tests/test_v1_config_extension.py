@@ -2964,6 +2964,9 @@ def test_nested_configs_validate_and_feed_runtime_objects() -> None:
         image="python:3.12-slim",
         packages="numpy",
         setup_commands="echo ready",
+        gpu_count=1,
+        gpu_type="H200_141GB",
+        vm=True,
         scope="group",
     )
     harness = make_harness(program={"sandbox": True}, sandbox=sandbox)
@@ -2972,6 +2975,9 @@ def test_nested_configs_validate_and_feed_runtime_objects() -> None:
     assert harness.sandbox["image"] == "python:3.12-slim"
     assert harness.sandbox["packages"] == ["numpy"]
     assert harness.sandbox["setup_commands"] == ["echo ready"]
+    assert harness.sandbox["gpu_count"] == 1
+    assert harness.sandbox["gpu_type"] == "H200_141GB"
+    assert harness.sandbox["vm"] is True
     assert harness.sandbox["scope"] == "group"
 
     toolset = Toolset(

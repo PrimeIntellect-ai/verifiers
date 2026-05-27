@@ -38,6 +38,7 @@ from verifiers.v1.utils.sandbox_program_utils import (
 from verifiers.v1.utils.sandbox_utils import (
     VF_STATE_INPUT_PATH_KEY,
     collect_sandbox_artifacts,
+    create_sandbox,
     run_sandbox_command,
 )
 
@@ -107,6 +108,7 @@ class FakeCommandResult:
 
 class FakeSandboxClient:
     created: list[str] = []
+    create_requests: list[FakeCreateSandboxRequest] = []
     deleted: list[str] = []
     commands: list[tuple[str, str]] = []
     command_timeouts: list[int | None] = []
@@ -116,6 +118,7 @@ class FakeSandboxClient:
     @classmethod
     def reset(cls) -> None:
         cls.created = []
+        cls.create_requests = []
         cls.deleted = []
         cls.commands = []
         cls.command_timeouts = []
@@ -123,8 +126,8 @@ class FakeSandboxClient:
         cls.uploads = []
 
     async def create(self, request: FakeCreateSandboxRequest) -> FakeSandboxResult:
-        _ = request
         sandbox_id = f"sbx-{len(type(self).created) + 1}"
+        type(self).create_requests.append(request)
         type(self).created.append(sandbox_id)
         return FakeSandboxResult(sandbox_id)
 
@@ -347,6 +350,29 @@ async def child_reads_program_sandbox(task, state) -> dict[str, object]:
     tools = state.get_tools()
     state["borrowed_sandbox_id"] = await tools["program_sandbox_id"]()
     return state
+
+
+@pytest.mark.asyncio
+async def test_create_sandbox_forwards_gpu_type_and_vm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sandboxes(monkeypatch)
+
+    sandbox_id = await create_sandbox(
+        FakeSandboxClient(),
+        {
+            "image": "gpu-image:latest",
+            "gpu_count": 1,
+            "gpu_type": "H200_141GB",
+        },
+    )
+
+    request = FakeSandboxClient.create_requests[0]
+    assert sandbox_id == "sbx-1"
+    assert request.kwargs["docker_image"] == "gpu-image:latest"
+    assert request.kwargs["gpu_count"] == 1
+    assert request.kwargs["gpu_type"] == "H200_141GB"
+    assert request.kwargs["vm"] is True
 
 
 def install_fake_sandboxes(monkeypatch: pytest.MonkeyPatch) -> None:
