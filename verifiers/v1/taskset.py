@@ -2,195 +2,92 @@ import json
 import uuid
 import weakref
 from importlib.abc import Traversable
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from copy import deepcopy
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar, cast
+from typing import TYPE_CHECKING, Generic, TypeVar, cast
 
 from datasets import Dataset
 from verifiers.types import task_payload_from_info
-from typing_extensions import NotRequired, TypedDict
 
 from .config import (
+    ConfigSource,
     TasksetConfig,
-    merge_config_handler_map,
-    merge_config_value,
     resolve_config_object,
-)
-from .utils.binding_utils import (
-    BindingMap,
-    normalize_binding_map,
-    normalize_object_map,
 )
 from .state import State
 from .task import Task
-from .toolset import ToolsetCollection, merge_toolsets, normalize_toolset_collection
-from .user import normalize_user
 from .utils.prompt_utils import normalize_system_prompt
-from .utils.taskset_utils import dataset_info_with_task, discover_sibling_dir
-from .utils.taskset_utils import rows_from_source
+from .utils.config_utils import coerce_config, config_ref_context
+from .utils.runtime_owner_utils import RuntimeOwnerMixin
+from .utils.taskset_registry_utils import (
+    register_taskset_config_type,
+    taskset_config_type,
+    taskset_config_type_from_class,
+)
+from .utils.taskset_utils import (
+    dataset_info_with_task,
+    discover_sibling_dir,
+    resolve_task_loader,
+    task_data_from_loader,
+)
 from .types import (
     ConfigData,
     ConfigMap,
-    Handler,
-    Objects,
     PromptInput,
+    TaskLoader,
     TaskRow,
-    TaskRowsSource,
 )
 
 if TYPE_CHECKING:
     from .harness import Harness
 
 
-TaskSourceValue = TaskRowsSource | None
+ConfigT = TypeVar("ConfigT", bound=TasksetConfig)
 
 
-class TasksetKwargs(TypedDict):
-    eval_source: NotRequired[TaskSourceValue]
-    taskset_id: NotRequired[str | None]
-    system_prompt: NotRequired[PromptInput | None]
-    user: NotRequired[Handler | str | ConfigMap | None]
-    bindings: NotRequired[BindingMap | None]
-    objects: NotRequired[Objects | None]
-    toolsets: NotRequired[ToolsetCollection]
-    stops: NotRequired[Iterable[Handler]]
-    setups: NotRequired[Iterable[Handler]]
-    updates: NotRequired[Iterable[Handler]]
-    metrics: NotRequired[Iterable[Handler]]
-    rewards: NotRequired[Iterable[Handler]]
-    advantages: NotRequired[Iterable[Handler]]
-    cleanups: NotRequired[Iterable[Handler]]
+class Taskset(RuntimeOwnerMixin, Generic[ConfigT]):
+    config: ConfigT
 
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)
+        config_type = taskset_config_type_from_class(
+            cls, inherited=False, taskset_base=Taskset
+        )
+        if config_type is not None:
+            register_taskset_config_type(cls, config_type)
 
-class Taskset:
-    config_type: ClassVar[type[TasksetConfig]] = TasksetConfig
-
-    def __init__(
-        self,
-        # Singleton fields.
-        source: TaskSourceValue = None,
-        eval_source: TaskSourceValue = None,
-        taskset_id: str | None = None,
-        system_prompt: PromptInput | None = None,
-        user: Handler | str | ConfigMap | None = None,
-        bindings: BindingMap | None = None,
-        objects: Objects | None = None,
-        # Collection fields.
-        toolsets: ToolsetCollection | None = None,
-        stops: Iterable[Handler] = (),
-        setups: Iterable[Handler] = (),
-        updates: Iterable[Handler] = (),
-        metrics: Iterable[Handler] = (),
-        rewards: Iterable[Handler] = (),
-        advantages: Iterable[Handler] = (),
-        cleanups: Iterable[Handler] = (),
-        # Config.
-        config: TasksetConfig | None = None,
-    ):
-        self.config = type(self).config_type.from_config(config)
-        source_value = resolve_config_object(
-            merge_config_value(source, self.config.source)
-        )
-        self.source = cast(
-            TaskSourceValue,
-            source_value,
-        )
-        eval_source_value = resolve_config_object(
-            merge_config_value(eval_source, self.config.eval_source)
-        )
-        self.eval_source = cast(
-            TaskSourceValue,
-            eval_source_value,
-        )
-        resolved_taskset_id = merge_config_value(taskset_id, self.config.taskset_id)
-        if resolved_taskset_id is not None and not isinstance(resolved_taskset_id, str):
-            raise TypeError("taskset_id must be a string.")
-        self.taskset_id = resolved_taskset_id or type(self).__name__
-        system_prompt_value = cast(
-            PromptInput | None,
-            merge_config_value(system_prompt, self.config.system_prompt),
-        )
-        self.system_prompt = normalize_system_prompt(
-            system_prompt_value, field_name="taskset.system_prompt"
-        )
-        self.user = normalize_user(merge_config_value(user, self.config.user))
-        self.bindings = {
-            **self.config.bindings,
-            **normalize_binding_map(bindings, "Taskset bindings"),
-        }
-        self.objects = {
-            **{
-                str(key): resolve_config_object(item)
-                for key, item in self.config.objects.items()
-            },
-            **normalize_object_map(objects, "Taskset objects"),
-        }
-        self.toolsets, self.named_toolsets = merge_toolsets(
-            toolsets or (), self.config.toolsets
-        )
-        handlers = merge_config_handler_map(
-            {
-                "stop": stops,
-                "setup": setups,
-                "update": updates,
-                "metric": metrics,
-                "reward": rewards,
-                "advantage": advantages,
-                "cleanup": cleanups,
-            },
-            self.config,
-        )
-        self.stops = handlers["stop"]
-        self.setups = handlers["setup"]
-        self.updates = handlers["update"]
-        self.metrics = handlers["metric"]
-        self.rewards = handlers["reward"]
-        self.advantages = handlers["advantage"]
-        self.cleanups = handlers["cleanup"]
-        self._rows: list[ConfigData] | None = None
-        self._eval_rows: list[ConfigData] | None = None
+    def __init__(self, config: ConfigSource = None):
+        config_type = taskset_config_type(type(self), Taskset)
+        self.config = cast(ConfigT, coerce_config(config_type, config))
+        with config_ref_context(self.config):
+            resolved_taskset_id = self.config.taskset_id
+            if resolved_taskset_id is not None and not isinstance(
+                resolved_taskset_id, str
+            ):
+                raise TypeError("taskset_id must be a string.")
+            self.taskset_id = resolved_taskset_id or type(self).__name__
+            self.system_prompt = normalize_system_prompt(
+                self._system_prompt_input(),
+                field_name="taskset.system_prompt",
+            )
+            self._init_runtime_user()
+            self.bindings = dict(self.config.bindings)
+            self.objects = {
+                **{
+                    str(key): resolve_config_object(item)
+                    for key, item in self.config.objects.items()
+                }
+            }
+            self._init_runtime_toolsets()
+            self._init_runtime_handlers()
         self._dataset: Dataset | None = None
         self._eval_dataset: Dataset | None = None
         self._attached_harnesses: weakref.WeakSet["Harness"] = weakref.WeakSet()
 
     @classmethod
     def config_schema(cls) -> str:
-        return cls.config_type.schema_text()
-
-    def _add_handler(self, handlers: list[Handler], fn: Handler) -> None:
-        handlers.append(fn)
-        self._refresh_attached_harnesses()
-
-    def add_metric(self, fn: Handler) -> None:
-        self._add_handler(self.metrics, fn)
-
-    def add_reward(self, fn: Handler) -> None:
-        self._add_handler(self.rewards, fn)
-
-    def add_advantage(self, fn: Handler) -> None:
-        self._add_handler(self.advantages, fn)
-
-    def add_toolset(self, toolset: object) -> None:
-        toolsets, named_toolsets = normalize_toolset_collection(toolset)
-        duplicate = set(self.named_toolsets) & set(named_toolsets)
-        if duplicate:
-            raise ValueError(f"Toolsets are defined twice: {sorted(duplicate)}.")
-        self.toolsets.extend(toolsets)
-        self.named_toolsets.update(named_toolsets)
-        self._refresh_attached_harnesses()
-
-    def add_stop(self, fn: Handler) -> None:
-        self._add_handler(self.stops, fn)
-
-    def add_setup(self, fn: Handler) -> None:
-        self._add_handler(self.setups, fn)
-
-    def add_update(self, fn: Handler) -> None:
-        self._add_handler(self.updates, fn)
-
-    def add_cleanup(self, fn: Handler) -> None:
-        self._add_handler(self.cleanups, fn)
+        return TasksetConfig.schema_text()
 
     def attach_harness(self, harness: "Harness") -> None:
         self._attached_harnesses.add(harness)
@@ -202,24 +99,19 @@ class Taskset:
         skills = self.get_skills_dir()
         return {} if skills is None else {"skills": skills}
 
-    def _refresh_attached_harnesses(self) -> None:
+    def _runtime_owner_changed(self) -> None:
         for harness in list(self._attached_harnesses):
             harness.runtime = harness.resolve_runtime()
 
-    def rows(self) -> list[ConfigData]:
-        if self._rows is None:
-            self._rows = rows_from_source(self.source)
-        return self._rows
-
-    def eval_rows(self) -> list[ConfigData]:
-        if self.eval_source is None:
-            return self.rows()
-        if self._eval_rows is None:
-            self._eval_rows = rows_from_source(self.eval_source)
-        return self._eval_rows
-
-    def task(self, row: ConfigMap) -> Task:
-        task = Task(row)
+    def to_task(self, value: ConfigMap | Task | str) -> Task:
+        if isinstance(value, str):
+            value = json.loads(value)
+        if not isinstance(value, Mapping):
+            raise TypeError("Taskset.to_task expects a mapping, Task, or JSON string.")
+        serialized_task = task_payload_from_info(value.get("info"))
+        if serialized_task is not None:
+            value = serialized_task
+        task = Task(value)
         task["taskset_id"] = self.taskset_id
         task_id = task.get("task_id")
         if task_id is None:
@@ -229,18 +121,6 @@ class Taskset:
         task["task_id"] = str(task_id if task_id is not None else uuid.uuid4().hex)
         return task.freeze()
 
-    def to_task(self, value: ConfigMap | Task | str) -> Task:
-        if isinstance(value, Task):
-            return value
-        if isinstance(value, str):
-            value = json.loads(value)
-        if not isinstance(value, Mapping):
-            raise TypeError("Taskset.to_task expects a mapping, Task, or JSON string.")
-        serialized_task = task_payload_from_info(value.get("info"))
-        if serialized_task is not None:
-            return self.task(serialized_task)
-        return self.task(value)
-
     async def init_group(
         self, task: Task, num_rollouts: int
     ) -> tuple[list[Task], list[State]]:
@@ -249,29 +129,35 @@ class Taskset:
 
     def get_dataset(self) -> Dataset:
         if self._dataset is None:
+            with config_ref_context(self.config):
+                load_tasks = self._task_loader(
+                    "tasks", ("load_tasks", "load_train_tasks")
+                )
+                tasks = task_data_from_loader(load_tasks)
             self._dataset = Dataset.from_list(
-                [self._dataset_row(row, index) for index, row in enumerate(self.rows())]
+                [self._dataset_row(row, index) for index, row in enumerate(tasks)]
             )
         return self._dataset
 
     def get_eval_dataset(self) -> Dataset:
-        if self.eval_source is None:
+        with config_ref_context(self.config):
+            load_tasks = self._task_loader("eval_tasks", ("load_eval_tasks",))
+        if load_tasks is None:
             return self.get_dataset()
         if self._eval_dataset is None:
+            with config_ref_context(self.config):
+                tasks = task_data_from_loader(load_tasks)
             self._eval_dataset = Dataset.from_list(
-                [
-                    self._dataset_row(row, index)
-                    for index, row in enumerate(self.eval_rows())
-                ]
+                [self._dataset_row(row, index) for index, row in enumerate(tasks)]
             )
         return self._eval_dataset
 
     def __iter__(self):
-        for row in self.rows():
-            yield self.task(row)
+        for row in self.get_dataset():
+            yield self.to_task(row)
 
     def __len__(self) -> int:
-        return len(self.rows())
+        return len(self.get_dataset())
 
     def _dataset_row(self, row: TaskRow, index: int) -> ConfigData:
         normalized = deepcopy(dict(row))
@@ -283,7 +169,7 @@ class Taskset:
                 if question is not None
                 else []
             )
-        task_payload = dict(self.task(normalized))
+        task_payload = dict(self.to_task(normalized))
         dataset_row: ConfigData = {
             "prompt": task_payload["prompt"],
             "example_id": normalized["example_id"],
@@ -292,3 +178,30 @@ class Taskset:
         if "answer" in normalized:
             dataset_row["answer"] = normalized["answer"]
         return dataset_row
+
+    def _task_loader(
+        self, field: str, method_names: tuple[str, ...]
+    ) -> TaskLoader | None:
+        if field not in self.config.model_fields_set:
+            methods = [
+                getattr(self, method_name)
+                for method_name in method_names
+                if callable(getattr(self, method_name, None))
+            ]
+            if len(methods) > 1:
+                raise ValueError(
+                    f"Taskset defines multiple class loaders for {field}: "
+                    f"{', '.join(method_names)}."
+                )
+            if methods:
+                return cast(TaskLoader, methods[0])
+        value = getattr(self.config, field)
+        return resolve_task_loader(field, cast(str | None, value))
+
+    def _system_prompt_input(self) -> PromptInput | None:
+        if "system_prompt" in self.config.model_fields_set:
+            return cast(PromptInput | None, self.config.system_prompt)
+        method = getattr(self, "load_system_prompt", None)
+        if callable(method):
+            return cast(PromptInput | None, method())
+        return cast(PromptInput | None, self.config.system_prompt)

@@ -102,24 +102,6 @@ class AnthropicMessagesClient(
     async def to_native_prompt(
         self, messages: Messages
     ) -> tuple[list[AnthropicMessageParam], dict]:
-        def parse_data_url(url: str) -> tuple[str, str] | None:
-            if not url.startswith("data:"):
-                return None
-            if "," not in url:
-                return None
-            header, data = url.split(",", 1)
-            if ";base64" not in header:
-                return None
-            media_type = header[5:].split(";")[0] or "image/png"
-            return media_type, data
-
-        def normalize_content_block(block: Any) -> dict[str, Any]:
-            if isinstance(block, Mapping):
-                return dict(block)
-            if hasattr(block, "model_dump"):
-                return block.model_dump()
-            raise ValueError(f"Invalid content block type: {type(block)}")
-
         def normalize_anthropic_content(content: Any) -> Any:
             if isinstance(content, str):
                 return content
@@ -128,7 +110,12 @@ class AnthropicMessagesClient(
 
             blocks: list[dict[str, Any]] = []
             for raw_part in content:
-                part = normalize_content_block(raw_part)
+                if isinstance(raw_part, Mapping):
+                    part = dict(raw_part)
+                elif hasattr(raw_part, "model_dump"):
+                    part = raw_part.model_dump()
+                else:
+                    raise ValueError(f"Invalid content block type: {type(raw_part)}")
                 part_type = part.get("type")
                 if part_type == "text":
                     text = part.get("text")
@@ -140,21 +127,22 @@ class AnthropicMessagesClient(
                         image_url.get("url") if isinstance(image_url, Mapping) else None
                     )
                     if isinstance(url, str):
-                        parsed = parse_data_url(url)
-                        if parsed is not None:
-                            media_type, data = parsed
-                            blocks.append(
-                                {
-                                    "type": "image",
-                                    "source": {
-                                        "type": "base64",
-                                        "media_type": media_type,
-                                        "data": data,
-                                    },
-                                }
-                            )
-                        else:
-                            blocks.append({"type": "text", "text": "[image]"})
+                        if url.startswith("data:") and "," in url:
+                            header, data = url.split(",", 1)
+                            if ";base64" in header:
+                                media_type = header[5:].split(";")[0] or "image/png"
+                                blocks.append(
+                                    {
+                                        "type": "image",
+                                        "source": {
+                                            "type": "base64",
+                                            "media_type": media_type,
+                                            "data": data,
+                                        },
+                                    }
+                                )
+                                continue
+                        blocks.append({"type": "text", "text": "[image]"})
                 elif part_type == "input_audio":
                     blocks.append({"type": "text", "text": "[audio]"})
                 else:
@@ -295,16 +283,11 @@ class AnthropicMessagesClient(
             else:
                 raise ValueError(f"Invalid chat message: {message}")
 
-        def extract_system_content(messages: Messages) -> str:
-            """Extract and concatenate system message contents."""
-            system_contents = []
-            for msg in messages:
-                if isinstance(msg, SystemMessage):
-                    content = msg.content
-                    system_contents.append(" ".join(content_to_text_chunks(content)))
-            return "\n\n".join(system_contents)
-
-        system = extract_system_content(messages)
+        system_contents = []
+        for msg in messages:
+            if isinstance(msg, SystemMessage):
+                system_contents.append(" ".join(content_to_text_chunks(msg.content)))
+        system = "\n\n".join(system_contents)
         prompt: list[AnthropicMessageParam] = []
         pending_tool_results: list[ToolResultBlockParam] = []
 

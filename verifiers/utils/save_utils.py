@@ -1,6 +1,7 @@
 import json
 import logging
 import time
+from collections import Counter
 from collections.abc import Mapping
 from datetime import date, datetime
 from pathlib import Path
@@ -208,6 +209,15 @@ def state_to_output(
     Raises:
         ValueError: If a state_columns value is not JSON-serializable.
     """
+    timing = state["timing"]
+    timing_model_dump = getattr(timing, "model_dump", None)
+    if callable(timing_model_dump):
+        timing_output = cast(dict[str, Any], timing_model_dump())
+    elif isinstance(timing, Mapping):
+        timing_output = dict(cast(Mapping[str, Any], timing))
+    else:
+        raise TypeError("state['timing'] must be a RolloutTiming or mapping.")
+
     output = RolloutOutput(
         example_id=state.get("example_id", 0),
         prompt=state.get("prompt"),
@@ -216,7 +226,7 @@ def state_to_output(
         info=state.get("info", {}),
         reward=state.get("reward", 0.0),
         error=state.get("error", None),
-        timing=serialize_timing(state["timing"]),
+        timing=timing_output,
         is_completed=state.get("is_completed", False),
         is_truncated=state.get("is_truncated", False),
         stop_condition=state.get("stop_condition", None),
@@ -334,6 +344,15 @@ def _delta_intermediate_mm_data(trajectory: object) -> object:
     step-deltas in that window. Placeholder offsets stay relative to the
     step's own cumulative token sequence; the assembler shifts them.
 
+    Non-monotonic trajectories: the diff is lossless only when the prior
+    step's cumulative is a multiset-subset of the current step's. When
+    that breaks — e.g. a compaction step that preserves a subset of prior
+    images, a pruning harness that drops earlier turns, or a sliding-window
+    context that rolls items out — diffing against ``prior`` would drop
+    items that should have survived. Such steps emit their full cumulative
+    as-is and reset the prior baseline, so per-window assemblers always
+    see at least their window's images.
+
     Returns a new list of step dicts (shallow copies for rewritten
     entries) so the input state isn't mutated. Non-list inputs and
     empty / single-step trajectories pass through unchanged.
@@ -356,6 +375,13 @@ def _delta_intermediate_mm_data(trajectory: object) -> object:
         current_hashes = _read_mm_hashes(step_mm)
 
         if idx == 0:
+            out.append(step)
+            prior_hashes = current_hashes
+            continue
+
+        # Non-monotonic transition (e.g. partial compaction): emit
+        # cumulative as-is and reset the baseline. See helper docstring.
+        if not _is_monotonic_extension(prior_hashes, current_hashes):
             out.append(step)
             prior_hashes = current_hashes
             continue
@@ -392,6 +418,28 @@ def _read_mm_hashes(mm: object) -> dict[str, list[str]]:
     return {
         modality: list(hs) for modality, hs in hashes.items() if isinstance(hs, list)
     }
+
+
+def _is_monotonic_extension(
+    prior: dict[str, list[str]], current: dict[str, list[str]]
+) -> bool:
+    """Precondition for ``_diff_mm_data`` to be lossless against ``prior``.
+
+    True iff every prior occurrence of every hash has a matching current
+    occurrence to consume, per modality — i.e. ``prior`` is a multiset-subset
+    of ``current``. Equivalently: every image in prior is still in current,
+    so the trajectory grew monotonically from prior to current.
+
+    Returns ``False`` when a compaction step preserved a subset of prior
+    images, a pruning harness dropped earlier turns, a sliding-window
+    context rolled items out, or any other non-monotonic transition. The
+    caller must then emit current's full cumulative as-is and reset the
+    baseline instead of diffing.
+    """
+    for modality, prior_hashes in prior.items():
+        if Counter(prior_hashes) - Counter(current.get(modality, [])):
+            return False
+    return True
 
 
 def _diff_mm_data(mm: object, prior_hashes: dict[str, list[str]]) -> object:
@@ -471,15 +519,6 @@ def _diff_mm_data(mm: object, prior_hashes: dict[str, list[str]]) -> object:
         )
     except TypeError:
         return mm
-
-
-def serialize_timing(timing: object) -> dict[str, Any]:
-    model_dump = getattr(timing, "model_dump", None)
-    if callable(model_dump):
-        return cast(dict[str, Any], model_dump())
-    if isinstance(timing, Mapping):
-        return dict(cast(Mapping[str, Any], timing))
-    raise TypeError("state['timing'] must be a RolloutTiming or mapping.")
 
 
 def states_to_outputs(
@@ -806,22 +845,14 @@ def save_new_outputs(new_outputs: list[RolloutOutput], results_path: Path):
     save_outputs(new_outputs, results_path, mode="a")
 
 
-def sanitize_metadata(metadata: GenerateMetadata) -> dict:
-    """Sanitizes metadata before saving to disk."""
-
-    metadata_dict = dict(metadata)
-    metadata_dict.pop("path_to_save")
-    metadata_dict.pop("date")
-
-    return metadata_dict
-
-
 def save_metadata(metadata: GenerateMetadata, result_path: Path):
     """Saves metadata to disk."""
 
     result_path.mkdir(parents=True, exist_ok=True)
     metadata_path = result_path / "metadata.json"
-    metadata_dict = sanitize_metadata(metadata)
+    metadata_dict = dict(metadata)
+    metadata_dict.pop("path_to_save")
+    metadata_dict.pop("date")
     with open(metadata_path, "w") as f:
         try:
             json.dump(metadata_dict, f, default=make_serializable)

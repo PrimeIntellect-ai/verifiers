@@ -1,124 +1,37 @@
 import json
 import shlex
 from pathlib import PurePosixPath
-from typing import cast
 
-from typing_extensions import Unpack
-
-from .command import HarnessKwargs, command_program, command_sandbox
-from .configs import (
-    OPENCODE_DEFAULT_AGENT_WORKDIR,
-    OPENCODE_DEFAULT_DISABLED_TOOLS,
-    OPENCODE_DEFAULT_INSTRUCTION_PATH,
-    OPENCODE_DEFAULT_LOG_PATH,
-    OPENCODE_DEFAULT_RELEASE_REPO,
-    OPENCODE_DEFAULT_RELEASE_SHA256,
-    OPENCODE_DEFAULT_RELEASE_VERSION,
-    OPENCODE_DEFAULT_SYSTEM_PROMPT,
-    OPENCODE_DEFAULT_SYSTEM_PROMPT_PATH,
-    OpenCodeConfig,
-)
-from ...config import SandboxConfig
+from .command import configure_command_harness
+from .configs import OpenCodeConfig
 from ...harness import Harness
 from ...utils.mcp_proxy_utils import proxy_command
-from ...utils.prompt_utils import (
-    state_system_prompt_text,
-    task_text as task_instruction_text,
-)
 from ...types import (
     ConfigData,
-    ConfigMap,
     ProgramCommand,
-    ProgramMap,
-    ProgramValue,
-    PromptInput,
+    ProgramChannels,
+    ProgramOptionMap,
+    ProgramSetup,
 )
-
-DEFAULT_RELEASE_REPO = OPENCODE_DEFAULT_RELEASE_REPO
-DEFAULT_RELEASE_VERSION = OPENCODE_DEFAULT_RELEASE_VERSION
-DEFAULT_RELEASE_SHA256 = OPENCODE_DEFAULT_RELEASE_SHA256
-DEFAULT_AGENT_WORKDIR = OPENCODE_DEFAULT_AGENT_WORKDIR
-DEFAULT_INSTRUCTION_PATH = OPENCODE_DEFAULT_INSTRUCTION_PATH
-DEFAULT_SYSTEM_PROMPT_PATH = OPENCODE_DEFAULT_SYSTEM_PROMPT_PATH
-DEFAULT_LOG_PATH = OPENCODE_DEFAULT_LOG_PATH
-DEFAULT_SYSTEM_PROMPT = OPENCODE_DEFAULT_SYSTEM_PROMPT
-DEFAULT_DISABLED_TOOLS = list(OPENCODE_DEFAULT_DISABLED_TOOLS)
-
-
-class Unset:
-    pass
-
-
-UNSET = Unset()
 
 
 class OpenCode(Harness):
-    config_type = OpenCodeConfig
-
-    def __init__(
-        self,
-        *,
-        agent_workdir: str | None = None,
-        instruction_path: str | None = None,
-        system_prompt_path: str | None = None,
-        log_path: str | None = None,
-        system_prompt: PromptInput | None | Unset = UNSET,
-        disabled_tools: list[str] | None = None,
-        allow_git: bool | None = None,
-        disable_compaction: bool | None = None,
-        release_repo: str | None = None,
-        release_version: str | None = None,
-        release_sha256: str | None = None,
-        install_ripgrep: bool | None = None,
-        provider_timeout_ms: int | None = None,
-        sandbox: bool | ConfigMap | SandboxConfig | None = None,
-        program: ProgramMap | None = None,
-        max_turns: int | None = None,
-        config: OpenCodeConfig | None = None,
-        **kwargs: Unpack[HarnessKwargs],
-    ):
-        config_data: ConfigData = {
-            "agent_workdir": agent_workdir,
-            "instruction_path": instruction_path,
-            "system_prompt_path": system_prompt_path,
-            "log_path": log_path,
-            "disabled_tools": disabled_tools,
-            "allow_git": allow_git,
-            "disable_compaction": disable_compaction,
-            "release_repo": release_repo,
-            "release_version": release_version,
-            "release_sha256": release_sha256,
-            "install_ripgrep": install_ripgrep,
-            "provider_timeout_ms": provider_timeout_ms,
-            "max_turns": max_turns,
-        }
-        if system_prompt is not UNSET:
-            config_data["system_prompt"] = system_prompt
-        config = OpenCodeConfig.from_config(config, **config_data)
-        if system_prompt is None:
-            config.system_prompt = None
-        sandbox_config: bool | ConfigMap | SandboxConfig
-        sandbox_config = (
-            config.sandbox if sandbox is None and config.sandbox is not None else True
+    def __init__(self, config: OpenCodeConfig | None = None):
+        config = OpenCodeConfig() if config is None else config
+        assert isinstance(config, OpenCodeConfig)
+        super().__init__(config=config.model_copy(update={"program": None}))
+        self.config = config
+        configure_command_harness(
+            self,
+            config,
+            command=self.command(config),
+            setup=self.setup(config),
+            artifacts=self.artifacts(config),
+            channels=self.channels(config),
         )
-        if sandbox is not None:
-            sandbox_config = sandbox
-        files: dict[str, ProgramValue] = {
-            config.instruction_path: cast(ProgramValue, task_instruction_text),
-        }
-        if config.system_prompt is not None:
-            files[config.system_prompt_path] = cast(
-                ProgramValue, state_system_prompt_text
-            )
-        artifacts = {
-            "opencode_log": {
-                "path": config.log_path,
-                "format": "text",
-                "optional": True,
-            }
-        }
-        system_prompt_disabled = config.system_prompt is None
-        command: ProgramCommand = [
+
+    def command(self, config: OpenCodeConfig) -> ProgramCommand:
+        return [
             "bash",
             "-lc",
             build_opencode_run_script(
@@ -128,48 +41,48 @@ class OpenCode(Harness):
                 allow_git=config.allow_git,
             ),
         ]
-        super().__init__(
-            program=command_program(
-                command=command,
-                sandbox=sandbox_config,
-                files=files,
-                setup=build_install_script(
-                    release_repo=config.release_repo,
-                    release_version=config.release_version,
-                    release_sha256=config.release_sha256,
-                    install_ripgrep=config.install_ripgrep,
-                ),
-                channels={
-                    "mcp": build_opencode_mcp_setup_script(
-                        agent_workdir=config.agent_workdir,
-                        system_prompt_path=config.system_prompt_path
-                        if config.system_prompt is not None
-                        else None,
-                        log_path=config.log_path,
-                        disabled_tools=config.disabled_tools,
-                        disable_compaction=config.disable_compaction,
-                        provider_timeout_ms=config.provider_timeout_ms,
-                    )
-                },
-                artifacts=artifacts,
-                program=program,
-            ),
-            sandbox=command_sandbox(sandbox_config),
-            system_prompt=config.system_prompt,
-            max_turns=config.max_turns,
-            config=config,
-            **kwargs,
+
+    def setup(self, config: OpenCodeConfig) -> ProgramSetup:
+        return build_install_script(
+            release_repo=config.release_repo,
+            release_version=config.release_version,
+            release_sha256=config.release_sha256,
+            install_ripgrep=config.install_ripgrep,
         )
-        if system_prompt_disabled:
-            self.config.system_prompt = None
-            self.system_prompt = None
+
+    def artifacts(self, config: OpenCodeConfig) -> ProgramOptionMap:
+        return {
+            "opencode_log": {
+                "path": config.log_path,
+                "format": "text",
+                "optional": True,
+            }
+        }
+
+    def channels(self, config: OpenCodeConfig) -> ProgramChannels:
+        return {
+            "mcp": build_opencode_mcp_setup_script(
+                agent_workdir=config.agent_workdir,
+                system_prompt_path=config.system_prompt_path
+                if config.system_prompt is not None
+                else None,
+                log_path=config.log_path,
+                disabled_tools=config.disabled_tools,
+                disable_compaction=config.disable_compaction,
+                provider_timeout_ms=config.provider_timeout_ms,
+            )
+        }
+
+
+def load_harness(config: OpenCodeConfig) -> OpenCode:
+    return OpenCode(config=config)
 
 
 def build_install_script(
-    release_repo: str = DEFAULT_RELEASE_REPO,
-    release_version: str = DEFAULT_RELEASE_VERSION,
-    release_sha256: str = DEFAULT_RELEASE_SHA256,
-    install_ripgrep: bool = True,
+    release_repo: str,
+    release_version: str,
+    release_sha256: str,
+    install_ripgrep: bool,
 ) -> str:
     rg_install = (
         "apt-get -o Acquire::Retries=3 install -y -qq ripgrep > /dev/null 2>&1 || true"
@@ -278,7 +191,7 @@ export OPENCODE_DISABLE_FILETIME_CHECK=true
 export ALLOW_GIT={"1" if allow_git else "0"}
 
 OPENCODE_WORKDIR="${{AGENT_WORKDIR:-}}"
-if [[ -z "$OPENCODE_WORKDIR" ]]; then
+if [ -z "$OPENCODE_WORKDIR" ]; then
     OPENCODE_WORKDIR={shlex.quote(agent_workdir)}
 fi
 
@@ -309,7 +222,7 @@ set -e
 export PATH="$HOME/.opencode/bin:$PATH"
 
 OPENCODE_WORKDIR="${{AGENT_WORKDIR:-}}"
-if [[ -z "$OPENCODE_WORKDIR" ]]; then
+if [ -z "$OPENCODE_WORKDIR" ]; then
     OPENCODE_WORKDIR={shlex.quote(agent_workdir)}
 fi
 

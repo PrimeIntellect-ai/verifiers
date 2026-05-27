@@ -16,7 +16,7 @@ Use this guidance in projects created via `prime lab setup`.
 - Keep each environment self-contained under `environments/<env_name>/` with `pyproject.toml`, implementation, and README so each abstraction has a dedicated home and the workspace stays maintainable.
 - Follow environment best practices strictly (for example `load_environment(...)`, `vf.ensure_keys(...)`, and the documented environment class patterns) to avoid brittle or messy implementations.
 - Use the Prime CLI for all environment lifecycle operations (`prime env init` -> `prime env install` -> `prime eval run` -> `prime env push`) rather than ad hoc scripts.
-- Treat `prime eval run` as the default eval path. It already saves results automatically; do not add `--skip-upload` or other opt-out deviations unless the user explicitly requests them, so logs and results stay available in the private Evaluations tab and via `prime eval tui`.
+- Treat `prime eval run` as the default eval path. It already saves results automatically; do not add `--skip-upload` or other opt-out deviations unless the user explicitly requests them, so logs and results stay available in the private Evaluations tab and via `prime eval view`.
 - For new reusable taskset/harness work, use the v1 `vf.Env` / `vf.Taskset` / `vf.Harness` format and the BYO Harness docs rather than older experimental patterns.
 - NEVER begin environment development before `prime lab setup` has been run; if work starts outside that structure, recommend adjusting course into a proper lab workspace before continuing.
 - Use `prime env push --path ./environments/<env_name>` only after local eval behavior is verified.

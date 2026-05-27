@@ -92,15 +92,6 @@ def _process_example(x: dict) -> dict:
     }
 
 
-def _resolve_parser(parser_name: str):
-    parser = _lp.NAME_TO_PARSER.get(parser_name)
-    if parser is None:
-        parser = getattr(_lp, parser_name, None)
-    if parser is None:
-        raise ValueError(f"Unknown SWE-rebench-V2 log parser: {parser_name!r}")
-    return parser
-
-
 def _repo_workdir(repo: str) -> str:
     """Mirror upstream eval.py: ``workdir = f'/{repo.split("/")[1]}'``."""
     if "/" not in repo:
@@ -116,18 +107,6 @@ def _extract_install_config(info: dict) -> dict:
     if isinstance(cfg, dict):
         return cfg
     raise ValueError("install_config missing or wrong type")
-
-
-def _normalize_test_cmds(test_cmd: Any) -> list[str]:
-    if isinstance(test_cmd, str):
-        cmds = [test_cmd]
-    elif isinstance(test_cmd, list):
-        cmds = [c for c in test_cmd if isinstance(c, str) and c.strip()]
-    else:
-        raise ValueError(f"install_config.test_cmd unsupported type: {type(test_cmd)}")
-    if not cmds:
-        raise ValueError("install_config.test_cmd is empty")
-    return cmds
 
 
 def _build_eval_script(test_cmds: list[str], workdir: str) -> str:
@@ -158,16 +137,6 @@ def _build_eval_script(test_cmds: list[str], workdir: str) -> str:
     return "\n".join(lines)
 
 
-def _slice_test_region(output: str) -> str:
-    start = "SWEREBENCH_V2_TEST_OUTPUT_START"
-    end = "SWEREBENCH_V2_TEST_OUTPUT_END"
-    if start in output:
-        output = output.split(start, 1)[1]
-    if end in output:
-        output = output.rsplit(end, 1)[0]
-    return output
-
-
 def _is_resolved(
     status_map: dict[str, str], fail_to_pass: list[str], pass_to_pass: list[str]
 ) -> bool:
@@ -190,7 +159,7 @@ class SWERebenchV2Rubric(vf.Rubric):
         self.add_reward_func(self.solved)
 
     async def solved(self, state, info, **kwargs) -> float:
-        if isinstance(state.get("error"), vf.InfraError):
+        if state.get("error") is not None:
             return 0.0
         sandbox_client = state.get("sandbox_client")
         sandbox_id = state.get("sandbox_id")
@@ -345,7 +314,17 @@ class SWERebenchV2TaskSet(SandboxTaskSet):
     ) -> str:
         info = state["info"]
         cfg = _extract_install_config(info)
-        test_cmds = _normalize_test_cmds(cfg.get("test_cmd"))
+        raw_test_cmd = cfg.get("test_cmd")
+        if isinstance(raw_test_cmd, str):
+            test_cmds = [raw_test_cmd]
+        elif isinstance(raw_test_cmd, list):
+            test_cmds = [c for c in raw_test_cmd if isinstance(c, str) and c.strip()]
+        else:
+            raise ValueError(
+                f"install_config.test_cmd unsupported type: {type(raw_test_cmd)}"
+            )
+        if not test_cmds:
+            raise ValueError("install_config.test_cmd is empty")
         workdir = _repo_workdir(info["repo"])
 
         # Canonical SWE-bench grading dance: revert any agent edits to
@@ -399,11 +378,22 @@ class SWERebenchV2TaskSet(SandboxTaskSet):
             return 0.0
         try:
             cfg = _extract_install_config(info)
-            parser = _resolve_parser(cfg["log_parser"])
+            parser_name = cfg["log_parser"]
+            parser = _lp.NAME_TO_PARSER.get(parser_name)
+            if parser is None:
+                parser = getattr(_lp, parser_name, None)
+            if parser is None:
+                raise ValueError(f"Unknown SWE-rebench-V2 log parser: {parser_name!r}")
         except (KeyError, ValueError) as e:
             logger.warning(f"Could not resolve parser: {e}")
             return 0.0
-        region = _slice_test_region(test_output)
+        start = "SWEREBENCH_V2_TEST_OUTPUT_START"
+        end = "SWEREBENCH_V2_TEST_OUTPUT_END"
+        region = test_output
+        if start in region:
+            region = region.split(start, 1)[1]
+        if end in region:
+            region = region.rsplit(end, 1)[0]
         try:
             status_map = parser(region) or {}
         except Exception as e:

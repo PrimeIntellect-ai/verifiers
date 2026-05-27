@@ -7,13 +7,10 @@ ANSWER_RE = re.compile(r"^\s*ANSWER\s*:?\s*(.+?)\s*$", re.IGNORECASE)
 
 
 class OpenAIAgentsTasksetConfig(vf.TasksetConfig):
+    rewards: list[str] = ["answer_reward"]
+    taskset_id: str = "gsm8k-openai-agents"
     num_train_examples: int = 50
     num_eval_examples: int = 20
-
-
-class OpenAIAgentsEnvConfig(vf.EnvConfig):
-    taskset: OpenAIAgentsTasksetConfig
-    harness: vf.HarnessConfig
 
 
 def calculate(expression: str) -> str:
@@ -72,9 +69,17 @@ async def run_openai_agents_program(task: vf.Task, state: vf.State) -> vf.State:
     return state
 
 
-def load_rows(split: str, num_examples: int):
+def load_gsm8k_tasks(split: str, num_examples: int):
     n = num_examples if num_examples > 0 else None
     return load_example_dataset("gsm8k", split=split, n=n)
+
+
+def load_tasks(num_train_examples: int = 50):
+    return load_gsm8k_tasks("train", num_train_examples)
+
+
+def load_eval_tasks(num_eval_examples: int = 20):
+    return load_gsm8k_tasks("test", num_eval_examples)
 
 
 def extract_answer(text: str) -> str:
@@ -113,23 +118,25 @@ def answer_reward(task: vf.Task, state: vf.State) -> float:
     return answers_match(agent_answer, str(task.get("answer", "")))
 
 
-def load_taskset(config: OpenAIAgentsTasksetConfig) -> vf.Taskset:
-    return vf.Taskset(
-        source=lambda: load_rows("train", config.num_train_examples),
-        eval_source=lambda: load_rows("test", config.num_eval_examples),
-        taskset_id="gsm8k-openai-agents",
-        rewards=[answer_reward],
-        config=config,
-    )
+class OpenAIAgentsTaskset(vf.Taskset[OpenAIAgentsTasksetConfig]):
+    def load_tasks(self) -> vf.Tasks:
+        return load_tasks(num_train_examples=self.config.num_train_examples)
+
+    def load_eval_tasks(self) -> vf.Tasks:
+        return load_eval_tasks(num_eval_examples=self.config.num_eval_examples)
 
 
-def load_harness(config: vf.HarnessConfig) -> vf.Harness:
-    return vf.Harness(program=run_openai_agents_program, config=config)
+class OpenAIAgentsHarnessConfig(vf.HarnessConfig):
+    program: str | None = "run_openai_agents_program"
+
+
+class OpenAIAgentsEnvConfig(vf.EnvConfig):
+    taskset: OpenAIAgentsTasksetConfig = OpenAIAgentsTasksetConfig()
+    harness: OpenAIAgentsHarnessConfig = OpenAIAgentsHarnessConfig()
 
 
 def load_environment(config: OpenAIAgentsEnvConfig) -> vf.Env:
-    """Load the OpenAI Agents SDK V1 taskset/harness example environment."""
     return vf.Env(
-        taskset=load_taskset(config=config.taskset),
-        harness=load_harness(config=config.harness),
+        taskset=OpenAIAgentsTaskset(config=config.taskset),
+        harness=vf.Harness(config=config.harness),
     )

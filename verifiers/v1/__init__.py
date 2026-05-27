@@ -1,5 +1,7 @@
 """Taskset/harness authoring API."""
 
+import importlib
+
 from verifiers.decorators import (
     advantage,
     cleanup,
@@ -22,12 +24,14 @@ from verifiers.types import (
 from verifiers.utils.message_utils import get_messages
 
 from .config import (
+    CallableConfig,
     Config,
     EnvConfig,
     HarnessConfig,
     MCPToolConfig,
     ProgramConfig,
     SandboxConfig,
+    SignalConfig,
     TasksetConfig,
     ToolsetConfig,
     UserConfig,
@@ -63,7 +67,7 @@ from .packages.tasksets import (
     NeMoGymTaskset,
     NeMoGymTasksetConfig,
 )
-from .toolset import MCPTool, Toolset
+from .toolset import MCPTool, Toolset, Toolsets
 from .types import (
     ConfigData,
     ConfigMap,
@@ -71,13 +75,15 @@ from .types import (
     Handler,
     MutableConfigMap,
     Objects,
+    SystemPrompt,
     TaskRow,
-    TaskRows,
+    Tasks,
 )
 from .user import User
 
 __all__ = [
     "ConfigData",
+    "CallableConfig",
     "Config",
     "ConfigMap",
     "Env",
@@ -86,8 +92,6 @@ __all__ = [
     "GroupHandler",
     "Harness",
     "HarnessConfig",
-    "HarborTaskset",
-    "HarborTasksetConfig",
     "Handler",
     "MutableConfigMap",
     "MCPTool",
@@ -102,22 +106,21 @@ __all__ = [
     "OpenCode",
     "OpenCodeConfig",
     "Objects",
-    "Pi",
     "ProgramConfig",
-    "RLM",
-    "RLMConfig",
-    "Terminus2",
     "SandboxConfig",
+    "SignalConfig",
     "State",
+    "SystemPrompt",
     "Task",
     "TaskRow",
-    "TaskRows",
+    "Tasks",
     "Taskset",
     "TasksetConfig",
     "SystemMessage",
     "TextMessage",
     "Toolset",
     "ToolsetConfig",
+    "Toolsets",
     "ToolMessage",
     "User",
     "UserMessage",
@@ -132,6 +135,8 @@ __all__ = [
     "discover_sibling_dir",
     "metric",
     "get_messages",
+    "load_harness",
+    "load_taskset",
     "reward",
     "score_group",
     "score_rollout",
@@ -140,3 +145,10 @@ __all__ = [
     "teardown",
     "update",
 ]
+
+
+def __getattr__(name: str):
+    if name in ("load_harness", "load_taskset"):
+        module = importlib.import_module("verifiers.utils.env_utils")
+        return getattr(module, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

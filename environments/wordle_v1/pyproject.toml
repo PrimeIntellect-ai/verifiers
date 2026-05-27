@@ -1,0 +1,22 @@
+[project]
+name = "wordle-v1"
+description = "Wordle game environment using the v1 TextArena taskset."
+tags = ["textarena", "multi-turn", "reasoning", "game", "train", "eval", "v1", "taskset"]
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "verifiers>=0.1.15.dev7",
+    "nltk>=3.9.2",
+    "textarena==0.7.4",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["wordle_v1.py", "pyproject.toml", "README.md"]
+
+[tool.verifiers.eval]
+num_examples = 5
+rollouts_per_example = 3

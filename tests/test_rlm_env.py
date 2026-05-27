@@ -1467,46 +1467,7 @@ class TestSubLLMTrajectorySteps:
 
 
 # =============================================================================
-# 13. Tunnel Utils (kept for coverage)
-# =============================================================================
-
-
-class TestExtractTunnelUrlFromLine:
-    def test_extract_valid_url(self):
-        from verifiers.utils.tunnel_utils import extract_tunnel_url_from_line
-
-        line = (
-            "2024-01-01 12:00:00 INF https://random-words.trycloudflare.com registered"
-        )
-        url = extract_tunnel_url_from_line(line)
-        assert url == "https://random-words.trycloudflare.com"
-
-    def test_return_none_for_no_url(self):
-        from verifiers.utils.tunnel_utils import extract_tunnel_url_from_line
-
-        line = "Starting cloudflared tunnel..."
-        url = extract_tunnel_url_from_line(line)
-        assert url is None
-
-    def test_handle_trailing_characters(self):
-        from verifiers.utils.tunnel_utils import extract_tunnel_url_from_line
-
-        line = "https://test-tunnel.trycloudflare.com/path?query=1 some text"
-        url = extract_tunnel_url_from_line(line)
-        assert url is not None
-        assert url.startswith("https://")
-        assert ".trycloudflare.com" in url
-
-    def test_no_https_prefix(self):
-        from verifiers.utils.tunnel_utils import extract_tunnel_url_from_line
-
-        line = "something.trycloudflare.com without https"
-        url = extract_tunnel_url_from_line(line)
-        assert url is None
-
-
-# =============================================================================
-# 14. RLM Exception Hierarchy
+# 13. RLM Exception Hierarchy
 # =============================================================================
 
 
@@ -2171,30 +2132,6 @@ class TestRootLLMMaxCompletionTokens:
             interception_url="http://test.invalid",
         )
         assert env.root_max_completion_tokens == 20000
-
-    @pytest.mark.asyncio
-    async def test_is_root_budget_exhausted_false_when_none(self, rlm_env):
-        assert rlm_env.root_max_completion_tokens is None
-        state = {"root_llm_completion_tokens": 999999}
-        assert rlm_env._is_root_budget_exhausted(state) is False
-
-    @pytest.mark.asyncio
-    async def test_is_root_budget_exhausted_false_when_under(self, rlm_env):
-        rlm_env.root_max_completion_tokens = 1000
-        state = {"root_llm_completion_tokens": 500}
-        assert rlm_env._is_root_budget_exhausted(state) is False
-
-    @pytest.mark.asyncio
-    async def test_is_root_budget_exhausted_true_when_at(self, rlm_env):
-        rlm_env.root_max_completion_tokens = 1000
-        state = {"root_llm_completion_tokens": 1000}
-        assert rlm_env._is_root_budget_exhausted(state) is True
-
-    @pytest.mark.asyncio
-    async def test_is_root_budget_exhausted_true_when_over(self, rlm_env):
-        rlm_env.root_max_completion_tokens = 1000
-        state = {"root_llm_completion_tokens": 1500}
-        assert rlm_env._is_root_budget_exhausted(state) is True
 
     @pytest.mark.asyncio
     async def test_system_prompt_includes_root_budget_when_set(self):

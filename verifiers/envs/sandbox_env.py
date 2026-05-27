@@ -1,7 +1,7 @@
 import logging
 import sys
 import time
-from typing import Any, Protocol, cast
+from typing import Any, cast
 
 if sys.version_info < (3, 12):
     from typing_extensions import TypedDict
@@ -14,10 +14,6 @@ from prime_sandboxes import CommandTimeoutError
 
 import verifiers as vf
 from verifiers.utils.threaded_sandbox_client import ThreadedAsyncSandboxClient
-
-
-class LoggerProtocol(Protocol):
-    def log(self, level: int, msg: str, /, *args: Any, **kwargs: Any) -> Any: ...
 
 
 try:

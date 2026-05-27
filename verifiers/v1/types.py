@@ -10,7 +10,7 @@ from importlib.abc import Traversable
 from os import PathLike
 from typing import Literal, TypeAlias
 
-from pydantic import BaseModel
+from datasets import Dataset
 from verifiers.clients import Client
 from verifiers.types import ClientConfig, Message
 
@@ -24,20 +24,15 @@ JsonValue: TypeAlias = (
     str | int | float | bool | None | list["JsonValue"] | dict[str, "JsonValue"]
 )
 JsonData: TypeAlias = dict[str, JsonValue]
-ConfigFactory: TypeAlias = Callable[[], BaseModel | ConfigMap]
-ConfigSource: TypeAlias = BaseModel | ConfigMap | str | ConfigFactory
-CallableConfigEntry: TypeAlias = Handler | str | ConfigMap
 HandlerList: TypeAlias = Iterable[Handler]
 
 TaskRow: TypeAlias = Mapping[str, object]
-TaskRows: TypeAlias = Iterable[TaskRow]
-TaskRowsSource: TypeAlias = Callable[[], TaskRows] | TaskRows
-TaskSource: TypeAlias = str | TaskRowsSource
+Tasks: TypeAlias = Dataset | Iterable[TaskRow]
+TaskLoader: TypeAlias = Callable[..., Tasks]
 
 PromptMessage: TypeAlias = Message | ConfigMap
 PromptInput: TypeAlias = str | Sequence[PromptMessage]
-Transcript: TypeAlias = Sequence[PromptMessage]
-TranscriptData: TypeAlias = list[PromptMessage]
+SystemPrompt: TypeAlias = PromptInput | PathLike[str]
 ToolSpec: TypeAlias = Handler | str | ConfigMap
 ToolSpecs: TypeAlias = ToolSpec | Sequence[ToolSpec]
 ToolsetSpecs: TypeAlias = ToolSpec | Sequence[ToolSpec] | ConfigMap
@@ -56,4 +51,5 @@ ProgramChannel: TypeAlias = Literal["callable", "mcp"]
 ProgramChannelSpec: TypeAlias = ProgramChannel | ConfigMap
 ProgramChannels: TypeAlias = ProgramChannelSpec | list[ProgramChannelSpec]
 
-Objects: TypeAlias = Mapping[str, object | Callable[[], object | Awaitable[object]]]
+ObjectLoader: TypeAlias = str | Callable[..., object | Awaitable[object]]
+Objects: TypeAlias = dict[str, ObjectLoader]

@@ -11,7 +11,7 @@ Run reliable environment evaluations and produce actionable summaries, not raw l
 ## Canonical Eval Path
 1. Use `prime eval run` as the default way to run evaluations.
 2. Do not add `--skip-upload` or other opt-out flags unless the user explicitly requests that deviation.
-3. Standard `prime eval run` runs save results automatically, keeping them available in the user's private Evaluations tab and locally in `prime eval tui`.
+3. Standard `prime eval run` runs save results automatically, keeping them available in the user's private Evaluations tab and locally in `prime eval view`.
 4. For Prime Inference models with available pricing, eval output and saved metadata include estimated total-run USD cost automatically; no extra flags or API-key handling are needed.
 
 ## Core Loop
@@ -104,7 +104,7 @@ prime eval run configs/eval/my-benchmark.toml
 ```bash
 prime eval run my-env -a '{"config":{"taskset":{"difficulty":"hard"},"harness":{"max_turns":20}}}'
 ```
-2. Override constructor kwargs:
+2. Override legacy/v0 constructor kwargs only when the environment still exposes them; for v1, use `config.taskset` and `config.harness` instead:
 ```bash
 prime eval run my-env -x '{"max_turns":20}'
 ```
@@ -144,18 +144,30 @@ name = "reverse-text-long"
 [eval.args]
 max_length = 256
 ```
-9. Pass extra HTTP headers via CLI (repeatable):
+9. Put generation parameters in TOML sampling sections:
+```toml
+[sampling]
+max_tokens = 1024
+temperature = 0.7
+reasoning_effort = "medium"
+enable_thinking = true
+
+[[eval]]
+env_id = "my-env"
+```
+Use `[eval.sampling]` for per-eval overrides. `[sampling]` is shorthand for `sampling_args`; `reasoning_effort` and `enable_thinking` stay top-level and are mirrored into `extra_body.chat_template_kwargs`.
+10. Pass extra HTTP headers via CLI (repeatable):
 ```bash
 prime eval run my-env -m my-proxy --header "X-Custom-Header: value"
 ```
-10. Set headers in `[[eval]]` TOML configs as a table or list (merge order: registry row < `headers` table < `header` list / `--header`):
+11. Set headers in `[[eval]]` TOML configs as a table or list (merge order: registry row < `headers` table < `header` list / `--header`):
 ```toml
 [[eval]]
 env_id = "my-env"
 headers = { "X-Custom-Header" = "value" }
 header = ["X-Another: val"]
 ```
-11. Run ablation sweeps using `[[ablation]]` blocks in TOML configs:
+12. Run ablation sweeps using `[[ablation]]` blocks in TOML configs:
 ```toml
 [[ablation]]
 env_id = "my-env"
@@ -171,7 +183,7 @@ This generates the cartesian product (6 configs in this example). Sweep v1 envir
 ## Inspect Saved Results
 1. Browse locally saved runs:
 ```bash
-prime eval tui
+prime eval view
 ```
 2. Check `metadata.json` for aggregate token usage and, when available, total-run `cost.input_usd`, `cost.output_usd`, and `cost.total_usd`.
 3. Inspect platform-visible runs when needed:

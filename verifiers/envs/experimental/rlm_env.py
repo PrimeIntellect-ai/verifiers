@@ -304,16 +304,6 @@ def _ensure_rlm_metric_state(state: State) -> None:
     state.setdefault("_summarize_at_root_llm_turns", [])
 
 
-def _update_rlm_repl_metrics(state: State, execution_seconds: float) -> None:
-    _ensure_rlm_metric_state(state)
-    state["repl_total_time_seconds"] += execution_seconds
-    state["repl_call_count"] += 1
-    if state["repl_call_count"] > 0:
-        state["repl_mean_time_seconds"] = (
-            state["repl_total_time_seconds"] / state["repl_call_count"]
-        )
-
-
 def update_rlm_metrics_from_step(state: State, step: TrajectoryStep) -> None:
     _ensure_rlm_metric_state(state)
     extras = step.get("extras", {}) or {}
@@ -361,14 +351,6 @@ def update_rlm_metrics_from_step(state: State, step: TrajectoryStep) -> None:
         state["root_llm_turns"] += 1
         state["root_llm_prompt_tokens"] += prompt_tokens
         state["root_llm_completion_tokens"] += completion_tokens
-
-
-def _update_root_tool_metrics(state: State, tool_name: str) -> None:
-    _ensure_rlm_metric_state(state)
-    state["root_tool_call_count"] += 1
-    tool_calls: dict[str, int] = state.get("root_tool_calls", {})
-    tool_calls[tool_name] = tool_calls.get(tool_name, 0) + 1
-    state["root_tool_calls"] = tool_calls
 
 
 def _update_root_tool_time_metrics(
@@ -2924,17 +2906,6 @@ class RLMEnv(vf.StatefulToolEnv):
             max_turns_reached=True,
         )
 
-    def _sub_llm_budget_exhausted_message(self, state_ref: State) -> str:
-        """Build a human-readable budget-exhausted message."""
-        used = state_ref.get("sub_llm_completion_tokens", 0)
-        budget = self.sub_max_completion_tokens
-        return (
-            f"llm_batch token budget exhausted "
-            f"(used {used}/{budget} completion tokens). "
-            f"No further llm_batch calls are available. "
-            f"Finalize your answer with the information you have."
-        )
-
     async def _root_llm_batch(
         self,
         context: dict[str, Any],
@@ -2955,7 +2926,12 @@ class RLMEnv(vf.StatefulToolEnv):
         if self.sub_max_completion_tokens is not None:
             used = state_ref.get("sub_llm_completion_tokens", 0)
             if used >= self.sub_max_completion_tokens:
-                msg = self._sub_llm_budget_exhausted_message(state_ref)
+                msg = (
+                    f"llm_batch token budget exhausted "
+                    f"(used {used}/{self.sub_max_completion_tokens} completion tokens). "
+                    f"No further llm_batch calls are available. "
+                    f"Finalize your answer with the information you have."
+                )
                 return [msg] * len(prompts)
 
         rid = state_ref.get("rollout_id", "?")
@@ -2974,18 +2950,17 @@ class RLMEnv(vf.StatefulToolEnv):
         ] * len(prompts)
         semaphore = asyncio.Semaphore(self.max_sub_llm_parallelism)
 
-        def _coerce_prompt_messages(prompt: Any, index: int) -> Messages:
-            if isinstance(prompt, str):
-                return [UserMessage(content=prompt)]
-            raise ValueError(
-                "llm_batch prompt at index " + str(index) + " must be a string."
-            )
-
         async def _call_one(index: int, prompt: Any) -> None:
             async with semaphore:
                 request_id = uuid.uuid4().hex[:8]
                 try:
-                    messages = _coerce_prompt_messages(prompt, index)
+                    if not isinstance(prompt, str):
+                        raise ValueError(
+                            "llm_batch prompt at index "
+                            + str(index)
+                            + " must be a string."
+                        )
+                    messages: Messages = [UserMessage(content=prompt)]
                     response_dict = await self._run_sub_llm_request(
                         state_ref=state_ref,
                         client=client,
@@ -3287,7 +3262,11 @@ class RLMEnv(vf.StatefulToolEnv):
         token = self._root_tool_context_var.set(root_tool_context)
         tool_start = perf_counter()
         try:
-            _update_root_tool_metrics(state_ref, tool_name)
+            _ensure_rlm_metric_state(state_ref)
+            state_ref["root_tool_call_count"] += 1
+            tool_calls: dict[str, int] = state_ref.get("root_tool_calls", {})
+            tool_calls[tool_name] = tool_calls.get(tool_name, 0) + 1
+            state_ref["root_tool_calls"] = tool_calls
             tool_func = self.root_tool_map[tool_name]
             if tool_name == "llm_batch":
                 if args and "prompts" in kwargs:
@@ -3566,10 +3545,6 @@ class RLMEnv(vf.StatefulToolEnv):
     # Code Execution
     # =========================================================================
 
-    async def _recover_from_code_timeout(self, state: State) -> bool:
-        """Attempt to recover from a code execution timeout via the active backend."""
-        return await self._executor.recover_from_timeout(state)
-
     async def _execute_code(self, code: str, state: State) -> dict[str, Any]:
         """Execute code in worker and return result."""
         if not state.get("rlm_worker_ready", False):
@@ -3648,6 +3623,10 @@ class RLMEnv(vf.StatefulToolEnv):
             }
 
         return parsed_result
+
+    async def _recover_from_code_timeout(self, state: State) -> bool:
+        """Attempt to recover from a code execution timeout via the active backend."""
+        return await self._executor.recover_from_timeout(state)
 
     def _format_execution_output(self, result: dict[str, Any]) -> str:
         """Format execution result for display to model."""
@@ -3809,7 +3788,13 @@ class RLMEnv(vf.StatefulToolEnv):
         execution_time = perf_counter() - execution_start
         output = self._format_execution_output(result)
 
-        _update_rlm_repl_metrics(state, execution_time)
+        _ensure_rlm_metric_state(state)
+        state["repl_total_time_seconds"] += execution_time
+        state["repl_call_count"] += 1
+        if state["repl_call_count"] > 0:
+            state["repl_mean_time_seconds"] = (
+                state["repl_total_time_seconds"] / state["repl_call_count"]
+            )
 
         answer = result.get("answer", {})
         answer_ready = answer.get("ready", False)
@@ -4224,30 +4209,23 @@ class RLMEnv(vf.StatefulToolEnv):
             self._append_observable_messages(state, tool_messages)
         if "final_answer" in state:
             state["final_env_response"] = tool_messages
-        elif self._is_root_budget_exhausted(state):
+        elif (
+            self.root_max_completion_tokens is not None
+            and state.get("root_llm_completion_tokens", 0)
+            >= self.root_max_completion_tokens
+        ):
             await self._ensure_final_answer(state)
             state["final_env_response"] = tool_messages
-        elif self._is_max_turns_in_context_reached(state):
+        elif (
+            self.max_turns_in_context is not None
+            and self._main_turn_count(state)
+            - state.get("_keep_from_assistant_index", 0)
+            >= self.max_turns_in_context
+        ):
             state["max_turns_in_context_stopped"] = True
             await self._ensure_final_answer(state)
             state["final_env_response"] = tool_messages
         return tool_messages
-
-    def _is_root_budget_exhausted(self, state: State) -> bool:
-        """Check if root model completion token budget is exhausted."""
-        if self.root_max_completion_tokens is None:
-            return False
-        used = state.get("root_llm_completion_tokens", 0)
-        return used >= self.root_max_completion_tokens
-
-    def _is_max_turns_in_context_reached(self, state: State) -> bool:
-        """Check if visible turns in context exceed max_turns_in_context."""
-        if self.max_turns_in_context is None:
-            return False
-        visible = self._main_turn_count(state) - state.get(
-            "_keep_from_assistant_index", 0
-        )
-        return visible >= self.max_turns_in_context
 
     # =========================================================================
     # Stop Conditions

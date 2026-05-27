@@ -1,4 +1,10 @@
-from .configs import OpenCodeConfig, RLMConfig
+from .configs import (
+    MiniSWEAgentConfig,
+    OpenCodeConfig,
+    PiConfig,
+    RLMConfig,
+    Terminus2Config,
+)
 from .mini_swe_agent import MiniSWEAgent
 from .nemo_gym import NeMoGymHarness, NeMoGymHarnessConfig
 from .opencode import OpenCode
@@ -10,10 +16,13 @@ __all__ = [
     "MiniSWEAgent",
     "NeMoGymHarness",
     "NeMoGymHarnessConfig",
+    "MiniSWEAgentConfig",
     "OpenCode",
     "OpenCodeConfig",
     "Pi",
+    "PiConfig",
     "RLM",
     "RLMConfig",
     "Terminus2",
+    "Terminus2Config",
 ]

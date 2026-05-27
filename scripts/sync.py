@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Compile AGENTS.md / CLAUDE.md files from modular docs sources."""
 
+import argparse
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).parent.parent
@@ -37,18 +39,23 @@ def combine_sections(sections: list[str]) -> str:
     )
 
 
-def write_if_changed(path: Path, content: str) -> None:
+def write_if_changed(path: Path, content: str, *, check: bool = False) -> bool:
     """Write file only when content changed."""
     if path.exists() and path.read_text() == content:
         print(f"{path} is up to date")
-        return
+        return True
+
+    if check:
+        print(f"{path} is out of date")
+        return False
 
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content)
     print(f"Updated {path}")
+    return True
 
 
-def compile_agents() -> None:
+def compile_agents(*, check: bool = False) -> bool:
     common = read_markdown(ROOT / "assets" / "agents" / "common_best_practices.md")
     repo_only = read_markdown(
         ROOT / "assets" / "agents" / "repo_development_best_practices.md"
@@ -63,7 +70,7 @@ def compile_agents() -> None:
             repo_only,
         ]
     )
-    write_if_changed(ROOT / "AGENTS.md", repo_agents)
+    ok = write_if_changed(ROOT / "AGENTS.md", repo_agents, check=check)
 
     lab_agents = combine_sections(
         [
@@ -74,7 +81,9 @@ def compile_agents() -> None:
             end_user,
         ]
     )
-    write_if_changed(ROOT / "assets" / "lab" / "AGENTS.md", lab_agents)
+    ok &= write_if_changed(
+        ROOT / "assets" / "lab" / "AGENTS.md", lab_agents, check=check
+    )
 
     repo_claude = combine_sections(
         [
@@ -83,7 +92,7 @@ def compile_agents() -> None:
             "Before beginning work in this repository, read `AGENTS.md` and follow all scoped AGENTS guidance.",
         ]
     )
-    write_if_changed(ROOT / "CLAUDE.md", repo_claude)
+    ok &= write_if_changed(ROOT / "CLAUDE.md", repo_claude, check=check)
 
     lab_claude = combine_sections(
         [
@@ -93,10 +102,13 @@ def compile_agents() -> None:
             "Treat all `AGENTS.md` and `AGENTS.local.md` files as equivalent to `CLAUDE.md` files.",
         ]
     )
-    write_if_changed(ROOT / "assets" / "lab" / "CLAUDE.md", lab_claude)
+    ok &= write_if_changed(
+        ROOT / "assets" / "lab" / "CLAUDE.md", lab_claude, check=check
+    )
+    return ok
 
 
-def compile_environment_guides() -> None:
+def compile_environment_guides(*, check: bool = False) -> bool:
     envs_body = read_without_title(ROOT / "docs" / "environments.md")
     repo_envs_agents = combine_sections(
         [
@@ -117,15 +129,29 @@ def compile_environment_guides() -> None:
         ]
     )
 
-    write_if_changed(ROOT / "environments" / "AGENTS.md", repo_envs_agents)
-    write_if_changed(
-        ROOT / "assets" / "lab" / "environments" / "AGENTS.md", lab_envs_agents
+    ok = write_if_changed(
+        ROOT / "environments" / "AGENTS.md", repo_envs_agents, check=check
     )
+    ok &= write_if_changed(
+        ROOT / "assets" / "lab" / "environments" / "AGENTS.md",
+        lab_envs_agents,
+        check=check,
+    )
+    return ok
 
 
 def main() -> None:
-    compile_agents()
-    compile_environment_guides()
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="verify generated files are current without writing them",
+    )
+    args = parser.parse_args()
+    ok = compile_agents(check=args.check)
+    ok &= compile_environment_guides(check=args.check)
+    if args.check and not ok:
+        sys.exit(1)
 
 
 if __name__ == "__main__":

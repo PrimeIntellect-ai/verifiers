@@ -330,7 +330,7 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Per-request HTTP header whose value is read from the rollout state. "
             "'Name: state_key' (e.g. 'X-Session-ID: trajectory_id'). Repeatable. "
-            "Defaults to X-Session-ID=example_id if unset."
+            "Defaults to X-Session-ID=trajectory_id if unset."
         ),
     )
     parser.add_argument(
@@ -527,6 +527,14 @@ def main(argv: list[str] | None = None):
                 f"TOML config file not found: {path}\nPlease check the path is correct."
             )
         raw_eval_configs = load_toml_config(path)
+        raw_eval_configs = [
+            (
+                {**raw_config, "save_results": True}
+                if args.save_results or "save_results" not in raw_config
+                else raw_config
+            )
+            for raw_config in raw_eval_configs
+        ]
     else:
         # CLI path: convert args to dict
         raw_config = {"env_id": args.env_id_or_config}
@@ -703,10 +711,10 @@ def main(argv: list[str] | None = None):
         )
         # Build headers: registry < [[eval]] headers table < header list / --header
         eval_headers_merged = build_extra_headers(raw)
-        # Default X-Session-ID → example_id for sticky DP-aware routing;
+        # Default X-Session-ID → trajectory_id for sticky DP-aware routing;
         # user-supplied headers_from_state / --header-from-state override.
         eval_headers_from_state = {
-            "X-Session-ID": "example_id",
+            "X-Session-ID": "trajectory_id",
             **build_extra_headers_from_state(raw),
         }
 
@@ -824,9 +832,11 @@ def main(argv: list[str] | None = None):
         )
 
     # Check Hub environments are installed before running
-    missing_envs = []
+    missing_envs: list[str] = []
     for raw in raw_eval_configs:
         env_id = raw["env_id"]
+        if not isinstance(env_id, str):
+            raise ValueError("All eval configs must contain a string env_id.")
         if not check_hub_env_installed(env_id):
             missing_envs.append(env_id)
 

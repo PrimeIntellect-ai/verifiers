@@ -16,12 +16,6 @@ _TEST_FIELDS = ("fixed_tests", "p2p_tests", "f2p_tests", "s2p_tests", "n2p_tests
 _TASK_META_PREFIX = "_task_"
 
 
-def _drop_task_meta(row: dict) -> dict:
-    return {
-        k: v for k, v in dict(row).items() if not str(k).startswith(_TASK_META_PREFIX)
-    }
-
-
 def _columnar_to_tests(entry: dict | None) -> dict[str, dict[str, str]]:
     if not entry:
         return {}
@@ -51,7 +45,9 @@ def _columnar_to_resolved_issues(entry: dict | list | None) -> list[dict[str, An
 
 
 def restore_row(row: dict) -> dict:
-    restored = _drop_task_meta(row)
+    restored = {
+        k: v for k, v in dict(row).items() if not str(k).startswith(_TASK_META_PREFIX)
+    }
     for field in _TEST_FIELDS:
         if field in restored:
             restored[field] = _columnar_to_tests(restored[field])
@@ -141,7 +137,7 @@ class MultiSWERubric(vf.Rubric):
         self.add_reward_func(self.solved)
 
     async def solved(self, state, info, **kwargs) -> float:
-        if isinstance(state.get("error"), vf.InfraError):
+        if state.get("error") is not None:
             return 0.0
         sandbox_client = state.get("sandbox_client")
         sandbox_id = state.get("sandbox_id")

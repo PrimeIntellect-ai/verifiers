@@ -1,19 +1,16 @@
 import json
 
 from math_verify import parse, verify
+from pydantic import model_validator
 
 import verifiers as vf
 from verifiers.errors import SandboxError
 from verifiers.utils.data_utils import extract_boxed_answer, load_example_dataset
 
 
-def python_session() -> dict[str, list[str]]:
-    return {"history": []}
-
-
-async def python(code: str, sandbox, session) -> str:
+async def python(code: str, sandbox, state) -> str:
     """Execute Python code in the rollout sandbox."""
-    history = session.setdefault("history", [])
+    history = state.setdefault("python_history", [])
     script = f"""
 import ast
 import contextlib
@@ -92,7 +89,43 @@ def build_system_prompt(pip_install_packages: str = "numpy sympy scipy") -> str:
     )
 
 
-def source(
+class MathPythonTasksetConfig(vf.TasksetConfig):
+    rewards: list[str] = ["correct_answer"]
+    system_prompt: str | None = None
+    dataset_name: str = "math"
+    dataset_split: str = "train"
+    num_train_examples: int = -1
+
+
+class MathPythonHarnessConfig(vf.HarnessConfig):
+    max_turns: int = 100
+    pip_install_packages: str = "numpy sympy scipy"
+    sandbox_cpu_cores: int = 1
+    sandbox_memory_gb: int = 2
+    sandbox_disk_size_gb: int = 5
+    sandbox_gpu_count: int = 0
+    sandbox_timeout_minutes: int = 60
+    sandbox_timeout_per_command_seconds: int = 60
+
+
+class MathPythonEnvConfig(vf.EnvConfig):
+    taskset: MathPythonTasksetConfig = MathPythonTasksetConfig()
+    harness: MathPythonHarnessConfig = MathPythonHarnessConfig()
+
+    @model_validator(mode="after")
+    def derive_taskset_system_prompt(self) -> "MathPythonEnvConfig":
+        if "system_prompt" not in self.taskset.model_fields_set:
+            self.taskset = self.taskset.model_copy(
+                update={
+                    "system_prompt": build_system_prompt(
+                        self.harness.pip_install_packages
+                    )
+                }
+            )
+        return self
+
+
+def load_tasks(
     dataset_name: str = "math",
     dataset_split: str = "train",
     num_train_examples: int = -1,
@@ -110,6 +143,19 @@ def source(
         }
 
 
+class MathPythonTaskset(vf.Taskset[MathPythonTasksetConfig]):
+    def load_tasks(self) -> vf.Tasks:
+        return load_tasks(
+            dataset_name=self.config.dataset_name,
+            dataset_split=self.config.dataset_split,
+            num_train_examples=self.config.num_train_examples,
+        )
+
+
+class MathPythonHarness(vf.Harness):
+    pass
+
+
 def load_toolset(
     pip_install_packages: str = "numpy sympy scipy",
     sandbox_cpu_cores: int = 1,
@@ -124,8 +170,6 @@ def load_toolset(
     return vf.Toolset(
         tools=[python],
         write=True,
-        objects={"python_session": python_session},
-        bindings={"python.session": "objects.python_session"},
         sandbox={
             "image": "python:3.11-slim",
             "scope": "group",
@@ -142,90 +186,25 @@ def load_toolset(
     )
 
 
-def load_taskset(
-    dataset_name: str = "math",
-    dataset_split: str = "train",
-    num_train_examples: int = -1,
-    pip_install_packages: str = "numpy sympy scipy",
-    config=None,
-):
-    def load_rows():
-        return source(
-            dataset_name=dataset_name,
-            dataset_split=dataset_split,
-            num_train_examples=num_train_examples,
+def load_environment(config: MathPythonEnvConfig) -> vf.Env:
+    harness = MathPythonHarness(config=config.harness)
+    if "toolsets" not in config.harness.model_fields_set:
+        harness.add_toolset(
+            {
+                "python": load_toolset(
+                    pip_install_packages=config.harness.pip_install_packages,
+                    sandbox_cpu_cores=config.harness.sandbox_cpu_cores,
+                    sandbox_memory_gb=config.harness.sandbox_memory_gb,
+                    sandbox_disk_size_gb=config.harness.sandbox_disk_size_gb,
+                    sandbox_gpu_count=config.harness.sandbox_gpu_count,
+                    sandbox_timeout_minutes=config.harness.sandbox_timeout_minutes,
+                    sandbox_timeout_per_command_seconds=(
+                        config.harness.sandbox_timeout_per_command_seconds
+                    ),
+                )
+            }
         )
-
-    return vf.Taskset(
-        source=load_rows,
-        system_prompt=build_system_prompt(pip_install_packages),
-        rewards=[correct_answer],
-        config=config,
-    )
-
-
-def load_harness(
-    max_turns: int = 100,
-    pip_install_packages: str = "numpy sympy scipy",
-    sandbox_cpu_cores: int = 1,
-    sandbox_memory_gb: int = 2,
-    sandbox_disk_size_gb: int = 5,
-    sandbox_gpu_count: int = 0,
-    sandbox_timeout_minutes: int = 60,
-    sandbox_timeout_per_command_seconds: int = 60,
-    config=None,
-):
-    return vf.Harness(
-        toolsets=[
-            load_toolset(
-                pip_install_packages=pip_install_packages,
-                sandbox_cpu_cores=sandbox_cpu_cores,
-                sandbox_memory_gb=sandbox_memory_gb,
-                sandbox_disk_size_gb=sandbox_disk_size_gb,
-                sandbox_gpu_count=sandbox_gpu_count,
-                sandbox_timeout_minutes=sandbox_timeout_minutes,
-                sandbox_timeout_per_command_seconds=sandbox_timeout_per_command_seconds,
-            )
-        ],
-        max_turns=max_turns,
-        config=config,
-    )
-
-
-def load_v1_environment(
-    dataset_name: str = "math",
-    dataset_split: str = "train",
-    num_train_examples: int = -1,
-    max_turns: int = 100,
-    max_startup_wait_seconds: int = 60,
-    pip_install_packages: str = "numpy sympy scipy",
-    sandbox_cpu_cores: int = 1,
-    sandbox_memory_gb: int = 2,
-    sandbox_disk_size_gb: int = 5,
-    sandbox_gpu_count: int = 0,
-    sandbox_timeout_minutes: int = 60,
-    sandbox_timeout_per_command_seconds: int = 60,
-    sandbox_client_max_workers: int | None = None,
-    **kwargs,
-) -> vf.Env:
-    _ = max_startup_wait_seconds, sandbox_client_max_workers
-    if kwargs:
-        raise TypeError(f"Unsupported v1 args: {sorted(kwargs)}")
     return vf.Env(
-        taskset=load_taskset(
-            dataset_name=dataset_name,
-            dataset_split=dataset_split,
-            num_train_examples=num_train_examples,
-            pip_install_packages=pip_install_packages,
-        ),
-        harness=load_harness(
-            max_turns=max_turns,
-            pip_install_packages=pip_install_packages,
-            sandbox_cpu_cores=sandbox_cpu_cores,
-            sandbox_memory_gb=sandbox_memory_gb,
-            sandbox_disk_size_gb=sandbox_disk_size_gb,
-            sandbox_gpu_count=sandbox_gpu_count,
-            sandbox_timeout_minutes=sandbox_timeout_minutes,
-            sandbox_timeout_per_command_seconds=sandbox_timeout_per_command_seconds,
-        ),
+        taskset=MathPythonTaskset(config=config.taskset),
+        harness=harness,
     )

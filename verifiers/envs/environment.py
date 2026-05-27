@@ -274,16 +274,6 @@ class Environment(ABC):
         )
         signal.signal(signal.SIGTERM, lambda _, __: (_sync_teardown(), exit(143)))
 
-    def _ensure_example_id(self, dataset: "Dataset") -> "Dataset":
-        """Ensure example_id column exists and is integer type."""
-        if "example_id" in dataset.column_names and not isinstance(
-            dataset["example_id"][0], int
-        ):
-            dataset = dataset.rename_column("example_id", "src_id")
-        if "example_id" not in dataset.column_names:
-            dataset = dataset.add_column("example_id", range(len(dataset)))
-        return dataset
-
     def _ensure_prompt(
         self,
         dataset: "Dataset",
@@ -365,21 +355,15 @@ class Environment(ABC):
         """
         if "env_id" in dataset.column_names:
             dataset = dataset.remove_columns(["env_id"])
-        dataset = self._ensure_example_id(dataset)
+        if "example_id" in dataset.column_names and not isinstance(
+            dataset["example_id"][0], int
+        ):
+            dataset = dataset.rename_column("example_id", "src_id")
+        if "example_id" not in dataset.column_names:
+            dataset = dataset.add_column("example_id", range(len(dataset)))
         dataset = self._ensure_prompt(
             dataset, system_prompt, few_shot, question_key, answer_key, map_kwargs
         )
-        return dataset
-
-    def _format_completion_dataset(
-        self, dataset: "Dataset", map_kwargs: dict = {}
-    ) -> "Dataset":
-        """
-        Format dataset by creating example_id.
-        """
-        if "env_id" in dataset.column_names:
-            dataset = dataset.remove_columns(["env_id"])
-        dataset = self._ensure_example_id(dataset)
         return dataset
 
     def _format_dataset_source(self, dataset: "Dataset") -> "Dataset":
@@ -778,7 +762,7 @@ class Environment(ABC):
             )
 
         state = await maybe_retry(run_rollout_attempt, max_retries=max_retries)()
-        output = state_to_output(state, state_columns or [])
+        output = await asyncio.to_thread(state_to_output, state, state_columns or [])
         return output
 
     @final
@@ -825,10 +809,13 @@ class Environment(ABC):
             )
 
         group_states = await maybe_retry(run_group_attempt, max_retries=max_retries)()
-        outputs = [
-            state_to_output(state, state_columns or []) for state in group_states
-        ]
-        return outputs
+        outputs = await asyncio.gather(
+            *(
+                asyncio.to_thread(state_to_output, state, state_columns or [])
+                for state in group_states
+            )
+        )
+        return list(outputs)
 
     async def generate(
         self,

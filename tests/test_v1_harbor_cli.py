@@ -9,18 +9,33 @@ from uuid import uuid4
 
 import pytest
 
-import verifiers as root_vf
-import verifiers.v1 as vf
+import verifiers as vf
+from verifiers.v1.packages.harnesses import (
+    MiniSWEAgent,
+    MiniSWEAgentConfig,
+    OpenCode,
+    OpenCodeConfig,
+    Pi,
+    PiConfig,
+    RLM,
+    RLMConfig,
+    Terminus2Config,
+)
 from verifiers.v1.packages.harnesses.pi import pi_mcp_json, pi_models_json
+from verifiers.v1.packages.harnesses.configs import (
+    PI_DEFAULT_PACKAGE,
+    TERMINUS_2_DEFAULT_API_BASE_URL,
+    TERMINUS_2_DEFAULT_HARBOR_PACKAGE,
+    TERMINUS_2_DEFAULT_MODEL_NAME,
+)
 from verifiers.v1.packages.harnesses.terminus_2 import (
-    DEFAULT_API_BASE_URL,
-    DEFAULT_HARBOR_PACKAGE,
-    DEFAULT_MODEL_NAME,
     Terminus2,
     terminus_2_agent_script,
 )
-from verifiers.v1.packages.tasksets.harbor import harbor_reward
+from verifiers.v1.packages.tasksets import HarborTaskset, HarborTasksetConfig
+from verifiers.v1.packages.tasksets.harbor import harbor_reward, harbor_task_row
 from verifiers.v1.utils.program_utils import merge_task_program, merge_task_sandbox
+from verifiers.v1.utils.sandbox_python_utils import SANDBOX_PYTHON
 
 
 def write_harbor_task(root: Path, name: str = "task-a") -> Path:
@@ -57,15 +72,17 @@ def write_harbor_package(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Mod
     tasks_root.mkdir(parents=True)
     (package_dir / "__init__.py").write_text(
         """
-import verifiers.v1 as vf
+import verifiers as vf
+from verifiers.v1.packages.harnesses import OpenCode, OpenCodeConfig
+from verifiers.v1.packages.tasksets import HarborTaskset, HarborTasksetConfig
 
 
-def load_taskset(**kwargs):
-    return vf.HarborTaskset(**kwargs)
+def load_taskset(config: HarborTasksetConfig):
+    return HarborTaskset(config=config)
 
 
 def load_env():
-    return vf.Env(taskset=vf.HarborTaskset(), harness=vf.OpenCode())
+    return vf.Env(taskset=HarborTaskset(config=HarborTasksetConfig()), harness=OpenCode(config=OpenCodeConfig()))
 """.lstrip()
     )
     monkeypatch.syspath_prepend(str(tmp_path))
@@ -81,7 +98,7 @@ def test_harbor_taskset_loads_package_tasks_with_program_patch(
     package = write_harbor_package(tmp_path, monkeypatch)
     write_harbor_task(cast(Path, getattr(package, "tasks_root")))
 
-    taskset = getattr(package, "load_taskset")()
+    taskset = getattr(package, "load_taskset")(config=HarborTasksetConfig())
     task = next(iter(taskset))
 
     assert task["taskset_id"] == "harbor"
@@ -117,10 +134,29 @@ def test_harbor_taskset_rejects_malformed_package_task(
     bad_task.mkdir()
     (bad_task / "task.toml").write_text('version = "1.0"')
 
-    taskset = getattr(package, "load_taskset")()
+    taskset = getattr(package, "load_taskset")(config=HarborTasksetConfig())
 
     with pytest.raises(ValueError, match="Malformed Harbor task"):
         list(taskset)
+
+
+@pytest.mark.parametrize("section", ["agent", "verifier"])
+def test_harbor_task_row_rejects_non_mapping_agent_sections(
+    tmp_path: Path, section: str
+) -> None:
+    task_dir = write_harbor_task(tmp_path)
+    (task_dir / "task.toml").write_text(
+        f"""
+version = "1.0"
+{section} = "invalid"
+
+[environment]
+docker_image = "ubuntu:24.04"
+""".strip()
+    )
+
+    with pytest.raises(TypeError, match=rf"\[{section}\] must be a mapping"):
+        harbor_task_row(HarborTasksetConfig(), task_dir, 0)
 
 
 def test_harbor_taskset_constructs_env_with_opencode(
@@ -134,7 +170,7 @@ def test_harbor_taskset_constructs_env_with_opencode(
     row = env.get_dataset()[0]
     task = env.taskset.to_task(row)
     assert task["task_name"] == "task-a"
-    assert isinstance(env.harness, vf.OpenCode)
+    assert isinstance(env.harness, OpenCode)
     assert "task_dir" not in cast(dict[str, object], env.harness.program)
 
 
@@ -208,21 +244,17 @@ async def test_harbor_reward_uses_background_job_for_tests(
     assert ("bash test.sh", 120, "/tests") not in client.execute_commands
 
 
-def test_packaged_harbor_and_opencode_imports_are_reexported() -> None:
-    from verifiers.v1.packages.harnesses import OpenCode, OpenCodeConfig, Pi
-    from verifiers.v1.packages.tasksets import HarborTaskset
-
-    assert vf.OpenCode is OpenCode
-    assert vf.OpenCodeConfig is OpenCodeConfig
-    assert vf.Pi is Pi
-    assert vf.Terminus2 is Terminus2
-    assert root_vf.Terminus2 is Terminus2
-    assert vf.HarborTaskset is HarborTaskset
+def test_packaged_harbor_and_opencode_imports_are_available_from_packages() -> None:
+    assert OpenCode
+    assert OpenCodeConfig
+    assert Pi
+    assert Terminus2
+    assert HarborTaskset
 
 
 def test_opencode_config_owns_opencode_harness_fields() -> None:
-    harness = vf.OpenCode(
-        config=vf.OpenCodeConfig(
+    harness = OpenCode(
+        config=OpenCodeConfig(
             agent_workdir="/workspace",
             disabled_tools=["webfetch"],
             system_prompt=None,
@@ -245,8 +277,42 @@ def test_opencode_config_owns_opencode_harness_fields() -> None:
     assert "/opencode/system.txt" not in cast(dict[str, object], program["files"])
 
 
+@pytest.mark.parametrize(
+    ("harness_cls", "config_cls"),
+    [
+        (OpenCode, OpenCodeConfig),
+        (MiniSWEAgent, MiniSWEAgentConfig),
+        (Pi, PiConfig),
+        (RLM, RLMConfig),
+        (Terminus2, Terminus2Config),
+    ],
+)
+def test_packaged_command_harnesses_defer_partial_program_overrides(
+    harness_cls, config_cls
+) -> None:
+    override = {
+        "setup": "echo caller",
+        "env": {"CALLER": "1"},
+        "args": ["--caller"],
+    }
+    harness = harness_cls(config=config_cls(program=override))
+    program = cast(dict[str, object], harness.program)
+    env = cast(dict[str, object], program["env"])
+    setup = cast(list[object], program["setup"])
+    args = cast(list[object], program["args"])
+
+    assert program["command"]
+    assert env["CALLER"] == "1"
+    assert "echo caller" in setup
+    assert "--caller" in args
+    assert isinstance(harness.config.program, vf.ProgramConfig)
+    assert harness.config.program.env == {"CALLER": "1"}
+    assert harness.config.program.setup == override["setup"]
+    assert harness.config.program.args == override["args"]
+
+
 def test_pi_harness_writes_intercepted_model_and_mcp_config() -> None:
-    harness = vf.Pi()
+    harness = Pi()
     program = cast(dict[str, object], harness.program)
     setup = cast(str, program["setup"])
     models = json.loads(
@@ -263,20 +329,26 @@ def test_pi_harness_writes_intercepted_model_and_mcp_config() -> None:
 
     assert "apt-get -o Acquire::Retries=3 update" in setup
     assert "apt-get -o Acquire::Retries=3 install" in setup
+    assert harness.config.package == PI_DEFAULT_PACKAGE
+    assert PI_DEFAULT_PACKAGE == "@earendil-works/pi-coding-agent"
+    assert f"npm install -g --ignore-scripts {PI_DEFAULT_PACKAGE}" in setup
+    assert "mariozechner" not in setup
     provider = models["providers"]["verifiers"]
     assert provider["baseUrl"] == "http://127.0.0.1:1/rollout/key/v1"
     assert provider["api"] == "openai-completions"
     assert provider["apiKey"] == "secret"
     assert provider["models"] == [{"id": "model", "name": "openai/gpt-5.4-mini"}]
-    assert mcp["mcpServers"]["verifiers-tools"]["command"] == "python3"
+    assert mcp["mcpServers"]["verifiers-tools"]["command"] == SANDBOX_PYTHON
 
 
 def test_terminus_2_harness_builds_sandbox_program() -> None:
-    harness = vf.Terminus2(
-        system_prompt="extra system prompt",
-        agent_workdir="/workspace",
-        max_turns=7,
-        python_version="3.12",
+    harness = Terminus2(
+        config=Terminus2Config(
+            system_prompt="extra system prompt",
+            agent_workdir="/workspace",
+            max_turns=7,
+            python_version="3.12",
+        )
     )
     program = cast(dict[str, object], harness.program)
     command = cast(list[object], program["command"])
@@ -296,14 +368,14 @@ def test_terminus_2_harness_builds_sandbox_program() -> None:
 
     run_script = cast(str, command[2])
     assert "TERMINUS_2_WORKDIR=/workspace" in run_script
-    assert f"--with {DEFAULT_HARBOR_PACKAGE}" in run_script
+    assert f"--with {TERMINUS_2_DEFAULT_HARBOR_PACKAGE}" in run_script
     assert "git+https://github.com" not in run_script
     assert "max_turns=7" in run_script
 
     script = terminus_2_agent_script(max_turns=7)
     compile(script, "terminus_2_agent.py", "exec")
-    assert DEFAULT_MODEL_NAME in script
-    assert DEFAULT_API_BASE_URL in script
+    assert TERMINUS_2_DEFAULT_MODEL_NAME in script
+    assert TERMINUS_2_DEFAULT_API_BASE_URL in script
     assert "OPENAI_MODEL" not in script
     assert "PRIME_API_KEY" in script
     assert "async def prepare_logs_for_host(self) -> None" in script
@@ -312,17 +384,19 @@ def test_terminus_2_harness_builds_sandbox_program() -> None:
 
 def test_task_program_merges_into_command_program_without_collisions() -> None:
     harness = vf.Harness(
-        program={
-            "command": ["tool"],
-            "sandbox": True,
-            "files": {"/harness.txt": "harness"},
-            "setup": "echo harness",
-            "channels": {"mcp": "echo harness tools"},
-            "env": {"HARNESS": "1"},
-            "artifacts": {"log": {"path": "/logs/harness.log", "format": "text"}},
-            "args": ["--base"],
-        },
-        sandbox={"image": "python:3.11-slim"},
+        config=vf.HarnessConfig(
+            program={
+                "command": ["tool"],
+                "sandbox": True,
+                "files": {"/harness.txt": "harness"},
+                "setup": "echo harness",
+                "channels": {"mcp": "echo harness tools"},
+                "env": {"HARNESS": "1"},
+                "artifacts": {"log": {"path": "/logs/harness.log", "format": "text"}},
+                "args": ["--base"],
+            },
+            sandbox={"image": "python:3.11-slim"},
+        )
     )
     task = vf.Task(
         {
@@ -357,8 +431,10 @@ def test_task_program_merges_into_command_program_without_collisions() -> None:
 
 def test_task_program_rejects_harness_owned_keys() -> None:
     harness = vf.Harness(
-        program={"command": ["tool"], "sandbox": True},
-        sandbox={"image": "python:3.11-slim"},
+        config=vf.HarnessConfig(
+            program={"command": ["tool"], "sandbox": True},
+            sandbox={"image": "python:3.11-slim"},
+        )
     )
     task = vf.Task({"prompt": [], "program": {"command": ["other"]}}).freeze()
 
@@ -370,12 +446,14 @@ def test_task_program_rejects_harness_owned_keys() -> None:
 
 def test_task_program_rejects_colliding_upload_paths() -> None:
     harness = vf.Harness(
-        program={
-            "command": ["tool"],
-            "sandbox": True,
-            "files": {"/task/instruction.md": "harness"},
-        },
-        sandbox={"image": "python:3.11-slim"},
+        config=vf.HarnessConfig(
+            program={
+                "command": ["tool"],
+                "sandbox": True,
+                "files": {"/task/instruction.md": "harness"},
+            },
+            sandbox={"image": "python:3.11-slim"},
+        )
     )
     task = vf.Task(
         {"prompt": [], "program": {"files": {"/task/instruction.md": "task"}}}

@@ -84,16 +84,25 @@ def render_prompt(observation: Any, **kwargs: Any):
     return [UserMessage(content=str(observation["prompt"]))]
 
 
-async def test_openenv_uses_public_async_generic_client(monkeypatch):
+async def test_openenv_uses_public_async_generic_client(monkeypatch, tmp_path):
     FakeGenericEnvClient.instances.clear()
     monkeypatch.setattr(openenv_env, "GenericEnvClient", FakeGenericEnvClient)
     env = vf.OpenEnvEnv(
+        openenv_project=tmp_path,
         num_train_examples=1,
         num_eval_examples=0,
         prompt_renderer=render_prompt,
     )
 
-    async def create_server():
+    async def launch_image_server(
+        image: str, port: int, start_command: str, contract: str
+    ):
+        assert (image, port, start_command, contract) == (
+            "image",
+            8000,
+            "run",
+            "gym",
+        )
         return openenv_env.OpenEnvServer(
             sandbox_id="sandbox",
             exposure_id="exposure",
@@ -102,34 +111,56 @@ async def test_openenv_uses_public_async_generic_client(monkeypatch):
             contract="gym",
         )
 
-    async def fetch_action_schema(base_url: str) -> dict[str, object]:
-        return {"type": "object", "properties": {}}
+    async def fetch_schema(base_url: str) -> dict[str, object]:
+        assert base_url == "http://localhost:8000"
+        return {"action": {"type": "object", "properties": {}}}
 
-    monkeypatch.setattr(env, "_create_server", create_server)
-    monkeypatch.setattr(env, "_fetch_action_schema", fetch_action_schema)
+    async def cleanup_server(server: openenv_env.OpenEnvServer) -> None:
+        env._active_servers.pop(server.sandbox_id, None)
+
+    monkeypatch.setattr(
+        env,
+        "_resolve_runtime_config",
+        lambda project_path: ("image", 8000, "run", "gym"),
+    )
+    monkeypatch.setattr(env, "_launch_image_server", launch_image_server)
+    monkeypatch.setattr(env, "_fetch_schema", fetch_schema)
+    monkeypatch.setattr(env, "_cleanup_server", cleanup_server)
 
     state = vf.State({"info": {"seed": 7}, "trajectory": []})
-    await env.setup_state(state)
+    try:
+        await env.setup_state(state)
 
-    assert state["prompt"] == [UserMessage(content="seed-7")]
-    assert len(FakeGenericEnvClient.instances) == 1
-    client = FakeGenericEnvClient.instances[0]
-    assert client.base_url == "http://localhost:8000"
-    assert client.connected is True
-    assert client.reset_seeds == [7]
+        assert state["prompt"] == [UserMessage(content="seed-7")]
+        assert len(FakeGenericEnvClient.instances) == 1
+        client = FakeGenericEnvClient.instances[0]
+        assert client.base_url == "http://localhost:8000"
+        assert client.connected is True
+        assert client.reset_seeds == [7]
+    finally:
+        await env.cleanup_openenv(state)
 
 
-async def test_openenv_uses_public_async_mcp_client(monkeypatch):
+async def test_openenv_uses_public_async_mcp_client(monkeypatch, tmp_path):
     FakeMCPToolClient.instances.clear()
     monkeypatch.setattr(openenv_env, "MCPToolClient", FakeMCPToolClient)
     monkeypatch.setattr(openenv_env, "CallToolAction", FakeCallToolAction)
     env = vf.OpenEnvEnv(
+        openenv_project=tmp_path,
         num_train_examples=1,
         num_eval_examples=0,
         prompt_renderer=render_prompt,
     )
 
-    async def create_server():
+    async def launch_image_server(
+        image: str, port: int, start_command: str, contract: str
+    ):
+        assert (image, port, start_command, contract) == (
+            "image",
+            8000,
+            "run",
+            "mcp",
+        )
         return openenv_env.OpenEnvServer(
             sandbox_id="sandbox",
             exposure_id="exposure",
@@ -138,25 +169,52 @@ async def test_openenv_uses_public_async_mcp_client(monkeypatch):
             contract="mcp",
         )
 
-    async def fetch_action_schema(base_url: str) -> dict[str, object]:
+    async def fetch_schema(base_url: str) -> dict[str, object]:
+        assert base_url == "http://localhost:8000"
         return {
-            "type": "object",
-            "properties": {"type": {"enum": ["list_tools", "call_tool"]}},
+            "action": {
+                "type": "object",
+                "properties": {"type": {"enum": ["list_tools", "call_tool"]}},
+            }
         }
 
-    monkeypatch.setattr(env, "_create_server", create_server)
-    monkeypatch.setattr(env, "_fetch_action_schema", fetch_action_schema)
+    async def cleanup_server(server: openenv_env.OpenEnvServer) -> None:
+        env._active_servers.pop(server.sandbox_id, None)
+
+    monkeypatch.setattr(
+        env,
+        "_resolve_runtime_config",
+        lambda project_path: ("image", 8000, "run", "mcp"),
+    )
+    monkeypatch.setattr(env, "_launch_image_server", launch_image_server)
+    monkeypatch.setattr(env, "_fetch_schema", fetch_schema)
+    monkeypatch.setattr(env, "_cleanup_server", cleanup_server)
 
     state = vf.State({"info": {"seed": 9}, "trajectory": []})
-    await env.setup_state(state)
-    result = await env._mcp_step_tool(
-        state["openenv_mcp_client"], "echo", {"message": "hi"}
-    )
+    try:
+        await env.setup_state(state)
+        state["trajectory"].append({})
+        tool_messages = await env._mcp_env_response(
+            [
+                vf.AssistantMessage(
+                    content=None,
+                    tool_calls=[
+                        vf.ToolCall(
+                            id="call-1", name="echo", arguments='{"message": "hi"}'
+                        )
+                    ],
+                )
+            ],
+            state,
+        )
 
-    assert state["prompt"] == [UserMessage(content="mcp-9")]
-    assert state["tool_defs"][0].name == "echo"
-    assert result.reward == 1.0
-    client = FakeMCPToolClient.instances[0]
-    action = client.step_actions[0]
-    assert action.tool_name == "echo"
-    assert action.arguments == {"message": "hi"}
+        assert state["prompt"] == [UserMessage(content="mcp-9")]
+        assert state["tool_defs"][0].name == "echo"
+        assert state["trajectory"][-1]["reward"] == 1.0
+        assert tool_messages == [vf.ToolMessage(content="ok", tool_call_id="call-1")]
+        client = FakeMCPToolClient.instances[0]
+        action = client.step_actions[0]
+        assert action.tool_name == "echo"
+        assert action.arguments == {"message": "hi"}
+    finally:
+        await env.cleanup_openenv(state)

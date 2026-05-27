@@ -5,6 +5,7 @@ import random
 import re
 
 from datasets import Dataset, load_dataset
+from pydantic import model_validator
 
 import verifiers as vf
 
@@ -47,16 +48,18 @@ def _extract_last_name(combined_name: str) -> str:
     return ""
 
 
-def get_source(
+def build_task_loader(
     min_turns: int = 1,
     max_turns: int = 3,
     min_names_per_turn: int = 1,
     max_names_per_turn: int = 5,
+    similarity_power: int = 4,
+    power_per_turn: bool = True,
     dataset_name: str = "kalomaze/alphabetic-arxiv-authors-it1",
     dataset_split: str = "train",
     seed: int = 1337420,
 ):
-    def source():
+    def loader():
         random.seed(seed)
 
         def get_random_turn_config():
@@ -174,6 +177,8 @@ These are in addition to the prior list. Mark any NEW names (that weren't in the
                             "num_turns": num_turns,
                             "sort_by_first": sort_by_first,
                         },
+                        "similarity_power": similarity_power,
+                        "power_per_turn": power_per_turn,
                     }
                 )
             except Exception as e:
@@ -181,7 +186,37 @@ These are in addition to the prior list. Mark any NEW names (that weren't in the
 
         return Dataset.from_list(data)
 
-    return source
+    return loader
+
+
+def load_tasks(
+    min_turns: int = 1,
+    max_turns: int = 3,
+    min_names_per_turn: int = 1,
+    max_names_per_turn: int = 5,
+    similarity_power: int = 4,
+    power_per_turn: bool = True,
+    dataset_name: str = "kalomaze/alphabetic-arxiv-authors-it1",
+    dataset_split: str = "train",
+    seed: int = 1337420,
+):
+    validate_parameters(
+        min_turns=min_turns,
+        max_turns=max_turns,
+        min_names_per_turn=min_names_per_turn,
+        max_names_per_turn=max_names_per_turn,
+    )
+    return build_task_loader(
+        min_turns=min_turns,
+        max_turns=max_turns,
+        min_names_per_turn=min_names_per_turn,
+        max_names_per_turn=max_names_per_turn,
+        similarity_power=similarity_power,
+        power_per_turn=power_per_turn,
+        dataset_name=dataset_name,
+        dataset_split=dataset_split,
+        seed=seed,
+    )()
 
 
 def _count_tag_instances_and_contents(text: str, tag: str) -> tuple[int, list[str]]:
@@ -244,95 +279,82 @@ def eval_turn(
     return attempt_scores[-1]
 
 
-def weighted_reward_factory(similarity_power: int, power_per_turn: bool):
-    @vf.reward(weight=1.0)
-    async def weighted_reward(task, state) -> float:
-        completion = state.get("completion") or []
-        actual_turns = state["info"]["num_turns"]
-        total = 0.0
-        for turn_num in range(1, actual_turns + 1):
-            total += eval_turn(
-                completion,
-                turn_num,
-                state,
-                similarity_power,
-                apply_power=power_per_turn,
-            )
-        if actual_turns <= 0:
-            return 0.0
-        if power_per_turn:
-            return total / actual_turns
-        return (total / actual_turns) ** similarity_power
+@vf.reward(weight=1.0)
+async def weighted_reward(task, state) -> float:
+    completion = state.get("completion") or []
+    actual_turns = state["info"]["num_turns"]
+    similarity_power = int(task.get("similarity_power", 4))
+    power_per_turn = bool(task.get("power_per_turn", True))
+    total = 0.0
+    for turn_num in range(1, actual_turns + 1):
+        total += eval_turn(
+            completion,
+            turn_num,
+            state,
+            similarity_power,
+            apply_power=power_per_turn,
+        )
+    if actual_turns <= 0:
+        return 0.0
+    if power_per_turn:
+        return total / actual_turns
+    return (total / actual_turns) ** similarity_power
 
-    return weighted_reward
 
-
-async def alphabet_user(task, state, transcript) -> list[dict[str, str]]:
-    assistant_count = len(vf.get_messages(transcript, role="assistant"))
+async def alphabet_user(task, state, messages) -> list[dict[str, str]]:
+    assistant_count = len(vf.get_messages(messages, role="assistant"))
     follow_ups = state["info"]["follow_ups"]
     if assistant_count <= 0 or assistant_count > len(follow_ups):
         return []
     return [{"role": "user", "content": follow_ups[assistant_count - 1]}]
 
 
-def load_taskset(
-    min_turns: int = 1,
-    max_turns: int = 3,
-    min_names_per_turn: int = 1,
-    max_names_per_turn: int = 5,
-    similarity_power: int = 4,
-    power_per_turn: bool = True,
-    dataset_name: str = "kalomaze/alphabetic-arxiv-authors-it1",
-    dataset_split: str = "train",
-    seed: int = 1337420,
-    config=None,
-):
-    validate_parameters(
-        min_turns=min_turns,
-        max_turns=max_turns,
-        min_names_per_turn=min_names_per_turn,
-        max_names_per_turn=max_names_per_turn,
-    )
-    return vf.Taskset(
-        source=get_source(
-            min_turns=min_turns,
-            max_turns=max_turns,
-            min_names_per_turn=min_names_per_turn,
-            max_names_per_turn=max_names_per_turn,
-            dataset_name=dataset_name,
-            dataset_split=dataset_split,
-            seed=seed,
-        ),
-        rewards=[weighted_reward_factory(similarity_power, power_per_turn)],
-        user=alphabet_user,
-        config=config,
-    )
+class AlphabetSortTasksetConfig(vf.TasksetConfig):
+    rewards: list[str] = ["weighted_reward"]
+    user: str | None = "alphabet_user"
+    min_turns: int = 1
+    max_turns: int = 3
+    min_names_per_turn: int = 1
+    max_names_per_turn: int = 5
+    similarity_power: int = 4
+    power_per_turn: bool = True
+    dataset_name: str = "kalomaze/alphabetic-arxiv-authors-it1"
+    dataset_split: str = "train"
+    seed: int = 1337420
 
-
-def load_v1_environment(
-    max_turns: int = 3,
-    min_turns: int = 1,
-    min_names_per_turn: int = 1,
-    max_names_per_turn: int = 5,
-    similarity_power: int = 4,
-    power_per_turn: bool = True,
-    dataset_name: str = "kalomaze/alphabetic-arxiv-authors-it1",
-    dataset_split: str = "train",
-    seed: int = 1337420,
-    **kwargs,
-) -> vf.Env:
-    if kwargs:
-        raise TypeError(f"Unsupported v1 args: {sorted(kwargs)}")
-    return vf.Env(
-        taskset=load_taskset(
-            min_turns=min_turns,
-            max_turns=max_turns,
-            min_names_per_turn=min_names_per_turn,
-            max_names_per_turn=max_names_per_turn,
-            similarity_power=similarity_power,
-            power_per_turn=power_per_turn,
-            dataset_name=dataset_name,
-            dataset_split=dataset_split,
-            seed=seed,
+    @model_validator(mode="after")
+    def validate_task_shape(self) -> "AlphabetSortTasksetConfig":
+        validate_parameters(
+            min_turns=self.min_turns,
+            max_turns=self.max_turns,
+            min_names_per_turn=self.min_names_per_turn,
+            max_names_per_turn=self.max_names_per_turn,
         )
+        return self
+
+
+class AlphabetSortEnvConfig(vf.EnvConfig):
+    taskset: AlphabetSortTasksetConfig = AlphabetSortTasksetConfig()
+    harness: vf.HarnessConfig = vf.HarnessConfig()
+
+
+class AlphabetSortTaskset(vf.Taskset[AlphabetSortTasksetConfig]):
+    def load_tasks(self) -> vf.Tasks:
+        return load_tasks(
+            min_turns=self.config.min_turns,
+            max_turns=self.config.max_turns,
+            min_names_per_turn=self.config.min_names_per_turn,
+            max_names_per_turn=self.config.max_names_per_turn,
+            similarity_power=self.config.similarity_power,
+            power_per_turn=self.config.power_per_turn,
+            dataset_name=self.config.dataset_name,
+            dataset_split=self.config.dataset_split,
+            seed=self.config.seed,
+        )
+
+
+def load_environment(config: AlphabetSortEnvConfig) -> vf.Env:
+    return vf.Env(
+        taskset=AlphabetSortTaskset(config=config.taskset),
+        harness=vf.Harness(config=config.harness),
     )

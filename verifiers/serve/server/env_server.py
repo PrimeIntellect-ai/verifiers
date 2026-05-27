@@ -87,6 +87,10 @@ class EnvServer(ABC):
 
     async def run(self) -> None:
         """Run the server with signal-based graceful shutdown."""
+        from verifiers.utils.thread_utils import install_default_executor
+
+        install_default_executor()
+
         if self.death_pipe is not None:
             monitor_death_pipe(self.death_pipe)
 
@@ -125,5 +129,18 @@ class EnvServer(ABC):
 
     @classmethod
     def run_server(cls, *args, **kwargs):
+        try:
+            import uvloop
+
+            uvloop.install()
+        except ImportError:
+            pass
+
+        # Router juggles stats, worker responses, and request dispatch on a
+        # single loop; the default 32-thread executor silently caps to_thread.
+        from verifiers.utils.thread_utils import scale_executors
+
+        scale_executors(concurrency=512)
+
         server = cls(*args, **kwargs)
         return asyncio.run(server.run())
