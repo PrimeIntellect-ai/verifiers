@@ -34,25 +34,25 @@ prime eval run my-env -m openai/gpt-4.1-mini -n 10
 ### vf-eval-v1 (preview)
 
 `vf-eval-v1` is a parallel CLI built around the v1 taskset/harness model.
-It takes two positionals:
+Both the taskset and the harness are referenced by **installable module
+name**, and both are positional:
 
 ```
-vf-eval-v1 <task> [<harness>] [--taskset.<field> ...] [--harness.<field> ...]
+vf-eval-v1 <taskset> [<harness>] [--taskset.<field> ...] [--harness.<field> ...]
 ```
 
-`<task>` is an installed env module that exposes
-`load_taskset(config: TasksetConfig)`. `<harness>` is optional — when
-omitted, the harness auto-resolves to the env's own `load_harness` if
-present, otherwise the base `verifiers.v1.Harness`. When provided, it can
-be a registry alias (`rlm`, `opencode`, `pi`, `terminus-2`,
-`mini-swe-agent`, `base`) or a `pkg.mod:Class` import ref pointing at a
-`verifiers.v1.Harness` subclass.
+- `<taskset>` is an installed Python module exposing
+  `load_taskset(config: TasksetConfig)`.
+- `<harness>` is optional and is also an installed Python module — one
+  exposing `load_harness(config: HarnessConfig)`. When omitted, the harness
+  auto-resolves to the taskset module's own `load_harness` if present,
+  otherwise the base `verifiers.v1.Harness`.
 
-A v1 env can stop at the taskset surface — no `EnvConfig` subclass and no
-`load_environment` are required:
+A pure v1 taskset module stops at the taskset surface — no `EnvConfig`
+subclass and no `load_environment` are required:
 
 ```python
-# environments/v1/my_env/my_env.py
+# environments/v1/my_taskset/my_taskset.py
 import verifiers as vf
 
 
@@ -69,31 +69,47 @@ def load_taskset(config: MyTasksetConfig) -> MyTaskset:
     return MyTaskset(config=config)
 ```
 
-`vf-eval-v1` resolves the env's `TasksetConfig` subclass and the selected
-harness's `HarnessConfig` subclass at parse time, and validates
-`--taskset.*` / `--harness.*` against those typed schemas. `--help` shows
-the actual fields available for the resolved task and harness.
+A v1 harness module is a parallel shape — a top-level module exposing
+`load_harness`:
+
+```python
+# environments/v1/harnesses/rlm/rlm.py
+from verifiers.v1.packages.harnesses import RLM, RLMConfig
+
+
+def load_harness(config: RLMConfig) -> RLM:
+    return RLM(config=config)
+```
+
+`vf-eval-v1` resolves the taskset module's `TasksetConfig` subclass and
+the harness module's `HarnessConfig` subclass at parse time, and validates
+`--taskset.*` / `--harness.*` / `--client.*` / `--sampling.*` against
+those typed schemas. `--help` shows the actual fields available for the
+chosen modules.
 
 ```bash
-# default harness, default config
-vf-eval-v1 my-env --num-examples 5 --model openai/gpt-4.1-mini
+# default harness, default client + sampling config
+vf-eval-v1 my-taskset --num-examples 5
 
-# override fields on the env's default harness
-vf-eval-v1 my-env --harness.max-turns 5 --harness.system-prompt-merge harness
+# override fields on the taskset module's default harness
+vf-eval-v1 my-taskset --harness.max-turns 5 --harness.system-prompt-merge harness
 
-# swap the harness class (positional, with harness-specific overrides)
-vf-eval-v1 my-env rlm --harness.rlm-max-turns 50
+# select an external harness module (also installable; e.g. `pip install rlm-harness`)
+vf-eval-v1 my-taskset rlm --harness.rlm-max-turns 50
 
-# tweak the taskset config (typed against the env's TasksetConfig)
-vf-eval-v1 my-env --taskset.split test
+# tweak taskset / client / sampling config (typed)
+vf-eval-v1 my-taskset \
+    --taskset.split test \
+    --client.model openai/gpt-4.1-mini --client.provider openai \
+    --sampling.temperature 0.7 --sampling.max-tokens 1024
 
 # load everything from TOML; CLI args layered on top win on conflict
-vf-eval-v1 @ configs/eval/my-env-rlm.toml --num-examples 10
+vf-eval-v1 @ configs/eval/my-taskset-rlm.toml --num-examples 10
 ```
 
 For convenience, the harness identifier can equally be given as a flag —
-`vf-eval-v1 my-env --harness-name rlm` is identical to
-`vf-eval-v1 my-env rlm`.
+`vf-eval-v1 my-taskset --harness-name rlm` is identical to
+`vf-eval-v1 my-taskset rlm`.
 
 `vf-eval-v1` keeps a v0 fallback: when the env only exposes
 `load_environment`, the CLI calls it with `--env-args` and refuses both

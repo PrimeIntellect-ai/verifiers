@@ -34,9 +34,9 @@ Loadable through `vf-eval-v1` (the v1 CLI) or `vf.load_environment`. The legacy 
 
 ```bash
 # default harness
-vf-eval-v1 reverse-text -m openai/gpt-4.1-mini --num-examples 5
+vf-eval-v1 reverse-text --client.model openai/gpt-4.1-mini --num-examples 5
 
-# swap to RLM via the second positional
+# swap to the rlm harness module (install `environments/v1/harnesses/rlm/` first)
 vf-eval-v1 reverse-text rlm --harness.rlm-max-turns 25 --harness.system-prompt-merge harness
 
 # override the taskset config

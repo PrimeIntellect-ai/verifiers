@@ -4,9 +4,12 @@ env from inside a worker subprocess.
 
 Two private kwargs are reserved on ``vf.load_environment(env_id, **env_args)``:
 
-* ``__vf_v1_taskset__`` — dict merged into the env's TasksetConfig subclass.
+* ``__vf_v1_taskset__`` — dict merged into the taskset's ``TasksetConfig``
+  subclass.
 * ``__vf_v1_harness__`` — dict describing the harness selection + overrides.
-  Recognised shape: ``{"name": "<alias-or-import-ref>"|None, **overrides}``.
+  Recognised shape: ``{"name": "<harness-module>"|None, **overrides}``. The
+  harness module is an installed Python module exposing
+  ``load_harness(config: HarnessConfig)``.
 
 The CLI emits those when the user customises a v1 env. Workers see the same
 ``env_args`` and re-run the same builder, so a configured taskset/harness pair
@@ -21,21 +24,9 @@ from verifiers.v1.config import HarnessConfig, TasksetConfig
 from verifiers.v1.env import Env as VEnv
 from verifiers.v1.harness import Harness
 from verifiers.v1.taskset import Taskset
-from verifiers.v1.utils.config_utils import import_config_ref
 
 V1_TASKSET_KEY = "__vf_v1_taskset__"
 V1_HARNESS_KEY = "__vf_v1_harness__"
-
-# Short aliases for harnesses bundled under ``verifiers.v1.packages.harnesses``.
-# Any ``pkg.mod:Class`` import ref is also accepted on ``--harness.name``.
-HARNESS_ALIASES: dict[str, str] = {
-    "base": "verifiers.v1:Harness",
-    "rlm": "verifiers.v1.packages.harnesses:RLM",
-    "opencode": "verifiers.v1.packages.harnesses:OpenCode",
-    "pi": "verifiers.v1.packages.harnesses:Pi",
-    "mini-swe-agent": "verifiers.v1.packages.harnesses:MiniSWEAgent",
-    "terminus-2": "verifiers.v1.packages.harnesses:Terminus2",
-}
 
 
 def has_v1_overrides(env_args: dict[str, Any]) -> bool:
@@ -47,20 +38,43 @@ def module_supports_v1_loader(module) -> bool:
     return hasattr(module, "load_taskset")
 
 
-def resolve_harness_class(name: str) -> type[Harness]:
-    target = HARNESS_ALIASES.get(name, name)
-    if ":" not in target:
-        raise ValueError(
-            f"harness name {name!r} must be a registry alias "
-            f"({sorted(HARNESS_ALIASES)}) or a 'pkg.mod:Class' import ref."
+def _factory_config_type(module, factory_name: str, base_type: type) -> type | None:
+    # Lazy import to avoid pulling env_utils into module init.
+    from verifiers.utils.env_utils import factory_config_type
+
+    return factory_config_type(module, factory_name, base_type)
+
+
+def _import_module_by_name(name: str):
+    """Resolve a taskset/harness name to a Python module.
+
+    Names follow the same convention as env ids: dashes become underscores and
+    the trailing path segment is used as the module name.
+    """
+    from verifiers.utils.env_utils import import_env_module
+
+    return import_env_module(name)
+
+
+def resolve_harness_module(name: str):
+    """Import a harness module by name and validate it exposes ``load_harness``."""
+    module = _import_module_by_name(name)
+    if not hasattr(module, "load_harness"):
+        raise AttributeError(
+            f"Harness module {module.__name__!r} does not expose "
+            "load_harness(config: HarnessConfig). Install a harness package "
+            "that provides this factory, or use the env's own load_harness "
+            "by omitting the harness positional."
         )
-    obj = import_config_ref(target)
-    if not (isinstance(obj, type) and issubclass(obj, Harness)):
-        raise TypeError(
-            f"harness name {name!r} resolved to {obj!r}, which is not a "
-            f"verifiers.v1.Harness subclass."
-        )
-    return obj
+    return module
+
+
+def harness_config_type_from_module(module) -> type[HarnessConfig]:
+    """Inspect a harness module's ``load_harness`` to find its config type."""
+    config_type = _factory_config_type(module, "load_harness", HarnessConfig)
+    if config_type is None:
+        raise TypeError(f"{module.__name__}.load_harness must accept a typed config.")
+    return cast(type[HarnessConfig], config_type)
 
 
 def harness_config_type_from_class(harness_cls: type[Harness]) -> type[HarnessConfig]:
@@ -79,13 +93,6 @@ def harness_config_type_from_class(harness_cls: type[Harness]) -> type[HarnessCo
         if isinstance(candidate, type) and issubclass(candidate, HarnessConfig):
             return candidate
     return HarnessConfig
-
-
-def _factory_config_type(module, factory_name: str, base_type: type) -> type | None:
-    # Lazy import to avoid pulling env_utils into module init.
-    from verifiers.utils.env_utils import factory_config_type
-
-    return factory_config_type(module, factory_name, base_type)
 
 
 def build_v1_taskset(env_module, overrides: dict[str, Any]) -> Taskset:
@@ -110,13 +117,23 @@ def build_v1_taskset(env_module, overrides: dict[str, Any]) -> Taskset:
 
 
 def build_v1_harness(env_module, harness_spec: dict[str, Any]) -> Harness:
+    """Resolve and build the v1 harness for an env.
+
+    ``harness_spec`` shape: ``{"name": "<harness-module>"|None, **overrides}``.
+
+    * ``name`` set: import the harness module, read its ``HarnessConfig``
+      subclass from ``load_harness``, validate ``overrides`` against it, call
+      ``load_harness(config=...)``.
+    * ``name`` unset: use the env's own ``load_harness`` if present, else the
+      base ``verifiers.v1.Harness`` with ``HarnessConfig`` defaults.
+    """
     spec = dict(harness_spec)
     name = spec.pop("name", None)
     if name:
-        harness_cls = resolve_harness_class(name)
-        config_type = harness_config_type_from_class(harness_cls)
+        harness_module = resolve_harness_module(name)
+        config_type = harness_config_type_from_module(harness_module)
         config = config_type.model_validate(spec)
-        harness = harness_cls(config=config)
+        harness = harness_module.load_harness(config=config)
     elif hasattr(env_module, "load_harness"):
         factory_type = _factory_config_type(env_module, "load_harness", HarnessConfig)
         config_type = cast(type[HarnessConfig], factory_type or HarnessConfig)
@@ -140,9 +157,7 @@ def build_v1_env(
     harness_spec: dict[str, Any] | None = None,
 ) -> vf.Environment:
     """Build a ``vf.Env`` for ``env_id`` using the v1 taskset/harness path."""
-    from verifiers.utils.env_utils import import_env_module
-
-    env_module = import_env_module(env_id)
+    env_module = _import_module_by_name(env_id)
     if not module_supports_v1_loader(env_module):
         raise AttributeError(
             f"Env {env_id!r} does not expose load_taskset; v1 dispatch is "
@@ -155,7 +170,9 @@ def build_v1_env(
     return env
 
 
-def pop_v1_overrides(env_args: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+def pop_v1_overrides(
+    env_args: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
     """Extract the v1 markers from ``env_args``, mutating it in place."""
     taskset_overrides = env_args.pop(V1_TASKSET_KEY, None) or {}
     harness_spec = env_args.pop(V1_HARNESS_KEY, None) or {}
@@ -169,15 +186,15 @@ def pop_v1_overrides(env_args: dict[str, Any]) -> tuple[dict[str, Any], dict[str
 
 
 __all__ = [
-    "HARNESS_ALIASES",
     "V1_HARNESS_KEY",
     "V1_TASKSET_KEY",
     "build_v1_env",
     "build_v1_harness",
     "build_v1_taskset",
     "harness_config_type_from_class",
+    "harness_config_type_from_module",
     "has_v1_overrides",
     "module_supports_v1_loader",
     "pop_v1_overrides",
-    "resolve_harness_class",
+    "resolve_harness_module",
 ]

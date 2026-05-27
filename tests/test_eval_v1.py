@@ -9,7 +9,6 @@ import pytest
 import verifiers as vf
 from verifiers.scripts import eval_v1 as ev1
 from verifiers.utils.v1_loader_utils import (
-    HARNESS_ALIASES,
     V1_HARNESS_KEY,
     V1_TASKSET_KEY,
     build_v1_env,
@@ -20,11 +19,11 @@ from verifiers.v1.harness import Harness
 
 
 # ---------------------------------------------------------------------------
-# Inline v1 env module fixtures
+# Inline module fixtures
 # ---------------------------------------------------------------------------
 
 
-V1_ENV_SOURCE = textwrap.dedent(
+V1_TASKSET_SOURCE = textwrap.dedent(
     """
     import verifiers as vf
 
@@ -61,8 +60,7 @@ V1_ENV_SOURCE = textwrap.dedent(
 )
 
 
-# Lean v1 env: just a Taskset + load_taskset. No load_harness either.
-LEAN_V1_ENV_SOURCE = textwrap.dedent(
+LEAN_V1_TASKSET_SOURCE = textwrap.dedent(
     """
     import verifiers as vf
 
@@ -106,6 +104,27 @@ V0_ENV_SOURCE = textwrap.dedent(
 )
 
 
+# A standalone harness module: exposes load_harness(config) and a HarnessConfig
+# subclass. Mimics what environments/v1/harnesses/<name>/ packages do.
+EXTERNAL_HARNESS_SOURCE = textwrap.dedent(
+    """
+    import verifiers as vf
+
+
+    class ExtHarnessConfig(vf.HarnessConfig):
+        ext_field: str = "default"
+
+
+    class ExtHarness(vf.Harness):
+        pass
+
+
+    def load_harness(config: ExtHarnessConfig) -> ExtHarness:
+        return ExtHarness(config=config)
+    """
+)
+
+
 def _install_module(tmp_path: Path, monkeypatch, name: str, source: str) -> None:
     module_path = tmp_path / f"{name}.py"
     module_path.write_text(source)
@@ -114,25 +133,33 @@ def _install_module(tmp_path: Path, monkeypatch, name: str, source: str) -> None
 
 
 @pytest.fixture
-def dummy_v1_env(tmp_path: Path, monkeypatch):
-    name = "dummy_v1_env"
-    _install_module(tmp_path, monkeypatch, name, V1_ENV_SOURCE)
+def dummy_taskset(tmp_path: Path, monkeypatch):
+    name = "dummy_taskset"
+    _install_module(tmp_path, monkeypatch, name, V1_TASKSET_SOURCE)
     yield name
     sys.modules.pop(name, None)
 
 
 @pytest.fixture
-def lean_v1_env(tmp_path: Path, monkeypatch):
-    name = "lean_v1_env"
-    _install_module(tmp_path, monkeypatch, name, LEAN_V1_ENV_SOURCE)
+def lean_taskset(tmp_path: Path, monkeypatch):
+    name = "lean_taskset"
+    _install_module(tmp_path, monkeypatch, name, LEAN_V1_TASKSET_SOURCE)
     yield name
     sys.modules.pop(name, None)
 
 
 @pytest.fixture
-def dummy_v0_env(tmp_path: Path, monkeypatch):
+def v0_env(tmp_path: Path, monkeypatch):
     name = "dummy_v0_env"
     _install_module(tmp_path, monkeypatch, name, V0_ENV_SOURCE)
+    yield name
+    sys.modules.pop(name, None)
+
+
+@pytest.fixture
+def external_harness(tmp_path: Path, monkeypatch):
+    name = "ext_harness"
+    _install_module(tmp_path, monkeypatch, name, EXTERNAL_HARNESS_SOURCE)
     yield name
     sys.modules.pop(name, None)
 
@@ -143,76 +170,85 @@ def dummy_v0_env(tmp_path: Path, monkeypatch):
 
 
 def test_argv_no_positionals():
-    cleaned, env, harness = ev1._extract_initial_args(["vf-eval", "--env", "x"])
-    assert env == "x"
-    assert harness is None
-    assert cleaned == ["vf-eval", "--env", "x"]
-
-
-def test_argv_single_positional_promoted():
-    cleaned, env, harness = ev1._extract_initial_args(["vf-eval", "my-env"])
-    assert env == "my-env"
-    assert harness is None
-    assert "--env" in cleaned and cleaned[cleaned.index("--env") + 1] == "my-env"
-
-
-def test_argv_two_positionals_promoted():
-    cleaned, env, harness = ev1._extract_initial_args(
-        ["vf-eval", "my-env", "rlm", "--num-examples", "3"]
+    cleaned, ts, harness = ev1._extract_initial_args(
+        ["vf-eval-v1", "--taskset-name", "x"]
     )
-    assert env == "my-env"
+    assert ts == "x"
+    assert harness is None
+    assert cleaned == ["vf-eval-v1", "--taskset-name", "x"]
+
+
+def test_argv_single_positional_taskset():
+    cleaned, ts, harness = ev1._extract_initial_args(["vf-eval-v1", "my-taskset"])
+    assert ts == "my-taskset"
+    assert harness is None
+    assert "--taskset-name" in cleaned
+
+
+def test_argv_two_positionals():
+    cleaned, ts, harness = ev1._extract_initial_args(
+        ["vf-eval-v1", "my-taskset", "rlm", "--num-examples", "3"]
+    )
+    assert ts == "my-taskset"
     assert harness == "rlm"
-    assert "--env" in cleaned
+    assert "--taskset-name" in cleaned
     assert "--harness-name" in cleaned
     assert "--num-examples" in cleaned
 
 
 def test_argv_positionals_stop_at_first_flag():
-    cleaned, env, harness = ev1._extract_initial_args(
-        ["vf-eval", "my-env", "--num-examples", "3", "rlm"]
+    cleaned, ts, harness = ev1._extract_initial_args(
+        ["vf-eval-v1", "my-taskset", "--num-examples", "3", "rlm"]
     )
-    # 'rlm' came after a flag — not a positional. env stays from the
-    # positional; harness is None because flag-style fallback isn't here.
-    assert env == "my-env"
+    # 'rlm' came after a flag — not a positional.
+    assert ts == "my-taskset"
     assert harness is None
 
 
-def test_argv_explicit_flags_override_no_positionals():
-    cleaned, env, harness = ev1._extract_initial_args(
-        ["vf-eval", "--env", "explicit", "--harness-name", "rlm"]
+def test_argv_explicit_flags():
+    cleaned, ts, harness = ev1._extract_initial_args(
+        [
+            "vf-eval-v1",
+            "--taskset-name",
+            "explicit",
+            "--harness-name",
+            "rlm",
+        ]
     )
-    assert env == "explicit"
+    assert ts == "explicit"
     assert harness == "rlm"
 
 
-def test_argv_positional_env_with_explicit_harness_flag():
-    cleaned, env, harness = ev1._extract_initial_args(
-        ["vf-eval", "my-env", "--harness-name=rlm", "--num-examples", "5"]
+def test_argv_positional_taskset_explicit_harness_flag():
+    cleaned, ts, harness = ev1._extract_initial_args(
+        ["vf-eval-v1", "my-taskset", "--harness-name=rlm"]
     )
-    assert env == "my-env"
+    assert ts == "my-taskset"
     assert harness == "rlm"
 
 
 def test_argv_third_positional_rejected():
     with pytest.raises(SystemExit, match="two positionals"):
-        ev1._extract_initial_args(["vf-eval", "a", "b", "c"])
+        ev1._extract_initial_args(["vf-eval-v1", "a", "b", "c"])
 
 
-def test_argv_at_file_peek_for_env(tmp_path: Path):
+def test_argv_at_file_peek(tmp_path: Path):
     toml_path = tmp_path / "eval.toml"
-    toml_path.write_text('env = "from-toml"\nharness_name = "rlm"\n')
-    cleaned, env, harness = ev1._extract_initial_args(["vf-eval", "@", str(toml_path)])
-    assert env == "from-toml"
-    assert harness == "rlm"
+    toml_path.write_text('taskset_name = "from-toml"\nharness_name = "rlm-from-toml"\n')
+    cleaned, ts, harness = ev1._extract_initial_args(
+        ["vf-eval-v1", "@", str(toml_path)]
+    )
+    assert ts == "from-toml"
+    assert harness == "rlm-from-toml"
 
 
 def test_argv_positional_wins_over_toml(tmp_path: Path):
     toml_path = tmp_path / "eval.toml"
-    toml_path.write_text('env = "from-toml"\nharness_name = "from-toml-rlm"\n')
-    cleaned, env, harness = ev1._extract_initial_args(
-        ["vf-eval", "cli-env", "cli-rlm", "@", str(toml_path)]
+    toml_path.write_text('taskset_name = "from-toml"\nharness_name = "from-toml-rlm"\n')
+    cleaned, ts, harness = ev1._extract_initial_args(
+        ["vf-eval-v1", "cli-ts", "cli-rlm", "@", str(toml_path)]
     )
-    assert env == "cli-env"
+    assert ts == "cli-ts"
     assert harness == "cli-rlm"
 
 
@@ -221,39 +257,57 @@ def test_argv_positional_wins_over_toml(tmp_path: Path):
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_config_class_for_v1_env_is_dynamic(dummy_v1_env: str):
-    cls = ev1._resolve_config_class(dummy_v1_env, harness_name=None)
+def test_resolve_config_class_for_v1_taskset_is_dynamic(dummy_taskset: str):
+    cls = ev1._resolve_config_class(dummy_taskset, harness_name=None)
     assert cls.__name__ == "ResolvedEvalConfig"
-    # taskset / harness fields are typed to the env's actual subclasses
     taskset_field = cls.model_fields["taskset"].annotation
     harness_field = cls.model_fields["harness"].annotation
     assert taskset_field.__name__ == "DummyTasksetConfig"
-    # No positional harness → env's load_harness gives DummyHarnessConfig
+    # No positional harness → taskset module's load_harness gives DummyHarnessConfig
     assert harness_field.__name__ == "DummyHarnessConfig"
 
 
-def test_resolve_config_class_with_positional_harness(dummy_v1_env: str):
-    cls = ev1._resolve_config_class(dummy_v1_env, harness_name="base")
+def test_resolve_config_class_with_external_harness(
+    dummy_taskset: str, external_harness: str
+):
+    cls = ev1._resolve_config_class(dummy_taskset, harness_name=external_harness)
     harness_field = cls.model_fields["harness"].annotation
-    # 'base' alias → verifiers.v1:Harness → HarnessConfig
+    assert harness_field.__name__ == "ExtHarnessConfig"
+
+
+def test_resolve_config_class_for_lean_taskset_uses_base_harness(lean_taskset: str):
+    cls = ev1._resolve_config_class(lean_taskset, harness_name=None)
+    harness_field = cls.model_fields["harness"].annotation
     assert harness_field is HarnessConfig
 
 
-def test_resolve_config_class_for_lean_env_uses_base_harness(lean_v1_env: str):
-    cls = ev1._resolve_config_class(lean_v1_env, harness_name=None)
-    harness_field = cls.model_fields["harness"].annotation
-    assert harness_field is HarnessConfig
-
-
-def test_resolve_config_class_for_v0_env_returns_v0_config(dummy_v0_env: str):
-    cls = ev1._resolve_config_class(dummy_v0_env, harness_name=None)
+def test_resolve_config_class_for_v0_returns_v0_config(v0_env: str):
+    cls = ev1._resolve_config_class(v0_env, harness_name=None)
     assert cls is ev1.EvalV0Config
     assert "env_args" in cls.model_fields
 
 
-def test_resolve_config_class_without_env_falls_back_to_base():
+def test_resolve_config_class_without_taskset_falls_back_to_base():
     cls = ev1._resolve_config_class(None, harness_name=None)
     assert cls is ev1.EvalConfigBase
+
+
+def test_unknown_harness_module_raises(dummy_taskset: str):
+    with pytest.raises(Exception, match="not_a_module|No module named"):
+        ev1._resolve_config_class(dummy_taskset, harness_name="not_a_module")
+
+
+def test_harness_module_without_load_harness_raises(
+    dummy_taskset: str, tmp_path: Path, monkeypatch
+):
+    # Module that doesn't expose load_harness should fail with a clear error.
+    bad_name = "bad_harness_module"
+    _install_module(tmp_path, monkeypatch, bad_name, "")  # empty module
+    try:
+        with pytest.raises(AttributeError, match="load_harness"):
+            ev1._resolve_config_class(dummy_taskset, harness_name=bad_name)
+    finally:
+        sys.modules.pop(bad_name, None)
 
 
 # ---------------------------------------------------------------------------
@@ -262,72 +316,145 @@ def test_resolve_config_class_without_env_falls_back_to_base():
 
 
 def _parse_cli(argv: list[str]):
-    """Invoke ev1's full preprocess + dynamic-config + cli() pipeline."""
     from pydantic_config import cli as pyd_cli
 
-    cleaned, env_id, harness_name = ev1._extract_initial_args(argv)
-    cls = ev1._resolve_config_class(env_id, harness_name)
+    cleaned, ts, harness = ev1._extract_initial_args(argv)
+    cls = ev1._resolve_config_class(ts, harness)
     saved = sys.argv
     sys.argv = cleaned
     try:
-        return pyd_cli(cls), env_id, harness_name
+        return pyd_cli(cls), ts, harness
     finally:
         sys.argv = saved
 
 
-def test_cli_v1_positional_task(dummy_v1_env: str):
-    config, env_id, harness_name = _parse_cli(["vf-eval", dummy_v1_env])
-    assert env_id == dummy_v1_env
-    assert harness_name is None
-    assert config.env == dummy_v1_env
+def test_cli_v1_positional_taskset(dummy_taskset: str):
+    config, ts, harness = _parse_cli(["vf-eval-v1", dummy_taskset])
+    assert ts == dummy_taskset
+    assert harness is None
+    assert config.taskset_name == dummy_taskset
     assert config.taskset.difficulty == "easy"
 
 
-def test_cli_v1_typed_taskset_override(dummy_v1_env: str):
-    config, _, _ = _parse_cli(["vf-eval", dummy_v1_env, "--taskset.difficulty", "hard"])
+def test_cli_v1_typed_taskset_override(dummy_taskset: str):
+    config, _, _ = _parse_cli(
+        ["vf-eval-v1", dummy_taskset, "--taskset.difficulty", "hard"]
+    )
     assert config.taskset.difficulty == "hard"
 
 
-def test_cli_v1_typed_harness_override(dummy_v1_env: str):
-    config, _, _ = _parse_cli(["vf-eval", dummy_v1_env, "--harness.extra-field", "42"])
-    # DummyHarnessConfig.extra_field: int — pydantic coerces "42" -> 42
+def test_cli_v1_typed_harness_override(dummy_taskset: str):
+    config, _, _ = _parse_cli(
+        ["vf-eval-v1", dummy_taskset, "--harness.extra-field", "42"]
+    )
     assert config.harness.extra_field == 42
 
 
-def test_cli_v1_rejects_unknown_taskset_field(dummy_v1_env: str):
+def test_cli_v1_rejects_unknown_taskset_field(dummy_taskset: str):
     with pytest.raises(SystemExit):
-        _parse_cli(["vf-eval", dummy_v1_env, "--taskset.unknown", "x"])
+        _parse_cli(["vf-eval-v1", dummy_taskset, "--taskset.unknown", "x"])
 
 
-def test_cli_v1_rejects_unknown_harness_field(dummy_v1_env: str):
+def test_cli_v1_rejects_unknown_harness_field(dummy_taskset: str):
     with pytest.raises(SystemExit):
-        _parse_cli(["vf-eval", dummy_v1_env, "--harness.unknown", "x"])
+        _parse_cli(["vf-eval-v1", dummy_taskset, "--harness.unknown", "x"])
 
 
-def test_cli_v1_positional_harness_swap(dummy_v1_env: str):
-    config, _, harness_name = _parse_cli(["vf-eval", dummy_v1_env, "base"])
-    assert harness_name == "base"
-    assert isinstance(config.harness, HarnessConfig)
-    assert type(config.harness).__name__ == "HarnessConfig"
-
-
-def test_cli_v1_lean_env_typed_default_harness(lean_v1_env: str):
-    config, _, _ = _parse_cli(["vf-eval", lean_v1_env, "--harness.max-turns", "12"])
-    assert type(config.harness).__name__ == "HarnessConfig"
-    assert config.harness.max_turns == 12
-
-
-def test_cli_v0_env_typed(dummy_v0_env: str):
-    config, _, _ = _parse_cli(
-        ["vf-eval", dummy_v0_env, "--env-args", '{"some_arg": 1}']
+def test_cli_v1_external_harness_module(dummy_taskset: str, external_harness: str):
+    config, _, harness_name = _parse_cli(
+        [
+            "vf-eval-v1",
+            dummy_taskset,
+            external_harness,
+            "--harness.ext-field",
+            "custom",
+        ]
     )
+    assert harness_name == external_harness
+    assert type(config.harness).__name__ == "ExtHarnessConfig"
+    assert config.harness.ext_field == "custom"
+
+
+def test_cli_v1_client_sub_config(dummy_taskset: str):
+    config, _, _ = _parse_cli(
+        [
+            "vf-eval-v1",
+            dummy_taskset,
+            "--client.model",
+            "gpt-test",
+            "--client.provider",
+            "openai",
+        ]
+    )
+    assert config.client.model == "gpt-test"
+    assert config.client.provider == "openai"
+
+
+def test_cli_v1_sampling_sub_config(dummy_taskset: str):
+    config, _, _ = _parse_cli(
+        [
+            "vf-eval-v1",
+            dummy_taskset,
+            "--sampling.temperature",
+            "0.5",
+            "--sampling.max-tokens",
+            "256",
+        ]
+    )
+    assert config.sampling.temperature == 0.5
+    assert config.sampling.max_tokens == 256
+
+
+def test_cli_v1_rejects_unknown_client_field(dummy_taskset: str):
+    with pytest.raises(SystemExit):
+        _parse_cli(["vf-eval-v1", dummy_taskset, "--client.unknown", "x"])
+
+
+def test_cli_v1_rejects_unknown_sampling_field(dummy_taskset: str):
+    with pytest.raises(SystemExit):
+        _parse_cli(["vf-eval-v1", dummy_taskset, "--sampling.unknown", "x"])
+
+
+def test_cli_v0_env_typed(v0_env: str):
+    config, _, _ = _parse_cli(["vf-eval-v1", v0_env, "--env-args", '{"some_arg": 1}'])
     assert isinstance(config, ev1.EvalV0Config)
     assert config.env_args == {"some_arg": 1}
 
 
-def test_cli_v0_env_rejects_positional_harness(dummy_v0_env: str):
+def test_cli_v0_env_rejects_positional_harness(v0_env: str):
     with pytest.raises(SystemExit):
-        _parse_cli(["vf-eval", dummy_v0_env, "rlm"])
+        _parse_cli(["vf-eval-v1", v0_env, "rlm"])
+
+
+# ---------------------------------------------------------------------------
+# Sampling/client merge into legacy EvalConfig
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_sampling_args_merges_typed_and_extras(dummy_taskset: str):
+    config, _, _ = _parse_cli(
+        [
+            "vf-eval-v1",
+            dummy_taskset,
+            "--sampling.temperature",
+            "0.5",
+            "--sampling.max-tokens",
+            "100",
+            "--sampling.extras",
+            '{"top_k": 40}',
+        ]
+    )
+    args = ev1._resolve_sampling_args(config)
+    assert args == {"temperature": 0.5, "max_tokens": 100, "top_k": 40}
+
+
+def test_resolve_legacy_client_config_uses_provider_defaults(dummy_taskset: str):
+    config, _, _ = _parse_cli(
+        ["vf-eval-v1", dummy_taskset, "--client.provider", "openai"]
+    )
+    legacy = ev1._resolve_legacy_client_config(config)
+    assert legacy.api_base_url == "https://api.openai.com/v1"
+    assert legacy.api_key_var == "OPENAI_API_KEY"
 
 
 # ---------------------------------------------------------------------------
@@ -335,83 +462,86 @@ def test_cli_v0_env_rejects_positional_harness(dummy_v0_env: str):
 # ---------------------------------------------------------------------------
 
 
-def test_v1_env_args_taskset_dispatch(dummy_v1_env: str):
-    config, _, _ = _parse_cli(["vf-eval", dummy_v1_env, "--taskset.difficulty", "hard"])
+def test_v1_env_args_taskset_dispatch(dummy_taskset: str):
+    config, _, _ = _parse_cli(
+        ["vf-eval-v1", dummy_taskset, "--taskset.difficulty", "hard"]
+    )
     env_args = ev1._v1_env_args(config)
     assert env_args[V1_TASKSET_KEY] == {"difficulty": "hard"}
 
 
-def test_v1_env_args_harness_name_dispatch(dummy_v1_env: str):
-    config, _, _ = _parse_cli(["vf-eval", dummy_v1_env, "base"])
+def test_v1_env_args_harness_name_dispatch(dummy_taskset: str, external_harness: str):
+    config, _, _ = _parse_cli(["vf-eval-v1", dummy_taskset, external_harness])
     env_args = ev1._v1_env_args(config)
-    assert env_args[V1_HARNESS_KEY] == {"name": "base"}
+    assert env_args[V1_HARNESS_KEY] == {"name": external_harness}
 
 
-def test_v1_env_args_combined(dummy_v1_env: str):
+def test_v1_env_args_combined(dummy_taskset: str, external_harness: str):
     config, _, _ = _parse_cli(
         [
-            "vf-eval",
-            dummy_v1_env,
-            "base",
+            "vf-eval-v1",
+            dummy_taskset,
+            external_harness,
             "--taskset.difficulty",
             "hard",
-            "--harness.max-turns",
-            "7",
+            "--harness.ext-field",
+            "x",
         ]
     )
     env_args = ev1._v1_env_args(config)
     assert env_args[V1_TASKSET_KEY] == {"difficulty": "hard"}
-    assert env_args[V1_HARNESS_KEY] == {"name": "base", "max_turns": 7}
+    assert env_args[V1_HARNESS_KEY] == {"name": external_harness, "ext_field": "x"}
 
 
 # ---------------------------------------------------------------------------
-# v1 dispatch through vf.load_environment
+# vf.load_environment dispatch
 # ---------------------------------------------------------------------------
 
 
-def test_load_environment_v1_default_harness(dummy_v1_env: str):
-    env = vf.load_environment(dummy_v1_env)
+def test_load_environment_v1_default_harness(dummy_taskset: str):
+    env = vf.load_environment(dummy_taskset)
     assert isinstance(env, vf.Env)
     assert type(env.taskset).__name__ == "DummyTaskset"
     assert type(env.harness).__name__ == "DummyHarness"
     assert env.harness.config.extra_field == 7
 
 
-def test_load_environment_v1_taskset_overrides(dummy_v1_env: str):
-    env = vf.load_environment(dummy_v1_env, **{V1_TASKSET_KEY: {"difficulty": "hard"}})
+def test_load_environment_v1_taskset_overrides(dummy_taskset: str):
+    env = vf.load_environment(dummy_taskset, **{V1_TASKSET_KEY: {"difficulty": "hard"}})
     assert env.taskset.config.difficulty == "hard"
 
 
-def test_load_environment_v1_harness_name_swap(dummy_v1_env: str):
+def test_load_environment_v1_harness_module_swap(
+    dummy_taskset: str, external_harness: str
+):
     env = vf.load_environment(
-        dummy_v1_env,
-        **{V1_HARNESS_KEY: {"name": "verifiers.v1:Harness", "max_turns": 4}},
+        dummy_taskset,
+        **{V1_HARNESS_KEY: {"name": external_harness, "ext_field": "y"}},
     )
-    assert type(env.harness) is Harness
-    assert isinstance(env.harness.config, HarnessConfig)
-    assert env.harness.config.max_turns == 4
+    assert type(env.harness).__name__ == "ExtHarness"
+    assert env.harness.config.ext_field == "y"
 
 
-def test_load_environment_v1_dispatch_preserves_env_args(dummy_v1_env: str):
-    env_args = {V1_HARNESS_KEY: {"max_turns": 5}}
-    env = vf.load_environment(dummy_v1_env, **env_args)
+def test_load_environment_v1_dispatch_preserves_env_args(dummy_taskset: str):
+    env_args = {V1_HARNESS_KEY: {"extra_field": 5}}
+    env = vf.load_environment(dummy_taskset, **env_args)
     assert env.env_args == env_args
 
 
 # ---------------------------------------------------------------------------
-# Lean env: only load_taskset, no load_environment, no load_harness.
+# Lean taskset: only load_taskset, no load_harness.
 # ---------------------------------------------------------------------------
 
 
-def test_lean_v1_env_auto_resolves_base_harness(lean_v1_env: str):
-    env = vf.load_environment(lean_v1_env)
+def test_lean_taskset_auto_resolves_base_harness(lean_taskset: str):
+    env = vf.load_environment(lean_taskset)
     assert type(env.taskset).__name__ == "LeanTaskset"
     assert type(env.harness) is Harness
 
 
-def test_lean_v1_env_load_environment_rejects_extra_kwargs(lean_v1_env: str):
+def test_lean_taskset_load_environment_rejects_extra_kwargs(lean_taskset: str):
     with pytest.raises(Exception, match="load_taskset"):
-        vf.load_environment(lean_v1_env, foo=1)
+        vf.load_environment(lean_taskset, foo=1)
 
 
 # ---------------------------------------------------------------------------
@@ -419,25 +549,17 @@ def test_lean_v1_env_load_environment_rejects_extra_kwargs(lean_v1_env: str):
 # ---------------------------------------------------------------------------
 
 
-def test_build_v1_env_uses_env_load_harness(dummy_v1_env: str):
-    env = build_v1_env(dummy_v1_env)
+def test_build_v1_env_uses_taskset_load_harness(dummy_taskset: str):
+    env = build_v1_env(dummy_taskset)
     assert type(env.harness).__name__ == "DummyHarness"
 
 
-def test_build_v1_env_explicit_base_harness(dummy_v1_env: str):
-    env = build_v1_env(dummy_v1_env, harness_spec={"name": "base", "max_turns": 2})
-    assert type(env.harness) is Harness
-    assert env.harness.config.max_turns == 2
-
-
-# ---------------------------------------------------------------------------
-# Harness alias registry + helpers
-# ---------------------------------------------------------------------------
-
-
-def test_harness_aliases_registered():
-    assert HARNESS_ALIASES["rlm"] == "verifiers.v1.packages.harnesses:RLM"
-    assert HARNESS_ALIASES["base"] == "verifiers.v1:Harness"
+def test_build_v1_env_external_harness(dummy_taskset: str, external_harness: str):
+    env = build_v1_env(
+        dummy_taskset, harness_spec={"name": external_harness, "ext_field": "z"}
+    )
+    assert type(env.harness).__name__ == "ExtHarness"
+    assert env.harness.config.ext_field == "z"
 
 
 def test_has_v1_overrides():

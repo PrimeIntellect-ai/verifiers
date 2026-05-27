@@ -71,8 +71,8 @@ def load_taskset(config: ReverseTasksetConfig) -> ReverseTaskset:
 Override the default harness from the CLI without touching the env code:
 
 ```bash
-vf-eval-v1 my-env --harness.max-turns 5    # tweak the default harness's config
-vf-eval-v1 my-env rlm                       # swap in a different harness class
+vf-eval-v1 my-taskset --harness.max-turns 5    # tweak the default harness's config
+vf-eval-v1 my-taskset rlm                       # swap in another harness module
 ```
 
 ## Tasksets
