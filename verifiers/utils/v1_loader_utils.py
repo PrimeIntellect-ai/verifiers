@@ -116,61 +116,31 @@ def build_v1_taskset(env_module, overrides: dict[str, Any]) -> Taskset:
     return taskset
 
 
-def _collect_taskset_harness_defaults(taskset: Taskset | None) -> dict[str, Any]:
-    """Read the taskset's harness opinions via ``Taskset.harness_defaults()``.
-
-    Returns an empty dict for tasksets that don't override the hook.
-    """
-    if taskset is None:
-        return {}
-    defaults = taskset.harness_defaults()
-    if not isinstance(defaults, dict):
-        raise TypeError(
-            f"{type(taskset).__name__}.harness_defaults() must return a dict; "
-            f"got {type(defaults).__name__}."
-        )
-    return dict(defaults)
-
-
-def build_v1_harness(
-    env_module,
-    harness_spec: dict[str, Any],
-    *,
-    taskset: Taskset | None = None,
-) -> Harness:
+def build_v1_harness(env_module, harness_spec: dict[str, Any]) -> Harness:
     """Resolve and build the v1 harness for an env.
 
     ``harness_spec`` shape: ``{"name": "<harness-module>"|None, **overrides}``.
 
     * ``name`` set: import the harness module, read its ``HarnessConfig``
-      subclass from ``load_harness``, validate the merged config against it,
-      call ``load_harness(config=...)``.
+      subclass from ``load_harness``, validate ``overrides`` against it, call
+      ``load_harness(config=...)``.
     * ``name`` unset: use the env's own ``load_harness`` if present, else the
       base ``verifiers.v1.Harness`` with ``HarnessConfig`` defaults.
-
-    When ``taskset`` is supplied, its ``harness_defaults()`` is merged
-    *underneath* the user's overrides so opinions travel with the taskset
-    across harness choices. Precedence:
-
-        HarnessConfig defaults < taskset.harness_defaults() < CLI overrides
     """
     spec = dict(harness_spec)
     name = spec.pop("name", None)
-    taskset_defaults = _collect_taskset_harness_defaults(taskset)
-    merged = {**taskset_defaults, **spec}
-
     if name:
         harness_module = resolve_harness_module(name)
         config_type = harness_config_type_from_module(harness_module)
-        config = config_type.model_validate(merged)
+        config = config_type.model_validate(spec)
         harness = harness_module.load_harness(config=config)
     elif hasattr(env_module, "load_harness"):
         factory_type = _factory_config_type(env_module, "load_harness", HarnessConfig)
         config_type = cast(type[HarnessConfig], factory_type or HarnessConfig)
-        config = config_type.model_validate(merged)
+        config = config_type.model_validate(spec)
         harness = env_module.load_harness(config=config)
     else:
-        config = HarnessConfig.model_validate(merged)
+        config = HarnessConfig.model_validate(spec)
         harness = Harness(config=config)
     if not isinstance(harness, Harness):
         raise TypeError(
@@ -194,7 +164,7 @@ def build_v1_env(
             "only available for taskset/harness environments."
         )
     taskset = build_v1_taskset(env_module, taskset_overrides or {})
-    harness = build_v1_harness(env_module, harness_spec or {}, taskset=taskset)
+    harness = build_v1_harness(env_module, harness_spec or {})
     env = VEnv(taskset=taskset, harness=harness)
     env.env_id = env_id
     return env

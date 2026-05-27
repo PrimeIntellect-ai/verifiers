@@ -99,24 +99,6 @@ class Taskset(RuntimeOwnerMixin, Generic[ConfigT]):
         skills = self.get_skills_dir()
         return {} if skills is None else {"skills": skills}
 
-    def harness_defaults(self) -> ConfigData:
-        """Harness-config defaults this taskset prefers.
-
-        Returned values are merged on top of the chosen ``HarnessConfig``
-        subclass's own defaults but below any ``--harness.<field>`` CLI /
-        TOML overrides. The merged dict is validated against the resolved
-        ``HarnessConfig`` subclass; supplying a field that doesn't exist on
-        the chosen harness fails loudly.
-
-        Override on subclasses to express opinions that should travel with
-        the taskset across any harness choice — e.g. a single-turn task
-        returning ``{"max_turns": 1}`` regardless of which harness module
-        the user picks.
-
-        Returns an empty dict by default.
-        """
-        return {}
-
     def _runtime_owner_changed(self) -> None:
         for harness in list(self._attached_harnesses):
             harness.runtime = harness.resolve_runtime()
