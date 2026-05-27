@@ -257,9 +257,8 @@ class TrajectoryStepTokens(TypedDict):
     # ``NotRequired`` because text-only rollouts (and non-renderer client
     # types) never populate it.
     multi_modal_data: NotRequired[Any]
-    # Renderer-emitted prompt attribution
-    # (``renderers.base.RenderedTokens``); ``NotRequired`` because only
-    # ``RendererClient`` rollouts populate it.
+    # ``RenderedTokens`` as dict (rehydrate via ``RenderedTokens(**d)``);
+    # only ``RendererClient`` rollouts populate it.
     prompt_attribution: NotRequired[Any]
 
 
