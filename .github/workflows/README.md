@@ -14,7 +14,7 @@ This directory contains automated workflows for the verifiers project.
 **What it does**:
 - Runs ruff for linting and formatting checks
 - Runs ty type checks with `uv run ty check verifiers`
-- Runs Semgrep policy checks through pre-commit's isolated hook environment.
+- Runs Semgrep policy checks from the isolated `policy` dependency group.
 - Uses configuration from `pyproject.toml`, `.pre-commit-config.yaml`, and `.semgrep/verifiers.yml`
 
 ### 2. Test (`test.yml`)
@@ -58,7 +58,7 @@ To run checks locally the same way they run in CI:
 uv run ty check verifiers
 
 # Verifiers-specific policy lint
-env PYTHONWARNINGS=ignore::SyntaxWarning uv run pre-commit run semgrep-v1-policy --all-files
+env PYTHONWARNINGS=ignore::SyntaxWarning uv run --no-dev --group policy semgrep --metrics=off --disable-version-check --config .semgrep/verifiers.yml --error --quiet
 
 # Tests
 uv sync

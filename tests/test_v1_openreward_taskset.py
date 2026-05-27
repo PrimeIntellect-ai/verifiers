@@ -4,6 +4,9 @@ from typing import cast
 import pytest
 
 import verifiers as vf
+
+pytest.importorskip("openreward")
+
 from tasksets import openreward
 
 
