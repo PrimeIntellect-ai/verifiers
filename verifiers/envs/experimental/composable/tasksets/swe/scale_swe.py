@@ -335,7 +335,7 @@ exit "$fail"
         ]
         for command in commands:
             await sandbox_client.execute_command(
-                sandbox_id, command, working_dir=workdir, timeout=60
+                sandbox_id, command, working_dir=workdir, timeout=120
             )
 
     def _calculate_reward(self, test_output: str, info: dict) -> float:
