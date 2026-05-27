@@ -198,7 +198,10 @@ class EnvRouter:
             name=worker_name,
             daemon=False,
         )
-        process.start()
+        from verifiers.utils.native_threads import scoped_native_thread_limits
+
+        with scoped_native_thread_limits():
+            process.start()
 
         socket = self.ctx.socket(zmq.PUSH)
         socket.setsockopt(zmq.SNDHWM, 0)
