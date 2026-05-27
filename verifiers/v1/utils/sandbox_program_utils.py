@@ -445,12 +445,26 @@ def message_from_response(response):
                 "type": getattr(call, "type", "function"),
                 "function": {
                     "name": call.function.name,
-                    "arguments": call.function.arguments,
+                    "arguments": normalize_tool_call_arguments(
+                        call.function.arguments
+                    ),
                 },
             }
             for call in tool_calls
         ]
     return data
+
+
+def normalize_tool_call_arguments(arguments):
+    if arguments is None:
+        return "{}"
+    if isinstance(arguments, str):
+        try:
+            json.loads(arguments)
+            return arguments
+        except json.JSONDecodeError:
+            return json.dumps({"arguments": arguments})
+    return json.dumps(arguments)
 
 
 def message_from_chat_completion_data(response):
@@ -471,7 +485,9 @@ def message_from_chat_completion_data(response):
                     "type": call.get("type") or "function",
                     "function": {
                         "name": function["name"],
-                        "arguments": function.get("arguments") or "{}",
+                        "arguments": normalize_tool_call_arguments(
+                            function.get("arguments")
+                        ),
                     },
                 }
             )
