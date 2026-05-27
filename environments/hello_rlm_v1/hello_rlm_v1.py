@@ -1,5 +1,5 @@
 import verifiers as vf
-from verifiers.v1.packages.harnesses import RLM, RLMConfig
+from harnesses import RLM, RLMConfig
 
 
 @vf.reward(weight=1.0)

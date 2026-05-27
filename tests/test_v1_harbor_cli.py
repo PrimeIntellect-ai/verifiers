@@ -10,7 +10,7 @@ from uuid import uuid4
 import pytest
 
 import verifiers as vf
-from verifiers.v1.packages.harnesses import (
+from harnesses import (
     MiniSWEAgent,
     MiniSWEAgentConfig,
     OpenCode,
@@ -21,19 +21,19 @@ from verifiers.v1.packages.harnesses import (
     RLMConfig,
     Terminus2Config,
 )
-from verifiers.v1.packages.harnesses.pi import pi_mcp_json, pi_models_json
-from verifiers.v1.packages.harnesses.configs import (
+from harnesses.pi import pi_mcp_json, pi_models_json
+from harnesses.configs import (
     PI_DEFAULT_PACKAGE,
     TERMINUS_2_DEFAULT_API_BASE_URL,
     TERMINUS_2_DEFAULT_HARBOR_PACKAGE,
     TERMINUS_2_DEFAULT_MODEL_NAME,
 )
-from verifiers.v1.packages.harnesses.terminus_2 import (
+from harnesses.terminus_2 import (
     Terminus2,
     terminus_2_agent_script,
 )
-from verifiers.v1.packages.tasksets import HarborTaskset, HarborTasksetConfig
-from verifiers.v1.packages.tasksets.harbor import harbor_reward, harbor_task_row
+from tasksets import HarborTaskset, HarborTasksetConfig
+from tasksets.harbor import harbor_reward, harbor_task_row
 from verifiers.v1.utils.program_utils import merge_task_program, merge_task_sandbox
 from verifiers.v1.utils.sandbox_python_utils import SANDBOX_PYTHON
 
@@ -73,8 +73,8 @@ def write_harbor_package(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Mod
     (package_dir / "__init__.py").write_text(
         """
 import verifiers as vf
-from verifiers.v1.packages.harnesses import OpenCode, OpenCodeConfig
-from verifiers.v1.packages.tasksets import HarborTaskset, HarborTasksetConfig
+from harnesses import OpenCode, OpenCodeConfig
+from tasksets import HarborTaskset, HarborTasksetConfig
 
 
 def load_taskset(config: HarborTasksetConfig):

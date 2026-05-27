@@ -12,13 +12,12 @@ from importlib.resources import files
 from pathlib import Path
 from typing import cast
 
-from verifiers.utils.import_utils import load_toml
-
-from ...config import CallableEntry, TasksetConfig
-from ...taskset import Taskset
-from ...utils.sandbox_utils import SandboxClient
 from verifiers.decorators import reward
-from ...types import ConfigData
+from verifiers.utils.import_utils import load_toml
+from verifiers.v1.config import CallableEntry, TasksetConfig
+from verifiers.v1.taskset import Taskset
+from verifiers.v1.types import ConfigData
+from verifiers.v1.utils.sandbox_utils import SandboxClient
 
 TASKS_SUBDIR = "tasks"
 
@@ -30,7 +29,7 @@ def _resolve_caller_package() -> str | None:
             package = frame_info.frame.f_globals.get("__name__")
         if not isinstance(package, str) or not package or package == "__main__":
             continue
-        if package.startswith("verifiers"):
+        if package.startswith(("verifiers", "tasksets", "harnesses")):
             continue
         return package
     return None

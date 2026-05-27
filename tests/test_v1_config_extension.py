@@ -22,7 +22,7 @@ from verifiers import (
     Toolset,
 )
 from verifiers.v1.toolset import normalize_toolset
-from verifiers.v1.packages.harnesses import OpenCode
+from harnesses import OpenCode
 from verifiers.utils.import_utils import load_toml
 from verifiers.v1.utils.config_utils import coerce_config, explicit_config_data
 
@@ -1865,8 +1865,8 @@ def test_env_rejects_harness_builders() -> None:
 
 
 def test_package_harness_requires_package_config_subtype() -> None:
-    from verifiers.v1.packages.harnesses.opencode import OpenCode
-    from verifiers.v1.packages.harnesses.opencode import OpenCodeConfig
+    from harnesses.opencode import OpenCode
+    from harnesses.opencode import OpenCodeConfig
 
     config = OpenCode(config=OpenCodeConfig(model="configured-model")).config
 

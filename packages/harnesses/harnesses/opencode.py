@@ -4,15 +4,15 @@ from pathlib import PurePosixPath
 
 from .command import configure_command_harness
 from .configs import OpenCodeConfig
-from ...harness import Harness
-from ...utils.mcp_proxy_utils import proxy_command
-from ...types import (
+from verifiers.v1.harness import Harness
+from verifiers.v1.types import (
     ConfigData,
-    ProgramCommand,
     ProgramChannels,
+    ProgramCommand,
     ProgramOptionMap,
     ProgramSetup,
 )
+from verifiers.v1.utils.mcp_proxy_utils import proxy_command
 
 
 class OpenCode(Harness):

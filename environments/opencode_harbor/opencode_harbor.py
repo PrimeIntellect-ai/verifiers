@@ -1,6 +1,6 @@
 import verifiers as vf
-from verifiers.v1.packages.harnesses import OpenCode, OpenCodeConfig
-from verifiers.v1.packages.tasksets import HarborTaskset, HarborTasksetConfig
+from harnesses import OpenCode, OpenCodeConfig
+from tasksets import HarborTaskset, HarborTasksetConfig
 
 
 class OpenCodeHarborEnvConfig(vf.EnvConfig):

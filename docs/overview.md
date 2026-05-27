@@ -119,13 +119,14 @@ def load_environment(config: vf.EnvConfig) -> vf.Env:
     return vf.Env(taskset=vf.load_taskset(config=config.taskset))
 ```
 See [BYO Harness](byo-harness.md) for the advanced v1 taskset/harness API.
-Reusable v1 taskset and harness packages live under `verifiers.v1.packages`.
-For example, Harbor task directories can run through the bundled OpenCode CLI
-harness with:
+Reusable v1 taskset and harness packages live in `tasksets` and `harnesses`.
+Install them with `uv add "verifiers[packages]"`, or with the narrower
+`verifiers[tasksets]` and `verifiers[harnesses]` extras. For example, Harbor
+task directories can run through the bundled OpenCode CLI harness with:
 
 ```python
-from verifiers.v1.packages.harnesses import OpenCode, OpenCodeConfig
-from verifiers.v1.packages.tasksets import HarborTaskset, HarborTasksetConfig
+from harnesses import OpenCode, OpenCodeConfig
+from tasksets import HarborTaskset, HarborTasksetConfig
 
 env = vf.Env(
     taskset=HarborTaskset(config=HarborTasksetConfig()),

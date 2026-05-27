@@ -414,8 +414,8 @@ directories, and other sandboxed CLI programs. Prefer packaged harnesses when
 the format already matches:
 
 ```python
-from verifiers.v1.packages.harnesses import OpenCode, OpenCodeConfig
-from verifiers.v1.packages.tasksets import HarborTaskset, HarborTasksetConfig
+from harnesses import OpenCode, OpenCodeConfig
+from tasksets import HarborTaskset, HarborTasksetConfig
 
 env = vf.Env(
     taskset=HarborTaskset(config=HarborTasksetConfig()),

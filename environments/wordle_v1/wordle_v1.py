@@ -2,7 +2,7 @@ import re
 from pathlib import Path
 
 import verifiers as vf
-from verifiers.v1.packages.tasksets.textarena import (
+from tasksets.textarena import (
     TextArenaTaskset,
     TextArenaTasksetConfig,
 )

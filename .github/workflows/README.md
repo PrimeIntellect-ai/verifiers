@@ -31,6 +31,15 @@ This directory contains automated workflows for the verifiers project.
 - Uploads HTML coverage reports as artifacts
 - Comments on PRs with test results
 
+### 3. Package Publishing
+**Purpose**: Build and publish PyPI packages.
+
+**Workflows**:
+- `tag-and-release.yml` publishes `verifiers` from `v*` tags with trusted publishing.
+- `publish-tasksets.yml` publishes `tasksets` from `tasksets-v*` tags with trusted publishing.
+- `publish-harnesses.yml` publishes `harnesses` from `harnesses-v*` tags with trusted publishing.
+- `publish-verifiers-rl.yml` publishes `verifiers-rl` from `verifiers-rl-v*` tags.
+
 ## Setting Up
 
 ### Branch Protection

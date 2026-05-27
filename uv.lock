@@ -19,7 +19,7 @@ conflicts = [[
 ]]
 
 [options]
-exclude-newer = "2026-05-18T23:52:58.317507426Z"
+exclude-newer = "2026-05-20T01:45:26.984898Z"
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
@@ -28,6 +28,8 @@ prime-sandboxes = false
 prime-pydantic-config = false
 renderers = false
 openenv-core = false
+harnesses = false
+tasksets = false
 
 [[package]]
 name = "accelerate"
@@ -1855,6 +1857,17 @@ sdist = { url = "https://files.pythonhosted.org/packages/01/ee/02a2c011bdab74c6f
 wheels = [
     { url = "https://files.pythonhosted.org/packages/04/4b/29cac41a4d98d144bf5f6d33995617b185d14b22401f75ca86f384e87ff1/h11-0.16.0-py3-none-any.whl", hash = "sha256:63cf8bbe7522de3bf65932fda1d9c2772064ffb3dae62d55932da54b31cb6c86", size = 37515, upload-time = "2025-04-24T03:35:24.344Z" },
 ]
+
+[[package]]
+name = "harnesses"
+version = "0.1.0.post0"
+source = { editable = "packages/harnesses" }
+dependencies = [
+    { name = "verifiers" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "verifiers", specifier = ">=0.1.15.dev11" }]
 
 [[package]]
 name = "hf-gradio"
@@ -6185,6 +6198,28 @@ wheels = [
 ]
 
 [[package]]
+name = "tasksets"
+version = "0.1.0.post0"
+source = { editable = "packages/tasksets" }
+dependencies = [
+    { name = "verifiers" },
+]
+
+[package.optional-dependencies]
+textarena = [
+    { name = "nltk" },
+    { name = "textarena" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "nltk", marker = "extra == 'textarena'" },
+    { name = "textarena", marker = "extra == 'textarena'" },
+    { name = "verifiers", specifier = ">=0.1.15.dev11" },
+]
+provides-extras = ["textarena"]
+
+[[package]]
 name = "tenacity"
 version = "9.1.4"
 source = { registry = "https://pypi.org/simple" }
@@ -6782,8 +6817,15 @@ browser = [
     { name = "python-dotenv" },
     { name = "stagehand" },
 ]
+harnesses = [
+    { name = "harnesses" },
+]
 openenv = [
     { name = "openenv-core" },
+]
+packages = [
+    { name = "harnesses" },
+    { name = "tasksets" },
 ]
 renderers = [
     { name = "renderers" },
@@ -6804,13 +6846,16 @@ rl = [
     { name = "wandb" },
 ]
 ta = [
-    { name = "nltk" },
-    { name = "textarena" },
+    { name = "tasksets", extra = ["textarena"] },
+]
+tasksets = [
+    { name = "tasksets" },
 ]
 
 [package.dev-dependencies]
 dev = [
     { name = "aiohttp" },
+    { name = "harnesses" },
     { name = "ipykernel" },
     { name = "ipywidgets" },
     { name = "nltk" },
@@ -6824,6 +6869,7 @@ dev = [
     { name = "renderers" },
     { name = "ruff" },
     { name = "stagehand" },
+    { name = "tasksets" },
     { name = "textarena" },
     { name = "ty" },
 ]
@@ -6842,6 +6888,8 @@ requires-dist = [
     { name = "deepspeed", marker = "extra == 'rl'", specifier = ">=0.17.6" },
     { name = "flash-attn", marker = "extra == 'rl'", specifier = ">=2.8.3" },
     { name = "gepa" },
+    { name = "harnesses", marker = "extra == 'harnesses'", editable = "packages/harnesses" },
+    { name = "harnesses", marker = "extra == 'packages'", editable = "packages/harnesses" },
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "jinja2", specifier = ">=3.1.6" },
     { name = "liger-kernel", marker = "extra == 'rl'", specifier = ">=0.5.10" },
@@ -6849,7 +6897,6 @@ requires-dist = [
     { name = "mcp", specifier = ">=1.14.1" },
     { name = "msgpack", specifier = ">=1.1.2" },
     { name = "nest-asyncio", specifier = ">=1.6.0" },
-    { name = "nltk", marker = "extra == 'ta'" },
     { name = "numpy" },
     { name = "openai", specifier = ">=1.108.1" },
     { name = "openai-agents", specifier = ">=0.0.7" },
@@ -6869,8 +6916,10 @@ requires-dist = [
     { name = "rich" },
     { name = "setproctitle", specifier = ">=1.3.0" },
     { name = "stagehand", marker = "extra == 'browser'", specifier = ">=3.0.0" },
+    { name = "tasksets", marker = "extra == 'packages'", editable = "packages/tasksets" },
+    { name = "tasksets", marker = "extra == 'tasksets'", editable = "packages/tasksets" },
+    { name = "tasksets", extras = ["textarena"], marker = "extra == 'ta'", editable = "packages/tasksets" },
     { name = "tenacity", specifier = ">=8.5.0" },
-    { name = "textarena", marker = "extra == 'ta'" },
     { name = "textual" },
     { name = "tomli", marker = "python_full_version < '3.11'" },
     { name = "torch", marker = "extra == 'rl'", specifier = ">=2.8.0,<2.9.0" },
@@ -6880,11 +6929,12 @@ requires-dist = [
     { name = "vllm", marker = "extra == 'rl'", specifier = ">=0.10.0,<0.11.0" },
     { name = "wandb", marker = "extra == 'rl'" },
 ]
-provides-extras = ["browser", "openenv", "renderers", "rg", "rl", "ta"]
+provides-extras = ["browser", "harnesses", "openenv", "packages", "renderers", "rg", "rl", "ta", "tasksets"]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "aiohttp", specifier = ">=3.9.0" },
+    { name = "harnesses", editable = "packages/harnesses" },
     { name = "ipykernel" },
     { name = "ipywidgets" },
     { name = "nltk" },
@@ -6898,6 +6948,7 @@ dev = [
     { name = "renderers", specifier = ">=0.1.8.dev28" },
     { name = "ruff" },
     { name = "stagehand", specifier = ">=3.0.0" },
+    { name = "tasksets", editable = "packages/tasksets" },
     { name = "textarena" },
     { name = "ty", specifier = ">=0.0.1a29,<0.0.22" },
 ]

@@ -13,7 +13,7 @@ def test_wordle_format_observation_extracts_latest_feedback():
 
 def test_wordle_load_taskset_requires_wordle_config():
     from environments.wordle_v1 import wordle_v1
-    from verifiers.v1.packages.tasksets.textarena import TextArenaTasksetConfig
+    from tasksets.textarena import TextArenaTasksetConfig
 
     with pytest.raises(AssertionError):
         wordle_v1.load_taskset(

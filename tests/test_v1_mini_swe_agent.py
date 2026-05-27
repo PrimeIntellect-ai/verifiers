@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import pytest
 import verifiers as vf
-from verifiers.v1.packages.harnesses import MiniSWEAgent, MiniSWEAgentConfig
+from harnesses import MiniSWEAgent, MiniSWEAgentConfig
 
 
 def write_harbor_task(root: Path) -> Path:
@@ -44,8 +44,8 @@ def write_harbor_package(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Mod
     (package_dir / "__init__.py").write_text(
         """
 import verifiers as vf
-from verifiers.v1.packages.harnesses import MiniSWEAgent, MiniSWEAgentConfig
-from verifiers.v1.packages.tasksets import HarborTaskset, HarborTasksetConfig
+from harnesses import MiniSWEAgent, MiniSWEAgentConfig
+from tasksets import HarborTaskset, HarborTasksetConfig
 
 
 def load_env():

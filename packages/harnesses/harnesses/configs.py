@@ -2,7 +2,7 @@ from collections.abc import Mapping
 
 from pydantic import field_validator
 
-from ...config import HarnessConfig, PromptInput, SandboxConfig
+from verifiers.v1.config import HarnessConfig, PromptInput, SandboxConfig
 
 OPENCODE_DEFAULT_RELEASE_REPO = "PrimeIntellect-ai/opencode"
 OPENCODE_DEFAULT_RELEASE_VERSION = "1.1.63-rl2"

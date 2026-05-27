@@ -19,20 +19,20 @@ from verifiers.envs.experimental.utils.git_checkout_cache import (
     resolve_git_checkout,
     validate_git_checkout,
 )
+from verifiers.v1.config import SandboxConfig, sandbox_config_mapping
+from verifiers.v1.harness import Harness
+from verifiers.v1.state import State
+from verifiers.v1.task import Task
+from verifiers.v1.taskset import Taskset
+from verifiers.v1.types import ConfigData, ConfigMap, ProgramCommand, ProgramValue
+from verifiers.v1.utils.program_utils import int_config
+from verifiers.v1.utils.prompt_utils import task_text
 
-from ...config import SandboxConfig, sandbox_config_mapping
-from ...harness import Harness
-from ...state import State
-from ...task import Task
-from ...taskset import Taskset
-from ...utils.prompt_utils import task_text
-from ...utils.program_utils import int_config
 from .command import command_program
 from .configs import (
     RLM_DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH,
     RLMConfig,
 )
-from ...types import ConfigData, ConfigMap, ProgramCommand, ProgramValue
 
 DEFAULT_RLM_CHECKOUT_PATH = "/tmp/rlm-checkout"
 DEFAULT_RLM_SKILLS_PATH = "/task/rlm-skills"

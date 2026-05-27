@@ -4,7 +4,7 @@ import pytest
 from typing import cast
 
 import verifiers as vf
-from verifiers.v1.packages.tasksets import textarena
+from tasksets import textarena
 
 
 class FakeNltk:

@@ -10,9 +10,9 @@ from .configs import (
     TERMINUS_2_DEFAULT_SYSTEM_PROMPT_PATH,
     Terminus2Config,
 )
-from ...harness import Harness
-from ...types import ProgramCommand, ProgramOptionMap
-from ...utils.sandbox_python_utils import SANDBOX_BIN_DIR, uv_setup_command
+from verifiers.v1.harness import Harness
+from verifiers.v1.types import ProgramCommand, ProgramOptionMap
+from verifiers.v1.utils.sandbox_python_utils import SANDBOX_BIN_DIR, uv_setup_command
 
 
 class Terminus2(Harness):

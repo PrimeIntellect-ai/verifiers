@@ -4,11 +4,16 @@ from pathlib import PurePosixPath
 
 from .command import configure_command_harness
 from .configs import PiConfig
-from ...harness import Harness
-from ...state import State
-from ...utils.mcp_proxy_utils import proxy_command
-from ...utils.binding_utils import Bindings
-from ...types import ConfigMap, ProgramChannels, ProgramCommand, ProgramOptionMap
+from verifiers.v1.harness import Harness
+from verifiers.v1.state import State
+from verifiers.v1.types import (
+    ConfigMap,
+    ProgramChannels,
+    ProgramCommand,
+    ProgramOptionMap,
+)
+from verifiers.v1.utils.binding_utils import Bindings
+from verifiers.v1.utils.mcp_proxy_utils import proxy_command
 
 
 class Pi(Harness):

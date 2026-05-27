@@ -3,9 +3,9 @@ from typing import TypeVar, cast
 
 from pydantic import BaseModel
 
-from ...config import HarnessConfig, SandboxConfig, sandbox_config_mapping
-from ...harness import Harness
-from ...types import (
+from verifiers.v1.config import HarnessConfig, SandboxConfig, sandbox_config_mapping
+from verifiers.v1.harness import Harness
+from verifiers.v1.types import (
     ConfigData,
     ConfigMap,
     ProgramCommand,
@@ -15,13 +15,13 @@ from ...types import (
     ProgramSetup,
     ProgramValue,
 )
-from ...utils.binding_utils import Bindings
-from ...utils.config_utils import resolve_config_object
-from ...utils.prompt_utils import (
+from verifiers.v1.utils.binding_utils import Bindings
+from verifiers.v1.utils.config_utils import resolve_config_object
+from verifiers.v1.utils.prompt_utils import (
     state_system_prompt_text,
     task_text as task_instruction_text,
 )
-from ...utils.program_utils import program_list_items
+from verifiers.v1.utils.program_utils import program_list_items
 
 ConfigT = TypeVar("ConfigT", bound=HarnessConfig)
 

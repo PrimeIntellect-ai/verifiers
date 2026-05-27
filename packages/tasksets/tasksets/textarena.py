@@ -6,13 +6,12 @@ from typing import Generic, Protocol, TypeVar, cast
 
 from verifiers.types import UserMessage
 from verifiers.utils.message_utils import get_messages
-
-from ...config import TasksetConfig
-from ...task import Task
-from ...taskset import Taskset
-from ...types import ConfigData
-from ...state import State
-from ...user import User
+from verifiers.v1.config import TasksetConfig
+from verifiers.v1.state import State
+from verifiers.v1.task import Task
+from verifiers.v1.taskset import Taskset
+from verifiers.v1.types import ConfigData
+from verifiers.v1.user import User
 
 try:
     import nltk
@@ -20,7 +19,7 @@ try:
 except ImportError as e:
     raise ImportError(
         "TextArenaTaskset requires nltk and textarena. "
-        "Install with: uv add 'verifiers[ta]'"
+        "Install with: uv add 'tasksets[textarena]'"
     ) from e
 
 

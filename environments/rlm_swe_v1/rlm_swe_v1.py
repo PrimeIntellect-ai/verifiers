@@ -8,7 +8,7 @@ from typing import Protocol
 
 from datasets import load_dataset
 import verifiers as vf
-from verifiers.v1.packages.harnesses import RLM, RLMConfig
+from harnesses import RLM, RLMConfig
 from verifiers.v1.types import ConfigMap
 from verifiers.v1.utils.config_utils import coerce_config
 

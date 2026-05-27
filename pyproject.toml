@@ -74,7 +74,9 @@ dev = [
     "aiohttp>=3.9.0",
     "python-dotenv>=1.0.0",
     "nltk",
+    "harnesses",
     "renderers>=0.1.8.dev28",
+    "tasksets",
 ]
 policy = [
     "semgrep>=1.150.0",
@@ -85,8 +87,17 @@ rg = [
     "reasoning-gym",
 ]
 ta = [
-    "textarena",
-    "nltk",
+    "tasksets[textarena]>=0.1.0.post0",
+]
+tasksets = [
+    "tasksets>=0.1.0.post0",
+]
+harnesses = [
+    "harnesses>=0.1.0.post0",
+]
+packages = [
+    "harnesses>=0.1.0.post0",
+    "tasksets>=0.1.0.post0",
 ]
 browser = [
     "stagehand>=3.0.0",
@@ -127,6 +138,10 @@ name = "pypi"
 url = "https://pypi.org/simple"
 default = true
 
+[tool.uv.sources]
+harnesses = { path = "packages/harnesses", editable = true }
+tasksets = { path = "packages/tasksets", editable = true }
+
 [tool.uv.exclude-newer-package]
 # PrimeIntellect-published on PyPI (trusted publisher)
 prime-tunnel = false
@@ -134,6 +149,8 @@ prime-sandboxes = false
 prime-pydantic-config = false
 renderers = false
 openenv-core = false
+harnesses = false
+tasksets = false
 
 [tool.uv.extra-build-dependencies]
 flash-attn = [{ requirement = "torch", match-runtime = true }]

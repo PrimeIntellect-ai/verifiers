@@ -66,7 +66,7 @@ Summarize key metrics your rubric emits and how they’re interpreted.
 3. The v1 runtime resolves both sides into one sandboxed command program at rollout time.
 4. Reward is computed by running the Harbor test scripts after the rollout.
 
-`HarborTaskset` and `OpenCode` are packaged under `verifiers.v1.packages` and
+`HarborTaskset` and `OpenCode` are packaged under `tasksets` and `harnesses` and
 imported by the environment package.
 
 ## Requirements

@@ -7,6 +7,7 @@ description = "Minimal v1 environment that runs the RLM CLI through a sandboxed 
 requires-python = ">=3.11"
 dependencies = [
     "verifiers>=0.1.13.dev0",
+    "harnesses>=0.1.0.post0",
 ]
 
 [build-system]

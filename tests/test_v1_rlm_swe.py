@@ -13,8 +13,8 @@ from verifiers.types import Tool
 
 import verifiers as vf
 from environments.rlm_swe_v1 import rlm_swe_v1
-from verifiers.v1.packages.harnesses import RLM, RLMConfig
-from verifiers.v1.packages.harnesses.rlm import (
+from harnesses import RLM, RLMConfig
+from harnesses.rlm import (
     DEFAULT_RLM_TOOL_SKILL_MARKER,
     DEFAULT_RLM_TOOL_SKILLS_ARCHIVE_PATH,
     DEFAULT_RLM_TOOL_SKILLS_MANIFEST_NAME,

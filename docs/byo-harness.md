@@ -443,12 +443,14 @@ validation. Subclass `Harness` only when packaging reusable behavior with a new
 config surface; do not subclass `Env` just to bypass inference.
 
 Packaged CLI harnesses should use the same boundary. These implementations live
-under `verifiers.v1.packages`. `OpenCode`, `Pi`, `MiniSWEAgent`, `Terminus2`,
-and `RLM` are bundled `Harness` leaf wrappers for common command-line agents:
+in `tasksets` and `harnesses`. `OpenCode`, `Pi`, `MiniSWEAgent`, `Terminus2`,
+and `RLM` are bundled `Harness` leaf wrappers for common command-line agents.
+Install them with `uv add "verifiers[packages]"`, or with the narrower
+`verifiers[tasksets]` and `verifiers[harnesses]` extras.
 
 ```python
-from verifiers.v1.packages.harnesses import OpenCode, OpenCodeConfig
-from verifiers.v1.packages.tasksets import HarborTaskset, HarborTasksetConfig
+from harnesses import OpenCode, OpenCodeConfig
+from tasksets import HarborTaskset, HarborTasksetConfig
 
 
 def load_taskset(config: HarborTasksetConfig) -> HarborTaskset:

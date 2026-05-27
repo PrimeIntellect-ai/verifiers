@@ -6,9 +6,9 @@ from .configs import (
     MINI_SWE_AGENT_DEFAULT_AGENT_WORKDIR,
     MiniSWEAgentConfig,
 )
-from ...harness import Harness
-from ...types import ProgramCommand, ProgramOptionMap, ProgramSetup
-from ...utils.sandbox_python_utils import python_runtime_setup_command
+from verifiers.v1.harness import Harness
+from verifiers.v1.types import ProgramCommand, ProgramOptionMap, ProgramSetup
+from verifiers.v1.utils.sandbox_python_utils import python_runtime_setup_command
 
 DEFAULT_INSTALL_DIR = "/opt/mini-swe-agent"
 DEFAULT_PREFIX_DIR = f"{DEFAULT_INSTALL_DIR}/prefix"

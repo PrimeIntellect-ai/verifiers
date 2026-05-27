@@ -4,8 +4,8 @@ from pathlib import Path
 from typing import Any, cast
 
 import verifiers as vf
-from verifiers.v1.packages.harnesses import OpenCode, OpenCodeConfig
-from verifiers.v1.packages.tasksets import HarborTaskset
+from harnesses import OpenCode, OpenCodeConfig
+from tasksets import HarborTaskset
 
 
 def _load_opencode_module() -> Any:
