@@ -30,7 +30,7 @@ def load_taskset(config: ReverseTextTasksetConfig) -> ReverseTextTaskset:
 
 ### Quickstart
 
-Loadable through `vf-eval-v1` (the v1 CLI) or `vf.load_environment`. The legacy `vf-eval` does not understand v1 envs that omit `load_environment`.
+Loadable through `vf-eval-v1` (the v1 CLI) or `vf.load_environment`. The legacy `vf-eval` does not understand v1 modules that omit `load_environment`, and `vf-eval-v1` is v1-only: it rejects modules that don't expose `load_taskset`.
 
 ```bash
 # default harness

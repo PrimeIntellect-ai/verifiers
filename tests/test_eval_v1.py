@@ -281,10 +281,11 @@ def test_resolve_config_class_for_lean_taskset_uses_base_harness(lean_taskset: s
     assert harness_field is HarnessConfig
 
 
-def test_resolve_config_class_for_v0_returns_v0_config(v0_env: str):
-    cls = ev1._resolve_config_class(v0_env, harness_name=None)
-    assert cls is ev1.EvalV0Config
-    assert "env_args" in cls.model_fields
+def test_resolve_config_class_for_v0_module_raises(v0_env: str):
+    # vf-eval-v1 is v1-only; modules that expose only load_environment are
+    # rejected up front with a clear error pointing at the legacy `vf-eval`.
+    with pytest.raises(SystemExit, match="v1 taskset modules"):
+        ev1._resolve_config_class(v0_env, harness_name=None)
 
 
 def test_resolve_config_class_without_taskset_falls_back_to_base():
@@ -415,15 +416,10 @@ def test_cli_v1_rejects_unknown_sampling_field(dummy_taskset: str):
         _parse_cli(["vf-eval-v1", dummy_taskset, "--sampling.unknown", "x"])
 
 
-def test_cli_v0_env_typed(v0_env: str):
-    config, _, _ = _parse_cli(["vf-eval-v1", v0_env, "--env-args", '{"some_arg": 1}'])
-    assert isinstance(config, ev1.EvalV0Config)
-    assert config.env_args == {"some_arg": 1}
-
-
-def test_cli_v0_env_rejects_positional_harness(v0_env: str):
-    with pytest.raises(SystemExit):
-        _parse_cli(["vf-eval-v1", v0_env, "rlm"])
+def test_cli_v0_module_rejected_at_parse_time(v0_env: str):
+    # vf-eval-v1 is v1-only; users must use the legacy `vf-eval` for v0 envs.
+    with pytest.raises(SystemExit, match="v1 taskset modules"):
+        _parse_cli(["vf-eval-v1", v0_env])
 
 
 # ---------------------------------------------------------------------------

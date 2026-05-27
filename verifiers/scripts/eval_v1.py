@@ -20,9 +20,8 @@ The CLI is shaped around two positionals and dotted overrides:
 Anything settable on the CLI can equally be loaded from TOML via
 ``vf-eval-v1 @ path/to/eval.toml``.
 
-The v0 fallback (modules that only expose ``load_environment``) keeps
-working: the CLI calls the bundled loader with ``--env-args`` and rejects
-``--taskset.*`` / ``--harness.*`` overrides for those envs.
+v1-only by design: modules that don't expose ``load_taskset`` are
+rejected up front. Use the legacy ``vf-eval`` for v0 environments.
 """
 
 import asyncio
@@ -34,7 +33,7 @@ import tomllib
 from pathlib import Path
 from typing import Any, cast
 
-from pydantic import AliasChoices, Field, create_model, field_validator
+from pydantic import Field, create_model, field_validator
 from pydantic_config import BaseConfig, cli
 
 from verifiers import setup_logging
@@ -143,7 +142,7 @@ class ClientConfig(BaseConfig):
 
 
 # ---------------------------------------------------------------------------
-# Static config base (shared between v0 and v1 dispatch).
+# Static config base
 # ---------------------------------------------------------------------------
 
 
@@ -155,16 +154,12 @@ class EvalConfigBase(BaseConfig):
     selected on the command line.
     """
 
-    taskset_name: str = Field(
-        validation_alias=AliasChoices("taskset_name", "taskset-name", "env"),
-    )
+    taskset_name: str
     """Taskset module name — an installed Python module exposing
     ``load_taskset(config: TasksetConfig)``. Settable as the first positional
     (``vf-eval-v1 <taskset_name>``)."""
 
-    harness_name: str | None = Field(
-        None, validation_alias=AliasChoices("harness_name", "harness-name")
-    )
+    harness_name: str | None = None
     """Harness module name — an installed Python module exposing
     ``load_harness(config: HarnessConfig)``. Settable as the second positional.
     When unset, auto-resolves to the taskset module's ``load_harness`` if
@@ -232,25 +227,6 @@ class EvalConfigBase(BaseConfig):
 
     heartbeat_url: str | None = None
     """Heartbeat URL pinged after each progress update."""
-
-
-class EvalV0Config(EvalConfigBase):
-    """Eval config for v0 envs (modules that expose only ``load_environment``)."""
-
-    env_args: dict = {}
-    """Extra kwargs passed to ``load_environment`` for v0 envs (the bundled
-    harness in a v0 env is not swappable)."""
-
-    @field_validator("harness_name")
-    @classmethod
-    def _v0_rejects_harness_name(cls, value: str | None) -> str | None:
-        if value is not None:
-            raise ValueError(
-                "Env is a v0 module (no load_taskset); harness selection is "
-                "not supported. The bundled harness in load_environment is "
-                "not swappable."
-            )
-        return value
 
 
 # ---------------------------------------------------------------------------
@@ -528,17 +504,26 @@ def _build_eval_config(config: EvalConfigBase, env_args: dict[str, Any]) -> Eval
 def _resolve_config_class(
     taskset_name: str | None, harness_name: str | None
 ) -> type[BaseConfig]:
-    """Pick the right BaseConfig subclass for this invocation."""
+    """Pick the right BaseConfig subclass for this invocation.
+
+    Raises ``SystemExit`` if the taskset module does not expose
+    ``load_taskset``. ``vf-eval-v1`` is v1-only by design; the legacy
+    ``vf-eval`` handles v0 envs.
+    """
     if taskset_name is None:
         # No taskset yet — fall back to the base. cli() will report
         # --taskset-name as required (or render the top-level --help).
         return EvalConfigBase
     env_module = import_env_module(taskset_name)
-    if module_supports_v1_loader(env_module):
-        taskset_cls = _resolve_taskset_config_class(env_module)
-        harness_cls = _resolve_harness_config_class(env_module, harness_name)
-        return _build_v1_eval_config(taskset_cls, harness_cls)
-    return EvalV0Config
+    if not module_supports_v1_loader(env_module):
+        raise SystemExit(
+            f"Taskset {taskset_name!r} does not expose load_taskset. "
+            "vf-eval-v1 only loads v1 taskset modules; use the legacy "
+            "`vf-eval` for v0 environments."
+        )
+    taskset_cls = _resolve_taskset_config_class(env_module)
+    harness_cls = _resolve_harness_config_class(env_module, harness_name)
+    return _build_v1_eval_config(taskset_cls, harness_cls)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -569,17 +554,7 @@ def main(argv: list[str] | None = None) -> None:
     if config.disable_tui:
         setup_logging(get_log_level(config.verbose))
 
-    # Build env_args based on the dispatch path.
-    if isinstance(config, EvalV0Config):
-        env_args = dict(config.env_args)
-    elif isinstance(config, EvalConfigBase):
-        env_args = _v1_env_args(config)
-    else:  # pragma: no cover — exhaustive
-        raise SystemExit(
-            f"Unexpected config type {type(config).__name__}; please report this."
-        )
-
-    eval_config = _build_eval_config(config, env_args)
+    eval_config = _build_eval_config(config, _v1_env_args(config))
     eval_run_config = EvalRunConfig(
         evals=[eval_config], heartbeat_url=config.heartbeat_url
     )
@@ -599,7 +574,6 @@ def main(argv: list[str] | None = None) -> None:
 __all__ = [
     "ClientConfig",
     "EvalConfigBase",
-    "EvalV0Config",
     "SamplingConfig",
     "main",
 ]

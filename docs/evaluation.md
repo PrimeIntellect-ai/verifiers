@@ -111,14 +111,10 @@ For convenience, the harness identifier can equally be given as a flag —
 `vf-eval-v1 my-taskset --harness-name rlm` is identical to
 `vf-eval-v1 my-taskset rlm`.
 
-`vf-eval-v1` keeps a v0 fallback: when the env only exposes
-`load_environment`, the CLI calls it with `--env-args` and refuses both
-the harness positional and `--taskset.*` / `--harness.*` overrides (the
-bundled harness in a v0 env is not swappable).
-
-`vf-eval` is unchanged in this PR — it remains the existing multi-env /
-ablation-sweep CLI. `vf-eval-v1` is the preview surface; once parity is
-reached we'll consider promoting it.
+`vf-eval-v1` is **v1-only by design**. Taskset modules that don't expose
+`load_taskset` are rejected up front; there is no `--env-args` and no
+v0 fallback. Use the legacy `vf-eval` for environments that ship a
+`load_environment` function.
 
 ## Hosted Evaluations
 
