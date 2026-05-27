@@ -1076,17 +1076,6 @@ async def run_sandbox_background_command(
         "< /dev/null > /dev/null 2>&1 & "
         "fi"
     )
-    start_timeout = min(max(wait_seconds, 60), 120)
-    start_result = await maybe_call_with_named_args(
-        getattr(client, "execute_command"),
-        sandbox_id=sandbox_id,
-        command=bg_cmd,
-        timeout=start_timeout,
-    )
-    start_result = cast(SandboxCommandResult, start_result)
-    if start_result.exit_code:
-        raise SandboxError(f"Sandbox background command failed: {start_result.stderr}")
-
     job = SandboxBackgroundJobRecord(
         job_id=job_id,
         sandbox_id=sandbox_id,
@@ -1096,6 +1085,27 @@ async def run_sandbox_background_command(
         exit_file=exit_file,
     )
     deadline = asyncio.get_running_loop().time() + wait_seconds
+    start_timeout = min(max(wait_seconds, 60), 120)
+    try:
+        start_result = await maybe_call_with_named_args(
+            getattr(client, "execute_command"),
+            sandbox_id=sandbox_id,
+            command=bg_cmd,
+            timeout=start_timeout,
+        )
+    except CommandTimeoutError:
+        # The sandbox API may time out after the background process has already
+        # been launched. The job writes deterministic marker files, so polling
+        # the job record is safer than failing the rollout or retrying the
+        # command and risking duplicate work.
+        pass
+    else:
+        start_result = cast(SandboxCommandResult, start_result)
+        if start_result.exit_code:
+            raise SandboxError(
+                f"Sandbox background command failed: {start_result.stderr}"
+            )
+
     while asyncio.get_running_loop().time() < deadline:
         status = await maybe_call_with_named_args(
             getattr(client, "get_background_job"),

@@ -1513,6 +1513,35 @@ async def test_sandbox_background_command_times_out() -> None:
 
 
 @pytest.mark.asyncio
+async def test_sandbox_background_command_launch_timeout_polls_job() -> None:
+    from prime_sandboxes import CommandTimeoutError
+
+    class LaunchTimeoutClient(FakeSandboxClient):
+        async def execute_command(
+            self, *args: object, **kwargs: object
+        ) -> FakeCommandResult:
+            sandbox_id = str(kwargs.get("sandbox_id") or args[0])
+            command = str(kwargs.get("command") or args[1])
+            timeout = cast(int | None, kwargs.get("timeout"))
+            type(self).commands.append((sandbox_id, command))
+            type(self).command_timeouts.append(timeout)
+            raise CommandTimeoutError(sandbox_id, command, timeout or 0)
+
+    FakeSandboxClient.reset()
+
+    result = await run_sandbox_background_command(
+        LaunchTimeoutClient(),
+        sandbox_id="sbx-1",
+        command="echo eventually-finishes",
+        timeout=10,
+    )
+
+    assert result.exit_code == 0
+    assert len(FakeSandboxClient.commands) == 1
+    assert FakeSandboxClient.command_timeouts == [60]
+
+
+@pytest.mark.asyncio
 async def test_sandbox_setup_command_timeout_becomes_rollout_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
