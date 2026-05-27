@@ -11,14 +11,7 @@ from importlib.abc import Traversable
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, TypeVar, cast
 
-import httpx
 import tenacity as tc
-from prime_sandboxes import (
-    APIError,
-    CommandTimeoutError,
-    DownloadTimeoutError,
-    UploadTimeoutError,
-)
 
 from verifiers.errors import Error, SandboxError
 from verifiers.utils.async_utils import maybe_call_with_named_args
@@ -58,90 +51,6 @@ class SandboxCommandResult(Protocol):
     stderr: str | None
 
 
-class SandboxBackgroundJob(Protocol):
-    job_id: str
-    stdout_log_file: str
-    stderr_log_file: str
-    exit_file: str
-
-
-class SandboxBackgroundJobStatus(SandboxCommandResult, Protocol):
-    completed: bool
-
-
-class SandboxBackgroundJobRecord:
-    def __init__(
-        self,
-        *,
-        job_id: str,
-        sandbox_id: str,
-        pid_file: str,
-        stdout_log_file: str,
-        stderr_log_file: str,
-        exit_file: str,
-    ):
-        self.job_id = job_id
-        self.sandbox_id = sandbox_id
-        self.pid_file = pid_file
-        self.stdout_log_file = stdout_log_file
-        self.stderr_log_file = stderr_log_file
-        self.exit_file = exit_file
-
-
-def is_retryable_sandbox_api_error(exception: BaseException) -> bool:
-    retry_tokens = (
-        "HTTP 429",
-        "Rate exceeded",
-        "HTTP 502",
-        "HTTP 503",
-        "ConnectError",
-        "Read file timed out",
-        "Temporary failure in name resolution",
-    )
-    current: BaseException | None = exception
-    while current is not None:
-        if isinstance(current, APIError):
-            message = str(current)
-            if any(token in message for token in retry_tokens):
-                return True
-        current = current.__cause__ or current.__context__
-    return False
-
-
-def is_retryable_sandbox_transfer_error(exception: BaseException) -> bool:
-    return isinstance(
-        exception,
-        (
-            httpx.ReadTimeout,
-            CommandTimeoutError,
-            UploadTimeoutError,
-            DownloadTimeoutError,
-        ),
-    ) or is_retryable_sandbox_api_error(exception)
-
-
-async def with_sandbox_retry(
-    fn: Callable[[], Awaitable[T]],
-    *,
-    retry_transfer_errors: bool = False,
-) -> T:
-    retry_predicate = (
-        is_retryable_sandbox_transfer_error
-        if retry_transfer_errors
-        else is_retryable_sandbox_api_error
-    )
-    async for attempt in tc.AsyncRetrying(
-        retry=tc.retry_if_exception(retry_predicate),
-        stop=tc.stop_after_attempt(SANDBOX_RETRY_ATTEMPTS),
-        wait=tc.wait_exponential_jitter(initial=1, max=30),
-        sleep=asyncio.sleep,
-        reraise=True,
-    ):
-        with attempt:
-            return await fn()
-    raise AssertionError("unreachable")
-
-
 class SandboxClient(Protocol):
     async def create(self, request: object) -> SandboxRecord: ...
 
@@ -150,7 +59,6 @@ class SandboxClient(Protocol):
         sandbox_id: str,
         *,
         max_attempts: int = 120,
-        stability_checks: int = 1,
     ) -> object: ...
 
     async def delete(self, sandbox_id: str) -> object: ...
@@ -174,7 +82,6 @@ class SandboxClient(Protocol):
         file_bytes: bytes,
         *,
         filename: str | None = None,
-        timeout: int | None = None,
     ) -> object: ...
 
     async def upload_file(
@@ -205,16 +112,19 @@ class SandboxClient(Protocol):
         timeout: int | None = None,
         working_dir: str | None = None,
         env: dict[str, str] | None = None,
-        poll_interval: int = 3,
     ) -> SandboxCommandResult: ...
 
-    async def get_background_job(
-        self,
-        sandbox_id: str,
-        job: SandboxBackgroundJob,
-        *,
-        timeout: int | None = None,
-    ) -> SandboxBackgroundJobStatus: ...
+
+async def with_sandbox_retry(fn: Callable[[], Awaitable[T]]) -> T:
+    async for attempt in tc.AsyncRetrying(
+        stop=tc.stop_after_attempt(SANDBOX_RETRY_ATTEMPTS),
+        wait=tc.wait_exponential_jitter(initial=0.5, max=30, jitter=1e-3),
+        sleep=asyncio.sleep,
+        reraise=True,
+    ):
+        with attempt:
+            return await fn()
+    raise AssertionError("unreachable")
 
 
 class SandboxLease:
@@ -296,8 +206,8 @@ class SandboxLease:
         working_dir: str | None = None,
         env: dict[str, str] | None = None,
     ) -> SandboxCommandResult:
-        return await run_sandbox_background_command(
-            self.client,
+        return await maybe_call_with_named_args(
+            getattr(self.client, "run_background_job"),
             sandbox_id=self.id,
             command=command,
             timeout=timeout,
@@ -461,31 +371,12 @@ async def run_sandbox_command(
         if use_sandbox_python_path or "mcp" in program_channels(program):
             command = sandbox_python_path_command(command)
         command_timeout = cast(int | None, sandbox_config.get("command_timeout"))
-        try:
-            result = await lease.run_background_job(
-                command,
-                timeout=command_timeout,
-                working_dir=workdir,
-                env=env,
-            )
-        except CommandTimeoutError as e:
-            timeout_seconds = (
-                command_timeout
-                if command_timeout is not None
-                else getattr(e, "timeout", None)
-            )
-            stderr = f"Command timed out after {timeout_seconds}s"
-            state["command"] = {
-                "argv": argv,
-                "returncode": 124,
-                "stdout": "",
-                "stderr": stderr,
-            }
-            state["completion"] = [{"role": "assistant", "content": ""}]
-            state["command_timeout"] = True
-            state._set_truncated(True)
-            state._set_stop_condition("command_timeout")
-            return state
+        result = await lease.run_background_job(
+            command,
+            timeout=command_timeout,
+            working_dir=workdir,
+            env=env,
+        )
         state["command"] = {
             "argv": argv,
             "returncode": result.exit_code,
@@ -641,10 +532,14 @@ async def create_sandbox(client: SandboxClient, sandbox_config: ConfigMap) -> st
         network_access=bool(sandbox_config.get("network_access", True)),
         timeout_minutes=int_config(sandbox_config, "timeout_minutes", 60),
     )
-    sandbox = await create_sandbox_record(client, request)
+    sandbox = await with_sandbox_retry(lambda: client.create(request))
     sandbox_id = str(sandbox.id)
     try:
-        await wait_for_sandbox_creation(client, sandbox_id)
+        await maybe_call_with_named_args(
+            getattr(client, "wait_for_creation"),
+            sandbox_id=sandbox_id,
+            max_attempts=120,
+        )
     except BaseException:
         try:
             await with_sandbox_retry(lambda: client.delete(sandbox_id))
@@ -654,31 +549,12 @@ async def create_sandbox(client: SandboxClient, sandbox_config: ConfigMap) -> st
     return sandbox_id
 
 
-async def create_sandbox_record(
-    client: SandboxClient, request: object
-) -> SandboxRecord:
-    result = await with_sandbox_retry(lambda: client.create(request))
-    return cast(SandboxRecord, result)
-
-
-async def wait_for_sandbox_creation(client: SandboxClient, sandbox_id: str) -> None:
-    await with_sandbox_retry(
-        lambda: maybe_call_with_named_args(
-            getattr(client, "wait_for_creation"),
-            sandbox_id=sandbox_id,
-            max_attempts=120,
-            stability_checks=1,
-        ),
-        retry_transfer_errors=True,
-    )
-
-
 async def setup_sandbox(handle: SandboxLease, sandbox_config: ConfigMap) -> None:
     packages = python_package_list(sandbox_config.get("packages"))
     if packages:
         package_args = " ".join(shlex.quote(str(package)) for package in packages)
         try:
-            result = await handle.run_background_job(
+            result = await handle.execute(
                 python_package_install_command(package_args),
                 timeout=int_config(sandbox_config, "install_timeout", 300),
             )
@@ -699,8 +575,9 @@ async def setup_sandbox(handle: SandboxLease, sandbox_config: ConfigMap) -> None
         if use_sandbox_python_path:
             command = sandbox_python_path_command(command)
         try:
-            result = await handle.run_background_job(
-                command, timeout=int_config(sandbox_config, "setup_timeout", 300)
+            result = await handle.execute(
+                command,
+                timeout=int_config(sandbox_config, "setup_timeout", 300),
             )
         except Error:
             raise
@@ -796,8 +673,7 @@ async def upload_program_files(
         if not isinstance(content, str):
             content = str(content)
         await maybe_call_with_named_args(
-            upload_sandbox_bytes,
-            client=client,
+            getattr(client, "upload_bytes"),
             sandbox_id=sandbox_id,
             file_path=path,
             file_bytes=content.encode(),
@@ -919,40 +795,12 @@ async def upload_state_input(
     if not isinstance(path, str):
         raise TypeError(f"{VF_STATE_INPUT_PATH_KEY} must be a string.")
     await maybe_call_with_named_args(
-        upload_sandbox_bytes,
-        client=client,
+        getattr(client, "upload_bytes"),
         sandbox_id=sandbox_id,
         file_path=path,
         file_bytes=json.dumps(state).encode(),
         filename=path.rsplit("/", 1)[-1] or "file",
     )
-
-
-async def upload_sandbox_bytes(
-    client: SandboxClient,
-    *,
-    sandbox_id: str,
-    file_path: str,
-    file_bytes: bytes,
-    filename: str,
-    timeout: int = 30,
-) -> object:
-    try:
-        return await with_sandbox_retry(
-            lambda: maybe_call_with_named_args(
-                getattr(client, "upload_bytes"),
-                sandbox_id=sandbox_id,
-                file_path=file_path,
-                file_bytes=file_bytes,
-                filename=filename,
-                timeout=timeout,
-            ),
-            retry_transfer_errors=True,
-        )
-    except Error:
-        raise
-    except Exception as exc:
-        raise SandboxError(f"Sandbox upload failed: {file_path}") from exc
 
 
 async def run_program_commands(
@@ -1006,8 +854,8 @@ async def run_program_items(
         command = str(command)
         if use_sandbox_python_path:
             command = sandbox_python_path_command(command)
-        result = await run_sandbox_background_command(
-            client,
+        result = await maybe_call_with_named_args(
+            getattr(client, "execute_command"),
             sandbox_id=sandbox_id,
             command=command,
             env=env,
@@ -1015,124 +863,6 @@ async def run_program_items(
         )
         if result.exit_code:
             raise SandboxError(f"{error_prefix}: {result.stderr}")
-
-
-async def run_sandbox_background_command(
-    client: SandboxClient,
-    *,
-    sandbox_id: str,
-    command: str,
-    timeout: int | None,
-    working_dir: str | None = None,
-    env: dict[str, str] | None = None,
-) -> SandboxCommandResult:
-    wait_seconds = timeout if timeout is not None else 900
-    poll_interval = 3
-    job_id = uuid.uuid4().hex[:8]
-    pid_file = f"/tmp/job_{job_id}.pid"
-    stdout_log_file = f"/tmp/job_{job_id}.stdout.log"
-    stderr_log_file = f"/tmp/job_{job_id}.stderr.log"
-    exit_file = f"/tmp/job_{job_id}.exit"
-
-    env_prefix = ""
-    if env:
-        exports = []
-        for key, value in env.items():
-            if not key.replace("_", "").isalnum() or key[:1].isdigit():
-                raise ValueError(f"Invalid environment variable name: {key!r}")
-            exports.append(f"export {key}={shlex.quote(value)}")
-        env_prefix = "; ".join(exports)
-        if env_prefix:
-            env_prefix += "; "
-
-    dir_prefix = f"cd {shlex.quote(working_dir)} && " if working_dir else ""
-    command_body = f"{env_prefix}{dir_prefix}{command}"
-    sh_command = (
-        f"echo $$ > {shlex.quote(pid_file)}; "
-        f"({command_body}) > {shlex.quote(stdout_log_file)} "
-        f"2> {shlex.quote(stderr_log_file)}; echo $? > {shlex.quote(exit_file)}"
-    )
-    bg_cmd = (
-        "if command -v setsid >/dev/null 2>&1; then "
-        f"nohup setsid sh -c {shlex.quote(sh_command)} "
-        "< /dev/null > /dev/null 2>&1 & "
-        "else "
-        f"nohup sh -c {shlex.quote(sh_command)} "
-        "< /dev/null > /dev/null 2>&1 & "
-        "fi"
-    )
-    job = SandboxBackgroundJobRecord(
-        job_id=job_id,
-        sandbox_id=sandbox_id,
-        pid_file=pid_file,
-        stdout_log_file=stdout_log_file,
-        stderr_log_file=stderr_log_file,
-        exit_file=exit_file,
-    )
-    deadline = asyncio.get_running_loop().time() + wait_seconds
-    start_timeout = min(max(wait_seconds, 60), 120)
-    try:
-        start_result = await maybe_call_with_named_args(
-            getattr(client, "execute_command"),
-            sandbox_id=sandbox_id,
-            command=bg_cmd,
-            timeout=start_timeout,
-        )
-    except CommandTimeoutError:
-        # The sandbox API may time out after the background process has already
-        # been launched. The job writes deterministic marker files, so polling
-        # the job record is safer than failing the rollout or retrying the
-        # command and risking duplicate work.
-        pass
-    else:
-        start_result = cast(SandboxCommandResult, start_result)
-        if start_result.exit_code:
-            raise SandboxError(
-                f"Sandbox background command failed: {start_result.stderr}"
-            )
-
-    while asyncio.get_running_loop().time() < deadline:
-        status = await with_sandbox_retry(
-            lambda: maybe_call_with_named_args(
-                getattr(client, "get_background_job"),
-                sandbox_id=sandbox_id,
-                job=job,
-                timeout=30,
-            ),
-            retry_transfer_errors=True,
-        )
-        status = cast(SandboxBackgroundJobStatus, status)
-        if status.completed:
-            return status
-        await asyncio.sleep(poll_interval)
-
-    try:
-        await terminate_sandbox_background_job(client, sandbox_id, job)
-    except Exception:
-        pass
-    raise CommandTimeoutError(sandbox_id, command, wait_seconds)
-
-
-async def terminate_sandbox_background_job(
-    client: SandboxClient,
-    sandbox_id: str,
-    job: SandboxBackgroundJobRecord,
-) -> None:
-    command = (
-        f"pid_file={shlex.quote(job.pid_file)}; "
-        'if [ -s "$pid_file" ]; then '
-        'pid=$(cat "$pid_file"); '
-        'kill -TERM -"$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true; '
-        "sleep 2; "
-        'kill -KILL -"$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true; '
-        "fi"
-    )
-    await maybe_call_with_named_args(
-        getattr(client, "execute_command"),
-        sandbox_id=sandbox_id,
-        command=command,
-        timeout=30,
-    )
 
 
 async def collect_sandbox_artifacts(
@@ -1158,18 +888,15 @@ async def collect_sandbox_artifacts(
                 continue
             raise
         format_name = artifact_format(spec)
-        try:
-            if format_name == "json":
-                value: object = json.loads(content)
-            elif format_name == "text":
-                value = content
-            else:
-                raise ValueError(f"Unsupported artifact format: {format_name!r}")
-            key = artifact_key(spec)
-            if key is not None:
-                value = cast(ConfigMap, value)[key]
-        except Exception as exc:
-            raise SandboxError(f"Sandbox artifact parsing failed: {name}") from exc
+        if format_name == "json":
+            value: object = json.loads(content)
+        elif format_name == "text":
+            value = content
+        else:
+            raise ValueError(f"Unsupported artifact format: {format_name!r}")
+        key = artifact_key(spec)
+        if key is not None:
+            value = cast(ConfigMap, value)[key]
         state["artifacts"][name] = value
 
 
@@ -1189,17 +916,11 @@ async def read_sandbox_artifact(client: object, sandbox_id: str, path: str) -> s
         f'exec "$PYTHON" -c {shlex.quote(script)}'
     )
     command = sandbox_python_path_command(command)
-    try:
-        result = await maybe_call_with_named_args(
-            getattr(client, "execute_command"),
-            sandbox_id=sandbox_id,
-            command=command,
-            timeout=60,
-        )
-    except Error:
-        raise
-    except Exception as exc:
-        raise SandboxError(f"Sandbox artifact reader failed: {path}") from exc
+    result = await maybe_call_with_named_args(
+        getattr(client, "execute_command"),
+        sandbox_id=sandbox_id,
+        command=command,
+    )
     if result.exit_code == 2:
         raise FileNotFoundError(f"Sandbox artifact not found: {path}")
     if result.exit_code:

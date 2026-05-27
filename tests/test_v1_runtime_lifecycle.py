@@ -10,7 +10,6 @@ from types import ModuleType, SimpleNamespace
 from typing import Any, cast
 
 import pytest
-from prime_sandboxes import UploadTimeoutError
 from pydantic import BaseModel
 
 import verifiers as vf
@@ -45,8 +44,6 @@ from verifiers.v1.utils.sandbox_utils import (
     VF_STATE_INPUT_PATH_KEY,
     collect_sandbox_artifacts,
     run_sandbox_command,
-    run_sandbox_background_command,
-    upload_program_files,
 )
 
 PROGRAM_REF_MODULE = "v1_runtime_lifecycle_refs"
@@ -108,7 +105,6 @@ class FakeSandboxResult:
 
 
 class FakeCommandResult:
-    completed = True
     exit_code = 0
     stdout = "ok\n"
     stderr = ""
@@ -161,12 +157,6 @@ class FakeSandboxClient:
         type(self).background_jobs.append((sandbox_id, command, timeout, working_dir))
         return FakeCommandResult()
 
-    async def get_background_job(
-        self, *args: object, **kwargs: object
-    ) -> FakeCommandResult:
-        _ = args, kwargs
-        return FakeCommandResult()
-
     async def upload_bytes(self, *args: object, **kwargs: object) -> None:
         sandbox_id = str(kwargs.get("sandbox_id") or args[0])
         path = str(kwargs.get("file_path") or kwargs.get("path") or args[1])
@@ -185,21 +175,6 @@ class FakeSandboxClient:
 
     async def aclose(self) -> None:
         pass
-
-
-class FlakyUploadSandboxClient(FakeSandboxClient):
-    attempts = 0
-
-    @classmethod
-    def reset(cls) -> None:
-        super().reset()
-        cls.attempts = 0
-
-    async def upload_bytes(self, *args: object, **kwargs: object) -> None:
-        type(self).attempts += 1
-        if type(self).attempts < 3:
-            raise UploadTimeoutError("sbx-1", "/tmp/program.txt", 30)
-        await super().upload_bytes(*args, **kwargs)
 
 
 async def echo_tool(query: str) -> str:
@@ -397,13 +372,6 @@ def install_fake_endpoint_tunnel(monkeypatch: pytest.MonkeyPatch) -> None:
         "verifiers.v1.utils.endpoint_utils.Endpoint.get_tunnel_url",
         get_tunnel_url,
     )
-
-
-def command_index_containing(commands: list[str], fragment: str) -> int:
-    for index, command in enumerate(commands):
-        if fragment in command:
-            return index
-    raise AssertionError(f"Command fragment not found: {fragment}")
 
 
 async def endpoint_user(
@@ -1289,11 +1257,19 @@ async def test_program_channels_mcp_setup_uses_bindings_after_setup_before_comma
     await harness.run(task)
 
     commands = [command for _, command in FakeSandboxClient.commands]
-    setup_index = command_index_containing(commands, "echo setup")
-    mcp_setup_index = command_index_containing(
-        commands, "echo model=bound-model > /tmp/endpoint.txt"
+    setup_index = next(
+        i for i, command in enumerate(commands) if command.endswith("echo setup")
     )
-    command_index = command_index_containing(commands, "python -c")
+    mcp_setup_index = next(
+        i
+        for i, command in enumerate(commands)
+        if command.endswith("echo model=bound-model > /tmp/endpoint.txt")
+    )
+    command_index = next(
+        i
+        for i, command in enumerate(commands)
+        if command.endswith("python -c 'print('\"'\"'ok'\"'\"')'")
+    )
     assert setup_index < mcp_setup_index < command_index
 
 
@@ -1321,10 +1297,10 @@ async def test_rollout_setup_receives_program_sandbox_before_program_setup(
     state = await harness.run(task)
 
     commands = [command for _, command in FakeSandboxClient.commands]
-    early_setup_index = command_index_containing(commands, "echo early-lifecycle-setup")
-    lifecycle_setup_index = command_index_containing(commands, "echo lifecycle-setup")
-    program_setup_index = command_index_containing(commands, "echo program-setup")
-    command_index = command_index_containing(commands, "; true)")
+    early_setup_index = commands.index("echo early-lifecycle-setup")
+    lifecycle_setup_index = commands.index("echo lifecycle-setup")
+    program_setup_index = commands.index("echo program-setup")
+    command_index = commands.index("true")
     assert state["setup_sandbox_id"] == "sbx-1"
     assert state["early_setup_sandbox_id"] == "sbx-1"
     assert early_setup_index < program_setup_index
@@ -1332,126 +1308,36 @@ async def test_rollout_setup_receives_program_sandbox_before_program_setup(
 
 
 @pytest.mark.asyncio
-async def test_sandbox_background_command_launch_timeout_polls_job() -> None:
-    from prime_sandboxes import CommandTimeoutError
-
-    class LaunchTimeoutClient(FakeSandboxClient):
-        async def execute_command(
-            self, *args: object, **kwargs: object
-        ) -> FakeCommandResult:
-            sandbox_id = str(kwargs.get("sandbox_id") or args[0])
-            command = str(kwargs.get("command") or args[1])
-            timeout = cast(int | None, kwargs.get("timeout"))
-            type(self).commands.append((sandbox_id, command))
-            type(self).command_timeouts.append(timeout)
-            raise CommandTimeoutError(sandbox_id, command, timeout or 0)
-
-    FakeSandboxClient.reset()
-
-    result = await run_sandbox_background_command(
-        LaunchTimeoutClient(),
-        sandbox_id="sbx-1",
-        command="echo eventually-finishes",
-        timeout=10,
-    )
-
-    assert result.exit_code == 0
-    assert len(FakeSandboxClient.commands) == 1
-    assert FakeSandboxClient.command_timeouts == [60]
-
-
-@pytest.mark.asyncio
-async def test_sandbox_command_timeout_is_terminal_not_rollout_error(
+async def test_program_setup_uses_program_setup_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     install_fake_sandboxes(monkeypatch)
     install_fake_endpoint_tunnel(monkeypatch)
-    FakeSandboxClient.reset()
-
-    harness = make_harness(
-        program={"command": ["sleep", "120"], "sandbox": True},
-        sandbox={"image": "python:3.11-slim", "command_timeout": 0},
-    )
-    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
-
-    state = await harness.run(task)
-
-    assert state["stop_condition"] == "command_timeout"
-    assert state["error"] is None
-    assert state["command_timeout"] is True
-    assert state["is_truncated"] is True
-
-
-@pytest.mark.asyncio
-async def test_program_file_upload_uses_retry_wrapper(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    async def no_sleep(delay: float) -> None:
-        _ = delay
-
-    monkeypatch.setattr("verifiers.v1.utils.sandbox_utils.asyncio.sleep", no_sleep)
-    FlakyUploadSandboxClient.reset()
-
-    task = vf.Task({}).freeze()
-    state = vf.State.for_task(task)
-    await upload_program_files(
-        FlakyUploadSandboxClient(),
-        "sbx-1",
-        {"files": {"/tmp/program.txt": "content"}},
-        task,
-        state,
-        Runtime(),
-    )
-
-    assert FlakyUploadSandboxClient.attempts == 3
-    assert FlakyUploadSandboxClient.uploads == [
-        ("sbx-1", "/tmp/program.txt", b"content")
-    ]
-
-
-@pytest.mark.asyncio
-async def test_program_setup_timeout_becomes_rollout_error(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from prime_sandboxes import CommandTimeoutError
-
-    install_fake_sandboxes(monkeypatch)
-    install_fake_endpoint_tunnel(monkeypatch)
-
-    setup_calls: list[tuple[str, int | None]] = []
-
-    async def raise_timeout(*args: object, **kwargs: object) -> None:
-        _ = args
-        setup_calls.append(
-            (str(kwargs["command"]), cast(int | None, kwargs["timeout"]))
-        )
-        raise CommandTimeoutError("sbx-1", "echo never-finishes", 120)
-
-    monkeypatch.setattr(
-        "verifiers.v1.utils.sandbox_utils.run_sandbox_background_command",
-        raise_timeout,
-    )
 
     harness = make_harness(
         program={
             "command": ["true"],
             "sandbox": True,
-            "setup": "echo never-finishes",
+            "setup": "echo program-setup",
             "setup_timeout": 777,
         },
         sandbox={"image": "python:3.11-slim"},
     )
     task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
 
-    state = await harness.run(task)
+    await harness.run(task)
 
-    assert state["stop_condition"] == "has_error"
-    assert state["error"]["error"] == "SandboxError"
-    assert "CommandTimeoutError" in state["error"]["error_chain_str"]
-    assert setup_calls == [("echo never-finishes", 777)]
-    assert not any(
-        command == "true" for _, command, _, _ in FakeSandboxClient.background_jobs
+    setup_commands = FakeSandboxClient.commands[
+        : len(FakeSandboxClient.command_timeouts)
+    ]
+    command_timeouts = dict(
+        zip(
+            [command for _, command in setup_commands],
+            FakeSandboxClient.command_timeouts,
+            strict=True,
+        )
     )
+    assert command_timeouts["echo program-setup"] == 777
 
 
 @pytest.mark.asyncio
@@ -1504,50 +1390,7 @@ async def test_task_command_uses_background_job(
 
     await harness.run(task)
 
-    assert any(
-        "sleep 120" in command and "cd /app" in command
-        for _, command in FakeSandboxClient.commands
-    )
-
-
-@pytest.mark.asyncio
-async def test_program_sandbox_rollout_scope_creates_concurrently(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    install_fake_sandboxes(monkeypatch)
-    install_fake_endpoint_tunnel(monkeypatch)
-
-    active_creates = 0
-    max_active_creates = 0
-    original_create = FakeSandboxClient.create
-
-    async def slow_create(
-        self: FakeSandboxClient, request: FakeCreateSandboxRequest
-    ) -> FakeSandboxResult:
-        nonlocal active_creates, max_active_creates
-        active_creates += 1
-        max_active_creates = max(max_active_creates, active_creates)
-        try:
-            await asyncio.sleep(0.05)
-            return await original_create(self, request)
-        finally:
-            active_creates -= 1
-
-    monkeypatch.setattr(FakeSandboxClient, "create", slow_create)
-
-    harness = make_harness(
-        program={"command": ["true"], "sandbox": True},
-        sandbox={"image": "python:3.11-slim", "scope": "rollout"},
-    )
-    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
-
-    await asyncio.gather(
-        harness.run(task, vf.State.for_task(task)),
-        harness.run(task, vf.State.for_task(task)),
-    )
-
-    assert FakeSandboxClient.created == ["sbx-1", "sbx-2"]
-    assert max_active_creates == 2
+    assert ("sbx-1", "sleep 120", 120, "/app") in FakeSandboxClient.background_jobs
 
 
 @pytest.mark.asyncio
@@ -1577,7 +1420,7 @@ async def test_program_channels_mcp_setup_accepts_config_ref_mappings(
 
     commands = [command for _, command in FakeSandboxClient.commands]
     assert any(
-        "echo ref-model=toml-model > /tmp/ref_endpoint.txt" in command
+        command.endswith("echo ref-model=toml-model > /tmp/ref_endpoint.txt")
         for command in commands
     )
 
@@ -2183,35 +2026,6 @@ async def test_optional_sandbox_program_artifact_records_none() -> None:
     )
 
     assert state["artifacts"]["missing_log"] is None
-
-
-@pytest.mark.asyncio
-async def test_sandbox_program_artifact_timeout_raises_sandbox_error() -> None:
-    from prime_sandboxes import CommandTimeoutError
-
-    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
-    state = vf.State.for_task(task)
-
-    async def execute_command(**kwargs: object) -> object:
-        _ = kwargs
-        raise CommandTimeoutError("sbx", "read-artifact", 60)
-
-    client = SimpleNamespace(execute_command=execute_command)
-
-    with pytest.raises(vf.SandboxError):
-        await collect_sandbox_artifacts(
-            client,
-            "sbx",
-            {
-                "artifacts": {
-                    "state": {
-                        "path": "/tmp/vf_state_out.json",
-                        "format": "json",
-                    }
-                }
-            },
-            state,
-        )
 
 
 @pytest.mark.asyncio
