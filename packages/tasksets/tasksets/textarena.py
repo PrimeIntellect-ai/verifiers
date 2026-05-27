@@ -6,10 +6,9 @@ from typing import Generic, Protocol, TypeVar, cast
 
 from verifiers.types import UserMessage
 from verifiers.utils.message_utils import get_messages
-from verifiers.v1.config import TasksetConfig
 from verifiers.v1.state import State
 from verifiers.v1.task import Task
-from verifiers.v1.taskset import Taskset
+from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.types import ConfigData
 from verifiers.v1.user import User
 

@@ -2,19 +2,63 @@ import asyncio
 import uuid
 from typing import TypeAlias, cast
 
+from pydantic import ValidationInfo, field_validator
 import verifiers as vf
 from verifiers.clients import Client
 from verifiers.types import ClientConfig
 from verifiers.types import RolloutInput, SamplingArgs
 
-from .config import EnvConfig, HarnessConfig, TasksetConfig
-from .harness import Harness
+from .config import Config
+from .harness import Harness, HarnessConfig
 from .state import State
-from .taskset import Taskset
+from .taskset import Taskset, TasksetConfig
 from .types import ConfigMap
+from .utils.config_utils import explicit_config_data
 
 TasksetInput: TypeAlias = Taskset
 HarnessInput: TypeAlias = Harness | None
+
+
+class EnvConfig(Config):
+    taskset: TasksetConfig = TasksetConfig()
+    harness: HarnessConfig = HarnessConfig()
+
+    @classmethod
+    def __pydantic_init_subclass__(cls, **kwargs: object) -> None:
+        super().__pydantic_init_subclass__(**kwargs)
+        extra_fields = set(cls.model_fields) - set(EnvConfig.model_fields)
+        if extra_fields:
+            raise TypeError(
+                f"{cls.__name__} defines unsupported root env config fields: "
+                f"{', '.join(sorted(extra_fields))}. Put env-specific settings on "
+                "a TasksetConfig or HarnessConfig instead."
+            )
+        for field_name, expected_type in (
+            ("taskset", TasksetConfig),
+            ("harness", HarnessConfig),
+        ):
+            annotation = cls.model_fields[field_name].annotation
+            if not (
+                isinstance(annotation, type) and issubclass(annotation, expected_type)
+            ):
+                raise TypeError(
+                    f"{cls.__name__}.{field_name} must be typed as a "
+                    f"{expected_type.__name__} subclass."
+                )
+
+    @field_validator("taskset", "harness", mode="before")
+    @classmethod
+    def validate_child_config(cls, value: object, info: ValidationInfo) -> object:
+        if value is None:
+            raise ValueError(
+                f"EnvConfig.{info.field_name} cannot be None. "
+                "Omit the section to use the default config."
+            )
+        try:
+            explicit_config_data(value)
+        except TypeError as exc:
+            raise ValueError(str(exc)) from exc
+        return value
 
 
 class Env(vf.Environment):

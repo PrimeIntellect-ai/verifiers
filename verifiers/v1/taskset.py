@@ -5,26 +5,30 @@ from importlib.abc import Traversable
 from collections.abc import Mapping
 from copy import deepcopy
 from pathlib import Path
-from typing import TYPE_CHECKING, Generic, TypeVar, cast
+from typing import TYPE_CHECKING, Generic, TypeAlias, TypeVar, cast
 
 from datasets import Dataset
+from pydantic import field_validator, model_validator
 from verifiers.types import task_payload_from_info
 
 from .config import (
     ConfigSource,
-    TasksetConfig,
+    LifecycleConfig,
     resolve_config_object,
 )
 from .state import State
 from .task import Task
+from .user import UserConfig
+from .utils.binding_utils import BindingMap, normalize_binding_map
 from .utils.prompt_utils import normalize_system_prompt
-from .utils.config_utils import coerce_config, config_ref_context
-from .utils.runtime_owner_utils import RuntimeOwnerMixin
-from .utils.taskset_registry_utils import (
-    register_taskset_config_type,
-    taskset_config_type,
-    taskset_config_type_from_class,
+from .utils.config_utils import (
+    coerce_config,
+    config_ref_context,
+    config_type_from_class,
+    registered_config_type,
+    register_config_type,
 )
+from .utils.runtime_owner_utils import RuntimeOwnerMixin
 from .utils.taskset_utils import (
     dataset_info_with_task,
     discover_sibling_dir,
@@ -43,6 +47,49 @@ if TYPE_CHECKING:
     from .harness import Harness
 
 
+TaskLoaderRef: TypeAlias = str
+
+
+class TasksetConfig(LifecycleConfig):
+    # Core fields configure taskset-owned loaders and runtime behavior.
+    tasks: TaskLoaderRef | None = None
+    eval_tasks: TaskLoaderRef | None = None
+    taskset_id: str | None = None
+    system_prompt: PromptInput | None = None
+    user: UserConfig | str | None = None
+    bindings: BindingMap = {}
+    objects: dict[str, str] = {}
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_task_fields(cls, value: object) -> object:
+        if not isinstance(value, Mapping):
+            return value
+        data = dict(value)
+        if "train_tasks" not in data:
+            return data
+        if "tasks" in data:
+            raise ValueError(
+                "TasksetConfig received multiple values for 'tasks': "
+                "'tasks', 'train_tasks'; provide only one."
+            )
+        train_tasks = data.pop("train_tasks")
+        if train_tasks is not None and not isinstance(train_tasks, str):
+            raise ValueError(
+                "TasksetConfig.train_tasks must be an import ref string. "
+                "Inline task rows are not supported; define load_train_tasks() "
+                "or load_tasks() and set TasksetConfig.train_tasks or "
+                "TasksetConfig.tasks to its import ref."
+            )
+        data["tasks"] = train_tasks
+        return data
+
+    @field_validator("bindings", mode="before")
+    @classmethod
+    def validate_bindings(cls, value: object) -> BindingMap:
+        return normalize_binding_map(value, "taskset.bindings")
+
+
 ConfigT = TypeVar("ConfigT", bound=TasksetConfig)
 
 
@@ -51,14 +98,17 @@ class Taskset(RuntimeOwnerMixin, Generic[ConfigT]):
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)
-        config_type = taskset_config_type_from_class(
-            cls, inherited=False, taskset_base=Taskset
+        config_type = config_type_from_class(
+            cls,
+            inherited=False,
+            owner_base=Taskset,
+            config_base=TasksetConfig,
         )
         if config_type is not None:
-            register_taskset_config_type(cls, config_type)
+            register_config_type(cls, config_type)
 
     def __init__(self, config: ConfigSource = None):
-        config_type = taskset_config_type(type(self), Taskset)
+        config_type = registered_config_type(type(self), TasksetConfig)
         self.config = cast(ConfigT, coerce_config(config_type, config))
         with config_ref_context(self.config):
             resolved_taskset_id = self.config.taskset_id
@@ -87,7 +137,7 @@ class Taskset(RuntimeOwnerMixin, Generic[ConfigT]):
 
     @classmethod
     def config_schema(cls) -> str:
-        return TasksetConfig.schema_text()
+        return registered_config_type(cls, TasksetConfig).schema_text()
 
     def attach_harness(self, harness: "Harness") -> None:
         self._attached_harnesses.add(harness)

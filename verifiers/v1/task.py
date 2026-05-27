@@ -1,7 +1,7 @@
 from collections.abc import Mapping
 from copy import deepcopy
 
-from .config import sandbox_config_mapping
+from .sandbox import sandbox_config_mapping
 from .utils.task_freeze_utils import assert_serializable, freeze_value
 from .utils.prompt_utils import normalize_prompt, normalize_system_prompt
 from .types import ConfigMap, JsonValue

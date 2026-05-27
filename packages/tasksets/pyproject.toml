@@ -17,6 +17,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+openenv = [
+    "openenv-core>=0.3.0",
+]
+openreward = [
+    "openreward>=0.1.123; python_version >= '3.11'",
+]
 textarena = [
     "nltk",
     "textarena",

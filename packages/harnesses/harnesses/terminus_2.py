@@ -1,15 +1,13 @@
 import shlex
 from pathlib import PurePosixPath
 
-from verifiers.v1.config import HarnessConfig, PromptInput, SandboxConfig
-from verifiers.v1.harness import Harness
-from verifiers.v1.program import Program
+from verifiers.v1.harness import Harness, HarnessConfig
+from verifiers.v1.program import Program, ProgramCommand, ProgramOptionMap, ProgramValue
+from verifiers.v1.sandbox import SandboxConfig
 from verifiers.v1.types import (
     ConfigData,
     ConfigMap,
-    ProgramCommand,
-    ProgramOptionMap,
-    ProgramValue,
+    PromptInput,
 )
 from verifiers.v1.utils.sandbox_python_utils import SANDBOX_BIN_DIR, uv_setup_command
 

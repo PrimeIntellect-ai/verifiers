@@ -17,7 +17,7 @@ from verifiers.utils.message_utils import normalize_messages
 from verifiers.utils.response_utils import parse_response_message, parse_response_tokens
 from verifiers.utils.tool_utils import convert_func_to_tool_def
 
-from .config import ToolsetConfig, resolve_config_object
+from .toolset import ToolsetConfig
 from .utils.binding_utils import (
     BindingSource,
     GROUP_FRAMEWORK_ARGS,
@@ -32,7 +32,7 @@ from .utils.binding_utils import (
     validate_bound_arg,
     validate_callable_source,
 )
-from .utils.config_utils import coerce_config
+from .utils.config_utils import coerce_config, resolve_config_object
 from .utils.lifecycle_utils import (
     collect_handlers,
     handler_collection_attr,

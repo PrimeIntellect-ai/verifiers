@@ -14,8 +14,8 @@ from typing import cast
 
 from verifiers.decorators import reward
 from verifiers.utils.import_utils import load_toml
-from verifiers.v1.config import CallableEntry, TasksetConfig
-from verifiers.v1.taskset import Taskset
+from verifiers.v1.config import CallableEntry
+from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.types import ConfigData
 from verifiers.v1.utils.sandbox_utils import SandboxClient
 

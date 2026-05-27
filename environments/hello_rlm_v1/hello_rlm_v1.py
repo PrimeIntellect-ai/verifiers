@@ -1,5 +1,5 @@
 import verifiers as vf
-from harnesses import RLM, RLMConfig
+from harnesses import RLMConfig
 
 
 @vf.reward(weight=1.0)
@@ -67,8 +67,12 @@ class HelloRLMEnvConfig(vf.EnvConfig):
     harness: RLMConfig = RLMConfig()
 
 
+def load_taskset(config: HelloRLMTasksetConfig) -> HelloRLMTaskset:
+    return HelloRLMTaskset(config=config)
+
+
 def load_environment(config: HelloRLMEnvConfig) -> vf.Env:
     return vf.Env(
-        taskset=HelloRLMTaskset(config=config.taskset),
-        harness=RLM(config=config.harness),
+        taskset=vf.load_taskset(config=config.taskset),
+        harness=vf.load_harness("harnesses.rlm", config=config.harness),
     )

@@ -1764,6 +1764,45 @@ wheels = [
 ]
 
 [[package]]
+name = "google-auth"
+version = "2.53.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "cryptography", marker = "python_full_version >= '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "pyasn1-modules", marker = "python_full_version >= '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/c6/ad/ff781329bbbdc0974a098d996e89c9e1f7024262f9e3eec442fbb9ad1ac6/google_auth-2.53.0.tar.gz", hash = "sha256:e7e6aa16f6bee7b2b264830fd04f08087a1d5a836df516251a5d15327b246c9c", size = 335844, upload-time = "2026-05-15T20:53:07.928Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/4a/c9/db44165ba7c581268c6d46017ef63339110378305062830104fc7fa144cb/google_auth-2.53.0-py3-none-any.whl", hash = "sha256:6e7449917c599b35126a99ec268ec6880301f2fea41dce198fe8fd83ff642b68", size = 246071, upload-time = "2026-05-15T20:53:05.609Z" },
+]
+
+[package.optional-dependencies]
+requests = [
+    { name = "requests", marker = "python_full_version >= '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+]
+
+[[package]]
+name = "google-genai"
+version = "2.4.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "anyio", marker = "python_full_version >= '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "distro", marker = "python_full_version >= '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "google-auth", extra = ["requests"], marker = "python_full_version >= '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "httpx", marker = "python_full_version >= '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "pydantic", marker = "python_full_version >= '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "requests", marker = "python_full_version >= '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "sniffio", marker = "python_full_version >= '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "tenacity", marker = "python_full_version >= '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "typing-extensions", marker = "python_full_version >= '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "websockets", marker = "python_full_version >= '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/b6/91/15fff1b7c22dc0b5b44fa348f151379721353d06a3da22dbbe15bf2c4dd9/google_genai-2.4.0.tar.gz", hash = "sha256:3f8d4bd618be2801e805dc698726731a70f34b438ea25a6c92800eef5b1f513e", size = 552025, upload-time = "2026-05-18T00:25:14.556Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ed/c8/1b49f6bb69dc7e291ba5d14926937bec4dffcc09ee875822636bd5ef3cf4/google_genai-2.4.0-py3-none-any.whl", hash = "sha256:48df1c44190b05b834fee9cffd360af6d6fd7f68164588e7ebd670fa34f71ee1", size = 818207, upload-time = "2026-05-18T00:25:12.426Z" },
+]
+
+[[package]]
 name = "googleapis-common-protos"
 version = "1.74.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2845,7 +2884,8 @@ dependencies = [
     { name = "pyjwt", extra = ["crypto"], marker = "extra == 'group-9-verifiers-policy'" },
     { name = "python-multipart", marker = "extra == 'group-9-verifiers-policy'" },
     { name = "pywin32", marker = "(sys_platform == 'win32' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "sse-starlette", marker = "extra == 'group-9-verifiers-policy'" },
+    { name = "sse-starlette", version = "2.3.6", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.11' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "sse-starlette", version = "3.0.3", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.11' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "starlette", marker = "extra == 'group-9-verifiers-policy'" },
     { name = "typing-extensions", marker = "extra == 'group-9-verifiers-policy'" },
     { name = "typing-inspection", marker = "extra == 'group-9-verifiers-policy'" },
@@ -2882,7 +2922,8 @@ dependencies = [
     { name = "pyjwt", extra = ["crypto"], marker = "extra == 'extra-9-verifiers-openenv' or extra != 'group-9-verifiers-policy'" },
     { name = "python-multipart", marker = "extra == 'extra-9-verifiers-openenv' or extra != 'group-9-verifiers-policy'" },
     { name = "pywin32", marker = "(sys_platform == 'win32' and extra == 'extra-9-verifiers-openenv') or (sys_platform == 'win32' and extra != 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "sse-starlette", marker = "extra == 'extra-9-verifiers-openenv' or extra != 'group-9-verifiers-policy'" },
+    { name = "sse-starlette", version = "2.3.6", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.11' and extra == 'extra-9-verifiers-openenv') or (python_full_version >= '3.11' and extra != 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "sse-starlette", version = "3.0.3", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.11' and extra == 'extra-9-verifiers-openenv') or (python_full_version < '3.11' and extra != 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
     { name = "starlette", marker = "extra == 'extra-9-verifiers-openenv' or extra != 'group-9-verifiers-policy'" },
     { name = "typing-extensions", marker = "extra == 'extra-9-verifiers-openenv' or extra != 'group-9-verifiers-policy'" },
     { name = "typing-inspection", marker = "extra == 'extra-9-verifiers-openenv' or extra != 'group-9-verifiers-policy'" },
@@ -3679,6 +3720,30 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/ce/d6/3bebe8afb55fcc3ea9251c4c2dfbab2879e31089bc91a8fe9696e5ce019b/openenv_core-0.3.0.tar.gz", hash = "sha256:c7fee2035badab5be497eb6f4afb2cb417de000f82cc19afd72fb5ec332c431d", size = 164720, upload-time = "2026-05-11T11:37:57.274Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/f8/f5/aafa43138589bfd5d369a8d02ea365aae9d6fe55ac0b3894368d6d69bd03/openenv_core-0.3.0-py3-none-any.whl", hash = "sha256:859e875c9d5211b157c30fb9abc681606fcf0bf1b6ffcdf404678992823a1df0", size = 194313, upload-time = "2026-05-11T11:37:55.537Z" },
+]
+
+[[package]]
+name = "openreward"
+version = "0.1.123"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "aiohttp", marker = "python_full_version >= '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "anthropic", marker = "python_full_version >= '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "click", marker = "python_full_version >= '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "fastapi", marker = "python_full_version >= '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "google-genai", marker = "python_full_version >= '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "openai", marker = "python_full_version >= '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "pydantic", marker = "python_full_version >= '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "pyyaml", marker = "python_full_version >= '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "sse-starlette", version = "2.3.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "structlog", marker = "python_full_version >= '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "tenacity", marker = "python_full_version >= '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "typing-extensions", marker = "python_full_version >= '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "uvicorn", marker = "python_full_version >= '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/6f/dc/c5f937d9f466d0184b7974d2026c76727a28458f9287fa73d68c2230a6fd/openreward-0.1.123.tar.gz", hash = "sha256:2b7742865b889da8170bb27fd1ec2debb1248f32372a4c60f28966e1ae588c9f", size = 133615, upload-time = "2026-05-19T14:37:06.539Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/fe/66/b1b0a365fbe8383c884129a1dc9f6153dca571fa4c3bad53f034fa51010b/openreward-0.1.123-py3-none-any.whl", hash = "sha256:9677414129b4c59b476ebd444d42e69dd77ce6de314ee0798383507b1840c846", size = 131046, upload-time = "2026-05-19T14:37:05.018Z" },
 ]
 
 [[package]]
@@ -4510,6 +4575,27 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/5f/eb/771f9ecb0c65e73fe9dccdd1717901b9594f08c4515d000c7c62df573811/pyarrow-24.0.0-cp313-cp313t-musllinux_1_2_aarch64.whl", hash = "sha256:641f795b361874ac9da5294f8f443dfdbee355cf2bd9e3b8d97aaac2306b9b37", size = 49451819, upload-time = "2026-04-21T10:49:21.474Z" },
     { url = "https://files.pythonhosted.org/packages/48/da/61ae89a88732f5a785646f3ec6125dbb640fa98a540eb2b9889caa561403/pyarrow-24.0.0-cp313-cp313t-musllinux_1_2_x86_64.whl", hash = "sha256:8adc8e6ce5fccf5dc707046ae4914fd537def529709cc0d285d37a7f9cd442ca", size = 51909252, upload-time = "2026-04-21T10:49:31.164Z" },
     { url = "https://files.pythonhosted.org/packages/cb/1a/8dd5cafab7b66573fa91c03d06d213356ad4edd71813aa75e08ce2b3a844/pyarrow-24.0.0-cp313-cp313t-win_amd64.whl", hash = "sha256:9b18371ad2f44044b81a8d23bc2d8a9b6a6226dca775e8e16cfee640473d6c5d", size = 27388127, upload-time = "2026-04-21T10:49:37.334Z" },
+]
+
+[[package]]
+name = "pyasn1"
+version = "0.6.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/5c/5f/6583902b6f79b399c9c40674ac384fd9cd77805f9e6205075f828ef11fb2/pyasn1-0.6.3.tar.gz", hash = "sha256:697a8ecd6d98891189184ca1fa05d1bb00e2f84b5977c481452050549c8a72cf", size = 148685, upload-time = "2026-03-17T01:06:53.382Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/5d/a0/7d793dce3fa811fe047d6ae2431c672364b462850c6235ae306c0efd025f/pyasn1-0.6.3-py3-none-any.whl", hash = "sha256:a80184d120f0864a52a073acc6fc642847d0be408e7c7252f31390c0f4eadcde", size = 83997, upload-time = "2026-03-17T01:06:52.036Z" },
+]
+
+[[package]]
+name = "pyasn1-modules"
+version = "0.4.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pyasn1", marker = "python_full_version >= '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/e9/e6/78ebbb10a8c8e4b61a59249394a4a594c1a7af95593dc933a349c8d00964/pyasn1_modules-0.4.2.tar.gz", hash = "sha256:677091de870a80aae844b1ca6134f54652fa2c8c5a52aa396440ac3106e941e6", size = 307892, upload-time = "2025-03-28T02:41:22.17Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/47/8d/d529b5d697919ba8c11ad626e835d4039be708a35b0d22de83a269a6682c/pyasn1_modules-0.4.2-py3-none-any.whl", hash = "sha256:29253a9207ce32b64c3ac6600edc75368f98473906e8fd1043bd6b5b1de2c14a", size = 181259, upload-time = "2025-03-28T02:41:19.028Z" },
 ]
 
 [[package]]
@@ -6120,10 +6206,36 @@ wheels = [
 
 [[package]]
 name = "sse-starlette"
+version = "2.3.6"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version >= '3.13' and sys_platform == 'win32'",
+    "python_full_version == '3.12.*' and sys_platform == 'win32'",
+    "python_full_version >= '3.13' and sys_platform == 'emscripten'",
+    "python_full_version == '3.12.*' and sys_platform == 'emscripten'",
+    "python_full_version >= '3.13' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "python_full_version == '3.12.*' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "python_full_version == '3.11.*' and sys_platform == 'win32'",
+    "python_full_version == '3.11.*' and sys_platform == 'emscripten'",
+    "python_full_version == '3.11.*' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+]
+dependencies = [
+    { name = "anyio", marker = "python_full_version >= '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/8c/f4/989bc70cb8091eda43a9034ef969b25145291f3601703b82766e5172dfed/sse_starlette-2.3.6.tar.gz", hash = "sha256:0382336f7d4ec30160cf9ca0518962905e1b69b72d6c1c995131e0a703b436e3", size = 18284, upload-time = "2025-05-30T13:34:12.914Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/81/05/78850ac6e79af5b9508f8841b0f26aa9fd329a1ba00bf65453c2d312bcc8/sse_starlette-2.3.6-py3-none-any.whl", hash = "sha256:d49a8285b182f6e2228e2609c350398b2ca2c36216c2675d875f81e93548f760", size = 10606, upload-time = "2025-05-30T13:34:11.703Z" },
+]
+
+[[package]]
+name = "sse-starlette"
 version = "3.0.3"
 source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version < '3.11'",
+]
 dependencies = [
-    { name = "anyio" },
+    { name = "anyio", marker = "python_full_version < '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/db/3c/fa6517610dc641262b77cc7bf994ecd17465812c1b0585fe33e11be758ab/sse_starlette-3.0.3.tar.gz", hash = "sha256:88cfb08747e16200ea990c8ca876b03910a23b547ab3bd764c0d8eb81019b971", size = 21943, upload-time = "2025-10-30T18:44:20.117Z" }
 wheels = [
@@ -6177,6 +6289,15 @@ wheels = [
 ]
 
 [[package]]
+name = "structlog"
+version = "25.5.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/ef/52/9ba0f43b686e7f3ddfeaa78ac3af750292662284b3661e91ad5494f21dbc/structlog-25.5.0.tar.gz", hash = "sha256:098522a3bebed9153d4570c6d0288abf80a031dfdb2048d59a49e9dc2190fc98", size = 1460830, upload-time = "2025-10-27T08:28:23.028Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a8/45/a132b9074aa18e799b891b91ad72133c98d8042c70f6240e4c5f9dabee2f/structlog-25.5.0-py3-none-any.whl", hash = "sha256:a8453e9b9e636ec59bd9e79bbd4a72f025981b3ba0f5837aebf48f02f37a7f9f", size = 72510, upload-time = "2025-10-27T08:28:21.535Z" },
+]
+
+[[package]]
 name = "sympy"
 version = "1.14.0"
 source = { registry = "https://pypi.org/simple" }
@@ -6206,6 +6327,12 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+openenv = [
+    { name = "openenv-core" },
+]
+openreward = [
+    { name = "openreward", marker = "python_full_version >= '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+]
 textarena = [
     { name = "nltk" },
     { name = "textarena" },
@@ -6214,10 +6341,12 @@ textarena = [
 [package.metadata]
 requires-dist = [
     { name = "nltk", marker = "extra == 'textarena'" },
+    { name = "openenv-core", marker = "extra == 'openenv'", specifier = ">=0.3.0" },
+    { name = "openreward", marker = "python_full_version >= '3.11' and extra == 'openreward'", specifier = ">=0.1.123" },
     { name = "textarena", marker = "extra == 'textarena'" },
     { name = "verifiers", specifier = ">=0.1.15.dev11" },
 ]
-provides-extras = ["textarena"]
+provides-extras = ["openenv", "openreward", "textarena"]
 
 [[package]]
 name = "tenacity"
@@ -6822,6 +6951,10 @@ harnesses = [
 ]
 openenv = [
     { name = "openenv-core" },
+    { name = "tasksets", extra = ["openenv"], marker = "extra == 'extra-9-verifiers-openenv'" },
+]
+openreward = [
+    { name = "tasksets", extra = ["openreward"] },
 ]
 packages = [
     { name = "harnesses" },
@@ -6918,6 +7051,8 @@ requires-dist = [
     { name = "stagehand", marker = "extra == 'browser'", specifier = ">=3.0.0" },
     { name = "tasksets", marker = "extra == 'packages'", editable = "packages/tasksets" },
     { name = "tasksets", marker = "extra == 'tasksets'", editable = "packages/tasksets" },
+    { name = "tasksets", extras = ["openenv"], marker = "extra == 'openenv'", editable = "packages/tasksets" },
+    { name = "tasksets", extras = ["openreward"], marker = "extra == 'openreward'", editable = "packages/tasksets" },
     { name = "tasksets", extras = ["textarena"], marker = "extra == 'ta'", editable = "packages/tasksets" },
     { name = "tenacity", specifier = ">=8.5.0" },
     { name = "textual" },
@@ -6929,7 +7064,7 @@ requires-dist = [
     { name = "vllm", marker = "extra == 'rl'", specifier = ">=0.10.0,<0.11.0" },
     { name = "wandb", marker = "extra == 'rl'" },
 ]
-provides-extras = ["browser", "harnesses", "openenv", "packages", "renderers", "rg", "rl", "ta", "tasksets"]
+provides-extras = ["browser", "harnesses", "openenv", "openreward", "packages", "renderers", "rg", "rl", "ta", "tasksets"]
 
 [package.metadata.requires-dev]
 dev = [

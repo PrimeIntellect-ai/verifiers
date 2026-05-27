@@ -1,25 +1,84 @@
-import inspect
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from typing import TypeAlias, cast
+from typing import Literal, TypeAlias, cast
 
-from pydantic import BaseModel
+from pydantic import field_validator, model_validator
 
 from .config import (
     CallableEntry,
-    MCPToolConfig,
-    SandboxConfig,
-    ToolsetConfig,
-    config_callables,
+    Config,
+    JsonMap,
     resolve_config_object,
-    sandbox_config_mapping,
 )
+from .sandbox import SandboxConfig, sandbox_config_mapping
 from .utils.binding_utils import BindingMap, normalize_binding_map
 from .utils.binding_utils import normalize_object_map
-from .utils.config_utils import coerce_config, resolved_config_data
+from .utils.config_callable_utils import config_callables
 from .types import ConfigMap, Handler, Objects, ToolSpec
+from .utils.toolset_utils import (
+    collect_toolsets as collect_toolsets,
+    flatten_toolsets as flatten_toolsets,
+    iter_toolsets as iter_toolsets,
+    normalize_toolset as normalize_toolset,
+    normalize_toolset_collection as normalize_toolset_collection,
+    normalize_toolset_result as normalize_toolset_result,
+    optional_string as optional_string,
+    string_items as string_items,
+    tool_item as tool_item,
+    tool_items as tool_items,
+    tool_name as tool_name,
+    toolset_config_mapping as toolset_config_mapping,
+)
 
 ToolsetCallableEntry: TypeAlias = CallableEntry | Handler
+
+
+class MCPToolConfig(Config):
+    command: str
+    args: list[str] = []
+    env: dict[str, str] | None = None
+    cwd: str | None = None
+
+    @field_validator("args", mode="before")
+    @classmethod
+    def validate_args(cls, value: object) -> object:
+        if isinstance(value, str):
+            return [value]
+        return value
+
+
+class ToolsetConfig(Config):
+    tools: str | JsonMap | list[str | JsonMap] | None = []
+    show: list[str] | None = None
+    hide: list[str] | None = None
+    bindings: BindingMap = {}
+    objects: dict[str, str] = {}
+    write: bool = False
+    scope: Literal["rollout", "group", "global"] | None = None
+    sandbox: SandboxConfig | Literal["program"] | None = None
+    stops: list[CallableEntry] = []
+    setups: list[CallableEntry] = []
+    updates: list[CallableEntry] = []
+    cleanups: list[CallableEntry] = []
+    teardowns: list[CallableEntry] = []
+
+    @field_validator("show", "hide", mode="before")
+    @classmethod
+    def validate_visibility_list(cls, value: object) -> object:
+        if isinstance(value, str):
+            return [value]
+        return value
+
+    @field_validator("bindings", mode="before")
+    @classmethod
+    def validate_bindings(cls, value: object) -> BindingMap:
+        return normalize_binding_map(value, "toolset.bindings")
+
+    @model_validator(mode="after")
+    def validate_visibility(self) -> "ToolsetConfig":
+        if self.show is not None and self.hide is not None:
+            raise ValueError("Toolset accepts show or hide, not both.")
+        return self
 
 
 @dataclass(frozen=True)
@@ -178,216 +237,6 @@ ToolsetCollection: TypeAlias = (
     ToolsetItem | Iterable[ToolsetItem] | dict[str, ToolsetItem | ConfigMap]
 )
 Toolsets: TypeAlias = ToolsetCollection | None
-
-
-def flatten_toolsets(
-    toolsets: "Iterable[ToolEntry]", apply_visibility: bool = False
-) -> "list[ToolEntry]":
-    flat: list[ToolEntry] = []
-    for item in toolsets:
-        if isinstance(item, Toolset):
-            tools = flatten_toolsets(item.tools, apply_visibility)
-            if apply_visibility and item.show is not None:
-                show = set(item.show)
-                tools = [tool for tool in tools if tool_name(tool) in show]
-            if apply_visibility and item.hide is not None:
-                hide = set(item.hide)
-                tools = [tool for tool in tools if tool_name(tool) not in hide]
-            flat.extend(tools)
-        else:
-            flat.append(item)
-    return flat
-
-
-def iter_toolsets(toolsets: "Iterable[ToolEntry]") -> list[Toolset]:
-    groups: list[Toolset] = []
-    for item in toolsets:
-        if isinstance(item, Toolset):
-            groups.append(item)
-            groups.extend(iter_toolsets(item.tools))
-    return groups
-
-
-def normalize_toolsets(toolsets: "Iterable[ToolEntry]") -> list[Toolset]:
-    return [normalize_toolset(toolset) for toolset in toolsets]
-
-
-def collect_toolsets(
-    values: object,
-    config: object,
-) -> tuple[list[Toolset], dict[str, Toolset]]:
-    value_toolsets, value_named = normalize_toolset_collection(values)
-    config_toolsets, config_named = normalize_toolset_collection(config)
-    duplicate = set(value_named) & set(config_named)
-    if duplicate:
-        raise ValueError(f"Toolsets are defined twice: {sorted(duplicate)}.")
-    return [*value_toolsets, *config_toolsets], {**value_named, **config_named}
-
-
-def normalize_toolset_collection(
-    value: object,
-) -> tuple[list[Toolset], dict[str, Toolset]]:
-    if value is None:
-        return [], {}
-    if isinstance(value, Mapping):
-        named: dict[str, Toolset] = {}
-        for key, item in value.items():
-            if not isinstance(key, str):
-                raise TypeError("Toolset names must be strings.")
-            if key in named:
-                raise ValueError(f"Toolset {key!r} is defined twice.")
-            named[key] = named_toolset(key, item)
-        return list(named.values()), named
-    if isinstance(value, str):
-        return [normalize_toolset(value)], {}
-    if not isinstance(value, Iterable):
-        return [normalize_toolset(value)], {}
-    return normalize_toolsets(cast(Iterable[ToolEntry], value)), {}
-
-
-def named_toolset(name: str, value: object) -> Toolset:
-    value = resolve_config_object(value)
-    if isinstance(value, Toolset):
-        return value
-    if isinstance(value, BaseModel):
-        value = value.model_dump(exclude_none=True)
-    if isinstance(value, Mapping):
-        spec = cast(ConfigMap, value)
-        if "fn" in spec:
-            return toolset_from_factory(name, spec)
-        return toolset_from_mapping(spec)
-    if callable(value):
-        return call_toolset_factory(name, cast(Handler, value), {})
-    return normalize_toolset(value)
-
-
-def toolset_from_factory(name: str, spec: ConfigMap) -> Toolset:
-    fn = resolve_config_object(spec.get("fn"))
-    if not callable(fn):
-        raise TypeError(f"Toolset {name!r} requires callable fn.")
-    kwargs = {key: value for key, value in spec.items() if key != "fn"}
-    return call_toolset_factory(name, cast(Handler, fn), kwargs)
-
-
-def call_toolset_factory(name: str, fn: Handler, kwargs: ConfigMap) -> Toolset:
-    result = fn(**kwargs)
-    if inspect.isawaitable(result):
-        raise TypeError(f"Toolset {name!r} fn must be synchronous.")
-    toolsets = normalize_toolset_result(result)
-    if len(toolsets) != 1:
-        raise ValueError(f"Toolset {name!r} fn must return exactly one Toolset.")
-    return toolsets[0]
-
-
-def normalize_toolset_result(value: object) -> list[Toolset]:
-    value = resolve_config_object(value)
-    if value is None:
-        return []
-    if isinstance(value, Toolset | Mapping | str):
-        return [normalize_toolset(value)]
-    if not isinstance(value, Iterable):
-        return [normalize_toolset(value)]
-    return normalize_toolsets(cast(Iterable[ToolEntry], value))
-
-
-def normalize_toolset(value: object) -> Toolset:
-    value = resolve_config_object(value)
-    if isinstance(value, Toolset):
-        return value
-    if isinstance(value, Mapping):
-        return toolset_from_mapping(cast(ConfigMap, value))
-    return Toolset(tools=[cast(ToolEntry, value)])
-
-
-def toolset_from_mapping(spec: ConfigMap) -> Toolset:
-    extra_keys = set(spec) - set(ToolsetConfig.model_fields)
-    if extra_keys:
-        raise ValueError(f"Unknown toolset config keys: {sorted(extra_keys)}.")
-    write = spec.get("write")
-    if write is not None and not isinstance(write, bool):
-        raise TypeError("Toolset write must be a boolean.")
-    return Toolset(
-        tools=cast(ToolEntries | None, spec.get("tools", ())),
-        show=string_items(spec.get("show")),
-        hide=string_items(spec.get("hide")),
-        bindings=cast(BindingMap | None, spec.get("bindings")),
-        objects=cast(Objects | None, spec.get("objects")),
-        write=write,
-        scope=cast(str | None, spec.get("scope")),
-        sandbox=cast(ConfigMap | SandboxConfig | str | None, spec.get("sandbox")),
-        stops=cast(Iterable[ToolsetCallableEntry], spec.get("stops") or ()),
-        setups=cast(Iterable[ToolsetCallableEntry], spec.get("setups") or ()),
-        updates=cast(Iterable[ToolsetCallableEntry], spec.get("updates") or ()),
-        cleanups=cast(Iterable[ToolsetCallableEntry], spec.get("cleanups") or ()),
-        teardowns=cast(Iterable[ToolsetCallableEntry], spec.get("teardowns") or ()),
-    )
-
-
-def tool_items(value: object) -> "list[ToolEntry]":
-    if value is None:
-        return []
-    if isinstance(value, str) or isinstance(value, Mapping):
-        return [tool_item(value)]
-    if not isinstance(value, Iterable):
-        return [tool_item(value)]
-    return [tool_item(item) for item in value]
-
-
-def tool_item(value: object) -> "ToolEntry":
-    value = resolve_config_object(value)
-    if isinstance(value, Toolset | MCPTool):
-        return value
-    if isinstance(value, MCPToolConfig):
-        return MCPTool(
-            command=value.command,
-            args=value.args,
-            env=value.env,
-            cwd=value.cwd,
-        )
-    if isinstance(value, Mapping):
-        if "command" in value:
-            config = coerce_config(MCPToolConfig, value)
-            return MCPTool(
-                command=config.command,
-                args=config.args,
-                env=config.env,
-                cwd=config.cwd,
-            )
-        raise TypeError("Tool mapping specs require command.")
-    if not callable(value):
-        raise TypeError("Tool entries must be callables, Toolsets, or MCP tool specs.")
-    return cast(Handler, value)
-
-
-def toolset_config_mapping(config: ToolsetConfig | None) -> ConfigMap:
-    if config is None:
-        return {}
-    return resolved_config_data(coerce_config(ToolsetConfig, config))
-
-
-def string_items(value: object) -> list[str] | None:
-    if value is None:
-        return None
-    if isinstance(value, str):
-        return [value]
-    if not isinstance(value, Iterable):
-        raise TypeError("Toolset visibility fields must be strings or lists.")
-    return [str(item) for item in value]
-
-
-def optional_string(value: object) -> str | None:
-    if value is None:
-        return None
-    if not isinstance(value, str):
-        raise TypeError("Toolset scope must be a string.")
-    return value
-
-
-def tool_name(tool: object) -> str:
-    name = getattr(tool, "__name__", None) or getattr(tool, "name", None)
-    if not isinstance(name, str) or not name:
-        raise ValueError("Tools require a stable __name__ or name.")
-    return name
 
 
 @dataclass(frozen=True)

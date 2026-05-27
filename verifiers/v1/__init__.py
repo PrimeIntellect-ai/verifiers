@@ -26,19 +26,12 @@ from verifiers.utils.message_utils import get_messages
 from .config import (
     CallableConfig,
     Config,
-    EnvConfig,
-    HarnessConfig,
-    MCPToolConfig,
-    ProgramConfig,
-    SandboxConfig,
     SignalConfig,
-    TasksetConfig,
-    ToolsetConfig,
-    UserConfig,
 )
-from .env import Env
-from .harness import Harness
-from .program import Program
+from .env import Env, EnvConfig
+from .harness import Harness, HarnessConfig
+from .program import Program, ProgramConfig
+from .sandbox import SandboxConfig
 from .utils.scoring_utils import (
     add_metric,
     add_reward,
@@ -50,8 +43,8 @@ from .utils.scoring_utils import (
 )
 from .state import State
 from .task import Task
-from .taskset import Taskset, discover_sibling_dir
-from .toolset import MCPTool, Toolset, Toolsets
+from .taskset import Taskset, TasksetConfig, discover_sibling_dir
+from .toolset import MCPTool, MCPToolConfig, Toolset, ToolsetConfig, Toolsets
 from .types import (
     ConfigData,
     ConfigMap,
@@ -63,7 +56,7 @@ from .types import (
     TaskRow,
     Tasks,
 )
-from .user import User
+from .user import User, UserConfig
 
 __all__ = [
     "ConfigData",

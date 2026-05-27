@@ -106,6 +106,10 @@ browser = [
 ]
 openenv = [
     "openenv-core>=0.3.0",
+    "tasksets[openenv]>=0.1.0.post0",
+]
+openreward = [
+    "tasksets[openreward]>=0.1.0.post0",
 ]
 renderers = [
     "renderers>=0.1.8.dev28",

@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING, Generic, TypeVar, cast
 from verifiers.decorators import metric, update
 from verifiers.errors import Error, OverlongPromptError
 from verifiers.types import (
+    ClientConfig,
     MessageContent,
     Messages,
     SamplingArgs,
@@ -15,29 +16,42 @@ from verifiers.utils.message_utils import normalize_messages
 from verifiers.utils.response_utils import parse_response_message
 from verifiers.utils.tool_utils import is_valid_tool_content_parts
 
+from pydantic import field_validator
+
 from .config import (
     ConfigSource,
-    HarnessConfig,
-    PromptInput,
-    ProgramConfig,
-    SandboxConfig,
+    JsonMap,
+    LifecycleConfig,
     import_config_ref,
     resolve_config_object,
-    sandbox_config_mapping,
 )
-from .program import Program, program_config_data
+from .program import (
+    Program,
+    ProgramArgs,
+    ProgramChannels,
+    ProgramCommand,
+    ProgramConfig,
+    ProgramOptionMap,
+    ProgramSetup,
+    program_config_data,
+)
+from .sandbox import SandboxConfig, sandbox_config_mapping
+from .user import UserConfig
+from .utils.binding_utils import BindingMap, normalize_binding_map
 from .utils.endpoint_utils import (
     Endpoint,
     assistant_completion_from_messages,
     run_intercepted_program,
 )
-from .utils.config_utils import coerce_config, config_ref_context, qualified_config_ref
-from .utils.runtime_owner_utils import RuntimeOwnerMixin
-from .utils.harness_registry_utils import (
-    harness_config_type,
-    harness_config_type_from_class,
-    register_harness_config_type,
+from .utils.config_utils import (
+    coerce_config,
+    config_ref_context,
+    config_type_from_class,
+    qualified_config_ref,
+    registered_config_type,
+    register_config_type,
 )
+from .utils.runtime_owner_utils import RuntimeOwnerMixin
 from .utils.json_utils import json_args
 from .utils.mcp_proxy_utils import (
     proxy_program,
@@ -72,19 +86,10 @@ from .utils.tool_utils import tool_error_content
 from .utils.trajectory_utils import has_borrowed_trajectory, sync_trajectory
 from .state import State
 from .task import Task
-from .types import ConfigData, ConfigMap, Handler, ModelClient, ProgramMap
-from .types import (
-    ProgramChannels,
-    ProgramCommand,
-    ProgramOptionMap,
-    ProgramSetup,
-)
+from .types import ConfigData, ConfigMap, Handler, ModelClient, ProgramMap, PromptInput
 
 if TYPE_CHECKING:
     from .taskset import Taskset
-
-
-ConfigT = TypeVar("ConfigT", bound=HarnessConfig)
 
 
 COMMAND_SANDBOX_DEFAULTS: ConfigData = {
@@ -109,19 +114,45 @@ COMMAND_PROGRAM_MAP_PATCH_KEYS = {"files", "dirs", "bindings", "env", "artifacts
 COMMAND_PROGRAM_LIST_PATCH_KEYS = {"setup", "args"}
 
 
+class HarnessConfig(LifecycleConfig):
+    # Core fields configure harness-owned runtime behavior.
+    program: ProgramConfig = ProgramConfig()
+    system_prompt: PromptInput | None = None
+    system_prompt_merge: str = "reject"
+    sandbox: SandboxConfig | None = None
+    client: ClientConfig | JsonMap | str | None = None
+    model: str | None = None
+    sampling_args: JsonMap = {}
+    keep_trajectory_step: str | None = None
+    user: UserConfig | str | None = None
+    bindings: BindingMap = {}
+    max_turns: int = 10
+
+    @field_validator("bindings", mode="before")
+    @classmethod
+    def validate_bindings(cls, value: object) -> BindingMap:
+        return normalize_binding_map(value, "harness.bindings", allow_objects=False)
+
+
+ConfigT = TypeVar("ConfigT", bound=HarnessConfig)
+
+
 class Harness(RuntimeOwnerMixin, Generic[ConfigT]):
     config: ConfigT
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)
-        config_type = harness_config_type_from_class(
-            cls, inherited=False, harness_base=Harness
+        config_type = config_type_from_class(
+            cls,
+            inherited=False,
+            owner_base=Harness,
+            config_base=HarnessConfig,
         )
         if config_type is not None:
-            register_harness_config_type(cls, config_type)
+            register_config_type(cls, config_type)
 
     def __init__(self, config: ConfigSource = None):
-        config_type = harness_config_type(type(self), Harness)
+        config_type = registered_config_type(type(self), HarnessConfig)
         self.config = cast(ConfigT, coerce_config(config_type, config))
         with config_ref_context(self.config):
             self.program = self.program_data(self.load_program())
@@ -152,7 +183,7 @@ class Harness(RuntimeOwnerMixin, Generic[ConfigT]):
 
     @classmethod
     def config_schema(cls) -> str:
-        return HarnessConfig.schema_text()
+        return registered_config_type(cls, HarnessConfig).schema_text()
 
     def load_program(self) -> Program:
         return Program(self.config.program)
@@ -187,7 +218,7 @@ class Harness(RuntimeOwnerMixin, Generic[ConfigT]):
         env: ProgramOptionMap | None = None,
         artifacts: ProgramOptionMap | None = None,
         channels: ProgramChannels | None = None,
-        args: list[object] | None = None,
+        args: ProgramArgs | None = None,
     ) -> tuple[Program, ConfigData | None]:
         sandbox_value = (
             sandbox

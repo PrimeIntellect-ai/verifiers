@@ -125,14 +125,17 @@ Install them with `uv add "verifiers[packages]"`, or with the narrower
 task directories can run through the bundled OpenCode CLI harness with:
 
 ```python
-from harnesses import OpenCode, OpenCodeConfig
-from tasksets import HarborTaskset, HarborTasksetConfig
+from harnesses import OpenCodeConfig
+from tasksets import HarborTasksetConfig
 
 env = vf.Env(
-    taskset=HarborTaskset(config=HarborTasksetConfig()),
-    harness=OpenCode(config=OpenCodeConfig()),
+    taskset=vf.load_taskset("tasksets.harbor", config=HarborTasksetConfig()),
+    harness=vf.load_harness("harnesses.opencode", config=OpenCodeConfig()),
 )
 ```
+
+The packaged `Taskset` and `Harness` classes can also be constructed directly in
+ordinary Python code; loaders are the environment/config composition path.
 
 To run a local evaluation with any OpenAI-compatible model, do:
 ```bash

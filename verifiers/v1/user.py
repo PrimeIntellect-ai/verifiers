@@ -3,7 +3,10 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Literal, cast
 
-from .config import UserConfig, import_config_ref, resolve_config_object
+from pydantic import field_validator
+
+from .config import Config, import_config_ref, resolve_config_object
+from .sandbox import SandboxConfig
 from .utils.binding_utils import BindingMap, normalize_binding_map
 from .utils.binding_utils import normalize_object_map
 from .utils.config_utils import coerce_config
@@ -11,6 +14,19 @@ from .utils.trajectory_utils import completion_from_trajectory
 from .types import ConfigMap, Handler, Objects, PromptMessage
 
 UserScope = Literal["rollout", "group", "global"]
+
+
+class UserConfig(Config):
+    fn: str
+    scope: UserScope = "rollout"
+    bindings: BindingMap = {}
+    objects: dict[str, str] = {}
+    sandbox: SandboxConfig | None = None
+
+    @field_validator("bindings", mode="before")
+    @classmethod
+    def validate_bindings(cls, value: object) -> BindingMap:
+        return normalize_binding_map(value, "user.bindings", key_style="arg")
 
 
 def state_messages(

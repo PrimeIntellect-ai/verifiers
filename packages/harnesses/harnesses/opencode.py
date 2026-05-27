@@ -2,17 +2,19 @@ import json
 import shlex
 from pathlib import PurePosixPath
 
-from verifiers.v1.config import HarnessConfig, PromptInput
-from verifiers.v1.harness import Harness
-from verifiers.v1.program import Program
-from verifiers.v1.types import (
-    ConfigData,
-    ConfigMap,
+from verifiers.v1.harness import Harness, HarnessConfig
+from verifiers.v1.program import (
+    Program,
     ProgramChannels,
     ProgramCommand,
     ProgramOptionMap,
     ProgramSetup,
     ProgramValue,
+)
+from verifiers.v1.types import (
+    ConfigData,
+    ConfigMap,
+    PromptInput,
 )
 from verifiers.v1.utils.mcp_proxy_utils import proxy_command
 

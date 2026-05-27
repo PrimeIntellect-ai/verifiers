@@ -6,11 +6,11 @@ from collections.abc import (
     MutableMapping,
     Sequence,
 )
-from importlib.abc import Traversable
 from os import PathLike
 from typing import Literal, TypeAlias
 
 from datasets import Dataset
+from typing_extensions import TypeAliasType
 from verifiers.clients import Client
 from verifiers.types import ClientConfig, Message
 
@@ -40,15 +40,19 @@ ToolsetSpecs: TypeAlias = ToolSpec | Sequence[ToolSpec] | ConfigMap
 ModelClient: TypeAlias = Client | ClientConfig
 
 ProgramScalar: TypeAlias = str | int | float | bool | None
-ProgramSource: TypeAlias = PathLike[str] | Traversable
-ProgramValue: TypeAlias = ProgramScalar | Handler | ConfigMap | ProgramSource
-ProgramCommand: TypeAlias = str | Sequence[ProgramValue]
+ProgramConfigValue = TypeAliasType(
+    "ProgramConfigValue",
+    ProgramScalar | list["ProgramConfigValue"] | dict[str, "ProgramConfigValue"],
+)
+ProgramValue: TypeAlias = ProgramConfigValue
+ProgramCommand: TypeAlias = str | list[ProgramConfigValue]
 ProgramMap: TypeAlias = Mapping[str, object]
 ProgramData: TypeAlias = dict[str, object]
-ProgramOptionMap: TypeAlias = Mapping[str, ProgramValue]
-ProgramSetup: TypeAlias = ProgramValue | Sequence[ProgramValue]
+ProgramOptionMap: TypeAlias = dict[str, ProgramConfigValue]
+ProgramSetup: TypeAlias = ProgramConfigValue | list[ProgramConfigValue]
+ProgramArgs: TypeAlias = list[ProgramConfigValue]
 ProgramChannel: TypeAlias = Literal["callable", "mcp"]
-ProgramChannelSpec: TypeAlias = ProgramChannel | ConfigMap
+ProgramChannelSpec: TypeAlias = ProgramChannel | dict[str, ProgramConfigValue]
 ProgramChannels: TypeAlias = ProgramChannelSpec | list[ProgramChannelSpec]
 
 ObjectLoader: TypeAlias = str | Callable[..., object | Awaitable[object]]

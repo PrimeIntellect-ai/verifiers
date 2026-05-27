@@ -21,25 +21,23 @@ from verifiers.envs.experimental.utils.git_checkout_cache import (
     resolve_git_checkout,
     validate_git_checkout,
 )
-from verifiers.v1.config import (
-    CallableEntry,
-    HarnessConfig,
-    SandboxConfig,
-    sandbox_config_mapping,
+from verifiers.v1.config import CallableEntry
+from verifiers.v1.harness import Harness, HarnessConfig
+from verifiers.v1.program import (
+    Program,
+    ProgramCommand,
+    ProgramOptionMap,
+    ProgramSetup,
+    ProgramValue,
 )
-from verifiers.v1.harness import Harness
-from verifiers.v1.program import Program
 from verifiers.v1.runtime import Runtime
+from verifiers.v1.sandbox import SandboxConfig, sandbox_config_mapping
 from verifiers.v1.state import State
 from verifiers.v1.task import Task
 from verifiers.v1.taskset import Taskset
 from verifiers.v1.types import (
     ConfigData,
     ConfigMap,
-    ProgramCommand,
-    ProgramOptionMap,
-    ProgramSetup,
-    ProgramValue,
 )
 from verifiers.v1.utils.program_utils import int_config
 from verifiers.v1.utils.prompt_utils import task_text
@@ -217,9 +215,17 @@ def rlm_env(config: RLMConfig) -> ProgramOptionMap:
     if summarize_resolver is not None:
         env["RLM_SUMMARIZE_AT_TOKENS"] = {
             "fn": "harnesses.rlm:rlm_summarize_at_tokens",
-            "value": config.summarize_at_tokens,
+            "value": summarize_at_tokens_config_value(config.summarize_at_tokens),
         }
     return env
+
+
+def summarize_at_tokens_config_value(
+    value: int | tuple[int, int] | list[int] | None,
+) -> int | list[int] | None:
+    if isinstance(value, tuple):
+        return list(value)
+    return value
 
 
 def rlm_artifacts(config: RLMConfig) -> ProgramOptionMap:

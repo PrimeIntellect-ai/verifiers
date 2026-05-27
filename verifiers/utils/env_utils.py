@@ -9,9 +9,9 @@ from typing import Callable, Union, cast, get_args, get_origin, get_type_hints
 from pydantic import BaseModel
 from verifiers.envs.environment import Environment
 from verifiers.utils.config_utils import MissingKeyError
-from verifiers.v1.config import EnvConfig, HarnessConfig, TasksetConfig
-from verifiers.v1.harness import Harness
-from verifiers.v1.taskset import Taskset
+from verifiers.v1.env import EnvConfig
+from verifiers.v1.harness import Harness, HarnessConfig
+from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.utils.config_utils import coerce_config, explicit_config_data
 
 

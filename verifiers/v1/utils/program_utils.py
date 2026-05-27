@@ -7,7 +7,7 @@ from typing import cast
 from verifiers.errors import InfraError
 from verifiers.utils.async_utils import maybe_call_with_named_args
 
-from ..config import resolve_config_object, string_mapping
+from .config_utils import resolve_config_object, string_mapping
 from .binding_utils import (
     binding_key_parts,
     function_name,
