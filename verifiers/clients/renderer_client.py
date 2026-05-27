@@ -560,6 +560,16 @@ def _is_retryable_cache_hit_failure(exc: Exception) -> bool:
     return "Expected a cached item" in text or "mm_hash" in text
 
 
+def _is_empty_model_result(result: Mapping[str, Any] | None) -> bool:
+    if result is None:
+        return True
+    return not (
+        result.get("content")
+        or result.get("tool_calls")
+        or result.get("reasoning_content")
+    )
+
+
 async def _generate_with_optional_vllm_lru_cache(**kwargs: Any) -> dict[str, Any]:
     client = cast(AsyncOpenAI, kwargs["client"])
     config = await _resolve_vllm_lru_cache_config(client)
@@ -610,6 +620,17 @@ async def _generate_with_optional_vllm_lru_cache(**kwargs: Any) -> dict[str, Any
                 result = await _renderer_generate(**kwargs)
             else:
                 raise
+        if _lru_cache_used_hits.get() and _is_empty_model_result(result):
+            _lru_cache_logger.warning(
+                "renderer_lru_cache_hit_empty_response req=%d; clearing local "
+                "MM cache mirror and retrying with full payloads",
+                req_id,
+            )
+            _clear_local_lru_cache()
+            _lru_cache_disable_hits.set(True)
+            _lru_cache_used_hits.set(False)
+            _lru_cache_sent_hashes.set({})
+            result = await _renderer_generate(**kwargs)
         newly_confirmed = _confirm_sent_mm_hashes()
         if newly_confirmed:
             _lru_cache_logger.debug(
