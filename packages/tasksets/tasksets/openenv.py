@@ -17,7 +17,6 @@ from openenv.core.env_server.mcp_types import (
 )
 from openenv.core.generic_client import GenericEnvClient
 from openenv.core.mcp_client import MCPToolClient
-from pydantic import field_validator
 from verifiers.types import Message, MessageContent, Tool, UserMessage
 from verifiers.utils.message_utils import get_messages, normalize_messages
 from verifiers.utils.tool_utils import is_valid_tool_content_parts
@@ -85,13 +84,6 @@ class OpenEnvTasksetConfig(TasksetConfig):
     backoff_factor: float = 2.0
     max_backoff_seconds: float = 30.0
     jitter: float = 1e-3
-
-    @field_validator("prompt_renderer")
-    @classmethod
-    def validate_prompt_renderer(cls, value: str) -> str:
-        if not value:
-            raise ValueError("OpenEnvTasksetConfig.prompt_renderer is required.")
-        return value
 
 
 class OpenEnvTaskset(Taskset[OpenEnvTasksetConfig]):

@@ -13,8 +13,6 @@ from importlib.abc import Traversable
 from pathlib import Path
 from typing import cast
 
-from pydantic import field_validator
-
 from verifiers.envs.experimental.utils.git_checkout_cache import (
     resolve_git_checkout,
     validate_git_checkout,
@@ -82,24 +80,6 @@ class RLMConfig(HarnessConfig):
     rlm_tools: list[str] = RLM_DEFAULT_TOOLS
     env_vars: dict[str, str] = {}
     skills: str | None = None
-
-    @field_validator("summarize_at_tokens")
-    @classmethod
-    def validate_summarize_at_tokens(cls, value: object) -> object:
-        if value is None:
-            return value
-        if isinstance(value, bool) or not isinstance(value, int):
-            raise ValueError("summarize_at_tokens must be a positive integer.")
-        if value <= 0:
-            raise ValueError("summarize_at_tokens must be positive.")
-        return value
-
-    @field_validator("env_vars", mode="before")
-    @classmethod
-    def validate_env_vars(cls, value: object) -> object:
-        if isinstance(value, Mapping):
-            return {str(key): str(item) for key, item in value.items()}
-        return value
 
 
 class RLM(Harness[RLMConfig]):
@@ -331,21 +311,6 @@ export RLM_APPEND_TO_SYSTEM_PROMPT="$(cat {shlex.quote(RLM_DEFAULT_APPEND_TO_SYS
 cd "${{AGENT_WORKDIR:-{workdir}}}"
 rlm "$(cat {shlex.quote(instruction_path)})"
 """
-
-    @classmethod
-    def _metric(cls, state: ConfigMap, key: str) -> float:
-        artifacts = state.get("artifacts")
-        if not isinstance(artifacts, Mapping):
-            return 0.0
-        artifacts = cast(ConfigMap, artifacts)
-        metrics = artifacts.get("rlm_metrics")
-        if not isinstance(metrics, Mapping):
-            return 0.0
-        metrics = cast(ConfigMap, metrics)
-        value = metrics.get(key, 0.0)
-        if isinstance(value, bool) or not isinstance(value, int | float | str):
-            return 0.0
-        return float(value or 0.0)
 
 
 def load_harness(config: RLMConfig) -> RLM:
@@ -672,20 +637,46 @@ Tool schema:
 
 
 def keep_only_parent_rlm_steps(step: object, state: State, headers: ConfigMap) -> bool:
-    _ = step, state
     return str(headers.get("x-rlm-depth", "0")) == "0"
 
 
 async def rlm_sub_llm_call_count(task: Task, state: State) -> float:
     _ = task
-    return RLM._metric(state, "sub_llm_call_count")
+    artifacts = state.get("artifacts")
+    if not isinstance(artifacts, Mapping):
+        return 0.0
+    metrics = cast(ConfigMap, artifacts).get("rlm_metrics")
+    if not isinstance(metrics, Mapping):
+        return 0.0
+    value = cast(ConfigMap, metrics).get("sub_llm_call_count", 0.0)
+    if isinstance(value, bool) or not isinstance(value, int | float | str):
+        return 0.0
+    return float(value or 0.0)
 
 
 async def rlm_sub_llm_total_turns(task: Task, state: State) -> float:
     _ = task
-    return RLM._metric(state, "sub_llm_total_turns")
+    artifacts = state.get("artifacts")
+    if not isinstance(artifacts, Mapping):
+        return 0.0
+    metrics = cast(ConfigMap, artifacts).get("rlm_metrics")
+    if not isinstance(metrics, Mapping):
+        return 0.0
+    value = cast(ConfigMap, metrics).get("sub_llm_total_turns", 0.0)
+    if isinstance(value, bool) or not isinstance(value, int | float | str):
+        return 0.0
+    return float(value or 0.0)
 
 
 async def rlm_sub_llm_total_tool_calls(task: Task, state: State) -> float:
     _ = task
-    return RLM._metric(state, "sub_llm_total_tool_calls")
+    artifacts = state.get("artifacts")
+    if not isinstance(artifacts, Mapping):
+        return 0.0
+    metrics = cast(ConfigMap, artifacts).get("rlm_metrics")
+    if not isinstance(metrics, Mapping):
+        return 0.0
+    value = cast(ConfigMap, metrics).get("sub_llm_total_tool_calls", 0.0)
+    if isinstance(value, bool) or not isinstance(value, int | float | str):
+        return 0.0
+    return float(value or 0.0)

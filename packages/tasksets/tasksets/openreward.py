@@ -11,7 +11,6 @@ from openreward.api.environments.types import (
     TextBlock as OpenRewardTextBlock,
     ToolOutput as OpenRewardToolOutput,
 )
-from pydantic import field_validator
 import verifiers as vf
 from verifiers.types import MessageContent, Tool
 from verifiers.utils.message_utils import normalize_messages
@@ -33,12 +32,6 @@ class OpenRewardTasksetConfig(TasksetConfig):
     eval_split: str | None = None
     num_train_examples: int | None = None
     num_eval_examples: int = 0
-
-    @field_validator("environment", "split")
-    @classmethod
-    def validate_required_name(cls, value: str) -> str:
-        assert value
-        return value
 
 
 class OpenRewardTaskset(Taskset[OpenRewardTasksetConfig]):
