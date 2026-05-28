@@ -17,7 +17,6 @@ from verifiers.utils.message_utils import normalize_messages
 from verifiers.utils.response_utils import parse_response_message, parse_response_tokens
 from verifiers.utils.tool_utils import convert_func_to_tool_def
 
-from .toolset import ToolsetConfig
 from .utils.binding_utils import (
     BindingSource,
     GROUP_FRAMEWORK_ARGS,
@@ -32,7 +31,7 @@ from .utils.binding_utils import (
     validate_bound_arg,
     validate_callable_source,
 )
-from .utils.config_utils import coerce_config, resolve_config_object
+from .utils.config_utils import resolve_config_object
 from .utils.lifecycle_utils import (
     collect_handlers,
     handler_collection_attr,
@@ -61,9 +60,7 @@ from .toolset import (
     MCPTool,
     ToolEntry,
     Toolset,
-    flatten_toolsets,
     iter_toolsets,
-    normalize_toolset_result,
     tool_name,
 )
 from .user import User
@@ -111,6 +108,7 @@ class Runtime:
                 self.toolsets.extend(iter_toolsets(getattr(owner, "toolsets", ())))
         self.named_toolsets = self._collect_named_toolsets()
         self.rollout_toolsets: dict[str, list[Toolset]] = {}
+        self.scoped_tools: dict[tuple[int, str, str], list[ToolEntry]] = {}
         self.objects: dict[tuple[int, str, str], object] = {}
         self.user_objects: dict[tuple[int, str, str], object] = {}
         self.taskset_objects: dict[tuple[int, str, str], object] = {}
@@ -121,7 +119,7 @@ class Runtime:
         self.sandbox_lock = asyncio.Lock()
         self.mcp_exit_stacks: dict[str, AsyncExitStack] = {}
         self.mcp_tools: dict[str, ConfigData] = {}
-        self.exposed_mcp_tools: dict[str, ConfigData] = {}
+        self.mcp_tool_parents: dict[str, dict[str, tuple[Toolset, ...]]] = {}
         self.trajectories: dict[str, list[ConfigMap]] = {}
         self.tool_handles: dict[str, tuple[Task, State, tuple[str, ...]]] = {}
         self.stop_conditions = collect_handlers(
@@ -210,8 +208,11 @@ class Runtime:
         state.setdefault("task", dict(task))
         state.setdefault("runtime", {})
         state["runtime"]["runtime_id"] = self.runtime_id
-        state["tools"] = sorted(self.all_exposed_tools(state))
+        self.refresh_tools(state, validate=False)
         self.register_trajectory(state)
+
+    def refresh_tools(self, state: State, *, validate: bool = True) -> None:
+        state["tools"] = sorted(self.all_exposed_tools(state, validate=validate))
 
     def register_tool_handle(self, state: State, names: Sequence[str]) -> str:
         task = Task(cast(ConfigMap, state["task"])).freeze()
@@ -252,6 +253,40 @@ class Runtime:
         for handle_id, (_, source_state, _) in list(self.tool_handles.items()):
             if source_state is state:
                 del self.tool_handles[handle_id]
+
+    def add_tool(self, toolset: str, tool: ToolEntry, state: State) -> None:
+        if toolset not in self.named_toolsets:
+            raise KeyError(f"Unknown toolset {toolset!r}.")
+        if isinstance(tool, Toolset):
+            raise TypeError("State.add_tool accepts a tool, not a Toolset.")
+        toolset_value = self.named_toolsets[toolset]
+        scope = toolset_object_scope(toolset_value)
+        key = (id(toolset_value), scope, self.scope_key(scope, state))
+        tools = self.scoped_tools.setdefault(key, [])
+        if not isinstance(tool, MCPTool):
+            name = tool_name(tool)
+            existing = self._tools_for_toolsets(
+                [toolset_value], apply_visibility=False, state=state
+            )
+            if name in existing:
+                raise ValueError(f"Tool {name!r} is defined twice.")
+        tools.append(tool)
+
+    def release_scoped_tools(self, scope: str, state: State) -> None:
+        scope_key = self.scope_key(scope, state)
+        for key in list(self.scoped_tools):
+            _, tool_scope, tool_scope_key = key
+            if tool_scope == scope and tool_scope_key == scope_key:
+                del self.scoped_tools[key]
+
+    def scoped_tool_entries(
+        self, toolset: Toolset, state: State | None
+    ) -> list[ToolEntry]:
+        if state is None:
+            return []
+        scope = toolset_object_scope(toolset)
+        key = (id(toolset), scope, self.scope_key(scope, state))
+        return list(self.scoped_tools.get(key, ()))
 
     def register_trajectory(self, state: State) -> None:
         trajectory = state.get("trajectory")
@@ -697,6 +732,9 @@ class Runtime:
         )
         validate_handler_args(handlers, {"task", "state"}, "setup", "rollout")
         await self.run_rollout_handlers(handlers, task=task, state=state, **kwargs)
+        await self.ensure_mcp_tools(state)
+        self.validate_bindings(state)
+        self.refresh_tools(state)
         return state
 
     async def update_rollout(self, task: Task, state: State) -> State:
@@ -758,6 +796,7 @@ class Runtime:
         await self.release_user_objects("rollout", state)
         await self.release_sandboxes(scope="rollout", state=state)
         await self.close_mcp_tools(state)
+        self.release_scoped_tools("rollout", state)
         await self.release_model_client(state)
         self.release_tool_handles(state)
 
@@ -774,6 +813,7 @@ class Runtime:
             await self.release_user_objects("group", state)
             await self.release_sandboxes(scope="group", state=state)
             await self.close_mcp_tools(state, scope="group")
+            self.release_scoped_tools("group", state)
             self.rollout_toolsets.pop(self.scope_key("rollout", state), None)
 
     async def collect_artifacts(self, task: Task, state: State) -> None:
@@ -805,6 +845,7 @@ class Runtime:
         finally:
             await self.teardown_sandbox_client()
         self.tool_handles.clear()
+        self.scoped_tools.clear()
         await self.close_all_mcp_tools()
         await self.release_all_model_clients()
         unregister_runtime(self.runtime_id)
@@ -1124,20 +1165,20 @@ class Runtime:
         key = self.scope_key("rollout", state)
         if key in self.rollout_toolsets:
             return
-        toolsets: list[Toolset] = []
-        for name, spec in self._task_toolsets_config(task).items():
-            if name in {"show", "hide"}:
-                continue
-            if name in self.named_toolsets:
-                raise ValueError(f"Task toolset {name!r} is already defined.")
-            toolsets.append(await self._runtime_named_toolset(name, spec, task, state))
-        self.rollout_toolsets[key] = toolsets
+        self._task_toolsets_config(task)
+        self.rollout_toolsets[key] = []
 
-    def validate_bindings(self, state: State) -> None:
+    def validate_bindings(
+        self, state: State, *, allow_unresolved_tool_bindings: bool = False
+    ) -> None:
         for owner in (self.taskset, self.harness):
             self._validate_owner_bindings(owner)
         for toolset in iter_toolsets(self.active_toolsets(state)):
-            self._validate_toolset_bindings(toolset)
+            self._validate_toolset_bindings(
+                toolset,
+                state,
+                allow_unresolved=allow_unresolved_tool_bindings,
+            )
         user = self._resolve_user()
         if user is not None:
             for name, source in user.bindings.items():
@@ -1196,12 +1237,17 @@ class Runtime:
                         f"{object_name!r}."
                     )
 
-    def _validate_toolset_bindings(self, toolset: Toolset) -> None:
-        targets = self._toolset_binding_targets(toolset)
+    def _validate_toolset_bindings(
+        self, toolset: Toolset, state: State, *, allow_unresolved: bool
+    ) -> None:
+        targets = self._toolset_binding_targets(toolset, state)
         for binding_key, source in toolset.bindings.items():
             target_name, arg_name = binding_key_parts(binding_key)
             target = targets.get(target_name)
             if target is None:
+                if allow_unresolved and toolset_object_scope(toolset) == "rollout":
+                    validate_binding_source(source, f"Binding {binding_key!r}")
+                    continue
                 raise ValueError(
                     f"Binding {binding_key!r} does not match a callable or object "
                     "factory owned by the same Toolset."
@@ -1293,7 +1339,7 @@ class Runtime:
                 entries, self._owner_bindings(owner), target_name, entry_owner
             )
         for toolset in iter_toolsets(self.active_toolsets(state)):
-            target = self._toolset_binding_targets(toolset).get(target_name)
+            target = self._toolset_binding_targets(toolset, state).get(target_name)
             if target is None or not same_callable(target[1], fn):
                 continue
             self._extend_binding_entries(
@@ -1319,7 +1365,7 @@ class Runtime:
             entries.append((binding_key, source, owner))
 
     def _toolset_binding_targets(
-        self, toolset: Toolset
+        self, toolset: Toolset, state: State | None = None
     ) -> dict[str, tuple[str, Handler]]:
         targets: dict[str, tuple[str, Handler]] = {}
 
@@ -1328,7 +1374,7 @@ class Runtime:
                 raise ValueError(f"Toolset binding target {name!r} is defined twice.")
             targets[name] = (kind, fn)
 
-        for item in toolset.tools:
+        for item in self._toolset_entries(toolset, state):
             if isinstance(item, Toolset | MCPTool):
                 continue
             if callable(item):
@@ -1362,45 +1408,12 @@ class Runtime:
             return {}
         if not isinstance(raw_toolsets, Mapping):
             raise TypeError("task.toolsets must be a mapping.")
-        return cast(ConfigMap, raw_toolsets)
-
-    async def _runtime_named_toolset(
-        self, name: str, spec: object, task: Task, state: State
-    ) -> Toolset:
-        spec = resolve_config_object(spec)
-        if isinstance(spec, Toolset):
-            return spec
-        if isinstance(spec, Mapping):
-            mapping = cast(ConfigMap, spec)
-            if "fn" in mapping:
-                fn = resolve_config_object(mapping.get("fn"))
-                if not callable(fn):
-                    raise TypeError(f"Task toolset {name!r} requires callable fn.")
-                kwargs = {key: value for key, value in mapping.items() if key != "fn"}
-                result = await maybe_call_with_named_args(
-                    cast(Handler, fn),
-                    task=task,
-                    state=state,
-                    **kwargs,
-                )
-                toolsets = normalize_toolset_result(result)
-                if len(toolsets) != 1:
-                    raise ValueError(
-                        f"Task toolset {name!r} fn must return exactly one Toolset."
-                    )
-                return toolsets[0]
-            return Toolset(config=coerce_config(ToolsetConfig, mapping))
-        if callable(spec):
-            result = await maybe_call_with_named_args(
-                cast(Handler, spec), task=task, state=state
+        unknown = set(raw_toolsets) - {"show", "hide"}
+        if unknown:
+            raise ValueError(
+                f"task.toolsets has unknown keys: {sorted(str(key) for key in unknown)}."
             )
-            toolsets = normalize_toolset_result(result)
-            if len(toolsets) != 1:
-                raise ValueError(
-                    f"Task toolset {name!r} fn must return exactly one Toolset."
-                )
-            return toolsets[0]
-        return normalize_toolset_result(spec)[0]
+        return cast(ConfigMap, raw_toolsets)
 
     def _rollout_toolsets(self, state: State) -> list[Toolset]:
         return self.rollout_toolsets.get(self.scope_key("rollout", state), [])
@@ -1462,23 +1475,75 @@ class Runtime:
         return named
 
     def _tools_for_toolsets(
-        self, toolsets: Iterable[ToolEntry], apply_visibility: bool
+        self,
+        toolsets: Iterable[ToolEntry],
+        apply_visibility: bool,
+        state: State | None = None,
+        tool_filters: dict[str, ConfigMap] | None = None,
     ) -> ConfigData:
         tools: ConfigData = {}
-        for tool in flatten_toolsets(toolsets, apply_visibility=apply_visibility):
-            if isinstance(tool, MCPTool):
-                continue
-            name = tool_name(tool)
+
+        def visit(item: ToolEntry, parents: list[Toolset]) -> None:
+            if isinstance(item, Toolset):
+                for child in self._toolset_entries(item, state):
+                    visit(child, [*parents, item])
+                return
+            if isinstance(item, MCPTool):
+                return
+            name = tool_name(item)
+            if apply_visibility and not all(
+                self._tool_visible_for_task(toolset, name, tool_filters)
+                for toolset in parents
+            ):
+                return
             if name in tools:
                 raise ValueError(f"Tool {name!r} is defined twice.")
-            tools[name] = tool
+            tools[name] = item
+
+        for toolset in toolsets:
+            visit(toolset, [])
         return tools
 
-    def _tool_owners_for(self, toolsets: Sequence[Toolset]) -> dict[str, Toolset]:
+    def _toolset_entries(
+        self, toolset: Toolset, state: State | None
+    ) -> list[ToolEntry]:
+        return [*toolset.tools, *self.scoped_tool_entries(toolset, state)]
+
+    def _tool_visible_for_task(
+        self,
+        toolset: Toolset,
+        name: str,
+        tool_filters: dict[str, ConfigMap] | None,
+    ) -> bool:
+        if not tool_visible(toolset, name):
+            return False
+        toolset_name = self._toolset_name(toolset)
+        if toolset_name is None or tool_filters is None:
+            return True
+        selected = tool_filters.get(toolset_name)
+        if selected is None:
+            return True
+        show = selected.get("show")
+        hide = selected.get("hide")
+        if show is not None and name not in cast(list[str], show):
+            return False
+        if hide is not None and name in cast(list[str], hide):
+            return False
+        return True
+
+    def _toolset_name(self, toolset: Toolset) -> str | None:
+        for name, named_toolset in self.named_toolsets.items():
+            if named_toolset is toolset:
+                return name
+        return None
+
+    def _tool_owners_for(
+        self, toolsets: Sequence[Toolset], state: State | None = None
+    ) -> dict[str, Toolset]:
         owners: dict[str, Toolset] = {}
 
         def visit(toolset: Toolset) -> None:
-            for item in toolset.tools:
+            for item in self._toolset_entries(toolset, state):
                 if isinstance(item, Toolset):
                     visit(item)
                     continue
@@ -1494,7 +1559,7 @@ class Runtime:
         return owners
 
     def tool_owner(self, name: str, state: State) -> Toolset | None:
-        return self._tool_owners_for(self.active_toolsets(state)).get(name)
+        return self._tool_owners_for(self.active_toolsets(state), state).get(name)
 
     def _owner_signals(self, owner: object | None) -> list[SignalRecord]:
         if owner is None:
@@ -1887,7 +1952,7 @@ class Runtime:
                 continue
             exit_stack = AsyncExitStack()
             tools: ConfigData = {}
-            exposed_tools: ConfigData = {}
+            tool_parents: dict[str, tuple[Toolset, ...]] = {}
             try:
                 for toolset in self.active_toolsets(state):
                     await self._register_mcp_tools(
@@ -1896,7 +1961,7 @@ class Runtime:
                         connect_mcp_tool,
                         exit_stack,
                         tools,
-                        exposed_tools,
+                        tool_parents,
                         state,
                         key,
                     )
@@ -1905,7 +1970,7 @@ class Runtime:
                 raise
             self.mcp_exit_stacks[key] = exit_stack
             self.mcp_tools[key] = tools
-            self.exposed_mcp_tools[key] = exposed_tools
+            self.mcp_tool_parents[key] = tool_parents
 
     async def _register_mcp_tools(
         self,
@@ -1917,11 +1982,11 @@ class Runtime:
         ],
         exit_stack: AsyncExitStack,
         tools: ConfigData,
-        exposed_tools: ConfigData,
+        tool_parents: dict[str, tuple[Toolset, ...]],
         state: State,
         target_key: str,
     ) -> None:
-        for item in toolset.tools:
+        for item in self._toolset_entries(toolset, state):
             if isinstance(item, Toolset):
                 await self._register_mcp_tools(
                     item,
@@ -1929,7 +1994,7 @@ class Runtime:
                     connect_mcp_tool,
                     exit_stack,
                     tools,
-                    exposed_tools,
+                    tool_parents,
                     state,
                     target_key,
                 )
@@ -1944,33 +2009,34 @@ class Runtime:
                 if (
                     name
                     in self._tools_for_toolsets(
-                        self.active_toolsets(state), apply_visibility=False
+                        self.active_toolsets(state),
+                        apply_visibility=False,
+                        state=state,
                     )
                     or name in tools
                 ):
                     raise ValueError(f"Tool {name!r} is defined twice.")
                 tools[name] = handle
-                if all(tool_visible(parent, name) for parent in parents):
-                    exposed_tools[name] = handle
+                tool_parents[name] = tuple(parents)
 
     async def close_mcp_tools(self, state: State, scope: str = "rollout") -> None:
         for key in self.mcp_scope_keys(state, scope=scope):
             exit_stack = self.mcp_exit_stacks.pop(key, None)
             self.mcp_tools.pop(key, None)
-            self.exposed_mcp_tools.pop(key, None)
+            self.mcp_tool_parents.pop(key, None)
             if exit_stack is not None:
                 await exit_stack.aclose()
 
     async def close_all_mcp_tools(self) -> None:
         for key, exit_stack in list(self.mcp_exit_stacks.items()):
             self.mcp_tools.pop(key, None)
-            self.exposed_mcp_tools.pop(key, None)
+            self.mcp_tool_parents.pop(key, None)
             del self.mcp_exit_stacks[key]
             await exit_stack.aclose()
 
     def all_tools(self, state: State) -> ConfigData:
         tools = self._tools_for_toolsets(
-            self.active_toolsets(state), apply_visibility=False
+            self.active_toolsets(state), apply_visibility=False, state=state
         )
         for name, tool in self.mcp_tools_for_state(state, exposed=False).items():
             if name in tools:
@@ -1982,9 +2048,18 @@ class Runtime:
             tools[name] = tool
         return tools
 
-    def unfiltered_exposed_tools(self, state: State) -> ConfigData:
+    def unfiltered_exposed_tools(
+        self, state: State, *, validate: bool = True
+    ) -> ConfigData:
+        active_toolsets = self.active_toolsets(state)
+        tool_filters = self._task_tools_config(
+            state, active_toolsets, validate=validate
+        )
         tools = self._tools_for_toolsets(
-            self.active_toolsets(state), apply_visibility=True
+            active_toolsets,
+            apply_visibility=True,
+            state=state,
+            tool_filters=tool_filters,
         )
         for name, tool in self.mcp_tools_for_state(state, exposed=True).items():
             if name in tools:
@@ -2007,48 +2082,114 @@ class Runtime:
         source_runtime = self.handle_runtime(handle, "tools")
         return {name: BorrowedTool(source_runtime, handle_id, name) for name in names}
 
-    def all_exposed_tools(self, state: State) -> ConfigData:
-        tools = self.unfiltered_exposed_tools(state)
-        selected = state.get("runtime", {}).get("tools")
-        if selected is None:
-            return tools
-        if isinstance(selected, Mapping):
-            unknown_keys = set(selected) - {"show", "hide"}
+    def all_exposed_tools(self, state: State, *, validate: bool = True) -> ConfigData:
+        return self.unfiltered_exposed_tools(state, validate=validate)
+
+    def _task_tools_config(
+        self,
+        state: State,
+        active_toolsets: Sequence[Toolset],
+        *,
+        validate: bool,
+    ) -> dict[str, ConfigMap]:
+        task = state.get("task") or {}
+        if not isinstance(task, Mapping):
+            raise TypeError("state.task must be a mapping.")
+        raw_tools = task.get("tools")
+        if raw_tools is None:
+            return {}
+        if not isinstance(raw_tools, Mapping):
+            raise TypeError("task.tools must be a toolset-keyed mapping.")
+        if "show" in raw_tools or "hide" in raw_tools:
+            raise ValueError("task.tools must be keyed by toolset name.")
+        active_named_toolsets = self._active_named_toolsets(active_toolsets)
+        filters: dict[str, ConfigMap] = {}
+        for name, raw_filter in raw_tools.items():
+            if not isinstance(name, str):
+                raise TypeError("task.tools keys must be toolset names.")
+            if name not in active_named_toolsets:
+                raise KeyError(f"Unknown toolset tools filter: {name!r}.")
+            if not isinstance(raw_filter, Mapping):
+                raise TypeError(f"task.tools.{name} must be a mapping.")
+            unknown_keys = set(raw_filter) - {"show", "hide"}
             if unknown_keys:
                 raise ValueError(
-                    f"state.runtime.tools has unknown keys: {sorted(unknown_keys)}."
+                    f"task.tools.{name} has unknown keys: "
+                    f"{sorted(str(key) for key in unknown_keys)}."
                 )
-            if selected.get("show") is not None and selected.get("hide") is not None:
-                raise ValueError("state.runtime.tools accepts show or hide, not both.")
-            if selected.get("show") is not None:
-                selected_names = string_list(
-                    selected["show"], "state.runtime.tools.show"
+            if (
+                raw_filter.get("show") is not None
+                and raw_filter.get("hide") is not None
+            ):
+                raise ValueError(f"task.tools.{name} accepts show or hide, not both.")
+            show = (
+                string_list(raw_filter["show"], f"task.tools.{name}.show")
+                if raw_filter.get("show") is not None
+                else None
+            )
+            hide = (
+                string_list(raw_filter["hide"], f"task.tools.{name}.hide")
+                if raw_filter.get("hide") is not None
+                else None
+            )
+            if validate:
+                available = set(
+                    self._tool_names_for_toolset(active_named_toolsets[name], state)
                 )
-                unknown = sorted(set(selected_names) - set(tools))
+                selected = set(show or hide or [])
+                unknown = sorted(selected - available)
                 if unknown:
-                    raise KeyError(f"Unknown requested tools: {unknown}.")
-                return {name: tools[name] for name in selected_names}
-            elif selected.get("hide") is not None:
-                hidden_names = set(
-                    string_list(selected["hide"], "state.runtime.tools.hide")
-                )
-                unknown = sorted(hidden_names - set(tools))
-                if unknown:
-                    raise KeyError(f"Unknown hidden tools: {unknown}.")
-                return {
-                    name: tool
-                    for name, tool in tools.items()
-                    if name not in hidden_names
-                }
-            else:
-                return tools
-        raise TypeError("state.runtime.tools must be a mapping with show or hide.")
+                    raise KeyError(f"Unknown tools for toolset {name!r}: {unknown}.")
+            filters[name] = {
+                **({"show": show} if show is not None else {}),
+                **({"hide": hide} if hide is not None else {}),
+            }
+        return filters
+
+    def _active_named_toolsets(
+        self, active_toolsets: Sequence[Toolset]
+    ) -> dict[str, Toolset]:
+        active_ids = {id(toolset) for toolset in iter_toolsets(active_toolsets)}
+        return {
+            name: toolset
+            for name, toolset in self.named_toolsets.items()
+            if id(toolset) in active_ids
+        }
+
+    def _tool_names_for_toolset(self, toolset: Toolset, state: State) -> list[str]:
+        names: list[str] = []
+
+        def visit_toolset(item: Toolset) -> None:
+            names.extend(self.mcp_tools.get(self.mcp_scope_key(item, state), ()))
+            for child in self._toolset_entries(item, state):
+                visit_entry(child)
+
+        def visit_entry(item: ToolEntry) -> None:
+            if isinstance(item, Toolset):
+                visit_toolset(item)
+                return
+            if isinstance(item, MCPTool):
+                return
+            names.append(tool_name(item))
+
+        visit_toolset(toolset)
+        return names
 
     def mcp_tools_for_state(self, state: State, exposed: bool) -> ConfigData:
-        source = self.exposed_mcp_tools if exposed else self.mcp_tools
+        tool_filters = (
+            self._task_tools_config(state, self.active_toolsets(state), validate=False)
+            if exposed
+            else {}
+        )
         tools: ConfigData = {}
         for key in self.mcp_scope_keys(state):
-            for name, tool in source.get(key, {}).items():
+            for name, tool in self.mcp_tools.get(key, {}).items():
+                parents = self.mcp_tool_parents.get(key, {}).get(name, ())
+                if exposed and not all(
+                    self._tool_visible_for_task(parent, name, tool_filters)
+                    for parent in parents
+                ):
+                    continue
                 if name in tools:
                     raise ValueError(f"Tool {name!r} is defined twice.")
                 tools[name] = tool
@@ -2058,7 +2199,7 @@ class Runtime:
         keys: list[str] = []
 
         def visit(toolset: Toolset) -> None:
-            for item in toolset.tools:
+            for item in self._toolset_entries(toolset, state):
                 if isinstance(item, Toolset):
                     visit(item)
                     continue

@@ -96,7 +96,7 @@ class FakeMCPToolClient:
 
 
 class FakeOpenEnvProvider:
-    def __init__(self, spec: openenv.OpenEnvRuntimeSpec):
+    def __init__(self, spec: openenv.OpenEnvRuntimeConfig):
         self.spec = spec
         self.base_url = "http://localhost:8000"
         self.stopped = False
@@ -118,7 +118,7 @@ def fake_openenv_runtime(monkeypatch):
     FakeMCPToolClient.instances.clear()
 
     def fetch_schema(
-        base_url: str, spec: openenv.OpenEnvRuntimeSpec
+        base_url: str, spec: openenv.OpenEnvRuntimeConfig
     ) -> dict[str, object]:
         del base_url
         if spec.contract == "mcp":

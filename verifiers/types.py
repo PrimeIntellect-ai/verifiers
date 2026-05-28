@@ -663,6 +663,13 @@ class State(dict):
 
         return load_tools_from_state(self)
 
+    def add_tool(self, toolset: str, tool: object) -> None:
+        from verifiers.v1.utils.toolset_utils import tool_item
+
+        if not isinstance(toolset, str) or not toolset:
+            raise TypeError("State.add_tool requires a named toolset.")
+        self._runtime().add_tool(toolset, tool_item(tool), self)
+
     def _runtime_handles(self) -> dict[str, Any]:
         runtime = self.runtime_state()
         handles = runtime.setdefault("resolved", {})

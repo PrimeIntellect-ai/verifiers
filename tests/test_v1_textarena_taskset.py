@@ -92,7 +92,7 @@ def test_textarena_taskset_is_generic_over_config_type(fake_textarena):
     assert isinstance(taskset.config, CustomTextArenaConfig)
 
 
-def test_textarena_taskset_builds_train_and_eval_rows(fake_textarena):
+def test_textarena_taskset_builds_train_and_eval_tasks(fake_textarena):
     fake_nltk, _ = fake_textarena
     taskset = textarena.TextArenaTaskset(
         config=textarena.TextArenaTasksetConfig(
@@ -104,15 +104,15 @@ def test_textarena_taskset_builds_train_and_eval_rows(fake_textarena):
         )
     )
 
-    rows = list(taskset.get_dataset())
-    eval_rows = list(taskset.get_eval_dataset())
+    tasks = list(taskset.get_dataset())
+    eval_tasks = list(taskset.get_eval_dataset())
 
     assert taskset.config.system_prompt is None
-    assert [row["example_id"] for row in rows] == [0, 1]
-    assert [row["example_id"] for row in eval_rows] == [2, 3]
-    assert all(row["answer"] in FakeTextArenaEnv.word_list for row in rows)
-    assert all(row["answer"] in FakeTextArenaEnv.word_list for row in eval_rows)
-    assert rows[0]["prompt"] == [
+    assert [task["example_id"] for task in tasks] == [0, 1]
+    assert [task["example_id"] for task in eval_tasks] == [2, 3]
+    assert all(task["answer"] in FakeTextArenaEnv.word_list for task in tasks)
+    assert all(task["answer"] in FakeTextArenaEnv.word_list for task in eval_tasks)
+    assert tasks[0]["prompt"] == [
         {
             "role": "user",
             "content": "Guess the word. [GAME] Use <guess>[word]</guess>.",
@@ -145,11 +145,13 @@ def test_textarena_taskset_flattens_dict_word_list(fake_textarena, monkeypatch):
     assert all(row["answer"] in taskset.word_list for row in taskset.get_dataset())
 
 
-def test_textarena_taskset_deepcopy_reuses_shared_memo(fake_textarena, monkeypatch):
-    captured_memos: list[dict[int, object]] = []
+def test_textarena_taskset_user_env_loader_deepcopies_template(
+    fake_textarena, monkeypatch
+):
+    copied: list[FakeTextArenaEnv] = []
 
-    def fake_deepcopy(env: FakeTextArenaEnv, memo: dict[int, object]):
-        captured_memos.append(memo)
+    def fake_deepcopy(env: FakeTextArenaEnv):
+        copied.append(env)
         return FakeTextArenaEnv(env_id=env.env_id)
 
     monkeypatch.setattr(textarena, "deepcopy", fake_deepcopy)
@@ -164,14 +166,11 @@ def test_textarena_taskset_deepcopy_reuses_shared_memo(fake_textarena, monkeypat
 
     loader = taskset.user.objects["ta_env"]
     assert callable(loader)
-    loader()
+    loaded = loader()
 
-    assert captured_memos == [
-        {
-            id(FakeTextArenaEnv.dictionary): FakeTextArenaEnv.dictionary,
-            id(FakeTextArenaEnv.word_list): FakeTextArenaEnv.word_list,
-        }
-    ]
+    assert copied == [taskset.template]
+    assert isinstance(loaded, FakeTextArenaEnv)
+    assert loaded.reset_calls == 1
 
 
 @pytest.mark.asyncio

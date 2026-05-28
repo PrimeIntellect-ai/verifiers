@@ -134,7 +134,7 @@ def fake_openreward_client(monkeypatch):
     return environment
 
 
-def test_openreward_taskset_loads_serializable_rows(fake_openreward_client):
+def test_openreward_taskset_loads_serializable_tasks(fake_openreward_client):
     taskset = openreward.OpenRewardTaskset(
         config=openreward.OpenRewardTasksetConfig(
             environment="owner/env",
@@ -143,8 +143,8 @@ def test_openreward_taskset_loads_serializable_rows(fake_openreward_client):
         )
     )
 
-    rows = list(taskset.get_dataset())
-    task = taskset.to_task(rows[0])
+    tasks = list(taskset.get_dataset())
+    task = taskset.to_task(tasks[0])
 
     assert fake_openreward_client.task_range_calls == [("train", 0, 2)]
     assert task["openreward"]["environment"] == "owner/env"
@@ -154,9 +154,7 @@ def test_openreward_taskset_loads_serializable_rows(fake_openreward_client):
         "namespace": "owner",
         "task_spec": {"id": "train-0"},
     }
-    assert task["toolsets"]["openreward"]["fn"] == (
-        "tasksets.openreward:openreward_toolset"
-    )
+    assert set(taskset.named_toolsets) == {"openreward"}
 
 
 @pytest.mark.asyncio

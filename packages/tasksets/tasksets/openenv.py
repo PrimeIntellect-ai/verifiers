@@ -3,9 +3,8 @@ import inspect
 import json
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 
 import requests
 import tenacity as tc
@@ -22,25 +21,24 @@ from verifiers.decorators import cleanup, reward, setup, stop
 from verifiers.types import Message, MessageContent, Tool, UserMessage
 from verifiers.utils.message_utils import get_messages, normalize_messages
 from verifiers.utils.tool_utils import is_valid_tool_content_parts
-from verifiers.v1.config import ConfigSource, import_config_ref
+from verifiers.v1.config import Config, ConfigSource, import_config_ref
 from verifiers.v1.state import State
 from verifiers.v1.task import Task
 from verifiers.v1.taskset import Taskset, TasksetConfig
-from verifiers.v1.toolset import Toolset
+from verifiers.v1.toolset import Toolset, Toolsets
 from verifiers.v1.types import ConfigData, ConfigMap, Handler, PromptInput
 from verifiers.v1.user import User
 from verifiers.v1.utils.config_utils import coerce_config
 from verifiers.v1.utils.serialization_utils import serializable
 
 
-@dataclass(frozen=True)
-class OpenEnvRuntimeSpec:
+class OpenEnvRuntimeConfig(Config):
     openenv_project: str
     prompt_renderer: str
     image: str
     port: int
     start_command: str
-    contract: str
+    contract: Literal["gym", "mcp"]
     seed: int
     startup_timeout_seconds: int
     startup_poll_interval_seconds: float
@@ -88,24 +86,103 @@ class OpenEnvTaskset(Taskset[OpenEnvTasksetConfig]):
             )
         super().__init__(config=config_value)
         if "user" not in self.config.model_fields_set:
-            self.user = User(fn=self.openenv_user)
+            self.user = OpenEnvUser()
         self.taskset_id = self.config.taskset_id or "openenv"
 
+    def load_toolsets(self) -> Toolsets:
+        return {"openenv": Toolset(scope="rollout")}
+
     def load_tasks(self) -> list[ConfigData]:
-        return load_tasks(self.config)
+        if self.config.num_train_examples <= 0:
+            return []
+        project = resolved_openenv_project(self.config)
+        image, port, start_command, contract = resolve_openenv_runtime_config(project)
+        return [
+            self.openenv_task(
+                index=index,
+                seed=self.config.seed + index,
+                project=project,
+                image=image,
+                port=port,
+                start_command=start_command,
+                contract=contract,
+            )
+            for index in range(self.config.num_train_examples)
+        ]
 
     def load_eval_tasks(self) -> list[ConfigData]:
-        return load_eval_tasks(self.config)
+        if self.config.num_eval_examples <= 0:
+            return []
+        project = resolved_openenv_project(self.config)
+        image, port, start_command, contract = resolve_openenv_runtime_config(project)
+        first_seed = self.config.seed + self.config.num_train_examples
+        return [
+            self.openenv_task(
+                index=index + self.config.num_train_examples,
+                seed=first_seed + index,
+                project=project,
+                image=image,
+                port=port,
+                start_command=start_command,
+                contract=contract,
+            )
+            for index in range(self.config.num_eval_examples)
+        ]
+
+    def openenv_task(
+        self,
+        *,
+        index: int,
+        seed: int,
+        project: Path,
+        image: str,
+        port: int,
+        start_command: str,
+        contract: str,
+    ) -> ConfigData:
+        return {
+            "example_id": index,
+            "prompt": [
+                {
+                    "role": "user",
+                    "content": "OpenEnv rollout is initializing.",
+                }
+            ],
+            "openenv": {
+                "openenv_project": str(project),
+                "prompt_renderer": self.config.prompt_renderer,
+                "image": image,
+                "port": port,
+                "start_command": start_command,
+                "contract": contract,
+                "seed": seed,
+                "startup_timeout_seconds": self.config.startup_timeout_seconds,
+                "startup_poll_interval_seconds": self.config.startup_poll_interval_seconds,
+                "health_request_timeout_seconds": self.config.health_request_timeout_seconds,
+                "schema_request_timeout_seconds": self.config.schema_request_timeout_seconds,
+                "wait_for_creation_max_attempts": self.config.wait_for_creation_max_attempts,
+                "max_retries": self.config.max_retries,
+                "base_delay": self.config.base_delay,
+                "backoff_factor": self.config.backoff_factor,
+                "max_backoff_seconds": self.config.max_backoff_seconds,
+                "jitter": self.config.jitter,
+            },
+            "info": {"seed": seed, "contract": contract},
+        }
 
     @setup
     async def setup_openenv(self, task: Task, state: State) -> None:
-        spec = openenv_runtime_spec(task)
-        client = await ensure_openenv_runtime(spec, state)
-        result = await client.reset(seed=spec.seed)
+        config = openenv_runtime_config(task)
+        client = await ensure_openenv_runtime(config, state)
+        result = await client.reset(seed=config.seed)
+        if config.contract == "mcp":
+            assert isinstance(client, MCPToolClient)
+            for tool_def in convert_openenv_mcp_tools(await client.list_tools()):
+                state.add_tool("openenv", OpenEnvMCPTool(tool_def))
         state["openenv_done"] = bool(result.done)
         state["prompt"] = await render_openenv_observation_messages(
             result.observation,
-            spec,
+            config,
             context="reset",
             action_schema=openenv_action_schema(state),
         )
@@ -132,11 +209,16 @@ class OpenEnvTaskset(Taskset[OpenEnvTasksetConfig]):
             )
         )
 
-    async def openenv_user(
+
+class OpenEnvUser(User):
+    def __init__(self):
+        super().__init__(fn=self.respond)
+
+    async def respond(
         self, task: Task, state: State, messages: Sequence[Message]
     ) -> list[UserMessage]:
-        spec = openenv_runtime_spec(task)
-        if spec.contract == "mcp":
+        config = openenv_runtime_config(task)
+        if config.contract == "mcp":
             return []
         assistant_messages = get_messages(messages, role="assistant")
         last_message = assistant_messages[-1] if assistant_messages else None
@@ -153,7 +235,7 @@ class OpenEnvTaskset(Taskset[OpenEnvTasksetConfig]):
             list[UserMessage],
             await render_openenv_observation_messages(
                 result.observation,
-                spec,
+                config,
                 context="step",
                 action_schema=schema,
             ),
@@ -162,31 +244,6 @@ class OpenEnvTaskset(Taskset[OpenEnvTasksetConfig]):
 
 def load_taskset(config: OpenEnvTasksetConfig) -> OpenEnvTaskset:
     return OpenEnvTaskset(config=config)
-
-
-def load_tasks(config: OpenEnvTasksetConfig) -> list[ConfigData]:
-    return openenv_rows(config, config.num_train_examples, config.seed)
-
-
-def load_eval_tasks(config: OpenEnvTasksetConfig) -> list[ConfigData]:
-    if config.num_eval_examples <= 0:
-        return []
-    return openenv_rows(
-        config,
-        config.num_eval_examples,
-        config.seed + config.num_train_examples,
-    )
-
-
-async def openenv_toolset(task: Task, state: State) -> Toolset:
-    spec = openenv_runtime_spec(task)
-    if spec.contract != "mcp":
-        return Toolset()
-    client = await ensure_openenv_runtime(spec, state)
-    if not isinstance(client, MCPToolClient):
-        raise RuntimeError("OpenEnv MCP task did not initialize an MCPToolClient.")
-    tool_defs = convert_openenv_mcp_tools(await client.list_tools())
-    return Toolset(tools=[OpenEnvMCPTool(tool_def) for tool_def in tool_defs])
 
 
 class OpenEnvMCPTool:
@@ -220,51 +277,6 @@ def discover_caller_openenv_project() -> str:
         if frame_path != current_file:
             return str(frame_path.parent / "proj")
     return str(Path.cwd() / "proj")
-
-
-def openenv_rows(
-    config: OpenEnvTasksetConfig, num_examples: int, first_seed: int
-) -> list[ConfigData]:
-    if num_examples <= 0:
-        return []
-    project = resolved_openenv_project(config)
-    image, port, start_command, contract = resolve_openenv_runtime_config(project)
-    rows: list[ConfigData] = []
-    for index in range(num_examples):
-        seed = first_seed + index
-        row: ConfigData = {
-            "example_id": index,
-            "prompt": [
-                {
-                    "role": "user",
-                    "content": "OpenEnv rollout is initializing.",
-                }
-            ],
-            "openenv": {
-                "openenv_project": str(project),
-                "prompt_renderer": config.prompt_renderer,
-                "image": image,
-                "port": port,
-                "start_command": start_command,
-                "contract": contract,
-                "seed": seed,
-                "startup_timeout_seconds": config.startup_timeout_seconds,
-                "startup_poll_interval_seconds": config.startup_poll_interval_seconds,
-                "health_request_timeout_seconds": config.health_request_timeout_seconds,
-                "schema_request_timeout_seconds": config.schema_request_timeout_seconds,
-                "wait_for_creation_max_attempts": config.wait_for_creation_max_attempts,
-                "max_retries": config.max_retries,
-                "base_delay": config.base_delay,
-                "backoff_factor": config.backoff_factor,
-                "max_backoff_seconds": config.max_backoff_seconds,
-                "jitter": config.jitter,
-            },
-            "info": {"seed": seed, "contract": contract},
-        }
-        if contract == "mcp":
-            row["toolsets"] = {"openenv": {"fn": "tasksets.openenv:openenv_toolset"}}
-        rows.append(row)
-    return rows
 
 
 def resolved_openenv_project(config: OpenEnvTasksetConfig) -> Path:
@@ -314,41 +326,15 @@ def read_openenv_build_manifest(project_path: Path) -> ConfigData:
     return {str(key): value for key, value in data.items()}
 
 
-def openenv_runtime_spec(task: Task) -> OpenEnvRuntimeSpec:
+def openenv_runtime_config(task: Task) -> OpenEnvRuntimeConfig:
     data = task.get("openenv")
     if not isinstance(data, Mapping):
         raise TypeError("OpenEnv tasks must contain an openenv mapping.")
-    return OpenEnvRuntimeSpec(
-        openenv_project=str(data["openenv_project"]),
-        prompt_renderer=str(data["prompt_renderer"]),
-        image=str(data["image"]),
-        port=int(cast(int | str, data["port"])),
-        start_command=str(data["start_command"]),
-        contract=str(data["contract"]),
-        seed=int(cast(int | str, data["seed"])),
-        startup_timeout_seconds=int(cast(int | str, data["startup_timeout_seconds"])),
-        startup_poll_interval_seconds=float(
-            cast(float | int | str, data["startup_poll_interval_seconds"])
-        ),
-        health_request_timeout_seconds=float(
-            cast(float | int | str, data["health_request_timeout_seconds"])
-        ),
-        schema_request_timeout_seconds=float(
-            cast(float | int | str, data["schema_request_timeout_seconds"])
-        ),
-        wait_for_creation_max_attempts=int(
-            cast(int | str, data["wait_for_creation_max_attempts"])
-        ),
-        max_retries=int(cast(int | str, data["max_retries"])),
-        base_delay=float(cast(float | int | str, data["base_delay"])),
-        backoff_factor=float(cast(float | int | str, data["backoff_factor"])),
-        max_backoff_seconds=float(cast(float | int | str, data["max_backoff_seconds"])),
-        jitter=float(cast(float | int | str, data["jitter"])),
-    )
+    return OpenEnvRuntimeConfig.model_validate(data)
 
 
 async def ensure_openenv_runtime(
-    spec: OpenEnvRuntimeSpec, state: State
+    spec: OpenEnvRuntimeConfig, state: State
 ) -> GenericEnvClient | MCPToolClient:
     existing = state.get("openenv_client")
     if isinstance(existing, GenericEnvClient | MCPToolClient):
@@ -383,7 +369,7 @@ async def ensure_openenv_runtime(
 
 
 class PrimeSandboxOpenEnvProvider(ContainerProvider):
-    def __init__(self, spec: OpenEnvRuntimeSpec):
+    def __init__(self, spec: OpenEnvRuntimeConfig):
         self.spec = spec
         self.sandbox_id: str | None = None
         self.exposure_id: str | None = None
@@ -497,7 +483,7 @@ class PrimeSandboxOpenEnvProvider(ContainerProvider):
 
 
 def openenv_retry_sync(
-    spec: OpenEnvRuntimeSpec, fn: Callable[..., object], *args: object
+    spec: OpenEnvRuntimeConfig, fn: Callable[..., object], *args: object
 ) -> object:
     retrying = tc.Retrying(
         stop=tc.stop_after_attempt(spec.max_retries),
@@ -540,7 +526,7 @@ def openenv_exposure_base_url(exposure: object) -> str:
     raise RuntimeError("OpenEnv sandbox exposure did not provide a usable URL.")
 
 
-def wait_for_openenv_ready(base_url: str, spec: OpenEnvRuntimeSpec) -> None:
+def wait_for_openenv_ready(base_url: str, spec: OpenEnvRuntimeConfig) -> None:
     start_time = time.monotonic()
     last_error = "no attempts"
     while time.monotonic() - start_time < spec.startup_timeout_seconds:
@@ -556,7 +542,7 @@ def wait_for_openenv_ready(base_url: str, spec: OpenEnvRuntimeSpec) -> None:
     )
 
 
-def check_openenv_health(base_url: str, spec: OpenEnvRuntimeSpec) -> tuple[bool, str]:
+def check_openenv_health(base_url: str, spec: OpenEnvRuntimeConfig) -> tuple[bool, str]:
     try:
         response = requests.get(
             f"{base_url}/health",
@@ -603,7 +589,7 @@ def openenv_sandbox_failure_details(
     return "\n".join(details) or None
 
 
-def fetch_openenv_schema(base_url: str, spec: OpenEnvRuntimeSpec) -> ConfigData:
+def fetch_openenv_schema(base_url: str, spec: OpenEnvRuntimeConfig) -> ConfigData:
     def request_schema() -> ConfigData:
         response = requests.get(
             f"{base_url}/schema",
@@ -682,7 +668,7 @@ def openenv_action_schema(state: State) -> ConfigMap:
 
 async def render_openenv_observation_messages(
     observation: object,
-    spec: OpenEnvRuntimeSpec,
+    spec: OpenEnvRuntimeConfig,
     *,
     context: str,
     action_schema: ConfigMap,

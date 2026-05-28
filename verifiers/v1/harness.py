@@ -384,12 +384,10 @@ class Harness(RuntimeOwnerMixin, Generic[ConfigT]):
 
     async def setup_state(self, task: Task, state: State) -> State:
         explicit_runtime = dict(cast(ConfigMap, state.get("runtime") or {}))
-        task_controls = {
-            key: task[key] for key in ("max_turns", "tools") if key in task
-        }
+        task_controls = {key: task[key] for key in ("max_turns",) if key in task}
         state["runtime"] = {**task_controls, **explicit_runtime}
         if "tools" in task and not isinstance(task["tools"], Mapping):
-            raise TypeError("task.tools must be a mapping with show or hide.")
+            raise TypeError("task.tools must be a toolset-keyed mapping.")
         model_handle = self.runtime.resolved_handle(state, "model")
         if (
             model_handle is None
@@ -411,7 +409,7 @@ class Harness(RuntimeOwnerMixin, Generic[ConfigT]):
             state["runtime"]["sampling_args"] = sampling_args
         self.resolve_system_prompt(task, state)
         await self.runtime.ensure_rollout_toolsets(task, state)
-        self.runtime.validate_bindings(state)
+        self.runtime.validate_bindings(state, allow_unresolved_tool_bindings=True)
         await self.runtime.ensure_mcp_tools(state)
         self.runtime.resolve_trajectory(state)
         self.runtime.prepare_state(task, state)

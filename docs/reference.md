@@ -619,8 +619,8 @@ Common top-level fields:
 | `answer` | Reference answer or target data. Stays on task, not state. |
 | `info` | Serializable metadata. |
 | `max_turns` | Per-task base-loop turn limit. |
-| `tools` | Tool visibility: `{"show": [...]}` or `{"hide": [...]}`. |
-| `toolsets` | Toolset visibility or rollout-local toolset config. |
+| `tools` | Toolset-keyed tool visibility: `{"wiki": {"show": [...]}}` or `{"wiki": {"hide": [...]}}`. |
+| `toolsets` | Toolset visibility: `{"show": [...]}` or `{"hide": [...]}`. |
 | `sandbox` | Per-task sandbox overrides for sandboxed programs. |
 | `program` | Task-owned files, dirs, env, setup, artifacts, bindings, and command args. |
 

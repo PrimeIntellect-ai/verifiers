@@ -231,6 +231,10 @@ class Toolset:
         )
         object.__setattr__(self, "config", config)
 
+    def add_tool(self, tool: "ToolEntry") -> None:
+        tool_value = tool_item(tool)
+        object.__setattr__(self, "tools", (*self.tools, tool_value))
+
 
 ToolsetItem: TypeAlias = Toolset | ToolSpec
 ToolsetCollection: TypeAlias = (

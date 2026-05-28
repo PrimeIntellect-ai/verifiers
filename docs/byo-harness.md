@@ -213,8 +213,8 @@ a reward, update, setup, or program function.
 Tasks can request rollout behavior through top-level serializable fields:
 
 - `max_turns`: per-rollout turn limit for the base harness loop;
-- `tools`: tool visibility as `{"show": [...]}` or `{"hide": [...]}`;
-- `toolsets`: toolset visibility or rollout-local toolsets;
+- `tools`: toolset-keyed tool visibility as `{"wiki": {"show": [...]}}`;
+- `toolsets`: toolset visibility as `{"show": [...]}` or `{"hide": [...]}`;
 - `sandbox`: per-task overrides for a sandboxed program;
 - `program`: per-task files, dirs, env, setup, artifacts, bindings, and command
   args.
@@ -239,7 +239,7 @@ top-level task controls:
 yield {
     "prompt": [{"role": "user", "content": "Use the search tool."}],
     "max_turns": 5,
-    "tools": {"show": ["search"]},
+    "tools": {"wiki": {"show": ["search"]}},
 }
 ```
 

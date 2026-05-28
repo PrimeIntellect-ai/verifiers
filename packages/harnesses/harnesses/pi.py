@@ -2,6 +2,7 @@ import json
 import shlex
 from pathlib import PurePosixPath
 
+from verifiers.v1.config import ConfigSource
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.program import (
     Program,
@@ -18,6 +19,7 @@ from verifiers.v1.types import (
     PromptInput,
 )
 from verifiers.v1.utils.mcp_proxy_utils import proxy_command
+from verifiers.v1.utils.config_utils import coerce_config
 
 PI_DEFAULT_PACKAGE = "@earendil-works/pi-coding-agent"
 PI_DEFAULT_WORKDIR = "/app"
@@ -42,12 +44,17 @@ class PiConfig(HarnessConfig):
 class Pi(Harness[PiConfig]):
     config: PiConfig
 
+    def __init__(self, config: ConfigSource = None):
+        config_value = coerce_config(PiConfig, config)
+        self.command_program_parts = pi_program_config(config_value)
+        super().__init__(config=config_value)
+
     def load_program(self) -> Program:
-        program, _ = pi_program_config(self.config)
+        program, _ = self.command_program_parts
         return program
 
     def load_sandbox(self) -> ConfigMap | None:
-        _, sandbox = pi_program_config(self.config)
+        _, sandbox = self.command_program_parts
         return sandbox
 
 

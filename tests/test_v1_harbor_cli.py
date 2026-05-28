@@ -31,7 +31,7 @@ from harnesses.terminus_2 import (
     terminus_2_agent_script,
 )
 from tasksets import HarborTaskset, HarborTasksetConfig
-from tasksets.harbor import harbor_reward, harbor_task_row
+from tasksets.harbor import harbor_reward
 from verifiers.v1.utils.program_utils import merge_task_program, merge_task_sandbox
 from verifiers.v1.utils.sandbox_python_utils import SANDBOX_PYTHON
 
@@ -139,7 +139,7 @@ def test_harbor_taskset_rejects_malformed_package_task(
 
 
 @pytest.mark.parametrize("section", ["agent", "verifier"])
-def test_harbor_task_row_rejects_non_mapping_agent_sections(
+def test_harbor_task_rejects_non_mapping_agent_sections(
     tmp_path: Path, section: str
 ) -> None:
     task_dir = write_harbor_task(tmp_path)
@@ -154,7 +154,7 @@ docker_image = "ubuntu:24.04"
     )
 
     with pytest.raises(TypeError, match=rf"\[{section}\] must be a mapping"):
-        harbor_task_row(HarborTasksetConfig(), task_dir, 0)
+        HarborTaskset(config=HarborTasksetConfig()).harbor_task(task_dir, 0)
 
 
 def test_harbor_taskset_constructs_env_with_opencode(

@@ -1,6 +1,7 @@
 import shlex
 from pathlib import PurePosixPath
 
+from verifiers.v1.config import ConfigSource
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.program import (
     Program,
@@ -16,6 +17,7 @@ from verifiers.v1.types import (
     PromptInput,
 )
 from verifiers.v1.utils.sandbox_python_utils import python_runtime_setup_command
+from verifiers.v1.utils.config_utils import coerce_config
 
 DEFAULT_INSTALL_DIR = "/opt/mini-swe-agent"
 DEFAULT_PREFIX_DIR = f"{DEFAULT_INSTALL_DIR}/prefix"
@@ -56,12 +58,17 @@ class MiniSWEAgentConfig(HarnessConfig):
 class MiniSWEAgent(Harness[MiniSWEAgentConfig]):
     config: MiniSWEAgentConfig
 
+    def __init__(self, config: ConfigSource = None):
+        config_value = coerce_config(MiniSWEAgentConfig, config)
+        self.command_program_parts = mini_swe_agent_program_config(config_value)
+        super().__init__(config=config_value)
+
     def load_program(self) -> Program:
-        program, _ = mini_swe_agent_program_config(self.config)
+        program, _ = self.command_program_parts
         return program
 
     def load_sandbox(self) -> ConfigMap | None:
-        _, sandbox = mini_swe_agent_program_config(self.config)
+        _, sandbox = self.command_program_parts
         return sandbox
 
 

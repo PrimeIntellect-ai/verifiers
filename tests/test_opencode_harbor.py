@@ -57,7 +57,7 @@ def test_load_environment_accepts_v1_taskset_and_harness_config() -> None:
         config=module.OpenCodeHarborEnvConfig(
             taskset=module.HarborTasksetConfig(
                 task_names=["task-a"],
-                cpu_cores=1.5,
+                sandbox=vf.SandboxConfig(cpu_cores=1.5),
             ),
             harness=module.OpenCodeConfig(
                 agent_workdir="/workspace",
@@ -69,7 +69,7 @@ def test_load_environment_accepts_v1_taskset_and_harness_config() -> None:
 
     assert env.taskset.resolve_tasks_root() == Path(module.__file__).parent / "tasks"
     assert env.taskset.task_names == ["task-a"]
-    assert env.taskset.cpu_cores == 1.5
+    assert env.taskset.config.sandbox.cpu_cores == 1.5
     assert env.harness.config.agent_workdir == "/workspace"
     assert env.harness.config.max_turns == 2
 

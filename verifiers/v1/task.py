@@ -31,7 +31,7 @@ class Task(dict):
                 ),
             )
         if "tools" in self and not isinstance(self["tools"], Mapping):
-            raise TypeError("task.tools must be a mapping with show or hide.")
+            raise TypeError("task.tools must be a toolset-keyed mapping.")
         if "toolsets" in self and not isinstance(self["toolsets"], Mapping):
             raise TypeError("task.toolsets must be a mapping.")
         if "sandbox" in self and not isinstance(self["sandbox"], Mapping):

@@ -1,6 +1,7 @@
 import shlex
 from pathlib import PurePosixPath
 
+from verifiers.v1.config import ConfigSource
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.program import Program, ProgramCommand, ProgramOptionMap, ProgramValue
 from verifiers.v1.sandbox import SandboxConfig
@@ -10,6 +11,7 @@ from verifiers.v1.types import (
     PromptInput,
 )
 from verifiers.v1.utils.sandbox_python_utils import SANDBOX_BIN_DIR, uv_setup_command
+from verifiers.v1.utils.config_utils import coerce_config
 
 TERMINUS_2_DEFAULT_AGENT_WORKDIR = "/app"
 TERMINUS_2_DEFAULT_INSTRUCTION_PATH = "/terminus_2/instruction.md"
@@ -38,12 +40,17 @@ class Terminus2Config(HarnessConfig):
 class Terminus2(Harness[Terminus2Config]):
     config: Terminus2Config
 
+    def __init__(self, config: ConfigSource = None):
+        config_value = coerce_config(Terminus2Config, config)
+        self.command_program_parts = terminus_2_program_config(config_value)
+        super().__init__(config=config_value)
+
     def load_program(self) -> Program:
-        program, _ = terminus_2_program_config(self.config)
+        program, _ = self.command_program_parts
         return program
 
     def load_sandbox(self) -> ConfigMap | None:
-        _, sandbox = terminus_2_program_config(self.config)
+        _, sandbox = self.command_program_parts
         return sandbox
 
 

@@ -1,11 +1,9 @@
 import base64
-import hashlib
 import io
 import inspect
 import json
 import keyword
 import os
-import random
 import re
 import shlex
 import tarfile
@@ -21,7 +19,7 @@ from verifiers.envs.experimental.utils.git_checkout_cache import (
     resolve_git_checkout,
     validate_git_checkout,
 )
-from verifiers.v1.config import CallableEntry
+from verifiers.v1.config import CallableEntry, ConfigSource
 from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.program import (
     Program,
@@ -41,6 +39,7 @@ from verifiers.v1.types import (
 )
 from verifiers.v1.utils.program_utils import int_config
 from verifiers.v1.utils.prompt_utils import task_text
+from verifiers.v1.utils.config_utils import coerce_config
 
 RLM_DEFAULT_REPO_URL = "github.com/PrimeIntellect-ai/rlm-harness.git"
 RLM_DEFAULT_REPO_REF = "main"
@@ -60,7 +59,6 @@ DEFAULT_RLM_LOCAL_CHECKOUT_CACHE_ROOT = (
     Path.home() / ".cache" / "verifiers" / "rlm-checkouts"
 )
 REQUIRED_RLM_CHECKOUT_FILES = ("install.sh", "pyproject.toml")
-ProgramDir = str | Path | Traversable
 
 
 class RLMConfig(HarnessConfig):
@@ -77,13 +75,24 @@ class RLMConfig(HarnessConfig):
     rlm_max_turns: int = RLM_DEFAULT_MAX_TURNS
     rlm_exec_timeout: int = RLM_DEFAULT_EXEC_TIMEOUT
     rlm_max_depth: int = RLM_DEFAULT_MAX_DEPTH
-    summarize_at_tokens: int | tuple[int, int] | list[int] | None = None
+    summarize_at_tokens: int | None = None
     append_to_system_prompt: str = ""
     local_checkout: str | None = None
     gh_token: str | None = None
     rlm_tools: list[str] = RLM_DEFAULT_TOOLS
     env_vars: dict[str, str] = {}
     skills: str | None = None
+
+    @field_validator("summarize_at_tokens")
+    @classmethod
+    def validate_summarize_at_tokens(cls, value: object) -> object:
+        if value is None:
+            return value
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError("summarize_at_tokens must be a positive integer.")
+        if value <= 0:
+            raise ValueError("summarize_at_tokens must be positive.")
+        return value
 
     @field_validator("env_vars", mode="before")
     @classmethod
@@ -95,17 +104,22 @@ class RLMConfig(HarnessConfig):
 
 class RLM(Harness[RLMConfig]):
     config: RLMConfig
-    taskset_skills_dir: ProgramDir | None = None
+    taskset_skills_dir: Path | Traversable | None = None
+
+    def __init__(self, config: ConfigSource = None):
+        config_value = coerce_config(RLMConfig, config)
+        self.command_program_parts = rlm_program_config(config_value)
+        super().__init__(config=config_value)
 
     def load_program(self) -> Program:
-        program, _ = rlm_program_config(self.config)
+        program, _ = self.command_program_parts
         return program
 
     def load_sandbox(self) -> ConfigMap | None:
-        _, sandbox = rlm_program_config(self.config)
+        _, sandbox = self.command_program_parts
         return sandbox
 
-    def skills_dir(self) -> ProgramDir | None:
+    def skills_dir(self) -> Path | Traversable | None:
         if self.config.skills is not None:
             return Path(self.config.skills)
         return self.taskset_skills_dir
@@ -115,7 +129,12 @@ class RLM(Harness[RLMConfig]):
             upload_dirs = taskset.get_upload_dirs()
             if not isinstance(upload_dirs, Mapping):
                 raise TypeError("Taskset.get_upload_dirs() must return a mapping.")
-            self.taskset_skills_dir = cast(ProgramDir | None, upload_dirs.get("skills"))
+            skills_dir = upload_dirs.get("skills")
+            if skills_dir is not None and not isinstance(
+                skills_dir, (Path, Traversable)
+            ):
+                raise TypeError("Taskset upload dir 'skills' must be a path.")
+            self.taskset_skills_dir = skills_dir
             if not isinstance(self.program, Mapping):
                 raise TypeError("RLM program must be a mapping.")
             program = dict(cast(ConfigMap, self.program))
@@ -211,21 +230,12 @@ def rlm_env(config: RLMConfig) -> ProgramOptionMap:
         "RLM_MAX_DEPTH": str(config.rlm_max_depth),
         **config.env_vars,
     }
-    summarize_resolver = build_summarize_resolver(config.summarize_at_tokens)
-    if summarize_resolver is not None:
+    if config.summarize_at_tokens is not None:
         env["RLM_SUMMARIZE_AT_TOKENS"] = {
             "fn": "harnesses.rlm:rlm_summarize_at_tokens",
-            "value": summarize_at_tokens_config_value(config.summarize_at_tokens),
+            "value": config.summarize_at_tokens,
         }
     return env
-
-
-def summarize_at_tokens_config_value(
-    value: int | tuple[int, int] | list[int] | None,
-) -> int | list[int] | None:
-    if isinstance(value, tuple):
-        return list(value)
-    return value
 
 
 def rlm_artifacts(config: RLMConfig) -> ProgramOptionMap:
@@ -378,16 +388,16 @@ def task_instruction_text(task: Task, state: State) -> str:
 
 def rlm_summarize_at_tokens(
     state: State,
-    value: int | tuple[int, int] | list[int],
+    value: int,
 ) -> str:
-    resolver = build_summarize_resolver(value)
-    if resolver is None:
-        return ""
-    return str(resolver(state) or "")
+    _ = state
+    if value <= 0:
+        raise ValueError("summarize_at_tokens must be positive.")
+    return str(value)
 
 
 def rlm_tool_skills_archive(state: State, runtime: Runtime) -> str:
-    harness = getattr(runtime, "harness", None)
+    harness = runtime.harness
     if not isinstance(harness, RLM):
         raise TypeError("rlm_tool_skills_archive requires an RLM harness runtime.")
     tool_defs = runtime.tool_defs(state) or []
@@ -680,35 +690,3 @@ async def rlm_sub_llm_total_turns(task: Task, state: State) -> float:
 async def rlm_sub_llm_total_tool_calls(task: Task, state: State) -> float:
     _ = task
     return rlm_metric(state, "sub_llm_total_tool_calls")
-
-
-def build_summarize_resolver(
-    value: int | tuple[int, int] | list[int] | None,
-) -> Callable[..., str | None] | None:
-    if value is None:
-        return None
-    if isinstance(value, bool):
-        raise ValueError("summarize_at_tokens must be an int or (lo, hi) pair")
-    if isinstance(value, int):
-        if value <= 0:
-            raise ValueError("summarize_at_tokens must be positive")
-
-        def fixed_threshold(state: State) -> str:
-            _ = state
-            return str(value)
-
-        return fixed_threshold
-    if isinstance(value, (tuple, list)):
-        if len(value) != 2:
-            raise ValueError("summarize_at_tokens pair must have 2 elements")
-        lo, hi = int(value[0]), int(value[1])
-        if lo <= 0 or hi <= 0 or lo > hi:
-            raise ValueError("summarize_at_tokens pair must satisfy 0 < lo <= hi")
-
-        def sampled_threshold(state: State) -> str:
-            prompt = json.dumps(state.get("prompt"), sort_keys=True, default=str)
-            digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
-            return str(random.Random(int(digest[:16], 16)).randint(lo, hi))
-
-        return sampled_threshold
-    raise ValueError("summarize_at_tokens must be int, (lo, hi), or None")

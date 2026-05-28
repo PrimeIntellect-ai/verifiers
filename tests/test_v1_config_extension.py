@@ -267,21 +267,17 @@ class DynamicSchemaTool:
         return "recorded"
 
 
-def dynamic_toolset(task: Mapping[str, object]) -> Toolset:
+def dynamic_tool(task: Mapping[str, object]) -> DynamicSchemaTool:
     tool = task["dynamic_tool"]
     if not isinstance(tool, Mapping):
         raise TypeError("dynamic_tool must be a mapping.")
     tool = cast(Mapping[str, Any], tool)
-    return Toolset(
-        tools=[
-            DynamicSchemaTool(
-                vf.Tool(
-                    name=str(tool["name"]),
-                    description=str(tool["description"]),
-                    parameters=dict(cast(Mapping[str, Any], tool["parameters"])),
-                )
-            )
-        ]
+    return DynamicSchemaTool(
+        vf.Tool(
+            name=str(tool["name"]),
+            description=str(tool["description"]),
+            parameters=dict(cast(Mapping[str, Any], tool["parameters"])),
+        )
     )
 
 
@@ -382,7 +378,7 @@ setattr(ref_module, "bad_group_update", bad_group_update)
 setattr(ref_module, "group_updated_reward", group_updated_reward)
 setattr(ref_module, "config_tool", config_tool)
 setattr(ref_module, "config_toolset", config_toolset)
-setattr(ref_module, "dynamic_toolset", dynamic_toolset)
+setattr(ref_module, "dynamic_tool", dynamic_tool)
 setattr(ref_module, "direct_tool", direct_tool)
 setattr(ref_module, "hidden_tool", hidden_tool)
 setattr(ref_module, "object_tool", object_tool)
@@ -1199,29 +1195,49 @@ async def test_task_toolsets_show_hide_selects_named_defaults() -> None:
 
 
 @pytest.mark.asyncio
-async def test_task_toolsets_can_add_rollout_local_toolsets() -> None:
-    harness = make_harness()
+async def test_state_can_add_rollout_local_tools() -> None:
+    async def provision_tool(state: State) -> None:
+        state.add_tool("local", config_tool)
+
+    harness = make_harness(
+        toolsets={
+            "local": Toolset(
+                scope="rollout",
+                bindings={"config_tool.prefix": "task.answer"},
+            )
+        }
+    )
+    harness.add_setup(provision_tool)
     task = Task(
         {
             "prompt": [{"role": "user", "content": "hi"}],
             "answer": "ok",
-            "toolsets": {
-                "local": {
-                    "tools": [ref("config_tool")],
-                    "bindings": {"config_tool.prefix": "task.answer"},
-                }
-            },
         }
     ).freeze()
     state = await harness.setup_state(task, State.for_task(task))
+    await harness.runtime.setup_rollout(task, state)
 
     assert state["tools"] == ["config_tool"]
     assert await state.get_tools()["config_tool"](query="q") == "ok:q"
 
 
 @pytest.mark.asyncio
-async def test_task_toolsets_can_add_dynamic_schema_backed_tools() -> None:
-    harness = make_harness()
+async def test_state_add_tool_rejects_toolsets() -> None:
+    harness = make_harness(toolsets={"local": Toolset(scope="rollout")})
+    task = Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+    state = await harness.setup_state(task, State.for_task(task))
+
+    with pytest.raises(TypeError, match="tool, not a Toolset"):
+        state.add_tool("local", Toolset())
+
+
+@pytest.mark.asyncio
+async def test_state_can_add_dynamic_schema_backed_tools() -> None:
+    async def provision_tool(task: Task, state: State) -> None:
+        state.add_tool("dynamic", dynamic_tool(task))
+
+    harness = make_harness(toolsets={"dynamic": Toolset(scope="rollout")})
+    harness.add_setup(provision_tool)
     task = Task(
         {
             "prompt": [{"role": "user", "content": "hi"}],
@@ -1234,10 +1250,11 @@ async def test_task_toolsets_can_add_dynamic_schema_backed_tools() -> None:
                     "required": ["city"],
                 },
             },
-            "toolsets": {"dynamic": {"fn": ref("dynamic_toolset")}},
+            "tools": {"dynamic": {"show": ["lookup_city"]}},
         }
     ).freeze()
     state = await harness.setup_state(task, State.for_task(task))
+    await harness.runtime.setup_rollout(task, state)
 
     tool_defs = harness.runtime.tool_defs(state)
     assert tool_defs is not None
@@ -3052,11 +3069,11 @@ def test_configs_validate_toml_sections(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_task_tools_filter_exposed_tools() -> None:
-    harness = make_harness(toolsets=[Toolset(tools=[direct_tool, hidden_tool])])
+    harness = make_harness(toolsets={"main": Toolset(tools=[direct_tool, hidden_tool])})
     task = Task(
         {
             "prompt": [{"role": "user", "content": "hi"}],
-            "tools": {"show": ["direct_tool"]},
+            "tools": {"main": {"show": ["direct_tool"]}},
         }
     ).freeze()
     state = await harness.setup_state(task, State.for_task(task))

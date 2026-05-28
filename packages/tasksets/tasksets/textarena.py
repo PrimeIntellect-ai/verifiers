@@ -21,21 +21,14 @@ except ImportError as e:
     ) from e
 
 
-class TextArenaState(Protocol):
-    game_state: ConfigData
-    game_info: list[ConfigData]
+class TextArenaRuntimeState(Protocol):
+    game_state: dict[str, object]
     done: bool
+    game_info: dict[int, dict[str, object]]
 
 
-class TextArenaEnv(Protocol):
-    state: TextArenaState
-    word_list: list[str] | dict[str, list[str] | tuple[str, ...] | str]
-
-    def reset(self, *, num_players: int) -> None: ...
-
-    def get_observation(self) -> tuple[int, str]: ...
-
-    def step(self, action: str) -> None: ...
+class TextArenaRuntimeEnv(Protocol):
+    state: TextArenaRuntimeState
 
 
 class TextArenaTasksetConfig(TasksetConfig):
@@ -54,23 +47,26 @@ class TextArenaTaskset(Taskset[ConfigT], Generic[ConfigT]):
 
     def __init__(self, config: ConfigT):
         assert isinstance(config, TextArenaTasksetConfig)
+        nltk.download("words", quiet=True)
+        nltk.download("averaged_perceptron_tagger_eng", quiet=True)
+        self.template = ta.make(env_id=config.game)
+        assert isinstance(self.template, ta.Env)
+        self.template.reset(num_players=1)
+        _, self.initial_prompt = self.template.get_observation()
+        assert isinstance(self.initial_prompt, str)
+        assert self.initial_prompt
+        words = self.template.word_list
+        if isinstance(words, dict):
+            words = [
+                word
+                for values in words.values()
+                for word in (values if isinstance(values, (list, tuple)) else [values])
+            ]
+        self.word_list = [str(word) for word in words]
+        assert self.word_list
 
-        self.template, self.initial_prompt, self.word_list = textarena_context(config)
-
-        template = self.template
-        shared_memo = {}
-        env = template
-        while hasattr(env, "env"):
-            env = cast(TextArenaEnv, getattr(env, "env"))
-        dictionary = getattr(env, "dictionary", None)
-        if dictionary is not None:
-            shared_memo[id(dictionary)] = dictionary
-        word_list = getattr(env, "word_list", None)
-        if word_list is not None:
-            shared_memo[id(word_list)] = word_list
-
-        def load_ta_env() -> TextArenaEnv:
-            env = cast(TextArenaEnv, deepcopy(template, shared_memo.copy()))
+        def load_ta_env() -> ta.Env:
+            env = deepcopy(self.template)
             env.reset(num_players=1)
             return env
 
@@ -83,92 +79,56 @@ class TextArenaTaskset(Taskset[ConfigT], Generic[ConfigT]):
             )
 
     def load_tasks(self) -> list[ConfigData]:
-        return load_tasks(config=self.config)
+        rng = random.Random(self.config.seed)
+        return [
+            self.textarena_task(rng, index)
+            for index in range(self.config.num_train_examples)
+        ]
 
     def load_eval_tasks(self) -> list[ConfigData]:
-        return load_eval_tasks(config=self.config)
+        if self.config.num_eval_examples <= 0:
+            return []
+        rng = random.Random(self.config.seed)
+        for _ in range(self.config.num_train_examples):
+            rng.choice(self.word_list)
+        return [
+            self.textarena_task(rng, index + self.config.num_train_examples)
+            for index in range(self.config.num_eval_examples)
+        ]
+
+    def textarena_task(self, rng: random.Random, index: int) -> ConfigData:
+        return {
+            "example_id": index,
+            "prompt": [UserMessage(content=self.initial_prompt)],
+            "answer": rng.choice(self.word_list),
+        }
 
     def format_observation(self, observation: str) -> str:
         return observation
 
     async def textarena_user(
-        self, task: Task, state: State, ta_env: TextArenaEnv
+        self, task: Task, state: State, ta_env: ta.Env
     ) -> list[UserMessage]:
         answer = task["answer"]
         assert isinstance(answer, str)
         assert answer
-        ta_env.state.game_state[self.config.answer_state_key] = answer
+        runtime_env = cast(TextArenaRuntimeEnv, ta_env)
+        runtime_env.state.game_state[self.config.answer_state_key] = answer
 
         assistant_messages = get_messages(
             cast(list, state.get("completion") or []), role="assistant"
         )
         last_text = assistant_messages[-1].content if assistant_messages else ""
         assert isinstance(last_text, str)
-        matches = re.findall(r"<guess>(.*?)</guess>", str(last_text), re.DOTALL)
+        matches = re.findall(r"<guess>(.*?)</guess>", last_text, re.DOTALL)
         guess = matches[-1].strip() if matches else ""
         await asyncio.to_thread(ta_env.step, guess)
-        if ta_env.state.done:
-            reason = str(ta_env.state.game_info[0]["reason"])
+        if runtime_env.state.done:
+            reason = str(runtime_env.state.game_info[0]["reason"])
             state["final_env_response"] = reason
             state.stop("textarena_done")
             return [UserMessage(content=reason)]
 
         _, observation = await asyncio.to_thread(ta_env.get_observation)
         assert isinstance(observation, str)
-        return [UserMessage(content=self.format_observation(str(observation)))]
-
-
-def textarena_context(
-    config: TextArenaTasksetConfig,
-) -> tuple[TextArenaEnv, str, list[str]]:
-    nltk.download("words", quiet=True)
-    nltk.download("averaged_perceptron_tagger_eng", quiet=True)
-
-    template = cast(TextArenaEnv, ta.make(env_id=config.game))
-    assert isinstance(template, ta.Env)
-    template.reset(num_players=1)
-    _, initial_prompt = template.get_observation()
-    assert isinstance(initial_prompt, str)
-    assert initial_prompt
-    words = template.word_list
-    if isinstance(words, dict):
-        words = [
-            word
-            for values in words.values()
-            for word in (values if isinstance(values, (list, tuple)) else [values])
-        ]
-    word_list = [str(word) for word in words]
-    assert word_list
-    return template, initial_prompt, word_list
-
-
-def textarena_row(
-    initial_prompt: str, word_list: list[str], rng: random.Random, index: int
-) -> ConfigData:
-    return {
-        "example_id": index,
-        "prompt": [UserMessage(content=initial_prompt)],
-        "answer": rng.choice(word_list),
-    }
-
-
-def load_tasks(config: TextArenaTasksetConfig) -> list[ConfigData]:
-    _, initial_prompt, word_list = textarena_context(config)
-    rng = random.Random(config.seed)
-    return [
-        textarena_row(initial_prompt, word_list, rng, index)
-        for index in range(config.num_train_examples)
-    ]
-
-
-def load_eval_tasks(config: TextArenaTasksetConfig) -> list[ConfigData]:
-    if config.num_eval_examples <= 0:
-        return load_tasks(config=config)
-    _, initial_prompt, word_list = textarena_context(config)
-    rng = random.Random(config.seed)
-    for _ in range(config.num_train_examples):
-        rng.choice(word_list)
-    return [
-        textarena_row(initial_prompt, word_list, rng, index + config.num_train_examples)
-        for index in range(config.num_eval_examples)
-    ]
+        return [UserMessage(content=self.format_observation(observation))]

@@ -49,8 +49,9 @@ for per-task system instructions, or set `TasksetConfig.system_prompt` /
 Multiple system prompt sources reject by default; set `system_prompt_merge` in
 `HarnessConfig` only when that harness knows how they should combine.
 Tasks may also set `max_turns`, `tools`, `toolsets`, and `sandbox` at top level
-for per-row runtime specialization. `tools` and `toolsets` use `show`/`hide`
-maps; `runtime` remains hidden framework metadata.
+for per-row runtime specialization. `toolsets` selects named toolsets, `tools`
+selects tools inside named toolsets, and `runtime` remains hidden framework
+metadata.
 
 ```python
 task = vf.Task(
@@ -239,8 +240,8 @@ Every task receives:
 Tasks can request rollout behavior through top-level serializable fields:
 
 - `max_turns`: per-rollout turn limit for the base harness loop;
-- `tools`: tool visibility as `{"show": [...]}` or `{"hide": [...]}`;
-- `toolsets`: toolset visibility or rollout-local toolsets;
+- `tools`: toolset-keyed tool visibility as `{"wiki": {"show": [...]}}`;
+- `toolsets`: toolset visibility as `{"show": [...]}` or `{"hide": [...]}`;
 - `sandbox`: per-task primary sandbox overrides;
 - `program`: per-task program options contributed by a taskset.
 
@@ -762,26 +763,21 @@ Tasks can select toolsets and tools for one rollout:
 {
     "prompt": [{"role": "user", "content": "Use read-only tools."}],
     "toolsets": {"show": ["wiki"]},
-    "tools": {"show": ["read_file"]},
+    "tools": {"wiki": {"show": ["read_file"]}},
 }
 ```
 
 `task.toolsets` accepts `{"show": [...]}` or `{"hide": [...]}` over mapped
-toolset keys. `task.tools` accepts `{"show": [...]}` or `{"hide": [...]}` over
-the flattened resolved tool names. In each mapping, `show` and `hide` are
+toolset keys. `task.tools` is keyed by mapped toolset name, with each value
+accepting `{"show": [...]}` or `{"hide": [...]}` over that toolset's resolved
+tool names. In each mapping, `show` and `hide` are
 mutually exclusive, and unknown names hard fail.
 
-Task rows can also add rollout-local toolsets:
+Rollout setup can provision task-specific tools into named rollout toolsets:
 
 ```python
-{
-    "toolsets": {
-        "local_search": {
-            "tools": ["my_env:search"],
-            "bindings": {"search.index": "task.index_id"},
-        }
-    }
-}
+async def setup_search(task: vf.Task, state: vf.State) -> None:
+    state.add_tool("wiki", SearchTool(task["index_id"]))
 ```
 
 Task-local toolsets are resolved during rollout setup and follow the same
