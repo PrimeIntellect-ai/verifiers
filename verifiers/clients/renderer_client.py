@@ -18,6 +18,7 @@ from collections import OrderedDict
 from collections.abc import Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass
+from multiprocessing import current_process
 from typing import Any, ClassVar, cast
 
 from openai import AsyncOpenAI
@@ -112,6 +113,9 @@ _lru_cache_attempt_state: ContextVar[_LruCacheAttemptState | None] = ContextVar(
 )
 _lru_cache_request_id: ContextVar[int | None] = ContextVar(
     "renderer_lru_cache_request_id", default=None
+)
+_lru_cache_log_context: ContextVar[dict[str, Any] | None] = ContextVar(
+    "renderer_lru_cache_log_context", default=None
 )
 _lru_cache_request_counter = 0
 _lru_cache_inflight = 0
@@ -324,6 +328,24 @@ def _preview_hashes(hashes: list[str]) -> str:
 def _sent_hash_count_and_preview() -> tuple[int, str]:
     sent = _lru_cache_sent_hashes.get() or {}
     return len(sent), _preview_hashes(list(sent.keys()))
+
+
+def _lru_cache_context_str() -> str:
+    ctx = _lru_cache_log_context.get() or {}
+    parts = [f"pid={os.getpid()}", f"proc={current_process().name}"]
+    for key in (
+        "session_id",
+        "trajectory_id",
+        "prior_turns",
+        "prompt_msgs",
+        "model",
+        "cache_salt",
+        "client_idx",
+    ):
+        value = ctx.get(key)
+        if value is not None:
+            parts.append(f"{key}={value}")
+    return " ".join(parts)
 
 
 def _image_cache_feature_summary(
@@ -596,7 +618,7 @@ def _install_vllm_lru_cache_patch() -> None:
             _lru_cache_logger.info(
                 "renderer_lru_features req=%s images=%d new=%d hits=%d "
                 "new_hashes=%s hit_hashes=%s mm_mb=%.1f payload_mb=%.1f "
-                "cached_total=%d rss_mb=%.1f threads=%d elapsed_ms=%.1f",
+                "cached_total=%d rss_mb=%.1f threads=%d elapsed_ms=%.1f ctx=%s",
                 _lru_cache_request_id.get() or "-",
                 images,
                 new_items,
@@ -609,6 +631,7 @@ def _install_vllm_lru_cache_patch() -> None:
                 _rss_mb(),
                 _os_thread_count(),
                 elapsed_ms,
+                _lru_cache_context_str(),
             )
             return features
 
@@ -640,6 +663,7 @@ def _is_empty_model_result(result: Mapping[str, Any] | None) -> bool:
 
 
 async def _generate_with_optional_vllm_lru_cache(**kwargs: Any) -> dict[str, Any]:
+    log_context = kwargs.pop("_lru_log_context", None)
     client = cast(AsyncOpenAI, kwargs["client"])
     config = await _resolve_vllm_lru_cache_config(client)
     if not config.enabled:
@@ -657,12 +681,17 @@ async def _generate_with_optional_vllm_lru_cache(**kwargs: Any) -> dict[str, Any
     disable_token = _lru_cache_disable_hits.set(False)
     state_token = _lru_cache_attempt_state.set(_LruCacheAttemptState())
     req_token = _lru_cache_request_id.set(req_id)
+    log_token = _lru_cache_log_context.set(
+        cast(dict[str, Any] | None, log_context)
+        if isinstance(log_context, dict)
+        else None
+    )
     start_rss = _rss_mb()
     start = time.monotonic()
     try:
         _lru_cache_logger.debug(
             "renderer_lru_generate_start req=%d inflight=%d rss_mb=%.1f "
-            "threads=%d cached_hashes=%d source=%s capacity_mb=%s",
+            "threads=%d cached_hashes=%d source=%s capacity_mb=%s ctx=%s",
             req_id,
             inflight,
             start_rss,
@@ -672,6 +701,7 @@ async def _generate_with_optional_vllm_lru_cache(**kwargs: Any) -> dict[str, Any
             None
             if config.capacity_bytes is None
             else round(config.capacity_bytes / (1024 * 1024)),
+            _lru_cache_context_str(),
         )
         try:
             result = await generate(**kwargs)
@@ -680,20 +710,22 @@ async def _generate_with_optional_vllm_lru_cache(**kwargs: Any) -> dict[str, Any
             sent_count, sent_hashes = _sent_hash_count_and_preview()
             _lru_cache_logger.info(
                 "renderer_lru_exception req=%d parent_used_hits=%d "
-                "retryable=%d sent=%d sent_hashes=%s exc_type=%s",
+                "retryable=%d sent=%d sent_hashes=%s exc_type=%s ctx=%s",
                 req_id,
                 int(_lru_cache_used_hit()),
                 int(retryable),
                 sent_count,
                 sent_hashes,
                 type(exc).__name__,
+                _lru_cache_context_str(),
             )
             if _lru_cache_used_hit() and retryable:
                 _lru_cache_logger.warning(
                     "renderer_lru_cache_hit_failed req=%d; retrying with "
-                    "full payloads while preserving local MM cache mirror: %r",
+                    "full payloads while preserving local MM cache mirror: %r ctx=%s",
                     req_id,
                     exc,
+                    _lru_cache_context_str(),
                 )
                 _lru_cache_disable_hits.set(True)
                 _reset_lru_cache_used_hit()
@@ -705,19 +737,21 @@ async def _generate_with_optional_vllm_lru_cache(**kwargs: Any) -> dict[str, Any
         sent_count, sent_hashes = _sent_hash_count_and_preview()
         _lru_cache_logger.info(
             "renderer_lru_result req=%d empty=%d parent_used_hits=%d "
-            "sent=%d sent_hashes=%s cached_total=%d",
+            "sent=%d sent_hashes=%s cached_total=%d ctx=%s",
             req_id,
             int(empty_result),
             int(_lru_cache_used_hit()),
             sent_count,
             sent_hashes,
             _local_lru_len(),
+            _lru_cache_context_str(),
         )
         if _lru_cache_used_hit() and empty_result:
             _lru_cache_logger.warning(
                 "renderer_lru_cache_hit_empty_response req=%d; retrying with "
-                "full payloads while preserving local MM cache mirror",
+                "full payloads while preserving local MM cache mirror ctx=%s",
                 req_id,
+                _lru_cache_context_str(),
             )
             _lru_cache_disable_hits.set(True)
             _reset_lru_cache_used_hit()
@@ -727,23 +761,25 @@ async def _generate_with_optional_vllm_lru_cache(**kwargs: Any) -> dict[str, Any
             sent_count, sent_hashes = _sent_hash_count_and_preview()
             _lru_cache_logger.info(
                 "renderer_lru_retry_result req=%d empty=%d "
-                "parent_used_hits=%d sent=%d sent_hashes=%s cached_total=%d",
+                "parent_used_hits=%d sent=%d sent_hashes=%s cached_total=%d ctx=%s",
                 req_id,
                 int(empty_result),
                 int(_lru_cache_used_hit()),
                 sent_count,
                 sent_hashes,
                 _local_lru_len(),
+                _lru_cache_context_str(),
             )
         if empty_result:
             sent_count, sent_hashes = _sent_hash_count_and_preview()
             _lru_cache_logger.info(
                 "renderer_lru_skip_confirm req=%d empty=1 sent=%d "
-                "sent_hashes=%s cached_total=%d",
+                "sent_hashes=%s cached_total=%d ctx=%s",
                 req_id,
                 sent_count,
                 sent_hashes,
                 _local_lru_len(),
+                _lru_cache_context_str(),
             )
         else:
             newly_confirmed = _confirm_sent_mm_hashes()
@@ -751,13 +787,14 @@ async def _generate_with_optional_vllm_lru_cache(**kwargs: Any) -> dict[str, Any
                 sent_count, sent_hashes = _sent_hash_count_and_preview()
                 _lru_cache_logger.info(
                     "renderer_lru_confirm req=%d confirmed=%d sent=%d "
-                    "sent_hashes=%s cached_total=%d empty=%d",
+                    "sent_hashes=%s cached_total=%d empty=%d ctx=%s",
                     req_id,
                     newly_confirmed,
                     sent_count,
                     sent_hashes,
                     _local_lru_len(),
                     int(empty_result),
+                    _lru_cache_context_str(),
                 )
         return result
     finally:
@@ -766,18 +803,20 @@ async def _generate_with_optional_vllm_lru_cache(**kwargs: Any) -> dict[str, Any
             inflight = _lru_cache_inflight
         _lru_cache_logger.debug(
             "renderer_lru_generate_end req=%d inflight=%d elapsed_s=%.1f "
-            "rss_start_mb=%.1f rss_end_mb=%.1f threads=%d",
+            "rss_start_mb=%.1f rss_end_mb=%.1f threads=%d ctx=%s",
             req_id,
             inflight,
             time.monotonic() - start,
             start_rss,
             _rss_mb(),
             _os_thread_count(),
+            _lru_cache_context_str(),
         )
         _lru_cache_attempt_state.reset(state_token)
         _lru_cache_disable_hits.reset(disable_token)
         _lru_cache_sent_hashes.reset(sent_token)
         _lru_cache_request_id.reset(req_token)
+        _lru_cache_log_context.reset(log_token)
 
 
 def _get_value(obj: Any, key: str, default: Any = None) -> Any:
@@ -1264,10 +1303,21 @@ class RendererClient(
         if args.get("prompt_logprobs"):
             sampling_params["prompt_logprobs"] = 1
 
+        state = kwargs.get("state")
+        trajectory = _get_value(state, "trajectory", []) if state is not None else []
+        prior_turns = len(trajectory) if isinstance(trajectory, list) else None
+        session_id = (
+            extra_headers.get("X-Session-ID")
+            or extra_headers.get("x-session-id")
+            or (_get_value(state, "trajectory_id") if state is not None else None)
+        )
+        cache_salt = args.get("cache_salt") or sampling_params.pop("cache_salt", None)
+        priority = args.get("priority") or sampling_params.pop("priority", None)
+
         bridged = await _get_incremental_prompt_ids(
             renderer=renderer,
             prompt=prompt,
-            state=kwargs.get("state"),
+            state=state,
             tools=tools,
         )
         # ``bridged`` is RenderedTokens | None. Unpack token_ids + mm_data
@@ -1303,10 +1353,22 @@ class RendererClient(
                 prompt_attribution=prompt_attribution,
                 tools=tools,
                 sampling_params=sampling_params,
-                cache_salt=args.get("cache_salt")
-                or sampling_params.pop("cache_salt", None),
-                priority=args.get("priority") or sampling_params.pop("priority", None),
+                cache_salt=cache_salt,
+                priority=priority,
                 extra_headers=extra_headers or None,
+                _lru_log_context={
+                    "session_id": session_id,
+                    "trajectory_id": _get_value(state, "trajectory_id")
+                    if state is not None
+                    else None,
+                    "prior_turns": prior_turns,
+                    "prompt_msgs": len(prompt),
+                    "model": model,
+                    "cache_salt": cache_salt,
+                    "client_idx": self._config.client_idx
+                    if self._config is not None
+                    else None,
+                },
             )
         except RendererOverlongPromptError as exc:
             raise OverlongPromptError(str(exc)) from exc
