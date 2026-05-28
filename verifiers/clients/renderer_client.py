@@ -190,9 +190,9 @@ def _capacity_with_safety(cache_gb: float | int | None) -> int | None:
     if cache_gb is None:
         return _capacity_from_env()
     try:
-        safety = float(os.environ.get("VF_RENDERER_VLLM_CACHE_SAFETY", "0.75"))
+        safety = float(os.environ.get("VF_RENDERER_VLLM_CACHE_SAFETY", "1.0"))
     except ValueError:
-        safety = 0.75
+        safety = 1.0
     safety = min(max(safety, 0.05), 1.0)
     return max(0, int(float(cache_gb) * _GIB * safety))
 
@@ -690,12 +690,11 @@ async def _generate_with_optional_vllm_lru_cache(**kwargs: Any) -> dict[str, Any
             )
             if _lru_cache_used_hit() and retryable:
                 _lru_cache_logger.warning(
-                    "renderer_lru_cache_hit_failed req=%d; clearing local "
-                    "MM cache mirror and retrying with full payloads: %r",
+                    "renderer_lru_cache_hit_failed req=%d; retrying with "
+                    "full payloads while preserving local MM cache mirror: %r",
                     req_id,
                     exc,
                 )
-                _clear_local_lru_cache()
                 _lru_cache_disable_hits.set(True)
                 _reset_lru_cache_used_hit()
                 _lru_cache_sent_hashes.set({})
@@ -716,11 +715,10 @@ async def _generate_with_optional_vllm_lru_cache(**kwargs: Any) -> dict[str, Any
         )
         if _lru_cache_used_hit() and empty_result:
             _lru_cache_logger.warning(
-                "renderer_lru_cache_hit_empty_response req=%d; clearing local "
-                "MM cache mirror and retrying with full payloads",
+                "renderer_lru_cache_hit_empty_response req=%d; retrying with "
+                "full payloads while preserving local MM cache mirror",
                 req_id,
             )
-            _clear_local_lru_cache()
             _lru_cache_disable_hits.set(True)
             _reset_lru_cache_used_hit()
             _lru_cache_sent_hashes.set({})

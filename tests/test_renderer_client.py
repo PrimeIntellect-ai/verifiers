@@ -471,6 +471,8 @@ async def test_renderer_lru_does_not_confirm_sent_hashes_for_empty_result():
 @pytest.mark.asyncio
 async def test_renderer_lru_retries_empty_hash_only_hit_with_full_payload():
     renderer_client_module._clear_local_lru_cache()
+    with renderer_client_module._lru_cache_entries_lock:
+        renderer_client_module._lru_cache_entries["hash-existing"] = 456
     calls = 0
 
     async def fake_generate(**_kwargs):
@@ -502,7 +504,7 @@ async def test_renderer_lru_retries_empty_hash_only_hit_with_full_payload():
 
     assert calls == 2
     assert result == {"content": "ok"}
-    assert renderer_client_module._local_lru_len() == 1
+    assert renderer_client_module._local_lru_len() == 2
 
 
 class _BridgeRenderer:
