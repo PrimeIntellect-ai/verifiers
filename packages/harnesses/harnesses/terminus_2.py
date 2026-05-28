@@ -42,7 +42,7 @@ class Terminus2(Harness[Terminus2Config]):
 
     def __init__(self, config: ConfigSource = None):
         config_value = coerce_config(Terminus2Config, config)
-        self.command_program_parts = terminus_2_program_config(config_value)
+        self.command_program_parts = self._program_config(config_value)
         super().__init__(config=config_value)
 
     def load_program(self) -> Program:
@@ -53,91 +53,90 @@ class Terminus2(Harness[Terminus2Config]):
         _, sandbox = self.command_program_parts
         return sandbox
 
+    @classmethod
+    def _program_config(
+        cls, config: Terminus2Config
+    ) -> tuple[Program, ConfigData | None]:
+        return Harness.command_program_config(
+            config,
+            command=cls._command(config),
+            files=cls._files(config),
+            setup=cls._setup(config),
+            artifacts=cls._artifacts(config),
+        )
 
-def load_harness(config: Terminus2Config) -> Terminus2:
-    return Terminus2(config=config)
+    @classmethod
+    def _command(cls, config: Terminus2Config) -> ProgramCommand:
+        return [
+            "bash",
+            "-lc",
+            cls._run_script(
+                agent_workdir=config.agent_workdir,
+                instruction_path=config.instruction_path,
+                system_prompt_path=config.system_prompt_path
+                if config.system_prompt is not None
+                else None,
+                log_path=config.log_path,
+                harbor_package=config.harbor_package,
+                python_version=config.python_version,
+                model_name=config.model_name,
+                api_base_url=config.api_base_url,
+                max_turns=config.max_turns,
+            ),
+        ]
 
+    @classmethod
+    def _setup(cls, config: Terminus2Config) -> str:
+        _ = config
+        return uv_setup_command()
 
-def terminus_2_program_config(
-    config: Terminus2Config,
-) -> tuple[Program, ConfigData | None]:
-    return Harness.command_program_config(
-        config,
-        command=terminus_2_command(config),
-        files=terminus_2_files(config),
-        setup=terminus_2_setup(config),
-        artifacts=terminus_2_artifacts(config),
-    )
-
-
-def terminus_2_command(config: Terminus2Config) -> ProgramCommand:
-    return [
-        "bash",
-        "-lc",
-        build_terminus_2_run_script(
-            agent_workdir=config.agent_workdir,
-            instruction_path=config.instruction_path,
-            system_prompt_path=config.system_prompt_path
-            if config.system_prompt is not None
-            else None,
-            log_path=config.log_path,
-            harbor_package=config.harbor_package,
-            python_version=config.python_version,
-            model_name=config.model_name,
-            api_base_url=config.api_base_url,
-            max_turns=config.max_turns,
-        ),
-    ]
-
-
-def terminus_2_setup(config: Terminus2Config) -> str:
-    _ = config
-    return uv_setup_command()
-
-
-def terminus_2_files(config: Terminus2Config) -> ProgramOptionMap:
-    files: dict[str, ProgramValue] = {
-        config.instruction_path: {"fn": "verifiers.v1.utils.prompt_utils:task_text"},
-    }
-    if config.system_prompt is not None:
-        files[config.system_prompt_path] = {
-            "fn": "verifiers.v1.utils.prompt_utils:state_system_prompt_text"
+    @classmethod
+    def _files(cls, config: Terminus2Config) -> ProgramOptionMap:
+        files: dict[str, ProgramValue] = {
+            config.instruction_path: {
+                "fn": "verifiers.v1.utils.prompt_utils:task_text"
+            },
         }
-    return files
+        if config.system_prompt is not None:
+            files[config.system_prompt_path] = {
+                "fn": "verifiers.v1.utils.prompt_utils:state_system_prompt_text"
+            }
+        return files
 
-
-def terminus_2_artifacts(config: Terminus2Config) -> ProgramOptionMap:
-    return {
-        "terminus_2_log": {
-            "path": config.log_path,
-            "format": "text",
-            "optional": True,
+    @classmethod
+    def _artifacts(cls, config: Terminus2Config) -> ProgramOptionMap:
+        return {
+            "terminus_2_log": {
+                "path": config.log_path,
+                "format": "text",
+                "optional": True,
+            }
         }
-    }
 
-
-def build_terminus_2_run_script(
-    *,
-    agent_workdir: str,
-    instruction_path: str,
-    system_prompt_path: str | None,
-    log_path: str,
-    harbor_package: str,
-    python_version: str,
-    model_name: str,
-    api_base_url: str,
-    max_turns: int | None,
-) -> str:
-    log_dir = str(PurePosixPath(log_path).parent)
-    agent_script = terminus_2_agent_script(
-        instruction_path=instruction_path,
-        system_prompt_path=system_prompt_path,
-        log_dir=log_dir,
-        model_name=model_name,
-        api_base_url=api_base_url,
-        max_turns=max_turns,
-    )
-    return f"""\
+    @classmethod
+    def _run_script(
+        cls,
+        *,
+        agent_workdir: str,
+        instruction_path: str,
+        system_prompt_path: str | None,
+        log_path: str,
+        harbor_package: str,
+        python_version: str,
+        model_name: str,
+        api_base_url: str,
+        max_turns: int | None,
+    ) -> str:
+        log_dir = str(PurePosixPath(log_path).parent)
+        agent_script = cls._agent_script(
+            instruction_path=instruction_path,
+            system_prompt_path=system_prompt_path,
+            log_dir=log_dir,
+            model_name=model_name,
+            api_base_url=api_base_url,
+            max_turns=max_turns,
+        )
+        return f"""\
 set -eo pipefail
 export PATH={shlex.quote(SANDBOX_BIN_DIR)}:"$HOME/.local/bin:$PATH"
 
@@ -157,24 +156,25 @@ uv --no-config run --no-project --quiet \
 PY
 """
 
-
-def terminus_2_agent_script(
-    *,
-    instruction_path: str = TERMINUS_2_DEFAULT_INSTRUCTION_PATH,
-    system_prompt_path: str | None = TERMINUS_2_DEFAULT_SYSTEM_PROMPT_PATH,
-    log_dir: str = "/logs/agent",
-    model_name: str = TERMINUS_2_DEFAULT_MODEL_NAME,
-    api_base_url: str = TERMINUS_2_DEFAULT_API_BASE_URL,
-    max_turns: int | None = 4,
-) -> str:
-    system_prompt_block = ""
-    if system_prompt_path is not None:
-        system_prompt_block = f"""\
+    @classmethod
+    def _agent_script(
+        cls,
+        *,
+        instruction_path: str = TERMINUS_2_DEFAULT_INSTRUCTION_PATH,
+        system_prompt_path: str | None = TERMINUS_2_DEFAULT_SYSTEM_PROMPT_PATH,
+        log_dir: str = "/logs/agent",
+        model_name: str = TERMINUS_2_DEFAULT_MODEL_NAME,
+        api_base_url: str = TERMINUS_2_DEFAULT_API_BASE_URL,
+        max_turns: int | None = 4,
+    ) -> str:
+        system_prompt_block = ""
+        if system_prompt_path is not None:
+            system_prompt_block = f"""\
     system_prompt_path = Path({system_prompt_path!r})
     if system_prompt_path.exists() and system_prompt_path.stat().st_size > 0:
         instruction = system_prompt_path.read_text() + "\\n\\n" + instruction
 """
-    return f"""\
+        return f"""\
 from __future__ import annotations
 
 import asyncio
@@ -290,8 +290,5 @@ asyncio.run(main())
 """
 
 
-__all__ = [
-    "Terminus2",
-    "build_terminus_2_run_script",
-    "terminus_2_agent_script",
-]
+def load_harness(config: Terminus2Config) -> Terminus2:
+    return Terminus2(config=config)

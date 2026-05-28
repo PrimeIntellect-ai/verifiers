@@ -104,24 +104,8 @@ class FakeOpenEnvProvider:
     def stop_container(self) -> None:
         self.stopped = True
 
-
-def openenv_prompt_renderer(observation: object, **kwargs: object) -> list[vf.Message]:
-    del kwargs
-    assert isinstance(observation, dict)
-    observation_data = cast(dict[str, object], observation)
-    return [vf.UserMessage(content=str(observation_data["prompt"]))]
-
-
-@pytest.fixture
-def fake_openenv_runtime(monkeypatch):
-    FakeGenericEnvClient.instances.clear()
-    FakeMCPToolClient.instances.clear()
-
-    def fetch_schema(
-        base_url: str, spec: openenv.OpenEnvRuntimeConfig
-    ) -> dict[str, object]:
-        del base_url
-        if spec.contract == "mcp":
+    def fetch_schema(self) -> dict[str, object]:
+        if self.spec.contract == "mcp":
             return {
                 "action": {
                     "type": "object",
@@ -136,10 +120,22 @@ def fake_openenv_runtime(monkeypatch):
             }
         }
 
+
+def openenv_prompt_renderer(observation: object, **kwargs: object) -> list[vf.Message]:
+    del kwargs
+    assert isinstance(observation, dict)
+    observation_data = cast(dict[str, object], observation)
+    return [vf.UserMessage(content=str(observation_data["prompt"]))]
+
+
+@pytest.fixture
+def fake_openenv_runtime(monkeypatch):
+    FakeGenericEnvClient.instances.clear()
+    FakeMCPToolClient.instances.clear()
+
     monkeypatch.setattr(openenv, "PrimeSandboxOpenEnvProvider", FakeOpenEnvProvider)
     monkeypatch.setattr(openenv, "GenericEnvClient", FakeGenericEnvClient)
     monkeypatch.setattr(openenv, "MCPToolClient", FakeMCPToolClient)
-    monkeypatch.setattr(openenv, "fetch_openenv_schema", fetch_schema)
 
 
 def write_openenv_manifest(project: Path, contract: str) -> None:

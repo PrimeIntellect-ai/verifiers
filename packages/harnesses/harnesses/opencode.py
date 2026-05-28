@@ -81,7 +81,7 @@ class OpenCode(Harness[OpenCodeConfig]):
 
     def __init__(self, config: ConfigSource = None):
         config_value = coerce_config(OpenCodeConfig, config)
-        self.command_program_parts = opencode_program_config(config_value)
+        self.command_program_parts = self._program_config(config_value)
         super().__init__(config=config_value)
 
     def load_program(self) -> Program:
@@ -92,97 +92,96 @@ class OpenCode(Harness[OpenCodeConfig]):
         _, sandbox = self.command_program_parts
         return sandbox
 
-
-def load_harness(config: OpenCodeConfig) -> OpenCode:
-    return OpenCode(config=config)
-
-
-def opencode_program_config(
-    config: OpenCodeConfig,
-) -> tuple[Program, ConfigData | None]:
-    return Harness.command_program_config(
-        config,
-        command=opencode_command(config),
-        files=opencode_files(config),
-        setup=opencode_setup(config),
-        artifacts=opencode_artifacts(config),
-        channels=opencode_channels(config),
-    )
-
-
-def opencode_command(config: OpenCodeConfig) -> ProgramCommand:
-    return [
-        "bash",
-        "-lc",
-        build_opencode_run_script(
-            agent_workdir=config.agent_workdir,
-            instruction_path=config.instruction_path,
-            log_path=config.log_path,
-            allow_git=config.allow_git,
-        ),
-    ]
-
-
-def opencode_setup(config: OpenCodeConfig) -> ProgramSetup:
-    return build_install_script(
-        release_repo=config.release_repo,
-        release_version=config.release_version,
-        release_sha256=config.release_sha256,
-        install_ripgrep=config.install_ripgrep,
-    )
-
-
-def opencode_files(config: OpenCodeConfig) -> ProgramOptionMap:
-    files: dict[str, ProgramValue] = {
-        config.instruction_path: {"fn": "verifiers.v1.utils.prompt_utils:task_text"},
-    }
-    if config.system_prompt is not None:
-        files[config.system_prompt_path] = {
-            "fn": "verifiers.v1.utils.prompt_utils:state_system_prompt_text"
-        }
-    return files
-
-
-def opencode_artifacts(config: OpenCodeConfig) -> ProgramOptionMap:
-    return {
-        "opencode_log": {
-            "path": config.log_path,
-            "format": "text",
-            "optional": True,
-        }
-    }
-
-
-def opencode_channels(config: OpenCodeConfig) -> ProgramChannels:
-    return {
-        "mcp": build_opencode_mcp_setup_script(
-            agent_workdir=config.agent_workdir,
-            system_prompt_path=config.system_prompt_path
-            if config.system_prompt is not None
-            else None,
-            log_path=config.log_path,
-            disabled_tools=config.disabled_tools,
-            disable_compaction=config.disable_compaction,
-            provider_timeout_ms=config.provider_timeout_ms,
+    @classmethod
+    def _program_config(
+        cls, config: OpenCodeConfig
+    ) -> tuple[Program, ConfigData | None]:
+        return Harness.command_program_config(
+            config,
+            command=cls._command(config),
+            files=cls._files(config),
+            setup=cls._setup(config),
+            artifacts=cls._artifacts(config),
+            channels=cls._channels(config),
         )
-    }
 
+    @classmethod
+    def _command(cls, config: OpenCodeConfig) -> ProgramCommand:
+        return [
+            "bash",
+            "-lc",
+            cls._run_script(
+                agent_workdir=config.agent_workdir,
+                instruction_path=config.instruction_path,
+                log_path=config.log_path,
+                allow_git=config.allow_git,
+            ),
+        ]
 
-def build_install_script(
-    release_repo: str,
-    release_version: str,
-    release_sha256: str,
-    install_ripgrep: bool,
-) -> str:
-    rg_install = (
-        "apt-get -o Acquire::Retries=3 install -y -qq ripgrep > /dev/null 2>&1 || true"
-        if install_ripgrep
-        else ""
-    )
-    sha256_check = f'echo "{release_sha256}  /tmp/opencode.tar.gz" | sha256sum -c -'
-    # Acquire::Retries=3 mitigates transient archive.ubuntu.com CDN sync
-    # mismatches that fail fresh-sandbox apt-get calls mid-rollout.
-    return f"""\
+    @classmethod
+    def _setup(cls, config: OpenCodeConfig) -> ProgramSetup:
+        return cls._install_script(
+            release_repo=config.release_repo,
+            release_version=config.release_version,
+            release_sha256=config.release_sha256,
+            install_ripgrep=config.install_ripgrep,
+        )
+
+    @classmethod
+    def _files(cls, config: OpenCodeConfig) -> ProgramOptionMap:
+        files: dict[str, ProgramValue] = {
+            config.instruction_path: {
+                "fn": "verifiers.v1.utils.prompt_utils:task_text"
+            },
+        }
+        if config.system_prompt is not None:
+            files[config.system_prompt_path] = {
+                "fn": "verifiers.v1.utils.prompt_utils:state_system_prompt_text"
+            }
+        return files
+
+    @classmethod
+    def _artifacts(cls, config: OpenCodeConfig) -> ProgramOptionMap:
+        return {
+            "opencode_log": {
+                "path": config.log_path,
+                "format": "text",
+                "optional": True,
+            }
+        }
+
+    @classmethod
+    def _channels(cls, config: OpenCodeConfig) -> ProgramChannels:
+        return {
+            "mcp": cls._mcp_setup_script(
+                agent_workdir=config.agent_workdir,
+                system_prompt_path=config.system_prompt_path
+                if config.system_prompt is not None
+                else None,
+                log_path=config.log_path,
+                disabled_tools=config.disabled_tools,
+                disable_compaction=config.disable_compaction,
+                provider_timeout_ms=config.provider_timeout_ms,
+            )
+        }
+
+    @classmethod
+    def _install_script(
+        cls,
+        release_repo: str,
+        release_version: str,
+        release_sha256: str,
+        install_ripgrep: bool,
+    ) -> str:
+        rg_install = (
+            "apt-get -o Acquire::Retries=3 install -y -qq ripgrep > /dev/null 2>&1 || true"
+            if install_ripgrep
+            else ""
+        )
+        sha256_check = f'echo "{release_sha256}  /tmp/opencode.tar.gz" | sha256sum -c -'
+        # Acquire::Retries=3 mitigates transient archive.ubuntu.com CDN sync
+        # mismatches that fail fresh-sandbox apt-get calls mid-rollout.
+        return f"""\
 set -e
 apt-get -o Acquire::Retries=3 update -qq && apt-get -o Acquire::Retries=3 install -y -qq curl tar ca-certificates > /dev/null 2>&1
 {rg_install}
@@ -212,69 +211,71 @@ else
 fi
 """
 
+    @classmethod
+    def _opencode_config(
+        cls,
+        *,
+        disabled_tools: list[str],
+        system_prompt_path: str | None,
+        disable_compaction: bool,
+        provider_timeout_ms: int,
+    ) -> str:
+        agent_config: ConfigData = {
+            "title": {"disable": True},
+        }
+        config: ConfigData = {
+            "${SCHEMA_DOLLAR}schema": "https://opencode.ai/config.json",
+            "provider": {
+                "intercepted": {
+                    "npm": "@ai-sdk/openai-compatible",
+                    "name": "Intercepted",
+                    "options": {
+                        "baseURL": "$OPENAI_BASE_URL",
+                        "apiKey": "${OPENAI_API_KEY:-intercepted}",
+                        "timeout": provider_timeout_ms,
+                    },
+                    "models": {
+                        "model": {
+                            "name": "Intercepted Model",
+                            "modalities": {"input": ["text"], "output": ["text"]},
+                        }
+                    },
+                }
+            },
+            "model": "intercepted/model",
+            # Keep the small-model pin to avoid falling back to the default small
+            # model and hitting rate limits; disable title calls below.
+            "small_model": "intercepted/model",
+            "agent": agent_config,
+            "mcp": {
+                "verifiers-tools": {
+                    "type": "local",
+                    "command": proxy_command(),
+                    "enabled": True,
+                }
+            },
+        }
+        if disable_compaction:
+            config["compaction"] = {"auto": False, "prune": False}
+        build_config: ConfigData = {}
+        if system_prompt_path is not None:
+            build_config["prompt"] = "{file:" + system_prompt_path + "}"
+        if disabled_tools:
+            build_config["tools"] = {tool: False for tool in disabled_tools}
+        if build_config:
+            agent_config["build"] = build_config
+        return json.dumps(config, indent=2)
 
-def build_opencode_config(
-    *,
-    disabled_tools: list[str],
-    system_prompt_path: str | None,
-    disable_compaction: bool,
-    provider_timeout_ms: int,
-) -> str:
-    agent_config: ConfigData = {
-        "title": {"disable": True},
-    }
-    config: ConfigData = {
-        "${SCHEMA_DOLLAR}schema": "https://opencode.ai/config.json",
-        "provider": {
-            "intercepted": {
-                "npm": "@ai-sdk/openai-compatible",
-                "name": "Intercepted",
-                "options": {
-                    "baseURL": "$OPENAI_BASE_URL",
-                    "apiKey": "${OPENAI_API_KEY:-intercepted}",
-                    "timeout": provider_timeout_ms,
-                },
-                "models": {
-                    "model": {
-                        "name": "Intercepted Model",
-                        "modalities": {"input": ["text"], "output": ["text"]},
-                    }
-                },
-            }
-        },
-        "model": "intercepted/model",
-        # Keep the small-model pin to avoid falling back to the default small
-        # model and hitting rate limits; disable title calls below.
-        "small_model": "intercepted/model",
-        "agent": agent_config,
-        "mcp": {
-            "verifiers-tools": {
-                "type": "local",
-                "command": proxy_command(),
-                "enabled": True,
-            }
-        },
-    }
-    if disable_compaction:
-        config["compaction"] = {"auto": False, "prune": False}
-    build_config: ConfigData = {}
-    if system_prompt_path is not None:
-        build_config["prompt"] = "{file:" + system_prompt_path + "}"
-    if disabled_tools:
-        build_config["tools"] = {tool: False for tool in disabled_tools}
-    if build_config:
-        agent_config["build"] = build_config
-    return json.dumps(config, indent=2)
-
-
-def build_opencode_run_script(
-    *,
-    agent_workdir: str,
-    instruction_path: str,
-    log_path: str,
-    allow_git: bool,
-) -> str:
-    script = f"""\
+    @classmethod
+    def _run_script(
+        cls,
+        *,
+        agent_workdir: str,
+        instruction_path: str,
+        log_path: str,
+        allow_git: bool,
+    ) -> str:
+        script = f"""\
 set -eo pipefail
 export PATH="$HOME/.opencode/bin:$PATH"
 export OPENCODE_DISABLE_FILETIME_CHECK=true
@@ -288,26 +289,27 @@ fi
 cd "$OPENCODE_WORKDIR"
 cat {shlex.quote(instruction_path)} | opencode run 2>&1 | tee {shlex.quote(log_path)}
 """
-    return script
+        return script
 
-
-def build_opencode_mcp_setup_script(
-    *,
-    agent_workdir: str,
-    system_prompt_path: str | None,
-    log_path: str,
-    disabled_tools: list[str],
-    disable_compaction: bool,
-    provider_timeout_ms: int,
-) -> str:
-    config_json = build_opencode_config(
-        disabled_tools=disabled_tools,
-        system_prompt_path=system_prompt_path,
-        disable_compaction=disable_compaction,
-        provider_timeout_ms=provider_timeout_ms,
-    )
-    log_dir = str(PurePosixPath(log_path).parent)
-    return f"""\
+    @classmethod
+    def _mcp_setup_script(
+        cls,
+        *,
+        agent_workdir: str,
+        system_prompt_path: str | None,
+        log_path: str,
+        disabled_tools: list[str],
+        disable_compaction: bool,
+        provider_timeout_ms: int,
+    ) -> str:
+        config_json = cls._opencode_config(
+            disabled_tools=disabled_tools,
+            system_prompt_path=system_prompt_path,
+            disable_compaction=disable_compaction,
+            provider_timeout_ms=provider_timeout_ms,
+        )
+        log_dir = str(PurePosixPath(log_path).parent)
+        return f"""\
 set -e
 export PATH="$HOME/.opencode/bin:$PATH"
 
@@ -322,3 +324,7 @@ cat > ~/.config/opencode/opencode.json << EOFCONFIG
 {config_json}
 EOFCONFIG
 """
+
+
+def load_harness(config: OpenCodeConfig) -> OpenCode:
+    return OpenCode(config=config)

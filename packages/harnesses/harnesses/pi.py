@@ -46,7 +46,7 @@ class Pi(Harness[PiConfig]):
 
     def __init__(self, config: ConfigSource = None):
         config_value = coerce_config(PiConfig, config)
-        self.command_program_parts = pi_program_config(config_value)
+        self.command_program_parts = self._program_config(config_value)
         super().__init__(config=config_value)
 
     def load_program(self) -> Program:
@@ -57,39 +57,35 @@ class Pi(Harness[PiConfig]):
         _, sandbox = self.command_program_parts
         return sandbox
 
+    @classmethod
+    def _program_config(cls, config: PiConfig) -> tuple[Program, ConfigData | None]:
+        return Harness.command_program_config(
+            config,
+            command=cls._command(config),
+            files=cls._files(config),
+            setup=cls._setup(config),
+            artifacts=cls._artifacts(config),
+            channels=cls._channels(config),
+        )
 
-def load_harness(config: PiConfig) -> Pi:
-    return Pi(config=config)
+    @classmethod
+    def _command(cls, config: PiConfig) -> ProgramCommand:
+        return [
+            "bash",
+            "-lc",
+            cls._run_script(
+                agent_workdir=config.agent_workdir,
+                instruction_path=config.instruction_path,
+                system_prompt_path=config.system_prompt_path
+                if config.system_prompt is not None
+                else None,
+                log_path=config.log_path,
+            ),
+        ]
 
-
-def pi_program_config(config: PiConfig) -> tuple[Program, ConfigData | None]:
-    return Harness.command_program_config(
-        config,
-        command=pi_command(config),
-        files=pi_files(config),
-        setup=pi_setup(config),
-        artifacts=pi_artifacts(config),
-        channels=pi_channels(config),
-    )
-
-
-def pi_command(config: PiConfig) -> ProgramCommand:
-    return [
-        "bash",
-        "-lc",
-        build_pi_run_script(
-            agent_workdir=config.agent_workdir,
-            instruction_path=config.instruction_path,
-            system_prompt_path=config.system_prompt_path
-            if config.system_prompt is not None
-            else None,
-            log_path=config.log_path,
-        ),
-    ]
-
-
-def pi_setup(config: PiConfig) -> str:
-    return f"""\
+    @classmethod
+    def _setup(cls, config: PiConfig) -> str:
+        return f"""\
 set -e
 apt-get -o Acquire::Retries=3 update -qq && apt-get -o Acquire::Retries=3 install -y -qq curl ca-certificates nodejs npm xz-utils > /dev/null 2>&1
 npm install -g --ignore-scripts n
@@ -98,69 +94,62 @@ hash -r
 npm install -g --ignore-scripts {shlex.quote(config.package)}
 """
 
-
-def pi_files(config: PiConfig) -> ProgramOptionMap:
-    files: dict[str, ProgramValue] = {
-        config.instruction_path: {"fn": "verifiers.v1.utils.prompt_utils:task_text"},
-    }
-    if config.system_prompt is not None:
-        files[config.system_prompt_path] = {
-            "fn": "verifiers.v1.utils.prompt_utils:state_system_prompt_text"
+    @classmethod
+    def _files(cls, config: PiConfig) -> ProgramOptionMap:
+        files: dict[str, ProgramValue] = {
+            config.instruction_path: {
+                "fn": "verifiers.v1.utils.prompt_utils:task_text"
+            },
         }
-    return files
+        if config.system_prompt is not None:
+            files[config.system_prompt_path] = {
+                "fn": "verifiers.v1.utils.prompt_utils:state_system_prompt_text"
+            }
+        return files
 
-
-def pi_artifacts(config: PiConfig) -> ProgramOptionMap:
-    return {
-        "pi_log": {
-            "path": config.log_path,
-            "format": "text",
-            "optional": True,
+    @classmethod
+    def _artifacts(cls, config: PiConfig) -> ProgramOptionMap:
+        return {
+            "pi_log": {
+                "path": config.log_path,
+                "format": "text",
+                "optional": True,
+            }
         }
-    }
 
-
-def pi_channels(config: PiConfig) -> ProgramChannels | None:
-    if not config.install_mcp_adapter:
-        return None
-    return {
-        "mcp": {
-            "fn": "harnesses.pi:pi_mcp_setup_script",
-            "agent_workdir": config.agent_workdir,
-            "install_mcp_adapter": config.install_mcp_adapter,
+    @classmethod
+    def _channels(cls, config: PiConfig) -> ProgramChannels | None:
+        if not config.install_mcp_adapter:
+            return None
+        return {
+            "mcp": {
+                "fn": "harnesses.pi:pi_mcp_setup_script",
+                "agent_workdir": config.agent_workdir,
+                "install_mcp_adapter": config.install_mcp_adapter,
+            }
         }
-    }
 
-
-def pi_mcp_setup_script(
-    state: State,
-    agent_workdir: str,
-    install_mcp_adapter: bool,
-) -> str:
-    return build_pi_mcp_setup_script(
-        agent_workdir=agent_workdir,
-        endpoint_config=pi_endpoint_config(state),
-        install_mcp_adapter=install_mcp_adapter,
-    )
-
-
-def build_pi_mcp_setup_script(
-    *,
-    agent_workdir: str,
-    endpoint_config: ConfigMap,
-    install_mcp_adapter: bool,
-) -> str:
-    models_json = pi_models_json(endpoint_config)
-    mcp_json = pi_mcp_json() if install_mcp_adapter else None
-    install_adapter = "pi install npm:pi-mcp-adapter -l" if install_mcp_adapter else ""
-    mcp_write = ""
-    if mcp_json is not None:
-        mcp_write = f"""\
+    @classmethod
+    def _mcp_setup_script(
+        cls,
+        *,
+        agent_workdir: str,
+        endpoint_config: ConfigMap,
+        install_mcp_adapter: bool,
+    ) -> str:
+        models_json = pi_models_json(endpoint_config)
+        mcp_json = pi_mcp_json() if install_mcp_adapter else None
+        install_adapter = (
+            "pi install npm:pi-mcp-adapter -l" if install_mcp_adapter else ""
+        )
+        mcp_write = ""
+        if mcp_json is not None:
+            mcp_write = f"""\
 cat > "$PI_WORKDIR/.mcp.json" <<'EOFMCP'
 {mcp_json}
 EOFMCP
 """
-    return f"""\
+        return f"""\
 set -e
 
 PI_WORKDIR="${{AGENT_WORKDIR:-}}"
@@ -177,21 +166,22 @@ cd "$PI_WORKDIR"
 {install_adapter}
 """
 
-
-def build_pi_run_script(
-    *,
-    agent_workdir: str,
-    instruction_path: str,
-    system_prompt_path: str | None,
-    log_path: str,
-) -> str:
-    log_dir = str(PurePosixPath(log_path).parent)
-    system_prompt_arg = (
-        f'--system-prompt "$(cat {shlex.quote(system_prompt_path)})"'
-        if system_prompt_path is not None
-        else ""
-    )
-    return f"""\
+    @classmethod
+    def _run_script(
+        cls,
+        *,
+        agent_workdir: str,
+        instruction_path: str,
+        system_prompt_path: str | None,
+        log_path: str,
+    ) -> str:
+        log_dir = str(PurePosixPath(log_path).parent)
+        system_prompt_arg = (
+            f'--system-prompt "$(cat {shlex.quote(system_prompt_path)})"'
+            if system_prompt_path is not None
+            else ""
+        )
+        return f"""\
 set -eo pipefail
 
 PI_WORKDIR="${{AGENT_WORKDIR:-}}"
@@ -206,8 +196,20 @@ pi --no-session --no-context-files --provider verifiers --model model \
 """
 
 
-def pi_endpoint_config(state: State) -> dict[str, str]:
-    return state.get_endpoint_config(api="chat")
+def load_harness(config: PiConfig) -> Pi:
+    return Pi(config=config)
+
+
+def pi_mcp_setup_script(
+    state: State,
+    agent_workdir: str,
+    install_mcp_adapter: bool,
+) -> str:
+    return Pi._mcp_setup_script(
+        agent_workdir=agent_workdir,
+        endpoint_config=state.get_endpoint_config(api="chat"),
+        install_mcp_adapter=install_mcp_adapter,
+    )
 
 
 def pi_models_json(endpoint_config: ConfigMap) -> str:

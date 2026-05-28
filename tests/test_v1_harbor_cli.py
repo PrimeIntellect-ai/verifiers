@@ -4,7 +4,7 @@ import sys
 import types
 from pathlib import Path
 from types import ModuleType
-from typing import cast
+from typing import Any, cast
 from uuid import uuid4
 
 import pytest
@@ -28,7 +28,6 @@ from harnesses.terminus_2 import (
     TERMINUS_2_DEFAULT_HARBOR_PACKAGE,
     TERMINUS_2_DEFAULT_MODEL_NAME,
     Terminus2,
-    terminus_2_agent_script,
 )
 from tasksets import HarborTaskset, HarborTasksetConfig
 from tasksets.harbor import harbor_reward
@@ -154,7 +153,7 @@ docker_image = "ubuntu:24.04"
     )
 
     with pytest.raises(TypeError, match=rf"\[{section}\] must be a mapping"):
-        HarborTaskset(config=HarborTasksetConfig()).harbor_task(task_dir, 0)
+        HarborTaskset(config=HarborTasksetConfig())._task(task_dir, 0)
 
 
 def test_harbor_taskset_constructs_env_with_opencode(
@@ -226,7 +225,7 @@ async def test_harbor_reward_uses_background_job_for_tests(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     task_dir = write_harbor_task(tmp_path)
-    fake_module = types.ModuleType("prime_sandboxes")
+    fake_module = cast(Any, types.ModuleType("prime_sandboxes"))
     fake_module.AsyncSandboxClient = FakeHarborSandboxClient
     monkeypatch.setitem(sys.modules, "prime_sandboxes", fake_module)
     FakeHarborSandboxClient.instances = []
@@ -398,7 +397,7 @@ def test_terminus_2_harness_builds_sandbox_program() -> None:
     assert "git+https://github.com" not in run_script
     assert "max_turns=7" in run_script
 
-    script = terminus_2_agent_script(max_turns=7)
+    script = Terminus2._agent_script(max_turns=7)
     compile(script, "terminus_2_agent.py", "exec")
     assert TERMINUS_2_DEFAULT_MODEL_NAME in script
     assert TERMINUS_2_DEFAULT_API_BASE_URL in script

@@ -12,7 +12,7 @@ from openreward.api.environments.types import (
     ToolOutput as OpenRewardToolOutput,
 )
 from pydantic import field_validator
-from verifiers.decorators import cleanup, reward, setup, stop
+import verifiers as vf
 from verifiers.types import MessageContent, Tool
 from verifiers.utils.message_utils import normalize_messages
 from verifiers.v1.config import ConfigSource
@@ -67,7 +67,7 @@ class OpenRewardTaskset(Taskset[OpenRewardTasksetConfig]):
                 )
             )
         return [
-            self.openreward_task(self.config.split, task, index)
+            self._task(self.config.split, task, index)
             for index, task in enumerate(tasks)
         ]
 
@@ -86,13 +86,9 @@ class OpenRewardTaskset(Taskset[OpenRewardTasksetConfig]):
                 start=0,
                 stop=self.config.num_eval_examples,
             )
-        return [
-            self.openreward_task(split, task, index) for index, task in enumerate(tasks)
-        ]
+        return [self._task(split, task, index) for index, task in enumerate(tasks)]
 
-    def openreward_task(
-        self, split: str, task: OpenRewardTask, index: int
-    ) -> ConfigData:
+    def _task(self, split: str, task: OpenRewardTask, index: int) -> ConfigData:
         task_spec = serializable(task.task_spec)
         assert isinstance(task_spec, Mapping)
         return {
@@ -114,22 +110,22 @@ class OpenRewardTaskset(Taskset[OpenRewardTasksetConfig]):
             },
         }
 
-    @setup
+    @vf.setup
     async def setup_openreward(self, task: Task, state: State) -> None:
-        session = await self.openreward_session(task, state)
+        session = await self._session(task, state)
         prompt = await asyncio.to_thread(session.get_prompt)
         state["prompt"] = normalize_messages(
-            [{"role": "user", "content": openreward_content(prompt)}],
+            [{"role": "user", "content": self._content(prompt)}],
             field_name="openreward.prompt",
         )
         tool_specs = await asyncio.to_thread(session.list_tools, "openai")
         for tool_spec in tool_specs:
             state.add_tool(
                 "openreward",
-                OpenRewardTool(self.openreward_tool_def(cast(ConfigMap, tool_spec))),
+                OpenRewardTool(self._tool_def(cast(ConfigMap, tool_spec))),
             )
 
-    @cleanup
+    @vf.cleanup
     async def cleanup_openreward(self, state: State) -> None:
         session = state.pop("openreward_session", None)
         client = state.pop("openreward_client", None)
@@ -138,11 +134,11 @@ class OpenRewardTaskset(Taskset[OpenRewardTasksetConfig]):
         if client is not None:
             await asyncio.to_thread(client.close)
 
-    @stop
+    @vf.stop
     async def openreward_done(self, state: State) -> bool:
         return bool(state.get("openreward_finished"))
 
-    @reward(weight=1.0)
+    @vf.reward(weight=1.0)
     async def openreward_reward(self, state: State) -> float:
         return float(
             sum(
@@ -152,7 +148,7 @@ class OpenRewardTaskset(Taskset[OpenRewardTasksetConfig]):
             )
         )
 
-    async def openreward_session(self, task: Task, state: State) -> OpenRewardSession:
+    async def _session(self, task: Task, state: State) -> OpenRewardSession:
         session = state.get("openreward_session")
         if session is not None:
             return cast(OpenRewardSession, session)
@@ -184,7 +180,8 @@ class OpenRewardTaskset(Taskset[OpenRewardTasksetConfig]):
         state["openreward_session"] = entered_session
         return entered_session
 
-    def openreward_tool_def(self, tool: ConfigMap) -> Tool:
+    @classmethod
+    def _tool_def(cls, tool: ConfigMap) -> Tool:
         function_data = tool.get("function")
         data = (
             cast(ConfigMap, function_data)
@@ -206,6 +203,33 @@ class OpenRewardTaskset(Taskset[OpenRewardTasksetConfig]):
             parameters={str(key): value for key, value in parameters.items()},
         )
 
+    @classmethod
+    def _content(cls, blocks: object) -> MessageContent:
+        block_list = (
+            list(blocks)
+            if isinstance(blocks, Iterable) and not isinstance(blocks, str | bytes)
+            else [blocks]
+        )
+        if all(isinstance(block, OpenRewardTextBlock) for block in block_list):
+            text_blocks = cast(list[OpenRewardTextBlock], block_list)
+            return "\n".join(block.text for block in text_blocks)
+        content: list[ConfigData] = []
+        for block in block_list:
+            if isinstance(block, OpenRewardTextBlock):
+                content.append({"type": "text", "text": block.text})
+            elif isinstance(block, OpenRewardImageBlock):
+                content.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:{block.mimeType};base64,{block.data}"
+                        },
+                    }
+                )
+            else:
+                assert False, f"Unexpected OpenReward block: {block!r}"
+        return cast(MessageContent, content)
+
 
 class OpenRewardTool:
     def __init__(self, tool_def: Tool):
@@ -226,10 +250,10 @@ class OpenRewardTool:
                 {str(key): value for key, value in arguments.items()},
             ),
         )
-        self.record_output(state, result)
-        return openreward_content(result.blocks)
+        self._record_output(state, result)
+        return OpenRewardTaskset._content(result.blocks)
 
-    def record_output(self, state: State, output: OpenRewardToolOutput) -> None:
+    def _record_output(self, state: State, output: OpenRewardToolOutput) -> None:
         if output.reward is not None:
             trajectory = state["trajectory"]
             assert isinstance(trajectory, list)
@@ -243,31 +267,6 @@ class OpenRewardTool:
             state.stop("openreward_done")
         if output.metadata is not None:
             state["openreward_metadata"] = serializable(output.metadata)
-
-
-def openreward_content(blocks: object) -> MessageContent:
-    block_list = (
-        list(blocks)
-        if isinstance(blocks, Iterable) and not isinstance(blocks, str | bytes)
-        else [blocks]
-    )
-    if all(isinstance(block, OpenRewardTextBlock) for block in block_list):
-        text_blocks = cast(list[OpenRewardTextBlock], block_list)
-        return "\n".join(block.text for block in text_blocks)
-    content: list[ConfigData] = []
-    for block in block_list:
-        if isinstance(block, OpenRewardTextBlock):
-            content.append({"type": "text", "text": block.text})
-        elif isinstance(block, OpenRewardImageBlock):
-            content.append(
-                {
-                    "type": "image_url",
-                    "image_url": {"url": f"data:{block.mimeType};base64,{block.data}"},
-                }
-            )
-        else:
-            assert False, f"Unexpected OpenReward block: {block!r}"
-    return cast(MessageContent, content)
 
 
 def load_taskset(config: OpenRewardTasksetConfig) -> OpenRewardTaskset:

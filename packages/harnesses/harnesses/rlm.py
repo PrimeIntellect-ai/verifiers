@@ -108,7 +108,7 @@ class RLM(Harness[RLMConfig]):
 
     def __init__(self, config: ConfigSource = None):
         config_value = coerce_config(RLMConfig, config)
-        self.command_program_parts = rlm_program_config(config_value)
+        self.command_program_parts = self._program_config(config_value)
         super().__init__(config=config_value)
 
     def load_program(self) -> Program:
@@ -151,146 +151,141 @@ class RLM(Harness[RLMConfig]):
         super().attach_taskset(taskset)
         self._program = self.compile_program(self.program)
 
-
-def load_harness(config: RLMConfig) -> RLM:
-    return RLM(config=config)
-
-
-def rlm_program_config(config: RLMConfig) -> tuple[Program, ConfigData | None]:
-    return Harness.command_program_config(
-        config,
-        command=rlm_command(config),
-        files=rlm_files(config),
-        dirs=rlm_dirs(config),
-        setup=rlm_setup(config),
-        env=rlm_env(config),
-        artifacts=rlm_artifacts(config),
-        sandbox=rlm_sandbox(config),
-        setup_timeout=rlm_setup_timeout(config),
-    )
-
-
-def rlm_command(config: RLMConfig) -> ProgramCommand:
-    return [
-        "bash",
-        "-lc",
-        build_run_script(config.instruction_path, config.workdir),
-    ]
-
-
-def rlm_files(config: RLMConfig) -> ProgramOptionMap:
-    _ = config
-    return {
-        config.instruction_path: {"fn": "harnesses.rlm:task_instruction_text"},
-        RLM_DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH: config.append_to_system_prompt,
-        DEFAULT_RLM_TOOL_SKILLS_ARCHIVE_PATH: {
-            "fn": "harnesses.rlm:rlm_tool_skills_archive"
-        },
-    }
-
-
-def rlm_dirs(config: RLMConfig) -> ProgramOptionMap:
-    dirs: dict[str, ProgramValue] = {
-        DEFAULT_RLM_CHECKOUT_PATH: {
-            "fn": "harnesses.rlm:rlm_checkout_path",
-            **(
-                {"local_checkout": config.local_checkout}
-                if config.local_checkout
-                else {}
-            ),
-            "rlm_repo_url": config.rlm_repo_url,
-            "rlm_repo_ref": config.rlm_repo_ref,
-            **({"gh_token": config.gh_token} if config.gh_token else {}),
-        }
-    }
-    if config.skills is not None:
-        dirs[DEFAULT_RLM_SKILLS_PATH] = config.skills
-    return dirs
-
-
-def rlm_setup(config: RLMConfig) -> ProgramSetup:
-    _ = config
-    return [
-        "apt-get -o Acquire::Retries=3 update && "
-        "apt-get -o Acquire::Retries=3 install -y --no-install-recommends "
-        "ca-certificates curl git && rm -rf /var/lib/apt/lists/*",
-        "bash -lc " + shlex.quote(build_rlm_skills_install_script()),
-        "bash -lc " + shlex.quote(build_rlm_checkout_install_script()),
-    ]
-
-
-def rlm_env(config: RLMConfig) -> ProgramOptionMap:
-    env: dict[str, ProgramValue] = {
-        "PATH": "/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-        "OPENAI_MODEL": "runtime.model",
-        "RLM_MODEL": "runtime.model",
-        "RLM_TOOLS": ",".join(config.rlm_tools),
-        "RLM_MAX_TURNS": str(config.rlm_max_turns),
-        "RLM_EXEC_TIMEOUT": str(config.rlm_exec_timeout),
-        "RLM_MAX_DEPTH": str(config.rlm_max_depth),
-        **config.env_vars,
-    }
-    if config.summarize_at_tokens is not None:
-        env["RLM_SUMMARIZE_AT_TOKENS"] = {
-            "fn": "harnesses.rlm:rlm_summarize_at_tokens",
-            "value": config.summarize_at_tokens,
-        }
-    return env
-
-
-def rlm_artifacts(config: RLMConfig) -> ProgramOptionMap:
-    return {
-        "rlm_metrics": {
-            "path": f"{config.workdir}/.rlm/sessions/*/meta.json",
-            "format": "json",
-            "key": "metrics",
-            "optional": True,
-        }
-    }
-
-
-def rlm_setup_timeout(config: RLMConfig) -> int:
-    setup_timeout = max(config.rlm_exec_timeout + 120, 600)
-    sandbox_config = config.sandbox or True
-    if sandbox_config is not True and sandbox_config is not False:
-        explicit_sandbox_options = (
-            sandbox_config_mapping(sandbox_config, fill_defaults=False) or {}
+    @classmethod
+    def _program_config(cls, config: RLMConfig) -> tuple[Program, ConfigData | None]:
+        return Harness.command_program_config(
+            config,
+            command=cls._command(config),
+            files=cls._files(config),
+            dirs=cls._dirs(config),
+            setup=cls._setup(config),
+            env=cls._env(config),
+            artifacts=cls._artifacts(config),
+            sandbox=cls._sandbox(config),
+            setup_timeout=cls._setup_timeout(config),
         )
-        if explicit_sandbox_options.get("setup_timeout") is not None:
-            setup_timeout = int_config(
-                explicit_sandbox_options, "setup_timeout", setup_timeout
-            )
-    return setup_timeout
 
+    @classmethod
+    def _command(cls, config: RLMConfig) -> ProgramCommand:
+        return [
+            "bash",
+            "-lc",
+            cls._run_script(config.instruction_path, config.workdir),
+        ]
 
-def rlm_sandbox(config: RLMConfig) -> ConfigMap | SandboxConfig | bool:
-    setup_timeout = rlm_setup_timeout(config)
-    sandbox_config: ConfigMap | SandboxConfig | bool = config.sandbox or True
-    if sandbox_config is True:
+    @classmethod
+    def _files(cls, config: RLMConfig) -> ProgramOptionMap:
         return {
-            "image": "python:3.11-slim",
+            config.instruction_path: {"fn": "harnesses.rlm:task_instruction_text"},
+            RLM_DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH: config.append_to_system_prompt,
+            DEFAULT_RLM_TOOL_SKILLS_ARCHIVE_PATH: {
+                "fn": "harnesses.rlm:rlm_tool_skills_archive"
+            },
+        }
+
+    @classmethod
+    def _dirs(cls, config: RLMConfig) -> ProgramOptionMap:
+        dirs: dict[str, ProgramValue] = {
+            DEFAULT_RLM_CHECKOUT_PATH: {
+                "fn": "harnesses.rlm:rlm_checkout_path",
+                **(
+                    {"local_checkout": config.local_checkout}
+                    if config.local_checkout
+                    else {}
+                ),
+                "rlm_repo_url": config.rlm_repo_url,
+                "rlm_repo_ref": config.rlm_repo_ref,
+                **({"gh_token": config.gh_token} if config.gh_token else {}),
+            }
+        }
+        if config.skills is not None:
+            dirs[DEFAULT_RLM_SKILLS_PATH] = config.skills
+        return dirs
+
+    @classmethod
+    def _setup(cls, config: RLMConfig) -> ProgramSetup:
+        _ = config
+        return [
+            "apt-get -o Acquire::Retries=3 update && "
+            "apt-get -o Acquire::Retries=3 install -y --no-install-recommends "
+            "ca-certificates curl git && rm -rf /var/lib/apt/lists/*",
+            "bash -lc " + shlex.quote(cls._skills_install_script()),
+            "bash -lc " + shlex.quote(cls._checkout_install_script()),
+        ]
+
+    @classmethod
+    def _env(cls, config: RLMConfig) -> ProgramOptionMap:
+        env: dict[str, ProgramValue] = {
+            "PATH": "/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+            "OPENAI_MODEL": "runtime.model",
+            "RLM_MODEL": "runtime.model",
+            "RLM_TOOLS": ",".join(config.rlm_tools),
+            "RLM_MAX_TURNS": str(config.rlm_max_turns),
+            "RLM_EXEC_TIMEOUT": str(config.rlm_exec_timeout),
+            "RLM_MAX_DEPTH": str(config.rlm_max_depth),
+            **config.env_vars,
+        }
+        if config.summarize_at_tokens is not None:
+            env["RLM_SUMMARIZE_AT_TOKENS"] = {
+                "fn": "harnesses.rlm:rlm_summarize_at_tokens",
+                "value": config.summarize_at_tokens,
+            }
+        return env
+
+    @classmethod
+    def _artifacts(cls, config: RLMConfig) -> ProgramOptionMap:
+        return {
+            "rlm_metrics": {
+                "path": f"{config.workdir}/.rlm/sessions/*/meta.json",
+                "format": "json",
+                "key": "metrics",
+                "optional": True,
+            }
+        }
+
+    @classmethod
+    def _setup_timeout(cls, config: RLMConfig) -> int:
+        setup_timeout = max(config.rlm_exec_timeout + 120, 600)
+        sandbox_config = config.sandbox or True
+        if sandbox_config is not True and sandbox_config is not False:
+            explicit_sandbox_options = (
+                sandbox_config_mapping(sandbox_config, fill_defaults=False) or {}
+            )
+            if explicit_sandbox_options.get("setup_timeout") is not None:
+                setup_timeout = int_config(
+                    explicit_sandbox_options, "setup_timeout", setup_timeout
+                )
+        return setup_timeout
+
+    @classmethod
+    def _sandbox(cls, config: RLMConfig) -> ConfigMap | SandboxConfig | bool:
+        setup_timeout = cls._setup_timeout(config)
+        sandbox_config: ConfigMap | SandboxConfig | bool = config.sandbox or True
+        if sandbox_config is True:
+            return {
+                "image": "python:3.11-slim",
+                "workdir": config.workdir,
+                "cpu_cores": 1,
+                "memory_gb": 2,
+                "disk_size_gb": 5,
+                "network_access": True,
+                "timeout_minutes": 60,
+                "command_timeout": max(config.rlm_exec_timeout + 120, 600),
+                "setup_timeout": setup_timeout,
+            }
+        if sandbox_config is False:
+            return False
+        sandbox_options = sandbox_config_mapping(sandbox_config) or {}
+        return {
             "workdir": config.workdir,
-            "cpu_cores": 1,
-            "memory_gb": 2,
-            "disk_size_gb": 5,
-            "network_access": True,
-            "timeout_minutes": 60,
             "command_timeout": max(config.rlm_exec_timeout + 120, 600),
+            **sandbox_options,
             "setup_timeout": setup_timeout,
         }
-    if sandbox_config is False:
-        return False
-    sandbox_options = sandbox_config_mapping(sandbox_config) or {}
-    return {
-        "workdir": config.workdir,
-        "command_timeout": max(config.rlm_exec_timeout + 120, 600),
-        **sandbox_options,
-        "setup_timeout": setup_timeout,
-    }
 
-
-def build_rlm_skills_install_script() -> str:
-    return f"""
+    @classmethod
+    def _skills_install_script(cls) -> str:
+        return f"""
 set -eo pipefail
 skills_path={shlex.quote(DEFAULT_RLM_SKILLS_PATH)}
 archive_path={shlex.quote(DEFAULT_RLM_TOOL_SKILLS_ARCHIVE_PATH)}
@@ -316,18 +311,18 @@ if [ -s "$archive_path" ]; then
 fi
 """
 
-
-def build_rlm_checkout_install_script() -> str:
-    return f"""
+    @classmethod
+    def _checkout_install_script(cls) -> str:
+        return f"""
 set -eo pipefail
 export RLM_CHECKOUT_PATH={shlex.quote(DEFAULT_RLM_CHECKOUT_PATH)}
 test -f "$RLM_CHECKOUT_PATH/install.sh"
 bash "$RLM_CHECKOUT_PATH/install.sh"
 """
 
-
-def build_run_script(instruction_path: str, workdir: str) -> str:
-    return f"""
+    @classmethod
+    def _run_script(cls, instruction_path: str, workdir: str) -> str:
+        return f"""
 set -eo pipefail
 export PATH="$HOME/.local/bin:${{AGENT_PATH:-$PATH}}"
 export RLM_MODEL="${{RLM_MODEL:-$OPENAI_MODEL}}"
@@ -336,6 +331,25 @@ export RLM_APPEND_TO_SYSTEM_PROMPT="$(cat {shlex.quote(RLM_DEFAULT_APPEND_TO_SYS
 cd "${{AGENT_WORKDIR:-{workdir}}}"
 rlm "$(cat {shlex.quote(instruction_path)})"
 """
+
+    @classmethod
+    def _metric(cls, state: ConfigMap, key: str) -> float:
+        artifacts = state.get("artifacts")
+        if not isinstance(artifacts, Mapping):
+            return 0.0
+        artifacts = cast(ConfigMap, artifacts)
+        metrics = artifacts.get("rlm_metrics")
+        if not isinstance(metrics, Mapping):
+            return 0.0
+        metrics = cast(ConfigMap, metrics)
+        value = metrics.get(key, 0.0)
+        if isinstance(value, bool) or not isinstance(value, int | float | str):
+            return 0.0
+        return float(value or 0.0)
+
+
+def load_harness(config: RLMConfig) -> RLM:
+    return RLM(config=config)
 
 
 def rlm_checkout_path(
@@ -662,31 +676,16 @@ def keep_only_parent_rlm_steps(step: object, state: State, headers: ConfigMap) -
     return str(headers.get("x-rlm-depth", "0")) == "0"
 
 
-def rlm_metric(state: ConfigMap, key: str) -> float:
-    artifacts = state.get("artifacts")
-    if not isinstance(artifacts, Mapping):
-        return 0.0
-    artifacts = cast(ConfigMap, artifacts)
-    metrics = artifacts.get("rlm_metrics")
-    if not isinstance(metrics, Mapping):
-        return 0.0
-    metrics = cast(ConfigMap, metrics)
-    value = metrics.get(key, 0.0)
-    if isinstance(value, bool) or not isinstance(value, int | float | str):
-        return 0.0
-    return float(value or 0.0)
-
-
 async def rlm_sub_llm_call_count(task: Task, state: State) -> float:
     _ = task
-    return rlm_metric(state, "sub_llm_call_count")
+    return RLM._metric(state, "sub_llm_call_count")
 
 
 async def rlm_sub_llm_total_turns(task: Task, state: State) -> float:
     _ = task
-    return rlm_metric(state, "sub_llm_total_turns")
+    return RLM._metric(state, "sub_llm_total_turns")
 
 
 async def rlm_sub_llm_total_tool_calls(task: Task, state: State) -> float:
     _ = task
-    return rlm_metric(state, "sub_llm_total_tool_calls")
+    return RLM._metric(state, "sub_llm_total_tool_calls")

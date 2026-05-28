@@ -1,3 +1,5 @@
+from typing import Any, cast
+
 import pytest
 
 
@@ -6,7 +8,7 @@ def test_wordle_format_observation_extracts_latest_feedback():
 
     taskset = wordle_v1.WordleTaskset.__new__(wordle_v1.WordleTaskset)
     assert (
-        taskset.format_observation("intro [GAME] Feedback:\nmiss\nY----\ntry again")
+        taskset._format_observation("intro [GAME] Feedback:\nmiss\nY----\ntry again")
         == "\nmiss\nY----\ntry again"
     )
 
@@ -17,7 +19,12 @@ def test_wordle_load_taskset_requires_wordle_config():
 
     with pytest.raises(AssertionError):
         wordle_v1.load_taskset(
-            TextArenaTasksetConfig(game="Wordle-v0", answer_state_key="secret_word")
+            cast(
+                Any,
+                TextArenaTasksetConfig(
+                    game="Wordle-v0", answer_state_key="secret_word"
+                ),
+            )
         )
 
 

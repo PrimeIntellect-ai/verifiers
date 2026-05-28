@@ -4,13 +4,7 @@ import re
 from copy import deepcopy
 from typing import Generic, Protocol, TypeVar, cast
 
-from verifiers.types import UserMessage
-from verifiers.utils.message_utils import get_messages
-from verifiers.v1.state import State
-from verifiers.v1.task import Task
-from verifiers.v1.taskset import Taskset, TasksetConfig
-from verifiers.v1.types import ConfigData
-from verifiers.v1.user import User
+import verifiers as vf
 
 try:
     import nltk
@@ -31,7 +25,7 @@ class TextArenaRuntimeEnv(Protocol):
     state: TextArenaRuntimeState
 
 
-class TextArenaTasksetConfig(TasksetConfig):
+class TextArenaTasksetConfig(vf.TasksetConfig):
     game: str
     num_train_examples: int = 2000
     num_eval_examples: int = 20
@@ -42,7 +36,7 @@ class TextArenaTasksetConfig(TasksetConfig):
 ConfigT = TypeVar("ConfigT", bound=TextArenaTasksetConfig)
 
 
-class TextArenaTaskset(Taskset[ConfigT], Generic[ConfigT]):
+class TextArenaTaskset(vf.Taskset[ConfigT], Generic[ConfigT]):
     config: ConfigT
 
     def __init__(self, config: ConfigT):
@@ -72,50 +66,49 @@ class TextArenaTaskset(Taskset[ConfigT], Generic[ConfigT]):
 
         super().__init__(config=config)
         if "user" not in self.config.model_fields_set:
-            self.user = User(
-                fn=self.textarena_user,
+            self.user = vf.User(
+                fn=self._respond,
                 objects={"ta_env": load_ta_env},
                 bindings={"ta_env": "objects.ta_env"},
             )
 
-    def load_tasks(self) -> list[ConfigData]:
+    def load_tasks(self) -> list[vf.ConfigData]:
         rng = random.Random(self.config.seed)
         return [
-            self.textarena_task(rng, index)
-            for index in range(self.config.num_train_examples)
+            self._task(rng, index) for index in range(self.config.num_train_examples)
         ]
 
-    def load_eval_tasks(self) -> list[ConfigData]:
+    def load_eval_tasks(self) -> list[vf.ConfigData]:
         if self.config.num_eval_examples <= 0:
             return []
         rng = random.Random(self.config.seed)
         for _ in range(self.config.num_train_examples):
             rng.choice(self.word_list)
         return [
-            self.textarena_task(rng, index + self.config.num_train_examples)
+            self._task(rng, index + self.config.num_train_examples)
             for index in range(self.config.num_eval_examples)
         ]
 
-    def textarena_task(self, rng: random.Random, index: int) -> ConfigData:
+    def _task(self, rng: random.Random, index: int) -> vf.ConfigData:
         return {
             "example_id": index,
-            "prompt": [UserMessage(content=self.initial_prompt)],
+            "prompt": [vf.UserMessage(content=self.initial_prompt)],
             "answer": rng.choice(self.word_list),
         }
 
-    def format_observation(self, observation: str) -> str:
+    def _format_observation(self, observation: str) -> str:
         return observation
 
-    async def textarena_user(
-        self, task: Task, state: State, ta_env: ta.Env
-    ) -> list[UserMessage]:
+    async def _respond(
+        self, task: vf.Task, state: vf.State, ta_env: ta.Env
+    ) -> list[vf.UserMessage]:
         answer = task["answer"]
         assert isinstance(answer, str)
         assert answer
         runtime_env = cast(TextArenaRuntimeEnv, ta_env)
         runtime_env.state.game_state[self.config.answer_state_key] = answer
 
-        assistant_messages = get_messages(
+        assistant_messages = vf.get_messages(
             cast(list, state.get("completion") or []), role="assistant"
         )
         last_text = assistant_messages[-1].content if assistant_messages else ""
@@ -127,8 +120,8 @@ class TextArenaTaskset(Taskset[ConfigT], Generic[ConfigT]):
             reason = str(runtime_env.state.game_info[0]["reason"])
             state["final_env_response"] = reason
             state.stop("textarena_done")
-            return [UserMessage(content=reason)]
+            return [vf.UserMessage(content=reason)]
 
         _, observation = await asyncio.to_thread(ta_env.get_observation)
         assert isinstance(observation, str)
-        return [UserMessage(content=self.format_observation(observation))]
+        return [vf.UserMessage(content=self._format_observation(observation))]

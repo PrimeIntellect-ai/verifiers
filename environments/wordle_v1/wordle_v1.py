@@ -31,7 +31,7 @@ class WordleTaskset(TextArenaTaskset[WordleTasksetConfig]):
     def guesses(self, content: str) -> list[str]:
         return re.findall(self.guess_pattern, content, re.DOTALL)
 
-    def format_observation(self, observation: str) -> str:
+    def _format_observation(self, observation: str) -> str:
         latest_observation = observation.split("[GAME]")[-1].strip()
         if "Feedback:" in latest_observation:
             return latest_observation.split("Feedback:")[-1]

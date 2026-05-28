@@ -38,7 +38,7 @@ def test_load_environment_uses_v1_taskset_and_harness() -> None:
     assert isinstance(env.harness.config, OpenCodeConfig)
     assert not hasattr(module, "OpenCodeHarborHarnessConfig")
     assert not hasattr(module, "TERMINAL_BENCH_SAMPLE_TASKS")
-    assert env.taskset.resolve_tasks_root() == Path(module.__file__).parent / "tasks"
+    assert env.taskset._tasks_root() == Path(module.__file__).parent / "tasks"
     assert env.harness.config.max_turns == 4
     assert env.harness.config.disabled_tools == OpenCodeConfig().disabled_tools
     assert "webfetch" in env.harness.config.disabled_tools
@@ -67,8 +67,8 @@ def test_load_environment_accepts_v1_taskset_and_harness_config() -> None:
         )
     )
 
-    assert env.taskset.resolve_tasks_root() == Path(module.__file__).parent / "tasks"
-    assert env.taskset.task_names == ["task-a"]
+    assert env.taskset._tasks_root() == Path(module.__file__).parent / "tasks"
+    assert env.taskset.config.task_names == ["task-a"]
     assert env.taskset.config.sandbox.cpu_cores == 1.5
     assert env.harness.config.agent_workdir == "/workspace"
     assert env.harness.config.max_turns == 2
