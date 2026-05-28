@@ -52,6 +52,7 @@ ENV_VARS_SCALE_SWE = {
 _JUNIT_START = "SCALESWE_JUNIT_XML_START"
 _JUNIT_END = "SCALESWE_JUNIT_XML_END"
 _ERROR_PREFIX = "SCALESWE_ERROR="
+_PYTEST_SUCCESS_MARKER = "<pytest>true</pytest>"
 
 _PYTEST_RUNNER_SCRIPT = """\
 import json, sys, os
@@ -353,6 +354,8 @@ exit "$fail"
         )
         if not expected:
             return 0.0
+        if _PYTEST_SUCCESS_MARKER in test_output:
+            return 1.0
         xml_content = _extract_between(test_output, _JUNIT_START, _JUNIT_END)
         if not xml_content:
             return 0.0
@@ -479,7 +482,10 @@ def _parse_test_ids(raw: str | list[str] | None) -> list[str]:
 
 
 def _normalize_for_match(value: str) -> str:
-    return value.replace(".py", "").replace("/", ".").replace("::", ".").strip(".")
+    parts = value.strip().split("::")
+    if parts and parts[0].endswith(".py"):
+        parts[0] = parts[0][:-3]
+    return ".".join(parts).replace("/", ".").strip(".")
 
 
 def _fingerprint(value: str) -> str:
