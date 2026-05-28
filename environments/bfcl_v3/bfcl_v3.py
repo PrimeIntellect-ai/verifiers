@@ -20,7 +20,6 @@ from verifiers.v1.utils.config_utils import explicit_config_data
 from verifiers.v1.utils.json_utils import json_args
 from verifiers.v1.types import ConfigMap
 
-BFCL_TOOLSET_REF = "bfcl_v3:load_bfcl_toolset"
 _BFCL_PATCHED = False
 BFCLRawMessage = str | ConfigMap
 BFCLRawTurn = str | ConfigMap | Sequence[BFCLRawMessage] | None
@@ -114,15 +113,6 @@ class BFCLSchemaTool:
         return "recorded"
 
 
-def load_bfcl_toolset(task: ConfigMap) -> vf.Toolset:
-    return vf.Toolset(
-        tools=[
-            BFCLSchemaTool(tool_def)
-            for tool_def in bfcl_tool_defs(bfcl_functions(task))
-        ]
-    )
-
-
 def bfcl_functions(task: ConfigMap) -> object:
     return task.get("function_with_hints") or task["function"]
 
@@ -175,7 +165,6 @@ def build_task_loader(test_category: str, examples_per_category: int = -1):
                 )
             else:
                 row["max_turns"] = 1
-                row["toolsets"] = {"bfcl": {"fn": BFCL_TOOLSET_REF}}
             rows.append(row)
         return rows
 
@@ -584,11 +573,24 @@ class BFCLMultiTurnHarness(vf.Harness[BFCLHarnessConfig]):
 
 
 class BFCLTaskset(vf.Taskset[BFCLTasksetConfig]):
+    def load_toolsets(self) -> vf.Toolsets:
+        return {"bfcl": vf.Toolset(scope="rollout")}
+
     def load_tasks(self) -> vf.Tasks:
         return load_tasks(
             test_category=self.config.test_category,
             examples_per_category=self.config.examples_per_category,
         )
+
+    @vf.setup
+    async def setup_bfcl_tools(self, task: vf.Task, state: vf.State) -> None:
+        patch_bfcl_eval()
+        from bfcl_eval.utils import is_multi_turn
+
+        if is_multi_turn(str(task["category"])):
+            return
+        for tool_def in bfcl_tool_defs(bfcl_functions(task)):
+            state.add_tool("bfcl", BFCLSchemaTool(tool_def))
 
 
 def load_harness(config: BFCLHarnessConfig) -> vf.Harness:
