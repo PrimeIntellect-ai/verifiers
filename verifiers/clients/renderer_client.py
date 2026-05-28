@@ -470,11 +470,12 @@ def _materialize_pixels_for_lru_cache(renderer: Any, mm_data: Any, messages: lis
             "materialize_pixels: mm_hashes/mm_items length mismatch "
             f"({len(hashes)} vs {len(image_items)})"
         )
+    force_full_payloads = _lru_cache_disable_hits.get()
 
     missing = {
         hashes[i]
         for i, item in enumerate(image_items)
-        if not _is_local_lru_hit(hashes[i]) and item.get("pixel_values") is None
+        if force_full_payloads and item.get("pixel_values") is None
     }
 
     resolved: dict[str, dict[str, Any]] = {}
@@ -495,10 +496,14 @@ def _materialize_pixels_for_lru_cache(renderer: Any, mm_data: Any, messages: lis
     new_image_items: list[dict[str, Any]] = []
     for i, item in enumerate(image_items):
         h = hashes[i]
-        if _is_local_lru_hit(h):
-            new_image_items.append(
-                {k: v for k, v in item.items() if k != "pixel_values"}
-            )
+        if not force_full_payloads and item.get("pixel_values") is None:
+            # Descriptor-only items came from previous turns via the renderer
+            # bridge. Assume X-Session-ID/consistent-hash routing keeps the
+            # trajectory on the same vLLM backend, so send hash-only instead
+            # of re-materializing the large pixel tensor. New bridge images
+            # still carry pixel_values and are sent as full payloads below.
+            _mark_lru_cache_used_hit()
+            new_image_items.append({k: v for k, v in item.items() if k != "pixel_values"})
             continue
         if item.get("pixel_values") is not None:
             new_image_items.append(item)
