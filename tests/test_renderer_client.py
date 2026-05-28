@@ -1,7 +1,6 @@
 import asyncio
 from functools import lru_cache
-from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -417,94 +416,55 @@ async def test_get_native_response_forwards_extra_headers_to_generate():
 
 
 @pytest.mark.asyncio
-async def test_renderer_lru_hit_marker_propagates_from_offload_thread():
-    renderer_client_module._clear_local_lru_cache()
-    with renderer_client_module._lru_cache_entries_lock:
-        renderer_client_module._lru_cache_entries["hash-a"] = 1
-
-    state_token = renderer_client_module._lru_cache_attempt_state.set(
-        renderer_client_module._LruCacheAttemptState()
-    )
-    disable_token = renderer_client_module._lru_cache_disable_hits.set(False)
-    try:
-        hit = await asyncio.to_thread(
-            renderer_client_module._is_local_lru_hit, "hash-a"
-        )
-
-        assert hit
-        assert renderer_client_module._lru_cache_used_hit()
-    finally:
-        renderer_client_module._lru_cache_disable_hits.reset(disable_token)
-        renderer_client_module._lru_cache_attempt_state.reset(state_token)
-        renderer_client_module._clear_local_lru_cache()
-
-
-@pytest.mark.asyncio
-async def test_renderer_lru_does_not_confirm_sent_hashes_for_empty_result():
-    renderer_client_module._clear_local_lru_cache()
-
-    async def fake_generate(**_kwargs):
-        renderer_client_module._remember_sent_mm_hash("hash-empty", 123)
-        return {}
-
-    with (
-        patch.object(
-            renderer_client_module,
-            "_resolve_vllm_lru_cache_config",
-            new=AsyncMock(
-                return_value=renderer_client_module._VllmLruCacheConfig(
-                    True, None, "test"
-                )
-            ),
-        ),
-        patch.object(renderer_client_module, "_install_vllm_lru_cache_patch"),
-        patch.object(renderer_client_module, "generate", side_effect=fake_generate),
-    ):
-        result = await renderer_client_module._generate_with_optional_vllm_lru_cache(
-            client=SimpleNamespace()
-        )
-
-    assert result == {}
-    assert renderer_client_module._local_lru_len() == 0
-
-
-@pytest.mark.asyncio
-async def test_renderer_lru_retries_empty_hash_only_hit_with_full_payload():
-    renderer_client_module._clear_local_lru_cache()
-    with renderer_client_module._lru_cache_entries_lock:
-        renderer_client_module._lru_cache_entries["hash-existing"] = 456
+async def test_ephemeral_mm_retries_hash_only_failure_with_full_payloads():
     calls = 0
 
     async def fake_generate(**_kwargs):
         nonlocal calls
         calls += 1
         if calls == 1:
-            renderer_client_module._mark_lru_cache_used_hit()
-            return {}
-        assert renderer_client_module._lru_cache_disable_hits.get()
-        renderer_client_module._remember_sent_mm_hash("hash-retry", 123)
+            renderer_client_module._mark_hash_only_used()
+            raise RuntimeError("Expected a cached item for mm_hash=abc")
+        assert renderer_client_module._mm_force_full_payloads.get()
         return {"content": "ok"}
 
     with (
-        patch.object(
-            renderer_client_module,
-            "_resolve_vllm_lru_cache_config",
-            new=AsyncMock(
-                return_value=renderer_client_module._VllmLruCacheConfig(
-                    True, None, "test"
-                )
-            ),
-        ),
-        patch.object(renderer_client_module, "_install_vllm_lru_cache_patch"),
+        patch.object(renderer_client_module, "_install_ephemeral_mm_patch"),
         patch.object(renderer_client_module, "generate", side_effect=fake_generate),
     ):
-        result = await renderer_client_module._generate_with_optional_vllm_lru_cache(
-            client=SimpleNamespace()
+        result = await renderer_client_module._generate_with_ephemeral_mm_retry(
+            client=object(),
+            renderer=object(),
+            messages=[],
+            model="test-model",
         )
 
     assert calls == 2
     assert result == {"content": "ok"}
-    assert renderer_client_module._local_lru_len() == 2
+
+
+@pytest.mark.asyncio
+async def test_ephemeral_mm_does_not_retry_without_hash_only_payloads():
+    calls = 0
+
+    async def fake_generate(**_kwargs):
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("Expected a cached item for mm_hash=abc")
+
+    with (
+        patch.object(renderer_client_module, "_install_ephemeral_mm_patch"),
+        patch.object(renderer_client_module, "generate", side_effect=fake_generate),
+    ):
+        with pytest.raises(RuntimeError, match="Expected a cached item"):
+            await renderer_client_module._generate_with_ephemeral_mm_retry(
+                client=object(),
+                renderer=object(),
+                messages=[],
+                model="test-model",
+            )
+
+    assert calls == 1
 
 
 class _BridgeRenderer:
