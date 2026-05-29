@@ -1,0 +1,28 @@
+[project]
+name = "swe-bench-verified"
+version = "0.1.0"
+description = "SWE-bench Verified patch-generation taskset for Verifiers"
+license = "Apache-2.0"
+tags = ["v1", "swe-bench", "patch-generation", "eval"]
+requires-python = ">=3.11"
+dependencies = [
+    "datasets",
+    "verifiers",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["swe_bench_verified.py", "README.md", "pyproject.toml"]
+
+[project.entry-points."verifiers.environments"]
+swe-bench-verified = "swe_bench_verified:load_environment"
+
+[tool.verifiers.eval]
+num_examples = 5
+rollouts_per_example = 1
+
+[tool.uv.sources]
+verifiers = { path = "../..", editable = true }
