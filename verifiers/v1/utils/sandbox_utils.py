@@ -29,7 +29,7 @@ from .sandbox_python_utils import (
 from ..runtime import Runtime
 from ..state import State
 from ..task import Task
-from ..types import ConfigMap, Handler, JsonData, ProgramValue
+from ..types import ConfigData, ConfigMap, Handler, JsonData, ProgramValue
 
 if TYPE_CHECKING:
     from ..toolset import Toolset
@@ -106,6 +106,16 @@ class SandboxClient(Protocol):
     ) -> SandboxCommandResult: ...
 
 
+async def close_sandbox_client(client: SandboxClient) -> None:
+    teardown = getattr(client, "teardown", None)
+    if callable(teardown):
+        teardown()
+        return
+    aclose = getattr(client, "aclose", None)
+    if callable(aclose):
+        await aclose()
+
+
 class SandboxLease:
     def __init__(
         self,
@@ -113,11 +123,14 @@ class SandboxLease:
         sandbox_id: str,
         scope: str,
         key: str,
+        *,
+        owns_client: bool = True,
     ):
         self.client = client
         self.id = sandbox_id
         self.scope = scope
         self.key = key
+        self.owns_client = owns_client
         self.deleted = False
         self.lock = asyncio.Lock()
 
@@ -185,13 +198,17 @@ class SandboxLease:
         working_dir: str | None = None,
         env: dict[str, str] | None = None,
     ) -> SandboxCommandResult:
+        call_args: ConfigData = {
+            "sandbox_id": self.id,
+            "command": command,
+            "working_dir": working_dir,
+            "env": env,
+        }
+        if timeout is not None:
+            call_args["timeout"] = timeout
         return await maybe_call_with_named_args(
             getattr(self.client, "run_background_job"),
-            sandbox_id=self.id,
-            command=command,
-            timeout=timeout,
-            working_dir=working_dir,
-            env=env,
+            **call_args,
         )
 
     async def delete(self) -> None:
@@ -201,9 +218,8 @@ class SandboxLease:
         try:
             await self.client.delete(self.id)
         finally:
-            aclose = getattr(self.client, "aclose", None)
-            if callable(aclose):
-                await aclose()
+            if self.owns_client:
+                await close_sandbox_client(self.client)
 
 
 class SandboxHandle:
@@ -269,23 +285,28 @@ class SandboxHandle:
         await self.lease.delete()
 
 
-async def create_tool_sandbox_lease(toolset: "Toolset") -> SandboxLease:
-    return await create_scoped_sandbox_lease(toolset, tool_sandbox_key(toolset))
+async def create_tool_sandbox_lease(
+    toolset: "Toolset", client: SandboxClient | None = None
+) -> SandboxLease:
+    return await create_scoped_sandbox_lease(toolset, tool_sandbox_key(toolset), client)
 
 
-async def create_sandbox_lease(sandbox_config: ConfigMap, key: str) -> SandboxLease:
-    from prime_sandboxes import AsyncSandboxClient
-
+async def create_sandbox_lease(
+    sandbox_config: ConfigMap, key: str, client: SandboxClient | None = None
+) -> SandboxLease:
     scope = sandbox_scope(sandbox_config)
-    client = cast(SandboxClient, AsyncSandboxClient())
+    owns_client = client is None
+    if client is None:
+        from verifiers.utils.threaded_sandbox_client import ThreadedAsyncSandboxClient
+
+        client = cast(SandboxClient, ThreadedAsyncSandboxClient())
     try:
         sandbox_id = await create_sandbox(client, sandbox_config)
     except BaseException:
-        aclose = getattr(client, "aclose", None)
-        if callable(aclose):
-            await aclose()
+        if owns_client:
+            await close_sandbox_client(client)
         raise
-    lease = SandboxLease(client, sandbox_id, scope, key)
+    lease = SandboxLease(client, sandbox_id, scope, key, owns_client=owns_client)
     try:
         await setup_sandbox(lease, sandbox_config)
     except BaseException:
@@ -295,12 +316,14 @@ async def create_sandbox_lease(sandbox_config: ConfigMap, key: str) -> SandboxLe
 
 
 async def create_scoped_sandbox_lease(
-    owner: object, key: str | None = None
+    owner: object, key: str | None = None, client: SandboxClient | None = None
 ) -> SandboxLease:
     sandbox_config = getattr(owner, "sandbox", None)
     if not isinstance(sandbox_config, Mapping):
         raise TypeError("Sandbox owner must define a sandbox mapping.")
-    return await create_sandbox_lease(sandbox_config, key or sandbox_owner_key(owner))
+    return await create_sandbox_lease(
+        sandbox_config, key or sandbox_owner_key(owner), client
+    )
 
 
 async def run_sandbox_command(
@@ -622,18 +645,25 @@ async def upload_program_files(
     state: State,
     runtime: Runtime,
 ) -> None:
+    from prime_sandboxes import APIError, UploadTimeoutError
+
     files = program_option_mapping(program.get("files"), "program.files")
     for path, source in files.items():
         content = await resolve_program_value(source, task, state, runtime, program)
         if not isinstance(content, str):
             content = str(content)
-        await maybe_call_with_named_args(
-            getattr(client, "upload_bytes"),
-            sandbox_id=sandbox_id,
-            file_path=path,
-            file_bytes=content.encode(),
-            filename=path.rsplit("/", 1)[-1] or "file",
-        )
+        try:
+            await maybe_call_with_named_args(
+                getattr(client, "upload_bytes"),
+                sandbox_id=sandbox_id,
+                file_path=path,
+                file_bytes=content.encode(),
+                filename=path.rsplit("/", 1)[-1] or "file",
+            )
+        except (APIError, UploadTimeoutError) as exc:
+            raise SandboxError(
+                f"Program file upload failed for {path!r} in sandbox {sandbox_id}: {exc}"
+            ) from exc
 
 
 async def upload_program_dirs(

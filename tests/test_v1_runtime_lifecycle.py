@@ -14,13 +14,14 @@ from pydantic import BaseModel
 
 import verifiers as vf
 from verifiers.clients import Client
+from verifiers.errors import SandboxError
 from verifiers.types import ClientConfig
 from verifiers.types import Response, ResponseMessage, ToolCall
 from verifiers.types import Tool
 from verifiers.types import Usage
 from verifiers.v1.runtime import Runtime
 from verifiers.v1.utils.endpoint_utils import endpoint_api_key
-from verifiers.v1.utils import mcp_utils
+from verifiers.v1.utils import mcp_utils, sandbox_utils
 from verifiers.v1.utils.mcp_proxy_utils import MCP_PROXY_CONFIG_PATH, MCP_PROXY_PATH
 from verifiers.v1.utils.mcp_proxy_utils import proxy_command, proxy_source
 from verifiers.v1.utils.program_utils import command_env
@@ -44,6 +45,7 @@ from verifiers.v1.utils.sandbox_utils import (
     VF_STATE_INPUT_PATH_KEY,
     collect_sandbox_artifacts,
     run_sandbox_command,
+    upload_program_files,
 )
 
 PROGRAM_REF_MODULE = "v1_runtime_lifecycle_refs"
@@ -99,6 +101,14 @@ class FakeCreateSandboxRequest:
         self.kwargs = kwargs
 
 
+class FakeAPIError(Exception):
+    pass
+
+
+class FakeUploadTimeoutError(Exception):
+    pass
+
+
 class FakeSandboxResult:
     def __init__(self, sandbox_id: str):
         self.id = sandbox_id
@@ -117,6 +127,7 @@ class FakeSandboxClient:
     command_timeouts: list[int | None] = []
     background_jobs: list[tuple[str, str, int | None, str | None]] = []
     uploads: list[tuple[str, str, bytes]] = []
+    closed = 0
 
     @classmethod
     def reset(cls) -> None:
@@ -126,6 +137,7 @@ class FakeSandboxClient:
         cls.command_timeouts = []
         cls.background_jobs = []
         cls.uploads = []
+        cls.closed = 0
 
     async def create(self, request: FakeCreateSandboxRequest) -> FakeSandboxResult:
         _ = request
@@ -151,7 +163,7 @@ class FakeSandboxClient:
     ) -> FakeCommandResult:
         sandbox_id = str(kwargs.get("sandbox_id") or args[0])
         command = str(kwargs.get("command") or args[1])
-        timeout = cast(int | None, kwargs.get("timeout"))
+        timeout = cast(int | None, kwargs.get("timeout", 900))
         working_dir = cast(str | None, kwargs.get("working_dir"))
         type(self).commands.append((sandbox_id, command))
         type(self).background_jobs.append((sandbox_id, command, timeout, working_dir))
@@ -174,7 +186,10 @@ class FakeSandboxClient:
         type(self).deleted.append(sandbox_id)
 
     async def aclose(self) -> None:
-        pass
+        type(self).closed += 1
+
+    def teardown(self) -> None:
+        type(self).closed += 1
 
 
 async def echo_tool(query: str) -> str:
@@ -358,9 +373,15 @@ def install_fake_sandboxes(monkeypatch: pytest.MonkeyPatch) -> None:
     FakeSandboxClient.reset()
     module = SimpleNamespace(
         AsyncSandboxClient=FakeSandboxClient,
+        APIError=FakeAPIError,
         CreateSandboxRequest=FakeCreateSandboxRequest,
+        UploadTimeoutError=FakeUploadTimeoutError,
     )
     monkeypatch.setitem(sys.modules, "prime_sandboxes", module)
+    monkeypatch.setattr(
+        "verifiers.utils.threaded_sandbox_client.ThreadedAsyncSandboxClient",
+        FakeSandboxClient,
+    )
 
 
 def install_fake_endpoint_tunnel(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1341,6 +1362,24 @@ async def test_program_setup_uses_program_setup_timeout(
 
 
 @pytest.mark.asyncio
+async def test_sandbox_command_uses_client_default_timeout_when_omitted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sandboxes(monkeypatch)
+    install_fake_endpoint_tunnel(monkeypatch)
+
+    harness = make_harness(
+        program={"command": ["true"], "sandbox": True},
+        sandbox={"image": "python:3.11-slim"},
+    )
+    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+
+    await harness.run(task)
+
+    assert FakeSandboxClient.background_jobs == [("sbx-1", "true", 900, None)]
+
+
+@pytest.mark.asyncio
 async def test_sandbox_state_input_upload_runs_after_rollout_setup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1942,6 +1981,33 @@ async def test_mcp_lifetime_follows_toolset_scope(
 
 
 @pytest.mark.asyncio
+async def test_shared_sandbox_delete_surfaces_delete_failures() -> None:
+    class DeleteFailingClient:
+        closed = 0
+
+        async def delete(self, sandbox_id: str) -> None:
+            _ = sandbox_id
+            raise RuntimeError("delete failed")
+
+        async def aclose(self) -> None:
+            type(self).closed += 1
+
+    client = DeleteFailingClient()
+    lease = sandbox_utils.SandboxLease(
+        cast(sandbox_utils.SandboxClient, client),
+        "sbx-1",
+        "rollout",
+        "program",
+        owns_client=False,
+    )
+
+    with pytest.raises(RuntimeError, match="delete failed"):
+        await lease.delete()
+
+    assert client.closed == 0
+
+
+@pytest.mark.asyncio
 async def test_program_sandbox_group_scope_reuses_and_cleans(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1969,10 +2035,15 @@ async def test_program_sandbox_group_scope_reuses_and_cleans(
     await harness.cleanup_group([task, task], [state_a, state_b])
 
     assert FakeSandboxClient.deleted == ["sbx-1"]
+    assert FakeSandboxClient.closed == 0
     assert "resolved" not in state_a.get("runtime", {})
     assert "resolved" not in state_b.get("runtime", {})
     assert "lease_key" not in state_a.get("runtime", {}).get("sandbox", {})
     assert "lease_key" not in state_b.get("runtime", {}).get("sandbox", {})
+
+    await harness.teardown()
+
+    assert FakeSandboxClient.closed == 1
 
 
 @pytest.mark.asyncio
@@ -1997,7 +2068,33 @@ async def test_program_sandbox_global_scope_lives_until_teardown(
     await harness.teardown()
 
     assert FakeSandboxClient.deleted == ["sbx-1"]
+    assert FakeSandboxClient.closed == 1
     assert "resolved" not in state.get("runtime", {})
+
+
+@pytest.mark.asyncio
+async def test_upload_program_files_wraps_sandbox_upload_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sandboxes(monkeypatch)
+
+    class TimeoutUploadClient:
+        async def upload_bytes(self, *args: object, **kwargs: object) -> None:
+            _ = args, kwargs
+            raise FakeUploadTimeoutError("timed out")
+
+    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+    state = vf.State.for_task(task)
+
+    with pytest.raises(SandboxError, match="Program file upload failed"):
+        await upload_program_files(
+            cast(sandbox_utils.SandboxClient, TimeoutUploadClient()),
+            "sbx-1",
+            {"files": {"/mini-swe-agent/prompt.txt": "hello"}},
+            task,
+            state,
+            cast(Runtime, SimpleNamespace()),
+        )
 
 
 @pytest.mark.asyncio
