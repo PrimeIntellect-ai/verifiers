@@ -107,6 +107,20 @@ rl = [
 [tool.uv]
 preview = true
 required-version = ">=0.11.1"
+# Supply-chain cooldown: new PyPI uploads must age 7 days before resolution
+# picks them up. Mitigates blast radius of compromised dependencies
+# (typosquatting, account takeovers). Internal packages we publish ourselves
+# are fast-tracked below.
+exclude-newer = "7 days"
+
+[tool.uv.exclude-newer-package]
+# PrimeIntellect-published packages in this project's dependency closure —
+# fast-track so first-party releases can land same-day. Only packages that
+# appear in `uv tree` need to be listed; the resolver ignores entries for
+# packages it never sees. Add a new entry when verifiers starts depending
+# on another first-party package.
+prime-sandboxes = false
+prime-tunnel    = false
 
 [tool.uv.extra-build-dependencies]
 flash-attn = [{ requirement = "torch", match-runtime = true }]

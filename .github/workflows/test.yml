@@ -15,6 +15,21 @@ on:
       - ".github/workflows/test.yml"
 
 jobs:
+  resolve-check:
+    # verifiers' .gitignore excludes uv.lock by design, so there's no
+    # committed lock to check against. This job instead verifies that the
+    # pyproject.toml resolves cleanly under the supply-chain cooldown
+    # ([tool.uv] exclude-newer + [tool.uv.exclude-newer-package]). Catches
+    # malformed config and resolution failures introduced by a PR.
+    name: Resolve check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+      - name: Verify resolution under cooldown
+        run: uv lock --dry-run
+
   test:
     name: Verifiers
     runs-on: ubuntu-latest
