@@ -63,13 +63,9 @@ def load_taskset(config: ReverseTasksetConfig) -> ReverseTaskset:
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
-    taskset_config = config.taskset
-    harness_config = config.harness
-    assert isinstance(taskset_config, ReverseTasksetConfig)
-    assert isinstance(harness_config, vf.HarnessConfig)
     return vf.Env(
-        taskset=load_taskset(taskset_config),
-        harness=vf.Harness(config=harness_config),
+        taskset=vf.load_taskset(config=config.taskset),
+        harness=vf.Harness(config=config.harness),
     )
 ```
 
@@ -172,10 +168,8 @@ def load_taskset(config: ExtractTasksetConfig) -> ExtractTaskset:
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
-    taskset_config = config.taskset
-    assert isinstance(taskset_config, ExtractTasksetConfig)
     return vf.Env(
-        taskset=load_taskset(taskset_config),
+        taskset=vf.load_taskset(config=config.taskset),
         harness=vf.Harness(config=config.harness),
     )
 ```
@@ -367,13 +361,9 @@ def load_harness(config: AgentHarnessConfig) -> AgentHarness:
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
-    taskset_config = config.taskset
-    harness_config = config.harness
-    assert isinstance(taskset_config, FetchTasksetConfig)
-    assert isinstance(harness_config, AgentHarnessConfig)
     return vf.Env(
-        taskset=load_taskset(taskset_config),
-        harness=load_harness(harness_config),
+        taskset=vf.load_taskset(config=config.taskset),
+        harness=vf.load_harness(config=config.harness),
     )
 ```
 
@@ -475,13 +465,9 @@ def load_harness(config: OpenCodeConfig) -> OpenCode:
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
-    taskset_config = config.taskset
-    harness_config = config.harness
-    assert isinstance(taskset_config, HarborTasksetConfig)
-    assert isinstance(harness_config, OpenCodeConfig)
     return vf.Env(
-        taskset=load_taskset(taskset_config),
-        harness=load_harness(harness_config),
+        taskset=vf.load_taskset(config=config.taskset),
+        harness=vf.load_harness(config=config.harness),
     )
 ```
 
@@ -578,19 +564,15 @@ Eval and RL TOML own the outer run: model, endpoint, sampling, rollout count,
 and trainer/eval settings. v1 config owns taskset and harness behavior inside
 the environment package.
 
-The recommended loader takes one `vf.EnvConfig` object, asserts the child config
-types supplied by the child factory annotations, and routes its `taskset` and
-`harness` sections:
+The recommended loader takes one `vf.EnvConfig` object and routes its `taskset`
+and `harness` sections through the child loaders. The child factory annotations
+own type coercion.
 
 ```python
 def load_environment(config: vf.EnvConfig) -> vf.Env:
-    taskset_config = config.taskset
-    harness_config = config.harness
-    assert isinstance(taskset_config, MyTasksetConfig)
-    assert isinstance(harness_config, MyHarnessConfig)
     return vf.Env(
-        taskset=load_taskset(taskset_config),
-        harness=load_harness(harness_config),
+        taskset=vf.load_taskset(config=config.taskset),
+        harness=vf.load_harness(config=config.harness),
     )
 ```
 
@@ -630,10 +612,8 @@ def load_taskset(config: MyTasksetConfig) -> MyTaskset:
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
-    taskset_config = config.taskset
-    assert isinstance(taskset_config, MyTasksetConfig)
     return vf.Env(
-        taskset=load_taskset(taskset_config),
+        taskset=vf.load_taskset(config=config.taskset),
         harness=vf.Harness(config=config.harness),
     )
 ```

@@ -80,6 +80,7 @@ def load_taskset(config: OpenEnvTextArenaTasksetConfig) -> OpenEnvTaskset:
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
-    taskset_config = config.taskset
-    assert isinstance(taskset_config, OpenEnvTextArenaTasksetConfig)
-    return vf.Env(taskset=load_taskset(taskset_config))
+    return vf.Env(
+        taskset=vf.load_taskset(config=config.taskset),
+        harness=vf.Harness(config=config.harness),
+    )

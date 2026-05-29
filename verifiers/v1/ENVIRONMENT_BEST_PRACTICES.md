@@ -13,7 +13,8 @@ proves the looser surface is needed.
 1. Environment modules MUST expose `load_environment(config: vf.EnvConfig)`.
    Do not subclass `vf.EnvConfig` just to narrow child config types.
 2. Environment modules SHOULD construct `vf.Env` from component loaders:
-   `vf.load_taskset(config=config.taskset)` and, when needed,
+   `vf.load_taskset(config=config.taskset)` and either
+   `vf.Harness(config=config.harness)` or
    `vf.load_harness(config=config.harness)`.
 3. Environment modules with custom taskset fields MUST expose
    `load_taskset(config: TasksetConfigType)`. Environments with custom harness
@@ -39,8 +40,8 @@ your loader runs. The type annotation is not cosmetic.
 4. The `load_environment` envelope stays loose as `vf.EnvConfig`. The framework
    coerces `config.taskset` and `config.harness` inside `vf.load_taskset(...)`
    and `vf.load_harness(...)` using the child factory annotations.
-5. `vf.Env(taskset=vf.load_taskset(config=config.taskset))` is the
-   default construction path.
+5. `vf.Env(taskset=vf.load_taskset(config=config.taskset),
+   harness=vf.Harness(config=config.harness))` is the default construction path.
 6. Root env kwargs behave differently from TOML child sections. TOML
    `[env.taskset]` and `[env.harness]` route into the env config envelope; CLI
    `-a` passes loader kwargs. This is why CLI child config overrides must be
@@ -54,7 +55,7 @@ your loader runs. The type annotation is not cosmetic.
 def load_environment(config: vf.EnvConfig) -> vf.Env:
     return vf.Env(
         taskset=vf.load_taskset(config=config.taskset),
-        harness=vf.load_harness(config=config.harness),
+        harness=vf.Harness(config=config.harness),
     )
 ```
 
@@ -121,7 +122,10 @@ def load_taskset(config: MyTasksetConfig) -> MyTaskset:
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
-    return vf.Env(taskset=vf.load_taskset(config=config.taskset))
+    return vf.Env(
+        taskset=vf.load_taskset(config=config.taskset),
+        harness=vf.Harness(config=config.harness),
+    )
 ```
 
 ### Custom Harness

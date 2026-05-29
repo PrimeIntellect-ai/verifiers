@@ -180,9 +180,10 @@ def load_taskset(config: {taskset_config_name}) -> {taskset_name}:
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
-    taskset_config = config.taskset
-    assert isinstance(taskset_config, {taskset_config_name})
-    return vf.Env(taskset=load_taskset(taskset_config))
+    return vf.Env(
+        taskset=vf.load_taskset(config=config.taskset),
+        harness=vf.Harness(config=config.harness),
+    )
 """
 
 V1_HARNESS_ENVIRONMENT_TEMPLATE = """\
@@ -222,13 +223,9 @@ def load_harness(config: {harness_config_name}) -> {harness_name}:
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
-    taskset_config = config.taskset
-    harness_config = config.harness
-    assert isinstance(taskset_config, {taskset_config_name})
-    assert isinstance(harness_config, {harness_config_name})
     return vf.Env(
-        taskset=load_taskset(taskset_config),
-        harness=load_harness(harness_config),
+        taskset=vf.load_taskset(config=config.taskset),
+        harness=vf.load_harness(config=config.harness),
     )
 """
 
@@ -242,9 +239,10 @@ def load_taskset(config: OpenEnvTasksetConfig) -> OpenEnvTaskset:
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
-    taskset_config = config.taskset
-    assert isinstance(taskset_config, OpenEnvTasksetConfig)
-    return vf.Env(taskset=load_taskset(taskset_config))
+    return vf.Env(
+        taskset=vf.load_taskset(config=config.taskset),
+        harness=vf.Harness(config=config.harness),
+    )
 """
 
 OPENENV_PROJ_README_TEMPLATE = """\

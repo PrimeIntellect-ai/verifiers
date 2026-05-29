@@ -69,11 +69,7 @@ def load_taskset(config: ReverseTextTasksetConfig) -> ReverseTextTaskset:
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
-    taskset_config = config.taskset
-    harness_config = config.harness
-    assert isinstance(taskset_config, ReverseTextTasksetConfig)
-    assert isinstance(harness_config, vf.HarnessConfig)
     return vf.Env(
-        taskset=load_taskset(taskset_config),
-        harness=vf.Harness(config=harness_config),
+        taskset=vf.load_taskset(config=config.taskset),
+        harness=vf.Harness(config=config.harness),
     )
