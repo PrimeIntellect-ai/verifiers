@@ -236,27 +236,7 @@ def load_env_config(
     config_type: type[EnvConfig],
     value: object,
 ) -> EnvConfig:
-    child_types: dict[str, type[BaseModel]] = {}
-    for field_name, factory_name, base_type in (
-        ("taskset", "load_taskset", TasksetConfig),
-        ("harness", "load_harness", HarnessConfig),
-    ):
-        field_type = config_type_from_annotation(
-            config_type.model_fields[field_name].annotation,
-            base_type,
-            f"{config_type.__name__}.{field_name}",
-        )
-        factory_type = factory_config_type(module, factory_name, base_type)
-        if factory_type is not None:
-            if not issubclass(factory_type, field_type):
-                raise TypeError(
-                    f"{module.__name__}.{factory_name} config type "
-                    f"{factory_type.__name__} does not match "
-                    f"{config_type.__name__}.{field_name}: {field_type.__name__}."
-                )
-            child_types[field_name] = factory_type
-        else:
-            child_types[field_name] = field_type
+    child_types = env_config_child_types(module, config_type)
 
     data: dict[str, object]
     if isinstance(value, config_type):
@@ -292,6 +272,34 @@ def load_env_config(
                 f"got {type(child).__name__}."
             )
     return config
+
+
+def env_config_child_types(
+    module: ModuleType,
+    config_type: type[EnvConfig],
+) -> dict[str, type[BaseModel]]:
+    child_types: dict[str, type[BaseModel]] = {}
+    for field_name, factory_name, base_type in (
+        ("taskset", "load_taskset", TasksetConfig),
+        ("harness", "load_harness", HarnessConfig),
+    ):
+        field_type = config_type_from_annotation(
+            config_type.model_fields[field_name].annotation,
+            base_type,
+            f"{config_type.__name__}.{field_name}",
+        )
+        factory_type = factory_config_type(module, factory_name, base_type)
+        if factory_type is not None:
+            if not issubclass(factory_type, field_type):
+                raise TypeError(
+                    f"{module.__name__}.{factory_name} config type "
+                    f"{factory_type.__name__} does not match "
+                    f"{config_type.__name__}.{field_name}: {field_type.__name__}."
+                )
+            child_types[field_name] = factory_type
+        else:
+            child_types[field_name] = field_type
+    return child_types
 
 
 def factory_config_type(

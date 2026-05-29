@@ -56,6 +56,7 @@ For the full hosted workflow and hosted-only flags such as `--follow`, `--timeou
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
 | `env_id_or_path` | (positional) | — | Environment ID(s) or path to TOML config |
+| `--taskset.FIELD` / `--harness.FIELD` | — | — | Typed v1 `EnvConfig` overrides for single-environment runs |
 | `--env-args` | `-a` | `{}` | JSON object passed to `load_environment()` |
 | `--extra-env-kwargs` | `-x` | `{}` | JSON object passed to environment constructor |
 | `--timeout` | — | `None` | Per-rollout wall-clock timeout in seconds. Wins over equivalent values in `--extra-env-kwargs` or TOML `[eval.extra_env_kwargs]`. Bounds generation only — scoring is not bounded. |
@@ -66,6 +67,14 @@ The positional argument accepts two formats:
 - **TOML config path**: `configs/eval/benchmark.toml` — evaluates multiple environments defined in the config file
 
 Environment IDs are converted to Python module names (`my-env` → `my_env`) and imported after `prime eval run` resolves the environment package.
+
+For v1 `load_environment(config: vf.EnvConfig)` loaders, prefer typed
+taskset/harness overrides. These flags are parsed against the concrete child
+config types from `load_taskset(config: ...)` and `load_harness(config: ...)`:
+
+```bash
+prime eval run my-v1-env --taskset.id my-id --harness.max-turns 4
+```
 
 For legacy or direct-constructor environments, the `--env-args` flag passes
 arguments to your `load_environment()` function:
