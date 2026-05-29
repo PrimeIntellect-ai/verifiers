@@ -48,6 +48,7 @@ from verifiers.utils.env_utils import (
 from verifiers.utils.import_utils import load_toml
 from verifiers.utils.install_utils import check_hub_env_installed
 from verifiers.v1.env import EnvConfig
+from verifiers.v1.utils.config_utils import explicit_config_data
 
 logger = logging.getLogger(__name__)
 
@@ -282,6 +283,20 @@ def validate_env_config_override_args(
         parser.error(f"unrecognized arguments: {' '.join(invalid_flags)}")
 
 
+def merge_config_data(
+    base: dict[str, Any],
+    overrides: dict[str, Any],
+) -> dict[str, Any]:
+    merged = dict(base)
+    for key, value in overrides.items():
+        existing = merged.get(key)
+        if isinstance(existing, dict) and isinstance(value, dict):
+            merged[key] = merge_config_data(existing, value)
+        else:
+            merged[key] = value
+    return merged
+
+
 def env_config_cli_type(
     env_id: str,
     config_type: type[EnvConfig],
@@ -293,9 +308,10 @@ def env_config_cli_type(
         field_name: (child_type, getattr(default_config, field_name))
         for field_name, child_type in child_types.items()
     }
+    create_env_model = cast(Any, create_model)
     return cast(
         type[EnvConfig],
-        create_model(
+        create_env_model(
             f"{config_type.__name__}CliOverrides",
             __base__=config_type,
             **fields,
@@ -336,12 +352,16 @@ def apply_env_config_cli_overrides(
             cli_type,
             args=override_args,
             default=base_config,
-            prog=f"prime eval run {env_id}",
         )
     except ConfigFileError as exc:
         raise ValueError(f"Invalid taskset/harness override: {exc}") from exc
 
-    merged_env_args["config"] = config.model_dump(exclude_unset=True)
+    base_config_data = explicit_config_data(merged_env_args.get("config", {}))
+    override_config_data = explicit_config_data(config)
+    merged_env_args["config"] = merge_config_data(
+        base_config_data,
+        override_config_data,
+    )
     return merged_env_args
 
 

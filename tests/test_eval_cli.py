@@ -155,7 +155,7 @@ def test_parse_args_rejects_unknown_eval_flags():
         vf_eval.parse_args(["env1", "--unknown-flag", "value"])
 
 
-def test_cli_v1_env_config_overrides_use_child_config_annotations(
+def test_cli_v1_env_config_overrides_preserve_env_args_config(
     tmp_path: Path, monkeypatch, run_cli
 ):
     module_name = f"cli_override_env_{time.time_ns()}"
@@ -198,8 +198,6 @@ def load_environment(config: vf.EnvConfig):
             "env_config_overrides": [
                 "--taskset.id",
                 "override-id",
-                "--taskset.count",
-                "7",
                 "--no-taskset.enabled",
                 "--harness.max-turns",
                 "4",
@@ -209,7 +207,7 @@ def load_environment(config: vf.EnvConfig):
 
     assert captured["configs"][0].env_args == {
         "config": {
-            "taskset": {"id": "override-id", "count": 7, "enabled": False},
+            "taskset": {"id": "override-id", "count": 2, "enabled": False},
             "harness": {"max_turns": 4},
         }
     }
