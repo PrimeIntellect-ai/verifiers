@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Generic, TypeVar, cast, final
 
 from datasets import Dataset
+from pydantic import AliasChoices, Field
 
 from .config import (
     ConfigSource,
@@ -43,12 +44,23 @@ from .types import (
 
 class TasksetConfig(LifecycleConfig):
     # Core fields configure taskset-owned loaders and runtime behavior.
-    taskset_id: str | None = None
+    taskset_id: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("taskset_id", "id"),
+    )
     system_prompt: PromptInput | SystemPromptConfig | None = None
     user: UserConfig | None = None
     bindings: BindingsConfig = BindingsConfig()
     objects: ObjectsConfig = ObjectsConfig()
     artifacts: ArtifactsConfig = ArtifactsConfig()
+
+    @classmethod
+    def __pydantic_init_subclass__(cls, **kwargs: object) -> None:
+        super().__pydantic_init_subclass__(**kwargs)
+        field = cls.model_fields.get("taskset_id")
+        if field is not None:
+            field.validation_alias = AliasChoices("taskset_id", "id")
+            cls.model_rebuild(force=True)
 
 
 ConfigT = TypeVar("ConfigT", bound=TasksetConfig)

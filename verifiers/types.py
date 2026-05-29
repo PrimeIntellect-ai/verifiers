@@ -17,7 +17,14 @@ from typing import (
     cast,
 )
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    computed_field,
+    field_validator,
+)
 
 if TYPE_CHECKING:
     from anthropic.types import RedactedThinkingBlock
@@ -1307,7 +1314,7 @@ class EvalConfig(BaseModel):
     """Pydantic model for evaluation configuration."""
 
     # environment
-    env_id: str
+    env_id: str = Field(validation_alias=AliasChoices("env_id", "id"))
     name: str | None = None
     env_args: dict
     env_dir_path: str

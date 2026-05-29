@@ -235,7 +235,55 @@ def load_env_config(
     module: ModuleType,
     config_type: type[EnvConfig],
     value: object,
+    *,
+    child_types: Mapping[str, type[BaseModel]] | None = None,
 ) -> EnvConfig:
+    resolved_child_types = (
+        env_config_child_types(module, config_type)
+        if child_types is None
+        else child_types
+    )
+
+    data: dict[str, object]
+    if isinstance(value, config_type):
+        data = dict(explicit_config_data(value))
+    elif isinstance(value, BaseModel):
+        raise TypeError(
+            f"load_environment config must be {config_type.__name__}; "
+            f"got {type(value).__name__}."
+        )
+    elif not isinstance(value, Mapping):
+        raise TypeError("load_environment config must be a mapping or EnvConfig.")
+    else:
+        data = dict(explicit_config_data(value))
+    defaults: EnvConfig | None = None
+    for field_name, child_type in resolved_child_types.items():
+        if field_name not in data:
+            defaults = config_type() if defaults is None else defaults
+            child = getattr(defaults, field_name)
+            data[field_name] = child if isinstance(child, child_type) else child_type()
+            continue
+        child = data[field_name]
+        if isinstance(child, child_type):
+            continue
+        if child is None:
+            raise TypeError(f"config.{field_name} cannot be None.")
+        data[field_name] = child_type.model_validate(explicit_config_data(child))
+    config = config_type.model_validate(data)
+    for field_name, child_type in resolved_child_types.items():
+        child = getattr(config, field_name)
+        if not isinstance(child, child_type):
+            raise TypeError(
+                f"config.{field_name} must be {child_type.__name__}; "
+                f"got {type(child).__name__}."
+            )
+    return config
+
+
+def env_config_child_types(
+    module: ModuleType,
+    config_type: type[EnvConfig],
+) -> dict[str, type[BaseModel]]:
     child_types: dict[str, type[BaseModel]] = {}
     for field_name, factory_name, base_type in (
         ("taskset", "load_taskset", TasksetConfig),
@@ -257,41 +305,7 @@ def load_env_config(
             child_types[field_name] = factory_type
         else:
             child_types[field_name] = field_type
-
-    data: dict[str, object]
-    if isinstance(value, config_type):
-        data = dict(explicit_config_data(value))
-    elif isinstance(value, BaseModel):
-        raise TypeError(
-            f"load_environment config must be {config_type.__name__}; "
-            f"got {type(value).__name__}."
-        )
-    elif not isinstance(value, Mapping):
-        raise TypeError("load_environment config must be a mapping or EnvConfig.")
-    else:
-        data = dict(explicit_config_data(value))
-    defaults: EnvConfig | None = None
-    for field_name, child_type in child_types.items():
-        if field_name not in data:
-            defaults = config_type() if defaults is None else defaults
-            child = getattr(defaults, field_name)
-            data[field_name] = child if isinstance(child, child_type) else child_type()
-            continue
-        child = data[field_name]
-        if isinstance(child, child_type):
-            continue
-        if child is None:
-            raise TypeError(f"config.{field_name} cannot be None.")
-        data[field_name] = child_type.model_validate(explicit_config_data(child))
-    config = config_type.model_validate(data)
-    for field_name, child_type in child_types.items():
-        child = getattr(config, field_name)
-        if not isinstance(child, child_type):
-            raise TypeError(
-                f"config.{field_name} must be {child_type.__name__}; "
-                f"got {type(child).__name__}."
-            )
-    return config
+    return child_types
 
 
 def factory_config_type(

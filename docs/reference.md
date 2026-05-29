@@ -1020,11 +1020,12 @@ class EnvConfig(Config):
     harness: HarnessConfig
 
 class TasksetConfig(Config):
-    taskset_id: str | None = None
+    taskset_id: str | None = None  # `id` shorthand accepted
     system_prompt: object | None = None
     user: object | None = None
 
 class HarnessConfig(Config):
+    harness_id: str | None = None  # `id` shorthand accepted
     program: ProgramConfig = ProgramConfig()
     system_prompt: object | None = None
     sandbox: SandboxConfig | None = None
