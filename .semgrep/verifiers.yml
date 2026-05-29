@@ -31,14 +31,14 @@ rules:
                   ...
           - metavariable-regex:
               metavariable: $ANNOT
-              regex: "(Any|ConfigMap|Mapping\\[str, object\\]|dict\\[str, object\\]|.*\\|.*)"
+              regex: "(Any|Mapping\\[str, object\\]|dict\\[str, object\\]|.*\\|.*)"
       - patterns:
           - pattern: |
               def $FUNC(..., config: $ANNOT = $DEFAULT, ...):
                   ...
           - metavariable-regex:
               metavariable: $ANNOT
-              regex: "(Any|ConfigMap|Mapping\\[str, object\\]|dict\\[str, object\\]|.*\\|.*\\|.*)"
+              regex: "(Any|Mapping\\[str, object\\]|dict\\[str, object\\]|.*\\|.*\\|.*)"
 
   - id: verifiers-v1-load-environment-config-required
     languages: [python]
@@ -121,7 +121,7 @@ rules:
   - id: verifiers-no-raw-object-containers-v1
     languages: [python]
     severity: ERROR
-    message: Do not spell broad object containers in v1 or environment code; use the named boundary types ConfigMap, ConfigData, Handler, GroupHandler, Objects, TaskRow, ProgramMap, or a narrower type.
+    message: Do not spell broad object containers in v1 or environment code; use concrete config models, ConfigData, Handler, BindingsConfig, Objects, or a narrower type. Do not patch around weak typing with generic containers.
     paths:
       include:
         - /verifiers/v1/**/*.py
@@ -136,7 +136,7 @@ rules:
   - id: verifiers-no-raw-mapping-annotations-v1
     languages: [python]
     severity: ERROR
-    message: Do not use raw Mapping annotations in v1 or environment code; prefer dict or a named v1 boundary type. Keep Mapping only for isinstance checks or explicit aliases.
+    message: Do not use raw Mapping annotations in v1 or environment code; normalize at the boundary to a dict, a typed Config model, or a named v1 boundary type. Do not patch around unclear contracts with loose Mapping types.
     paths:
       include:
         - /verifiers/v1/**/*.py
@@ -145,6 +145,19 @@ rules:
         - /verifiers/v1/types.py
         - /environments/openenv_*/proj/**/*.py
     pattern-regex: "\\b(?:Mapping|MutableMapping)\\["
+
+  - id: verifiers-v1-package-no-mapping
+    languages: [python]
+    severity: ERROR
+    message: Package taskset/harness implementations should not use Mapping as a loose shape escape hatch; use concrete dict payloads, typed Config models, or package utils that encode a real protocol boundary.
+    paths:
+      include:
+        - /packages/tasksets/tasksets/**/*.py
+        - /packages/harnesses/harnesses/**/*.py
+        - /verifiers/v1/**/*.py
+      exclude:
+        - /verifiers/v1/types.py
+    pattern-regex: "\\b(?:Mapping|MutableMapping)\\b"
 
   - id: verifiers-get-messages-typed
     languages: [python]
@@ -158,7 +171,7 @@ rules:
   - id: verifiers-v1-no-signal-factories
     languages: [python]
     severity: ERROR
-    message: v1 reward/update/metric handlers must be top-level decorated callables; inject shared resources through taskset/harness bindings instead of returning decorated inner functions.
+    message: v1 reward/update/metric handlers must be direct decorated methods or functions, not factories; put runtime resources on state/config/bindings instead of patching around weak ownership.
     paths:
       include:
         - /environments/**/*.py
@@ -293,7 +306,7 @@ rules:
   - id: verifiers-v1-no-env-var-reads-in-signals
     languages: [python]
     severity: ERROR
-    message: v1 reward/update handlers must not read env vars directly; use state.get_endpoint_config(api="chat") and optionally override only judge_model.
+    message: v1 reward/update handlers must not read env vars directly; use state.get_client(api="chat") and optionally read state.get_endpoint_config(api="chat").model for model selection.
     paths:
       include:
         - /environments/**/*.py
@@ -486,6 +499,47 @@ rules:
       - pattern: |
           def __init__(..., **$KWARGS):
               ...
+
+  - id: verifiers-v1-no-taskset-harness-init-overrides
+    languages: [python]
+    severity: ERROR
+    message: v1 Taskset/Harness subclasses must not override __init__; put construction data on typed Config classes and lifecycle/runtime behavior on standard methods instead of patching constructors.
+    paths:
+      include:
+        - /environments/**/*.py
+        - /packages/tasksets/tasksets/**/*.py
+        - /packages/harnesses/harnesses/**/*.py
+        - /verifiers/v1/**/*.py
+      exclude:
+        - /environments/**/proj/**/*.py
+        - /environments/**/tasks/**/*.py
+        - /packages/tasksets/tasksets/utils/**/*.py
+        - /packages/harnesses/harnesses/utils/**/*.py
+        - /verifiers/v1/taskset.py
+        - /verifiers/v1/harness.py
+        - /verifiers/v1/utils/**/*.py
+    patterns:
+      - pattern-inside: |
+          class $CLS(...):
+              ...
+      - metavariable-regex:
+          metavariable: $CLS
+          regex: ".*(Taskset|Harness)$"
+      - pattern: |
+          def __init__(...):
+              ...
+
+  - id: verifiers-v1-package-no-static-classmethod-helpers
+    languages: [python]
+    severity: ERROR
+    message: Package taskset/harness implementations should use direct instance methods and standard lifecycle hooks; do not patch around weak ownership with staticmethod/classmethod helpers.
+    paths:
+      include:
+        - /packages/tasksets/tasksets/*.py
+        - /packages/harnesses/harnesses/*.py
+    pattern-either:
+      - pattern: "@staticmethod"
+      - pattern: "@classmethod"
 
   - id: verifiers-v1-no-transcript-user-callback-param
     languages: [python]

@@ -2,20 +2,24 @@ import json
 from collections.abc import Mapping
 from copy import deepcopy
 from pathlib import Path
-from typing import cast
+from typing import TypeAlias, cast
 
-from ...config import TasksetConfig
-from ...taskset import Taskset
-from ...types import ConfigData, ConfigMap, TaskRow
-from ...utils.endpoint_utils import normalize_openai_responses_input
-from ..nemo_gym import (
+import verifiers as vf
+from verifiers.v1.utils.endpoint_utils import normalize_openai_responses_input
+
+from tasksets.utils.nemo_gym_utils import (
     DEFAULT_NEMO_GYM_DATA_NAME,
     agent_ref_name,
     resolve_nemo_gym_data_path,
 )
 
+ConfigData: TypeAlias = vf.ConfigData
+ConfigMap: TypeAlias = dict[str, object]
+TaskRow: TypeAlias = dict[str, object]
 
-class NeMoGymTasksetConfig(TasksetConfig):
+
+class NeMoGymTasksetConfig(vf.TasksetConfig):
+    taskset_id: str | None = "nemo_gym"
     nemo_env: str | None = None
     jsonl_path: str | None = None
     data_name: str = DEFAULT_NEMO_GYM_DATA_NAME
@@ -23,7 +27,7 @@ class NeMoGymTasksetConfig(TasksetConfig):
     limit: int | None = None
 
 
-class NeMoGymTaskset(Taskset[NeMoGymTasksetConfig]):
+class NeMoGymTaskset(vf.Taskset[NeMoGymTasksetConfig]):
     """Taskset adapter for NeMo Gym JSONL rows.
 
     Each task keeps the original NeMo Gym row under ``nemo_gym_row`` so the
@@ -34,7 +38,6 @@ class NeMoGymTaskset(Taskset[NeMoGymTasksetConfig]):
         config = NeMoGymTasksetConfig() if config is None else config
         assert isinstance(config, NeMoGymTasksetConfig)
         super().__init__(config=config)
-        self.taskset_id = self.config.taskset_id or "nemo_gym"
         raw_path = self.config.jsonl_path
         if raw_path:
             self.jsonl_path: Path | None = Path(str(raw_path)).expanduser()
@@ -46,7 +49,7 @@ class NeMoGymTaskset(Taskset[NeMoGymTasksetConfig]):
         else:
             self.jsonl_path = None
 
-    def load_tasks(self) -> list[ConfigData]:
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         if self.jsonl_path is None:
             raise ValueError("NeMoGymTaskset requires nemo_env=... or jsonl_path=...")
         raw_rows: list[TaskRow] = []

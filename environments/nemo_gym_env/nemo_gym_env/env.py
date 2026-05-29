@@ -1,6 +1,6 @@
 import verifiers as vf
-from verifiers.v1.packages.harnesses import NeMoGymHarness, NeMoGymHarnessConfig
-from verifiers.v1.packages.tasksets import NeMoGymTaskset, NeMoGymTasksetConfig
+from harnesses import NeMoGymHarness, NeMoGymHarnessConfig
+from tasksets import NeMoGymTaskset, NeMoGymTasksetConfig
 
 
 NEMO_ENV = "example_single_tool_call"

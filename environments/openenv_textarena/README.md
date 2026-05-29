@@ -7,7 +7,7 @@
 ### Overview
 
 - **Environment ID**: `openenv-textarena`
-- **Short description**: OpenEnv TextArena gym integration (default game: `Wordle-v0`) via `OpenEnvEnv`.
+- **Short description**: OpenEnv TextArena gym integration (default game: `Wordle-v0`) via `OpenEnvTaskset`.
 - **Tags**: openenv, gym, textarena, wordle, example
 
 ### Datasets
@@ -20,7 +20,7 @@
 
 - **Type**: Multi-turn gym interaction.
 - **Output format**: Game actions.
-- **Rubric overview**: `OpenEnvEpisodicSumRubric` sums per-step rewards; `MultiTurnMonitorRubric` tracks turn count.
+- **Rubric overview**: The OpenEnv taskset sums per-step rewards from the upstream environment.
 
 ### Quickstart
 
@@ -36,7 +36,7 @@ Run an evaluation with default settings:
 prime eval run openenv-textarena
 ```
 
-### Environment Arguments
+### Taskset Config
 
 | Arg | Type | Default | Description |
 | --- | ---- | ------- | ----------- |
@@ -48,4 +48,4 @@ prime eval run openenv-textarena
 
 - Upstream TextArena app defaults to `TEXTARENA_ENV_ID=Wordle-v0`.
 - To use another game, set environment variables in the OpenEnv project/server config before building.
-- `openenv_textarena.py` defines `TextArenaPromptRenderer` and passes it via `prompt_renderer` so observations are rendered as useful game messages.
+- `openenv_textarena.py` defines `render_textarena_prompt` and passes it via `prompt_renderer` so observations are rendered as useful game messages.

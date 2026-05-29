@@ -297,8 +297,8 @@ async def _get_incremental_prompt_ids(
     prompt: list[RendererMessage],
     state: Any,
     tools: list[ToolSpec] | None,
-) -> "RenderedTokens | None":
-    """Return the bridged prompt for the next turn as ``RenderedTokens``.
+) -> "tuple[RenderedTokens, int] | None":
+    """Return the bridged prompt and routed-experts replay start.
 
     Returns ``None`` when no prior trajectory step lines up with the new
     prompt's prefix or the renderer's ``bridge_to_next_turn`` can't extend
@@ -372,7 +372,10 @@ async def _get_incremental_prompt_ids(
         with _bridge_metrics_lock:
             _bridge_metrics["attempts"] += 1
             _bridge_metrics["successes" if bridged is not None else "failures"] += 1
-        return bridged
+        if bridged is not None:
+            start = max(len(previous_prompt_ids) + len(previous_completion_ids) - 1, 0)
+            return bridged, start
+        return None
 
     return None
 
@@ -578,20 +581,23 @@ class RendererClient(
         if args.get("prompt_logprobs"):
             sampling_params["prompt_logprobs"] = 1
 
-        bridged = await _get_incremental_prompt_ids(
+        bridged_with_start = await _get_incremental_prompt_ids(
             renderer=renderer,
             prompt=prompt,
             state=kwargs.get("state"),
             tools=tools,
         )
-        # ``bridged`` is RenderedTokens | None. Unpack token_ids + mm_data
-        # (multimodal feature pass-through) and prompt_attribution
-        # (per-token mask sidecar). On the first turn (``bridged is None``),
-        # ``generate`` renders and emits the attribution itself.
-        if bridged is not None:
+        # ``bridged_with_start`` is (RenderedTokens, replay_start) | None.
+        # Unpack token_ids + mm_data (multimodal feature pass-through) and
+        # prompt_attribution (per-token mask sidecar). On the first turn
+        # (``bridged_with_start is None``), ``generate`` renders and emits the
+        # attribution itself.
+        if bridged_with_start is not None:
+            bridged, routed_experts_prompt_start = bridged_with_start
             prompt_ids = bridged.token_ids
             multi_modal_data = bridged.multi_modal_data
             prompt_attribution = bridged
+            sampling_params["routed_experts_prompt_start"] = routed_experts_prompt_start
         else:
             prompt_ids = None
             multi_modal_data = None

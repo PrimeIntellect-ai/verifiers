@@ -7,21 +7,17 @@ import os
 import secrets
 from collections.abc import Awaitable, Iterator, Mapping, Sequence
 from copy import deepcopy
-from typing import Protocol, cast
+from typing import Protocol, TypeAlias, cast
 from urllib.parse import urlparse
 
+import verifiers as vf
 from aiohttp import ClientSession, web
 from pydantic import Field
 
 from verifiers.types import AssistantMessage, ToolCall, ToolMessage
 from verifiers.utils.serve_utils import get_free_port
 
-from ...config import HarnessConfig
-from ...harness import Harness
-from ...state import State
-from ...task import Task
-from ...types import ConfigData, ConfigMap, TaskRow
-from ..nemo_gym import (
+from harnesses.utils.nemo_gym_utils import (
     agent_ref_name,
     first_nemo_gym_agent,
     resolve_nemo_gym_config_path,
@@ -39,16 +35,19 @@ _NEMO_GYM_OWNS_AIOHTTP_CLIENT = False
 _RAY_ENABLE_UV_RUN_RUNTIME_ENV = "RAY_ENABLE_UV_RUN_RUNTIME_ENV"
 _NEMO_GYM_CONFIG_PATH_ENV_VAR_NAME = "NEMO_GYM_CONFIG_PATH"
 EndpointConfig = dict[str, str]
+ConfigData: TypeAlias = vf.ConfigData
+ConfigMap: TypeAlias = dict[str, object]
+TaskRow: TypeAlias = dict[str, object]
 
 
-class NeMoGymHarnessConfig(HarnessConfig):
+class NeMoGymHarnessConfig(vf.HarnessConfig):
     nemo_env: str | None = None
     config_name: str | None = None
     config_paths: list[str] = Field(default_factory=list)
     server_name: str | None = None
     agent_name: str | None = None
     timeout_seconds: float | None = None
-    global_config: ConfigData = Field(default_factory=dict)
+    global_config: ConfigMap = Field(default_factory=dict)
 
 
 class NeMoGymRunner(Protocol):
@@ -86,7 +85,7 @@ class NeMoGymRolloutCollector(Protocol):
     ) -> Iterator[Awaitable[tuple[ConfigData, ConfigMap]]]: ...
 
 
-class NeMoGymHarness(Harness):
+class NeMoGymHarness(vf.Harness[NeMoGymHarnessConfig]):
     """Run a NeMo Gym row from a Verifiers rollout.
 
     The default runner keeps one NeMo Gym server stack alive per harness instance.
@@ -108,9 +107,9 @@ class NeMoGymHarness(Harness):
         assert isinstance(harness_config, NeMoGymHarnessConfig)
         configure_nemo_gym_harness_config(harness_config)
         self.runner = runner or PersistentNeMoGymRunner()
-        super().__init__(config=harness_config.model_copy(update={"program": None}))
+        super().__init__(config=harness_config)
         self.config = harness_config
-        self._configure_runtime(program=self._run_nemo_gym)
+        self.program = self._run_nemo_gym
 
     async def teardown(self) -> None:
         teardown = getattr(self.runner, "teardown", None)
@@ -120,8 +119,8 @@ class NeMoGymHarness(Harness):
                 await result
         await super().teardown()
 
-    async def _run_nemo_gym(self, task: Task, state: State) -> State:
-        endpoint_config = state.get_endpoint_config(api="responses")
+    async def _run_nemo_gym(self, task: vf.Task, state: vf.State) -> vf.State:
+        endpoint_config = await nemo_gym_rollout_endpoint_config(state)
         row = nemo_gym_row_from_task(cast(ConfigMap, task), self.config.agent_name)
         result = await self.runner.run(
             row,
@@ -158,6 +157,24 @@ def configure_nemo_gym_harness_config(config: NeMoGymHarnessConfig) -> None:
         config.server_name = inferred_server_name
     if config.agent_name is None:
         config.agent_name = inferred_agent_name
+
+
+async def nemo_gym_rollout_endpoint_config(state: vf.State) -> EndpointConfig:
+    endpoint_config = state.get_endpoint_config(api="responses")
+    client = state.get_client(api="responses")
+    api_key = getattr(client, "api_key", None)
+    close = getattr(client, "close", None)
+    if callable(close):
+        result = close()
+        if inspect.isawaitable(result):
+            await result
+    if not isinstance(api_key, str):
+        api_key = str(api_key)
+    return {
+        "base_url": endpoint_config.base_url,
+        "api_key": api_key,
+        "model": endpoint_config.model,
+    }
 
 
 class PersistentNeMoGymRunner:
@@ -786,7 +803,7 @@ def nemo_gym_row_from_task(task: ConfigMap, agent_name: str | None) -> ConfigDat
     return prepare_nemo_gym_request_row(row, agent_name)
 
 
-def apply_nemo_gym_result(state: State, result: ConfigMap) -> None:
+def apply_nemo_gym_result(state: vf.State, result: ConfigMap) -> None:
     result_dict = jsonable_mapping(result)
     state["nemo_gym_result"] = result_dict
     response = result_dict.get("response")

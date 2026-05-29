@@ -1,9 +1,10 @@
 import json
-from collections.abc import Mapping
-from typing import cast
-from ..types import ConfigData, ConfigMap, ProgramChannel
+from typing import Literal, cast
+
+from ..types import ConfigData
 from .sandbox_python_utils import SANDBOX_PYTHON, python_package_list
 
+ProgramChannel = Literal["callable", "mcp"]
 
 MCP_PROXY_PATH = "/tmp/vf_mcp_tools.py"
 MCP_PROXY_CONFIG_PATH = "/tmp/vf_mcp_tools.json"
@@ -32,10 +33,10 @@ def validate_program_channels(value: object) -> tuple[ProgramChannel, ...]:
                     )
                 result.append(channel)
         return tuple(result)
-    if isinstance(value, Mapping):
+    if isinstance(value, dict):
         if not all(isinstance(key, str) for key in value):
             raise TypeError("program.channels mapping keys must be strings.")
-        spec = cast(ConfigMap, value)
+        spec = cast(ConfigData, value)
         unknown = sorted(set(spec) - PROGRAM_CHANNELS - PROGRAM_CHANNEL_METADATA)
         if unknown:
             raise ValueError(f"program.channels has unknown channel: {unknown}.")
@@ -51,14 +52,14 @@ def validate_program_channels(value: object) -> tuple[ProgramChannel, ...]:
 
 
 def proxy_program(
-    program: ConfigMap, tool_base_url: str, tool_api_key: str
+    program: ConfigData, tool_base_url: str, tool_auth_var: str
 ) -> ConfigData:
-    files = dict(cast(ConfigMap, program.get("files") or {}))
+    files = dict(cast(ConfigData, program.get("files") or {}))
     if MCP_PROXY_PATH in files and files[MCP_PROXY_PATH] != proxy_source():
         raise ValueError(f"program.files cannot override {MCP_PROXY_PATH}.")
     config = {
         "tool_base_url": tool_base_url.rstrip("/"),
-        "tool_api_key": tool_api_key,
+        "tool_auth_var": tool_auth_var,
     }
     config_json = json.dumps(config)
     if MCP_PROXY_CONFIG_PATH in files and files[MCP_PROXY_CONFIG_PATH] != config_json:
@@ -72,7 +73,7 @@ def proxy_command() -> list[str]:
     return [SANDBOX_PYTHON, MCP_PROXY_PATH, MCP_PROXY_CONFIG_PATH]
 
 
-def proxy_sandbox(sandbox_config: ConfigMap) -> ConfigData:
+def proxy_sandbox(sandbox_config: ConfigData) -> ConfigData:
     config = dict(sandbox_config)
     packages = python_package_list(config.get("packages"))
     if not any(str(package).startswith("mcp") for package in packages):
@@ -87,6 +88,7 @@ def proxy_source() -> str:
     return r"""
 import asyncio
 import json
+import os
 import sys
 
 import requests
@@ -116,7 +118,10 @@ def tool_base_url() -> str:
 
 
 def auth_headers() -> dict[str, str]:
-    token = config().get("tool_api_key")
+    token_var = config().get("tool_auth_var")
+    if not token_var:
+        raise RuntimeError("tool_auth_var is required.")
+    token = os.environ.get(str(token_var), "")
     headers = {
         "Content-Type": "application/json",
         "Accept": "application/json",

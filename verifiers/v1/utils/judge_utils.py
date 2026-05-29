@@ -1,26 +1,29 @@
 import json
-from collections.abc import Mapping
 from typing import cast
-from ..types import ConfigData, ConfigMap
+from ..types import ConfigData
 
 
 def parse_judge_json(text: str) -> ConfigData:
-    try:
-        value = json.loads(text)
-        if isinstance(value, dict):
-            return cast(ConfigData, value)
-    except json.JSONDecodeError:
-        pass
+    value = parsed_json_object(text)
+    if value is not None:
+        return value
     start = text.find("{")
     end = text.rfind("}")
     if start >= 0 and end > start:
-        try:
-            value = json.loads(text[start : end + 1])
-            if isinstance(value, dict):
-                return cast(ConfigData, value)
-        except json.JSONDecodeError:
-            pass
+        value = parsed_json_object(text[start : end + 1])
+        if value is not None:
+            return value
     return {"score": 0.0, "reason": "judge did not return JSON", "raw": text}
+
+
+def parsed_json_object(text: str) -> ConfigData | None:
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if isinstance(value, dict):
+        return cast(ConfigData, value)
+    return None
 
 
 def clamp_float(value: object) -> float:
@@ -34,9 +37,9 @@ def clamp_float(value: object) -> float:
 
 
 def truncate_command_record(record: object) -> object:
-    if not isinstance(record, Mapping):
+    if not isinstance(record, dict):
         return record
-    record = cast(ConfigMap, record)
+    record = cast(ConfigData, record)
     return {
         **dict(record),
         "command": truncate_text(str(record.get("command") or ""), limit=2_000),

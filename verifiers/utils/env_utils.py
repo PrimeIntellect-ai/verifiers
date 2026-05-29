@@ -9,9 +9,9 @@ from typing import Callable, Union, cast, get_args, get_origin, get_type_hints
 from pydantic import BaseModel
 from verifiers.envs.environment import Environment
 from verifiers.utils.config_utils import MissingKeyError
-from verifiers.v1.config import EnvConfig, HarnessConfig, TasksetConfig
-from verifiers.v1.harness import Harness
-from verifiers.v1.taskset import Taskset
+from verifiers.v1.env import EnvConfig
+from verifiers.v1.harness import Harness, HarnessConfig
+from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.utils.config_utils import coerce_config, explicit_config_data
 
 
@@ -258,8 +258,9 @@ def load_env_config(
         else:
             child_types[field_name] = field_type
 
+    data: dict[str, object]
     if isinstance(value, config_type):
-        data = explicit_config_data(value)
+        data = dict(explicit_config_data(value))
     elif isinstance(value, BaseModel):
         raise TypeError(
             f"load_environment config must be {config_type.__name__}; "
@@ -268,7 +269,7 @@ def load_env_config(
     elif not isinstance(value, Mapping):
         raise TypeError("load_environment config must be a mapping or EnvConfig.")
     else:
-        data = explicit_config_data(value)
+        data = dict(explicit_config_data(value))
     defaults: EnvConfig | None = None
     for field_name, child_type in child_types.items():
         if field_name not in data:

@@ -1,10 +1,8 @@
 from collections.abc import Mapping
 from pathlib import Path
-from typing import cast
+from typing import TypeAlias, cast
 
-from ..types import ConfigMap
-
-DEFAULT_NEMO_GYM_DATA_NAME = "example.jsonl"
+ConfigMap: TypeAlias = dict[str, object]
 
 
 def nemo_gym_package_root() -> Path:
@@ -43,16 +41,6 @@ def resolve_nemo_gym_config_path(
         f"Multiple NeMo Gym configs found for {nemo_env!r}; pass config_name. "
         f"Options: {[path.name for path in configs]}"
     )
-
-
-def resolve_nemo_gym_data_path(
-    nemo_env: str,
-    data_name: str = DEFAULT_NEMO_GYM_DATA_NAME,
-) -> Path:
-    path = nemo_gym_package_root() / "resources_servers" / nemo_env / "data" / data_name
-    if not path.exists():
-        raise FileNotFoundError(f"NeMo Gym data file not found: {path}")
-    return path
 
 
 def infer_nemo_gym_agent_from_config(config_path: str | Path) -> tuple[str, str]:

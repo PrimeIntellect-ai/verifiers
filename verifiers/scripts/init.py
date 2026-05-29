@@ -66,7 +66,7 @@ OPENENV_README_TEMPLATE = """\
 
 ### Overview
 - **Environment ID**: `{env_id_dash}`
-- **Short description**: OpenEnv-backed environment using `vf.OpenEnvEnv`.
+- **Short description**: OpenEnv-backed environment using `tasksets.OpenEnvTaskset`.
 - **Tags**: openenv, tools, multi-turn
 
 ### Structure
@@ -120,6 +120,7 @@ version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = [
     "verifiers>={vf.__version__}",
+    "tasksets>=0.1.1",
 ]
 
 [build-system]
@@ -163,11 +164,11 @@ class {taskset_config_name}(vf.TasksetConfig):
 
 
 class {taskset_name}(vf.Taskset[{taskset_config_name}]):
-    def load_system_prompt(self) -> vf.SystemPrompt:
+    def load_system_prompt(self, config: {taskset_config_name}) -> vf.SystemPrompt:
         raise NotImplementedError("Load the system prompt for {env_id_dash}.")
 
-    def load_tasks(self) -> vf.Tasks:
-        raise NotImplementedError("Load task rows for {env_id_dash}.")
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
+        raise NotImplementedError("Load tasks for {env_id_dash}.")
 
     @vf.reward(weight=1.0)
     async def correct_answer(self, task: vf.Task, state: vf.State) -> float:
@@ -179,7 +180,10 @@ def load_taskset(config: {taskset_config_name}) -> {taskset_name}:
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
-    return vf.Env(taskset=vf.load_taskset(config=config.taskset))
+    return vf.Env(
+        taskset=vf.load_taskset(config=config.taskset),
+        harness=vf.Harness(config=config.harness),
+    )
 """
 
 V1_HARNESS_ENVIRONMENT_TEMPLATE = """\
@@ -191,11 +195,11 @@ class {taskset_config_name}(vf.TasksetConfig):
 
 
 class {taskset_name}(vf.Taskset[{taskset_config_name}]):
-    def load_system_prompt(self) -> vf.SystemPrompt:
+    def load_system_prompt(self, config: {taskset_config_name}) -> vf.SystemPrompt:
         raise NotImplementedError("Load the system prompt for {env_id_dash}.")
 
-    def load_tasks(self) -> vf.Tasks:
-        raise NotImplementedError("Load task rows for {env_id_dash}.")
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
+        raise NotImplementedError("Load tasks for {env_id_dash}.")
 
     @vf.reward(weight=1.0)
     async def correct_answer(self, task: vf.Task, state: vf.State) -> float:
@@ -206,8 +210,8 @@ class {harness_config_name}(vf.HarnessConfig):
     pass
 
 
-class {harness_name}(vf.Harness):
-    config: {harness_config_name}
+class {harness_name}(vf.Harness[{harness_config_name}]):
+    pass
 
 
 def load_taskset(config: {taskset_config_name}) -> {taskset_name}:
@@ -227,31 +231,17 @@ def load_environment(config: vf.EnvConfig) -> vf.Env:
 
 OPENENV_ENVIRONMENT_TEMPLATE = """\
 import verifiers as vf
-from verifiers.types import Messages, UserMessage
+from tasksets.openenv import OpenEnvTaskset, OpenEnvTasksetConfig
 
 
-class OpenEnvPromptRenderer:
-    def __call__(self, observation: object) -> Messages:
-        if isinstance(observation, dict):
-            prompt = observation.get("prompt")
-            if isinstance(prompt, str) and prompt.strip():
-                return [UserMessage(content=prompt)]
-        raise RuntimeError(
-            "OpenEnv observation did not include a renderable prompt. "
-            "Update OpenEnvPromptRenderer for your project's observation schema."
-        )
+def load_taskset(config: OpenEnvTasksetConfig) -> OpenEnvTaskset:
+    return OpenEnvTaskset(config=config)
 
 
-def load_environment(
-    num_train_examples: int = 100,
-    num_eval_examples: int = 50,
-    seed: int = 0,
-):
-    return vf.OpenEnvEnv(
-        num_train_examples=num_train_examples,
-        num_eval_examples=num_eval_examples,
-        seed=seed,
-        prompt_renderer=OpenEnvPromptRenderer(),
+def load_environment(config: vf.EnvConfig) -> vf.Env:
+    return vf.Env(
+        taskset=vf.load_taskset(config=config.taskset),
+        harness=vf.Harness(config=config.harness),
     )
 """
 
@@ -419,6 +409,8 @@ def init_environment(
     taskset_name = _class_name(env_id_underscore, "Taskset")
     harness_config_name = _class_name(env_id_underscore, "HarnessConfig")
     harness_name = _class_name(env_id_underscore, "Harness")
+    if openenv:
+        v1 = True
     if with_harness and not v1:
         print("--with-harness only applies with --v1; ignoring.")
         with_harness = False
@@ -460,7 +452,7 @@ def init_environment(
         init_file = environment_dir / "__init__.py"
         if not init_file.exists():
             exports = ["load_environment"]
-            if v1 and not openenv:
+            if v1:
                 exports.append("load_taskset")
             if v1 and with_harness and not openenv:
                 exports.append("load_harness")

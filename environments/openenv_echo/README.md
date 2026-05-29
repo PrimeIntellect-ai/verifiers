@@ -7,7 +7,7 @@
 ### Overview
 
 - **Environment ID**: `openenv-echo`
-- **Short description**: OpenEnv Echo environment via `OpenEnvEnv`, demonstrating MCP tool-calling in Prime Sandboxes.
+- **Short description**: OpenEnv Echo environment via `OpenEnvTaskset`, demonstrating MCP tool-calling in Prime Sandboxes.
 - **Tags**: openenv, mcp, tools, example
 
 ### Datasets
@@ -20,7 +20,7 @@
 
 - **Type**: Tool use, multi-turn.
 - **Output format**: MCP tool calls.
-- **Rubric overview**: `OpenEnvEpisodicSumRubric` sums per-step rewards; `MultiTurnMonitorRubric` tracks turn count.
+- **Rubric overview**: The OpenEnv taskset sums per-step rewards from the upstream environment.
 
 ### Quickstart
 
@@ -56,7 +56,7 @@ Notes:
 - If your environments directory is not `./environments`, run:
 `uv run vf-build openenv-echo -p /path/to/environments`
 - If you customize the bundled OpenEnv project, rerun `uv run vf-build openenv-echo` (the `proj/.build.json` manifest is updated).
-- `openenv_echo.py` defines `EchoPromptRenderer` and passes it via `prompt_renderer` to keep the initial MCP prompt concise.
+- `openenv_echo.py` defines `render_openenv_prompt` and passes it via `prompt_renderer` to keep the initial MCP prompt concise.
 
 ### Troubleshooting
 
@@ -70,7 +70,7 @@ If `prime images list` shows **Ready** but the sandbox still cannot pull the ima
 - Build status/output from `prime images list`
 - Sandbox ID and timestamp from the error log
 
-### Environment Arguments
+### Taskset Config
 
 | Arg | Type | Default | Description |
 | --- | ---- | ------- | ----------- |

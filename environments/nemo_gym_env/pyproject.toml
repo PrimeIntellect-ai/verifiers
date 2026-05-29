@@ -5,8 +5,9 @@ tags = ["nemo-gym", "tool-use", "v1", "train", "eval"]
 version = "0.1.0"
 requires-python = ">=3.12,<3.14"
 dependencies = [
+    "harnesses[nemogym]",
+    "tasksets[nemogym]",
     "verifiers",
-    "nemo-gym",
 ]
 
 [build-system]

@@ -20,8 +20,8 @@ from verifiers import setup_logging
 from verifiers.types import (
     ClientConfig,
     ClientType,
-    Endpoint,
     EndpointClientConfig,
+    EndpointConfig,
     EvalConfig,
     EvalRunConfig,
     _validate_extra_headers_value,
@@ -623,7 +623,7 @@ def main(argv: list[str] | None = None):
             raw_endpoint_id is None and api_key_override and api_base_url_override
         )
         endpoints = {} if direct_endpoint_config else load_endpoints(endpoints_path)
-        endpoint_group: list[Endpoint] | None = None
+        endpoint_group: list[EndpointConfig] | None = None
         resolved_endpoint_id: str | None = None
 
         if endpoint_lookup_id in endpoints:
@@ -632,17 +632,17 @@ def main(argv: list[str] | None = None):
             endpoint = endpoint_group[0]
 
             # Start from registry values
-            api_key_var = endpoint["key"]
-            api_base_url = endpoint["url"]
-            client_type = endpoint.get("api_client_type", DEFAULT_CLIENT_TYPE)
+            api_key_var = endpoint.api_key_var
+            api_base_url = endpoint.base_url
+            client_type = endpoint.api_client_type or DEFAULT_CLIENT_TYPE
 
-            endpoint_models = {entry["model"] for entry in endpoint_group}
+            endpoint_models = {entry.model for entry in endpoint_group}
             if len(endpoint_models) > 1:
                 raise ValueError(
                     f"Endpoint alias '{endpoint_lookup_id}' maps to multiple model ids {sorted(endpoint_models)}, "
                     "which is not yet supported by EvalConfig."
                 )
-            model = endpoint["model"]
+            model = endpoint.model
 
             # Provider overrides registry
             if raw_provider is not None:
@@ -720,7 +720,7 @@ def main(argv: list[str] | None = None):
 
         registry_headers_base: dict[str, str] = {}
         if endpoint_group is not None:
-            registry_headers_base = dict(endpoint_group[0].get("extra_headers", {}))
+            registry_headers_base = dict(endpoint_group[0].extra_headers)
 
         merged_headers: dict[str, str] = {
             **registry_headers_base,
@@ -743,11 +743,11 @@ def main(argv: list[str] | None = None):
             endpoint_configs = [
                 EndpointClientConfig(
                     api_key_var=(
-                        resolved_api_key_var if api_key_override else ep["key"]
+                        resolved_api_key_var if api_key_override else ep.api_key_var
                     ),
-                    api_base_url=ep["url"],
+                    api_base_url=ep.base_url,
                     extra_headers={
-                        **dict(ep.get("extra_headers", {})),
+                        **dict(ep.extra_headers),
                         **eval_headers_merged,
                     },
                 )

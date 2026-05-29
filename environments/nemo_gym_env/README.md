@@ -11,7 +11,7 @@
 - **Split sizes**: 5 packaged examples; default eval uses 1 example via `pyproject.toml`.
 
 ### Task
-- **Type**: `vf.Env` with `NeMoGymTaskset` and `NeMoGymHarness` (imported from `verifiers.v1.packages`).
+- **Type**: `vf.Env` with `NeMoGymTaskset` from `tasksets` and `NeMoGymHarness` from `harnesses`.
 - **Rubric overview**: Reward and metrics are returned by the NeMo Gym resources server.
 
 ### How it works

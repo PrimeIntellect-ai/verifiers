@@ -1,15 +1,21 @@
 import verifiers as vf
-from verifiers.v1.packages.harnesses import OpenCode, OpenCodeConfig
-from verifiers.v1.packages.tasksets import HarborTaskset, HarborTasksetConfig
+from harnesses import OpenCode, OpenCodeConfig
+from tasksets import HarborTaskset, HarborTasksetConfig
 
 
-class OpenCodeHarborEnvConfig(vf.EnvConfig):
-    taskset: HarborTasksetConfig = HarborTasksetConfig()
-    harness: OpenCodeConfig = OpenCodeConfig()
+def load_taskset(config: HarborTasksetConfig) -> HarborTaskset:
+    taskset_config = config
+    if taskset_config.dataset is None and taskset_config.bundle_package is None:
+        taskset_config = taskset_config.model_copy(update={"bundle_package": __name__})
+    return HarborTaskset(config=taskset_config)
 
 
-def load_environment(config: OpenCodeHarborEnvConfig) -> vf.Env:
+def load_harness(config: OpenCodeConfig) -> OpenCode:
+    return OpenCode(config=config)
+
+
+def load_environment(config: vf.EnvConfig) -> vf.Env:
     return vf.Env(
-        taskset=HarborTaskset(config=config.taskset),
-        harness=OpenCode(config=config.harness),
+        taskset=vf.load_taskset(config=config.taskset),
+        harness=vf.load_harness(config=config.harness),
     )

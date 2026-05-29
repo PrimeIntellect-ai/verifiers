@@ -16,7 +16,7 @@
   <g filter="url(#shadow)">
     <rect x="62" y="132" width="240" height="318" rx="12" fill="#fffbeb" stroke="#fbbf24" stroke-width="2"/>
     <text x="86" y="168" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="22" font-weight="700" fill="#92400e">Taskset owns</text>
-    <text x="86" y="205" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#78350f">tasks / eval_tasks</text>
+    <text x="86" y="205" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#78350f">load_tasks(split)</text>
     <text x="86" y="231" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#78350f">system_prompt</text>
     <text x="86" y="257" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#78350f">task-owned toolsets</text>
     <text x="86" y="283" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#78350f">user simulator</text>

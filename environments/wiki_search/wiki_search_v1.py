@@ -6,7 +6,6 @@ import chromadb
 from chromadb.api.types import Embeddable, EmbeddingFunction
 from chromadb.utils import embedding_functions
 from datasets import load_dataset
-from openai import AsyncOpenAI
 
 import verifiers as vf
 
@@ -210,11 +209,8 @@ async def judge_reward(task, state) -> float:
         response=response,
     )
     endpoint_config = state.get_endpoint_config(api="chat")
-    judge_model = task.get("judge_model") or endpoint_config["model"]
-    judge_client = AsyncOpenAI(
-        base_url=endpoint_config["base_url"],
-        api_key=endpoint_config["api_key"],
-    )
+    judge_model = task.get("judge_model") or endpoint_config.model
+    judge_client = state.get_client(api="chat")
     try:
         result = await judge_client.chat.completions.create(
             model=str(judge_model),
@@ -293,24 +289,25 @@ class WikiSearchEnvConfig(vf.EnvConfig):
 
 
 class WikiSearchTaskset(vf.Taskset[WikiSearchTasksetConfig]):
-    def load_tasks(self) -> vf.Tasks:
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         return load_tasks(
             max_turns=self.config.max_turns,
             judge_model=self.config.judge_model,
         )
 
-    def load_system_prompt(self) -> vf.SystemPrompt:
+    def load_system_prompt(self, config: WikiSearchTasksetConfig) -> vf.SystemPrompt:
+        _ = config
         return SYSTEM_PROMPT
 
-    def load_toolsets(self) -> vf.Toolsets:
+    def load_toolsets(self, config: WikiSearchTasksetConfig) -> vf.Toolsets:
         return {
             "wiki": load_toolset(
-                corpus_dataset=self.config.corpus_dataset,
-                corpus_split=self.config.corpus_split,
-                chroma_db_dir=self.config.chroma_db_dir,
-                embed_model=self.config.embed_model,
-                embed_base_url=self.config.embed_base_url,
-                embed_api_key_var=self.config.embed_api_key_var,
+                corpus_dataset=config.corpus_dataset,
+                corpus_split=config.corpus_split,
+                chroma_db_dir=config.chroma_db_dir,
+                embed_model=config.embed_model,
+                embed_base_url=config.embed_base_url,
+                embed_api_key_var=config.embed_api_key_var,
             )
         }
 

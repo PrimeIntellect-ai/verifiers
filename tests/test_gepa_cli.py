@@ -11,14 +11,25 @@ from verifiers.scripts.gepa import (
     load_gepa_toml_config,
     resolve_gepa_config_args,
 )
+from verifiers.types import EndpointConfig
 
 
 def test_gepa_extra_headers_from_group_requires_consistent_variants():
     with pytest.raises(ValueError, match="different headers"):
         _gepa_extra_headers_from_group(
             [
-                {"extra_headers": {"X-A": "1"}},
-                {"extra_headers": {"X-A": "2"}},
+                EndpointConfig(
+                    api_key_var="K",
+                    base_url="https://a.example/v1",
+                    model="m",
+                    extra_headers={"X-A": "1"},
+                ),
+                EndpointConfig(
+                    api_key_var="K",
+                    base_url="https://a.example/v1",
+                    model="m",
+                    extra_headers={"X-A": "2"},
+                ),
             ],
             "my-alias",
         )
@@ -27,8 +38,18 @@ def test_gepa_extra_headers_from_group_requires_consistent_variants():
 def test_gepa_extra_headers_from_group_returns_first_row_dict():
     h = _gepa_extra_headers_from_group(
         [
-            {"extra_headers": {"X-A": "x"}},
-            {"extra_headers": {"X-A": "x"}},
+            EndpointConfig(
+                api_key_var="K",
+                base_url="https://a.example/v1",
+                model="m",
+                extra_headers={"X-A": "x"},
+            ),
+            EndpointConfig(
+                api_key_var="K",
+                base_url="https://a.example/v1",
+                model="m",
+                extra_headers={"X-A": "x"},
+            ),
         ],
         "my-alias",
     )

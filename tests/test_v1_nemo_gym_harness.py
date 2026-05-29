@@ -5,8 +5,7 @@ import os
 import pytest
 from aiohttp import ClientSession, web
 
-from verifiers.utils.serve_utils import get_free_port
-from verifiers.v1.packages.harnesses.nemo_gym import (
+from harnesses.nemo_gym import (
     NEMO_GYM_EXTERNAL_POLICY_MODEL_ENTRYPOINT,
     NEMO_GYM_POLICY_MODEL_SERVER_NAME,
     NEMO_GYM_POLICY_MODEL_TYPE_NAME,
@@ -21,6 +20,7 @@ from verifiers.v1.packages.harnesses.nemo_gym import (
     set_nemo_gym_proxy_model,
     skip_nemo_gym_policy_model_process,
 )
+from verifiers.utils.serve_utils import get_free_port
 
 
 @pytest.mark.asyncio

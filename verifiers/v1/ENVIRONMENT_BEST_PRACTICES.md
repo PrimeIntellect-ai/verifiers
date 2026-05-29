@@ -13,7 +13,8 @@ proves the looser surface is needed.
 1. Environment modules MUST expose `load_environment(config: vf.EnvConfig)`.
    Do not subclass `vf.EnvConfig` just to narrow child config types.
 2. Environment modules SHOULD construct `vf.Env` from component loaders:
-   `vf.load_taskset(config=config.taskset)` and, when needed,
+   `vf.load_taskset(config=config.taskset)` and either
+   `vf.Harness(config=config.harness)` or
    `vf.load_harness(config=config.harness)`.
 3. Environment modules with custom taskset fields MUST expose
    `load_taskset(config: TasksetConfigType)`. Environments with custom harness
@@ -39,8 +40,8 @@ your loader runs. The type annotation is not cosmetic.
 4. The `load_environment` envelope stays loose as `vf.EnvConfig`. The framework
    coerces `config.taskset` and `config.harness` inside `vf.load_taskset(...)`
    and `vf.load_harness(...)` using the child factory annotations.
-5. `vf.Env(taskset=vf.load_taskset(config=config.taskset))` is the
-   default construction path.
+5. `vf.Env(taskset=vf.load_taskset(config=config.taskset),
+   harness=vf.Harness(config=config.harness))` is the default construction path.
 6. Root env kwargs behave differently from TOML child sections. TOML
    `[env.taskset]` and `[env.harness]` route into the env config envelope; CLI
    `-a` passes loader kwargs. This is why CLI child config overrides must be
@@ -54,7 +55,7 @@ your loader runs. The type annotation is not cosmetic.
 def load_environment(config: vf.EnvConfig) -> vf.Env:
     return vf.Env(
         taskset=vf.load_taskset(config=config.taskset),
-        harness=vf.load_harness(config=config.harness),
+        harness=vf.Harness(config=config.harness),
     )
 ```
 
@@ -101,15 +102,15 @@ class MyTasksetConfig(vf.TasksetConfig):
 
 
 class MyTaskset(vf.Taskset[MyTasksetConfig]):
-    def load_tasks(self) -> vf.Tasks:
-        rows = [
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
+        records = [
             {
                 "prompt": [{"role": "user", "content": "What is 2 + 2?"}],
                 "answer": "4",
                 "split": "train",
             }
         ]
-        return [row for row in rows if row["split"] == self.config.split]
+        return [record for record in records if record["split"] == self.config.split]
 
     @vf.reward(weight=1.0)
     async def exact(self, task, state) -> float:
@@ -121,7 +122,10 @@ def load_taskset(config: MyTasksetConfig) -> MyTaskset:
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
-    return vf.Env(taskset=vf.load_taskset(config=config.taskset))
+    return vf.Env(
+        taskset=vf.load_taskset(config=config.taskset),
+        harness=vf.Harness(config=config.harness),
+    )
 ```
 
 ### Custom Harness
@@ -142,23 +146,23 @@ class MyTasksetConfig(vf.TasksetConfig):
 
 
 class MyTaskset(vf.Taskset[MyTasksetConfig]):
-    def load_tasks(self) -> vf.Tasks:
-        rows = [
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
+        records = [
             {
                 "prompt": [{"role": "user", "content": "What is 2 + 2?"}],
                 "answer": "4",
                 "split": "train",
             }
         ]
-        return [row for row in rows if row["split"] == self.config.split]
+        return [record for record in records if record["split"] == self.config.split]
 
 
 class MyHarnessConfig(vf.HarnessConfig):
     timeout_seconds: int = 120
-    program: str = "my_env:run"
+    program: vf.ProgramConfig = vf.ProgramConfig(fn="my_env:run")
 
 
-class MyHarness(vf.Harness):
+class MyHarness(vf.Harness[MyHarnessConfig]):
     config: MyHarnessConfig
 
 
@@ -207,11 +211,11 @@ surfaces. Inside Python environment code, use typed config objects.
 
 1. Import the public API with `import verifiers as vf`.
 2. Use Pydantic config models for structured configuration.
-3. Treat `Mapping[str, object]` as an explicit boundary type. Accept it only for
-   intentionally dynamic payloads such as task rows, protocol messages,
-   sandbox/program specs, or config fields that store arbitrary user objects.
-4. Prefer a named alias such as `ConfigMap`, `TaskRow`, or `Objects` over
-   spelling a broad mapping type in a user-facing signature.
+3. Do not use `Mapping[str, object]` as a public or internal escape hatch.
+   Normalize external inputs to concrete `dict` payloads or typed config models
+   at the boundary.
+4. Use named config aliases for intended dynamic payloads: `JsonData`,
+   `ConfigData`, `BindingsConfig`, and `Objects`.
 5. Do not use raw `Any` in v1 environment code. If a value is intentionally
    arbitrary, give that boundary a named type in `verifiers.v1.types`.
 6. Avoid `object`, broad unions, and untyped mappings unless arbitrary user data

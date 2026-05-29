@@ -1,15 +1,16 @@
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from typing import cast
 
 from ..state import State
 from verifiers.types import Message
 
-from ..types import ConfigMap, PromptMessage
+from ..runtime_handles import ResolvedRuntimeHandlesConfig
+from ..types import ConfigData, JsonData, PromptMessage
 
 
 def sync_trajectory(
     state: State,
-    trajectory: Sequence[ConfigMap] | None = None,
+    trajectory: Sequence[JsonData] | None = None,
 ) -> State:
     if trajectory is not None:
         state["trajectory"] = [dict(step) for step in trajectory]
@@ -19,7 +20,7 @@ def sync_trajectory(
         raise TypeError("state.trajectory must be a list.")
     state["num_model_requests"] = len(steps)
     state._set_truncated(
-        any(bool(cast(ConfigMap, step).get("is_truncated", False)) for step in steps)
+        any(bool(cast(ConfigData, step).get("is_truncated", False)) for step in steps)
     )
 
     if not steps:
@@ -32,18 +33,15 @@ def sync_trajectory(
     return state
 
 
-def has_borrowed_trajectory(state: ConfigMap) -> bool:
-    runtime = state.get("runtime")
-    if not isinstance(runtime, Mapping):
-        return False
-    runtime = cast(ConfigMap, runtime)
-    resolved = runtime.get("resolved")
-    if not isinstance(resolved, Mapping):
-        return False
-    return isinstance(cast(ConfigMap, resolved).get("trajectory"), Mapping)
+def has_borrowed_trajectory(state: State) -> bool:
+    runtime = state.runtime_state()
+    resolved = ResolvedRuntimeHandlesConfig.model_validate(
+        runtime.get("resolved") or {}
+    )
+    return resolved.trajectory is not None
 
 
-def completion_from_trajectory(steps: Sequence[ConfigMap]) -> list[PromptMessage]:
+def completion_from_trajectory(steps: Sequence[JsonData]) -> list[PromptMessage]:
     if not steps:
         return []
     first_prompt = message_list(steps[0], "prompt")
@@ -66,17 +64,17 @@ def merge_existing_completion(
 
 
 def message_list(step: object, field: str) -> list[PromptMessage]:
-    if not isinstance(step, Mapping):
+    if not isinstance(step, dict):
         raise TypeError("trajectory steps must be mappings.")
-    value = cast(ConfigMap, step).get(field)
+    value = cast(ConfigData, step).get(field)
     if value is None:
         return []
     if not isinstance(value, list):
         raise TypeError(f"trajectory step {field} must be a list.")
     messages: list[PromptMessage] = []
     for item in value:
-        if isinstance(item, Mapping):
-            messages.append(cast(ConfigMap, item))
+        if isinstance(item, dict):
+            messages.append(cast(JsonData, item))
         elif hasattr(item, "role") and hasattr(item, "content"):
             messages.append(cast(Message, item))
         else:

@@ -29,10 +29,10 @@ def config_data(config: object | None) -> dict[str, object]:
 
 def make_taskset(config: object | None = None, **values: object) -> vf.Taskset:
     data = {**config_data(config), **values}
-    return vf.Taskset(config=vf.TasksetConfig.model_validate(data))
+    return BindingTaskset(config=BindingTasksetConfig.model_validate(data))
 
 
-def load_tasks() -> list[dict[str, object]]:
+def load_tasks(split: vf.TaskSplit = "train") -> list[dict[str, object]]:
     return [
         {
             "prompt": [{"role": "user", "content": "reply ok"}],
@@ -41,7 +41,7 @@ def load_tasks() -> list[dict[str, object]]:
     ]
 
 
-def load_prefixed_tasks() -> list[dict[str, object]]:
+def load_prefixed_tasks(split: vf.TaskSplit = "train") -> list[dict[str, object]]:
     return [
         {
             "prompt": [{"role": "user", "content": "reply ok"}],
@@ -51,7 +51,7 @@ def load_prefixed_tasks() -> list[dict[str, object]]:
     ]
 
 
-def load_two_prefixed_tasks() -> list[dict[str, object]]:
+def load_two_prefixed_tasks(split: vf.TaskSplit = "train") -> list[dict[str, object]]:
     return [
         {
             "prompt": [{"role": "user", "content": "reply ok"}],
@@ -64,6 +64,19 @@ def load_two_prefixed_tasks() -> list[dict[str, object]]:
             "prefix": "second:",
         },
     ]
+
+
+class BindingTasksetConfig(vf.TasksetConfig):
+    dataset: str = "default"
+
+
+class BindingTaskset(vf.Taskset[BindingTasksetConfig]):
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
+        if self.config.dataset == "prefixed":
+            return load_prefixed_tasks(split)
+        if self.config.dataset == "two_prefixed":
+            return load_two_prefixed_tasks(split)
+        return load_tasks(split)
 
 
 class Prefixer:
@@ -170,9 +183,8 @@ for _name, _value in {
 
 
 def test_taskset_object_binding_rejects_live_instance() -> None:
-    with pytest.raises(ValueError, match="prefixer"):
+    with pytest.raises(TypeError, match="prefixer"):
         make_taskset(
-            tasks=ref("load_tasks"),
             rewards=[ref("prefix_reward")],
             objects={"prefixer": Prefixer("inst:")},
             bindings={"prefix_reward.prefixer": "objects.prefixer"},
@@ -185,7 +197,6 @@ async def test_taskset_object_factory_is_lazy_and_resolved_once() -> None:
     prefixer_factory_calls = 0
 
     taskset = make_taskset(
-        tasks=ref("load_tasks"),
         rewards=[ref("prefix_reward")],
         objects={"prefixer": ref("load_factory_prefixer")},
         bindings={"prefix_reward.prefixer": "objects.prefixer"},
@@ -204,7 +215,6 @@ async def test_taskset_object_factory_is_lazy_and_resolved_once() -> None:
 @pytest.mark.asyncio
 async def test_taskset_object_factory_accepts_defaulted_arguments() -> None:
     taskset = make_taskset(
-        tasks=ref("load_tasks"),
         rewards=[ref("prefix_reward")],
         objects={"prefixer": ref("load_defaulted_prefixer")},
         bindings={"prefix_reward.prefixer": "objects.prefixer"},
@@ -218,7 +228,7 @@ async def test_taskset_object_factory_accepts_defaulted_arguments() -> None:
 @pytest.mark.asyncio
 async def test_taskset_object_factory_accepts_bound_arguments() -> None:
     taskset = make_taskset(
-        tasks=ref("load_prefixed_tasks"),
+        dataset="prefixed",
         rewards=[ref("prefix_reward")],
         objects={"prefixer": ref("load_bound_prefixer")},
         bindings={
@@ -235,7 +245,7 @@ async def test_taskset_object_factory_accepts_bound_arguments() -> None:
 @pytest.mark.asyncio
 async def test_taskset_object_factory_bindings_are_rollout_scoped() -> None:
     taskset = make_taskset(
-        tasks=ref("load_two_prefixed_tasks"),
+        dataset="two_prefixed",
         rewards=[ref("prefix_reward")],
         objects={"prefixer": ref("load_bound_prefixer")},
         bindings={
@@ -258,7 +268,7 @@ async def test_taskset_object_factory_bindings_are_rollout_scoped() -> None:
 @pytest.mark.asyncio
 async def test_taskset_object_factory_rejects_unbound_arguments() -> None:
     taskset = make_taskset(
-        tasks=ref("load_prefixed_tasks"),
+        dataset="prefixed",
         rewards=[ref("prefix_reward")],
         objects={"prefixer": ref("load_bound_prefixer")},
         bindings={"prefix_reward.prefixer": "objects.prefixer"},
@@ -271,7 +281,6 @@ async def test_taskset_object_factory_rejects_unbound_arguments() -> None:
 @pytest.mark.asyncio
 async def test_framework_args_win_over_taskset_bindings() -> None:
     taskset = make_taskset(
-        tasks=ref("load_tasks"),
         rewards=[ref("framework_state_reward")],
         bindings={"framework_state_reward.state": "objects.missing"},
     )
@@ -284,7 +293,6 @@ async def test_framework_args_win_over_taskset_bindings() -> None:
 @pytest.mark.asyncio
 async def test_caller_kwargs_win_over_taskset_bindings_for_handlers() -> None:
     taskset = make_taskset(
-        tasks=ref("load_tasks"),
         setups=[ref("setup_with_override")],
         objects={"token": ref("load_token")},
         bindings={"setup_with_override.token": "objects.token"},
@@ -302,9 +310,7 @@ async def test_caller_kwargs_win_over_taskset_bindings_for_handlers() -> None:
 
 @pytest.mark.asyncio
 async def test_missing_taskset_binding_error_names_signal_and_arg() -> None:
-    taskset = make_taskset(
-        tasks=ref("load_tasks"), rewards=[ref("missing_binding_reward")]
-    )
+    taskset = make_taskset(rewards=[ref("missing_binding_reward")])
 
     with pytest.raises(
         TypeError,
@@ -320,7 +326,6 @@ async def test_taskset_config_map_round_trips_objects_and_bindings() -> None:
         bindings={"prefix_reward.prefixer": "objects.prefixer"},
     )
     taskset = make_taskset(
-        tasks=ref("load_tasks"),
         rewards=[ref("prefix_reward")],
         config=config,
     )
@@ -333,7 +338,6 @@ async def test_taskset_config_map_round_trips_objects_and_bindings() -> None:
 @pytest.mark.asyncio
 async def test_taskset_bindings_support_shared_extractor_pattern() -> None:
     taskset = make_taskset(
-        tasks=ref("load_tasks"),
         rewards=[ref("extracted_answer_reward")],
         objects={"extract_answer": ref("load_answer_extractor")},
         bindings={"extracted_answer_reward.extract_answer": "objects.extract_answer"},
@@ -346,3 +350,25 @@ async def test_taskset_bindings_support_shared_extractor_pattern() -> None:
     await env.harness.runtime.score_rollout(task, state)
 
     assert state["reward"] == 1.0
+
+
+@pytest.mark.asyncio
+async def test_harness_object_factory_accepts_bound_arguments() -> None:
+    taskset = make_taskset(dataset="prefixed")
+    harness = vf.Harness(
+        config=vf.HarnessConfig(
+            rewards=[ref("prefix_reward")],
+            objects={"prefixer": ref("load_bound_prefixer")},
+            bindings={
+                "prefixer.prefix": "task.prefix",
+                "prefix_reward.prefixer": "objects.prefixer",
+            },
+        )
+    )
+    env = vf.Env(taskset=taskset, harness=harness)
+    task = next(iter(taskset))
+    state = await env.harness.setup_state(task, vf.State.for_task(task))
+
+    await env.harness.runtime.score_rollout(task, state)
+
+    assert state["prefixed"] == "bound:ok"

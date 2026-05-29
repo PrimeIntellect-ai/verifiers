@@ -1,6 +1,6 @@
 import json
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from typing import cast
 
 import verifiers as vf
@@ -18,12 +18,10 @@ from verifiers.utils.message_utils import message_role, normalize_messages
 from verifiers.v1.utils.endpoint_utils import assistant_completion_from_messages
 from verifiers.v1.utils.config_utils import explicit_config_data
 from verifiers.v1.utils.json_utils import json_args
-from verifiers.v1.types import ConfigMap
 
-BFCL_TOOLSET_REF = "bfcl_v3:load_bfcl_toolset"
 _BFCL_PATCHED = False
-BFCLRawMessage = str | ConfigMap
-BFCLRawTurn = str | ConfigMap | Sequence[BFCLRawMessage] | None
+BFCLRawMessage = str | vf.JsonData
+BFCLRawTurn = str | vf.JsonData | Sequence[BFCLRawMessage] | None
 
 
 class BFCLTasksetConfig(vf.TasksetConfig):
@@ -92,7 +90,7 @@ def bfcl_tool_defs(functions: object) -> list[Tool]:
             Tool(
                 name=str(function["name"]),
                 description=str(function.get("description") or ""),
-                parameters=dict(cast(ConfigMap, function["parameters"])),
+                parameters=dict(cast(vf.JsonData, function["parameters"])),
                 strict=False,
             )
         )
@@ -114,24 +112,15 @@ class BFCLSchemaTool:
         return "recorded"
 
 
-def load_bfcl_toolset(task: ConfigMap) -> vf.Toolset:
-    return vf.Toolset(
-        tools=[
-            BFCLSchemaTool(tool_def)
-            for tool_def in bfcl_tool_defs(bfcl_functions(task))
-        ]
-    )
-
-
-def bfcl_functions(task: ConfigMap) -> object:
+def bfcl_functions(task: vf.JsonData) -> object:
     return task.get("function_with_hints") or task["function"]
 
 
-def bfcl_missed_function(task: ConfigMap) -> ConfigMap:
+def bfcl_missed_function(task: vf.JsonData) -> vf.JsonData:
     value = task.get("missed_function_with_hints") or task.get("missed_function") or {}
-    if not isinstance(value, Mapping):
+    if not isinstance(value, dict):
         raise TypeError("BFCL missed_function must be a mapping.")
-    return cast(ConfigMap, value)
+    return cast(vf.JsonData, value)
 
 
 def build_task_loader(test_category: str, examples_per_category: int = -1):
@@ -165,7 +154,7 @@ def build_task_loader(test_category: str, examples_per_category: int = -1):
                 test_category,
                 entry,
                 hinted_entry,
-                cast(ConfigMap | None, ground_truth),
+                cast(vf.JsonData | None, ground_truth),
             )
             if is_multi_turn(test_category):
                 max_steps = maximum_step_limit()
@@ -175,7 +164,6 @@ def build_task_loader(test_category: str, examples_per_category: int = -1):
                 )
             else:
                 row["max_turns"] = 1
-                row["toolsets"] = {"bfcl": {"fn": BFCL_TOOLSET_REF}}
             rows.append(row)
         return rows
 
@@ -188,9 +176,9 @@ def load_tasks(test_category: str = "simple_python", examples_per_category: int 
 
 def bfcl_row(
     test_category: str,
-    entry: ConfigMap,
-    hinted_entry: ConfigMap,
-    ground_truth: ConfigMap | None,
+    entry: vf.JsonData,
+    hinted_entry: vf.JsonData,
+    ground_truth: vf.JsonData | None,
 ) -> vf.ConfigData:
     question = cast(list[BFCLRawTurn], entry["question"])
     first_turn_system_prompt, first_turn_prompt = split_system_prompt(
@@ -231,15 +219,15 @@ def normalize_turn(value: object) -> list[vf.ConfigData]:
         return []
     if isinstance(value, str):
         return [{"role": "user", "content": value}]
-    if isinstance(value, Mapping):
-        return [dict(cast(ConfigMap, value))]
+    if isinstance(value, dict):
+        return [dict(cast(vf.JsonData, value))]
     if isinstance(value, Sequence):
         messages = []
         for item in value:
             if isinstance(item, str):
                 messages.append({"role": "user", "content": item})
-            elif isinstance(item, Mapping):
-                messages.append(dict(cast(ConfigMap, item)))
+            elif isinstance(item, dict):
+                messages.append(dict(cast(vf.JsonData, item)))
             else:
                 raise TypeError(f"Unsupported BFCL message item: {type(item).__name__}")
         return messages
@@ -247,7 +235,7 @@ def normalize_turn(value: object) -> list[vf.ConfigData]:
 
 
 def split_system_prompt(
-    messages: Sequence[ConfigMap],
+    messages: Sequence[vf.JsonData],
 ) -> tuple[list[vf.ConfigData], list[vf.ConfigData]]:
     system_prompt = []
     prompt = []
@@ -264,17 +252,17 @@ def maximum_step_limit() -> int:
     return cast(int, MAXIMUM_STEP_LIMIT)
 
 
-def model_name(state: ConfigMap) -> str:
+def model_name(state: vf.JsonData) -> str:
     runtime = state.get("runtime") or {}
-    if isinstance(runtime, Mapping):
-        runtime_map = cast(ConfigMap, runtime)
+    if isinstance(runtime, dict):
+        runtime_map = cast(vf.JsonData, runtime)
         model = runtime_map.get("model")
         if isinstance(model, str) and model:
             return model
     return "unknown"
 
 
-def assistant_tool_calls(state: ConfigMap) -> list[ToolCall]:
+def assistant_tool_calls(state: vf.JsonData) -> list[ToolCall]:
     completion = state.get("completion") or []
     if not isinstance(completion, Sequence):
         return []
@@ -288,8 +276,8 @@ def parse_tool_calls(message: object) -> list[ToolCall]:
     if isinstance(message, AssistantMessage):
         return list(message.tool_calls or [])
     raw_tool_calls: object
-    if isinstance(message, Mapping):
-        message_map = cast(ConfigMap, message)
+    if isinstance(message, dict):
+        message_map = cast(vf.JsonData, message)
         raw_tool_calls = message_map.get("tool_calls") or []
     else:
         raw_tool_calls = getattr(message, "tool_calls", []) or []
@@ -300,12 +288,12 @@ def parse_tool_calls(message: object) -> list[ToolCall]:
         if isinstance(raw_call, ToolCall):
             calls.append(raw_call)
             continue
-        if not isinstance(raw_call, Mapping):
+        if not isinstance(raw_call, dict):
             continue
-        raw_call = cast(ConfigMap, raw_call)
+        raw_call = cast(vf.JsonData, raw_call)
         function = raw_call.get("function")
-        if isinstance(function, Mapping):
-            function_map = cast(ConfigMap, function)
+        if isinstance(function, dict):
+            function_map = cast(vf.JsonData, function)
             name = str(function_map.get("name") or "")
             arguments = function_map.get("arguments") or "{}"
         else:
@@ -346,7 +334,7 @@ def json_clone(value: object) -> object:
 
 
 @vf.reward(weight=1.0)
-async def bfcl_reward(task: ConfigMap, state: vf.State) -> float:
+async def bfcl_reward(task: vf.Task, state: vf.State) -> float:
     patch_bfcl_eval()
     from bfcl_eval.utils import is_multi_turn, is_relevance_or_irrelevance
 
@@ -358,7 +346,7 @@ async def bfcl_reward(task: ConfigMap, state: vf.State) -> float:
     return ast_reward(task, state)
 
 
-def relevance_reward(task: ConfigMap, state: ConfigMap) -> float:
+def relevance_reward(task: vf.JsonData, state: vf.JsonData) -> float:
     patch_bfcl_eval()
     from bfcl_eval.utils import is_empty_output
 
@@ -373,7 +361,7 @@ def relevance_reward(task: ConfigMap, state: ConfigMap) -> float:
     return float(contain_func_call)
 
 
-def ast_reward(task: ConfigMap, state: ConfigMap) -> float:
+def ast_reward(task: vf.JsonData, state: vf.JsonData) -> float:
     patch_bfcl_eval()
     from bfcl_eval.constants.enums import Language
     from bfcl_eval.eval_checker.ast_eval.ast_checker import ast_checker
@@ -409,7 +397,7 @@ def ast_reward(task: ConfigMap, state: ConfigMap) -> float:
     return float(bool(checker_result["valid"]))
 
 
-def multi_turn_reward(task: ConfigMap, state: ConfigMap) -> float:
+def multi_turn_reward(task: vf.JsonData, state: vf.JsonData) -> float:
     patch_bfcl_eval()
     from bfcl_eval.eval_checker.multi_turn_eval.multi_turn_checker import (
         multi_turn_checker,
@@ -578,21 +566,26 @@ async def bfcl_multi_turn_program(
     return state
 
 
-class BFCLMultiTurnHarness(vf.Harness):
-    def __init__(self, config: BFCLHarnessConfig):
-        super().__init__(config=config)
-        self._configure_runtime(program=self.run_bfcl_multi_turn)
-
-    async def run_bfcl_multi_turn(self, task: vf.Task, state: vf.State) -> vf.State:
-        return await bfcl_multi_turn_program(task, state, self)
-
-
 class BFCLTaskset(vf.Taskset[BFCLTasksetConfig]):
-    def load_tasks(self) -> vf.Tasks:
+    def load_toolsets(self, config: BFCLTasksetConfig) -> vf.Toolsets:
+        _ = config
+        return {"bfcl": vf.Toolset(scope="rollout")}
+
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         return load_tasks(
             test_category=self.config.test_category,
             examples_per_category=self.config.examples_per_category,
         )
+
+    @vf.setup
+    async def setup_bfcl_tools(self, task: vf.Task, state: vf.State) -> None:
+        patch_bfcl_eval()
+        from bfcl_eval.utils import is_multi_turn
+
+        if is_multi_turn(str(task["category"])):
+            return
+        for tool_def in bfcl_tool_defs(bfcl_functions(task)):
+            state.add_tool("bfcl", BFCLSchemaTool(tool_def))
 
 
 def load_harness(config: BFCLHarnessConfig) -> vf.Harness:
@@ -600,7 +593,9 @@ def load_harness(config: BFCLHarnessConfig) -> vf.Harness:
     from bfcl_eval.utils import is_multi_turn
 
     if is_multi_turn(config.test_category):
-        return BFCLMultiTurnHarness(config=config)
+        config = config.model_copy(
+            update={"program": vf.ProgramConfig(fn="bfcl_multi_turn_program")}
+        )
     return vf.Harness(config=config)
 
 
