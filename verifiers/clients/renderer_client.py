@@ -8,16 +8,18 @@ A shared RendererPool (one per model) offloads sync tokenization to threads so
 concurrent rollouts tokenize in parallel instead of blocking the event loop.
 """
 
+import base64
 import ctypes
 import gc
+import hashlib
 import json
 import logging
 import os
 import threading
 import time
 from collections.abc import Mapping
-from contextvars import ContextVar
 from multiprocessing import current_process
+from pathlib import Path
 from typing import Any, ClassVar, cast
 
 from openai import AsyncOpenAI
@@ -40,7 +42,6 @@ from renderers import (
 from renderers import ToolCall as RendererToolCall
 from renderers import ToolCallFunction
 from renderers.base import MODEL_RENDERER_MAP
-import renderers.client as _renderer_client_module
 from renderers.client import _maybe_offload, generate
 
 from verifiers.clients.client import Client
@@ -76,30 +77,12 @@ _bridge_metrics_lock = threading.Lock()
 _bridge_metrics: dict[str, int] = {"attempts": 0, "successes": 0, "failures": 0}
 
 _mm_logger = logging.getLogger("verifiers.clients.renderer_ephemeral_mm")
-_mm_patch_installed = False
-_mm_patch_lock = threading.Lock()
 _mm_cleanup_lock = threading.Lock()
 _mm_libc: Any | None = None
 _DEFAULT_MM_CLEANUP_MODE = "auto"
 _DEFAULT_MM_CLEANUP_MIN_DELTA_MB = 64.0
-_HASH_PREVIEW_CHARS = 8
-_HASH_PREVIEW_LIMIT = 8
 
-_mm_force_full_payloads: ContextVar[bool] = ContextVar(
-    "renderer_mm_force_full_payloads", default=False
-)
-_mm_used_hash_only: ContextVar[bool] = ContextVar(
-    "renderer_mm_used_hash_only", default=False
-)
-_mm_full_payload_count: ContextVar[int] = ContextVar(
-    "renderer_mm_full_payload_count", default=0
-)
-_mm_request_id: ContextVar[int | None] = ContextVar("renderer_mm_request_id", default=None)
-_mm_log_context: ContextVar[dict[str, Any] | None] = ContextVar(
-    "renderer_mm_log_context", default=None
-)
 _mm_request_counter = 0
-_mm_inflight = 0
 _mm_counter_lock = threading.Lock()
 
 
@@ -171,8 +154,16 @@ def _cleanup_mode() -> str:
     return _env_flag("VF_RENDERER_MM_CLEANUP") or _DEFAULT_MM_CLEANUP_MODE
 
 
-def _maybe_cleanup_mm_request(req_id: int, full_payload_count: int, start_rss: float) -> None:
-    """Return transient multimodal payload memory to the OS when possible."""
+def _maybe_cleanup_mm_request(
+    req_id: int, built_full: bool, start_rss: float, context: Mapping[str, Any]
+) -> None:
+    """Return transient multimodal payload memory to the OS when possible.
+
+    ``built_full`` is whether this request actually serialized any full pixel
+    payload (a new-turn image or a materialize-all fallback). Hash-only-only
+    requests allocate no large transient tensors, so in ``auto`` mode we skip
+    the trim for them.
+    """
 
     mode = _cleanup_mode()
     if _is_off_flag(mode):
@@ -180,7 +171,7 @@ def _maybe_cleanup_mm_request(req_id: int, full_payload_count: int, start_rss: f
     if mode not in {"auto", "always", "1", "true", "on", "enabled"}:
         _mm_logger.warning("Ignoring invalid renderer MM cleanup mode: %r", mode)
         return
-    if full_payload_count <= 0 and mode != "always":
+    if not built_full and mode != "always":
         return
 
     before = _rss_mb()
@@ -203,13 +194,13 @@ def _maybe_cleanup_mm_request(req_id: int, full_payload_count: int, start_rss: f
         after_trim = _rss_mb()
 
     _mm_logger.info(
-        "renderer_mm_cleanup req=%d mode=%s full_payloads=%d "
+        "renderer_mm_cleanup req=%d mode=%s built_full=%d "
         "rss_start_mb=%.1f rss_before_mb=%.1f rss_after_gc_mb=%.1f "
         "rss_after_trim_mb=%.1f freed_mb=%.1f gc_collected=%d "
         "trim_ok=%s trim_error=%s ctx=%s",
         req_id,
         mode,
-        full_payload_count,
+        int(built_full),
         start_rss,
         before,
         after_gc,
@@ -218,7 +209,7 @@ def _maybe_cleanup_mm_request(req_id: int, full_payload_count: int, start_rss: f
         gc_collected,
         "-" if trim_ok is None else trim_ok,
         "-" if trim_error is None else trim_error,
-        _mm_context_str(),
+        _format_context(context),
     )
 
 
@@ -242,34 +233,275 @@ def _value_nbytes(value: Any) -> int:
     return 0
 
 
-def _mm_data_stats(mm_data: Any) -> tuple[int, float]:
+def _json_bytes(value: Any) -> int:
+    try:
+        return len(json.dumps(value, ensure_ascii=False, default=str).encode("utf-8"))
+    except Exception:
+        return 0
+
+
+def _image_url_payload_bytes(url: Any) -> int:
+    if not isinstance(url, str):
+        return 0
+    marker = ";base64,"
+    if not url.startswith("data:image/") or marker not in url:
+        return 0
+    return len(url.split(marker, 1)[1])
+
+
+def _image_url_stats(value: Any) -> tuple[int, int]:
+    if isinstance(value, Mapping):
+        count = 0
+        nbytes = 0
+        if value.get("type") == "image_url":
+            url_payload = value.get("image_url")
+            if isinstance(url_payload, Mapping):
+                image_bytes = _image_url_payload_bytes(url_payload.get("url"))
+                if image_bytes:
+                    count += 1
+                    nbytes += image_bytes
+        for child in value.values():
+            child_count, child_bytes = _image_url_stats(child)
+            count += child_count
+            nbytes += child_bytes
+        return count, nbytes
+    if isinstance(value, (list, tuple)):
+        count = 0
+        nbytes = 0
+        for child in value:
+            child_count, child_bytes = _image_url_stats(child)
+            count += child_count
+            nbytes += child_bytes
+        return count, nbytes
+    return 0, 0
+
+
+def _trajectory_prompt_image_stats(trajectory: Any) -> tuple[int, int, int]:
+    if not isinstance(trajectory, list):
+        return 0, 0, 0
+    image_count = 0
+    image_bytes = 0
+    prompt_json_bytes = 0
+    for step in trajectory:
+        prompt = _get_value(step, "prompt")
+        if prompt is None:
+            continue
+        prompt_json_bytes += _json_bytes(prompt)
+        count, nbytes = _image_url_stats(prompt)
+        image_count += count
+        image_bytes += nbytes
+    return image_count, image_bytes, prompt_json_bytes
+
+
+def _mm_sidecar_stats(mm_data: Any) -> tuple[int, int, float]:
+    if mm_data is None:
+        return 0, 0, 0.0
     image_items = getattr(mm_data, "mm_items", {}).get("image") or []
-    return len(image_items), _value_nbytes(image_items) / (1024.0 * 1024.0)
+    descriptor_count = 0
+    payload_count = 0
+    payload_bytes = 0
+    for item in image_items:
+        if not isinstance(item, Mapping):
+            continue
+        if item.get("pixel_values") is None:
+            descriptor_count += 1
+        else:
+            payload_count += 1
+            payload_bytes += _value_nbytes(item.get("pixel_values"))
+            payload_bytes += _value_nbytes(item.get("image_grid_thw"))
+    return descriptor_count, payload_count, payload_bytes / (1024.0 * 1024.0)
 
 
-def _features_encoded_mb(features: Mapping[str, Any] | None) -> float:
-    if not features:
-        return 0.0
-    kwargs_data = features.get("kwargs_data")
-    if not isinstance(kwargs_data, Mapping):
-        return 0.0
-    return _value_nbytes(kwargs_data) / (1024.0 * 1024.0)
+# ── Live image offload ───────────────────────────────────────────────────
+# Screenshots arrive as ``data:image/...;base64,...`` URLs. Decoding them to a
+# shared dir during the live rollout (and rewriting the URL to ``file://``)
+# keeps the env worker from retaining the full base64 transcript across turns —
+# the unbounded growth lives in ``state["trajectory"]``, which accumulates every
+# turn's prompt. Renderers load ``file://`` paths transparently, and the
+# renderer's content hash is computed from decoded pixels (not the URL), so the
+# rewrite is invisible to bridge matching, vLLM cache keys, and pixel
+# materialization. Offload is deterministic (content-addressed), so the same
+# image rewrites to the same path on both the current prompt and the stored
+# trajectory — which is what keeps bridge prefix matching valid.
+
+_IMAGE_OFFLOAD_MODE_ENV = "VF_RENDERER_IMAGE_OFFLOAD"
+_IMAGE_OFFLOAD_DIR_ENV = "VF_RENDERER_IMAGE_OFFLOAD_DIR"
+_DEFAULT_IMAGE_OFFLOAD_DIR = "/data/renderer-image-cache"
+_FILE_URL_PREFIX = "file://"
+_MEDIA_TYPE_EXT = {
+    "jpeg": ".jpg",
+    "jpg": ".jpg",
+    "png": ".png",
+    "webp": ".webp",
+    "gif": ".gif",
+}
 
 
-def _preview_hashes(hashes: list[str]) -> str:
-    if not hashes:
-        return "-"
-    clipped = [str(h)[:_HASH_PREVIEW_CHARS] for h in hashes[:_HASH_PREVIEW_LIMIT]]
-    suffix = (
-        f",+{len(hashes) - _HASH_PREVIEW_LIMIT}"
-        if len(hashes) > _HASH_PREVIEW_LIMIT
-        else ""
+def _image_offload_enabled() -> bool:
+    return not _is_off_flag(_env_flag(_IMAGE_OFFLOAD_MODE_ENV))
+
+
+def _image_offload_dir() -> Path:
+    raw = os.environ.get(_IMAGE_OFFLOAD_DIR_ENV, "").strip()
+    return Path(raw) if raw else Path(_DEFAULT_IMAGE_OFFLOAD_DIR)
+
+
+def _media_type_ext(media_type: str) -> str:
+    subtype = media_type.split("/", 1)[-1].split(";", 1)[0].strip().lower()
+    return _MEDIA_TYPE_EXT.get(subtype, ".img")
+
+
+def _offload_image_url(url: Any, offload_dir: Path) -> "tuple[str, int] | None":
+    """Decode a base64 image data URI to ``offload_dir`` and return
+    ``(file_url, decoded_bytes)``. Returns ``None`` for anything that isn't a
+    base64 image data URI (already ``file://`` / a path / http, or non-image),
+    leaving the caller's URL untouched.
+
+    Content-addressed by ``sha256(decoded_bytes)`` so identical images share one
+    file (and one path) regardless of which writer or turn produced them. Writes
+    via a unique temp file + atomic ``os.replace`` so concurrent env workers on a
+    shared (NFS) dir never see a partial file.
+    """
+    if not isinstance(url, str) or not url.startswith("data:image/"):
+        return None
+    marker = ";base64,"
+    if marker not in url:
+        return None
+    header, b64 = url.split(marker, 1)
+    media_type = header[len("data:") :]  # e.g. "image/jpeg"
+    try:
+        raw = base64.b64decode(b64)
+    except Exception:
+        return None
+    digest = hashlib.sha256(raw).hexdigest()[:16]
+    path = offload_dir / f"{digest}{_media_type_ext(media_type)}"
+    if not path.exists():
+        try:
+            offload_dir.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_name(
+                f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+            )
+            tmp.write_bytes(raw)
+            os.replace(tmp, path)  # atomic; last writer wins (identical content)
+        except OSError as exc:
+            # Best effort: if the shared dir isn't writable, leave the data URI
+            # in place rather than dropping the image.
+            _mm_logger.warning("renderer_image_offload write failed: %r", exc)
+            return None
+    return f"{_FILE_URL_PREFIX}{path}", len(raw)
+
+
+def _offload_image_parts_inplace(value: Any, offload_dir: Path) -> "tuple[int, int]":
+    """Rewrite every base64 image URL reachable from ``value`` to ``file://`` in
+    place; return ``(images_rewritten, bytes_offloaded)``.
+
+    Handles plain-dict messages/parts (the native renderer prompt) and Pydantic
+    ``Message`` / ``ContentPart`` models (stored trajectory prompts): for dicts
+    we mutate ``item["image_url"]["url"]``; for content-part objects we set
+    ``part.image_url.url``; messages are descended via their ``content`` list.
+    """
+    if isinstance(value, dict):
+        count = nbytes = 0
+        if value.get("type") == "image_url" and isinstance(value.get("image_url"), dict):
+            res = _offload_image_url(value["image_url"].get("url"), offload_dir)
+            if res is not None:
+                value["image_url"]["url"], n = res
+                count += 1
+                nbytes += n
+        for child in value.values():
+            c, b = _offload_image_parts_inplace(child, offload_dir)
+            count += c
+            nbytes += b
+        return count, nbytes
+    if isinstance(value, (list, tuple)):
+        count = nbytes = 0
+        for child in value:
+            c, b = _offload_image_parts_inplace(child, offload_dir)
+            count += c
+            nbytes += b
+        return count, nbytes
+    # Pydantic image content part: ``part.type == "image_url"``, ``part.image_url.url``.
+    if getattr(value, "type", None) == "image_url":
+        src = getattr(value, "image_url", None)
+        res = _offload_image_url(getattr(src, "url", None), offload_dir) if src is not None else None
+        if res is not None:
+            try:
+                src.url = res[0]
+                return 1, res[1]
+            except Exception:  # frozen / validated model — leave it untouched
+                return 0, 0
+        return 0, 0
+    # Pydantic message: descend into its content list.
+    content = getattr(value, "content", None)
+    if isinstance(content, (list, tuple)):
+        return _offload_image_parts_inplace(content, offload_dir)
+    return 0, 0
+
+
+def _offload_prompt_and_trajectory_images(prompt: Any, state: Any) -> "dict[str, int]":
+    """Offload base64 images in the current ``prompt`` and the newest stored
+    trajectory step to disk, in place, BEFORE bridge prefix matching — so both
+    sides use identical ``file://`` URLs for the same image.
+
+    The trajectory is append-only, and the prompt that became each prior step
+    was offloaded on the turn it was the newest step — so only ``trajectory[-1]``
+    can still hold base64. (The very last step of the rollout is offloaded by
+    the orchestrator's ``offload_images_to_disk`` post-rollout.)
+    """
+    offload_dir = _image_offload_dir()
+    prompt_count, prompt_bytes = _offload_image_parts_inplace(prompt, offload_dir)
+    traj_count = traj_bytes = 0
+    trajectory = _get_value(state, "trajectory") if state is not None else None
+    if isinstance(trajectory, list) and trajectory:
+        last_prompt = _get_value(trajectory[-1], "prompt")
+        if last_prompt is not None:
+            traj_count, traj_bytes = _offload_image_parts_inplace(last_prompt, offload_dir)
+    return {
+        "prompt_rewritten": prompt_count,
+        "prompt_bytes": prompt_bytes,
+        "trajectory_rewritten": traj_count,
+        "trajectory_bytes": traj_bytes,
+    }
+
+
+def _log_renderer_prompt_memory(
+    *,
+    prompt: list[RendererMessage],
+    trajectory: Any,
+    multi_modal_data: Any,
+    bridged: bool,
+    context: Mapping[str, Any],
+) -> None:
+    prompt_images, prompt_image_bytes = _image_url_stats(prompt)
+    traj_images, traj_image_bytes, traj_prompt_json_bytes = _trajectory_prompt_image_stats(
+        trajectory
     )
-    return ",".join(clipped) + suffix
+    mm_descriptors, mm_payloads, mm_payload_mb = _mm_sidecar_stats(multi_modal_data)
+    _mm_logger.info(
+        "renderer_prompt_mem prompt_msgs=%d prompt_images=%d "
+        "prompt_image_mb=%.1f prompt_json_mb=%.1f traj_steps=%d "
+        "traj_prompt_images=%d traj_prompt_image_mb=%.1f "
+        "traj_prompt_json_mb=%.1f mm_descriptors=%d mm_payloads=%d "
+        "mm_payload_mb=%.1f bridged=%d rss_mb=%.1f threads=%d ctx=%s",
+        len(prompt),
+        prompt_images,
+        prompt_image_bytes / (1024.0 * 1024.0),
+        _json_bytes(prompt) / (1024.0 * 1024.0),
+        len(trajectory) if isinstance(trajectory, list) else 0,
+        traj_images,
+        traj_image_bytes / (1024.0 * 1024.0),
+        traj_prompt_json_bytes / (1024.0 * 1024.0),
+        mm_descriptors,
+        mm_payloads,
+        mm_payload_mb,
+        int(bridged),
+        _rss_mb(),
+        _os_thread_count(),
+        _format_context(context),
+    )
 
 
-def _mm_context_str() -> str:
-    ctx = _mm_log_context.get() or {}
+def _format_context(ctx: Mapping[str, Any]) -> str:
     parts = [f"pid={os.getpid()}", f"proc={current_process().name}"]
     for key in (
         "session_id",
@@ -286,221 +518,6 @@ def _mm_context_str() -> str:
     return " ".join(parts)
 
 
-def _image_feature_summary(
-    features: Mapping[str, Any] | None,
-) -> tuple[int, int, str, str]:
-    if not features:
-        return 0, 0, "-", "-"
-    hashes = list((features.get("mm_hashes") or {}).get("image") or [])
-    kwargs_data = features.get("kwargs_data")
-    hash_only: list[str] = []
-    full_payloads: list[str] = []
-    if hashes and isinstance(kwargs_data, Mapping):
-        image_payloads = kwargs_data.get("image")
-        if isinstance(image_payloads, list):
-            for i, h in enumerate(hashes):
-                if i < len(image_payloads) and image_payloads[i] is not None:
-                    full_payloads.append(h)
-                else:
-                    hash_only.append(h)
-    elif hashes and kwargs_data is None:
-        hash_only = hashes
-    return (
-        len(full_payloads),
-        len(hash_only),
-        _preview_hashes(full_payloads),
-        _preview_hashes(hash_only),
-    )
-
-
-def _mark_hash_only_used() -> None:
-    _mm_used_hash_only.set(True)
-
-
-def _increment_full_payload_count(count: int) -> None:
-    if count > 0:
-        _mm_full_payload_count.set(_mm_full_payload_count.get() + count)
-
-
-def _materialize_pixels_for_ephemeral_mm(renderer: Any, mm_data: Any, messages: list[Any]):
-    from dataclasses import replace
-
-    from renderers.qwen3_vl import _grids_equal, _iter_image_parts
-
-    image_items = getattr(mm_data, "mm_items", {}).get("image") or []
-    if not image_items:
-        return mm_data
-    hashes = list(getattr(mm_data, "mm_hashes", {}).get("image") or [])
-    if len(hashes) != len(image_items):
-        raise ValueError(
-            "materialize_pixels: mm_hashes/mm_items length mismatch "
-            f"({len(hashes)} vs {len(image_items)})"
-        )
-    force_full_payloads = _mm_force_full_payloads.get()
-
-    missing = {
-        hashes[i]
-        for i, item in enumerate(image_items)
-        if force_full_payloads and item.get("pixel_values") is None
-    }
-
-    resolved: dict[str, dict[str, Any]] = {}
-    if missing:
-        for part in _iter_image_parts(messages):
-            if not missing:
-                break
-            _, out, _, h = renderer._process_image(part)
-            if h in missing:
-                resolved[h] = out
-                missing.discard(h)
-        if missing:
-            raise ValueError(
-                f"materialize_pixels: {len(missing)} image hash(es) not "
-                "found in messages; cannot reconstruct pixel_values"
-            )
-
-    new_image_items: list[dict[str, Any]] = []
-    for i, item in enumerate(image_items):
-        h = hashes[i]
-        if item.get("pixel_values") is not None:
-            new_image_items.append(item)
-            continue
-        if not force_full_payloads:
-            _mark_hash_only_used()
-            new_image_items.append({k: v for k, v in item.items() if k != "pixel_values"})
-            continue
-        out = resolved[h]
-        if not _grids_equal(out["image_grid_thw"], item.get("image_grid_thw")):
-            raise ValueError(
-                "materialize_pixels: reconstructed image_grid_thw "
-                f"{out['image_grid_thw']!r} != descriptor "
-                f"{item.get('image_grid_thw')!r}"
-            )
-        new_image_items.append(
-            {
-                "pixel_values": out["pixel_values"],
-                "image_grid_thw": out["image_grid_thw"],
-            }
-        )
-
-    new_items = dict(mm_data.mm_items)
-    new_items["image"] = new_image_items
-    return replace(mm_data, mm_items=new_items)
-
-
-def _build_qwen_vl_features_with_hash_only(
-    mm_data: Any, *, spatial_merge_size: int
-) -> dict[str, Any]:
-    try:
-        import torch
-        from transformers.feature_extraction_utils import BatchFeature
-        from vllm.entrypoints.serve.disagg.mm_serde import encode_mm_kwargs_item
-        from vllm.model_executor.models.qwen2_vl import _create_qwen2vl_field_factory
-        from vllm.multimodal.inputs import MultiModalKwargsItems
-    except ImportError as exc:
-        raise RuntimeError(
-            "Multimodal generate via /inference/v1/generate requires `vllm` "
-            "and `torch` to encode the features payload."
-        ) from exc
-
-    out: dict[str, Any] = {
-        "mm_hashes": {},
-        "mm_placeholders": {},
-        "kwargs_data": {},
-    }
-
-    image_items = mm_data.mm_items.get("image") or []
-    if image_items:
-        hashes = list(mm_data.mm_hashes.get("image") or [])
-        encoded: list[str | None] = [None] * len(image_items)
-        encode_indices: list[int] = []
-        encode_items: list[dict[str, Any]] = []
-        for i, item in enumerate(image_items):
-            if item.get("pixel_values") is None:
-                _mark_hash_only_used()
-                continue
-            encode_indices.append(i)
-            encode_items.append(item)
-
-        if encode_items:
-            pixel_values = torch.cat(
-                [torch.as_tensor(it["pixel_values"]) for it in encode_items], dim=0
-            )
-            image_grid_thw = torch.cat(
-                [torch.as_tensor(it["image_grid_thw"]) for it in encode_items], dim=0
-            )
-            hf_inputs = BatchFeature(
-                data={"pixel_values": pixel_values, "image_grid_thw": image_grid_thw}
-            )
-            config = _create_qwen2vl_field_factory(spatial_merge_size)(hf_inputs)
-            kwargs_items = MultiModalKwargsItems.from_hf_inputs(hf_inputs, config)
-            encoded_items = [encode_mm_kwargs_item(it) for it in kwargs_items["image"]]
-            for i, encoded_item in zip(encode_indices, encoded_items):
-                encoded[i] = encoded_item
-            _increment_full_payload_count(len(encode_items))
-
-        out["kwargs_data"]["image"] = encoded
-        out["mm_hashes"]["image"] = hashes
-        out["mm_placeholders"]["image"] = [
-            {"offset": p.offset, "length": p.length}
-            for p in mm_data.mm_placeholders.get("image") or []
-        ]
-
-    if not any(
-        any(item is not None for item in items) for items in out["kwargs_data"].values()
-    ):
-        out["kwargs_data"] = None
-
-    return out
-
-
-def _install_ephemeral_mm_patch() -> None:
-    global _mm_patch_installed
-    if _mm_patch_installed:
-        return
-    with _mm_patch_lock:
-        if _mm_patch_installed:
-            return
-
-        from renderers.qwen3_vl import Qwen3VLRenderer
-        from renderers.qwen35 import Qwen35Renderer
-
-        def wrapped_build_qwen_vl_features(mm_data: Any, *, spatial_merge_size: int):
-            images, mm_mb = _mm_data_stats(mm_data)
-            t0 = time.monotonic()
-            features = _build_qwen_vl_features_with_hash_only(
-                mm_data, spatial_merge_size=spatial_merge_size
-            )
-            elapsed_ms = (time.monotonic() - t0) * 1000.0
-            encoded_mb = _features_encoded_mb(features)
-            full_payloads, hash_only, full_hashes, hash_only_hashes = (
-                _image_feature_summary(features)
-            )
-            _mm_logger.info(
-                "renderer_mm_features req=%s images=%d full=%d hash_only=%d "
-                "full_hashes=%s hash_only_hashes=%s mm_mb=%.1f payload_mb=%.1f "
-                "rss_mb=%.1f threads=%d elapsed_ms=%.1f ctx=%s",
-                _mm_request_id.get() or "-",
-                images,
-                full_payloads,
-                hash_only,
-                full_hashes,
-                hash_only_hashes,
-                mm_mb,
-                encoded_mb,
-                _rss_mb(),
-                _os_thread_count(),
-                elapsed_ms,
-                _mm_context_str(),
-            )
-            return features
-
-        _renderer_client_module._build_qwen_vl_features = wrapped_build_qwen_vl_features
-        Qwen35Renderer.materialize_pixels = _materialize_pixels_for_ephemeral_mm
-        Qwen3VLRenderer.materialize_pixels = _materialize_pixels_for_ephemeral_mm
-        _mm_patch_installed = True
-
-
 def _is_retryable_hash_only_failure(exc: Exception) -> bool:
     status = getattr(exc, "status_code", None)
     response = getattr(exc, "response", None)
@@ -512,54 +529,65 @@ def _is_retryable_hash_only_failure(exc: Exception) -> bool:
     return "Expected a cached item" in text or "mm_hash" in text
 
 
-async def _generate_with_ephemeral_mm_retry(**kwargs: Any) -> dict[str, Any]:
-    log_context = kwargs.pop("_mm_log_context", None)
-    _install_ephemeral_mm_patch()
+async def _generate_with_mm_fallback(
+    *, mm_log_context: Mapping[str, Any] | None = None, **kwargs: Any
+) -> dict[str, Any]:
+    """Send images hash-only first; fall back to full pixels on a cache miss.
 
-    global _mm_request_counter, _mm_inflight
+    Prior-turn images reach ``generate`` descriptor-only and are serialized
+    hash-only, assuming the engine still has them cached; the new turn's images
+    carry ``pixel_values`` and are sent in full (see
+    ``renderers.client.generate`` / ``_build_qwen_vl_features``). If the engine
+    rejects the hash-only request because it evicted a hashed image, retry once
+    with ``force_full_pixels=True`` so every image is re-materialized and sent.
+
+    Both gates are inferred locally from ``multi_modal_data``: ``has_hash_only``
+    (a cache-miss is worth retrying) is needed on the failure path where
+    ``generate`` has no return value, and ``built_full`` (this request built
+    full pixel payloads, so trim afterwards) follows from the same inspection —
+    an image carries ``pixel_values`` iff ``generate`` sends it in full. Reading
+    both here, not from state set inside ``generate`` (which runs the feature
+    build on a pool thread — a copied context where a ``ContextVar.set`` would
+    be invisible), is what keeps this correct.
+    """
+    ctx: Mapping[str, Any] = mm_log_context if isinstance(mm_log_context, Mapping) else {}
+    mm_data = kwargs.get("multi_modal_data")
+    descriptor_count, payload_count, _ = _mm_sidecar_stats(mm_data)
+    has_hash_only = descriptor_count > 0
+    built_full = payload_count > 0
+
+    global _mm_request_counter
     with _mm_counter_lock:
         _mm_request_counter += 1
         req_id = _mm_request_counter
-        _mm_inflight += 1
-        inflight = _mm_inflight
 
-    force_token = _mm_force_full_payloads.set(False)
-    used_token = _mm_used_hash_only.set(False)
-    payload_token = _mm_full_payload_count.set(0)
-    req_token = _mm_request_id.set(req_id)
-    log_token = _mm_log_context.set(
-        cast(dict[str, Any] | None, log_context)
-        if isinstance(log_context, dict)
-        else None
-    )
     start_rss = _rss_mb()
     start = time.monotonic()
     try:
         _mm_logger.debug(
-            "renderer_mm_generate_start req=%d inflight=%d rss_mb=%.1f "
-            "threads=%d ctx=%s",
+            "renderer_mm_generate_start req=%d hash_only=%d full=%d "
+            "rss_mb=%.1f threads=%d ctx=%s",
             req_id,
-            inflight,
+            descriptor_count,
+            payload_count,
             start_rss,
             _os_thread_count(),
-            _mm_context_str(),
+            _format_context(ctx),
         )
         try:
-            return await generate(**kwargs)
+            return await generate(force_full_pixels=False, **kwargs)
         except Exception as exc:
             retryable = _is_retryable_hash_only_failure(exc)
-            used_hash_only = _mm_used_hash_only.get()
             _mm_logger.info(
                 "renderer_mm_exception req=%d hash_only=%d retryable=%d "
-                "full_payloads=%d exc_type=%s ctx=%s",
+                "exc_type=%s ctx=%s",
                 req_id,
-                int(used_hash_only),
+                int(has_hash_only),
                 int(retryable),
-                _mm_full_payload_count.get(),
                 type(exc).__name__,
-                _mm_context_str(),
+                _format_context(ctx),
             )
-            if not (used_hash_only and retryable):
+            if not (has_hash_only and retryable):
                 raise
 
             _mm_logger.warning(
@@ -567,35 +595,23 @@ async def _generate_with_ephemeral_mm_retry(**kwargs: Any) -> dict[str, Any]:
                 "images materialized: %r ctx=%s",
                 req_id,
                 exc,
-                _mm_context_str(),
+                _format_context(ctx),
             )
-            _mm_force_full_payloads.set(True)
-            _mm_used_hash_only.set(False)
-            _mm_full_payload_count.set(0)
-            return await generate(**kwargs)
+            built_full = True
+            return await generate(force_full_pixels=True, **kwargs)
     finally:
-        with _mm_counter_lock:
-            _mm_inflight -= 1
-            inflight = _mm_inflight
-        full_payload_count = _mm_full_payload_count.get()
-        _maybe_cleanup_mm_request(req_id, full_payload_count, start_rss)
+        _maybe_cleanup_mm_request(req_id, built_full, start_rss, ctx)
         _mm_logger.debug(
-            "renderer_mm_generate_end req=%d inflight=%d elapsed_s=%.1f "
-            "rss_start_mb=%.1f rss_end_mb=%.1f threads=%d full_payloads=%d ctx=%s",
+            "renderer_mm_generate_end req=%d elapsed_s=%.1f rss_start_mb=%.1f "
+            "rss_end_mb=%.1f threads=%d built_full=%d ctx=%s",
             req_id,
-            inflight,
             time.monotonic() - start,
             start_rss,
             _rss_mb(),
             _os_thread_count(),
-            full_payload_count,
-            _mm_context_str(),
+            int(built_full),
+            _format_context(ctx),
         )
-        _mm_force_full_payloads.reset(force_token)
-        _mm_used_hash_only.reset(used_token)
-        _mm_full_payload_count.reset(payload_token)
-        _mm_request_id.reset(req_token)
-        _mm_log_context.reset(log_token)
 
 
 def _get_value(obj: Any, key: str, default: Any = None) -> Any:
@@ -1092,6 +1108,38 @@ class RendererClient(
         )
         cache_salt = args.get("cache_salt") or sampling_params.pop("cache_salt", None)
         priority = args.get("priority") or sampling_params.pop("priority", None)
+        log_context = {
+            "session_id": session_id,
+            "trajectory_id": _get_value(state, "trajectory_id")
+            if state is not None
+            else None,
+            "prior_turns": prior_turns,
+            "prompt_msgs": len(prompt),
+            "model": model,
+            "cache_salt": cache_salt,
+            "client_idx": self._config.client_idx
+            if self._config is not None
+            else None,
+        }
+
+        # Offload base64 screenshots to a shared dir BEFORE bridge matching, so
+        # the current prompt and the stored trajectory it's compared against use
+        # identical ``file://`` URLs for the same image (deterministic by
+        # content hash). This also frees the unbounded retained transcript that
+        # would otherwise grow env-worker RSS turn over turn.
+        if _image_offload_enabled():
+            offload_stats = _offload_prompt_and_trajectory_images(prompt, state)
+            if offload_stats["prompt_rewritten"] or offload_stats["trajectory_rewritten"]:
+                _mm_logger.info(
+                    "renderer_image_offload prompt_rewritten=%d trajectory_rewritten=%d "
+                    "bytes_mb=%.1f dir=%s ctx=%s",
+                    offload_stats["prompt_rewritten"],
+                    offload_stats["trajectory_rewritten"],
+                    (offload_stats["prompt_bytes"] + offload_stats["trajectory_bytes"])
+                    / (1024.0 * 1024.0),
+                    _image_offload_dir(),
+                    _format_context(log_context),
+                )
 
         bridged = await _get_incremental_prompt_ids(
             renderer=renderer,
@@ -1112,6 +1160,14 @@ class RendererClient(
             multi_modal_data = None
             prompt_attribution = None
 
+        _log_renderer_prompt_memory(
+            prompt=prompt,
+            trajectory=trajectory,
+            multi_modal_data=multi_modal_data,
+            bridged=bridged is not None,
+            context=log_context,
+        )
+
         # ``renderers.client.generate`` discovers the engine's context-length
         # cap on its own (via ``GET /v1/models``, cached) and raises
         # ``renderers.OverlongPromptError`` on pre-flight overflow. Rebadge
@@ -1122,7 +1178,7 @@ class RendererClient(
         # 4xx → vf.OverlongPromptError) for engines whose ``/v1/models``
         # doesn't expose ``max_model_len``.
         try:
-            return await _generate_with_ephemeral_mm_retry(
+            return await _generate_with_mm_fallback(
                 client=self.client,
                 renderer=renderer,
                 messages=prompt,
@@ -1135,19 +1191,7 @@ class RendererClient(
                 cache_salt=cache_salt,
                 priority=priority,
                 extra_headers=extra_headers or None,
-                _mm_log_context={
-                    "session_id": session_id,
-                    "trajectory_id": _get_value(state, "trajectory_id")
-                    if state is not None
-                    else None,
-                    "prior_turns": prior_turns,
-                    "prompt_msgs": len(prompt),
-                    "model": model,
-                    "cache_salt": cache_salt,
-                    "client_idx": self._config.client_idx
-                    if self._config is not None
-                    else None,
-                },
+                mm_log_context=log_context,
             )
         except RendererOverlongPromptError as exc:
             raise OverlongPromptError(str(exc)) from exc
