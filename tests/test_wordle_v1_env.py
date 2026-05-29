@@ -1,5 +1,3 @@
-from typing import Any, cast
-
 import pytest
 
 
@@ -53,22 +51,22 @@ async def test_wordle_user_extracts_latest_feedback(monkeypatch):
     assert response == [vf.UserMessage(content="\nmiss\nY----\ntry again")]
 
 
-def test_wordle_load_environment_requires_wordle_config():
+def test_wordle_load_environment_coerces_taskset_config():
     from environments.wordle_v1 import wordle_v1
     from tasksets.textarena import TextArenaTasksetConfig
     import verifiers as vf
 
-    with pytest.raises(AssertionError):
-        wordle_v1.load_environment(
-            vf.EnvConfig(
-                taskset=cast(
-                    Any,
-                    TextArenaTasksetConfig(
-                        game="Wordle-v0", answer_state_key="secret_word"
-                    ),
-                )
+    env = wordle_v1.load_environment(
+        vf.EnvConfig(
+            taskset=TextArenaTasksetConfig(
+                game="Wordle-v0", answer_state_key="secret_word"
             )
         )
+    )
+
+    assert isinstance(env.taskset.config, wordle_v1.WordleTasksetConfig)
+    assert env.taskset.config.game == "Wordle-v0"
+    assert env.taskset.config.answer_state_key == "secret_word"
 
 
 def test_wordle_taskset_uses_textarena_loaders():
