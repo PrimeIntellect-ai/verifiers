@@ -95,8 +95,8 @@ class MyTasksetConfig(vf.TasksetConfig):
 
 
 class MyTaskset(vf.Taskset[MyTasksetConfig]):
-    def load_tasks(self) -> vf.Tasks:
-        rows = [
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
+        records = [
             {
                 "prompt": [{"role": "user", "content": "Reverse abc."}],
                 "answer": "cba",
@@ -104,7 +104,7 @@ class MyTaskset(vf.Taskset[MyTasksetConfig]):
                 "max_turns": 1,
             }
         ]
-        return [row for row in rows if row["split"] == self.config.split]
+        return [record for record in records if record["split"] == self.config.split]
 
     @vf.reward(weight=1.0)
     async def contains_answer(self, task, state) -> float:
@@ -116,22 +116,29 @@ def load_taskset(config: MyTasksetConfig) -> MyTaskset:
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
-    return vf.Env(taskset=vf.load_taskset(config=config.taskset))
+    return vf.Env(
+        taskset=vf.load_taskset(config=config.taskset),
+        harness=vf.Harness(config=config.harness),
+    )
 ```
 See [BYO Harness](byo-harness.md) for the advanced v1 taskset/harness API.
-Reusable v1 taskset and harness packages live under `verifiers.v1.packages`.
-For example, Harbor task directories can run through the bundled OpenCode CLI
-harness with:
+Reusable v1 taskset and harness packages live in `tasksets` and `harnesses`.
+Install them with `uv add "verifiers[packages]"`, or with the narrower
+`verifiers[tasksets]` and `verifiers[harnesses]` extras. For example, Harbor
+task directories can run through the bundled OpenCode CLI harness with:
 
 ```python
-from verifiers.v1.packages.harnesses import OpenCode, OpenCodeConfig
-from verifiers.v1.packages.tasksets import HarborTaskset, HarborTasksetConfig
+from harnesses import OpenCode, OpenCodeConfig
+from tasksets import HarborTaskset, HarborTasksetConfig
 
 env = vf.Env(
-    taskset=HarborTaskset(config=HarborTasksetConfig()),
+    taskset=HarborTaskset(config=HarborTasksetConfig(bundle_package=__name__)),
     harness=OpenCode(config=OpenCodeConfig()),
 )
 ```
+
+The packaged `Taskset` and `Harness` classes can also be constructed directly in
+ordinary Python code; loaders are the environment/config composition path.
 
 To run a local evaluation with any OpenAI-compatible model, do:
 ```bash

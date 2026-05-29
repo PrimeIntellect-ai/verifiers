@@ -11,7 +11,7 @@ import pytest
 
 import verifiers.scripts.eval as vf_eval
 import verifiers.utils.eval_utils
-from verifiers.types import GenerateOutputs
+from verifiers.types import EndpointConfig, GenerateOutputs
 from verifiers.utils.eval_utils import load_toml_config
 from verifiers.utils.path_utils import get_eval_results_path
 from verifiers.utils.save_utils import states_to_outputs
@@ -19,6 +19,10 @@ from verifiers.utils.save_utils import states_to_outputs
 
 def fail_load_endpoints(*_: object) -> dict:
     raise AssertionError("load_endpoints should not be called")
+
+
+def endpoint(**values: object) -> EndpointConfig:
+    return EndpointConfig.model_validate(values)
 
 
 @pytest.fixture
@@ -322,12 +326,12 @@ def test_cli_registry_headers_merged_with_eval_toml(tmp_path, monkeypatch, run_c
         {"env_id_or_config": str(cfg)},
         endpoints={
             "gpt-5-mini": [
-                {
-                    "model": "gpt-5-mini",
-                    "url": "https://a.example/v1",
-                    "key": "OPENAI_API_KEY",
-                    "extra_headers": {"X-Reg": "r"},
-                }
+                endpoint(
+                    model="gpt-5-mini",
+                    base_url="https://a.example/v1",
+                    api_key_var="OPENAI_API_KEY",
+                    extra_headers={"X-Reg": "r"},
+                )
             ]
         },
     )
@@ -350,18 +354,18 @@ def test_cli_multi_variant_preserves_per_row_registry_headers(monkeypatch, run_c
         },
         endpoints={
             "gpt-5-mini": [
-                {
-                    "model": "gpt-5-mini",
-                    "url": "https://a.example/v1",
-                    "key": "OPENAI_API_KEY",
-                    "extra_headers": {"X-Row": "a"},
-                },
-                {
-                    "model": "gpt-5-mini",
-                    "url": "https://b.example/v1",
-                    "key": "OPENAI_API_KEY",
-                    "extra_headers": {"X-Row": "b"},
-                },
+                endpoint(
+                    model="gpt-5-mini",
+                    base_url="https://a.example/v1",
+                    api_key_var="OPENAI_API_KEY",
+                    extra_headers={"X-Row": "a"},
+                ),
+                endpoint(
+                    model="gpt-5-mini",
+                    base_url="https://b.example/v1",
+                    api_key_var="OPENAI_API_KEY",
+                    extra_headers={"X-Row": "b"},
+                ),
             ]
         },
     )
@@ -381,16 +385,16 @@ def test_cli_endpoint_alias_multi_variant_sets_multi_base_urls(monkeypatch, run_
         },
         endpoints={
             "gpt-5-mini": [
-                {
-                    "model": "gpt-5-mini",
-                    "url": "https://a.example/v1",
-                    "key": "OPENAI_API_KEY",
-                },
-                {
-                    "model": "gpt-5-mini",
-                    "url": "https://b.example/v1",
-                    "key": "OPENAI_API_KEY",
-                },
+                endpoint(
+                    model="gpt-5-mini",
+                    base_url="https://a.example/v1",
+                    api_key_var="OPENAI_API_KEY",
+                ),
+                endpoint(
+                    model="gpt-5-mini",
+                    base_url="https://b.example/v1",
+                    api_key_var="OPENAI_API_KEY",
+                ),
             ]
         },
     )
@@ -417,11 +421,11 @@ def test_cli_model_flag_resolves_endpoint_alias_when_registry_present(
         },
         endpoints={
             "gpt-4.1-mini": [
-                {
-                    "model": "openai/gpt-4.1-mini",
-                    "url": "https://alias.example/v1",
-                    "key": "ALIAS_API_KEY",
-                }
+                endpoint(
+                    model="openai/gpt-4.1-mini",
+                    base_url="https://alias.example/v1",
+                    api_key_var="ALIAS_API_KEY",
+                )
             ]
         },
     )
@@ -443,12 +447,12 @@ def test_cli_model_flag_uses_endpoint_client_type_when_provided(monkeypatch, run
         },
         endpoints={
             "haiku": [
-                {
-                    "model": "claude-haiku-4-5",
-                    "url": "https://api.anthropic.com",
-                    "key": "ANTHROPIC_API_KEY",
-                    "api_client_type": "anthropic_messages",
-                }
+                endpoint(
+                    model="claude-haiku-4-5",
+                    base_url="https://api.anthropic.com",
+                    api_key_var="ANTHROPIC_API_KEY",
+                    api_client_type="anthropic_messages",
+                )
             ]
         },
     )
@@ -518,16 +522,16 @@ def test_cli_endpoint_alias_multi_variant_supports_mixed_keys(monkeypatch, run_c
         },
         endpoints={
             "gpt-5-mini": [
-                {
-                    "model": "gpt-5-mini",
-                    "url": "https://a.example/v1",
-                    "key": "PRIME_API_KEY",
-                },
-                {
-                    "model": "gpt-5-mini",
-                    "url": "https://b.example/v1",
-                    "key": "OPENAI_API_KEY",
-                },
+                endpoint(
+                    model="gpt-5-mini",
+                    base_url="https://a.example/v1",
+                    api_key_var="PRIME_API_KEY",
+                ),
+                endpoint(
+                    model="gpt-5-mini",
+                    base_url="https://b.example/v1",
+                    api_key_var="OPENAI_API_KEY",
+                ),
             ]
         },
     )
@@ -551,16 +555,16 @@ def test_cli_endpoint_id_resolves_registry_alias(monkeypatch, run_cli):
             },
             endpoints={
                 "gpt-5-mini": [
-                    {
-                        "model": "gpt-5-mini",
-                        "url": "https://a.example/v1",
-                        "key": "OPENAI_API_KEY",
-                    },
-                    {
-                        "model": "gpt-5-mini",
-                        "url": "https://b.example/v1",
-                        "key": "OPENAI_API_KEY",
-                    },
+                    endpoint(
+                        model="gpt-5-mini",
+                        base_url="https://a.example/v1",
+                        api_key_var="OPENAI_API_KEY",
+                    ),
+                    endpoint(
+                        model="gpt-5-mini",
+                        base_url="https://b.example/v1",
+                        api_key_var="OPENAI_API_KEY",
+                    ),
                 ]
             },
         )
@@ -602,11 +606,11 @@ def test_cli_endpoint_id_accepts_directory_endpoints_path(monkeypatch, run_cli):
                 },
                 endpoints={
                     "gpt-5-mini": [
-                        {
-                            "model": "gpt-5-mini",
-                            "url": "https://a.example/v1",
-                            "key": "OPENAI_API_KEY",
-                        }
+                        endpoint(
+                            model="gpt-5-mini",
+                            base_url="https://a.example/v1",
+                            api_key_var="OPENAI_API_KEY",
+                        )
                     ]
                 },
             )
@@ -647,11 +651,11 @@ def test_cli_endpoint_id_requires_toml_endpoints_path(monkeypatch, run_cli):
                 },
                 endpoints={
                     "gpt-5-mini": [
-                        {
-                            "model": "gpt-5-mini",
-                            "url": "https://a.example/v1",
-                            "key": "OPENAI_API_KEY",
-                        }
+                        endpoint(
+                            model="gpt-5-mini",
+                            base_url="https://a.example/v1",
+                            api_key_var="OPENAI_API_KEY",
+                        )
                     ]
                 },
             )

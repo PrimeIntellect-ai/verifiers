@@ -173,7 +173,7 @@ In TOML configs, set GEPA parameters such as `max_calls`, `num_train`, `num_val`
 ### Output
 
 After optimization, you'll find:
-- `system_prompt.txt` - The optimized system prompt. Load it with `vf.SystemMessage.from_path("/path/to/system_prompt.txt")`.
+- `system_prompt.txt` - The optimized system prompt. For v1 tasksets, expose a `system_prompt` config field and return `vf.SystemPromptConfig(path="system_prompt.txt")` from `load_system_prompt(...)` when the prompt should be file-backed.
 - `results.jsonl` - Candidate prompt rows for evaluation upload; GEPA-specific fields live under `info`.
 - `pareto_frontier.jsonl` - Best candidate references per validation example
 - `metadata.json` - Run configuration and summary

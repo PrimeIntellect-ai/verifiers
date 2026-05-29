@@ -3,7 +3,7 @@
 from pathlib import PurePosixPath
 import shlex
 
-from verifiers.v1.packages.harnesses.mini_swe_agent import (
+from harnesses.mini_swe_agent import (
     build_mini_swe_agent_install_script as build_packaged_mini_swe_agent_install_script,
 )
 

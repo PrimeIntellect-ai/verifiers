@@ -149,7 +149,7 @@ class MyTasksetConfig(vf.TasksetConfig):
 
 
 class MyTaskset(vf.Taskset[MyTasksetConfig]):
-    def load_tasks(self) -> vf.Tasks:
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         rows = [
             {
                 "prompt": [{"role": "user", "content": "Reverse abc."}],
@@ -174,16 +174,17 @@ def load_environment(config: vf.EnvConfig) -> vf.Env:
 ```
 If no harness is passed, `vf.Env` uses the base endpoint-backed harness. See
 **[BYO Harness](docs/byo-harness.md)** for the advanced v1 taskset/harness API.
-Reusable taskset and harness packages live under `verifiers.v1.packages`. For
-example, Harbor task directories can run through the bundled OpenCode CLI
-harness with:
+Reusable taskset and harness packages live in `tasksets` and `harnesses`.
+Install them with `uv add "verifiers[packages]"`, or with the narrower
+`verifiers[tasksets]` and `verifiers[harnesses]` extras. For example, Harbor
+task directories can run through the bundled OpenCode CLI harness with:
 
 ```python
-from verifiers.v1.packages.harnesses import OpenCode, OpenCodeConfig
-from verifiers.v1.packages.tasksets import HarborTaskset, HarborTasksetConfig
+from harnesses import OpenCode, OpenCodeConfig
+from tasksets import HarborTaskset, HarborTasksetConfig
 
 env = vf.Env(
-    taskset=HarborTaskset(config=HarborTasksetConfig()),
+    taskset=HarborTaskset(config=HarborTasksetConfig(bundle_package=__name__)),
     harness=OpenCode(config=OpenCodeConfig()),
 )
 ```

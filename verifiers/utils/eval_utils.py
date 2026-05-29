@@ -19,7 +19,7 @@ from datasets.utils import logging as ds_logging
 import verifiers as vf
 from verifiers.types import (
     ClientType,
-    Endpoint,
+    EndpointConfig,
     Endpoints,
     EvalCost,
     EvalConfig,
@@ -135,7 +135,7 @@ def _with_eval_metadata(
     return wrapped_progress
 
 
-def _coerce_endpoint(raw_endpoint: object, source: str) -> Endpoint:
+def _coerce_endpoint(raw_endpoint: object, source: str) -> EndpointConfig:
     if not isinstance(raw_endpoint, dict):
         raise ValueError(f"Endpoint entry must be a table/dict in {source}")
 
@@ -161,8 +161,6 @@ def _coerce_endpoint(raw_endpoint: object, source: str) -> Endpoint:
             f"Fields 'model', 'url', and 'key' must all be strings in {source}"
         )
 
-    endpoint = Endpoint(model=model, url=url, key=key)
-
     if "client_type" in raw_endpoint_dict:
         raise ValueError(
             f"Field 'client_type' is no longer supported in {source}. "
@@ -183,6 +181,7 @@ def _coerce_endpoint(raw_endpoint: object, source: str) -> Endpoint:
     client_type = (
         short_client_type if short_client_type is not None else long_client_type
     )
+    api_client_type: ClientType | None = None
     if client_type is not None:
         allowed_types = (
             "openai_completions",
@@ -198,7 +197,7 @@ def _coerce_endpoint(raw_endpoint: object, source: str) -> Endpoint:
             raise ValueError(
                 f"Field 'type'/'api_client_type' must be one of '{allowed_str}' in {source}"
             )
-        endpoint["api_client_type"] = cast(ClientType, client_type)
+        api_client_type = cast(ClientType, client_type)
 
     raw_headers = raw_endpoint_dict.get("headers")
     raw_extra_headers = raw_endpoint_dict.get("extra_headers")
@@ -207,12 +206,17 @@ def _coerce_endpoint(raw_endpoint: object, source: str) -> Endpoint:
             f"Use only one of 'headers' or 'extra_headers' in {source}, not both"
         )
     header_table = raw_headers if raw_headers is not None else raw_extra_headers
+    extra_headers: dict[str, str] = {}
     if header_table is not None:
-        coerced_headers = _validate_extra_headers_value(header_table)
-        if coerced_headers:
-            endpoint["extra_headers"] = coerced_headers
+        extra_headers = _validate_extra_headers_value(header_table)
 
-    return endpoint
+    return EndpointConfig(
+        model=model,
+        base_url=url,
+        api_key_var=key,
+        api_client_type=api_client_type,
+        extra_headers=extra_headers,
+    )
 
 
 def _normalize_toml_endpoints(raw_toml: object, source: Path) -> Endpoints:

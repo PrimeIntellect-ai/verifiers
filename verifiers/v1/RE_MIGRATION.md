@@ -53,15 +53,15 @@ import verifiers as vf
 
 
 class MyTasksetConfig(vf.TasksetConfig):
-    split: str = "train"
+    system_prompt: vf.SystemPrompt = SYSTEM_PROMPT
 
 
 class MyTaskset(vf.Taskset[MyTasksetConfig]):
-    def load_system_prompt(self) -> vf.SystemPrompt:
-        return SYSTEM_PROMPT
+    def load_system_prompt(self, config: MyTasksetConfig) -> vf.SystemPrompt:
+        return config.system_prompt
 
-    def load_tasks(self) -> vf.Tasks:
-        return build_tasks(split=self.config.split)
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
+        return build_tasks(split=split)
 
     @vf.reward(weight=1.0)
     async def exact_answer(self, task, state) -> float:
@@ -77,7 +77,10 @@ def load_taskset(config: MyTasksetConfig) -> MyTaskset:
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
-    return vf.Env(taskset=vf.load_taskset(config=config.taskset))
+    return vf.Env(
+        taskset=vf.load_taskset(config=config.taskset),
+        harness=vf.Harness(config=config.harness),
+    )
 ```
 
 Rows should be plain serializable task data:
@@ -100,14 +103,14 @@ Put system instructions in `system_prompt`, not in `prompt`:
 
 ```python
 class PromptTasksetConfig(vf.TasksetConfig):
-    pass
+    system_prompt: vf.SystemPrompt = "Answer concisely."
 
 
 class PromptTaskset(vf.Taskset[PromptTasksetConfig]):
-    def load_system_prompt(self) -> vf.SystemPrompt:
-        return "Answer concisely."
+    def load_system_prompt(self, config: PromptTasksetConfig) -> vf.SystemPrompt:
+        return config.system_prompt
 
-    def load_tasks(self) -> vf.Tasks:
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         return [{"prompt": [{"role": "user", "content": "Question?"}]}]
 
 
@@ -167,7 +170,7 @@ class QATasksetConfig(vf.TasksetConfig):
 
 
 class QATaskset(vf.Taskset[QATasksetConfig]):
-    def load_tasks(self) -> vf.Tasks:
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         return [
             {
                 "prompt": [{"role": "user", "content": row["question"]}],
@@ -190,7 +193,10 @@ def load_taskset(config: QATasksetConfig) -> QATaskset:
 
 
 def load_environment(config: vf.EnvConfig):
-    return vf.Env(taskset=vf.load_taskset(config=config.taskset))
+    return vf.Env(
+        taskset=vf.load_taskset(config=config.taskset),
+        harness=vf.Harness(config=config.harness),
+    )
 ```
 
 Gotchas:
@@ -216,7 +222,7 @@ class ExtractTasksetConfig(vf.TasksetConfig):
 
 
 class ExtractTaskset(vf.Taskset[ExtractTasksetConfig]):
-    def load_tasks(self) -> vf.Tasks:
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         return [{"prompt": [{"role": "user", "content": "Question?"}], "answer": "A"}]
 
     @vf.reward
@@ -262,27 +268,29 @@ async def open_page(url: str, exa) -> str:
     return await exa.open(url)
 
 
-def load_toolset(config=None):
-    def load_exa():
-        return ExaClient(...)
-
-    return vf.Toolset(
-        tools=[search, open_page],
-        objects={"exa": load_exa},
-        bindings={
-            "search.exa": "objects.exa",
-            "open_page.exa": "objects.exa",
-        },
-        config=config,
-    )
-
-
 class SearchTasksetConfig(vf.TasksetConfig):
     pass
 
 
 class SearchTaskset(vf.Taskset[SearchTasksetConfig]):
-    def load_tasks(self) -> vf.Tasks:
+    def load_toolsets(self, config: SearchTasksetConfig) -> vf.Toolsets:
+        _ = config
+
+        def load_exa():
+            return ExaClient(...)
+
+        return {
+            "search": vf.Toolset(
+                tools=[search, open_page],
+                objects={"exa": load_exa},
+                bindings={
+                    "search.exa": "objects.exa",
+                    "open_page.exa": "objects.exa",
+                },
+            )
+        }
+
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         return [
             {
                 "prompt": [{"role": "user", "content": "Search the web."}],
@@ -296,7 +304,6 @@ class SearchTaskset(vf.Taskset[SearchTasksetConfig]):
 
 
 taskset = SearchTaskset(config=SearchTasksetConfig())
-taskset.add_toolset(load_toolset())
 env = vf.Env(taskset=taskset)
 ```
 
@@ -328,7 +335,7 @@ toolset = vf.Toolset(tools=[finish])
 
 ## Dynamic Tool Schemas And Services
 
-Use this for `bfcl_v3`, `mcp_atlas`, and evals where each task row carries
+Use this for `bfcl_v3`, `mcp_atlas`, and evals where each task carries
 schemas or service metadata. Keep schemas on `task`, point
 `task["toolsets"]` at an importable task-local factory, and score from the
 assistant tool calls or service call records in state.
@@ -342,7 +349,7 @@ Gotchas:
 
 - Dynamic tools still execute; use a recorder when the eval only needs emitted
   calls.
-- Toolset factory refs in task data must be import strings so task rows stay
+- Toolset factory refs in task data must be import strings so tasks stay
   serializable.
 - Service sandboxes stay private to the toolset unless the task or harness
   explicitly shares a compatible primary sandbox.
@@ -350,9 +357,9 @@ Gotchas:
 ## Sandbox-Backed Tools
 
 Use this for Python execution tools and code-analysis helpers. Define a normal
-callable, place it in `vf.Toolset(..., sandbox={...})`, add `sandbox` to the
-tool signature, and choose `scope="rollout"`, `"group"`, or `"global"` based on
-lifetime.
+callable, place it in `vf.Toolset(..., sandbox=vf.SandboxConfig(...))`, add
+`sandbox` to the tool signature, and choose `scope="rollout"`, `"group"`, or
+`"global"` based on lifetime.
 
 Reference: `environments/math_python/math_python_v1.py`.
 
@@ -366,17 +373,20 @@ Gotchas:
 ## User Simulators
 
 Use this for `tau2-bench-v1` and tasksets where the environment returns a user
-message when the model does not call a tool. Put the simulator on
-`TasksetConfig.user` or `HarnessConfig.user`; keep per-rollout simulator state
-in `state`; put static clients behind `User(objects=...)`.
+message when the model does not call a tool. Define a `User` subclass with
+`get_response()`, pair it with a typed `UserConfig`, and place that config on
+`TasksetConfig.user` / `HarnessConfig.user`. Keep per-rollout simulator state
+in `state`; put static clients behind `UserConfig.objects`.
 
 Reference: `environments/tau2_bench_v1/tau2_bench_v1.py`.
 
-Gotchas:
+Rules:
 
-- The base harness calls `user` only when the model returns no tool calls.
+- Users do not use string refs.
+- The base harness calls `user.get_response()` only when the model returns no tool calls.
 - Returning `[]` means no user response is available; the base harness stops.
-- User functions receive `transcript` through the default binding.
+- `get_response()` receives `messages` through the default binding when its
+  signature declares that parameter.
 
 ## MCP Toolsets
 
@@ -414,11 +424,11 @@ directories, and other sandboxed CLI programs. Prefer packaged harnesses when
 the format already matches:
 
 ```python
-from verifiers.v1.packages.harnesses import OpenCode, OpenCodeConfig
-from verifiers.v1.packages.tasksets import HarborTaskset, HarborTasksetConfig
+from harnesses import OpenCode, OpenCodeConfig
+from tasksets import HarborTaskset, HarborTasksetConfig
 
 env = vf.Env(
-    taskset=HarborTaskset(config=HarborTasksetConfig()),
+    taskset=HarborTaskset(config=HarborTasksetConfig(bundle_package=__name__)),
     harness=OpenCode(config=OpenCodeConfig()),
 )
 ```
@@ -426,7 +436,8 @@ env = vf.Env(
 For custom command programs, put task-directory metadata on `task`, use
 callable `program.files` / `program.dirs` import refs for task-dependent
 uploads, set per-task sandbox overrides under `task["sandbox"]`, and collect
-logs or reports through `program.artifacts`.
+logs or reports through first-class artifact configs on the taskset, harness,
+user, toolset, program, or task.
 
 References:
 

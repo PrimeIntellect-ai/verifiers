@@ -6,16 +6,15 @@ import shlex
 import tarfile
 import tempfile
 import uuid
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable
 from importlib.abc import Traversable
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, cast
+from typing import TYPE_CHECKING, Literal, Protocol, cast
 
 from verifiers.errors import SandboxError
+from verifiers.decorators import setup as setup_handler
 from verifiers.utils.async_utils import maybe_call_with_named_args
 
-from .artifact_utils import artifact_format, artifact_key, artifact_optional
-from .artifact_utils import artifact_path
 from .program_utils import command_argv, command_env, float_config, int_config
 from .program_utils import program_channels
 from .program_utils import program_option_mapping, program_channel_setup
@@ -27,9 +26,11 @@ from .sandbox_python_utils import (
     sandbox_python_path_command,
 )
 from ..runtime import Runtime
+from ..sandbox import SandboxConfig
+from ..program import ProgramValue
 from ..state import State
 from ..task import Task
-from ..types import ConfigData, ConfigMap, Handler, JsonData, ProgramValue
+from ..types import ConfigData, Handler
 
 if TYPE_CHECKING:
     from ..toolset import Toolset
@@ -45,6 +46,11 @@ class SandboxCommandResult(Protocol):
     exit_code: int
     stdout: str | None
     stderr: str | None
+
+
+class SandboxOwner(Protocol):
+    @property
+    def sandbox(self) -> SandboxConfig | Literal["program"] | None: ...
 
 
 class SandboxClient(Protocol):
@@ -131,6 +137,7 @@ class SandboxLease:
         self.scope = scope
         self.key = key
         self.owns_client = owns_client
+        self.scope_key: str | None = None
         self.deleted = False
         self.lock = asyncio.Lock()
 
@@ -142,7 +149,7 @@ class SandboxLease:
         env: dict[str, str] | None = None,
     ) -> SandboxCommandResult:
         result = await maybe_call_with_named_args(
-            getattr(self.client, "execute_command"),
+            self.client.execute_command,
             sandbox_id=self.id,
             command=command,
             timeout=timeout,
@@ -155,7 +162,7 @@ class SandboxLease:
         self, path: str, content: bytes, filename: str | None = None
     ) -> object:
         return await maybe_call_with_named_args(
-            getattr(self.client, "upload_bytes"),
+            self.client.upload_bytes,
             sandbox_id=self.id,
             file_path=path,
             file_bytes=content,
@@ -166,7 +173,7 @@ class SandboxLease:
         self, path: str, local_path: str, timeout: int | None = None
     ) -> object:
         return await maybe_call_with_named_args(
-            getattr(self.client, "upload_file"),
+            self.client.upload_file,
             sandbox_id=self.id,
             file_path=path,
             local_file_path=local_path,
@@ -177,7 +184,7 @@ class SandboxLease:
         self, path: str, local_path: str, timeout: int | None = None
     ) -> object:
         return await maybe_call_with_named_args(
-            getattr(self.client, "download_file"),
+            self.client.download_file,
             sandbox_id=self.id,
             file_path=path,
             local_file_path=local_path,
@@ -186,7 +193,7 @@ class SandboxLease:
 
     async def read_file(self, path: str) -> object:
         return await maybe_call_with_named_args(
-            getattr(self.client, "read_file"),
+            self.client.read_file,
             sandbox_id=self.id,
             path=path,
         )
@@ -292,23 +299,25 @@ async def create_tool_sandbox_lease(
 
 
 async def create_sandbox_lease(
-    sandbox_config: ConfigMap, key: str, client: SandboxClient | None = None
+    sandbox_config: SandboxConfig, key: str, client: SandboxClient | None = None
 ) -> SandboxLease:
-    scope = sandbox_scope(sandbox_config)
+    sandbox_data = sandbox_config.data()
     owns_client = client is None
     if client is None:
         from verifiers.utils.threaded_sandbox_client import ThreadedAsyncSandboxClient
 
         client = cast(SandboxClient, ThreadedAsyncSandboxClient())
     try:
-        sandbox_id = await create_sandbox(client, sandbox_config)
+        sandbox_id = await create_sandbox(client, sandbox_data)
     except BaseException:
         if owns_client:
             await close_sandbox_client(client)
         raise
-    lease = SandboxLease(client, sandbox_id, scope, key, owns_client=owns_client)
+    lease = SandboxLease(
+        client, sandbox_id, sandbox_config.scope, key, owns_client=owns_client
+    )
     try:
-        await setup_sandbox(lease, sandbox_config)
+        await setup_sandbox(lease, sandbox_data)
     except BaseException:
         await lease.delete()
         raise
@@ -316,32 +325,32 @@ async def create_sandbox_lease(
 
 
 async def create_scoped_sandbox_lease(
-    owner: object, key: str | None = None, client: SandboxClient | None = None
+    owner: SandboxOwner,
+    key: str | None = None,
+    client: SandboxClient | None = None,
 ) -> SandboxLease:
-    sandbox_config = getattr(owner, "sandbox", None)
-    if not isinstance(sandbox_config, Mapping):
-        raise TypeError("Sandbox owner must define a sandbox mapping.")
-    return await create_sandbox_lease(
-        sandbox_config, key or sandbox_owner_key(owner), client
-    )
+    sandbox = owner.sandbox
+    if not isinstance(sandbox, SandboxConfig):
+        raise TypeError("Sandbox owner must define a sandbox config.")
+    return await create_sandbox_lease(sandbox, key or sandbox_owner_key(owner), client)
 
 
 async def run_sandbox_command(
-    program: ConfigMap,
-    sandbox_config: ConfigMap,
+    program: ConfigData,
+    sandbox_config: SandboxConfig,
     task: Task,
     state: State,
     runtime: Runtime,
 ) -> State:
     validate_program_bindings(program)
+    sandbox_data = sandbox_config.data()
     lease = await runtime.resolve_program_sandbox(sandbox_config, task, state)
     async with lease.lock:
         state["sandbox_id"] = lease.id
-        state.setdefault("runtime", {})
-        lease_scope_key = getattr(lease, "scope_key", None) or runtime.scope_key(
-            lease.scope, state
-        )
-        state["runtime"]["sandbox"] = {
+        runtime_state = state.runtime_state()
+        lease_scope_key = lease.scope_key or runtime.scope_key(lease.scope, state)
+        lease.scope_key = lease_scope_key
+        runtime_state["sandbox"] = {
             "id": lease.id,
             "scope": lease.scope,
             "key": lease.key,
@@ -349,7 +358,7 @@ async def run_sandbox_command(
         }
         handle = SandboxHandle(lease, state)
         use_sandbox_python_path = bool(
-            python_package_list(sandbox_config.get("packages"))
+            python_package_list(sandbox_data.get("packages"))
         )
         await runtime.setup_rollout(
             task,
@@ -362,7 +371,7 @@ async def run_sandbox_command(
             ),
             sandbox=handle,
         )
-        workdir = cast(str | None, sandbox_config.get("workdir"))
+        workdir = sandbox_config.workdir
         if workdir:
             await lease.client.execute_command(
                 lease.id, f"mkdir -p {shlex.quote(workdir)}"
@@ -372,7 +381,7 @@ async def run_sandbox_command(
         command = shlex.join(argv)
         if use_sandbox_python_path or "mcp" in program_channels(program):
             command = sandbox_python_path_command(command)
-        command_timeout = cast(int | None, sandbox_config.get("command_timeout"))
+        command_timeout = sandbox_config.command_timeout
         result = await lease.run_background_job(
             command,
             timeout=command_timeout,
@@ -393,13 +402,12 @@ async def run_sandbox_command(
                 f"Sandbox command exited with {result.exit_code}: {result.stderr}"
             )
         state._set_stop_condition("command_completed")
-        await collect_sandbox_artifacts(lease.client, lease.id, program, state)
         return state
 
 
 def program_setup_handlers(
     lease: SandboxLease,
-    program: ConfigMap,
+    program: ConfigData,
     runtime: Runtime,
     *,
     use_sandbox_python_path: bool = False,
@@ -456,7 +464,7 @@ def program_setup_handlers(
 
 def _program_setup_handler(
     lease: SandboxLease,
-    program: ConfigMap,
+    program: ConfigData,
     runtime: Runtime,
     fn: Callable[..., Awaitable[None]],
     name: str,
@@ -464,28 +472,24 @@ def _program_setup_handler(
     use_sandbox_python_path: bool = False,
 ) -> Handler:
     async def handler(task: Task, state: State) -> None:
-        if use_sandbox_python_path:
-            await fn(
-                lease.client,
-                lease.id,
-                program,
-                task,
-                state,
-                runtime,
-                use_sandbox_python_path=True,
-            )
-            return
-        await fn(lease.client, lease.id, program, task, state, runtime)
+        await maybe_call_with_named_args(
+            fn,
+            client=lease.client,
+            sandbox_id=lease.id,
+            program=program,
+            task=task,
+            state=state,
+            runtime=runtime,
+            use_sandbox_python_path=use_sandbox_python_path,
+        )
 
     handler.__name__ = name
-    setattr(handler, "setup", True)
-    setattr(handler, "setup_priority", priority)
-    return handler
+    return setup_handler(handler, priority=priority)
 
 
 def _program_channel_setup_handler(
     lease: SandboxLease,
-    program: ConfigMap,
+    program: ConfigData,
     runtime: Runtime,
     channel: str,
     setup_item: ProgramValue,
@@ -506,12 +510,10 @@ def _program_channel_setup_handler(
         )
 
     handler.__name__ = f"program_{channel}_channel_setup"
-    setattr(handler, "setup", True)
-    setattr(handler, "setup_priority", priority)
-    return handler
+    return setup_handler(handler, priority=priority)
 
 
-async def create_sandbox(client: SandboxClient, sandbox_config: ConfigMap) -> str:
+async def create_sandbox(client: SandboxClient, sandbox_config: ConfigData) -> str:
     from prime_sandboxes import CreateSandboxRequest
 
     labels = sandbox_config.get("labels")
@@ -537,7 +539,7 @@ async def create_sandbox(client: SandboxClient, sandbox_config: ConfigMap) -> st
     return sandbox_id
 
 
-async def setup_sandbox(handle: SandboxLease, sandbox_config: ConfigMap) -> None:
+async def setup_sandbox(handle: SandboxLease, sandbox_config: ConfigData) -> None:
     packages = python_package_list(sandbox_config.get("packages"))
     if packages:
         package_args = " ".join(shlex.quote(str(package)) for package in packages)
@@ -565,16 +567,8 @@ async def setup_sandbox(handle: SandboxLease, sandbox_config: ConfigMap) -> None
             raise SandboxError(f"Sandbox setup command failed: {result.stderr}")
 
 
-def sandbox_scope(sandbox_config: ConfigMap) -> str:
-    scope = str(sandbox_config.get("scope") or "rollout")
-    if scope not in {"rollout", "group", "global"}:
-        raise ValueError("sandbox.scope must be 'rollout', 'group', or 'global'.")
-    return scope
-
-
 def attach_sandbox_ref(state: State, lease: SandboxLease) -> None:
-    state.setdefault("runtime", {})
-    sandboxes = state["runtime"].setdefault("sandboxes", {})
+    sandboxes = state.runtime_state().setdefault("sandboxes", {})
     if not isinstance(sandboxes, dict):
         raise TypeError("state.runtime.sandboxes must be a mapping.")
     sandboxes[lease.key] = {"id": lease.id, "scope": lease.scope}
@@ -583,7 +577,7 @@ def attach_sandbox_ref(state: State, lease: SandboxLease) -> None:
 def record_tool_sandbox_command(
     state: State, lease: SandboxLease, command: str, result: SandboxCommandResult
 ) -> None:
-    command_record: JsonData = {
+    command_record: ConfigData = {
         "command": command,
         "returncode": result.exit_code,
         "stdout": result.stdout or "",
@@ -592,10 +586,9 @@ def record_tool_sandbox_command(
     commands = state.setdefault("sandbox_commands", [])
     if not isinstance(commands, list):
         raise TypeError("state.sandbox_commands must be a list.")
-    commands = cast(list[JsonData], commands)
+    commands = cast(list[ConfigData], commands)
     commands.append(command_record)
-    state.setdefault("runtime", {})
-    sandboxes = state["runtime"].setdefault("sandboxes", {})
+    sandboxes = state.runtime_state().setdefault("sandboxes", {})
     if isinstance(sandboxes, dict):
         tool_state = sandboxes.setdefault(
             lease.key, {"id": lease.id, "scope": lease.scope}
@@ -603,7 +596,7 @@ def record_tool_sandbox_command(
         if isinstance(tool_state, dict):
             tool_commands = tool_state.setdefault("commands", [])
             if isinstance(tool_commands, list):
-                tool_commands = cast(list[JsonData], tool_commands)
+                tool_commands = cast(list[ConfigData], tool_commands)
                 tool_commands.append(command_record)
 
 
@@ -620,9 +613,9 @@ def tool_sandbox_key(toolset: "Toolset") -> str:
     return f"toolset:{id(toolset)}"
 
 
-def program_sandbox_key(sandbox_config: ConfigMap) -> str:
+def program_sandbox_key(sandbox_config: SandboxConfig) -> str:
     try:
-        fingerprint = json.dumps(sandbox_config, sort_keys=True)
+        fingerprint = json.dumps(sandbox_config.data(), sort_keys=True)
     except TypeError as exc:
         raise TypeError("Program sandbox config must be JSON-serializable.") from exc
     digest = hashlib.sha256(fingerprint.encode()).hexdigest()[:12]
@@ -630,17 +623,13 @@ def program_sandbox_key(sandbox_config: ConfigMap) -> str:
 
 
 def sandbox_owner_key(owner: object) -> str:
-    fn = getattr(owner, "fn", None)
-    name = getattr(fn, "__name__", None)
-    if isinstance(name, str) and name:
-        return f"user:{name}"
     return f"sandbox:{id(owner)}"
 
 
 async def upload_program_files(
     client: SandboxClient,
     sandbox_id: str,
-    program: ConfigMap,
+    program: ConfigData,
     task: Task,
     state: State,
     runtime: Runtime,
@@ -669,7 +658,7 @@ async def upload_program_files(
 async def upload_program_dirs(
     client: SandboxClient,
     sandbox_id: str,
-    program: ConfigMap,
+    program: ConfigData,
     task: Task,
     state: State,
     runtime: Runtime,
@@ -679,6 +668,8 @@ async def upload_program_dirs(
         local_source = await resolve_program_value(
             source, task, state, runtime, program
         )
+        if local_source is None:
+            continue
         await upload_program_dir(client, sandbox_id, path, local_source)
 
 
@@ -693,13 +684,13 @@ async def upload_program_dir(
     tmp_path = await asyncio.to_thread(build_dir_archive, local_source, remote_path)
     try:
         await maybe_call_with_named_args(
-            getattr(client, "upload_file"),
+            client.upload_file,
             sandbox_id=sandbox_id,
             file_path=remote_tar,
             local_file_path=str(tmp_path),
         )
         result = await maybe_call_with_named_args(
-            getattr(client, "execute_command"),
+            client.execute_command,
             sandbox_id=sandbox_id,
             command=(
                 f"mkdir -p {shlex.quote(str(Path(remote_path).parent))} && "
@@ -746,7 +737,7 @@ def upload_tar_filter(tarinfo: tarfile.TarInfo) -> tarfile.TarInfo | None:
 async def run_program_setup(
     client: SandboxClient,
     sandbox_id: str,
-    program: ConfigMap,
+    program: ConfigData,
     task: Task,
     state: State,
     runtime: Runtime,
@@ -768,19 +759,16 @@ async def run_program_setup(
 async def upload_state_input(
     client: SandboxClient,
     sandbox_id: str,
-    program: ConfigMap,
-    task: Task,
+    program: ConfigData,
     state: State,
-    runtime: Runtime,
 ) -> None:
-    _ = task, runtime
     path = program.get(VF_STATE_INPUT_PATH_KEY)
     if path is None:
         return
     if not isinstance(path, str):
         raise TypeError(f"{VF_STATE_INPUT_PATH_KEY} must be a string.")
     await maybe_call_with_named_args(
-        getattr(client, "upload_bytes"),
+        client.upload_bytes,
         sandbox_id=sandbox_id,
         file_path=path,
         file_bytes=json.dumps(state).encode(),
@@ -791,7 +779,7 @@ async def upload_state_input(
 async def run_program_commands(
     client: SandboxClient,
     sandbox_id: str,
-    program: ConfigMap,
+    program: ConfigData,
     task: Task,
     state: State,
     runtime: Runtime,
@@ -823,7 +811,7 @@ async def run_program_commands(
 async def run_program_items(
     client: SandboxClient,
     sandbox_id: str,
-    program: ConfigMap,
+    program: ConfigData,
     task: Task,
     state: State,
     runtime: Runtime,
@@ -840,7 +828,7 @@ async def run_program_items(
         if use_sandbox_python_path:
             command = sandbox_python_path_command(command)
         result = await maybe_call_with_named_args(
-            getattr(client, "execute_command"),
+            client.execute_command,
             sandbox_id=sandbox_id,
             command=command,
             env=env,
@@ -850,42 +838,9 @@ async def run_program_items(
             raise SandboxError(f"{error_prefix}: {result.stderr}")
 
 
-async def collect_sandbox_artifacts(
-    client: object, sandbox_id: str, program: ConfigMap, state: State
-) -> None:
-    artifacts = program_option_mapping(program.get("artifacts"), "program.artifacts")
-    if not artifacts:
-        return
-    state.setdefault("artifacts", {})
-    for name, spec in artifacts.items():
-        if not isinstance(spec, Mapping):
-            raise TypeError("program.artifacts values must be mappings.")
-        spec = cast(ConfigMap, spec)
-        path = artifact_path(spec)
-        optional = artifact_optional(spec)
-        try:
-            content = await read_sandbox_artifact(
-                client, sandbox_id, path.format(**state)
-            )
-        except FileNotFoundError:
-            if optional:
-                state["artifacts"][name] = None
-                continue
-            raise
-        format_name = artifact_format(spec)
-        if format_name == "json":
-            value: object = json.loads(content)
-        elif format_name == "text":
-            value = content
-        else:
-            raise ValueError(f"Unsupported artifact format: {format_name!r}")
-        key = artifact_key(spec)
-        if key is not None:
-            value = cast(ConfigMap, value)[key]
-        state["artifacts"][name] = value
-
-
-async def read_sandbox_artifact(client: object, sandbox_id: str, path: str) -> str:
+async def read_sandbox_artifact(
+    client: SandboxClient, sandbox_id: str, path: str
+) -> str:
     script = (
         "import glob, pathlib, sys\n"
         f"matches = sorted(glob.glob({path!r}))\n"
@@ -902,7 +857,7 @@ async def read_sandbox_artifact(client: object, sandbox_id: str, path: str) -> s
     )
     command = sandbox_python_path_command(command)
     result = await maybe_call_with_named_args(
-        getattr(client, "execute_command"),
+        client.execute_command,
         sandbox_id=sandbox_id,
         command=command,
     )
@@ -910,7 +865,6 @@ async def read_sandbox_artifact(client: object, sandbox_id: str, path: str) -> s
         raise FileNotFoundError(f"Sandbox artifact not found: {path}")
     if result.exit_code:
         raise SandboxError(
-            "Sandbox artifact reader failed: "
-            f"{getattr(result, 'stderr', '') or getattr(result, 'stdout', '')}"
+            f"Sandbox artifact reader failed: {result.stderr or result.stdout or ''}"
         )
     return result.stdout or ""

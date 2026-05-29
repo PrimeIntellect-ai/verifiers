@@ -27,15 +27,18 @@ def test_init_v1_writes_thin_taskset_template(tmp_path: Path) -> None:
 
     assert "class BarTasksetConfig(vf.TasksetConfig):" in content
     assert "class BarTaskset(vf.Taskset[BarTasksetConfig]):" in content
-    assert "def load_tasks(self) -> vf.Tasks:" in content
-    assert "def load_system_prompt(self) -> vf.SystemPrompt:" in content
+    assert 'def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:' in content
+    assert (
+        "def load_system_prompt(self, config: BarTasksetConfig) -> vf.SystemPrompt:"
+        in content
+    )
     assert "async def correct_answer(self, task: vf.Task, state: vf.State)" in content
     assert "def load_taskset(config: BarTasksetConfig) -> BarTaskset:" in content
     assert "return BarTaskset(config=config)" in content
-    assert "vf.load_taskset(config=config.taskset)" in content
+    assert "taskset=vf.load_taskset(config=config.taskset)" in content
+    assert "harness=vf.Harness(config=config.harness)" in content
     assert "class EnvTaskset(" not in content
     assert "_default_" not in content
-    assert "assert isinstance" not in content
     assert 'tasks: str = "load_tasks"' not in content
     assert 'rewards: list[str] = ["correct_answer"]' not in content
 
@@ -56,9 +59,10 @@ def test_init_v1_with_harness_writes_harness_stub(tmp_path: Path) -> None:
 
     assert "class BazTaskset(vf.Taskset[BazTasksetConfig]):" in content
     assert "class BazHarnessConfig(vf.HarnessConfig):" in content
-    assert "class BazHarness(vf.Harness):" in content
+    assert "class BazHarness(vf.Harness[BazHarnessConfig]):" in content
     assert "def load_harness(config: BazHarnessConfig) -> BazHarness:" in content
-    assert "vf.load_harness(config=config.harness)" in content
+    assert "taskset=vf.load_taskset(config=config.taskset)" in content
+    assert "harness=vf.load_harness(config=config.harness)" in content
 
 
 def test_init_with_harness_without_v1_warns_and_uses_v0(tmp_path: Path, capsys) -> None:
@@ -81,3 +85,35 @@ def test_init_v1_multifile_exports_component_loaders(tmp_path: Path) -> None:
     assert "__all__ = ['load_environment', 'load_taskset']" in init_content
     assert "class PkgEnvTaskset(vf.Taskset[PkgEnvTasksetConfig]):" in env_content
     assert "return PkgEnvTaskset(config=config)" in env_content
+
+
+def test_init_openenv_writes_v1_taskset_template(tmp_path: Path) -> None:
+    init_environment("openenv-sample", path=str(tmp_path), openenv=True)
+    content = read_env_file(tmp_path, "openenv-sample")
+    pyproject = (tmp_path / "openenv_sample" / "pyproject.toml").read_text()
+
+    assert (
+        "from tasksets.openenv import OpenEnvTaskset, OpenEnvTasksetConfig" in content
+    )
+    assert (
+        "def load_taskset(config: OpenEnvTasksetConfig) -> OpenEnvTaskset:" in content
+    )
+    assert "taskset=vf.load_taskset(config=config.taskset)" in content
+    assert "harness=vf.Harness(config=config.harness)" in content
+    assert "vf.OpenEnvEnv" not in content
+    assert '"tasksets>=0.1.1"' in pyproject
+
+
+def test_init_openenv_multifile_exports_taskset_loader(tmp_path: Path) -> None:
+    init_environment(
+        "openenv-pkg",
+        path=str(tmp_path),
+        openenv=True,
+        multi_file=True,
+    )
+    init_content = (
+        tmp_path / "openenv_pkg" / "openenv_pkg" / "__init__.py"
+    ).read_text()
+
+    assert "from .openenv_pkg import load_environment, load_taskset" in init_content
+    assert "__all__ = ['load_environment', 'load_taskset']" in init_content

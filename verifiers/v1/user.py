@@ -1,96 +1,132 @@
-import inspect
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
-from typing import Literal, cast
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Generic, Literal, TypeVar, cast, final
 
-from .config import UserConfig, import_config_ref, resolve_config_object
-from .utils.binding_utils import BindingMap, normalize_binding_map
-from .utils.binding_utils import normalize_object_map
-from .utils.config_utils import coerce_config
+from verifiers.types import Message, UserMessage
+from verifiers.utils.message_utils import normalize_messages
+
+from .artifact import Artifacts, ArtifactsConfig
+from .config import Config, ConfigSource
+from .sandbox import SandboxConfig
+from .utils.binding_utils import (
+    BindingSources,
+    BindingsConfig,
+    ObjectsConfig,
+)
+from .utils.config_utils import (
+    coerce_config,
+    config_type_from_class,
+    registered_config_type,
+    register_config_type,
+)
 from .utils.trajectory_utils import completion_from_trajectory
-from .types import ConfigMap, Handler, Objects, PromptMessage
+from .state import State
+from .types import JsonData, Objects, PromptMessage
+
+if TYPE_CHECKING:
+    from .task import Task
 
 UserScope = Literal["rollout", "group", "global"]
 
 
+class UserConfig(Config):
+    scope: UserScope = "rollout"
+    bindings: BindingsConfig = BindingsConfig()
+    objects: ObjectsConfig = ObjectsConfig()
+    artifacts: ArtifactsConfig = ArtifactsConfig()
+    sandbox: SandboxConfig | None = None
+
+
 def state_messages(
-    state: ConfigMap, transcript: Sequence[PromptMessage] | None = None
-) -> list[PromptMessage]:
+    state: State, transcript: Sequence[PromptMessage] | None = None
+) -> list[Message]:
     if transcript is not None:
-        return list(transcript)
+        return normalize_messages(transcript, field_name="user.transcript")
     prompt = state.get("prompt")
     completion = state.get("completion")
     if isinstance(prompt, list) and isinstance(completion, list):
-        return [
-            *cast(list[PromptMessage], prompt),
-            *cast(list[PromptMessage], completion),
-        ]
+        return normalize_messages(
+            [
+                *cast(list[PromptMessage], prompt),
+                *cast(list[PromptMessage], completion),
+            ],
+            field_name="state.messages",
+        )
     if isinstance(completion, list):
-        return list(cast(list[PromptMessage], completion))
+        return normalize_messages(
+            cast(list[PromptMessage], completion), field_name="state.completion"
+        )
     trajectory = state.get("trajectory")
     if isinstance(trajectory, Sequence) and not isinstance(trajectory, str):
-        return completion_from_trajectory(cast(Sequence[ConfigMap], trajectory))
+        return normalize_messages(
+            completion_from_trajectory(cast(Sequence[JsonData], trajectory)),
+            field_name="state.trajectory",
+        )
     return []
 
 
-@dataclass(frozen=True)
-class User:
-    fn: Handler
-    scope: UserScope = "rollout"
-    bindings: BindingMap = field(default_factory=dict)
-    objects: Objects = field(default_factory=dict)
-    sandbox: ConfigMap | None = None
+ConfigT = TypeVar("ConfigT", bound=UserConfig)
+user_type_registry: dict[type[UserConfig], type["User"]] = {}
 
-    def __post_init__(self) -> None:
-        if self.scope not in {"rollout", "group", "global"}:
+
+class User(Generic[ConfigT]):
+    config: ConfigT
+    scope: UserScope
+    bindings: BindingSources
+    objects: Objects
+    artifacts: Artifacts
+    sandbox: SandboxConfig | None
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)
+        config_type = config_type_from_class(
+            cls,
+            inherited=False,
+            owner_base=User,
+            config_base=UserConfig,
+        )
+        if config_type is not None:
+            register_config_type(cls, config_type)
+            user_type_registry[cast(type[UserConfig], config_type)] = cls
+
+    @final
+    def __init__(
+        self,
+        *,
+        config: ConfigSource = None,
+    ):
+        config_type = registered_config_type(type(self), UserConfig)
+        self.config = cast(ConfigT, coerce_config(config_type, config))
+        if self.config.scope not in {"rollout", "group", "global"}:
             raise ValueError("User scope must be 'rollout', 'group', or 'global'.")
-        bindings = normalize_binding_map(
-            self.bindings, "User bindings", key_style="arg"
-        )
-        try:
-            parameters = inspect.signature(self.fn).parameters
-        except (TypeError, ValueError):
-            parameters = {}
-        if "messages" in parameters:
-            bindings.setdefault("messages", state_messages)
-        object.__setattr__(self, "bindings", bindings)
-        object.__setattr__(
-            self, "objects", normalize_object_map(self.objects, "User objects")
-        )
+        bindings = self.config.bindings.entries("User bindings", key_style="arg")
+        if "messages" in bindings:
+            raise ValueError("User messages are provided directly to get_response.")
+        self.scope = self.config.scope
+        self.bindings = bindings
+        self.objects = self.load_objects(self.config.objects)
+        self.artifacts = self.load_artifacts(self.config.artifacts)
+        self.sandbox = self.config.sandbox
+
+    def load_objects(self, config: ObjectsConfig) -> Objects:
+        return config.objects("user.objects")
+
+    def load_artifacts(self, config: ArtifactsConfig) -> Artifacts:
+        return config.artifacts("user.artifacts")
+
+    async def get_object(self, name: str, task: "Task", state: State) -> object:
+        return await state._runtime().resolve_owner_object(self, name, task, state)
+
+    async def get_response(
+        self, task: "Task", state: State, messages: list[Message]
+    ) -> list[UserMessage]:
+        return []
 
 
-def normalize_user(value: object | None) -> User | None:
-    value = resolve_config_object(value) if value is not None else None
-    if value is None or isinstance(value, User):
-        return value
-    if isinstance(value, UserConfig):
-        return user_from_mapping(value.model_dump(exclude_none=True))
-    if isinstance(value, Mapping):
-        return user_from_mapping(cast(ConfigMap, value))
-    if callable(value):
-        return User(value)
-    raise TypeError("User must be a callable, User, import ref, or mapping.")
-
-
-def user_from_mapping(spec: ConfigMap) -> User:
-    config = coerce_config(UserConfig, spec)
-    fn = config.fn
-    if isinstance(fn, str):
-        fn = import_config_ref(fn)
-    if not callable(fn):
-        raise TypeError("User config requires callable fn.")
-    return User(
-        fn=fn,
-        scope=cast(UserScope, config.scope),
-        bindings=config.bindings,
-        objects=cast(
-            Objects,
-            {
-                str(key): resolve_config_object(value)
-                for key, value in config.objects.items()
-            },
-        ),
-        sandbox=config.sandbox.model_dump(exclude_none=True)
-        if config.sandbox is not None
-        else None,
-    )
+def user_from_config(config: UserConfig) -> User:
+    for config_type in type(config).__mro__:
+        if not issubclass(config_type, UserConfig):
+            continue
+        user_type = user_type_registry.get(config_type)
+        if user_type is not None:
+            return user_type(config=config)
+    raise TypeError(f"No User subclass is registered for {type(config).__name__}.")

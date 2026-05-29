@@ -91,8 +91,11 @@ def test_wikispeedia_env_config_reaches_taskset_and_harness(
         )
     )
 
-    train_rows = [env.taskset.to_task(row) for row in env.taskset.get_dataset()]
-    eval_rows = [env.taskset.to_task(row) for row in env.taskset.get_eval_dataset()]
+    train_rows = list(env.taskset)
+    eval_rows = [
+        env.taskset.to_task(vf.Task(dict(row)))
+        for row in env.taskset.get_eval_dataset()
+    ]
 
     assert len(train_rows) == 2
     assert len(eval_rows) == 1
@@ -136,8 +139,10 @@ def test_wikispeedia_taskset_sources_use_disjoint_target_split(
         )
     )
 
-    train_rows = [taskset.to_task(row) for row in taskset.get_dataset()]
-    eval_rows = [taskset.to_task(row) for row in taskset.get_eval_dataset()]
+    train_rows = list(taskset)
+    eval_rows = [
+        taskset.to_task(vf.Task(dict(row))) for row in taskset.get_eval_dataset()
+    ]
 
     assert len(train_rows) == 2
     assert len(eval_rows) == 1
@@ -281,11 +286,24 @@ async def test_wikispeedia_graph_recursion_limit_stops_rollout(
 
     class FakeState(dict):
         def get_endpoint_config(self, api: str):
-            return {
-                "model": "model",
-                "api_base": "https://example.invalid/v1",
-                "api_key": "key",
-            }
+            _ = api
+
+            class EndpointConfig:
+                model = "model"
+                base_url = "https://example.invalid/v1"
+
+            return EndpointConfig()
+
+        def get_client(self, api: str, *, sync: bool = False):
+            _ = api, sync
+
+            class Client:
+                api_key = "key"
+
+                def close(self) -> None:
+                    return None
+
+            return Client()
 
         def get_tools(self):
             return {}

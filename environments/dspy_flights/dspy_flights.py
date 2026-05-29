@@ -3,6 +3,7 @@ import functools
 import random
 import string
 from collections.abc import Mapping
+from typing import cast
 
 from pydantic import BaseModel
 
@@ -18,7 +19,7 @@ PROGRAM_SANDBOX = {
 
 
 class DSPyFlightsHarnessConfig(vf.HarnessConfig):
-    program: vf.ProgramConfig | None = vf.ProgramConfig(
+    program: vf.ProgramConfig = vf.ProgramConfig(
         fn="run_dspy_flight_program",
         sandbox=True,
     )
@@ -141,8 +142,10 @@ async def dspy_calls(task, state) -> float:
     return float(len(state.get("trajectory", [])))
 
 
-def load_tasks():
-    def row(
+def load_tasks(split: vf.TaskSplit = "train"):
+    _ = split
+
+    def record(
         example_id: int,
         user_request: str,
         expected: vf.ConfigData,
@@ -159,7 +162,7 @@ def load_tasks():
         return task
 
     return [
-        row(
+        record(
             0,
             (
                 "please help me book a flight from SFO to JFK on 09/01/2025, "
@@ -167,7 +170,7 @@ def load_tasks():
             ),
             {"kind": "book", "user": "Adam", "flight_id": "DA123"},
         ),
-        row(
+        record(
             1,
             (
                 "please help me book a flight from SFO to SNA on 10/01/2025, "
@@ -175,7 +178,7 @@ def load_tasks():
             ),
             {"kind": "book", "user": "Bob", "flight_id": "DA456"},
         ),
-        row(
+        record(
             2,
             (
                 "please cancel itinerary CH123 for Chelsie; she no longer wants "
@@ -184,7 +187,7 @@ def load_tasks():
             {"kind": "cancel", "confirmation_number": "CH123"},
             {"CH123": itinerary("CH123", "Chelsie", "DA125").model_dump()},
         ),
-        row(
+        record(
             3,
             (
                 "my name is David and I need wheelchair assistance added to my "
@@ -196,7 +199,7 @@ def load_tasks():
                 "contains": "wheelchair assistance",
             },
         ),
-        row(
+        record(
             4,
             ("my name is Adam and I need a vegetarian meal noted for my upcoming trip"),
             {
@@ -205,13 +208,13 @@ def load_tasks():
                 "contains": "vegetarian meal",
             },
         ),
-        row(
+        record(
             5,
             "please cancel itinerary BO456 for Bob because his plans changed",
             {"kind": "cancel", "confirmation_number": "BO456"},
             {"BO456": itinerary("BO456", "Bob", "DA456").model_dump()},
         ),
-        row(
+        record(
             6,
             (
                 "please help me book a flight from SFO to JFK on 09/01/2025, "
@@ -219,7 +222,7 @@ def load_tasks():
             ),
             {"kind": "book", "user": "Chelsie", "flight_id": "DA123"},
         ),
-        row(
+        record(
             7,
             (
                 "please help me book a flight from SFO to SNA on 10/01/2025, "
@@ -227,13 +230,13 @@ def load_tasks():
             ),
             {"kind": "book", "user": "David", "flight_id": "DA456"},
         ),
-        row(
+        record(
             8,
             "cancel confirmation AD460 for Adam; he will rebook later",
             {"kind": "cancel", "confirmation_number": "AD460"},
             {"AD460": itinerary("AD460", "Adam", "DA460").model_dump()},
         ),
-        row(
+        record(
             9,
             "my name is Chelsie and I need to travel with a service animal",
             {
@@ -371,6 +374,7 @@ def dump_database(database: dict[str, BaseModel]) -> dict[str, vf.ConfigData]:
 
 async def run_dspy_flight_program(task, state):
     import dspy
+    from openai import OpenAI
 
     class DSPyAirlineCustomerService(dspy.Signature):
         """You are an airline customer service agent that helps user book and manage flights.
@@ -389,10 +393,13 @@ async def run_dspy_flight_program(task, state):
 
     tools, databases = build_airline_tools(task)
     endpoint_config = state.get_endpoint_config(api="chat")
+    endpoint_client = cast(OpenAI, state.get_client(api="chat", sync=True))
+    endpoint_api_key = endpoint_client.api_key
+    endpoint_client.close()
     lm = dspy.LM(
-        f"openai/{endpoint_config['model']}",
-        api_base=endpoint_config["api_base"],
-        api_key=endpoint_config["api_key"],
+        f"openai/{endpoint_config.model}",
+        api_base=endpoint_config.base_url,
+        api_key=endpoint_api_key,
         cache=False,
     )
     agent = dspy.ReAct(DSPyAirlineCustomerService, tools=tools, max_iters=8)
@@ -428,11 +435,11 @@ class DSPyFlightsTasksetConfig(vf.TasksetConfig):
 
 
 class DSPyFlightsTaskset(vf.Taskset[DSPyFlightsTasksetConfig]):
-    def load_tasks(self) -> vf.Tasks:
-        return load_tasks()
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
+        return load_tasks(split)
 
 
-class DSPyFlightsHarness(vf.Harness):
+class DSPyFlightsHarness(vf.Harness[DSPyFlightsHarnessConfig]):
     pass
 
 

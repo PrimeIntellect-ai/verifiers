@@ -158,6 +158,10 @@ def test_env(env_dir: Path, tmp_path_factory: pytest.TempPathFactory):
         f"{repo_root.as_posix()} && "
         "uv pip install "
         "--exclude-newer-package prime-pydantic-config=2026-05-20T00:00:00Z "
+        f"{(repo_root / 'packages' / 'tasksets').as_posix()} "
+        f"{(repo_root / 'packages' / 'harnesses').as_posix()} && "
+        "uv pip install "
+        "--exclude-newer-package prime-pydantic-config=2026-05-20T00:00:00Z "
         f"{env_dir.absolute().as_posix()}"
     )
     try:

@@ -16,10 +16,25 @@ resolution-markers = [
 conflicts = [[
     { package = "verifiers", extra = "openenv" },
     { package = "verifiers", group = "policy" },
+], [
+    { package = "verifiers", extra = "ta" },
+    { package = "verifiers", group = "policy" },
+], [
+    { package = "verifiers", extra = "tasksets" },
+    { package = "verifiers", group = "policy" },
+], [
+    { package = "verifiers", extra = "packages" },
+    { package = "verifiers", group = "policy" },
+], [
+    { package = "verifiers", extra = "openreward" },
+    { package = "verifiers", group = "policy" },
+], [
+    { package = "verifiers", group = "dev" },
+    { package = "verifiers", group = "policy" },
 ]]
 
 [options]
-exclude-newer = "2026-05-18T23:52:58.317507426Z"
+exclude-newer = "2026-05-20T18:47:38.343999Z"
 exclude-newer-span = "P7D"
 
 [options.exclude-newer-package]
@@ -28,6 +43,8 @@ prime-sandboxes = false
 prime-pydantic-config = false
 renderers = false
 openenv-core = false
+harnesses = false
+tasksets = false
 
 [[package]]
 name = "accelerate"
@@ -84,7 +101,7 @@ source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohappyeyeballs" },
     { name = "aiosignal" },
-    { name = "async-timeout", marker = "python_full_version < '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "async-timeout", marker = "python_full_version < '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
     { name = "attrs" },
     { name = "frozenlist" },
     { name = "multidict" },
@@ -178,7 +195,7 @@ version = "1.4.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "frozenlist" },
-    { name = "typing-extensions", marker = "python_full_version < '3.13' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/61/62/06741b579156360248d1ec624842ad0edf697050bbaf7c3e46394e106ad1/aiosignal-1.4.0.tar.gz", hash = "sha256:f47eecd9468083c2029cc99945502cb7708b082c232f9aca65da147157b251c7", size = 25007, upload-time = "2025-07-03T22:54:43.528Z" }
 wheels = [
@@ -236,9 +253,9 @@ name = "anyio"
 version = "4.13.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "exceptiongroup", marker = "python_full_version < '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "exceptiongroup", marker = "python_full_version < '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
     { name = "idna" },
-    { name = "typing-extensions", marker = "python_full_version < '3.13' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/19/14/2c5dd9f512b66549ae92767a9c7b330ae88e1932ca57876909410251fe13/anyio-4.13.0.tar.gz", hash = "sha256:334b70e641fd2221c1505b3890c69882fe4a2df910cba14d97019b90b24439dc", size = 231622, upload-time = "2026-03-24T12:59:09.671Z" }
 wheels = [
@@ -397,7 +414,7 @@ name = "blake3"
 version = "1.0.8"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "typing-extensions", marker = "python_full_version < '3.12' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "typing-extensions", marker = "python_full_version < '3.12' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/75/aa/abcd75e9600987a0bc6cfe9b6b2ff3f0e2cb08c170addc6e76035b5c4cb3/blake3-1.0.8.tar.gz", hash = "sha256:513cc7f0f5a7c035812604c2c852a0c1468311345573de647e310aca4ab165ba", size = 117308, upload-time = "2025-10-14T06:47:48.83Z" }
 wheels = [
@@ -624,7 +641,7 @@ name = "cffi"
 version = "2.0.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pycparser", marker = "implementation_name != 'PyPy' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "pycparser", marker = "implementation_name != 'PyPy' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/eb/56/b1ba7935a17738ae8453301356628e8147c79dbb825bcbc73dc7401f9846/cffi-2.0.0.tar.gz", hash = "sha256:44d1b5909021139fe36001ae048dbdde8214afa20200eda0f64c068cac5d5529", size = 523588, upload-time = "2025-09-08T23:24:04.541Z" }
 wheels = [
@@ -772,7 +789,7 @@ name = "click"
 version = "8.1.8"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/b9/2e/0090cbf739cee7d23781ad4b89a9894a41538e4fcf4c31dcdd705b78eb8b/click-8.1.8.tar.gz", hash = "sha256:ed53c9d8990d83c2a27deae68e4ee337473f6330c040a31d4225c9574d16096a", size = 226593, upload-time = "2024-12-21T18:38:44.339Z" }
 wheels = [
@@ -854,7 +871,7 @@ resolution-markers = [
     "python_full_version < '3.11'",
 ]
 dependencies = [
-    { name = "numpy", marker = "python_full_version < '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "numpy", marker = "python_full_version < '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/66/54/eb9bfc647b19f2009dd5c7f5ec51c4e6ca831725f1aea7a993034f483147/contourpy-1.3.2.tar.gz", hash = "sha256:b6945942715a034c671b7fc54f9588126b0b8bf23db2696e3ca8328f3ff0ab54", size = 13466130, upload-time = "2025-04-15T17:47:53.79Z" }
 wheels = [
@@ -932,7 +949,7 @@ resolution-markers = [
     "python_full_version == '3.11.*' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 dependencies = [
-    { name = "numpy", marker = "python_full_version >= '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "numpy", marker = "python_full_version >= '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/58/01/1253e6698a07380cd31a736d248a3f2a50a7c88779a1813da27503cadc2a/contourpy-1.3.3.tar.gz", hash = "sha256:083e12155b210502d0bca491432bb04d56dc3432f95a979b429f2848c3dbe880", size = 13466174, upload-time = "2025-07-26T12:03:12.549Z" }
 wheels = [
@@ -1072,8 +1089,7 @@ wheels = [
 
 [package.optional-dependencies]
 toml = [
-    { name = "tomli", version = "2.0.2", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version == '3.11' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "tomli", version = "2.4.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11' or (python_full_version == '3.11' and extra == 'extra-9-verifiers-openenv') or (python_full_version == '3.11' and extra != 'group-9-verifiers-policy') or (python_full_version > '3.11' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "tomli", marker = "python_full_version <= '3.11'" },
 ]
 
 [[package]]
@@ -1081,8 +1097,8 @@ name = "cryptography"
 version = "46.0.7"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "cffi", marker = "platform_python_implementation != 'PyPy' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "typing-extensions", marker = "python_full_version < '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "cffi", marker = "platform_python_implementation != 'PyPy' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
+    { name = "typing-extensions", marker = "python_full_version < '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/47/93/ac8f3d5ff04d54bc814e961a43ae5b0b146154c89c61b47bb07557679b18/cryptography-46.0.7.tar.gz", hash = "sha256:e4cfd68c5f3e0bfdad0d38e023239b96a2fe84146481852dffbcca442c245aa5", size = 750652, upload-time = "2026-04-08T01:57:54.692Z" }
 wheels = [
@@ -1171,7 +1187,7 @@ dependencies = [
     { name = "docstring-parser" },
     { name = "rich" },
     { name = "rich-rst" },
-    { name = "tomli", version = "2.4.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "tomli", marker = "python_full_version < '3.11'" },
     { name = "typing-extensions", marker = "python_full_version < '3.11'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/e4/f7/3ee212c1bc314551094fc8fda7b4b63c647ac5c32d06daa285d04d33edfc/cyclopts-4.11.2.tar.gz", hash = "sha256:8c9b77921660fa1ee52c150e2217ced672323efb3434e9b338077de1bc551ff4", size = 175935, upload-time = "2026-05-04T00:11:57.857Z" }
@@ -1192,8 +1208,8 @@ dependencies = [
     { name = "multiprocess" },
     { name = "numpy" },
     { name = "packaging" },
-    { name = "pandas", version = "2.3.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "pandas", version = "3.0.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "pandas", version = "2.3.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
+    { name = "pandas", version = "3.0.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
     { name = "pyarrow" },
     { name = "pyyaml" },
     { name = "requests" },
@@ -1462,8 +1478,8 @@ dependencies = [
     { name = "opentelemetry-api" },
     { name = "packaging" },
     { name = "platformdirs" },
-    { name = "py-key-value-aio", extra = ["filetree", "keyring", "memory"], marker = "extra == 'extra-9-verifiers-openenv'" },
-    { name = "pydantic", extra = ["email"], marker = "extra == 'extra-9-verifiers-openenv'" },
+    { name = "py-key-value-aio", extra = ["filetree", "keyring", "memory"], marker = "extra == 'extra-9-verifiers-openenv' or extra == 'extra-9-verifiers-openreward' or extra == 'extra-9-verifiers-packages' or extra == 'extra-9-verifiers-ta' or extra == 'extra-9-verifiers-tasksets' or extra == 'group-9-verifiers-dev' or extra != 'group-9-verifiers-policy'" },
+    { name = "pydantic", extra = ["email"], marker = "extra == 'extra-9-verifiers-openenv' or extra == 'extra-9-verifiers-openreward' or extra == 'extra-9-verifiers-packages' or extra == 'extra-9-verifiers-ta' or extra == 'extra-9-verifiers-tasksets' or extra == 'group-9-verifiers-dev' or extra != 'group-9-verifiers-policy'" },
     { name = "pyperclip" },
     { name = "python-dotenv" },
     { name = "pyyaml" },
@@ -1762,6 +1778,45 @@ wheels = [
 ]
 
 [[package]]
+name = "google-auth"
+version = "2.53.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "cryptography", marker = "python_full_version >= '3.11'" },
+    { name = "pyasn1-modules", marker = "python_full_version >= '3.11'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/c6/ad/ff781329bbbdc0974a098d996e89c9e1f7024262f9e3eec442fbb9ad1ac6/google_auth-2.53.0.tar.gz", hash = "sha256:e7e6aa16f6bee7b2b264830fd04f08087a1d5a836df516251a5d15327b246c9c", size = 335844, upload-time = "2026-05-15T20:53:07.928Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/4a/c9/db44165ba7c581268c6d46017ef63339110378305062830104fc7fa144cb/google_auth-2.53.0-py3-none-any.whl", hash = "sha256:6e7449917c599b35126a99ec268ec6880301f2fea41dce198fe8fd83ff642b68", size = 246071, upload-time = "2026-05-15T20:53:05.609Z" },
+]
+
+[package.optional-dependencies]
+requests = [
+    { name = "requests", marker = "python_full_version >= '3.11'" },
+]
+
+[[package]]
+name = "google-genai"
+version = "2.4.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "anyio", marker = "python_full_version >= '3.11'" },
+    { name = "distro", marker = "python_full_version >= '3.11'" },
+    { name = "google-auth", extra = ["requests"], marker = "(python_full_version >= '3.11' and extra == 'extra-9-verifiers-openenv') or (python_full_version >= '3.11' and extra == 'extra-9-verifiers-openreward') or (python_full_version >= '3.11' and extra == 'extra-9-verifiers-packages') or (python_full_version >= '3.11' and extra == 'extra-9-verifiers-ta') or (python_full_version >= '3.11' and extra == 'extra-9-verifiers-tasksets') or (python_full_version >= '3.11' and extra == 'group-9-verifiers-dev') or (python_full_version >= '3.11' and extra != 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
+    { name = "httpx", marker = "python_full_version >= '3.11'" },
+    { name = "pydantic", marker = "python_full_version >= '3.11'" },
+    { name = "requests", marker = "python_full_version >= '3.11'" },
+    { name = "sniffio", marker = "python_full_version >= '3.11'" },
+    { name = "tenacity", marker = "python_full_version >= '3.11'" },
+    { name = "typing-extensions", marker = "python_full_version >= '3.11'" },
+    { name = "websockets", marker = "python_full_version >= '3.11'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/b6/91/15fff1b7c22dc0b5b44fa348f151379721353d06a3da22dbbe15bf2c4dd9/google_genai-2.4.0.tar.gz", hash = "sha256:3f8d4bd618be2801e805dc698726731a70f34b438ea25a6c92800eef5b1f513e", size = 552025, upload-time = "2026-05-18T00:25:14.556Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ed/c8/1b49f6bb69dc7e291ba5d14926937bec4dffcc09ee875822636bd5ef3cf4/google_genai-2.4.0-py3-none-any.whl", hash = "sha256:48df1c44190b05b834fee9cffd360af6d6fd7f68164588e7ebd670fa34f71ee1", size = 818207, upload-time = "2026-05-18T00:25:12.426Z" },
+]
+
+[[package]]
 name = "googleapis-common-protos"
 version = "1.74.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1792,8 +1847,8 @@ dependencies = [
     { name = "numpy" },
     { name = "orjson" },
     { name = "packaging" },
-    { name = "pandas", version = "2.3.3", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.11' and extra == 'extra-9-verifiers-openenv') or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "pandas", version = "3.0.2", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.11' and extra == 'extra-9-verifiers-openenv') or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "pandas", version = "2.3.3", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.11' and extra == 'extra-9-verifiers-openenv') or (python_full_version < '3.11' and extra == 'extra-9-verifiers-openreward') or (python_full_version < '3.11' and extra == 'extra-9-verifiers-packages') or (python_full_version < '3.11' and extra == 'extra-9-verifiers-ta') or (python_full_version < '3.11' and extra == 'extra-9-verifiers-tasksets') or (python_full_version < '3.11' and extra == 'group-9-verifiers-dev') or (python_full_version < '3.11' and extra != 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
+    { name = "pandas", version = "3.0.2", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.11' and extra == 'extra-9-verifiers-openenv') or (python_full_version >= '3.11' and extra == 'extra-9-verifiers-openreward') or (python_full_version >= '3.11' and extra == 'extra-9-verifiers-packages') or (python_full_version >= '3.11' and extra == 'extra-9-verifiers-ta') or (python_full_version >= '3.11' and extra == 'extra-9-verifiers-tasksets') or (python_full_version >= '3.11' and extra == 'group-9-verifiers-dev') or (python_full_version >= '3.11' and extra != 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
     { name = "pillow" },
     { name = "pydantic" },
     { name = "pydub" },
@@ -1855,6 +1910,17 @@ sdist = { url = "https://files.pythonhosted.org/packages/01/ee/02a2c011bdab74c6f
 wheels = [
     { url = "https://files.pythonhosted.org/packages/04/4b/29cac41a4d98d144bf5f6d33995617b185d14b22401f75ca86f384e87ff1/h11-0.16.0-py3-none-any.whl", hash = "sha256:63cf8bbe7522de3bf65932fda1d9c2772064ffb3dae62d55932da54b31cb6c86", size = 37515, upload-time = "2025-04-24T03:35:24.344Z" },
 ]
+
+[[package]]
+name = "harnesses"
+version = "0.1.1"
+source = { editable = "packages/harnesses" }
+dependencies = [
+    { name = "verifiers" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "verifiers", specifier = ">=0.1.15.dev11" }]
 
 [[package]]
 name = "hf-gradio"
@@ -1982,7 +2048,7 @@ source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "filelock" },
     { name = "fsspec" },
-    { name = "hf-xet", marker = "platform_machine == 'AMD64' or platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'arm64' or platform_machine == 'x86_64' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "hf-xet", marker = "platform_machine == 'AMD64' or platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'arm64' or platform_machine == 'x86_64' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
     { name = "httpx" },
     { name = "packaging" },
     { name = "pyyaml" },
@@ -2048,11 +2114,11 @@ name = "ipykernel"
 version = "7.2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "appnope", marker = "sys_platform == 'darwin' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "appnope", marker = "sys_platform == 'darwin'" },
     { name = "comm" },
     { name = "debugpy" },
-    { name = "ipython", version = "8.39.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "ipython", version = "9.13.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "ipython", version = "8.39.0", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.11' and extra == 'extra-9-verifiers-openenv') or (python_full_version < '3.11' and extra == 'extra-9-verifiers-openreward') or (python_full_version < '3.11' and extra == 'extra-9-verifiers-packages') or (python_full_version < '3.11' and extra == 'extra-9-verifiers-ta') or (python_full_version < '3.11' and extra == 'extra-9-verifiers-tasksets') or (python_full_version < '3.11' and extra == 'group-9-verifiers-dev') or (python_full_version < '3.11' and extra != 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
+    { name = "ipython", version = "9.13.0", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.11' and extra == 'extra-9-verifiers-openenv') or (python_full_version >= '3.11' and extra == 'extra-9-verifiers-openreward') or (python_full_version >= '3.11' and extra == 'extra-9-verifiers-packages') or (python_full_version >= '3.11' and extra == 'extra-9-verifiers-ta') or (python_full_version >= '3.11' and extra == 'extra-9-verifiers-tasksets') or (python_full_version >= '3.11' and extra == 'group-9-verifiers-dev') or (python_full_version >= '3.11' and extra != 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
     { name = "jupyter-client" },
     { name = "jupyter-core" },
     { name = "matplotlib-inline" },
@@ -2076,17 +2142,17 @@ resolution-markers = [
     "python_full_version < '3.11'",
 ]
 dependencies = [
-    { name = "colorama", marker = "(python_full_version < '3.11' and sys_platform == 'win32') or (python_full_version >= '3.11' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'win32' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "decorator", marker = "python_full_version < '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "exceptiongroup", marker = "python_full_version < '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "jedi", marker = "python_full_version < '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "matplotlib-inline", marker = "python_full_version < '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "pexpect", marker = "(python_full_version < '3.11' and sys_platform != 'emscripten' and sys_platform != 'win32') or (python_full_version >= '3.11' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform == 'emscripten' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform == 'win32' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "prompt-toolkit", marker = "python_full_version < '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "pygments", marker = "python_full_version < '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "stack-data", marker = "python_full_version < '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "traitlets", marker = "python_full_version < '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "typing-extensions", marker = "python_full_version < '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "colorama", marker = "python_full_version < '3.11' and sys_platform == 'win32'" },
+    { name = "decorator", marker = "python_full_version < '3.11'" },
+    { name = "exceptiongroup", marker = "python_full_version < '3.11'" },
+    { name = "jedi", marker = "python_full_version < '3.11'" },
+    { name = "matplotlib-inline", marker = "python_full_version < '3.11'" },
+    { name = "pexpect", marker = "python_full_version < '3.11' and sys_platform != 'emscripten' and sys_platform != 'win32'" },
+    { name = "prompt-toolkit", marker = "python_full_version < '3.11'" },
+    { name = "pygments", marker = "python_full_version < '3.11'" },
+    { name = "stack-data", marker = "python_full_version < '3.11'" },
+    { name = "traitlets", marker = "python_full_version < '3.11'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.11'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/40/18/f8598d287006885e7136451fdea0755af4ebcbfe342836f24deefaed1164/ipython-8.39.0.tar.gz", hash = "sha256:4110ae96012c379b8b6db898a07e186c40a2a1ef5d57a7fa83166047d9da7624", size = 5513971, upload-time = "2026-03-27T10:02:13.94Z" }
 wheels = [
@@ -2109,18 +2175,18 @@ resolution-markers = [
     "python_full_version == '3.11.*' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 dependencies = [
-    { name = "colorama", marker = "(python_full_version >= '3.11' and sys_platform == 'win32') or (python_full_version < '3.11' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'win32' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "decorator", marker = "python_full_version >= '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "ipython-pygments-lexers", marker = "python_full_version >= '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "jedi", marker = "python_full_version >= '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "matplotlib-inline", marker = "python_full_version >= '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "pexpect", marker = "(python_full_version >= '3.11' and sys_platform != 'emscripten' and sys_platform != 'win32') or (python_full_version < '3.11' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform == 'emscripten' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform == 'win32' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "prompt-toolkit", marker = "python_full_version >= '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "psutil", marker = "python_full_version >= '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "pygments", marker = "python_full_version >= '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "stack-data", marker = "python_full_version >= '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "traitlets", marker = "python_full_version >= '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "typing-extensions", marker = "python_full_version == '3.11.*' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "colorama", marker = "python_full_version >= '3.11' and sys_platform == 'win32'" },
+    { name = "decorator", marker = "python_full_version >= '3.11'" },
+    { name = "ipython-pygments-lexers", marker = "python_full_version >= '3.11'" },
+    { name = "jedi", marker = "python_full_version >= '3.11'" },
+    { name = "matplotlib-inline", marker = "python_full_version >= '3.11'" },
+    { name = "pexpect", marker = "python_full_version >= '3.11' and sys_platform != 'emscripten' and sys_platform != 'win32'" },
+    { name = "prompt-toolkit", marker = "python_full_version >= '3.11'" },
+    { name = "psutil", marker = "python_full_version >= '3.11'" },
+    { name = "pygments", marker = "python_full_version >= '3.11'" },
+    { name = "stack-data", marker = "python_full_version >= '3.11'" },
+    { name = "traitlets", marker = "python_full_version >= '3.11'" },
+    { name = "typing-extensions", marker = "python_full_version == '3.11.*'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/cd/c4/87cda5842cf5c31837c06ddb588e11c3c35d8ece89b7a0108c06b8c9b00a/ipython-9.13.0.tar.gz", hash = "sha256:7e834b6afc99f020e3f05966ced34792f40267d64cb1ea9043886dab0dde5967", size = 4430549, upload-time = "2026-04-24T12:24:55.221Z" }
 wheels = [
@@ -2132,7 +2198,7 @@ name = "ipython-pygments-lexers"
 version = "1.1.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pygments", marker = "python_full_version >= '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "pygments", marker = "python_full_version >= '3.11'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/ef/4c/5dd1d8af08107f88c7f741ead7a40854b8ac24ddf9ae850afbcf698aa552/ipython_pygments_lexers-1.1.1.tar.gz", hash = "sha256:09c0138009e56b6854f9535736f4171d855c8c08a563a0dcd8022f78355c7e81", size = 8393, upload-time = "2025-01-17T11:24:34.505Z" }
 wheels = [
@@ -2145,8 +2211,8 @@ version = "8.1.8"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "comm" },
-    { name = "ipython", version = "8.39.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "ipython", version = "9.13.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "ipython", version = "8.39.0", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.11' and extra == 'extra-9-verifiers-openenv') or (python_full_version < '3.11' and extra == 'extra-9-verifiers-openreward') or (python_full_version < '3.11' and extra == 'extra-9-verifiers-packages') or (python_full_version < '3.11' and extra == 'extra-9-verifiers-ta') or (python_full_version < '3.11' and extra == 'extra-9-verifiers-tasksets') or (python_full_version < '3.11' and extra == 'group-9-verifiers-dev') or (python_full_version < '3.11' and extra != 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
+    { name = "ipython", version = "9.13.0", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.11' and extra == 'extra-9-verifiers-openenv') or (python_full_version >= '3.11' and extra == 'extra-9-verifiers-openreward') or (python_full_version >= '3.11' and extra == 'extra-9-verifiers-packages') or (python_full_version >= '3.11' and extra == 'extra-9-verifiers-ta') or (python_full_version >= '3.11' and extra == 'extra-9-verifiers-tasksets') or (python_full_version >= '3.11' and extra == 'group-9-verifiers-dev') or (python_full_version >= '3.11' and extra != 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
     { name = "jupyterlab-widgets" },
     { name = "traitlets" },
     { name = "widgetsnbextension" },
@@ -2739,8 +2805,8 @@ name = "matplotlib"
 version = "3.10.9"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "contourpy", version = "1.3.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "contourpy", version = "1.3.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "contourpy", version = "1.3.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
+    { name = "contourpy", version = "1.3.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
     { name = "cycler" },
     { name = "fonttools" },
     { name = "kiwisolver" },
@@ -2831,12 +2897,13 @@ dependencies = [
     { name = "pydantic-settings", marker = "extra == 'group-9-verifiers-policy'" },
     { name = "pyjwt", extra = ["crypto"], marker = "extra == 'group-9-verifiers-policy'" },
     { name = "python-multipart", marker = "extra == 'group-9-verifiers-policy'" },
-    { name = "pywin32", marker = "(sys_platform == 'win32' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "sse-starlette", marker = "extra == 'group-9-verifiers-policy'" },
+    { name = "pywin32", marker = "(sys_platform == 'win32' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
+    { name = "sse-starlette", version = "2.3.6", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.11' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
+    { name = "sse-starlette", version = "3.0.3", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.11' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
     { name = "starlette", marker = "extra == 'group-9-verifiers-policy'" },
     { name = "typing-extensions", marker = "extra == 'group-9-verifiers-policy'" },
     { name = "typing-inspection", marker = "extra == 'group-9-verifiers-policy'" },
-    { name = "uvicorn", marker = "(sys_platform != 'emscripten' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "uvicorn", marker = "(sys_platform != 'emscripten' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/a7/a4/d06a303f45997e266f2c228081abe299bbcba216cb806128e2e49095d25f/mcp-1.23.3.tar.gz", hash = "sha256:b3b0da2cc949950ce1259c7bfc1b081905a51916fcd7c8182125b85e70825201", size = 600697, upload-time = "2025-12-09T16:04:37.351Z" }
 wheels = [
@@ -2860,20 +2927,21 @@ resolution-markers = [
     "python_full_version < '3.11'",
 ]
 dependencies = [
-    { name = "anyio", marker = "extra == 'extra-9-verifiers-openenv' or extra != 'group-9-verifiers-policy'" },
-    { name = "httpx", marker = "extra == 'extra-9-verifiers-openenv' or extra != 'group-9-verifiers-policy'" },
-    { name = "httpx-sse", marker = "extra == 'extra-9-verifiers-openenv' or extra != 'group-9-verifiers-policy'" },
-    { name = "jsonschema", marker = "extra == 'extra-9-verifiers-openenv' or extra != 'group-9-verifiers-policy'" },
-    { name = "pydantic", marker = "extra == 'extra-9-verifiers-openenv' or extra != 'group-9-verifiers-policy'" },
-    { name = "pydantic-settings", marker = "extra == 'extra-9-verifiers-openenv' or extra != 'group-9-verifiers-policy'" },
-    { name = "pyjwt", extra = ["crypto"], marker = "extra == 'extra-9-verifiers-openenv' or extra != 'group-9-verifiers-policy'" },
-    { name = "python-multipart", marker = "extra == 'extra-9-verifiers-openenv' or extra != 'group-9-verifiers-policy'" },
-    { name = "pywin32", marker = "(sys_platform == 'win32' and extra == 'extra-9-verifiers-openenv') or (sys_platform == 'win32' and extra != 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "sse-starlette", marker = "extra == 'extra-9-verifiers-openenv' or extra != 'group-9-verifiers-policy'" },
-    { name = "starlette", marker = "extra == 'extra-9-verifiers-openenv' or extra != 'group-9-verifiers-policy'" },
-    { name = "typing-extensions", marker = "extra == 'extra-9-verifiers-openenv' or extra != 'group-9-verifiers-policy'" },
-    { name = "typing-inspection", marker = "extra == 'extra-9-verifiers-openenv' or extra != 'group-9-verifiers-policy'" },
-    { name = "uvicorn", marker = "(sys_platform != 'emscripten' and extra == 'extra-9-verifiers-openenv') or (sys_platform != 'emscripten' and extra != 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "anyio" },
+    { name = "httpx" },
+    { name = "httpx-sse" },
+    { name = "jsonschema" },
+    { name = "pydantic" },
+    { name = "pydantic-settings" },
+    { name = "pyjwt", extra = ["crypto"], marker = "extra == 'extra-9-verifiers-openenv' or extra == 'extra-9-verifiers-openreward' or extra == 'extra-9-verifiers-packages' or extra == 'extra-9-verifiers-ta' or extra == 'extra-9-verifiers-tasksets' or extra == 'group-9-verifiers-dev' or extra != 'group-9-verifiers-policy'" },
+    { name = "python-multipart" },
+    { name = "pywin32", marker = "(sys_platform == 'win32' and extra == 'extra-9-verifiers-openenv') or (sys_platform == 'win32' and extra == 'extra-9-verifiers-openreward') or (sys_platform == 'win32' and extra == 'extra-9-verifiers-packages') or (sys_platform == 'win32' and extra == 'extra-9-verifiers-ta') or (sys_platform == 'win32' and extra == 'extra-9-verifiers-tasksets') or (sys_platform == 'win32' and extra == 'group-9-verifiers-dev') or (sys_platform == 'win32' and extra != 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
+    { name = "sse-starlette", version = "2.3.6", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.11' and extra == 'extra-9-verifiers-openenv') or (python_full_version >= '3.11' and extra == 'extra-9-verifiers-openreward') or (python_full_version >= '3.11' and extra == 'extra-9-verifiers-packages') or (python_full_version >= '3.11' and extra == 'extra-9-verifiers-ta') or (python_full_version >= '3.11' and extra == 'extra-9-verifiers-tasksets') or (python_full_version >= '3.11' and extra == 'group-9-verifiers-dev') or (python_full_version >= '3.11' and extra != 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
+    { name = "sse-starlette", version = "3.0.3", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.11' and extra == 'extra-9-verifiers-openenv') or (python_full_version < '3.11' and extra == 'extra-9-verifiers-openreward') or (python_full_version < '3.11' and extra == 'extra-9-verifiers-packages') or (python_full_version < '3.11' and extra == 'extra-9-verifiers-ta') or (python_full_version < '3.11' and extra == 'extra-9-verifiers-tasksets') or (python_full_version < '3.11' and extra == 'group-9-verifiers-dev') or (python_full_version < '3.11' and extra != 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
+    { name = "starlette" },
+    { name = "typing-extensions" },
+    { name = "typing-inspection" },
+    { name = "uvicorn", marker = "(sys_platform != 'emscripten' and extra == 'extra-9-verifiers-openenv') or (sys_platform != 'emscripten' and extra == 'extra-9-verifiers-openreward') or (sys_platform != 'emscripten' and extra == 'extra-9-verifiers-packages') or (sys_platform != 'emscripten' and extra == 'extra-9-verifiers-ta') or (sys_platform != 'emscripten' and extra == 'extra-9-verifiers-tasksets') or (sys_platform != 'emscripten' and extra == 'group-9-verifiers-dev') or (sys_platform != 'emscripten' and extra != 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/8b/eb/c0cfc62075dc6e1ec1c64d352ae09ac051d9334311ed226f1f425312848a/mcp-1.27.0.tar.gz", hash = "sha256:d3dc35a7eec0d458c1da4976a48f982097ddaab87e278c5511d5a4a56e852b83", size = 607509, upload-time = "2026-04-02T14:48:08.88Z" }
 wheels = [
@@ -2934,7 +3002,7 @@ name = "mlx"
 version = "0.31.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "mlx-metal", marker = "sys_platform == 'darwin' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "mlx-metal", marker = "sys_platform == 'darwin' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/29/7c/c16d52494a1ba6d90443f31fa26bc810bf878d532dfa9a7a13f49ef9542d/mlx-0.31.2-cp310-cp310-macosx_14_0_arm64.whl", hash = "sha256:b29cf940f34205f09bb552ac60465ae833c4ae640b52777c6d725ddbad8461ca", size = 586942, upload-time = "2026-04-22T03:14:21.97Z" },
@@ -2964,13 +3032,13 @@ name = "mlx-lm"
 version = "0.31.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "jinja2", marker = "(python_full_version < '3.11' and sys_platform == 'emscripten') or (python_full_version < '3.11' and sys_platform == 'win32') or (sys_platform != 'emscripten' and sys_platform != 'win32') or (sys_platform == 'emscripten' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform == 'win32' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "mlx", marker = "sys_platform == 'darwin' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "numpy", marker = "(python_full_version < '3.11' and sys_platform == 'emscripten') or (python_full_version < '3.11' and sys_platform == 'win32') or (sys_platform != 'emscripten' and sys_platform != 'win32') or (sys_platform == 'emscripten' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform == 'win32' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "protobuf", marker = "(python_full_version < '3.11' and sys_platform == 'emscripten') or (python_full_version < '3.11' and sys_platform == 'win32') or (sys_platform != 'emscripten' and sys_platform != 'win32') or (sys_platform == 'emscripten' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform == 'win32' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "pyyaml", marker = "(python_full_version < '3.11' and sys_platform == 'emscripten') or (python_full_version < '3.11' and sys_platform == 'win32') or (sys_platform != 'emscripten' and sys_platform != 'win32') or (sys_platform == 'emscripten' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform == 'win32' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "sentencepiece", marker = "(python_full_version < '3.11' and sys_platform == 'emscripten') or (python_full_version < '3.11' and sys_platform == 'win32') or (sys_platform != 'emscripten' and sys_platform != 'win32') or (sys_platform == 'emscripten' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform == 'win32' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "transformers", marker = "(python_full_version < '3.11' and sys_platform == 'emscripten') or (python_full_version < '3.11' and sys_platform == 'win32') or (sys_platform != 'emscripten' and sys_platform != 'win32') or (sys_platform == 'emscripten' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform == 'win32' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "jinja2" },
+    { name = "mlx", marker = "sys_platform == 'darwin' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
+    { name = "numpy" },
+    { name = "protobuf" },
+    { name = "pyyaml" },
+    { name = "sentencepiece" },
+    { name = "transformers" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/84/94/9a38d6b0c6fcca995b9136c94eb7da1e9c5165652edf228b96b29960fa7a/mlx_lm-0.31.3.tar.gz", hash = "sha256:61eb0e3ba09444f77f874aff295401d7ccd20b39495cbbce0c782a15474ce733", size = 304318, upload-time = "2026-04-22T07:37:27.922Z" }
 wheels = [
@@ -3093,7 +3161,7 @@ name = "multidict"
 version = "6.7.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "typing-extensions", marker = "python_full_version < '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "typing-extensions", marker = "python_full_version < '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/1a/c2/c2d94cbe6ac1753f3fc980da97b3d930efe1da3af3c9f5125354436c073d/multidict-6.7.1.tar.gz", hash = "sha256:ec6652a1bee61c53a3e5776b6049172c53b6aaba34f18c9ad04f82712bac623d", size = 102010, upload-time = "2026-01-26T02:46:45.979Z" }
 wheels = [
@@ -3443,7 +3511,7 @@ name = "nvidia-cudnn-cu12"
 version = "9.10.2.21"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-cublas-cu12", marker = "(python_full_version < '3.11' and sys_platform == 'emscripten') or (python_full_version < '3.11' and sys_platform == 'win32') or (sys_platform != 'emscripten' and sys_platform != 'win32') or (sys_platform == 'emscripten' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform == 'win32' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "nvidia-cublas-cu12" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/fa/41/e79269ce215c857c935fd86bcfe91a451a584dfc27f1e068f568b9ad1ab7/nvidia_cudnn_cu12-9.10.2.21-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:c9132cc3f8958447b4910a1720036d9eff5928cc3179b0a51fb6d167c6cc87d8", size = 705026878, upload-time = "2025-06-06T21:52:51.348Z" },
@@ -3456,7 +3524,7 @@ name = "nvidia-cufft-cu12"
 version = "11.3.3.83"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-nvjitlink-cu12", marker = "(python_full_version < '3.11' and sys_platform == 'emscripten') or (python_full_version < '3.11' and sys_platform == 'win32') or (sys_platform != 'emscripten' and sys_platform != 'win32') or (sys_platform == 'emscripten' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform == 'win32' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "nvidia-nvjitlink-cu12" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/60/bc/7771846d3a0272026c416fbb7e5f4c1f146d6d80704534d0b187dd6f4800/nvidia_cufft_cu12-11.3.3.83-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:848ef7224d6305cdb2a4df928759dca7b1201874787083b6e7550dd6765ce69a", size = 193109211, upload-time = "2025-03-07T01:44:56.873Z" },
@@ -3488,9 +3556,9 @@ name = "nvidia-cusolver-cu12"
 version = "11.7.3.90"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-cublas-cu12", marker = "(python_full_version < '3.11' and sys_platform == 'emscripten') or (python_full_version < '3.11' and sys_platform == 'win32') or (sys_platform != 'emscripten' and sys_platform != 'win32') or (sys_platform == 'emscripten' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform == 'win32' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "nvidia-cusparse-cu12", marker = "(python_full_version < '3.11' and sys_platform == 'emscripten') or (python_full_version < '3.11' and sys_platform == 'win32') or (sys_platform != 'emscripten' and sys_platform != 'win32') or (sys_platform == 'emscripten' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform == 'win32' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "nvidia-nvjitlink-cu12", marker = "(python_full_version < '3.11' and sys_platform == 'emscripten') or (python_full_version < '3.11' and sys_platform == 'win32') or (sys_platform != 'emscripten' and sys_platform != 'win32') or (sys_platform == 'emscripten' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform == 'win32' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "nvidia-cublas-cu12" },
+    { name = "nvidia-cusparse-cu12" },
+    { name = "nvidia-nvjitlink-cu12" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c8/32/f7cd6ce8a7690544d084ea21c26e910a97e077c9b7f07bf5de623ee19981/nvidia_cusolver_cu12-11.7.3.90-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:db9ed69dbef9715071232caa9b69c52ac7de3a95773c2db65bdba85916e4e5c0", size = 267229841, upload-time = "2025-03-07T01:46:54.356Z" },
@@ -3503,7 +3571,7 @@ name = "nvidia-cusparse-cu12"
 version = "12.5.8.93"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-nvjitlink-cu12", marker = "(python_full_version < '3.11' and sys_platform == 'emscripten') or (python_full_version < '3.11' and sys_platform == 'win32') or (sys_platform != 'emscripten' and sys_platform != 'win32') or (sys_platform == 'emscripten' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform == 'win32' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "nvidia-nvjitlink-cu12" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/bc/f7/cd777c4109681367721b00a106f491e0d0d15cfa1fd59672ce580ce42a97/nvidia_cusparse_cu12-12.5.8.93-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:9b6c161cb130be1a07a27ea6923df8141f3c295852f4b260c65f18f3e0a091dc", size = 288117129, upload-time = "2025-03-07T01:47:40.407Z" },
@@ -3576,7 +3644,7 @@ source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "griffelib" },
     { name = "mcp", version = "1.23.3", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'group-9-verifiers-policy'" },
-    { name = "mcp", version = "1.27.0", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-9-verifiers-openenv' or extra != 'group-9-verifiers-policy'" },
+    { name = "mcp", version = "1.27.0", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-9-verifiers-openenv' or extra == 'extra-9-verifiers-openreward' or extra == 'extra-9-verifiers-packages' or extra == 'extra-9-verifiers-ta' or extra == 'extra-9-verifiers-tasksets' or extra == 'group-9-verifiers-dev' or extra != 'group-9-verifiers-policy'" },
     { name = "openai" },
     { name = "pydantic" },
     { name = "requests" },
@@ -3657,7 +3725,7 @@ dependencies = [
     { name = "pyyaml" },
     { name = "requests" },
     { name = "rich" },
-    { name = "tomli", version = "2.4.1", source = { registry = "https://pypi.org/simple" } },
+    { name = "tomli" },
     { name = "tomli-w" },
     { name = "typer" },
     { name = "uvicorn" },
@@ -3666,6 +3734,30 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/ce/d6/3bebe8afb55fcc3ea9251c4c2dfbab2879e31089bc91a8fe9696e5ce019b/openenv_core-0.3.0.tar.gz", hash = "sha256:c7fee2035badab5be497eb6f4afb2cb417de000f82cc19afd72fb5ec332c431d", size = 164720, upload-time = "2026-05-11T11:37:57.274Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/f8/f5/aafa43138589bfd5d369a8d02ea365aae9d6fe55ac0b3894368d6d69bd03/openenv_core-0.3.0-py3-none-any.whl", hash = "sha256:859e875c9d5211b157c30fb9abc681606fcf0bf1b6ffcdf404678992823a1df0", size = 194313, upload-time = "2026-05-11T11:37:55.537Z" },
+]
+
+[[package]]
+name = "openreward"
+version = "0.1.123"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "aiohttp", marker = "python_full_version >= '3.11'" },
+    { name = "anthropic", marker = "python_full_version >= '3.11'" },
+    { name = "click", marker = "python_full_version >= '3.11'" },
+    { name = "fastapi", marker = "python_full_version >= '3.11'" },
+    { name = "google-genai", marker = "python_full_version >= '3.11'" },
+    { name = "openai", marker = "python_full_version >= '3.11'" },
+    { name = "pydantic", marker = "python_full_version >= '3.11'" },
+    { name = "pyyaml", marker = "python_full_version >= '3.11'" },
+    { name = "sse-starlette", version = "2.3.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "structlog", marker = "python_full_version >= '3.11'" },
+    { name = "tenacity", marker = "python_full_version >= '3.11'" },
+    { name = "typing-extensions", marker = "python_full_version >= '3.11'" },
+    { name = "uvicorn", marker = "python_full_version >= '3.11'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/6f/dc/c5f937d9f466d0184b7974d2026c76727a28458f9287fa73d68c2230a6fd/openreward-0.1.123.tar.gz", hash = "sha256:2b7742865b889da8170bb27fd1ec2debb1248f32372a4c60f28966e1ae588c9f", size = 133615, upload-time = "2026-05-19T14:37:06.539Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/fe/66/b1b0a365fbe8383c884129a1dc9f6153dca571fa4c3bad53f034fa51010b/openreward-0.1.123-py3-none-any.whl", hash = "sha256:9677414129b4c59b476ebd444d42e69dd77ce6de314ee0798383507b1840c846", size = 131046, upload-time = "2026-05-19T14:37:05.018Z" },
 ]
 
 [[package]]
@@ -3926,10 +4018,10 @@ resolution-markers = [
     "python_full_version < '3.11'",
 ]
 dependencies = [
-    { name = "numpy", marker = "python_full_version < '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "python-dateutil", marker = "python_full_version < '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "pytz", marker = "python_full_version < '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "tzdata", marker = "python_full_version < '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "numpy", marker = "python_full_version < '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
+    { name = "python-dateutil", marker = "python_full_version < '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
+    { name = "pytz", marker = "python_full_version < '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
+    { name = "tzdata", marker = "python_full_version < '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/33/01/d40b85317f86cf08d853a4f495195c73815fdf205eef3993821720274518/pandas-2.3.3.tar.gz", hash = "sha256:e05e1af93b977f7eafa636d043f9f94c7ee3ac81af99c13508215942e64c993b", size = 4495223, upload-time = "2025-09-29T23:34:51.853Z" }
 wheels = [
@@ -3985,9 +4077,9 @@ resolution-markers = [
     "python_full_version == '3.11.*' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 dependencies = [
-    { name = "numpy", marker = "python_full_version >= '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "python-dateutil", marker = "python_full_version >= '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "tzdata", marker = "(python_full_version >= '3.11' and sys_platform == 'emscripten') or (python_full_version >= '3.11' and sys_platform == 'win32') or (sys_platform != 'emscripten' and sys_platform != 'win32' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform == 'emscripten' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform == 'win32' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "numpy", marker = "python_full_version >= '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
+    { name = "python-dateutil", marker = "python_full_version >= '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
+    { name = "tzdata", marker = "(python_full_version >= '3.11' and sys_platform == 'emscripten') or (python_full_version >= '3.11' and sys_platform == 'win32') or (sys_platform != 'emscripten' and sys_platform != 'win32' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'emscripten' and sys_platform != 'win32' and extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (sys_platform != 'emscripten' and sys_platform != 'win32' and extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (sys_platform != 'emscripten' and sys_platform != 'win32' and extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (sys_platform != 'emscripten' and sys_platform != 'win32' and extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (sys_platform != 'emscripten' and sys_platform != 'win32' and extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy') or (sys_platform == 'emscripten' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform == 'emscripten' and extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (sys_platform == 'emscripten' and extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (sys_platform == 'emscripten' and extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (sys_platform == 'emscripten' and extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (sys_platform == 'emscripten' and extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy') or (sys_platform == 'win32' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform == 'win32' and extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (sys_platform == 'win32' and extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (sys_platform == 'win32' and extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (sys_platform == 'win32' and extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (sys_platform == 'win32' and extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/da/99/b342345300f13440fe9fe385c3c481e2d9a595ee3bab4d3219247ac94e9a/pandas-3.0.2.tar.gz", hash = "sha256:f4753e73e34c8d83221ba58f232433fca2748be8b18dbca02d242ed153945043", size = 4645855, upload-time = "2026-03-31T06:48:30.816Z" }
 wheels = [
@@ -4086,7 +4178,7 @@ name = "pexpect"
 version = "4.9.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "ptyprocess", marker = "(python_full_version < '3.11' and sys_platform == 'emscripten') or (python_full_version < '3.11' and sys_platform == 'win32') or (sys_platform != 'emscripten' and sys_platform != 'win32') or (sys_platform == 'emscripten' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform == 'win32' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "ptyprocess", marker = "(python_full_version < '3.11' and sys_platform == 'emscripten') or (python_full_version < '3.11' and sys_platform == 'win32') or (sys_platform != 'emscripten' and sys_platform != 'win32')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/42/92/cc564bf6381ff43ce1f4d06852fc19a2f11d180f23dc32d9588bee2f149d/pexpect-4.9.0.tar.gz", hash = "sha256:ee7d41123f3c9911050ea2c2dac107568dc43b2d3b0c7557a33212c398ead30f", size = 166450, upload-time = "2023-11-25T09:07:26.339Z" }
 wheels = [
@@ -4214,8 +4306,7 @@ wheels = [
 
 [package.optional-dependencies]
 toml = [
-    { name = "tomli", version = "2.0.2", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.11' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "tomli", version = "2.4.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11' or extra == 'extra-9-verifiers-openenv' or extra != 'group-9-verifiers-policy'" },
+    { name = "tomli" },
 ]
 
 [[package]]
@@ -4497,6 +4588,27 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/5f/eb/771f9ecb0c65e73fe9dccdd1717901b9594f08c4515d000c7c62df573811/pyarrow-24.0.0-cp313-cp313t-musllinux_1_2_aarch64.whl", hash = "sha256:641f795b361874ac9da5294f8f443dfdbee355cf2bd9e3b8d97aaac2306b9b37", size = 49451819, upload-time = "2026-04-21T10:49:21.474Z" },
     { url = "https://files.pythonhosted.org/packages/48/da/61ae89a88732f5a785646f3ec6125dbb640fa98a540eb2b9889caa561403/pyarrow-24.0.0-cp313-cp313t-musllinux_1_2_x86_64.whl", hash = "sha256:8adc8e6ce5fccf5dc707046ae4914fd537def529709cc0d285d37a7f9cd442ca", size = 51909252, upload-time = "2026-04-21T10:49:31.164Z" },
     { url = "https://files.pythonhosted.org/packages/cb/1a/8dd5cafab7b66573fa91c03d06d213356ad4edd71813aa75e08ce2b3a844/pyarrow-24.0.0-cp313-cp313t-win_amd64.whl", hash = "sha256:9b18371ad2f44044b81a8d23bc2d8a9b6a6226dca775e8e16cfee640473d6c5d", size = 27388127, upload-time = "2026-04-21T10:49:37.334Z" },
+]
+
+[[package]]
+name = "pyasn1"
+version = "0.6.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/5c/5f/6583902b6f79b399c9c40674ac384fd9cd77805f9e6205075f828ef11fb2/pyasn1-0.6.3.tar.gz", hash = "sha256:697a8ecd6d98891189184ca1fa05d1bb00e2f84b5977c481452050549c8a72cf", size = 148685, upload-time = "2026-03-17T01:06:53.382Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/5d/a0/7d793dce3fa811fe047d6ae2431c672364b462850c6235ae306c0efd025f/pyasn1-0.6.3-py3-none-any.whl", hash = "sha256:a80184d120f0864a52a073acc6fc642847d0be408e7c7252f31390c0f4eadcde", size = 83997, upload-time = "2026-03-17T01:06:52.036Z" },
+]
+
+[[package]]
+name = "pyasn1-modules"
+version = "0.4.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pyasn1", marker = "python_full_version >= '3.11'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/e9/e6/78ebbb10a8c8e4b61a59249394a4a594c1a7af95593dc933a349c8d00964/pyasn1_modules-0.4.2.tar.gz", hash = "sha256:677091de870a80aae844b1ca6134f54652fa2c8c5a52aa396440ac3106e941e6", size = 307892, upload-time = "2025-03-28T02:41:22.17Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/47/8d/d529b5d697919ba8c11ad626e835d4039be708a35b0d22de83a269a6682c/pyasn1_modules-0.4.2-py3-none-any.whl", hash = "sha256:29253a9207ce32b64c3ac6600edc75368f98473906e8fd1043bd6b5b1de2c14a", size = 181259, upload-time = "2025-03-28T02:41:19.028Z" },
 ]
 
 [[package]]
@@ -4823,7 +4935,7 @@ name = "pyjwt"
 version = "2.12.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "typing-extensions", marker = "python_full_version < '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "typing-extensions", marker = "python_full_version < '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/c2/27/a3b6e5bf6ff856d2509292e95c8f57f0df7017cf5394921fc4e4ef40308a/pyjwt-2.12.1.tar.gz", hash = "sha256:c74a7a2adf861c04d002db713dd85f84beb242228e671280bf709d765b03672b", size = 102564, upload-time = "2026-03-13T19:27:37.25Z" }
 wheels = [
@@ -4896,13 +5008,13 @@ name = "pytest"
 version = "9.0.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "exceptiongroup", marker = "python_full_version < '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "colorama", marker = "sys_platform == 'win32'" },
+    { name = "exceptiongroup", marker = "python_full_version < '3.11'" },
     { name = "iniconfig" },
     { name = "packaging" },
     { name = "pluggy" },
     { name = "pygments" },
-    { name = "tomli", version = "2.4.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "tomli", marker = "python_full_version < '3.11'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/7d/0d/549bd94f1a0a402dc8cf64563a117c0f3765662e2e668477624baeec44d5/pytest-9.0.3.tar.gz", hash = "sha256:b86ada508af81d19edeb213c681b1d48246c1a91d304c6c81a427674c17eb91c", size = 1572165, upload-time = "2026-04-07T17:16:18.027Z" }
 wheels = [
@@ -4914,9 +5026,9 @@ name = "pytest-asyncio"
 version = "1.3.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "backports-asyncio-runner", marker = "python_full_version < '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "backports-asyncio-runner", marker = "python_full_version < '3.11'" },
     { name = "pytest" },
-    { name = "typing-extensions", marker = "python_full_version < '3.13' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/90/2c/8af215c0f776415f3590cac4f9086ccefd6fd463befeae41cd4d3f193e5a/pytest_asyncio-1.3.0.tar.gz", hash = "sha256:d7f52f36d231b80ee124cd216ffb19369aa168fc10095013c6b014a34d3ee9e5", size = 50087, upload-time = "2025-11-10T16:07:47.256Z" }
 wheels = [
@@ -4928,7 +5040,7 @@ name = "pytest-cov"
 version = "7.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "coverage", extra = ["toml"] },
+    { name = "coverage", extra = ["toml"], marker = "extra == 'extra-9-verifiers-openenv' or extra == 'extra-9-verifiers-openreward' or extra == 'extra-9-verifiers-packages' or extra == 'extra-9-verifiers-ta' or extra == 'extra-9-verifiers-tasksets' or extra == 'group-9-verifiers-dev' or extra != 'group-9-verifiers-policy'" },
     { name = "pluggy" },
     { name = "pytest" },
 ]
@@ -5090,7 +5202,7 @@ name = "pyzmq"
 version = "27.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "cffi", marker = "implementation_name == 'pypy' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "cffi", marker = "implementation_name == 'pypy' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/04/0b/3c9baedbdf613ecaa7aa07027780b8867f57b6293b6ee50de316c9f3222b/pyzmq-27.1.0.tar.gz", hash = "sha256:ac0765e3d44455adb6ddbf4417dcce460fc40a05978c08efdf2948072f6db540", size = 281750, upload-time = "2025-09-08T23:10:18.157Z" }
 wheels = [
@@ -5182,7 +5294,7 @@ wheels = [
 
 [package.optional-dependencies]
 cgraph = [
-    { name = "cupy-cuda12x", marker = "sys_platform != 'darwin' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "cupy-cuda12x", marker = "sys_platform != 'darwin' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
 ]
 
 [[package]]
@@ -5214,7 +5326,7 @@ source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "attrs" },
     { name = "rpds-py" },
-    { name = "typing-extensions", marker = "python_full_version < '3.13' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/22/f5/df4e9027acead3ecc63e50fe1e36aca1523e1719559c499951bb4b53188f/referencing-0.37.0.tar.gz", hash = "sha256:44aefc3142c5b842538163acb373e24cce6632bd54bdb01b21ad5863489f50d8", size = 78036, upload-time = "2025-10-13T15:30:48.871Z" }
 wheels = [
@@ -5474,70 +5586,8 @@ wheels = [
 
 [[package]]
 name = "ruamel-yaml-clib"
-version = "0.2.14"
-source = { registry = "https://pypi.org/simple" }
-resolution-markers = [
-    "python_full_version >= '3.13' and sys_platform == 'win32'",
-    "python_full_version == '3.12.*' and sys_platform == 'win32'",
-    "python_full_version >= '3.13' and sys_platform == 'emscripten'",
-    "python_full_version == '3.12.*' and sys_platform == 'emscripten'",
-    "python_full_version >= '3.13' and sys_platform != 'emscripten' and sys_platform != 'win32'",
-    "python_full_version == '3.12.*' and sys_platform != 'emscripten' and sys_platform != 'win32'",
-    "python_full_version == '3.11.*' and sys_platform == 'win32'",
-    "python_full_version == '3.11.*' and sys_platform == 'emscripten'",
-    "python_full_version == '3.11.*' and sys_platform != 'emscripten' and sys_platform != 'win32'",
-]
-sdist = { url = "https://files.pythonhosted.org/packages/d8/e9/39ec4d4b3f91188fad1842748f67d4e749c77c37e353c4e545052ee8e893/ruamel.yaml.clib-0.2.14.tar.gz", hash = "sha256:803f5044b13602d58ea378576dd75aa759f52116a0232608e8fdada4da33752e", size = 225394, upload-time = "2025-09-22T19:51:23.753Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/b4/56/35a0a752415ae01992c68f5a6513bdef0e1b6fbdb60d7619342ce12346a0/ruamel.yaml.clib-0.2.14-cp310-cp310-macosx_10_9_universal2.whl", hash = "sha256:f8b2acb0ffdd2ce8208accbec2dca4a06937d556fdcaefd6473ba1b5daa7e3c4", size = 269216, upload-time = "2025-09-23T14:24:09.742Z" },
-    { url = "https://files.pythonhosted.org/packages/98/6a/9a68184ab93619f4607ff1675e4ef01e8accfcbff0d482f4ca44c10d8eab/ruamel.yaml.clib-0.2.14-cp310-cp310-macosx_13_0_arm64.whl", hash = "sha256:aef953f3b8bd0b50bd52a2e52fb54a6a2171a1889d8dea4a5959d46c6624c451", size = 137092, upload-time = "2025-09-22T19:50:26.906Z" },
-    { url = "https://files.pythonhosted.org/packages/2b/3f/cfed5f088628128a9ec66f46794fd4d165642155c7b78c26d83b16c6bf7b/ruamel.yaml.clib-0.2.14-cp310-cp310-manylinux2014_aarch64.whl", hash = "sha256:a0ac90efbc7a77b0d796c03c8cc4e62fd710b3f1e4c32947713ef2ef52e09543", size = 633768, upload-time = "2025-09-22T19:50:31.228Z" },
-    { url = "https://files.pythonhosted.org/packages/3a/d5/5ce2cc156c1da48160171968d91f066d305840fbf930ee955a509d025a44/ruamel.yaml.clib-0.2.14-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:9bf6b699223afe6c7fe9f2ef76e0bfa6dd892c21e94ce8c957478987ade76cd8", size = 721253, upload-time = "2025-09-22T19:50:28.776Z" },
-    { url = "https://files.pythonhosted.org/packages/2b/71/d0b56bc902b38ebe4be8e270f730f929eec4edaf8a0fa7028f4ef64fa950/ruamel.yaml.clib-0.2.14-cp310-cp310-manylinux_2_5_i686.manylinux1_i686.manylinux_2_17_i686.manylinux2014_i686.whl", hash = "sha256:d73a0187718f6eec5b2f729b0f98e4603f7bd9c48aa65d01227d1a5dcdfbe9e8", size = 683823, upload-time = "2025-09-22T19:50:29.993Z" },
-    { url = "https://files.pythonhosted.org/packages/4b/db/1f37449dd89c540218598316ccafc1a0aed60215e72efa315c5367cfd015/ruamel.yaml.clib-0.2.14-cp310-cp310-musllinux_1_2_aarch64.whl", hash = "sha256:81f6d3b19bc703679a5705c6a16dabdc79823c71d791d73c65949be7f3012c02", size = 690370, upload-time = "2025-09-23T18:42:46.797Z" },
-    { url = "https://files.pythonhosted.org/packages/5d/53/c498b30f35efcd9f47cb084d7ad9374f2b907470f73913dec6396b81397d/ruamel.yaml.clib-0.2.14-cp310-cp310-musllinux_1_2_i686.whl", hash = "sha256:b28caeaf3e670c08cb7e8de221266df8494c169bd6ed8875493fab45be9607a4", size = 703578, upload-time = "2025-09-22T19:50:32.531Z" },
-    { url = "https://files.pythonhosted.org/packages/34/79/492cfad9baed68914840c39e5f3c1cc251f51a897ddb3f532601215cbb12/ruamel.yaml.clib-0.2.14-cp310-cp310-musllinux_1_2_x86_64.whl", hash = "sha256:94f3efb718f8f49b031f2071ec7a27dd20cbfe511b4dfd54ecee54c956da2b31", size = 722544, upload-time = "2025-09-22T19:50:34.157Z" },
-    { url = "https://files.pythonhosted.org/packages/ca/f5/479ebfd5ba396e209ade90f7282d84b90c57b3e07be8dc6fcd02a6df7ffc/ruamel.yaml.clib-0.2.14-cp310-cp310-win32.whl", hash = "sha256:27c070cf3888e90d992be75dd47292ff9aa17dafd36492812a6a304a1aedc182", size = 100375, upload-time = "2025-09-22T19:50:36.832Z" },
-    { url = "https://files.pythonhosted.org/packages/57/31/a044520fdb3bd409889f67f1efebda0658033c7ab3f390cee37531cc9a9e/ruamel.yaml.clib-0.2.14-cp310-cp310-win_amd64.whl", hash = "sha256:4f4a150a737fccae13fb51234d41304ff2222e3b7d4c8e9428ed1a6ab48389b8", size = 118129, upload-time = "2025-09-22T19:50:35.545Z" },
-    { url = "https://files.pythonhosted.org/packages/b3/9f/3c51e9578b8c36fcc4bdd271a1a5bb65963a74a4b6ad1a989768a22f6c2a/ruamel.yaml.clib-0.2.14-cp311-cp311-macosx_10_9_universal2.whl", hash = "sha256:5bae1a073ca4244620425cd3d3aa9746bde590992b98ee8c7c8be8c597ca0d4e", size = 270207, upload-time = "2025-09-23T14:24:11.445Z" },
-    { url = "https://files.pythonhosted.org/packages/4a/16/cb02815bc2ae9c66760c0c061d23c7358f9ba51dae95ac85247662b7fbe2/ruamel.yaml.clib-0.2.14-cp311-cp311-macosx_13_0_arm64.whl", hash = "sha256:0a54e5e40a7a691a426c2703b09b0d61a14294d25cfacc00631aa6f9c964df0d", size = 137780, upload-time = "2025-09-22T19:50:37.734Z" },
-    { url = "https://files.pythonhosted.org/packages/31/c6/fc687cd1b93bff8e40861eea46d6dc1a6a778d9a085684e4045ff26a8e40/ruamel.yaml.clib-0.2.14-cp311-cp311-manylinux2014_aarch64.whl", hash = "sha256:10d9595b6a19778f3269399eff6bab642608e5966183abc2adbe558a42d4efc9", size = 641590, upload-time = "2025-09-22T19:50:41.978Z" },
-    { url = "https://files.pythonhosted.org/packages/45/5d/65a2bc08b709b08576b3f307bf63951ee68a8e047cbbda6f1c9864ecf9a7/ruamel.yaml.clib-0.2.14-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:dba72975485f2b87b786075e18a6e5d07dc2b4d8973beb2732b9b2816f1bad70", size = 738090, upload-time = "2025-09-22T19:50:39.152Z" },
-    { url = "https://files.pythonhosted.org/packages/fb/d0/a70a03614d9a6788a3661ab1538879ed2aae4e84d861f101243116308a37/ruamel.yaml.clib-0.2.14-cp311-cp311-manylinux_2_5_i686.manylinux1_i686.manylinux_2_17_i686.manylinux2014_i686.whl", hash = "sha256:29757bdb7c142f9595cc1b62ec49a3d1c83fab9cef92db52b0ccebaad4eafb98", size = 700744, upload-time = "2025-09-22T19:50:40.811Z" },
-    { url = "https://files.pythonhosted.org/packages/77/30/c93fa457611f79946d5cb6cc97493ca5425f3f21891d7b1f9b44eaa1b38e/ruamel.yaml.clib-0.2.14-cp311-cp311-musllinux_1_2_aarch64.whl", hash = "sha256:557df28dbccf79b152fe2d1b935f6063d9cc431199ea2b0e84892f35c03bb0ee", size = 742321, upload-time = "2025-09-23T18:42:48.916Z" },
-    { url = "https://files.pythonhosted.org/packages/40/85/e2c54ad637117cd13244a4649946eaa00f32edcb882d1f92df90e079ab00/ruamel.yaml.clib-0.2.14-cp311-cp311-musllinux_1_2_i686.whl", hash = "sha256:26a8de280ab0d22b6e3ec745b4a5a07151a0f74aad92dd76ab9c8d8d7087720d", size = 743805, upload-time = "2025-09-22T19:50:43.58Z" },
-    { url = "https://files.pythonhosted.org/packages/81/50/f899072c38877d8ef5382e0b3d47f8c4346226c1f52d6945d6f64fec6a2f/ruamel.yaml.clib-0.2.14-cp311-cp311-musllinux_1_2_x86_64.whl", hash = "sha256:e501c096aa3889133d674605ebd018471bc404a59cbc17da3c5924421c54d97c", size = 769529, upload-time = "2025-09-22T19:50:45.707Z" },
-    { url = "https://files.pythonhosted.org/packages/99/7c/96d4b5075e30c65ea2064e40c2d657c7c235d7b6ef18751cf89a935b9041/ruamel.yaml.clib-0.2.14-cp311-cp311-win32.whl", hash = "sha256:915748cfc25b8cfd81b14d00f4bfdb2ab227a30d6d43459034533f4d1c207a2a", size = 100256, upload-time = "2025-09-22T19:50:48.26Z" },
-    { url = "https://files.pythonhosted.org/packages/7d/8c/73ee2babd04e8bfcf1fd5c20aa553d18bf0ebc24b592b4f831d12ae46cc0/ruamel.yaml.clib-0.2.14-cp311-cp311-win_amd64.whl", hash = "sha256:4ccba93c1e5a40af45b2f08e4591969fa4697eae951c708f3f83dcbf9f6c6bb1", size = 118234, upload-time = "2025-09-22T19:50:47.019Z" },
-    { url = "https://files.pythonhosted.org/packages/b4/42/ccfb34a25289afbbc42017e4d3d4288e61d35b2e00cfc6b92974a6a1f94b/ruamel.yaml.clib-0.2.14-cp312-cp312-macosx_10_13_universal2.whl", hash = "sha256:6aeadc170090ff1889f0d2c3057557f9cd71f975f17535c26a5d37af98f19c27", size = 271775, upload-time = "2025-09-23T14:24:12.771Z" },
-    { url = "https://files.pythonhosted.org/packages/82/73/e628a92e80197ff6a79ab81ec3fa00d4cc082d58ab78d3337b7ba7043301/ruamel.yaml.clib-0.2.14-cp312-cp312-macosx_14_0_arm64.whl", hash = "sha256:5e56ac47260c0eed992789fa0b8efe43404a9adb608608631a948cee4fc2b052", size = 138842, upload-time = "2025-09-22T19:50:49.156Z" },
-    { url = "https://files.pythonhosted.org/packages/2b/c5/346c7094344a60419764b4b1334d9e0285031c961176ff88ffb652405b0c/ruamel.yaml.clib-0.2.14-cp312-cp312-manylinux2014_aarch64.whl", hash = "sha256:a911aa73588d9a8b08d662b9484bc0567949529824a55d3885b77e8dd62a127a", size = 647404, upload-time = "2025-09-22T19:50:52.921Z" },
-    { url = "https://files.pythonhosted.org/packages/df/99/65080c863eb06d4498de3d6c86f3e90595e02e159fd8529f1565f56cfe2c/ruamel.yaml.clib-0.2.14-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:a05ba88adf3d7189a974b2de7a9d56731548d35dc0a822ec3dc669caa7019b29", size = 753141, upload-time = "2025-09-22T19:50:50.294Z" },
-    { url = "https://files.pythonhosted.org/packages/3d/e3/0de85f3e3333f8e29e4b10244374a202a87665d1131798946ee22cf05c7c/ruamel.yaml.clib-0.2.14-cp312-cp312-manylinux_2_5_i686.manylinux1_i686.manylinux_2_17_i686.manylinux2014_i686.whl", hash = "sha256:fb04c5650de6668b853623eceadcdb1a9f2fee381f5d7b6bc842ee7c239eeec4", size = 703477, upload-time = "2025-09-22T19:50:51.508Z" },
-    { url = "https://files.pythonhosted.org/packages/d9/25/0d2f09d8833c7fd77ab8efeff213093c16856479a9d293180a0d89f6bed9/ruamel.yaml.clib-0.2.14-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:df3ec9959241d07bc261f4983d25a1205ff37703faf42b474f15d54d88b4f8c9", size = 741157, upload-time = "2025-09-23T18:42:50.408Z" },
-    { url = "https://files.pythonhosted.org/packages/d3/8c/959f10c2e2153cbdab834c46e6954b6dd9e3b109c8f8c0a3cf1618310985/ruamel.yaml.clib-0.2.14-cp312-cp312-musllinux_1_2_i686.whl", hash = "sha256:fbc08c02e9b147a11dfcaa1ac8a83168b699863493e183f7c0c8b12850b7d259", size = 745859, upload-time = "2025-09-22T19:50:54.497Z" },
-    { url = "https://files.pythonhosted.org/packages/ed/6b/e580a7c18b485e1a5f30a32cda96b20364b0ba649d9d2baaf72f8bd21f83/ruamel.yaml.clib-0.2.14-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:c099cafc1834d3c5dac305865d04235f7c21c167c8dd31ebc3d6bbc357e2f023", size = 770200, upload-time = "2025-09-22T19:50:55.718Z" },
-    { url = "https://files.pythonhosted.org/packages/ef/44/3455eebc761dc8e8fdced90f2b0a3fa61e32ba38b50de4130e2d57db0f21/ruamel.yaml.clib-0.2.14-cp312-cp312-win32.whl", hash = "sha256:b5b0f7e294700b615a3bcf6d28b26e6da94e8eba63b079f4ec92e9ba6c0d6b54", size = 98829, upload-time = "2025-09-22T19:50:58.895Z" },
-    { url = "https://files.pythonhosted.org/packages/76/ab/5121f7f3b651db93de546f8c982c241397aad0a4765d793aca1dac5eadee/ruamel.yaml.clib-0.2.14-cp312-cp312-win_amd64.whl", hash = "sha256:a37f40a859b503304dd740686359fcf541d6fb3ff7fc10f539af7f7150917c68", size = 115570, upload-time = "2025-09-22T19:50:57.981Z" },
-    { url = "https://files.pythonhosted.org/packages/d7/ae/e3811f05415594025e96000349d3400978adaed88d8f98d494352d9761ee/ruamel.yaml.clib-0.2.14-cp313-cp313-macosx_10_13_universal2.whl", hash = "sha256:7e4f9da7e7549946e02a6122dcad00b7c1168513acb1f8a726b1aaf504a99d32", size = 269205, upload-time = "2025-09-23T14:24:15.06Z" },
-    { url = "https://files.pythonhosted.org/packages/72/06/7d51f4688d6d72bb72fa74254e1593c4f5ebd0036be5b41fe39315b275e9/ruamel.yaml.clib-0.2.14-cp313-cp313-macosx_15_0_arm64.whl", hash = "sha256:dd7546c851e59c06197a7c651335755e74aa383a835878ca86d2c650c07a2f85", size = 137417, upload-time = "2025-09-22T19:50:59.82Z" },
-    { url = "https://files.pythonhosted.org/packages/5a/08/b4499234a420ef42960eeb05585df5cc7eb25ccb8c980490b079e6367050/ruamel.yaml.clib-0.2.14-cp313-cp313-manylinux2014_aarch64.whl", hash = "sha256:1c1acc3a0209ea9042cc3cfc0790edd2eddd431a2ec3f8283d081e4d5018571e", size = 642558, upload-time = "2025-09-22T19:51:03.388Z" },
-    { url = "https://files.pythonhosted.org/packages/b6/ba/1975a27dedf1c4c33306ee67c948121be8710b19387aada29e2f139c43ee/ruamel.yaml.clib-0.2.14-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:2070bf0ad1540d5c77a664de07ebcc45eebd1ddcab71a7a06f26936920692beb", size = 744087, upload-time = "2025-09-22T19:51:00.897Z" },
-    { url = "https://files.pythonhosted.org/packages/20/15/8a19a13d27f3bd09fa18813add8380a29115a47b553845f08802959acbce/ruamel.yaml.clib-0.2.14-cp313-cp313-manylinux_2_5_i686.manylinux1_i686.manylinux_2_17_i686.manylinux2014_i686.whl", hash = "sha256:9bd8fe07f49c170e09d76773fb86ad9135e0beee44f36e1576a201b0676d3d1d", size = 699709, upload-time = "2025-09-22T19:51:02.075Z" },
-    { url = "https://files.pythonhosted.org/packages/19/ee/8d6146a079ad21e534b5083c9ee4a4c8bec42f79cf87594b60978286b39a/ruamel.yaml.clib-0.2.14-cp313-cp313-musllinux_1_2_aarch64.whl", hash = "sha256:ff86876889ea478b1381089e55cf9e345707b312beda4986f823e1d95e8c0f59", size = 708926, upload-time = "2025-09-23T18:42:51.707Z" },
-    { url = "https://files.pythonhosted.org/packages/a9/f5/426b714abdc222392e68f3b8ad323930d05a214a27c7e7a0f06c69126401/ruamel.yaml.clib-0.2.14-cp313-cp313-musllinux_1_2_i686.whl", hash = "sha256:1f118b707eece8cf84ecbc3e3ec94d9db879d85ed608f95870d39b2d2efa5dca", size = 740202, upload-time = "2025-09-22T19:51:04.673Z" },
-    { url = "https://files.pythonhosted.org/packages/3d/ac/3c5c2b27a183f4fda8a57c82211721c016bcb689a4a175865f7646db9f94/ruamel.yaml.clib-0.2.14-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:b30110b29484adc597df6bd92a37b90e63a8c152ca8136aad100a02f8ba6d1b6", size = 765196, upload-time = "2025-09-22T19:51:05.916Z" },
-    { url = "https://files.pythonhosted.org/packages/92/2e/06f56a71fd55021c993ed6e848c9b2e5e9cfce180a42179f0ddd28253f7c/ruamel.yaml.clib-0.2.14-cp313-cp313-win32.whl", hash = "sha256:f4e97a1cf0b7a30af9e1d9dad10a5671157b9acee790d9e26996391f49b965a2", size = 98635, upload-time = "2025-09-22T19:51:08.183Z" },
-    { url = "https://files.pythonhosted.org/packages/51/79/76aba16a1689b50528224b182f71097ece338e7a4ab55e84c2e73443b78a/ruamel.yaml.clib-0.2.14-cp313-cp313-win_amd64.whl", hash = "sha256:090782b5fb9d98df96509eecdbcaffd037d47389a89492320280d52f91330d78", size = 115238, upload-time = "2025-09-22T19:51:07.081Z" },
-]
-
-[[package]]
-name = "ruamel-yaml-clib"
 version = "0.2.15"
 source = { registry = "https://pypi.org/simple" }
-resolution-markers = [
-    "python_full_version < '3.11'",
-]
 sdist = { url = "https://files.pythonhosted.org/packages/ea/97/60fda20e2fb54b83a61ae14648b0817c8f5d84a3821e40bfbdae1437026a/ruamel_yaml_clib-0.2.15.tar.gz", hash = "sha256:46e4cc8c43ef6a94885f72512094e482114a8a706d3c555a34ed4b0d20200600", size = 225794, upload-time = "2025-11-16T16:12:59.761Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/f7/5a/4ab767cd42dcd65b83c323e1620d7c01ee60a52f4032fb7b61501f45f5c2/ruamel_yaml_clib-0.2.15-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:88eea8baf72f0ccf232c22124d122a7f26e8a24110a0273d9bcddcb0f7e1fa03", size = 147454, upload-time = "2025-11-16T16:13:02.54Z" },
@@ -5653,7 +5703,7 @@ resolution-markers = [
     "python_full_version < '3.11'",
 ]
 dependencies = [
-    { name = "numpy", marker = "python_full_version < '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "numpy", marker = "python_full_version < '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/0f/37/6964b830433e654ec7485e45a00fc9a27cf868d622838f6b6d9c5ec0d532/scipy-1.15.3.tar.gz", hash = "sha256:eae3cf522bc7df64b42cad3925c876e1b0b6c35c1337c93e12c0f366f55b0eaf", size = 59419214, upload-time = "2025-05-08T16:13:05.955Z" }
 wheels = [
@@ -5720,7 +5770,7 @@ resolution-markers = [
     "python_full_version == '3.11.*' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 dependencies = [
-    { name = "numpy", marker = "python_full_version >= '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "numpy", marker = "python_full_version >= '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/7a/97/5a3609c4f8d58b039179648e62dd220f89864f56f7357f5d4f45c29eb2cc/scipy-1.17.1.tar.gz", hash = "sha256:95d8e012d8cb8816c226aef832200b1d45109ed4464303e997c5b13122b297c0", size = 30573822, upload-time = "2026-02-23T00:26:24.851Z" }
 wheels = [
@@ -5790,94 +5840,36 @@ wheels = [
 
 [[package]]
 name = "semgrep"
-version = "1.161.0"
-source = { registry = "https://pypi.org/simple" }
-resolution-markers = [
-    "python_full_version >= '3.13' and sys_platform == 'win32'",
-    "python_full_version == '3.12.*' and sys_platform == 'win32'",
-    "python_full_version >= '3.13' and sys_platform == 'emscripten'",
-    "python_full_version == '3.12.*' and sys_platform == 'emscripten'",
-    "python_full_version >= '3.13' and sys_platform != 'emscripten' and sys_platform != 'win32'",
-    "python_full_version == '3.12.*' and sys_platform != 'emscripten' and sys_platform != 'win32'",
-    "python_full_version == '3.11.*' and sys_platform == 'win32'",
-    "python_full_version == '3.11.*' and sys_platform == 'emscripten'",
-    "python_full_version == '3.11.*' and sys_platform != 'emscripten' and sys_platform != 'win32'",
-]
-dependencies = [
-    { name = "attrs", marker = "python_full_version >= '3.11'" },
-    { name = "boltons", marker = "python_full_version >= '3.11'" },
-    { name = "click", marker = "python_full_version >= '3.11'" },
-    { name = "click-option-group", marker = "python_full_version >= '3.11'" },
-    { name = "colorama", marker = "python_full_version >= '3.11'" },
-    { name = "exceptiongroup", marker = "python_full_version >= '3.11'" },
-    { name = "glom", marker = "python_full_version >= '3.11'" },
-    { name = "jsonschema", marker = "python_full_version >= '3.11'" },
-    { name = "mcp", version = "1.23.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
-    { name = "opentelemetry-api", marker = "python_full_version >= '3.11'" },
-    { name = "opentelemetry-exporter-otlp-proto-http", marker = "python_full_version >= '3.11'" },
-    { name = "opentelemetry-instrumentation-requests", marker = "python_full_version >= '3.11'" },
-    { name = "opentelemetry-instrumentation-threading", marker = "python_full_version >= '3.11'" },
-    { name = "opentelemetry-sdk", marker = "python_full_version >= '3.11'" },
-    { name = "packaging", marker = "python_full_version >= '3.11'" },
-    { name = "peewee", marker = "python_full_version >= '3.11'" },
-    { name = "pyjwt", extra = ["crypto"], marker = "(python_full_version >= '3.11' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "pywin32", marker = "python_full_version >= '3.11' and sys_platform == 'win32'" },
-    { name = "requests", marker = "python_full_version >= '3.11'" },
-    { name = "rich", marker = "python_full_version >= '3.11'" },
-    { name = "ruamel-yaml", marker = "python_full_version >= '3.11'" },
-    { name = "ruamel-yaml-clib", version = "0.2.14", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
-    { name = "semantic-version", marker = "python_full_version >= '3.11'" },
-    { name = "tomli", version = "2.0.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
-    { name = "typing-extensions", marker = "python_full_version >= '3.11'" },
-    { name = "urllib3", marker = "python_full_version >= '3.11'" },
-    { name = "wcmatch", marker = "python_full_version >= '3.11'" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/ef/de/37c8b9d716d6d1e8a494ca960396a37b49fc79b593437d603489ffec58c8/semgrep-1.161.0.tar.gz", hash = "sha256:4f078397b7f2d4a88dbe803cb4b1128266339e3a5797208695cf2aee444d7b83", size = 55346055, upload-time = "2026-04-22T21:08:10.213Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/87/47/2c21a67bdb44786a0ff5cd41a91968c827edef28e988a54e33b45fa601ad/semgrep-1.161.0-cp310.cp311.cp312.cp313.cp314.py310.py311.py312.py313.py314-none-macosx_10_14_x86_64.whl", hash = "sha256:345068df665f3b48742ae9ce69679f5919f2baed5791892ee514f13a909f5964", size = 44680267, upload-time = "2026-04-22T21:07:39.991Z" },
-    { url = "https://files.pythonhosted.org/packages/2f/ff/b7a91b66b31bcc681b75068fe7d57c859d918dcba681b1537ac011666c50/semgrep-1.161.0-cp310.cp311.cp312.cp313.cp314.py310.py311.py312.py313.py314-none-macosx_11_0_arm64.whl", hash = "sha256:1f9d43a97f78c8ca9bc2f0eb9486b70fae2106dbd802f7a52bb1cb9d58f9f3c8", size = 48602046, upload-time = "2026-04-22T21:07:43.542Z" },
-    { url = "https://files.pythonhosted.org/packages/7d/08/3382aab9139ad344dd85b90f54b3fe92c1de8c0b41795356bdfda4e75e62/semgrep-1.161.0-cp310.cp311.cp312.cp313.cp314.py310.py311.py312.py313.py314-none-manylinux_2_35_aarch64.whl", hash = "sha256:c8316729d54882dede14d7166f4cdaf6174927b05895d12888ae3a0f4791c785", size = 77963546, upload-time = "2026-04-22T21:07:47.762Z" },
-    { url = "https://files.pythonhosted.org/packages/cc/bf/573042ea49590bff369dc96ca687068dc90947b33a261cf19b889f4795b5/semgrep-1.161.0-cp310.cp311.cp312.cp313.cp314.py310.py311.py312.py313.py314-none-manylinux_2_35_x86_64.whl", hash = "sha256:8a82257d654348f94250f410701f1124dc70a0c4338461acc5ee713e101b0d9d", size = 76204940, upload-time = "2026-04-22T21:07:52.203Z" },
-    { url = "https://files.pythonhosted.org/packages/28/95/0c86c0341b3b104aeea1e814ed9d874605486c11a92d8c613266969d9a89/semgrep-1.161.0-cp310.cp311.cp312.cp313.cp314.py310.py311.py312.py313.py314-none-musllinux_1_2_aarch64.whl", hash = "sha256:ae2d56f0c14910c9ac15d7de2ff084994d249b4b20c972931bb4dfa11e78f4d2", size = 78411785, upload-time = "2026-04-22T21:07:56.764Z" },
-    { url = "https://files.pythonhosted.org/packages/34/a0/ed74b68e7720298e58b1458483698091123f9b6884ac5d2754755ed68137/semgrep-1.161.0-cp310.cp311.cp312.cp313.cp314.py310.py311.py312.py313.py314-none-musllinux_1_2_x86_64.whl", hash = "sha256:6583d68017890561fc93087056a565564051f498cb0637bde1af3945b755b164", size = 75949179, upload-time = "2026-04-22T21:08:01.832Z" },
-    { url = "https://files.pythonhosted.org/packages/26/54/51305a35e4b0cef706259d28ceab2e3aa5de548d290a124f1860b433aa64/semgrep-1.161.0-cp310.cp311.cp312.cp313.cp314.py310.py311.py312.py313.py314-none-win_amd64.whl", hash = "sha256:bf4bc7caf27fa817f4a5a26b0875add679bc011aff70ae44aa46913e21f5a401", size = 56273247, upload-time = "2026-04-22T21:08:05.823Z" },
-]
-
-[[package]]
-name = "semgrep"
 version = "1.162.0"
 source = { registry = "https://pypi.org/simple" }
-resolution-markers = [
-    "python_full_version < '3.11'",
-]
 dependencies = [
-    { name = "attrs", marker = "python_full_version < '3.11'" },
-    { name = "boltons", marker = "python_full_version < '3.11'" },
-    { name = "click", marker = "python_full_version < '3.11'" },
-    { name = "click-option-group", marker = "python_full_version < '3.11'" },
-    { name = "colorama", marker = "python_full_version < '3.11'" },
-    { name = "exceptiongroup", marker = "python_full_version < '3.11'" },
-    { name = "glom", marker = "python_full_version < '3.11'" },
-    { name = "jsonschema", marker = "python_full_version < '3.11'" },
-    { name = "mcp", version = "1.23.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
-    { name = "opentelemetry-api", marker = "python_full_version < '3.11'" },
-    { name = "opentelemetry-exporter-otlp-proto-http", marker = "python_full_version < '3.11'" },
-    { name = "opentelemetry-instrumentation-requests", marker = "python_full_version < '3.11'" },
-    { name = "opentelemetry-instrumentation-threading", marker = "python_full_version < '3.11'" },
-    { name = "opentelemetry-sdk", marker = "python_full_version < '3.11'" },
-    { name = "packaging", marker = "python_full_version < '3.11'" },
-    { name = "peewee", marker = "python_full_version < '3.11'" },
-    { name = "pyjwt", extra = ["crypto"], marker = "(python_full_version < '3.11' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "pywin32", marker = "python_full_version < '3.11' and sys_platform == 'win32'" },
-    { name = "requests", marker = "python_full_version < '3.11'" },
-    { name = "rich", marker = "python_full_version < '3.11'" },
-    { name = "ruamel-yaml", marker = "python_full_version < '3.11'" },
-    { name = "ruamel-yaml-clib", version = "0.2.15", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
-    { name = "semantic-version", marker = "python_full_version < '3.11'" },
-    { name = "tomli", version = "2.4.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
-    { name = "typing-extensions", marker = "python_full_version < '3.11'" },
-    { name = "urllib3", marker = "python_full_version < '3.11'" },
-    { name = "wcmatch", marker = "python_full_version < '3.11'" },
+    { name = "attrs" },
+    { name = "boltons" },
+    { name = "click" },
+    { name = "click-option-group" },
+    { name = "colorama" },
+    { name = "exceptiongroup" },
+    { name = "glom" },
+    { name = "jsonschema" },
+    { name = "mcp", version = "1.23.3", source = { registry = "https://pypi.org/simple" } },
+    { name = "opentelemetry-api" },
+    { name = "opentelemetry-exporter-otlp-proto-http" },
+    { name = "opentelemetry-instrumentation-requests" },
+    { name = "opentelemetry-instrumentation-threading" },
+    { name = "opentelemetry-sdk" },
+    { name = "packaging" },
+    { name = "peewee" },
+    { name = "pyjwt", extra = ["crypto"], marker = "extra == 'group-9-verifiers-policy'" },
+    { name = "pywin32", marker = "sys_platform == 'win32'" },
+    { name = "requests" },
+    { name = "rich" },
+    { name = "ruamel-yaml" },
+    { name = "ruamel-yaml-clib" },
+    { name = "semantic-version" },
+    { name = "tomli" },
+    { name = "typing-extensions" },
+    { name = "urllib3" },
+    { name = "wcmatch" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/e1/a5/2e2626dc47198f05fb2924b76527175bc2fa4bf0c2274b3b2385b2c5add4/semgrep-1.162.0.tar.gz", hash = "sha256:d920329b7f54535df2142044953de17168adae7f9979b350a8c2d12082aeb135", size = 55440103, upload-time = "2026-05-07T16:05:20.251Z" }
 wheels = [
@@ -6107,10 +6099,36 @@ wheels = [
 
 [[package]]
 name = "sse-starlette"
+version = "2.3.6"
+source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version >= '3.13' and sys_platform == 'win32'",
+    "python_full_version == '3.12.*' and sys_platform == 'win32'",
+    "python_full_version >= '3.13' and sys_platform == 'emscripten'",
+    "python_full_version == '3.12.*' and sys_platform == 'emscripten'",
+    "python_full_version >= '3.13' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "python_full_version == '3.12.*' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+    "python_full_version == '3.11.*' and sys_platform == 'win32'",
+    "python_full_version == '3.11.*' and sys_platform == 'emscripten'",
+    "python_full_version == '3.11.*' and sys_platform != 'emscripten' and sys_platform != 'win32'",
+]
+dependencies = [
+    { name = "anyio", marker = "python_full_version >= '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/8c/f4/989bc70cb8091eda43a9034ef969b25145291f3601703b82766e5172dfed/sse_starlette-2.3.6.tar.gz", hash = "sha256:0382336f7d4ec30160cf9ca0518962905e1b69b72d6c1c995131e0a703b436e3", size = 18284, upload-time = "2025-05-30T13:34:12.914Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/81/05/78850ac6e79af5b9508f8841b0f26aa9fd329a1ba00bf65453c2d312bcc8/sse_starlette-2.3.6-py3-none-any.whl", hash = "sha256:d49a8285b182f6e2228e2609c350398b2ca2c36216c2675d875f81e93548f760", size = 10606, upload-time = "2025-05-30T13:34:11.703Z" },
+]
+
+[[package]]
+name = "sse-starlette"
 version = "3.0.3"
 source = { registry = "https://pypi.org/simple" }
+resolution-markers = [
+    "python_full_version < '3.11'",
+]
 dependencies = [
-    { name = "anyio" },
+    { name = "anyio", marker = "python_full_version < '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/db/3c/fa6517610dc641262b77cc7bf994ecd17465812c1b0585fe33e11be758ab/sse_starlette-3.0.3.tar.gz", hash = "sha256:88cfb08747e16200ea990c8ca876b03910a23b547ab3bd764c0d8eb81019b971", size = 21943, upload-time = "2025-10-30T18:44:20.117Z" }
 wheels = [
@@ -6164,6 +6182,15 @@ wheels = [
 ]
 
 [[package]]
+name = "structlog"
+version = "25.5.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/ef/52/9ba0f43b686e7f3ddfeaa78ac3af750292662284b3661e91ad5494f21dbc/structlog-25.5.0.tar.gz", hash = "sha256:098522a3bebed9153d4570c6d0288abf80a031dfdb2048d59a49e9dc2190fc98", size = 1460830, upload-time = "2025-10-27T08:28:23.028Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a8/45/a132b9074aa18e799b891b91ad72133c98d8042c70f6240e4c5f9dabee2f/structlog-25.5.0-py3-none-any.whl", hash = "sha256:a8453e9b9e636ec59bd9e79bbd4a72f025981b3ba0f5837aebf48f02f37a7f9f", size = 72510, upload-time = "2025-10-27T08:28:21.535Z" },
+]
+
+[[package]]
 name = "sympy"
 version = "1.14.0"
 source = { registry = "https://pypi.org/simple" }
@@ -6182,6 +6209,27 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/ec/fe/802052aecb21e3797b8f7902564ab6ea0d60ff8ca23952079064155d1ae1/tabulate-0.9.0.tar.gz", hash = "sha256:0095b12bf5966de529c0feb1fa08671671b3368eec77d7ef7ab114be2c068b3c", size = 81090, upload-time = "2022-10-06T17:21:48.54Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/40/44/4a5f08c96eb108af5cb50b41f76142f0afa346dfa99d5296fe7202a11854/tabulate-0.9.0-py3-none-any.whl", hash = "sha256:024ca478df22e9340661486f85298cff5f6dcdba14f3813e8830015b9ed1948f", size = 35252, upload-time = "2022-10-06T17:21:44.262Z" },
+]
+
+[[package]]
+name = "tasksets"
+version = "0.1.1"
+source = { editable = "packages/tasksets" }
+dependencies = [
+    { name = "nltk" },
+    { name = "openenv-core" },
+    { name = "openreward", marker = "python_full_version >= '3.11'" },
+    { name = "textarena" },
+    { name = "verifiers" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "nltk" },
+    { name = "openenv-core", specifier = ">=0.3.0" },
+    { name = "openreward", marker = "python_full_version >= '3.11'", specifier = ">=0.1.123" },
+    { name = "textarena" },
+    { name = "verifiers", specifier = ">=0.1.15.dev11" },
 ]
 
 [[package]]
@@ -6306,40 +6354,8 @@ wheels = [
 
 [[package]]
 name = "tomli"
-version = "2.0.2"
-source = { registry = "https://pypi.org/simple" }
-resolution-markers = [
-    "python_full_version >= '3.13' and sys_platform == 'win32'",
-    "python_full_version == '3.12.*' and sys_platform == 'win32'",
-    "python_full_version >= '3.13' and sys_platform == 'emscripten'",
-    "python_full_version == '3.12.*' and sys_platform == 'emscripten'",
-    "python_full_version >= '3.13' and sys_platform != 'emscripten' and sys_platform != 'win32'",
-    "python_full_version == '3.12.*' and sys_platform != 'emscripten' and sys_platform != 'win32'",
-    "python_full_version == '3.11.*' and sys_platform == 'win32'",
-    "python_full_version == '3.11.*' and sys_platform == 'emscripten'",
-    "python_full_version == '3.11.*' and sys_platform != 'emscripten' and sys_platform != 'win32'",
-]
-sdist = { url = "https://files.pythonhosted.org/packages/35/b9/de2a5c0144d7d75a57ff355c0c24054f965b2dc3036456ae03a51ea6264b/tomli-2.0.2.tar.gz", hash = "sha256:d46d457a85337051c36524bc5349dd91b1877838e2979ac5ced3e710ed8a60ed", size = 16096, upload-time = "2024-10-02T10:46:13.208Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/cf/db/ce8eda256fa131af12e0a76d481711abe4681b6923c27efb9a255c9e4594/tomli-2.0.2-py3-none-any.whl", hash = "sha256:2ebe24485c53d303f690b0ec092806a085f07af5a5aa1464f3931eec36caaa38", size = 13237, upload-time = "2024-10-02T10:46:11.806Z" },
-]
-
-[[package]]
-name = "tomli"
 version = "2.4.1"
 source = { registry = "https://pypi.org/simple" }
-resolution-markers = [
-    "python_full_version >= '3.13' and sys_platform == 'win32'",
-    "python_full_version == '3.12.*' and sys_platform == 'win32'",
-    "python_full_version >= '3.13' and sys_platform == 'emscripten'",
-    "python_full_version == '3.12.*' and sys_platform == 'emscripten'",
-    "python_full_version >= '3.13' and sys_platform != 'emscripten' and sys_platform != 'win32'",
-    "python_full_version == '3.12.*' and sys_platform != 'emscripten' and sys_platform != 'win32'",
-    "python_full_version == '3.11.*' and sys_platform == 'win32'",
-    "python_full_version == '3.11.*' and sys_platform == 'emscripten'",
-    "python_full_version == '3.11.*' and sys_platform != 'emscripten' and sys_platform != 'win32'",
-    "python_full_version < '3.11'",
-]
 sdist = { url = "https://files.pythonhosted.org/packages/22/de/48c59722572767841493b26183a0d1cc411d54fd759c5607c4590b6563a6/tomli-2.4.1.tar.gz", hash = "sha256:7c7e1a961a0b2f2472c1ac5b69affa0ae1132c39adcb67aba98568702b9cc23f", size = 17543, upload-time = "2026-03-25T20:22:03.828Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/f4/11/db3d5885d8528263d8adc260bb2d28ebf1270b96e98f0e0268d32b8d9900/tomli-2.4.1-cp311-cp311-macosx_10_9_x86_64.whl", hash = "sha256:f8f0fc26ec2cc2b965b7a3b87cd19c5c6b8c5e5f436b984e85f486d652285c30", size = 154704, upload-time = "2026-03-25T20:21:10.473Z" },
@@ -6398,25 +6414,25 @@ dependencies = [
     { name = "filelock" },
     { name = "fsspec" },
     { name = "jinja2" },
-    { name = "networkx", version = "3.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "networkx", version = "3.6.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "nvidia-cublas-cu12", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "nvidia-cuda-cupti-cu12", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "nvidia-cuda-nvrtc-cu12", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "nvidia-cuda-runtime-cu12", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "nvidia-cudnn-cu12", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "nvidia-cufft-cu12", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "nvidia-cufile-cu12", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "nvidia-curand-cu12", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "nvidia-cusolver-cu12", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "nvidia-cusparse-cu12", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "nvidia-cusparselt-cu12", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "nvidia-nccl-cu12", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "nvidia-nvjitlink-cu12", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "nvidia-nvtx-cu12", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "setuptools", marker = "python_full_version >= '3.12' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "networkx", version = "3.4.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
+    { name = "networkx", version = "3.6.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
+    { name = "nvidia-cublas-cu12", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
+    { name = "nvidia-cuda-cupti-cu12", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
+    { name = "nvidia-cuda-nvrtc-cu12", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
+    { name = "nvidia-cuda-runtime-cu12", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
+    { name = "nvidia-cudnn-cu12", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
+    { name = "nvidia-cufft-cu12", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
+    { name = "nvidia-cufile-cu12", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
+    { name = "nvidia-curand-cu12", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
+    { name = "nvidia-cusolver-cu12", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
+    { name = "nvidia-cusparse-cu12", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
+    { name = "nvidia-cusparselt-cu12", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
+    { name = "nvidia-nccl-cu12", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
+    { name = "nvidia-nvjitlink-cu12", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
+    { name = "nvidia-nvtx-cu12", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
+    { name = "setuptools", marker = "python_full_version >= '3.12' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
     { name = "sympy" },
-    { name = "triton", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "triton", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
     { name = "typing-extensions" },
 ]
 wheels = [
@@ -6526,7 +6542,7 @@ name = "tqdm"
 version = "4.67.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/09/a9/6ba95a270c6f1fbcd8dac228323f2777d886cb206987444e4bce66338dd4/tqdm-4.67.3.tar.gz", hash = "sha256:7d825f03f89244ef73f1d4ce193cb1774a8179fd96f31d7e1dcde62092b960bb", size = 169598, upload-time = "2026-02-03T17:35:53.048Z" }
 wheels = [
@@ -6692,7 +6708,7 @@ source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "click" },
     { name = "h11" },
-    { name = "typing-extensions", marker = "python_full_version < '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "typing-extensions", marker = "python_full_version < '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/1f/93/041fca8274050e40e6791f267d82e0e2e27dd165627bd640d3e0e378d877/uvicorn-0.46.0.tar.gz", hash = "sha256:fb9da0926999cc6cb22dc7cd71a94a632f078e6ae47ff683c5c420750fb7413d", size = 88758, upload-time = "2026-04-23T07:16:00.151Z" }
 wheels = [
@@ -6701,11 +6717,11 @@ wheels = [
 
 [package.optional-dependencies]
 standard = [
-    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
     { name = "httptools" },
     { name = "python-dotenv" },
     { name = "pyyaml" },
-    { name = "uvloop", marker = "(platform_python_implementation != 'PyPy' and sys_platform != 'cygwin' and sys_platform != 'win32') or (platform_python_implementation == 'PyPy' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform == 'cygwin' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform == 'win32' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "uvloop", marker = "(platform_python_implementation != 'PyPy' and sys_platform != 'cygwin' and sys_platform != 'win32') or (platform_python_implementation == 'PyPy' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_python_implementation == 'PyPy' and extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (platform_python_implementation == 'PyPy' and extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (platform_python_implementation == 'PyPy' and extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (platform_python_implementation == 'PyPy' and extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (platform_python_implementation == 'PyPy' and extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy') or (sys_platform == 'cygwin' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform == 'cygwin' and extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (sys_platform == 'cygwin' and extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (sys_platform == 'cygwin' and extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (sys_platform == 'cygwin' and extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (sys_platform == 'cygwin' and extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy') or (sys_platform == 'win32' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform == 'win32' and extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (sys_platform == 'win32' and extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (sys_platform == 'win32' and extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (sys_platform == 'win32' and extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (sys_platform == 'win32' and extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
     { name = "watchfiles" },
     { name = "websockets" },
 ]
@@ -6754,7 +6770,7 @@ dependencies = [
     { name = "jinja2" },
     { name = "math-verify" },
     { name = "mcp", version = "1.23.3", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'group-9-verifiers-policy'" },
-    { name = "mcp", version = "1.27.0", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-9-verifiers-openenv' or extra != 'group-9-verifiers-policy'" },
+    { name = "mcp", version = "1.27.0", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-9-verifiers-openenv' or extra == 'extra-9-verifiers-openreward' or extra == 'extra-9-verifiers-packages' or extra == 'extra-9-verifiers-ta' or extra == 'extra-9-verifiers-tasksets' or extra == 'group-9-verifiers-dev' or extra != 'group-9-verifiers-policy'" },
     { name = "msgpack" },
     { name = "nest-asyncio" },
     { name = "numpy" },
@@ -6771,9 +6787,9 @@ dependencies = [
     { name = "setproctitle" },
     { name = "tenacity" },
     { name = "textual" },
-    { name = "tomli", version = "2.4.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "typing-extensions", marker = "python_full_version < '3.12' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "uvloop", marker = "(platform_python_implementation != 'PyPy' and sys_platform != 'cygwin' and sys_platform != 'win32') or (platform_python_implementation == 'PyPy' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform == 'cygwin' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform == 'win32' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "tomli", marker = "python_full_version < '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
+    { name = "typing-extensions", marker = "python_full_version < '3.12' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
+    { name = "uvloop", marker = "(platform_python_implementation != 'PyPy' and sys_platform != 'cygwin' and sys_platform != 'win32') or (platform_python_implementation == 'PyPy' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_python_implementation == 'PyPy' and extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (platform_python_implementation == 'PyPy' and extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (platform_python_implementation == 'PyPy' and extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (platform_python_implementation == 'PyPy' and extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (platform_python_implementation == 'PyPy' and extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy') or (sys_platform == 'cygwin' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform == 'cygwin' and extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (sys_platform == 'cygwin' and extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (sys_platform == 'cygwin' and extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (sys_platform == 'cygwin' and extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (sys_platform == 'cygwin' and extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy') or (sys_platform == 'win32' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform == 'win32' and extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (sys_platform == 'win32' and extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (sys_platform == 'win32' and extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (sys_platform == 'win32' and extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (sys_platform == 'win32' and extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
 ]
 
 [package.optional-dependencies]
@@ -6782,8 +6798,18 @@ browser = [
     { name = "python-dotenv" },
     { name = "stagehand" },
 ]
+harnesses = [
+    { name = "harnesses" },
+]
 openenv = [
-    { name = "openenv-core" },
+    { name = "tasksets" },
+]
+openreward = [
+    { name = "tasksets" },
+]
+packages = [
+    { name = "harnesses" },
+    { name = "tasksets" },
 ]
 renderers = [
     { name = "renderers" },
@@ -6807,10 +6833,14 @@ ta = [
     { name = "nltk" },
     { name = "textarena" },
 ]
+tasksets = [
+    { name = "tasksets" },
+]
 
 [package.dev-dependencies]
 dev = [
     { name = "aiohttp" },
+    { name = "harnesses" },
     { name = "ipykernel" },
     { name = "ipywidgets" },
     { name = "nltk" },
@@ -6824,12 +6854,12 @@ dev = [
     { name = "renderers" },
     { name = "ruff" },
     { name = "stagehand" },
+    { name = "tasksets" },
     { name = "textarena" },
     { name = "ty" },
 ]
 policy = [
-    { name = "semgrep", version = "1.161.0", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.11' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "semgrep", version = "1.162.0", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.11' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "semgrep" },
 ]
 
 [package.metadata]
@@ -6842,6 +6872,8 @@ requires-dist = [
     { name = "deepspeed", marker = "extra == 'rl'", specifier = ">=0.17.6" },
     { name = "flash-attn", marker = "extra == 'rl'", specifier = ">=2.8.3" },
     { name = "gepa" },
+    { name = "harnesses", marker = "extra == 'harnesses'", editable = "packages/harnesses" },
+    { name = "harnesses", marker = "extra == 'packages'", editable = "packages/harnesses" },
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "jinja2", specifier = ">=3.1.6" },
     { name = "liger-kernel", marker = "extra == 'rl'", specifier = ">=0.5.10" },
@@ -6853,7 +6885,6 @@ requires-dist = [
     { name = "numpy" },
     { name = "openai", specifier = ">=1.108.1" },
     { name = "openai-agents", specifier = ">=0.0.7" },
-    { name = "openenv-core", marker = "extra == 'openenv'", specifier = ">=0.3.0" },
     { name = "peft", marker = "extra == 'rl'" },
     { name = "prime-pydantic-config", extras = ["toml"] },
     { name = "prime-sandboxes", specifier = ">=0.2.25" },
@@ -6869,6 +6900,10 @@ requires-dist = [
     { name = "rich" },
     { name = "setproctitle", specifier = ">=1.3.0" },
     { name = "stagehand", marker = "extra == 'browser'", specifier = ">=3.0.0" },
+    { name = "tasksets", marker = "extra == 'openenv'", editable = "packages/tasksets" },
+    { name = "tasksets", marker = "extra == 'openreward'", editable = "packages/tasksets" },
+    { name = "tasksets", marker = "extra == 'packages'", editable = "packages/tasksets" },
+    { name = "tasksets", marker = "extra == 'tasksets'", editable = "packages/tasksets" },
     { name = "tenacity", specifier = ">=8.5.0" },
     { name = "textarena", marker = "extra == 'ta'" },
     { name = "textual" },
@@ -6880,11 +6915,12 @@ requires-dist = [
     { name = "vllm", marker = "extra == 'rl'", specifier = ">=0.10.0,<0.11.0" },
     { name = "wandb", marker = "extra == 'rl'" },
 ]
-provides-extras = ["browser", "openenv", "renderers", "rg", "rl", "ta"]
+provides-extras = ["browser", "harnesses", "openenv", "openreward", "packages", "renderers", "rg", "rl", "ta", "tasksets"]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "aiohttp", specifier = ">=3.9.0" },
+    { name = "harnesses", editable = "packages/harnesses" },
     { name = "ipykernel" },
     { name = "ipywidgets" },
     { name = "nltk" },
@@ -6898,6 +6934,7 @@ dev = [
     { name = "renderers", specifier = ">=0.1.8.dev28" },
     { name = "ruff" },
     { name = "stagehand", specifier = ">=3.0.0" },
+    { name = "tasksets", editable = "packages/tasksets" },
     { name = "textarena" },
     { name = "ty", specifier = ">=0.0.1a29,<0.0.22" },
 ]
@@ -6912,7 +6949,7 @@ dependencies = [
     { name = "filelock" },
     { name = "platformdirs" },
     { name = "python-discovery" },
-    { name = "typing-extensions", marker = "python_full_version < '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "typing-extensions", marker = "python_full_version < '3.11'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/0c/98/3a7e644e19cb26133488caff231be390579860bbbb3da35913c49a1d0a46/virtualenv-21.2.4.tar.gz", hash = "sha256:b294ef68192638004d72524ce7ef303e9d0cf5a44c95ce2e54a7500a6381cada", size = 5850742, upload-time = "2026-04-14T22:15:31.438Z" }
 wheels = [
@@ -6937,7 +6974,7 @@ dependencies = [
     { name = "filelock" },
     { name = "gguf" },
     { name = "lark" },
-    { name = "llguidance", marker = "platform_machine == 'aarch64' or platform_machine == 'arm64' or platform_machine == 'x86_64' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "llguidance", marker = "platform_machine == 'aarch64' or platform_machine == 'arm64' or platform_machine == 'x86_64' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
     { name = "lm-format-enforcer" },
     { name = "mistral-common", extra = ["audio", "image"] },
     { name = "msgspec" },
@@ -6963,12 +7000,12 @@ dependencies = [
     { name = "ray", extra = ["cgraph"] },
     { name = "regex" },
     { name = "requests" },
-    { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
     { name = "sentencepiece" },
     { name = "setproctitle" },
-    { name = "setuptools", marker = "python_full_version >= '3.12' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "six", marker = "python_full_version >= '3.12' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "setuptools", marker = "python_full_version >= '3.12' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
+    { name = "six", marker = "python_full_version >= '3.12' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
     { name = "tiktoken" },
     { name = "tokenizers" },
     { name = "torch" },
@@ -6978,8 +7015,8 @@ dependencies = [
     { name = "transformers" },
     { name = "typing-extensions" },
     { name = "watchfiles" },
-    { name = "xformers", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "xgrammar", marker = "platform_machine == 'aarch64' or platform_machine == 'arm64' or platform_machine == 'x86_64' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "xformers", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
+    { name = "xgrammar", marker = "platform_machine == 'aarch64' or platform_machine == 'arm64' or platform_machine == 'x86_64' or (extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/7d/0a/278d7bbf454f7de5322a5007427eed3e8b34ed6c2802491b56bbdfd7bbb4/vllm-0.10.2.tar.gz", hash = "sha256:57608f44cf61f5d80fb182c98e06e524cb2925bb528258a7b247c8e43a52d13e", size = 10908356, upload-time = "2025-09-13T23:00:34.918Z" }
 wheels = [
@@ -7239,8 +7276,8 @@ name = "xformers"
 version = "0.0.32.post1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "numpy", marker = "(python_full_version < '3.11' and sys_platform == 'emscripten') or (python_full_version < '3.11' and sys_platform == 'win32') or (sys_platform != 'emscripten' and sys_platform != 'win32') or (sys_platform == 'emscripten' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform == 'win32' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
-    { name = "torch", marker = "(python_full_version < '3.11' and sys_platform == 'emscripten') or (python_full_version < '3.11' and sys_platform == 'win32') or (sys_platform != 'emscripten' and sys_platform != 'win32') or (sys_platform == 'emscripten' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform == 'win32' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "numpy" },
+    { name = "torch" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/6f/33/3b9c4d3d5b2da453d27de891df4ad653ac5795324961aa3a5c15b0353fe6/xformers-0.0.32.post1.tar.gz", hash = "sha256:1de84a45c497c8d92326986508d81f4b0a8c6be4d3d62a29b8ad6048a6ab51e1", size = 12106196, upload-time = "2025-08-14T18:07:45.486Z" }
 wheels = [
@@ -7253,13 +7290,13 @@ name = "xgrammar"
 version = "0.1.23"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "mlx-lm", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine != 'arm64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'darwin' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "mlx-lm", marker = "(platform_machine == 'arm64' and sys_platform == 'darwin') or (platform_machine != 'arm64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine != 'arm64' and extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (platform_machine != 'arm64' and extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (platform_machine != 'arm64' and extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (platform_machine != 'arm64' and extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (platform_machine != 'arm64' and extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy') or (sys_platform != 'darwin' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'darwin' and extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (sys_platform != 'darwin' and extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (sys_platform != 'darwin' and extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (sys_platform != 'darwin' and extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (sys_platform != 'darwin' and extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
     { name = "ninja" },
     { name = "numpy" },
     { name = "pydantic" },
     { name = "torch" },
     { name = "transformers" },
-    { name = "triton", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy')" },
+    { name = "triton", marker = "(platform_machine == 'x86_64' and sys_platform == 'linux') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (platform_machine != 'x86_64' and extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openenv' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-openreward' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-packages' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-ta' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'extra-9-verifiers-tasksets' and extra == 'group-9-verifiers-policy') or (sys_platform != 'linux' and extra == 'group-9-verifiers-dev' and extra == 'group-9-verifiers-policy')" },
     { name = "typing-extensions" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/e9/12/958457553a87c31bdb18c8395b88bb3255f7c7373ab3a0b046d3b7f37f86/xgrammar-0.1.23.tar.gz", hash = "sha256:5ef280455c1ac008f052d7ea92286f0ca3a3d7ab360224894ac69277c8827113", size = 2263693, upload-time = "2025-08-15T07:31:42.792Z" }

@@ -1,12 +1,12 @@
 import functools
 import inspect
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable
 from typing import Literal, TypeAlias, cast
 
 from pydantic import BaseModel
 
 from .config_utils import resolve_config_object
-from ..types import ConfigMap, Handler
+from ..types import ConfigData, Handler
 
 CallableKind: TypeAlias = Literal[
     "stop", "setup", "update", "metric", "reward", "advantage", "cleanup", "teardown"
@@ -49,7 +49,7 @@ def config_callables(value: object, kind: CallableKind) -> list[Handler]:
         return []
     if isinstance(value, str):
         return [callable_config_item(value, kind)]
-    if isinstance(value, Mapping):
+    if isinstance(value, dict):
         return [callable_config_item(value, kind)]
     if isinstance(value, Iterable):
         return [callable_config_item(item, kind) for item in value]
@@ -60,14 +60,14 @@ def callable_config_item(value: object, kind: CallableKind) -> Handler:
     value = resolve_config_object(value)
     if isinstance(value, BaseModel):
         value = value.model_dump(exclude_none=True)
-    if isinstance(value, Mapping):
-        return callable_from_mapping(cast(ConfigMap, value), kind)
+    if isinstance(value, dict):
+        return callable_from_mapping(cast(ConfigData, value), kind)
     if not callable(value):
         raise TypeError(f"{kind} config entries must resolve to callables.")
     return cast(Handler, value)
 
 
-def callable_from_mapping(spec: ConfigMap, kind: CallableKind) -> Handler:
+def callable_from_mapping(spec: ConfigData, kind: CallableKind) -> Handler:
     allowed = callable_config_keys(kind)
     unknown = set(spec) - allowed
     if unknown:
@@ -95,7 +95,7 @@ def callable_config_keys(kind: CallableKind) -> set[str]:
 def configured_callable(
     fn: Handler,
     kind: CallableKind,
-    metadata: ConfigMap,
+    metadata: ConfigData,
 ) -> Handler:
     if not metadata:
         return fn
