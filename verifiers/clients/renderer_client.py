@@ -9,6 +9,7 @@ concurrent rollouts tokenize in parallel instead of blocking the event loop.
 """
 
 import json
+import logging
 import threading
 from collections.abc import Mapping
 from typing import Any, ClassVar, cast
@@ -59,6 +60,8 @@ from verifiers.types import (
     UserMessage,
 )
 from verifiers.utils.client_utils import setup_openai_client
+
+logger = logging.getLogger(__name__)
 
 # Module-level bridge counters. Incremented by every RendererClient instance
 # that tries to stitch a multi-turn prompt; callers (e.g. prime-rl's
@@ -598,6 +601,14 @@ class RendererClient(
             multi_modal_data = bridged.multi_modal_data
             prompt_attribution = bridged
             sampling_params["routed_experts_prompt_start"] = routed_experts_prompt_start
+            if routed_experts_prompt_start:
+                logger.debug(
+                    "Using routed_experts_prompt_start=%d for bridged renderer prompt "
+                    "(prompt_len=%d, trajectory_len=%d)",
+                    routed_experts_prompt_start,
+                    len(prompt_ids),
+                    len(_get_value(kwargs.get("state"), "trajectory", []) or []),
+                )
         else:
             prompt_ids = None
             multi_modal_data = None
