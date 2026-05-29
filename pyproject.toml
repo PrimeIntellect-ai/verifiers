@@ -87,7 +87,8 @@ rg = [
     "reasoning-gym",
 ]
 ta = [
-    "tasksets>=0.1.1",
+    "nltk",
+    "textarena",
 ]
 tasksets = [
     "tasksets>=0.1.1",

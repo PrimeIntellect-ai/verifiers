@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Existing tag to release (e.g. harnesses-v0.1.0.post0)'
+        description: 'Existing tag to release (e.g. harnesses-v0.1.1)'
         required: true
         type: string
   push:

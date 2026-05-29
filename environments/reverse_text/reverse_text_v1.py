@@ -25,6 +25,10 @@ REVERSED_TEXT_EXTRACTOR = TagExtractor("reversed_text")
 class ReverseTextTasksetConfig(vf.TasksetConfig):
     dataset_name: str = "PrimeIntellect/Reverse-Text-RL"
     dataset_split: str = "train"
+    system_prompt: vf.SystemPrompt = (
+        "Reverse the text character-by-character. Put your answer in "
+        "<reversed_text> tags."
+    )
 
 
 class ReverseTextTaskset(vf.Taskset[ReverseTextTasksetConfig]):
@@ -49,13 +53,6 @@ class ReverseTextTaskset(vf.Taskset[ReverseTextTasksetConfig]):
                 "answer": row["answer"],
                 "info": row.get("info") or {},
             }
-
-    def load_system_prompt(self, config: ReverseTextTasksetConfig) -> vf.SystemPrompt:
-        _ = config
-        return (
-            "Reverse the text character-by-character. Put your answer in "
-            "<reversed_text> tags."
-        )
 
     @vf.reward(weight=1.0)
     async def lcs_reward(self, task, state) -> float:

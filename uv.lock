@@ -6830,7 +6830,8 @@ rl = [
     { name = "wandb" },
 ]
 ta = [
-    { name = "tasksets" },
+    { name = "nltk" },
+    { name = "textarena" },
 ]
 tasksets = [
     { name = "tasksets" },
@@ -6880,6 +6881,7 @@ requires-dist = [
     { name = "mcp", specifier = ">=1.14.1" },
     { name = "msgpack", specifier = ">=1.1.2" },
     { name = "nest-asyncio", specifier = ">=1.6.0" },
+    { name = "nltk", marker = "extra == 'ta'" },
     { name = "numpy" },
     { name = "openai", specifier = ">=1.108.1" },
     { name = "openai-agents", specifier = ">=0.0.7" },
@@ -6901,9 +6903,9 @@ requires-dist = [
     { name = "tasksets", marker = "extra == 'openenv'", editable = "packages/tasksets" },
     { name = "tasksets", marker = "extra == 'openreward'", editable = "packages/tasksets" },
     { name = "tasksets", marker = "extra == 'packages'", editable = "packages/tasksets" },
-    { name = "tasksets", marker = "extra == 'ta'", editable = "packages/tasksets" },
     { name = "tasksets", marker = "extra == 'tasksets'", editable = "packages/tasksets" },
     { name = "tenacity", specifier = ">=8.5.0" },
+    { name = "textarena", marker = "extra == 'ta'" },
     { name = "textual" },
     { name = "tomli", marker = "python_full_version < '3.11'" },
     { name = "torch", marker = "extra == 'rl'", specifier = ">=2.8.0,<2.9.0" },

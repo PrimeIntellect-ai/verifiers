@@ -1,9 +1,21 @@
 import verifiers as vf
 
 
+async def child_program(
+    task: vf.Task, state: vf.State
+) -> dict[str, list[dict[str, str]]]:
+    _ = state
+    name = str(task["name"])
+    return {"completion": [{"role": "assistant", "content": f"hello {name}"}]}
+
+
+class ChildHarnessConfig(vf.HarnessConfig):
+    program: vf.ProgramConfig = vf.ProgramConfig(fn="child_program")
+
+
 async def ask_subagent(name: str, state) -> str:
-    """Ask a child language-model harness to produce the greeting for one name."""
-    harness = vf.Harness(config=vf.HarnessConfig())
+    """Ask a child harness to produce the greeting for one name."""
+    harness = vf.Harness(config=ChildHarnessConfig())
     task = vf.Task(
         {
             "name": name,

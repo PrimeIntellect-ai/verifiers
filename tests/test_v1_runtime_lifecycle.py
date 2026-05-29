@@ -22,7 +22,6 @@ from verifiers.types import Response, ResponseMessage, ToolCall
 from verifiers.types import Tool
 from verifiers.types import Usage
 from verifiers.v1.runtime import Runtime
-from verifiers.v1.utils.endpoint_utils import endpoint_api_key
 from verifiers.v1.utils import mcp_utils, sandbox_utils
 from verifiers.v1.utils.mcp_proxy_utils import MCP_PROXY_CONFIG_PATH, MCP_PROXY_PATH
 from verifiers.v1.utils.mcp_proxy_utils import proxy_command, proxy_program
