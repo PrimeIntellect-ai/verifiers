@@ -25,7 +25,7 @@ def fake_dataset() -> Dataset:
                 "version": "1.0",
                 "problem_statement": "Fix the demo behavior.",
                 "hints_text": "Look at src/demo.py.",
-                "FAIL_TO_PASS": '["tests/test_demo.py::test_fix"]',
+                "FAIL_TO_PASS": ["tests/test_demo.py::test_fix"],
                 "PASS_TO_PASS": ["tests/test_demo.py::test_existing"],
                 "patch": GOLD_PATCH,
                 "test_patch": "diff --git a/tests/test_demo.py b/tests/test_demo.py\n",
@@ -87,6 +87,12 @@ def test_extract_patch_supports_tags_fences_and_raw_diff():
     assert swe_bench_verified.extract_patch(f"Here is the patch:\n{GOLD_PATCH}") == (
         GOLD_PATCH.strip()
     )
+
+
+def test_normalize_test_names_supports_json_strings():
+    assert swe_bench_verified.normalize_test_names(
+        '["tests/test_demo.py::test_fix"]'
+    ) == ["tests/test_demo.py::test_fix"]
 
 
 def test_patch_metrics_and_official_submission():
