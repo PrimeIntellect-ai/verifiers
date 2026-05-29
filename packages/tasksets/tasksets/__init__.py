@@ -1,27 +1,25 @@
-import importlib
-
 from .harbor import HarborTaskset, HarborTasksetConfig
+
+LAZY_EXPORTS = {
+    "OpenEnvTaskset": (".openenv", "OpenEnvTaskset"),
+    "OpenEnvTasksetConfig": (".openenv", "OpenEnvTasksetConfig"),
+    "OpenRewardTaskset": (".openreward", "OpenRewardTaskset"),
+    "OpenRewardTasksetConfig": (".openreward", "OpenRewardTasksetConfig"),
+    "TextArenaTaskset": (".textarena", "TextArenaTaskset"),
+    "TextArenaTasksetConfig": (".textarena", "TextArenaTasksetConfig"),
+}
 
 __all__ = [
     "HarborTaskset",
     "HarborTasksetConfig",
-    "OpenEnvTaskset",
-    "OpenEnvTasksetConfig",
-    "OpenRewardTaskset",
-    "OpenRewardTasksetConfig",
-    "TextArenaTaskset",
-    "TextArenaTasksetConfig",
+    *LAZY_EXPORTS,
 ]
 
 
 def __getattr__(name: str):
-    if name in ("OpenEnvTaskset", "OpenEnvTasksetConfig"):
-        module = importlib.import_module("tasksets.openenv")
-        return getattr(module, name)
-    if name in ("OpenRewardTaskset", "OpenRewardTasksetConfig"):
-        module = importlib.import_module("tasksets.openreward")
-        return getattr(module, name)
-    if name in ("TextArenaTaskset", "TextArenaTasksetConfig"):
-        module = importlib.import_module("tasksets.textarena")
-        return getattr(module, name)
+    if name in LAZY_EXPORTS:
+        module_name, symbol_name = LAZY_EXPORTS[name]
+        from importlib import import_module
+
+        return vars(import_module(module_name, __name__))[symbol_name]
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

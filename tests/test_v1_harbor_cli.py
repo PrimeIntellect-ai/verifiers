@@ -12,13 +12,18 @@ import verifiers as vf
 from harnesses import (
     MiniSWEAgent,
     MiniSWEAgentConfig,
+    MiniSWEAgentProgramConfig,
     OpenCode,
     OpenCodeConfig,
+    OpenCodeProgramConfig,
     Pi,
     PiConfig,
+    PiProgramConfig,
     RLM,
     RLMConfig,
+    RLMProgramConfig,
     Terminus2Config,
+    Terminus2ProgramConfig,
 )
 from harnesses.pi import PI_DEFAULT_PACKAGE
 from harnesses.terminus_2 import (
@@ -108,9 +113,9 @@ def test_harbor_taskset_loads_package_tasks_with_program_patch(
     assert task["sandbox"]["command_timeout"] == 600
     assert "network_access" not in task["sandbox"]
     assert (
-        merge_task_sandbox({"network_access": False, "scope": "rollout"}, task)[
-            "network_access"
-        ]
+        merge_task_sandbox(
+            vf.SandboxConfig(network_access=False, scope="rollout"), task
+        ).network_access
         is False
     )
     assert task["harbor"]["test_timeout"] == 300.0
@@ -165,11 +170,10 @@ def test_harbor_taskset_constructs_env_with_opencode(
 
     env = getattr(package, "load_env")()
 
-    row = env.get_dataset()[0]
-    task = env.taskset.to_task(row)
+    task = next(iter(env.taskset))
     assert task["task_name"] == "task-a"
     assert isinstance(env.harness, OpenCode)
-    assert "task_dir" not in cast(dict[str, object], env.harness.program)
+    assert "task_dir" not in cast(dict[str, object], env.harness.config.program.data())
 
 
 class FakeHarborCommandResult:
@@ -233,8 +237,10 @@ async def test_harbor_reward_uses_background_job_for_tests(
 
     taskset = HarborTaskset(config=HarborTasksetConfig(bundle_package=__name__))
     reward = await taskset.harbor_reward(
-        {"harbor": {"task_dir": str(task_dir), "test_timeout": 120}},
-        {"sandbox_id": "sbx-1"},
+        vf.Task(
+            {"prompt": [], "harbor": {"task_dir": str(task_dir), "test_timeout": 120}}
+        ).freeze(),
+        vf.State({"sandbox_id": "sbx-1"}),
     )
 
     client = FakeHarborSandboxClient.instances[0]
@@ -254,40 +260,42 @@ def test_packaged_harbor_and_opencode_imports_are_available_from_packages() -> N
 def test_opencode_config_owns_opencode_harness_fields() -> None:
     harness = OpenCode(
         config=OpenCodeConfig(
-            agent_workdir="/workspace",
-            disabled_tools=["webfetch"],
             system_prompt=None,
+            program=OpenCodeProgramConfig(
+                agent_workdir="/workspace",
+                disabled_tools=["webfetch"],
+            ),
             max_turns=2,
         )
     )
-    program = cast(dict[str, object], harness.program)
+    program = cast(dict[str, object], harness.config.program.data())
     command = cast(list[object], program["command"])
     mcp_setup = cast(dict[str, object], program["channels"])["mcp"]
     setup = cast(str, program["setup"])
 
-    assert harness.config.agent_workdir == "/workspace"
-    assert harness.config.disabled_tools == ["webfetch"]
+    assert harness.config.program.agent_workdir == "/workspace"
+    assert harness.config.program.disabled_tools == ["webfetch"]
     assert harness.config.system_prompt is None
     assert harness.config.max_turns == 2
     assert "apt-get -o Acquire::Retries=3 update" in setup
     assert "apt-get -o Acquire::Retries=3 install" in setup
     assert "/workspace" in cast(str, command[2])
     assert '"webfetch": false' in cast(str, mcp_setup)
-    assert "/opencode/system.txt" not in cast(dict[str, object], program["files"])
+    assert "/opencode/system.txt" in cast(dict[str, object], program["files"])
 
 
 @pytest.mark.parametrize(
-    ("harness_cls", "config_cls"),
+    ("harness_cls", "config_cls", "program_cls"),
     [
-        (OpenCode, OpenCodeConfig),
-        (MiniSWEAgent, MiniSWEAgentConfig),
-        (Pi, PiConfig),
-        (RLM, RLMConfig),
-        (Terminus2, Terminus2Config),
+        (OpenCode, OpenCodeConfig, OpenCodeProgramConfig),
+        (MiniSWEAgent, MiniSWEAgentConfig, MiniSWEAgentProgramConfig),
+        (Pi, PiConfig, PiProgramConfig),
+        (RLM, RLMConfig, RLMProgramConfig),
+        (Terminus2, Terminus2Config, Terminus2ProgramConfig),
     ],
 )
 def test_packaged_command_harnesses_defer_partial_program_overrides(
-    harness_cls, config_cls
+    harness_cls, config_cls, program_cls
 ) -> None:
     override = {
         "setup": "echo caller",
@@ -295,7 +303,7 @@ def test_packaged_command_harnesses_defer_partial_program_overrides(
         "args": ["--caller"],
     }
     harness = harness_cls(config=config_cls(program=override))
-    program = cast(dict[str, object], harness.program)
+    program = cast(dict[str, object], harness.config.program.data())
     env = cast(dict[str, object], program["env"])
     setup = cast(list[object], program["setup"])
     args = cast(list[object], program["args"])
@@ -304,22 +312,22 @@ def test_packaged_command_harnesses_defer_partial_program_overrides(
     assert env["CALLER"] == "1"
     assert setup[-1] == "echo caller"
     assert args[-1] == "--caller"
-    assert isinstance(harness.config.program, vf.ProgramConfig)
-    config_setup = cast(list[object], harness.config.program.setup)
+    assert isinstance(harness.config.program, program_cls)
+    assert isinstance(harness.program_config, vf.ProgramConfig)
     config_args = cast(list[object], harness.config.program.args)
-    assert harness.config.program.command == program["command"]
+    assert harness.program_config.command == program["command"]
     assert harness.config.program.env["CALLER"] == "1"
-    assert config_setup[-1] == override["setup"]
+    assert harness.config.program.setup == override["setup"]
     assert config_args[-1] == "--caller"
 
 
 def test_packaged_command_harness_config_program_patch_precedence() -> None:
     harness = MiniSWEAgent(
         config=MiniSWEAgentConfig(
-            program=vf.ProgramConfig(env={"OPENAI_MODEL": "caller-model"})
+            program=MiniSWEAgentProgramConfig(env={"OPENAI_MODEL": "caller-model"})
         )
     )
-    program = cast(dict[str, object], harness.program)
+    program = cast(dict[str, object], harness.config.program.data())
     env = cast(dict[str, object], program["env"])
 
     assert env["OPENAI_MODEL"] == "caller-model"
@@ -335,21 +343,20 @@ def test_packaged_command_harness_config_program_patch_precedence() -> None:
 def test_packaged_command_harness_config_program_rejects_owned_keys(
     key: str, value: object
 ) -> None:
-    program = vf.ProgramConfig.model_validate({key: value})
     with pytest.raises(ValueError, match="Command ProgramConfig can only"):
-        OpenCode(config=OpenCodeConfig(program=program))
+        OpenCode(config=OpenCodeConfig.model_validate({"program": {key: value}}))
 
 
 def test_pi_harness_writes_intercepted_model_and_mcp_config() -> None:
     harness = Pi()
-    program = cast(dict[str, object], harness.program)
+    program = cast(dict[str, object], harness.config.program.data())
     setup = cast(str, program["setup"])
     channels = cast(dict[str, object], program["channels"])
     mcp_setup = cast(str, channels["mcp"])
 
     assert "apt-get -o Acquire::Retries=3 update" in setup
     assert "apt-get -o Acquire::Retries=3 install" in setup
-    assert harness.config.package == PI_DEFAULT_PACKAGE
+    assert harness.config.program.package == PI_DEFAULT_PACKAGE
     assert PI_DEFAULT_PACKAGE == "@earendil-works/pi-coding-agent"
     assert f"npm install -g --ignore-scripts {PI_DEFAULT_PACKAGE}" in setup
     assert "mariozechner" not in setup
@@ -365,12 +372,14 @@ def test_terminus_2_harness_builds_sandbox_program() -> None:
     harness = Terminus2(
         config=Terminus2Config(
             system_prompt="extra system prompt",
-            agent_workdir="/workspace",
-            max_turns=7,
-            python_version="3.12",
+            program=Terminus2ProgramConfig(
+                agent_workdir="/workspace",
+                max_turns=7,
+                python_version="3.12",
+            ),
         )
     )
-    program = cast(dict[str, object], harness.program)
+    program = cast(dict[str, object], harness.config.program.data())
     command = cast(list[object], program["command"])
     setup = cast(str, program["setup"])
     files = cast(dict[str, object], program["files"])
@@ -413,7 +422,9 @@ def test_task_program_merges_into_command_program_without_collisions() -> None:
                 setup="echo harness",
                 channels={"mcp": "echo harness tools"},
                 env={"HARNESS": "1"},
-                artifacts={"log": {"path": "/logs/harness.log", "format": "text"}},
+                artifacts=vf.ArtifactsConfig.model_validate(
+                    {"log": {"path": "/logs/harness.log", "format": "text"}}
+                ),
                 args=["--base"],
             ),
             sandbox=vf.SandboxConfig(image="python:3.11-slim"),
@@ -433,7 +444,7 @@ def test_task_program_merges_into_command_program_without_collisions() -> None:
     ).freeze()
 
     program = merge_task_program(
-        cast(dict[str, object], harness.program), task, kind="command"
+        cast(vf.ConfigData, harness.config.program.data()), task, kind="command"
     )
 
     assert program["files"] == {
@@ -451,12 +462,9 @@ def test_task_program_merges_into_command_program_without_collisions() -> None:
 
 
 def test_command_program_patch_preserves_explicit_default_values() -> None:
-    program = vf.Program(
-        vf.ProgramConfig.from_command(
-            program=vf.ProgramConfig(setup_timeout=300),
-            command=["tool"],
-            setup_timeout=600,
-        )
+    program = vf.ProgramConfig(setup_timeout=300).resolve_command(
+        command=["tool"],
+        setup_timeout=600,
     )
 
     assert program.data()["setup_timeout"] == 300
@@ -473,7 +481,9 @@ def test_task_program_rejects_harness_owned_keys() -> None:
 
     with pytest.raises(ValueError, match="task.program can only define"):
         merge_task_program(
-            cast(dict[str, object], harness.program), task, kind="command"
+            cast(vf.ConfigData, harness.config.program.data()),
+            task,
+            kind="command",
         )
 
 
@@ -494,5 +504,7 @@ def test_task_program_rejects_colliding_upload_paths() -> None:
 
     with pytest.raises(ValueError, match="define the same keys"):
         merge_task_program(
-            cast(dict[str, object], harness.program), task, kind="command"
+            cast(vf.ConfigData, harness.config.program.data()),
+            task,
+            kind="command",
         )

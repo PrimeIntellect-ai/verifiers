@@ -1,5 +1,5 @@
 import verifiers as vf
-from harnesses import RLMConfig
+from harnesses import RLM, RLMConfig
 
 
 @vf.reward(weight=1.0)
@@ -8,7 +8,8 @@ async def exact_answer(task, state) -> float:
     return float(str(task["answer"]).lower() in stdout.lower())
 
 
-def load_tasks():
+def load_tasks(split: vf.TaskSplit = "train"):
+    _ = split
     return [
         {
             "question": "Reply with exactly hello rlm.",
@@ -59,20 +60,23 @@ class HelloRLMTasksetConfig(vf.TasksetConfig):
 
 class HelloRLMTaskset(vf.Taskset[HelloRLMTasksetConfig]):
     def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
-        return load_tasks()
-
-
-class HelloRLMEnvConfig(vf.EnvConfig):
-    taskset: HelloRLMTasksetConfig = HelloRLMTasksetConfig()
-    harness: RLMConfig = RLMConfig()
+        return load_tasks(split)
 
 
 def load_taskset(config: HelloRLMTasksetConfig) -> HelloRLMTaskset:
     return HelloRLMTaskset(config=config)
 
 
-def load_environment(config: HelloRLMEnvConfig) -> vf.Env:
+def load_harness(config: RLMConfig) -> RLM:
+    return RLM(config=config)
+
+
+def load_environment(config: vf.EnvConfig) -> vf.Env:
+    taskset_config = config.taskset
+    harness_config = config.harness
+    assert isinstance(taskset_config, HelloRLMTasksetConfig)
+    assert isinstance(harness_config, RLMConfig)
     return vf.Env(
-        taskset=vf.load_taskset(config=config.taskset),
-        harness=vf.load_harness("harnesses.rlm", config=config.harness),
+        taskset=load_taskset(taskset_config),
+        harness=load_harness(harness_config),
     )

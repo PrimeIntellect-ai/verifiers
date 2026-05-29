@@ -164,11 +164,11 @@ class {taskset_config_name}(vf.TasksetConfig):
 
 
 class {taskset_name}(vf.Taskset[{taskset_config_name}]):
-    def load_system_prompt(self) -> vf.SystemPrompt:
+    def load_system_prompt(self, config: {taskset_config_name}) -> vf.SystemPrompt:
         raise NotImplementedError("Load the system prompt for {env_id_dash}.")
 
     def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
-        raise NotImplementedError("Load task rows for {env_id_dash}.")
+        raise NotImplementedError("Load tasks for {env_id_dash}.")
 
     @vf.reward(weight=1.0)
     async def correct_answer(self, task: vf.Task, state: vf.State) -> float:
@@ -180,7 +180,9 @@ def load_taskset(config: {taskset_config_name}) -> {taskset_name}:
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
-    return vf.Env(taskset=vf.load_taskset(config=config.taskset))
+    taskset_config = config.taskset
+    assert isinstance(taskset_config, {taskset_config_name})
+    return vf.Env(taskset=load_taskset(taskset_config))
 """
 
 V1_HARNESS_ENVIRONMENT_TEMPLATE = """\
@@ -192,11 +194,11 @@ class {taskset_config_name}(vf.TasksetConfig):
 
 
 class {taskset_name}(vf.Taskset[{taskset_config_name}]):
-    def load_system_prompt(self) -> vf.SystemPrompt:
+    def load_system_prompt(self, config: {taskset_config_name}) -> vf.SystemPrompt:
         raise NotImplementedError("Load the system prompt for {env_id_dash}.")
 
     def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
-        raise NotImplementedError("Load task rows for {env_id_dash}.")
+        raise NotImplementedError("Load tasks for {env_id_dash}.")
 
     @vf.reward(weight=1.0)
     async def correct_answer(self, task: vf.Task, state: vf.State) -> float:
@@ -220,9 +222,13 @@ def load_harness(config: {harness_config_name}) -> {harness_name}:
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
+    taskset_config = config.taskset
+    harness_config = config.harness
+    assert isinstance(taskset_config, {taskset_config_name})
+    assert isinstance(harness_config, {harness_config_name})
     return vf.Env(
-        taskset=vf.load_taskset(config=config.taskset),
-        harness=vf.load_harness(config=config.harness),
+        taskset=load_taskset(taskset_config),
+        harness=load_harness(harness_config),
     )
 """
 
@@ -236,7 +242,9 @@ def load_taskset(config: OpenEnvTasksetConfig) -> OpenEnvTaskset:
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
-    return vf.Env(taskset=vf.load_taskset(config=config.taskset))
+    taskset_config = config.taskset
+    assert isinstance(taskset_config, OpenEnvTasksetConfig)
+    return vf.Env(taskset=load_taskset(taskset_config))
 """
 
 OPENENV_PROJ_README_TEMPLATE = """\

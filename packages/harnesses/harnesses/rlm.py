@@ -1,11 +1,6 @@
 import shlex
-from collections.abc import Mapping
-from typing import cast
 
 import verifiers as vf
-from pydantic import model_validator
-from verifiers.v1.sandbox import sandbox_config_mapping
-from verifiers.v1.utils.program_utils import int_config
 
 from .utils.rlm_utils import (
     DEFAULT_RLM_CHECKOUT_PATH,
@@ -26,7 +21,8 @@ RLM_DEFAULT_WORKDIR = "/workspace"
 RLM_DEFAULT_TOOLS = ["ipython"]
 
 
-class RLMConfig(vf.HarnessConfig):
+class RLMProgramConfig(vf.ProgramConfig):
+    sandbox: vf.SandboxConfig | None = None
     workdir: str = RLM_DEFAULT_WORKDIR
     instruction_path: str = RLM_DEFAULT_INSTRUCTION_PATH
     rlm_repo_url: str = RLM_DEFAULT_REPO_URL
@@ -42,17 +38,13 @@ class RLMConfig(vf.HarnessConfig):
     env_vars: dict[str, str] = {}
     skills: str | None = None
 
-    @model_validator(mode="after")
-    def configure_program(self) -> "RLMConfig":
-        if self.program.command is not None and "program" not in self.model_fields_set:
-            return self
-        config = self
+    def resolve(self) -> vf.ProgramConfig:
         files: dict[str, vf.ProgramValue] = {
-            config.instruction_path: {
+            self.instruction_path: {
                 "fn": "verifiers.v1.utils.prompt_utils:task_text",
                 "keys": ["instruction", "question"],
             },
-            RLM_DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH: config.append_to_system_prompt,
+            RLM_DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH: self.append_to_system_prompt,
             DEFAULT_RLM_TOOL_SKILLS_ARCHIVE_PATH: {
                 "fn": "harnesses.utils.rlm_utils:rlm_tool_skills_archive"
             },
@@ -61,19 +53,17 @@ class RLMConfig(vf.HarnessConfig):
             DEFAULT_RLM_CHECKOUT_PATH: {
                 "fn": "harnesses.utils.rlm_utils:rlm_checkout_path",
                 **(
-                    {"local_checkout": config.local_checkout}
-                    if config.local_checkout
+                    {"local_checkout": self.local_checkout}
+                    if self.local_checkout
                     else {}
                 ),
-                "rlm_repo_url": config.rlm_repo_url,
-                "rlm_repo_ref": config.rlm_repo_ref,
-                **(
-                    {"gh_token_var": config.gh_token_var} if config.gh_token_var else {}
-                ),
+                "rlm_repo_url": self.rlm_repo_url,
+                "rlm_repo_ref": self.rlm_repo_ref,
+                **({"gh_token_var": self.gh_token_var} if self.gh_token_var else {}),
             }
         }
-        if config.skills is not None:
-            dirs[DEFAULT_RLM_SKILLS_PATH] = config.skills
+        if self.skills is not None:
+            dirs[DEFAULT_RLM_SKILLS_PATH] = self.skills
         else:
             dirs[DEFAULT_RLM_SKILLS_PATH] = {
                 "fn": "harnesses.utils.rlm_utils:rlm_skills_dir"
@@ -83,54 +73,54 @@ class RLMConfig(vf.HarnessConfig):
             "PATH": "/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
             "OPENAI_MODEL": "runtime.model",
             "RLM_MODEL": "runtime.model",
-            "RLM_TOOLS": ",".join(config.rlm_tools),
-            "RLM_MAX_TURNS": str(config.rlm_max_turns),
-            "RLM_EXEC_TIMEOUT": str(config.rlm_exec_timeout),
-            "RLM_MAX_DEPTH": str(config.rlm_max_depth),
-            **config.env_vars,
+            "RLM_TOOLS": ",".join(self.rlm_tools),
+            "RLM_MAX_TURNS": str(self.rlm_max_turns),
+            "RLM_EXEC_TIMEOUT": str(self.rlm_exec_timeout),
+            "RLM_MAX_DEPTH": str(self.rlm_max_depth),
+            **self.env_vars,
         }
-        if config.summarize_at_tokens is not None:
-            assert config.summarize_at_tokens > 0
-            env["RLM_SUMMARIZE_AT_TOKENS"] = str(config.summarize_at_tokens)
+        if self.summarize_at_tokens is not None:
+            assert self.summarize_at_tokens > 0
+            env["RLM_SUMMARIZE_AT_TOKENS"] = str(self.summarize_at_tokens)
 
-        artifacts: dict[str, vf.ProgramValue] = {
-            "rlm_metrics": {
-                "path": f"{config.workdir}/.rlm/sessions/*/meta.json",
-                "format": "json",
-                "key": "metrics",
-                "optional": True,
+        artifacts = vf.ArtifactsConfig.model_validate(
+            {
+                "rlm_metrics": {
+                    "path": f"{self.workdir}/.rlm/sessions/*/meta.json",
+                    "format": "json",
+                    "key": "metrics",
+                    "optional": True,
+                }
             }
-        }
-        setup_timeout = max(config.rlm_exec_timeout + 120, 600)
-        if config.sandbox is not None:
-            explicit_sandbox_options = (
-                sandbox_config_mapping(config.sandbox, fill_defaults=False) or {}
+        )
+        command_timeout = max(self.rlm_exec_timeout + 120, 600)
+        setup_timeout = command_timeout
+        if self.sandbox is not None and "setup_timeout" in self.sandbox.data(
+            fill_defaults=False
+        ):
+            setup_timeout = self.sandbox.setup_timeout
+
+        if self.sandbox is None:
+            sandbox = vf.SandboxConfig(
+                image="python:3.11-slim",
+                workdir=self.workdir,
+                cpu_cores=1,
+                memory_gb=2,
+                disk_size_gb=5,
+                network_access=True,
+                timeout_minutes=60,
+                command_timeout=command_timeout,
+                setup_timeout=setup_timeout,
             )
-            if explicit_sandbox_options.get("setup_timeout") is not None:
-                setup_timeout = int_config(
-                    explicit_sandbox_options, "setup_timeout", setup_timeout
-                )
-
-        if config.sandbox is None:
-            sandbox: vf.ConfigData | vf.SandboxConfig | bool = {
-                "image": "python:3.11-slim",
-                "workdir": config.workdir,
-                "cpu_cores": 1,
-                "memory_gb": 2,
-                "disk_size_gb": 5,
-                "network_access": True,
-                "timeout_minutes": 60,
-                "command_timeout": max(config.rlm_exec_timeout + 120, 600),
-                "setup_timeout": setup_timeout,
-            }
         else:
-            sandbox_options = sandbox_config_mapping(config.sandbox) or {}
-            sandbox = {
-                "workdir": config.workdir,
-                "command_timeout": max(config.rlm_exec_timeout + 120, 600),
-                **sandbox_options,
-                "setup_timeout": setup_timeout,
-            }
+            sandbox = vf.SandboxConfig.model_validate(
+                {
+                    "workdir": self.workdir,
+                    "command_timeout": command_timeout,
+                    **self.sandbox.data(),
+                    "setup_timeout": setup_timeout,
+                }
+            )
 
         skills_install_script = f"""
 set -eo pipefail
@@ -169,13 +159,11 @@ export PATH="$HOME/.local/bin:${{AGENT_PATH:-$PATH}}"
 export RLM_MODEL="${{RLM_MODEL:-$OPENAI_MODEL}}"
 export OPENAI_API_KEY="${{OPENAI_API_KEY:-intercepted}}"
 export RLM_APPEND_TO_SYSTEM_PROMPT="$(cat {shlex.quote(RLM_DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH)} 2>/dev/null || true)"
-cd "${{AGENT_WORKDIR:-{config.workdir}}}"
-rlm "$(cat {shlex.quote(config.instruction_path)})"
+cd "${{AGENT_WORKDIR:-{self.workdir}}}"
+rlm "$(cat {shlex.quote(self.instruction_path)})"
 """
-        self.program = vf.ProgramConfig.from_command(
+        return self.resolve_command(
             command=["bash", "-lc", run_script],
-            program=config.program,
-            default_sandbox=config.sandbox,
             files=files,
             dirs=dirs,
             setup=[
@@ -190,12 +178,14 @@ rlm "$(cat {shlex.quote(config.instruction_path)})"
             sandbox=sandbox,
             setup_timeout=setup_timeout,
         )
-        self.model_fields_set.discard("program")
-        return self
+
+
+class RLMConfig(vf.HarnessConfig):
+    program: RLMProgramConfig = RLMProgramConfig()
 
 
 class RLMEndpoint(vf.Endpoint):
-    def trajectory_visibility(self, headers: vf.ConfigMap):
+    def trajectory_visibility(self, headers: dict[str, str]) -> vf.TrajectoryVisibility:
         if str(headers.get("x-rlm-depth", "0")) != "0":
             return "hidden"
         return super().trajectory_visibility(headers)
@@ -206,51 +196,28 @@ class RLM(vf.Harness[RLMConfig]):
 
     def load_endpoint(self) -> vf.Endpoint:
         return RLMEndpoint(
-            use_tunnel=self.program_sandbox_config(self.program) is not None
+            use_tunnel=self.program_sandbox_config(self.program_config) is not None
         )
 
     @vf.metric
-    async def rlm_sub_llm_call_count(self, task: vf.Task, state: vf.State) -> float:
-        _ = task
-        artifacts = state.get("artifacts")
-        if not isinstance(artifacts, Mapping):
-            return 0.0
-        metrics = cast(vf.ConfigMap, artifacts).get("rlm_metrics")
-        if not isinstance(metrics, Mapping):
-            return 0.0
-        value = cast(vf.ConfigMap, metrics).get("sub_llm_call_count", 0.0)
-        if isinstance(value, bool) or not isinstance(value, int | float | str):
-            return 0.0
+    async def rlm_sub_llm_call_count(self, state: vf.State) -> float:
+        metrics = state["artifacts"].get("rlm_metrics") or {}
+        assert isinstance(metrics, dict)
+        value = metrics.get("sub_llm_call_count", 0.0)
         return float(value or 0.0)
 
     @vf.metric
-    async def rlm_sub_llm_total_turns(self, task: vf.Task, state: vf.State) -> float:
-        _ = task
-        artifacts = state.get("artifacts")
-        if not isinstance(artifacts, Mapping):
-            return 0.0
-        metrics = cast(vf.ConfigMap, artifacts).get("rlm_metrics")
-        if not isinstance(metrics, Mapping):
-            return 0.0
-        value = cast(vf.ConfigMap, metrics).get("sub_llm_total_turns", 0.0)
-        if isinstance(value, bool) or not isinstance(value, int | float | str):
-            return 0.0
+    async def rlm_sub_llm_total_turns(self, state: vf.State) -> float:
+        metrics = state["artifacts"].get("rlm_metrics") or {}
+        assert isinstance(metrics, dict)
+        value = metrics.get("sub_llm_total_turns", 0.0)
         return float(value or 0.0)
 
     @vf.metric
-    async def rlm_sub_llm_total_tool_calls(
-        self, task: vf.Task, state: vf.State
-    ) -> float:
-        _ = task
-        artifacts = state.get("artifacts")
-        if not isinstance(artifacts, Mapping):
-            return 0.0
-        metrics = cast(vf.ConfigMap, artifacts).get("rlm_metrics")
-        if not isinstance(metrics, Mapping):
-            return 0.0
-        value = cast(vf.ConfigMap, metrics).get("sub_llm_total_tool_calls", 0.0)
-        if isinstance(value, bool) or not isinstance(value, int | float | str):
-            return 0.0
+    async def rlm_sub_llm_total_tool_calls(self, state: vf.State) -> float:
+        metrics = state["artifacts"].get("rlm_metrics") or {}
+        assert isinstance(metrics, dict)
+        value = metrics.get("sub_llm_total_tool_calls", 0.0)
         return float(value or 0.0)
 
 

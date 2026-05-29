@@ -1,9 +1,6 @@
 import json
-from collections.abc import Mapping
-from typing import cast
 
 import verifiers as vf
-from verifiers.v1.types import ConfigMap
 from verifiers.v1.utils.judge_utils import (
     clamp_float,
     parse_judge_json,
@@ -195,9 +192,8 @@ async def bash_calls(task, state) -> float:
 @vf.reward(weight=1.0)
 async def self_consistency_score(task, state) -> float:
     updated = state.get("update_judge")
-    if not isinstance(updated, Mapping):
+    if not isinstance(updated, dict):
         return 0.0
-    updated = cast(ConfigMap, updated)
     findings = str(updated.get("findings") or "")
     if not findings:
         return 0.0
@@ -273,7 +269,7 @@ async def sandbox_judge(task, state) -> None:
     state["sandbox_report"] = judge_bash_outputs
 
 
-def update_prompt(task: ConfigMap, response: str) -> str:
+def update_prompt(task: vf.Task, response: str) -> str:
     return (
         "Task:\n"
         f"{task['question']}\n\n"
@@ -299,7 +295,7 @@ def update_prompt(task: ConfigMap, response: str) -> str:
     )
 
 
-def score_prompt(task: ConfigMap, findings: str) -> str:
+def score_prompt(task: vf.Task, findings: str) -> str:
     return (
         "Task:\n"
         f"{task['question']}\n\n"
@@ -332,20 +328,19 @@ def load_tasks(num_examples: int = -1):
         }
 
 
-def load_bash_toolset(config=None) -> vf.Toolset:
+def load_bash_toolset() -> vf.Toolset:
     return vf.Toolset(
         tools=[bash],
         write=True,
         scope="rollout",
-        sandbox={
-            "image": "python:3.11-slim",
-            "scope": "rollout",
-            "network_access": True,
-            "timeout_minutes": 30,
-            "command_timeout": 120,
-        },
+        sandbox=vf.SandboxConfig(
+            image="python:3.11-slim",
+            scope="rollout",
+            network_access=True,
+            timeout_minutes=30,
+            command_timeout=120,
+        ),
         cleanups=[collect_bash_commands],
-        config=config,
     )
 
 

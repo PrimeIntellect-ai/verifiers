@@ -698,9 +698,9 @@ environments/my_env/
 
 The golden v1 shape is one taskset config, one typed
 `load_taskset(config: MyTasksetConfig)` factory, and a tiny
-`load_environment(config: vf.EnvConfig)` that calls
-`vf.load_taskset(config=config.taskset)`. The factory signature defines
-the taskset config type.
+`load_environment(config: vf.EnvConfig)` that asserts the config type and calls
+the local factory directly. The factory signature defines the taskset config
+type.
 Add a harness config and harness class only when the environment owns reusable
 rollout behavior; otherwise omit `harness=` and `vf.Env` uses the base harness.
 The loader's `config` parameter is a strict, non-optional config object supplied
@@ -723,14 +723,14 @@ class MyTasksetConfig(vf.TasksetConfig):
 
 class MyTaskset(vf.Taskset[MyTasksetConfig]):
     def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
-        rows = [
+        records = [
             {
                 "prompt": [{"role": "user", "content": "Reverse abc."}],
                 "answer": "cba",
                 "split": "train",
             }
         ]
-        return [row for row in rows if row["split"] == self.config.split]
+        return [record for record in records if record["split"] == self.config.split]
 
     @vf.reward(weight=1.0)
     async def contains_answer(self, task, state) -> float:
@@ -742,7 +742,9 @@ def load_taskset(config: MyTasksetConfig) -> MyTaskset:
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
-    return vf.Env(taskset=vf.load_taskset(config=config.taskset))
+    taskset_config = config.taskset
+    assert isinstance(taskset_config, MyTasksetConfig)
+    return vf.Env(taskset=load_taskset(taskset_config))
 ```
 
 With a reusable harness, keep the same explicit object boundary:
@@ -756,8 +758,8 @@ class MyHarness(vf.Harness[MyHarnessConfig]):
     pass
 
 
-def load_taskset(config: MyTasksetConfig) -> vf.Taskset:
-    return vf.Taskset(config=config)
+def load_taskset(config: MyTasksetConfig) -> MyTaskset:
+    return MyTaskset(config=config)
 
 
 def load_harness(config: MyHarnessConfig) -> MyHarness:
@@ -765,9 +767,13 @@ def load_harness(config: MyHarnessConfig) -> MyHarness:
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
+    taskset_config = config.taskset
+    harness_config = config.harness
+    assert isinstance(taskset_config, MyTasksetConfig)
+    assert isinstance(harness_config, MyHarnessConfig)
     return vf.Env(
-        taskset=vf.load_taskset(config=config.taskset),
-        harness=vf.load_harness(config=config.harness),
+        taskset=load_taskset(taskset_config),
+        harness=load_harness(harness_config),
     )
 ```
 
@@ -1006,7 +1012,7 @@ Newer and more experimental environment classes include:
         timeouts=SandboxTimeouts(read_file=30.0, extract=180.0, poll=120.0),
     )
     ```
-- **`vf.Env` / `vf.Taskset` / `vf.Harness`** — preferred taskset/harness pattern for composing task data and program execution without subclassing. Use this for environments that need reusable tasksets, reusable harnesses, config-driven metrics, rewards, toolsets, users, endpoint interception, or sandboxed Python/command programs. `vf.Taskset` owns train/eval rows, prompt shaping, setup/update/reward hooks, and toolsets. `vf.Harness` owns the framework program, endpoint proxy, model controls, sandbox options, and runtime hooks. `vf.Env` wires them into the standard evaluation and training surface.
+- **`vf.Env` / `vf.Taskset` / `vf.Harness`** — preferred taskset/harness pattern for composing task data and program execution without subclassing. Use this for environments that need reusable tasksets, reusable harnesses, config-driven metrics, rewards, toolsets, users, endpoint interception, or sandboxed Python/command programs. `vf.Taskset` owns train/eval tasks, prompt shaping, setup/update/reward hooks, and toolsets. `vf.Harness` owns the framework program, endpoint proxy, model controls, sandbox options, and runtime hooks. `vf.Env` wires them into the standard evaluation and training surface.
 - **`SWEDebugEnv`** — no-agent debugger for SWE-style `SandboxTaskSet` instances. It creates the task sandbox, optionally runs `taskset.setup(state)`, performs one debug step (`none`, `gold_patch`, `command`, or `script`), and optionally runs the task tests and scorer. It records setup, sandbox creation, gold patch, debug command, and test timings in state for validation and timing investigations.
 - **`HarborEnv`** — loads Harbor-format agent benchmark tasks
 - **`RLMEnv`** — implements [Recursive Language Models](https://alexzhang13.github.io/blog/2025/rlm/) for unbounded context processing via REPL-based decomposition and recursive sub-LLM calls

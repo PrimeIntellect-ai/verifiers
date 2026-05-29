@@ -28,14 +28,17 @@ def test_init_v1_writes_thin_taskset_template(tmp_path: Path) -> None:
     assert "class BarTasksetConfig(vf.TasksetConfig):" in content
     assert "class BarTaskset(vf.Taskset[BarTasksetConfig]):" in content
     assert 'def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:' in content
-    assert "def load_system_prompt(self) -> vf.SystemPrompt:" in content
+    assert (
+        "def load_system_prompt(self, config: BarTasksetConfig) -> vf.SystemPrompt:"
+        in content
+    )
     assert "async def correct_answer(self, task: vf.Task, state: vf.State)" in content
     assert "def load_taskset(config: BarTasksetConfig) -> BarTaskset:" in content
     assert "return BarTaskset(config=config)" in content
-    assert "vf.load_taskset(config=config.taskset)" in content
+    assert "assert isinstance(taskset_config, BarTasksetConfig)" in content
+    assert "return vf.Env(taskset=load_taskset(taskset_config))" in content
     assert "class EnvTaskset(" not in content
     assert "_default_" not in content
-    assert "assert isinstance" not in content
     assert 'tasks: str = "load_tasks"' not in content
     assert 'rewards: list[str] = ["correct_answer"]' not in content
 
@@ -58,7 +61,9 @@ def test_init_v1_with_harness_writes_harness_stub(tmp_path: Path) -> None:
     assert "class BazHarnessConfig(vf.HarnessConfig):" in content
     assert "class BazHarness(vf.Harness[BazHarnessConfig]):" in content
     assert "def load_harness(config: BazHarnessConfig) -> BazHarness:" in content
-    assert "vf.load_harness(config=config.harness)" in content
+    assert "assert isinstance(taskset_config, BazTasksetConfig)" in content
+    assert "assert isinstance(harness_config, BazHarnessConfig)" in content
+    assert "harness=load_harness(harness_config)" in content
 
 
 def test_init_with_harness_without_v1_warns_and_uses_v0(tmp_path: Path, capsys) -> None:
@@ -94,7 +99,8 @@ def test_init_openenv_writes_v1_taskset_template(tmp_path: Path) -> None:
     assert (
         "def load_taskset(config: OpenEnvTasksetConfig) -> OpenEnvTaskset:" in content
     )
-    assert "return vf.Env(taskset=vf.load_taskset(config=config.taskset))" in content
+    assert "assert isinstance(taskset_config, OpenEnvTasksetConfig)" in content
+    assert "return vf.Env(taskset=load_taskset(taskset_config))" in content
     assert "vf.OpenEnvEnv" not in content
     assert '"tasksets>=0.1.0.post0"' in pyproject
 

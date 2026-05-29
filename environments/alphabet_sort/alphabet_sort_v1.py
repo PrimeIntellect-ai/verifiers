@@ -315,7 +315,7 @@ class AlphabetUser(vf.User[AlphabetUserConfig]):
 
 
 class AlphabetSortTasksetConfig(vf.TasksetConfig):
-    user: AlphabetUserConfig | None = None
+    user: AlphabetUserConfig | None = AlphabetUserConfig()
     rewards: list[str] = ["weighted_reward"]
     min_turns: int = 1
     max_turns: int = 3
@@ -344,9 +344,6 @@ class AlphabetSortEnvConfig(vf.EnvConfig):
 
 
 class AlphabetSortTaskset(vf.Taskset[AlphabetSortTasksetConfig]):
-    def load_user(self) -> vf.UserConfig:
-        return self.config.user or AlphabetUserConfig()
-
     def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         return load_tasks(
             min_turns=self.config.min_turns,

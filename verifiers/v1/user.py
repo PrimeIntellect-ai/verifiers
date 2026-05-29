@@ -1,10 +1,17 @@
 from collections.abc import Sequence
-from typing import Generic, Literal, TypeVar, cast
+from typing import TYPE_CHECKING, Generic, Literal, TypeVar, cast, final
 
-from .config import Config, resolve_config_object
-from .sandbox import SandboxConfig, sandbox_config_mapping
-from .utils.binding_utils import BindingMap, normalize_binding_map
-from .utils.binding_utils import normalize_object_map
+from verifiers.types import Message, UserMessage
+from verifiers.utils.message_utils import normalize_messages
+
+from .artifact import Artifacts, ArtifactsConfig
+from .config import Config, ConfigSource
+from .sandbox import SandboxConfig
+from .utils.binding_utils import (
+    BindingSources,
+    BindingsConfig,
+    ObjectsConfig,
+)
 from .utils.config_utils import (
     coerce_config,
     config_type_from_class,
@@ -12,35 +19,48 @@ from .utils.config_utils import (
     register_config_type,
 )
 from .utils.trajectory_utils import completion_from_trajectory
-from .types import ConfigMap, Handler, Objects, PromptMessage
+from .state import State
+from .types import JsonData, Objects, PromptMessage
+
+if TYPE_CHECKING:
+    from .task import Task
 
 UserScope = Literal["rollout", "group", "global"]
 
 
 class UserConfig(Config):
     scope: UserScope = "rollout"
-    bindings: BindingMap = {}
-    objects: dict[str, str] = {}
+    bindings: BindingsConfig = BindingsConfig()
+    objects: ObjectsConfig = ObjectsConfig()
+    artifacts: ArtifactsConfig = ArtifactsConfig()
     sandbox: SandboxConfig | None = None
 
 
 def state_messages(
-    state: ConfigMap, transcript: Sequence[PromptMessage] | None = None
-) -> list[PromptMessage]:
+    state: State, transcript: Sequence[PromptMessage] | None = None
+) -> list[Message]:
     if transcript is not None:
-        return list(transcript)
+        return normalize_messages(transcript, field_name="user.transcript")
     prompt = state.get("prompt")
     completion = state.get("completion")
     if isinstance(prompt, list) and isinstance(completion, list):
-        return [
-            *cast(list[PromptMessage], prompt),
-            *cast(list[PromptMessage], completion),
-        ]
+        return normalize_messages(
+            [
+                *cast(list[PromptMessage], prompt),
+                *cast(list[PromptMessage], completion),
+            ],
+            field_name="state.messages",
+        )
     if isinstance(completion, list):
-        return list(cast(list[PromptMessage], completion))
+        return normalize_messages(
+            cast(list[PromptMessage], completion), field_name="state.completion"
+        )
     trajectory = state.get("trajectory")
     if isinstance(trajectory, Sequence) and not isinstance(trajectory, str):
-        return completion_from_trajectory(cast(Sequence[ConfigMap], trajectory))
+        return normalize_messages(
+            completion_from_trajectory(cast(Sequence[JsonData], trajectory)),
+            field_name="state.trajectory",
+        )
     return []
 
 
@@ -51,10 +71,10 @@ user_type_registry: dict[type[UserConfig], type["User"]] = {}
 class User(Generic[ConfigT]):
     config: ConfigT
     scope: UserScope
-    bindings: BindingMap
+    bindings: BindingSources
     objects: Objects
-    sandbox: ConfigMap | None
-    get_response: Handler
+    artifacts: Artifacts
+    sandbox: SandboxConfig | None
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)
@@ -68,41 +88,38 @@ class User(Generic[ConfigT]):
             register_config_type(cls, config_type)
             user_type_registry[cast(type[UserConfig], config_type)] = cls
 
+    @final
     def __init__(
         self,
         *,
-        config: object = None,
+        config: ConfigSource = None,
     ):
         config_type = registered_config_type(type(self), UserConfig)
         self.config = cast(ConfigT, coerce_config(config_type, config))
         if self.config.scope not in {"rollout", "group", "global"}:
             raise ValueError("User scope must be 'rollout', 'group', or 'global'.")
-        bindings = normalize_binding_map(
-            self.config.bindings, "User bindings", key_style="arg"
-        )
+        bindings = self.config.bindings.entries("User bindings", key_style="arg")
         if "messages" in bindings:
             raise ValueError("User messages are provided directly to get_response.")
         self.scope = self.config.scope
         self.bindings = bindings
-        self.objects = normalize_object_map(
-            cast(
-                Objects,
-                {
-                    str(key): resolve_config_object(value)
-                    for key, value in self.config.objects.items()
-                },
-            ),
-            "User objects",
-        )
-        self.sandbox = sandbox_config_mapping(self.config.sandbox, fill_defaults=False)
+        self.objects = self.load_objects(self.config.objects)
+        self.artifacts = self.load_artifacts(self.config.artifacts)
+        self.sandbox = self.config.sandbox
 
+    def load_objects(self, config: ObjectsConfig) -> Objects:
+        return config.objects("user.objects")
 
-def normalize_user(value: object | None) -> User | None:
-    if value is None:
-        return None
-    if isinstance(value, UserConfig):
-        return user_from_config(value)
-    raise TypeError("User must be a UserConfig.")
+    def load_artifacts(self, config: ArtifactsConfig) -> Artifacts:
+        return config.artifacts("user.artifacts")
+
+    async def get_object(self, name: str, task: "Task", state: State) -> object:
+        return await state._runtime().resolve_owner_object(self, name, task, state)
+
+    async def get_response(
+        self, task: "Task", state: State, messages: list[Message]
+    ) -> list[UserMessage]:
+        return []
 
 
 def user_from_config(config: UserConfig) -> User:

@@ -295,18 +295,19 @@ class WikiSearchTaskset(vf.Taskset[WikiSearchTasksetConfig]):
             judge_model=self.config.judge_model,
         )
 
-    def load_system_prompt(self) -> vf.SystemPrompt:
+    def load_system_prompt(self, config: WikiSearchTasksetConfig) -> vf.SystemPrompt:
+        _ = config
         return SYSTEM_PROMPT
 
-    def load_toolsets(self) -> vf.Toolsets:
+    def load_toolsets(self, config: WikiSearchTasksetConfig) -> vf.Toolsets:
         return {
             "wiki": load_toolset(
-                corpus_dataset=self.config.corpus_dataset,
-                corpus_split=self.config.corpus_split,
-                chroma_db_dir=self.config.chroma_db_dir,
-                embed_model=self.config.embed_model,
-                embed_base_url=self.config.embed_base_url,
-                embed_api_key_var=self.config.embed_api_key_var,
+                corpus_dataset=config.corpus_dataset,
+                corpus_split=config.corpus_split,
+                chroma_db_dir=config.chroma_db_dir,
+                embed_model=config.embed_model,
+                embed_base_url=config.embed_base_url,
+                embed_api_key_var=config.embed_api_key_var,
             )
         }
 

@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import pytest
 import verifiers as vf
-from harnesses import MiniSWEAgent, MiniSWEAgentConfig
+from harnesses import MiniSWEAgent, MiniSWEAgentConfig, MiniSWEAgentProgramConfig
 
 
 def write_harbor_task(root: Path) -> Path:
@@ -63,10 +63,12 @@ def test_mini_swe_agent_builds_sandbox_program():
     harness = MiniSWEAgent(
         config=MiniSWEAgentConfig(
             system_prompt="Use tests.",
-            agent_workdir="/app",
+            program=MiniSWEAgentProgramConfig(
+                agent_workdir="/app",
+            ),
         )
     )
-    program = cast(dict[str, Any], harness.program)
+    program = cast(dict[str, Any], harness.config.program.data())
 
     assert isinstance(harness, vf.Harness)
     assert program["sandbox"] is not False
@@ -85,8 +87,7 @@ def test_mini_swe_agent_composes_with_harbor_taskset(
     write_harbor_task(cast(Path, getattr(package, "tasks_root")))
 
     env = getattr(package, "load_env")()
-    row = env.get_dataset()[0]
-    task = env.taskset.to_task(row)
+    task = next(iter(env.taskset))
 
     assert isinstance(env.harness, MiniSWEAgent)
     assert task["taskset_id"] == "harbor"

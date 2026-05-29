@@ -19,6 +19,7 @@ from verifiers.types import (
     Messages,
     SystemMessage,
     TextMessage,
+    ToolLike,
     ToolMessage,
     UserMessage,
 )
@@ -30,9 +31,11 @@ from .config import (
     SignalConfig,
 )
 from .env import Env, EnvConfig
+from .artifact import ArtifactConfig, Artifacts, ArtifactsConfig
 from .harness import Harness, HarnessConfig
 from .model import ModelConfig
-from .program import Program, ProgramConfig, ProgramOptionMap, ProgramValue
+from .program import ProgramConfig, ProgramValue
+from .runtime import TrajectoryVisibility
 from .sandbox import SandboxConfig
 from .utils.scoring_utils import (
     add_metric,
@@ -46,68 +49,78 @@ from .utils.scoring_utils import (
 from .state import State
 from .task import Task
 from .taskset import Taskset, TasksetConfig, discover_sibling_dir
-from .toolset import MCPTool, MCPToolConfig, Toolset, ToolsetConfig, Toolsets
+from .toolset import (
+    MCPTool,
+    MCPToolConfig,
+    Toolset,
+    ToolsetConfig,
+    Toolsets,
+    VisibilityConfig,
+)
 from .utils.endpoint_utils import Endpoint
+from .utils.binding_utils import BindingsConfig, ObjectsConfig
+from .utils.prompt_utils import SystemPromptConfig
 from .types import (
     ConfigData,
-    ConfigMap,
-    GroupHandler,
     Handler,
-    MutableConfigMap,
+    JsonData,
     Objects,
     PromptInput,
     SystemPrompt,
-    TaskRow,
     TaskSplit,
     Tasks,
 )
 from .user import User, UserConfig
 
 __all__ = [
+    "BindingsConfig",
+    "ArtifactConfig",
+    "Artifacts",
+    "ArtifactsConfig",
     "ConfigData",
     "CallableConfig",
     "Config",
-    "ConfigMap",
     "Env",
     "EnvConfig",
     "Endpoint",
     "EndpointConfig",
     "AssistantMessage",
-    "GroupHandler",
     "Harness",
     "HarnessConfig",
     "Handler",
-    "MutableConfigMap",
+    "JsonData",
     "MCPTool",
     "MCPToolConfig",
     "Message",
     "Messages",
     "ModelConfig",
     "Objects",
-    "Program",
+    "ObjectsConfig",
     "ProgramConfig",
-    "ProgramOptionMap",
     "ProgramValue",
     "PromptInput",
     "SandboxConfig",
     "SignalConfig",
     "State",
     "SystemPrompt",
+    "SystemPromptConfig",
     "Task",
-    "TaskRow",
     "TaskSplit",
     "Tasks",
     "Taskset",
     "TasksetConfig",
     "SystemMessage",
     "TextMessage",
+    "ToolLike",
     "Toolset",
     "ToolsetConfig",
     "Toolsets",
     "ToolMessage",
+    "TrajectoryVisibility",
     "User",
     "UserMessage",
     "UserConfig",
+    "VisibilityConfig",
     "add_metric",
     "add_reward",
     "add_advantage",

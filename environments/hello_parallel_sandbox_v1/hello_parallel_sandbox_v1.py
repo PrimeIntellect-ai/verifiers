@@ -2,7 +2,6 @@ import asyncio
 import json
 
 import verifiers as vf
-from verifiers.v1.types import ConfigMap
 from verifiers.v1.utils.judge_utils import (
     clamp_float,
     parse_judge_json,
@@ -280,7 +279,7 @@ async def update_audits(task, state) -> float:
     return float(len(audits) if isinstance(audits, list) else 0)
 
 
-def file_audit_prompt(task: ConfigMap, response: str) -> str:
+def file_audit_prompt(task: vf.Task, response: str) -> str:
     return (
         "Task instruction:\n"
         f"{task['instruction']}\n\n"
@@ -301,7 +300,7 @@ def file_audit_prompt(task: ConfigMap, response: str) -> str:
     )
 
 
-def command_audit_prompt(task: ConfigMap) -> str:
+def command_audit_prompt(task: vf.Task) -> str:
     return (
         "Task instruction:\n"
         f"{task['instruction']}\n\n"
@@ -320,7 +319,7 @@ def command_audit_prompt(task: ConfigMap) -> str:
     )
 
 
-def reward_prompt(task: ConfigMap, state: ConfigMap) -> str:
+def reward_prompt(task: vf.Task, state: vf.State) -> str:
     messages = vf.get_messages(state.get("completion") or [], role="assistant")
     response = str(messages[-1].content or "") if messages else ""
     return (

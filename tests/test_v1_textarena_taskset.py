@@ -1,7 +1,6 @@
 import sys
 
 import pytest
-from typing import cast
 
 import verifiers as vf
 from tasksets import textarena
@@ -160,6 +159,7 @@ def test_textarena_taskset_loads_user(fake_textarena):
 
 @pytest.mark.asyncio
 async def test_textarena_user_steps_env_and_stops_when_game_finishes(fake_textarena):
+    _, fake_ta = fake_textarena
     taskset = textarena.TextArenaTaskset(
         config=textarena.TextArenaTasksetConfig(
             game="FakeWordle-v0",
@@ -168,15 +168,28 @@ async def test_textarena_user_steps_env_and_stops_when_game_finishes(fake_textar
             num_eval_examples=0,
         )
     )
-    task = taskset.to_task({"example_id": 0, "prompt": [], "answer": "apple"})
+    task = taskset.to_task(
+        vf.Task(
+            {
+                "example_id": 0,
+                "prompt": [],
+                "answer": "apple",
+                "textarena": {
+                    "game": "FakeWordle-v0",
+                    "answer_state_key": "secret_word",
+                },
+            }
+        )
+    )
     state = vf.State.for_task(task)
     state["completion"] = [
         vf.AssistantMessage(content="I will guess <guess>[apple]</guess>.")
     ]
 
     env = vf.Env(taskset=taskset, harness=vf.Harness(config=vf.HarnessConfig()))
+    state = await env.harness.setup_state(task, state)
     messages = await env.harness.runtime.user_messages(task, state)
-    ta_env = cast(FakeTextArenaEnv, state["textarena_env"])
+    ta_env = fake_ta.envs[-1]
 
     assert ta_env.guesses == ["[apple]"]
     assert ta_env.state.game_state["secret_word"] == "apple"
@@ -189,6 +202,7 @@ async def test_textarena_user_steps_env_and_stops_when_game_finishes(fake_textar
 async def test_textarena_user_returns_wordle_feedback_for_unfinished_game(
     fake_textarena,
 ):
+    _, fake_ta = fake_textarena
     taskset = textarena.TextArenaTaskset(
         config=textarena.TextArenaTasksetConfig(
             game="FakeWordle-v0",
@@ -197,15 +211,28 @@ async def test_textarena_user_returns_wordle_feedback_for_unfinished_game(
             num_eval_examples=0,
         )
     )
-    task = taskset.to_task({"example_id": 0, "prompt": [], "answer": "apple"})
+    task = taskset.to_task(
+        vf.Task(
+            {
+                "example_id": 0,
+                "prompt": [],
+                "answer": "apple",
+                "textarena": {
+                    "game": "FakeWordle-v0",
+                    "answer_state_key": "secret_word",
+                },
+            }
+        )
+    )
     state = vf.State.for_task(task)
     state["completion"] = [
         vf.AssistantMessage(content="I will guess <guess>[berry]</guess>.")
     ]
 
     env = vf.Env(taskset=taskset, harness=vf.Harness(config=vf.HarnessConfig()))
+    state = await env.harness.setup_state(task, state)
     messages = await env.harness.runtime.user_messages(task, state)
-    ta_env = cast(FakeTextArenaEnv, state["textarena_env"])
+    ta_env = fake_ta.envs[-1]
 
     assert ta_env.guesses == ["[berry]"]
     assert messages == [

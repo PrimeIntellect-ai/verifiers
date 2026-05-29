@@ -1,23 +1,23 @@
 from importlib.abc import Traversable
 from pathlib import Path
-from typing import Generic, TypeAlias, TypeVar, cast, final
+from typing import Generic, TypeVar, cast, final
 
 from datasets import Dataset
 
 from .config import (
     ConfigSource,
     LifecycleConfig,
-    resolve_config_object,
 )
+from .artifact import ArtifactsConfig
 from .state import State
 from .task import Task
 from .user import UserConfig
 from .utils.binding_utils import (
-    BindingMap,
-    normalize_binding_map,
-    normalize_object_map,
+    BindingSources,
+    BindingsConfig,
+    ObjectsConfig,
 )
-from .utils.prompt_utils import normalize_system_prompt
+from .utils.prompt_utils import SystemPromptConfig, normalize_system_prompt
 from .utils.config_utils import (
     coerce_config,
     config_ref_context,
@@ -27,38 +27,34 @@ from .utils.config_utils import (
 )
 from .utils.runtime_owner_utils import RuntimeOwnerMixin
 from .utils.taskset_utils import (
-    dataset_rows_from_tasks,
+    dataset_from_result,
     discover_sibling_dir,
-    task_data_from_result,
-    task_from_row,
+    prepare_task,
+    task_from_dataset_record,
 )
 from .types import (
-    PromptInput,
-    TaskLoader,
-    TaskSplit,
-    TaskRow,
-    Tasks,
+    JsonData,
     Objects,
-    SystemPrompt,
+    PromptInput,
+    TaskSplit,
+    Tasks,
 )
-
-TaskLoaderRef: TypeAlias = str
 
 
 class TasksetConfig(LifecycleConfig):
     # Core fields configure taskset-owned loaders and runtime behavior.
-    tasks: TaskLoaderRef | None = None
     taskset_id: str | None = None
-    system_prompt: PromptInput | None = None
+    system_prompt: PromptInput | SystemPromptConfig | None = None
     user: UserConfig | None = None
-    bindings: BindingMap = {}
-    objects: dict[str, str] = {}
+    bindings: BindingsConfig = BindingsConfig()
+    objects: ObjectsConfig = ObjectsConfig()
+    artifacts: ArtifactsConfig = ArtifactsConfig()
 
 
 ConfigT = TypeVar("ConfigT", bound=TasksetConfig)
 
 
-class Taskset(RuntimeOwnerMixin, Generic[ConfigT]):
+class Taskset(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
     config: ConfigT
 
     def __init_subclass__(cls, **kwargs: object) -> None:
@@ -77,38 +73,25 @@ class Taskset(RuntimeOwnerMixin, Generic[ConfigT]):
         config_type = registered_config_type(type(self), TasksetConfig)
         self.config = cast(ConfigT, coerce_config(config_type, config))
         with config_ref_context(self.config):
+            self.initialize_runtime_refresh()
             resolved_taskset_id = self.config.taskset_id
             if resolved_taskset_id is not None and not isinstance(
                 resolved_taskset_id, str
             ):
                 raise TypeError("taskset_id must be a string.")
             self.taskset_id = resolved_taskset_id or type(self).__name__
-            system_prompt_value = (
-                self.config.system_prompt
-                if "system_prompt" in self.config.model_fields_set
-                else self.load_system_prompt()
-            )
+            system_prompt_value = self.load_system_prompt(self.config)
             self.system_prompt = normalize_system_prompt(
                 system_prompt_value,
                 field_name="taskset.system_prompt",
             )
-            self.initialize_runtime_user(
-                self.config.user,
-                explicitly_configured="user" in self.config.model_fields_set,
+            self.initialize_runtime_user(self.config.user)
+            self.bindings: BindingSources = self.config.bindings.entries(
+                "taskset.bindings"
             )
-            self.bindings = normalize_binding_map(
-                self.config.bindings, "taskset.bindings"
-            )
-            self.objects = cast(
-                Objects,
-                {
-                    str(key): resolve_config_object(item)
-                    for key, item in normalize_object_map(
-                        self.config.objects, "taskset.objects"
-                    ).items()
-                },
-            )
-            self.initialize_runtime_toolsets(self.config.toolsets)
+            self.objects: Objects = self.load_objects(self.config.objects)
+            self.artifacts = self.load_artifacts(self.config.artifacts)
+            self.initialize_runtime_toolsets(self.config, self.config.toolsets)
             self.initialize_runtime_handlers()
         self._dataset: Dataset | None = None
         self._eval_dataset: Dataset | None = None
@@ -120,19 +103,13 @@ class Taskset(RuntimeOwnerMixin, Generic[ConfigT]):
         skills = self.get_skills_dir()
         return {} if skills is None else {"skills": skills}
 
-    def load_user(self) -> UserConfig | None:
-        return self.config.user
-
-    def to_task(self, row: TaskRow | Task) -> Task:
-        return task_from_row(row, self.taskset_id)
+    def to_task(self, task: Task | JsonData) -> Task:
+        if isinstance(task, Task):
+            return prepare_task(task, self.taskset_id)
+        return task_from_dataset_record(task, self.taskset_id)
 
     def load_tasks(self, split: TaskSplit = "train") -> Tasks:
-        if self.config.tasks is None:
-            return []
-        loader = resolve_config_object(self.config.tasks)
-        if not callable(loader):
-            raise TypeError("TasksetConfig.tasks must resolve to a callable.")
-        return cast(TaskLoader, loader)(split=split)
+        return []
 
     async def init_group(
         self, task: Task, num_rollouts: int
@@ -143,27 +120,27 @@ class Taskset(RuntimeOwnerMixin, Generic[ConfigT]):
     def get_dataset(self) -> Dataset:
         if self._dataset is None:
             with config_ref_context(self.config):
-                tasks = task_data_from_result(self.load_tasks(split="train"))
-            self._dataset = Dataset.from_list(
-                dataset_rows_from_tasks(tasks, self.taskset_id)
-            )
+                self._dataset = dataset_from_result(
+                    self.load_tasks(split="train"), self.taskset_id
+                )
         return self._dataset
 
     def get_eval_dataset(self) -> Dataset:
         if self._eval_dataset is None:
             with config_ref_context(self.config):
-                tasks = task_data_from_result(self.load_tasks(split="eval"))
-            self._eval_dataset = Dataset.from_list(
-                dataset_rows_from_tasks(tasks, self.taskset_id)
-            )
+                self._eval_dataset = dataset_from_result(
+                    self.load_tasks(split="eval"), self.taskset_id
+                )
         return self._eval_dataset
 
     def __iter__(self):
-        for row in self.get_dataset():
-            yield self.to_task(row)
+        for record in self.get_dataset():
+            yield task_from_dataset_record(dict(record), self.taskset_id)
 
     def __len__(self) -> int:
         return len(self.get_dataset())
 
-    def load_system_prompt(self) -> SystemPrompt | None:
-        return self.config.system_prompt
+    def load_system_prompt(
+        self, config: ConfigT
+    ) -> PromptInput | SystemPromptConfig | None:
+        return config.system_prompt

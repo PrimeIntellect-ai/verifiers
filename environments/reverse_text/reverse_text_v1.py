@@ -50,7 +50,8 @@ class ReverseTextTaskset(vf.Taskset[ReverseTextTasksetConfig]):
                 "info": row.get("info") or {},
             }
 
-    def load_system_prompt(self) -> vf.SystemPrompt:
+    def load_system_prompt(self, config: ReverseTextTasksetConfig) -> vf.SystemPrompt:
+        _ = config
         return (
             "Reverse the text character-by-character. Put your answer in "
             "<reversed_text> tags."
@@ -63,17 +64,16 @@ class ReverseTextTaskset(vf.Taskset[ReverseTextTasksetConfig]):
         return SequenceMatcher(None, response, answer).ratio()
 
 
-class ReverseTextEnvConfig(vf.EnvConfig):
-    taskset: ReverseTextTasksetConfig = ReverseTextTasksetConfig()
-    harness: vf.HarnessConfig = vf.HarnessConfig()
-
-
 def load_taskset(config: ReverseTextTasksetConfig) -> ReverseTextTaskset:
     return ReverseTextTaskset(config=config)
 
 
-def load_environment(config: ReverseTextEnvConfig) -> vf.Env:
+def load_environment(config: vf.EnvConfig) -> vf.Env:
+    taskset_config = config.taskset
+    harness_config = config.harness
+    assert isinstance(taskset_config, ReverseTextTasksetConfig)
+    assert isinstance(harness_config, vf.HarnessConfig)
     return vf.Env(
-        taskset=vf.load_taskset(config=config.taskset),
-        harness=vf.Harness(config=config.harness),
+        taskset=load_taskset(taskset_config),
+        harness=vf.Harness(config=harness_config),
     )

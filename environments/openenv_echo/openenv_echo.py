@@ -59,4 +59,6 @@ def load_taskset(config: OpenEnvEchoTasksetConfig) -> OpenEnvTaskset:
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
-    return vf.Env(taskset=vf.load_taskset(config=config.taskset))
+    taskset_config = config.taskset
+    assert isinstance(taskset_config, OpenEnvEchoTasksetConfig)
+    return vf.Env(taskset=load_taskset(taskset_config))

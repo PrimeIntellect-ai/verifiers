@@ -1,12 +1,11 @@
-from collections.abc import Mapping
 from os import PathLike
-from typing import Literal, TypeAlias, cast
+from typing import Literal, TypeAlias
 
 from pydantic import BaseModel, field_validator, model_validator
 from pydantic_config import BaseConfig
 from typing_extensions import Self
 
-from .types import ConfigData, ConfigInputMap, ConfigMap, ToolsetSpecs
+from .types import ConfigData
 from .utils.config_utils import (
     annotation_text,
     coerce_config,
@@ -17,7 +16,7 @@ from .utils.config_utils import (
 )
 
 
-ConfigSource: TypeAlias = BaseModel | ConfigMap | None
+ConfigSource: TypeAlias = BaseModel | ConfigData | None
 
 
 class Config(BaseConfig):
@@ -51,7 +50,7 @@ def validate_serializable_value(value: object, field: str) -> None:
         return
     if callable(value) or isinstance(value, PathLike):
         raise TypeError(f"{field} must be serializable; use an import ref string.")
-    if isinstance(value, Mapping):
+    if isinstance(value, dict):
         for key, item in value.items():
             if not isinstance(key, str):
                 raise TypeError(f"{field} mapping keys must be strings.")
@@ -73,6 +72,11 @@ class CallableConfig(Config):
 
 
 CallableEntry: TypeAlias = str | CallableConfig
+ToolEntryData: TypeAlias = str | ConfigData
+ToolsetData: TypeAlias = str | ConfigData
+ToolsetCollectionData: TypeAlias = (
+    ToolsetData | list[ToolsetData] | dict[str, ToolsetData]
+)
 
 
 class SignalConfig(Config):
@@ -85,7 +89,7 @@ class SignalConfig(Config):
 def validate_scoring_map(value: object, field: str) -> dict[str, ConfigData]:
     if value is None:
         return {}
-    if not isinstance(value, Mapping):
+    if not isinstance(value, dict):
         raise TypeError(f"{field} must be a mapping.")
     result: dict[str, ConfigData] = {}
     for name, item in value.items():
@@ -93,8 +97,8 @@ def validate_scoring_map(value: object, field: str) -> dict[str, ConfigData]:
             raise TypeError(f"{field} keys must be strings.")
         if isinstance(item, BaseModel):
             data = item.model_dump(exclude_none=True, exclude_unset=True)
-        elif isinstance(item, Mapping):
-            data = string_mapping(cast(ConfigInputMap, item))
+        elif isinstance(item, dict):
+            data = string_mapping(item)
         else:
             raise TypeError(f"{field}.{name} must be a mapping.")
         result[name] = coerce_config(SignalConfig, data).model_dump(
@@ -106,7 +110,7 @@ def validate_scoring_map(value: object, field: str) -> dict[str, ConfigData]:
 
 class LifecycleConfig(Config):
     # Collection fields are configured only here; runtime mutation APIs are separate.
-    toolsets: ToolsetSpecs | None = []
+    toolsets: ToolsetCollectionData = []
     stops: list[CallableEntry] = []
     setups: list[CallableEntry] = []
     updates: list[CallableEntry] = []

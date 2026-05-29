@@ -13,7 +13,7 @@ This directory contains automated workflows for the verifiers project.
 
 **What it does**:
 - Runs ruff for linting and formatting checks
-- Runs ty type checks with `uv run ty check verifiers`
+- Runs ty type checks with `uv run ty check verifiers packages/tasksets/tasksets packages/harnesses/harnesses`
 - Runs Semgrep policy checks from the isolated `policy` dependency group.
 - Uses configuration from `pyproject.toml`, `.pre-commit-config.yaml`, and `.semgrep/verifiers.yml`
 
@@ -55,7 +55,7 @@ To run checks locally the same way they run in CI:
 
 ```bash
 # Ty parity with CI (Python 3.13 target configured in `pyproject.toml`)
-uv run ty check verifiers
+uv run ty check verifiers packages/tasksets/tasksets packages/harnesses/harnesses
 
 # Verifiers-specific policy lint
 env PYTHONWARNINGS=ignore::SyntaxWarning uv run --no-dev --group policy semgrep --metrics=off --disable-version-check --config .semgrep/verifiers.yml --error --quiet

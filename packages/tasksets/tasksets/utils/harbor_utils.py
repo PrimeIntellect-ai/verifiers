@@ -6,13 +6,12 @@ import subprocess
 import sys
 import tarfile
 import tempfile
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable
 from importlib.resources import files
 from pathlib import Path
 from typing import cast
 
-from verifiers.v1.sandbox import SandboxConfig, sandbox_config_mapping
-from verifiers.v1.types import ConfigData
+from verifiers.v1.sandbox import SandboxConfig
 from verifiers.v1.utils.sandbox_utils import SandboxClient
 
 TASKS_SUBDIR = "tasks"
@@ -30,10 +29,10 @@ def bundle_tasks_root(module_name: str) -> Path:
         return Path(module_file).resolve().parent / TASKS_SUBDIR
 
 
-def harbor_sandbox(default: SandboxConfig, configured: SandboxConfig) -> ConfigData:
-    defaults = sandbox_config_mapping(default, fill_defaults=False) or {}
-    values = sandbox_config_mapping(configured, fill_defaults=False) or {}
-    return {**defaults, **values}
+def harbor_sandbox(default: SandboxConfig, configured: SandboxConfig) -> SandboxConfig:
+    return SandboxConfig.model_validate(
+        {**default.data(fill_defaults=False), **configured.data(fill_defaults=False)}
+    )
 
 
 def harbor_task_dirs(root: Path, task_names: Iterable[str] | None = None) -> list[Path]:
@@ -165,11 +164,10 @@ def parse_reward_text(reward_text: str) -> float:
     try:
         return float(reward_text)
     except ValueError:
-        pass
-    try:
-        data = json.loads(reward_text)
-    except json.JSONDecodeError:
-        return 0.0
-    if not isinstance(data, Mapping):
+        try:
+            data = json.loads(reward_text)
+        except json.JSONDecodeError:
+            return 0.0
+    if not isinstance(data, dict):
         return 0.0
     return float(data.get("reward", 0.0))

@@ -96,7 +96,7 @@ class MyTasksetConfig(vf.TasksetConfig):
 
 class MyTaskset(vf.Taskset[MyTasksetConfig]):
     def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
-        rows = [
+        records = [
             {
                 "prompt": [{"role": "user", "content": "Reverse abc."}],
                 "answer": "cba",
@@ -104,7 +104,7 @@ class MyTaskset(vf.Taskset[MyTasksetConfig]):
                 "max_turns": 1,
             }
         ]
-        return [row for row in rows if row["split"] == self.config.split]
+        return [record for record in records if record["split"] == self.config.split]
 
     @vf.reward(weight=1.0)
     async def contains_answer(self, task, state) -> float:
@@ -116,7 +116,9 @@ def load_taskset(config: MyTasksetConfig) -> MyTaskset:
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
-    return vf.Env(taskset=vf.load_taskset(config=config.taskset))
+    taskset_config = config.taskset
+    assert isinstance(taskset_config, MyTasksetConfig)
+    return vf.Env(taskset=load_taskset(taskset_config))
 ```
 See [BYO Harness](byo-harness.md) for the advanced v1 taskset/harness API.
 Reusable v1 taskset and harness packages live in `tasksets` and `harnesses`.
@@ -125,15 +127,12 @@ Install them with `uv add "verifiers[packages]"`, or with the narrower
 task directories can run through the bundled OpenCode CLI harness with:
 
 ```python
-from harnesses import OpenCodeConfig
-from tasksets import HarborTasksetConfig
+from harnesses import OpenCode, OpenCodeConfig
+from tasksets import HarborTaskset, HarborTasksetConfig
 
 env = vf.Env(
-    taskset=vf.load_taskset(
-        "tasksets.harbor",
-        config=HarborTasksetConfig(bundle_package=__name__),
-    ),
-    harness=vf.load_harness("harnesses.opencode", config=OpenCodeConfig()),
+    taskset=HarborTaskset(config=HarborTasksetConfig(bundle_package=__name__)),
+    harness=OpenCode(config=OpenCodeConfig()),
 )
 ```
 

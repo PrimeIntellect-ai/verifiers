@@ -3,7 +3,6 @@ import verifiers as vf
 
 class NestedHarnessConfig(vf.HarnessConfig):
     program: vf.ProgramConfig = vf.ProgramConfig(fn="parent_program")
-    toolsets: dict[str, dict[str, str]] = {"nested": {"fn": "load_toolset"}}
     metrics: list[str] = ["child_calls"]
 
 
@@ -17,9 +16,10 @@ async def child_program(task, state):
     return state
 
 
-async def call_harness(prompt, harness, state):
+async def call_harness(prompt, state):
     _ = state
     task = vf.Task({"prompt": prompt}).freeze()
+    harness = vf.Harness(config=ChildHarnessConfig())
     child_state = await harness.run(task)
     return child_state["answer"]
 
@@ -48,7 +48,8 @@ CHILD_PROMPT_GROUPS = [
 ]
 
 
-def load_tasks():
+def load_tasks(split: vf.TaskSplit = "train"):
+    _ = split
     return [
         {
             "prompt": (
@@ -59,22 +60,6 @@ def load_tasks():
         }
         for child_prompts in CHILD_PROMPT_GROUPS
     ]
-
-
-def load_child_harness():
-    return vf.Harness(config=ChildHarnessConfig())
-
-
-def load_toolset(config: vf.ToolsetConfig | None = None):
-    async def call_child_harness(prompt, state):
-        return await call_harness(prompt, load_child_harness(), state)
-
-    call_child_harness.__name__ = "call_harness"
-    call_child_harness.__doc__ = call_harness.__doc__
-    return vf.Toolset(
-        tools=[call_child_harness],
-        config=config,
-    )
 
 
 async def parent_program(task, state):
@@ -90,7 +75,9 @@ async def parent_program(task, state):
 
 
 class NestedHarness(vf.Harness[NestedHarnessConfig]):
-    pass
+    def load_toolsets(self, config: NestedHarnessConfig) -> vf.Toolsets:
+        _ = config
+        return {"nested": vf.Toolset(tools=[call_harness])}
 
 
 class NestedTasksetConfig(vf.TasksetConfig):
@@ -99,7 +86,7 @@ class NestedTasksetConfig(vf.TasksetConfig):
 
 class NestedTaskset(vf.Taskset[NestedTasksetConfig]):
     def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
-        return load_tasks()
+        return load_tasks(split)
 
 
 class NestedEnvConfig(vf.EnvConfig):

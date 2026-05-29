@@ -1,6 +1,5 @@
 import base64
 import io
-import inspect
 import json
 import keyword
 import os
@@ -8,7 +7,6 @@ import re
 import tarfile
 import textwrap
 from collections.abc import Callable
-from collections.abc import Mapping
 from importlib.abc import Traversable
 from pathlib import Path
 from typing import cast
@@ -80,7 +78,6 @@ def rlm_tool_skills_archive(state: State, runtime: Runtime) -> str:
     tool_defs = runtime.tool_defs(state) or []
     if not tool_defs:
         return ""
-    tools = runtime.all_exposed_tools(state)
     used_names: set[str] = set()
     skills_dir = rlm_skills_dir(state, runtime)
     if skills_dir is not None:
@@ -186,89 +183,43 @@ def rlm_tool_skills_archive(state: State, runtime: Runtime) -> str:
                 call_example = (
                     f"result = await {skill_name}({{'argument_name': 'value'}})"
                 )
-            local_tool_payload: str | None = None
-            tool = tools.get(tool_name)
-            owner = runtime.tool_owner(tool_name, state)
-            if owner is not None and owner.sandbox is None and callable(tool):
-                try:
-                    tool_signature = inspect.signature(tool)
-                except (TypeError, ValueError):
-                    tool_signature = None
-                if tool_signature is not None and not any(
-                    binding_key.partition(".")[0] == tool_name
-                    for binding_key in owner.bindings
-                ):
-                    hidden_args = runtime.hidden_tool_args(tool_name, state)
-                    if not any(
-                        arg_name in tool_signature.parameters
-                        for arg_name in hidden_args
-                    ):
-                        try:
-                            import dill
-
-                            local_tool_payload = base64.b64encode(
-                                dill.dumps(tool)
-                            ).decode()
-                        except Exception:
-                            local_tool_payload = None
-            if local_tool_payload is None:
-                module_imports = "os, requests"
-                tool_setup = ""
-                dependencies = ["requests", "rlm"]
-                call_source = textwrap.indent(
-                    textwrap.dedent(
-                        f"""\
-                        base = os.environ.get("ANTHROPIC_BASE_URL") or os.environ.get("OPENAI_BASE_URL")
-                        if not base:
-                            raise RuntimeError("No Verifiers endpoint URL is configured.")
-                        api_key = (
-                            os.environ.get("OPENAI_API_KEY")
-                            or os.environ.get("ANTHROPIC_API_KEY")
-                            or "intercepted"
-                        )
-                        # Runtime-bound tools fall back to the verifier endpoint.
-                        response = requests.post(
-                            f"{{base.rsplit('/v1', 1)[0].rstrip('/')}}/vf/tools/" + {tool_name!r},
-                            json={{"arguments": arguments}},
-                            headers={{"Authorization": f"Bearer {{api_key}}"}},
-                            timeout=300,
-                        )
-                        if not response.content:
-                            response.raise_for_status()
-                            return None
-                        payload = response.json()
-                        if "error" in payload:
-                            raise RuntimeError(str(payload["error"]))
+            module_imports = "os, requests"
+            dependencies = ["requests", "rlm"]
+            call_source = textwrap.indent(
+                textwrap.dedent(
+                    f"""\
+                    base = os.environ.get("ANTHROPIC_BASE_URL") or os.environ.get("OPENAI_BASE_URL")
+                    if not base:
+                        raise RuntimeError("No Verifiers endpoint URL is configured.")
+                    api_key = (
+                        os.environ.get("OPENAI_API_KEY")
+                        or os.environ.get("ANTHROPIC_API_KEY")
+                        or "intercepted"
+                    )
+                    response = requests.post(
+                        f"{{base.rsplit('/v1', 1)[0].rstrip('/')}}/vf/tools/" + {tool_name!r},
+                        json={{"arguments": arguments}},
+                        headers={{"Authorization": f"Bearer {{api_key}}"}},
+                        timeout=300,
+                    )
+                    if not response.content:
                         response.raise_for_status()
-                        return payload.get("result")
-                        """
-                    ),
-                    " " * 20,
-                )
-            else:
-                module_imports = "base64, dill, inspect"
-                tool_setup = (
-                    f"TOOL = dill.loads(base64.b64decode({local_tool_payload!r}))"
-                )
-                dependencies = ["dill", "rlm"]
-                call_source = textwrap.indent(
-                    textwrap.dedent(
-                        """\
-                        result = TOOL(**arguments)
-                        if inspect.isawaitable(result):
-                            return await result
-                        return result
-                        """
-                    ),
-                    " " * 20,
-                )
+                        return None
+                    payload = response.json()
+                    if "error" in payload:
+                        raise RuntimeError(str(payload["error"]))
+                    response.raise_for_status()
+                    return payload.get("result")
+                    """
+                ),
+                " " * 20,
+            )
             module = textwrap.dedent(
                 f"""\
                 import {module_imports}
 
 
                 TOOL_ALLOWED_ARGUMENTS = {allowed_arguments!r}
-                {tool_setup}
 
 
                 async def run({signature}) -> object:
@@ -338,17 +289,16 @@ Tool schema:
 def rlm_skills_dir(state: State, runtime: Runtime) -> Path | Traversable | None:
     from harnesses.rlm import RLM
 
-    _ = state
     harness = runtime.harness
     if not isinstance(harness, RLM):
         raise TypeError("rlm_skills_dir requires an RLM harness runtime.")
-    if harness.config.skills is not None:
-        return Path(harness.config.skills)
+    if harness.config.program.skills is not None:
+        return Path(harness.config.program.skills)
     taskset = runtime.taskset
     if taskset is None:
         return None
     upload_dirs = taskset.get_upload_dirs()
-    assert isinstance(upload_dirs, Mapping)
+    assert isinstance(upload_dirs, dict)
     skills_dir = upload_dirs.get("skills")
     if skills_dir is None:
         return None

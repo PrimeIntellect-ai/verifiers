@@ -3,7 +3,7 @@ import verifiers as vf
 
 async def ask_subagent(name: str, state) -> str:
     """Ask a child language-model harness to produce the greeting for one name."""
-    harness = load_child_harness()
+    harness = vf.Harness(config=vf.HarnessConfig())
     task = vf.Task(
         {
             "name": name,
@@ -50,7 +50,8 @@ NAME_GROUPS = [
 ]
 
 
-def load_tasks():
+def load_tasks(split: vf.TaskSplit = "train"):
+    _ = split
     return [
         {
             "names": names,
@@ -59,17 +60,6 @@ def load_tasks():
         }
         for names in NAME_GROUPS
     ]
-
-
-def load_child_harness():
-    return vf.Harness(config=vf.HarnessConfig())
-
-
-def load_toolset():
-    return vf.Toolset(
-        tools=[ask_subagent],
-        scope="rollout",
-    )
 
 
 class SubagentTasksetConfig(vf.TasksetConfig):
@@ -82,17 +72,18 @@ class SubagentTasksetConfig(vf.TasksetConfig):
 
 
 class SubagentHarnessConfig(vf.HarnessConfig):
-    toolsets: dict[str, dict[str, str]] = {"subagent": {"fn": "load_toolset"}}
     metrics: list[str] = ["subagent_calls"]
 
 
 class SubagentTaskset(vf.Taskset[SubagentTasksetConfig]):
     def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
-        return load_tasks()
+        return load_tasks(split)
 
 
 class SubagentHarness(vf.Harness[SubagentHarnessConfig]):
-    pass
+    def load_toolsets(self, config: SubagentHarnessConfig) -> vf.Toolsets:
+        _ = config
+        return {"subagent": vf.Toolset(tools=[ask_subagent], scope="rollout")}
 
 
 class SubagentEnvConfig(vf.EnvConfig):

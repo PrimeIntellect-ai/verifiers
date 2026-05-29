@@ -43,6 +43,8 @@ OpenCode settings belong under the v1 harness config:
 ```toml
 [env.harness]
 max_turns = 4
+
+[env.harness.program]
 agent_workdir = "/app"
 ```
 
@@ -59,7 +61,7 @@ Summarize key metrics your rubric emits and how they’re interpreted.
 
 ## How It Works
 
-1. `HarborTaskset` loads Harbor task rows and contributes sandbox settings,
+1. `HarborTaskset` loads Harbor tasks and contributes sandbox settings,
    task uploads, env vars, and the Harbor reward.
 2. `OpenCode` contributes the reusable OpenCode CLI program, install/setup,
    intercepted endpoint config, MCP tool proxy, and log artifact collection.

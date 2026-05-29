@@ -1,13 +1,11 @@
 import inspect
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable
 from typing import TYPE_CHECKING, cast
 
 from pydantic import BaseModel
 from verifiers.types import Tool
 
-from ..sandbox import SandboxConfig
-from ..types import ConfigMap, Handler, Objects
-from .binding_utils import BindingMap
+from ..types import ConfigData, Handler
 from .config_utils import coerce_config, resolved_config_data, resolve_config_object
 
 if TYPE_CHECKING:
@@ -69,7 +67,7 @@ def normalize_toolset_collection(
 
     if value is None:
         return [], {}
-    if isinstance(value, Mapping):
+    if isinstance(value, dict):
         named: dict[str, Toolset] = {}
         for key, item in value.items():
             if not isinstance(key, str):
@@ -93,8 +91,8 @@ def named_toolset(name: str, value: object) -> "Toolset":
         return value
     if isinstance(value, BaseModel):
         value = value.model_dump(exclude_none=True)
-    if isinstance(value, Mapping):
-        spec = cast(ConfigMap, value)
+    if isinstance(value, dict):
+        spec = cast(ConfigData, value)
         if "fn" in spec:
             return toolset_from_factory(name, spec)
         return toolset_from_mapping(spec)
@@ -103,7 +101,7 @@ def named_toolset(name: str, value: object) -> "Toolset":
     return normalize_toolset(value)
 
 
-def toolset_from_factory(name: str, spec: ConfigMap) -> "Toolset":
+def toolset_from_factory(name: str, spec: ConfigData) -> "Toolset":
     fn = resolve_config_object(spec.get("fn"))
     if not callable(fn):
         raise TypeError(f"Toolset {name!r} requires callable fn.")
@@ -111,7 +109,7 @@ def toolset_from_factory(name: str, spec: ConfigMap) -> "Toolset":
     return call_toolset_factory(name, cast(Handler, fn), kwargs)
 
 
-def call_toolset_factory(name: str, fn: Handler, kwargs: ConfigMap) -> "Toolset":
+def call_toolset_factory(name: str, fn: Handler, kwargs: ConfigData) -> "Toolset":
     result = fn(**kwargs)
     if inspect.isawaitable(result):
         raise TypeError(f"Toolset {name!r} fn must be synchronous.")
@@ -127,7 +125,7 @@ def normalize_toolset_result(value: object) -> list["Toolset"]:
     value = resolve_config_object(value)
     if value is None:
         return []
-    if isinstance(value, Toolset | Mapping | str):
+    if isinstance(value, Toolset | dict | str):
         return [normalize_toolset(value)]
     if not isinstance(value, Iterable):
         return [normalize_toolset(value)]
@@ -140,42 +138,24 @@ def normalize_toolset(value: object) -> "Toolset":
     value = resolve_config_object(value)
     if isinstance(value, Toolset):
         return value
-    if isinstance(value, Mapping):
-        return toolset_from_mapping(cast(ConfigMap, value))
+    if isinstance(value, dict):
+        return toolset_from_mapping(cast(ConfigData, value))
     return Toolset(tools=[cast(ToolEntry, value)])
 
 
-def toolset_from_mapping(spec: ConfigMap) -> "Toolset":
-    from ..toolset import ToolEntries, Toolset, ToolsetCallableEntry, ToolsetConfig
+def toolset_from_mapping(spec: ConfigData) -> "Toolset":
+    from ..toolset import Toolset, ToolsetConfig
 
     extra_keys = set(spec) - set(ToolsetConfig.model_fields)
     if extra_keys:
         raise ValueError(f"Unknown toolset config keys: {sorted(extra_keys)}.")
-    write = spec.get("write")
-    if write is not None and not isinstance(write, bool):
-        raise TypeError("Toolset write must be a boolean.")
-    return Toolset(
-        tools=cast(ToolEntries | None, spec.get("tools", ())),
-        handler=cast(ToolsetCallableEntry | None, spec.get("handler")),
-        show=string_items(spec.get("show")),
-        hide=string_items(spec.get("hide")),
-        bindings=cast(BindingMap | None, spec.get("bindings")),
-        objects=cast(Objects | None, spec.get("objects")),
-        write=write,
-        scope=cast(str | None, spec.get("scope")),
-        sandbox=cast(ConfigMap | SandboxConfig | str | None, spec.get("sandbox")),
-        stops=cast(Iterable[ToolsetCallableEntry], spec.get("stops") or ()),
-        setups=cast(Iterable[ToolsetCallableEntry], spec.get("setups") or ()),
-        updates=cast(Iterable[ToolsetCallableEntry], spec.get("updates") or ()),
-        cleanups=cast(Iterable[ToolsetCallableEntry], spec.get("cleanups") or ()),
-        teardowns=cast(Iterable[ToolsetCallableEntry], spec.get("teardowns") or ()),
-    )
+    return Toolset(config=ToolsetConfig.model_validate(spec))
 
 
 def tool_items(value: object) -> list["ToolEntry"]:
     if value is None:
         return []
-    if isinstance(value, str) or isinstance(value, Mapping):
+    if isinstance(value, str) or isinstance(value, dict):
         return [tool_item(value)]
     if not isinstance(value, Iterable):
         return [tool_item(value)]
@@ -195,7 +175,7 @@ def tool_item(value: object) -> "ToolEntry":
             env=value.env,
             cwd=value.cwd,
         )
-    if isinstance(value, Mapping):
+    if isinstance(value, dict):
         if "command" in value:
             config = coerce_config(MCPToolConfig, value)
             return MCPTool(
@@ -212,22 +192,12 @@ def tool_item(value: object) -> "ToolEntry":
     return cast(Handler, value)
 
 
-def toolset_config_mapping(config: object | None) -> ConfigMap:
+def toolset_config_mapping(config: object | None) -> ConfigData:
     from ..toolset import ToolsetConfig
 
     if config is None:
         return {}
     return resolved_config_data(coerce_config(ToolsetConfig, config))
-
-
-def string_items(value: object) -> list[str] | None:
-    if value is None:
-        return None
-    if isinstance(value, str):
-        return [value]
-    if not isinstance(value, Iterable):
-        raise TypeError("Toolset visibility fields must be strings or lists.")
-    return [str(item) for item in value]
 
 
 def optional_string(value: object) -> str | None:

@@ -1,10 +1,17 @@
-from collections.abc import Mapping
-from typing import TYPE_CHECKING, Generic, TypeVar, cast, final
+import asyncio
+from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING, Generic, TypeAlias, TypeVar, cast, final
 
 import verifiers as vf
 from verifiers.clients.client import Client
 from verifiers.errors import Error, OverlongPromptError
-from verifiers.types import MessageContent, Messages, SamplingArgs, ToolMessage
+from verifiers.types import (
+    ClientConfig,
+    MessageContent,
+    Messages,
+    SamplingArgs,
+    ToolMessage,
+)
 from verifiers.utils.async_utils import maybe_call_with_named_args
 from verifiers.utils.error_utils import error_info
 from verifiers.utils.message_utils import normalize_messages
@@ -15,19 +22,18 @@ from .config import (
     ConfigSource,
     LifecycleConfig,
     import_config_ref,
-    resolve_config_object,
 )
+from .artifact import ArtifactsConfig
 from .program import (
     ProgramConfig,
-    program_config_data,
 )
 from .model import ModelConfig, model_config_from_task
-from .sandbox import SandboxConfig, sandbox_config_mapping
+from .sandbox import SandboxConfig
 from .user import UserConfig
 from .utils.binding_utils import (
-    BindingMap,
-    normalize_binding_map,
-    normalize_object_map,
+    BindingSources,
+    BindingsConfig,
+    ObjectsConfig,
 )
 from .utils.endpoint_utils import (
     Endpoint,
@@ -64,48 +70,52 @@ from .utils.sandbox_program_utils import (
     run_sandbox_python_program,
 )
 from .utils.prompt_utils import (
+    SystemPromptConfig,
     normalize_prompt,
     normalize_system_prompt,
     resolve_system_prompt,
 )
-from .utils.timing_utils import ensure_timing, record_generation_timing
 from .utils.tool_utils import tool_error_content
 from .utils.trajectory_utils import has_borrowed_trajectory, sync_trajectory
 from .state import State
 from .task import Task
 from .types import (
-    ConfigData,
-    ConfigMap,
     Handler,
     ModelClient,
+    ConfigData,
+    JsonData,
     Objects,
-    ProgramMap,
     PromptInput,
-    SystemPrompt,
 )
 
 if TYPE_CHECKING:
     from .taskset import Taskset
+
+ProgramResult: TypeAlias = State | ConfigData | None
+ProgramRunner: TypeAlias = Callable[[Task, State], Awaitable[ProgramResult]]
 
 
 class HarnessConfig(LifecycleConfig):
     # Core fields configure harness-owned runtime behavior.
     program: ProgramConfig = ProgramConfig()
     model: ModelConfig = ModelConfig()
-    system_prompt: PromptInput | None = None
+    system_prompt: PromptInput | SystemPromptConfig | None = None
     system_prompt_merge: str = "reject"
     sandbox: SandboxConfig | None = None
     user: UserConfig | None = None
-    bindings: BindingMap = {}
-    objects: dict[str, str] = {}
+    bindings: BindingsConfig = BindingsConfig()
+    objects: ObjectsConfig = ObjectsConfig()
+    artifacts: ArtifactsConfig = ArtifactsConfig()
     max_turns: int = 10
 
 
 ConfigT = TypeVar("ConfigT", bound=HarnessConfig)
 
 
-class Harness(RuntimeOwnerMixin, Generic[ConfigT]):
+class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
     config: ConfigT
+    program_config: ProgramConfig
+    program: ProgramRunner
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)
@@ -133,91 +143,82 @@ class Harness(RuntimeOwnerMixin, Generic[ConfigT]):
         if config is not None and model_kwargs_present:
             raise TypeError("Pass either config or model/client/sampling_args kwargs.")
         runtime_model_client: Client | None = None
+        config_type = registered_config_type(type(self), HarnessConfig)
         if config is None and model_kwargs_present:
             if isinstance(model, ModelConfig):
                 if client is not None or sampling_args is not None:
                     raise TypeError(
                         "ModelConfig cannot be combined with client or sampling_args."
                     )
-                config = {"model": model}
+                config = config_type(model=model)
             else:
-                model_config: ConfigData = {}
-                if model is not None:
-                    model_config["name"] = model
+                model_client: ClientConfig | str | None = None
                 if client is not None:
                     if isinstance(client, Client):
                         runtime_model_client = client
                     else:
-                        model_config["client"] = client
-                if sampling_args is not None:
-                    model_config["sampling_args"] = sampling_args
-                config = {"model": model_config}
-        config_type = registered_config_type(type(self), HarnessConfig)
+                        model_client = client
+                config = config_type(
+                    model=ModelConfig(
+                        name=model,
+                        client=model_client,
+                        sampling_args=sampling_args or {},
+                    )
+                )
         self.config = cast(ConfigT, coerce_config(config_type, config))
         with config_ref_context(self.config):
-            self.program = program_config_data(self.config.program) or {"base": True}
-            system_prompt_value = self.load_system_prompt()
+            self.initialize_runtime_refresh()
+            self.program_config = self.config.program.resolve()
+            system_prompt_value = self.load_system_prompt(self.config)
             self.system_prompt = normalize_system_prompt(
                 system_prompt_value, field_name="harness.system_prompt"
             )
             self.system_prompt_merge = self.config.system_prompt_merge
-            self.initialize_runtime_user(
-                self.config.user,
-                explicitly_configured="user" in self.config.model_fields_set,
+            self.initialize_runtime_user(self.config.user)
+            self.bindings: BindingSources = self.config.bindings.entries(
+                "harness.bindings"
             )
-            self.bindings = normalize_binding_map(
-                self.config.bindings,
-                "harness.bindings",
-            )
-            self.objects = cast(
-                Objects,
-                {
-                    str(key): resolve_config_object(item)
-                    for key, item in normalize_object_map(
-                        self.config.objects, "harness.objects"
-                    ).items()
-                },
-            )
-            self.sandbox = self.load_sandbox()
-            self.model = self.load_model()
+            self.objects: Objects = self.load_objects(self.config.objects)
+            self.artifacts = self.load_artifacts(self.config.artifacts)
+            self.sandbox = self.load_sandbox(self.config.sandbox)
+            self.model = self.load_model(self.config.model)
             self.model_client: ModelClient | None = cast(
                 ModelClient | None,
-                resolve_config_object(self.model.client),
+                self.model.client_object(),
             )
             if runtime_model_client is not None:
                 self.model_client = runtime_model_client
-            self.initialize_runtime_toolsets(self.config.toolsets)
+            self.initialize_runtime_toolsets(self.config, self.config.toolsets)
             self.initialize_runtime_handlers()
             self.taskset: "Taskset | None" = None
             self.runtime = Runtime(taskset=self.taskset, harness=self)
+            self.runtime_refresh = self.rebuild_runtime
             self.endpoint = self.load_endpoint()
-            self.program_runner = self.compile_program(self.program)
+            self.program = self.compile_program(self.program_config)
 
-    def load_system_prompt(self) -> SystemPrompt | None:
-        return self.config.system_prompt
+    def load_system_prompt(
+        self, config: ConfigT
+    ) -> PromptInput | SystemPromptConfig | None:
+        return config.system_prompt
 
-    def load_user(self) -> UserConfig | None:
-        return self.config.user
-
-    def load_sandbox(self) -> SandboxConfig | None:
-        sandbox = self.config.program.sandbox
-        if sandbox is None:
-            return self.config.sandbox
-        if sandbox is False:
-            return None
+    def load_sandbox(self, config: SandboxConfig | None) -> SandboxConfig | None:
+        sandbox = self.program_config.sandbox
+        if sandbox is None or sandbox is False:
+            return config
+        base = config.data() if config is not None else {}
         if sandbox is True:
-            return self.config.sandbox or SandboxConfig()
-        return SandboxConfig.model_validate(sandbox_config_mapping(sandbox) or {})
+            return SandboxConfig.model_validate(base)
+        return SandboxConfig.model_validate({**base, **sandbox.data()})
 
-    def load_model(self) -> ModelConfig:
-        return self.config.model
+    def load_model(self, config: ModelConfig) -> ModelConfig:
+        return config
 
     def load_endpoint(self) -> Endpoint:
         return Endpoint(
-            use_tunnel=self.program_sandbox_config(self.program) is not None
+            use_tunnel=self.program_sandbox_config(self.program_config) is not None
         )
 
-    def refresh_runtime(self) -> None:
+    def rebuild_runtime(self) -> None:
         self.runtime = Runtime(taskset=self.taskset, harness=self)
 
     async def run(self, task: Task, state: State | None = None) -> State:
@@ -235,7 +236,7 @@ class Harness(RuntimeOwnerMixin, Generic[ConfigT]):
             except Error as e:
                 self.record_error(state, e)
             await self.runtime.update_rollout(task, state)
-            record_generation_timing(state)
+            state.record_generation_timing()
             timing_recorded = True
             if state.runtime_state().get("score_rollout", True):
                 await self.runtime.score_rollout(task, state)
@@ -243,12 +244,15 @@ class Harness(RuntimeOwnerMixin, Generic[ConfigT]):
             completed = True
         finally:
             if not timing_recorded:
-                record_generation_timing(state)
+                state.record_generation_timing()
             await self.runtime.cleanup_rollout(task, state)
             if "group_key" not in state.runtime_state():
                 await self.runtime.cleanup_group([task], [state])
-                state.strip_runtime_handles()
-            if completed:
+                if completed:
+                    state.finalize()
+                else:
+                    state.strip_runtime_handles()
+            elif completed:
                 state.assert_serializable()
         return state
 
@@ -277,15 +281,13 @@ class Harness(RuntimeOwnerMixin, Generic[ConfigT]):
         return State.for_task(task)
 
     @vf.update(priority=-100)
-    async def render_completion(self, task: Task, state: State) -> None:
-        _ = task
+    async def render_completion(self, state: State) -> None:
         if has_borrowed_trajectory(state):
             return
         sync_trajectory(state)
 
     @vf.metric
-    async def num_turns(self, task: Task, state: State) -> float:
-        _ = task
+    async def num_turns(self, state: State) -> float:
         trajectory = state.get("trajectory") or []
         if not isinstance(trajectory, list):
             raise TypeError("state.trajectory must be a list.")
@@ -296,7 +298,7 @@ class Harness(RuntimeOwnerMixin, Generic[ConfigT]):
         await self.setup_model_state(task, state)
         await self.resolve_system_prompt(task, state)
         await self.setup_tool_state(task, state)
-        await self.setup_sandbox_state(task, state)
+        await self.setup_sandbox_state(state)
         await self.setup_default_state_fields(state)
         return state
 
@@ -304,16 +306,19 @@ class Harness(RuntimeOwnerMixin, Generic[ConfigT]):
         runtime_state = state.runtime_state()
         if "max_turns" in task:
             runtime_state.setdefault("max_turns", task["max_turns"])
-        if "tools" in task and not isinstance(task["tools"], Mapping):
-            raise TypeError("task.tools must be a toolset-keyed mapping.")
+        task.tools_config()
+        task.toolsets_config()
 
     async def setup_model_state(self, task: Task, state: State) -> None:
         runtime_state = state.runtime_state()
-        model_handle = self.runtime.resolved_handle(state, "model")
+        model_handle = self.runtime.model_handle(state)
         if model_handle is not None:
-            for key in ("model", "client_type", "sampling_args"):
-                if key in model_handle:
-                    runtime_state.setdefault(key, model_handle[key])
+            if model_handle.model is not None:
+                runtime_state.setdefault("model", model_handle.model)
+            if model_handle.client_type is not None:
+                runtime_state.setdefault("client_type", model_handle.client_type)
+            if model_handle.sampling_args is not None:
+                runtime_state.setdefault("sampling_args", model_handle.sampling_args)
         task_model = model_config_from_task(task)
         model_name = task_model.name or self.model.name
         if model_name is not None:
@@ -322,13 +327,13 @@ class Harness(RuntimeOwnerMixin, Generic[ConfigT]):
         sampling_args.update(task_model.sampling_args)
         state_sampling_args = runtime_state.get("sampling_args")
         if state_sampling_args is not None:
-            if not isinstance(state_sampling_args, Mapping):
+            if not isinstance(state_sampling_args, dict):
                 raise TypeError("state.runtime.sampling_args must be a mapping.")
             sampling_args.update(state_sampling_args)
         if sampling_args:
             runtime_state["sampling_args"] = sampling_args
         task_model_client = (
-            cast(ModelClient | None, resolve_config_object(task_model.client))
+            cast(ModelClient | None, task_model.client_object())
             if task_model.client is not None
             else None
         )
@@ -343,14 +348,12 @@ class Harness(RuntimeOwnerMixin, Generic[ConfigT]):
             self.runtime.bind_model_client(state, model_client)
 
     async def setup_tool_state(self, task: Task, state: State) -> None:
-        await self.runtime.ensure_rollout_toolsets(task, state)
+        self.runtime.prepare_state(task, state)
         self.runtime.validate_bindings(state, allow_unresolved_tool_bindings=True)
         await self.runtime.ensure_mcp_tools(state)
-        self.runtime.resolve_trajectory(state)
-        self.runtime.prepare_state(task, state)
+        self.runtime.refresh_tools(state, validate=False)
 
-    async def setup_sandbox_state(self, task: Task, state: State) -> None:
-        _ = task
+    async def setup_sandbox_state(self, state: State) -> None:
         await self.runtime.ensure_global_sandboxes(state)
         self.runtime.bind_global_sandboxes(state)
 
@@ -358,7 +361,7 @@ class Harness(RuntimeOwnerMixin, Generic[ConfigT]):
         state.setdefault("artifacts", {})
         state.setdefault("metrics", {})
         state.setdefault("reward", 0.0)
-        ensure_timing(state)
+        state.ensure_timing()
 
     async def resolve_system_prompt(self, task: Task, state: State) -> None:
         taskset_system_prompt = (
@@ -374,22 +377,22 @@ class Harness(RuntimeOwnerMixin, Generic[ConfigT]):
     async def run_program(self, task: Task, state: State) -> State:
         endpoint = self.resolved_endpoint(state)
         result = await run_intercepted_program(
-            self.program_runner, endpoint, self.runtime, task, state
+            self.program, endpoint, self.runtime, task, state
         )
         if result is None:
             return state
         if isinstance(result, State):
             return result
-        if isinstance(result, Mapping):
+        if isinstance(result, dict):
             state.update(result)
             return state
         raise TypeError("Harness program must return None, State, or a mapping.")
 
     def resolved_endpoint(self, state: State) -> Endpoint:
-        handle = self.runtime.resolved_handle(state, "endpoint")
+        handle = self.runtime.endpoint_handle(state)
         if handle is None:
             return self.endpoint
-        runtime = self.runtime.handle_runtime(handle, "endpoint")
+        runtime = self.runtime.resolved_runtime(handle)
         harness = runtime.harness
         if harness is None:
             raise RuntimeError("Resolved endpoint handle has no live harness.")
@@ -398,27 +401,26 @@ class Harness(RuntimeOwnerMixin, Generic[ConfigT]):
             raise RuntimeError("Resolved endpoint handle has no live endpoint.")
         return endpoint
 
-    def compile_program(self, program: ProgramMap | None) -> Handler:
-        if program is None:
-            return self.base_program
-        if not isinstance(program, Mapping):
-            raise TypeError("program must be None or a mapping.")
-        kind = program_kind(program)
+    def compile_program(self, program: ProgramConfig) -> ProgramRunner:
+        program_data = program.data()
+        if not isinstance(program_data, dict):
+            raise TypeError("program must materialize to a mapping.")
+        kind = program_kind(program_data)
         if kind == "base":
             sandbox_config = self.program_sandbox_config(program)
-            validate_program_options(program, kind, sandbox_config)
+            validate_program_options(program_data, kind, sandbox_config)
             if sandbox_config is not None:
-                return self.sandbox_base_program(program, sandbox_config)
+                return self.sandbox_base_program(program_data, sandbox_config)
             return self.base_program
         if kind == "fn":
             sandbox_config = self.program_sandbox_config(program)
-            validate_program_options(program, kind, sandbox_config)
-            fn_ref = program["fn"]
+            validate_program_options(program_data, kind, sandbox_config)
+            fn_ref = program_data["fn"]
             if not isinstance(fn_ref, str):
                 raise TypeError("program.fn must be a string ref.")
             if sandbox_config is not None:
                 return self.sandbox_fn_program(
-                    program, sandbox_config, qualified_config_ref(fn_ref)
+                    program_data, sandbox_config, qualified_config_ref(fn_ref)
                 )
             fn = import_config_ref(fn_ref)
             if not callable(fn):
@@ -426,16 +428,19 @@ class Harness(RuntimeOwnerMixin, Generic[ConfigT]):
             return self.local_callable_program(cast(Handler, fn))
         if kind == "command":
             sandbox_config = self.program_sandbox_config(program)
-            validate_program_options(program, kind, sandbox_config)
-            return self.command_program(cast(ConfigMap, program))
+            validate_program_options(program_data, kind, sandbox_config)
+            return self.command_program(program_data, sandbox_config)
         raise AssertionError(f"Unhandled program kind: {kind}")
 
-    def local_callable_program(self, fn: Handler) -> Handler:
-        async def run(task: Task, state: State) -> object:
+    def local_callable_program(self, fn: Handler) -> ProgramRunner:
+        async def run(task: Task, state: State) -> ProgramResult:
             await self.runtime.setup_rollout(task, state)
-            return await maybe_call_with_named_args(
+            result = await maybe_call_with_named_args(
                 fn, task=task, state=state, runtime=self.runtime, harness=self
             )
+            if result is None or isinstance(result, State | dict):
+                return cast(ProgramResult, result)
+            raise TypeError("program.fn must return None, State, or a mapping.")
 
         return run
 
@@ -456,7 +461,7 @@ class Harness(RuntimeOwnerMixin, Generic[ConfigT]):
             message.model_dump(exclude_none=True) for message in messages
         ]
 
-        def sync_completion() -> list[ConfigData]:
+        def sync_completion() -> list[JsonData]:
             rendered_messages = [
                 message.model_dump(exclude_none=True) for message in messages
             ]
@@ -496,7 +501,8 @@ class Harness(RuntimeOwnerMixin, Generic[ConfigT]):
                 state._set_stop_condition("no_tools")
                 return state
             callable_tools = state.get_tools()
-            for tool_call in tool_calls:
+
+            async def call_tool(tool_call) -> ToolMessage:
                 content: MessageContent
                 try:
                     name = tool_call.name
@@ -510,20 +516,27 @@ class Harness(RuntimeOwnerMixin, Generic[ConfigT]):
                     )
                 except Exception as e:
                     content = tool_error_content(e)
-                messages.append(ToolMessage(tool_call_id=tool_call.id, content=content))
-                sync_completion()
-                if await self.runtime.is_completed(task, state):
-                    return state
+                return ToolMessage(tool_call_id=tool_call.id, content=content)
+
+            messages.extend(
+                await asyncio.gather(
+                    *(call_tool(tool_call) for tool_call in tool_calls)
+                )
+            )
+            sync_completion()
+            if await self.runtime.is_completed(task, state):
+                return state
             if max_turns > 0 and turn >= max_turns:
                 state._set_stop_condition("max_turns_reached", overwrite=True)
                 return state
         return state
 
-    def command_program(self, program: ConfigMap) -> Handler:
+    def command_program(
+        self, program: ConfigData, sandbox_config: SandboxConfig | None
+    ) -> ProgramRunner:
         async def run(task: Task, state: State) -> State:
             runtime = self.runtime
             merged_program = merge_task_program(program, task, kind="command")
-            sandbox_config = self.program_sandbox_config(program)
             if sandbox_config is not None:
                 return await run_sandbox_command(
                     self.prepare_sandbox_program(merged_program, state),
@@ -540,8 +553,8 @@ class Harness(RuntimeOwnerMixin, Generic[ConfigT]):
         return run
 
     def sandbox_base_program(
-        self, program: ConfigMap, sandbox_config: ConfigMap
-    ) -> Handler:
+        self, program: ConfigData, sandbox_config: SandboxConfig
+    ) -> ProgramRunner:
         async def run(task: Task, state: State) -> State:
             merged_program = merge_task_program(program, task, kind="base")
             return await run_sandbox_python_program(
@@ -561,10 +574,10 @@ class Harness(RuntimeOwnerMixin, Generic[ConfigT]):
 
     def sandbox_fn_program(
         self,
-        program: ConfigMap,
-        sandbox_config: ConfigMap,
+        program: ConfigData,
+        sandbox_config: SandboxConfig,
         fn_ref: str,
-    ) -> Handler:
+    ) -> ProgramRunner:
         async def run(task: Task, state: State) -> State:
             merged_program = merge_task_program(program, task, kind="fn")
             return await run_sandbox_python_program(
@@ -582,26 +595,18 @@ class Harness(RuntimeOwnerMixin, Generic[ConfigT]):
 
         return run
 
-    def program_sandbox_config(self, program: ConfigMap) -> ConfigMap | None:
-        sandbox = program.get("sandbox")
-        if sandbox is None or sandbox is False:
+    def program_sandbox_config(self, program: ProgramConfig) -> SandboxConfig | None:
+        sandbox = program.resolve().sandbox
+        if sandbox is False:
             return None
-        if sandbox is True:
-            if self.sandbox is None:
-                raise ValueError("program.sandbox=true requires Harness.sandbox.")
-            sandbox_config = sandbox_config_mapping(self.sandbox) or {}
-            validate_program_sandbox_scope(sandbox_config)
-            return sandbox_config
-        if not isinstance(sandbox, Mapping | SandboxConfig):
-            raise TypeError("program.sandbox must be true, false, or a mapping.")
-        sandbox_config = {}
-        if self.sandbox is not None:
-            sandbox_config.update(sandbox_config_mapping(self.sandbox) or {})
-        sandbox_config.update(sandbox_config_mapping(sandbox) or {})
-        validate_program_sandbox_scope(sandbox_config)
-        return sandbox_config
+        if self.sandbox is None:
+            return None
+        if sandbox is None and self.config.sandbox is None:
+            return None
+        validate_program_sandbox_scope(self.sandbox)
+        return self.sandbox
 
-    def prepare_sandbox_program(self, program: ConfigMap, state: State) -> ConfigMap:
+    def prepare_sandbox_program(self, program: ConfigData, state: State) -> ConfigData:
         if "mcp" in program_channels(program):
             endpoint_root_url = state.get("endpoint_root_url")
             if not isinstance(endpoint_root_url, str):
@@ -617,11 +622,11 @@ class Harness(RuntimeOwnerMixin, Generic[ConfigT]):
         return program
 
     def prepare_sandbox_config(
-        self, sandbox_config: ConfigMap, program: ConfigMap
-    ) -> ConfigMap:
-        config = dict(sandbox_config)
+        self, sandbox_config: SandboxConfig, program: ConfigData
+    ) -> SandboxConfig:
+        config = sandbox_config.data()
         if "mcp" in program_channels(program):
             config = proxy_sandbox(config)
         if program_kind(program) in {"base", "fn"}:
             config = python_program_sandbox(config)
-        return config
+        return SandboxConfig.model_validate(config)

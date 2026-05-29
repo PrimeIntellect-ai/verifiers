@@ -1,7 +1,8 @@
 import asyncio
 import random
 import re
-from typing import Generic, TypeVar, cast
+from typing import Generic, TypeVar
+from typing import Protocol, cast
 
 import verifiers as vf
 
@@ -14,44 +15,52 @@ except ImportError as e:
     ) from e
 
 
+class TextArenaState(Protocol):
+    game_state: vf.JsonData
+    game_info: dict[int, vf.JsonData]
+    done: bool
+
+
+class TextArenaRuntimeEnv(Protocol):
+    state: TextArenaState
+
+    def reset(self, num_players: int) -> None: ...
+
+    def get_observation(self) -> tuple[int, str]: ...
+
+    def step(self, action: str) -> object: ...
+
+
 class TextArenaUserConfig(vf.UserConfig):
-    game: str
-    answer_state_key: str
+    objects: vf.ObjectsConfig = vf.ObjectsConfig.model_validate(
+        {"session": "tasksets.textarena:TextArenaSession"}
+    )
 
 
 class TextArenaTasksetConfig(vf.TasksetConfig):
     taskset_id: str | None = "textarena"
     game: str
-    user: TextArenaUserConfig | None = None
+    user: TextArenaUserConfig | None = TextArenaUserConfig()
     num_train_examples: int = 2000
     num_eval_examples: int = 20
     seed: int = 0
     answer_state_key: str
 
 
-ConfigT = TypeVar("ConfigT", bound=TextArenaTasksetConfig)
+TextArenaConfigT = TypeVar("TextArenaConfigT", bound=TextArenaTasksetConfig)
 
 
-class TextArenaTaskset(vf.Taskset[ConfigT], Generic[ConfigT]):
-    config: ConfigT
-
-    def load_user(self) -> vf.UserConfig:
-        return self.config.user or TextArenaUserConfig(
-            game=self.config.game,
-            answer_state_key=self.config.answer_state_key,
-        )
-
-    def load_tasks(self, split: vf.TaskSplit = "train") -> list[vf.ConfigData]:
+class TextArenaTaskset(vf.Taskset[TextArenaConfigT], Generic[TextArenaConfigT]):
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
+        config = self.config
         num_examples = (
-            self.config.num_train_examples
-            if split == "train"
-            else self.config.num_eval_examples
+            config.num_train_examples if split == "train" else config.num_eval_examples
         )
         if num_examples <= 0:
             return []
         nltk.download("words", quiet=True)
         nltk.download("averaged_perceptron_tagger_eng", quiet=True)
-        template = ta.make(env_id=self.config.game)
+        template = ta.make(env_id=config.game)
         assert isinstance(template, ta.Env)
         template.reset(num_players=1)
         _, initial_prompt = template.get_observation()
@@ -66,35 +75,57 @@ class TextArenaTaskset(vf.Taskset[ConfigT], Generic[ConfigT]):
             ]
         word_list = [str(word) for word in words]
         assert word_list
-        rng = random.Random(self.config.seed)
-        first_seed_offset = 0 if split == "train" else self.config.num_train_examples
+        rng = random.Random(config.seed)
+        first_seed_offset = 0 if split == "train" else config.num_train_examples
         for _ in range(first_seed_offset):
             rng.choice(word_list)
         return [
             {
                 "prompt": [vf.UserMessage(content=initial_prompt)],
                 "answer": rng.choice(word_list),
+                "textarena": {
+                    "game": config.game,
+                    "answer_state_key": config.answer_state_key,
+                },
             }
-            for index in range(num_examples)
+            for _ in range(num_examples)
         ]
+
+
+class TextArenaSession:
+    env: TextArenaRuntimeEnv | None
+
+    def __init__(self):
+        self.env = None
+
+    def reset(self, game: str) -> TextArenaRuntimeEnv:
+        env = ta.make(env_id=game)
+        assert isinstance(env, ta.Env)
+        self.env = cast(TextArenaRuntimeEnv, env)
+        self.env.reset(num_players=1)
+        return self.env
 
 
 class TextArenaUser(vf.User[TextArenaUserConfig]):
     async def get_response(
-        self, task: vf.Task, state: vf.State, messages: list[vf.Message]
+        self,
+        task: vf.Task,
+        state: vf.State,
+        messages: list[vf.Message],
     ) -> list[vf.UserMessage]:
-        ta_env = state.get("textarena_env")
-        if ta_env is None:
-            ta_env = ta.make(env_id=self.config.game)
-            assert isinstance(ta_env, ta.Env)
-            ta_env.reset(num_players=1)
-            state["textarena_env"] = ta_env
-        assert isinstance(ta_env, ta.Env)
+        session = await self.get_object("session", task, state)
+        assert isinstance(session, TextArenaSession)
+        textarena_config = task["textarena"]
+        assert isinstance(textarena_config, dict)
+        game = textarena_config["game"]
+        assert isinstance(game, str)
+        answer_state_key = textarena_config["answer_state_key"]
+        assert isinstance(answer_state_key, str)
+        ta_env = session.env or session.reset(game)
         answer = task["answer"]
         assert isinstance(answer, str)
         assert answer
-        game_state = cast(dict[str, object], ta_env.state.game_state)
-        game_state[self.config.answer_state_key] = answer
+        ta_env.state.game_state[answer_state_key] = answer
 
         assistant_messages = vf.get_messages(messages, role="assistant")
         last_text = assistant_messages[-1].content if assistant_messages else ""
@@ -103,8 +134,7 @@ class TextArenaUser(vf.User[TextArenaUserConfig]):
         guess = matches[-1].strip() if matches else ""
         await asyncio.to_thread(ta_env.step, guess)
         if ta_env.state.done:
-            game_info = cast(dict[int, dict[str, object]], ta_env.state.game_info)
-            reason = str(game_info[0]["reason"])
+            reason = str(ta_env.state.game_info[0]["reason"])
             state["final_env_response"] = reason
             state.stop("textarena_done")
             return [vf.UserMessage(content=reason)]
@@ -116,5 +146,5 @@ class TextArenaUser(vf.User[TextArenaUserConfig]):
 
 def load_taskset(
     config: TextArenaTasksetConfig,
-) -> TextArenaTaskset[TextArenaTasksetConfig]:
+) -> TextArenaTaskset:
     return TextArenaTaskset(config=config)

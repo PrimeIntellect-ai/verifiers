@@ -1,4 +1,3 @@
-from collections.abc import Mapping
 from difflib import SequenceMatcher
 from statistics import mean
 
@@ -93,11 +92,11 @@ TASKS: list[vf.ConfigData] = [
         "nested programs inherit active model endpoint controls",
         "programs inherit model endpoint controls",
         "model endpoint controls",
-        "hardcoded providers inside task rows",
+        "hardcoded providers inside tasks",
     ),
     group_reward_task(
-        "user-callbacks",
-        "Describe v1 user callbacks in one short phrase.",
+        "users",
+        "Describe v1 users in one short phrase.",
         "task-owned follow-up messages between assistant turns",
         "follow-up messages between assistant turns",
         "follow-up messages",
@@ -152,7 +151,7 @@ class GroupRewardTaskset(vf.Taskset[GroupRewardTasksetConfig]):
         states: list[vf.State] = []
         for rollout_index in range(num_rollouts):
             candidate = candidates[rollout_index % len(candidates)]
-            if not isinstance(candidate, Mapping):
+            if not isinstance(candidate, dict):
                 raise TypeError("candidate entries must be mappings.")
             candidate_id = str(candidate["id"])
             candidate_answer = str(candidate["answer"])
@@ -308,16 +307,16 @@ def dense_ranks(values: list[float]) -> list[int]:
 
 
 def load_tasks(num_examples: int = -1):
-    rows = TASKS if num_examples < 0 else TASKS[:num_examples]
-    for index, row in enumerate(rows):
+    records = TASKS if num_examples < 0 else TASKS[:num_examples]
+    for index, record in enumerate(records):
         yield {
-            **row,
+            **record,
             "example_id": index,
-            "answer": row["target"],
+            "answer": record["target"],
             "prompt": [
                 {
                     "role": "user",
-                    "content": str(row["question"]),
+                    "content": str(record["question"]),
                 }
             ],
             "max_turns": 1,

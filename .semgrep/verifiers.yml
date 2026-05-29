@@ -31,14 +31,14 @@ rules:
                   ...
           - metavariable-regex:
               metavariable: $ANNOT
-              regex: "(Any|ConfigMap|Mapping\\[str, object\\]|dict\\[str, object\\]|.*\\|.*)"
+              regex: "(Any|Mapping\\[str, object\\]|dict\\[str, object\\]|.*\\|.*)"
       - patterns:
           - pattern: |
               def $FUNC(..., config: $ANNOT = $DEFAULT, ...):
                   ...
           - metavariable-regex:
               metavariable: $ANNOT
-              regex: "(Any|ConfigMap|Mapping\\[str, object\\]|dict\\[str, object\\]|.*\\|.*\\|.*)"
+              regex: "(Any|Mapping\\[str, object\\]|dict\\[str, object\\]|.*\\|.*\\|.*)"
 
   - id: verifiers-v1-load-environment-config-required
     languages: [python]
@@ -121,7 +121,7 @@ rules:
   - id: verifiers-no-raw-object-containers-v1
     languages: [python]
     severity: ERROR
-    message: Do not spell broad object containers in v1 or environment code; use the named boundary types ConfigMap, ConfigData, Handler, GroupHandler, Objects, TaskRow, ProgramMap, or a narrower type.
+    message: Do not spell broad object containers in v1 or environment code; use concrete config models, ConfigData, Handler, BindingsConfig, Objects, or a narrower type. Do not patch around weak typing with generic containers.
     paths:
       include:
         - /verifiers/v1/**/*.py
@@ -136,7 +136,7 @@ rules:
   - id: verifiers-no-raw-mapping-annotations-v1
     languages: [python]
     severity: ERROR
-    message: Do not use raw Mapping annotations in v1 or environment code; prefer dict or a named v1 boundary type. Keep Mapping only for isinstance checks or explicit aliases.
+    message: Do not use raw Mapping annotations in v1 or environment code; normalize at the boundary to a dict, a typed Config model, or a named v1 boundary type. Do not patch around unclear contracts with loose Mapping types.
     paths:
       include:
         - /verifiers/v1/**/*.py
@@ -145,6 +145,19 @@ rules:
         - /verifiers/v1/types.py
         - /environments/openenv_*/proj/**/*.py
     pattern-regex: "\\b(?:Mapping|MutableMapping)\\["
+
+  - id: verifiers-v1-package-no-mapping
+    languages: [python]
+    severity: ERROR
+    message: Package taskset/harness implementations should not use Mapping as a loose shape escape hatch; use concrete dict payloads, typed Config models, or package utils that encode a real protocol boundary.
+    paths:
+      include:
+        - /packages/tasksets/tasksets/**/*.py
+        - /packages/harnesses/harnesses/**/*.py
+        - /verifiers/v1/**/*.py
+      exclude:
+        - /verifiers/v1/types.py
+    pattern-regex: "\\b(?:Mapping|MutableMapping)\\b"
 
   - id: verifiers-get-messages-typed
     languages: [python]

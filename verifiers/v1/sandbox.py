@@ -1,14 +1,12 @@
-from collections.abc import Mapping
-from typing import Literal, cast
+from typing import Literal
 
 from pydantic import field_validator
 
 from .config import Config
-from .types import ConfigData, ConfigInputMap
+from .types import ConfigData
 from .utils.config_utils import (
     explicit_config_data,
     resolved_config_data,
-    string_mapping,
 )
 
 
@@ -37,25 +35,7 @@ class SandboxConfig(Config):
             return [value]
         return value
 
-
-def sandbox_config_mapping(
-    value: object | None, *, fill_defaults: bool = True
-) -> ConfigData | None:
-    if value is None:
-        return None
-    if isinstance(value, SandboxConfig):
-        return (
-            resolved_config_data(value)
-            if fill_defaults
-            else explicit_config_data(value, SandboxConfig)
-        )
-    if isinstance(value, Mapping):
-        mapping = string_mapping(cast(ConfigInputMap, value))
-        prefer = mapping.get("prefer")
-        if prefer is not None and prefer != "program":
-            raise ValueError("sandbox.prefer must be 'program'.")
-        sandbox = SandboxConfig.model_validate(mapping).model_dump(exclude_none=True)
+    def data(self, *, fill_defaults: bool = True) -> ConfigData:
         if fill_defaults:
-            return sandbox
-        return {key: sandbox[key] for key in mapping if key in sandbox}
-    raise TypeError("Sandbox config must be a mapping.")
+            return resolved_config_data(self)
+        return explicit_config_data(self, SandboxConfig)

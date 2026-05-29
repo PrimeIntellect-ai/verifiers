@@ -1,11 +1,14 @@
 import time
-from collections.abc import Callable, Mapping
-from typing import TYPE_CHECKING, cast
+from collections.abc import Callable
+from contextlib import suppress
+from typing import TYPE_CHECKING, TypeVar, cast
 
 import requests
 import tenacity as tc
 from openenv.core.containers.runtime.providers import ContainerProvider
-from verifiers.v1.types import ConfigData
+from verifiers.v1.types import JsonData
+
+T = TypeVar("T")
 
 if TYPE_CHECKING:
     from prime_sandboxes import SandboxClient as PrimeSandboxClient
@@ -98,14 +101,10 @@ class PrimeSandboxOpenEnvProvider(ContainerProvider):
             )
             if sandbox_id is not None:
                 if exposure_id is not None:
-                    try:
+                    with suppress(Exception):
                         client.unexpose(sandbox_id, exposure_id)
-                    except Exception:
-                        pass
-                try:
+                with suppress(Exception):
                     client.delete(sandbox_id)
-                except Exception:
-                    pass
             message = f"OpenEnv sandbox failed during startup for image {image}."
             if details:
                 message = f"{message}\n{details}"
@@ -116,15 +115,11 @@ class PrimeSandboxOpenEnvProvider(ContainerProvider):
         if client is None:
             return
         if self.sandbox_id is not None and self.exposure_id is not None:
-            try:
+            with suppress(Exception):
                 client.unexpose(self.sandbox_id, self.exposure_id)
-            except Exception:
-                pass
         if self.sandbox_id is not None:
-            try:
+            with suppress(Exception):
                 client.delete(self.sandbox_id)
-            except Exception:
-                pass
         self.sandbox_id = None
         self.exposure_id = None
         self._base_url = None
@@ -152,21 +147,21 @@ class PrimeSandboxOpenEnvProvider(ContainerProvider):
             f"url={base_url}, last error: {last_error}"
         )
 
-    def fetch_schema(self) -> ConfigData:
-        def request_schema() -> ConfigData:
+    def fetch_schema(self) -> JsonData:
+        def request_schema() -> JsonData:
             response = requests.get(
                 f"{self.base_url}/schema",
                 timeout=self.spec.schema_request_timeout_seconds,
             )
             response.raise_for_status()
             data = response.json()
-            if not isinstance(data, Mapping):
+            if not isinstance(data, dict):
                 raise TypeError("OpenEnv /schema must return a JSON object.")
             return {str(key): value for key, value in data.items()}
 
-        return cast(ConfigData, self._retry(request_schema))
+        return self._retry(request_schema)
 
-    def _retry(self, fn: Callable[..., object], *args: object) -> object:
+    def _retry(self, fn: Callable[..., T], *args: object) -> T:
         retrying = tc.Retrying(
             stop=tc.stop_after_attempt(self.spec.max_retries),
             wait=tc.wait_exponential_jitter(

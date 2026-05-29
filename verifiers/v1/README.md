@@ -40,7 +40,7 @@ defining a shallow subclass when a package needs a typed config surface.
 
 ### `Task`
 
-A `Task` is an immutable, JSON-serializable dataset row. It is the canonical
+A `Task` is an immutable, JSON-serializable task record. It is the canonical
 place for per-example data such as prompts, answers, metadata, tool filters, and
 sandbox overrides. A task is frozen before rollout code sees it.
 `task["prompt"]` must not contain system messages. Use `task["system_prompt"]`
@@ -49,7 +49,7 @@ for per-task system instructions, or set `TasksetConfig.system_prompt` /
 Multiple system prompt sources reject by default; set `system_prompt_merge` in
 `HarnessConfig` only when that harness knows how they should combine.
 Tasks may also set `max_turns`, `tools`, `toolsets`, and `sandbox` at top level
-for per-row runtime specialization. `toolsets` selects named toolsets, `tools`
+for per-task runtime specialization. `toolsets` selects named toolsets, `tools`
 selects tools inside named toolsets, and `runtime` remains hidden framework
 metadata.
 
@@ -92,16 +92,16 @@ returned from a standalone rollout or completed `Env` group.
 
 ### `Taskset`
 
-A `Taskset` provides task rows and task-owned logic:
+A `Taskset` provides tasks and task-owned logic:
 
-- row and eval row loading;
+- train/eval task loading;
 - task-owned tools/toolsets;
 - user behavior;
 - stop conditions;
 - metrics, rewards, advantages;
 - cleanup.
 
-Taskset rows are lazy-loaded and cached after first access.
+Taskset datasets are lazy-loaded and cached after first access.
 
 ### `Harness`
 
@@ -145,7 +145,7 @@ class ReverseTasksetConfig(vf.TasksetConfig):
 
 class ReverseTaskset(vf.Taskset[ReverseTasksetConfig]):
     def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
-        rows = [
+        records = [
             {
                 "prompt": [{"role": "user", "content": "Reverse abc."}],
                 "answer": "cba",
@@ -153,7 +153,7 @@ class ReverseTaskset(vf.Taskset[ReverseTasksetConfig]):
                 "max_turns": 1,
             }
         ]
-        return [row for row in rows if row["split"] == self.config.split]
+        return [record for record in records if record["split"] == self.config.split]
 
     @vf.reward(weight=1.0)
     async def contains_answer(self, task, state) -> float:
@@ -164,8 +164,10 @@ def load_taskset(config: ReverseTasksetConfig) -> ReverseTaskset:
     return ReverseTaskset(config=config)
 
 
-def load_environment(config: vf.EnvConfig):
-    return vf.Env(taskset=vf.load_taskset(config=config.taskset))
+def load_environment(config: vf.EnvConfig) -> vf.Env:
+    taskset_config = config.taskset
+    assert isinstance(taskset_config, ReverseTasksetConfig)
+    return vf.Env(taskset=load_taskset(taskset_config))
 ```
 
 Standalone harness use is the same runner without the `Env` adapter:
@@ -189,7 +191,7 @@ state = await harness.run(
 
 ## Tasksets And Datasets
 
-Tasksets own row loading through `load_tasks(split="train" | "eval")`.
+Tasksets own task loading through `load_tasks(split="train" | "eval")`.
 Config should hold user-facing knobs, such as dataset name, split, or size
 limits; taskset methods read those values from `self.config` and return
 `vf.Tasks`.
@@ -224,7 +226,7 @@ def load_taskset(config: GSM8KTasksetConfig) -> GSM8KTaskset:
     return GSM8KTaskset(config=config)
 ```
 
-Branch on `split` when the evaluation rows differ from the training rows. Task
+Branch on `split` when the evaluation tasks differ from the training tasks. Task
 identity fields are assigned by the framework.
 
 ### Task Controls
@@ -235,6 +237,7 @@ Tasks can request rollout behavior through top-level serializable fields:
 - `tools`: toolset-keyed tool visibility as `{"wiki": {"show": [...]}}`;
 - `toolsets`: toolset visibility as `{"show": [...]}` or `{"hide": [...]}`;
 - `sandbox`: per-task primary sandbox overrides;
+- `artifacts`: per-task text/JSON files collected after program execution;
 - `program`: per-task program options contributed by a taskset.
 
 The priority rule is:
@@ -246,7 +249,7 @@ explicit state.runtime > task top-level controls > harness defaults
 `state.runtime` is only present when a caller passes an already-specialized
 state into `harness.run(...)`, when `Taskset.init_group(...)` returns customized
 states, or when `Env` writes model controls for eval/training. The base harness
-default remains `max_turns=10`; a taskset can override it per row:
+default remains `max_turns=10`; a taskset can override it per task:
 
 ```python
 yield {
@@ -255,7 +258,7 @@ yield {
 }
 ```
 
-`task.runtime` is not part of the v1 task schema. Task rows should use top-level
+`task.runtime` is not part of the v1 task schema. Tasks should use top-level
 controls; runtime metadata belongs on `state`.
 
 `task.program` is the taskset-to-harness merge point for command/program data
@@ -297,11 +300,11 @@ before the framework `render_completion` update. The default is a private child
 transcript.
 
 For compatibility with the current `vf.Environment` worker schema,
-`Taskset.get_dataset()` emits worker rows and stores the full canonical task as
-a JSON string in `info["task"]`. `Taskset.to_task(...)` accepts a task row or
-`Task`.
+`Taskset.get_dataset()` emits worker records and stores the full canonical task
+as a JSON string in `info["task"]`. `Taskset.to_task(...)` accepts a task
+record or `Task`.
 
-Plain string task routes are not part of the v1 rollout schema. If a worker row
+Plain string task routes are not part of the v1 rollout schema. If a worker record
 contains a top-level `task` field, it must be a JSON object string or mapping;
 non-JSON strings fail during state initialization. Use `info["env_id"]` for
 environment routing.
@@ -364,7 +367,7 @@ shorthand for the same config object:
 | `vf.ProgramConfig(fn="pkg.module:run", ...)` | importable Python program |
 | `vf.ProgramConfig(command=["cmd", "arg"], ...)` | local or sandboxed command |
 
-Mapping programs must specify exactly one of `base=true`, `fn`, or
+Program config dicts must specify exactly one of `base=true`, `fn`, or
 `command`. An option-only mapping such as `{"sandbox": True}` resolves to the
 base loop; option-only mappings without sandbox placement hard fail because the
 options would be inert.
@@ -456,9 +459,11 @@ user returns no messages, the rollout stops with `stop_condition="no_tools"`.
 
 ### Program Placement
 
-A program runs locally unless its mapping asks for sandbox placement.
-`Harness.sandbox` is only the default primary sandbox config; it does not move
-the program by itself.
+A program runs locally unless the harness owns a primary sandbox or the program
+config asks for sandbox placement. `Harness.sandbox` is the primary program
+sandbox config. `ProgramConfig.sandbox=True` uses the harness sandbox or a
+default sandbox, `ProgramConfig.sandbox=False` forces local placement, and a
+`SandboxConfig` value patches the harness sandbox for that program.
 
 ```python
 # Local command.
@@ -471,16 +476,15 @@ vf.Harness(
 # Sandboxed command using Harness.sandbox.
 vf.Harness(
     config=vf.HarnessConfig(
-        sandbox={"image": "python:3.11-slim"},
-        program=vf.ProgramConfig(sandbox=True, command=["python", "run.py"]),
+        sandbox=vf.SandboxConfig(image="python:3.11-slim"),
+        program=vf.ProgramConfig(command=["python", "run.py"]),
     )
 )
 
 # Sandboxed default loop.
 vf.Harness(
     config=vf.HarnessConfig(
-        sandbox={"image": "python:3.11-slim"},
-        program=vf.ProgramConfig(sandbox=True),
+        sandbox=vf.SandboxConfig(image="python:3.11-slim"),
     )
 )
 
@@ -489,7 +493,7 @@ vf.Harness(
     config=vf.HarnessConfig(
         program=vf.ProgramConfig(
             fn="my_env.program:run",
-            sandbox={"image": "python:3.11-slim"},
+            sandbox=vf.SandboxConfig(image="python:3.11-slim"),
         )
     )
 )
@@ -510,7 +514,11 @@ Program does not own lifecycle scoring. `updates`, `metrics`, `rewards`,
 
 Artifact specs use `{"path": "...", "format": "text" | "json"}`. Set
 `optional=True` for logs or outputs that may not be produced on every rollout;
-missing optional artifacts are recorded as `None`.
+missing optional artifacts are recorded as `None`. Artifacts can be declared on
+tasksets, harnesses, users, toolsets, programs, or individual tasks; duplicate
+artifact names fail fast. User and toolset artifacts read from the owner's
+active sandbox when that owner has one; otherwise artifacts read from the
+active program sandbox when present, then from the local filesystem.
 
 The sandboxed base loop uses the same interception endpoint as local programs.
 The loop runs in the sandbox; tool execution and model forwarding remain owned
@@ -559,7 +567,7 @@ name = "gpt-5.4-mini"
 sampling_args = { max_tokens = 4096 }
 ```
 
-Task rows may also include a top-level `model` mapping for task-local model
+Tasks may also include a top-level `model` mapping for task-local model
 controls. State runtime values take precedence for a specific rollout; task
 model config takes precedence over harness model config.
 
@@ -584,13 +592,16 @@ env = vf.Env(
 `HarborTaskset` loads Harbor-format task
 directories from the `bundle_package` package's reserved `tasks/` directory.
 Set `dataset = "owner/name"` on the config to fetch a Harbor Hub dataset instead.
-Harbor task rows contribute sandbox settings and
+Harbor tasks contribute sandbox settings and
 `task.program` uploads for `/task/instruction.md` and `/task/task.toml`.
 `OpenCode` contributes the OpenCode install/setup, config generation, MCP tool
 proxy wiring, and log artifact collection. `Pi` follows the same pattern for
 Pi Coding Agent: the harness writes a Pi model config for the intercepted v1
 endpoint and, when tools are enabled, installs the Pi MCP adapter and writes a
-project `.mcp.json`. Neither side needs to know the other's private fields.
+project `.mcp.json`. Reusable command harnesses implement
+`ProgramConfig.resolve(...)` with `self.resolve_command(command=..., ...)`, so
+the typed program config resolves into one canonical command `ProgramConfig`.
+Neither side needs to know the other's private fields.
 `MiniSWEAgent` owns mini-swe-agent installation, config layering, endpoint env,
 and log/trajectory artifacts.
 `Terminus2` owns Harbor Terminus agent installation, endpoint env, and log
@@ -599,14 +610,15 @@ artifacts.
 the task directory and tests, while `RLM` owns RLM installation, optional skill
 upload to `/task/rlm-skills`, generated tool skills, endpoint wiring, and
 trajectory filtering.
-Use `RLMConfig` in `env.harness` for RLM-specific settings such as
-`rlm_repo_ref`, `rlm_tools`, `rlm_max_turns`, and `summarize_at_tokens`.
+Use `RLMConfig` in `env.harness`; put RLM program settings such as
+`rlm_tools`, `rlm_max_turns`, `summarize_at_tokens`, and `local_checkout` in
+`env.harness.program` / `RLMProgramConfig`.
 Tasksets can expose package-owned upload directories with `get_upload_dirs()`.
 The base `Taskset` discovers a sibling `skills/` directory by default, and
 `RLM` uploads that directory to `/task/rlm-skills` unless `skills=` is passed
-explicitly to the harness. Generated tool skills run simple callable tools
-inside the RLM sandbox by default and fall back to `/vf/tools` for tools that
-need verifier runtime resources.
+explicitly to the harness. Generated tool skills always call back through
+`/vf/tools` so bindings, sandboxes, borrowed handles, MCP sessions, and
+schema-backed handlers use the same routing path as ordinary v1 tool calls.
 
 ## State Helpers
 
@@ -799,28 +811,29 @@ async def search(
     ...
 ```
 
-Dynamic schema-backed tools should still be callable objects. The object can
-provide a `tool_def` when the visible schema is task data rather than a Python
-signature:
+Dynamic schema-backed tools should use `vf.Tool` entries in a named rollout
+toolset. The toolset handler receives the resolved tool schema and model-visible
+arguments, so task data can define the schema while runtime state owns the
+callable backend:
 
 ```python
-class DynamicTool:
-    def __init__(self, tool_def):
-        self.name = tool_def.name
-        self.tool_def = tool_def
-
-    async def __call__(self, state, **arguments):
-        state.setdefault("tool_calls", []).append({self.name: arguments})
-        return "recorded"
+async def call_dynamic_tool(state: vf.State, tool: vf.Tool, arguments: dict):
+    state.setdefault("tool_calls", []).append({tool.name: arguments})
+    return "recorded"
 
 
-def load_task_toolset(task):
-    return vf.Toolset(tools=[DynamicTool(vf.Tool(**task["tool_schema"]))])
+async def setup_dynamic_tool(task: vf.Task, state: vf.State):
+    state.add_tool("dynamic", vf.Tool(**task["tool_schema"]))
+
+
+toolsets = {
+    "dynamic": vf.Toolset(scope="rollout", handler=call_dynamic_tool),
+}
 ```
 
-This keeps BFCL-style dynamic tools on the normal callable-tool path: the model
-sees the task-specific schema, and the runtime still has an executable tool
-surface for recording, validation, or replay.
+This keeps BFCL-style dynamic tools on the standard toolset path: the model
+sees the task-specific schema, and the runtime still has a single executable
+handler surface for recording, validation, or replay.
 
 Tool `**arguments` receive only model-visible arguments. Framework values such
 as `task` and `state`, and configured hidden args such as bound clients or
@@ -851,11 +864,11 @@ async def python(code: str, sandbox) -> str:
 python_tools = vf.Toolset(
     tools=[python],
     write=True,
-    sandbox={
-        "image": "python:3.11-slim",
-        "scope": "group",
-        "packages": ["numpy"],
-    },
+    sandbox=vf.SandboxConfig(
+        image="python:3.11-slim",
+        scope="group",
+        packages=["numpy"],
+    ),
 )
 ```
 
@@ -877,11 +890,11 @@ exists, then fall back to provisioning its own scoped sandbox:
 vf.Toolset(
     tools=[python],
     write=True,
-    sandbox={
-        "prefer": "program",
-        "image": "python:3.11-slim",
-        "scope": "rollout",
-    },
+    sandbox=vf.SandboxConfig(
+        prefer="program",
+        image="python:3.11-slim",
+        scope="rollout",
+    ),
 )
 ```
 
@@ -988,7 +1001,7 @@ harness = vf.Harness(
             },
             channels={"mcp": {"fn": "my_env.cli:write_cli_config"}},
         ),
-        sandbox={"image": "python:3.11-slim"},
+        sandbox=vf.SandboxConfig(image="python:3.11-slim"),
     )
 )
 ```
@@ -1014,7 +1027,8 @@ environments.
 
 A `User` can return environment/user messages during the default loop. Tasksets
 and harnesses may define at most one user. Define a typed `UserConfig`, pair it
-with a `User` subclass, and return the config from `load_user()`.
+with a `User` subclass, and put that config on the owning taskset or harness
+config.
 
 ```python
 class RetryUserConfig(vf.UserConfig):
@@ -1029,13 +1043,10 @@ class RetryUser(vf.User[RetryUserConfig]):
 
 
 class UserTasksetConfig(vf.TasksetConfig):
-    user: RetryUserConfig | None = None
+    user: RetryUserConfig | None = RetryUserConfig()
 
 
 class UserTaskset(vf.Taskset[UserTasksetConfig]):
-    def load_user(self) -> vf.UserConfig:
-        return self.config.user or RetryUserConfig()
-
     def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         return [{"prompt": [{"role": "user", "content": "Try the task."}]}]
 
@@ -1061,8 +1072,8 @@ class UserTasksetConfig(vf.TasksetConfig):
     user: RetryUserConfig = RetryUserConfig(attempts=3)
 ```
 
-Users do not use string refs. `load_user()` returns a typed `UserConfig`; the
-framework materializes the registered `User` subclass from that config.
+Users do not use string refs. The framework materializes the registered `User`
+subclass from the typed `UserConfig`.
 
 `messages` is the default binding for `get_response` methods that declare it.
 It is the rendered prompt and completion message list passed to the user
@@ -1196,14 +1207,14 @@ class MyTasksetConfig(vf.TasksetConfig):
 
 class MyTaskset(vf.Taskset[MyTasksetConfig]):
     def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
-        rows = [
+        records = [
             {
                 "prompt": [{"role": "user", "content": "What is 2 + 2?"}],
                 "answer": "4",
                 "split": "train",
             }
         ]
-        return [row for row in rows if row["split"] == self.config.split]
+        return [record for record in records if record["split"] == self.config.split]
 
     @vf.reward(weight=1.0)
     async def exact(self, task, state) -> float:
@@ -1214,8 +1225,10 @@ def load_taskset(config: MyTasksetConfig) -> MyTaskset:
     return MyTaskset(config=config)
 
 
-def load_environment(config: vf.EnvConfig):
-    return vf.Env(taskset=vf.load_taskset(config=config.taskset))
+def load_environment(config: vf.EnvConfig) -> vf.Env:
+    taskset_config = config.taskset
+    assert isinstance(taskset_config, MyTasksetConfig)
+    return vf.Env(taskset=load_taskset(taskset_config))
 ```
 
 With that loader, eval TOML routes v1 config through the `taskset`/`harness`
@@ -1294,9 +1307,10 @@ nested harnesses, or explicit auxiliary-model workflows.
 `TasksetConfig` and `HarnessConfig` are Pydantic models. Constructors accept a
 single `config` object or mapping. TOML/config strings resolve as
 `"module:object"` refs where the field explicitly accepts import references.
-For `system_prompt`, use a prompt loader or text-file path for reusable
-environments; plain prose strings are treated as direct prompts only when they
-are not ref-shaped or path-shaped.
+For `system_prompt`, plain strings are prompt text. Use
+`SystemPromptConfig(path="system_prompt.txt")` for file-backed prompts, or
+override `load_system_prompt(config)` when prompt construction belongs to the
+class.
 
 ```python
 config = MyTasksetConfig.model_validate(
@@ -1366,9 +1380,9 @@ Config does not create a signal by name inside `scoring`; the function must
 already be present through a config list, runtime mutation API, or decorated
 method. `skip = true` belongs in `scoring`, not in a callable list entry.
 
-### Rows
+### Tasks
 
-Prefer a small `Taskset` subclass for row loading, and keep TOML focused on
+Prefer a small `Taskset` subclass for task loading, and keep TOML focused on
 values users naturally tune:
 
 ```toml
@@ -1515,7 +1529,7 @@ vf.Harness(
             sandbox=True,
             env={"TASK_ID": "task.example_id"},
         ),
-        sandbox={"image": "python:3.11-slim"},
+        sandbox=vf.SandboxConfig(image="python:3.11-slim"),
     )
 )
 ```

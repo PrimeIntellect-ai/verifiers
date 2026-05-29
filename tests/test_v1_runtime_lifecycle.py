@@ -45,7 +45,6 @@ from verifiers.v1.utils.sandbox_program_utils import (
 )
 from verifiers.v1.utils.sandbox_utils import (
     VF_STATE_INPUT_PATH_KEY,
-    collect_sandbox_artifacts,
     run_sandbox_command,
     upload_program_files,
 )
@@ -811,9 +810,12 @@ async def test_entrypoint_program_uses_state_tools_helper() -> None:
 
 @pytest.mark.asyncio
 async def test_offline_replay_program_scores_without_model_client() -> None:
-    taskset = make_taskset(
-        tasks=program_ref("replay_tasks"),
-        rewards=[program_ref("replay_reward")],
+    class ReplayTaskset(vf.Taskset):
+        def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
+            return replay_tasks(split)
+
+    taskset = ReplayTaskset(
+        config=vf.TasksetConfig(rewards=[program_ref("replay_reward")])
     )
     harness = make_harness(program={"fn": program_ref("replay_answer_program")})
     harness = vf.Env(taskset=taskset, harness=harness).harness
@@ -921,9 +923,12 @@ async def test_base_program_submits_system_prompt_before_prompt() -> None:
 
 @pytest.mark.asyncio
 async def test_taskset_setup_initializes_base_harness_prompt_and_sampling() -> None:
-    taskset = make_taskset(
-        tasks=program_ref("setup_runtime_tasks"),
-        setups=[program_ref("initialize_from_taskset")],
+    class SetupRuntimeTaskset(vf.Taskset):
+        def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
+            return setup_runtime_tasks(split)
+
+    taskset = SetupRuntimeTaskset(
+        config=vf.TasksetConfig(setups=[program_ref("initialize_from_taskset")])
     )
     env = vf.Env(taskset=taskset)
     client = CapturingModelClient([fake_response(content="ok")])
@@ -1108,7 +1113,7 @@ build-backend = "hatchling.build"
     env = cast(dict[str, object], program["env"])
     command = cast(list[str], program["command"])
     setup = cast(list[str], program["setup"])
-    assert dirs[PACKAGE_ROOT] == tmp_path.resolve()
+    assert dirs[PACKAGE_ROOT] == str(tmp_path.resolve())
     assert env["PYTHONPATH"] == "/custom"
     assert "pip install" in setup[1]
     assert shlex.quote(PACKAGE_ROOT) in setup[1]
@@ -1212,13 +1217,11 @@ def test_sandbox_python_program_installs_runtime_client_deps() -> None:
     harness = make_harness(program={"sandbox": True}, sandbox={"packages": ["numpy"]})
 
     sandbox = harness.prepare_sandbox_config(
-        {"packages": ["numpy"]},
+        vf.SandboxConfig(packages=["numpy"]),
         {"sandbox": True},
     )
 
-    packages = sandbox["packages"]
-    assert isinstance(packages, list)
-    assert packages == ["numpy", "openai", "anthropic", "requests"]
+    assert sandbox.packages == ["numpy", "openai", "anthropic", "requests"]
 
 
 def test_sandbox_package_install_bootstraps_managed_python() -> None:
@@ -1312,7 +1315,7 @@ def test_program_channels_mcp_injects_proxy_into_sandbox_program() -> None:
         {"sandbox": True, "command": ["true"], "channels": "mcp"}, state
     )
     sandbox = harness.prepare_sandbox_config(
-        {"image": "python:3.11-slim"},
+        vf.SandboxConfig(image="python:3.11-slim"),
         {"sandbox": True, "command": ["true"], "channels": "mcp"},
     )
 
@@ -1325,10 +1328,8 @@ def test_program_channels_mcp_injects_proxy_into_sandbox_program() -> None:
         "tool_auth_var": "OPENAI_API_KEY",
     }
     assert proxy_command() == [SANDBOX_PYTHON, MCP_PROXY_PATH, MCP_PROXY_CONFIG_PATH]
-    packages = sandbox["packages"]
-    assert isinstance(packages, list)
-    assert "mcp>=1.14.1" in packages
-    assert "requests" in packages
+    assert "mcp>=1.14.1" in sandbox.packages
+    assert "requests" in sandbox.packages
 
 
 def test_program_channels_mcp_requires_sandbox_command() -> None:
@@ -1485,7 +1486,7 @@ async def test_sandbox_state_input_upload_runs_after_rollout_setup(
 
     await run_sandbox_command(
         program,
-        {"image": "python:3.11-slim"},
+        vf.SandboxConfig(image="python:3.11-slim"),
         task,
         state,
         harness.runtime,
@@ -2226,6 +2227,28 @@ async def test_upload_program_files_wraps_sandbox_upload_timeout(
 
 
 @pytest.mark.asyncio
+async def test_sandbox_program_artifact_collected_by_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sandboxes(monkeypatch)
+    install_fake_endpoint_tunnel(monkeypatch)
+
+    harness = make_harness(
+        program={
+            "command": ["true"],
+            "sandbox": True,
+            "artifacts": {"command_log": {"path": "/tmp/command.log"}},
+        },
+        sandbox={"image": "python:3.11-slim"},
+    )
+    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+
+    state = await harness.run(task)
+
+    assert state["artifacts"]["command_log"] == "ok\n"
+
+
+@pytest.mark.asyncio
 async def test_optional_sandbox_program_artifact_records_none() -> None:
     task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
     state = vf.State.for_task(task)
@@ -2234,49 +2257,75 @@ async def test_optional_sandbox_program_artifact_records_none() -> None:
             exit_code=2, stdout="", stderr=""
         )
     )
+    sandbox_lease = SimpleNamespace(client=client, id="sbx")
+    runtime = Runtime()
 
-    await collect_sandbox_artifacts(
-        client,
-        "sbx",
-        {
-            "artifacts": {
-                "missing_log": {
-                    "path": "/tmp/missing.log",
-                    "format": "text",
-                    "optional": True,
-                }
-            }
-        },
+    result = await runtime.collect_artifact(
+        vf.ArtifactConfig(path="/tmp/missing.log", format="text", optional=True),
+        task,
         state,
+        sandbox_lease=cast(Any, sandbox_lease),
     )
 
-    assert state["artifacts"]["missing_log"] is None
+    await runtime.teardown()
+
+    assert result is None
 
 
 @pytest.mark.asyncio
 async def test_sandbox_program_artifact_optional_must_be_boolean() -> None:
-    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
-    state = vf.State.for_task(task)
-    client = SimpleNamespace(
-        execute_command=lambda **kwargs: SimpleNamespace(
-            exit_code=2, stdout="", stderr=""
+    with pytest.raises(ValueError, match="optional"):
+        vf.ArtifactConfig.model_validate(
+            {"path": "/tmp/missing.log", "optional": "true"}
         )
-    )
 
-    with pytest.raises(TypeError, match="optional must be a boolean"):
-        await collect_sandbox_artifacts(
-            client,
-            "sbx",
-            {
-                "artifacts": {
-                    "missing_log": {
-                        "path": "/tmp/missing.log",
-                        "optional": "true",
-                    }
-                }
-            },
-            state,
-        )
+
+@pytest.mark.asyncio
+async def test_optional_toolset_artifact_does_not_create_owner_sandbox(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sandboxes(monkeypatch)
+    toolset = vf.Toolset(
+        tools=[program_sandbox_id],
+        sandbox=vf.SandboxConfig(image="python:3.11-slim"),
+        artifacts=vf.ArtifactsConfig.model_validate(
+            {"tool_log": {"path": "/tmp/tool.log", "optional": True}}
+        ),
+    )
+    harness = make_harness(toolsets=[toolset])
+    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+    state = await harness.setup_state(task, vf.State.for_task(task))
+
+    await harness.runtime.collect_artifacts(task, state)
+    await harness.runtime.cleanup_rollout(task, state)
+
+    assert state["artifacts"]["tool_log"] is None
+    assert FakeSandboxClient.created == []
+
+
+@pytest.mark.asyncio
+async def test_toolset_artifact_reads_owned_sandbox(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sandboxes(monkeypatch)
+    toolset = vf.Toolset(
+        tools=[program_sandbox_id],
+        sandbox=vf.SandboxConfig(image="python:3.11-slim"),
+        artifacts=vf.ArtifactsConfig.model_validate(
+            {"tool_log": {"path": "/tmp/tool.log"}}
+        ),
+    )
+    harness = make_harness(toolsets=[toolset])
+    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+    state = await harness.setup_state(task, vf.State.for_task(task))
+
+    await harness.runtime.call_tool("program_sandbox_id", task, state)
+    await harness.runtime.collect_artifacts(task, state)
+    await harness.runtime.cleanup_rollout(task, state)
+
+    assert state["artifacts"]["tool_log"] == "ok\n"
+    assert FakeSandboxClient.created == ["sbx-1"]
+    assert FakeSandboxClient.deleted == ["sbx-1"]
 
 
 @pytest.mark.asyncio
@@ -2313,11 +2362,11 @@ async def test_toolset_sandbox_prefer_program_falls_back_to_owned_sandbox(
         toolsets=[
             vf.Toolset(
                 tools=[program_sandbox_id],
-                sandbox={
-                    "prefer": "program",
-                    "image": "python:3.11-slim",
-                    "scope": "rollout",
-                },
+                sandbox=vf.SandboxConfig(
+                    prefer="program",
+                    image="python:3.11-slim",
+                    scope="rollout",
+                ),
             )
         ]
     )
@@ -2347,11 +2396,11 @@ async def test_toolset_sandbox_prefer_program_uses_active_program_sandbox(
         toolsets=[
             vf.Toolset(
                 tools=[program_sandbox_id],
-                sandbox={
-                    "prefer": "program",
-                    "image": "python:3.11-slim",
-                    "scope": "rollout",
-                },
+                sandbox=vf.SandboxConfig(
+                    prefer="program",
+                    image="python:3.11-slim",
+                    scope="rollout",
+                ),
             )
         ],
     )

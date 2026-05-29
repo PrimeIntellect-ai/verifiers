@@ -345,7 +345,7 @@ def load_tasks(
 
 
 def serialize_agent_completion(
-    messages: Sequence[AgentMessage | vf.ConfigMap],
+    messages: Sequence[AgentMessage | vf.JsonData],
 ) -> list[vf.ConfigData]:
     role_aliases = {
         "human": "user",

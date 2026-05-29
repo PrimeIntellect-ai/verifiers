@@ -67,20 +67,27 @@ Generation parameters passed to the inference server (e.g., `temperature`, `top_
 ### Tasks
 
 ```python
-TaskRow = Mapping[str, object]
-Tasks = datasets.Dataset | Iterable[TaskRow]
+Tasks = datasets.Dataset | Iterable[JsonData] | Iterable[Task]
 TaskSplit = Literal["train", "eval"]
 ```
 
-v1 task loader return types. `load_tasks(split=...)` should return `vf.Tasks`.
+v1 task loader return types. Override `load_tasks(split=...)` on a
+`vf.Taskset` subclass and return `vf.Tasks`.
 
 ### SystemPrompt
 
 ```python
-SystemPrompt = str | Sequence[Message | Mapping[str, object]] | os.PathLike[str]
+SystemPrompt = str | Sequence[Message | JsonData]
+
+class SystemPromptConfig:
+    path: str | None = None
+    messages: list[JsonData] = []
 ```
 
-v1 system prompt loader return type. `load_system_prompt(...)` should return `vf.SystemPrompt`.
+v1 system prompt type. Plain strings are prompt text. Use
+`vf.SystemPromptConfig(path="system_prompt.txt")` for file-backed prompts, or
+override `load_system_prompt(config)` when prompt construction belongs to the
+class.
 
 ### RewardFunc
 
@@ -623,6 +630,7 @@ Common top-level fields:
 | `tools` | Toolset-keyed tool visibility: `{"wiki": {"show": [...]}}` or `{"wiki": {"hide": [...]}}`. |
 | `toolsets` | Toolset visibility: `{"show": [...]}` or `{"hide": [...]}`. |
 | `sandbox` | Per-task sandbox overrides for sandboxed programs. |
+| `artifacts` | Per-task text/JSON files collected after program execution. |
 | `program` | Task-owned files, dirs, env, setup, artifacts, bindings, and command args. |
 
 `task.runtime` is not public schema. Runtime metadata belongs on `State`.
@@ -632,7 +640,7 @@ Common top-level fields:
 ```python
 class State(dict):
     @classmethod
-    def for_task(task: Mapping[str, Any], ...) -> State: ...
+    def for_task(task: Task, ...) -> State: ...
     def stop(self, condition: str = "state_done") -> None: ...
     def get_model(self) -> str: ...
     def get_client(api: str = "chat_completions", *, sync: bool = False) -> object: ...
@@ -667,16 +675,16 @@ serialization boundary.
 class Taskset:
     def __init__(config: TasksetConfig | None = None): ...
 
-    def to_task(row: TaskRow | Task) -> Task: ...
+    def to_task(task: Task | JsonData) -> Task: ...
     async def init_group(task: Task, num_rollouts: int) -> tuple[list[Task], list[State]]: ...
     def get_dataset() -> Dataset: ...
     def get_eval_dataset() -> Dataset: ...
 ```
 
-Packages task rows and task-owned behavior. Tasksets usually define
+Packages tasks and task-owned behavior. Tasksets usually define
 `load_tasks(split="train" | "eval")` returning `vf.Tasks`, which is
-`datasets.Dataset | Iterable[TaskRow]`. `TasksetConfig.tasks` remains the
-explicit import-ref override field for plain configured tasksets.
+`datasets.Dataset | Iterable[JsonData] | Iterable[Task]`. During rollout,
+records are always materialized as `vf.Task`.
 
 #### Harness
 
@@ -690,7 +698,7 @@ class Harness:
         sampling_args: SamplingArgs | None = None,
     ): ...
 
-    async def run(task: Task | Mapping[str, Any], state: State | None = None) -> State: ...
+    async def run(task: Task, state: State | None = None) -> State: ...
     async def score_group(tasks: list[Task], states: list[State]) -> list[State]: ...
     async def cleanup_group(tasks: list[Task], states: list[State]) -> None: ...
     async def teardown() -> None: ...
@@ -710,6 +718,10 @@ shorthand for the same config object:
 | `ProgramConfig(base=True, ...)` | Explicit default loop, usually with sandbox options. |
 | `ProgramConfig(fn="pkg.module:run", ...)` | Importable Python program. |
 | `ProgramConfig(command=["cmd", "arg"], ...)` | Local or sandboxed command. |
+
+Reusable command harnesses should subclass `ProgramConfig` and implement
+`resolve()` with `self.resolve_command(command=..., ...)` so typed harness
+settings resolve to a canonical command program without a second loader layer.
 
 Sandboxed `program.fn` refs resolve their owning local package from the resolved
 module root: single-file modules use `pyproject.toml` in the same directory as
@@ -733,20 +745,20 @@ workers. `config` is an `EnvConfig` object or mapping with nested `taskset` and
 ```python
 class Toolset:
     def __init__(
-        tools=(),
+        tools=None,
         show=None,
         hide=None,
         bindings=None,
         objects=None,
-        write: bool = False,
+        write: bool | None = None,
         scope: Literal["rollout", "group", "global"] | None = None,
-        sandbox=None,
-        stops=(),
-        setups=(),
-        updates=(),
-        cleanups=(),
-        teardowns=(),
-        config: ToolsetConfig | Mapping[str, object] | None = None,
+        sandbox: SandboxConfig | Literal["program"] | None = None,
+        stops=None,
+        setups=None,
+        updates=None,
+        cleanups=None,
+        teardowns=None,
+        config: ToolsetConfig | None = None,
     ): ...
 
 class MCPTool:
@@ -1010,7 +1022,6 @@ class EnvConfig(Config):
 class TasksetConfig(Config):
     taskset_id: str | None = None
     system_prompt: object | None = None
-    tasks: str | None = None
     user: object | None = None
 
 class HarnessConfig(Config):

@@ -175,6 +175,8 @@ async def test_openenv_taskset_runs_gym_rollout_boundary(
     await env.harness.runtime.setup_rollout(task, state)
 
     assert state["prompt"] == [vf.UserMessage(content="seed-7")]
+    assert "openenv_client" not in state
+    assert "openenv_action_schema" not in state
     client = FakeGenericEnvClient.instances[0]
     assert client.connected is True
     assert client.reset_seeds == [7]
@@ -213,6 +215,8 @@ async def test_openenv_taskset_exposes_mcp_tools(tmp_path, fake_openenv_runtime)
 
     assert state["prompt"] == [vf.UserMessage(content="mcp-9")]
     assert state["tools"] == ["echo"]
+    assert "openenv_client" not in state
+    assert "openenv_action_schema" not in state
     client = FakeMCPToolClient.instances[0]
     state["trajectory"].append({"reward": None})
     tool = cast(

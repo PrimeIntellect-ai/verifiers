@@ -258,8 +258,9 @@ def load_env_config(
         else:
             child_types[field_name] = field_type
 
+    data: dict[str, object]
     if isinstance(value, config_type):
-        data = explicit_config_data(value)
+        data = dict(explicit_config_data(value))
     elif isinstance(value, BaseModel):
         raise TypeError(
             f"load_environment config must be {config_type.__name__}; "
@@ -268,7 +269,7 @@ def load_env_config(
     elif not isinstance(value, Mapping):
         raise TypeError("load_environment config must be a mapping or EnvConfig.")
     else:
-        data = explicit_config_data(value)
+        data = dict(explicit_config_data(value))
     defaults: EnvConfig | None = None
     for field_name, child_type in child_types.items():
         if field_name not in data:

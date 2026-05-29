@@ -3,27 +3,70 @@ from typing import Any, cast
 import pytest
 
 
-def test_wordle_format_observation_extracts_latest_feedback():
+@pytest.mark.asyncio
+async def test_wordle_user_extracts_latest_feedback(monkeypatch):
     from environments.wordle_v1 import wordle_v1
+    from tasksets import textarena
+    import verifiers as vf
 
-    taskset = wordle_v1.WordleTaskset.__new__(wordle_v1.WordleTaskset)
-    assert (
-        taskset._format_observation("intro [GAME] Feedback:\nmiss\nY----\ntry again")
-        == "\nmiss\nY----\ntry again"
-    )
+    class FakeTextArenaState:
+        def __init__(self):
+            self.game_state: dict[str, str] = {}
+            self.done = False
+            self.game_info: dict[int, dict[str, str]] = {}
+
+    class FakeTextArenaEnv:
+        def __init__(self):
+            self.state = FakeTextArenaState()
+
+        def reset(self, num_players: int):
+            assert num_players == 1
+
+        def step(self, guess: str):
+            assert guess == "[berry]"
+
+        def get_observation(self):
+            return 0, "intro [GAME] Feedback:\nmiss\nY----\ntry again"
+
+    class FakeTextArenaModule:
+        Env = FakeTextArenaEnv
+
+        def make(self, env_id: str):
+            assert env_id == "Wordle-v0"
+            return FakeTextArenaEnv()
+
+    monkeypatch.setattr(textarena, "ta", FakeTextArenaModule())
+    task = vf.Task(
+        {
+            "answer": "apple",
+            "textarena": {"game": "Wordle-v0", "answer_state_key": "secret_word"},
+        }
+    ).freeze()
+    state = vf.State.for_task(task)
+    state["completion"] = [vf.AssistantMessage(content="<guess>[berry]</guess>")]
+
+    taskset = wordle_v1.WordleTaskset(config=wordle_v1.WordleTasksetConfig())
+    env = vf.Env(taskset=taskset)
+    state = await env.harness.setup_state(task, state)
+    response = await env.harness.runtime.user_messages(task, state)
+
+    assert response == [vf.UserMessage(content="\nmiss\nY----\ntry again")]
 
 
-def test_wordle_load_taskset_requires_wordle_config():
+def test_wordle_load_environment_requires_wordle_config():
     from environments.wordle_v1 import wordle_v1
     from tasksets.textarena import TextArenaTasksetConfig
+    import verifiers as vf
 
     with pytest.raises(AssertionError):
-        wordle_v1.load_taskset(
-            cast(
-                Any,
-                TextArenaTasksetConfig(
-                    game="Wordle-v0", answer_state_key="secret_word"
-                ),
+        wordle_v1.load_environment(
+            vf.EnvConfig(
+                taskset=cast(
+                    Any,
+                    TextArenaTasksetConfig(
+                        game="Wordle-v0", answer_state_key="secret_word"
+                    ),
+                )
             )
         )
 
@@ -34,43 +77,40 @@ def test_wordle_taskset_uses_textarena_loaders():
     taskset = wordle_v1.WordleTaskset(config=wordle_v1.WordleTasksetConfig())
 
     assert callable(taskset.load_tasks)
+    assert isinstance(taskset.user, wordle_v1.WordleUser)
 
 
-def test_wordle_v1_load_taskset_reads_system_prompt_path(tmp_path, monkeypatch):
+def test_wordle_v1_load_taskset_reads_system_prompt_path(tmp_path):
     from environments.wordle_v1 import wordle_v1
-
-    class CapturingWordleTaskset:
-        def __init__(self, config):
-            self.config = config
+    import verifiers as vf
 
     prompt = "Optimized Wordle prompt.\n\nPreserve exact text.\n"
     prompt_path = tmp_path / "system_prompt.txt"
     prompt_path.write_text(prompt, encoding="utf-8")
-    monkeypatch.setattr(wordle_v1, "WordleTaskset", CapturingWordleTaskset)
 
     taskset = wordle_v1.load_taskset(
-        wordle_v1.WordleTasksetConfig(path_to_system_prompt=str(prompt_path))
+        wordle_v1.WordleTasksetConfig(
+            system_prompt=vf.SystemPromptConfig(path=str(prompt_path))
+        )
     )
 
-    assert taskset.config.system_prompt == prompt
+    assert taskset.system_prompt == [{"role": "system", "content": prompt}]
     assert taskset.config.game == "Wordle-v0"
     assert taskset.config.answer_state_key == "secret_word"
 
 
-def test_wordle_v1_load_taskset_rejects_empty_system_prompt_path(tmp_path, monkeypatch):
+def test_wordle_v1_load_taskset_rejects_empty_system_prompt_path(tmp_path):
     from environments.wordle_v1 import wordle_v1
-
-    class CapturingWordleTaskset:
-        def __init__(self, config):
-            self.config = config
+    import verifiers as vf
 
     prompt_path = tmp_path / "system_prompt.txt"
     prompt_path.write_text("", encoding="utf-8")
-    monkeypatch.setattr(wordle_v1, "WordleTaskset", CapturingWordleTaskset)
 
     with pytest.raises(ValueError, match="must not be empty"):
         wordle_v1.load_taskset(
-            wordle_v1.WordleTasksetConfig(path_to_system_prompt=str(prompt_path))
+            wordle_v1.WordleTasksetConfig(
+                system_prompt=vf.SystemPromptConfig(path=str(prompt_path))
+            )
         )
 
 

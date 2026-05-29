@@ -2,7 +2,6 @@ import shlex
 from pathlib import PurePosixPath
 
 import verifiers as vf
-from pydantic import model_validator
 from verifiers.v1.utils.sandbox_python_utils import python_runtime_setup_command
 
 DEFAULT_INSTALL_DIR = "/opt/mini-swe-agent"
@@ -30,18 +29,18 @@ def build_mini_swe_agent_install_script(
     prefix_dir: str = DEFAULT_PREFIX_DIR,
 ) -> str:
     install_dir = str(PurePosixPath(prefix_dir).parent)
-    site_packages_dir = f"{prefix_dir}/site-packages"
-    setup_prefix_dir = shlex.quote(prefix_dir)
-    setup_site_packages_dir = f"{prefix_dir}/site-packages"
+    site_packages_dir = f"{prefix_dir.rstrip('/')}/site-packages"
     wheel_filename = f"mini_swe_agent-{package_version}-py3-none-any.whl"
     wheel_url = (
         f"https://files.pythonhosted.org/packages/py3/m/mini-swe-agent/{wheel_filename}"
     )
+    setup_prefix_dir = shlex.quote(prefix_dir)
+    setup_site_packages_dir = shlex.quote(site_packages_dir)
     return f"""\
 set -e
 {python_runtime_setup_command()}
 rm -rf {setup_prefix_dir}
-mkdir -p {shlex.quote(install_dir)} {setup_prefix_dir}/bin {shlex.quote(site_packages_dir)} {shlex.quote(DEFAULT_LOG_DIR)} /mini-swe-agent
+mkdir -p {shlex.quote(install_dir)} {setup_prefix_dir}/bin {setup_site_packages_dir} {shlex.quote(DEFAULT_LOG_DIR)} /mini-swe-agent
 MINI_SWE_AGENT_WHEEL_DIR="$(mktemp -d)"
 trap 'rm -rf "$MINI_SWE_AGENT_WHEEL_DIR"' EXIT
 MINI_SWE_AGENT_WHEEL="$MINI_SWE_AGENT_WHEEL_DIR/{wheel_filename}"
@@ -49,11 +48,11 @@ MINI_SWE_AGENT_WHEEL_URL={shlex.quote(wheel_url)}
 export MINI_SWE_AGENT_WHEEL MINI_SWE_AGENT_WHEEL_URL
 "$VF_PYTHON" -c 'import os, urllib.request; urllib.request.urlretrieve(os.environ["MINI_SWE_AGENT_WHEEL_URL"], os.environ["MINI_SWE_AGENT_WHEEL"])'
 echo "{package_sha256}  $MINI_SWE_AGENT_WHEEL" | sha256sum -c -
-vf_python_install --target {shlex.quote(setup_site_packages_dir)} "$MINI_SWE_AGENT_WHEEL"
+vf_python_install --target {setup_site_packages_dir} "$MINI_SWE_AGENT_WHEEL"
 echo "$VF_PYTHON" > {setup_prefix_dir}/python
 cat > {setup_prefix_dir}/bin/mini <<'EOF'
 #!/usr/bin/env sh
-export PYTHONPATH={shlex.quote(setup_site_packages_dir)}:${{PYTHONPATH:-}}
+export PYTHONPATH={setup_site_packages_dir}:${{PYTHONPATH:-}}
 exec "$(cat {setup_prefix_dir}/python)" -m minisweagent.run.mini "$@"
 EOF
 chmod +x {setup_prefix_dir}/bin/mini
@@ -61,7 +60,7 @@ test -x {setup_prefix_dir}/bin/mini
 """
 
 
-class MiniSWEAgentConfig(vf.HarnessConfig):
+class MiniSWEAgentProgramConfig(vf.ProgramConfig):
     agent_workdir: str = MINI_SWE_AGENT_DEFAULT_AGENT_WORKDIR
     instruction_path: str = MINI_SWE_AGENT_DEFAULT_INSTRUCTION_PATH
     system_prompt_path: str = MINI_SWE_AGENT_DEFAULT_SYSTEM_PROMPT_PATH
@@ -73,79 +72,62 @@ class MiniSWEAgentConfig(vf.HarnessConfig):
     model_class: str = MINI_SWE_AGENT_DEFAULT_MODEL_CLASS
     environment_timeout: int = MINI_SWE_AGENT_DEFAULT_ENVIRONMENT_TIMEOUT
     extra_config_specs: list[str] | None = None
-    system_prompt: vf.PromptInput | None = None
     sandbox: vf.SandboxConfig | None = vf.SandboxConfig()
-    max_turns: int = 4
 
-    @model_validator(mode="after")
-    def configure_program(self) -> "MiniSWEAgentConfig":
-        if self.program.command is not None and "program" not in self.model_fields_set:
-            return self
-        config = self
+    def resolve(self) -> vf.ProgramConfig:
         files: dict[str, vf.ProgramValue] = {
-            config.instruction_path: {
-                "fn": "verifiers.v1.utils.prompt_utils:task_text"
-            },
-        }
-        if config.system_prompt is not None:
-            files[config.system_prompt_path] = {
+            self.instruction_path: {"fn": "verifiers.v1.utils.prompt_utils:task_text"},
+            self.system_prompt_path: {
                 "fn": "verifiers.v1.utils.prompt_utils:state_system_prompt_text"
-            }
-        artifacts: dict[str, vf.ProgramValue] = {
-            "mini_swe_agent_log": {
-                "path": config.log_path,
-                "format": "text",
-                "optional": True,
-            },
-            "mini_swe_agent_trajectory": {
-                "path": config.trajectory_path,
-                "format": "json",
-                "optional": True,
             },
         }
-        if config.agent_workdir == MINI_SWE_AGENT_DEFAULT_AGENT_WORKDIR:
+        artifacts = vf.ArtifactsConfig.model_validate(
+            {
+                "mini_swe_agent_log": {
+                    "path": self.log_path,
+                    "format": "text",
+                    "optional": True,
+                },
+                "mini_swe_agent_trajectory": {
+                    "path": self.trajectory_path,
+                    "format": "json",
+                    "optional": True,
+                },
+            }
+        )
+        if self.agent_workdir == MINI_SWE_AGENT_DEFAULT_AGENT_WORKDIR:
             workdir_assignment = (
                 f"MINI_SWE_AGENT_WORKDIR={MINI_SWE_AGENT_DEFAULT_AGENT_WORKDIR}"
             )
         else:
             workdir_assignment = (
-                f"MINI_SWE_AGENT_WORKDIR={shlex.quote(config.agent_workdir)}"
+                f"MINI_SWE_AGENT_WORKDIR={shlex.quote(self.agent_workdir)}"
             )
 
         config_args = [
             "-c",
-            shlex.quote(config.config_spec),
+            shlex.quote(self.config_spec),
             "-c",
             "agent.cost_limit=0",
             "-c",
-            f"environment.timeout={config.environment_timeout}",
+            f"environment.timeout={self.environment_timeout}",
             "-c",
-            f"model.model_class={shlex.quote(config.model_class)}",
+            f"model.model_class={shlex.quote(self.model_class)}",
             "-c",
             "model.cost_tracking=ignore_errors",
             "-c",
             "model.model_kwargs.custom_llm_provider=openai",
         ]
-        for spec in config.extra_config_specs or []:
+        for spec in self.extra_config_specs or []:
             config_args.extend(["-c", shlex.quote(spec)])
 
         setup = build_mini_swe_agent_install_script(
-            package_version=config.package_version,
-            package_sha256=config.package_sha256,
-            prefix_dir=DEFAULT_PREFIX_DIR,
+            package_version=self.package_version,
+            package_sha256=self.package_sha256,
         )
-        log_dir = str(PurePosixPath(config.log_path).parent)
-        trajectory_dir = str(PurePosixPath(config.trajectory_path).parent)
-        system_prompt_path = (
-            config.system_prompt_path if config.system_prompt is not None else None
-        )
-        system_prompt_block = ""
-        if system_prompt_path is not None:
-            system_prompt_block = f"""\
-if [ -s {shlex.quote(system_prompt_path)} ]; then
-  CONFIG_ARGS+=(-c "agent.system_template=$(cat {shlex.quote(system_prompt_path)})")
-fi
-"""
+        log_dir = str(PurePosixPath(self.log_path).parent)
+        trajectory_dir = str(PurePosixPath(self.trajectory_path).parent)
+        system_prompt_path = shlex.quote(self.system_prompt_path)
         script = f"""\
 set -eo pipefail
 export PATH={shlex.quote(DEFAULT_PREFIX_DIR)}/bin:"$PATH"
@@ -158,30 +140,34 @@ export OPENAI_API_KEY="${{OPENAI_API_KEY:-intercepted}}"
 {workdir_assignment}
 mkdir -p {shlex.quote(log_dir)} {shlex.quote(trajectory_dir)} "$MINI_SWE_AGENT_WORKDIR" "$MSWEA_GLOBAL_CONFIG_DIR"
 
-MINI_SWE_AGENT_TASK="$(cat {shlex.quote(config.instruction_path)})"
+MINI_SWE_AGENT_TASK="$(cat {shlex.quote(self.instruction_path)})"
 CONFIG_ARGS=({" ".join(config_args)})
 CONFIG_ARGS+=(-c "environment.cwd=$MINI_SWE_AGENT_WORKDIR")
-{system_prompt_block}
+if [ -s {system_prompt_path} ]; then
+  CONFIG_ARGS+=(-c "agent.system_template=$(cat {system_prompt_path})")
+fi
 cd "$MINI_SWE_AGENT_WORKDIR"
 timeout --kill-after=30s "${{AGENT_TIMEOUT_SECONDS:-3600}}" {shlex.quote(DEFAULT_MINI_BINARY)} \\
   --model "$OPENAI_MODEL" \\
   --task "$MINI_SWE_AGENT_TASK" \\
-  --output {shlex.quote(config.trajectory_path)} \\
+  --output {shlex.quote(self.trajectory_path)} \\
   --exit-immediately \\
   --yolo \\
-  "${{CONFIG_ARGS[@]}}" 2>&1 | tee -a {shlex.quote(config.log_path)}
+  "${{CONFIG_ARGS[@]}}" 2>&1 | tee -a {shlex.quote(self.log_path)}
 """
-        self.program = vf.ProgramConfig.from_command(
+        return self.resolve_command(
             command=["bash", "-lc", script],
-            program=config.program,
-            default_sandbox=config.sandbox,
+            default_sandbox=self.sandbox,
             files=files,
             setup=setup,
             env={"OPENAI_MODEL": "runtime.model"},
             artifacts=artifacts,
         )
-        self.model_fields_set.discard("program")
-        return self
+
+
+class MiniSWEAgentConfig(vf.HarnessConfig):
+    program: MiniSWEAgentProgramConfig = MiniSWEAgentProgramConfig()
+    max_turns: int = 4
 
 
 class MiniSWEAgent(vf.Harness[MiniSWEAgentConfig]):

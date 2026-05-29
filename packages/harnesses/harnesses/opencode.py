@@ -3,7 +3,6 @@ import shlex
 from pathlib import PurePosixPath
 
 import verifiers as vf
-from pydantic import model_validator
 from verifiers.v1.utils.mcp_proxy_utils import proxy_command
 
 OPENCODE_DEFAULT_RELEASE_REPO = "PrimeIntellect-ai/opencode"
@@ -45,12 +44,11 @@ OPENCODE_DEFAULT_DISABLED_TOOLS = [
 ]
 
 
-class OpenCodeConfig(vf.HarnessConfig):
+class OpenCodeProgramConfig(vf.ProgramConfig):
     agent_workdir: str = OPENCODE_DEFAULT_AGENT_WORKDIR
     instruction_path: str = OPENCODE_DEFAULT_INSTRUCTION_PATH
     system_prompt_path: str = OPENCODE_DEFAULT_SYSTEM_PROMPT_PATH
     log_path: str = OPENCODE_DEFAULT_LOG_PATH
-    system_prompt: vf.PromptInput | None = OPENCODE_DEFAULT_SYSTEM_PROMPT
     disabled_tools: list[str] = OPENCODE_DEFAULT_DISABLED_TOOLS
     allow_git: bool = False
     disable_compaction: bool = True
@@ -59,35 +57,31 @@ class OpenCodeConfig(vf.HarnessConfig):
     release_sha256: str = OPENCODE_DEFAULT_RELEASE_SHA256
     install_ripgrep: bool = True
     provider_timeout_ms: int = 3_600_000
-    max_turns: int = 4
 
-    @model_validator(mode="after")
-    def configure_program(self) -> "OpenCodeConfig":
-        if self.program.command is not None and "program" not in self.model_fields_set:
-            return self
-        harness_config = self
+    def resolve(self) -> vf.ProgramConfig:
         files: dict[str, vf.ProgramValue] = {
-            harness_config.instruction_path: {
-                "fn": "verifiers.v1.utils.prompt_utils:task_text"
+            self.instruction_path: {"fn": "verifiers.v1.utils.prompt_utils:task_text"},
+            self.system_prompt_path: {
+                "fn": "verifiers.v1.utils.prompt_utils:state_system_prompt_text"
             },
         }
-        if harness_config.system_prompt is not None:
-            files[harness_config.system_prompt_path] = {
-                "fn": "verifiers.v1.utils.prompt_utils:state_system_prompt_text"
+        artifacts = vf.ArtifactsConfig.model_validate(
+            {
+                "opencode_log": {
+                    "path": self.log_path,
+                    "format": "text",
+                    "optional": True,
+                }
             }
-        artifacts: dict[str, vf.ProgramValue] = {
-            "opencode_log": {
-                "path": harness_config.log_path,
-                "format": "text",
-                "optional": True,
-            }
-        }
+        )
         rg_install = (
             "apt-get -o Acquire::Retries=3 install -y -qq ripgrep > /dev/null 2>&1 || true"
-            if harness_config.install_ripgrep
+            if self.install_ripgrep
             else ""
         )
-        sha256_check = f'echo "{harness_config.release_sha256}  /tmp/opencode.tar.gz" | sha256sum -c -'
+        sha256_check = (
+            f'echo "{self.release_sha256}  /tmp/opencode.tar.gz" | sha256sum -c -'
+        )
         # Acquire::Retries=3 mitigates transient archive.ubuntu.com CDN sync
         # mismatches that fail fresh-sandbox apt-get calls mid-rollout.
         setup = f"""\
@@ -95,8 +89,8 @@ set -e
 apt-get -o Acquire::Retries=3 update -qq && apt-get -o Acquire::Retries=3 install -y -qq curl tar ca-certificates > /dev/null 2>&1
 {rg_install}
 
-OPENCODE_RELEASE_REPO={shlex.quote(harness_config.release_repo)}
-OPENCODE_RELEASE_VERSION={shlex.quote(harness_config.release_version)}
+OPENCODE_RELEASE_REPO={shlex.quote(self.release_repo)}
+OPENCODE_RELEASE_VERSION={shlex.quote(self.release_version)}
 
 case "$(uname -m)" in
   x86_64) OPENCODE_ARCH=x64 ;;
@@ -131,7 +125,7 @@ fi
                     "options": {
                         "baseURL": "$OPENAI_BASE_URL",
                         "apiKey": "${OPENAI_API_KEY:-intercepted}",
-                        "timeout": harness_config.provider_timeout_ms,
+                        "timeout": self.provider_timeout_ms,
                     },
                     "models": {
                         "model": {
@@ -154,31 +148,24 @@ fi
                 }
             },
         }
-        if harness_config.disable_compaction:
+        if self.disable_compaction:
             opencode_config["compaction"] = {"auto": False, "prune": False}
-        build_config: vf.ConfigData = {}
-        system_prompt_path = (
-            harness_config.system_prompt_path
-            if harness_config.system_prompt is not None
-            else None
-        )
-        if system_prompt_path is not None:
-            build_config["prompt"] = "{file:" + system_prompt_path + "}"
-        if harness_config.disabled_tools:
-            build_config["tools"] = {
-                tool: False for tool in harness_config.disabled_tools
-            }
+        build_config: vf.ConfigData = {
+            "prompt": "{file:" + self.system_prompt_path + "}"
+        }
+        if self.disabled_tools:
+            build_config["tools"] = {tool: False for tool in self.disabled_tools}
         if build_config:
             agent_config["build"] = build_config
         config_json = json.dumps(opencode_config, indent=2)
-        log_dir = str(PurePosixPath(harness_config.log_path).parent)
+        log_dir = str(PurePosixPath(self.log_path).parent)
         mcp_setup = f"""\
 set -e
 export PATH="$HOME/.opencode/bin:$PATH"
 
 OPENCODE_WORKDIR="${{AGENT_WORKDIR:-}}"
 if [ -z "$OPENCODE_WORKDIR" ]; then
-    OPENCODE_WORKDIR={shlex.quote(harness_config.agent_workdir)}
+    OPENCODE_WORKDIR={shlex.quote(self.agent_workdir)}
 fi
 
 mkdir -p ~/.config/opencode {shlex.quote(log_dir)} "$OPENCODE_WORKDIR"
@@ -191,27 +178,31 @@ EOFCONFIG
 set -eo pipefail
 export PATH="$HOME/.opencode/bin:$PATH"
 export OPENCODE_DISABLE_FILETIME_CHECK=true
-export ALLOW_GIT={"1" if harness_config.allow_git else "0"}
+export ALLOW_GIT={"1" if self.allow_git else "0"}
 
 OPENCODE_WORKDIR="${{AGENT_WORKDIR:-}}"
 if [ -z "$OPENCODE_WORKDIR" ]; then
-    OPENCODE_WORKDIR={shlex.quote(harness_config.agent_workdir)}
+    OPENCODE_WORKDIR={shlex.quote(self.agent_workdir)}
 fi
 
 cd "$OPENCODE_WORKDIR"
-cat {shlex.quote(harness_config.instruction_path)} | opencode run 2>&1 | tee {shlex.quote(harness_config.log_path)}
+cat {shlex.quote(self.instruction_path)} | opencode run 2>&1 | tee {shlex.quote(self.log_path)}
 """
-        self.program = vf.ProgramConfig.from_command(
+        return self.resolve_command(
             command=["bash", "-lc", run_script],
-            program=harness_config.program,
-            default_sandbox=harness_config.sandbox,
             files=files,
             setup=setup,
             artifacts=artifacts,
             channels={"mcp": mcp_setup},
         )
-        self.model_fields_set.discard("program")
-        return self
+
+
+class OpenCodeConfig(vf.HarnessConfig):
+    system_prompt: vf.PromptInput | vf.SystemPromptConfig | None = (
+        OPENCODE_DEFAULT_SYSTEM_PROMPT
+    )
+    program: OpenCodeProgramConfig = OpenCodeProgramConfig()
+    max_turns: int = 4
 
 
 class OpenCode(vf.Harness[OpenCodeConfig]):

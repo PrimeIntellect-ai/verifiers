@@ -1,7 +1,6 @@
 import importlib
 import sys
 from collections.abc import Iterator
-from collections.abc import Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import TypeVar, cast, get_args, get_origin, get_type_hints
@@ -9,7 +8,7 @@ from typing import TypeVar, cast, get_args, get_origin, get_type_hints
 from pydantic import BaseModel
 from pydantic_core import PydanticUndefined
 
-from ..types import ConfigData, ConfigInputMap
+from ..types import ConfigData, ConfigValue
 
 ConfigT = TypeVar("ConfigT", bound=BaseModel)
 ConfigOwner = type[object]
@@ -17,6 +16,7 @@ config_type_registry: dict[ConfigOwner, type[BaseModel]] = {}
 FRAMEWORK_CONFIG_MODULES = {
     "verifiers.v1.config",
     "verifiers.v1.env",
+    "verifiers.v1.artifact",
     "verifiers.v1.harness",
     "verifiers.v1.model",
     "verifiers.v1.program",
@@ -41,8 +41,8 @@ def explicit_config_data(
             data = {
                 key: item for key, item in data.items() if key in target.model_fields
             }
-    elif isinstance(value, Mapping):
-        data = string_mapping(cast(ConfigInputMap, value))
+    elif isinstance(value, dict):
+        data = string_mapping(value)
     else:
         raise TypeError("Config must be a mapping or config object.")
     return data
@@ -178,8 +178,8 @@ def resolved_config_data(
             data = {
                 key: item for key, item in data.items() if key in target.model_fields
             }
-    elif isinstance(value, Mapping):
-        data = string_mapping(cast(ConfigInputMap, value))
+    elif isinstance(value, dict):
+        data = string_mapping(value)
     else:
         raise TypeError("Config must be a mapping or config object.")
     return data
@@ -190,20 +190,23 @@ def explicit_model_config_data(value: BaseModel) -> ConfigData:
     for key in value.model_fields_set:
         item = getattr(value, key)
         data[key] = config_dump_value(item)
+    for key, item in (value.model_extra or {}).items():
+        if not isinstance(key, str):
+            raise TypeError("Config extra keys must be strings.")
+        data[key] = config_dump_value(item)
     return data
 
 
-def config_dump_value(value: object) -> object:
+def config_dump_value(value: object) -> ConfigValue:
     if isinstance(value, BaseModel):
         return explicit_model_config_data(value)
-    if isinstance(value, Mapping):
+    if isinstance(value, dict):
         return {
-            key: config_dump_value(item)
-            for key, item in string_mapping(cast(ConfigInputMap, value)).items()
+            key: config_dump_value(item) for key, item in string_mapping(value).items()
         }
     if isinstance(value, list | tuple):
         return [config_dump_value(item) for item in value]
-    return value
+    return cast(ConfigValue, value)
 
 
 def resolve_config_object(value: object) -> object:
@@ -265,12 +268,12 @@ def config_ref_module(config: object) -> str | None:
     return None
 
 
-def string_mapping(value: ConfigInputMap) -> ConfigData:
+def string_mapping(value: dict) -> ConfigData:
     result: ConfigData = {}
     for key, item in value.items():
         if not isinstance(key, str):
             raise TypeError("Config mappings require string keys.")
-        result[key] = item
+        result[key] = cast(ConfigValue, item)
     return result
 
 

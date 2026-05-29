@@ -15,7 +15,7 @@ nested sub-harness workflow. For simple one-off environments, the core
 
 v1 environments are composed from:
 
-- `Taskset`: task rows, task-owned tools, user behavior, metrics, rewards, and
+- `Taskset`: tasks, task-owned tools, user behavior, metrics, rewards, and
   cleanup;
 - `Harness`: rollout behavior, model endpoint forwarding, program execution,
   harness-owned tools, sandboxes, and nested harness calls;
@@ -42,7 +42,7 @@ class ReverseTasksetConfig(vf.TasksetConfig):
 
 class ReverseTaskset(vf.Taskset[ReverseTasksetConfig]):
     def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
-        rows = [
+        records = [
             {
                 "system_prompt": "Reverse text exactly.",
                 "prompt": [{"role": "user", "content": "Reverse abc."}],
@@ -51,7 +51,7 @@ class ReverseTaskset(vf.Taskset[ReverseTasksetConfig]):
                 "max_turns": 1,
             }
         ]
-        return [row for row in rows if row["split"] == self.config.split]
+        return [record for record in records if record["split"] == self.config.split]
 
     @vf.reward(weight=1.0)
     async def contains_answer(self, task, state) -> float:
@@ -63,15 +63,19 @@ def load_taskset(config: ReverseTasksetConfig) -> ReverseTaskset:
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
+    taskset_config = config.taskset
+    harness_config = config.harness
+    assert isinstance(taskset_config, ReverseTasksetConfig)
+    assert isinstance(harness_config, vf.HarnessConfig)
     return vf.Env(
-        taskset=vf.load_taskset(config=config.taskset),
-        harness=vf.Harness(config=config.harness),
+        taskset=load_taskset(taskset_config),
+        harness=vf.Harness(config=harness_config),
     )
 ```
 
 ## Tasksets
 
-Tasksets own row loading through `load_tasks(split="train" | "eval")`.
+Tasksets own task loading through `load_tasks(split="train" | "eval")`.
 Config should hold user-facing knobs, such as dataset name, split, or size
 limits; taskset methods read those knobs from `self.config` and return
 `vf.Tasks`.
@@ -107,8 +111,8 @@ def load_taskset(config: GSM8KTasksetConfig) -> GSM8KTaskset:
     return GSM8KTaskset(config=config)
 ```
 
-Rows are JSON-serializable mappings. The base taskset normalizes each row into a
-stable task payload for eval and training workers.
+Task loader records are JSON-serializable mappings. The base taskset normalizes
+each record into a stable task payload for eval and training workers.
 
 Do not use a top-level string `task` field for routing. v1 tasksets serialize
 the full task payload through `info["task"]` for worker compatibility, and
@@ -216,6 +220,7 @@ Tasks can request rollout behavior through top-level serializable fields:
 - `tools`: toolset-keyed tool visibility as `{"wiki": {"show": [...]}}`;
 - `toolsets`: toolset visibility as `{"show": [...]}` or `{"hide": [...]}`;
 - `sandbox`: per-task overrides for a sandboxed program;
+- `artifacts`: per-task text/JSON files collected after program execution;
 - `program`: per-task files, dirs, env, setup, artifacts, bindings, and command
   args.
 
@@ -335,6 +340,10 @@ class FetchTaskset(vf.Taskset[FetchTasksetConfig]):
         ]
 
 
+def load_taskset(config: FetchTasksetConfig) -> FetchTaskset:
+    return FetchTaskset(config=config)
+
+
 taskset = FetchTaskset(config=FetchTasksetConfig())
 ```
 
@@ -357,15 +366,14 @@ def load_harness(config: AgentHarnessConfig) -> AgentHarness:
     return AgentHarness(config=config)
 
 
-class AgentEnvConfig(vf.EnvConfig):
-    taskset: FetchTasksetConfig = FetchTasksetConfig()
-    harness: AgentHarnessConfig = AgentHarnessConfig()
-
-
-def load_environment(config: AgentEnvConfig) -> vf.Env:
+def load_environment(config: vf.EnvConfig) -> vf.Env:
+    taskset_config = config.taskset
+    harness_config = config.harness
+    assert isinstance(taskset_config, FetchTasksetConfig)
+    assert isinstance(harness_config, AgentHarnessConfig)
     return vf.Env(
-        taskset=vf.Taskset(config=config.taskset),
-        harness=load_harness(config.harness),
+        taskset=load_taskset(taskset_config),
+        harness=load_harness(harness_config),
     )
 ```
 
@@ -484,34 +492,43 @@ taskset owns Harbor task loading, sandbox overrides, task uploads, and test
 scoring.
 
 `TextArenaTaskset(config=TextArenaTasksetConfig(...))` wraps compatible
-TextArena single-player text games as v1 task rows plus a taskset-owned
-`vf.User`. The reusable taskset owns TextArena lifecycle, answer injection, row
+TextArena single-player text games as v1 tasks plus a taskset-owned
+`vf.User`. The reusable taskset owns TextArena lifecycle, answer injection, task
 sampling, and `<guess>...</guess>` parsing. Environment packages own
 task-specific defaults such as `game`, `answer_state_key`, `system_prompt`,
-observation formatting, and rewards.
+the paired `vf.User` subclass that shapes TextArena observations into user
+messages, and rewards.
 
 CLI harnesses own CLI installation/config/run behavior and work with any
 taskset that supplies a prompt.
 Their typed config fields generate the command, channels, and sandbox
-placement. `config.program` is an extension patch for `files`, `dirs`, `setup`,
+placement. Implement `ProgramConfig.resolve(...)` with
+`self.resolve_command(command=..., ...)` so the subclass resolves itself into
+one canonical command `ProgramConfig`. `config.program` is an extension patch for `files`, `dirs`, `setup`,
 `setup_timeout`, `bindings`, `env`, `artifacts`, and `args`; it cannot replace
 the command, channel wiring, or sandbox placement owned by the harness type.
 Mapping patches override harness defaults for the same key, while `setup` and
-`args` append after the harness defaults. Task rows can still add
-`task.program` values, but task rows cannot change harness-owned command
+`args` append after the harness defaults. Tasks can still add
+`task.program` values, but tasks cannot change harness-owned command
 behavior and duplicate upload/env/artifact/binding keys fail.
+Artifacts can also live directly on taskset, harness, user, toolset, program, or
+task configs when they are owned by that surface rather than a task program
+patch. User and toolset artifacts read from the owner's active sandbox when
+that owner has one; otherwise artifacts read from the active program sandbox
+when present, then from the local filesystem.
 Tasksets can expose package-owned upload directories with `get_upload_dirs()`.
 The base `Taskset` discovers a sibling `skills/` directory by default, and
 `RLM` uploads that directory to `/task/rlm-skills` unless `skills=` is passed
 explicitly to the harness. RLM also registers v1 rollout tools as generated
-skills in the same directory during setup. Generated skills run simple callable
-tools inside the RLM sandbox by default; tools that need verifier runtime state,
-toolset bindings, tool sandboxes, MCP sessions, borrowed handles, or other
-nonlocal resources fall back to `/vf/tools`. Explicit or taskset skill
+skills in the same directory during setup. Generated skills always call back
+through `/vf/tools`, so verifier runtime state, toolset bindings, tool
+sandboxes, MCP sessions, borrowed handles, and schema-backed handlers use the
+same routing path as ordinary v1 tool calls. Explicit or taskset skill
 directories take precedence and generated tool skills get a suffixed name when
 there is a collision.
-Use `RLMConfig` in `env.harness` for RLM-specific settings such as
-`rlm_repo_ref`, `rlm_tools`, `rlm_max_turns`, and `summarize_at_tokens`.
+Use `RLMConfig` in `env.harness`; put RLM program settings such as
+`rlm_tools`, `rlm_max_turns`, `summarize_at_tokens`, and `local_checkout` in
+`env.harness.program` / `RLMProgramConfig`.
 
 ## Setup, Updates, Signals, And Cleanup
 
@@ -681,7 +698,7 @@ taskset upload directory contract or the harness config. If a skill runner needs
 Python packages in the sandbox, declare them through the sandbox package/setup
 path instead of baking MCP proxy setup into the skill.
 
-The implementation details for TOML refs, toolset tables, row loading, program
+The implementation details for TOML refs, toolset tables, task loading, program
 bindings, and custom config subclasses are in
 `verifiers/v1/README.md`.
 
