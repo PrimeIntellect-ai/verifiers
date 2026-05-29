@@ -23,6 +23,7 @@ This folder contains installable example environments that showcase common usage
 - **sentence_repeater**: Multi-turn Q/A over a paragraph; rewards compare assistant messages to expected answers.
 - **wordle**: Game-style interaction via `TextArenaEnv`; multiple rewards (correctness, partial credit, few-turn bonus) and XML formatting.
 - **wordle_v1**: Wordle on the reusable v1 `TextArenaTaskset`, with Wordle-specific prompt, feedback, and rewards kept in the environment package.
+- **nyt_connections**: NYT Connections multi-turn word puzzle implemented as a v1 Taskset with a stateful user function and progress/format rewards.
 - **openenv_echo**: OpenEnv MCP integration example using upstream `echo_env`.
 - **openenv_textarena**: OpenEnv gym integration example using upstream `textarena_env` (default `Wordle-v0`).
 
