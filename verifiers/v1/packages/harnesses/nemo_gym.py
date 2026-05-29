@@ -238,7 +238,7 @@ class PersistentNeMoGymRunner:
             )
         except ImportError as exc:
             raise ImportError(
-                "NeMoGymHarness requires nemo-gym. Install with: uv add nemo-gym"
+                "NeMoGymHarness requires nemo-gym. Install as `verifiers[nemogym]`."
             ) from exc
 
         proxy = await self._ensure_proxy()

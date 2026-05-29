@@ -12,7 +12,7 @@ def nemo_gym_package_root() -> Path:
         from nemo_gym import PARENT_DIR as nemo_gym_root  # ty: ignore[unresolved-import]
     except ImportError as exc:
         raise ImportError(
-            "NeMo Gym integration requires nemo-gym. Install with: uv add nemo-gym"
+            "NeMo Gym integration requires nemo-gym. Install as `verifiers[nemogym]`."
         ) from exc
     return Path(nemo_gym_root)
 
@@ -61,7 +61,7 @@ def infer_nemo_gym_agent_from_config(config_path: str | Path) -> tuple[str, str]
     except ImportError as exc:
         raise ImportError(
             "NeMo Gym config inference requires omegaconf. "
-            "Install with: uv add nemo-gym"
+            "Install as `verifiers[nemogym]`."
         ) from exc
 
     path = Path(config_path)

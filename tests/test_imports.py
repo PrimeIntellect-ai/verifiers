@@ -9,6 +9,8 @@ PACKAGE_SYMBOLS = {
     "HarborTasksetConfig",
     "MiniSWEAgent",
     "MiniSWEAgentConfig",
+    "NeMoGymHarness",
+    "NeMoGymHarnessConfig",
     "OpenCode",
     "OpenCodeConfig",
     "Pi",
@@ -50,6 +52,17 @@ def test_v1_taskset_imports_do_not_import_textarena():
     v1.__dict__.pop("TextArenaTasksetConfig", None)
     importlib.reload(v1)
     assert textarena_module not in sys.modules
+
+
+def test_v1_harness_imports_do_not_import_nemo_gym():
+    nemo_gym_module = "verifiers.v1.packages.harnesses.nemo_gym"
+    sys.modules.pop(nemo_gym_module, None)
+
+    harnesses = importlib.import_module("verifiers.v1.packages.harnesses")
+    harnesses.__dict__.pop("NeMoGymHarness", None)
+    harnesses.__dict__.pop("NeMoGymHarnessConfig", None)
+    importlib.reload(harnesses)
+    assert nemo_gym_module not in sys.modules
 
 
 class TestImports:

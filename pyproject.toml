@@ -97,6 +97,7 @@ openenv = [
     "openenv-core>=0.3.0",
 ]
 nemogym = [
+    "aiohttp>=3.9.0",
     "nemo-gym>=0.2.1,<0.3; python_version >= '3.12'",
 ]
 renderers = [
