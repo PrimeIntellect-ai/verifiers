@@ -2183,23 +2183,23 @@ class Runtime:
 
     async def release_sandboxes(self, scope: str, state: State) -> None:
         scope_key = self.scope_key(scope, state)
-        deletion_count = 0
+        scoped_leases = [
+            (key, handle)
+            for key, handle in self.sandbox_leases.items()
+            if key[0] == scope_key and handle.scope == scope
+        ]
         deletion_failures = 0
-        for key, handle in list(self.sandbox_leases.items()):
-            lease_scope_key, _ = key
-            if lease_scope_key != scope_key:
-                continue
-            if handle.scope != scope:
-                continue
-            deletion_count += 1
+        for key, handle in scoped_leases:
             try:
                 await close_object(handle)
             except Exception as exc:
                 deletion_failures += 1
                 logger.warning(
-                    "Failed to delete %s sandbox lease %r.",
+                    "Failed to delete %s sandbox %s for scope key %s: %s",
                     scope,
-                    key,
+                    handle.id,
+                    key[0],
+                    exc,
                     exc_info=True,
                 )
                 cleanup_errors = state.setdefault("cleanup_errors", [])
@@ -2214,9 +2214,9 @@ class Runtime:
             del self.sandbox_leases[key]
         if deletion_failures:
             logger.error(
-                "%s/%s %s sandbox deletions unsuccessful.",
+                "%s/%s %s sandbox deletions failed during cleanup",
                 deletion_failures,
-                deletion_count,
+                len(scoped_leases),
                 scope,
             )
 

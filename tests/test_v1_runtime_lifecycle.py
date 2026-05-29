@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import os
 import shlex
 import sys
@@ -127,6 +128,7 @@ class FakeSandboxClient:
     command_timeouts: list[int | None] = []
     background_jobs: list[tuple[str, str, int | None, str | None]] = []
     uploads: list[tuple[str, str, bytes]] = []
+    wait_attempts: list[tuple[str, int]] = []
     closed = 0
 
     @classmethod
@@ -137,6 +139,7 @@ class FakeSandboxClient:
         cls.command_timeouts = []
         cls.background_jobs = []
         cls.uploads = []
+        cls.wait_attempts = []
         cls.closed = 0
 
     async def create(self, request: FakeCreateSandboxRequest) -> FakeSandboxResult:
@@ -145,8 +148,13 @@ class FakeSandboxClient:
         type(self).created.append(sandbox_id)
         return FakeSandboxResult(sandbox_id)
 
-    async def wait_for_creation(self, sandbox_id: str) -> None:
-        _ = sandbox_id
+    async def wait_for_creation(
+        self,
+        sandbox_id: str,
+        *,
+        max_attempts: int = sandbox_utils.SANDBOX_WAIT_FOR_CREATION_ATTEMPTS,
+    ) -> None:
+        type(self).wait_attempts.append((sandbox_id, max_attempts))
 
     async def execute_command(
         self, *args: object, **kwargs: object
@@ -400,6 +408,13 @@ def install_fake_sandboxes(monkeypatch: pytest.MonkeyPatch) -> None:
         "verifiers.utils.threaded_sandbox_client.ThreadedAsyncSandboxClient",
         FakeSandboxClient,
     )
+
+
+def disable_sandbox_retry_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def no_sleep(seconds: float) -> None:
+        _ = seconds
+
+    monkeypatch.setattr(sandbox_utils, "sandbox_retry_sleep", no_sleep)
 
 
 def install_fake_endpoint_tunnel(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1236,6 +1251,159 @@ def test_sandbox_package_install_bootstraps_managed_python() -> None:
     assert SANDBOX_PYTHON in command
     assert SANDBOX_UV in command
     assert "mcp>=1.14.1 requests" in command
+
+
+@pytest.mark.asyncio
+async def test_create_sandbox_retries_create_and_bounds_wait(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sandboxes(monkeypatch)
+    disable_sandbox_retry_sleep(monkeypatch)
+
+    class FlakyCreateClient:
+        def __init__(self) -> None:
+            self.create_calls = 0
+            self.wait_calls: list[tuple[str, int]] = []
+            self.deleted: list[str] = []
+
+        async def create(self, request: FakeCreateSandboxRequest) -> FakeSandboxResult:
+            _ = request
+            self.create_calls += 1
+            if self.create_calls == 1:
+                raise RuntimeError("transient create")
+            return FakeSandboxResult("sbx-retry")
+
+        async def wait_for_creation(
+            self,
+            sandbox_id: str,
+            *,
+            max_attempts: int = sandbox_utils.SANDBOX_WAIT_FOR_CREATION_ATTEMPTS,
+        ) -> None:
+            self.wait_calls.append((sandbox_id, max_attempts))
+
+        async def delete(self, sandbox_id: str) -> None:
+            self.deleted.append(sandbox_id)
+
+    client = FlakyCreateClient()
+
+    sandbox_id = await sandbox_utils.create_sandbox(
+        cast(sandbox_utils.SandboxClient, client),
+        {"image": "python:3.11-slim"},
+    )
+
+    assert sandbox_id == "sbx-retry"
+    assert client.create_calls == 2
+    assert client.wait_calls == [
+        ("sbx-retry", sandbox_utils.SANDBOX_WAIT_FOR_CREATION_ATTEMPTS)
+    ]
+    assert client.deleted == []
+
+
+@pytest.mark.asyncio
+async def test_create_sandbox_cleans_up_wait_failure_with_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sandboxes(monkeypatch)
+    disable_sandbox_retry_sleep(monkeypatch)
+
+    class WaitFailingClient:
+        def __init__(self) -> None:
+            self.delete_calls = 0
+
+        async def create(self, request: FakeCreateSandboxRequest) -> FakeSandboxResult:
+            _ = request
+            return FakeSandboxResult("sbx-wait")
+
+        async def wait_for_creation(
+            self,
+            sandbox_id: str,
+            *,
+            max_attempts: int = sandbox_utils.SANDBOX_WAIT_FOR_CREATION_ATTEMPTS,
+        ) -> None:
+            assert sandbox_id == "sbx-wait"
+            assert max_attempts == sandbox_utils.SANDBOX_WAIT_FOR_CREATION_ATTEMPTS
+            raise RuntimeError("wait failed")
+
+        async def delete(self, sandbox_id: str) -> None:
+            assert sandbox_id == "sbx-wait"
+            self.delete_calls += 1
+            if self.delete_calls == 1:
+                raise RuntimeError("transient delete")
+
+    client = WaitFailingClient()
+
+    with pytest.raises(RuntimeError, match="wait failed"):
+        await sandbox_utils.create_sandbox(
+            cast(sandbox_utils.SandboxClient, client),
+            {"image": "python:3.11-slim"},
+        )
+
+    assert client.delete_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_setup_sandbox_wraps_package_install_exceptions() -> None:
+    class ExecuteFailingLease:
+        async def execute(self, command: str, timeout: int | None = None):
+            _ = command, timeout
+            raise RuntimeError("gateway down")
+
+    with pytest.raises(
+        SandboxError, match="Sandbox package install failed: gateway down"
+    ):
+        await sandbox_utils.setup_sandbox(
+            cast(sandbox_utils.SandboxLease, ExecuteFailingLease()),
+            {"packages": ["requests"]},
+        )
+
+
+@pytest.mark.asyncio
+async def test_setup_sandbox_wraps_setup_command_exceptions() -> None:
+    class ExecuteFailingLease:
+        async def execute(self, command: str, timeout: int | None = None):
+            _ = command, timeout
+            raise RuntimeError("gateway down")
+
+    with pytest.raises(
+        SandboxError, match="Sandbox setup command failed: gateway down"
+    ):
+        await sandbox_utils.setup_sandbox(
+            cast(sandbox_utils.SandboxLease, ExecuteFailingLease()),
+            {"setup_commands": ["echo setup"]},
+        )
+
+
+@pytest.mark.asyncio
+async def test_program_setup_handler_wraps_unexpected_exceptions() -> None:
+    class ExecuteFailingClient:
+        async def execute_command(self, *args: object, **kwargs: object) -> None:
+            _ = args, kwargs
+            raise RuntimeError("gateway down")
+
+    lease = sandbox_utils.SandboxLease(
+        cast(sandbox_utils.SandboxClient, ExecuteFailingClient()),
+        "sbx-1",
+        "rollout",
+        "program",
+        owns_client=False,
+    )
+    handler = next(
+        handler
+        for handler in sandbox_utils.program_setup_handlers(
+            lease,
+            {"setup": "echo setup"},
+            Runtime(),
+        )
+        if handler.__name__ == "program_setup"
+    )
+    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+    state = vf.State.for_task(task)
+
+    with pytest.raises(
+        SandboxError,
+        match="Sandbox setup handler program_setup failed: gateway down",
+    ):
+        await handler(task, state)
 
 
 @pytest.mark.asyncio
@@ -2109,12 +2277,54 @@ async def test_mcp_lifetime_follows_toolset_scope(
 
 
 @pytest.mark.asyncio
-async def test_shared_sandbox_delete_surfaces_delete_failures() -> None:
+async def test_shared_sandbox_delete_retries_transient_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    disable_sandbox_retry_sleep(monkeypatch)
+
+    class FlakyDeleteClient:
+        closed = 0
+
+        def __init__(self) -> None:
+            self.delete_calls = 0
+
+        async def delete(self, sandbox_id: str) -> None:
+            assert sandbox_id == "sbx-1"
+            self.delete_calls += 1
+            if self.delete_calls == 1:
+                raise RuntimeError("transient delete")
+
+        async def aclose(self) -> None:
+            type(self).closed += 1
+
+    client = FlakyDeleteClient()
+    lease = sandbox_utils.SandboxLease(
+        cast(sandbox_utils.SandboxClient, client),
+        "sbx-1",
+        "rollout",
+        "program",
+    )
+
+    await lease.delete()
+    await lease.delete()
+
+    assert client.delete_calls == 2
+    assert client.closed == 1
+
+
+@pytest.mark.asyncio
+async def test_shared_sandbox_delete_surfaces_delete_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    disable_sandbox_retry_sleep(monkeypatch)
+
     class DeleteFailingClient:
         closed = 0
+        delete_calls = 0
 
         async def delete(self, sandbox_id: str) -> None:
             _ = sandbox_id
+            type(self).delete_calls += 1
             raise RuntimeError("delete failed")
 
         async def aclose(self) -> None:
@@ -2132,7 +2342,41 @@ async def test_shared_sandbox_delete_surfaces_delete_failures() -> None:
     with pytest.raises(RuntimeError, match="delete failed"):
         await lease.delete()
 
+    assert client.delete_calls == sandbox_utils.SANDBOX_RETRY_ATTEMPTS
     assert client.closed == 0
+
+
+@pytest.mark.asyncio
+async def test_release_sandboxes_logs_and_removes_delete_failures(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class DeleteFailingLease:
+        id = "sbx-1"
+        scope = "rollout"
+
+        async def delete(self) -> None:
+            raise RuntimeError("delete failed")
+
+    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+    state = vf.State.for_task(task)
+    runtime = Runtime()
+    key = (runtime.scope_key("rollout", state), "program")
+    runtime.sandbox_leases[key] = cast(sandbox_utils.SandboxLease, DeleteFailingLease())
+
+    package_logger = logging.getLogger("verifiers")
+    package_logger.addHandler(caplog.handler)
+    try:
+        with caplog.at_level(logging.WARNING, logger="verifiers.v1.runtime"):
+            await runtime.release_sandboxes("rollout", state)
+    finally:
+        package_logger.removeHandler(caplog.handler)
+
+    assert key not in runtime.sandbox_leases
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("Failed to delete rollout sandbox sbx-1" in msg for msg in messages)
+    assert any(
+        "1/1 rollout sandbox deletions failed during cleanup" in msg for msg in messages
+    )
 
 
 @pytest.mark.asyncio
