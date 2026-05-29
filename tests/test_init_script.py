@@ -102,7 +102,7 @@ def test_init_openenv_writes_v1_taskset_template(tmp_path: Path) -> None:
     assert "assert isinstance(taskset_config, OpenEnvTasksetConfig)" in content
     assert "return vf.Env(taskset=load_taskset(taskset_config))" in content
     assert "vf.OpenEnvEnv" not in content
-    assert '"tasksets>=0.1.0.post0"' in pyproject
+    assert '"tasksets>=0.1.1"' in pyproject
 
 
 def test_init_openenv_multifile_exports_taskset_loader(tmp_path: Path) -> None:

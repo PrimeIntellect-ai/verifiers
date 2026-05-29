@@ -87,17 +87,17 @@ rg = [
     "reasoning-gym",
 ]
 ta = [
-    "tasksets>=0.1.0.post0",
+    "tasksets>=0.1.1",
 ]
 tasksets = [
-    "tasksets>=0.1.0.post0",
+    "tasksets>=0.1.1",
 ]
 harnesses = [
-    "harnesses>=0.1.0.post0",
+    "harnesses>=0.1.1",
 ]
 packages = [
-    "harnesses>=0.1.0.post0",
-    "tasksets>=0.1.0.post0",
+    "harnesses>=0.1.1",
+    "tasksets>=0.1.1",
 ]
 browser = [
     "stagehand>=3.0.0",
@@ -105,10 +105,10 @@ browser = [
     "python-dotenv>=1.0.0",
 ]
 openenv = [
-    "tasksets>=0.1.0.post0",
+    "tasksets>=0.1.1",
 ]
 openreward = [
-    "tasksets>=0.1.0.post0",
+    "tasksets>=0.1.1",
 ]
 renderers = [
     "renderers>=0.1.8.dev28",
