@@ -11,6 +11,7 @@ from verifiers.v1.packages.harnesses.nemo_gym import (
     NEMO_GYM_POLICY_MODEL_SERVER_NAME,
     NEMO_GYM_POLICY_MODEL_TYPE_NAME,
     NeMoGymHarness,
+    NeMoGymHarnessConfig,
     NeMoGymModelProxy,
     PersistentNeMoGymRunner,
     build_nemo_gym_global_config,
@@ -219,9 +220,11 @@ def test_nemo_gym_global_config_uses_proxy_endpoint_without_header_forwarding():
 
 def test_nemo_gym_harness_does_not_add_a_model_server_config_path():
     harness = NeMoGymHarness(
-        config_paths=["agent.yaml"],
-        server_name="agent_server",
-        agent_name="agent",
+        NeMoGymHarnessConfig(
+            config_paths=["agent.yaml"],
+            server_name="agent_server",
+            agent_name="agent",
+        )
     )
 
     assert harness._config_paths() == ["agent.yaml"]

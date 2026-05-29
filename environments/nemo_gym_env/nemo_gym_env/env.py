@@ -1,21 +1,18 @@
 import verifiers as vf
+from verifiers.v1.packages.harnesses import NeMoGymHarness, NeMoGymHarnessConfig
+from verifiers.v1.packages.tasksets import NeMoGymTaskset, NeMoGymTasksetConfig
 
 
 NEMO_ENV = "example_single_tool_call"
 
 
-def load_environment(
-    nemo_env: str = NEMO_ENV,
-    num_examples: int = -1,
-    timeout_seconds: float | None = None,
-) -> vf.Environment:
-    limit = None if num_examples < 0 else num_examples
-    taskset = vf.NeMoGymTaskset(
-        nemo_env=nemo_env,
-        limit=limit,
+class NeMoGymEnvConfig(vf.EnvConfig):
+    taskset: NeMoGymTasksetConfig = NeMoGymTasksetConfig(nemo_env=NEMO_ENV)
+    harness: NeMoGymHarnessConfig = NeMoGymHarnessConfig(nemo_env=NEMO_ENV)
+
+
+def load_environment(config: NeMoGymEnvConfig) -> vf.Env:
+    return vf.Env(
+        taskset=NeMoGymTaskset(config=config.taskset),
+        harness=NeMoGymHarness(config=config.harness),
     )
-    harness = vf.NeMoGymHarness(
-        nemo_env=nemo_env,
-        timeout_seconds=timeout_seconds,
-    )
-    return vf.Env(taskset=taskset, harness=harness)

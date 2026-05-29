@@ -11,7 +11,7 @@
 - **Split sizes**: 5 packaged examples; default eval uses 1 example via `pyproject.toml`.
 
 ### Task
-- **Type**: `vf.Env` with `vf.NeMoGymTaskset` and `vf.NeMoGymHarness`
+- **Type**: `vf.Env` with `NeMoGymTaskset` and `NeMoGymHarness` (imported from `verifiers.v1.packages`).
 - **Rubric overview**: Reward and metrics are returned by the NeMo Gym resources server.
 
 ### How it works
@@ -35,15 +35,21 @@ Configure model and sampling:
 ```bash
 prime eval run nemo-gym-env \
   -m gpt-4.1-mini \
-  -n 1 -r 1 -t 128 \
-  -a '{"num_examples": 1}'
+  -n 1 -r 1 -t 128
 ```
 
-### Environment Arguments
-| Arg | Type | Default | Description |
-| --- | --- | --- | --- |
-| `num_examples` | int | `-1` | Limit on NeMo Gym JSONL rows. Use `-1` for all rows. |
-| `timeout_seconds` | float | `null` | Optional per-rollout timeout for the NeMo Gym run. |
+### Configuration
+NeMo Gym settings belong under the v1 taskset/harness config sections:
+
+```toml
+[env.taskset]
+nemo_env = "example_single_tool_call"
+limit = 1
+
+[env.harness]
+nemo_env = "example_single_tool_call"
+timeout_seconds = 30
+```
 
 ### Adapting
 This example is intentionally tied to one NeMo Gym task. To create another Verifiers environment, copy this directory and change `NEMO_ENV` in `nemo_gym_env/env.py` to another packaged NeMo Gym environment name, such as `example_multi_step`, `mcqa`, or `structured_outputs`.

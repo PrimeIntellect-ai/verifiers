@@ -38,17 +38,6 @@ from .config import (
 )
 from .env import Env
 from .harness import Harness
-from .packages.harnesses import (
-    MiniSWEAgent,
-    NeMoGymHarness,
-    NeMoGymHarnessConfig,
-    OpenCode,
-    OpenCodeConfig,
-    Pi,
-    RLM,
-    RLMConfig,
-    Terminus2,
-)
 from .utils.scoring_utils import (
     add_metric,
     add_reward,
@@ -61,12 +50,6 @@ from .utils.scoring_utils import (
 from .state import State
 from .task import Task
 from .taskset import Taskset, discover_sibling_dir
-from .packages.tasksets import (
-    HarborTaskset,
-    HarborTasksetConfig,
-    NeMoGymTaskset,
-    NeMoGymTasksetConfig,
-)
 from .toolset import MCPTool, Toolset, Toolsets
 from .types import (
     ConfigData,
@@ -98,13 +81,6 @@ __all__ = [
     "MCPToolConfig",
     "Message",
     "Messages",
-    "MiniSWEAgent",
-    "NeMoGymHarness",
-    "NeMoGymHarnessConfig",
-    "NeMoGymTaskset",
-    "NeMoGymTasksetConfig",
-    "OpenCode",
-    "OpenCodeConfig",
     "Objects",
     "ProgramConfig",
     "SandboxConfig",

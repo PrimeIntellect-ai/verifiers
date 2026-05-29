@@ -8,22 +8,19 @@ import secrets
 from collections.abc import Awaitable, Iterator, Mapping, Sequence
 from copy import deepcopy
 from typing import Protocol, cast
-from typing_extensions import NotRequired, TypedDict, Unpack
 from urllib.parse import urlparse
 
 from aiohttp import ClientSession, web
 from pydantic import Field
 
-from verifiers.types import AssistantMessage, SamplingArgs, ToolCall, ToolMessage
+from verifiers.types import AssistantMessage, ToolCall, ToolMessage
 from verifiers.utils.serve_utils import get_free_port
 
-from ...config import HarnessConfig, SandboxConfig
+from ...config import HarnessConfig
 from ...harness import Harness
 from ...state import State
 from ...task import Task
-from ...toolset import ToolsetCollection
-from ...types import ConfigData, ConfigMap, Handler, ModelClient, PromptInput, TaskRow
-from ...utils.binding_utils import BindingMap
+from ...types import ConfigData, ConfigMap, TaskRow
 from ..nemo_gym import (
     agent_ref_name,
     first_nemo_gym_agent,
@@ -89,25 +86,6 @@ class NeMoGymRolloutCollector(Protocol):
     ) -> Iterator[Awaitable[tuple[ConfigData, ConfigMap]]]: ...
 
 
-class NeMoGymHarnessKwargs(TypedDict):
-    system_prompt: NotRequired[PromptInput | None]
-    user: NotRequired[Handler | str | ConfigMap | None]
-    bindings: NotRequired[BindingMap | None]
-    sandbox: NotRequired[ConfigMap | SandboxConfig | None]
-    client: NotRequired[ModelClient | None]
-    model: NotRequired[str | None]
-    sampling_args: NotRequired[SamplingArgs | None]
-    max_turns: NotRequired[int | None]
-    toolsets: NotRequired[ToolsetCollection | None]
-    stops: NotRequired[list[Handler] | None]
-    setups: NotRequired[list[Handler] | None]
-    updates: NotRequired[list[Handler] | None]
-    metrics: NotRequired[list[Handler] | None]
-    rewards: NotRequired[list[Handler] | None]
-    advantages: NotRequired[list[Handler] | None]
-    cleanups: NotRequired[list[Handler] | None]
-
-
 class NeMoGymHarness(Harness):
     """Run a NeMo Gym row from a Verifiers rollout.
 
@@ -122,37 +100,17 @@ class NeMoGymHarness(Harness):
 
     def __init__(
         self,
-        *,
-        nemo_env: str | None = None,
-        config_name: str | None = None,
-        config_paths: Sequence[str] | None = None,
-        server_name: str | None = None,
-        agent_name: str | None = None,
-        timeout_seconds: float | None = None,
-        global_config: ConfigMap | None = None,
-        runner: NeMoGymRunner | None = None,
         config: NeMoGymHarnessConfig | None = None,
-        **kwargs: Unpack[NeMoGymHarnessKwargs],
+        *,
+        runner: NeMoGymRunner | None = None,
     ):
-        harness_config = NeMoGymHarnessConfig.from_config(
-            config,
-            nemo_env=nemo_env,
-            config_name=config_name,
-            config_paths=list(config_paths) if config_paths is not None else None,
-            server_name=server_name,
-            agent_name=agent_name,
-            timeout_seconds=timeout_seconds,
-            global_config=dict(global_config or {})
-            if global_config is not None
-            else None,
-        )
+        harness_config = NeMoGymHarnessConfig() if config is None else config
+        assert isinstance(harness_config, NeMoGymHarnessConfig)
         configure_nemo_gym_harness_config(harness_config)
         self.runner = runner or PersistentNeMoGymRunner()
-        super().__init__(
-            program=self._run_nemo_gym,
-            config=harness_config,
-            **kwargs,
-        )
+        super().__init__(config=harness_config.model_copy(update={"program": None}))
+        self.config = harness_config
+        self._configure_runtime(program=self._run_nemo_gym)
 
     async def teardown(self) -> None:
         teardown = getattr(self.runner, "teardown", None)
