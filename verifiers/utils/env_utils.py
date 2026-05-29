@@ -235,8 +235,14 @@ def load_env_config(
     module: ModuleType,
     config_type: type[EnvConfig],
     value: object,
+    *,
+    child_types: Mapping[str, type[BaseModel]] | None = None,
 ) -> EnvConfig:
-    child_types = env_config_child_types(module, config_type)
+    resolved_child_types = (
+        env_config_child_types(module, config_type)
+        if child_types is None
+        else child_types
+    )
 
     data: dict[str, object]
     if isinstance(value, config_type):
@@ -251,7 +257,7 @@ def load_env_config(
     else:
         data = dict(explicit_config_data(value))
     defaults: EnvConfig | None = None
-    for field_name, child_type in child_types.items():
+    for field_name, child_type in resolved_child_types.items():
         if field_name not in data:
             defaults = config_type() if defaults is None else defaults
             child = getattr(defaults, field_name)
@@ -264,7 +270,7 @@ def load_env_config(
             raise TypeError(f"config.{field_name} cannot be None.")
         data[field_name] = child_type.model_validate(explicit_config_data(child))
     config = config_type.model_validate(data)
-    for field_name, child_type in child_types.items():
+    for field_name, child_type in resolved_child_types.items():
         child = getattr(config, field_name)
         if not isinstance(child, child_type):
             raise TypeError(

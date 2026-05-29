@@ -17,7 +17,7 @@ import logging
 from pathlib import Path
 from typing import Any, cast
 
-from pydantic import create_model
+from pydantic import BaseModel, create_model
 from pydantic_config import ConfigFileError
 from pydantic_config import cli as parse_pydantic_config_cli
 
@@ -298,12 +298,10 @@ def merge_config_data(
 
 
 def env_config_cli_type(
-    env_id: str,
     config_type: type[EnvConfig],
     default_config: EnvConfig,
+    child_types: dict[str, type[BaseModel]],
 ) -> type[EnvConfig]:
-    module = import_env_module(env_id)
-    child_types = env_config_child_types(module, config_type)
     fields = {
         field_name: (child_type, getattr(default_config, field_name))
         for field_name, child_type in child_types.items()
@@ -341,12 +339,14 @@ def apply_env_config_cli_overrides(
         )
 
     merged_env_args = dict(env_args)
+    child_types = env_config_child_types(module, config_type)
     base_config = load_env_config(
         module,
         config_type,
         merged_env_args.get("config", {}),
+        child_types=child_types,
     )
-    cli_type = env_config_cli_type(env_id, config_type, base_config)
+    cli_type = env_config_cli_type(config_type, base_config, child_types)
     try:
         config = parse_pydantic_config_cli(
             cli_type,
