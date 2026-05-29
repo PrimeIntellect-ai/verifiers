@@ -25,7 +25,7 @@ from verifiers.v1.runtime import Runtime
 from verifiers.v1.utils.endpoint_utils import endpoint_api_key
 from verifiers.v1.utils import mcp_utils, sandbox_utils
 from verifiers.v1.utils.mcp_proxy_utils import MCP_PROXY_CONFIG_PATH, MCP_PROXY_PATH
-from verifiers.v1.utils.mcp_proxy_utils import proxy_command, proxy_source
+from verifiers.v1.utils.mcp_proxy_utils import proxy_command, proxy_program
 from verifiers.v1.utils.program_utils import command_env
 from verifiers.v1.utils.sandbox_python_utils import (
     SANDBOX_PYTHON,
@@ -519,20 +519,19 @@ async def mcp_proxy_program(task, state):
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.stdio import stdio_client
 
+    tool_auth_var = str(state["endpoint_api_key_var"])
+    proxy_config = proxy_program(
+        {},
+        tool_base_url=f"{state['endpoint_root_url'].rstrip('/')}/vf/tools",
+        tool_auth_var=tool_auth_var,
+    )
+    proxy_files = cast(dict[str, str], proxy_config["files"])
     with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
-        f.write(proxy_source())
+        f.write(proxy_files[MCP_PROXY_PATH])
         proxy_path = Path(f.name)
     config_path = proxy_path.with_suffix(".json")
-    config_path.write_text(
-        json.dumps(
-            {
-                "tool_base_url": f"{state['endpoint_root_url'].rstrip('/')}/vf/tools",
-                "tool_auth_var": state["endpoint_api_key_var"],
-            }
-        )
-    )
+    config_path.write_text(proxy_files[MCP_PROXY_CONFIG_PATH])
     try:
-        tool_auth_var = str(state["endpoint_api_key_var"])
         endpoint_client = cast(OpenAI, state.get_client(api="chat", sync=True))
         tool_auth_token = endpoint_client.api_key
         endpoint_client.close()
