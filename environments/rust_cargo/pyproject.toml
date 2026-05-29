@@ -1,0 +1,21 @@
+[project]
+name = "rust-cargo"
+description = "Rust coding environment with Cargo build, clippy, and test rewards."
+tags = ["rust", "cargo", "coding", "single-turn", "rl", "train", "eval"]
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "verifiers>=0.1.15.dev7",
+    "datasets",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["rust_cargo.py", "pyproject.toml", "README.md"]
+
+[tool.verifiers.eval]
+num_examples = 5
+rollouts_per_example = 3
