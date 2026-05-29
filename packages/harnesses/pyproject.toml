@@ -16,6 +16,12 @@ dependencies = [
     "verifiers>=0.1.15.dev11",
 ]
 
+[project.optional-dependencies]
+nemogym = [
+    "aiohttp>=3.9.0",
+    "nemo-gym>=0.2.1,<0.3; python_version >= '3.12'",
+]
+
 [project.urls]
 Homepage = "https://github.com/primeintellect-ai/verifiers"
 Repository = "https://github.com/primeintellect-ai/verifiers.git"

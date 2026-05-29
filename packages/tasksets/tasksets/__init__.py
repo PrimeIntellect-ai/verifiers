@@ -1,6 +1,8 @@
 from .harbor import HarborTaskset, HarborTasksetConfig
 
 LAZY_EXPORTS = {
+    "NeMoGymTaskset": (".nemo_gym", "NeMoGymTaskset"),
+    "NeMoGymTasksetConfig": (".nemo_gym", "NeMoGymTasksetConfig"),
     "OpenEnvTaskset": (".openenv", "OpenEnvTaskset"),
     "OpenEnvTasksetConfig": (".openenv", "OpenEnvTasksetConfig"),
     "OpenRewardTaskset": (".openreward", "OpenRewardTaskset"),

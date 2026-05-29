@@ -8,8 +8,8 @@ from tasksets import HarborTaskset, HarborTasksetConfig
 taskset = HarborTaskset(config=HarborTasksetConfig(bundle_package=__name__))
 ```
 
-Bundled tasksets include their upstream runtime dependencies by default:
+Install only the backend extras you need:
 
 ```bash
-uv add tasksets
+uv add "tasksets[openenv,openreward,ta]"
 ```

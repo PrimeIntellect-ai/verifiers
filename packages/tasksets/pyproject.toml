@@ -13,11 +13,22 @@ readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10,<3.14"
 dependencies = [
-    "nltk",
-    "openenv-core>=0.3.0",
-    "openreward>=0.1.123; python_version >= '3.11'",
-    "textarena",
     "verifiers>=0.1.15.dev11",
+]
+
+[project.optional-dependencies]
+openenv = [
+    "openenv-core>=0.3.0",
+]
+openreward = [
+    "openreward>=0.1.123; python_version >= '3.11'",
+]
+ta = [
+    "nltk",
+    "textarena",
+]
+nemogym = [
+    "nemo-gym>=0.2.1,<0.3; python_version >= '3.12'",
 ]
 
 [project.urls]

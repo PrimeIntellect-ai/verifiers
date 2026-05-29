@@ -537,8 +537,9 @@ def _program_channel_setup_handler(
     priority: int,
     use_sandbox_python_path: bool = False,
 ) -> Handler:
+    name = f"program_{channel}_channel_setup"
+
     async def handler(task: Task, state: State) -> None:
-        name = f"program_{channel}_channel_setup"
         try:
             await run_program_items(
                 lease.client,
@@ -555,10 +556,10 @@ def _program_channel_setup_handler(
             raise
         except Exception as exc:
             raise SandboxError(
-                f"Sandbox channel setup handler {name} failed: {exc}"
+                f"Sandbox {channel} channel setup handler {name} failed: {exc}"
             ) from exc
 
-    handler.__name__ = f"program_{channel}_channel_setup"
+    handler.__name__ = name
     return setup_handler(handler, priority=priority)
 
 
@@ -593,6 +594,7 @@ async def create_sandbox(client: SandboxClient, sandbox_config: ConfigData) -> s
                 "Failed to delete sandbox %s after creation failure: %s",
                 sandbox_id,
                 cleanup_exc,
+                exc_info=True,
             )
         raise
     return sandbox_id

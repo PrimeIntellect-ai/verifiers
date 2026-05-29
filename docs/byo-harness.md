@@ -445,7 +445,10 @@ Packaged CLI harnesses should use the same boundary. These implementations live
 in `tasksets` and `harnesses`. `OpenCode`, `Pi`, `MiniSWEAgent`, `Terminus2`,
 and `RLM` are bundled `Harness` leaf wrappers for common command-line agents.
 Install them with `uv add "verifiers[packages]"`, or with the narrower
-`verifiers[tasksets]` and `verifiers[harnesses]` extras.
+`verifiers[tasksets]`, `verifiers[harnesses]`, and backend-specific extras such
+as `verifiers[nemogym]`. `NeMoGymTaskset` and `NeMoGymHarness` package NeMo Gym
+JSONL rows and rollout collection behind the same reusable taskset/harness
+boundary.
 
 ```python
 from harnesses import OpenCode, OpenCodeConfig

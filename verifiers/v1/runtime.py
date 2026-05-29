@@ -2200,7 +2200,17 @@ class Runtime:
                     handle.id,
                     key[0],
                     exc,
+                    exc_info=True,
                 )
+                cleanup_errors = state.setdefault("cleanup_errors", [])
+                if isinstance(cleanup_errors, list):
+                    cleanup_errors.append(
+                        {
+                            "type": type(exc).__name__,
+                            "message": str(exc),
+                            "scope": scope,
+                        }
+                    )
             del self.sandbox_leases[key]
         if deletion_failures:
             logger.error(
