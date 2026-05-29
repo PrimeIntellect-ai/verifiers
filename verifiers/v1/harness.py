@@ -612,7 +612,7 @@ class Harness(RuntimeOwnerMixin, Generic[ConfigT]):
             return proxy_program(
                 program,
                 tool_base_url=f"{endpoint_root_url.rstrip('/')}/vf/tools",
-                tool_api_key_var=api_key_var,
+                tool_auth_var=api_key_var,
             )
         return program
 

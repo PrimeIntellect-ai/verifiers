@@ -527,19 +527,19 @@ async def mcp_proxy_program(task, state):
         json.dumps(
             {
                 "tool_base_url": f"{state['endpoint_root_url'].rstrip('/')}/vf/tools",
-                "tool_api_key_var": state["endpoint_api_key_var"],
+                "tool_auth_var": state["endpoint_api_key_var"],
             }
         )
     )
     try:
-        tool_api_key_var = str(state["endpoint_api_key_var"])
+        tool_auth_var = str(state["endpoint_api_key_var"])
         endpoint_client = cast(OpenAI, state.get_client(api="chat", sync=True))
-        tool_api_key = endpoint_client.api_key
+        tool_auth_token = endpoint_client.api_key
         endpoint_client.close()
         server = StdioServerParameters(
             command=sys.executable,
             args=[str(proxy_path), str(config_path)],
-            env={tool_api_key_var: tool_api_key},
+            env={tool_auth_var: tool_auth_token},
         )
         async with stdio_client(server) as (read_stream, write_stream):
             async with ClientSession(read_stream, write_stream) as session:
@@ -1323,7 +1323,7 @@ def test_program_channels_mcp_injects_proxy_into_sandbox_program() -> None:
     config = json.loads(files[MCP_PROXY_CONFIG_PATH])
     assert config == {
         "tool_base_url": "http://127.0.0.1:1/rollout/test/vf/tools",
-        "tool_api_key_var": "OPENAI_API_KEY",
+        "tool_auth_var": "OPENAI_API_KEY",
     }
     assert proxy_command() == [SANDBOX_PYTHON, MCP_PROXY_PATH, MCP_PROXY_CONFIG_PATH]
     packages = sandbox["packages"]
@@ -1610,11 +1610,11 @@ from mcp.client.stdio import stdio_client
 async def main():
     with open("/tmp/vf_mcp_tools.json") as f:
         config = json.load(f)
-    tool_api_key_var = str(config["tool_api_key_var"])
+    tool_auth_var = str(config["tool_auth_var"])
     server = StdioServerParameters(
         command="python3",
         args=["/tmp/vf_mcp_tools.py", "/tmp/vf_mcp_tools.json"],
-        env={tool_api_key_var: os.environ[tool_api_key_var]},
+        env={tool_auth_var: os.environ[tool_auth_var]},
     )
     async with stdio_client(server) as (read_stream, write_stream):
         async with ClientSession(read_stream, write_stream) as session:
