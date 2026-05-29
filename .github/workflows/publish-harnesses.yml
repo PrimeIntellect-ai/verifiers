@@ -19,6 +19,10 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      created: ${{ steps.tag.outputs.created }}
+      tag: ${{ steps.tag.outputs.tag }}
+      version: ${{ steps.tag.outputs.version }}
     steps:
       - name: Checkout main
         uses: actions/checkout@v4
@@ -26,7 +30,10 @@ jobs:
           fetch-depth: 0
 
       - name: Create release tag for untagged version
+        id: tag
         run: |
+          echo "created=false" >> "$GITHUB_OUTPUT"
+
           VERSION=$(python - <<'PY'
           from pathlib import Path
           import re
@@ -55,6 +62,66 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git tag -a "$TAG" -m "Release $TAG"
           git push origin "$TAG"
+
+          echo "created=true" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+  build-from-auto-tag:
+    needs: auto-tag-on-main
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.auto-tag-on-main.outputs.created == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ needs.auto-tag-on-main.outputs.tag }}
+      version: ${{ needs.auto-tag-on-main.outputs.version }}
+    steps:
+      - name: Checkout auto-created tag
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: refs/tags/${{ needs.auto-tag-on-main.outputs.tag }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Build harnesses
+        run: uv build packages/harnesses
+
+      - name: Upload dist artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: harnesses-dist
+          path: packages/harnesses/dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish-from-auto-tag:
+    needs: build-from-auto-tag
+    runs-on: ubuntu-latest
+    environment: pypi-prod
+    permissions:
+      contents: read
+    steps:
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Download dist artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: harnesses-dist
+          path: dist/
+
+      - name: Publish to PyPI
+        env:
+          PYPI_HARNESSES_TOKEN: ${{ secrets.PYPI_HARNESSES_TOKEN }}
+        run: |
+          if [ -z "$PYPI_HARNESSES_TOKEN" ]; then
+            echo "Missing PYPI_HARNESSES_TOKEN secret" >&2
+            exit 1
+          fi
+          uv publish --token "$PYPI_HARNESSES_TOKEN" dist/*
 
   build-tag:
     if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/harnesses-v')
