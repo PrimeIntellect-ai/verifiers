@@ -73,8 +73,13 @@ taskset/harness overrides. These flags are parsed against the concrete child
 config types from `load_taskset(config: ...)` and `load_harness(config: ...)`:
 
 ```bash
-prime eval run my-v1-env --taskset.id my-id --harness.max-turns 4
+prime eval run my-v1-env --taskset.id my-taskset --harness.id my-harness --harness.max-turns 4
 ```
+
+The positional environment ID selects the environment package to load. Dotted
+taskset/harness flags are fields on that environment's typed child config; they
+do not select separate taskset or harness packages unless the environment's own
+loader implements that behavior.
 
 For legacy or direct-constructor environments, the `--env-args` flag passes
 arguments to your `load_environment()` function:

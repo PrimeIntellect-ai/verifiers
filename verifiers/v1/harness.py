@@ -2,6 +2,8 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Generic, TypeAlias, TypeVar, cast, final
 
+from pydantic import AliasChoices, Field
+
 import verifiers as vf
 from verifiers.clients.client import Client
 from verifiers.errors import Error, OverlongPromptError
@@ -97,6 +99,10 @@ ProgramRunner: TypeAlias = Callable[[Task, State], Awaitable[ProgramResult]]
 
 class HarnessConfig(LifecycleConfig):
     # Core fields configure harness-owned runtime behavior.
+    harness_id: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("harness_id", "id"),
+    )
     program: ProgramConfig = ProgramConfig()
     model: ModelConfig = ModelConfig()
     system_prompt: PromptInput | SystemPromptConfig | None = None
@@ -107,6 +113,14 @@ class HarnessConfig(LifecycleConfig):
     objects: ObjectsConfig = ObjectsConfig()
     artifacts: ArtifactsConfig = ArtifactsConfig()
     max_turns: int = 10
+
+    @classmethod
+    def __pydantic_init_subclass__(cls, **kwargs: object) -> None:
+        super().__pydantic_init_subclass__(**kwargs)
+        field = cls.model_fields.get("harness_id")
+        if field is not None:
+            field.validation_alias = AliasChoices("harness_id", "id")
+            cls.model_rebuild(force=True)
 
 
 ConfigT = TypeVar("ConfigT", bound=HarnessConfig)
@@ -168,6 +182,12 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
         self.config = cast(ConfigT, coerce_config(config_type, config))
         with config_ref_context(self.config):
             self.initialize_runtime_refresh()
+            resolved_harness_id = self.config.harness_id
+            if resolved_harness_id is not None and not isinstance(
+                resolved_harness_id, str
+            ):
+                raise TypeError("harness_id must be a string.")
+            self.harness_id = resolved_harness_id or type(self).__name__
             self.program_config = self.config.program.resolve()
             system_prompt_value = self.load_system_prompt(self.config)
             self.system_prompt = normalize_system_prompt(

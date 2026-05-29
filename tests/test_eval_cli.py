@@ -10,7 +10,7 @@ import pytest
 
 import verifiers.scripts.eval as vf_eval
 import verifiers.utils.eval_utils
-from verifiers.types import EndpointConfig, GenerateOutputs
+from verifiers.types import EndpointConfig, EvalConfig, GenerateOutputs
 from verifiers.utils.eval_utils import load_toml_config
 from verifiers.utils.path_utils import get_eval_results_path
 from verifiers.utils.save_utils import states_to_outputs
@@ -22,6 +22,24 @@ def fail_load_endpoints(*_: object) -> dict:
 
 def endpoint(**values: object) -> EndpointConfig:
     return EndpointConfig.model_validate(values)
+
+
+def test_eval_config_accepts_id_shorthand():
+    config = EvalConfig.model_validate(
+        {
+            "id": "env1",
+            "env_args": {},
+            "env_dir_path": "./environments",
+            "model": "openai/gpt-4.1-mini",
+            "client_config": {},
+            "sampling_args": {},
+            "num_examples": 1,
+            "rollouts_per_example": 1,
+            "max_concurrent": 1,
+        }
+    )
+
+    assert config.env_id == "env1"
 
 
 @pytest.fixture
@@ -137,6 +155,8 @@ def test_parse_args_accepts_v1_env_config_overrides():
             "env1",
             "--taskset.id",
             "my-id",
+            "--harness.id",
+            "my-harness",
             "--harness.max-turns",
             "4",
         ]
@@ -145,6 +165,8 @@ def test_parse_args_accepts_v1_env_config_overrides():
     assert args.env_config_overrides == [
         "--taskset.id",
         "my-id",
+        "--harness.id",
+        "my-harness",
         "--harness.max-turns",
         "4",
     ]
@@ -165,7 +187,6 @@ import verifiers as vf
 
 
 class DemoTasksetConfig(vf.TasksetConfig):
-    id: str = "default-id"
     count: int = 1
     enabled: bool = True
 
@@ -199,6 +220,8 @@ def load_environment(config: vf.EnvConfig):
                 "--taskset.id",
                 "override-id",
                 "--no-taskset.enabled",
+                "--harness.id",
+                "demo-harness",
                 "--harness.max-turns",
                 "4",
             ],
@@ -207,8 +230,12 @@ def load_environment(config: vf.EnvConfig):
 
     assert captured["configs"][0].env_args == {
         "config": {
-            "taskset": {"id": "override-id", "count": 2, "enabled": False},
-            "harness": {"max_turns": 4},
+            "taskset": {
+                "taskset_id": "override-id",
+                "count": 2,
+                "enabled": False,
+            },
+            "harness": {"harness_id": "demo-harness", "max_turns": 4},
         }
     }
 

@@ -2027,6 +2027,28 @@ def test_env_config_tracks_prebuilt_children() -> None:
     assert env.config.harness.max_turns == 3
 
 
+def test_taskset_and_harness_configs_accept_id_shorthand() -> None:
+    class CustomTasksetConfig(TasksetConfig):
+        taskset_id: str | None = "default-taskset"
+
+    class CustomHarnessConfig(HarnessConfig):
+        harness_id: str | None = "default-harness"
+
+    taskset_config = CustomTasksetConfig.model_validate({"id": "taskset-short"})
+    harness_config = CustomHarnessConfig.model_validate({"id": "harness-short"})
+
+    assert taskset_config.taskset_id == "taskset-short"
+    assert harness_config.harness_id == "harness-short"
+    assert explicit_config_data(taskset_config) == {"taskset_id": "taskset-short"}
+    assert explicit_config_data(harness_config) == {"harness_id": "harness-short"}
+
+    taskset = Taskset(config={"id": "taskset-short"})
+    harness = Harness(config={"id": "harness-short"})
+
+    assert taskset.taskset_id == "taskset-short"
+    assert harness.harness_id == "harness-short"
+
+
 def test_env_rejects_taskset_builders() -> None:
     def load_taskset() -> Taskset:
         return Taskset(config=TasksetConfig())
