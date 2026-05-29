@@ -13,7 +13,7 @@ from tasksets.utils.nemo_gym_utils import (
     resolve_nemo_gym_data_path,
 )
 
-ConfigData: TypeAlias = vf.ConfigData
+ConfigData: TypeAlias = dict[str, object]
 ConfigMap: TypeAlias = dict[str, object]
 TaskRow: TypeAlias = dict[str, object]
 
@@ -34,36 +34,34 @@ class NeMoGymTaskset(vf.Taskset[NeMoGymTasksetConfig]):
     harness can post it to the configured NeMo Gym agent unchanged.
     """
 
-    def __init__(self, config: NeMoGymTasksetConfig | None = None):
-        config = NeMoGymTasksetConfig() if config is None else config
-        assert isinstance(config, NeMoGymTasksetConfig)
-        super().__init__(config=config)
+    def jsonl_path(self) -> Path | None:
         raw_path = self.config.jsonl_path
         if raw_path:
-            self.jsonl_path: Path | None = Path(str(raw_path)).expanduser()
-        elif self.config.nemo_env:
-            self.jsonl_path = resolve_nemo_gym_data_path(
+            return Path(str(raw_path)).expanduser()
+        if self.config.nemo_env:
+            return resolve_nemo_gym_data_path(
                 self.config.nemo_env,
                 self.config.data_name,
             )
-        else:
-            self.jsonl_path = None
+        return None
 
     def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
-        if self.jsonl_path is None:
+        jsonl_path = self.jsonl_path()
+        if jsonl_path is None:
             raise ValueError("NeMoGymTaskset requires nemo_env=... or jsonl_path=...")
         raw_rows: list[TaskRow] = []
-        with self.jsonl_path.open(encoding="utf-8") as f:
+        with jsonl_path.open(encoding="utf-8") as f:
             for line in f:
                 stripped = line.strip()
                 if stripped:
                     raw_rows.append(cast(TaskRow, json.loads(stripped)))
         if self.config.limit is not None:
             raw_rows = raw_rows[: self.config.limit]
-        return [
+        tasks = [
             normalize_nemo_gym_task_row(row, index, agent_name=self.config.agent_name)
             for index, row in enumerate(raw_rows)
         ]
+        return cast(vf.Tasks, tasks)
 
 
 def normalize_nemo_gym_task_row(

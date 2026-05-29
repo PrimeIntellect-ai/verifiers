@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import contextlib
 import inspect
@@ -35,7 +37,7 @@ _NEMO_GYM_OWNS_AIOHTTP_CLIENT = False
 _RAY_ENABLE_UV_RUN_RUNTIME_ENV = "RAY_ENABLE_UV_RUN_RUNTIME_ENV"
 _NEMO_GYM_CONFIG_PATH_ENV_VAR_NAME = "NEMO_GYM_CONFIG_PATH"
 EndpointConfig = dict[str, str]
-ConfigData: TypeAlias = vf.ConfigData
+ConfigData: TypeAlias = dict[str, object]
 ConfigMap: TypeAlias = dict[str, object]
 TaskRow: TypeAlias = dict[str, object]
 
@@ -96,20 +98,12 @@ class NeMoGymHarness(vf.Harness[NeMoGymHarnessConfig]):
 
     config_type = NeMoGymHarnessConfig
     config: NeMoGymHarnessConfig
+    runner: NeMoGymRunner
 
-    def __init__(
-        self,
-        config: NeMoGymHarnessConfig | None = None,
-        *,
-        runner: NeMoGymRunner | None = None,
-    ):
-        harness_config = NeMoGymHarnessConfig() if config is None else config
-        assert isinstance(harness_config, NeMoGymHarnessConfig)
-        configure_nemo_gym_harness_config(harness_config)
-        self.runner = runner or PersistentNeMoGymRunner()
-        super().__init__(config=harness_config)
-        self.config = harness_config
-        self.program = self._run_nemo_gym
+    def compile_program(self, program: vf.ProgramConfig) -> vf.ProgramRunner:
+        configure_nemo_gym_harness_config(self.config)
+        self.runner = PersistentNeMoGymRunner()
+        return self._run_nemo_gym
 
     async def teardown(self) -> None:
         teardown = getattr(self.runner, "teardown", None)
@@ -581,7 +575,7 @@ class NeMoGymModelProxy:
             raise TypeError("OpenAI-compatible proxy requests must be JSON objects.")
         return cast(ConfigData, payload)
 
-    def _response_headers(self, headers: ConfigMap) -> dict[str, str]:
+    def _response_headers(self, headers: Mapping[str, object]) -> dict[str, str]:
         return {
             key: str(value)
             for key, value in headers.items()
