@@ -343,7 +343,11 @@ def _image_offload_enabled() -> bool:
 
 def _image_offload_dir() -> Path:
     raw = os.environ.get(_IMAGE_OFFLOAD_DIR_ENV, "").strip()
-    return Path(raw) if raw else Path(_DEFAULT_IMAGE_OFFLOAD_DIR)
+    # Resolve to absolute: the offloaded path becomes a ``file://`` URL, and a
+    # relative path yields a malformed URI (``file://rel/seg/...`` parses ``rel``
+    # as the host and drops it) that the renderer can't load. Absolute path →
+    # well-formed ``file:///abs/...``.
+    return (Path(raw) if raw else Path(_DEFAULT_IMAGE_OFFLOAD_DIR)).resolve()
 
 
 def _media_type_ext(media_type: str) -> str:

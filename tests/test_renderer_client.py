@@ -748,6 +748,28 @@ def test_offload_rewrites_prompt_base64_to_file(tmp_path, monkeypatch):
     assert Path(url[len("file://") :]).read_bytes() == b"img-A"
 
 
+def test_offload_relative_dir_yields_absolute_loadable_file_uri(tmp_path, monkeypatch):
+    # Regression: a RELATIVE VF_RENDERER_IMAGE_OFFLOAD_DIR must still yield an
+    # ABSOLUTE file:/// URL. A relative path produced "file://rel/seg/..." which
+    # urlparse mis-reads (first segment → host, rest → a bogus absolute path) →
+    # the renderer FileNotFoundError'd on every rollout. (Caught by the local
+    # smoke when --output-dir was relative.)
+    from urllib.parse import urlparse
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("VF_RENDERER_IMAGE_OFFLOAD_DIR", "rel_sub/assets/images")  # relative!
+    prompt = [
+        {"role": "user", "content": [{"type": "image_url", "image_url": {"url": _data_uri(b"img-Z", "jpeg")}}]}
+    ]
+    _offload_prompt_and_trajectory_images(prompt, state=None)
+
+    url = prompt[0]["content"][0]["image_url"]["url"]
+    parsed = urlparse(url)
+    assert url.startswith("file:///")  # absolute + well-formed
+    assert parsed.netloc == ""  # no path segment swallowed as the URL host
+    assert Path(parsed.path).read_bytes() == b"img-Z"  # loadable at the urlparse path
+
+
 @pytest.mark.parametrize(
     "make_prompt",
     [
