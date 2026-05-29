@@ -1,0 +1,21 @@
+[project]
+name = "lisanbench"
+description = "LisanBench word-chain environment for evaluating planning, vocabulary, and constraint adherence."
+tags = ["word-chain", "lisanbench", "levenshtein", "planning", "vocabulary", "single-turn", "train", "eval"]
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "verifiers>=0.1.15.dev7",
+    "datasets",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["lisanbench.py", "pyproject.toml", "README.md"]
+
+[tool.verifiers.eval]
+num_examples = 10
+rollouts_per_example = 3

@@ -11,6 +11,7 @@ This folder contains installable example environments that showcase common usage
 ### SingleTurnEnv (prompt → single response)
 - **gsm8k**: Classic QA with exact-match reward and optional response-format reward.
 - **reverse_text**: XML formatting with non-binary LCS reward + format reward.
+- **lisanbench**: LisanBench word-chain task scored on starting word, edit-distance-1 validity, prefix length, duplicates, and formatting.
 - **continuation_quality**: Completion-style generation (`message_type="completion"`) judged for prose quality with `JudgeRubric`.
 - **mmmu**: Multimodal inputs (image + text) packed in chat content; single-turn boxed-answer check.
 
