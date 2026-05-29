@@ -1,4 +1,3 @@
-from collections.abc import Mapping
 from pathlib import Path
 from typing import TypeAlias, cast
 
@@ -81,7 +80,7 @@ def first_nemo_gym_agent(
 
 
 def agent_ref_name(value: object) -> str | None:
-    if not isinstance(value, Mapping):
+    if not isinstance(value, dict):
         return None
     name = cast(ConfigMap, value).get("name")
     return name if isinstance(name, str) and name else None

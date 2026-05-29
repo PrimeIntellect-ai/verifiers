@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import importlib.resources as resources
 import json
+import logging
 import shlex
 import tarfile
 import tempfile
@@ -11,7 +12,7 @@ from importlib.abc import Traversable
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol, cast
 
-from verifiers.errors import SandboxError
+from verifiers.errors import Error, SandboxError
 from verifiers.decorators import setup as setup_handler
 from verifiers.utils.async_utils import maybe_call_with_named_args
 
@@ -36,6 +37,7 @@ if TYPE_CHECKING:
     from ..toolset import Toolset
 
 VF_STATE_INPUT_PATH_KEY = "_vf_state_input_path"
+logger = logging.getLogger(__name__)
 
 
 class SandboxRecord(Protocol):
@@ -496,20 +498,29 @@ def _program_channel_setup_handler(
     priority: int,
     use_sandbox_python_path: bool = False,
 ) -> Handler:
-    async def handler(task: Task, state: State) -> None:
-        await run_program_items(
-            lease.client,
-            lease.id,
-            program,
-            task,
-            state,
-            runtime,
-            items=[setup_item],
-            error_prefix=f"Program {channel} channel setup failed",
-            use_sandbox_python_path=use_sandbox_python_path,
-        )
+    name = f"program_{channel}_channel_setup"
 
-    handler.__name__ = f"program_{channel}_channel_setup"
+    async def handler(task: Task, state: State) -> None:
+        try:
+            await run_program_items(
+                lease.client,
+                lease.id,
+                program,
+                task,
+                state,
+                runtime,
+                items=[setup_item],
+                error_prefix=f"Program {channel} channel setup failed",
+                use_sandbox_python_path=use_sandbox_python_path,
+            )
+        except Error:
+            raise
+        except Exception as exc:
+            raise SandboxError(
+                f"Sandbox {channel} channel setup handler {name} failed: {exc}"
+            ) from exc
+
+    handler.__name__ = name
     return setup_handler(handler, priority=priority)
 
 
@@ -534,7 +545,12 @@ async def create_sandbox(client: SandboxClient, sandbox_config: ConfigData) -> s
     try:
         await client.wait_for_creation(sandbox_id)
     except BaseException:
-        await client.delete(sandbox_id)
+        try:
+            await client.delete(sandbox_id)
+        except BaseException:
+            logger.exception(
+                "Failed to delete sandbox %s after creation failure.", sandbox_id
+            )
         raise
     return sandbox_id
 

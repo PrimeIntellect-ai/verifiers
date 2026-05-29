@@ -1,6 +1,7 @@
 import asyncio
 import glob
 import inspect
+import logging
 import time
 import uuid
 from collections.abc import Awaitable, Callable, Iterable, Sequence
@@ -88,6 +89,8 @@ from .types import (
     RuntimeData,
     RuntimeObject,
 )
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from .harness import Harness
@@ -2180,14 +2183,42 @@ class Runtime:
 
     async def release_sandboxes(self, scope: str, state: State) -> None:
         scope_key = self.scope_key(scope, state)
+        deletion_count = 0
+        deletion_failures = 0
         for key, handle in list(self.sandbox_leases.items()):
             lease_scope_key, _ = key
             if lease_scope_key != scope_key:
                 continue
             if handle.scope != scope:
                 continue
-            await close_object(handle)
+            deletion_count += 1
+            try:
+                await close_object(handle)
+            except Exception as exc:
+                deletion_failures += 1
+                logger.warning(
+                    "Failed to delete %s sandbox lease %r.",
+                    scope,
+                    key,
+                    exc_info=True,
+                )
+                cleanup_errors = state.setdefault("cleanup_errors", [])
+                if isinstance(cleanup_errors, list):
+                    cleanup_errors.append(
+                        {
+                            "type": type(exc).__name__,
+                            "message": str(exc),
+                            "scope": scope,
+                        }
+                    )
             del self.sandbox_leases[key]
+        if deletion_failures:
+            logger.error(
+                "%s/%s %s sandbox deletions unsuccessful.",
+                deletion_failures,
+                deletion_count,
+                scope,
+            )
 
     async def ensure_global_sandboxes(self, state: State | None = None) -> None:
         from .utils.sandbox_utils import (

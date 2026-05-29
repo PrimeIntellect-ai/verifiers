@@ -35,7 +35,7 @@ def __getattr__(name: str):
         from importlib import import_module
 
         try:
-            return vars(import_module(module_name, __name__))[symbol_name]
+            return getattr(import_module(module_name, __name__), symbol_name)
         except ModuleNotFoundError as exc:
             if exc.name in {"aiohttp", "nemo_gym", "omegaconf"}:
                 raise ImportError(

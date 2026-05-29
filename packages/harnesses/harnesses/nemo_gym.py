@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import asyncio
 import contextlib
 import inspect
@@ -7,7 +5,7 @@ import json
 import logging
 import os
 import secrets
-from collections.abc import Awaitable, Iterator, Mapping, Sequence
+from collections.abc import Awaitable, Iterator, Sequence
 from copy import deepcopy
 from typing import Protocol, TypeAlias, cast
 from urllib.parse import urlparse
@@ -100,7 +98,7 @@ class NeMoGymHarness(vf.Harness[NeMoGymHarnessConfig]):
     config: NeMoGymHarnessConfig
     runner: NeMoGymRunner
 
-    def compile_program(self, program: vf.ProgramConfig) -> vf.ProgramRunner:
+    def compile_program(self, program: vf.ProgramConfig) -> "vf.ProgramRunner":
         configure_nemo_gym_harness_config(self.config)
         self.runner = PersistentNeMoGymRunner()
         return self._run_nemo_gym
@@ -162,6 +160,8 @@ async def nemo_gym_rollout_endpoint_config(state: vf.State) -> EndpointConfig:
         result = close()
         if inspect.isawaitable(result):
             await result
+    if api_key is None:
+        raise ValueError("NeMo Gym rollout endpoint requires a model API key.")
     if not isinstance(api_key, str):
         api_key = str(api_key)
     return {
@@ -527,7 +527,7 @@ class NeMoGymModelProxy:
             return web.Response(
                 status=response.status,
                 body=body,
-                headers=self._response_headers(response.headers),
+                headers=self._response_headers(response.headers.items()),
             )
 
     async def _endpoint_for_request(
@@ -575,10 +575,11 @@ class NeMoGymModelProxy:
             raise TypeError("OpenAI-compatible proxy requests must be JSON objects.")
         return cast(ConfigData, payload)
 
-    def _response_headers(self, headers: Mapping[str, object]) -> dict[str, str]:
+    def _response_headers(self, headers: object) -> dict[str, str]:
+        header_items = cast(list[tuple[str, object]], headers)
         return {
             key: str(value)
-            for key, value in headers.items()
+            for key, value in header_items
             if key.lower()
             not in {
                 "content-length",
@@ -758,7 +759,7 @@ def prepare_nemo_gym_rollout_collection_row(
 
 def set_nemo_gym_proxy_model(row: ConfigData, routing_model: str) -> None:
     create_params = row.get("responses_create_params")
-    if not isinstance(create_params, Mapping):
+    if not isinstance(create_params, dict):
         raise ValueError("NeMo Gym row requires responses_create_params.")
     params = dict(cast(ConfigMap, create_params))
     params["model"] = routing_model
@@ -779,7 +780,7 @@ def nemo_gym_server_name(row: TaskRow, server_name: str | None) -> str:
 
 def nemo_gym_row_from_task(task: ConfigMap, agent_name: str | None) -> ConfigData:
     raw_row = task.get("nemo_gym_row")
-    if isinstance(raw_row, Mapping):
+    if isinstance(raw_row, dict):
         return prepare_nemo_gym_request_row(cast(TaskRow, raw_row), agent_name)
     if "responses_create_params" not in task:
         raise ValueError(
@@ -801,7 +802,7 @@ def apply_nemo_gym_result(state: vf.State, result: ConfigMap) -> None:
     result_dict = jsonable_mapping(result)
     state["nemo_gym_result"] = result_dict
     response = result_dict.get("response")
-    if isinstance(response, Mapping):
+    if isinstance(response, dict):
         completion = messages_from_nemo_gym_response(cast(ConfigMap, response))
         if completion:
             state["completion"] = completion
@@ -830,7 +831,7 @@ def messages_from_nemo_gym_response(
         return []
     messages: list[ConfigData] = []
     for item in output:
-        if not isinstance(item, Mapping):
+        if not isinstance(item, dict):
             continue
         item = cast(ConfigMap, item)
         item_type = item.get("type")
@@ -888,7 +889,7 @@ def nemo_content_text(content: object) -> str:
     if isinstance(content, list):
         parts: list[str] = []
         for part in content:
-            if isinstance(part, Mapping):
+            if isinstance(part, dict):
                 part = cast(ConfigMap, part)
                 text = part.get("text")
                 if isinstance(text, str):
@@ -911,7 +912,7 @@ def jsonable(value: object) -> object:
     model_dump = getattr(value, "model_dump", None)
     if callable(model_dump):
         return jsonable(model_dump(exclude_none=True))
-    if isinstance(value, Mapping):
+    if isinstance(value, dict):
         return {
             str(key): jsonable(item) for key, item in cast(ConfigMap, value).items()
         }

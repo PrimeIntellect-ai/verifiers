@@ -1,5 +1,4 @@
 import json
-from collections.abc import Mapping
 from copy import deepcopy
 from pathlib import Path
 from typing import TypeAlias, cast
@@ -84,7 +83,7 @@ def normalize_nemo_gym_task_row(
     if system_prompt:
         task_row.setdefault("system_prompt", system_prompt)
     raw_info = task_row.get("info")
-    info = dict(cast(ConfigMap, raw_info)) if isinstance(raw_info, Mapping) else {}
+    info = dict(cast(ConfigMap, raw_info)) if isinstance(raw_info, dict) else {}
     info.setdefault(
         "nemo_gym",
         {
@@ -99,7 +98,7 @@ def prompt_parts_from_nemo_gym_row(
     row: TaskRow,
 ) -> tuple[list[ConfigData], list[ConfigData]]:
     create_params = row.get("responses_create_params")
-    if not isinstance(create_params, Mapping):
+    if not isinstance(create_params, dict):
         return [], []
     create_params = cast(ConfigMap, create_params)
     try:

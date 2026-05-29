@@ -124,8 +124,9 @@ def load_environment(config: vf.EnvConfig) -> vf.Env:
 See [BYO Harness](byo-harness.md) for the advanced v1 taskset/harness API.
 Reusable v1 taskset and harness packages live in `tasksets` and `harnesses`.
 Install them with `uv add "verifiers[packages]"`, or with the narrower
-`verifiers[tasksets]` and `verifiers[harnesses]` extras. For example, Harbor
-task directories can run through the bundled OpenCode CLI harness with:
+`verifiers[tasksets]`, `verifiers[harnesses]`, and backend-specific extras such
+as `verifiers[nemogym]`. For example, Harbor task directories can run through
+the bundled OpenCode CLI harness with:
 
 ```python
 from harnesses import OpenCode, OpenCodeConfig
@@ -139,6 +140,8 @@ env = vf.Env(
 
 The packaged `Taskset` and `Harness` classes can also be constructed directly in
 ordinary Python code; loaders are the environment/config composition path.
+`NeMoGymTaskset` and `NeMoGymHarness` expose packaged NeMo Gym rows and rollout
+collection through the same taskset/harness composition boundary.
 
 To run a local evaluation with any OpenAI-compatible model, do:
 ```bash
