@@ -163,7 +163,7 @@ class FakeSandboxClient:
     ) -> FakeCommandResult:
         sandbox_id = str(kwargs.get("sandbox_id") or args[0])
         command = str(kwargs.get("command") or args[1])
-        timeout = cast(int | None, kwargs.get("timeout"))
+        timeout = cast(int | None, kwargs.get("timeout", 900))
         working_dir = cast(str | None, kwargs.get("working_dir"))
         type(self).commands.append((sandbox_id, command))
         type(self).background_jobs.append((sandbox_id, command, timeout, working_dir))
@@ -1360,6 +1360,24 @@ async def test_program_setup_uses_program_setup_timeout(
 
 
 @pytest.mark.asyncio
+async def test_sandbox_command_uses_client_default_timeout_when_omitted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sandboxes(monkeypatch)
+    install_fake_endpoint_tunnel(monkeypatch)
+
+    harness = make_harness(
+        program={"command": ["true"], "sandbox": True},
+        sandbox={"image": "python:3.11-slim"},
+    )
+    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+
+    await harness.run(task)
+
+    assert FakeSandboxClient.background_jobs == [("sbx-1", "true", 900, None)]
+
+
+@pytest.mark.asyncio
 async def test_sandbox_state_input_upload_runs_after_rollout_setup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1958,6 +1976,33 @@ async def test_mcp_lifetime_follows_toolset_scope(
 
     await harness.teardown()
     assert harness.runtime.mcp_exit_stacks == {}
+
+
+@pytest.mark.asyncio
+async def test_shared_sandbox_delete_surfaces_delete_failures() -> None:
+    class DeleteFailingClient:
+        closed = 0
+
+        async def delete(self, sandbox_id: str) -> None:
+            _ = sandbox_id
+            raise RuntimeError("delete failed")
+
+        async def aclose(self) -> None:
+            type(self).closed += 1
+
+    client = DeleteFailingClient()
+    lease = sandbox_utils.SandboxLease(
+        cast(sandbox_utils.SandboxClient, client),
+        "sbx-1",
+        "rollout",
+        "program",
+        owns_client=False,
+    )
+
+    with pytest.raises(RuntimeError, match="delete failed"):
+        await lease.delete()
+
+    assert client.closed == 0
 
 
 @pytest.mark.asyncio

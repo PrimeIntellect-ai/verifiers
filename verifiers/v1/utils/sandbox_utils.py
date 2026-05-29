@@ -29,7 +29,7 @@ from .sandbox_python_utils import (
 from ..runtime import Runtime
 from ..state import State
 from ..task import Task
-from ..types import ConfigMap, Handler, JsonData, ProgramValue
+from ..types import ConfigData, ConfigMap, Handler, JsonData, ProgramValue
 
 if TYPE_CHECKING:
     from ..toolset import Toolset
@@ -191,13 +191,17 @@ class SandboxLease:
         working_dir: str | None = None,
         env: dict[str, str] | None = None,
     ) -> SandboxCommandResult:
+        call_args: ConfigData = {
+            "sandbox_id": self.id,
+            "command": command,
+            "working_dir": working_dir,
+            "env": env,
+        }
+        if timeout is not None:
+            call_args["timeout"] = timeout
         return await maybe_call_with_named_args(
             getattr(self.client, "run_background_job"),
-            sandbox_id=self.id,
-            command=command,
-            timeout=timeout,
-            working_dir=working_dir,
-            env=env,
+            **call_args,
         )
 
     async def delete(self) -> None:
@@ -207,11 +211,10 @@ class SandboxLease:
         try:
             await self.client.delete(self.id)
         finally:
-            if not self.owns_client:
-                return
-            aclose = getattr(self.client, "aclose", None)
-            if callable(aclose):
-                await aclose()
+            if self.owns_client:
+                aclose = getattr(self.client, "aclose", None)
+                if callable(aclose):
+                    await aclose()
 
 
 class SandboxHandle:
