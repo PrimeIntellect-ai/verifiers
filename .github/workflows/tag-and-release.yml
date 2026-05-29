@@ -1,15 +1,21 @@
 name: Tag and Release
 
+# Stable release flow: tag + push to PyPI + GitHub Release with hand-curated
+# notes from `assets/release/RELEASE_<tag>.md`. Dev releases (`v*.dev*`) are
+# excluded from this workflow — they are handled by `devx_tag.yml`, which
+# publishes to PyPI without producing a GitHub Release.
+
 on:
   push:
     branches:
       - main
     tags:
       - 'v*'
+      - '!v*.dev*'
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Existing tag to release (e.g. v1.2.3)'
+        description: 'Existing stable tag to release (e.g. v1.2.3). `.dev` tags are not accepted.'
         required: true
         type: string
 
@@ -63,6 +69,14 @@ jobs:
             echo "No __version__ change detected in verifiers/__init__.py; skipping auto-tag."
             exit 0
           fi
+
+          case "$NEW_VERSION" in
+            *.dev*)
+              echo "verifiers/__init__.py bumped to dev version '$NEW_VERSION'; this flow is reserved for stable releases."
+              echo "Dev releases are produced automatically by devx_tag.yml — do not bump __version__ to a dev value manually."
+              exit 0
+              ;;
+          esac
 
           TAG="v${NEW_VERSION}"
 
@@ -204,6 +218,10 @@ jobs:
           fi
 
           case "$TAG" in
+            v*.dev*)
+              echo "Dev tags are not accepted by this workflow (received '$TAG'). Dev releases are handled by devx_tag.yml." >&2
+              exit 1
+              ;;
             v*)
               ;;
             *)
