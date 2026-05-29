@@ -1,3 +1,5 @@
+__version__ = "0.1.1"
+
 from .mini_swe_agent import MiniSWEAgent, MiniSWEAgentConfig, MiniSWEAgentProgramConfig
 from .opencode import OpenCode, OpenCodeConfig, OpenCodeProgramConfig
 from .pi import Pi, PiConfig, PiProgramConfig

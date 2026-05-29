@@ -2287,7 +2287,6 @@ wheels = [
 
 [[package]]
 name = "harnesses"
-version = "0.1.1"
 source = { editable = "packages/harnesses" }
 dependencies = [
     { name = "verifiers" },
@@ -7284,7 +7283,6 @@ wheels = [
 
 [[package]]
 name = "tasksets"
-version = "0.1.1"
 source = { editable = "packages/tasksets" }
 dependencies = [
     { name = "verifiers" },

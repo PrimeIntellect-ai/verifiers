@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "harnesses"
-version = "0.1.1"
+dynamic = ["version"]  # load from harnesses/__init__.py
 authors = [
     {name = "William Brown", email = "williambrown97@gmail.com"},
 ]
@@ -39,6 +39,9 @@ default = true
 [tool.uv.exclude-newer-package]
 # PrimeIntellect-published on PyPI (trusted publisher)
 verifiers = false
+
+[tool.hatch.version]
+path = "harnesses/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["harnesses"]

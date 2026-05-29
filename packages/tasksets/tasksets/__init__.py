@@ -1,3 +1,5 @@
+__version__ = "0.1.1"
+
 from .harbor import HarborTaskset, HarborTasksetConfig
 
 LAZY_EXPORTS = {
