@@ -40,7 +40,10 @@ class SWEBenchVerifiedTaskset(vf.Taskset[SWEBenchVerifiedTasksetConfig]):
         self.include_test_names = config.include_test_names
         super().__init__(config=config)
 
-    def load_tasks(self) -> list[vf.ConfigData]:
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
+        # The v1 taskset API passes train/eval here; the HF dataset split remains
+        # configurable because SWE-bench Verified commonly uses the "test" split.
+        _ = split
         return load_swe_bench_verified_tasks(
             dataset_name=self.dataset_name,
             dataset_split=self.dataset_split,

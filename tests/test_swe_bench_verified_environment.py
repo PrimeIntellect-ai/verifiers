@@ -77,6 +77,26 @@ def test_load_environment_builds_limited_taskset(monkeypatch):
     assert "tests/test_demo.py::test_existing" in task["prompt"][0]["content"]
 
 
+def test_taskset_load_tasks_accepts_v1_split_keyword(monkeypatch):
+    calls = {}
+
+    def fake_load_dataset(dataset_name: str, **kwargs):
+        calls["dataset_name"] = dataset_name
+        calls["kwargs"] = kwargs
+        return fake_dataset()
+
+    monkeypatch.setattr(swe_bench_verified, "load_dataset", fake_load_dataset)
+
+    taskset = swe_bench_verified.load_taskset(
+        config=swe_bench_verified.SWEBenchVerifiedTasksetConfig(max_examples=1)
+    )
+    tasks = taskset.load_tasks(split="eval")
+
+    assert calls["dataset_name"] == swe_bench_verified.DEFAULT_DATASET_NAME
+    assert calls["kwargs"]["split"] == "test"
+    assert tasks[0]["task_id"] == "demo__repo-1"
+
+
 def test_extract_patch_supports_tags_fences_and_raw_diff():
     assert swe_bench_verified.extract_patch(
         [{"role": "assistant", "content": f"<patch>\n{GOLD_PATCH}\n</patch>"}]
