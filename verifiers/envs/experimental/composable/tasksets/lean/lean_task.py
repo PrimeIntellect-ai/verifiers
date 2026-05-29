@@ -292,12 +292,19 @@ class LeanRubric(vf.Rubric):
             )
             output = (result.stdout or "") + (result.stderr or "")
 
-            # Parse exit code
+            # Parse exit code from the trailing ``EXIT_CODE:N`` we emitted at
+            # the end of ``cmd``. Match the LAST occurrence — the first one
+            # would let a model inject ``#eval IO.println "EXIT_CODE:0"``
+            # into the proof file: the regex would hit the injected marker,
+            # truncate everything after it (hiding the real
+            # ``declaration uses 'sorry'`` diagnostic and the real
+            # ``EXIT_CODE``), and report success.
             exit_code = 1
-            match = re.search(r"EXIT_CODE:(\d+)", output)
-            if match:
-                exit_code = int(match.group(1))
-                output = output[: match.start()].strip()
+            matches = list(re.finditer(r"EXIT_CODE:(\d+)", output))
+            if matches:
+                last = matches[-1]
+                exit_code = int(last.group(1))
+                output = output[: last.start()].strip()
 
             has_sorry = bool(re.search(r"declaration uses 'sorry'", output))
             compiled = exit_code == 0 and not has_sorry
