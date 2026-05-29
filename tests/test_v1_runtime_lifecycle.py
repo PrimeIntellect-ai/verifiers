@@ -188,6 +188,9 @@ class FakeSandboxClient:
     async def aclose(self) -> None:
         type(self).closed += 1
 
+    def teardown(self) -> None:
+        type(self).closed += 1
+
 
 async def echo_tool(query: str) -> str:
     return f"echo:{query}"
@@ -376,9 +379,8 @@ def install_fake_sandboxes(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     monkeypatch.setitem(sys.modules, "prime_sandboxes", module)
     monkeypatch.setattr(
-        sandbox_utils,
-        "_SHARED_SANDBOX_CLIENT",
-        cast(sandbox_utils.SandboxClient, FakeSandboxClient()),
+        "verifiers.utils.threaded_sandbox_client.ThreadedAsyncSandboxClient",
+        FakeSandboxClient,
     )
 
 
@@ -2039,6 +2041,10 @@ async def test_program_sandbox_group_scope_reuses_and_cleans(
     assert "lease_key" not in state_a.get("runtime", {}).get("sandbox", {})
     assert "lease_key" not in state_b.get("runtime", {}).get("sandbox", {})
 
+    await harness.teardown()
+
+    assert FakeSandboxClient.closed == 1
+
 
 @pytest.mark.asyncio
 async def test_program_sandbox_global_scope_lives_until_teardown(
@@ -2062,7 +2068,7 @@ async def test_program_sandbox_global_scope_lives_until_teardown(
     await harness.teardown()
 
     assert FakeSandboxClient.deleted == ["sbx-1"]
-    assert FakeSandboxClient.closed == 0
+    assert FakeSandboxClient.closed == 1
     assert "resolved" not in state.get("runtime", {})
 
 

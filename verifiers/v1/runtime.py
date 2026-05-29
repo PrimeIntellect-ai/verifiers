@@ -73,7 +73,7 @@ if TYPE_CHECKING:
     from .harness import Harness
     from .taskset import Taskset
     from .utils.mcp_utils import MCPToolHandle
-    from .utils.sandbox_utils import SandboxLease
+    from .utils.sandbox_utils import SandboxClient, SandboxLease
 
 BindingOwner = Toolset | Literal["taskset"] | None
 BindingEntry = tuple[str, BindingSource, BindingOwner]
@@ -116,6 +116,7 @@ class Runtime:
         self.taskset_objects: dict[tuple[int, str, str], object] = {}
         self.model_clients: dict[str, Client] = {}
         self.owned_model_clients: set[str] = set()
+        self._sandbox_client = None
         self.sandbox_leases: dict[tuple[str, str], SandboxLease] = {}
         self.sandbox_lock = asyncio.Lock()
         self.mcp_exit_stacks: dict[str, AsyncExitStack] = {}
@@ -797,13 +798,35 @@ class Runtime:
         await self.release_objects("global")
         await self.release_user_objects("global")
         await self.release_taskset_objects()
-        for handle in list(self.sandbox_leases.values()):
-            await maybe_call_with_named_args(getattr(handle, "delete"))
-        self.sandbox_leases.clear()
+        try:
+            for handle in list(self.sandbox_leases.values()):
+                await maybe_call_with_named_args(getattr(handle, "delete"))
+            self.sandbox_leases.clear()
+        finally:
+            await self.teardown_sandbox_client()
         self.tool_handles.clear()
         await self.close_all_mcp_tools()
         await self.release_all_model_clients()
         unregister_runtime(self.runtime_id)
+
+    def sandbox_client(self) -> "SandboxClient":
+        if self._sandbox_client is None:
+            from verifiers.utils.threaded_sandbox_client import (
+                ThreadedAsyncSandboxClient,
+            )
+
+            from .utils.sandbox_utils import SandboxClient
+
+            self._sandbox_client = cast(SandboxClient, ThreadedAsyncSandboxClient())
+        return self._sandbox_client
+
+    async def teardown_sandbox_client(self) -> None:
+        if self._sandbox_client is None:
+            return
+        from .utils.sandbox_utils import close_sandbox_client
+
+        await close_sandbox_client(self._sandbox_client)
+        self._sandbox_client = None
 
     async def run_rollout_handlers(
         self,
@@ -1697,7 +1720,9 @@ class Runtime:
         async with self.sandbox_lock:
             lease = self.sandbox_leases.get(key)
             if lease is None:
-                lease = await create_tool_sandbox_lease(toolset)
+                lease = await create_tool_sandbox_lease(
+                    toolset, client=self.sandbox_client()
+                )
                 self.sandbox_leases[key] = lease
         return SandboxHandle(lease, state)
 
@@ -1740,7 +1765,9 @@ class Runtime:
         async with self.sandbox_lock:
             lease = self.sandbox_leases.get(key)
             if lease is None:
-                lease = await create_sandbox_lease(sandbox_config, key[1])
+                lease = await create_sandbox_lease(
+                    sandbox_config, key[1], client=self.sandbox_client()
+                )
                 self.sandbox_leases[key] = lease
             setattr(lease, "scope_key", key[0])
         return lease
@@ -1784,7 +1811,9 @@ class Runtime:
         async with self.sandbox_lock:
             lease = self.sandbox_leases.get(key)
             if lease is None:
-                lease = await create_scoped_sandbox_lease(user, key[1])
+                lease = await create_scoped_sandbox_lease(
+                    user, key[1], client=self.sandbox_client()
+                )
                 self.sandbox_leases[key] = lease
         return SandboxHandle(lease, state)
 
@@ -1824,10 +1853,12 @@ class Runtime:
                 if key in self.sandbox_leases:
                     continue
                 if isinstance(owner, Toolset):
-                    self.sandbox_leases[key] = await create_tool_sandbox_lease(owner)
+                    self.sandbox_leases[key] = await create_tool_sandbox_lease(
+                        owner, client=self.sandbox_client()
+                    )
                 else:
                     self.sandbox_leases[key] = await create_scoped_sandbox_lease(
-                        owner, sandbox_key
+                        owner, sandbox_key, client=self.sandbox_client()
                     )
 
     def bind_global_sandboxes(self, state: State) -> None:

@@ -106,7 +106,14 @@ class SandboxClient(Protocol):
     ) -> SandboxCommandResult: ...
 
 
-_SHARED_SANDBOX_CLIENT: SandboxClient | None = None
+async def close_sandbox_client(client: SandboxClient) -> None:
+    teardown = getattr(client, "teardown", None)
+    if callable(teardown):
+        teardown()
+        return
+    aclose = getattr(client, "aclose", None)
+    if callable(aclose):
+        await aclose()
 
 
 class SandboxLease:
@@ -212,9 +219,7 @@ class SandboxLease:
             await self.client.delete(self.id)
         finally:
             if self.owns_client:
-                aclose = getattr(self.client, "aclose", None)
-                if callable(aclose):
-                    await aclose()
+                await close_sandbox_client(self.client)
 
 
 class SandboxHandle:
@@ -280,21 +285,28 @@ class SandboxHandle:
         await self.lease.delete()
 
 
-async def create_tool_sandbox_lease(toolset: "Toolset") -> SandboxLease:
-    return await create_scoped_sandbox_lease(toolset, tool_sandbox_key(toolset))
+async def create_tool_sandbox_lease(
+    toolset: "Toolset", client: SandboxClient | None = None
+) -> SandboxLease:
+    return await create_scoped_sandbox_lease(toolset, tool_sandbox_key(toolset), client)
 
 
-async def create_sandbox_lease(sandbox_config: ConfigMap, key: str) -> SandboxLease:
-    global _SHARED_SANDBOX_CLIENT
-
+async def create_sandbox_lease(
+    sandbox_config: ConfigMap, key: str, client: SandboxClient | None = None
+) -> SandboxLease:
     scope = sandbox_scope(sandbox_config)
-    if _SHARED_SANDBOX_CLIENT is None:
+    owns_client = client is None
+    if client is None:
         from verifiers.utils.threaded_sandbox_client import ThreadedAsyncSandboxClient
 
-        _SHARED_SANDBOX_CLIENT = cast(SandboxClient, ThreadedAsyncSandboxClient())
-    client = _SHARED_SANDBOX_CLIENT
-    sandbox_id = await create_sandbox(client, sandbox_config)
-    lease = SandboxLease(client, sandbox_id, scope, key, owns_client=False)
+        client = cast(SandboxClient, ThreadedAsyncSandboxClient())
+    try:
+        sandbox_id = await create_sandbox(client, sandbox_config)
+    except BaseException:
+        if owns_client:
+            await close_sandbox_client(client)
+        raise
+    lease = SandboxLease(client, sandbox_id, scope, key, owns_client=owns_client)
     try:
         await setup_sandbox(lease, sandbox_config)
     except BaseException:
@@ -304,12 +316,14 @@ async def create_sandbox_lease(sandbox_config: ConfigMap, key: str) -> SandboxLe
 
 
 async def create_scoped_sandbox_lease(
-    owner: object, key: str | None = None
+    owner: object, key: str | None = None, client: SandboxClient | None = None
 ) -> SandboxLease:
     sandbox_config = getattr(owner, "sandbox", None)
     if not isinstance(sandbox_config, Mapping):
         raise TypeError("Sandbox owner must define a sandbox mapping.")
-    return await create_sandbox_lease(sandbox_config, key or sandbox_owner_key(owner))
+    return await create_sandbox_lease(
+        sandbox_config, key or sandbox_owner_key(owner), client
+    )
 
 
 async def run_sandbox_command(
