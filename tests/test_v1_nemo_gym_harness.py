@@ -3,6 +3,7 @@ import gzip
 import os
 
 import pytest
+import verifiers as vf
 from aiohttp import ClientSession, web
 
 from harnesses.nemo_gym import (
@@ -13,6 +14,7 @@ from harnesses.nemo_gym import (
     NeMoGymHarnessConfig,
     NeMoGymModelProxy,
     PersistentNeMoGymRunner,
+    apply_nemo_gym_result,
     build_nemo_gym_global_config,
     build_nemo_gym_policy_model_config,
     disable_ray_uv_run_runtime_env,
@@ -228,6 +230,11 @@ def test_nemo_gym_harness_does_not_add_a_model_server_config_path():
     )
 
     assert harness._config_paths() == ["agent.yaml"]
+
+
+def test_apply_nemo_gym_result_rejects_non_numeric_string_reward():
+    with pytest.raises(TypeError, match="reward must be numeric"):
+        apply_nemo_gym_result(vf.State(), {"reward": "high"})
 
 
 def test_build_nemo_gym_policy_model_config_requires_explicit_port():

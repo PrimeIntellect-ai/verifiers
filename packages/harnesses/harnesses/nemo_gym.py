@@ -16,9 +16,9 @@ from pydantic import Field
 
 from verifiers.types import AssistantMessage, ToolCall, ToolMessage
 from verifiers.utils.serve_utils import get_free_port
+from verifiers.v1.utils.nemo_gym_utils import agent_ref_name
 
 from harnesses.utils.nemo_gym_utils import (
-    agent_ref_name,
     first_nemo_gym_agent,
     resolve_nemo_gym_config_path,
 )
@@ -96,7 +96,7 @@ class NeMoGymHarness(vf.Harness[NeMoGymHarnessConfig]):
 
     config_type = NeMoGymHarnessConfig
     config: NeMoGymHarnessConfig
-    runner: NeMoGymRunner
+    runner: NeMoGymRunner | None = None
 
     def compile_program(self, program: vf.ProgramConfig) -> "vf.ProgramRunner":
         configure_nemo_gym_harness_config(self.config)
@@ -104,7 +104,9 @@ class NeMoGymHarness(vf.Harness[NeMoGymHarnessConfig]):
         return self._run_nemo_gym
 
     async def teardown(self) -> None:
-        teardown = getattr(self.runner, "teardown", None)
+        runner = self.runner
+        self.runner = None
+        teardown = getattr(runner, "teardown", None)
         if callable(teardown):
             result = teardown()
             if inspect.isawaitable(result):
@@ -112,9 +114,12 @@ class NeMoGymHarness(vf.Harness[NeMoGymHarnessConfig]):
         await super().teardown()
 
     async def _run_nemo_gym(self, task: vf.Task, state: vf.State) -> vf.State:
+        runner = self.runner
+        if runner is None:
+            raise RuntimeError("NeMo Gym harness runner has not been compiled.")
         endpoint_config = await nemo_gym_rollout_endpoint_config(state)
         row = nemo_gym_row_from_task(cast(ConfigMap, task), self.config.agent_name)
-        result = await self.runner.run(
+        result = await runner.run(
             row,
             config_paths=self._config_paths(),
             server_name=self.config.server_name,
@@ -807,8 +812,15 @@ def apply_nemo_gym_result(state: vf.State, result: ConfigMap) -> None:
         if completion:
             state["completion"] = completion
     reward = result_dict.get("reward")
-    if isinstance(reward, int | float | str) and not isinstance(reward, bool):
+    if isinstance(reward, bool):
+        raise TypeError("NeMo Gym reward must be numeric.")
+    if isinstance(reward, int | float):
         state["reward"] = float(reward)
+    elif isinstance(reward, str):
+        try:
+            state["reward"] = float(reward)
+        except ValueError as exc:
+            raise TypeError("NeMo Gym reward must be numeric.") from exc
     elif reward is not None:
         raise TypeError("NeMo Gym reward must be numeric.")
     metrics = state.setdefault("metrics", {})

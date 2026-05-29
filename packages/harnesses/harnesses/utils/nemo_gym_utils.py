@@ -1,17 +1,9 @@
 from pathlib import Path
-from typing import TypeAlias, cast
+from typing import TypeAlias
+
+from verifiers.v1.utils.nemo_gym_utils import nemo_gym_package_root
 
 ConfigMap: TypeAlias = dict[str, object]
-
-
-def nemo_gym_package_root() -> Path:
-    try:
-        from nemo_gym import PARENT_DIR as nemo_gym_root  # ty: ignore[unresolved-import]
-    except ImportError as exc:
-        raise ImportError(
-            "NeMo Gym integration requires nemo-gym. Install as `verifiers[nemogym]`."
-        ) from exc
-    return Path(nemo_gym_root)
 
 
 def resolve_nemo_gym_config_path(
@@ -77,10 +69,3 @@ def first_nemo_gym_agent(
         except ValueError:
             continue
     return None
-
-
-def agent_ref_name(value: object) -> str | None:
-    if not isinstance(value, dict):
-        return None
-    name = cast(ConfigMap, value).get("name")
-    return name if isinstance(name, str) and name else None

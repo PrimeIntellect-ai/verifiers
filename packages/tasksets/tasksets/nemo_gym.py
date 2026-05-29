@@ -5,10 +5,10 @@ from typing import TypeAlias, cast
 
 import verifiers as vf
 from verifiers.v1.utils.endpoint_utils import normalize_openai_responses_input
+from verifiers.v1.utils.nemo_gym_utils import agent_ref_name
 
 from tasksets.utils.nemo_gym_utils import (
     DEFAULT_NEMO_GYM_DATA_NAME,
-    agent_ref_name,
     resolve_nemo_gym_data_path,
 )
 
