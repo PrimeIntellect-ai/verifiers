@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tasksets"
-version = "0.1.1"
+dynamic = ["version"]  # load from tasksets/__init__.py
 authors = [
     {name = "William Brown", email = "williambrown97@gmail.com"},
 ]
@@ -37,6 +37,9 @@ default = true
 [tool.uv.exclude-newer-package]
 # PrimeIntellect-published on PyPI (trusted publisher)
 verifiers = false
+
+[tool.hatch.version]
+path = "tasksets/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["tasksets"]

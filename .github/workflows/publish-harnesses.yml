@@ -29,20 +29,23 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Create release tag for unreleased version
+      - name: Create release tag for untagged version
         id: tag
         run: |
           echo "created=false" >> "$GITHUB_OUTPUT"
 
           VERSION=$(python - <<'PY'
-          import tomllib
           from pathlib import Path
+          import re
+          import sys
 
-          with Path("packages/harnesses/pyproject.toml").open("rb") as f:
-              data = tomllib.load(f)
-          print(data["project"]["version"])
+          match = re.search(r'__version__\s*=\s*"([^"]+)"', Path("packages/harnesses/harnesses/__init__.py").read_text())
+          if not match:
+              sys.exit("Could not find __version__ in packages/harnesses/harnesses/__init__.py")
+          print(match.group(1))
           PY
           )
+
           TAG="harnesses-v${VERSION}"
 
           if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
@@ -52,30 +55,6 @@ jobs:
 
           if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
             echo "Tag ${TAG} already exists on origin; skipping."
-            exit 0
-          fi
-
-          PYPI_STATUS=$(python - <<PY
-          from urllib.error import HTTPError
-          from urllib.request import Request, urlopen
-
-          request = Request(
-              "https://pypi.org/pypi/harnesses/${VERSION}/json",
-              headers={"Accept": "application/json"},
-          )
-          try:
-              with urlopen(request, timeout=10):
-                  print("released")
-          except HTTPError as exc:
-              if exc.code == 404:
-                  print("unreleased")
-              else:
-                  raise SystemExit(f"PyPI returned HTTP {exc.code}")
-          PY
-          )
-
-          if [ "$PYPI_STATUS" = "released" ]; then
-            echo "harnesses ${VERSION} is already published on PyPI; skipping."
             exit 0
           fi
 
@@ -189,17 +168,19 @@ jobs:
 
           VERSION="${TAG#harnesses-v}"
           FILE_VERSION=$(python - <<'PY'
-          import tomllib
           from pathlib import Path
+          import re
+          import sys
 
-          with Path("packages/harnesses/pyproject.toml").open("rb") as f:
-              data = tomllib.load(f)
-          print(data["project"]["version"])
+          match = re.search(r'__version__\s*=\s*"([^"]+)"', Path("packages/harnesses/harnesses/__init__.py").read_text())
+          if not match:
+              sys.exit("Could not find __version__ in packages/harnesses/harnesses/__init__.py")
+          print(match.group(1))
           PY
           )
 
           if [ "$FILE_VERSION" != "$VERSION" ]; then
-            echo "Version mismatch: tag requests '$VERSION' but packages/harnesses/pyproject.toml defines '$FILE_VERSION'" >&2
+            echo "Version mismatch: tag requests '$VERSION' but packages/harnesses/harnesses/__init__.py defines '$FILE_VERSION'" >&2
             exit 1
           fi
 
