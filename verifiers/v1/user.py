@@ -1,15 +1,16 @@
-import inspect
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
-from typing import Literal, cast
+from collections.abc import Sequence
+from typing import Generic, Literal, TypeVar, cast
 
-from pydantic import field_validator
-
-from .config import Config, import_config_ref, resolve_config_object
-from .sandbox import SandboxConfig
+from .config import Config, resolve_config_object
+from .sandbox import SandboxConfig, sandbox_config_mapping
 from .utils.binding_utils import BindingMap, normalize_binding_map
 from .utils.binding_utils import normalize_object_map
-from .utils.config_utils import coerce_config
+from .utils.config_utils import (
+    coerce_config,
+    config_type_from_class,
+    registered_config_type,
+    register_config_type,
+)
 from .utils.trajectory_utils import completion_from_trajectory
 from .types import ConfigMap, Handler, Objects, PromptMessage
 
@@ -17,16 +18,10 @@ UserScope = Literal["rollout", "group", "global"]
 
 
 class UserConfig(Config):
-    fn: str
     scope: UserScope = "rollout"
     bindings: BindingMap = {}
     objects: dict[str, str] = {}
     sandbox: SandboxConfig | None = None
-
-    @field_validator("bindings", mode="before")
-    @classmethod
-    def validate_bindings(cls, value: object) -> BindingMap:
-        return normalize_binding_map(value, "user.bindings", key_style="arg")
 
 
 def state_messages(
@@ -49,64 +44,72 @@ def state_messages(
     return []
 
 
-@dataclass(frozen=True)
-class User:
-    fn: Handler
-    scope: UserScope = "rollout"
-    bindings: BindingMap = field(default_factory=dict)
-    objects: Objects = field(default_factory=dict)
-    sandbox: ConfigMap | None = None
+ConfigT = TypeVar("ConfigT", bound=UserConfig)
+user_type_registry: dict[type[UserConfig], type["User"]] = {}
 
-    def __post_init__(self) -> None:
-        if self.scope not in {"rollout", "group", "global"}:
+
+class User(Generic[ConfigT]):
+    config: ConfigT
+    scope: UserScope
+    bindings: BindingMap
+    objects: Objects
+    sandbox: ConfigMap | None
+    get_response: Handler
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)
+        config_type = config_type_from_class(
+            cls,
+            inherited=False,
+            owner_base=User,
+            config_base=UserConfig,
+        )
+        if config_type is not None:
+            register_config_type(cls, config_type)
+            user_type_registry[cast(type[UserConfig], config_type)] = cls
+
+    def __init__(
+        self,
+        *,
+        config: object = None,
+    ):
+        config_type = registered_config_type(type(self), UserConfig)
+        self.config = cast(ConfigT, coerce_config(config_type, config))
+        if self.config.scope not in {"rollout", "group", "global"}:
             raise ValueError("User scope must be 'rollout', 'group', or 'global'.")
         bindings = normalize_binding_map(
-            self.bindings, "User bindings", key_style="arg"
+            self.config.bindings, "User bindings", key_style="arg"
         )
-        try:
-            parameters = inspect.signature(self.fn).parameters
-        except (TypeError, ValueError):
-            parameters = {}
-        if "messages" in parameters:
-            bindings.setdefault("messages", state_messages)
-        object.__setattr__(self, "bindings", bindings)
-        object.__setattr__(
-            self, "objects", normalize_object_map(self.objects, "User objects")
+        if "messages" in bindings:
+            raise ValueError("User messages are provided directly to get_response.")
+        self.scope = self.config.scope
+        self.bindings = bindings
+        self.objects = normalize_object_map(
+            cast(
+                Objects,
+                {
+                    str(key): resolve_config_object(value)
+                    for key, value in self.config.objects.items()
+                },
+            ),
+            "User objects",
         )
+        self.sandbox = sandbox_config_mapping(self.config.sandbox, fill_defaults=False)
 
 
 def normalize_user(value: object | None) -> User | None:
-    value = resolve_config_object(value) if value is not None else None
-    if value is None or isinstance(value, User):
-        return value
+    if value is None:
+        return None
     if isinstance(value, UserConfig):
-        return user_from_mapping(value.model_dump(exclude_none=True))
-    if isinstance(value, Mapping):
-        return user_from_mapping(cast(ConfigMap, value))
-    if callable(value):
-        return User(value)
-    raise TypeError("User must be a callable, User, import ref, or mapping.")
+        return user_from_config(value)
+    raise TypeError("User must be a UserConfig.")
 
 
-def user_from_mapping(spec: ConfigMap) -> User:
-    config = coerce_config(UserConfig, spec)
-    fn = config.fn
-    if isinstance(fn, str):
-        fn = import_config_ref(fn)
-    if not callable(fn):
-        raise TypeError("User config requires callable fn.")
-    return User(
-        fn=fn,
-        scope=cast(UserScope, config.scope),
-        bindings=config.bindings,
-        objects=cast(
-            Objects,
-            {
-                str(key): resolve_config_object(value)
-                for key, value in config.objects.items()
-            },
-        ),
-        sandbox=config.sandbox.model_dump(exclude_none=True)
-        if config.sandbox is not None
-        else None,
-    )
+def user_from_config(config: UserConfig) -> User:
+    for config_type in type(config).__mro__:
+        if not issubclass(config_type, UserConfig):
+            continue
+        user_type = user_type_registry.get(config_type)
+        if user_type is not None:
+            return user_type(config=config)
+    raise TypeError(f"No User subclass is registered for {type(config).__name__}.")

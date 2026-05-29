@@ -6,6 +6,7 @@ from typing import cast
 import pytest
 
 import verifiers as vf
+from openenv.core.env_server.mcp_types import Tool as OpenEnvToolSpec
 from tasksets import openenv
 
 
@@ -74,9 +75,9 @@ class FakeMCPToolClient:
     async def reset(self, *, seed: int) -> OpenEnvStepResult:
         return OpenEnvStepResult({"prompt": f"mcp-{seed}"}, None, False)
 
-    async def list_tools(self) -> list[openenv.OpenEnvToolSpec]:
+    async def list_tools(self) -> list[OpenEnvToolSpec]:
         return [
-            openenv.OpenEnvToolSpec(
+            OpenEnvToolSpec(
                 name="echo",
                 description="Echo a message",
                 input_schema={
@@ -178,7 +179,7 @@ async def test_openenv_taskset_runs_gym_rollout_boundary(
     assert client.connected is True
     assert client.reset_seeds == [7]
 
-    state["completion"] = [vf.AssistantMessage(content="advance")]
+    state["completion"] = [vf.AssistantMessage(content='{"command": "advance"}')]
     state["trajectory"].append({"reward": None})
     messages = await env.harness.runtime.user_messages(task, state)
 

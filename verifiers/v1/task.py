@@ -1,6 +1,7 @@
 from collections.abc import Mapping
 from copy import deepcopy
 
+from .model import model_config_data
 from .sandbox import sandbox_config_mapping
 from .utils.task_freeze_utils import assert_serializable, freeze_value
 from .utils.prompt_utils import normalize_prompt, normalize_system_prompt
@@ -42,6 +43,8 @@ class Task(dict):
             )
         if "program" in self and not isinstance(self["program"], Mapping):
             raise TypeError("task.program must be a mapping.")
+        if "model" in self:
+            super().__setitem__("model", model_config_data(self["model"]))
         if "max_turns" in self and (
             not isinstance(self["max_turns"], int)
             or isinstance(self["max_turns"], bool)

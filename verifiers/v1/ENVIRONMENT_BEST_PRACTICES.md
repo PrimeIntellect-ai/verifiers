@@ -101,7 +101,7 @@ class MyTasksetConfig(vf.TasksetConfig):
 
 
 class MyTaskset(vf.Taskset[MyTasksetConfig]):
-    def load_tasks(self) -> vf.Tasks:
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         rows = [
             {
                 "prompt": [{"role": "user", "content": "What is 2 + 2?"}],
@@ -142,7 +142,7 @@ class MyTasksetConfig(vf.TasksetConfig):
 
 
 class MyTaskset(vf.Taskset[MyTasksetConfig]):
-    def load_tasks(self) -> vf.Tasks:
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         rows = [
             {
                 "prompt": [{"role": "user", "content": "What is 2 + 2?"}],

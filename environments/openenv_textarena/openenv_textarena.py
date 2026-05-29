@@ -18,7 +18,11 @@ def render_textarena_prompt(
     observation: object,
     *,
     context: str = "reset",
+    action_schema: vf.ConfigData | None = None,
+    contract: str = "gym",
+    seed: int = 0,
 ) -> Messages:
+    del action_schema, contract, seed
     if not isinstance(observation, Mapping):
         raise RuntimeError(
             f"openenv-textarena prompt renderer expected dict observation, got {type(observation).__name__}."

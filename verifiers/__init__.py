@@ -2,7 +2,7 @@ __version__ = "0.1.15.dev11"
 
 import importlib
 import os
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal, TypeAlias
 
 # early imports to avoid circular dependencies
 from .errors import *  # noqa # isort: skip
@@ -17,7 +17,7 @@ from .decorators import (  # noqa # isort: skip
     teardown,
     update,
 )
-from .types import DatasetBuilder, State  # noqa # isort: skip
+from .types import DatasetBuilder, EndpointConfig, Endpoints, State  # noqa # isort: skip
 from .parsers.parser import Parser  # noqa # isort: skip
 from .rubrics.rubric import Rubric  # noqa # isort: skip
 
@@ -39,6 +39,8 @@ from .utils.logging_utils import (
     setup_logging,
 )
 
+TaskSplit: TypeAlias = Literal["train", "eval"]
+
 # Setup default logging configuration
 setup_logging(os.getenv("VF_LOG_LEVEL"))
 
@@ -55,6 +57,9 @@ __all__ = [
     "Objects",
     "Program",
     "ProgramConfig",
+    "ProgramOptionMap",
+    "ProgramValue",
+    "PromptInput",
     "Parser",
     "ThinkParser",
     "MaybeThinkParser",
@@ -73,8 +78,12 @@ __all__ = [
     "OpenEnvEnv",
     "Env",
     "EnvConfig",
+    "Endpoint",
+    "EndpointConfig",
+    "Endpoints",
     "Task",
     "TaskRow",
+    "TaskSplit",
     "Tasks",
     "Taskset",
     "TasksetConfig",
@@ -82,6 +91,7 @@ __all__ = [
     "HarnessConfig",
     "MCPTool",
     "MCPToolConfig",
+    "ModelConfig",
     "SandboxConfig",
     "SystemPrompt",
     "Toolset",
@@ -190,6 +200,8 @@ _LAZY_IMPORTS = {
     "CallableConfig": "verifiers.v1:CallableConfig",
     "Env": "verifiers.v1:Env",
     "EnvConfig": "verifiers.v1:EnvConfig",
+    "Endpoint": "verifiers.v1:Endpoint",
+    "EndpointConfig": "verifiers.v1:EndpointConfig",
     "ConfigData": "verifiers.v1:ConfigData",
     "ConfigMap": "verifiers.v1:ConfigMap",
     "GroupHandler": "verifiers.v1:GroupHandler",
@@ -198,6 +210,7 @@ _LAZY_IMPORTS = {
     "Objects": "verifiers.v1:Objects",
     "Task": "verifiers.v1:Task",
     "TaskRow": "verifiers.v1:TaskRow",
+    "TaskSplit": "verifiers.v1:TaskSplit",
     "Tasks": "verifiers.v1:Tasks",
     "Taskset": "verifiers.v1:Taskset",
     "TasksetConfig": "verifiers.v1:TasksetConfig",
@@ -205,8 +218,12 @@ _LAZY_IMPORTS = {
     "HarnessConfig": "verifiers.v1:HarnessConfig",
     "ProgramConfig": "verifiers.v1:ProgramConfig",
     "Program": "verifiers.v1:Program",
+    "ProgramOptionMap": "verifiers.v1:ProgramOptionMap",
+    "ProgramValue": "verifiers.v1:ProgramValue",
+    "PromptInput": "verifiers.v1:PromptInput",
     "MCPTool": "verifiers.v1:MCPTool",
     "MCPToolConfig": "verifiers.v1:MCPToolConfig",
+    "ModelConfig": "verifiers.v1:ModelConfig",
     "SandboxConfig": "verifiers.v1:SandboxConfig",
     "SignalConfig": "verifiers.v1:SignalConfig",
     "SystemPrompt": "verifiers.v1:SystemPrompt",
@@ -297,16 +314,22 @@ if TYPE_CHECKING:
         ConfigMap,
         Env,
         EnvConfig,
+        Endpoint,
+        EndpointConfig,
         GroupHandler,
         Handler,
         Harness,
         HarnessConfig,
         MCPTool,
         MCPToolConfig,
+        ModelConfig,
         MutableConfigMap,
         Objects,
         Program,
         ProgramConfig,
+        ProgramOptionMap,
+        ProgramValue,
+        PromptInput,
         SandboxConfig,
         SignalConfig,
         SystemPrompt,

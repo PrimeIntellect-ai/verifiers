@@ -28,7 +28,7 @@ class ReverseTextTasksetConfig(vf.TasksetConfig):
 
 
 class ReverseTextTaskset(vf.Taskset[ReverseTextTasksetConfig]):
-    def load_tasks(self) -> vf.Tasks:
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         def map_row(row):
             return {
                 "question": row["prompt"],

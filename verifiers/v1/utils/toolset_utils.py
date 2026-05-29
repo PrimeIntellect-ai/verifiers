@@ -3,6 +3,7 @@ from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, cast
 
 from pydantic import BaseModel
+from verifiers.types import Tool
 
 from ..sandbox import SandboxConfig
 from ..types import ConfigMap, Handler, Objects
@@ -155,6 +156,7 @@ def toolset_from_mapping(spec: ConfigMap) -> "Toolset":
         raise TypeError("Toolset write must be a boolean.")
     return Toolset(
         tools=cast(ToolEntries | None, spec.get("tools", ())),
+        handler=cast(ToolsetCallableEntry | None, spec.get("handler")),
         show=string_items(spec.get("show")),
         hide=string_items(spec.get("hide")),
         bindings=cast(BindingMap | None, spec.get("bindings")),
@@ -184,7 +186,7 @@ def tool_item(value: object) -> "ToolEntry":
     from ..toolset import MCPTool, MCPToolConfig, Toolset
 
     value = resolve_config_object(value)
-    if isinstance(value, Toolset | MCPTool):
+    if isinstance(value, Toolset | MCPTool | Tool):
         return value
     if isinstance(value, MCPToolConfig):
         return MCPTool(
@@ -204,7 +206,9 @@ def tool_item(value: object) -> "ToolEntry":
             )
         raise TypeError("Tool mapping specs require command.")
     if not callable(value):
-        raise TypeError("Tool entries must be callables, Toolsets, or MCP tool specs.")
+        raise TypeError(
+            "Tool entries must be callables, Tools, Toolsets, or MCP tool specs."
+        )
     return cast(Handler, value)
 
 
@@ -235,6 +239,8 @@ def optional_string(value: object) -> str | None:
 
 
 def tool_name(tool: object) -> str:
+    if isinstance(tool, Tool):
+        return tool.name
     name = getattr(tool, "__name__", None) or getattr(tool, "name", None)
     if not isinstance(name, str) or not name:
         raise ValueError("Tools require a stable __name__ or name.")

@@ -17,7 +17,6 @@ from .utils.config_utils import (
 )
 
 
-JsonMap: TypeAlias = ConfigData
 ConfigSource: TypeAlias = BaseModel | ConfigMap | None
 
 
@@ -29,7 +28,7 @@ class Config(BaseConfig):
         for name in type(self).model_fields:
             try:
                 validate_serializable_value(
-                    getattr(self, name), f"{type(self).__name__}.{name}"
+                    self.__dict__[name], f"{type(self).__name__}.{name}"
                 )
             except TypeError as exc:
                 raise ValueError(str(exc)) from exc

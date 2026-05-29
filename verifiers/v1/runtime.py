@@ -6,6 +6,7 @@ import time
 import uuid
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from contextlib import AsyncExitStack
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, cast, get_args
 
 from verifiers.clients import Client, resolve_client
@@ -63,7 +64,7 @@ from .toolset import (
     iter_toolsets,
     tool_name,
 )
-from .user import User
+from .user import User, state_messages
 from .types import ConfigData, ConfigMap, Handler, PromptMessage
 
 if TYPE_CHECKING:
@@ -72,8 +73,29 @@ if TYPE_CHECKING:
     from .utils.mcp_utils import MCPToolHandle
     from .utils.sandbox_utils import SandboxClient, SandboxLease
 
-BindingOwner = Toolset | Literal["taskset"] | None
+BindingOwner = Toolset | Literal["taskset", "harness"] | None
 BindingEntry = tuple[str, BindingSource, BindingOwner]
+TrajectoryVisibility = Literal["append", "hidden"]
+
+
+@dataclass(frozen=True)
+class ModelRequestContext:
+    source: Literal["direct", "endpoint"] = "direct"
+    endpoint_request_id: str | None = None
+    headers: ConfigData = field(default_factory=dict)
+    trajectory_visibility: TrajectoryVisibility = "append"
+
+    def extras(self) -> ConfigData:
+        data: ConfigData = {}
+        if self.source == "endpoint":
+            data["endpoint"] = True
+        if self.endpoint_request_id is not None:
+            data["endpoint_request_id"] = self.endpoint_request_id
+        if self.headers:
+            data["headers"] = self.headers
+        if self.trajectory_visibility != "append":
+            data["trajectory_visibility"] = self.trajectory_visibility
+        return data
 
 
 class BorrowedTool:
@@ -105,13 +127,14 @@ class Runtime:
         self.toolsets = []
         for owner in owners:
             if owner is not None:
-                self.toolsets.extend(iter_toolsets(getattr(owner, "toolsets", ())))
+                self.toolsets.extend(iter_toolsets(owner.toolsets))
         self.named_toolsets = self._collect_named_toolsets()
         self.rollout_toolsets: dict[str, list[Toolset]] = {}
         self.scoped_tools: dict[tuple[int, str, str], list[ToolEntry]] = {}
         self.objects: dict[tuple[int, str, str], object] = {}
         self.user_objects: dict[tuple[int, str, str], object] = {}
         self.taskset_objects: dict[tuple[int, str, str], object] = {}
+        self.harness_objects: dict[tuple[int, str, str], object] = {}
         self.model_clients: dict[str, Client] = {}
         self.owned_model_clients: set[str] = set()
         self._sandbox_client = None
@@ -353,12 +376,14 @@ class Runtime:
             client = resolve_client(resolved_config)
             client_type: ClientType = resolved_config.client_type
             owns_client = True
-        else:
-            config = getattr(client, "_config", None)
+        elif isinstance(client, Client):
+            config = client.config
             if isinstance(config, ClientConfig):
                 client_type = config.client_type
             else:
                 client_type = "openai_chat_completions"
+        else:
+            client_type = "openai_chat_completions"
         key = str(
             state["runtime"].get("client_key")
             or state.get("trajectory_id")
@@ -422,7 +447,7 @@ class Runtime:
     def tool_defs(self, state: State) -> list[Tool] | None:
         defs: list[Tool] = []
         for name, tool in self.all_exposed_tools(state).items():
-            if callable(tool):
+            if isinstance(tool, Tool) or callable(tool):
                 defs.append(self._tool_def(name, tool, state))
         return defs or None
 
@@ -436,17 +461,20 @@ class Runtime:
         if user is None:
             return []
         kwargs: ConfigData = {}
-        fn = user.fn
         if user.sandbox is not None:
             kwargs["sandbox"] = await self.resolve_user_sandbox(user, task, state)
         for name, source in user.bindings.items():
-            validate_bound_arg(user.fn, name, f"User binding {name!r}")
+            validate_bound_arg(user.get_response, name, f"User binding {name!r}")
             validate_binding_source(source, f"User binding {name!r}")
             kwargs[name] = await self.resolve_user_binding(
                 user, source, task, state, transcript
             )
         raw_messages = await maybe_call_with_named_args(
-            fn, task=task, state=state, **kwargs
+            user.get_response,
+            task=task,
+            state=state,
+            messages=state_messages(state, transcript),
+            **kwargs,
         )
         if raw_messages is None:
             return []
@@ -454,19 +482,35 @@ class Runtime:
         return [message.model_dump(exclude_none=True) for message in messages]
 
     def _resolve_user(self) -> User | None:
-        users = [
-            user
-            for user in (
-                getattr(self.taskset, "user", None),
-                getattr(self.harness, "user", None),
-            )
-            if user is not None
-        ]
+        users = []
+        if self.taskset is not None and self.taskset.user is not None:
+            users.append(self.taskset.user)
+        if self.harness is not None and self.harness.user is not None:
+            users.append(self.harness.user)
         if len(users) > 1:
             raise ValueError("Taskset and harness cannot both define user.")
         return cast(User | None, users[0] if users else None)
 
     def _tool_def(self, name: str, tool: object, state: State) -> Tool:
+        if isinstance(tool, Tool):
+            parameters = dict(tool.parameters)
+            properties = dict(cast(ConfigMap, parameters.get("properties") or {}))
+            for arg_name in self.hidden_tool_args(name, state):
+                properties.pop(arg_name, None)
+            parameters["properties"] = properties
+            required = parameters.get("required")
+            if isinstance(required, list):
+                parameters["required"] = [
+                    arg
+                    for arg in required
+                    if arg not in self.hidden_tool_args(name, state)
+                ]
+            return Tool(
+                name=tool.name,
+                description=tool.description,
+                parameters=parameters,
+                strict=tool.strict,
+            )
         mcp_tool_def = getattr(tool, "tool_def", None)
         if isinstance(mcp_tool_def, Tool):
             return mcp_tool_def
@@ -500,8 +544,14 @@ class Runtime:
             for binding_key in owner.bindings:
                 tool_name_prefix, arg_name = binding_key_parts(binding_key)
                 if tool_name_prefix == name:
+                    tool = self.all_tools(state)[name]
+                    target = owner.handler if isinstance(tool, Tool) else tool
+                    if target is None:
+                        raise TypeError(
+                            f"Schema-backed tool {name!r} requires a Toolset handler."
+                        )
                     validate_bound_arg(
-                        self.all_tools(state)[name],
+                        target,
                         arg_name,
                         f"Tool binding {binding_key!r}",
                     )
@@ -620,6 +670,49 @@ class Runtime:
             return await result
         return result
 
+    async def _call_schema_tool(
+        self,
+        tool: Tool,
+        handler: Handler,
+        tool_name: str,
+        task: Task,
+        state: State,
+        visible_kwargs: ConfigMap,
+        hidden_kwargs: ConfigMap,
+    ) -> object:
+        call_kwargs: ConfigData = {
+            "tool": tool,
+            "tool_name": tool_name,
+            "arguments": dict(visible_kwargs),
+            "task": task,
+            "state": state,
+            "runtime": self,
+            **hidden_kwargs,
+        }
+        try:
+            signature = inspect.signature(handler)
+        except (TypeError, ValueError):
+            if hidden_kwargs:
+                raise TypeError(
+                    f"Toolset handler for {tool_name!r} uses hidden args, but its "
+                    "signature cannot be inspected."
+                )
+            result = handler(tool=tool, arguments=dict(visible_kwargs))
+            if inspect.isawaitable(result):
+                return await result
+            return result
+        if not any(
+            parameter.kind == parameter.VAR_KEYWORD
+            for parameter in signature.parameters.values()
+        ):
+            for arg_name in hidden_kwargs:
+                if arg_name not in signature.parameters:
+                    raise TypeError(
+                        f"Toolset handler for {tool_name!r} has hidden arg "
+                        f"{arg_name!r}, but does not declare it in its signature."
+                    )
+        return await maybe_call_with_named_args(handler, **call_kwargs)
+
     async def _call_tool(
         self,
         tool_name: str,
@@ -655,8 +748,23 @@ class Runtime:
             hidden_kwargs[arg_name] = await self.resolve_tool_binding(
                 owner, source, task, state
             )
+        tool = tools[tool_name]
+        if isinstance(tool, Tool):
+            if owner is None or owner.handler is None:
+                raise TypeError(
+                    f"Schema-backed tool {tool_name!r} requires a Toolset handler."
+                )
+            return await self._call_schema_tool(
+                tool,
+                owner.handler,
+                tool_name,
+                task=task,
+                state=state,
+                visible_kwargs=visible_kwargs,
+                hidden_kwargs=hidden_kwargs,
+            )
         return await self._call_tool_callable(
-            cast(Handler, tools[tool_name]),
+            cast(Handler, tool),
             tool_name,
             task=task,
             state=state,
@@ -670,8 +778,9 @@ class Runtime:
         task: Task,
         state: State,
         tool_defs: list[Tool] | None = None,
-        extras: ConfigData | None = None,
+        context: ModelRequestContext | None = None,
     ) -> Response:
+        context = context or ModelRequestContext()
         client = self.model_client(state)
         request_start = time.time()
         response = await client.get_response(
@@ -698,19 +807,14 @@ class Runtime:
             "advantage": None,
             "is_truncated": bool(is_truncated),
             "trajectory_id": str(state["trajectory_id"]),
-            "extras": extras or {},
+            "extras": context.extras(),
         }
-        keep_step = getattr(self.harness, "keep_trajectory_step", None)
-        if keep_step is not None:
-            headers = {}
-            if extras is not None and isinstance(extras.get("headers"), Mapping):
-                headers = dict(cast(ConfigMap, extras["headers"]))
-            keep = await maybe_call_with_named_args(
-                keep_step, step=step, state=state, headers=headers
+        if context.trajectory_visibility == "append":
+            state["trajectory"].append(step)
+        elif context.trajectory_visibility != "hidden":
+            raise AssertionError(
+                f"Unknown trajectory visibility: {context.trajectory_visibility!r}"
             )
-            if not keep:
-                return response
-        state["trajectory"].append(step)
         return response
 
     async def setup_rollout(
@@ -838,6 +942,7 @@ class Runtime:
         await self.release_objects("global")
         await self.release_user_objects("global")
         await self.release_taskset_objects()
+        await self.release_harness_objects()
         try:
             for handle in list(self.sandbox_leases.values()):
                 await maybe_call_with_named_args(getattr(handle, "delete"))
@@ -973,6 +1078,8 @@ class Runtime:
             return await self.resolve_tool_binding(owner, source, task, state)
         if owner == "taskset":
             return await self.resolve_taskset_binding(source, task, state)
+        if owner == "harness":
+            return await self.resolve_harness_binding(source, task, state)
         return await self.resolve_binding(source, task, state)
 
     async def resolve_taskset_binding(
@@ -988,13 +1095,26 @@ class Runtime:
                 return read_path(value, rest) if rest else value
         return await self.resolve_binding(source, task, state)
 
+    async def resolve_harness_binding(
+        self, source: BindingSource, task: Task, state: State
+    ) -> object:
+        if isinstance(source, str):
+            root, separator, tail = source.partition(".")
+            if root == "objects":
+                if not separator:
+                    raise ValueError("objects binding sources must name an object.")
+                name, _, rest = tail.partition(".")
+                value = await self.resolve_harness_object(name, task, state)
+                return read_path(value, rest) if rest else value
+        return await self.resolve_binding(source, task, state)
+
     async def resolve_binding(
         self, source: BindingSource, task: Task, state: State
     ) -> object:
         if isinstance(source, str):
             if binding_source_root(source) == "objects":
                 raise ValueError(
-                    "objects.* bindings are private to the owning Taskset, "
+                    "objects.* bindings are private to the owning Taskset, Harness, "
                     "Toolset, or User callable."
                 )
             return await self._resolve_path(source, task, state)
@@ -1034,6 +1154,8 @@ class Runtime:
                 name, _, rest = tail.partition(".")
                 if owner == "taskset":
                     value = await self.resolve_taskset_object(name, tasks[0], state)
+                elif owner == "harness":
+                    value = await self.resolve_harness_object(name, tasks[0], state)
                 elif isinstance(owner, Toolset):
                     if toolset_object_scope(owner) == "rollout":
                         raise ValueError(
@@ -1145,10 +1267,46 @@ class Runtime:
         self.taskset_objects[key] = obj
         return obj
 
+    async def resolve_harness_object(
+        self, name: str, task: Task, state: State
+    ) -> object:
+        _ = task, state
+        harness = self.harness
+        if harness is None:
+            raise RuntimeError("Harness objects require a Harness.")
+        objects = getattr(harness, "objects", {})
+        if not isinstance(objects, Mapping):
+            raise TypeError("Harness objects must be a mapping.")
+        specs = cast(ConfigMap, objects)
+        if name not in specs:
+            raise KeyError(f"Unknown Harness object {name!r}.")
+        object_bindings: dict[str, BindingSource] = {}
+        for binding_key, source in self._owner_bindings(harness).items():
+            target_name, arg_name = binding_key_parts(binding_key)
+            if target_name == name:
+                object_bindings[arg_name] = source
+        scope_key = self.scope_key("rollout", state) if object_bindings else "global"
+        key = (id(harness), scope_key, name)
+        if key in self.harness_objects:
+            return self.harness_objects[key]
+        kwargs: ConfigData = {}
+        for arg_name, source in object_bindings.items():
+            kwargs[arg_name] = await self.resolve_harness_binding(source, task, state)
+        obj = await resolve_object_factory(
+            specs[name], f"Harness object {name!r}", kwargs
+        )
+        self.harness_objects[key] = obj
+        return obj
+
     async def release_taskset_objects(self) -> None:
         for key, obj in list(self.taskset_objects.items()):
             await close_object(obj)
             del self.taskset_objects[key]
+
+    async def release_harness_objects(self) -> None:
+        for key, obj in list(self.harness_objects.items()):
+            await close_object(obj)
+            del self.harness_objects[key]
 
     async def release_user_objects(
         self, scope: str, state: State | None = None
@@ -1182,7 +1340,7 @@ class Runtime:
         user = self._resolve_user()
         if user is not None:
             for name, source in user.bindings.items():
-                validate_bound_arg(user.fn, name, f"User binding {name!r}")
+                validate_bound_arg(user.get_response, name, f"User binding {name!r}")
                 source_root = binding_source_root(source)
                 validate_binding_source(source, f"User binding {name!r}")
                 if source_root == "objects":
@@ -1197,7 +1355,7 @@ class Runtime:
         if owner is None:
             return
         targets = self._owner_binding_targets(owner)
-        allow_objects = owner is self.taskset
+        allow_objects = owner in (self.taskset, self.harness)
         for binding_key, source in self._owner_bindings(owner).items():
             target_name, arg_name = binding_key_parts(binding_key)
             target = targets.get(target_name)
@@ -1230,10 +1388,10 @@ class Runtime:
                 object_name = binding_object_name(source)
                 objects = getattr(owner, "objects", {})
                 if not isinstance(objects, Mapping):
-                    raise TypeError("Taskset objects must be a mapping.")
+                    raise TypeError("Owner objects must be a mapping.")
                 if object_name not in objects:
                     raise KeyError(
-                        f"Binding {binding_key!r} references unknown Taskset object "
+                        f"Binding {binding_key!r} references unknown object "
                         f"{object_name!r}."
                     )
 
@@ -1310,7 +1468,7 @@ class Runtime:
         if isinstance(objects, Mapping):
             for name, spec in objects.items():
                 if not isinstance(name, str):
-                    raise TypeError("Taskset object names must be strings.")
+                    raise TypeError("Object names must be strings.")
                 if callable(spec):
                     add_target("object", cast(Handler, spec), name)
         return targets
@@ -1334,7 +1492,11 @@ class Runtime:
             target = self._owner_binding_targets(owner).get(target_name)
             if target is None or not same_callable(target[1], fn):
                 continue
-            entry_owner: BindingOwner = "taskset" if owner is self.taskset else None
+            entry_owner: BindingOwner = None
+            if owner is self.taskset:
+                entry_owner = "taskset"
+            elif owner is self.harness:
+                entry_owner = "harness"
             self._extend_binding_entries(
                 entries, self._owner_bindings(owner), target_name, entry_owner
             )
@@ -1376,6 +1538,13 @@ class Runtime:
 
         for item in self._toolset_entries(toolset, state):
             if isinstance(item, Toolset | MCPTool):
+                continue
+            if isinstance(item, Tool):
+                if toolset.handler is None:
+                    raise TypeError(
+                        f"Schema-backed tool {item.name!r} requires a Toolset handler."
+                    )
+                add_target(item.name, "tool", toolset.handler)
                 continue
             if callable(item):
                 add_target(tool_name(item), "tool", cast(Handler, item))
@@ -1669,7 +1838,8 @@ class Runtime:
             value = state.get("runtime", {})
         elif root == "objects":
             raise ValueError(
-                "objects.* bindings are private to the owning Toolset/User callable."
+                "objects.* bindings are private to the owning Taskset, Harness, "
+                "Toolset, or User callable."
             )
         elif root == "tools":
             if not separator:

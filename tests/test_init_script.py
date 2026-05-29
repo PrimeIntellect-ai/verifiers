@@ -27,7 +27,7 @@ def test_init_v1_writes_thin_taskset_template(tmp_path: Path) -> None:
 
     assert "class BarTasksetConfig(vf.TasksetConfig):" in content
     assert "class BarTaskset(vf.Taskset[BarTasksetConfig]):" in content
-    assert "def load_tasks(self) -> vf.Tasks:" in content
+    assert 'def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:' in content
     assert "def load_system_prompt(self) -> vf.SystemPrompt:" in content
     assert "async def correct_answer(self, task: vf.Task, state: vf.State)" in content
     assert "def load_taskset(config: BarTasksetConfig) -> BarTaskset:" in content

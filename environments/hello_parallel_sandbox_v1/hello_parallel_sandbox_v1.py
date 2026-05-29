@@ -358,7 +358,7 @@ def load_tasks(num_examples: int = -1):
 
 
 class ParallelSandboxTaskset(vf.Taskset[ParallelSandboxTasksetConfig]):
-    def load_tasks(self) -> vf.Tasks:
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         return load_tasks(num_examples=self.config.num_examples)
 
 

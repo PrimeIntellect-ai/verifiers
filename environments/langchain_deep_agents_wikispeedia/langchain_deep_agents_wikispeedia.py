@@ -69,21 +69,20 @@ class WikispeediaTasksetConfig(vf.TasksetConfig):
 
 
 class WikispeediaHarnessConfig(vf.HarnessConfig):
+    program: vf.ProgramConfig = vf.ProgramConfig(
+        fn="run_langchain_deep_agents_wikispeedia_program"
+    )
     max_turns: int = 50
     timeout_seconds: float = 1200.0
 
 
 class WikispeediaTaskset(vf.Taskset[WikispeediaTasksetConfig]):
-    def load_tasks(self) -> vf.Tasks:
-        return load_tasks(self.config)
-
-    def load_eval_tasks(self) -> vf.Tasks:
-        return load_eval_tasks(self.config)
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
+        return load_tasks(self.config, split=split)
 
 
 class WikispeediaHarness(vf.Harness[WikispeediaHarnessConfig]):
-    def load_program(self) -> vf.Program:
-        return vf.Program({"fn": "run_langchain_deep_agents_wikispeedia_program"})
+    pass
 
 
 def format_article(wiki: WikiGraph, article: str, links_only: bool = False) -> str:
@@ -333,21 +332,13 @@ def split_pairs(
     )
 
 
-def load_tasks(config: WikispeediaTasksetConfig) -> Dataset:
-    train, _ = split_pairs(config)
+def load_tasks(
+    config: WikispeediaTasksetConfig, split: vf.TaskSplit = "train"
+) -> Dataset:
+    train, eval_ = split_pairs(config)
     return build_dataset(
         load_wiki_graph(config.cache_dir),
-        train,
-        links_only=config.links_only,
-        max_turns=config.max_turns,
-    )
-
-
-def load_eval_tasks(config: WikispeediaTasksetConfig) -> Dataset:
-    _, eval_ = split_pairs(config)
-    return build_dataset(
-        load_wiki_graph(config.cache_dir),
-        eval_,
+        train if split == "train" else eval_,
         links_only=config.links_only,
         max_turns=config.max_turns,
     )
@@ -461,6 +452,7 @@ def make_langchain_deep_agents_program(
         from deepagents import create_deep_agent
         from langchain_openai import ChatOpenAI
         from langgraph.errors import GraphRecursionError
+        from openai import OpenAI
 
         state["current_article"] = state["info"]["source"]
         state["path"] = [state["info"]["source"]]
@@ -469,10 +461,13 @@ def make_langchain_deep_agents_program(
         state["links_only"] = bool(task.get("links_only", False))
 
         endpoint_config = state.get_endpoint_config(api="chat")
+        endpoint_client = cast(OpenAI, state.get_client(api="chat", sync=True))
+        endpoint_api_key = endpoint_client.api_key
+        endpoint_client.close()
         model = ChatOpenAI(
-            model=endpoint_config["model"],
-            base_url=endpoint_config["api_base"],
-            api_key=endpoint_config["api_key"],
+            model=endpoint_config.model,
+            base_url=endpoint_config.base_url,
+            api_key=endpoint_api_key,
         )
         runtime_tools = state.get_tools()
         nav_tools = langchain_navigation_tools(runtime_tools)

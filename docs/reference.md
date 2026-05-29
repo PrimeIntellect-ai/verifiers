@@ -69,9 +69,10 @@ Generation parameters passed to the inference server (e.g., `temperature`, `top_
 ```python
 TaskRow = Mapping[str, object]
 Tasks = datasets.Dataset | Iterable[TaskRow]
+TaskSplit = Literal["train", "eval"]
 ```
 
-v1 task loader return types. `load_tasks(...)` and `load_eval_tasks(...)` should return `vf.Tasks`.
+v1 task loader return types. `load_tasks(split=...)` should return `vf.Tasks`.
 
 ### SystemPrompt
 
@@ -151,7 +152,7 @@ A `dict` subclass that tracks rollout information. Accessing keys in `INPUT_FIEL
 ```python
 class RolloutInput(TypedDict):
     prompt: Messages        # Required
-    example_id: int         # Required
+    example_id: int         # Framework-managed
     answer: str             # Optional
     info: Info              # Optional
 ```
@@ -161,7 +162,7 @@ class RolloutInput(TypedDict):
 ```python
 class RolloutOutput(dict):
     # Required fields
-    example_id: int
+    example_id: int  # Framework-managed
     prompt: Messages | None
     completion: Messages | None
     reward: float
@@ -635,7 +636,7 @@ class State(dict):
     def stop(self, condition: str = "state_done") -> None: ...
     def get_model(self) -> str: ...
     def get_client(api: str = "chat_completions", *, sync: bool = False) -> object: ...
-    def get_endpoint_config(api: str = "chat_completions") -> dict[str, str]: ...
+    def get_endpoint_config(api: str = "chat_completions") -> EndpointConfig: ...
     def get_tools() -> dict[str, Callable[..., Awaitable[object]]]: ...
     def get_max_turns(default: int) -> int: ...
     def finalize() -> State: ...
@@ -666,22 +667,28 @@ serialization boundary.
 class Taskset:
     def __init__(config: TasksetConfig | None = None): ...
 
-    def to_task(value: Mapping[str, Any] | Task | str) -> Task: ...
+    def to_task(row: TaskRow | Task) -> Task: ...
     async def init_group(task: Task, num_rollouts: int) -> tuple[list[Task], list[State]]: ...
     def get_dataset() -> Dataset: ...
     def get_eval_dataset() -> Dataset: ...
 ```
 
 Packages task rows and task-owned behavior. Tasksets usually define
-`load_tasks()` and optional `load_eval_tasks()` methods returning `vf.Tasks`,
-which is `datasets.Dataset | Iterable[TaskRow]`. `TasksetConfig.tasks` and
-`TasksetConfig.eval_tasks` remain explicit import-ref override fields.
+`load_tasks(split="train" | "eval")` returning `vf.Tasks`, which is
+`datasets.Dataset | Iterable[TaskRow]`. `TasksetConfig.tasks` remains the
+explicit import-ref override field for plain configured tasksets.
 
 #### Harness
 
 ```python
 class Harness:
-    def __init__(config: HarnessConfig | None = None): ...
+    def __init__(
+        config: HarnessConfig | None = None,
+        *,
+        model: str | ModelConfig | None = None,
+        client: Client | ClientConfig | str | None = None,
+        sampling_args: SamplingArgs | None = None,
+    ): ...
 
     async def run(task: Task | Mapping[str, Any], state: State | None = None) -> State: ...
     async def score_group(tasks: list[Task], states: list[State]) -> list[State]: ...
@@ -765,8 +772,9 @@ MCPToolConfig(...)
 
 v1 config models are strict Pydantic models. Python code builds them directly,
 and TOML config validates into the same models at the loader boundary. TOML
-uses `"module:object"` refs for Python callables and loaders. Unknown fields
-fail validation.
+uses `"module:object"` refs for Python callables and loaders. Users are typed
+`UserConfig` objects materialized through registered `User` subclasses, not
+string refs. Unknown fields fail validation.
 
 ---
 
@@ -1003,16 +1011,19 @@ class TasksetConfig(Config):
     taskset_id: str | None = None
     system_prompt: object | None = None
     tasks: str | None = None
-    eval_tasks: str | None = None
     user: object | None = None
 
 class HarnessConfig(Config):
     program: ProgramConfig = ProgramConfig()
     system_prompt: object | None = None
     sandbox: SandboxConfig | None = None
-    model: str | None = None
-    sampling_args: dict[str, object] = {}
+    model: ModelConfig = ModelConfig()
     max_turns: int = 10
+
+class ModelConfig(Config):
+    name: str | None = None
+    client: ClientConfig | str | None = None
+    sampling_args: SamplingArgs = {}
 ```
 
 `EnvConfig` is the typed v1 loader envelope. TOML `[env.taskset]` and
@@ -1047,7 +1058,7 @@ class ClientConfig(BaseModel):
     extra_headers_from_state: dict[str, str] = {}
 ```
 
-`extra_headers_from_state` maps HTTP header names to state field names. For each inference request, the header value is dynamically read from the rollout state dict. For example, `{"X-Session-ID": "example_id"}` adds a `X-Session-ID` header with the value of `state["example_id"]`, enabling sticky routing at the inference router level.
+`extra_headers_from_state` maps HTTP header names to state field names. For each inference request, the header value is dynamically read from the rollout state dict. For example, `{"X-Session-ID": "trajectory_id"}` adds a `X-Session-ID` header with the value of `state["trajectory_id"]`, enabling sticky routing at the inference router level.
 
 `client_type` selects which `Client` implementation to instantiate (see [Client Classes](#client-classes)). Use `endpoint_configs` for multi-endpoint round-robin. In grouped scoring mode, groups are distributed round-robin across endpoint configs.
 
@@ -1101,21 +1112,22 @@ class EvalConfig(BaseModel):
     hf_hub_dataset_name: str | None = None
 ```
 
-### Endpoint
+### EndpointConfig
 
 ```python
-Endpoint = TypedDict(
-    "Endpoint",
-    {
-        "key": str,
-        "url": str,
-        "model": str,
-        "api_client_type": NotRequired[ClientType],
-        "extra_headers": NotRequired[dict[str, str]],
-    },
-)
-Endpoints = dict[str, list[Endpoint]]
+class EndpointConfig(BaseModel):
+    model: str
+    base_url: str
+    api_key_var: str
+    api_client_type: ClientType | None = None
+    extra_headers: dict[str, str] = {}
+
+
+Endpoints = dict[str, list[EndpointConfig]]
 ```
+
+`api_key_var` is a credential reference. Endpoint configs never serialize the
+materialized API key.
 
 `Endpoints` maps an endpoint id to one or more endpoint variants. A single variant is represented as a one-item list.
 

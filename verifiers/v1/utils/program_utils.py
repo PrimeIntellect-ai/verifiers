@@ -115,10 +115,16 @@ async def command_env(
     env = dict(os.environ) if include_base else {}
     endpoint_base_url = state.get("endpoint_base_url")
     if isinstance(endpoint_base_url, str):
-        api_key = endpoint_api_key(runtime)
+        harness = runtime.harness
+        if harness is None:
+            raise RuntimeError("Runtime has no active model endpoint.")
+        api_key = str(harness.endpoint.secret or "intercepted")
         endpoint_root_url = state.get("endpoint_root_url")
         env["OPENAI_BASE_URL"] = endpoint_base_url
         env["OPENAI_API_KEY"] = api_key
+        api_key_var = state.get("endpoint_api_key_var")
+        if isinstance(api_key_var, str):
+            env[api_key_var] = api_key
         if isinstance(endpoint_root_url, str):
             env["ANTHROPIC_BASE_URL"] = endpoint_root_url
             env["ANTHROPIC_API_KEY"] = api_key
@@ -317,13 +323,6 @@ def int_config(config: ConfigMap, key: str, default: int) -> int:
     if isinstance(value, bool) or not isinstance(value, int | float | str):
         raise TypeError(f"{key} must be numeric.")
     return int(value)
-
-
-def endpoint_api_key(runtime: Runtime) -> str:
-    harness = getattr(runtime, "harness", None)
-    endpoint = getattr(harness, "endpoint", None)
-    secret = getattr(endpoint, "secret", None)
-    return str(secret or "intercepted")
 
 
 def program_channels(program: ConfigMap) -> tuple[ProgramChannel, ...]:

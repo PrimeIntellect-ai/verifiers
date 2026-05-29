@@ -6,7 +6,6 @@ import chromadb
 from chromadb.api.types import Embeddable, EmbeddingFunction
 from chromadb.utils import embedding_functions
 from datasets import load_dataset
-from openai import AsyncOpenAI
 
 import verifiers as vf
 
@@ -210,11 +209,8 @@ async def judge_reward(task, state) -> float:
         response=response,
     )
     endpoint_config = state.get_endpoint_config(api="chat")
-    judge_model = task.get("judge_model") or endpoint_config["model"]
-    judge_client = AsyncOpenAI(
-        base_url=endpoint_config["base_url"],
-        api_key=endpoint_config["api_key"],
-    )
+    judge_model = task.get("judge_model") or endpoint_config.model
+    judge_client = state.get_client(api="chat")
     try:
         result = await judge_client.chat.completions.create(
             model=str(judge_model),
@@ -293,7 +289,7 @@ class WikiSearchEnvConfig(vf.EnvConfig):
 
 
 class WikiSearchTaskset(vf.Taskset[WikiSearchTasksetConfig]):
-    def load_tasks(self) -> vf.Tasks:
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         return load_tasks(
             max_turns=self.config.max_turns,
             judge_model=self.config.judge_model,

@@ -18,6 +18,7 @@ FRAMEWORK_CONFIG_MODULES = {
     "verifiers.v1.config",
     "verifiers.v1.env",
     "verifiers.v1.harness",
+    "verifiers.v1.model",
     "verifiers.v1.program",
     "verifiers.v1.sandbox",
     "verifiers.v1.taskset",

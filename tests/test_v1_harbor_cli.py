@@ -1,5 +1,4 @@
 import importlib
-import json
 import sys
 import types
 from pathlib import Path
@@ -21,7 +20,6 @@ from harnesses import (
     RLMConfig,
     Terminus2Config,
 )
-from harnesses.pi import pi_mcp_json, pi_models_json
 from harnesses.pi import PI_DEFAULT_PACKAGE
 from harnesses.terminus_2 import (
     TERMINUS_2_DEFAULT_API_BASE_URL,
@@ -30,7 +28,6 @@ from harnesses.terminus_2 import (
     Terminus2,
 )
 from tasksets import HarborTaskset, HarborTasksetConfig
-from tasksets.harbor import harbor_reward
 from verifiers.v1.utils.program_utils import merge_task_program, merge_task_sandbox
 from verifiers.v1.utils.sandbox_python_utils import SANDBOX_PYTHON
 
@@ -75,11 +72,13 @@ from tasksets import HarborTaskset, HarborTasksetConfig
 
 
 def load_taskset(config: HarborTasksetConfig):
+    if config.bundle_package is None:
+        config = config.model_copy(update={"bundle_package": __name__})
     return HarborTaskset(config=config)
 
 
 def load_env():
-    return vf.Env(taskset=HarborTaskset(config=HarborTasksetConfig()), harness=OpenCode(config=OpenCodeConfig()))
+    return vf.Env(taskset=HarborTaskset(config=HarborTasksetConfig(bundle_package=__name__)), harness=OpenCode(config=OpenCodeConfig()))
 """.lstrip()
     )
     monkeypatch.syspath_prepend(str(tmp_path))
@@ -139,9 +138,10 @@ def test_harbor_taskset_rejects_malformed_package_task(
 
 @pytest.mark.parametrize("section", ["agent", "verifier"])
 def test_harbor_task_rejects_non_mapping_agent_sections(
-    tmp_path: Path, section: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, section: str
 ) -> None:
-    task_dir = write_harbor_task(tmp_path)
+    package = write_harbor_package(tmp_path, monkeypatch)
+    task_dir = write_harbor_task(cast(Path, getattr(package, "tasks_root")))
     (task_dir / "task.toml").write_text(
         f"""
 version = "1.0"
@@ -151,9 +151,10 @@ version = "1.0"
 docker_image = "ubuntu:24.04"
 """.strip()
     )
+    taskset = getattr(package, "load_taskset")(config=HarborTasksetConfig())
 
     with pytest.raises(TypeError, match=rf"\[{section}\] must be a mapping"):
-        HarborTaskset(config=HarborTasksetConfig())._task(task_dir, 0)
+        list(taskset)
 
 
 def test_harbor_taskset_constructs_env_with_opencode(
@@ -230,7 +231,8 @@ async def test_harbor_reward_uses_background_job_for_tests(
     monkeypatch.setitem(sys.modules, "prime_sandboxes", fake_module)
     FakeHarborSandboxClient.instances = []
 
-    reward = await harbor_reward(
+    taskset = HarborTaskset(config=HarborTasksetConfig(bundle_package=__name__))
+    reward = await taskset.harbor_reward(
         {"harbor": {"task_dir": str(task_dir), "test_timeout": 120}},
         {"sandbox_id": "sbx-1"},
     )
@@ -303,9 +305,12 @@ def test_packaged_command_harnesses_defer_partial_program_overrides(
     assert setup[-1] == "echo caller"
     assert args[-1] == "--caller"
     assert isinstance(harness.config.program, vf.ProgramConfig)
-    assert harness.config.program.env == {"CALLER": "1"}
-    assert harness.config.program.setup == override["setup"]
-    assert harness.config.program.args == override["args"]
+    config_setup = cast(list[object], harness.config.program.setup)
+    config_args = cast(list[object], harness.config.program.args)
+    assert harness.config.program.command == program["command"]
+    assert harness.config.program.env["CALLER"] == "1"
+    assert config_setup[-1] == override["setup"]
+    assert config_args[-1] == "--caller"
 
 
 def test_packaged_command_harness_config_program_patch_precedence() -> None:
@@ -324,7 +329,6 @@ def test_packaged_command_harness_config_program_patch_precedence() -> None:
     ("key", "value"),
     [
         ("command", ["other"]),
-        ("sandbox", {"image": "python:3.12-slim"}),
         ("channels", "mcp"),
     ],
 )
@@ -332,7 +336,7 @@ def test_packaged_command_harness_config_program_rejects_owned_keys(
     key: str, value: object
 ) -> None:
     program = vf.ProgramConfig.model_validate({key: value})
-    with pytest.raises(ValueError, match="Command harness config.program can only"):
+    with pytest.raises(ValueError, match="Command ProgramConfig can only"):
         OpenCode(config=OpenCodeConfig(program=program))
 
 
@@ -340,17 +344,8 @@ def test_pi_harness_writes_intercepted_model_and_mcp_config() -> None:
     harness = Pi()
     program = cast(dict[str, object], harness.program)
     setup = cast(str, program["setup"])
-    models = json.loads(
-        pi_models_json(
-            {
-                "base_url": "http://127.0.0.1:1/rollout/key/v1",
-                "api_key": "secret",
-                "api_client_type": "openai_chat_completions",
-                "model": "openai/gpt-5.4-mini",
-            }
-        )
-    )
-    mcp = json.loads(pi_mcp_json())
+    channels = cast(dict[str, object], program["channels"])
+    mcp_setup = cast(str, channels["mcp"])
 
     assert "apt-get -o Acquire::Retries=3 update" in setup
     assert "apt-get -o Acquire::Retries=3 install" in setup
@@ -358,12 +353,12 @@ def test_pi_harness_writes_intercepted_model_and_mcp_config() -> None:
     assert PI_DEFAULT_PACKAGE == "@earendil-works/pi-coding-agent"
     assert f"npm install -g --ignore-scripts {PI_DEFAULT_PACKAGE}" in setup
     assert "mariozechner" not in setup
-    provider = models["providers"]["verifiers"]
-    assert provider["baseUrl"] == "http://127.0.0.1:1/rollout/key/v1"
-    assert provider["api"] == "openai-completions"
-    assert provider["apiKey"] == "secret"
-    assert provider["models"] == [{"id": "model", "name": "openai/gpt-5.4-mini"}]
-    assert mcp["mcpServers"]["verifiers-tools"]["command"] == SANDBOX_PYTHON
+    assert '"baseUrl": "${OPENAI_BASE_URL}"' in mcp_setup
+    assert '"api": "openai-completions"' in mcp_setup
+    assert '"apiKey": "${OPENAI_API_KEY:-intercepted}"' in mcp_setup
+    assert '"id": "model"' in mcp_setup
+    assert '"name": "${OPENAI_MODEL}"' in mcp_setup
+    assert f'"command": "{SANDBOX_PYTHON}"' in mcp_setup
 
 
 def test_terminus_2_harness_builds_sandbox_program() -> None:
@@ -397,12 +392,13 @@ def test_terminus_2_harness_builds_sandbox_program() -> None:
     assert "git+https://github.com" not in run_script
     assert "max_turns=7" in run_script
 
-    script = Terminus2._agent_script(max_turns=7)
+    script = run_script.split("python - <<'PY' 2>&1 | tee -a", 1)[1]
+    script = script.split("\n", 1)[1].rsplit("\nPY", 1)[0]
     compile(script, "terminus_2_agent.py", "exec")
     assert TERMINUS_2_DEFAULT_MODEL_NAME in script
     assert TERMINUS_2_DEFAULT_API_BASE_URL in script
     assert "OPENAI_MODEL" not in script
-    assert "PRIME_API_KEY" in script
+    assert "PRIME_API_KEY" not in script
     assert "async def prepare_logs_for_host(self) -> None" in script
     assert "max_turns=7" in script
 
@@ -455,10 +451,12 @@ def test_task_program_merges_into_command_program_without_collisions() -> None:
 
 
 def test_command_program_patch_preserves_explicit_default_values() -> None:
-    program, _ = vf.Harness.command_program_config(
-        vf.HarnessConfig(program=vf.ProgramConfig(setup_timeout=300)),
-        command=["tool"],
-        setup_timeout=600,
+    program = vf.Program(
+        vf.ProgramConfig.from_command(
+            program=vf.ProgramConfig(setup_timeout=300),
+            command=["tool"],
+            setup_timeout=600,
+        )
     )
 
     assert program.data()["setup_timeout"] == 300

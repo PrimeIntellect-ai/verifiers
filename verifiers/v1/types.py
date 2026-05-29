@@ -28,6 +28,7 @@ HandlerList: TypeAlias = Iterable[Handler]
 
 TaskRow: TypeAlias = Mapping[str, object]
 Tasks: TypeAlias = Dataset | Iterable[TaskRow]
+TaskSplit: TypeAlias = Literal["train", "eval"]
 TaskLoader: TypeAlias = Callable[..., Tasks]
 
 PromptMessage: TypeAlias = Message | ConfigMap

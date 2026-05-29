@@ -729,7 +729,7 @@ class MyTasksetConfig(vf.TasksetConfig):
 
 
 class MyTaskset(vf.Taskset[MyTasksetConfig]):
-    def load_tasks(self) -> vf.Tasks:
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         rows = [
             {
                 "prompt": [{"role": "user", "content": "Reverse abc."}],
@@ -792,11 +792,8 @@ Judge-style rewards should read endpoint details from the rollout state:
 @vf.reward(weight=1.0)
 async def judge_reward(task, state) -> float:
     endpoint = state.get_endpoint_config(api="chat")
-    client = AsyncOpenAI(
-        base_url=endpoint["base_url"],
-        api_key=endpoint["api_key"],
-    )
-    model = str(task.get("judge_model") or endpoint["model"])
+    client = state.get_client(api="chat")
+    model = str(task.get("judge_model") or endpoint.model)
     ...
 ```
 

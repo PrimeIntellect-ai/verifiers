@@ -10,6 +10,7 @@ from verifiers.types import RolloutInput, SamplingArgs
 
 from .config import Config
 from .harness import Harness, HarnessConfig
+from .runtime import Runtime
 from .state import State
 from .taskset import Taskset, TasksetConfig
 from .types import ConfigMap
@@ -76,7 +77,8 @@ class Env(vf.Environment):
             taskset=cast(TasksetConfig, self.taskset.config),
             harness=cast(HarnessConfig, self.harness.config),
         )
-        self.harness.attach_taskset(self.taskset)
+        self.harness.taskset = self.taskset
+        self.harness.runtime = Runtime(taskset=self.taskset, harness=self.harness)
         super().__init__(
             dataset=self.taskset.get_dataset,
             eval_dataset=self.taskset.get_eval_dataset,

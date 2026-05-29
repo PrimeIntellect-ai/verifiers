@@ -60,7 +60,7 @@ class MyTaskset(vf.Taskset[MyTasksetConfig]):
     def load_system_prompt(self) -> vf.SystemPrompt:
         return SYSTEM_PROMPT
 
-    def load_tasks(self) -> vf.Tasks:
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         return build_tasks(split=self.config.split)
 
     @vf.reward(weight=1.0)
@@ -107,7 +107,7 @@ class PromptTaskset(vf.Taskset[PromptTasksetConfig]):
     def load_system_prompt(self) -> vf.SystemPrompt:
         return "Answer concisely."
 
-    def load_tasks(self) -> vf.Tasks:
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         return [{"prompt": [{"role": "user", "content": "Question?"}]}]
 
 
@@ -167,7 +167,7 @@ class QATasksetConfig(vf.TasksetConfig):
 
 
 class QATaskset(vf.Taskset[QATasksetConfig]):
-    def load_tasks(self) -> vf.Tasks:
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         return [
             {
                 "prompt": [{"role": "user", "content": row["question"]}],
@@ -216,7 +216,7 @@ class ExtractTasksetConfig(vf.TasksetConfig):
 
 
 class ExtractTaskset(vf.Taskset[ExtractTasksetConfig]):
-    def load_tasks(self) -> vf.Tasks:
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         return [{"prompt": [{"role": "user", "content": "Question?"}], "answer": "A"}]
 
     @vf.reward
@@ -282,7 +282,7 @@ class SearchTasksetConfig(vf.TasksetConfig):
 
 
 class SearchTaskset(vf.Taskset[SearchTasksetConfig]):
-    def load_tasks(self) -> vf.Tasks:
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         return [
             {
                 "prompt": [{"role": "user", "content": "Search the web."}],
@@ -366,17 +366,21 @@ Gotchas:
 ## User Simulators
 
 Use this for `tau2-bench-v1` and tasksets where the environment returns a user
-message when the model does not call a tool. Put the simulator on
-`TasksetConfig.user` or `HarnessConfig.user`; keep per-rollout simulator state
-in `state`; put static clients behind `User(objects=...)`.
+message when the model does not call a tool. Define a `User` subclass with
+`get_response()`, pair it with a typed `UserConfig`, and return that config from
+`load_user()` or place it on `TasksetConfig.user` / `HarnessConfig.user`. Keep
+per-rollout simulator state in `state`; put static clients behind
+`UserConfig.objects`.
 
 Reference: `environments/tau2_bench_v1/tau2_bench_v1.py`.
 
-Gotchas:
+Rules:
 
-- The base harness calls `user` only when the model returns no tool calls.
+- Users do not use string refs.
+- The base harness calls `user.get_response()` only when the model returns no tool calls.
 - Returning `[]` means no user response is available; the base harness stops.
-- User functions receive `transcript` through the default binding.
+- `get_response()` receives `messages` through the default binding when its
+  signature declares that parameter.
 
 ## MCP Toolsets
 
@@ -418,7 +422,7 @@ from harnesses import OpenCode, OpenCodeConfig
 from tasksets import HarborTaskset, HarborTasksetConfig
 
 env = vf.Env(
-    taskset=HarborTaskset(config=HarborTasksetConfig()),
+    taskset=HarborTaskset(config=HarborTasksetConfig(bundle_package=__name__)),
     harness=OpenCode(config=OpenCodeConfig()),
 )
 ```

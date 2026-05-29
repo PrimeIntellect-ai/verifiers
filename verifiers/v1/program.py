@@ -3,8 +3,8 @@ from typing import TypeAlias, cast
 
 from pydantic import field_validator, model_validator
 
-from .config import Config, ConfigSource, JsonMap
-from .sandbox import SandboxConfig
+from .config import Config, ConfigSource
+from .sandbox import SandboxConfig, sandbox_config_mapping
 from .types import (
     ConfigData,
     ConfigInputMap,
@@ -21,6 +21,27 @@ from .utils.config_utils import coerce_config, explicit_config_data
 from .utils.mcp_proxy_utils import validate_program_channels
 
 ProgramCallableRef: TypeAlias = str
+COMMAND_SANDBOX_DEFAULTS: ConfigData = {
+    "image": "python:3.11-slim",
+    "workdir": "/app",
+    "scope": "rollout",
+    "timeout_minutes": 120,
+    "command_timeout": 900,
+    "network_access": True,
+}
+COMMAND_PROGRAM_PATCH_KEYS = {
+    "sandbox",
+    "files",
+    "dirs",
+    "setup",
+    "setup_timeout",
+    "bindings",
+    "env",
+    "artifacts",
+    "args",
+}
+COMMAND_PROGRAM_MAP_PATCH_KEYS = {"files", "dirs", "bindings", "env", "artifacts"}
+COMMAND_PROGRAM_LIST_PATCH_KEYS = {"setup", "args"}
 
 __all__ = [
     "Program",
@@ -41,7 +62,7 @@ class ProgramConfig(Config):
     base: bool = False
     fn: ProgramCallableRef | None = None
     command: ProgramCommand | None = None
-    sandbox: bool | SandboxConfig | JsonMap | None = None
+    sandbox: bool | SandboxConfig | ConfigData | None = None
     files: ProgramOptionMap = {}
     dirs: ProgramOptionMap = {}
     setup: ProgramSetup = []
@@ -86,18 +107,72 @@ class ProgramConfig(Config):
 
     @model_validator(mode="after")
     def validate_program_callable_refs(self) -> "ProgramConfig":
-        for name in (
-            "command",
-            "files",
-            "dirs",
-            "setup",
-            "env",
-            "artifacts",
-            "channels",
-            "args",
+        for name, value in (
+            ("command", self.command),
+            ("files", self.files),
+            ("dirs", self.dirs),
+            ("setup", self.setup),
+            ("env", self.env),
+            ("artifacts", self.artifacts),
+            ("channels", self.channels),
+            ("args", self.args),
         ):
-            validate_program_value_refs(getattr(self, name), f"program.{name}")
+            validate_program_value_refs(value, f"program.{name}")
         return self
+
+    @classmethod
+    def from_command(
+        cls,
+        *,
+        command: ProgramCommand,
+        program: "ProgramConfig | None" = None,
+        sandbox: bool | ConfigData | SandboxConfig | None = None,
+        default_sandbox: bool | ConfigData | SandboxConfig | None = True,
+        sandbox_defaults: ConfigData | None = None,
+        files: ProgramOptionMap | None = None,
+        dirs: ProgramOptionMap | None = None,
+        setup: ProgramSetup | None = None,
+        setup_timeout: int | None = None,
+        bindings: ConfigData | None = None,
+        env: ProgramOptionMap | None = None,
+        artifacts: ProgramOptionMap | None = None,
+        channels: ProgramChannels | None = None,
+        args: ProgramArgs | None = None,
+    ) -> "ProgramConfig":
+        patch = program or ProgramConfig()
+        sandbox_value = (
+            sandbox
+            if sandbox is not None
+            else patch.sandbox
+            if patch.sandbox is not None
+            else default_sandbox
+            if default_sandbox is not None
+            else True
+        )
+        data: ConfigData = {
+            "command": command,
+            "sandbox": command_sandbox_config(sandbox_value, defaults=sandbox_defaults)
+            or False,
+        }
+        if files is not None:
+            data["files"] = dict(files)
+        if dirs is not None:
+            data["dirs"] = dict(dirs)
+        if setup is not None:
+            data["setup"] = setup
+        if setup_timeout is not None:
+            data["setup_timeout"] = setup_timeout
+        if bindings is not None:
+            data["bindings"] = dict(bindings)
+        if env is not None:
+            data["env"] = dict(env)
+        if artifacts is not None:
+            data["artifacts"] = dict(artifacts)
+        if channels is not None:
+            data["channels"] = channels
+        if args is not None:
+            data["args"] = list(args)
+        return cls.model_validate(merge_command_program_config(data, patch))
 
 
 def validate_program_callable_ref(value: object, field_name: str) -> None:
@@ -118,6 +193,73 @@ def validate_program_value_refs(value: object, field_name: str) -> None:
     if isinstance(value, list | tuple):
         for index, item in enumerate(value):
             validate_program_value_refs(item, f"{field_name}.{index}")
+
+
+def command_sandbox_config(
+    sandbox: bool | ConfigData | SandboxConfig,
+    *,
+    defaults: ConfigData | None = None,
+) -> SandboxConfig | None:
+    if sandbox is False:
+        return None
+    base = {**COMMAND_SANDBOX_DEFAULTS, **dict(defaults or {})}
+    if sandbox is True:
+        return SandboxConfig.model_validate(base)
+    return SandboxConfig.model_validate(
+        {**base, **(sandbox_config_mapping(sandbox) or {})}
+    )
+
+
+def merge_command_program_config(
+    program: ConfigData,
+    patch_config: ProgramConfig,
+) -> ConfigData:
+    patch = program_config_data(patch_config)
+    unknown = sorted(set(patch) - COMMAND_PROGRAM_PATCH_KEYS)
+    if unknown:
+        allowed = ", ".join(sorted(COMMAND_PROGRAM_PATCH_KEYS))
+        raise ValueError(
+            f"Command ProgramConfig can only define {allowed}; got {unknown}."
+        )
+    merged: ConfigData = dict(program)
+    for key, value in patch.items():
+        if key in COMMAND_PROGRAM_MAP_PATCH_KEYS:
+            if not isinstance(value, Mapping):
+                raise TypeError(f"program.{key} must be a mapping.")
+            base = merged.get(key, {})
+            if base is None:
+                base = {}
+            if not isinstance(base, Mapping):
+                raise TypeError(f"command program {key} must be a mapping.")
+            merged[key] = {**dict(base), **dict(value)}
+        elif key in COMMAND_PROGRAM_LIST_PATCH_KEYS:
+            merged[key] = [
+                *program_list_items(
+                    cast(ProgramSetup | None, merged.get(key)),
+                    f"command program {key}",
+                ),
+                *program_list_items(
+                    cast(ProgramSetup | None, value),
+                    f"program.{key}",
+                ),
+            ]
+        else:
+            merged[key] = value
+    return merged
+
+
+def program_list_items(
+    value: ProgramSetup | None, field_name: str
+) -> list[ProgramConfigValue]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return cast(list[ProgramConfigValue], list(value))
+    if isinstance(value, tuple):
+        return cast(list[ProgramConfigValue], list(value))
+    if isinstance(value, str) or isinstance(value, Mapping):
+        return [cast(ProgramConfigValue, value)]
+    raise TypeError(f"{field_name} must be a string, mapping, or list.")
 
 
 PROGRAM_DEFAULT_DUMP_DATA = ProgramConfig().model_dump(exclude_none=True)

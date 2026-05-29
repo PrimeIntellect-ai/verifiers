@@ -32,7 +32,7 @@ def make_taskset(config: object | None = None, **values: object) -> vf.Taskset:
     return vf.Taskset(config=vf.TasksetConfig.model_validate(data))
 
 
-def load_tasks() -> list[dict[str, object]]:
+def load_tasks(split: vf.TaskSplit = "train") -> list[dict[str, object]]:
     return [
         {
             "prompt": [{"role": "user", "content": "reply ok"}],
@@ -41,7 +41,7 @@ def load_tasks() -> list[dict[str, object]]:
     ]
 
 
-def load_prefixed_tasks() -> list[dict[str, object]]:
+def load_prefixed_tasks(split: vf.TaskSplit = "train") -> list[dict[str, object]]:
     return [
         {
             "prompt": [{"role": "user", "content": "reply ok"}],
@@ -51,7 +51,7 @@ def load_prefixed_tasks() -> list[dict[str, object]]:
     ]
 
 
-def load_two_prefixed_tasks() -> list[dict[str, object]]:
+def load_two_prefixed_tasks(split: vf.TaskSplit = "train") -> list[dict[str, object]]:
     return [
         {
             "prompt": [{"role": "user", "content": "reply ok"}],
@@ -346,3 +346,25 @@ async def test_taskset_bindings_support_shared_extractor_pattern() -> None:
     await env.harness.runtime.score_rollout(task, state)
 
     assert state["reward"] == 1.0
+
+
+@pytest.mark.asyncio
+async def test_harness_object_factory_accepts_bound_arguments() -> None:
+    taskset = make_taskset(tasks=ref("load_prefixed_tasks"))
+    harness = vf.Harness(
+        config=vf.HarnessConfig(
+            rewards=[ref("prefix_reward")],
+            objects={"prefixer": ref("load_bound_prefixer")},
+            bindings={
+                "prefixer.prefix": "task.prefix",
+                "prefix_reward.prefixer": "objects.prefixer",
+            },
+        )
+    )
+    env = vf.Env(taskset=taskset, harness=harness)
+    task = next(iter(taskset))
+    state = await env.harness.setup_state(task, vf.State.for_task(task))
+
+    await env.harness.runtime.score_rollout(task, state)
+
+    assert state["prefixed"] == "bound:ok"

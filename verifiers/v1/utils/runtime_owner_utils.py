@@ -1,9 +1,9 @@
 from collections.abc import Iterable
 
-from ..config import Config
+from ..config import LifecycleConfig
 from ..toolset import Toolset, Toolsets, collect_toolsets, normalize_toolset_collection
 from ..types import Handler
-from ..user import normalize_user
+from ..user import UserConfig, normalize_user
 from .config_callable_utils import CallableKind, merge_config_handler_map
 
 
@@ -20,7 +20,7 @@ _HANDLER_KINDS: tuple[CallableKind, ...] = (
 
 
 class RuntimeOwnerMixin:
-    config: Config
+    config: LifecycleConfig
     toolsets: list[Toolset]
     named_toolsets: dict[str, Toolset]
     stops: list[Handler]
@@ -32,28 +32,33 @@ class RuntimeOwnerMixin:
     cleanups: list[Handler]
     teardowns: list[Handler]
 
-    def _init_runtime_user(self) -> None:
-        self.user = normalize_user(getattr(self.config, "user"))
+    def load_user(self) -> UserConfig | None:
+        return None
 
-    def _init_runtime_toolsets(self) -> None:
-        config_toolsets = getattr(self.config, "toolsets")
-        if config_toolsets is None:
+    def load_toolsets(self) -> Toolsets:
+        return None
+
+    def initialize_runtime_user(
+        self, user: UserConfig | None, *, explicitly_configured: bool
+    ) -> None:
+        if explicitly_configured:
+            self.user = normalize_user(user)
+            return
+        self.user = normalize_user(self.load_user())
+
+    def initialize_runtime_toolsets(self, toolsets: object) -> None:
+        if toolsets is None:
             self.toolsets = []
             self.named_toolsets = {}
             return
-        class_toolsets: Toolsets = None
-        load_toolsets = getattr(self, "load_toolsets", None)
-        if callable(load_toolsets):
-            class_toolsets = load_toolsets()
         self.toolsets, self.named_toolsets = collect_toolsets(
-            class_toolsets, config_toolsets
+            self.load_toolsets(), toolsets
         )
 
-    def _init_runtime_handlers(self, *, base_metrics: Iterable[Handler] = ()) -> None:
+    def initialize_runtime_handlers(self) -> None:
         defaults: dict[CallableKind, Iterable[Handler]] = {
             kind: () for kind in _HANDLER_KINDS
         }
-        defaults["metric"] = [*base_metrics, *defaults["metric"]]
         handlers = merge_config_handler_map(defaults, self.config)
         self.stops = handlers["stop"]
         self.setups = handlers["setup"]
@@ -64,21 +69,20 @@ class RuntimeOwnerMixin:
         self.cleanups = handlers["cleanup"]
         self.teardowns = handlers["teardown"]
 
-    def _runtime_owner_changed(self) -> None:
+    def refresh_runtime(self) -> None:
         pass
 
-    def _add_handler(self, handlers: list[Handler], fn: Handler) -> None:
-        handlers.append(fn)
-        self._runtime_owner_changed()
-
     def add_metric(self, fn: Handler) -> None:
-        self._add_handler(self.metrics, fn)
+        self.metrics.append(fn)
+        self.refresh_runtime()
 
     def add_reward(self, fn: Handler) -> None:
-        self._add_handler(self.rewards, fn)
+        self.rewards.append(fn)
+        self.refresh_runtime()
 
     def add_advantage(self, fn: Handler) -> None:
-        self._add_handler(self.advantages, fn)
+        self.advantages.append(fn)
+        self.refresh_runtime()
 
     def add_toolset(self, toolset: object) -> None:
         toolsets, named_toolsets = normalize_toolset_collection(toolset)
@@ -87,19 +91,24 @@ class RuntimeOwnerMixin:
             raise ValueError(f"Toolsets are defined twice: {sorted(duplicate)}.")
         self.toolsets.extend(toolsets)
         self.named_toolsets.update(named_toolsets)
-        self._runtime_owner_changed()
+        self.refresh_runtime()
 
     def add_stop(self, fn: Handler) -> None:
-        self._add_handler(self.stops, fn)
+        self.stops.append(fn)
+        self.refresh_runtime()
 
     def add_setup(self, fn: Handler) -> None:
-        self._add_handler(self.setups, fn)
+        self.setups.append(fn)
+        self.refresh_runtime()
 
     def add_update(self, fn: Handler) -> None:
-        self._add_handler(self.updates, fn)
+        self.updates.append(fn)
+        self.refresh_runtime()
 
     def add_cleanup(self, fn: Handler) -> None:
-        self._add_handler(self.cleanups, fn)
+        self.cleanups.append(fn)
+        self.refresh_runtime()
 
     def add_teardown(self, fn: Handler) -> None:
-        self._add_handler(self.teardowns, fn)
+        self.teardowns.append(fn)
+        self.refresh_runtime()

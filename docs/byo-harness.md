@@ -41,7 +41,7 @@ class ReverseTasksetConfig(vf.TasksetConfig):
 
 
 class ReverseTaskset(vf.Taskset[ReverseTasksetConfig]):
-    def load_tasks(self) -> vf.Tasks:
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         rows = [
             {
                 "system_prompt": "Reverse text exactly.",
@@ -71,7 +71,7 @@ def load_environment(config: vf.EnvConfig) -> vf.Env:
 
 ## Tasksets
 
-Tasksets own row loading through `load_tasks()` and `load_eval_tasks()` methods.
+Tasksets own row loading through `load_tasks(split="train" | "eval")`.
 Config should hold user-facing knobs, such as dataset name, split, or size
 limits; taskset methods read those knobs from `self.config` and return
 `vf.Tasks`.
@@ -87,7 +87,7 @@ class GSM8KTasksetConfig(vf.TasksetConfig):
 
 
 class GSM8KTaskset(vf.Taskset[GSM8KTasksetConfig]):
-    def load_tasks(self) -> vf.Tasks:
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         dataset = load_dataset(
             self.config.dataset_name,
             "main",
@@ -149,7 +149,7 @@ class ExtractTasksetConfig(vf.TasksetConfig):
 
 
 class ExtractTaskset(vf.Taskset[ExtractTasksetConfig]):
-    def load_tasks(self) -> vf.Tasks:
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         return [
             {
                 "prompt": [{"role": "user", "content": "What is 2 + 2?"}],
@@ -273,7 +273,7 @@ class SearchTasksetConfig(vf.TasksetConfig):
 
 
 class SearchTaskset(vf.Taskset[SearchTasksetConfig]):
-    def load_tasks(self) -> vf.Tasks:
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         return [
             {
                 "prompt": [{"role": "user", "content": "Search for docs."}],
@@ -326,7 +326,7 @@ class FetchTasksetConfig(vf.TasksetConfig):
 
 
 class FetchTaskset(vf.Taskset[FetchTasksetConfig]):
-    def load_tasks(self) -> vf.Tasks:
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         return [
             {
                 "prompt": [{"role": "user", "content": "Fetch the page."}],
@@ -416,7 +416,7 @@ class ReplayTasksetConfig(vf.TasksetConfig):
 
 
 class ReplayTaskset(vf.Taskset[ReplayTasksetConfig]):
-    def load_tasks(self) -> vf.Tasks:
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         return [
             {
                 "prompt": [{"role": "user", "content": "Say the answer."}],
@@ -456,6 +456,8 @@ from tasksets import HarborTaskset, HarborTasksetConfig
 
 def load_taskset(config: HarborTasksetConfig) -> HarborTaskset:
     assert isinstance(config, HarborTasksetConfig)
+    if config.bundle_package is None and config.dataset is None:
+        config = config.model_copy(update={"bundle_package": __name__})
     return HarborTaskset(config=config)
 
 
@@ -475,15 +477,15 @@ def load_environment(config: vf.EnvConfig) -> vf.Env:
     )
 ```
 
-`HarborTaskset(config=HarborTasksetConfig())` loads Harbor-format task
-directories from the environment package's reserved `tasks/` directory. Set
-`dataset = "owner/name"` on the config to fetch a Harbor Hub dataset. The
+`HarborTaskset(config=HarborTasksetConfig(bundle_package=__name__))` loads
+Harbor-format task directories from the package's reserved `tasks/` directory.
+Set `dataset = "owner/name"` on the config to fetch a Harbor Hub dataset. The
 taskset owns Harbor task loading, sandbox overrides, task uploads, and test
 scoring.
 
 `TextArenaTaskset(config=TextArenaTasksetConfig(...))` wraps compatible
-TextArena single-player text games as v1 task rows plus a taskset-owned user
-callback. The reusable taskset owns TextArena lifecycle, answer injection, row
+TextArena single-player text games as v1 task rows plus a taskset-owned
+`vf.User`. The reusable taskset owns TextArena lifecycle, answer injection, row
 sampling, and `<guess>...</guess>` parsing. Environment packages own
 task-specific defaults such as `game`, `answer_state_key`, `system_prompt`,
 observation formatting, and rewards.

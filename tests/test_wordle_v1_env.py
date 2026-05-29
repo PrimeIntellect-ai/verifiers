@@ -34,7 +34,6 @@ def test_wordle_taskset_uses_textarena_loaders():
     taskset = wordle_v1.WordleTaskset(config=wordle_v1.WordleTasksetConfig())
 
     assert callable(taskset.load_tasks)
-    assert callable(taskset.load_eval_tasks)
 
 
 def test_wordle_v1_load_taskset_reads_system_prompt_path(tmp_path, monkeypatch):

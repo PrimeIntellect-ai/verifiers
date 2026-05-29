@@ -29,7 +29,7 @@ def normalize_prompt(
 
 
 def normalize_system_prompt(
-    value: PromptInput | None, field_name: str = "system_prompt"
+    value: SystemPrompt | None, field_name: str = "system_prompt"
 ) -> list[ConfigData]:
     value = resolve_system_prompt_input(value, field_name=field_name)
     if value is None:

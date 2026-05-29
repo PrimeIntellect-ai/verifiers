@@ -14,6 +14,7 @@ from verifiers.decorators import (
 )
 from verifiers.types import (
     AssistantMessage,
+    EndpointConfig,
     Message,
     Messages,
     SystemMessage,
@@ -30,7 +31,8 @@ from .config import (
 )
 from .env import Env, EnvConfig
 from .harness import Harness, HarnessConfig
-from .program import Program, ProgramConfig
+from .model import ModelConfig
+from .program import Program, ProgramConfig, ProgramOptionMap, ProgramValue
 from .sandbox import SandboxConfig
 from .utils.scoring_utils import (
     add_metric,
@@ -45,6 +47,7 @@ from .state import State
 from .task import Task
 from .taskset import Taskset, TasksetConfig, discover_sibling_dir
 from .toolset import MCPTool, MCPToolConfig, Toolset, ToolsetConfig, Toolsets
+from .utils.endpoint_utils import Endpoint
 from .types import (
     ConfigData,
     ConfigMap,
@@ -52,8 +55,10 @@ from .types import (
     Handler,
     MutableConfigMap,
     Objects,
+    PromptInput,
     SystemPrompt,
     TaskRow,
+    TaskSplit,
     Tasks,
 )
 from .user import User, UserConfig
@@ -65,6 +70,8 @@ __all__ = [
     "ConfigMap",
     "Env",
     "EnvConfig",
+    "Endpoint",
+    "EndpointConfig",
     "AssistantMessage",
     "GroupHandler",
     "Harness",
@@ -75,15 +82,20 @@ __all__ = [
     "MCPToolConfig",
     "Message",
     "Messages",
+    "ModelConfig",
     "Objects",
     "Program",
     "ProgramConfig",
+    "ProgramOptionMap",
+    "ProgramValue",
+    "PromptInput",
     "SandboxConfig",
     "SignalConfig",
     "State",
     "SystemPrompt",
     "Task",
     "TaskRow",
+    "TaskSplit",
     "Tasks",
     "Taskset",
     "TasksetConfig",

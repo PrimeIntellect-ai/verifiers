@@ -679,6 +679,8 @@ async def upload_program_dirs(
         local_source = await resolve_program_value(
             source, task, state, runtime, program
         )
+        if local_source is None:
+            continue
         await upload_program_dir(client, sandbox_id, path, local_source)
 
 

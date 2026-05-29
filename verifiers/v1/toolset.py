@@ -3,18 +3,18 @@ from dataclasses import dataclass, field
 from typing import Literal, TypeAlias, cast
 
 from pydantic import field_validator, model_validator
+from verifiers.types import Tool
 
 from .config import (
     CallableEntry,
     Config,
-    JsonMap,
     resolve_config_object,
 )
 from .sandbox import SandboxConfig, sandbox_config_mapping
 from .utils.binding_utils import BindingMap, normalize_binding_map
 from .utils.binding_utils import normalize_object_map
 from .utils.config_callable_utils import config_callables
-from .types import ConfigMap, Handler, Objects, ToolSpec
+from .types import ConfigData, ConfigMap, Handler, Objects, ToolSpec
 from .utils.toolset_utils import (
     collect_toolsets as collect_toolsets,
     flatten_toolsets as flatten_toolsets,
@@ -48,7 +48,8 @@ class MCPToolConfig(Config):
 
 
 class ToolsetConfig(Config):
-    tools: str | JsonMap | list[str | JsonMap] | None = []
+    tools: str | ConfigData | list[str | ConfigData] | None = []
+    handler: str | None = None
     show: list[str] | None = None
     hide: list[str] | None = None
     bindings: BindingMap = {}
@@ -85,6 +86,7 @@ class ToolsetConfig(Config):
 class Toolset:
     # Tool surface.
     tools: "tuple[ToolEntry, ...]" = ()
+    handler: Handler | None = None
     show: tuple[str, ...] | None = None
     hide: tuple[str, ...] | None = None
     # Local dependencies and runtime policy.
@@ -106,6 +108,7 @@ class Toolset:
         self,
         # Tool surface.
         tools: "ToolEntries | None" = (),
+        handler: ToolsetCallableEntry | None = None,
         show: Iterable[str] | None = None,
         hide: Iterable[str] | None = None,
         # Local dependencies and runtime policy.
@@ -129,6 +132,12 @@ class Toolset:
         config_objects: Objects = {}
         if config_map:
             tool_values.extend(tool_items(config_map.get("tools")))
+            if handler is None:
+                handler_value = config_map.get("handler")
+                if handler_value is not None:
+                    if not isinstance(handler_value, str):
+                        raise TypeError("Toolset handler must be an import ref string.")
+                    handler = handler_value
             show = show if show is not None else string_items(config_map.get("show"))
             hide = hide if hide is not None else string_items(config_map.get("hide"))
             config_bindings = normalize_binding_map(
@@ -175,9 +184,15 @@ class Toolset:
             ]
         if show is not None and hide is not None:
             raise ValueError("Toolset accepts show or hide, not both.")
+        resolved_handler: object = handler
+        if handler is not None:
+            resolved_handler = resolve_config_object(handler)
+            if not callable(resolved_handler):
+                raise TypeError("Toolset handler must resolve to a callable.")
         if write is not None and not isinstance(write, bool):
             raise TypeError("Toolset write must be a boolean.")
         object.__setattr__(self, "tools", tuple(tool_values))
+        object.__setattr__(self, "handler", cast(Handler | None, resolved_handler))
         object.__setattr__(self, "show", tuple(show) if show is not None else None)
         object.__setattr__(self, "hide", tuple(hide) if hide is not None else None)
         object.__setattr__(
@@ -263,5 +278,7 @@ class MCPTool:
         object.__setattr__(self, "cwd", cwd)
 
 
-ToolEntry: TypeAlias = Handler | str | ConfigMap | Toolset | MCPTool | MCPToolConfig
+ToolEntry: TypeAlias = (
+    Handler | str | ConfigMap | Tool | Toolset | MCPTool | MCPToolConfig
+)
 ToolEntries: TypeAlias = ToolEntry | Iterable[ToolEntry]

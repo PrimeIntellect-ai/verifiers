@@ -144,7 +144,7 @@ class ReverseTasksetConfig(vf.TasksetConfig):
 
 
 class ReverseTaskset(vf.Taskset[ReverseTasksetConfig]):
-    def load_tasks(self) -> vf.Tasks:
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         rows = [
             {
                 "prompt": [{"role": "user", "content": "Reverse abc."}],
@@ -174,13 +174,11 @@ Standalone harness use is the same runner without the `Env` adapter:
 from verifiers.types import ClientConfig
 
 harness = vf.Harness(
-    config=vf.HarnessConfig(
-        client=ClientConfig(
-            client_type="openai_chat_completions",
-            api_base_url="https://api.openai.com/v1",
-            api_key_var="OPENAI_API_KEY",
-        ),
-        model="gpt-5.4-mini",
+    model="gpt-5.4-mini",
+    client=ClientConfig(
+        client_type="openai_chat_completions",
+        api_base_url="https://api.openai.com/v1",
+        api_key_var="OPENAI_API_KEY",
     ),
 )
 
@@ -191,7 +189,7 @@ state = await harness.run(
 
 ## Tasksets And Datasets
 
-Tasksets own row loading through `load_tasks()` and `load_eval_tasks()` methods.
+Tasksets own row loading through `load_tasks(split="train" | "eval")`.
 Config should hold user-facing knobs, such as dataset name, split, or size
 limits; taskset methods read those values from `self.config` and return
 `vf.Tasks`.
@@ -207,7 +205,7 @@ class GSM8KTasksetConfig(vf.TasksetConfig):
 
 
 class GSM8KTaskset(vf.Taskset[GSM8KTasksetConfig]):
-    def load_tasks(self) -> vf.Tasks:
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         dataset = load_dataset(
             self.config.dataset_name,
             "main",
@@ -215,11 +213,10 @@ class GSM8KTaskset(vf.Taskset[GSM8KTasksetConfig]):
         )
         return (
             {
-                "example_id": index,
                 "prompt": [{"role": "user", "content": row["question"]}],
                 "answer": row["answer"],
             }
-            for index, row in enumerate(dataset)
+            for row in dataset
         )
 
 
@@ -227,13 +224,8 @@ def load_taskset(config: GSM8KTasksetConfig) -> GSM8KTaskset:
     return GSM8KTaskset(config=config)
 ```
 
-Set `eval_tasks` only when the evaluation split needs a different loader from
-`tasks`.
-
-Every task receives:
-
-- `taskset_id`: the taskset identifier, defaulting to the class name;
-- `task_id`: `task_id`, `id`, `example_id`, or a generated UUID.
+Branch on `split` when the evaluation rows differ from the training rows. Task
+identity fields are assigned by the framework.
 
 ### Task Controls
 
@@ -306,8 +298,8 @@ transcript.
 
 For compatibility with the current `vf.Environment` worker schema,
 `Taskset.get_dataset()` emits worker rows and stores the full canonical task as
-a JSON string in `info["task"]`. `Taskset.to_task(...)` accepts a `Task`,
-mapping, or that JSON payload.
+a JSON string in `info["task"]`. `Taskset.to_task(...)` accepts a task row or
+`Task`.
 
 Plain string task routes are not part of the v1 rollout schema. If a worker row
 contains a top-level `task` field, it must be a JSON object string or mapping;
@@ -418,7 +410,7 @@ class ReplayTasksetConfig(vf.TasksetConfig):
 
 
 class ReplayTaskset(vf.Taskset[ReplayTasksetConfig]):
-    def load_tasks(self) -> vf.Tasks:
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         return [
             {
                 "prompt": [{"role": "user", "content": "Replay the answer."}],
@@ -557,13 +549,19 @@ Common sandbox config keys:
 
 ### Model Controls
 
-Standalone harnesses can receive `client`, `model`, and `sampling_args` at
-construction. `Env` receives those controls from eval/training workers and
-writes the serializable pieces into state for each rollout or group.
+Standalone harnesses can receive `model`, `client`, and `sampling_args`
+shortcuts at construction. Config files and loaders use
+`HarnessConfig.model: ModelConfig`, so the serializable shape is always nested:
 
-State runtime values take precedence for a specific rollout. This is how nested
-or specialized runs can override model controls without changing the method
-signature.
+```toml
+[env.harness.model]
+name = "gpt-5.4-mini"
+sampling_args = { max_tokens = 4096 }
+```
+
+Task rows may also include a top-level `model` mapping for task-local model
+controls. State runtime values take precedence for a specific rollout; task
+model config takes precedence over harness model config.
 
 ### Packaged CLI Harnesses And Harbor
 
@@ -578,15 +576,15 @@ from harnesses import OpenCode, OpenCodeConfig
 from tasksets import HarborTaskset, HarborTasksetConfig
 
 env = vf.Env(
-    taskset=HarborTaskset(config=HarborTasksetConfig()),
+    taskset=HarborTaskset(config=HarborTasksetConfig(bundle_package=__name__)),
     harness=OpenCode(config=OpenCodeConfig()),
 )
 ```
 
 `HarborTaskset` loads Harbor-format task
-directories from the environment package's reserved `tasks/` directory. Set
-`dataset = "owner/name"` on the config to fetch a Harbor Hub dataset. Harbor
-task rows contribute sandbox settings and
+directories from the `bundle_package` package's reserved `tasks/` directory.
+Set `dataset = "owner/name"` on the config to fetch a Harbor Hub dataset instead.
+Harbor task rows contribute sandbox settings and
 `task.program` uploads for `/task/instruction.md` and `/task/task.toml`.
 `OpenCode` contributes the OpenCode install/setup, config generation, MCP tool
 proxy wiring, and log artifact collection. `Pi` follows the same pattern for
@@ -627,8 +625,8 @@ Available helpers:
 
 - `state.get_model()`: read the resolved model name;
 - `state.get_client(...)`: materialize an intercepted SDK client;
-- `state.get_endpoint_config(...)`: materialize a config dict for third-party
-  model libraries;
+- `state.get_endpoint_config(...)`: read an `EndpointConfig` for third-party
+  model libraries; credentials are represented by env-var name, not value;
 - `state.get_max_turns(default)`: resolve a rollout turn limit for harness
   authors;
 - `state.get_tools()`: load callable tool handles for the current task/state.
@@ -708,7 +706,7 @@ class WikiTasksetConfig(vf.TasksetConfig):
 
 
 class WikiTaskset(vf.Taskset[WikiTasksetConfig]):
-    def load_tasks(self) -> vf.Tasks:
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         return [{"prompt": [{"role": "user", "content": "Search the wiki."}]}]
 
 
@@ -1014,45 +1012,61 @@ environments.
 
 ## Users
 
-A `User` is a callable that can return environment/user messages during the
-default loop. Tasksets and harnesses may define at most one user.
+A `User` can return environment/user messages during the default loop. Tasksets
+and harnesses may define at most one user. Define a typed `UserConfig`, pair it
+with a `User` subclass, and return the config from `load_user()`.
 
 ```python
-async def user(task, state, messages):
-    if len([m for m in messages if m["role"] == "assistant"]) >= 2:
-        return []
-    return [{"role": "user", "content": "Try one more time."}]
+class RetryUserConfig(vf.UserConfig):
+    pass
+
+
+class RetryUser(vf.User[RetryUserConfig]):
+    async def get_response(self, task, state, messages):
+        if len([m for m in messages if m["role"] == "assistant"]) >= 2:
+            return []
+        return [{"role": "user", "content": "Try one more time."}]
 
 
 class UserTasksetConfig(vf.TasksetConfig):
-    user: str = "user"
+    user: RetryUserConfig | None = None
 
 
 class UserTaskset(vf.Taskset[UserTasksetConfig]):
-    def load_tasks(self) -> vf.Tasks:
+    def load_user(self) -> vf.UserConfig:
+        return self.config.user or RetryUserConfig()
+
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         return [{"prompt": [{"role": "user", "content": "Try the task."}]}]
 
 
 taskset = UserTaskset(config=UserTasksetConfig())
 ```
 
-Use `vf.UserConfig(...)` when the user needs scope, sandboxing, or serialized
-loader-path dependencies:
+Put reusable user configuration on the same `vf.UserConfig` subclass:
 
 ```python
-taskset = vf.Taskset(
-    config=vf.TasksetConfig(
-        user=vf.UserConfig(
-            fn="my_env:user",
-            scope="group",
-            sandbox=vf.SandboxConfig(image="python:3.11-slim", scope="group"),
-        )
-    )
-)
+class RetryUserConfig(vf.UserConfig):
+    attempts: int = 2
+
+
+class RetryUser(vf.User[RetryUserConfig]):
+    async def get_response(self, task, state, messages):
+        if len([m for m in messages if m["role"] == "assistant"]) >= self.config.attempts:
+            return []
+        return [{"role": "user", "content": "Try one more time."}]
+
+
+class UserTasksetConfig(vf.TasksetConfig):
+    user: RetryUserConfig = RetryUserConfig(attempts=3)
 ```
 
-`messages` is the default binding for user functions. It is the rendered prompt
-and completion message list passed to the user simulator.
+Users do not use string refs. `load_user()` returns a typed `UserConfig`; the
+framework materializes the registered `User` subclass from that config.
+
+`messages` is the default binding for `get_response` methods that declare it.
+It is the rendered prompt and completion message list passed to the user
+simulator.
 
 ## Signals, Stop, Update, Cleanup, Teardown
 
@@ -1181,7 +1195,7 @@ class MyTasksetConfig(vf.TasksetConfig):
 
 
 class MyTaskset(vf.Taskset[MyTasksetConfig]):
-    def load_tasks(self) -> vf.Tasks:
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         rows = [
             {
                 "prompt": [{"role": "user", "content": "What is 2 + 2?"}],
@@ -1374,7 +1388,7 @@ class DatasetTasksetConfig(vf.TasksetConfig):
 
 
 class DatasetTaskset(vf.Taskset[DatasetTasksetConfig]):
-    def load_tasks(self) -> vf.Tasks:
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         dataset = load_dataset("my-org/my-dataset", split=self.config.split)
         if self.config.limit > 0:
             dataset = dataset.select(range(min(self.config.limit, len(dataset))))
@@ -1488,20 +1502,18 @@ Program bindings can point at `task.*`, `state.*`, `runtime.*`, `tools.*`, or a
 callable `{ fn = "module:object" }` source. They cannot access Toolset
 `objects.*`; toolset objects are private to their owning tools.
 
-Command programs usually receive API keys through `program.env`. Values can be
-plain strings, `task.*` / `state.*` paths, or callable value refs:
+Command programs receive the intercepted endpoint through `OPENAI_BASE_URL` and
+`OPENAI_API_KEY` automatically when an endpoint is active. Use `program.env` for
+task-specific values; values can be plain strings, `task.*` / `state.*` paths,
+or callable value refs:
 
 ```python
-def openai_key(state):
-    return state.get_endpoint_config(api="chat")["api_key"]
-
-
 vf.Harness(
     config=vf.HarnessConfig(
         program=vf.ProgramConfig(
             command=["my-cli", "run"],
             sandbox=True,
-            env={"OPENAI_API_KEY": {"fn": "my_env.cli:openai_key"}},
+            env={"TASK_ID": "task.example_id"},
         ),
         sandbox={"image": "python:3.11-slim"},
     )
@@ -1516,7 +1528,6 @@ yield {
     "prompt": [{"role": "user", "content": instruction}],
     "program": {
         "files": {"/task/instruction.md": "task.instruction"},
-        "env": {"TASK_ID": "task.example_id"},
     },
 }
 ```
@@ -1556,7 +1567,7 @@ class WikiTasksetConfig(vf.TasksetConfig):
 
 
 class WikiTaskset(vf.Taskset[WikiTasksetConfig]):
-    def load_tasks(self) -> vf.Tasks:
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         raise NotImplementedError(f"Load tasks from {self.config.db_path}.")
 
 
@@ -1572,7 +1583,7 @@ To inspect the active config shape:
 ```python
 print(vf.TasksetConfig.schema_text())
 print(vf.HarnessConfig.schema_text())
-print(WikiTaskset.config_schema())
+print(WikiTasksetConfig.schema_text())
 ```
 
 There is no public generic channel registry in v1. Stable cross-cutting
@@ -1650,6 +1661,19 @@ For libraries that want a client object, use `state.get_client(...)`:
 ```python
 async def program(task, state):
     client = state.get_client(api="responses")
+    ...
+```
+
+For sync libraries that need an OpenAI-compatible key string, derive it from a
+temporary sync client at construction time rather than reading process-global
+environment variables:
+
+```python
+async def program(task, state):
+    cfg = state.get_endpoint_config(api="chat")
+    client = state.get_client(api="chat", sync=True)
+    api_key = client.api_key
+    client.close()
     ...
 ```
 

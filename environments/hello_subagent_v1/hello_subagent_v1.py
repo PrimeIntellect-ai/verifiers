@@ -87,7 +87,7 @@ class SubagentHarnessConfig(vf.HarnessConfig):
 
 
 class SubagentTaskset(vf.Taskset[SubagentTasksetConfig]):
-    def load_tasks(self) -> vf.Tasks:
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         return load_tasks()
 
 

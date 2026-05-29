@@ -24,10 +24,6 @@ class WordleTaskset(TextArenaTaskset[WordleTasksetConfig]):
     guess_pattern = r"<guess>(.*?)</guess>"
     config: WordleTasksetConfig
 
-    def __init__(self, config: WordleTasksetConfig):
-        assert isinstance(config, WordleTasksetConfig)
-        super().__init__(config=config)
-
     def guesses(self, content: str) -> list[str]:
         return re.findall(self.guess_pattern, content, re.DOTALL)
 

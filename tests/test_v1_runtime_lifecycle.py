@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import shlex
 import sys
 import tempfile
@@ -10,6 +11,7 @@ from types import ModuleType, SimpleNamespace
 from typing import Any, cast
 
 import pytest
+from openai import OpenAI
 from pydantic import BaseModel
 
 import verifiers as vf
@@ -272,14 +274,15 @@ def endpoint_config_binding_ref(state):
 
 
 def configure_cli_endpoint(endpoint_config) -> str:
-    return f"echo model={endpoint_config['model']} > /tmp/endpoint.txt"
+    return f"echo model={endpoint_config.model} > /tmp/endpoint.txt"
 
 
 def configure_cli_endpoint_ref(endpoint_config) -> str:
-    return f"echo ref-model={endpoint_config['model']} > /tmp/ref_endpoint.txt"
+    return f"echo ref-model={endpoint_config.model} > /tmp/ref_endpoint.txt"
 
 
-def replay_tasks() -> list[dict[str, object]]:
+def replay_tasks(split: vf.TaskSplit = "train") -> list[dict[str, object]]:
+    _ = split
     return [
         {
             "prompt": [{"role": "user", "content": "Return the answer."}],
@@ -288,7 +291,8 @@ def replay_tasks() -> list[dict[str, object]]:
     ]
 
 
-def setup_runtime_tasks() -> list[dict[str, object]]:
+def setup_runtime_tasks(split: vf.TaskSplit = "train") -> list[dict[str, object]]:
+    _ = split
     return [{"prompt": [], "answer": "ready", "max_turns": 3}]
 
 
@@ -319,7 +323,7 @@ def config_data(config: object | None) -> dict[str, object]:
     if config is None:
         return {}
     if isinstance(config, BaseModel):
-        return config.model_dump(exclude_none=True)
+        return config.model_dump(exclude_none=True, exclude_unset=True)
     if isinstance(config, dict):
         return dict(config)
     raise TypeError("test config must be a mapping or config object")
@@ -338,13 +342,29 @@ def has_runtime_toolset(value: object) -> bool:
 def make_harness(config: object | None = None, **values: object) -> vf.Harness:
     data = {**config_data(config), **values}
     runtime_client = data.pop("client", None)
+    model_value = data.pop("model", None)
+    sampling_args = data.pop("sampling_args", None)
+    if model_value is not None or sampling_args is not None:
+        if model_value is None:
+            model_data: dict[str, object] = {}
+        elif isinstance(model_value, str):
+            model_data = {"name": model_value}
+        elif isinstance(model_value, vf.ModelConfig):
+            model_data = model_value.model_dump(exclude_none=True, exclude_unset=True)
+        elif isinstance(model_value, dict):
+            model_data = dict(model_value)
+        else:
+            raise TypeError("test harness model config must be a mapping.")
+        if sampling_args is not None:
+            model_data["sampling_args"] = sampling_args
+        data["model"] = model_data
     runtime_toolsets = data.pop("toolsets", None)
     if runtime_toolsets is not None and not has_runtime_toolset(runtime_toolsets):
         data["toolsets"] = runtime_toolsets
         runtime_toolsets = None
     harness = vf.Harness(config=vf.HarnessConfig.model_validate(data))
     if runtime_client is not None:
-        harness.client = cast(Client, runtime_client)
+        harness.model_client = cast(Client, runtime_client)
     if runtime_toolsets is not None:
         harness.add_toolset(runtime_toolsets)
     return harness
@@ -395,12 +415,17 @@ def install_fake_endpoint_tunnel(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
-async def endpoint_user(
-    task: dict[str, object], state: dict[str, object]
-) -> list[dict[str, str]]:
-    _ = task
-    state["user_seen"] = True
-    return [{"role": "user", "content": "continue"}]
+class EndpointUserConfig(vf.UserConfig):
+    pass
+
+
+class EndpointUser(vf.User[EndpointUserConfig]):
+    async def get_response(
+        self, task: dict[str, object], state: dict[str, object]
+    ) -> list[dict[str, str]]:
+        _ = task
+        state["user_seen"] = True
+        return [{"role": "user", "content": "continue"}]
 
 
 async def endpoint_program(task, state):
@@ -408,7 +433,9 @@ async def endpoint_program(task, state):
     root = state["endpoint_root_url"].rstrip("/")
     client = state.get_client(api="chat")
     config = state.get_endpoint_config(api="responses")
-    auth_headers = {"Authorization": f"Bearer {config['api_key']}"}
+    endpoint_client = cast(OpenAI, state.get_client(api="responses", sync=True))
+    auth_headers = {"Authorization": f"Bearer {endpoint_client.api_key}"}
+    endpoint_client.close()
 
     def get_json(url: str) -> dict[str, object]:
         request = urllib.request.Request(url, headers=auth_headers)
@@ -451,8 +478,40 @@ async def endpoint_program(task, state):
         "endpoint_user_messages": user_result["messages"],
         "endpoint_stop": stop_result,
         "endpoint_client_class": type(client).__name__,
-        "endpoint_config": config,
+        "endpoint_config": config.model_dump(),
     }
+
+
+async def endpoint_trajectory_program(task, state):
+    _ = task
+    root = state["endpoint_root_url"].rstrip("/")
+    config = state.get_endpoint_config(api="chat")
+    endpoint_client = cast(OpenAI, state.get_client(api="chat", sync=True))
+    api_key = endpoint_client.api_key
+    endpoint_client.close()
+
+    def post_chat(headers: dict[str, str]) -> dict[str, object]:
+        payload = {
+            "model": config.model,
+            "messages": [{"role": "user", "content": "hi"}],
+        }
+        request = urllib.request.Request(
+            f"{root}/v1/chat/completions",
+            data=json.dumps(payload).encode(),
+            headers={
+                "content-type": "application/json",
+                "Authorization": f"Bearer {api_key}",
+                **headers,
+            },
+        )
+        with urllib.request.urlopen(request) as response:
+            return json.loads(response.read().decode())
+
+    hidden = await asyncio.to_thread(post_chat, {"x-verifiers-trajectory": "hidden"})
+    shown = await asyncio.to_thread(post_chat, {})
+    state["endpoint_hidden_response"] = hidden
+    state["endpoint_shown_response"] = shown
+    return state
 
 
 async def mcp_proxy_program(task, state):
@@ -468,14 +527,19 @@ async def mcp_proxy_program(task, state):
         json.dumps(
             {
                 "tool_base_url": f"{state['endpoint_root_url'].rstrip('/')}/vf/tools",
-                "tool_api_key": endpoint_api_key(state),
+                "tool_api_key_var": state["endpoint_api_key_var"],
             }
         )
     )
     try:
+        tool_api_key_var = str(state["endpoint_api_key_var"])
+        endpoint_client = cast(OpenAI, state.get_client(api="chat", sync=True))
+        tool_api_key = endpoint_client.api_key
+        endpoint_client.close()
         server = StdioServerParameters(
             command=sys.executable,
             args=[str(proxy_path), str(config_path)],
+            env={tool_api_key_var: tool_api_key},
         )
         async with stdio_client(server) as (read_stream, write_stream):
             async with ClientSession(read_stream, write_stream) as session:
@@ -595,8 +659,8 @@ for _name, _value in {
     "configure_cli_endpoint": configure_cli_endpoint,
     "initialize_from_taskset": initialize_from_taskset,
     "child_reads_program_sandbox": child_reads_program_sandbox,
-    "endpoint_user": endpoint_user,
     "endpoint_program": endpoint_program,
+    "endpoint_trajectory_program": endpoint_trajectory_program,
     "mcp_proxy_program": mcp_proxy_program,
     "child_program": child_program,
     "parent_program": parent_program,
@@ -667,7 +731,7 @@ async def test_endpoint_exposes_tool_user_and_stop_surfaces() -> None:
         program={"fn": program_ref("endpoint_program")},
         model="test-model",
         toolsets=[vf.Toolset(tools=[echo_tool])],
-        user=program_ref("endpoint_user"),
+        user=EndpointUserConfig(),
     )
     task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
 
@@ -685,9 +749,36 @@ async def test_endpoint_exposes_tool_user_and_stop_surfaces() -> None:
     assert state["endpoint_stop"]["stop_condition"] == "state_done"
     assert state["endpoint_client_class"] == "AsyncOpenAI"
     assert state["endpoint_config"]["api_client_type"] == "openai_responses"
-    assert state["endpoint_config"]["api_base"].endswith("/v1")
+    assert state["endpoint_config"]["base_url"].endswith("/v1")
+    assert state["endpoint_config"]["api_key_var"].startswith("VF_ENDPOINT_API_KEY_")
+    assert state["endpoint_config"]["api_key_var"] not in os.environ
     assert "runtime_id" not in state["runtime"]
     assert "endpoint_root_url" not in state
+
+
+@pytest.mark.asyncio
+async def test_endpoint_request_can_hide_internal_model_call_from_trajectory() -> None:
+    client = FakeModelClient([fake_response("hidden"), fake_response("shown")])
+    harness = make_harness(
+        program={"fn": program_ref("endpoint_trajectory_program")},
+        client=client,
+        model="test-model",
+    )
+    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+
+    state = await harness.run(task)
+    await harness.teardown()
+
+    assert len(state["trajectory"]) == 1
+    assert state["trajectory"][0]["completion"][0]["content"] == "shown"
+    assert state["trajectory"][0]["extras"]["endpoint"] is True
+    assert (
+        state["endpoint_hidden_response"]["choices"][0]["message"]["content"]
+        == "hidden"
+    )
+    assert (
+        state["endpoint_shown_response"]["choices"][0]["message"]["content"] == "shown"
+    )
 
 
 @pytest.mark.asyncio
@@ -726,7 +817,7 @@ async def test_offline_replay_program_scores_without_model_client() -> None:
         rewards=[program_ref("replay_reward")],
     )
     harness = make_harness(program={"fn": program_ref("replay_answer_program")})
-    harness.attach_taskset(taskset)
+    harness = vf.Env(taskset=taskset, harness=harness).harness
     task = next(iter(taskset))
 
     state = await harness.run(task)
@@ -1232,7 +1323,7 @@ def test_program_channels_mcp_injects_proxy_into_sandbox_program() -> None:
     config = json.loads(files[MCP_PROXY_CONFIG_PATH])
     assert config == {
         "tool_base_url": "http://127.0.0.1:1/rollout/test/vf/tools",
-        "tool_api_key": harness.endpoint.secret,
+        "tool_api_key_var": "OPENAI_API_KEY",
     }
     assert proxy_command() == [SANDBOX_PYTHON, MCP_PROXY_PATH, MCP_PROXY_CONFIG_PATH]
     packages = sandbox["packages"]
@@ -1510,15 +1601,20 @@ async def write_real_sandbox_file(text: str, sandbox, state) -> str:
 REAL_MCP_PROXY_SCRIPT = r"""
 import asyncio
 import json
+import os
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 
 async def main():
+    with open("/tmp/vf_mcp_tools.json") as f:
+        config = json.load(f)
+    tool_api_key_var = str(config["tool_api_key_var"])
     server = StdioServerParameters(
         command="python3",
         args=["/tmp/vf_mcp_tools.py", "/tmp/vf_mcp_tools.json"],
+        env={tool_api_key_var: os.environ[tool_api_key_var]},
     )
     async with stdio_client(server) as (read_stream, write_stream):
         async with ClientSession(read_stream, write_stream) as session:
@@ -1687,6 +1783,37 @@ async def test_nested_harness_can_use_own_model_controls() -> None:
     assert child_state["child_runtime"]["model"] == "child-model"
     assert "client_key" not in child_state["child_runtime"]
     assert "client_key" not in state["runtime"]
+
+
+@pytest.mark.asyncio
+async def test_task_model_controls_override_harness_model_controls() -> None:
+    client = CapturingModelClient([fake_response("done")])
+    harness = make_harness(
+        client=cast(Client, client),
+        model="harness-model",
+        sampling_args={"temperature": 0.1, "top_p": 1.0},
+    )
+    task = vf.Task(
+        {
+            "prompt": [{"role": "user", "content": "Use task model."}],
+            "model": {
+                "name": "task-model",
+                "sampling_args": {"temperature": 0.4},
+            },
+        }
+    ).freeze()
+
+    await harness.run(task)
+
+    assert task["model"] == {
+        "name": "task-model",
+        "sampling_args": {"temperature": 0.4},
+    }
+    assert client.requests[0]["model"] == "task-model"
+    assert client.requests[0]["sampling_args"] == {
+        "temperature": 0.4,
+        "top_p": 1.0,
+    }
 
 
 @pytest.mark.asyncio

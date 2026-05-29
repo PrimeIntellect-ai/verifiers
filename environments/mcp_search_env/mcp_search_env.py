@@ -78,7 +78,7 @@ class MCPSearchTasksetConfig(vf.TasksetConfig):
 
 
 class MCPSearchTaskset(vf.Taskset[MCPSearchTasksetConfig]):
-    def load_tasks(self) -> vf.Tasks:
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         return load_tasks(
             examples=self.config.examples, max_turns=self.config.max_turns
         )

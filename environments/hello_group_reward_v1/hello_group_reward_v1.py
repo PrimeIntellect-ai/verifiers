@@ -139,7 +139,7 @@ TASKS: list[vf.ConfigData] = [
 
 
 class GroupRewardTaskset(vf.Taskset[GroupRewardTasksetConfig]):
-    def load_tasks(self) -> vf.Tasks:
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         return load_tasks(num_examples=self.config.num_examples)
 
     async def init_group(

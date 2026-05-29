@@ -7,11 +7,16 @@ import verifiers as vf
 
 pytest.importorskip("openreward")
 
+from openreward.api.environments.types import (
+    Task as OpenRewardTask,
+    TextBlock as OpenRewardTextBlock,
+    ToolOutput as OpenRewardToolOutput,
+)
 from tasksets import openreward
 
 
 class FakeOpenRewardSession:
-    def __init__(self, task: openreward.OpenRewardTask):
+    def __init__(self, task: OpenRewardTask):
         self.task = task
         self.entered = False
         self.exited = False
@@ -24,8 +29,8 @@ class FakeOpenRewardSession:
     def __exit__(self, *exc: object) -> None:
         self.exited = True
 
-    def get_prompt(self) -> list[openreward.OpenRewardTextBlock]:
-        return [openreward.OpenRewardTextBlock(text="Solve the task.")]
+    def get_prompt(self) -> list[OpenRewardTextBlock]:
+        return [OpenRewardTextBlock(text="Solve the task.")]
 
     def list_tools(self, format: str | None = None) -> list[dict[str, object]]:
         assert format == "openai"
@@ -44,10 +49,10 @@ class FakeOpenRewardSession:
 
     def call_tool(
         self, tool_name: str, input: dict[str, object]
-    ) -> openreward.OpenRewardToolOutput:
+    ) -> OpenRewardToolOutput:
         self.calls.append((tool_name, input))
-        return openreward.OpenRewardToolOutput(
-            blocks=[openreward.OpenRewardTextBlock(text="Correct.")],
+        return OpenRewardToolOutput(
+            blocks=[OpenRewardTextBlock(text="Correct.")],
             reward=1.0,
             finished=True,
             metadata={"status": "ok"},
@@ -59,9 +64,9 @@ class FakeOpenRewardEnvironment:
         self.sessions: list[FakeOpenRewardSession] = []
         self.task_range_calls: list[tuple[str, int | None, int | None]] = []
 
-    def list_tasks(self, split: str) -> list[openreward.OpenRewardTask]:
+    def list_tasks(self, split: str) -> list[OpenRewardTask]:
         return [
-            openreward.OpenRewardTask(
+            OpenRewardTask(
                 server_name="owner/env",
                 environment_name="env",
                 namespace="owner",
@@ -71,10 +76,10 @@ class FakeOpenRewardEnvironment:
 
     def get_task_range(
         self, split: str, start: int | None = None, stop: int | None = None
-    ) -> list[openreward.OpenRewardTask]:
+    ) -> list[OpenRewardTask]:
         self.task_range_calls.append((split, start, stop))
         return [
-            openreward.OpenRewardTask(
+            OpenRewardTask(
                 server_name="owner/env",
                 environment_name="env",
                 namespace="owner",
@@ -83,7 +88,7 @@ class FakeOpenRewardEnvironment:
             for index in range(start or 0, stop or 0)
         ]
 
-    def session(self, task: openreward.OpenRewardTask) -> FakeOpenRewardSession:
+    def session(self, task: OpenRewardTask) -> FakeOpenRewardSession:
         session = FakeOpenRewardSession(task)
         self.sessions.append(session)
         return session

@@ -456,6 +456,7 @@ class State(dict):
     INTERNAL_KEYS = {"is_completed", "stop_condition", "is_truncated", "error"}
     RUNTIME_HANDLE_KEYS = {"runtime_id", "client_key"}
     ENDPOINT_HANDLE_KEYS = {
+        "endpoint_api_key_var",
         "endpoint_rollout_key",
         "endpoint_root_url",
         "endpoint_base_url",
@@ -653,7 +654,7 @@ class State(dict):
     def get_endpoint_config(
         self,
         api: EndpointApi | ClientType = "chat_completions",
-    ) -> dict[str, str]:
+    ) -> "EndpointConfig":
         from verifiers.v1.utils.endpoint_utils import endpoint_config_from_state
 
         return endpoint_config_from_state(self, api)
@@ -1011,17 +1012,24 @@ class RolloutScores(TypedDict):
     metrics: dict[str, list[float]]
 
 
-Endpoint = TypedDict(
-    "Endpoint",
-    {
-        "key": str,
-        "url": str,
-        "model": str,
-        "api_client_type": NotRequired[ClientType],
-        "extra_headers": NotRequired[dict[str, str]],
-    },
-)
-Endpoints = dict[str, list[Endpoint]]
+class EndpointConfig(BaseModel):
+    """Endpoint connection config with credentials carried by env-var reference."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    model: str
+    base_url: str
+    api_key_var: str
+    api_client_type: ClientType | None = None
+    extra_headers: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("extra_headers", mode="before")
+    @classmethod
+    def validate_extra_headers(cls, value: object) -> dict[str, str]:
+        return _validate_extra_headers_value(value)
+
+
+Endpoints = dict[str, list[EndpointConfig]]
 
 
 def _validate_extra_headers_value(value: object) -> dict[str, str]:

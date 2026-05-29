@@ -10,6 +10,7 @@ from typing import cast
 
 import pytest
 from datasets import Dataset
+from pydantic import BaseModel
 from verifiers.types import Tool
 
 import verifiers as vf
@@ -19,17 +20,21 @@ from harnesses.rlm import (
     DEFAULT_RLM_TOOL_SKILL_MARKER,
     DEFAULT_RLM_TOOL_SKILLS_ARCHIVE_PATH,
     DEFAULT_RLM_TOOL_SKILLS_MANIFEST_NAME,
-    rlm_tool_skills_archive,
 )
+from harnesses.utils.rlm_utils import rlm_tool_skills_archive
+from harnesses.utils.rlm_utils import rlm_skills_dir
 from verifiers.v1.utils.program_utils import merge_task_program, merge_task_sandbox
 
 
 def as_mapping(value: object) -> Mapping[str, object]:
+    if isinstance(value, BaseModel):
+        value = value.model_dump(exclude_none=True)
     assert isinstance(value, Mapping)
     return cast(Mapping[str, object], value)
 
 
-def load_order_task() -> vf.Tasks:
+def load_order_task(split: vf.TaskSplit = "train") -> vf.Tasks:
+    _ = split
     return [{"prompt": [{"role": "user", "content": "Find order A-1."}]}]
 
 
@@ -75,6 +80,19 @@ def test_rlm_harness_accepts_typed_config_surface():
     assert program_env["RLM_MAX_TURNS"] == "7"
     assert program_env["RLM_EXEC_TIMEOUT"] == "11"
     assert program_env["CUSTOM"] == "1"
+
+
+def test_rlm_endpoint_hides_nested_depth_requests():
+    harness = RLM(config=RLMConfig(local_checkout="/tmp/checkout"))
+
+    assert harness.endpoint.trajectory_visibility({"x-rlm-depth": "0"}) == "append"
+    assert harness.endpoint.trajectory_visibility({"x-rlm-depth": "1"}) == "hidden"
+    assert (
+        harness.endpoint.trajectory_visibility(
+            {"x-rlm-depth": "0", "x-verifiers-trajectory": "hidden"}
+        )
+        == "hidden"
+    )
 
 
 def test_rlm_harness_preserves_program_setup_timeout_override():
@@ -128,7 +146,7 @@ def test_rlm_harness_can_upload_skills(tmp_path: Path):
 
     assert dirs["/task/rlm-skills"] == str(skills)
     assert files[DEFAULT_RLM_TOOL_SKILLS_ARCHIVE_PATH] == {
-        "fn": "harnesses.rlm:rlm_tool_skills_archive"
+        "fn": "harnesses.utils.rlm_utils:rlm_tool_skills_archive"
     }
     assert isinstance(setup, list)
     assert DEFAULT_RLM_TOOL_SKILLS_ARCHIVE_PATH in setup[1]
@@ -154,7 +172,10 @@ def test_rlm_harness_uploads_taskset_skills_by_default(tmp_path: Path):
     program = as_mapping(env.harness.program)
     dirs = as_mapping(program["dirs"])
 
-    assert dirs["/task/rlm-skills"] == skills
+    assert dirs["/task/rlm-skills"] == {
+        "fn": "harnesses.utils.rlm_utils:rlm_skills_dir"
+    }
+    assert rlm_skills_dir(vf.State({}), env.harness.runtime) == skills
 
 
 def test_rlm_harness_recomputes_taskset_skills(tmp_path: Path):
@@ -181,13 +202,14 @@ def test_rlm_harness_recomputes_taskset_skills(tmp_path: Path):
     program = as_mapping(harness.program)
     dirs = as_mapping(program["dirs"])
 
-    assert dirs["/task/rlm-skills"] == second_skills
+    assert dirs["/task/rlm-skills"] == {
+        "fn": "harnesses.utils.rlm_utils:rlm_skills_dir"
+    }
+    assert rlm_skills_dir(vf.State({}), harness.runtime) == second_skills
 
     vf.Env(taskset=NoSkillTaskset(config=vf.TasksetConfig()), harness=harness)
-    program = as_mapping(harness.program)
-    dirs = as_mapping(program["dirs"])
 
-    assert "/task/rlm-skills" not in dirs
+    assert rlm_skills_dir(vf.State({}), harness.runtime) is None
 
 
 @pytest.mark.asyncio

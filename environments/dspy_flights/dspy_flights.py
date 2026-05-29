@@ -3,6 +3,7 @@ import functools
 import random
 import string
 from collections.abc import Mapping
+from typing import cast
 
 from pydantic import BaseModel
 
@@ -371,6 +372,7 @@ def dump_database(database: dict[str, BaseModel]) -> dict[str, vf.ConfigData]:
 
 async def run_dspy_flight_program(task, state):
     import dspy
+    from openai import OpenAI
 
     class DSPyAirlineCustomerService(dspy.Signature):
         """You are an airline customer service agent that helps user book and manage flights.
@@ -389,10 +391,13 @@ async def run_dspy_flight_program(task, state):
 
     tools, databases = build_airline_tools(task)
     endpoint_config = state.get_endpoint_config(api="chat")
+    endpoint_client = cast(OpenAI, state.get_client(api="chat", sync=True))
+    endpoint_api_key = endpoint_client.api_key
+    endpoint_client.close()
     lm = dspy.LM(
-        f"openai/{endpoint_config['model']}",
-        api_base=endpoint_config["api_base"],
-        api_key=endpoint_config["api_key"],
+        f"openai/{endpoint_config.model}",
+        api_base=endpoint_config.base_url,
+        api_key=endpoint_api_key,
         cache=False,
     )
     agent = dspy.ReAct(DSPyAirlineCustomerService, tools=tools, max_iters=8)
@@ -428,7 +433,7 @@ class DSPyFlightsTasksetConfig(vf.TasksetConfig):
 
 
 class DSPyFlightsTaskset(vf.Taskset[DSPyFlightsTasksetConfig]):
-    def load_tasks(self) -> vf.Tasks:
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         return load_tasks()
 
 

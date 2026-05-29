@@ -92,7 +92,7 @@ def test_textarena_taskset_is_generic_over_config_type(fake_textarena):
     assert isinstance(taskset.config, CustomTextArenaConfig)
 
 
-def test_textarena_taskset_builds_train_and_eval_tasks(fake_textarena):
+def test_textarena_taskset_builds_train_and_eval_splits(fake_textarena):
     fake_nltk, _ = fake_textarena
     taskset = textarena.TextArenaTaskset(
         config=textarena.TextArenaTasksetConfig(
@@ -105,13 +105,13 @@ def test_textarena_taskset_builds_train_and_eval_tasks(fake_textarena):
     )
 
     tasks = list(taskset.get_dataset())
-    eval_tasks = list(taskset.get_eval_dataset())
+    eval_rows = list(taskset.get_eval_dataset())
 
     assert taskset.config.system_prompt is None
     assert [task["example_id"] for task in tasks] == [0, 1]
-    assert [task["example_id"] for task in eval_tasks] == [2, 3]
+    assert [task["example_id"] for task in eval_rows] == [0, 1]
     assert all(task["answer"] in FakeTextArenaEnv.word_list for task in tasks)
-    assert all(task["answer"] in FakeTextArenaEnv.word_list for task in eval_tasks)
+    assert all(task["answer"] in FakeTextArenaEnv.word_list for task in eval_rows)
     assert tasks[0]["prompt"] == [
         {
             "role": "user",
@@ -141,20 +141,11 @@ def test_textarena_taskset_flattens_dict_word_list(fake_textarena, monkeypatch):
         )
     )
 
-    assert taskset.word_list == ["apple", "berry", "cider"]
-    assert all(row["answer"] in taskset.word_list for row in taskset.get_dataset())
+    word_list = ["apple", "berry", "cider"]
+    assert all(row["answer"] in word_list for row in taskset.get_dataset())
 
 
-def test_textarena_taskset_user_env_loader_deepcopies_template(
-    fake_textarena, monkeypatch
-):
-    copied: list[FakeTextArenaEnv] = []
-
-    def fake_deepcopy(env: FakeTextArenaEnv):
-        copied.append(env)
-        return FakeTextArenaEnv(env_id=env.env_id)
-
-    monkeypatch.setattr(textarena, "deepcopy", fake_deepcopy)
+def test_textarena_taskset_loads_user(fake_textarena):
     taskset = textarena.TextArenaTaskset(
         config=textarena.TextArenaTasksetConfig(
             game="FakeWordle-v0",
@@ -164,13 +155,7 @@ def test_textarena_taskset_user_env_loader_deepcopies_template(
         )
     )
 
-    loader = taskset.user.objects["ta_env"]
-    assert callable(loader)
-    loaded = loader()
-
-    assert copied == [taskset.template]
-    assert isinstance(loaded, FakeTextArenaEnv)
-    assert loaded.reset_calls == 1
+    assert isinstance(taskset.user, textarena.TextArenaUser)
 
 
 @pytest.mark.asyncio
@@ -191,9 +176,7 @@ async def test_textarena_user_steps_env_and_stops_when_game_finishes(fake_textar
 
     env = vf.Env(taskset=taskset, harness=vf.Harness(config=vf.HarnessConfig()))
     messages = await env.harness.runtime.user_messages(task, state)
-    ta_env = cast(
-        FakeTextArenaEnv, next(iter(env.harness.runtime.user_objects.values()))
-    )
+    ta_env = cast(FakeTextArenaEnv, state["textarena_env"])
 
     assert ta_env.guesses == ["[apple]"]
     assert ta_env.state.game_state["secret_word"] == "apple"
@@ -222,9 +205,7 @@ async def test_textarena_user_returns_wordle_feedback_for_unfinished_game(
 
     env = vf.Env(taskset=taskset, harness=vf.Harness(config=vf.HarnessConfig()))
     messages = await env.harness.runtime.user_messages(task, state)
-    ta_env = cast(
-        FakeTextArenaEnv, next(iter(env.harness.runtime.user_objects.values()))
-    )
+    ta_env = cast(FakeTextArenaEnv, state["textarena_env"])
 
     assert ta_env.guesses == ["[berry]"]
     assert messages == [

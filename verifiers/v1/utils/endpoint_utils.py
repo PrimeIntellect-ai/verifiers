@@ -15,6 +15,7 @@ from verifiers.types import (
     AssistantMessage,
     ClientType,
     EndpointApi,
+    EndpointConfig,
     Messages,
     SystemMessage,
     Tool,
@@ -32,10 +33,13 @@ from verifiers.utils.interception_utils import (
 from verifiers.utils.message_utils import normalize_messages
 from verifiers.utils.serve_utils import get_free_port
 
-from ..runtime import Runtime
+from ..runtime import ModelRequestContext, Runtime, TrajectoryVisibility
 from ..state import State
 from ..task import Task
 from ..types import ConfigData, ConfigMap, Handler, PromptMessage
+
+VF_TRAJECTORY_VISIBILITY_HEADER = "x-verifiers-trajectory"
+VF_ENDPOINT_API_KEY_VAR = "VF_ENDPOINT_API_KEY"
 
 
 class TunnelHandle(Protocol):
@@ -62,23 +66,20 @@ def client_from_state(
 def endpoint_config_from_state(
     state: State,
     api: EndpointApi | ClientType = "chat_completions",
-) -> dict[str, str]:
+) -> EndpointConfig:
     endpoint = endpoint_from_state(state)
     return endpoint.config(state, api=api)
 
 
 def endpoint_from_state(state: State) -> "Endpoint":
     runtime = state._runtime()
-    harness = getattr(runtime, "harness", None)
-    endpoint = getattr(harness, "endpoint", None)
+    harness = runtime.harness
+    if harness is None:
+        raise RuntimeError("State does not have an active model endpoint.")
+    endpoint = harness.endpoint
     if not isinstance(endpoint, Endpoint):
         raise RuntimeError("State does not have an active model endpoint.")
     return endpoint
-
-
-def endpoint_api_key(state: State) -> str:
-    endpoint = endpoint_from_state(state)
-    return str(endpoint.secret or "intercepted")
 
 
 def endpoint_api_client_type(
@@ -171,9 +172,11 @@ class Endpoint:
         )
         self._rollout_queues[rollout_key] = cast(asyncio.Queue[str], request_queue)
         endpoint_root_url = f"{await self.url_base()}/rollout/{rollout_key}"
+        api_key_var = f"{VF_ENDPOINT_API_KEY_VAR}_{rollout_key.upper()}"
         state["endpoint_rollout_key"] = rollout_key
         state["endpoint_root_url"] = endpoint_root_url
         state["endpoint_base_url"] = f"{endpoint_root_url}/v1"
+        state["endpoint_api_key_var"] = api_key_var
         return state["endpoint_base_url"]
 
     def client(
@@ -199,22 +202,19 @@ class Endpoint:
         self,
         state: State,
         api: EndpointApi | ClientType = "chat_completions",
-    ) -> dict[str, str]:
+    ) -> EndpointConfig:
         api = normalize_endpoint_api(api)
         base_url = (
             str(state["endpoint_root_url"])
             if api == "messages"
             else str(state["endpoint_base_url"])
         )
-        config = {
-            "model": state.get_model(),
-            "api_key": self.secret or "intercepted",
-            "base_url": base_url,
-            "api_client_type": endpoint_api_client_type(api),
-        }
-        if api != "messages":
-            config["api_base"] = base_url
-        return config
+        return EndpointConfig(
+            model=state.get_model(),
+            base_url=base_url,
+            api_key_var=str(state["endpoint_api_key_var"]),
+            api_client_type=endpoint_api_client_type(api),
+        )
 
     def unregister_rollout(self, rollout_key: str) -> None:
         self._rollout_queues.pop(rollout_key, None)
@@ -225,6 +225,35 @@ class Endpoint:
 
     def get_request(self, request_id: str) -> ConfigData:
         return cast(ConfigData, self.server.intercepts[request_id])
+
+    def request_context(
+        self, request_id: str, request: ConfigData
+    ) -> ModelRequestContext:
+        headers = request.get("headers") or {}
+        if not isinstance(headers, Mapping):
+            raise TypeError("Endpoint request headers must be a mapping.")
+        header_data = {str(key).lower(): value for key, value in headers.items()}
+        return ModelRequestContext(
+            source="endpoint",
+            endpoint_request_id=request_id,
+            headers=header_data,
+            trajectory_visibility=self.trajectory_visibility(header_data),
+        )
+
+    def trajectory_visibility(self, headers: ConfigMap) -> TrajectoryVisibility:
+        value = headers.get(VF_TRAJECTORY_VISIBILITY_HEADER)
+        if value is None:
+            return "append"
+        if not isinstance(value, str):
+            raise TypeError(
+                f"{VF_TRAJECTORY_VISIBILITY_HEADER} must be 'append' or 'hidden'."
+            )
+        visibility = value.strip().lower()
+        if visibility not in {"append", "hidden"}:
+            raise ValueError(
+                f"{VF_TRAJECTORY_VISIBILITY_HEADER} must be 'append' or 'hidden'."
+            )
+        return cast(TrajectoryVisibility, visibility)
 
     async def url_base(self) -> str:
         if self.use_tunnel:
@@ -409,11 +438,7 @@ async def forward_request(
             task,
             state,
             tool_defs=tool_defs,
-            extras={
-                "endpoint": True,
-                "endpoint_request_id": request_id,
-                "headers": request.get("headers") or {},
-            },
+            context=endpoint.request_context(request_id, request),
         )
     except BaseException as e:
         error = e

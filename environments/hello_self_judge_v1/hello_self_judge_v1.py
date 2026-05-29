@@ -350,7 +350,7 @@ def load_bash_toolset(config=None) -> vf.Toolset:
 
 
 class SelfJudgeTaskset(vf.Taskset[SelfJudgeTasksetConfig]):
-    def load_tasks(self) -> vf.Tasks:
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         return load_tasks(num_examples=self.config.num_examples)
 
 

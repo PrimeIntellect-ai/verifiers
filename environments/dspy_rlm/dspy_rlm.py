@@ -1,4 +1,5 @@
 import re
+from typing import cast
 
 import verifiers as vf
 from verifiers.utils.data_utils import load_example_dataset
@@ -13,12 +14,16 @@ class DSPYRLMTasksetConfig(vf.TasksetConfig):
 
 async def run_dspy_rlm_program(task: vf.Task, state: vf.State) -> vf.State:
     import dspy
+    from openai import OpenAI
 
     endpoint_config = state.get_endpoint_config(api="chat")
+    endpoint_client = cast(OpenAI, state.get_client(api="chat", sync=True))
+    endpoint_api_key = endpoint_client.api_key
+    endpoint_client.close()
     lm = dspy.LM(
-        f"openai/{endpoint_config['model']}",
-        api_base=endpoint_config["api_base"],
-        api_key=endpoint_config["api_key"],
+        f"openai/{endpoint_config.model}",
+        api_base=endpoint_config.base_url,
+        api_key=endpoint_api_key,
         cache=False,
     )
 
@@ -45,12 +50,14 @@ def load_gsm8k_tasks(split: str, num_examples: int):
     return load_example_dataset("gsm8k", split=split, n=n)
 
 
-def load_tasks(num_train_examples: int = 50):
-    return load_gsm8k_tasks("train", num_train_examples)
-
-
-def load_eval_tasks(num_eval_examples: int = 20):
-    return load_gsm8k_tasks("test", num_eval_examples)
+def load_tasks(
+    split: vf.TaskSplit = "train",
+    num_train_examples: int = 50,
+    num_eval_examples: int = 20,
+):
+    dataset_split = "train" if split == "train" else "test"
+    num_examples = num_train_examples if split == "train" else num_eval_examples
+    return load_gsm8k_tasks(dataset_split, num_examples)
 
 
 def extract_dspy_answer(text: str) -> str:
@@ -100,11 +107,12 @@ def answer_reward(task: vf.Task, state: vf.State) -> float:
 
 
 class DSPYRLMTaskset(vf.Taskset[DSPYRLMTasksetConfig]):
-    def load_tasks(self) -> vf.Tasks:
-        return load_tasks(num_train_examples=self.config.num_train_examples)
-
-    def load_eval_tasks(self) -> vf.Tasks:
-        return load_eval_tasks(num_eval_examples=self.config.num_eval_examples)
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
+        return load_tasks(
+            split=split,
+            num_train_examples=self.config.num_train_examples,
+            num_eval_examples=self.config.num_eval_examples,
+        )
 
 
 class DSPYRLMHarnessConfig(vf.HarnessConfig):

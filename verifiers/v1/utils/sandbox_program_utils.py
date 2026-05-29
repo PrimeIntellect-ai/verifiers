@@ -304,13 +304,13 @@ TOOL_DEFS_BY_PROTOCOL_PATH = "/tmp/vf_tool_defs_by_protocol.json"
 class Client:
     def __init__(self, state):
         self.openai = AsyncOpenAI(
-            api_key=endpoint_api_key(),
+            api_key=endpoint_token(),
             base_url=os.environ.get("OPENAI_BASE_URL")
             or state["endpoint_base_url"],
         )
         self.anthropic = AsyncAnthropic(
             api_key=os.environ.get("ANTHROPIC_API_KEY")
-            or endpoint_api_key(),
+            or endpoint_token(),
             base_url=os.environ.get("ANTHROPIC_BASE_URL")
             or state["endpoint_root_url"],
         )
@@ -323,7 +323,7 @@ class Client:
         await self.anthropic.close()
 
 
-def endpoint_api_key():
+def endpoint_token():
     return os.environ.get("OPENAI_API_KEY") or os.environ.get("ANTHROPIC_API_KEY") or "intercepted"
 
 
@@ -332,7 +332,7 @@ def endpoint_headers():
         "Content-Type": "application/json",
         "Accept": "application/json",
         "User-Agent": "python-requests/2.32.3",
-        "Authorization": f"Bearer {endpoint_api_key()}",
+        "Authorization": f"Bearer {endpoint_token()}",
     }
 
 

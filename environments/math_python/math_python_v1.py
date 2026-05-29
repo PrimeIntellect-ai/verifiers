@@ -144,7 +144,7 @@ def load_tasks(
 
 
 class MathPythonTaskset(vf.Taskset[MathPythonTasksetConfig]):
-    def load_tasks(self) -> vf.Tasks:
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         return load_tasks(
             dataset_name=self.config.dataset_name,
             dataset_split=self.config.dataset_split,

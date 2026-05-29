@@ -4,13 +4,12 @@ import re
 import shlex
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, cast
 
 from datasets import load_dataset
 import verifiers as vf
 from harnesses import RLM, RLMConfig
 from verifiers.v1.types import ConfigMap
-from verifiers.v1.utils.config_utils import coerce_config
 
 logger = logging.getLogger(__name__)
 
@@ -160,38 +159,27 @@ def env_vars(*, repo_path: str, env: ConfigMap) -> dict[str, str]:
 
 
 class R2ESWETaskset(vf.Taskset[RlmSweTasksetConfig]):
-    def __init__(self, config: RlmSweTasksetConfig | None = None):
-        config = coerce_config(RlmSweTasksetConfig, config)
-        self.dataset_name = config.dataset_name
-        self.repo_path = config.repo_path
-        self.alt_path = config.alt_path
-        self.filter_repos = config.filter_repos
-        self.ds_num_proc = config.ds_num_proc
-        self.ds_keep_in_memory = config.ds_keep_in_memory
-        self.timeout_minutes = config.timeout_minutes
-        self.hide_tests_from_agent = config.hide_tests_from_agent
-        self.env = dict(config.env or {})
-        super().__init__(config=config)
-
     def sandbox_config(self, info: ConfigMap) -> vf.ConfigData:
         return sandbox_config(
             info=info,
-            repo_path=self.repo_path,
-            timeout_minutes=self.timeout_minutes,
+            repo_path=self.config.repo_path,
+            timeout_minutes=self.config.timeout_minutes,
         )
 
     def get_env_vars(self) -> dict[str, str]:
-        return env_vars(repo_path=self.repo_path, env=self.env)
+        return env_vars(
+            repo_path=self.config.repo_path, env=dict(self.config.env or {})
+        )
 
-    def load_tasks(self) -> vf.Tasks:
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         return load_tasks(
-            dataset_name=self.dataset_name,
-            repo_path=self.repo_path,
-            filter_repos=self.filter_repos,
-            ds_num_proc=self.ds_num_proc,
-            ds_keep_in_memory=self.ds_keep_in_memory,
-            timeout_minutes=self.timeout_minutes,
-            env=self.env,
+            dataset_name=self.config.dataset_name,
+            repo_path=self.config.repo_path,
+            filter_repos=self.config.filter_repos,
+            ds_num_proc=self.config.ds_num_proc,
+            ds_keep_in_memory=self.config.ds_keep_in_memory,
+            timeout_minutes=self.config.timeout_minutes,
+            env=dict(self.config.env or {}),
         )
 
     @vf.setup(priority=250)
@@ -222,10 +210,10 @@ class R2ESWETaskset(vf.Taskset[RlmSweTasksetConfig]):
             return result
 
         link_commands = [
-            f"ln -s {self.repo_path}/.venv {self.alt_path}/.venv",
-            f"ln -s {self.repo_path}/.venv/bin/python {self.alt_path}/.local/bin/python",
-            f"ln -s {self.repo_path}/.venv/bin/python {self.alt_path}/.local/bin/python3",
-            f"find {self.repo_path}/.venv/bin -type f -executable -exec ln -sfn {{}} {self.alt_path}/.local/bin/ \\;",
+            f"ln -s {self.config.repo_path}/.venv {self.config.alt_path}/.venv",
+            f"ln -s {self.config.repo_path}/.venv/bin/python {self.config.alt_path}/.local/bin/python",
+            f"ln -s {self.config.repo_path}/.venv/bin/python {self.config.alt_path}/.local/bin/python3",
+            f"find {self.config.repo_path}/.venv/bin -type f -executable -exec ln -sfn {{}} {self.config.alt_path}/.local/bin/ \\;",
         ]
         for command in link_commands:
             await exec_checked(command)
@@ -234,11 +222,11 @@ class R2ESWETaskset(vf.Taskset[RlmSweTasksetConfig]):
             cleanup_commands = [
                 (
                     "timeout 30 bash -c 'shopt -s globstar; rm -rf **/*.pyc **/__pycache__' 2>/dev/null || timeout 30 find . -name '*.pyc' -delete || true",
-                    self.repo_path,
+                    self.config.repo_path,
                 ),
                 (
                     "timeout 30 bash -c 'shopt -s globstar; rm -rf **/__pycache__' 2>/dev/null || timeout 30 find . -name '__pycache__' -exec rm -rf {} + || true",
-                    self.repo_path,
+                    self.config.repo_path,
                 ),
                 (
                     "timeout 30 bash -c 'shopt -s globstar; rm -rf /r2e_tests/**/*.pyc /r2e_tests/**/__pycache__' 2>/dev/null || timeout 30 find /r2e_tests -name '*.pyc' -delete || true",
@@ -254,8 +242,10 @@ class R2ESWETaskset(vf.Taskset[RlmSweTasksetConfig]):
         except Exception as exc:
             logger.warning("Continuing without deleting pycache: %r", exc)
 
-        if not self.hide_tests_from_agent:
-            await exec_checked(f"mv /r2e_tests {self.repo_path}/r2e_tests", timeout=60)
+        if not self.config.hide_tests_from_agent:
+            await exec_checked(
+                f"mv /r2e_tests {self.config.repo_path}/r2e_tests", timeout=60
+            )
             return
 
         remote_archive = "/tmp/r2e_tests.tar.gz"
@@ -299,7 +289,7 @@ class R2ESWETaskset(vf.Taskset[RlmSweTasksetConfig]):
                 remote_archive, str(local_archive_path), timeout=300
             )
             result = await sandbox.execute(
-                f"tar -C {self.repo_path} -xzf {remote_archive}",
+                f"tar -C {self.config.repo_path} -xzf {remote_archive}",
                 timeout=300,
             )
             if result.exit_code != 0:
@@ -308,7 +298,7 @@ class R2ESWETaskset(vf.Taskset[RlmSweTasksetConfig]):
                 )
             Path(str(local_archive_path)).unlink(missing_ok=True)
             del state["r2e_tests_archive_local_path"]
-        elif self.hide_tests_from_agent:
+        elif self.config.hide_tests_from_agent:
             raise RuntimeError(
                 f"Missing cached r2e_tests archive: {local_archive_path}"
             )
@@ -319,12 +309,12 @@ class R2ESWETaskset(vf.Taskset[RlmSweTasksetConfig]):
         )
         command = f"export {env_str}; /bin/bash run_tests.sh > test_output.txt 2>&1"
         result = await sandbox.run_background_job(
-            command, timeout=test_timeout, working_dir=self.repo_path
+            command, timeout=test_timeout, working_dir=self.config.repo_path
         )
         if result.exit_code > 1:
             raise RuntimeError(f"Error running tests: exit_code={result.exit_code}")
         result = await sandbox.execute(
-            f"cat {self.repo_path}/test_output.txt", timeout=300
+            f"cat {self.config.repo_path}/test_output.txt", timeout=300
         )
         return result.stdout or ""
 
@@ -350,7 +340,8 @@ class R2ESWETaskset(vf.Taskset[RlmSweTasksetConfig]):
     async def apply_gold_patch(
         self, sandbox: R2ESandbox, state: vf.MutableConfigMap
     ) -> None:
-        info = state["info"]
+        info = cast(ConfigMap, state["info"])
+        assert isinstance(info, Mapping)
         patch = extract_gold_patch(
             str(info["parsed_commit_content"]),
             test_file=False,
@@ -364,7 +355,7 @@ class R2ESWETaskset(vf.Taskset[RlmSweTasksetConfig]):
         await sandbox.upload_bytes("/tmp/gold.patch", patch.encode(), "gold.patch")
         result = await sandbox.execute(
             "git apply --whitespace=fix /tmp/gold.patch",
-            working_dir=self.repo_path,
+            working_dir=self.config.repo_path,
             timeout=30,
         )
         if result.exit_code != 0:
@@ -374,15 +365,19 @@ class R2ESWETaskset(vf.Taskset[RlmSweTasksetConfig]):
             )
 
     async def validate_instance(self, state: vf.MutableConfigMap) -> bool:
-        sandbox = state["_rlm_swe_sandbox"]
+        sandbox = cast(R2ESandbox, state["_rlm_swe_sandbox"])
         await self.apply_gold_patch(sandbox, state)
+        test_timeout = state.get("test_timeout", 900)
+        assert isinstance(test_timeout, int)
         test_output = await self.run_tests(
             sandbox,
             state,
-            int(state.get("test_timeout", 900)),
+            test_timeout,
         )
         state["test_output"] = test_output
-        return self.calculate_reward(test_output, state.get("info") or {}) > 0
+        info = cast(ConfigMap, state["info"])
+        assert isinstance(info, Mapping)
+        return self.calculate_reward(test_output, info) > 0
 
     @vf.cleanup(priority=100)
     async def cleanup_r2e_state(self, task, state) -> None:
@@ -506,13 +501,15 @@ def load_harness(config: RLMConfig) -> RLM:
     base_data = RLMConfig(
         workdir=DEFAULT_REPO_PATH,
         rlm_tools=list(DEFAULT_RLM_TOOLS),
-    ).model_dump()
-    config = RLMConfig.model_validate(
-        {
-            **base_data,
-            **user_config.model_dump(exclude_unset=True, exclude_none=True),
-        }
+    ).model_dump(exclude={"program"})
+    user_data = user_config.model_dump(
+        exclude_unset=True,
+        exclude_none=True,
+        exclude={"program"},
     )
+    if "program" in user_config.model_fields_set:
+        user_data["program"] = user_config.program
+    config = RLMConfig.model_validate({**base_data, **user_data})
     return RLM(
         config=config,
     )

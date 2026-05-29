@@ -167,7 +167,7 @@ class {taskset_name}(vf.Taskset[{taskset_config_name}]):
     def load_system_prompt(self) -> vf.SystemPrompt:
         raise NotImplementedError("Load the system prompt for {env_id_dash}.")
 
-    def load_tasks(self) -> vf.Tasks:
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         raise NotImplementedError("Load task rows for {env_id_dash}.")
 
     @vf.reward(weight=1.0)
@@ -195,7 +195,7 @@ class {taskset_name}(vf.Taskset[{taskset_config_name}]):
     def load_system_prompt(self) -> vf.SystemPrompt:
         raise NotImplementedError("Load the system prompt for {env_id_dash}.")
 
-    def load_tasks(self) -> vf.Tasks:
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         raise NotImplementedError("Load task rows for {env_id_dash}.")
 
     @vf.reward(weight=1.0)

@@ -95,7 +95,7 @@ class MyTasksetConfig(vf.TasksetConfig):
 
 
 class MyTaskset(vf.Taskset[MyTasksetConfig]):
-    def load_tasks(self) -> vf.Tasks:
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         rows = [
             {
                 "prompt": [{"role": "user", "content": "Reverse abc."}],
@@ -129,7 +129,10 @@ from harnesses import OpenCodeConfig
 from tasksets import HarborTasksetConfig
 
 env = vf.Env(
-    taskset=vf.load_taskset("tasksets.harbor", config=HarborTasksetConfig()),
+    taskset=vf.load_taskset(
+        "tasksets.harbor",
+        config=HarborTasksetConfig(bundle_package=__name__),
+    ),
     harness=vf.load_harness("harnesses.opencode", config=OpenCodeConfig()),
 )
 ```

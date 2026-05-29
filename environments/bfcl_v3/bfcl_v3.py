@@ -567,16 +567,11 @@ async def bfcl_multi_turn_program(
     return state
 
 
-class BFCLMultiTurnHarness(vf.Harness[BFCLHarnessConfig]):
-    def load_program(self) -> vf.Program:
-        return vf.Program({"fn": "bfcl_multi_turn_program"})
-
-
 class BFCLTaskset(vf.Taskset[BFCLTasksetConfig]):
     def load_toolsets(self) -> vf.Toolsets:
         return {"bfcl": vf.Toolset(scope="rollout")}
 
-    def load_tasks(self) -> vf.Tasks:
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         return load_tasks(
             test_category=self.config.test_category,
             examples_per_category=self.config.examples_per_category,
@@ -598,7 +593,9 @@ def load_harness(config: BFCLHarnessConfig) -> vf.Harness:
     from bfcl_eval.utils import is_multi_turn
 
     if is_multi_turn(config.test_category):
-        return BFCLMultiTurnHarness(config=config)
+        config = config.model_copy(
+            update={"program": vf.ProgramConfig(fn="bfcl_multi_turn_program")}
+        )
     return vf.Harness(config=config)
 
 

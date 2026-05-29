@@ -1,17 +1,9 @@
 import shlex
 from pathlib import PurePosixPath
 
-from verifiers.v1.config import ConfigSource
-from verifiers.v1.harness import Harness, HarnessConfig
-from verifiers.v1.program import Program, ProgramCommand, ProgramOptionMap, ProgramValue
-from verifiers.v1.sandbox import SandboxConfig
-from verifiers.v1.types import (
-    ConfigData,
-    ConfigMap,
-    PromptInput,
-)
+import verifiers as vf
+from pydantic import model_validator
 from verifiers.v1.utils.sandbox_python_utils import SANDBOX_BIN_DIR, uv_setup_command
-from verifiers.v1.utils.config_utils import coerce_config
 
 TERMINUS_2_DEFAULT_AGENT_WORKDIR = "/app"
 TERMINUS_2_DEFAULT_INSTRUCTION_PATH = "/terminus_2/instruction.md"
@@ -23,7 +15,7 @@ TERMINUS_2_DEFAULT_MODEL_NAME = "openai/gpt-4.1-mini"
 TERMINUS_2_DEFAULT_API_BASE_URL = "https://api.pinference.ai/api/v1"
 
 
-class Terminus2Config(HarnessConfig):
+class Terminus2Config(vf.HarnessConfig):
     agent_workdir: str = TERMINUS_2_DEFAULT_AGENT_WORKDIR
     instruction_path: str = TERMINUS_2_DEFAULT_INSTRUCTION_PATH
     system_prompt_path: str = TERMINUS_2_DEFAULT_SYSTEM_PROMPT_PATH
@@ -32,67 +24,16 @@ class Terminus2Config(HarnessConfig):
     python_version: str = TERMINUS_2_DEFAULT_PYTHON_VERSION
     model_name: str = TERMINUS_2_DEFAULT_MODEL_NAME
     api_base_url: str = TERMINUS_2_DEFAULT_API_BASE_URL
-    system_prompt: PromptInput | None = None
-    sandbox: SandboxConfig | None = SandboxConfig()
+    system_prompt: vf.PromptInput | None = None
+    sandbox: vf.SandboxConfig | None = vf.SandboxConfig()
     max_turns: int = 4
 
-
-class Terminus2(Harness[Terminus2Config]):
-    config: Terminus2Config
-
-    def __init__(self, config: ConfigSource = None):
-        config_value = coerce_config(Terminus2Config, config)
-        self.command_program_parts = self._program_config(config_value)
-        super().__init__(config=config_value)
-
-    def load_program(self) -> Program:
-        program, _ = self.command_program_parts
-        return program
-
-    def load_sandbox(self) -> ConfigMap | None:
-        _, sandbox = self.command_program_parts
-        return sandbox
-
-    @classmethod
-    def _program_config(
-        cls, config: Terminus2Config
-    ) -> tuple[Program, ConfigData | None]:
-        return Harness.command_program_config(
-            config,
-            command=cls._command(config),
-            files=cls._files(config),
-            setup=cls._setup(config),
-            artifacts=cls._artifacts(config),
-        )
-
-    @classmethod
-    def _command(cls, config: Terminus2Config) -> ProgramCommand:
-        return [
-            "bash",
-            "-lc",
-            cls._run_script(
-                agent_workdir=config.agent_workdir,
-                instruction_path=config.instruction_path,
-                system_prompt_path=config.system_prompt_path
-                if config.system_prompt is not None
-                else None,
-                log_path=config.log_path,
-                harbor_package=config.harbor_package,
-                python_version=config.python_version,
-                model_name=config.model_name,
-                api_base_url=config.api_base_url,
-                max_turns=config.max_turns,
-            ),
-        ]
-
-    @classmethod
-    def _setup(cls, config: Terminus2Config) -> str:
-        _ = config
-        return uv_setup_command()
-
-    @classmethod
-    def _files(cls, config: Terminus2Config) -> ProgramOptionMap:
-        files: dict[str, ProgramValue] = {
+    @model_validator(mode="after")
+    def configure_program(self) -> "Terminus2Config":
+        if self.program.command is not None and "program" not in self.model_fields_set:
+            return self
+        config = self
+        files: dict[str, vf.ProgramValue] = {
             config.instruction_path: {
                 "fn": "verifiers.v1.utils.prompt_utils:task_text"
             },
@@ -101,72 +42,17 @@ class Terminus2(Harness[Terminus2Config]):
             files[config.system_prompt_path] = {
                 "fn": "verifiers.v1.utils.prompt_utils:state_system_prompt_text"
             }
-        return files
-
-    @classmethod
-    def _artifacts(cls, config: Terminus2Config) -> ProgramOptionMap:
-        return {
+        artifacts: dict[str, vf.ProgramValue] = {
             "terminus_2_log": {
                 "path": config.log_path,
                 "format": "text",
                 "optional": True,
             }
         }
-
-    @classmethod
-    def _run_script(
-        cls,
-        *,
-        agent_workdir: str,
-        instruction_path: str,
-        system_prompt_path: str | None,
-        log_path: str,
-        harbor_package: str,
-        python_version: str,
-        model_name: str,
-        api_base_url: str,
-        max_turns: int | None,
-    ) -> str:
-        log_dir = str(PurePosixPath(log_path).parent)
-        agent_script = cls._agent_script(
-            instruction_path=instruction_path,
-            system_prompt_path=system_prompt_path,
-            log_dir=log_dir,
-            model_name=model_name,
-            api_base_url=api_base_url,
-            max_turns=max_turns,
+        log_dir = str(PurePosixPath(config.log_path).parent)
+        system_prompt_path = (
+            config.system_prompt_path if config.system_prompt is not None else None
         )
-        return f"""\
-set -eo pipefail
-export PATH={shlex.quote(SANDBOX_BIN_DIR)}:"$HOME/.local/bin:$PATH"
-
-TERMINUS_2_WORKDIR="${{AGENT_WORKDIR:-}}"
-if [ -z "$TERMINUS_2_WORKDIR" ]; then
-    TERMINUS_2_WORKDIR={shlex.quote(agent_workdir)}
-fi
-export AGENT_WORKDIR="$TERMINUS_2_WORKDIR"
-
-mkdir -p {shlex.quote(log_dir)} "$TERMINUS_2_WORKDIR"
-cd "$TERMINUS_2_WORKDIR"
-uv --no-config run --no-project --quiet \
-  --python {shlex.quote(python_version)} \
-  --with {shlex.quote(harbor_package)} \
-  python - <<'PY' 2>&1 | tee -a {shlex.quote(log_path)}
-{agent_script}
-PY
-"""
-
-    @classmethod
-    def _agent_script(
-        cls,
-        *,
-        instruction_path: str = TERMINUS_2_DEFAULT_INSTRUCTION_PATH,
-        system_prompt_path: str | None = TERMINUS_2_DEFAULT_SYSTEM_PROMPT_PATH,
-        log_dir: str = "/logs/agent",
-        model_name: str = TERMINUS_2_DEFAULT_MODEL_NAME,
-        api_base_url: str = TERMINUS_2_DEFAULT_API_BASE_URL,
-        max_turns: int | None = 4,
-    ) -> str:
         system_prompt_block = ""
         if system_prompt_path is not None:
             system_prompt_block = f"""\
@@ -174,7 +60,7 @@ PY
     if system_prompt_path.exists() and system_prompt_path.stat().st_size > 0:
         instruction = system_prompt_path.read_text() + "\\n\\n" + instruction
 """
-        return f"""\
+        agent_script = f"""\
 from __future__ import annotations
 
 import asyncio
@@ -271,16 +157,14 @@ class LocalEnvironment(BaseEnvironment):
 async def main() -> None:
     workdir = Path(os.environ.get("AGENT_WORKDIR") or {TERMINUS_2_DEFAULT_AGENT_WORKDIR!r})
     logs_dir = Path({log_dir!r})
-    instruction = Path({instruction_path!r}).read_text()
+    instruction = Path({config.instruction_path!r}).read_text()
 {system_prompt_block}    env = LocalEnvironment(workdir=workdir, logs_dir=logs_dir)
-    if "OPENAI_API_KEY" not in os.environ and "PRIME_API_KEY" in os.environ:
-        os.environ["OPENAI_API_KEY"] = os.environ["PRIME_API_KEY"]
-    api_base = os.environ.get("OPENAI_BASE_URL") or {api_base_url!r}
+    api_base = os.environ.get("OPENAI_BASE_URL") or {config.api_base_url!r}
     agent = Terminus2(
         logs_dir=logs_dir,
-        model_name={model_name!r},
+        model_name={config.model_name!r},
         api_base=api_base,
-        max_turns={max_turns!r},
+        max_turns={config.max_turns!r},
     )
     await agent.setup(env)
     await agent.run(instruction, env, AgentContext())
@@ -288,6 +172,39 @@ async def main() -> None:
 
 asyncio.run(main())
 """
+        run_script = f"""\
+set -eo pipefail
+export PATH={shlex.quote(SANDBOX_BIN_DIR)}:"$HOME/.local/bin:$PATH"
+
+TERMINUS_2_WORKDIR="${{AGENT_WORKDIR:-}}"
+if [ -z "$TERMINUS_2_WORKDIR" ]; then
+    TERMINUS_2_WORKDIR={shlex.quote(config.agent_workdir)}
+fi
+export AGENT_WORKDIR="$TERMINUS_2_WORKDIR"
+
+mkdir -p {shlex.quote(log_dir)} "$TERMINUS_2_WORKDIR"
+cd "$TERMINUS_2_WORKDIR"
+uv --no-config run --no-project --quiet \
+  --python {shlex.quote(config.python_version)} \
+  --with {shlex.quote(config.harbor_package)} \
+  python - <<'PY' 2>&1 | tee -a {shlex.quote(config.log_path)}
+{agent_script}
+PY
+"""
+        self.program = vf.ProgramConfig.from_command(
+            command=["bash", "-lc", run_script],
+            program=config.program,
+            default_sandbox=config.sandbox,
+            files=files,
+            setup=uv_setup_command(),
+            artifacts=artifacts,
+        )
+        self.model_fields_set.discard("program")
+        return self
+
+
+class Terminus2(vf.Harness[Terminus2Config]):
+    config: Terminus2Config
 
 
 def load_harness(config: Terminus2Config) -> Terminus2:

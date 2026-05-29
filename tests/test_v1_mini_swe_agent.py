@@ -49,7 +49,7 @@ from tasksets import HarborTaskset, HarborTasksetConfig
 
 
 def load_env():
-    return vf.Env(taskset=HarborTaskset(config=HarborTasksetConfig()), harness=MiniSWEAgent(config=MiniSWEAgentConfig()))
+    return vf.Env(taskset=HarborTaskset(config=HarborTasksetConfig(bundle_package=__name__)), harness=MiniSWEAgent(config=MiniSWEAgentConfig()))
 """.lstrip()
     )
     monkeypatch.syspath_prepend(str(tmp_path))

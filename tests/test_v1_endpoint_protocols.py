@@ -78,24 +78,26 @@ def test_endpoint_config_uses_endpoint_client_type_names():
             "runtime": {"model": "test-model"},
             "endpoint_root_url": root,
             "endpoint_base_url": f"{root}/v1",
+            "endpoint_api_key_var": "VF_ENDPOINT_API_KEY_ROLLOUT_TEST",
         }
     )
 
     openai_config = endpoint.config(state, api="responses")
     anthropic_config = endpoint.config(state, api="messages")
 
-    assert openai_config == {
+    assert openai_config.model_dump(exclude_none=True) == {
         "model": "test-model",
-        "api_key": "test-secret",
         "base_url": f"{root}/v1",
-        "api_base": f"{root}/v1",
+        "api_key_var": "VF_ENDPOINT_API_KEY_ROLLOUT_TEST",
         "api_client_type": "openai_responses",
+        "extra_headers": {},
     }
-    assert anthropic_config == {
+    assert anthropic_config.model_dump(exclude_none=True) == {
         "model": "test-model",
-        "api_key": "test-secret",
         "base_url": root,
+        "api_key_var": "VF_ENDPOINT_API_KEY_ROLLOUT_TEST",
         "api_client_type": "anthropic_messages",
+        "extra_headers": {},
     }
 
 

@@ -1,37 +1,60 @@
 import importlib
 import importlib.resources as resources
 import json
-from collections.abc import Iterable
+import uuid
+from collections.abc import Iterable, Mapping
+from copy import deepcopy
 from importlib.abc import Traversable
 from pathlib import Path
 from typing import cast
 
 from datasets import Dataset
+from verifiers.types import task_payload_from_info
 
-from ..config import resolve_config_object
-from ..types import ConfigData, ConfigMap, TaskLoader, Tasks
-
-
-def dataset_info_with_task(task: ConfigMap) -> ConfigData:
-    return {"task": json.dumps(task)}
+from ..task import Task
+from ..types import ConfigData, ConfigMap, TaskRow, Tasks
 
 
-def resolve_task_loader(field: str, ref: str | None) -> TaskLoader | None:
-    if ref is None:
-        return None
-    loader = resolve_config_object(ref)
-    if not callable(loader):
-        raise TypeError(f"TasksetConfig.{field} must resolve to a callable.")
-    return cast(TaskLoader, loader)
+def task_from_row(row: TaskRow | Task, taskset_id: str) -> Task:
+    if not isinstance(row, Mapping):
+        raise TypeError("Taskset.to_task expects a task row.")
+    serialized_task = task_payload_from_info(row.get("info"))
+    if serialized_task is not None:
+        row = serialized_task
+    data = deepcopy(dict(row))
+    if "prompt" not in data:
+        question = data.get("question")
+        data["prompt"] = (
+            [{"role": "user", "content": str(question)}] if question is not None else []
+        )
+    task = Task(data)
+    task["taskset_id"] = taskset_id
+    if "task_id" in task:
+        task["task_id"] = str(task["task_id"])
+    elif "example_id" in task:
+        task["task_id"] = str(task["example_id"])
+    else:
+        task["task_id"] = uuid.uuid4().hex
+    return task.freeze()
 
 
-def task_data_from_loader(
-    load_tasks: TaskLoader | None,
+def dataset_rows_from_tasks(
+    rows: Iterable[TaskRow], taskset_id: str
 ) -> list[ConfigData]:
-    if load_tasks is None:
-        return []
-    result = cast(Tasks, load_tasks())
-    return task_data_from_result(result)
+    dataset_rows: list[ConfigData] = []
+    for index, row in enumerate(rows):
+        normalized = deepcopy(dict(row))
+        normalized.setdefault("example_id", index)
+        task_payload = dict(task_from_row(normalized, taskset_id))
+        dataset_row: ConfigData = {
+            "prompt": task_payload["prompt"],
+            "example_id": normalized["example_id"],
+            "info": {"task": json.dumps(task_payload)},
+        }
+        if "answer" in normalized:
+            dataset_row["answer"] = normalized["answer"]
+        dataset_rows.append(dataset_row)
+    return dataset_rows
 
 
 def task_data_from_result(result: Tasks) -> list[ConfigData]:
@@ -63,7 +86,7 @@ def discover_sibling_dir(
             ValueError,
         ):
             pass
-    module_file = getattr(module, "__file__", None)
+    module_file = module.__dict__.get("__file__")
     if isinstance(module_file, str):
         candidate_path = Path(module_file).resolve().parent / dirname
         if candidate_path.is_dir() and any(candidate_path.iterdir()):
@@ -72,7 +95,8 @@ def discover_sibling_dir(
 
 
 def module_package_name(module: object) -> str | None:
-    if hasattr(module, "__path__"):
-        return str(getattr(module, "__name__"))
-    package_name = getattr(module, "__package__", None)
+    module_attrs = module.__dict__
+    if "__path__" in module_attrs:
+        return str(module_attrs["__name__"])
+    package_name = module_attrs.get("__package__")
     return package_name if isinstance(package_name, str) and package_name else None

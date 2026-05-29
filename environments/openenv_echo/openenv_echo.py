@@ -16,7 +16,10 @@ def render_openenv_prompt(
     *,
     action_schema: vf.ConfigData | None = None,
     context: str = "reset",
+    contract: str = "mcp",
+    seed: int = 0,
 ) -> Messages:
+    del contract, seed
     if not isinstance(observation, Mapping):
         raise RuntimeError(
             f"openenv-echo prompt renderer expected dict observation, got {type(observation).__name__}."
