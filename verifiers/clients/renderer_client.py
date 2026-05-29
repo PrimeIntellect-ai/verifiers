@@ -325,8 +325,7 @@ def _mm_sidecar_stats(mm_data: Any) -> tuple[int, int, float]:
 # trajectory — which is what keeps bridge prefix matching valid.
 
 _IMAGE_OFFLOAD_MODE_ENV = "VF_RENDERER_IMAGE_OFFLOAD"
-_IMAGE_OFFLOAD_DIR_ENV = "VF_RENDERER_IMAGE_OFFLOAD_DIR"
-_DEFAULT_IMAGE_OFFLOAD_DIR = "/data/renderer-image-cache"
+_IMAGE_OFFLOAD_ROOT = Path("/data/outputs")
 _FILE_URL_PREFIX = "file://"
 _MEDIA_TYPE_EXT = {
     "jpeg": ".jpg",
@@ -342,12 +341,14 @@ def _image_offload_enabled() -> bool:
 
 
 def _image_offload_dir() -> Path:
-    raw = os.environ.get(_IMAGE_OFFLOAD_DIR_ENV, "").strip()
-    # Resolve to absolute: the offloaded path becomes a ``file://`` URL, and a
-    # relative path yields a malformed URI (``file://rel/seg/...`` parses ``rel``
-    # as the host and drops it) that the renderer can't load. Absolute path →
-    # well-formed ``file:///abs/...``.
-    return (Path(raw) if raw else Path(_DEFAULT_IMAGE_OFFLOAD_DIR)).resolve()
+    # The env worker runs in a separate pod that can't inherit the orchestrator's
+    # env, but the platform injects RUN_ID into every container — so derive the
+    # shared run dir from it. Must equal the orchestrator's ``config.output_dir``
+    # (``/data/outputs/run_<RUN_ID>`` in prod), where ``offload_images_to_disk``
+    # writes and ``materialize_pixels`` reads back by hash. Absolute by
+    # construction → the ``file://`` URL is always well-formed.
+    run_id = os.environ.get("RUN_ID", "")
+    return (_IMAGE_OFFLOAD_ROOT / f"run_{run_id}" / "assets" / "images").resolve()
 
 
 def _media_type_ext(media_type: str) -> str:

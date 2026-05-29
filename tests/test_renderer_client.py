@@ -729,7 +729,7 @@ def _image_urls(value):
 
 
 def test_offload_rewrites_prompt_base64_to_file(tmp_path, monkeypatch):
-    monkeypatch.setenv("VF_RENDERER_IMAGE_OFFLOAD_DIR", str(tmp_path))
+    monkeypatch.setattr(renderer_client_module, "_IMAGE_OFFLOAD_ROOT", tmp_path)
     prompt = [
         {
             "role": "user",
@@ -746,28 +746,6 @@ def test_offload_rewrites_prompt_base64_to_file(tmp_path, monkeypatch):
     assert url.startswith("file://") and url.endswith(".jpg")
     # File holds the decoded bytes (not the base64), content-addressed.
     assert Path(url[len("file://") :]).read_bytes() == b"img-A"
-
-
-def test_offload_relative_dir_yields_absolute_loadable_file_uri(tmp_path, monkeypatch):
-    # Regression: a RELATIVE VF_RENDERER_IMAGE_OFFLOAD_DIR must still yield an
-    # ABSOLUTE file:/// URL. A relative path produced "file://rel/seg/..." which
-    # urlparse mis-reads (first segment → host, rest → a bogus absolute path) →
-    # the renderer FileNotFoundError'd on every rollout. (Caught by the local
-    # smoke when --output-dir was relative.)
-    from urllib.parse import urlparse
-
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("VF_RENDERER_IMAGE_OFFLOAD_DIR", "rel_sub/assets/images")  # relative!
-    prompt = [
-        {"role": "user", "content": [{"type": "image_url", "image_url": {"url": _data_uri(b"img-Z", "jpeg")}}]}
-    ]
-    _offload_prompt_and_trajectory_images(prompt, state=None)
-
-    url = prompt[0]["content"][0]["image_url"]["url"]
-    parsed = urlparse(url)
-    assert url.startswith("file:///")  # absolute + well-formed
-    assert parsed.netloc == ""  # no path segment swallowed as the URL host
-    assert Path(parsed.path).read_bytes() == b"img-Z"  # loadable at the urlparse path
 
 
 @pytest.mark.parametrize(
@@ -795,7 +773,7 @@ def test_offload_image_parts_handles_dict_and_pydantic(tmp_path, make_prompt):
 def test_offload_only_rewrites_newest_trajectory_step(tmp_path, monkeypatch):
     # Append-only: prior steps were offloaded when they were newest, so the
     # helper only needs to touch trajectory[-1]. (The old step here stays as-is.)
-    monkeypatch.setenv("VF_RENDERER_IMAGE_OFFLOAD_DIR", str(tmp_path))
+    monkeypatch.setattr(renderer_client_module, "_IMAGE_OFFLOAD_ROOT", tmp_path)
     old_uri = _data_uri(b"old", "png")
     new_uri = _data_uri(b"new", "png")
     state = {
@@ -861,7 +839,7 @@ async def test_bridge_prefix_matching_survives_image_offload(tmp_path, monkeypat
     """THE validation: after immediate base64->file:// offload of BOTH the
     current prompt and the stored trajectory, the bridge prefix match must still
     succeed (it compares the shared 'abc' screenshot by file path now)."""
-    monkeypatch.setenv("VF_RENDERER_IMAGE_OFFLOAD_DIR", str(tmp_path))
+    monkeypatch.setattr(renderer_client_module, "_IMAGE_OFFLOAD_ROOT", tmp_path)
     renderer, prompt, state = _multimodal_bridge_scenario()
 
     # Offload exactly as get_native_response does, before bridge matching.
