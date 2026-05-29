@@ -106,6 +106,9 @@ class SandboxClient(Protocol):
     ) -> SandboxCommandResult: ...
 
 
+_SHARED_SANDBOX_CLIENT: SandboxClient | None = None
+
+
 class SandboxLease:
     def __init__(
         self,
@@ -113,11 +116,14 @@ class SandboxLease:
         sandbox_id: str,
         scope: str,
         key: str,
+        *,
+        owns_client: bool = True,
     ):
         self.client = client
         self.id = sandbox_id
         self.scope = scope
         self.key = key
+        self.owns_client = owns_client
         self.deleted = False
         self.lock = asyncio.Lock()
 
@@ -201,6 +207,8 @@ class SandboxLease:
         try:
             await self.client.delete(self.id)
         finally:
+            if not self.owns_client:
+                return
             aclose = getattr(self.client, "aclose", None)
             if callable(aclose):
                 await aclose()
@@ -274,18 +282,16 @@ async def create_tool_sandbox_lease(toolset: "Toolset") -> SandboxLease:
 
 
 async def create_sandbox_lease(sandbox_config: ConfigMap, key: str) -> SandboxLease:
-    from prime_sandboxes import AsyncSandboxClient
+    global _SHARED_SANDBOX_CLIENT
 
     scope = sandbox_scope(sandbox_config)
-    client = cast(SandboxClient, AsyncSandboxClient())
-    try:
-        sandbox_id = await create_sandbox(client, sandbox_config)
-    except BaseException:
-        aclose = getattr(client, "aclose", None)
-        if callable(aclose):
-            await aclose()
-        raise
-    lease = SandboxLease(client, sandbox_id, scope, key)
+    if _SHARED_SANDBOX_CLIENT is None:
+        from verifiers.utils.threaded_sandbox_client import ThreadedAsyncSandboxClient
+
+        _SHARED_SANDBOX_CLIENT = cast(SandboxClient, ThreadedAsyncSandboxClient())
+    client = _SHARED_SANDBOX_CLIENT
+    sandbox_id = await create_sandbox(client, sandbox_config)
+    lease = SandboxLease(client, sandbox_id, scope, key, owns_client=False)
     try:
         await setup_sandbox(lease, sandbox_config)
     except BaseException:
@@ -622,18 +628,25 @@ async def upload_program_files(
     state: State,
     runtime: Runtime,
 ) -> None:
+    from prime_sandboxes import APIError, UploadTimeoutError
+
     files = program_option_mapping(program.get("files"), "program.files")
     for path, source in files.items():
         content = await resolve_program_value(source, task, state, runtime, program)
         if not isinstance(content, str):
             content = str(content)
-        await maybe_call_with_named_args(
-            getattr(client, "upload_bytes"),
-            sandbox_id=sandbox_id,
-            file_path=path,
-            file_bytes=content.encode(),
-            filename=path.rsplit("/", 1)[-1] or "file",
-        )
+        try:
+            await maybe_call_with_named_args(
+                getattr(client, "upload_bytes"),
+                sandbox_id=sandbox_id,
+                file_path=path,
+                file_bytes=content.encode(),
+                filename=path.rsplit("/", 1)[-1] or "file",
+            )
+        except (APIError, UploadTimeoutError) as exc:
+            raise SandboxError(
+                f"Program file upload failed for {path!r} in sandbox {sandbox_id}: {exc}"
+            ) from exc
 
 
 async def upload_program_dirs(
