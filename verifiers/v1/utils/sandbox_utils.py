@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import importlib.resources as resources
 import json
+import logging
 import shlex
 import tarfile
 import tempfile
@@ -9,10 +10,12 @@ import uuid
 from collections.abc import Awaitable, Callable
 from importlib.abc import Traversable
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Protocol, cast
+from typing import TYPE_CHECKING, Literal, Protocol, TypeVar, cast
 
-from verifiers.errors import SandboxError
+import tenacity as tc
+
 from verifiers.decorators import setup as setup_handler
+from verifiers.errors import Error, SandboxError
 from verifiers.utils.async_utils import maybe_call_with_named_args
 
 from .program_utils import command_argv, command_env, float_config, int_config
@@ -36,6 +39,16 @@ if TYPE_CHECKING:
     from ..toolset import Toolset
 
 VF_STATE_INPUT_PATH_KEY = "_vf_state_input_path"
+SANDBOX_RETRY_ATTEMPTS = 6
+SANDBOX_WAIT_FOR_CREATION_ATTEMPTS = 120
+T = TypeVar("T")
+logger = logging.getLogger(__name__)
+
+
+class RetryLogger(Protocol):
+    def log(
+        self, level: int, msg: str, /, *args: object, **kwargs: object
+    ) -> object: ...
 
 
 class SandboxRecord(Protocol):
@@ -56,7 +69,12 @@ class SandboxOwner(Protocol):
 class SandboxClient(Protocol):
     async def create(self, request: object) -> SandboxRecord: ...
 
-    async def wait_for_creation(self, sandbox_id: str) -> object: ...
+    async def wait_for_creation(
+        self,
+        sandbox_id: str,
+        *,
+        max_attempts: int = SANDBOX_WAIT_FOR_CREATION_ATTEMPTS,
+    ) -> object: ...
 
     async def delete(self, sandbox_id: str) -> object: ...
 
@@ -110,6 +128,24 @@ class SandboxClient(Protocol):
         working_dir: str | None = None,
         env: dict[str, str] | None = None,
     ) -> SandboxCommandResult: ...
+
+
+async def with_sandbox_retry(operation: Callable[[], Awaitable[T]]) -> T:
+    retry_logger = cast(RetryLogger, logger)
+    async for attempt in tc.AsyncRetrying(
+        stop=tc.stop_after_attempt(SANDBOX_RETRY_ATTEMPTS),
+        wait=tc.wait_exponential_jitter(initial=0.5, max=30, jitter=1e-3),
+        before_sleep=tc.before_sleep_log(retry_logger, logging.WARNING),
+        sleep=sandbox_retry_sleep,
+        reraise=True,
+    ):
+        with attempt:
+            return await operation()
+    raise AssertionError("sandbox retry loop exited without running")
+
+
+async def sandbox_retry_sleep(seconds: float) -> None:
+    await asyncio.sleep(seconds)
 
 
 async def close_sandbox_client(client: SandboxClient) -> None:
@@ -223,7 +259,7 @@ class SandboxLease:
             return
         self.deleted = True
         try:
-            await self.client.delete(self.id)
+            await with_sandbox_retry(lambda: self.client.delete(self.id))
         finally:
             if self.owns_client:
                 await close_sandbox_client(self.client)
@@ -472,16 +508,21 @@ def _program_setup_handler(
     use_sandbox_python_path: bool = False,
 ) -> Handler:
     async def handler(task: Task, state: State) -> None:
-        await maybe_call_with_named_args(
-            fn,
-            client=lease.client,
-            sandbox_id=lease.id,
-            program=program,
-            task=task,
-            state=state,
-            runtime=runtime,
-            use_sandbox_python_path=use_sandbox_python_path,
-        )
+        try:
+            await maybe_call_with_named_args(
+                fn,
+                client=lease.client,
+                sandbox_id=lease.id,
+                program=program,
+                task=task,
+                state=state,
+                runtime=runtime,
+                use_sandbox_python_path=use_sandbox_python_path,
+            )
+        except Error:
+            raise
+        except Exception as exc:
+            raise SandboxError(f"Sandbox setup handler {name} failed: {exc}") from exc
 
     handler.__name__ = name
     return setup_handler(handler, priority=priority)
@@ -497,17 +538,25 @@ def _program_channel_setup_handler(
     use_sandbox_python_path: bool = False,
 ) -> Handler:
     async def handler(task: Task, state: State) -> None:
-        await run_program_items(
-            lease.client,
-            lease.id,
-            program,
-            task,
-            state,
-            runtime,
-            items=[setup_item],
-            error_prefix=f"Program {channel} channel setup failed",
-            use_sandbox_python_path=use_sandbox_python_path,
-        )
+        name = f"program_{channel}_channel_setup"
+        try:
+            await run_program_items(
+                lease.client,
+                lease.id,
+                program,
+                task,
+                state,
+                runtime,
+                items=[setup_item],
+                error_prefix=f"Program {channel} channel setup failed",
+                use_sandbox_python_path=use_sandbox_python_path,
+            )
+        except Error:
+            raise
+        except Exception as exc:
+            raise SandboxError(
+                f"Sandbox channel setup handler {name} failed: {exc}"
+            ) from exc
 
     handler.__name__ = f"program_{channel}_channel_setup"
     return setup_handler(handler, priority=priority)
@@ -529,12 +578,22 @@ async def create_sandbox(client: SandboxClient, sandbox_config: ConfigData) -> s
         timeout_minutes=int_config(sandbox_config, "timeout_minutes", 60),
         labels=[str(label) for label in labels] if isinstance(labels, list) else [],
     )
-    sandbox = await client.create(request)
+    sandbox = await with_sandbox_retry(lambda: client.create(request))
     sandbox_id = str(sandbox.id)
     try:
-        await client.wait_for_creation(sandbox_id)
+        await client.wait_for_creation(
+            sandbox_id,
+            max_attempts=SANDBOX_WAIT_FOR_CREATION_ATTEMPTS,
+        )
     except BaseException:
-        await client.delete(sandbox_id)
+        try:
+            await with_sandbox_retry(lambda: client.delete(sandbox_id))
+        except Exception as cleanup_exc:
+            logger.warning(
+                "Failed to delete sandbox %s after creation failure: %s",
+                sandbox_id,
+                cleanup_exc,
+            )
         raise
     return sandbox_id
 
@@ -543,10 +602,15 @@ async def setup_sandbox(handle: SandboxLease, sandbox_config: ConfigData) -> Non
     packages = python_package_list(sandbox_config.get("packages"))
     if packages:
         package_args = " ".join(shlex.quote(str(package)) for package in packages)
-        result = await handle.execute(
-            python_package_install_command(package_args),
-            timeout=int_config(sandbox_config, "install_timeout", 300),
-        )
+        try:
+            result = await handle.execute(
+                python_package_install_command(package_args),
+                timeout=int_config(sandbox_config, "install_timeout", 300),
+            )
+        except Error:
+            raise
+        except Exception as exc:
+            raise SandboxError(f"Sandbox package install failed: {exc}") from exc
         if result.exit_code:
             raise SandboxError(f"Sandbox package install failed: {result.stderr}")
     commands = sandbox_config.get("setup_commands") or []
@@ -559,10 +623,15 @@ async def setup_sandbox(handle: SandboxLease, sandbox_config: ConfigData) -> Non
         command = str(command)
         if use_sandbox_python_path:
             command = sandbox_python_path_command(command)
-        result = await handle.execute(
-            command,
-            timeout=int_config(sandbox_config, "setup_timeout", 300),
-        )
+        try:
+            result = await handle.execute(
+                command,
+                timeout=int_config(sandbox_config, "setup_timeout", 300),
+            )
+        except Error:
+            raise
+        except Exception as exc:
+            raise SandboxError(f"Sandbox setup command failed: {exc}") from exc
         if result.exit_code:
             raise SandboxError(f"Sandbox setup command failed: {result.stderr}")
 
