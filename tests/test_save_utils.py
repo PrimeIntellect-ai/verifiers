@@ -946,6 +946,21 @@ class TestDeltaIntermediateMmData:
     def _step(self, mm):
         return {"tokens": {"multi_modal_data": mm}}
 
+    def _token_step(
+        self,
+        mm,
+        *,
+        prompt_ids: list[int],
+        completion_ids: list[int],
+    ):
+        return {
+            "tokens": {
+                "prompt_ids": prompt_ids,
+                "completion_ids": completion_ids,
+                "multi_modal_data": mm,
+            }
+        }
+
     def test_none_and_single_step_passthrough(self):
         assert _delta_intermediate_mm_data(None) is None
         assert _delta_intermediate_mm_data([]) == []
@@ -971,6 +986,65 @@ class TestDeltaIntermediateMmData:
             out[2]["tokens"]["multi_modal_data"].mm_placeholders["image"][0].offset
             == 20
         )
+
+    def test_token_prefix_break_emits_full_cumulative_mm_data(self):
+        """Image-monotonic full re-renders must not be saved as deltas."""
+        traj = [
+            self._token_step(
+                self._mm("A"),
+                prompt_ids=[1, 2],
+                completion_ids=[3, 4],
+            ),
+            self._token_step(
+                self._mm("A", "B"),
+                # Image-wise this extends step 0, but token-wise it is a
+                # full re-render that no longer starts with [1, 2, 3, 4].
+                prompt_ids=[90, 91, 92],
+                completion_ids=[93],
+            ),
+        ]
+        out = _delta_intermediate_mm_data(traj)
+
+        assert out[0]["tokens"]["multi_modal_data"].mm_hashes == {"image": ["A"]}
+        step1_mm = out[1]["tokens"]["multi_modal_data"]
+        assert step1_mm.mm_hashes == {"image": ["A", "B"]}
+        assert step1_mm.mm_items == {
+            "image": [{"pixel_values": "px-A"}, {"pixel_values": "px-B"}]
+        }
+        assert [p.offset for p in step1_mm.mm_placeholders["image"]] == [0, 10]
+
+    def test_non_adjacent_token_prefix_deltas_against_matching_baseline(self):
+        """Interleaved trajectories should diff against the matching prior step.
+
+        Step 2 extends step 0 rather than the immediate prior step 1. Emitting
+        step 2's full cumulative mm_data would duplicate A when downstream
+        assemblers union step indices [0, 2].
+        """
+        traj = [
+            self._token_step(
+                self._mm("A"),
+                prompt_ids=[1, 2],
+                completion_ids=[3],
+            ),
+            self._token_step(
+                self._mm("X"),
+                prompt_ids=[50],
+                completion_ids=[51],
+            ),
+            self._token_step(
+                self._mm("A", "B"),
+                prompt_ids=[1, 2, 3, 4],
+                completion_ids=[5],
+            ),
+        ]
+        out = _delta_intermediate_mm_data(traj)
+
+        assert out[0]["tokens"]["multi_modal_data"].mm_hashes == {"image": ["A"]}
+        assert out[1]["tokens"]["multi_modal_data"].mm_hashes == {"image": ["X"]}
+        step2_mm = out[2]["tokens"]["multi_modal_data"]
+        assert step2_mm.mm_hashes == {"image": ["B"]}
+        assert step2_mm.mm_items == {"image": [{"pixel_values": "px-B"}]}
+        assert [p.offset for p in step2_mm.mm_placeholders["image"]] == [10]
 
     def test_descriptor_only_items_delta_correctly(self):
         """Descriptor-only mm_items (``image_grid_thw`` but no ``pixel_values``)
