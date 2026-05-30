@@ -13,6 +13,7 @@ This folder contains installable example environments that showcase common usage
 - **reverse_text**: XML formatting with non-binary LCS reward + format reward.
 - **continuation_quality**: Completion-style generation (`message_type="completion"`) judged for prose quality with `JudgeRubric`.
 - **mmmu**: Multimodal inputs (image + text) packed in chat content; single-turn boxed-answer check.
+- **synlogic**: MiniMax SynLogic logical reasoning puzzles scored with the upstream task-specific verifiers.
 
 ### SingleTurnEnv subclass (custom dataset/scoring wrappers)
 - **reasoning_gym_env**: Wraps `reasoning_gym` procedural datasets, converts to HF datasets, and applies task-specific scoring.
