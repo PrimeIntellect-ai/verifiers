@@ -90,6 +90,11 @@ MyTasksetConfig)` defines the `[env.taskset]` schema; `load_harness(config:
 MyHarnessConfig)` defines the `[env.harness]` schema. Keep
 `load_environment(config: vf.EnvConfig)` as-is: implement the config surface through taskset and harness configs, not root loader kwargs.
 
+Start with a taskset and the base harness. Add a custom harness only when the
+environment owns a reusable execution protocol such as a command agent,
+third-party framework adapter, browser loop, endpoint interceptor, primary
+sandbox placement, or program runner.
+
 ## Hard Rules
 
 - Import as `import verifiers as vf`.
@@ -102,6 +107,8 @@ MyHarnessConfig)` defines the `[env.harness]` schema. Keep
 - Do not accept `None`, mutate configs, or synthesize fallback configs in
   loaders.
 - Do not put system messages in `task["prompt"]`; use `system_prompt`.
+- Do not add fallback parsing, fallback imports, compatibility aliases, or
+  silent degraded behavior to make one environment more permissive.
 - Put lifecycle behavior on the owning class with standard public methods or
   `@vf.*` decorators.
 - Do not create one-off private helpers or bottom-of-file helper functions for
@@ -177,18 +184,18 @@ class GSM8KTaskset(vf.Taskset[GSM8KTasksetConfig]):
         dataset = load_dataset(self.config.dataset_name, "main", split=dataset_split)
         if self.config.num_examples is not None:
             dataset = dataset.select(range(self.config.num_examples))
-        return (
-            {
-                "prompt": [{"role": "user", "content": row["question"]}],
-                "answer": row["answer"],
-            }
-            for row in dataset
-        )
+        return dataset
 ```
 
 `vf.Tasks` may be a `datasets.Dataset`, an iterable of serializable records, or
 an iterable of `vf.Task` objects. During rollout, records become immutable
 `vf.Task` objects.
+
+Return a `datasets.Dataset` directly when the source already has standard
+columns such as `question` and `answer`; the framework derives `prompt` from
+`question`. Use config fields like `train_split` and `eval_split` only to map
+v1 split names to upstream source split names. Do not add generic split config
+that duplicates `load_tasks(split=...)`.
 
 Common task fields:
 
@@ -207,6 +214,10 @@ Common task fields:
 
 Users should not manage task/example IDs. Preserve upstream IDs only as ordinary
 metadata when they matter.
+
+Do not copy config defaults into every row. Use `max_turns`, `sandbox`,
+`program`, and tool visibility fields in task records only when they genuinely
+vary by example.
 
 ## System Prompts
 

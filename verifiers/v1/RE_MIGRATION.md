@@ -171,13 +171,7 @@ class QATaskset(vf.Taskset[QATasksetConfig]):
             self.config.train_split if split == "train" else self.config.eval_split
         )
         dataset = load_dataset(self.config.dataset_name, "main", split=dataset_split)
-        return (
-            {
-                "prompt": [{"role": "user", "content": row["question"]}],
-                "answer": row["answer"],
-            }
-            for row in dataset
-        )
+        return dataset
 
     @vf.reward(weight=1.0)
     async def exact(self, task: vf.Task, state: vf.State) -> float:
@@ -185,6 +179,10 @@ class QATaskset(vf.Taskset[QATasksetConfig]):
         response = str(messages[-1].content or "") if messages else ""
         return float(str(task["answer"]).strip() in response)
 ```
+
+Return the source dataset directly when it already has standard fields such as
+`question` and `answer`; v1 derives `prompt` from `question`. Transform records
+only when the source does not match the task contract.
 
 Judge/extractor dependencies should be private objects with explicit bindings:
 

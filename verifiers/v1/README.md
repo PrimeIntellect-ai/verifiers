@@ -84,6 +84,11 @@ def load_harness(config: MyHarnessConfig) -> MyHarness:
 Do not subclass `EnvConfig` to narrow child config types. The child loader
 annotations define `[env.taskset]` and `[env.harness]`.
 
+Start with a taskset and the base harness. Add a custom harness only when the
+environment owns a reusable execution protocol, such as a command agent,
+third-party framework adapter, endpoint interceptor, primary sandbox placement,
+or program runner.
+
 ## Ownership
 
 | Object | Owns |
@@ -113,6 +118,10 @@ messages. Use top-level fields for task controls:
 | `toolsets` / `tools` | Visibility controls for toolsets and tools. |
 | `sandbox` | Per-task sandbox override. |
 | `program` | Task-owned program files, dirs, setup, env, artifacts, bindings, and args. |
+
+Use `max_turns`, `sandbox`, `program`, and visibility fields in tasks only when
+they genuinely vary by example. Do not copy config defaults or
+framework-managed IDs into task rows.
 
 ### State
 
@@ -188,6 +197,11 @@ class MyTaskset(vf.Taskset[MyTasksetConfig]):
 an iterable of `vf.Task` objects. `Taskset.get_dataset()` calls
 `load_tasks(split="train")`; `Taskset.get_eval_dataset()` calls
 `load_tasks(split="eval")`.
+
+Prefer returning a `datasets.Dataset` directly when source columns already
+match the task contract, such as `question` and `answer`. Do not add a generic
+split config field that duplicates `load_tasks(split=...)`; use owner config
+only to map v1 split names to upstream source split names.
 
 Use tasksets for:
 

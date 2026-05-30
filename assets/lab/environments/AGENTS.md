@@ -706,7 +706,8 @@ environments/my_env/
 The golden v1 shape is one taskset class, one typed
 `load_taskset(config: MyTasksetConfig)` child factory, and a tiny
 `load_environment(config: vf.EnvConfig)` root loader that delegates through
-`vf.load_taskset(config=config.taskset)`. The child factory annotation defines
+`vf.load_taskset(config=config.taskset)` and
+`vf.load_harness(config=config.harness)`. The child factory annotation defines
 the taskset config type for TOML, CLI, eval, GEPA, RL, and Hosted Training.
 
 Add a harness config, harness class, and `load_harness(config:

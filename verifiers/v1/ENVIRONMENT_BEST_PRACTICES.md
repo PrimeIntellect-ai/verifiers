@@ -58,6 +58,17 @@ coerce `config.taskset` and `config.harness`.
 Break these rules only when there is a concrete, documented framework-boundary
 reason. Do not add escape hatches to make a local implementation easier.
 
+## Start With Tasksets
+
+Start with a self-contained taskset and the base harness. Tool-use tasks,
+LLM-judged tasks, multimodal tasks, sandboxed tools, and simple multi-turn user
+simulations should all be tasksets first.
+
+Add a custom harness only when the environment owns a reusable execution
+protocol: command agents, third-party agent frameworks, browser or desktop
+loops, endpoint interception, primary sandbox placement, or program execution
+that can attempt arbitrary tasks.
+
 ## Ownership Rules
 
 Tasksets own:
@@ -102,6 +113,9 @@ task, it belongs to the harness.
   tools.
 - Runtime-only resources live on `state` or runtime-managed owners, not on task
   data or config.
+- Do not add a generic `split` or `dataset_split` config field that duplicates
+  `load_tasks(split=...)`. Use config fields like `train_split` and
+  `eval_split` only to map v1 split names to upstream source split names.
 
 ## Task Rules
 
@@ -122,6 +136,35 @@ rollout. Common top-level fields are:
 Users should not need to manage task IDs. Include upstream IDs only as ordinary
 task metadata when they matter.
 
+Prefer returning a `datasets.Dataset` directly when the source already exposes
+standard task columns such as `question` and `answer`; the framework derives
+`prompt` from `question`. Transform rows only to match the task contract, add
+real reference fields, create multimodal content, or attach per-example state
+that the rollout actually uses.
+
+Do not copy config defaults into every task row. Use `max_turns`, `sandbox`,
+`program`, and tool visibility fields in task records only when they genuinely
+vary by example.
+
+## Tools And Sandboxes
+
+Sandboxed tools are normal tools. Put them in `vf.Toolset`, pass runtime
+resources through bindings or state helpers, and keep task rows serializable.
+
+Avoid local protocol scaffolding for ordinary sandbox handles. If an example
+needs a local framework protocol class, hidden state-key convention, or custom
+tool wrapper just to call a sandboxed tool, fix the public API or docs instead.
+
+## Failure Behavior
+
+Fail fast. Do not add fallback parsing, fallback imports, compatibility aliases,
+broad best-effort branches, or silent degraded behavior to make a local
+environment more permissive.
+
+Mutable process globals are a smell. Runtime clients, sessions, sandboxes,
+caches, and registries should be owned by config-bound objects, lifecycle
+methods, state, or runtime-managed owners.
+
 ## Review Checklist
 
 Before approving a v1 environment:
@@ -134,6 +177,10 @@ Before approving a v1 environment:
 6. Taskset/harness ownership is clear.
 7. Config values are serializable.
 8. System prompt handling is config-first.
-9. Toolsets and users use first-class v1 objects.
-10. The environment has been validated through install/load/eval, not just
+9. Task rows do not duplicate config defaults or framework-managed IDs.
+10. Dataset records are returned directly when no transformation is needed.
+11. Toolsets and users use first-class v1 objects.
+12. The base harness is used unless a reusable protocol requires a custom one.
+13. Failure paths are strict and explicit.
+14. The environment has been validated through install/load/eval, not just
     imported.
