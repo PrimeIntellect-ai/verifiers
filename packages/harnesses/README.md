@@ -35,13 +35,14 @@ def load_harness(config: OpenCodeConfig) -> OpenCode:
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
+    """Loader pattern for all Taskset/Harness environments."""
     return vf.Env(
         taskset=vf.load_taskset(config=config.taskset),
         harness=vf.load_harness(config=config.harness),
     )
 ```
 
-Use the base `vf.Harness(config=config.harness)` when the environment does not
+Use `vf.load_harness(config=config.harness)` when the environment does not
 own a reusable execution mechanism.
 
 ## Included Harnesses

@@ -177,9 +177,10 @@ def load_taskset(config: {taskset_config_name}) -> {taskset_name}:
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
+    \"\"\"Loader pattern for all Taskset/Harness environments.\"\"\"
     return vf.Env(
         taskset=vf.load_taskset(config=config.taskset),
-        harness=vf.Harness(config=config.harness),
+        harness=vf.load_harness(config=config.harness),
     )
 """
 
@@ -217,6 +218,7 @@ def load_harness(config: {harness_config_name}) -> {harness_name}:
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
+    \"\"\"Loader pattern for all Taskset/Harness environments.\"\"\"
     return vf.Env(
         taskset=vf.load_taskset(config=config.taskset),
         harness=vf.load_harness(config=config.harness),
@@ -233,9 +235,10 @@ def load_taskset(config: OpenEnvTasksetConfig) -> OpenEnvTaskset:
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
+    \"\"\"Loader pattern for all Taskset/Harness environments.\"\"\"
     return vf.Env(
         taskset=vf.load_taskset(config=config.taskset),
-        harness=vf.Harness(config=config.harness),
+        harness=vf.load_harness(config=config.harness),
     )
 """
 

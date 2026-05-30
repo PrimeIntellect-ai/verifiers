@@ -37,7 +37,8 @@ def test_init_v1_writes_thin_taskset_template(tmp_path: Path) -> None:
     assert "def load_taskset(config: BarTasksetConfig) -> BarTaskset:" in content
     assert "return BarTaskset(config=config)" in content
     assert "taskset=vf.load_taskset(config=config.taskset)" in content
-    assert "harness=vf.Harness(config=config.harness)" in content
+    assert '"""Loader pattern for all Taskset/Harness environments."""' in content
+    assert "harness=vf.load_harness(config=config.harness)" in content
     assert "class EnvTaskset(" not in content
     assert "_default_" not in content
     assert 'tasks: str = "load_tasks"' not in content
@@ -100,7 +101,7 @@ def test_init_openenv_writes_v1_taskset_template(tmp_path: Path) -> None:
         "def load_taskset(config: OpenEnvTasksetConfig) -> OpenEnvTaskset:" in content
     )
     assert "taskset=vf.load_taskset(config=config.taskset)" in content
-    assert "harness=vf.Harness(config=config.harness)" in content
+    assert "harness=vf.load_harness(config=config.harness)" in content
     assert "vf.OpenEnvEnv" not in content
     assert '"tasksets>=0.1.1"' in pyproject
 

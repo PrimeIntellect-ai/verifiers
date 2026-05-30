@@ -704,7 +704,7 @@ the taskset config type for TOML, CLI, eval, GEPA, RL, and Hosted Training.
 
 Add a harness config, harness class, and `load_harness(config:
 MyHarnessConfig)` only when the environment owns reusable rollout behavior.
-Otherwise use the base harness with `vf.Harness(config=config.harness)`.
+Otherwise use the base harness through `vf.load_harness(config=config.harness)`.
 
 The loader `config` parameter is a strict, non-optional config object supplied
 by the framework. Do not accept `None`, synthesize fallback configs, or mirror
@@ -723,7 +723,6 @@ import verifiers as vf
 
 class MyTasksetConfig(vf.TasksetConfig):
     system_prompt: vf.SystemPrompt = "Answer exactly."
-    split: str = "train"
 
 
 class MyTaskset(vf.Taskset[MyTasksetConfig]):
@@ -735,7 +734,7 @@ class MyTaskset(vf.Taskset[MyTasksetConfig]):
                 "split": "train",
             }
         ]
-        return [record for record in records if record["split"] == self.config.split]
+        return [record for record in records if record["split"] == split]
 
     @vf.reward(weight=1.0)
     async def contains_answer(self, task, state) -> float:
@@ -747,9 +746,10 @@ def load_taskset(config: MyTasksetConfig) -> MyTaskset:
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
+    """Loader pattern for all Taskset/Harness environments."""
     return vf.Env(
         taskset=vf.load_taskset(config=config.taskset),
-        harness=vf.Harness(config=config.harness),
+        harness=vf.load_harness(config=config.harness),
     )
 ```
 
@@ -773,6 +773,7 @@ def load_harness(config: MyHarnessConfig) -> MyHarness:
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
+    """Loader pattern for all Taskset/Harness environments."""
     return vf.Env(
         taskset=vf.load_taskset(config=config.taskset),
         harness=vf.load_harness(config=config.harness),

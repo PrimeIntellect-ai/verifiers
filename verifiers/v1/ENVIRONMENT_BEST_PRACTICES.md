@@ -10,9 +10,10 @@ Environment modules expose one root loader:
 
 ```python
 def load_environment(config: vf.EnvConfig) -> vf.Env:
+    """Loader pattern for all Taskset/Harness environments."""
     return vf.Env(
         taskset=vf.load_taskset(config=config.taskset),
-        harness=vf.Harness(config=config.harness),
+        harness=vf.load_harness(config=config.harness),
     )
 ```
 
@@ -41,7 +42,7 @@ coerce `config.taskset` and `config.harness`.
 3. Use `XXXConfig` Pydantic config classes for structured settings.
 4. Put task behavior on the taskset config/class.
 5. Put execution behavior on the harness config/class.
-6. Keep `load_environment(config: vf.EnvConfig)` tiny and non-optional.
+6. Keep `load_environment(config: vf.EnvConfig)` as-is; implement the config surface through taskset and harness configs.
 7. Do not accept root loader kwargs for taskset or harness fields.
 8. Do not subclass `vf.Env` for ordinary environment packages.
 9. Do not subclass `vf.EnvConfig` just to narrow child config types.

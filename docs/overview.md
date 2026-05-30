@@ -92,7 +92,6 @@ import verifiers as vf
 
 class MyTasksetConfig(vf.TasksetConfig):
     system_prompt: vf.SystemPrompt = "Reverse text exactly."
-    split: str = "train"
 
 
 class MyTaskset(vf.Taskset[MyTasksetConfig]):
@@ -105,7 +104,7 @@ class MyTaskset(vf.Taskset[MyTasksetConfig]):
                 "max_turns": 1,
             }
         ]
-        return [record for record in records if record["split"] == self.config.split]
+        return [record for record in records if record["split"] == split]
 
     @vf.reward(weight=1.0)
     async def contains_answer(self, task, state) -> float:
@@ -117,9 +116,10 @@ def load_taskset(config: MyTasksetConfig) -> MyTaskset:
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
+    """Loader pattern for all Taskset/Harness environments."""
     return vf.Env(
         taskset=vf.load_taskset(config=config.taskset),
-        harness=vf.Harness(config=config.harness),
+        harness=vf.load_harness(config=config.harness),
     )
 ```
 See [BYO Harness](byo-harness.md) for the advanced v1 taskset/harness API.

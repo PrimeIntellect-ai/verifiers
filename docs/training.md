@@ -94,7 +94,7 @@ id = "primeintellect/my-v1-env"
 max_turns = 8
 
 [env.taskset]
-split = "train"
+system_prompt = "Answer exactly."
 
 [env.taskset.toolsets.search]
 tools = ["my_env.tools:search"]

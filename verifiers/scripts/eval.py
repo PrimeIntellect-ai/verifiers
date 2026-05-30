@@ -327,11 +327,12 @@ def apply_env_config_cli_overrides(
 
     module = import_env_module(env_id)
     env_load_func = getattr(module, "load_environment", None)
+    config_type: type[EnvConfig] | None
     if env_load_func is None:
-        raise ValueError(f"Environment '{env_id}' does not expose load_environment.")
-
-    sig = inspect.signature(env_load_func)
-    config_type = env_config_annotation(env_load_func, sig)
+        config_type = EnvConfig
+    else:
+        sig = inspect.signature(env_load_func)
+        config_type = env_config_annotation(env_load_func, sig)
     if config_type is None:
         raise ValueError(
             "Taskset/harness CLI overrides require a v1 loader shaped as "
@@ -339,7 +340,8 @@ def apply_env_config_cli_overrides(
         )
 
     merged_env_args = dict(env_args)
-    child_types = env_config_child_types(module, config_type)
+    base_config_data = explicit_config_data(merged_env_args.get("config", {}))
+    child_types = env_config_child_types(module, config_type, base_config_data)
     base_config = load_env_config(
         module,
         config_type,
@@ -356,7 +358,6 @@ def apply_env_config_cli_overrides(
     except ConfigFileError as exc:
         raise ValueError(f"Invalid taskset/harness override: {exc}") from exc
 
-    base_config_data = explicit_config_data(merged_env_args.get("config", {}))
     override_config_data = explicit_config_data(config)
     merged_env_args["config"] = merge_config_data(
         base_config_data,

@@ -146,7 +146,6 @@ import verifiers as vf
 
 class MyTasksetConfig(vf.TasksetConfig):
     system_prompt: vf.SystemPrompt = "Reverse text exactly."
-    split: str = "train"
 
 
 class MyTaskset(vf.Taskset[MyTasksetConfig]):
@@ -159,7 +158,7 @@ class MyTaskset(vf.Taskset[MyTasksetConfig]):
                 "max_turns": 1,
             }
         ]
-        return [row for row in rows if row["split"] == self.config.split]
+        return [row for row in rows if row["split"] == split]
 
     @vf.reward(weight=1.0)
     async def contains_answer(self, task, state) -> float:
@@ -171,9 +170,10 @@ def load_taskset(config: MyTasksetConfig) -> MyTaskset:
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
+    """Loader pattern for all Taskset/Harness environments."""
     return vf.Env(
         taskset=vf.load_taskset(config=config.taskset),
-        harness=vf.Harness(config=config.harness),
+        harness=vf.load_harness(config=config.harness),
     )
 ```
 The child loader annotation defines the taskset config shape; root
@@ -216,7 +216,7 @@ id = "my-env"
 max_turns = 1
 
 [env.taskset]
-split = "train"
+system_prompt = "Reverse text exactly."
 
 [env.taskset.scoring.contains_answer]
 weight = 1.0
