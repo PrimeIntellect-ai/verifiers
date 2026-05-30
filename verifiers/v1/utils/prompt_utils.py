@@ -1,7 +1,7 @@
 import importlib.util
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Literal, TypeAlias, cast
 
 from pydantic import model_validator
 from typing_extensions import Self
@@ -9,7 +9,7 @@ from verifiers.types import Messages, SystemMessage
 from verifiers.utils.message_utils import normalize_messages
 
 from ..config import Config
-from ..types import JsonData, PromptInput, SystemPrompt
+from ..types import JsonData, PromptInput
 from .config_utils import current_config_ref_module
 
 if TYPE_CHECKING:
@@ -64,13 +64,15 @@ class SystemPromptConfig(Config):
     messages: list[JsonData] = []
 
     @model_validator(mode="after")
-    def validate_one_source(self) -> Self:
-        sources = [
+    def validate_one_input(self) -> Self:
+        inputs = [
             self.path is not None,
             bool(self.messages),
         ]
-        if sum(sources) != 1:
-            raise ValueError("SystemPromptConfig requires exactly one source.")
+        if sum(inputs) != 1:
+            raise ValueError(
+                "SystemPromptConfig requires exactly one of path or messages."
+            )
         return self
 
     def load(self, field_name: str) -> PromptInput | None:
@@ -79,6 +81,9 @@ class SystemPromptConfig(Config):
                 resolve_system_prompt_path(self.path), field_name=field_name
             )
         return self.messages
+
+
+SystemPrompt: TypeAlias = PromptInput | SystemPromptConfig | None
 
 
 def normalize_prompt(
@@ -95,7 +100,7 @@ def normalize_prompt(
 
 
 def normalize_system_prompt(
-    value: SystemPrompt | SystemPromptConfig | None,
+    value: SystemPrompt,
     field_name: str = "system_prompt",
 ) -> list[JsonData]:
     value = resolve_system_prompt_input(value, field_name=field_name)
@@ -111,7 +116,7 @@ def normalize_system_prompt(
 
 
 def resolve_system_prompt_input(
-    value: PromptInput | SystemPromptConfig | None,
+    value: SystemPrompt,
     *,
     field_name: str,
 ) -> PromptInput | None:

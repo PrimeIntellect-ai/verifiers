@@ -41,7 +41,6 @@ Tasks: TypeAlias = Dataset | Iterable[JsonData] | Iterable["Task"]
 
 PromptMessage: TypeAlias = Message | JsonData
 PromptInput: TypeAlias = str | Sequence[PromptMessage]
-SystemPrompt: TypeAlias = PromptInput
 
 ModelClient: TypeAlias = Client | ClientConfig
 RuntimeObject: TypeAlias = object

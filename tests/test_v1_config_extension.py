@@ -2310,16 +2310,14 @@ def test_taskset_subclasses_inherit_registered_config_type() -> None:
 
 def test_taskset_class_loader_owns_split_loading() -> None:
     class LoaderTasksetConfig(TasksetConfig):
-        system_prompt: vf.SystemPrompt | None = "class prompt"
+        system_prompt: vf.SystemPrompt = "class prompt"
 
     class LoaderTaskset(Taskset[LoaderTasksetConfig]):
         def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
             answer = "class eval" if split == "eval" else "class tasks"
             return [{"prompt": [], "answer": answer}]
 
-        def load_system_prompt(
-            self, config: LoaderTasksetConfig
-        ) -> vf.SystemPrompt | None:
+        def load_system_prompt(self, config: LoaderTasksetConfig) -> vf.SystemPrompt:
             return config.system_prompt
 
     defaulted = LoaderTaskset(config=LoaderTasksetConfig())
@@ -2339,6 +2337,25 @@ def test_taskset_class_loader_owns_split_loading() -> None:
         {"role": "system", "content": ref("load_system_prompt")}
     ]
     assert disabled_prompt.system_prompt == []
+
+
+def test_system_prompt_alias_accepts_config_data(tmp_path) -> None:
+    prompt_path = tmp_path / "system_prompt.txt"
+    prompt_path.write_text("alias path system prompt", encoding="utf-8")
+
+    class PromptTasksetConfig(TasksetConfig):
+        system_prompt: vf.SystemPrompt = None
+
+    config = PromptTasksetConfig.model_validate(
+        {"system_prompt": {"path": str(prompt_path)}}
+    )
+    assert isinstance(config.system_prompt, vf.SystemPromptConfig)
+
+    taskset = Taskset(config=config)
+
+    assert taskset.system_prompt == [
+        {"role": "system", "content": "alias path system prompt"}
+    ]
 
 
 def test_taskset_load_tasks_can_return_empty_dataset() -> None:
