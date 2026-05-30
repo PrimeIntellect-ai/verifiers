@@ -53,6 +53,22 @@ async def test_openai_to_native_prompt_with_typed_multimodal_content_parts():
 
 
 @pytest.mark.asyncio
+async def test_openai_to_native_prompt_preserves_reasoning_only_assistant_message():
+    client = OpenAIChatCompletionsClient(object())
+    messages = [
+        UserMessage(content="continue"),
+        AssistantMessage(content=None, reasoning_content="thinking"),
+        UserMessage(content="next"),
+    ]
+
+    prompt, kwargs = await client.to_native_prompt(messages)
+    assert kwargs == {}
+    assert prompt[1]["role"] == "assistant"
+    assert prompt[1]["content"] == ""
+    assert prompt[1]["reasoning_content"] == "thinking"
+
+
+@pytest.mark.asyncio
 async def test_anthropic_to_native_prompt_with_typed_multimodal_content_parts():
     pytest.importorskip("anthropic")
     from verifiers.clients.anthropic_messages_client import AnthropicMessagesClient

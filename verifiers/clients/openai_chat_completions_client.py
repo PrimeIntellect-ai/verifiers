@@ -201,9 +201,16 @@ class OpenAIChatCompletionsClient(
                     ]
                 else:
                     oai_tool_calls = None
+                content = normalize_content(message.content)
+                if (
+                    content is None
+                    and oai_tool_calls is None
+                    and message.reasoning_content is not None
+                ):
+                    content = ""
                 return ChatCompletionAssistantMessageParam(
                     role="assistant",
-                    content=cast(Any, normalize_content(message.content)),
+                    content=cast(Any, content),
                     tool_calls=cast(Any, oai_tool_calls),
                     reasoning_content=message.reasoning_content,  # type: ignore[arg-type]
                 )
