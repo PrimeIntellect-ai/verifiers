@@ -1,6 +1,7 @@
 import asyncio
 import random
 import re
+from collections.abc import Sequence
 from typing import Generic, TypeVar
 from typing import Protocol, cast
 
@@ -48,6 +49,24 @@ class TextArenaTasksetConfig(vf.TasksetConfig):
 
 
 TextArenaConfigT = TypeVar("TextArenaConfigT", bound=TextArenaTasksetConfig)
+
+
+def _content_text(content: object) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, Sequence) and not isinstance(
+        content, (str, bytes, bytearray)
+    ):
+        chunks: list[str] = []
+        for part in content:
+            if isinstance(part, vf.TextContentPart):
+                chunks.append(part.text)
+            elif isinstance(part, dict):
+                text = cast(dict[str, object], part).get("text")
+                if isinstance(text, str):
+                    chunks.append(text)
+        return "\n".join(chunks)
+    return ""
 
 
 class TextArenaTaskset(vf.Taskset[TextArenaConfigT], Generic[TextArenaConfigT]):
@@ -128,8 +147,9 @@ class TextArenaUser(vf.User[TextArenaUserConfig]):
         ta_env.state.game_state[answer_state_key] = answer
 
         assistant_messages = vf.get_messages(messages, role="assistant")
-        last_text = assistant_messages[-1].content if assistant_messages else ""
-        assert isinstance(last_text, str)
+        last_text = (
+            _content_text(assistant_messages[-1].content) if assistant_messages else ""
+        )
         matches = re.findall(r"<guess>(.*?)</guess>", last_text, re.DOTALL)
         guess = matches[-1].strip() if matches else ""
         await asyncio.to_thread(ta_env.step, guess)
