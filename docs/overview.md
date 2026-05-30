@@ -58,7 +58,10 @@ prime env init my-env --v1
 prime env init my-env --v1 --with-harness
 ```
 
-This will create a new module called `my_env` with a basic environment template.
+This will create a new module called `my_env` with a runnable environment
+template. For v1 templates, start by editing the generated `TasksetConfig`,
+`Taskset.load_tasks()`, and `@vf.reward` methods. Use `--with-harness` when the
+environment also owns reusable execution behavior.
 ```
 environments/my_env/
 ├── my_env.py           # Main implementation
@@ -91,24 +94,29 @@ import verifiers as vf
 
 
 class MyTasksetConfig(vf.TasksetConfig):
-    system_prompt: vf.SystemPrompt = "Reverse text exactly."
+    system_prompt: vf.SystemPrompt = "Answer exactly."
 
 
 class MyTaskset(vf.Taskset[MyTasksetConfig]):
     def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
-        records = [
+        """Return serializable task records as a list, generator, or Dataset."""
+        if split == "eval":
+            return []
+        return [
             {
                 "prompt": [{"role": "user", "content": "Reverse abc."}],
                 "answer": "cba",
-                "split": "train",
                 "max_turns": 1,
             }
         ]
-        return [record for record in records if record["split"] == split]
 
     @vf.reward(weight=1.0)
-    async def contains_answer(self, task, state) -> float:
-        return float(task["answer"] in str(state.get("completion") or ""))
+    async def correct_answer(self, task: vf.Task, state: vf.State) -> float:
+        messages = vf.get_messages(state.get("completion") or [], role="assistant")
+        if not messages:
+            return 0.0
+        response = str(messages[-1].content or "").strip()
+        return float(response == task["answer"])
 
 
 def load_taskset(config: MyTasksetConfig) -> MyTaskset:

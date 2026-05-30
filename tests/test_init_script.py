@@ -1,6 +1,4 @@
 from pathlib import Path
-
-import pytest
 import verifiers as vf
 from verifiers.scripts.init import init_environment
 
@@ -21,20 +19,23 @@ def test_init_default_writes_v0_stub(tmp_path: Path) -> None:
     assert "EnvTaskset" not in content
 
 
-def test_init_v1_writes_thin_taskset_template(tmp_path: Path) -> None:
+def test_init_v1_writes_taskset_template(tmp_path: Path) -> None:
     init_environment("bar", path=str(tmp_path), v1=True)
     content = read_env_file(tmp_path, "bar")
 
     assert "class BarTasksetConfig(vf.TasksetConfig):" in content
     assert "class BarTaskset(vf.Taskset[BarTasksetConfig]):" in content
+    assert 'system_prompt: vf.SystemPrompt = "Answer exactly."' in content
+    assert '"""Taskset implementation for bar.' in content
+    assert 'def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:' in content
     assert (
-        'system_prompt: vf.SystemPrompt = "Replace this with the system prompt for bar."'
+        '"""Return serializable task records as a list, generator, or Dataset."""'
         in content
     )
-    assert 'def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:' in content
     assert "def load_system_prompt" not in content
     assert "async def correct_answer(self, task: vf.Task, state: vf.State)" in content
     assert "def load_taskset(config: BarTasksetConfig) -> BarTaskset:" in content
+    assert '"""Typed taskset loader used by vf.load_taskset."""' in content
     assert "return BarTaskset(config=config)" in content
     assert "taskset=vf.load_taskset(config=config.taskset)" in content
     assert '"""Loader pattern for all Taskset/Harness environments."""' in content
@@ -53,8 +54,10 @@ def test_init_v1_template_loads_with_vf_load_environment(
 
     env = vf.load_environment("loadable-v1")
 
-    with pytest.raises(RuntimeError, match="Load tasks"):
-        env.get_dataset()
+    dataset = env.get_dataset()
+
+    assert len(dataset) == 1
+    assert dataset[0]["answer"] == "cba"
 
 
 def test_init_v1_with_harness_writes_harness_stub(tmp_path: Path) -> None:

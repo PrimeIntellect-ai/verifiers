@@ -155,67 +155,72 @@ def load_environment(**kwargs) -> vf.Environment:
     raise NotImplementedError("Implement load_environment here.")
 """
 
-V1_ENVIRONMENT_TEMPLATE = """\
+V1_TASKSET_TEMPLATE = """\
 import verifiers as vf
 
 
 class {taskset_config_name}(vf.TasksetConfig):
-    system_prompt: vf.SystemPrompt = "Replace this with the system prompt for {env_id_dash}."
+    \"\"\"User-facing task settings for {env_id_dash}.\"\"\"
+
+    system_prompt: vf.SystemPrompt = "Answer exactly."
 
 
 class {taskset_name}(vf.Taskset[{taskset_config_name}]):
+    \"\"\"Taskset implementation for {env_id_dash}.
+
+    Add task loading, task-owned toolsets, user behavior, lifecycle hooks,
+    metrics, rewards, and advantages on this class.
+    \"\"\"
+
     def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
-        raise NotImplementedError("Load tasks for {env_id_dash}.")
+        \"\"\"Return serializable task records as a list, generator, or Dataset.\"\"\"
+        if split == "eval":
+            return []
+        return [
+            {
+                "prompt": [{"role": "user", "content": "Reverse abc."}],
+                "answer": "cba",
+                "max_turns": 1,
+            }
+        ]
 
     @vf.reward(weight=1.0)
     async def correct_answer(self, task: vf.Task, state: vf.State) -> float:
-        raise NotImplementedError("Score a completed rollout for {env_id_dash}.")
+        \"\"\"Score the final assistant response for one rollout.\"\"\"
+        messages = vf.get_messages(state.get("completion") or [], role="assistant")
+        if not messages:
+            return 0.0
+        response = str(messages[-1].content or "").strip()
+        return float(response == task["answer"])
 
 
 def load_taskset(config: {taskset_config_name}) -> {taskset_name}:
+    \"\"\"Typed taskset loader used by vf.load_taskset.\"\"\"
     return {taskset_name}(config=config)
-
-
-def load_environment(config: vf.EnvConfig) -> vf.Env:
-    \"\"\"Loader pattern for all Taskset/Harness environments.\"\"\"
-    return vf.Env(
-        taskset=vf.load_taskset(config=config.taskset),
-        harness=vf.load_harness(config=config.harness),
-    )
 """
 
-V1_HARNESS_ENVIRONMENT_TEMPLATE = """\
-import verifiers as vf
 
-
-class {taskset_config_name}(vf.TasksetConfig):
-    system_prompt: vf.SystemPrompt = "Replace this with the system prompt for {env_id_dash}."
-
-
-class {taskset_name}(vf.Taskset[{taskset_config_name}]):
-    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
-        raise NotImplementedError("Load tasks for {env_id_dash}.")
-
-    @vf.reward(weight=1.0)
-    async def correct_answer(self, task: vf.Task, state: vf.State) -> float:
-        raise NotImplementedError("Score a completed rollout for {env_id_dash}.")
-
+V1_HARNESS_TEMPLATE = """\
 
 class {harness_config_name}(vf.HarnessConfig):
-    pass
+    \"\"\"Execution settings for {env_id_dash}.\"\"\"
 
 
 class {harness_name}(vf.Harness[{harness_config_name}]):
-    pass
+    \"\"\"Reusable execution behavior for {env_id_dash}.
 
-
-def load_taskset(config: {taskset_config_name}) -> {taskset_name}:
-    return {taskset_name}(config=config)
+    Add harness-owned program, sandbox, endpoint, model, toolset, or lifecycle
+    behavior here when this environment owns a custom execution mechanism.
+    \"\"\"
 
 
 def load_harness(config: {harness_config_name}) -> {harness_name}:
+    \"\"\"Typed harness loader used by vf.load_harness.\"\"\"
     return {harness_name}(config=config)
+"""
 
+
+V1_ENV_LOADER_TEMPLATE = """\
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
     \"\"\"Loader pattern for all Taskset/Harness environments.\"\"\"
@@ -224,6 +229,11 @@ def load_environment(config: vf.EnvConfig) -> vf.Env:
         harness=vf.load_harness(config=config.harness),
     )
 """
+
+V1_ENVIRONMENT_TEMPLATE = V1_TASKSET_TEMPLATE + V1_ENV_LOADER_TEMPLATE
+V1_HARNESS_ENVIRONMENT_TEMPLATE = (
+    V1_TASKSET_TEMPLATE + V1_HARNESS_TEMPLATE + V1_ENV_LOADER_TEMPLATE
+)
 
 OPENENV_ENVIRONMENT_TEMPLATE = """\
 import verifiers as vf
