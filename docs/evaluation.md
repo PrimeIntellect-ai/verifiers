@@ -76,10 +76,10 @@ config types from `load_taskset(config: ...)` and `load_harness(config: ...)`:
 prime eval run my-v1-env --taskset.id my-taskset --harness.id my-harness --harness.max-turns 4
 ```
 
-The positional environment ID selects the environment package to load. Dotted
-taskset/harness flags are fields on that environment's typed child config; they
-do not select separate taskset or harness packages unless the environment's own
-loader implements that behavior.
+The positional environment ID selects the package to load. Dotted taskset and
+harness flags are fields on the typed child configs. If the loaded package does
+not provide a local child loader, `--taskset.id` and `--harness.id` select the
+taskset and harness loader packages.
 
 For legacy or direct-constructor environments, the `--env-args` flag passes
 arguments to your `load_environment()` function:
@@ -396,13 +396,15 @@ A minimal config requires only a single `[[eval]]` section:
 id = "gsm8k"
 ```
 
-Each `[[eval]]` section must contain an `id` field. `env_id` is accepted as a
-legacy alias and normalizes to the same internal field. All other fields are
-optional:
+Each `[[eval]]` section usually contains an `id` field. `env_id` is accepted as
+a legacy alias and normalizes to the same internal field. For Taskset/Harness
+configs, `id` may be omitted when `[eval.taskset].id` names the taskset loader
+package; the taskset id becomes the environment id for loading and outputs. All
+other fields are optional:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `id` | string | **Required.** Environment module name |
+| `id` | string | Environment module name; optional when `[eval.taskset].id` is set |
 | `name` | string | Optional eval label for display and saved result paths |
 | `args` | table | Arguments passed to `load_environment()` |
 | `taskset` | table | v1 taskset config passed through `EnvConfig.taskset` |

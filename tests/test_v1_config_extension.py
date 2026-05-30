@@ -1670,16 +1670,149 @@ def test_system_prompt_direct_string_can_contain_colon() -> None:
 
 
 @pytest.mark.asyncio
-async def test_harness_rejects_multiple_system_prompt_sources_by_default() -> None:
+async def test_harness_concats_multiple_system_prompt_sources_by_default() -> None:
     taskset = make_taskset(system_prompt="taskset sys")
     harness = make_harness(
         program={"fn": ref("config_program")}, system_prompt="harness sys"
     )
     Env(taskset=taskset, harness=harness)
     task = next(iter(taskset))
+    state = await harness.setup_state(task, State.for_task(task))
 
-    with pytest.raises(ValueError, match="Multiple system_prompt sources"):
+    assert state["system_prompt"] == [
+        {"role": "system", "content": "harness sys"},
+        {"role": "system", "content": "taskset sys"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_task_system_prompt_overrides_taskset_side_at_runtime() -> None:
+    taskset = make_taskset(system_prompt="taskset sys")
+    harness = make_harness(program={"fn": ref("config_program")})
+    Env(taskset=taskset, harness=harness)
+    task = Task(
+        {
+            "prompt": [{"role": "user", "content": "hi"}],
+            "system_prompt": "task sys",
+        }
+    ).freeze()
+    state = await harness.setup_state(task, State.for_task(task))
+
+    assert state["system_prompt"] == [{"role": "system", "content": "task sys"}]
+
+
+@pytest.mark.asyncio
+async def test_task_override_is_resolved_before_harness_concat() -> None:
+    taskset = make_taskset(system_prompt="taskset sys")
+    harness = make_harness(
+        program={"fn": ref("config_program")}, system_prompt="harness sys"
+    )
+    Env(taskset=taskset, harness=harness)
+    task = Task(
+        {
+            "prompt": [{"role": "user", "content": "hi"}],
+            "system_prompt": "task sys",
+        }
+    ).freeze()
+    state = await harness.setup_state(task, State.for_task(task))
+
+    assert state["system_prompt"] == [
+        {"role": "system", "content": "harness sys"},
+        {"role": "system", "content": "task sys"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_system_prompt_strategy_can_concat_taskset_side_first() -> None:
+    taskset = make_taskset(system_prompt="taskset sys")
+    harness = make_harness(
+        program={"fn": ref("config_program")},
+        system_prompt="harness sys",
+        system_prompt_strategy="TH",
+    )
+    Env(taskset=taskset, harness=harness)
+    task = next(iter(taskset))
+    state = await harness.setup_state(task, State.for_task(task))
+
+    assert state["system_prompt"] == [
+        {"role": "system", "content": "taskset sys"},
+        {"role": "system", "content": "harness sys"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_harness_can_reject_multiple_system_prompt_sides() -> None:
+    taskset = make_taskset(system_prompt="taskset sys")
+    harness = make_harness(
+        program={"fn": ref("config_program")},
+        system_prompt="harness sys",
+        system_prompt_strategy="REJECT",
+    )
+    Env(taskset=taskset, harness=harness)
+    task = next(iter(taskset))
+
+    with pytest.raises(ValueError, match="Multiple system_prompt sides"):
         await harness.setup_state(task, State.for_task(task))
+
+
+@pytest.mark.asyncio
+async def test_system_prompt_side_selection_uses_resolved_taskset_side() -> None:
+    taskset = make_taskset(system_prompt="taskset sys")
+    harness = make_harness(
+        program={"fn": ref("config_program")},
+        system_prompt="harness sys",
+        system_prompt_strategy="T_OR_H",
+    )
+    Env(taskset=taskset, harness=harness)
+    task = Task(
+        {
+            "prompt": [{"role": "user", "content": "hi"}],
+            "system_prompt": "task sys",
+        }
+    ).freeze()
+    state = await harness.setup_state(task, State.for_task(task))
+
+    assert state["system_prompt"] == [{"role": "system", "content": "task sys"}]
+
+
+@pytest.mark.asyncio
+async def test_system_prompt_side_selection_can_prefer_harness() -> None:
+    taskset = make_taskset(system_prompt="taskset sys")
+    harness = make_harness(
+        program={"fn": ref("config_program")},
+        system_prompt="harness sys",
+        system_prompt_strategy="H_OR_T",
+    )
+    Env(taskset=taskset, harness=harness)
+    task = next(iter(taskset))
+    state = await harness.setup_state(task, State.for_task(task))
+
+    assert state["system_prompt"] == [{"role": "system", "content": "harness sys"}]
+
+
+@pytest.mark.asyncio
+async def test_system_prompt_strategy_can_select_exact_sides() -> None:
+    taskset = make_taskset(system_prompt="taskset sys")
+    task = Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+
+    harness_t = make_harness(
+        program={"fn": ref("config_program")},
+        system_prompt="harness sys",
+        system_prompt_strategy="T",
+    )
+    Env(taskset=taskset, harness=harness_t)
+    state_t = await harness_t.setup_state(task, State.for_task(task))
+
+    harness_h = make_harness(
+        program={"fn": ref("config_program")},
+        system_prompt="harness sys",
+        system_prompt_strategy="H",
+    )
+    Env(taskset=taskset, harness=harness_h)
+    state_h = await harness_h.setup_state(task, State.for_task(task))
+
+    assert state_t["system_prompt"] == [{"role": "system", "content": "taskset sys"}]
+    assert state_h["system_prompt"] == [{"role": "system", "content": "harness sys"}]
 
 
 @pytest.mark.asyncio
@@ -2821,6 +2954,114 @@ def load_environment(config: vf.EnvConfig) -> vf.Env:
     assert type(env.taskset).__name__ == "LocalTaskset"
     assert env.taskset.get_dataset()[0]["answer"] == "configured:eval"
     assert configured.taskset.get_dataset()[0]["answer"] == "configured:train"
+
+
+def test_load_environment_composes_component_package_without_root_loader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_name = "component_only_taskset_package"
+    module = types.ModuleType(module_name)
+
+    class LocalTasksetConfig(TasksetConfig):
+        answer: str = "configured"
+
+    class LocalTaskset(Taskset[LocalTasksetConfig]):
+        def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
+            return [{"prompt": [], "answer": f"{split}:{self.config.answer}"}]
+
+    def load_taskset(config: LocalTasksetConfig) -> LocalTaskset:
+        return LocalTaskset(config=config)
+
+    module.load_taskset = load_taskset
+    monkeypatch.setitem(sys.modules, module_name, module)
+
+    env = vf.load_environment(
+        "component-only-taskset-package",
+        config={
+            "taskset": {"answer": "composed"},
+            "harness": {"max_turns": 3},
+        },
+    )
+
+    assert env.taskset.get_dataset()[0]["answer"] == "train:composed"
+    assert type(env.harness) is Harness
+    assert env.harness.config.max_turns == 3
+
+
+def test_load_environment_delegates_missing_child_loaders_by_config_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env_module = types.ModuleType("thin_env_package")
+    exec(
+        """
+import verifiers as vf
+
+
+def load_environment(config: vf.EnvConfig) -> vf.Env:
+    return vf.Env(
+        taskset=vf.load_taskset(config=config.taskset),
+        harness=vf.load_harness(config=config.harness),
+    )
+""",
+        env_module.__dict__,
+    )
+    taskset_module = types.ModuleType("external_taskset_pkg")
+    exec(
+        """
+import verifiers as vf
+
+
+class ExternalTasksetConfig(vf.TasksetConfig):
+    answer: str = "external"
+
+
+class ExternalTaskset(vf.Taskset[ExternalTasksetConfig]):
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
+        return [{"prompt": [], "answer": f"{split}:{self.config.answer}"}]
+
+
+def load_taskset(config: ExternalTasksetConfig) -> ExternalTaskset:
+    return ExternalTaskset(config=config)
+""",
+        taskset_module.__dict__,
+    )
+    harness_module = types.ModuleType("external_harness_pkg")
+    exec(
+        """
+import verifiers as vf
+
+
+class ExternalHarnessConfig(vf.HarnessConfig):
+    mode: str = "default"
+
+
+class ExternalHarness(vf.Harness[ExternalHarnessConfig]):
+    pass
+
+
+def load_harness(config: ExternalHarnessConfig) -> ExternalHarness:
+    return ExternalHarness(config=config)
+""",
+        harness_module.__dict__,
+    )
+    monkeypatch.setitem(sys.modules, "thin_env_package", env_module)
+    monkeypatch.setitem(
+        sys.modules, "empty_env_package", types.ModuleType("empty_env_package")
+    )
+    monkeypatch.setitem(sys.modules, "external_taskset_pkg", taskset_module)
+    monkeypatch.setitem(sys.modules, "external_harness_pkg", harness_module)
+
+    config = {
+        "taskset": {"id": "external-taskset-pkg", "answer": "delegated"},
+        "harness": {"id": "external-harness-pkg", "mode": "custom"},
+    }
+    for env_id in ("thin-env-package", "empty-env-package"):
+        env = vf.load_environment(env_id, config=config)
+
+        assert env.taskset.get_dataset()[0]["answer"] == "train:delegated"
+        assert type(env.taskset).__name__ == "ExternalTaskset"
+        assert type(env.harness).__name__ == "ExternalHarness"
+        assert env.harness.config.mode == "custom"
 
 
 def test_load_environment_coerces_base_env_config_with_factory_annotations(

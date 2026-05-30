@@ -703,15 +703,20 @@ environments/my_env/
 
 ### v1 Env Shape
 
-The golden v1 shape is one taskset config, one typed
-`load_taskset(config: MyTasksetConfig)` factory, and a tiny
-`load_environment(config: vf.EnvConfig)` that asserts the config type and calls
-the local factory directly. The factory signature defines the taskset config
-type.
-Add a harness config and harness class only when the environment owns reusable
-rollout behavior; otherwise omit `harness=` and `vf.Env` uses the base harness.
-The loader's `config` parameter is a strict, non-optional config object supplied
-by the framework; do not accept `None` or synthesize fallback configs.
+The golden v1 shape is one taskset class, one typed
+`load_taskset(config: MyTasksetConfig)` child factory, and a tiny
+`load_environment(config: vf.EnvConfig)` root loader that delegates through
+`vf.load_taskset(config=config.taskset)` and
+`vf.load_harness(config=config.harness)`. The child factory annotation defines
+the taskset config type for TOML, CLI, eval, GEPA, RL, and Hosted Training.
+
+Add a harness config, harness class, and `load_harness(config:
+MyHarnessConfig)` only when the environment owns reusable rollout behavior.
+Otherwise use the base harness through `vf.load_harness(config=config.harness)`.
+
+The loader `config` parameter is a strict, non-optional config object supplied
+by the framework. Do not accept `None`, synthesize fallback configs, or mirror
+taskset/harness fields as root loader kwargs.
 
 `EnvConfig` is a lightweight envelope for the two child configs. Put environment
 knobs on `TasksetConfig` or `HarnessConfig`, not on `EnvConfig` itself. Do not
@@ -725,7 +730,7 @@ import verifiers as vf
 
 
 class MyTasksetConfig(vf.TasksetConfig):
-    split: str = "train"
+    system_prompt: vf.SystemPrompt = "Answer exactly."
 
 
 class MyTaskset(vf.Taskset[MyTasksetConfig]):
@@ -737,7 +742,7 @@ class MyTaskset(vf.Taskset[MyTasksetConfig]):
                 "split": "train",
             }
         ]
-        return [record for record in records if record["split"] == self.config.split]
+        return [record for record in records if record["split"] == split]
 
     @vf.reward(weight=1.0)
     async def contains_answer(self, task, state) -> float:
@@ -749,9 +754,10 @@ def load_taskset(config: MyTasksetConfig) -> MyTaskset:
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
+    """Loader pattern for all Taskset/Harness environments."""
     return vf.Env(
         taskset=vf.load_taskset(config=config.taskset),
-        harness=vf.Harness(config=config.harness),
+        harness=vf.load_harness(config=config.harness),
     )
 ```
 
@@ -775,6 +781,7 @@ def load_harness(config: MyHarnessConfig) -> MyHarness:
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
+    """Loader pattern for all Taskset/Harness environments."""
     return vf.Env(
         taskset=vf.load_taskset(config=config.taskset),
         harness=vf.load_harness(config=config.harness),
@@ -803,6 +810,11 @@ async def judge_reward(task, state) -> float:
 Expose at most `judge_model: str | None = None` on the taskset config. Do not
 add judge endpoint URL/API-key fields or read `os.environ` inside reward/update
 handlers.
+
+For reusable tasksets and harnesses, [BYO Harness](byo-harness.md) is the
+canonical v1 implementation guide. It covers ownership, configs, task controls,
+system prompts, users, toolsets, programs, sandboxes, artifacts, nested
+harnesses, package adapters, and TOML/CLI overrides.
 
 ### pyproject.toml
 

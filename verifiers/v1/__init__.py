@@ -59,7 +59,7 @@ from .toolset import (
 )
 from .utils.endpoint_utils import Endpoint
 from .utils.binding_utils import BindingsConfig, ObjectsConfig
-from .utils.prompt_utils import SystemPromptConfig
+from .utils.prompt_utils import SystemPromptConfig, SystemPromptStrategy
 from .types import (
     ConfigData,
     Handler,
@@ -104,6 +104,7 @@ __all__ = [
     "State",
     "SystemPrompt",
     "SystemPromptConfig",
+    "SystemPromptStrategy",
     "Task",
     "TaskSplit",
     "Tasks",

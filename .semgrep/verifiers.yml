@@ -80,6 +80,50 @@ rules:
           metavariable: $DEFAULT
           regex: ".*Config"
 
+  - id: verifiers-v1-load-environment-canonical-shim
+    languages: [python]
+    severity: ERROR
+    message: v1 load_environment is only the Taskset/Harness loader shim. Keep load_environment as-is; implement the config surface through TasksetConfig, HarnessConfig, load_taskset, and load_harness instead of patching root-loader behavior.
+    paths:
+      include:
+        - /environments/**/*.py
+        - /verifiers/scripts/init.py
+      exclude:
+        - /environments/alphabet_sort/alphabet_sort_v1.py
+        - /environments/bfcl_v3/bfcl_v3.py
+        - /environments/dspy_flights/dspy_flights.py
+        - /environments/dspy_rlm/dspy_rlm.py
+        - /environments/hello_group_reward_v1/hello_group_reward_v1.py
+        - /environments/hello_parallel_sandbox_v1/hello_parallel_sandbox_v1.py
+        - /environments/hello_self_judge_v1/hello_self_judge_v1.py
+        - /environments/hello_subagent_v1/hello_subagent_v1.py
+        - /environments/langchain_deep_agents_wikispeedia/langchain_deep_agents_wikispeedia.py
+        - /environments/math_python/math_python_v1.py
+        - /environments/mcp_search_env/mcp_search_env.py
+        - /environments/nemo_gym_env/nemo_gym_env/env.py
+        - /environments/nested_harness_v1/nested_harness_v1.py
+        - /environments/openai_agents_env/openai_agents_env.py
+        - /environments/rlm_swe_v1/rlm_swe_v1.py
+        - /environments/tau2_bench_v1/tau2_bench_v1.py
+        - /environments/wiki_search/wiki_search_v1.py
+    patterns:
+      - pattern: |
+          def load_environment(config: $CONFIG) -> vf.Env:
+              ...
+      - pattern-not: |
+          def load_environment(config: vf.EnvConfig) -> vf.Env:
+              return vf.Env(
+                  taskset=vf.load_taskset(config=config.taskset),
+                  harness=vf.load_harness(config=config.harness),
+              )
+      - pattern-not: |
+          def load_environment(config: vf.EnvConfig) -> vf.Env:
+              """Loader pattern for all Taskset/Harness environments."""
+              return vf.Env(
+                  taskset=vf.load_taskset(config=config.taskset),
+                  harness=vf.load_harness(config=config.harness),
+              )
+
   - id: verifiers-v1-no-config-object-defaults
     languages: [python]
     severity: ERROR

@@ -442,6 +442,24 @@ def normalize_env_id_alias(config: Mapping[str, Any], section: str) -> dict[str,
     return normalized
 
 
+def eval_env_id(config: Mapping[str, Any], section: str) -> str:
+    env_id = config.get("env_id")
+    if isinstance(env_id, str) and env_id:
+        return env_id
+    taskset = config.get("taskset")
+    if not isinstance(taskset, Mapping):
+        env_args = config.get("env_args")
+        if isinstance(env_args, Mapping):
+            env_config = env_args.get("config")
+            if isinstance(env_config, Mapping):
+                taskset = env_config.get("taskset")
+    if isinstance(taskset, Mapping):
+        taskset_id = taskset.get("id") or taskset.get("taskset_id")
+        if isinstance(taskset_id, str) and taskset_id:
+            return taskset_id
+    raise ValueError(f"{section} must contain env_id or taskset.id.")
+
+
 def _merge_sampling_arg_tables(
     base: Mapping[str, Any],
     override: Mapping[str, Any],
@@ -603,9 +621,6 @@ def load_toml_config(
         normalize_env_id_alias(ablation, "[[ablation]]") for ablation in ablation_list
     ]
 
-    if not all("env_id" in e for e in eval_list):
-        raise ValueError(f"All [[eval]] sections must contain an id field: {path}")
-
     # extract global defaults (everything except 'eval' and 'ablation' keys)
     global_defaults = {
         k: v for k, v in raw_config.items() if k not in ("eval", "ablation")
@@ -683,6 +698,7 @@ def load_toml_config(
                 f"Invalid field(s) {invalid_fields} for {eval_config.get('env_id', 'unknown')}. "
                 f"Valid fields are: {sorted(valid_fields)}"
             )
+        eval_config["env_id"] = eval_env_id(eval_config, "[[eval]]")
         eval_config = normalize_sampling_config(
             eval_config, f"[[eval]] {eval_config['env_id']}"
         )
@@ -735,10 +751,7 @@ def load_toml_config(
 
     # Validate all expanded configs have env_id
     for config in merged_eval_list:
-        if "env_id" not in config:
-            raise ValueError(
-                "All eval configs (including expanded ablations) must have an id"
-            )
+        config["env_id"] = eval_env_id(config, "eval config")
 
     # Resolve endpoints_path relative to the config file location
     for merged in merged_eval_list:

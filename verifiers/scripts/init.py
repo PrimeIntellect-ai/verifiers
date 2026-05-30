@@ -120,7 +120,7 @@ version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = [
     "verifiers>={vf.__version__}",
-    "tasksets>=0.1.1",
+    "tasksets[openenv]>=0.1.1",
 ]
 
 [build-system]
@@ -160,13 +160,10 @@ import verifiers as vf
 
 
 class {taskset_config_name}(vf.TasksetConfig):
-    pass
+    system_prompt: vf.SystemPrompt = "Replace this with the system prompt for {env_id_dash}."
 
 
 class {taskset_name}(vf.Taskset[{taskset_config_name}]):
-    def load_system_prompt(self, config: {taskset_config_name}) -> vf.SystemPrompt:
-        raise NotImplementedError("Load the system prompt for {env_id_dash}.")
-
     def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         raise NotImplementedError("Load tasks for {env_id_dash}.")
 
@@ -180,9 +177,10 @@ def load_taskset(config: {taskset_config_name}) -> {taskset_name}:
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
+    \"\"\"Loader pattern for all Taskset/Harness environments.\"\"\"
     return vf.Env(
         taskset=vf.load_taskset(config=config.taskset),
-        harness=vf.Harness(config=config.harness),
+        harness=vf.load_harness(config=config.harness),
     )
 """
 
@@ -191,13 +189,10 @@ import verifiers as vf
 
 
 class {taskset_config_name}(vf.TasksetConfig):
-    pass
+    system_prompt: vf.SystemPrompt = "Replace this with the system prompt for {env_id_dash}."
 
 
 class {taskset_name}(vf.Taskset[{taskset_config_name}]):
-    def load_system_prompt(self, config: {taskset_config_name}) -> vf.SystemPrompt:
-        raise NotImplementedError("Load the system prompt for {env_id_dash}.")
-
     def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         raise NotImplementedError("Load tasks for {env_id_dash}.")
 
@@ -223,6 +218,7 @@ def load_harness(config: {harness_config_name}) -> {harness_name}:
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
+    \"\"\"Loader pattern for all Taskset/Harness environments.\"\"\"
     return vf.Env(
         taskset=vf.load_taskset(config=config.taskset),
         harness=vf.load_harness(config=config.harness),
@@ -231,7 +227,7 @@ def load_environment(config: vf.EnvConfig) -> vf.Env:
 
 OPENENV_ENVIRONMENT_TEMPLATE = """\
 import verifiers as vf
-from tasksets.openenv import OpenEnvTaskset, OpenEnvTasksetConfig
+from tasksets import OpenEnvTaskset, OpenEnvTasksetConfig
 
 
 def load_taskset(config: OpenEnvTasksetConfig) -> OpenEnvTaskset:
@@ -239,9 +235,10 @@ def load_taskset(config: OpenEnvTasksetConfig) -> OpenEnvTaskset:
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
+    \"\"\"Loader pattern for all Taskset/Harness environments.\"\"\"
     return vf.Env(
         taskset=vf.load_taskset(config=config.taskset),
-        harness=vf.Harness(config=config.harness),
+        harness=vf.load_harness(config=config.harness),
     )
 """
 

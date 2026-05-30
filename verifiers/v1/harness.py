@@ -72,6 +72,7 @@ from .utils.sandbox_program_utils import (
     run_sandbox_python_program,
 )
 from .utils.prompt_utils import (
+    SystemPromptStrategy,
     SystemPromptConfig,
     normalize_prompt,
     normalize_system_prompt,
@@ -106,7 +107,7 @@ class HarnessConfig(LifecycleConfig):
     program: ProgramConfig = ProgramConfig()
     model: ModelConfig = ModelConfig()
     system_prompt: PromptInput | SystemPromptConfig | None = None
-    system_prompt_merge: str = "reject"
+    system_prompt_strategy: SystemPromptStrategy = "HT"
     sandbox: SandboxConfig | None = None
     user: UserConfig | None = None
     bindings: BindingsConfig = BindingsConfig()
@@ -193,7 +194,7 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
             self.system_prompt = normalize_system_prompt(
                 system_prompt_value, field_name="harness.system_prompt"
             )
-            self.system_prompt_merge = self.config.system_prompt_merge
+            self.system_prompt_strategy = self.config.system_prompt_strategy
             self.initialize_runtime_user(self.config.user)
             self.bindings: BindingSources = self.config.bindings.entries(
                 "harness.bindings"
@@ -391,7 +392,7 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
             task=task,
             taskset_system_prompt=taskset_system_prompt,
             harness_system_prompt=self.system_prompt,
-            merge=self.system_prompt_merge,
+            strategy=self.system_prompt_strategy,
         )
 
     async def run_program(self, task: Task, state: State) -> State:

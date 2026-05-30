@@ -1,4 +1,4 @@
-__version__ = "0.1.15.dev14"
+__version__ = "0.1.15.dev15"
 
 import importlib
 import os
@@ -95,6 +95,7 @@ __all__ = [
     "SandboxConfig",
     "SystemPrompt",
     "SystemPromptConfig",
+    "SystemPromptStrategy",
     "Toolset",
     "ToolLike",
     "ToolsetConfig",
@@ -232,6 +233,7 @@ _LAZY_IMPORTS = {
     "SignalConfig": "verifiers.v1:SignalConfig",
     "SystemPrompt": "verifiers.v1:SystemPrompt",
     "SystemPromptConfig": "verifiers.v1:SystemPromptConfig",
+    "SystemPromptStrategy": "verifiers.v1:SystemPromptStrategy",
     "ToolLike": "verifiers.v1:ToolLike",
     "Toolset": "verifiers.v1:Toolset",
     "ToolsetConfig": "verifiers.v1:ToolsetConfig",
@@ -343,6 +345,7 @@ if TYPE_CHECKING:
         SignalConfig,
         SystemPrompt,
         SystemPromptConfig,
+        SystemPromptStrategy,
         Task,
         Tasks,
         Taskset,

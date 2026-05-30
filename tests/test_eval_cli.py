@@ -994,6 +994,29 @@ def test_load_toml_config_with_args_taskset_harness():
     assert "harness" not in result[0]
 
 
+def test_load_toml_config_allows_taskset_id_without_env_id():
+    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
+        f.write(
+            "[[eval]]\n"
+            "[eval.taskset]\n"
+            'id = "tasksets.harbor"\n'
+            "num_examples = 10\n\n"
+            "[eval.harness]\n"
+            'id = "harnesses.opencode"\n'
+            "max_turns = 5\n"
+        )
+        f.flush()
+        result = load_toml_config(Path(f.name))
+
+    assert result[0]["env_id"] == "tasksets.harbor"
+    assert result[0]["env_args"] == {
+        "config": {
+            "taskset": {"id": "tasksets.harbor", "num_examples": 10},
+            "harness": {"id": "harnesses.opencode", "max_turns": 5},
+        },
+    }
+
+
 def test_load_toml_config_missing_env_section():
     """TOML without [[eval]] section raises ValueError."""
     with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:

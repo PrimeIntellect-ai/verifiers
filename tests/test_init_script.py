@@ -27,16 +27,18 @@ def test_init_v1_writes_thin_taskset_template(tmp_path: Path) -> None:
 
     assert "class BarTasksetConfig(vf.TasksetConfig):" in content
     assert "class BarTaskset(vf.Taskset[BarTasksetConfig]):" in content
-    assert 'def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:' in content
     assert (
-        "def load_system_prompt(self, config: BarTasksetConfig) -> vf.SystemPrompt:"
+        'system_prompt: vf.SystemPrompt = "Replace this with the system prompt for bar."'
         in content
     )
+    assert 'def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:' in content
+    assert "def load_system_prompt" not in content
     assert "async def correct_answer(self, task: vf.Task, state: vf.State)" in content
     assert "def load_taskset(config: BarTasksetConfig) -> BarTaskset:" in content
     assert "return BarTaskset(config=config)" in content
     assert "taskset=vf.load_taskset(config=config.taskset)" in content
-    assert "harness=vf.Harness(config=config.harness)" in content
+    assert '"""Loader pattern for all Taskset/Harness environments."""' in content
+    assert "harness=vf.load_harness(config=config.harness)" in content
     assert "class EnvTaskset(" not in content
     assert "_default_" not in content
     assert 'tasks: str = "load_tasks"' not in content
@@ -49,8 +51,10 @@ def test_init_v1_template_loads_with_vf_load_environment(
     init_environment("loadable-v1", path=str(tmp_path), v1=True)
     monkeypatch.syspath_prepend(str(tmp_path / "loadable_v1"))
 
-    with pytest.raises(RuntimeError, match="Load the system prompt"):
-        vf.load_environment("loadable-v1")
+    env = vf.load_environment("loadable-v1")
+
+    with pytest.raises(RuntimeError, match="Load tasks"):
+        env.get_dataset()
 
 
 def test_init_v1_with_harness_writes_harness_stub(tmp_path: Path) -> None:
@@ -92,16 +96,14 @@ def test_init_openenv_writes_v1_taskset_template(tmp_path: Path) -> None:
     content = read_env_file(tmp_path, "openenv-sample")
     pyproject = (tmp_path / "openenv_sample" / "pyproject.toml").read_text()
 
-    assert (
-        "from tasksets.openenv import OpenEnvTaskset, OpenEnvTasksetConfig" in content
-    )
+    assert "from tasksets import OpenEnvTaskset, OpenEnvTasksetConfig" in content
     assert (
         "def load_taskset(config: OpenEnvTasksetConfig) -> OpenEnvTaskset:" in content
     )
     assert "taskset=vf.load_taskset(config=config.taskset)" in content
-    assert "harness=vf.Harness(config=config.harness)" in content
+    assert "harness=vf.load_harness(config=config.harness)" in content
     assert "vf.OpenEnvEnv" not in content
-    assert '"tasksets>=0.1.1"' in pyproject
+    assert '"tasksets[openenv]>=0.1.1"' in pyproject
 
 
 def test_init_openenv_multifile_exports_taskset_loader(tmp_path: Path) -> None:

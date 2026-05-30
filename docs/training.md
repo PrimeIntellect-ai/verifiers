@@ -94,7 +94,7 @@ id = "primeintellect/my-v1-env"
 max_turns = 8
 
 [env.taskset]
-split = "train"
+system_prompt = "Answer exactly."
 
 [env.taskset.toolsets.search]
 tools = ["my_env.tools:search"]
@@ -173,7 +173,7 @@ In TOML configs, set GEPA parameters such as `max_calls`, `num_train`, `num_val`
 ### Output
 
 After optimization, you'll find:
-- `system_prompt.txt` - The optimized system prompt. For v1 tasksets, expose a `system_prompt` config field and return `vf.SystemPromptConfig(path="system_prompt.txt")` from `load_system_prompt(...)` when the prompt should be file-backed.
+- `system_prompt.txt` - The optimized system prompt. For v1 environments, expose the owner prompt that GEPA should optimize as a `system_prompt` config field and default it to `vf.SystemPromptConfig(path="system_prompt.txt")` when the prompt should be file-backed. Override `load_system_prompt(config)` only when prompt loading is computed from config or package resources.
 - `results.jsonl` - Candidate prompt rows for evaluation upload; GEPA-specific fields live under `info`.
 - `pareto_frontier.jsonl` - Best candidate references per validation example
 - `metadata.json` - Run configuration and summary

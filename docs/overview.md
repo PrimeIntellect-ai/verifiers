@@ -91,7 +91,7 @@ import verifiers as vf
 
 
 class MyTasksetConfig(vf.TasksetConfig):
-    split: str = "train"
+    system_prompt: vf.SystemPrompt = "Reverse text exactly."
 
 
 class MyTaskset(vf.Taskset[MyTasksetConfig]):
@@ -104,7 +104,7 @@ class MyTaskset(vf.Taskset[MyTasksetConfig]):
                 "max_turns": 1,
             }
         ]
-        return [record for record in records if record["split"] == self.config.split]
+        return [record for record in records if record["split"] == split]
 
     @vf.reward(weight=1.0)
     async def contains_answer(self, task, state) -> float:
@@ -116,12 +116,17 @@ def load_taskset(config: MyTasksetConfig) -> MyTaskset:
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
+    """Loader pattern for all Taskset/Harness environments."""
     return vf.Env(
         taskset=vf.load_taskset(config=config.taskset),
-        harness=vf.Harness(config=config.harness),
+        harness=vf.load_harness(config=config.harness),
     )
 ```
 See [BYO Harness](byo-harness.md) for the advanced v1 taskset/harness API.
+The child loader annotation is the config contract: keep root
+`load_environment` typed as `vf.EnvConfig`, put task settings on
+`TasksetConfig`, and add `load_harness(config: MyHarnessConfig)` only when the
+environment owns a reusable harness.
 Reusable v1 taskset and harness packages live in `tasksets` and `harnesses`.
 Install them with `uv add "verifiers[packages]"`, or with the narrower
 `verifiers[tasksets]`, `verifiers[harnesses]`, and backend-specific extras such
