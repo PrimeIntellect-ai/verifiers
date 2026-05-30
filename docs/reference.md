@@ -77,7 +77,7 @@ v1 task loader return types. Override `load_tasks(split=...)` on a
 ### SystemPrompt
 
 ```python
-SystemPrompt = str | Sequence[Message | JsonData]
+SystemPrompt = PromptInput | SystemPromptConfig | None
 SystemPromptStrategy = Literal["HT", "TH", "H_OR_T", "T_OR_H", "H", "T", "REJECT"]
 
 class SystemPromptConfig:
@@ -1030,7 +1030,7 @@ class EnvConfig(Config):
 
 class TasksetConfig(Config):
     taskset_id: str | None = None  # `id` shorthand accepted
-    system_prompt: PromptInput | SystemPromptConfig | None = None
+    system_prompt: SystemPrompt = None
     user: UserConfig | None = None
     bindings: BindingsConfig = BindingsConfig()
     objects: ObjectsConfig = ObjectsConfig()
@@ -1040,7 +1040,7 @@ class HarnessConfig(Config):
     harness_id: str | None = None  # `id` shorthand accepted
     program: ProgramConfig = ProgramConfig()
     model: ModelConfig = ModelConfig()
-    system_prompt: PromptInput | SystemPromptConfig | None = None
+    system_prompt: SystemPrompt = None
     system_prompt_strategy: SystemPromptStrategy = "HT"
     sandbox: SandboxConfig | None = None
     user: UserConfig | None = None

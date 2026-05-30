@@ -18,7 +18,7 @@ from .utils.binding_utils import (
     BindingsConfig,
     ObjectsConfig,
 )
-from .utils.prompt_utils import SystemPromptConfig, normalize_system_prompt
+from .utils.prompt_utils import SystemPrompt, normalize_system_prompt
 from .utils.config_utils import (
     coerce_config,
     config_ref_context,
@@ -36,7 +36,6 @@ from .utils.taskset_utils import (
 from .types import (
     JsonData,
     Objects,
-    PromptInput,
     TaskSplit,
     Tasks,
 )
@@ -48,7 +47,7 @@ class TasksetConfig(LifecycleConfig):
         default=None,
         validation_alias=AliasChoices("taskset_id", "id"),
     )
-    system_prompt: PromptInput | SystemPromptConfig | None = None
+    system_prompt: SystemPrompt = None
     user: UserConfig | None = None
     bindings: BindingsConfig = BindingsConfig()
     objects: ObjectsConfig = ObjectsConfig()
@@ -152,7 +151,5 @@ class Taskset(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
     def __len__(self) -> int:
         return len(self.get_dataset())
 
-    def load_system_prompt(
-        self, config: ConfigT
-    ) -> PromptInput | SystemPromptConfig | None:
+    def load_system_prompt(self, config: ConfigT) -> SystemPrompt:
         return config.system_prompt

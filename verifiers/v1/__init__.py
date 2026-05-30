@@ -59,14 +59,13 @@ from .toolset import (
 )
 from .utils.endpoint_utils import Endpoint
 from .utils.binding_utils import BindingsConfig, ObjectsConfig
-from .utils.prompt_utils import SystemPromptConfig, SystemPromptStrategy
+from .utils.prompt_utils import SystemPrompt, SystemPromptConfig, SystemPromptStrategy
 from .types import (
     ConfigData,
     Handler,
     JsonData,
     Objects,
     PromptInput,
-    SystemPrompt,
     TaskSplit,
     Tasks,
 )

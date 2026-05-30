@@ -72,8 +72,8 @@ from .utils.sandbox_program_utils import (
     run_sandbox_python_program,
 )
 from .utils.prompt_utils import (
+    SystemPrompt,
     SystemPromptStrategy,
-    SystemPromptConfig,
     normalize_prompt,
     normalize_system_prompt,
     resolve_system_prompt,
@@ -88,7 +88,6 @@ from .types import (
     ConfigData,
     JsonData,
     Objects,
-    PromptInput,
 )
 
 if TYPE_CHECKING:
@@ -106,7 +105,7 @@ class HarnessConfig(LifecycleConfig):
     )
     program: ProgramConfig = ProgramConfig()
     model: ModelConfig = ModelConfig()
-    system_prompt: PromptInput | SystemPromptConfig | None = None
+    system_prompt: SystemPrompt = None
     system_prompt_strategy: SystemPromptStrategy = "HT"
     sandbox: SandboxConfig | None = None
     user: UserConfig | None = None
@@ -217,9 +216,7 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
             self.endpoint = self.load_endpoint()
             self.program = self.compile_program(self.program_config)
 
-    def load_system_prompt(
-        self, config: ConfigT
-    ) -> PromptInput | SystemPromptConfig | None:
+    def load_system_prompt(self, config: ConfigT) -> SystemPrompt:
         return config.system_prompt
 
     def load_sandbox(self, config: SandboxConfig | None) -> SandboxConfig | None:
