@@ -152,11 +152,6 @@ class TextArenaUser(vf.User[TextArenaUserConfig]):
         )
         matches = re.findall(r"<guess>(.*?)</guess>", last_text, re.DOTALL)
         guess = matches[-1].strip() if matches else ""
-        if not guess:
-            reason = "No <guess>...</guess> tag found."
-            state["final_env_response"] = reason
-            state.stop("textarena_no_guess")
-            return [vf.UserMessage(content=reason)]
         await asyncio.to_thread(ta_env.step, guess)
         if ta_env.state.done:
             reason = str(ta_env.state.game_info[0]["reason"])

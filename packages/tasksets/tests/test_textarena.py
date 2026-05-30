@@ -63,7 +63,7 @@ def fake_textarena(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_textarena_user_stops_without_guess(fake_textarena):
+async def test_textarena_user_steps_empty_guess_when_guess_tag_missing(fake_textarena):
     taskset = textarena.TextArenaTaskset(
         config=textarena.TextArenaTasksetConfig(
             game="FakeWordle-v0",
@@ -93,6 +93,11 @@ async def test_textarena_user_stops_without_guess(fake_textarena):
     messages = await env.harness.runtime.user_messages(task, state)
     ta_env = fake_textarena.envs[-1]
 
-    assert ta_env.guesses == []
-    assert messages == [{"role": "user", "content": "No <guess>...</guess> tag found."}]
-    assert state["stop_condition"] == "textarena_no_guess"
+    assert ta_env.guesses == [""]
+    assert messages == [
+        {
+            "role": "user",
+            "content": "Board [GAME] Feedback:\nmiss\nY----\ntry again",
+        }
+    ]
+    assert state.get("done") is None
