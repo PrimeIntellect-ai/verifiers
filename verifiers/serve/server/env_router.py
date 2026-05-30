@@ -8,8 +8,6 @@ This is an internal component owned by :class:`EnvServer` — it has no
 client-facing socket knowledge.
 """
 
-from __future__ import annotations
-
 import asyncio
 import logging
 import multiprocessing as mp

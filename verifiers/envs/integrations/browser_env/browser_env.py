@@ -175,7 +175,10 @@ class BrowserEnv(vf.StatefulToolEnv):
     async def setup_state(self, state: vf.State, **kwargs: Any) -> vf.State:
         """Delegate session creation to the mode strategy."""
         state = await self._mode_impl.setup_state(state, **kwargs)
-        return await super().setup_state(state, **kwargs)
+        setup_state = await super().setup_state(state, **kwargs)
+        if setup_state is not None:
+            state = setup_state
+        return state
 
     def update_tool_args(
         self,

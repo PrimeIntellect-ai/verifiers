@@ -28,15 +28,6 @@ def parse_log_pytest(log: str | None) -> dict[str, str]:
     return test_status_map
 
 
-def parse_log_fn(repo_name: str):
-    """Return repo-specific log parser. Currently all repos use pytest parser."""
-    return parse_log_pytest
-
-
 def decolor_dict_keys(d: dict) -> dict:
     """Strip ANSI escape codes from dict keys."""
-
-    def decolor(key: str) -> str:
-        return re.sub(r"\u001b\[\d+m", "", key)
-
-    return {decolor(k): v for k, v in d.items()}
+    return {re.sub(r"\u001b\[\d+m", "", k): v for k, v in d.items()}

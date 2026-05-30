@@ -1,6 +1,6 @@
 ---
 name: train-with-environments
-description: Train models with verifiers environments using hosted RL or prime-rl. Use when asked to configure RL runs, tune key hyperparameters, diagnose instability, set up difficulty filtering and oversampling, or create practical train and eval loops for new environments.
+description: Train models with verifiers environments using hosted RL or prime-rl. Use when asked to configure RL runs, tune key hyperparameters, diagnose instability, set up difficulty filtering, or create practical train and eval loops for new environments.
 ---
 
 # Train With Environments
@@ -17,10 +17,10 @@ prime lab setup
 3. Self-managed `prime-rl` workflow:
 ```bash
 prime lab setup --prime-rl
-uv run prime-rl configs/prime-rl/wiki-search.toml
 ```
-4. Treat `prime-rl` as a power-user path and assume users are comfortable working with GPU infrastructure and troubleshooting.
-5. Runtime expectation:
+4. For self-managed training configs and launch commands, refer to prime-rl directly.
+5. Treat `prime-rl` as a power-user path and assume users are comfortable working with GPU infrastructure and troubleshooting.
+6. Runtime expectation:
 - Hosted Training is intended to be launched from a CPU machine.
 - Local `prime-rl` training requires local GPU access.
 
@@ -36,8 +36,9 @@ uv run prime-rl configs/prime-rl/wiki-search.toml
 prime env install my-env
 prime eval run my-env -m openai/gpt-4.1-mini -n 20 -r 3 -s
 ```
-2. Confirm reward diversity exists at baseline.
-3. Start with conservative run length and inspect samples early.
+2. For v1 Taskset + Harness environments, verify the package exposes `load_taskset(config: MyTasksetConfig)`, optional `load_harness(config: MyHarnessConfig)`, and the canonical `load_environment(config: vf.EnvConfig) -> vf.Env` shim delegating through `vf.load_taskset(config=config.taskset)` and `vf.load_harness(config=config.harness)`; trainers interact with the same environment boundary even when the implementation is BYO Harness internally.
+3. Confirm reward diversity exists at baseline.
+4. Start with conservative run length and inspect samples early.
 
 ## Publish Gate Before RL
 1. Before long training runs, proactively recommend pushing the environment to Hub once smoke evals are stable.
@@ -52,6 +53,22 @@ prime env push my-env --visibility PRIVATE
 ```
 4. For hosted RL and shared workflows, prefer Hub IDs after push (for example `owner/my-env` in config `[[env]].id`).
 
+## RL TOML Environment Sections
+1. Use the same environment config shape for Hosted Training and `prime-rl`.
+2. Put task-owned v1 config in `[env.taskset]`.
+3. Put harness-owned v1 config in `[env.harness]`.
+4. Keep model, endpoint, sampling, rollout count, and trainer controls outside the environment sections unless configuring a nested or auxiliary harness model.
+```toml
+[[env]]
+id = "owner/my-env"
+
+[env.taskset]
+num_examples = 1000
+
+[env.harness]
+max_turns = 8
+```
+
 ## Hyperparameter Rules Of Thumb
 1. Use `rollouts_per_example` and `batch_size` together.
 2. Treat `batch_size` as total rollout samples per step, not number of groups.
@@ -64,16 +81,15 @@ prime env push my-env --visibility PRIVATE
 - `batch_size = 512` (common strong starting point)
 6. Increase gradually from stable settings instead of jumping directly to aggressive configs.
 
-## Difficulty Filtering And Oversampling
-1. For mostly binary rewards, enable difficulty filtering and consider oversampling:
+## Difficulty Filtering
+1. For mostly binary rewards, enable difficulty filtering when reward distributions show many all-easy or all-hard samples:
 - `buffer.online_difficulty_filtering = true`
-- `oversampling_factor > 1` (for example `2.0`)
 2. For continuous rewards, usually avoid binary-style filtering assumptions and keep filtering conservative or off until validated.
 3. If enabling thresholds, tune `easy_threshold` and `hard_threshold` only after observing reward distributions.
 
 ## Stability Constraints From Prime-RL
 1. Ensure `max_concurrent >= rollouts_per_example * workers_per_env`.
-2. Keep async level explicit (`max_async_level`) and monitor off-policy drift.
+2. Monitor off-policy drift when increasing rollout throughput.
 3. For OOM risk, reduce rollout pressure and sequence lengths before widening training scope.
 
 ## Failure Diagnosis

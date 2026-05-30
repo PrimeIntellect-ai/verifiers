@@ -50,6 +50,13 @@ from verifiers.types import (
 from verifiers.utils.client_utils import setup_anthropic_client
 
 
+ANTHROPIC_ADAPTIVE_THINKING_MODELS = {
+    "claude-opus-4-7",
+    "claude-opus-4-6",
+    "claude-sonnet-4-6",
+}
+
+
 def _handle_anthropic_overlong_prompt(func):
     """Decorator to handle overlong prompt errors from the Anthropic API."""
 
@@ -95,24 +102,6 @@ class AnthropicMessagesClient(
     async def to_native_prompt(
         self, messages: Messages
     ) -> tuple[list[AnthropicMessageParam], dict]:
-        def parse_data_url(url: str) -> tuple[str, str] | None:
-            if not url.startswith("data:"):
-                return None
-            if "," not in url:
-                return None
-            header, data = url.split(",", 1)
-            if ";base64" not in header:
-                return None
-            media_type = header[5:].split(";")[0] or "image/png"
-            return media_type, data
-
-        def normalize_content_block(block: Any) -> dict[str, Any]:
-            if isinstance(block, Mapping):
-                return dict(block)
-            if hasattr(block, "model_dump"):
-                return block.model_dump()
-            raise ValueError(f"Invalid content block type: {type(block)}")
-
         def normalize_anthropic_content(content: Any) -> Any:
             if isinstance(content, str):
                 return content
@@ -121,7 +110,12 @@ class AnthropicMessagesClient(
 
             blocks: list[dict[str, Any]] = []
             for raw_part in content:
-                part = normalize_content_block(raw_part)
+                if isinstance(raw_part, Mapping):
+                    part = dict(raw_part)
+                elif hasattr(raw_part, "model_dump"):
+                    part = raw_part.model_dump()
+                else:
+                    raise ValueError(f"Invalid content block type: {type(raw_part)}")
                 part_type = part.get("type")
                 if part_type == "text":
                     text = part.get("text")
@@ -133,21 +127,22 @@ class AnthropicMessagesClient(
                         image_url.get("url") if isinstance(image_url, Mapping) else None
                     )
                     if isinstance(url, str):
-                        parsed = parse_data_url(url)
-                        if parsed is not None:
-                            media_type, data = parsed
-                            blocks.append(
-                                {
-                                    "type": "image",
-                                    "source": {
-                                        "type": "base64",
-                                        "media_type": media_type,
-                                        "data": data,
-                                    },
-                                }
-                            )
-                        else:
-                            blocks.append({"type": "text", "text": "[image]"})
+                        if url.startswith("data:") and "," in url:
+                            header, data = url.split(",", 1)
+                            if ";base64" in header:
+                                media_type = header[5:].split(";")[0] or "image/png"
+                                blocks.append(
+                                    {
+                                        "type": "image",
+                                        "source": {
+                                            "type": "base64",
+                                            "media_type": media_type,
+                                            "data": data,
+                                        },
+                                    }
+                                )
+                                continue
+                        blocks.append({"type": "text", "text": "[image]"})
                 elif part_type == "input_audio":
                     blocks.append({"type": "text", "text": "[audio]"})
                 else:
@@ -288,16 +283,11 @@ class AnthropicMessagesClient(
             else:
                 raise ValueError(f"Invalid chat message: {message}")
 
-        def extract_system_content(messages: Messages) -> str:
-            """Extract and concatenate system message contents."""
-            system_contents = []
-            for msg in messages:
-                if isinstance(msg, SystemMessage):
-                    content = msg.content
-                    system_contents.append(" ".join(content_to_text_chunks(content)))
-            return "\n\n".join(system_contents)
-
-        system = extract_system_content(messages)
+        system_contents = []
+        for msg in messages:
+            if isinstance(msg, SystemMessage):
+                system_contents.append(" ".join(content_to_text_chunks(msg.content)))
+        system = "\n\n".join(system_contents)
         prompt: list[AnthropicMessageParam] = []
         pending_tool_results: list[ToolResultBlockParam] = []
 
@@ -342,6 +332,20 @@ class AnthropicMessagesClient(
     ) -> AnthropicMessage:
         def normalize_sampling_args(sampling_args: SamplingArgs) -> dict:
             sampling_args = dict(sampling_args)
+            reasoning_effort = sampling_args.pop("reasoning_effort", None)
+            if reasoning_effort is not None:
+                model_id = (
+                    model.lower().split("/")[-1].replace(".", "-").replace("_", "-")
+                )
+                output_config = dict(sampling_args.get("output_config") or {})
+                output_config["effort"] = reasoning_effort
+                sampling_args["output_config"] = output_config
+                if "thinking" not in sampling_args and any(
+                    model_id == adaptive_model
+                    or model_id.startswith(f"{adaptive_model}-")
+                    for adaptive_model in ANTHROPIC_ADAPTIVE_THINKING_MODELS
+                ):
+                    sampling_args["thinking"] = {"type": "adaptive"}
             max_tokens = sampling_args.pop("max_tokens", None)
             sampling_args.pop("n", None)
             sampling_args.pop("stop", None)

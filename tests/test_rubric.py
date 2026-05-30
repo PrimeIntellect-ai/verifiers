@@ -5,7 +5,7 @@ from typing import cast
 import pytest
 
 from verifiers import Parser, Rubric
-from verifiers.types import RewardFunc, RolloutInput, State
+from verifiers.types import RewardFunc, RolloutInput, RolloutTiming, State
 
 
 class TestRubric:
@@ -158,18 +158,12 @@ class TestRubric:
             input=RolloutInput(
                 prompt="test prompt",
                 answer="test",
-                task="test_task",
                 example_id=0,
             )
         )
         state["completion"] = "test"
         state["trajectory"] = []
-        state["timing"] = {
-            "generation_ms": 0.0,
-            "scoring_ms": 0.0,
-            "total_ms": 0.0,
-            "start_time": 0.0,
-        }
+        state["timing"] = RolloutTiming()
 
         await rubric.score_rollout(state)
 
@@ -197,18 +191,12 @@ class TestRubric:
             input=RolloutInput(
                 prompt="test",
                 answer="test",
-                task="test",
                 example_id=0,
             )
         )
         state["completion"] = completion
         state["trajectory"] = []
-        state["timing"] = {
-            "generation_ms": 0.0,
-            "scoring_ms": 0.0,
-            "total_ms": 0.0,
-            "start_time": 0.0,
-        }
+        state["timing"] = RolloutTiming()
 
         await rubric.score_rollout(state)
 
@@ -232,7 +220,6 @@ class TestRubric:
                 input=RolloutInput(
                     prompt="prompt1",
                     answer="answer1",
-                    task="task1",
                     example_id=0,
                 )
             ),
@@ -240,7 +227,6 @@ class TestRubric:
                 input=RolloutInput(
                     prompt="prompt2",
                     answer="answer2",
-                    task="task2",
                     example_id=1,
                 )
             ),
@@ -248,7 +234,6 @@ class TestRubric:
                 input=RolloutInput(
                     prompt="prompt3",
                     answer="answer3",
-                    task="task3",
                     example_id=2,
                 )
             ),
@@ -256,12 +241,7 @@ class TestRubric:
         for i, state in enumerate(states):
             state["completion"] = ["answer1", "answer2", "wrong"][i]
             state["trajectory"] = []
-            state["timing"] = {
-                "generation_ms": 0.0,
-                "scoring_ms": 0.0,
-                "total_ms": 0.0,
-                "start_time": 0.0,
-            }
+            state["timing"] = RolloutTiming()
 
         await rubric.score_group(states)
 
@@ -288,18 +268,12 @@ class TestRubric:
             input=RolloutInput(
                 prompt="test",
                 answer="test",
-                task="test",
                 example_id=0,
             )
         )
         state["completion"] = "test"
         state["trajectory"] = []
-        state["timing"] = {
-            "generation_ms": 0.0,
-            "scoring_ms": 0.0,
-            "total_ms": 0.0,
-            "start_time": 0.0,
-        }
+        state["timing"] = RolloutTiming()
 
         await rubric.score_group([state])
 
@@ -331,18 +305,12 @@ class TestRubric:
             input=RolloutInput(
                 prompt="test",
                 answer="test",
-                task="test",
                 example_id=0,
             )
         )
         state["completion"] = "test"
         state["trajectory"] = []
-        state["timing"] = {
-            "generation_ms": 0.0,
-            "scoring_ms": 0.0,
-            "total_ms": 0.0,
-            "start_time": 0.0,
-        }
+        state["timing"] = RolloutTiming()
 
         await rubric.score_group([state])
 
@@ -369,18 +337,12 @@ class TestRubric:
             input=RolloutInput(
                 prompt="test",
                 answer="test",
-                task="test",
                 example_id=0,
             )
         )
         state["completion"] = "test"
         state["trajectory"] = []
-        state["timing"] = {
-            "generation_ms": 0.0,
-            "scoring_ms": 0.0,
-            "total_ms": 0.0,
-            "start_time": 0.0,
-        }
+        state["timing"] = RolloutTiming()
 
         await rubric.score_group([state])
 
@@ -404,19 +366,13 @@ class TestRubric:
             input=RolloutInput(
                 prompt=[{"role": "user", "content": "q"}],
                 answer="ans",
-                task="default",
                 example_id=0,
                 info={"extra": 123},
             )
         )
         state["completion"] = [{"role": "assistant", "content": "a"}]
         state["trajectory"] = []
-        state["timing"] = {
-            "generation_ms": 0.0,
-            "scoring_ms": 0.0,
-            "total_ms": 0.0,
-            "start_time": 0.0,
-        }
+        state["timing"] = RolloutTiming()
 
         await rubric.score_rollout(state)
 
@@ -443,18 +399,12 @@ class TestRubric:
             input=RolloutInput(
                 prompt="q",
                 answer="ans",
-                task="default",
                 example_id=0,
             )
         )
         state["completion"] = "a"
         state["trajectory"] = []
-        state["timing"] = {
-            "generation_ms": 0.0,
-            "scoring_ms": 0.0,
-            "total_ms": 0.0,
-            "start_time": 0.0,
-        }
+        state["timing"] = RolloutTiming()
 
         await rubric.score_rollout(state)
 

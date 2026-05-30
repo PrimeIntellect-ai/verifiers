@@ -1,0 +1,228 @@
+name: Publish tasksets
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to release (e.g. tasksets-v0.1.1)'
+        required: true
+        type: string
+  push:
+    branches:
+      - main
+    tags:
+      - "tasksets-v*"
+
+jobs:
+  auto-tag-on-main:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      created: ${{ steps.tag.outputs.created }}
+      tag: ${{ steps.tag.outputs.tag }}
+      version: ${{ steps.tag.outputs.version }}
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create release tag for untagged version
+        id: tag
+        run: |
+          echo "created=false" >> "$GITHUB_OUTPUT"
+
+          VERSION=$(python - <<'PY'
+          from pathlib import Path
+          import re
+          import sys
+
+          match = re.search(r'__version__\s*=\s*"([^"]+)"', Path("packages/tasksets/tasksets/__init__.py").read_text())
+          if not match:
+              sys.exit("Could not find __version__ in packages/tasksets/tasksets/__init__.py")
+          print(match.group(1))
+          PY
+          )
+
+          TAG="tasksets-v${VERSION}"
+
+          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+            echo "Tag ${TAG} already exists locally; skipping."
+            exit 0
+          fi
+
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "Tag ${TAG} already exists on origin; skipping."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "$TAG"
+
+          echo "created=true" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+  build-from-auto-tag:
+    needs: auto-tag-on-main
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.auto-tag-on-main.outputs.created == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ needs.auto-tag-on-main.outputs.tag }}
+      version: ${{ needs.auto-tag-on-main.outputs.version }}
+    steps:
+      - name: Checkout auto-created tag
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: refs/tags/${{ needs.auto-tag-on-main.outputs.tag }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Build tasksets
+        run: uv build packages/tasksets
+
+      - name: Upload dist artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: tasksets-dist
+          path: packages/tasksets/dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish-from-auto-tag:
+    needs: build-from-auto-tag
+    runs-on: ubuntu-latest
+    environment: pypi-prod
+    permissions:
+      contents: read
+    steps:
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Download dist artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: tasksets-dist
+          path: dist/
+
+      - name: Publish to PyPI
+        env:
+          PYPI_TASKSETS_TOKEN: ${{ secrets.PYPI_TASKSETS_TOKEN }}
+        run: |
+          if [ -z "$PYPI_TASKSETS_TOKEN" ]; then
+            echo "Missing PYPI_TASKSETS_TOKEN secret" >&2
+            exit 1
+          fi
+          uv publish --token "$PYPI_TASKSETS_TOKEN" dist/*
+
+  build-tag:
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/tasksets-v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - name: Checkout tagged release (dispatch)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: refs/tags/${{ inputs.tag }}
+
+      - name: Checkout tagged release (push)
+        if: github.event_name != 'workflow_dispatch'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve release tag
+        id: release
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PUSHED_REF: ${{ github.ref_name }}
+          INPUT_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || '' }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            TAG="$INPUT_TAG"
+          else
+            TAG="$PUSHED_REF"
+          fi
+
+          case "$TAG" in
+            tasksets-v*) ;;
+            *)
+              echo "Release tags must be prefixed with 'tasksets-v' (received '$TAG')" >&2
+              exit 1
+              ;;
+          esac
+
+          VERSION="${TAG#tasksets-v}"
+          FILE_VERSION=$(python - <<'PY'
+          from pathlib import Path
+          import re
+          import sys
+
+          match = re.search(r'__version__\s*=\s*"([^"]+)"', Path("packages/tasksets/tasksets/__init__.py").read_text())
+          if not match:
+              sys.exit("Could not find __version__ in packages/tasksets/tasksets/__init__.py")
+          print(match.group(1))
+          PY
+          )
+
+          if [ "$FILE_VERSION" != "$VERSION" ]; then
+            echo "Version mismatch: tag requests '$VERSION' but packages/tasksets/tasksets/__init__.py defines '$FILE_VERSION'" >&2
+            exit 1
+          fi
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Build tasksets
+        run: uv build packages/tasksets
+
+      - name: Upload dist artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: tasksets-dist
+          path: packages/tasksets/dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish-tag:
+    needs: build-tag
+    runs-on: ubuntu-latest
+    environment: pypi-prod
+    permissions:
+      contents: read
+    steps:
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Download dist artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: tasksets-dist
+          path: dist/
+
+      - name: Publish to PyPI
+        env:
+          PYPI_TASKSETS_TOKEN: ${{ secrets.PYPI_TASKSETS_TOKEN }}
+        run: |
+          if [ -z "$PYPI_TASKSETS_TOKEN" ]; then
+            echo "Missing PYPI_TASKSETS_TOKEN secret" >&2
+            exit 1
+          fi
+          uv publish --token "$PYPI_TASKSETS_TOKEN" dist/*

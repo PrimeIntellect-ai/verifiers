@@ -250,22 +250,22 @@ class TestContextFilesystemSetup:
             "model": "m",
             "client": MagicMock(),
         }
-        result = await env.setup_state(state)
+        await env.setup_state(state)
 
         try:
-            fs_root = Path(result["rlm_fs_root"])
-            control_dir = Path(result["rlm_control_dir"])
-            rollout_dir = Path(result["rlm_rollout_dir"])
+            fs_root = Path(state["rlm_fs_root"])
+            control_dir = Path(state["rlm_control_dir"])
+            rollout_dir = Path(state["rlm_rollout_dir"])
 
             assert fs_root.is_dir()
             assert (fs_root / "data.txt").read_text(encoding="utf-8") == "hello"
             assert fs_root.parent == control_dir.parent == rollout_dir
             assert fs_root.name == "rlm_fs"
             assert control_dir.name == "rlm_control"
-            assert result["rlm_fs_has_data"] is True
-            assert result["rlm_fs_source"] == str(context_dir)
+            assert state["rlm_fs_has_data"] is True
+            assert state["rlm_fs_source"] == str(context_dir)
         finally:
-            await env.cleanup_rlm_state(result)
+            await env.cleanup_rlm_state(state)
 
     @pytest.mark.asyncio
     async def test_setup_state_writes_builtin_context_json(self):
@@ -276,15 +276,15 @@ class TestContextFilesystemSetup:
         env._executor.setup = AsyncMock()
 
         state = {"info": {"context": {"a": 1}}, "model": "m", "client": MagicMock()}
-        result = await env.setup_state(state)
+        await env.setup_state(state)
         try:
-            fs_root = Path(result["rlm_fs_root"])
+            fs_root = Path(state["rlm_fs_root"])
             context_file = fs_root / "context.json"
             assert context_file.exists()
             assert json.loads(context_file.read_text(encoding="utf-8")) == {"a": 1}
-            assert result["rlm_fs_has_data"] is True
+            assert state["rlm_fs_has_data"] is True
         finally:
-            await env.cleanup_rlm_state(result)
+            await env.cleanup_rlm_state(state)
 
     @pytest.mark.asyncio
     async def test_setup_state_writes_builtin_context_text(self):
@@ -295,15 +295,15 @@ class TestContextFilesystemSetup:
         env._executor.setup = AsyncMock()
 
         state = {"info": {"context": "hello"}, "model": "m", "client": MagicMock()}
-        result = await env.setup_state(state)
+        await env.setup_state(state)
         try:
-            fs_root = Path(result["rlm_fs_root"])
+            fs_root = Path(state["rlm_fs_root"])
             context_file = fs_root / "context.txt"
             assert context_file.exists()
             assert context_file.read_text(encoding="utf-8") == "hello"
-            assert result["rlm_fs_has_data"] is True
+            assert state["rlm_fs_has_data"] is True
         finally:
-            await env.cleanup_rlm_state(result)
+            await env.cleanup_rlm_state(state)
 
     @pytest.mark.asyncio
     async def test_setup_state_rejects_symlinks(self, tmp_path: Path):
@@ -359,14 +359,14 @@ class TestContextFilesystemSetup:
         env._executor.setup = AsyncMock()
 
         state = {"info": {}, "model": "m", "client": MagicMock()}
-        result = await env.setup_state(state)
+        await env.setup_state(state)
         try:
-            fs_root = Path(result["rlm_fs_root"])
+            fs_root = Path(state["rlm_fs_root"])
             assert fs_root.exists()
             assert list(fs_root.iterdir()) == []
-            assert result["rlm_fs_has_data"] is False
+            assert state["rlm_fs_has_data"] is False
         finally:
-            await env.cleanup_rlm_state(result)
+            await env.cleanup_rlm_state(state)
 
     @pytest.mark.asyncio
     async def test_system_prompt_mentions_working_dir_and_empty_context(self):
@@ -377,14 +377,14 @@ class TestContextFilesystemSetup:
         env._executor.setup = AsyncMock()
 
         state = {"info": {}, "model": "m", "client": MagicMock()}
-        result = await env.setup_state(state)
+        await env.setup_state(state)
         try:
-            prompt = result["rlm_system_prompt"]
+            prompt = state["rlm_system_prompt"]
             assert "filesystem available" in prompt
             assert "Working directory:" not in prompt
             assert "No extra data was provided" not in prompt
         finally:
-            await env.cleanup_rlm_state(result)
+            await env.cleanup_rlm_state(state)
 
 
 class TestFilesystemCleanup:
@@ -397,11 +397,11 @@ class TestFilesystemCleanup:
         env._executor.setup = AsyncMock()
 
         state = {"info": {"context": "hello"}, "model": "m", "client": MagicMock()}
-        result = await env.setup_state(state)
-        rollout_dir = Path(result["rlm_rollout_dir"])
+        await env.setup_state(state)
+        rollout_dir = Path(state["rlm_rollout_dir"])
         assert rollout_dir.exists()
 
-        await env.cleanup_rlm_state(result)
+        await env.cleanup_rlm_state(state)
         assert not rollout_dir.exists()
 
     @pytest.mark.asyncio
@@ -417,12 +417,12 @@ class TestFilesystemCleanup:
         env._executor.setup = AsyncMock()
 
         state = {"info": {"context": "hello"}, "model": "m", "client": MagicMock()}
-        result = await env.setup_state(state)
-        rollout_dir = Path(result["rlm_rollout_dir"])
+        await env.setup_state(state)
+        rollout_dir = Path(state["rlm_rollout_dir"])
         assert rollout_dir.exists()
 
         try:
-            await env.cleanup_rlm_state(result)
+            await env.cleanup_rlm_state(state)
             assert rollout_dir.exists()
         finally:
             shutil.rmtree(rollout_dir, ignore_errors=True)
@@ -437,13 +437,13 @@ class TestBashPrompt:
         env._executor.setup = AsyncMock()
 
         state = {"info": {}, "model": "m", "client": MagicMock()}
-        result = await env.setup_state(state)
+        await env.setup_state(state)
         try:
-            prompt = result["rlm_system_prompt"]
+            prompt = state["rlm_system_prompt"]
             assert "ANSWER_READY" in prompt
             assert "ANSWER_CONTENT" in prompt
         finally:
-            await env.cleanup_rlm_state(result)
+            await env.cleanup_rlm_state(state)
 
 
 class TestPromptVerbosity:
@@ -500,15 +500,15 @@ class TestPromptVerbosity:
         env._executor.setup = AsyncMock()
 
         state = {"info": {}, "model": "m", "client": MagicMock()}
-        result = await env.setup_state(state)
+        await env.setup_state(state)
         try:
-            prompt = result["rlm_system_prompt"]
+            prompt = state["rlm_system_prompt"]
             for snippet in expected_snippets:
                 assert snippet in prompt
             for snippet in unexpected_snippets:
                 assert snippet not in prompt
         finally:
-            await env.cleanup_rlm_state(result)
+            await env.cleanup_rlm_state(state)
 
     @pytest.mark.asyncio
     async def test_enable_sub_llms_false_omits_sub_llm_docs(self):
@@ -525,14 +525,14 @@ class TestPromptVerbosity:
         env._executor.setup = AsyncMock()
 
         state = {"info": {}, "model": "m", "client": MagicMock()}
-        result = await env.setup_state(state)
+        await env.setup_state(state)
         try:
-            prompt = result["rlm_system_prompt"]
+            prompt = state["rlm_system_prompt"]
             assert "llm_batch" not in prompt
             assert "sub-LLM" not in prompt
             assert "You have the `call_python_repl` tool" in prompt
         finally:
-            await env.cleanup_rlm_state(result)
+            await env.cleanup_rlm_state(state)
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("verbosity", ["light", "medium", "heavy"])
@@ -949,9 +949,9 @@ class TestToolSplitConfiguration:
         env._executor.setup = AsyncMock()
 
         state = {"info": {}, "model": "test-model", "client": MagicMock()}
-        result = await env.setup_state(state)
+        await env.setup_state(state)
         try:
-            prompt = result["rlm_system_prompt"]
+            prompt = state["rlm_system_prompt"]
             assert "REPL Tools" in prompt
             assert "llm_batch Tools" in prompt
 
@@ -970,13 +970,13 @@ class TestToolSplitConfiguration:
             assert "sub_tool" in sub_section
             assert "repl_tool" not in sub_section
 
-            assert result["rlm_root_tools"] == [
+            assert state["rlm_root_tools"] == [
                 "llm_batch",
                 "repl_tool",
             ]
-            assert result["rlm_sub_tools"] == ["sub_tool"]
+            assert state["rlm_sub_tools"] == ["sub_tool"]
         finally:
-            await env.cleanup_rlm_state(result)
+            await env.cleanup_rlm_state(state)
 
 
 # =============================================================================
@@ -1282,6 +1282,9 @@ class TestRootToolSerialization:
         payload = {"value": 123}
         mock_request = MagicMock()
         mock_request.match_info = {"rollout_id": rollout_id}
+        mock_request.headers = {
+            "Authorization": f"Bearer {env._interception_secret}",
+        }
         mock_request.json = AsyncMock(
             return_value={
                 "tool_name": "echo_tool",
@@ -1464,46 +1467,7 @@ class TestSubLLMTrajectorySteps:
 
 
 # =============================================================================
-# 13. Tunnel Utils (kept for coverage)
-# =============================================================================
-
-
-class TestExtractTunnelUrlFromLine:
-    def test_extract_valid_url(self):
-        from verifiers.utils.tunnel_utils import extract_tunnel_url_from_line
-
-        line = (
-            "2024-01-01 12:00:00 INF https://random-words.trycloudflare.com registered"
-        )
-        url = extract_tunnel_url_from_line(line)
-        assert url == "https://random-words.trycloudflare.com"
-
-    def test_return_none_for_no_url(self):
-        from verifiers.utils.tunnel_utils import extract_tunnel_url_from_line
-
-        line = "Starting cloudflared tunnel..."
-        url = extract_tunnel_url_from_line(line)
-        assert url is None
-
-    def test_handle_trailing_characters(self):
-        from verifiers.utils.tunnel_utils import extract_tunnel_url_from_line
-
-        line = "https://test-tunnel.trycloudflare.com/path?query=1 some text"
-        url = extract_tunnel_url_from_line(line)
-        assert url is not None
-        assert url.startswith("https://")
-        assert ".trycloudflare.com" in url
-
-    def test_no_https_prefix(self):
-        from verifiers.utils.tunnel_utils import extract_tunnel_url_from_line
-
-        line = "something.trycloudflare.com without https"
-        url = extract_tunnel_url_from_line(line)
-        assert url is None
-
-
-# =============================================================================
-# 14. RLM Exception Hierarchy
+# 13. RLM Exception Hierarchy
 # =============================================================================
 
 
@@ -1801,15 +1765,15 @@ class TestMessageHistory:
         env._executor.setup = AsyncMock()
 
         state = {"info": {}, "model": "m", "client": MagicMock()}
-        result = await env.setup_state(state)
+        await env.setup_state(state)
         try:
-            prompt = result["rlm_system_prompt"]
+            prompt = state["rlm_system_prompt"]
             assert ".messages" in prompt
             assert "JSONL" in prompt
             assert "observable conversation transcript" in prompt
             assert "<SUMMARY>" not in prompt
         finally:
-            await env.cleanup_rlm_state(result)
+            await env.cleanup_rlm_state(state)
 
     @pytest.mark.asyncio
     async def test_system_prompt_bash_history_note(self):
@@ -1824,14 +1788,14 @@ class TestMessageHistory:
         env._executor.setup = AsyncMock()
 
         state = {"info": {}, "model": "m", "client": MagicMock()}
-        result = await env.setup_state(state)
+        await env.setup_state(state)
         try:
-            prompt = result["rlm_system_prompt"]
+            prompt = state["rlm_system_prompt"]
             assert ".messages" in prompt
             assert "cat .messages" in prompt
             assert "<SUMMARY>" not in prompt
         finally:
-            await env.cleanup_rlm_state(result)
+            await env.cleanup_rlm_state(state)
 
     @pytest.mark.asyncio
     async def test_setup_state_initializes_observable_transcript(self):
@@ -1845,11 +1809,11 @@ class TestMessageHistory:
         env._executor.setup = AsyncMock()
 
         state = {"info": {}, "model": "m", "client": MagicMock()}
-        result = await env.setup_state(state)
+        await env.setup_state(state)
         try:
-            assert result["_observable_messages"] == []
+            assert state["_observable_messages"] == []
         finally:
-            await env.cleanup_rlm_state(result)
+            await env.cleanup_rlm_state(state)
 
 
 # =============================================================================
@@ -2027,14 +1991,14 @@ class TestSubLLMCompletionTokenBudget:
         env._executor.setup = AsyncMock()
 
         state = {"info": {}, "model": "m", "client": MagicMock()}
-        result = await env.setup_state(state)
+        await env.setup_state(state)
         try:
-            prompt = result["rlm_system_prompt"]
+            prompt = state["rlm_system_prompt"]
             assert "50000" in prompt
             assert "completion tokens" in prompt
             assert "llm_batch" in prompt
         finally:
-            await env.cleanup_rlm_state(result)
+            await env.cleanup_rlm_state(state)
 
     @pytest.mark.asyncio
     async def test_system_prompt_excludes_budget_when_none(self):
@@ -2050,12 +2014,12 @@ class TestSubLLMCompletionTokenBudget:
         env._executor.setup = AsyncMock()
 
         state = {"info": {}, "model": "m", "client": MagicMock()}
-        result = await env.setup_state(state)
+        await env.setup_state(state)
         try:
-            prompt = result["rlm_system_prompt"]
+            prompt = state["rlm_system_prompt"]
             assert "budget" not in prompt.lower()
         finally:
-            await env.cleanup_rlm_state(result)
+            await env.cleanup_rlm_state(state)
 
     @pytest.mark.asyncio
     async def test_budget_enforced_within_tool_loop(self, rlm_env_with_sub_tools):
@@ -2170,30 +2134,6 @@ class TestRootLLMMaxCompletionTokens:
         assert env.root_max_completion_tokens == 20000
 
     @pytest.mark.asyncio
-    async def test_is_root_budget_exhausted_false_when_none(self, rlm_env):
-        assert rlm_env.root_max_completion_tokens is None
-        state = {"root_llm_completion_tokens": 999999}
-        assert rlm_env._is_root_budget_exhausted(state) is False
-
-    @pytest.mark.asyncio
-    async def test_is_root_budget_exhausted_false_when_under(self, rlm_env):
-        rlm_env.root_max_completion_tokens = 1000
-        state = {"root_llm_completion_tokens": 500}
-        assert rlm_env._is_root_budget_exhausted(state) is False
-
-    @pytest.mark.asyncio
-    async def test_is_root_budget_exhausted_true_when_at(self, rlm_env):
-        rlm_env.root_max_completion_tokens = 1000
-        state = {"root_llm_completion_tokens": 1000}
-        assert rlm_env._is_root_budget_exhausted(state) is True
-
-    @pytest.mark.asyncio
-    async def test_is_root_budget_exhausted_true_when_over(self, rlm_env):
-        rlm_env.root_max_completion_tokens = 1000
-        state = {"root_llm_completion_tokens": 1500}
-        assert rlm_env._is_root_budget_exhausted(state) is True
-
-    @pytest.mark.asyncio
     async def test_system_prompt_includes_root_budget_when_set(self):
         dataset = make_dataset({})
         env = build_env(
@@ -2207,14 +2147,14 @@ class TestRootLLMMaxCompletionTokens:
         env._executor.setup = AsyncMock()
 
         state: dict[str, Any] = {"info": {}, "model": "m", "client": MagicMock()}
-        result = await env.setup_state(state)
+        await env.setup_state(state)
         try:
-            prompt = result["rlm_system_prompt"]
+            prompt = state["rlm_system_prompt"]
             assert "20000" in prompt
             assert "completion tokens" in prompt
             assert "your own responses" in prompt
         finally:
-            await env.cleanup_rlm_state(result)
+            await env.cleanup_rlm_state(state)
 
     @pytest.mark.asyncio
     async def test_system_prompt_excludes_root_budget_when_none(self):
@@ -2230,12 +2170,12 @@ class TestRootLLMMaxCompletionTokens:
         env._executor.setup = AsyncMock()
 
         state: dict[str, Any] = {"info": {}, "model": "m", "client": MagicMock()}
-        result = await env.setup_state(state)
+        await env.setup_state(state)
         try:
-            prompt = result["rlm_system_prompt"]
+            prompt = state["rlm_system_prompt"]
             assert "your own responses" not in prompt
         finally:
-            await env.cleanup_rlm_state(result)
+            await env.cleanup_rlm_state(state)
 
     @pytest.mark.asyncio
     async def test_env_response_sets_final_env_response_when_budget_exhausted(
@@ -2364,11 +2304,11 @@ class TestTunnelRouting:
             tunnel.start = AsyncMock(return_value="https://tunnel.example")
             tunnel.stop = AsyncMock()
 
-            result = await env.setup_state(state)
+            await env.setup_state(state)
 
         tunnel.start.assert_awaited_once()
-        assert result["interception_url"].startswith("https://tunnel.example")
-        assert result["root_tool_url"].startswith("https://tunnel.example")
+        assert state["interception_url"].startswith("https://tunnel.example")
+        assert state["root_tool_url"].startswith("https://tunnel.example")
 
     @pytest.mark.asyncio
     async def test_skips_tunnel_when_interception_url_provided(self, tmp_path: Path):
@@ -2387,11 +2327,11 @@ class TestTunnelRouting:
         env._executor.create_rollout_dirs = MagicMock(side_effect=lambda s=state: None)
 
         with patch("verifiers.envs.experimental.rlm_env.Tunnel") as TunnelMock:
-            result = await env.setup_state(state)
+            await env.setup_state(state)
 
         TunnelMock.assert_not_called()
-        assert result["interception_url"].startswith("https://override.example")
-        assert result["root_tool_url"].startswith("https://override.example")
+        assert state["interception_url"].startswith("https://override.example")
+        assert state["root_tool_url"].startswith("https://override.example")
 
 
 class TestCleanupSemantics:
@@ -2415,8 +2355,8 @@ class TestCleanupSemantics:
         _seed_rollout_dirs(state, tmp_path)
         env._executor.create_rollout_dirs = MagicMock(side_effect=lambda s=state: None)
 
-        result = await env.setup_state(state)
-        await env.cleanup_rlm_state(result)
+        await env.setup_state(state)
+        await env.cleanup_rlm_state(state)
 
         env._executor.cleanup.assert_awaited_once()
 

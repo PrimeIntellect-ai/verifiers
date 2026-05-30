@@ -30,7 +30,7 @@ from verifiers.serve.types import (
 class ZMQEnvClient(EnvClient):
     """ZMQ-based environment client."""
 
-    DEFAULT_REQUEST_TIMEOUT = 36_000  # 10h
+    DEFAULT_REQUEST_TIMEOUT: float | None = None
 
     def __init__(self, address: str = "tcp://127.0.0.1:5000", **kwargs):
         super().__init__(address=address, **kwargs)
@@ -146,7 +146,10 @@ class ZMQEnvClient(EnvClient):
         """Send a cancel signal (empty payload) to the server for a request."""
         try:
             await self.socket.send_multipart([request_id.encode(), b""])
-        except BaseException:
+        except Exception:
+            # Best-effort cancel notification; transport/socket errors here are
+            # deliberately swallowed. Cancellation and interrupt signals still
+            # propagate (they are not `Exception` subclasses).
             pass
 
     async def cancel_all_pending(

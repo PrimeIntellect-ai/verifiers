@@ -57,7 +57,6 @@ def get_sentence_questions(x):
             f"The {shuffled_index[4][0]} sentence of the paragraph is: {sentences[shuffled_index[4][1]]}",
         ),
     ]
-    x["task"] = "sentence-repeater"
     x["info"] = {}
     x["info"]["questions"] = [q for q, _ in questions_answers]
     x["info"]["answers"] = [a for _, a in questions_answers]

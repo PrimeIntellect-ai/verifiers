@@ -8,8 +8,6 @@ Usage::
     task = MathTaskSet("hendrycks/math")
 """
 
-from __future__ import annotations
-
 import logging
 
 from verifiers.envs.experimental.composable import SandboxSpec, SandboxTaskSet
@@ -136,7 +134,6 @@ class MathTaskSet(SandboxTaskSet):
             cpu_cores=1,
             memory_gb=2,
             disk_size_gb=4,
-            timeout_minutes=60,
         )
 
     def get_rubric(self):

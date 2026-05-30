@@ -54,12 +54,7 @@ class TestSingleTurnEnv:
         state = {
             "trajectory": [],
             "prompt": [{"role": "user", "content": "Hello"}],
-            "timing": RolloutTiming(
-                generation_ms=0.0,
-                scoring_ms=0.0,
-                total_ms=0.0,
-                start_time=0.0,
-            ),
+            "timing": RolloutTiming(),
         }
         assert not await mock_singleturn_env.is_completed(state)
 
@@ -81,12 +76,7 @@ class TestSingleTurnEnv:
                 )
             ],
             "prompt": [{"role": "user", "content": "Hello"}],
-            "timing": RolloutTiming(
-                generation_ms=0.0,
-                scoring_ms=0.0,
-                total_ms=0.0,
-                start_time=0.0,
-            ),
+            "timing": RolloutTiming(),
         }
         assert await mock_singleturn_env.is_completed(state)
 
@@ -170,12 +160,11 @@ class TestSingleTurnEnv:
         assert call_kwargs["sampling_args"]["max_tokens"] == 100
 
     @pytest.mark.asyncio
-    async def test_rollout_with_task_and_info(self, mock_singleturn_env, make_input):
-        """Test rollout with task and info parameters."""
+    async def test_rollout_with_info(self, mock_singleturn_env, make_input):
+        """Test rollout with input info parameters."""
         input = make_input(
             prompt=[{"role": "user", "content": "Test question"}],
             answer="Test answer",
-            task="math",
             info={"difficulty": "easy"},
         )
         state = await mock_singleturn_env.rollout(
@@ -190,7 +179,6 @@ class TestSingleTurnEnv:
         assert state["example_id"] == input["example_id"]
         assert state["prompt"] == input["prompt"]
         assert state["answer"] == input["answer"]
-        assert state["task"] == input["task"]
         assert state["info"] == input["info"]
 
     @pytest.mark.asyncio
@@ -223,7 +211,6 @@ class TestSingleTurnEnv:
         # Check all expected state fields
         assert state["prompt"] == input["prompt"]
         assert state["answer"] == input["answer"]
-        assert state["task"] == input["task"]
         assert state["info"] == input["info"]
         assert state["example_id"] == input["example_id"]
         assert state["completion"] == completion
@@ -389,12 +376,7 @@ class TestSingleTurnEnv:
 
         state = State(input=make_input())
         state["trajectory"] = []
-        state["timing"] = RolloutTiming(
-            generation_ms=0.0,
-            scoring_ms=0.0,
-            total_ms=0.0,
-            start_time=0.0,
-        )
+        state["timing"] = RolloutTiming()
         assert not await env.is_completed(state)
 
         # After one trajectory step
@@ -414,12 +396,7 @@ class TestSingleTurnEnv:
                 extras={},
             )
         ]
-        state["timing"] = RolloutTiming(
-            generation_ms=0.0,
-            scoring_ms=0.0,
-            total_ms=0.0,
-            start_time=0.0,
-        )
+        state["timing"] = RolloutTiming()
         assert await env.is_completed(state)
 
         # Even with multiple trajectory steps (shouldn't happen), it's still completed
@@ -448,10 +425,5 @@ class TestSingleTurnEnv:
                 extras={},
             ),
         ]
-        state["timing"] = RolloutTiming(
-            generation_ms=0.0,
-            scoring_ms=0.0,
-            total_ms=0.0,
-            start_time=0.0,
-        )
+        state["timing"] = RolloutTiming()
         assert await env.is_completed(state)

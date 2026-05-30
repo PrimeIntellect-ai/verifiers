@@ -15,4 +15,6 @@ This package provides:
 - `vf-vllm`
 - `verifiers_rl.rl` (RLTrainer implementation)
 
+Example TOML configs live in `examples/`.
+
 `verifiers` core remains usable without this package.

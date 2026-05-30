@@ -1,57 +1,20 @@
 # mcp-search-env
 
-<a href="https://github.com/PrimeIntellect-ai/verifiers/tree/main/environments/mcp_env">
-<img src="https://img.shields.io/badge/GitHub-181717?style=for-the-badge&logo=github&logoColor=white" alt="Source Code">
-</a>
-
-### Overview
-
-- **Environment ID**: `mcp-search-env`
-- **Short description**: Example environment using `vf.MCPEnv` for MCP server integration
-- **Tags**: MCP, Tools
-
-This environment demonstrates how to use the first-class `MCPEnv` from `verifiers.envs.experimental`.
-
-### Datasets
-
-- **Primary dataset(s)**: N/A
-- **Source links**: N/A
-- **Split sizes**: N/A
-
-### Task
-
-- **Type**: <multi-turn | tool use>
-- **Rubric overview**: N/A
-
-### Quickstart
-
-Run an evaluation with default settings:
+v1 `vf.Env` example for MCP-backed tool use. The taskset asks short synthetic
+search questions, and the bundled stdio MCP server exposes `search_records` and
+`read_record` over a small stable record corpus.
 
 ```bash
-prime eval run mcp-search-env
+prime eval run mcp-search-env -m openai/gpt-4.1-mini -n 5 -r 1
 ```
 
-Configure model and sampling:
+Configuration belongs under v1 sections:
 
-```bash
-prime eval run mcp-search-env   -m openai/gpt-4.1-mini   -n 1 -r 1
+```toml
+[env.taskset]
+max_turns = 6
 ```
 
-Notes:
-
-- Use `-a` / `--env-args` to pass environment-specific configuration as a JSON object.
-
-### Environment Arguments
-
-Document any supported environment arguments and their meaning. Example:
-
-| Arg            | Type | Default | Description                            |
-| -------------- | ---- | ------- | -------------------------------------- |
-| `max_examples` | int  | `-1`    | Limit on dataset size (use -1 for all) |
-
-### Metrics
-
-| Metric         | Meaning                                       |
-| -------------- | --------------------------------------------- |
-| `reward`       | Main scalar reward (weighted sum of criteria) |
-| `judge_reward` | LLM judge score (1.0 if correct, 0.0 if not)  |
+The environment does not mirror project documentation. The bundled MCP server is
+only a compact search fixture so the package stays self-contained and easy to
+maintain.

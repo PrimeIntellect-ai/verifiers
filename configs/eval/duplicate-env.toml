@@ -1,6 +1,0 @@
-[[eval]]
-env_id = "alphabet-sort"
-
-[[eval]]
-env_id = "alphabet-sort"
-max_concurrent = 1

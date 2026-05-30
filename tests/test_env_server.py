@@ -49,7 +49,7 @@ def make_rollout_request() -> RunRolloutRequest:
     return RunRolloutRequest(
         input=RolloutInput(
             example_id=0,
-            task="test",
+            env_id="test",
             prompt=[UserMessage(content="test")],
         ),
         client_config=ClientConfig(),
@@ -323,6 +323,72 @@ class TestRetryOnServerError:
 
             assert attempt_count == 1
 
+            await client.close()
+
+
+class TestSendCancelErrorHandling:
+    """Tests that ``send_cancel`` swallows transport errors but not
+    cancellation or interrupt signals."""
+
+    @pytest.mark.asyncio
+    async def test_send_cancel_swallows_connection_error(self):
+        """Transport-layer failures are silently swallowed (best-effort cleanup)."""
+        client = make_client()
+        try:
+            client.socket.send_multipart = AsyncMock(
+                side_effect=ConnectionError("closed")
+            )
+            # Should not raise
+            await client.send_cancel("req_1")
+        finally:
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_send_cancel_swallows_oserror(self):
+        """OSError from the socket layer is silently swallowed."""
+        client = make_client()
+        try:
+            client.socket.send_multipart = AsyncMock(side_effect=OSError("nope"))
+            await client.send_cancel("req_1")
+        finally:
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_send_cancel_propagates_cancelled_error(self):
+        """``asyncio.CancelledError`` must propagate, not be silenced.
+
+        Especially important in a method literally named ``send_cancel``: the
+        prior ``except BaseException`` was denying the caller's own
+        cancellation.
+        """
+        client = make_client()
+        try:
+            client.socket.send_multipart = AsyncMock(side_effect=asyncio.CancelledError)
+            with pytest.raises(asyncio.CancelledError):
+                await client.send_cancel("req_1")
+        finally:
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_send_cancel_propagates_keyboard_interrupt(self):
+        """``KeyboardInterrupt`` must propagate through best-effort cleanup."""
+        client = make_client()
+        try:
+            client.socket.send_multipart = AsyncMock(side_effect=KeyboardInterrupt)
+            with pytest.raises(KeyboardInterrupt):
+                await client.send_cancel("req_1")
+        finally:
+            await client.close()
+
+    @pytest.mark.asyncio
+    async def test_send_cancel_propagates_system_exit(self):
+        """``SystemExit`` must propagate through best-effort cleanup."""
+        client = make_client()
+        try:
+            client.socket.send_multipart = AsyncMock(side_effect=SystemExit)
+            with pytest.raises(SystemExit):
+                await client.send_cancel("req_1")
+        finally:
             await client.close()
 
 

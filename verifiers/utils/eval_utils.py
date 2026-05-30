@@ -1,8 +1,6 @@
-from __future__ import annotations
-
 import asyncio
-import importlib.util
 import itertools
+import json
 import logging
 import math
 import os
@@ -12,7 +10,7 @@ from collections import Counter, defaultdict
 from collections.abc import Mapping
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
-from typing import Callable, cast
+from typing import Any, Callable, cast
 
 import numpy as np
 from datasets import disable_progress_bar, enable_progress_bar
@@ -21,13 +19,15 @@ from datasets.utils import logging as ds_logging
 import verifiers as vf
 from verifiers.types import (
     ClientType,
-    Endpoint,
+    EndpointConfig,
     Endpoints,
+    EvalCost,
     EvalConfig,
     EvalRunConfig,
     GenerateMetadata,
     GenerateOutputs,
     LogCallback,
+    ModelPricing,
     ProgressCallback,
     RolloutInput,
     RolloutOutput,
@@ -36,6 +36,7 @@ from verifiers.types import (
     _validate_extra_headers_value,
 )
 from verifiers.utils.async_utils import EventLoopLagMonitor
+from verifiers.utils.env_config_utils import config_table, normalize_env_config_sections
 from verifiers.utils.import_utils import load_toml
 from verifiers.utils.logging_utils import (
     log_level,
@@ -43,11 +44,98 @@ from verifiers.utils.logging_utils import (
     print_time,
 )
 from verifiers.utils.path_utils import get_eval_results_path
+from verifiers.utils.pricing_utils import (
+    compute_eval_cost,
+    fetch_prime_pricing,
+    format_cost_usd,
+    is_prime_inference_url,
+)
+from verifiers.utils.save_utils import save_metadata
 
 logger = logging.getLogger(__name__)
+FREEFORM_ABLATION_SWEEP_FIELDS = {"args", "env_args"}
+CHAT_TEMPLATE_KWARG_FIELDS = ("reasoning_effort", "enable_thinking")
 
 
-def _coerce_endpoint(raw_endpoint: object, source: str) -> Endpoint:
+def _sum_output_usage(outputs: list[RolloutOutput]) -> TokenUsage | None:
+    input_tokens = 0.0
+    output_tokens = 0.0
+    usage_seen = False
+    for output in outputs:
+        token_usage = output.get("token_usage")
+        if not isinstance(token_usage, Mapping):
+            continue
+        try:
+            input_tokens += float(token_usage.get("input_tokens", 0.0))
+            output_tokens += float(token_usage.get("output_tokens", 0.0))
+        except (TypeError, ValueError):
+            return None
+        usage_seen = True
+
+    if not usage_seen:
+        return None
+
+    return TokenUsage(input_tokens=input_tokens, output_tokens=output_tokens)
+
+
+def _attach_metadata_cost(
+    metadata: GenerateMetadata,
+    model_pricing: ModelPricing | None,
+    outputs: list[RolloutOutput],
+) -> EvalCost | None:
+    cost = compute_eval_cost(_sum_output_usage(outputs), model_pricing)
+    if cost is None:
+        metadata.pop("cost", None)
+        return None
+
+    metadata["cost"] = cost
+    return cost
+
+
+def _attach_metadata_name(metadata: GenerateMetadata, name: str | None) -> bool:
+    if name is None:
+        return False
+
+    metadata["name"] = name
+    return True
+
+
+def _with_eval_metadata(
+    on_progress: ProgressCallback | list[ProgressCallback] | None,
+    model_pricing: ModelPricing | None,
+    name: str | None,
+) -> ProgressCallback | list[ProgressCallback] | None:
+    if model_pricing is None and name is None:
+        return on_progress
+
+    def attach_metadata(
+        all_outputs: list[RolloutOutput],
+        new_outputs: list[RolloutOutput],
+        metadata: GenerateMetadata,
+    ) -> None:
+        _attach_metadata_name(metadata, name)
+        _attach_metadata_cost(metadata, model_pricing, all_outputs)
+
+    if on_progress is None:
+        return [attach_metadata]
+
+    if isinstance(on_progress, list):
+        callbacks: list[ProgressCallback] = [attach_metadata]
+        callbacks.extend(cast(list[ProgressCallback], on_progress))
+        return callbacks
+
+    def wrapped_progress(
+        all_outputs: list[RolloutOutput],
+        new_outputs: list[RolloutOutput],
+        metadata: GenerateMetadata,
+    ) -> None:
+        attach_metadata(all_outputs, new_outputs, metadata)
+        on_progress(all_outputs, new_outputs, metadata)
+
+    return wrapped_progress
+
+
+def _coerce_endpoint(raw_endpoint: object, source: str) -> EndpointConfig:
     if not isinstance(raw_endpoint, dict):
         raise ValueError(f"Endpoint entry must be a table/dict in {source}")
 
@@ -73,8 +161,6 @@ def _coerce_endpoint(raw_endpoint: object, source: str) -> Endpoint:
             f"Fields 'model', 'url', and 'key' must all be strings in {source}"
         )
 
-    endpoint = Endpoint(model=model, url=url, key=key)
-
     if "client_type" in raw_endpoint_dict:
         raise ValueError(
             f"Field 'client_type' is no longer supported in {source}. "
@@ -95,17 +181,23 @@ def _coerce_endpoint(raw_endpoint: object, source: str) -> Endpoint:
     client_type = (
         short_client_type if short_client_type is not None else long_client_type
     )
+    api_client_type: ClientType | None = None
     if client_type is not None:
-        if client_type not in (
+        allowed_types = (
             "openai_completions",
             "openai_chat_completions",
             "openai_chat_completions_token",
+            "openai_responses",
+            "renderer",
             "anthropic_messages",
-        ):
+            "nemorl_chat_completions",
+        )
+        if client_type not in allowed_types:
+            allowed_str = "', '".join(allowed_types)
             raise ValueError(
-                f"Field 'type'/'api_client_type' must be 'openai_completions' or 'openai_chat_completions' or 'openai_chat_completions_token' or 'anthropic_messages' in {source}"
+                f"Field 'type'/'api_client_type' must be one of '{allowed_str}' in {source}"
             )
-        endpoint["api_client_type"] = cast(ClientType, client_type)
+        api_client_type = cast(ClientType, client_type)
 
     raw_headers = raw_endpoint_dict.get("headers")
     raw_extra_headers = raw_endpoint_dict.get("extra_headers")
@@ -114,45 +206,17 @@ def _coerce_endpoint(raw_endpoint: object, source: str) -> Endpoint:
             f"Use only one of 'headers' or 'extra_headers' in {source}, not both"
         )
     header_table = raw_headers if raw_headers is not None else raw_extra_headers
+    extra_headers: dict[str, str] = {}
     if header_table is not None:
-        coerced_headers = _validate_extra_headers_value(header_table)
-        if coerced_headers:
-            endpoint["extra_headers"] = coerced_headers
+        extra_headers = _validate_extra_headers_value(header_table)
 
-    return endpoint
-
-
-def _normalize_python_endpoints(raw_endpoints: object, source: Path) -> Endpoints:
-    if not isinstance(raw_endpoints, dict):
-        raise ValueError(f"ENDPOINTS must be a dict in {source}")
-
-    raw_endpoints_dict = cast(dict[str, object], raw_endpoints)
-    normalized: Endpoints = {}
-    for endpoint_id, raw_endpoint_group in raw_endpoints_dict.items():
-        if not isinstance(endpoint_id, str):
-            raise ValueError(f"Endpoint ids must be strings in {source}")
-
-        if isinstance(raw_endpoint_group, list):
-            if not raw_endpoint_group:
-                raise ValueError(
-                    f"Endpoint '{endpoint_id}' has an empty endpoint list in {source}"
-                )
-            normalized[endpoint_id] = [
-                _coerce_endpoint(
-                    raw_endpoint,
-                    source=f"{source} (ENDPOINTS['{endpoint_id}'])",
-                )
-                for raw_endpoint in raw_endpoint_group
-            ]
-        else:
-            normalized[endpoint_id] = [
-                _coerce_endpoint(
-                    raw_endpoint_group,
-                    source=f"{source} (ENDPOINTS['{endpoint_id}'])",
-                )
-            ]
-
-    return normalized
+    return EndpointConfig(
+        model=model,
+        base_url=url,
+        api_key_var=key,
+        api_client_type=api_client_type,
+        extra_headers=extra_headers,
+    )
 
 
 def _normalize_toml_endpoints(raw_toml: object, source: Path) -> Endpoints:
@@ -215,40 +279,36 @@ def resolve_endpoints_file(endpoints_path: str) -> Path | None:
         toml_file = endpoints_path_obj / "endpoints.toml"
         python_file = endpoints_path_obj / "endpoints.py"
         if toml_file.exists():
+            if python_file.exists():
+                logger.warning(
+                    "Ignoring deprecated Python endpoint registry at %s; using %s.",
+                    python_file,
+                    toml_file,
+                )
             return toml_file
         if python_file.exists():
-            return python_file
+            raise ValueError(
+                "Python endpoint registries are no longer supported. "
+                f"Replace {python_file} with endpoints.toml."
+            )
         return None
+    if endpoints_path_obj.suffix == ".py":
+        raise ValueError(
+            "Python endpoint registries are no longer supported. "
+            f"Replace {endpoints_path_obj} with an endpoints.toml file."
+        )
     return endpoints_path_obj
 
 
 def load_endpoints(endpoints_path: str):
+    endpoints_file = resolve_endpoints_file(endpoints_path)
     try:
-        endpoints_file = resolve_endpoints_file(endpoints_path)
         if endpoints_file is None:
-            raise ImportError(
-                f"Neither endpoints.py nor endpoints.toml found at {endpoints_path}"
-            )
+            raise ImportError(f"endpoints.toml not found at {endpoints_path}")
 
         if endpoints_file.exists():
             logger.debug(f"Loading endpoint registry from {endpoints_file}")
-            if endpoints_file.suffix == ".py":
-                spec = importlib.util.spec_from_file_location(
-                    "endpoints", endpoints_file
-                )
-                assert spec and spec.loader
-                endpoints_module = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(endpoints_module)
-                # check that module exposes ENDPOINTS
-                if not hasattr(endpoints_module, "ENDPOINTS"):
-                    raise AttributeError(
-                        f"Module '{endpoints_file}' does not have a 'ENDPOINTS' attribute"
-                    )
-                endpoints = _normalize_python_endpoints(
-                    cast(object, endpoints_module.ENDPOINTS),
-                    source=endpoints_file,
-                )
-            elif endpoints_file.suffix == ".toml":
+            if endpoints_file.suffix == ".toml":
                 with open(endpoints_file, "rb") as f:
                     raw_toml = load_toml(f)
                 endpoints = _normalize_toml_endpoints(raw_toml, source=endpoints_file)
@@ -279,17 +339,17 @@ def _expand_ablation(ablation: dict, global_defaults: dict) -> list[dict]:
     """Expand an [[ablation]] block into eval configs via cartesian product.
 
     Sweep keys are lists of values under [ablation.sweep]. Environment args
-    can be swept via [ablation.sweep.env_args]. All sweep dimensions are
+    can be swept via [ablation.sweep.args]. All sweep dimensions are
     crossed to produce one eval config per combination.
 
     Example TOML:
         [[ablation]]
-        env_id = "my-env"
+        id = "my-env"
 
         [ablation.sweep]
         temperature = [0.0, 0.5]
 
-        [ablation.sweep.env_args]
+        [ablation.sweep.args]
         difficulty = ["easy", "hard"]
 
     This produces 4 eval configs (2 temperatures × 2 difficulties).
@@ -297,6 +357,7 @@ def _expand_ablation(ablation: dict, global_defaults: dict) -> list[dict]:
     ablation = dict(ablation)  # don't mutate caller's dict
     sweep = ablation.pop("sweep", {})
     sweep = dict(sweep)  # copy before mutating
+    args_sweep = sweep.pop("args", {})
     env_args_sweep = sweep.pop("env_args", {})
 
     # Collect all sweep dimensions: [(key, [values]), ...]
@@ -315,20 +376,31 @@ def _expand_ablation(ablation: dict, global_defaults: dict) -> list[dict]:
                 f"{type(values).__name__} for '{key}'"
             )
         dimensions.append((f"env_args.{key}", values))
+    for key, values in args_sweep.items():
+        if not isinstance(values, list):
+            raise ValueError(
+                f"Ablation sweep.args values must be lists, got "
+                f"{type(values).__name__} for '{key}'"
+            )
+        dimensions.append((f"args.{key}", values))
 
     if not dimensions:
         raise ValueError(
             "[[ablation]] block must have a non-empty [ablation.sweep] section"
         )
 
-    # Guard against same key in both fixed env_args and sweep.env_args
-    fixed_env_args = ablation.get("env_args", {})
-    if fixed_env_args and env_args_sweep:
-        overlap = set(fixed_env_args.keys()) & set(env_args_sweep.keys())
+    # Guard against same key in both fixed env args and swept env args.
+    fixed_env_args = {
+        **config_table(ablation.get("env_args", {}), "ablation.env_args"),
+        **config_table(ablation.get("args", {}), "ablation.args"),
+    }
+    swept_env_arg_keys = set(env_args_sweep) | set(args_sweep)
+    if fixed_env_args and swept_env_arg_keys:
+        overlap = set(fixed_env_args) & swept_env_arg_keys
         if overlap:
             raise ValueError(
-                f"env_args key(s) {overlap} appear in both fixed env_args and "
-                f"sweep.env_args — use one or the other"
+                f"environment arg key(s) {overlap} appear in both fixed args and "
+                f"sweep args — use one or the other"
             )
 
     explicit_keys = (set(ablation.keys()) - {"sweep"}) | set(sweep.keys())
@@ -351,11 +423,140 @@ def _expand_ablation(ablation: dict, global_defaults: dict) -> list[dict]:
             if key.startswith("env_args."):
                 env_key = key[len("env_args.") :]
                 config["env_args"] = {**config.get("env_args", {}), env_key: value}
+            elif key.startswith("args."):
+                env_key = key[len("args.") :]
+                config["args"] = {**config.get("args", {}), env_key: value}
             else:
                 config[key] = value
         expanded.append(config)
 
     return expanded
+
+
+def normalize_env_id_alias(config: Mapping[str, Any], section: str) -> dict[str, Any]:
+    normalized = dict(config)
+    if "id" in normalized and "env_id" in normalized:
+        raise ValueError(f"{section} cannot contain both id and env_id.")
+    if "id" in normalized:
+        normalized["env_id"] = normalized.pop("id")
+    return normalized
+
+
+def eval_env_id(config: Mapping[str, Any], section: str) -> str:
+    env_id = config.get("env_id")
+    if isinstance(env_id, str) and env_id:
+        return env_id
+    taskset = config.get("taskset")
+    if not isinstance(taskset, Mapping):
+        env_args = config.get("env_args")
+        if isinstance(env_args, Mapping):
+            env_config = env_args.get("config")
+            if isinstance(env_config, Mapping):
+                taskset = env_config.get("taskset")
+    if isinstance(taskset, Mapping):
+        taskset_id = taskset.get("id") or taskset.get("taskset_id")
+        if isinstance(taskset_id, str) and taskset_id:
+            return taskset_id
+    raise ValueError(f"{section} must contain env_id or taskset.id.")
+
+
+def _merge_sampling_arg_tables(
+    base: Mapping[str, Any],
+    override: Mapping[str, Any],
+) -> dict[str, Any]:
+    merged = {**dict(base), **dict(override)}
+    base_extra_body = base.get("extra_body")
+    override_extra_body = override.get("extra_body")
+    if isinstance(base_extra_body, Mapping) and isinstance(
+        override_extra_body, Mapping
+    ):
+        extra_body = {**dict(base_extra_body), **dict(override_extra_body)}
+        base_chat_template_kwargs = base_extra_body.get("chat_template_kwargs")
+        override_chat_template_kwargs = override_extra_body.get("chat_template_kwargs")
+        if isinstance(base_chat_template_kwargs, Mapping) and isinstance(
+            override_chat_template_kwargs, Mapping
+        ):
+            extra_body["chat_template_kwargs"] = {
+                **dict(base_chat_template_kwargs),
+                **dict(override_chat_template_kwargs),
+            }
+        merged["extra_body"] = extra_body
+    return merged
+
+
+def normalize_sampling_args(
+    sampling_args: Mapping[str, Any], section: str
+) -> dict[str, Any]:
+    normalized = dict(sampling_args)
+    chat_template_kwargs = {
+        key: normalized[key] for key in CHAT_TEMPLATE_KWARG_FIELDS if key in normalized
+    }
+    if not chat_template_kwargs:
+        return normalized
+
+    raw_extra_body = normalized.get("extra_body", {})
+    if raw_extra_body is None:
+        raw_extra_body = {}
+    if not isinstance(raw_extra_body, Mapping):
+        raise ValueError(f"{section}.extra_body must be a table.")
+    extra_body = dict(cast(Mapping[str, Any], raw_extra_body))
+
+    raw_chat_template_kwargs = extra_body.get("chat_template_kwargs", {})
+    if raw_chat_template_kwargs is None:
+        raw_chat_template_kwargs = {}
+    if not isinstance(raw_chat_template_kwargs, Mapping):
+        raise ValueError(f"{section}.extra_body.chat_template_kwargs must be a table.")
+    extra_body["chat_template_kwargs"] = {
+        **dict(cast(Mapping[str, Any], raw_chat_template_kwargs)),
+        **chat_template_kwargs,
+    }
+    normalized["extra_body"] = extra_body
+    return normalized
+
+
+def normalize_sampling_config(
+    config: Mapping[str, Any],
+    section: str,
+    *,
+    merge_sampling_with_existing: bool = False,
+) -> dict[str, Any]:
+    normalized = dict(config)
+    if "sampling_args" in normalized:
+        raw_sampling_args = normalized["sampling_args"]
+        if not isinstance(raw_sampling_args, Mapping):
+            raise ValueError(f"{section}.sampling_args must be a table.")
+        normalized["sampling_args"] = normalize_sampling_args(
+            cast(Mapping[str, Any], raw_sampling_args), f"{section}.sampling_args"
+        )
+
+    if "sampling" not in normalized:
+        return normalized
+
+    if "sampling_args" in normalized:
+        if not merge_sampling_with_existing:
+            raise ValueError(
+                f"{section} cannot contain both sampling and sampling_args."
+            )
+        existing_sampling_args = cast(Mapping[str, Any], normalized["sampling_args"])
+    else:
+        existing_sampling_args = {}
+
+    sampling = normalized.pop("sampling")
+    if not isinstance(sampling, Mapping):
+        raise ValueError(f"{section}.sampling must be a table.")
+    normalized["sampling_args"] = _merge_sampling_arg_tables(
+        existing_sampling_args,
+        normalize_sampling_args(
+            cast(Mapping[str, Any], sampling), f"{section}.sampling"
+        ),
+    )
+    return normalized
+
+
+def invalid_ablation_sweep_fields(
+    sweep: Mapping[str, Any], valid_fields: set[str]
+) -> set[str]:
+    return set(sweep) - valid_fields - FREEFORM_ABLATION_SWEEP_FIELDS
 
 
 def load_toml_config(
@@ -371,20 +572,20 @@ def load_toml_config(
         num_examples = 10
 
         [[eval]]
-        env_id = "gsm8k"
+        id = "gsm8k"
 
         [[eval]]
-        env_id = "math-python"
+        id = "math-python"
         num_examples = 5  # overrides global default
 
         # Ablation: cartesian product of sweep values
         [[ablation]]
-        env_id = "my-env"
+        id = "my-env"
 
         [ablation.sweep]
         temperature = [0.0, 0.5, 1.0]
 
-        [ablation.sweep.env_args]
+        [ablation.sweep.args]
         difficulty = ["easy", "hard"]
         # → 6 eval configs
     """
@@ -413,8 +614,12 @@ def load_toml_config(
             f"Config file must contain at least one [[eval]] or [[ablation]] section: {path}"
         )
 
-    if not all("env_id" in e for e in eval_list):
-        raise ValueError(f"All [[eval]] sections must contain an env_id field: {path}")
+    eval_list = [
+        normalize_env_id_alias(eval_config, "[[eval]]") for eval_config in eval_list
+    ]
+    ablation_list = [
+        normalize_env_id_alias(ablation, "[[ablation]]") for ablation in ablation_list
+    ]
 
     # extract global defaults (everything except 'eval' and 'ablation' keys)
     global_defaults = {
@@ -426,7 +631,11 @@ def load_toml_config(
     valid_fields = {
         # environment
         "env_id",
+        "name",
+        "args",
         "env_args",
+        "taskset",
+        "harness",
         "env_dir_path",
         "endpoints_path",
         "extra_env_kwargs",
@@ -442,6 +651,7 @@ def load_toml_config(
         "header_from_state",
         "headers_from_state",
         # sampling
+        "sampling",
         "sampling_args",
         "max_tokens",
         "temperature",
@@ -453,6 +663,7 @@ def load_toml_config(
         "max_retries",
         "num_workers",
         "disable_env_server",
+        "timeout",
         # logging
         "verbose",
         "disable_tui",
@@ -469,12 +680,14 @@ def load_toml_config(
 
     # validate global fields
     if global_defaults:
-        invalid_global = set(global_defaults.keys()) - valid_fields
+        global_valid_fields = valid_fields - {"name"}
+        invalid_global = set(global_defaults.keys()) - global_valid_fields
         if invalid_global:
             raise ValueError(
                 f"Invalid global field(s) {invalid_global}. "
-                f"Valid fields are: {sorted(valid_fields)}"
+                f"Valid fields are: {sorted(global_valid_fields)}"
             )
+    global_defaults = normalize_sampling_config(global_defaults, "global config")
 
     # merge global defaults with per-eval configs
     merged_eval_list: list[dict] = []
@@ -485,16 +698,28 @@ def load_toml_config(
                 f"Invalid field(s) {invalid_fields} for {eval_config.get('env_id', 'unknown')}. "
                 f"Valid fields are: {sorted(valid_fields)}"
             )
+        eval_config["env_id"] = eval_env_id(eval_config, "[[eval]]")
+        eval_config = normalize_sampling_config(
+            eval_config, f"[[eval]] {eval_config['env_id']}"
+        )
         # global defaults, then per-eval overrides
         merged = {**global_defaults, **eval_config}
         if "endpoint_id" in eval_config and "model" not in eval_config:
             merged.pop("model", None)
         if "model" in eval_config and "endpoint_id" not in eval_config:
             merged.pop("endpoint_id", None)
-        merged_eval_list.append(merged)
+        merged_eval_list.append(normalize_env_config_sections(merged))
 
     # expand [[ablation]] blocks into eval configs
     for ablation in ablation_list:
+        if isinstance(ablation.get("sweep"), Mapping):
+            ablation = {
+                **ablation,
+                "sweep": normalize_env_id_alias(
+                    cast(Mapping[str, Any], ablation["sweep"]),
+                    "[ablation.sweep]",
+                ),
+            }
         # Validate fixed fields (everything except 'sweep')
         ablation_fixed_keys = set(ablation.keys()) - {"sweep"}
         invalid_fields = ablation_fixed_keys - valid_fields
@@ -503,23 +728,30 @@ def load_toml_config(
                 f"Invalid field(s) {invalid_fields} in [[ablation]] block. "
                 f"Valid fields are: {sorted(valid_fields)}"
             )
-        # Validate sweep keys (except env_args which has freeform sub-keys)
+        ablation = normalize_sampling_config(ablation, "[[ablation]] block")
+        # Validate sweep keys (except arg tables, which have freeform sub-keys)
         sweep = ablation.get("sweep", {})
-        invalid_sweep = set(sweep.keys()) - valid_fields - {"env_args"}
+        invalid_sweep = invalid_ablation_sweep_fields(sweep, valid_fields)
         if invalid_sweep:
             raise ValueError(
                 f"Invalid sweep field(s) {invalid_sweep} in [[ablation]] block. "
                 f"Valid fields are: {sorted(valid_fields)}"
             )
-        expanded = _expand_ablation(ablation, global_defaults)
+        expanded = [
+            normalize_env_config_sections(
+                normalize_sampling_config(
+                    config,
+                    "expanded [[ablation]] config",
+                    merge_sampling_with_existing=True,
+                )
+            )
+            for config in _expand_ablation(ablation, global_defaults)
+        ]
         merged_eval_list.extend(expanded)
 
     # Validate all expanded configs have env_id
     for config in merged_eval_list:
-        if "env_id" not in config:
-            raise ValueError(
-                "All eval configs (including expanded ablations) must have an env_id"
-            )
+        config["env_id"] = eval_env_id(config, "eval config")
 
     # Resolve endpoints_path relative to the config file location
     for merged in merged_eval_list:
@@ -555,20 +787,16 @@ def filter_inputs(
     return filtered_inputs
 
 
-def to_col_order(list_of_dicts: list[Mapping[str, float]]) -> dict[str, list[float]]:
-    """Convert a list of mappings to a dictionary of lists, ordered by the keys of the first mapping."""
-    if not list_of_dicts:
-        return {}
-    return {k: [m[k] for m in list_of_dicts] for k in list_of_dicts[0].keys()}
-
-
-def get_task_outputs(results: GenerateOutputs, task: str) -> GenerateOutputs:
-    """Get only the rollouts for a given task."""
-    outputs = [o for o in results["outputs"] if o["task"] == task]
-    return GenerateOutputs(
-        outputs=outputs,
-        metadata=results["metadata"],  # duplicate metadata
-    )
+def output_env_id(output: Mapping[str, Any]) -> str:
+    info = output.get("info") or {}
+    if isinstance(info, str):
+        info = json.loads(info)
+    value = info.get("env_id") if isinstance(info, Mapping) else None
+    if isinstance(value, list | tuple):
+        return "/".join(str(part) for part in value)
+    if value is not None:
+        return str(value)
+    return str(output.get("env_id", "default"))
 
 
 def print_rewards(results: GenerateOutputs):
@@ -601,12 +829,23 @@ def print_rewards(results: GenerateOutputs):
         print(f"pass^k: {', '.join(parts)}")
 
     metrics = [o["metrics"] for o in results["outputs"]]
-    metrics_col = to_col_order(metrics)
+    metric_keys = sorted({key for mapping in metrics for key in mapping})
+    metrics_col = {
+        key: [mapping.get(key) for mapping in metrics] for key in metric_keys
+    }
     for k in metrics_col.keys():
         v = metrics_col[k]
-        print(f"{k}: avg - {sum(v) / len(v):.3f}, std - {np.std(v):.3f}")
+        present_values = [value for value in v if value is not None]
+        print(
+            f"{k}: avg - {sum(present_values) / len(present_values):.3f}, "
+            f"std - {np.std(present_values):.3f}"
+        )
         for i in range(r):
-            trials = [round(v[i + (j * r)], 3) for j in range(n)]
+            trials = [
+                round(value, 3)
+                for j in range(n)
+                if (value := v[i + (j * r)]) is not None
+            ]
             out = f"r{i + 1}: {trials}"
             print(out)
 
@@ -636,25 +875,33 @@ def print_info(results: GenerateOutputs):
 
 
 def print_timing(results: GenerateOutputs):
-    print("Timing:")
-    timing = [o["timing"] for o in results["outputs"]]
-    timing_col = to_col_order(timing)
-    generation_ms_arr = np.array(timing_col["generation_ms"])
-    scoring_ms_arr = np.array(timing_col["scoring_ms"])
-    total_ms_arr = np.array(timing_col["total_ms"])
-    generation_arr = generation_ms_arr / 1000
-    scoring_arr = scoring_ms_arr / 1000
-    total_arr = total_ms_arr / 1000
+    from verifiers.utils.logging_utils import print_time
 
-    print(
-        f"generation: min - {print_time(float(np.min(generation_arr)))}, mean - {print_time(float(np.mean(generation_arr)))}, max - {print_time(float(np.max(generation_arr)))}"
-    )
-    print(
-        f"scoring: min - {print_time(float(np.min(scoring_arr)))}, mean - {print_time(float(np.mean(scoring_arr)))}, max - {print_time(float(np.max(scoring_arr)))}"
-    )
-    print(
-        f"total: min - {print_time(float(np.min(total_arr)))}, mean - {print_time(float(np.mean(total_arr)))}, max - {print_time(float(np.max(total_arr)))}"
-    )
+    outputs = results["outputs"]
+
+    def _values(key: str) -> list[float]:
+        out: list[float] = []
+        for o in outputs:
+            t = o.get("timing")
+            if not isinstance(t, dict) or key not in t:
+                continue
+            v = t[key]
+            if isinstance(v, dict):
+                v = v.get("duration", 0.0)
+            out.append(float(v))
+        return out
+
+    print("Timing:")
+    for key in ("total", "setup", "generation", "model", "env", "scoring", "overhead"):
+        vals = _values(key)
+        if not vals:
+            continue
+        lo = float(np.min(vals))
+        mean = float(np.mean(vals))
+        hi = float(np.max(vals))
+        print(
+            f"  {key:<10} min - {print_time(lo)}, mean - {print_time(mean)}, max - {print_time(hi)}"
+        )
 
 
 def print_usage(results: GenerateOutputs):
@@ -702,12 +949,20 @@ def print_usage(results: GenerateOutputs):
         print(f"final_input_tokens (avg): {float(inp):.3f}")
     if out is not None:
         print(f"final_output_tokens (avg): {float(out):.3f}")
+    cost = results["metadata"].get("cost")
+    if isinstance(cost, Mapping):
+        total_usd = cost.get("total_usd")
+        if isinstance(total_usd, int | float):
+            print(f"cost (all): {format_cost_usd(float(total_usd))}")
 
 
 def print_results(results: GenerateOutputs, num_samples: int = 1):
     assert results["metadata"] is not None
     print("--- Evaluation ---")
-    print(f"Environment: {results['metadata']['env_id']}")
+    env_id = results["metadata"]["env_id"]
+    name = results["metadata"].get("name")
+    env_label = f"{name} ({env_id})" if name and name != env_id else env_id
+    print(f"Environment: {env_label}")
     print(f"Model: {results['metadata']['model']}")
     print(f"Provider: {results['metadata']['base_url']}")
     print(f"Examples: {results['metadata']['num_examples']}")
@@ -735,15 +990,22 @@ def print_results(results: GenerateOutputs, num_samples: int = 1):
     print_timing(results)
     print_usage(results)
 
-    tasks = set([o["task"] for o in results["outputs"]])
-    if len(tasks) > 1:
-        for task in tasks:
-            task_results = get_task_outputs(results, task)
-            print(f"\n--- {task} ---")
-            print_rewards(task_results)
-            print_info(task_results)
-            print_timing(task_results)
-            print_usage(task_results)
+    env_ids = {output_env_id(o) for o in results["outputs"]}
+    if len(env_ids) > 1:
+        for env_id in env_ids:
+            env_results = GenerateOutputs(
+                outputs=[
+                    output
+                    for output in results["outputs"]
+                    if output_env_id(output) == env_id
+                ],
+                metadata=results["metadata"],
+            )
+            print(f"\n--- {env_id} ---")
+            print_rewards(env_results)
+            print_info(env_results)
+            print_timing(env_results)
+            print_usage(env_results)
 
 
 def get_log_level(verbose: bool) -> str:
@@ -782,6 +1044,16 @@ async def run_evaluation(
         vf_env.set_kwargs(**config.extra_env_kwargs)
 
     results_path = config.resume_path or get_eval_results_path(config)
+    if config.client_config.endpoint_configs:
+        pricing_urls = [
+            endpoint.api_base_url for endpoint in config.client_config.endpoint_configs
+        ]
+    else:
+        pricing_urls = [config.client_config.api_base_url]
+    model_pricing = None
+    if pricing_urls and all(is_prime_inference_url(url) for url in pricing_urls):
+        model_pricing = (await fetch_prime_pricing()).get(config.model)
+    on_progress = _with_eval_metadata(on_progress, model_pricing, config.name)
 
     try:
         if not config.disable_env_server:
@@ -870,6 +1142,12 @@ async def run_evaluation(
     finally:
         if not config.disable_env_server:
             await vf_env.stop_server()
+
+    metadata_changed = _attach_metadata_name(outputs["metadata"], config.name)
+    if _attach_metadata_cost(outputs["metadata"], model_pricing, outputs["outputs"]):
+        metadata_changed = True
+    if metadata_changed and config.save_results:
+        await asyncio.to_thread(save_metadata, outputs["metadata"], results_path)
 
     return outputs
 
@@ -965,6 +1243,20 @@ async def run_evaluations_tui(
                 env_idx, total=total, num_examples=num_examples, progress=resumed
             )
 
+        # Running sums for live timing average — only walk new outputs each
+        # progress event (O(M) per update, O(N) total across the run).
+        timing_sums: dict[str, float] = {}
+        timing_counts: dict[str, int] = {}
+        TIMING_KEYS = (
+            "setup",
+            "generation",
+            "scoring",
+            "overhead",
+            "total",
+            "model",
+            "env",
+        )
+
         def on_display_progress(
             all_outputs: list[RolloutOutput],
             new_outputs: list[RolloutOutput],
@@ -977,6 +1269,25 @@ async def run_evaluations_tui(
             pass_all_k = metadata.get("pass_all_k") or {}
             for k, v in pass_all_k.items():
                 metrics[f"pass^{k}"] = v
+
+            for o in new_outputs:
+                t = o.get("timing")
+                if not isinstance(t, dict):
+                    continue
+                for key in TIMING_KEYS:
+                    if key not in t:
+                        continue
+                    val = t[key]
+                    if isinstance(val, dict):
+                        val = val.get("duration", 0.0)
+                    timing_sums[key] = timing_sums.get(key, 0.0) + float(val)
+                    timing_counts[key] = timing_counts.get(key, 0) + 1
+            avg_timing = (
+                {k: timing_sums[k] / timing_counts[k] for k in timing_sums}
+                if timing_sums
+                else None
+            )
+
             display.update_env_state(
                 env_idx,
                 progress=len(all_outputs),
@@ -984,6 +1295,8 @@ async def run_evaluations_tui(
                 metrics=metrics,
                 error_rate=metadata.get("avg_error"),
                 usage=metadata.get("usage"),
+                cost=metadata.get("cost"),
+                avg_timing=avg_timing,
             )
 
         on_progress: list[ProgressCallback] = [on_display_progress]

@@ -1,14 +1,13 @@
 import json
 import logging
 import re
-from collections.abc import Mapping
-from typing import Any, cast
+from collections.abc import Mapping, Sequence
+from typing import Any, Literal, TypeAlias, cast, overload
 
 from rich.text import Text
 
 from verifiers.types import (
     AssistantMessage,
-    ContentPart,
     ImageUrlContentPart,
     InputAudioContentPart,
     Message,
@@ -22,17 +21,9 @@ from verifiers.types import (
 
 logger = logging.getLogger(__name__)
 
-
-def from_raw_content_part(part: dict[str, Any]) -> ContentPart:
-    """Convert a raw content-part dict to a typed content part when possible."""
-    part_type = part.get("type")
-    if part_type == "text":
-        return TextContentPart.model_validate(part)
-    if part_type == "image_url":
-        return ImageUrlContentPart.model_validate(part)
-    if part_type == "input_audio":
-        return InputAudioContentPart.model_validate(part)
-    return part
+MessageLike: TypeAlias = Message | Mapping[str, object]
+MessageInput: TypeAlias = str | Sequence[MessageLike]
+MessageRole: TypeAlias = Literal["text", "system", "user", "assistant", "tool"]
 
 
 def _normalize_raw_message_content(message: dict[str, Any]) -> dict[str, Any]:
@@ -41,7 +32,15 @@ def _normalize_raw_message_content(message: dict[str, Any]) -> dict[str, Any]:
         normalized_parts = []
         for part in content:
             if isinstance(part, dict):
-                normalized_parts.append(from_raw_content_part(part))
+                part_type = part.get("type")
+                if part_type == "text":
+                    normalized_parts.append(TextContentPart.model_validate(part))
+                elif part_type == "image_url":
+                    normalized_parts.append(ImageUrlContentPart.model_validate(part))
+                elif part_type == "input_audio":
+                    normalized_parts.append(InputAudioContentPart.model_validate(part))
+                else:
+                    normalized_parts.append(part)
             else:
                 normalized_parts.append(part)
         message = dict(message)
@@ -122,7 +121,7 @@ def from_raw_message(message: dict) -> Message:
 
 
 def normalize_messages(
-    value: Messages | str, *, field_name: str = "messages"
+    value: MessageInput, *, field_name: str = "messages"
 ) -> Messages:
     """Normalize raw/string message inputs into provider-agnostic Message objects."""
     if isinstance(value, str):
@@ -140,6 +139,58 @@ def normalize_messages(
             "Expected vf.Message-like objects."
         )
     return normalized
+
+
+@overload
+def get_messages(
+    messages: Sequence[MessageLike], role: Literal["assistant"]
+) -> list[AssistantMessage]: ...
+
+
+@overload
+def get_messages(
+    messages: Sequence[MessageLike], role: Literal["system"]
+) -> list[SystemMessage]: ...
+
+
+@overload
+def get_messages(
+    messages: Sequence[MessageLike], role: Literal["user"]
+) -> list[UserMessage]: ...
+
+
+@overload
+def get_messages(
+    messages: Sequence[MessageLike], role: Literal["tool"]
+) -> list[ToolMessage]: ...
+
+
+@overload
+def get_messages(
+    messages: Sequence[MessageLike], role: Literal["text"]
+) -> list[TextMessage]: ...
+
+
+@overload
+def get_messages(messages: Sequence[MessageLike], role: None = None) -> Messages: ...
+
+
+def get_messages(
+    messages: Sequence[MessageLike], role: MessageRole | None = None
+) -> Messages:
+    """Return typed transcript messages, optionally filtered by role."""
+    normalized = normalize_messages(messages)
+    if role is None:
+        return normalized
+    return [message for message in normalized if message.role == role]
+
+
+def message_role(message: MessageLike) -> str | None:
+    if isinstance(message, Mapping):
+        value = message.get("role")
+    else:
+        value = getattr(message, "role", None)
+    return value if isinstance(value, str) else None
 
 
 def maybe_normalize_messages(

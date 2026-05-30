@@ -6,8 +6,6 @@ Usage::
     taskset = CPTaskSet()
 """
 
-from __future__ import annotations
-
 import json
 import logging
 import random
@@ -235,7 +233,6 @@ class CPTaskSet(SandboxTaskSet):
             cpu_cores=2,
             memory_gb=4,
             disk_size_gb=4,
-            timeout_minutes=60,
         )
 
     def get_rubric(self):

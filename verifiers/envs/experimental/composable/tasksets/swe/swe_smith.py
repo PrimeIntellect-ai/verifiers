@@ -20,8 +20,6 @@ C++ is special-cased: upstream currently registers profiles for ~20 of 69 repos
 priority languages (py, go, java, js, ts, rs) have 100% coverage.
 """
 
-from __future__ import annotations
-
 import logging
 import shlex
 import tempfile
@@ -147,7 +145,7 @@ class SWESmithRubric(vf.Rubric):
         self.add_reward_func(self.solved)
 
     async def solved(self, state, info, **kwargs) -> float:
-        if isinstance(state.get("error"), vf.InfraError):
+        if state.get("error") is not None:
             return 0.0
         sandbox_client = state.get("sandbox_client")
         sandbox_id = state.get("sandbox_id")
@@ -185,11 +183,10 @@ class SWESmithTaskSet(SandboxTaskSet):
         language: str = "py",
         dataset_name: str | None = None,
         split: str = "train",
-        filter_repos: list[str] | None = None,
         filter_fn: str | None = None,
         ds_num_proc: int | None = None,
         ds_keep_in_memory: bool = True,
-        timeout_minutes: int = 60,
+        timeout_minutes: int | None = None,
     ):
         if language not in LANGUAGE_TO_DATASET:
             raise ValueError(
@@ -199,7 +196,6 @@ class SWESmithTaskSet(SandboxTaskSet):
         self.language = language
         self.dataset_name = dataset_name or LANGUAGE_TO_DATASET[language]
         self.split = split
-        self.filter_repos = filter_repos
         self.ds_num_proc = ds_num_proc
         self.ds_keep_in_memory = ds_keep_in_memory
         self.timeout_minutes = timeout_minutes
@@ -235,10 +231,6 @@ class SWESmithTaskSet(SandboxTaskSet):
                 return False
 
         dataset = dataset.filter(_has_profile, **_kw)
-
-        if self.filter_repos:
-            filter_set = frozenset(self.filter_repos)
-            dataset = dataset.filter(lambda x: x.get("repo") not in filter_set, **_kw)
 
         return dataset.map(_process_example, remove_columns=dataset.column_names, **_kw)
 

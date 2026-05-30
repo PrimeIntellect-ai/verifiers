@@ -82,8 +82,7 @@ class OpenAICompletionsClient(
     ) -> OpenAITextResponse:
         if tools:
             raise ValueError(
-                "Completions API does not support tools. "
-                "Use chat_completions or messages client_type instead."
+                "Completions API does not support tools. Use chat_completions or messages client_type instead."
             )
 
         def normalize_sampling_args(sampling_args: SamplingArgs):

@@ -15,9 +15,49 @@ def load_environment(
     sandbox_gpu_count: int = 0,
     sandbox_timeout_minutes: int = 60,
     sandbox_timeout_per_command_seconds: int = 60,
-    sandbox_client_max_workers: int = 50,
+    sandbox_client_max_workers: int | None = None,
+    v1: bool = False,
     **kwargs,
 ):
+    if v1:
+        unsupported = [*kwargs]
+        if max_startup_wait_seconds != 60:
+            unsupported.append("max_startup_wait_seconds")
+        if sandbox_client_max_workers is not None:
+            unsupported.append("sandbox_client_max_workers")
+        if unsupported:
+            unexpected = ", ".join(sorted(unsupported))
+            raise TypeError(f"Unsupported v1 load_environment kwargs: {unexpected}")
+
+        from math_python_v1 import (
+            MathPythonEnvConfig,
+            MathPythonHarnessConfig,
+            MathPythonTasksetConfig,
+            build_system_prompt,
+            load_environment as load_v1,
+        )
+
+        return load_v1(
+            config=MathPythonEnvConfig(
+                taskset=MathPythonTasksetConfig(
+                    dataset_name=dataset_name,
+                    dataset_split=dataset_split,
+                    num_train_examples=num_train_examples,
+                    system_prompt=build_system_prompt(pip_install_packages),
+                ),
+                harness=MathPythonHarnessConfig(
+                    max_turns=max_turns,
+                    pip_install_packages=pip_install_packages,
+                    sandbox_cpu_cores=sandbox_cpu_cores,
+                    sandbox_memory_gb=sandbox_memory_gb,
+                    sandbox_disk_size_gb=sandbox_disk_size_gb,
+                    sandbox_gpu_count=sandbox_gpu_count,
+                    sandbox_timeout_minutes=sandbox_timeout_minutes,
+                    sandbox_timeout_per_command_seconds=sandbox_timeout_per_command_seconds,
+                ),
+            )
+        )
+
     def build_dataset():
         return load_example_dataset(dataset_name, dataset_split, n=num_train_examples)
 

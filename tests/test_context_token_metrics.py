@@ -5,10 +5,9 @@ Tests the trajectory-based context token computation
 using the last trajectory step.
 """
 
-from unittest.mock import MagicMock
-
 import pytest
 
+from verifiers.types import Response, ResponseMessage, Usage
 from verifiers.utils.usage_utils import compute_context_token_metrics
 
 
@@ -20,12 +19,39 @@ SYS = {"role": "system", "content": "You are helpful"}
 USER = {"role": "user", "content": "hi"}
 
 
-def _make_response(prompt_tokens: int, completion_tokens: int) -> MagicMock:
-    response = MagicMock()
-    response.usage = MagicMock(
-        prompt_tokens=prompt_tokens, completion_tokens=completion_tokens
+def _make_response(prompt_tokens: int, completion_tokens: int) -> Response:
+    return Response(
+        id="test",
+        created=0,
+        model="test",
+        usage=Usage(
+            prompt_tokens=prompt_tokens,
+            reasoning_tokens=0,
+            completion_tokens=completion_tokens,
+            total_tokens=prompt_tokens + completion_tokens,
+        ),
+        message=ResponseMessage(
+            role="assistant",
+            content="",
+            finish_reason="stop",
+            is_truncated=False,
+        ),
     )
-    return response
+
+
+def _make_response_without_usage() -> Response:
+    return Response(
+        id="test",
+        created=0,
+        model="test",
+        usage=None,
+        message=ResponseMessage(
+            role="assistant",
+            content="",
+            finish_reason="stop",
+            is_truncated=False,
+        ),
+    )
 
 
 def _asst(i: int) -> dict:
@@ -115,13 +141,11 @@ class TestContextMetrics:
         assert metrics["final_input_tokens"] == 230 - 50
 
     def test_skips_responses_without_usage(self):
-        """Responses with no .usage attribute are skipped entirely."""
-        no_usage = MagicMock()
-        no_usage.usage = None
+        """Responses with usage=None are skipped entirely."""
         trajectory = [
             {"response": _make_response(100, 20)},
             {"response": _make_response(200, 30)},
-            {"response": no_usage},  # last step, but no usage
+            {"response": _make_response_without_usage()},
         ]
         metrics = compute_context_token_metrics(trajectory)
         # Should use step 1 (last with usage): total = 230
@@ -130,11 +154,9 @@ class TestContextMetrics:
 
     def test_all_responses_lack_usage(self):
         """If no response has usage data, return zeros."""
-        no_usage = MagicMock()
-        no_usage.usage = None
         trajectory = [
-            {"response": no_usage},
-            {"response": no_usage},
+            {"response": _make_response_without_usage()},
+            {"response": _make_response_without_usage()},
         ]
         metrics = compute_context_token_metrics(trajectory)
         assert metrics["final_output_tokens"] == 0

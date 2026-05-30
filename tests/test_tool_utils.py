@@ -1,8 +1,14 @@
 """Tests for the tool_utils module."""
 
-from typing import Optional
+from typing import Annotated, Optional
+
+from pydantic import Field
 
 from verifiers.utils.tool_utils import convert_func_to_tool_def
+
+
+def tool_dump_without_strict(tool):
+    return tool.model_dump(exclude={"strict"}, exclude_none=True)
 
 
 class TestToolUtils:
@@ -26,7 +32,8 @@ class TestToolUtils:
             return 1.0
 
         result = convert_func_to_tool_def(test_func)
-        assert result.model_dump(exclude_none=True) == {
+        assert result.strict is True
+        assert tool_dump_without_strict(result) == {
             "name": "test_func",
             "description": "This is a test function.",
             "parameters": {
@@ -61,7 +68,7 @@ class TestToolUtils:
             return 1.0
 
         result = convert_func_to_tool_def(test_func)
-        assert result.model_dump(exclude_none=True) == {
+        assert tool_dump_without_strict(result) == {
             "name": "test_func",
             "description": "",
             "parameters": {
@@ -92,7 +99,7 @@ class TestToolUtils:
             return None
 
         result = convert_func_to_tool_def(test_func)
-        assert result.model_dump(exclude_none=True) == {
+        assert tool_dump_without_strict(result) == {
             "name": "test_func",
             "description": "",
             "parameters": {
@@ -119,7 +126,7 @@ class TestToolUtils:
             return None
 
         result = convert_func_to_tool_def(test_func)
-        assert result.model_dump(exclude_none=True) == {
+        assert tool_dump_without_strict(result) == {
             "name": "test_func",
             "description": "",
             "parameters": {
@@ -145,7 +152,7 @@ class TestToolUtils:
             return None
 
         result = convert_func_to_tool_def(test_func)
-        assert result.model_dump(exclude_none=True) == {
+        assert tool_dump_without_strict(result) == {
             "name": "test_func",
             "description": "This is a test function.",
             "parameters": {
@@ -154,6 +161,34 @@ class TestToolUtils:
                     "param1": {"title": "Param1"},
                 },
                 "required": ["param1"],
+                "title": "test_func_args",
+                "additionalProperties": False,
+            },
+        }
+
+    def test_convert_func_to_tool_def_with_annotated_field_description(self):
+        """Test parameter descriptions from Annotated pydantic fields."""
+
+        def test_func(
+            query: Annotated[str, Field(description="Search query.")],
+        ):
+            """Search pages."""
+            return None
+
+        result = convert_func_to_tool_def(test_func)
+        assert tool_dump_without_strict(result) == {
+            "name": "test_func",
+            "description": "Search pages.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search query.",
+                        "title": "Query",
+                    },
+                },
+                "required": ["query"],
                 "title": "test_func_args",
                 "additionalProperties": False,
             },

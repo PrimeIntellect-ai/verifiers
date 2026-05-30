@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import json
 import logging
 import re
@@ -315,7 +313,7 @@ class SWEBenchRubric(vf.Rubric):
         self.add_reward_func(self.solved)
 
     async def solved(self, state, info, **kwargs) -> float:
-        if isinstance(state.get("error"), vf.InfraError):
+        if state.get("error") is not None:
             return 0.0
         sandbox_client = state.get("sandbox_client")
         sandbox_id = state.get("sandbox_id")
@@ -351,11 +349,10 @@ class SWEBenchTaskSet(SandboxTaskSet):
         self,
         dataset_name: str = "princeton-nlp/SWE-bench_Verified",
         skip_install: bool = True,
-        filter_repos: list[str] | None = None,
         filter_fn: str | None = None,
         ds_num_proc: int | None = None,
         ds_keep_in_memory: bool = True,
-        timeout_minutes: int = 60,
+        timeout_minutes: int | None = None,
     ):
         """
         Args:
@@ -367,7 +364,6 @@ class SWEBenchTaskSet(SandboxTaskSet):
         """
         self.dataset_name = dataset_name
         self.skip_install = skip_install
-        self.filter_repos = filter_repos
         self.ds_num_proc = ds_num_proc
         self.ds_keep_in_memory = ds_keep_in_memory
         self.timeout_minutes = timeout_minutes
@@ -392,12 +388,6 @@ class SWEBenchTaskSet(SandboxTaskSet):
             keep_in_memory=self.ds_keep_in_memory,
             num_proc=self.ds_num_proc,
         )
-        if self.filter_repos:
-            filter_set = set(self.filter_repos)
-            dataset = dataset.filter(
-                lambda x: filter_set.isdisjoint((x.get("repo"), x.get("repo_name"))),
-                **_kw,
-            )
         return dataset.map(_process_example, remove_columns=dataset.column_names, **_kw)
 
     def get_instruction(self, info: dict) -> str:

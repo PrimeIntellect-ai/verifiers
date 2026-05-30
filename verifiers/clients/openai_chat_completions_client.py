@@ -1,9 +1,6 @@
-import base64
 import functools
 from collections.abc import Iterable, Mapping
 from typing import Any, TypeAlias, cast
-
-import numpy as np
 
 from openai import (
     AsyncOpenAI,
@@ -59,7 +56,10 @@ from verifiers.types import (
     Usage,
     UserMessage,
 )
-from verifiers.utils.client_utils import setup_openai_client
+from verifiers.utils.client_utils import (
+    post_chat_completion_with_routed_experts_sidecar,
+    setup_openai_client,
+)
 
 
 def handle_openai_overlong_prompt(func):
@@ -76,12 +76,14 @@ def handle_openai_overlong_prompt(func):
             context_length_phrases = [
                 "this model's maximum context length is",
                 "is longer than the model's context length",
+                "is longer than the maximum model length",
                 "exceeds the model's context length",
                 "exceed the configured limit",
                 "exceeds the configured limit",
                 "exceeded model",
                 "prompt_too_long",
                 "context length",
+                "maximum model length",
             ]
             if any(phrase in error_text for phrase in context_length_phrases):
                 raise OverlongPromptError from e
@@ -250,6 +252,31 @@ class OpenAIChatCompletionsClient(
     ) -> OpenAIChatResponse:
         def normalize_sampling_args(sampling_args: SamplingArgs):
             sampling_args = dict(sampling_args)
+            api_base_url = None
+            if hasattr(self.client, "base_url"):
+                api_base_url = str(self.client.base_url)
+            elif self._config is not None:
+                api_base_url = self._config.api_base_url
+            reasoning_effort = sampling_args.pop("reasoning_effort", None)
+            model_id = model.lower().split("/")[-1].replace(".", "-").replace("_", "-")
+            is_anthropic_route = (
+                "openrouter.ai" in (api_base_url or "").lower()
+                or "pinference.ai" in (api_base_url or "").lower()
+            )
+            if (
+                reasoning_effort is not None
+                and model_id.startswith("claude-")
+                and is_anthropic_route
+            ):
+                # OpenRouter/Pinference route Anthropic reasoning_effort through extra_body.
+                extra_body = dict(sampling_args.get("extra_body") or {})
+                extra_body["verbosity"] = reasoning_effort
+                reasoning = dict(extra_body.get("reasoning") or {})
+                reasoning.setdefault("enabled", True)
+                extra_body["reasoning"] = reasoning
+                sampling_args["extra_body"] = extra_body
+            elif reasoning_effort is not None:
+                sampling_args["reasoning_effort"] = reasoning_effort
             if "max_tokens" in sampling_args:
                 sampling_args["max_completion_tokens"] = sampling_args.pop("max_tokens")
             return {k: v for k, v in sampling_args.items() if v is not None}
@@ -275,23 +302,24 @@ class OpenAIChatCompletionsClient(
             sampling_args = {**sampling_args, "modalities": ["text"]}
 
         extra_headers = kwargs.pop("extra_headers", None)
+        request_args = normalize_sampling_args(sampling_args)
+        extra_body = request_args.pop("extra_body", {})
 
+        body: dict[str, Any] = {
+            "model": model,
+            "messages": prompt,
+            **request_args,
+            **extra_body,
+        }
         if tools:
-            response = await self.client.chat.completions.create(
-                model=model,
-                messages=prompt,
-                tools=tools,
-                extra_headers=extra_headers,
-                **normalize_sampling_args(sampling_args),
-            )
-        else:
-            response = await self.client.chat.completions.create(
-                model=model,
-                messages=prompt,
-                extra_headers=extra_headers,
-                **normalize_sampling_args(sampling_args),
-            )
-        return response
+            body["tools"] = tools
+
+        return await post_chat_completion_with_routed_experts_sidecar(
+            self.client,
+            "/chat/completions",
+            body=body,
+            extra_headers=extra_headers,
+        )
 
     async def raise_from_native_response(self, response: OpenAIChatResponse) -> None:
         if response is None:
@@ -457,40 +485,15 @@ class OpenAIChatCompletionsClient(
                 logprobs_content = response.choices[0].logprobs["content"]
                 completion_logprobs = [token["logprob"] for token in logprobs_content]
 
-            has_routed_experts = (
-                isinstance(
-                    routed_experts := getattr(choice, "routed_experts", None), dict
-                )
-                and "data" in routed_experts
-                and "shape" in routed_experts
-            )
-            if has_routed_experts:
-                routed_experts = cast(dict[str, Any], routed_experts)
-                routed_experts = cast(
-                    list[list[list[int]]],
-                    (
-                        np.frombuffer(
-                            base64.b85decode(routed_experts["data"]), dtype=np.int32
-                        )
-                        .reshape(routed_experts["shape"])
-                        .tolist()
-                    ),
-                )  # [seq_len, layers, topk]
-            else:
-                routed_experts = None
+            choice_extra = choice.model_extra or {}
             return ResponseTokens(
                 prompt_ids=prompt_ids,
                 prompt_mask=prompt_mask,
                 completion_ids=completion_ids,
                 completion_mask=completion_mask,
                 completion_logprobs=completion_logprobs,
-                routed_experts=routed_experts,
+                routed_experts=choice_extra.get("routed_experts"),
             )
-
-        def parse_reasoning_content_from_response(
-            response: OpenAIChatResponse,
-        ) -> str | None:
-            return parse_reasoning_content(response.choices[0].message)
 
         response_id = getattr(response, "id", "")
         if not isinstance(response_id, str):
@@ -509,7 +512,7 @@ class OpenAIChatCompletionsClient(
             usage=parse_usage(response),
             message=ResponseMessage(
                 content=response.choices[0].message.content,
-                reasoning_content=parse_reasoning_content_from_response(response),
+                reasoning_content=parse_reasoning_content(response.choices[0].message),
                 finish_reason=parse_finish_reason(response),
                 is_truncated=parse_is_truncated(response),
                 tokens=parse_tokens(response),

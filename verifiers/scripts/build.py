@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import argparse
 import ast
 import json
@@ -34,15 +32,6 @@ def _normalize_env_id(raw_env_id: str) -> tuple[str, str]:
         )
     env_id_underscore = env_id_dash.replace("-", "_")
     return env_id_dash, env_id_underscore
-
-
-def _find_dockerfile(project_dir: Path) -> Path:
-    dockerfile = project_dir / "server" / "Dockerfile"
-    if dockerfile.exists():
-        return dockerfile
-    raise FileNotFoundError(
-        f"No Dockerfile found at {dockerfile}. Expected enforced layout with proj/server/Dockerfile."
-    )
 
 
 def _resolve_project_dir(environments_root: Path, env_id_underscore: str) -> Path:
@@ -101,15 +90,6 @@ def _read_project_app(project_dir: Path) -> str:
         if isinstance(app, str) and app.strip():
             return app.strip()
     return "server.app:app"
-
-
-def _build_start_command(app: str, port: int) -> str:
-    # Prime sandboxes default to `tail -f /dev/null` unless start_command is explicit.
-    # Also avoid relying on image-level PATH, which may not be propagated by sandbox runtime.
-    return (
-        "sh -lc "
-        f'"cd /app/env && /app/.venv/bin/uvicorn {app} --host 0.0.0.0 --port {int(port)}"'
-    )
 
 
 def _resolve_app_module(project_dir: Path, app: str) -> Path:
@@ -270,14 +250,6 @@ def _resolve_fully_qualified_image(image: str) -> tuple[str | None, str | None]:
     return None, None
 
 
-def _parse_image_from_push_output(output: str) -> str | None:
-    for line in output.splitlines():
-        match = re.search(r"Image:\s*(\S+)", line)
-        if match:
-            return match.group(1).strip()
-    return None
-
-
 def _get_image_status(image_ref: str) -> str | None:
     items = _get_images_list()
     if not items:
@@ -374,7 +346,11 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         project_dir = _resolve_project_dir(env_path.parent, env_id_underscore)
-        dockerfile = _find_dockerfile(project_dir)
+        dockerfile = project_dir / "server" / "Dockerfile"
+        if not dockerfile.exists():
+            raise FileNotFoundError(
+                f"No Dockerfile found at {dockerfile}. Expected enforced layout with proj/server/Dockerfile."
+            )
     except FileNotFoundError as e:
         print(str(e), file=sys.stderr)
         return 2
@@ -391,7 +367,12 @@ def main(argv: list[str] | None = None) -> int:
     port = _read_project_port(project_dir)
     app = _read_project_app(project_dir)
     contract = _detect_contract(project_dir, app)
-    start_command = _build_start_command(app=app, port=port)
+    # Prime sandboxes default to `tail -f /dev/null` unless start_command is explicit.
+    # Also avoid relying on image-level PATH, which may not be propagated by sandbox runtime.
+    start_command = (
+        "sh -lc "
+        f'"cd /app/env && /app/.venv/bin/uvicorn {app} --host 0.0.0.0 --port {int(port)}"'
+    )
 
     cmd = [
         "prime",
@@ -425,7 +406,12 @@ def main(argv: list[str] | None = None) -> int:
         return e.returncode or 1
 
     output = ((result.stdout or "") + "\n" + (result.stderr or "")).strip()
-    resolved_image = _parse_image_from_push_output(output)
+    resolved_image = None
+    for line in output.splitlines():
+        match = re.search(r"Image:\s*(\S+)", line)
+        if match:
+            resolved_image = match.group(1).strip()
+            break
     status = None
     if resolved_image is None:
         resolved_image, status = _resolve_fully_qualified_image(image)

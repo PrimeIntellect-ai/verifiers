@@ -24,26 +24,15 @@ A **SandboxSpec** describes sandbox requirements (image, CPU, memory, etc.).
         async def evaluate(self, sandbox_client, sandbox_id, state) -> float: ...
 """
 
-from __future__ import annotations
-
 import importlib
 import importlib.resources as resources
 from dataclasses import dataclass
 from importlib.abc import Traversable
 from pathlib import Path
-from types import ModuleType
 from typing import Any, Callable
 
 from verifiers.envs.experimental.composable._filter import _resolve_filter_fn
 from verifiers.types import DatasetBuilder, Messages, State
-
-
-def _module_package_name(module: ModuleType) -> str | None:
-    """Return the package name for a module, or None if not in a package."""
-    if hasattr(module, "__path__"):
-        return module.__name__
-    package_name = getattr(module, "__package__", None)
-    return package_name or None
 
 
 def discover_sibling_dir(taskset_cls: type, dirname: str) -> Traversable | Path | None:
@@ -57,7 +46,11 @@ def discover_sibling_dir(taskset_cls: type, dirname: str) -> Traversable | Path 
     """
     module = importlib.import_module(taskset_cls.__module__)
 
-    package_name = _module_package_name(module)
+    package_name = (
+        module.__name__
+        if hasattr(module, "__path__")
+        else getattr(module, "__package__", None)
+    )
     if package_name:
         try:
             candidate = resources.files(package_name) / dirname
@@ -84,7 +77,8 @@ class SandboxSpec:
     disk_size_gb: int = 10
     gpu_count: int = 0
     gpu_type: str | None = None
-    timeout_minutes: int = 60
+    # If None, lifetime is derived by SandboxMixin.compute_sandbox_timeout_minutes.
+    timeout_minutes: int | None = None
 
 
 class Task:
@@ -99,7 +93,7 @@ class Task:
     """
 
     def __init__(
-        self, taskset: TaskSet, prompt: Messages, info: dict, answer: str = ""
+        self, taskset: "TaskSet", prompt: Messages, info: dict, answer: str = ""
     ):
         self._taskset = taskset
         self.prompt = prompt
@@ -142,7 +136,7 @@ class TaskSet:
 
     def __init__(
         self,
-        dataset: Any | DatasetBuilder,
+        dataset: "Any | DatasetBuilder",
         name: str = "",
         filter_fn: str | None = None,
     ):
@@ -293,13 +287,13 @@ class TaskSet:
 
     # -- Combinators ---------------------------------------------------------
 
-    def filter(self, predicate: Callable[[dict], bool]) -> TaskSet:
+    def filter(self, predicate: Callable[[dict], bool]) -> "TaskSet":
         clone = object.__new__(type(self))
         clone.__dict__.update(self.__dict__)
         clone.dataset = self.dataset.filter(predicate)
         return clone
 
-    def take(self, n: int) -> TaskSet:
+    def take(self, n: int) -> "TaskSet":
         clone = object.__new__(type(self))
         clone.__dict__.update(self.__dict__)
         clone.dataset = self.dataset.select(range(min(n, len(self.dataset))))
@@ -315,6 +309,7 @@ class TaskSet:
         out_path: str | Path | None = None,
         max_retries: int = 0,
         resume: bool = False,
+        sandbox_client_max_workers: int | None = None,
         test_output_tail_chars: int = 2000,
     ) -> list[dict]:
         """Validate instances with streaming progress and crash-safe output.
@@ -344,6 +339,10 @@ class TaskSet:
             rows are returned in the result list unchanged (so downstream
             analysis sees the union of old + new). If False (default),
             ``out_path`` is truncated at start.
+        sandbox_client_max_workers:
+            Max worker threads for the sandbox client used by sandbox taskset
+            validation. Defaults to the threaded sandbox client's standard
+            worker cap; pass an explicit value to raise or lower it.
         test_output_tail_chars:
             Number of trailing characters of ``state["test_output"]`` to
             store in each result's ``test_output_tail``. Default 2000,
@@ -429,13 +428,6 @@ class TaskSet:
         def _write_line(path: Path, line: str) -> None:
             with path.open("a") as f:
                 f.write(line)
-
-        async def _append_jsonl(row: dict) -> None:
-            if out_path_p is None:
-                return
-            line = json.dumps(row, default=str) + "\n"
-            async with write_lock:
-                await asyncio.to_thread(_write_line, out_path_p, line)
 
         # Sandbox-specific exception types — imported lazily so pure-LLM
         # tasksets don't pull in prime_sandboxes. Dispatch is via isinstance
@@ -540,9 +532,7 @@ class TaskSet:
                 ThreadedAsyncSandboxClient,
             )
 
-            client = ThreadedAsyncSandboxClient(
-                max_workers=min(max(1, concurrency // 8), 50)
-            )
+            client = ThreadedAsyncSandboxClient(max_workers=sandbox_client_max_workers)
             assert isinstance(self, SandboxTaskSet)
 
             async def _validate_once(i: int) -> tuple[bool, BaseException | None, dict]:
@@ -553,6 +543,11 @@ class TaskSet:
                     "answer": row.get("answer", ""),
                 }
                 spec = self.get_sandbox_spec(info)
+                # validate() runs without a SandboxMixin, so resolve
+                # spec.timeout_minutes=None (its "auto-derive at rollout
+                # time" sentinel) to a concrete fallback for both the
+                # SDK call and the in-test wall-clock cap.
+                timeout_minutes = spec.timeout_minutes or 60
                 sb = None
                 try:
                     sb = await client.create(
@@ -565,12 +560,12 @@ class TaskSet:
                             gpu_count=spec.gpu_count,
                             gpu_type=spec.gpu_type,
                             vm=spec.gpu_count > 0,
-                            timeout_minutes=spec.timeout_minutes,
+                            timeout_minutes=timeout_minutes,
                         )
                     )
                     state["sandbox_id"] = sb.id
                     state["sandbox_client"] = client
-                    state["test_timeout"] = spec.timeout_minutes * 60
+                    state["test_timeout"] = timeout_minutes * 60
                     await client.wait_for_creation(sb.id, max_attempts=120)
                     await self.setup(state)
                     valid = await self.validate_instance(state)
@@ -591,7 +586,7 @@ class TaskSet:
         async def validate_one(i: int) -> dict:
             async with sem:
                 info, instance_id, repo = _row_info(i)
-                t0 = time.time()
+                start_time = time.perf_counter()
                 attempts = 0
                 last_valid = False
                 last_exc: BaseException | None = None
@@ -607,7 +602,8 @@ class TaskSet:
                     if valid or reason != "sandbox_error":
                         break  # only InfraError triggers retry
 
-                elapsed = time.time() - t0
+                end_time = time.perf_counter()
+                elapsed = end_time - start_time
                 result = {
                     "index": i,
                     "instance_id": instance_id,
@@ -631,7 +627,7 @@ class TaskSet:
             f"(concurrency={concurrency}, max_retries={max_retries}, "
             f"skipped={skipped} from prior run)"
         )
-        t0 = time.time()
+        start_time = time.perf_counter()
         results: list[dict] = list(prior_rows)
         tasks = [asyncio.create_task(validate_one(i)) for i in todo_indices]
         passed = sum(1 for r in prior_rows if r.get("valid"))
@@ -649,7 +645,10 @@ class TaskSet:
                 for fut in asyncio.as_completed(tasks):
                     r = await fut
                     results.append(r)
-                    await _append_jsonl(r)
+                    if out_path_p is not None:
+                        line = json.dumps(r, default=str) + "\n"
+                        async with write_lock:
+                            await asyncio.to_thread(_write_line, out_path_p, line)
                     if r["valid"]:
                         passed += 1
                     rate = passed / len(results)
@@ -701,9 +700,10 @@ class TaskSet:
             raise
         finally:
             if is_sandbox:
-                client.teardown()  # type: ignore[name-defined]
+                client.teardown()
 
-        elapsed = time.time() - t0
+        end_time = time.perf_counter()
+        elapsed = end_time - start_time
         denom = len(results) or 1
         rate = passed / denom
         logger.info(

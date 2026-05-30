@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import json
 import logging
 import tempfile
@@ -9,7 +7,7 @@ from typing import Any
 import verifiers as vf
 from verifiers.envs.experimental.composable import SandboxSpec, SandboxTaskSet
 
-from .log_parser import decolor_dict_keys, parse_log_fn
+from .log_parser import decolor_dict_keys, parse_log_pytest
 
 logger = logging.getLogger(__name__)
 
@@ -142,7 +140,7 @@ class R2ERubric(vf.Rubric):
         self.add_reward_func(self.solved)
 
     async def solved(self, state, info, **kwargs) -> float:
-        if isinstance(state.get("error"), vf.InfraError):
+        if state.get("error") is not None:
             return 0.0
         sandbox_client = state.get("sandbox_client")
         sandbox_id = state.get("sandbox_id")
@@ -179,11 +177,10 @@ class R2EGymTaskSet(SandboxTaskSet):
         dataset_name: str = "R2E-Gym/R2E-Gym-Subset",
         repo_path: str = "/testbed",
         alt_path: str = "/root",
-        filter_repos: list[str] | None = None,
         filter_fn: str | None = None,
         ds_num_proc: int | None = None,
         ds_keep_in_memory: bool = True,
-        timeout_minutes: int = 60,
+        timeout_minutes: int | None = None,
         hide_tests_from_agent: bool = True,
     ):
         """
@@ -206,7 +203,6 @@ class R2EGymTaskSet(SandboxTaskSet):
         self.dataset_name = dataset_name
         self.repo_path = repo_path
         self.alt_path = alt_path
-        self.filter_repos = filter_repos
         self.ds_num_proc = ds_num_proc
         self.ds_keep_in_memory = ds_keep_in_memory
         self.timeout_minutes = timeout_minutes
@@ -231,11 +227,6 @@ class R2EGymTaskSet(SandboxTaskSet):
             keep_in_memory=self.ds_keep_in_memory,
             num_proc=self.ds_num_proc,
         )
-        if self.filter_repos:
-            filter_set = frozenset(self.filter_repos)
-            dataset = dataset.filter(
-                lambda x: x.get("repo_name") not in filter_set, **_kw
-            )
         return dataset.map(_process_example, remove_columns=dataset.column_names, **_kw)
 
     def get_instruction(self, info: dict) -> str:
@@ -399,7 +390,7 @@ class R2EGymTaskSet(SandboxTaskSet):
 
     def _calculate_reward(self, test_output: str, info: dict) -> float:
         """Parse test log, compare to expected_output_json."""
-        parse = parse_log_fn(info["repo_name"])(test_output)
+        parse = parse_log_pytest(test_output)
         parse = decolor_dict_keys(parse)
         expected: dict = json.loads(info["expected_output_json"])
         expected = decolor_dict_keys(expected)

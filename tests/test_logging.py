@@ -1,5 +1,7 @@
 import logging
 
+import pytest
+
 import verifiers as vf
 
 
@@ -101,6 +103,54 @@ class TestLogLevel:
             assert logger.level == logging.DEBUG
 
         assert logger.level == original_level
+
+
+class TestJsonLoggingMutesHttpNoise:
+    """Tests that setup_logging(json_logging=True) mutes httpcore/httpx DEBUG."""
+
+    @pytest.fixture
+    def restore_logging_state(self):
+        """Snapshot + restore root, verifiers, httpcore, and httpx logger state."""
+        names = (None, "verifiers", "httpcore", "httpx")
+        saved: list[tuple[logging.Logger, int, list[logging.Handler], bool]] = []
+        for name in names:
+            lg = logging.getLogger(name) if name else logging.getLogger()
+            saved.append((lg, lg.level, list(lg.handlers), lg.propagate))
+        try:
+            yield
+        finally:
+            for lg, level, handlers, propagate in saved:
+                lg.setLevel(level)
+                lg.handlers = handlers
+                lg.propagate = propagate
+
+    def test_json_logging_debug_mutes_httpcore_and_httpx(self, restore_logging_state):
+        """setup_logging at DEBUG with json_logging=True pins httpcore/httpx to WARNING."""
+        vf.setup_logging(level="DEBUG", json_logging=True)
+
+        assert logging.getLogger("httpcore").getEffectiveLevel() == logging.WARNING
+        assert logging.getLogger("httpx").getEffectiveLevel() == logging.WARNING
+
+        # Root stays at DEBUG so user code and other namespaces still emit DEBUG.
+        assert logging.getLogger().getEffectiveLevel() == logging.DEBUG
+        # A sibling user logger (no explicit level) inherits root's DEBUG, proving
+        # we didn't over-mute.
+        assert (
+            logging.getLogger("some.random.user.logger").getEffectiveLevel()
+            == logging.DEBUG
+        )
+
+    def test_non_json_logging_does_not_mute_httpcore(self, restore_logging_state):
+        """json_logging=False must not mutate httpcore/httpx levels."""
+        # Start from a known baseline.
+        logging.getLogger("httpcore").setLevel(logging.NOTSET)
+        logging.getLogger("httpx").setLevel(logging.NOTSET)
+
+        vf.setup_logging(level="DEBUG", json_logging=False)
+
+        # Unchanged by the non-json path.
+        assert logging.getLogger("httpcore").level == logging.NOTSET
+        assert logging.getLogger("httpx").level == logging.NOTSET
 
 
 class TestQuietVerifiers:

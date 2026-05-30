@@ -34,8 +34,6 @@ harnesses that need a per-instance workdir while still using a static
 ``run_command``.
 """
 
-from __future__ import annotations
-
 import asyncio
 import importlib.resources as resources
 import json
@@ -54,7 +52,7 @@ from verifiers.envs.experimental.composable.harness import Harness
 from verifiers.envs.experimental.composable.task import TaskSet
 from verifiers.envs.experimental.utils.file_locks import shared_path_lock
 from verifiers.envs.tool_env import ToolMonitorRubric
-from verifiers.types import State
+from verifiers.types import State, TrajectoryStep
 from verifiers.utils.logging_utils import print_size, print_time
 
 logger = logging.getLogger(__name__)
@@ -174,6 +172,11 @@ class ComposableEnv(CliAgentEnv):
         """Per-instance resources from SandboxSpec, or harness defaults."""
         spec = self._get_spec(state) or self.harness.sandbox_spec
         if spec:
+            timeout_minutes = (
+                spec.timeout_minutes
+                if spec.timeout_minutes is not None
+                else self.compute_sandbox_timeout_minutes()
+            )
             return {
                 "cpu_cores": spec.cpu_cores,
                 "memory_gb": spec.memory_gb,
@@ -181,7 +184,7 @@ class ComposableEnv(CliAgentEnv):
                 "gpu_count": spec.gpu_count,
                 "gpu_type": spec.gpu_type,
                 "vm": spec.gpu_count > 0,
-                "timeout_minutes": spec.timeout_minutes,
+                "timeout_minutes": timeout_minutes,
             }
         return super().get_sandbox_resources(state)
 
@@ -215,20 +218,61 @@ class ComposableEnv(CliAgentEnv):
         env_vars["AGENT_WORKDIR"] = self.taskset.get_workdir(info)
         return env_vars
 
+    async def add_trajectory_step(
+        self, state: State, trajectory_step: TrajectoryStep
+    ) -> None:
+        """Append the step unless the harness's filter says to drop it.
+
+        Reads the originating request's headers from
+        ``state["_last_request_headers"]`` — ``CliAgentEnv.get_model_response``
+        stashes them there before clearing ``current_request_id``, since
+        ``add_trajectory_step`` runs *after* that clear. Headers, step,
+        and state are passed to ``harness.keep_trajectory_step``;
+        ``True`` keeps, ``False`` drops. ``None`` filter (default) keeps
+        every step.
+        """
+        if self.harness.keep_trajectory_step is not None:
+            headers = state.get("_last_request_headers") or {}
+            if not self.harness.keep_trajectory_step(trajectory_step, state, headers):
+                return
+        await super().add_trajectory_step(state, trajectory_step)
+
+    async def render_completion(self, state: State) -> None:
+        """Delegate to ``harness.render_completion`` if provided.
+
+        The harness renderer mutates ``state["completion"]`` directly.
+        Falls back to ``MultiTurnEnv.render_completion`` when no harness
+        renderer is set.
+        """
+        if self.harness.render_completion is None:
+            await super().render_completion(state)
+            return
+        self.harness.render_completion(state)
+
     async def post_sandbox_setup(self, state: State) -> None:
         """Task setup → upload instruction/system prompt → upload dirs →
         install agent → post-install (uploads + script).
 
         The post-install step runs ``Harness.post_install_uploads`` and
         ``Harness.post_install_script`` after the agent is fully
-        installed — harnesses use it to layer small assets onto the
-        installed agent (e.g. RLM's ``/usr/local/bin/git`` refusal
-        shim)."""
+        installed — a generic hook harnesses use to layer small assets
+        onto the installed agent."""
         sandbox_id = state["sandbox_id"]
 
-        await self._populate_sandbox_context(state)
+        state["sandbox_client"] = self.sandbox_client
+        spec = self._get_spec(state) or self.harness.sandbox_spec
+        if spec and spec.timeout_minutes is not None:
+            state["test_timeout"] = spec.timeout_minutes * 60
+        else:
+            state["test_timeout"] = self.compute_sandbox_timeout_minutes() * 60
         await self.taskset.setup(state)
-        await self._create_harness_input_dirs(sandbox_id)
+        dirs = {self.harness.instruction_path.rsplit("/", 1)[0]}
+        if self.harness.system_prompt:
+            dirs.add(self.harness.system_prompt_path.rsplit("/", 1)[0])
+        mkdir_args = " ".join(shlex.quote(path) for path in sorted(dirs))
+        await self.sandbox_client.execute_command(
+            sandbox_id, f"mkdir -p {mkdir_args}", timeout=self.timeouts.mkdir
+        )
         await self._upload_harness_inputs(sandbox_id, state)
         await self._after_harness_inputs_uploaded(state)
         await self._install_agent(sandbox_id)
@@ -258,27 +302,6 @@ class ComposableEnv(CliAgentEnv):
             await self._collect_harness_metrics(sandbox_id, state)
 
         await super().post_rollout(state)
-
-    async def _populate_sandbox_context(self, state: State) -> None:
-        """Populate sandbox-specific context used by setup/evaluate hooks."""
-        state["sandbox_client"] = self.sandbox_client
-        spec = self._get_spec(state)
-        if spec:
-            state["test_timeout"] = spec.timeout_minutes * 60
-        elif self.harness.sandbox_spec:
-            state["test_timeout"] = self.harness.sandbox_spec.timeout_minutes * 60
-        else:
-            state["test_timeout"] = 900
-
-    async def _create_harness_input_dirs(self, sandbox_id: str) -> None:
-        """Create parent directories for harness-managed task assets."""
-        dirs = {self.harness.instruction_path.rsplit("/", 1)[0]}
-        if self.harness.system_prompt:
-            dirs.add(self.harness.system_prompt_path.rsplit("/", 1)[0])
-        mkdir_args = " ".join(shlex.quote(path) for path in sorted(dirs))
-        await self.sandbox_client.execute_command(
-            sandbox_id, f"mkdir -p {mkdir_args}", timeout=self.timeouts.mkdir
-        )
 
     async def _upload_harness_inputs(self, sandbox_id: str, state: State) -> None:
         """Upload instruction and optional system prompt to harness-declared paths."""
@@ -362,11 +385,10 @@ class ComposableEnv(CliAgentEnv):
         """Upload harness ``post_install_uploads`` and run ``post_install_script``.
 
         Runs after ``_install_agent`` so harnesses can layer small assets
-        on top of a fully-installed agent (e.g. RLM stages its git refusal
-        shim into ``$HOME/.local/bin/git`` and chmods it executable).
-        Uses the single-file upload path — not ``_upload_dir`` — because
-        these are small, harness-computed blobs of content rather than
-        local directories on disk.
+        on top of a fully-installed agent. Uses the single-file upload
+        path — not ``_upload_dir`` — because these are small,
+        harness-computed blobs of content rather than local directories
+        on disk.
         """
         uploads = self.harness.post_install_uploads
         if uploads:

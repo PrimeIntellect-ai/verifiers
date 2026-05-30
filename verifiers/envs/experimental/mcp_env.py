@@ -1,5 +1,4 @@
 import asyncio
-import atexit
 import logging
 import threading
 from dataclasses import dataclass
@@ -191,16 +190,6 @@ class MCPEnv(vf.ToolEnv):
         fut.result()
         self._setup_complete = True
 
-        # cleanup on exit
-        atexit.register(
-            lambda: (
-                asyncio.run_coroutine_threadsafe(self.cleanup(), self._bg_loop).result(
-                    timeout=5
-                ),
-                self._shutdown_loop(),
-            )
-        )
-
     def _run_loop(self, loop: asyncio.AbstractEventLoop):
         asyncio.set_event_loop(loop)
         loop.run_forever()
@@ -260,13 +249,14 @@ class MCPEnv(vf.ToolEnv):
                 },
             )
 
-    async def cleanup(self):
+    @vf.teardown
+    async def teardown_mcp_servers(self):
         for connection in self.server_connections.values():
-            await connection.disconnect()
-
+            fut = asyncio.run_coroutine_threadsafe(
+                connection.disconnect(), self._bg_loop
+            )
+            await asyncio.wrap_future(fut)
         self.server_connections.clear()
         self.mcp_tools.clear()
-
-    def _shutdown_loop(self):
         self._bg_loop.call_soon_threadsafe(self._bg_loop.stop)
         self._bg_thread.join(timeout=5)

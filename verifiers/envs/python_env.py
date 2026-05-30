@@ -206,7 +206,9 @@ PY
         self.remove_tool(self.bash)  # omit from agent tool list
 
     async def setup_state(self, state: vf.State, **kwargs: Any) -> vf.State:
-        state = await super().setup_state(state, **kwargs)
+        setup_state = await super().setup_state(state, **kwargs)
+        if setup_state is not None:
+            state = setup_state
         state["python_state"] = {
             "ready": False,
             "execution_count": 0,

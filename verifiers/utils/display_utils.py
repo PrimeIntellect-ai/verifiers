@@ -35,18 +35,26 @@ def make_aligned_row(left: Text, right: Text) -> Table:
 
 
 def make_kv_line(
-    items: dict[str, object], prefix: str = "╰─ ", prefix_style: str = "dim"
+    items: dict[str, object],
+    prefix: str = "╰─ ",
+    prefix_style: str = "dim",
+    section_label: str | None = None,
+    value_style: str = "bold",
 ) -> Text:
     """Create a key-value line like: ╰─ name value   name value
 
-    Keys are dim, values are bold, separated by 3 spaces.
+    Keys are dim, values use ``value_style`` (default bold), separated by 3 spaces.
+    If ``section_label`` is provided it is inserted after the prefix in a distinct style.
     """
     text = Text()
     text.append(prefix, style=prefix_style)
+    if section_label:
+        text.append(section_label, style="bold dim")
+        text.append("  ")
     for i, (name, value) in enumerate(items.items()):
         text.append(name, style="dim")
         text.append(" ", style="dim")
-        text.append(str(value), style="bold")
+        text.append(str(value), style=value_style)
         if i < len(items) - 1:
             text.append("   ")
     return text
@@ -100,7 +108,7 @@ class DisplayLogHandler(logging.Handler):
             pass
 
 
-class _FDToLogger(threading.Thread):
+class FDToLogger(threading.Thread):
     """Background reader that forwards a file descriptor's output to a logger."""
 
     def __init__(
@@ -167,8 +175,8 @@ class BaseDisplay:
         self._old_stdout_fd: int | None = None
         self._old_stderr_fd: int | None = None
         self._console_file: io.TextIOWrapper | None = None
-        self._stdout_thread: _FDToLogger | None = None
-        self._stderr_thread: _FDToLogger | None = None
+        self._stdout_thread: FDToLogger | None = None
+        self._stderr_thread: FDToLogger | None = None
         self._key_listener_thread: threading.Thread | None = None
         self._key_listener_stop: threading.Event | None = None
 
@@ -257,13 +265,13 @@ class BaseDisplay:
         os.close(stdout_w)
         os.dup2(stderr_w, 2)
         os.close(stderr_w)
-        self._stdout_thread = _FDToLogger(
+        self._stdout_thread = FDToLogger(
             stdout_r,
             logger.getChild("stdout"),
             logging.INFO,
             getattr(self._old_stdout, "encoding", None),
         )
-        self._stderr_thread = _FDToLogger(
+        self._stderr_thread = FDToLogger(
             stderr_r,
             logger.getChild("stderr"),
             logging.ERROR,
@@ -425,11 +433,6 @@ class BaseDisplay:
         fd = sys.stdin.fileno()
         old_settings = termios_module.tcgetattr(fd)
 
-        def drain_escape_sequence() -> None:
-            """Consume remaining chars of an escape sequence (mouse events, etc)."""
-            while select_module.select([sys.stdin], [], [], 0.01)[0]:
-                sys.stdin.read(1)
-
         try:
             # Use cbreak mode (not raw) - allows single char input without corrupting display
             tty_module.setcbreak(fd)
@@ -448,7 +451,8 @@ class BaseDisplay:
                         # Check if more chars follow (escape sequence vs standalone Esc)
                         if select_module.select([sys.stdin], [], [], 0.05)[0]:
                             # Escape sequence - drain it and ignore
-                            drain_escape_sequence()
+                            while select_module.select([sys.stdin], [], [], 0.01)[0]:
+                                sys.stdin.read(1)
                             continue
                         else:
                             # Standalone Escape key - exit
@@ -499,3 +503,60 @@ class BaseDisplay:
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         """Sync context manager exit - stop the display."""
         self.stop()
+
+
+def _timing_parts(
+    setup: float = 0.0,
+    generation: float = 0.0,
+    scoring: float = 0.0,
+    overhead: float = 0.0,
+    model: float = 0.0,
+    env: float = 0.0,
+) -> list[tuple[str, str, list[tuple[str, str]]]]:
+    """Return timing breakdown as structured parts.
+
+    Each part is ``(label, value, sub_parts)`` where *sub_parts* is a list of
+    ``(label, value)`` tuples for the parenthesised breakdown (e.g. model/env
+    inside generation).
+    """
+    from verifiers.utils.logging_utils import print_time
+
+    parts: list[tuple[str, str, list[tuple[str, str]]]] = []
+    if setup > 0:
+        parts.append(("setup", print_time(setup), []))
+    if generation > 0:
+        subs = [("model", print_time(model)), ("env", print_time(env))]
+        parts.append(("generation", print_time(generation), subs))
+    if scoring > 0:
+        parts.append(("scoring", print_time(scoring), []))
+    parts.append(("overhead", print_time(overhead), []))
+    return parts
+
+
+def format_timing_rich(
+    setup: float = 0.0,
+    generation: float = 0.0,
+    scoring: float = 0.0,
+    overhead: float = 0.0,
+    model: float = 0.0,
+    env: float = 0.0,
+    label_style: str = "dim",
+    value_style: str = "white",
+) -> Text:
+    """Return a styled compact timing breakdown."""
+    parts = _timing_parts(setup, generation, scoring, overhead, model, env)
+    text = Text()
+    for i, (label, value, subs) in enumerate(parts):
+        if i > 0:
+            text.append(" + ", style=label_style)
+        text.append(f"{label} ", style=label_style)
+        text.append(value, style=value_style)
+        if subs:
+            text.append(" (", style=label_style)
+            for j, (sl, sv) in enumerate(subs):
+                if j > 0:
+                    text.append(" + ", style=label_style)
+                text.append(f"{sl} ", style=label_style)
+                text.append(sv, style=value_style)
+            text.append(")", style=label_style)
+    return text

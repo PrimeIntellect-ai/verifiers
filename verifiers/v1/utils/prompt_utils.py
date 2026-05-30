@@ -1,0 +1,244 @@
+import importlib.util
+from dataclasses import dataclass
+from pathlib import Path
+from typing import TYPE_CHECKING, Literal, cast
+
+from pydantic import model_validator
+from typing_extensions import Self
+from verifiers.types import Messages, SystemMessage
+from verifiers.utils.message_utils import normalize_messages
+
+from ..config import Config
+from ..types import JsonData, PromptInput, SystemPrompt
+from .config_utils import current_config_ref_module
+
+if TYPE_CHECKING:
+    from ..state import State
+    from ..task import Task
+
+
+SystemPromptStrategy = Literal["REJECT", "TH", "HT", "T", "H", "T_OR_H", "H_OR_T"]
+SystemPromptTasksetSource = Literal["task", "taskset"]
+
+
+@dataclass(frozen=True)
+class SystemPromptResolution:
+    harness: list[JsonData]
+    taskset: list[JsonData]
+    taskset_source: SystemPromptTasksetSource | None
+
+    def apply_strategy(self, strategy: SystemPromptStrategy) -> list[JsonData]:
+        if strategy == "HT":
+            return [*self._copy(self.harness), *self._copy(self.taskset)]
+        if strategy == "TH":
+            return [*self._copy(self.taskset), *self._copy(self.harness)]
+        if strategy == "REJECT":
+            if self.harness and self.taskset:
+                raise ValueError(
+                    "Multiple system_prompt sides cannot be resolved: "
+                    f"harness, {self.taskset_source or 'taskset'}. "
+                    "Set system_prompt_strategy='HT', 'TH', 'H', 'T', "
+                    "'H_OR_T', or 'T_OR_H'."
+                )
+            return [*self._copy(self.harness), *self._copy(self.taskset)]
+        if strategy == "H_OR_T":
+            return self._copy(self.harness or self.taskset)
+        if strategy == "T_OR_H":
+            return self._copy(self.taskset or self.harness)
+        if strategy == "H":
+            return self._copy(self.harness)
+        if strategy == "T":
+            return self._copy(self.taskset)
+        raise ValueError(
+            "system_prompt_strategy must be one of REJECT, TH, HT, T, H, "
+            "T_OR_H, H_OR_T."
+        )
+
+    @staticmethod
+    def _copy(messages: list[JsonData]) -> list[JsonData]:
+        return [dict(message) for message in messages]
+
+
+class SystemPromptConfig(Config):
+    path: str | None = None
+    messages: list[JsonData] = []
+
+    @model_validator(mode="after")
+    def validate_one_source(self) -> Self:
+        sources = [
+            self.path is not None,
+            bool(self.messages),
+        ]
+        if sum(sources) != 1:
+            raise ValueError("SystemPromptConfig requires exactly one source.")
+        return self
+
+    def load(self, field_name: str) -> PromptInput | None:
+        if self.path is not None:
+            return read_system_prompt_path(
+                resolve_system_prompt_path(self.path), field_name=field_name
+            )
+        return self.messages
+
+
+def normalize_prompt(
+    value: PromptInput | None, field_name: str = "prompt"
+) -> list[JsonData]:
+    messages = normalize_messages(cast(Messages, value or []), field_name=field_name)
+    for message in messages:
+        if getattr(message, "role", None) == "system":
+            raise ValueError(
+                f"{field_name} must not contain system messages. "
+                "Use system_prompt instead."
+            )
+    return dump_messages(messages)
+
+
+def normalize_system_prompt(
+    value: SystemPrompt | SystemPromptConfig | None,
+    field_name: str = "system_prompt",
+) -> list[JsonData]:
+    value = resolve_system_prompt_input(value, field_name=field_name)
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [SystemMessage(content=value).model_dump(exclude_none=True)]
+    messages = normalize_messages(cast(Messages, value), field_name=field_name)
+    for message in messages:
+        if getattr(message, "role", None) != "system":
+            raise ValueError(f"{field_name} accepts only system messages.")
+    return dump_messages(messages)
+
+
+def resolve_system_prompt_input(
+    value: PromptInput | SystemPromptConfig | None,
+    *,
+    field_name: str,
+) -> PromptInput | None:
+    if value is None:
+        return None
+    if isinstance(value, SystemPromptConfig):
+        return value.load(field_name)
+    return value
+
+
+def resolve_system_prompt_path(value: str) -> Path:
+    path = Path(value).expanduser()
+    if path.is_absolute():
+        return path
+    module_name = current_config_ref_module()
+    if module_name is None:
+        return path
+    spec = importlib.util.find_spec(module_name)
+    if spec is None or spec.origin is None:
+        return path
+    return Path(spec.origin).parent / path
+
+
+def read_system_prompt_path(path: Path, field_name: str) -> str:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ValueError(f"{field_name} path {str(path)!r} could not be read.") from exc
+    if not text:
+        raise ValueError(f"{field_name} path {str(path)!r} must not be empty.")
+    return text
+
+
+def resolve_system_prompt(
+    *,
+    task: "Task",
+    taskset_system_prompt: list[JsonData],
+    harness_system_prompt: list[JsonData],
+    strategy: SystemPromptStrategy,
+) -> list[JsonData]:
+    return system_prompt_resolution(
+        task=task,
+        taskset_system_prompt=taskset_system_prompt,
+        harness_system_prompt=harness_system_prompt,
+    ).apply_strategy(strategy)
+
+
+def system_prompt_resolution(
+    *,
+    task: "Task",
+    taskset_system_prompt: list[JsonData],
+    harness_system_prompt: list[JsonData],
+) -> SystemPromptResolution:
+    task_system_prompt = normalize_system_prompt(
+        cast(PromptInput | None, task.get("system_prompt")),
+        field_name="task.system_prompt",
+    )
+    return SystemPromptResolution(
+        harness=[dict(message) for message in harness_system_prompt],
+        taskset=(
+            [dict(message) for message in task_system_prompt]
+            if task_system_prompt
+            else [dict(message) for message in taskset_system_prompt]
+        ),
+        taskset_source=(
+            "task"
+            if task_system_prompt
+            else "taskset"
+            if taskset_system_prompt
+            else None
+        ),
+    )
+
+
+def dump_messages(messages: Messages) -> list[JsonData]:
+    return [message.model_dump(exclude_none=True) for message in messages]
+
+
+def task_text(
+    task: "Task",
+    state: "State",
+    *,
+    keys: tuple[str, ...] = ("instruction",),
+) -> str:
+    for key in keys:
+        value = task.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return messages_text(task.get("prompt", []))
+
+
+def state_system_prompt_text(task: "Task", state: "State") -> str:
+    return messages_text(state.get("system_prompt", []))
+
+
+def messages_text(messages: object) -> str:
+    if isinstance(messages, str):
+        return messages
+    if not isinstance(messages, list):
+        return str(messages or "")
+    parts: list[str] = []
+    for message in messages:
+        content = getattr(message, "content", None)
+        if content is not None:
+            parts.append(content_text(content))
+        elif isinstance(message, dict):
+            item = cast(JsonData, message)
+            parts.append(content_text(item.get("content")))
+        else:
+            parts.append(str(message))
+    return "\n\n".join(part for part in parts if part)
+
+
+def content_text(content: object) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        text_parts: list[str] = []
+        for part in content:
+            if isinstance(part, dict):
+                item = cast(JsonData, part)
+                text = item.get("text")
+                if isinstance(text, str):
+                    text_parts.append(text)
+            elif isinstance(part, str):
+                text_parts.append(part)
+        return "\n".join(text_parts)
+    return str(content)

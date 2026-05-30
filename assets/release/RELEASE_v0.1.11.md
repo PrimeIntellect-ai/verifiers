@@ -81,7 +81,7 @@
 
 - Update `README.md` paths and environment documentation links (#898)
 - replace outdated `vf-*` CLI references with `prime` CLI commands (#926)
-- Sync `endpoints.toml` API type fields with `endpoints.py` (#925)
+- Sync endpoint registry API type fields (#925)
 - Change `publish-envs` workflow to manual and release triggers (#922)
 - Fix all ty type check errors in `verifiers/` (#998)
 - pin ty version because `0.0.22` is buggy (#1014)

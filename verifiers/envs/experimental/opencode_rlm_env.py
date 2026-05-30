@@ -96,25 +96,36 @@ class OpenCodeRLMMonitorRubric(vf.Rubric):
 RLM_RUN_COMMAND_TEMPLATE = """\
 set -e
 
-apt-get update && apt-get install -y curl git unzip jq
+# Acquire::Retries=3 mitigates transient archive.ubuntu.com CDN sync mismatches
+# that fail fresh-sandbox apt-get update mid-rollout (launchpad bug #1876035).
+apt-get -o Acquire::Retries=3 update && apt-get -o Acquire::Retries=3 install -y curl git unzip jq
 
 # Install bun (TypeScript runtime required by the RLM plugin)
 curl -fsSL https://bun.sh/install | bash
 export PATH="$HOME/.bun/bin:$PATH"
 
 # Install opencode
-for install_attempt in 1 2 3; do
-    if {install_command}; then
-        break
-    fi
-    if [ "$install_attempt" -eq 3 ]; then
-        echo "OpenCode installation failed after 3 attempts" >&2
-        exit 1
-    fi
-    echo "OpenCode install attempt $install_attempt/3 failed, retrying in 5s..." >&2
-    sleep 5
-done
+if [ -x "$HOME/.opencode/bin/opencode" ]; then
+    echo "OpenCode already installed, skipping download"
+else
+    for install_attempt in 1 2 3; do
+        if {install_command}; then
+            break
+        fi
+        if [ "$install_attempt" -eq 3 ]; then
+            echo "OpenCode installation failed after 3 attempts" >&2
+            exit 1
+        fi
+        echo "OpenCode install attempt $install_attempt/3 failed, retrying in 5s..." >&2
+        sleep 5
+    done
+fi
 export PATH="$HOME/.opencode/bin:$PATH"
+
+if [ ! -x "$HOME/.opencode/bin/opencode" ]; then
+    echo "OpenCode binary not found after installation" >&2
+    exit 1
+fi
 
 # Install RLM plugin
 git clone --branch {plugin_branch} https://github.com/{plugin_repo}.git {plugin_install_path}
@@ -247,16 +258,14 @@ class OpenCodeRLMEnv(OpenCodeEnv):
         return env
 
     async def setup_state(self, state: State) -> State:
-        state = await super().setup_state(state)
+        setup_state = await super().setup_state(state)
+        if setup_state is not None:
+            state = setup_state
         state.setdefault("sub_llm_turns", 0)
         state.setdefault("sub_llm_prompt_tokens", 0)
         state.setdefault("sub_llm_completion_tokens", 0)
         state.setdefault("_sub_llm_tasks", set())
         return state
-
-    @staticmethod
-    def _is_sub_llm_request(intercept: dict[str, Any]) -> bool:
-        return intercept.get("headers", {}).get("x-rlm-role") == "sub"
 
     async def get_prompt_messages(self, state: State) -> Messages:
         """Extends parent to route sub-LLM requests concurrently.
@@ -278,7 +287,7 @@ class OpenCodeRLMEnv(OpenCodeEnv):
 
             intercept = interception_server.intercepts[request_id]
 
-            if self._is_sub_llm_request(intercept):
+            if intercept.get("headers", {}).get("x-rlm-role") == "sub":
                 task = asyncio.create_task(
                     self._handle_sub_llm_request(state, request_id, intercept)
                 )
@@ -349,7 +358,14 @@ class OpenCodeRLMEnv(OpenCodeEnv):
                 raise error
 
             if response is not None:
-                self._update_sub_metrics(state, response)
+                prompt_tokens, completion_tokens = self._extract_token_counts(response)
+                state["sub_llm_turns"] = state.get("sub_llm_turns", 0) + 1
+                state["sub_llm_prompt_tokens"] = (
+                    state.get("sub_llm_prompt_tokens", 0) + prompt_tokens
+                )
+                state["sub_llm_completion_tokens"] = (
+                    state.get("sub_llm_completion_tokens", 0) + completion_tokens
+                )
                 if self.include_sub_llm_in_trajectory:
                     completion = [response.message] if response.message else []
                     prompt_tokens, completion_tokens = self._extract_token_counts(
@@ -410,14 +426,4 @@ class OpenCodeRLMEnv(OpenCodeEnv):
         return (
             int(getattr(usage, "prompt_tokens", 0) or 0),
             int(getattr(usage, "completion_tokens", 0) or 0),
-        )
-
-    def _update_sub_metrics(self, state: State, response: Response) -> None:
-        prompt_tokens, completion_tokens = self._extract_token_counts(response)
-        state["sub_llm_turns"] = state.get("sub_llm_turns", 0) + 1
-        state["sub_llm_prompt_tokens"] = (
-            state.get("sub_llm_prompt_tokens", 0) + prompt_tokens
-        )
-        state["sub_llm_completion_tokens"] = (
-            state.get("sub_llm_completion_tokens", 0) + completion_tokens
         )

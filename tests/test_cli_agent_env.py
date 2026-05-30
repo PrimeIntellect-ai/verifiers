@@ -1,5 +1,6 @@
 """Tests for CliAgentEnv and HarborEnv."""
 
+import asyncio
 import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -8,6 +9,7 @@ import pytest
 from datasets import Dataset
 
 import verifiers as vf
+from verifiers.utils.interception_utils import serialize_intercept_response
 
 
 @pytest.fixture
@@ -62,7 +64,8 @@ class TestCliAgentEnv:
         assert env.run_command == "python agent.py"
         assert env.docker_image == "python:3.11-slim"
         assert env.interception_port == 8765
-        assert env.timeout_seconds == 3600.0
+        assert env.timeout_seconds is None
+        assert env.sandbox_timeout_minutes is None
 
     def test_init_custom_config(self, sample_dataset):
         """Test initialization with custom configuration."""
@@ -99,6 +102,11 @@ class TestCliAgentEnv:
         env_vars = await env.build_env_vars(state)
 
         assert env_vars["OPENAI_BASE_URL"] == "https://test.trycloudflare.com/v1"
+        assert env_vars["OPENAI_API_KEY"] == env._require_interception_server().secret
+        assert env_vars["ANTHROPIC_BASE_URL"] == "https://test.trycloudflare.com"
+        assert (
+            env_vars["ANTHROPIC_API_KEY"] == env._require_interception_server().secret
+        )
         assert env_vars["OPENAI_MODEL"] == "gpt-4"
         assert env_vars["CUSTOM_VAR"] == "value"
 
@@ -130,22 +138,34 @@ class TestCliAgentEnv:
         state = {"agent_completed": True}
         assert await env.agent_completed(state) is True
 
-    @pytest.mark.asyncio
-    async def test_timeout_reached_stop_condition(self, sample_dataset):
-        """Test the timeout_reached stop condition."""
+    @pytest.mark.parametrize(
+        "timeout_seconds,expected_minutes",
+        [
+            (None, 24 * 60),  # no rollout cap → SDK ceiling
+            (600.0, 10 + 60),  # finite → ceil + scoring buffer
+            (24 * 3600.0, 24 * 60),  # buffer would overflow → clamped to ceiling
+        ],
+    )
+    def test_sandbox_timeout_auto_derived(
+        self, sample_dataset, timeout_seconds, expected_minutes
+    ):
         env = vf.CliAgentEnv(
             run_command="python agent.py",
             dataset=sample_dataset,
             rubric=vf.Rubric(),
-            timeout_seconds=10.0,
+            timeout_seconds=timeout_seconds,
         )
-        import time
+        assert env.get_sandbox_resources({})["timeout_minutes"] == expected_minutes
 
-        state = {"timing": {"start_time": time.time()}}
-        assert await env.timeout_reached(state) is False
-
-        state = {"timing": {"start_time": time.time() - 20}}
-        assert await env.timeout_reached(state) is True
+    def test_sandbox_timeout_explicit_override(self, sample_dataset):
+        env = vf.CliAgentEnv(
+            run_command="python agent.py",
+            dataset=sample_dataset,
+            rubric=vf.Rubric(),
+            timeout_seconds=600.0,
+            sandbox_timeout_minutes=30,
+        )
+        assert env.get_sandbox_resources({})["timeout_minutes"] == 30
 
     @pytest.mark.asyncio
     async def test_env_response_returns_empty(self, sample_dataset):
@@ -204,6 +224,152 @@ class TestCliAgentEnv:
         assert kwargs["tools"][0].name == "echo"
 
 
+@pytest.mark.asyncio
+async def test_cli_agent_env_delivers_intercepted_tool_call_response(
+    sample_dataset, mock_client
+):
+    env = vf.CliAgentEnv(
+        run_command="python agent.py",
+        dataset=sample_dataset,
+        rubric=vf.Rubric(),
+    )
+    prompt = sample_dataset[0]["prompt"]
+    tool_call = {
+        "id": "call_echo",
+        "type": "function",
+        "function": {"name": "echo", "arguments": '{"text": "hello"}'},
+    }
+    mock_client.add_response(
+        prompt,
+        "",
+        finish_reason="tool_calls",
+        tool_calls=[tool_call],
+    )
+
+    state = await env.init_state(
+        input=sample_dataset[0],
+        client=mock_client,
+        model="test-model",
+    )
+    response_future = asyncio.Future()
+    request_id = "req-tool-call"
+    state["current_request_id"] = request_id
+    env._interception_server.intercepts[request_id] = {
+        "stream": False,
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "echo",
+                    "description": "Return the provided text.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"text": {"type": "string"}},
+                    },
+                },
+            }
+        ],
+        "response_future": response_future,
+    }
+
+    response = await env.get_model_response(
+        state=state,
+        prompt=prompt,
+        client=mock_client,
+        model="test-model",
+    )
+
+    assert response_future.done()
+    assert response_future.result() is response
+    assert state["current_request_id"] is None
+
+    payload = serialize_intercept_response(response_future.result())
+    choice = payload["choices"][0]
+    assert choice["finish_reason"] == "tool_calls"
+    assert choice["message"]["tool_calls"] == [tool_call]
+    assert mock_client.last_call_kwargs["tools"][0].name == "echo"
+
+
+@pytest.mark.asyncio
+async def test_cli_agent_env_synthesizes_stream_for_intercepted_tool_call_response(
+    sample_dataset, mock_client
+):
+    env = vf.CliAgentEnv(
+        run_command="python agent.py",
+        dataset=sample_dataset,
+        rubric=vf.Rubric(),
+    )
+    prompt = sample_dataset[0]["prompt"]
+    tool_call = {
+        "id": "call_echo",
+        "type": "function",
+        "function": {"name": "echo", "arguments": '{"text": "hello"}'},
+    }
+    mock_client.add_response(
+        prompt,
+        "",
+        finish_reason="tool_calls",
+        tool_calls=[tool_call],
+    )
+
+    state = await env.init_state(
+        input=sample_dataset[0],
+        client=mock_client,
+        model="test-model",
+    )
+    chunk_queue = asyncio.Queue()
+    response_future = asyncio.Future()
+    request_id = "req-stream-tool-call"
+    state["current_request_id"] = request_id
+    env._interception_server.intercepts[request_id] = {
+        "stream": True,
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "echo",
+                    "description": "Return the provided text.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"text": {"type": "string"}},
+                    },
+                },
+            }
+        ],
+        "chunk_queue": chunk_queue,
+        "response_future": response_future,
+    }
+
+    response = await env.get_model_response(
+        state=state,
+        prompt=prompt,
+        client=mock_client,
+        model="test-model",
+    )
+
+    chunks = []
+    while True:
+        chunk = await asyncio.wait_for(chunk_queue.get(), timeout=1.0)
+        if chunk is None:
+            break
+        chunks.append(chunk)
+
+    assert response_future.done()
+    assert response_future.result() is response
+    assert state["current_request_id"] is None
+
+    assert chunks[0]["object"] == "chat.completion.chunk"
+    assert chunks[0]["choices"][0]["delta"]["tool_calls"][0]["id"] == "call_echo"
+    assert (
+        chunks[0]["choices"][0]["delta"]["tool_calls"][0]["function"]["name"] == "echo"
+    )
+    assert (
+        chunks[0]["choices"][0]["delta"]["tool_calls"][0]["function"]["arguments"]
+        == '{"text": "hello"}'
+    )
+    assert chunks[-1]["choices"][0]["finish_reason"] == "tool_calls"
+
+
 class TestHarborEnv:
     """Tests for HarborEnv."""
 
@@ -231,7 +397,7 @@ class TestHarborEnv:
             dataset_path=harbor_task_dir,
         )
         assert len(env.dataset) == 1
-        assert env.dataset[0]["task"] == "test_task"
+        assert env.dataset[0]["info"]["task_name"] == "test_task"
 
     def test_init_filters_tasks(self, harbor_task_dir):
         """Test that HarborEnv can filter tasks by name."""
@@ -247,7 +413,7 @@ class TestHarborEnv:
             tasks=["test_task"],
         )
         assert len(env.dataset) == 1
-        assert env.dataset[0]["task"] == "test_task"
+        assert env.dataset[0]["info"]["task_name"] == "test_task"
 
     def test_init_raises_on_empty_dataset(self):
         """Test that HarborEnv raises when no valid tasks found."""
@@ -301,7 +467,7 @@ class TestHarborEnv:
         )
         state = {
             "interception_base_url": "https://test.trycloudflare.com/v1",
-            "task": "my_task",
+            "info": {"task_name": "my_task"},
         }
         env_vars = await env.build_env_vars(state)
 

@@ -883,7 +883,6 @@ class CUAMode:
                 # Wrap all other exceptions in BrowserSandboxError
                 # This ensures cleanup_session is called via stop_errors mechanism
                 raise vf.BrowserSandboxError(e)
-
         return state
 
     def update_tool_args(

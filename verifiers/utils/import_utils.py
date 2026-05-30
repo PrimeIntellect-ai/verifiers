@@ -1,17 +1,10 @@
-from __future__ import annotations
-
 import importlib
 from typing import Any, cast
 
-
-def _load_toml_module() -> Any:
-    try:
-        return importlib.import_module("tomllib")
-    except ModuleNotFoundError:
-        return importlib.import_module("tomli")
-
-
-_TOML = _load_toml_module()
+try:
+    _TOML = importlib.import_module("tomllib")
+except ModuleNotFoundError:
+    _TOML = importlib.import_module("tomli")
 
 
 def load_toml(file_obj: Any) -> dict[str, Any]:

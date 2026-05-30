@@ -1,31 +1,42 @@
-from typing import Any
+from collections.abc import Mapping
+from typing import cast
 
 import verifiers as vf
+from tasksets.openenv import OpenEnvTaskset, OpenEnvTasksetConfig
 from verifiers.types import Messages, UserMessage
-from verifiers.utils.message_utils import normalize_messages
+from verifiers.utils.message_utils import MessageInput, normalize_messages
 
 
-def render_echo_prompt(
-    observation: Any,
+class OpenEnvEchoTasksetConfig(OpenEnvTasksetConfig):
+    prompt_renderer: str = "openenv_echo:render_openenv_prompt"
+
+
+def render_openenv_prompt(
+    observation: object,
     *,
-    action_schema: dict[str, Any] | None = None,
+    action_schema: vf.ConfigData | None = None,
     context: str = "reset",
+    contract: str = "mcp",
+    seed: int = 0,
 ) -> Messages:
-    if not isinstance(observation, dict):
+    del contract, seed
+    if not isinstance(observation, Mapping):
         raise RuntimeError(
             f"openenv-echo prompt renderer expected dict observation, got {type(observation).__name__}."
         )
+    observation_data = cast(vf.ConfigData, observation)
 
-    messages = observation.get("messages")
+    messages = observation_data.get("messages")
     if isinstance(messages, list) and messages:
         try:
             return normalize_messages(
-                messages, field_name="openenv-echo observation messages"
+                cast(MessageInput, messages),
+                field_name="openenv-echo observation messages",
             )
         except TypeError as e:
             raise RuntimeError(str(e)) from e
 
-    prompt = observation.get("prompt")
+    prompt = observation_data.get("prompt")
     if isinstance(prompt, str) and prompt.strip():
         return [UserMessage(content=prompt)]
 
@@ -43,14 +54,13 @@ def render_echo_prompt(
     raise RuntimeError("openenv-echo observation did not include a renderable prompt.")
 
 
-def load_environment(
-    num_train_examples: int = 100,
-    num_eval_examples: int = 50,
-    seed: int = 0,
-):
-    return vf.OpenEnvEnv(
-        num_train_examples=num_train_examples,
-        num_eval_examples=num_eval_examples,
-        seed=seed,
-        prompt_renderer=render_echo_prompt,
+def load_taskset(config: OpenEnvEchoTasksetConfig) -> OpenEnvTaskset:
+    return OpenEnvTaskset(config=config)
+
+
+def load_environment(config: vf.EnvConfig) -> vf.Env:
+    """Loader pattern for all Taskset/Harness environments."""
+    return vf.Env(
+        taskset=vf.load_taskset(config=config.taskset),
+        harness=vf.load_harness(config=config.harness),
     )

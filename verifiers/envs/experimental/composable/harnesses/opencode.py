@@ -9,11 +9,9 @@ Usage::
     harness = opencode_harness(system_prompt="You are a coding agent...")
 """
 
-from __future__ import annotations
-
 import json
 import shlex
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 # ── Defaults ─────────────────────────────────────────────────────────────
 
@@ -58,14 +56,17 @@ def build_install_script(
 ) -> str:
     """Build the shell script that installs OpenCode in a sandbox."""
     rg_install = (
-        "apt-get install -y -qq ripgrep > /dev/null 2>&1 || true"
+        "apt-get -o Acquire::Retries=3 install -y -qq ripgrep > /dev/null 2>&1 || true"
         if install_ripgrep
         else ""
     )
     sha256_check = f'echo "{release_sha256}  /tmp/opencode.tar.gz" | sha256sum -c -'
+    # Acquire::Retries=3 mitigates transient archive.ubuntu.com CDN sync mismatches
+    # (e.g. "File has unexpected size ... Mirror sync in progress?"). See launchpad
+    # bug #1876035. apt's default retries is 0, so one bad fetch fails the rollout.
     return f"""\
 set -e
-apt-get update -qq && apt-get install -y -qq curl tar > /dev/null 2>&1
+apt-get -o Acquire::Retries=3 update -qq && apt-get -o Acquire::Retries=3 install -y -qq curl tar > /dev/null 2>&1
 {rg_install}
 
 OPENCODE_RELEASE_REPO="{release_repo}"
@@ -82,11 +83,16 @@ OPENCODE_RELEASE_TAG="${{OPENCODE_RELEASE_VERSION#v}}"
 OPENCODE_RELEASE_URL="https://github.com/$OPENCODE_RELEASE_REPO/releases/download/v$OPENCODE_RELEASE_TAG/$OPENCODE_ASSET"
 
 mkdir -p "$HOME/.opencode/bin"
-curl -fsSL "$OPENCODE_RELEASE_URL" -o /tmp/opencode.tar.gz
-{sha256_check}
-tar -xzf /tmp/opencode.tar.gz -C /tmp
-install -m 755 /tmp/opencode "$HOME/.opencode/bin/opencode"
-echo "OpenCode installed successfully"
+if [ -x "$HOME/.opencode/bin/opencode" ]; then
+  echo "OpenCode already installed, skipping download"
+else
+  curl -fsSL "$OPENCODE_RELEASE_URL" -o /tmp/opencode.tar.gz
+  {sha256_check}
+  tar -xzf /tmp/opencode.tar.gz -C /tmp
+  install -m 755 /tmp/opencode "$HOME/.opencode/bin/opencode"
+  rm -f /tmp/opencode.tar.gz /tmp/opencode
+  echo "OpenCode installed successfully"
+fi
 """
 
 
@@ -105,6 +111,9 @@ def build_opencode_config(
     provider_timeout_ms: int = 3_600_000,
 ) -> str:
     """Generate opencode.json config content."""
+    agent_config: dict[str, object] = {
+        "title": {"disable": True},
+    }
     config: dict = {
         "${SCHEMA_DOLLAR}schema": "https://opencode.ai/config.json",
         "provider": {
@@ -126,6 +135,10 @@ def build_opencode_config(
             }
         },
         "model": model_id,
+        # Keep the small-model pin to avoid falling back to the default small
+        # model and hitting rate limits; disable title calls below.
+        "small_model": model_id,
+        "agent": agent_config,
     }
 
     if disable_compaction:
@@ -137,7 +150,7 @@ def build_opencode_config(
     if disabled_tools:
         agent_build["tools"] = {tool: False for tool in disabled_tools}
     if agent_build:
-        config["agent"] = {"build": agent_build}
+        agent_config["build"] = agent_build
 
     return json.dumps(config, indent=2)
 
@@ -173,6 +186,8 @@ def build_opencode_run_command(
         provider_timeout_ms=provider_timeout_ms,
     )
 
+    log_dir = str(PurePosixPath(log_path).parent)
+
     script = f"""\
 set -eo pipefail
 
@@ -180,7 +195,23 @@ export PATH="$HOME/.opencode/bin:$PATH"
 export OPENCODE_DISABLE_FILETIME_CHECK=true
 export ALLOW_GIT={"1" if allow_git else "0"}
 
-mkdir -p ~/.config/opencode /logs/agent {agent_workdir}
+# ComposableEnv exports AGENT_WORKDIR from taskset.get_workdir(info) for each
+# rollout. Prefer that runtime value; agent_workdir is only the static fallback
+# for direct callers that do not run through ComposableEnv.
+OPENCODE_WORKDIR="${{AGENT_WORKDIR:-}}"
+if [[ -z "$OPENCODE_WORKDIR" ]]; then
+    OPENCODE_WORKDIR={shlex.quote(agent_workdir)}
+fi
+
+# OpenCode follows XDG spec — config is read from
+# $XDG_CONFIG_HOME/opencode/opencode.json (default $HOME/.config). Some
+# sandbox images (e.g. SWE-rebench-V2's swerebenchv2/* images) override
+# XDG_CONFIG_HOME to a non-default path like /workspace/.config; writing
+# only to ~/.config/opencode would silently miss it and the binary would
+# fall back to its bundled "opencode" provider (free hosted Cloudflare
+# tier), which rate-limits under load and silently blocks the agent.
+OPENCODE_CONFIG_DIR="${{XDG_CONFIG_HOME:-$HOME/.config}}/opencode"
+mkdir -p "$OPENCODE_CONFIG_DIR" {shlex.quote(log_dir)} "$OPENCODE_WORKDIR"
 
 # Ensure OPENAI_MODEL has provider/model format for opencode AI SDK config.
 # LoRA adapter names (e.g. "rft-abc123") lack a slash, causing empty modelID.
@@ -190,12 +221,12 @@ fi
 
 SCHEMA_DOLLAR='$'
 
-cat > ~/.config/opencode/opencode.json << EOFCONFIG
+cat > "$OPENCODE_CONFIG_DIR/opencode.json" << EOFCONFIG
 {config_json}
 EOFCONFIG
 
-cd {agent_workdir}
-cat {prompt_path} | opencode run 2>&1 | tee {log_path}
+cd "$OPENCODE_WORKDIR"
+cat {shlex.quote(prompt_path)} | opencode run 2>&1 | tee {shlex.quote(log_path)}
 """
     return f"bash -lc {shlex.quote(script)}"
 

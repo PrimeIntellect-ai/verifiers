@@ -18,18 +18,13 @@ LOGGER_NAME = "verifiers"
 _seen_once_keys: set[tuple[str, str]] = set()
 
 
-def log_once(logger: logging.Logger, level: int, msg: str) -> None:
-    """Log a message only once per (logger name, message) pair for the process lifetime."""
+def warning_once(logger: logging.Logger, msg: str) -> None:
+    """Log a warning only once per (logger name, message) pair for the process lifetime."""
     key = (logger.name, msg)
     if key in _seen_once_keys:
         return
     _seen_once_keys.add(key)
-    logger.log(level, msg)
-
-
-def warning_once(logger: logging.Logger, msg: str) -> None:
-    """Shorthand for ``log_once(logger, logging.WARNING, ...)``."""
-    log_once(logger, logging.WARNING, msg)
+    logger.warning(msg)
 
 
 class JsonFormatter(logging.Formatter):
@@ -122,6 +117,15 @@ def setup_logging(
         root_handler.setLevel(log_level)
         root.addHandler(root_handler)
 
+        # Mute httpcore/httpx per-request DEBUG trace noise. At scale, env workers
+        # poll background jobs at ~1Hz * max_inflight_rollouts, producing thousands
+        # of DEBUG lines/sec from httpcore.http11 with no diagnostic value. Pin
+        # these two namespaces above root DEBUG; real connection errors still
+        # surface as httpx exceptions. For wire-level debugging, use the
+        # HTTPX_LOG_LEVEL opt-in (see envs/experimental/sandbox_mixin.py).
+        logging.getLogger("httpcore").setLevel(logging.WARNING)
+        logging.getLogger("httpx").setLevel(logging.WARNING)
+
 
 @contextmanager
 def log_level(level: str | int):
@@ -159,14 +163,6 @@ def print_prompt_completions_sample(
 ) -> None:
     from verifiers.utils.message_utils import format_messages
 
-    def format_error(error: ErrorInfo | BaseException) -> Text:
-        out = Text()
-        if isinstance(error, BaseException):
-            out.append(f"error: {ErrorChain(error)}", style="bold red")
-        else:
-            out.append(f"error: {error['error_chain_repr']}", style="bold red")
-        return out
-
     console = Console()
     table = Table(show_header=True, header_style="bold white", expand=True)
 
@@ -188,7 +184,14 @@ def print_prompt_completions_sample(
         formatted_prompt = format_messages(prompt)
         formatted_completion = format_messages(completion)
         if error is not None:
-            formatted_completion += Text("\n\n") + format_error(error)
+            formatted_error = Text()
+            if isinstance(error, BaseException):
+                formatted_error.append(f"error: {ErrorChain(error)}", style="bold red")
+            else:
+                formatted_error.append(
+                    f"error: {error['error_chain_repr']}", style="bold red"
+                )
+            formatted_completion += Text("\n\n") + formatted_error
 
         table.add_row(formatted_prompt, formatted_completion, Text(f"{reward:.2f}"))
         if i < samples_to_show - 1:

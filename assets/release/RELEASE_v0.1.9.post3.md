@@ -100,7 +100,7 @@ The `vf-setup` command bootstraps a verifiers training workspace:
 **Default behavior** (no flags):
 - Creates `configs/` and `environments/` directories
 - Downloads `AGENTS.md`, `CLAUDE.md`, and `environments/AGENTS.md` for AI coding assistants
-- Downloads `configs/endpoints.py` (API endpoint configuration)
+- Downloads `configs/endpoints.toml` (API endpoint configuration)
 - Downloads lab configs for quick experimentation (`configs/lab/*.toml`)
 
 **With `--prime-rl`**:
@@ -122,4 +122,3 @@ The `vf-setup` command bootstraps a verifiers training workspace:
 - Experimental environments (GymEnv, MCPEnv, CliAgentEnv, HarborEnv, RLMEnv) are now in `verifiers.envs.experimental` and require explicit imports or `verifiers[all]` installation.
 
 **Full Changelog**: https://github.com/PrimeIntellect-ai/verifiers/compare/v0.1.8.post2...v0.1.9
-

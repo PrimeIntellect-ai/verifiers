@@ -9,8 +9,6 @@ Covers:
 - make_dataset tool call sanitization
 """
 
-from __future__ import annotations
-
 import asyncio
 import json
 from unittest.mock import AsyncMock
@@ -40,7 +38,7 @@ from verifiers.utils.save_utils import state_to_output
 # Local simple concrete Environment for testing
 class DummyEnvironment(Environment):
     async def setup_state(self, state):
-        return state
+        pass
 
     async def rollout(
         self,
@@ -52,7 +50,7 @@ class DummyEnvironment(Environment):
         state = await self.init_state(
             input, client=client, model=model, sampling_args=sampling_args
         )
-        state = await self.setup_state(state)
+        await self.setup_state(state)
 
         prompt_messages = state["prompt"]
         response = await self.get_model_response(state=state, prompt=prompt_messages)
@@ -337,7 +335,6 @@ async def test_generate_grouped_scoring_distributes_per_group(
             return [
                 {
                     "example_id": input_item["example_id"],
-                    "task": "dummy",
                     "prompt": "p",
                     "completion": "c",
                     "answer": "a",
@@ -432,7 +429,6 @@ async def test_run_group_server_mode_resolves_endpoint_config(
             return [
                 {
                     "example_id": input_item["example_id"],
-                    "task": "dummy",
                     "prompt": "p",
                     "completion": "c",
                     "answer": "a",

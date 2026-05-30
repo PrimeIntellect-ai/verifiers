@@ -23,10 +23,12 @@ Key features:
 import asyncio
 import base64
 import contextvars
+import hmac
 import json
 import logging
 import os
 import re
+import secrets
 import shlex
 import shutil
 import sys
@@ -302,16 +304,6 @@ def _ensure_rlm_metric_state(state: State) -> None:
     state.setdefault("_summarize_at_root_llm_turns", [])
 
 
-def _update_rlm_repl_metrics(state: State, execution_seconds: float) -> None:
-    _ensure_rlm_metric_state(state)
-    state["repl_total_time_seconds"] += execution_seconds
-    state["repl_call_count"] += 1
-    if state["repl_call_count"] > 0:
-        state["repl_mean_time_seconds"] = (
-            state["repl_total_time_seconds"] / state["repl_call_count"]
-        )
-
-
 def update_rlm_metrics_from_step(state: State, step: TrajectoryStep) -> None:
     _ensure_rlm_metric_state(state)
     extras = step.get("extras", {}) or {}
@@ -359,14 +351,6 @@ def update_rlm_metrics_from_step(state: State, step: TrajectoryStep) -> None:
         state["root_llm_turns"] += 1
         state["root_llm_prompt_tokens"] += prompt_tokens
         state["root_llm_completion_tokens"] += completion_tokens
-
-
-def _update_root_tool_metrics(state: State, tool_name: str) -> None:
-    _ensure_rlm_metric_state(state)
-    state["root_tool_call_count"] += 1
-    tool_calls: dict[str, int] = state.get("root_tool_calls", {})
-    tool_calls[tool_name] = tool_calls.get(tool_name, 0) + 1
-    state["root_tool_calls"] = tool_calls
 
 
 def _update_root_tool_time_metrics(
@@ -553,6 +537,7 @@ def _build_python_worker_script_template() -> str:
             "        answer = json.load(f)",
             "",
             'ROOT_TOOL_URL = os.environ.get("RLM_ROOT_TOOL_URL", "")',
+            'ROOT_TOOL_HEADERS = {"Authorization": "Bearer " + os.environ.get("RLM_INTERCEPTION_SECRET", "")}',
             'ROOT_TOOL_NAMES_RAW = os.environ.get("RLM_ROOT_TOOL_NAMES", "[]")',
             "try:",
             "    ROOT_TOOL_NAMES = json.loads(ROOT_TOOL_NAMES_RAW)",
@@ -572,6 +557,7 @@ def _build_python_worker_script_template() -> str:
             "    resp = requests.post(",
             "        ROOT_TOOL_URL,",
             "        json=payload,",
+            "        headers=ROOT_TOOL_HEADERS,",
             "        timeout=SUB_LLM_TIMEOUT,",
             "    )",
             "    resp.raise_for_status()",
@@ -700,6 +686,7 @@ _RLM_BASH_TOOL_HELPER_SCRIPT = textwrap.dedent(
     import urllib.request
 
     ROOT_TOOL_URL = os.environ.get("RLM_ROOT_TOOL_URL", "")
+    ROOT_TOOL_SECRET = os.environ.get("RLM_INTERCEPTION_SECRET", "")
     ROOT_TOOL_USER_AGENT = os.environ.get(
         "RLM_ROOT_TOOL_USER_AGENT", "python-requests/2.32.3"
     )
@@ -731,6 +718,7 @@ _RLM_BASH_TOOL_HELPER_SCRIPT = textwrap.dedent(
                 "Content-Type": "application/json",
                 "Accept": "application/json",
                 "User-Agent": ROOT_TOOL_USER_AGENT,
+                "Authorization": f"Bearer {ROOT_TOOL_SECRET}",
             },
             method="POST",
         )
@@ -2372,7 +2360,7 @@ class RLMEnv(vf.StatefulToolEnv):
         sandbox_timeout_minutes: int = 60,
         sandbox_environment_vars: dict[str, str] | None = None,
         sandbox_labels: list[str] | None = None,
-        sandbox_client_max_workers: int = 50,
+        sandbox_client_max_workers: int | None = None,
         sandbox_client_max_connections: int = 100,
         sandbox_client_max_keepalive_connections: int = 50,
         sandbox_transfer_max_retries: int = 3,
@@ -2408,6 +2396,7 @@ class RLMEnv(vf.StatefulToolEnv):
         self.custom_system_prompt = system_prompt
         self.interception_port = 0
         self._interception_url_override: str | None = None
+        self._interception_secret = secrets.token_urlsafe(32)
         self.pip_install_packages = pip_install_packages
         self.max_startup_wait_seconds = max_startup_wait_seconds
         self.include_sub_llm_in_trajectory = include_sub_llm_in_trajectory
@@ -2617,6 +2606,7 @@ class RLMEnv(vf.StatefulToolEnv):
         return {
             "RLM_INTERCEPTION_URL": state.get("interception_url", ""),
             "RLM_ROOT_TOOL_URL": state.get("root_tool_url", ""),
+            "RLM_INTERCEPTION_SECRET": self._interception_secret,
             "RLM_ROOT_TOOL_NAMES": json.dumps(self.root_tool_names),
             "RLM_SUB_LLM_TIMEOUT": str(self.sub_llm_timeout),
         }
@@ -2916,17 +2906,6 @@ class RLMEnv(vf.StatefulToolEnv):
             max_turns_reached=True,
         )
 
-    def _sub_llm_budget_exhausted_message(self, state_ref: State) -> str:
-        """Build a human-readable budget-exhausted message."""
-        used = state_ref.get("sub_llm_completion_tokens", 0)
-        budget = self.sub_max_completion_tokens
-        return (
-            f"llm_batch token budget exhausted "
-            f"(used {used}/{budget} completion tokens). "
-            f"No further llm_batch calls are available. "
-            f"Finalize your answer with the information you have."
-        )
-
     async def _root_llm_batch(
         self,
         context: dict[str, Any],
@@ -2947,7 +2926,12 @@ class RLMEnv(vf.StatefulToolEnv):
         if self.sub_max_completion_tokens is not None:
             used = state_ref.get("sub_llm_completion_tokens", 0)
             if used >= self.sub_max_completion_tokens:
-                msg = self._sub_llm_budget_exhausted_message(state_ref)
+                msg = (
+                    f"llm_batch token budget exhausted "
+                    f"(used {used}/{self.sub_max_completion_tokens} completion tokens). "
+                    f"No further llm_batch calls are available. "
+                    f"Finalize your answer with the information you have."
+                )
                 return [msg] * len(prompts)
 
         rid = state_ref.get("rollout_id", "?")
@@ -2966,18 +2950,17 @@ class RLMEnv(vf.StatefulToolEnv):
         ] * len(prompts)
         semaphore = asyncio.Semaphore(self.max_sub_llm_parallelism)
 
-        def _coerce_prompt_messages(prompt: Any, index: int) -> Messages:
-            if isinstance(prompt, str):
-                return [UserMessage(content=prompt)]
-            raise ValueError(
-                "llm_batch prompt at index " + str(index) + " must be a string."
-            )
-
         async def _call_one(index: int, prompt: Any) -> None:
             async with semaphore:
                 request_id = uuid.uuid4().hex[:8]
                 try:
-                    messages = _coerce_prompt_messages(prompt, index)
+                    if not isinstance(prompt, str):
+                        raise ValueError(
+                            "llm_batch prompt at index "
+                            + str(index)
+                            + " must be a string."
+                        )
+                    messages: Messages = [UserMessage(content=prompt)]
                     response_dict = await self._run_sub_llm_request(
                         state_ref=state_ref,
                         client=client,
@@ -3232,6 +3215,10 @@ class RLMEnv(vf.StatefulToolEnv):
 
     async def _handle_root_tool_request(self, request: Any) -> Any:
         """Handle root tool requests from worker."""
+        auth = request.headers.get("Authorization", "")
+        if not hmac.compare_digest(auth, f"Bearer {self._interception_secret}"):
+            return web.json_response({"error": "Unauthorized"}, status=401)
+
         rollout_id = request.match_info["rollout_id"]
         context = self.active_rollouts.get(rollout_id)
         if not context:
@@ -3275,7 +3262,11 @@ class RLMEnv(vf.StatefulToolEnv):
         token = self._root_tool_context_var.set(root_tool_context)
         tool_start = perf_counter()
         try:
-            _update_root_tool_metrics(state_ref, tool_name)
+            _ensure_rlm_metric_state(state_ref)
+            state_ref["root_tool_call_count"] += 1
+            tool_calls: dict[str, int] = state_ref.get("root_tool_calls", {})
+            tool_calls[tool_name] = tool_calls.get(tool_name, 0) + 1
+            state_ref["root_tool_calls"] = tool_calls
             tool_func = self.root_tool_map[tool_name]
             if tool_name == "llm_batch":
                 if args and "prompts" in kwargs:
@@ -3316,6 +3307,10 @@ class RLMEnv(vf.StatefulToolEnv):
 
     async def _handle_sub_llm_request(self, request: Any) -> Any:
         """Handle sub-LLM requests from worker code."""
+        auth = request.headers.get("Authorization", "")
+        if not hmac.compare_digest(auth, f"Bearer {self._interception_secret}"):
+            return web.json_response({"error": "Unauthorized"}, status=401)
+
         rollout_id = request.match_info["rollout_id"]
         context = self.active_rollouts.get(rollout_id)
         if not context:
@@ -3462,7 +3457,9 @@ class RLMEnv(vf.StatefulToolEnv):
 
     async def setup_state(self, state: State, **kwargs) -> State:
         """Setup worker, filesystem context, and interception for sub-LLM calls."""
-        state = await vf.StatefulToolEnv.setup_state(self, state, **kwargs)
+        setup_state = await vf.StatefulToolEnv.setup_state(self, state, **kwargs)
+        if setup_state is not None:
+            state = setup_state
 
         rollout_id = f"rlm_{uuid.uuid4().hex[:8]}"
         state["rollout_id"] = rollout_id
@@ -3471,7 +3468,7 @@ class RLMEnv(vf.StatefulToolEnv):
 
         try:
             # 1. Setup interception and register rollout
-            state = await self._setup_interception_and_register(state, rollout_id)
+            await self._setup_interception_and_register(state, rollout_id)
 
             # 2. Create rollout directories
             self._executor.create_rollout_dirs(state)
@@ -3528,7 +3525,6 @@ class RLMEnv(vf.StatefulToolEnv):
             state["_observable_messages"] = []
 
             _ensure_rlm_metric_state(state)
-
             return state
         except Exception:
             # Best-effort cleanup to avoid leaking tunnels/sandboxes on setup failure.
@@ -3548,10 +3544,6 @@ class RLMEnv(vf.StatefulToolEnv):
     # =========================================================================
     # Code Execution
     # =========================================================================
-
-    async def _recover_from_code_timeout(self, state: State) -> bool:
-        """Attempt to recover from a code execution timeout via the active backend."""
-        return await self._executor.recover_from_timeout(state)
 
     async def _execute_code(self, code: str, state: State) -> dict[str, Any]:
         """Execute code in worker and return result."""
@@ -3631,6 +3623,10 @@ class RLMEnv(vf.StatefulToolEnv):
             }
 
         return parsed_result
+
+    async def _recover_from_code_timeout(self, state: State) -> bool:
+        """Attempt to recover from a code execution timeout via the active backend."""
+        return await self._executor.recover_from_timeout(state)
 
     def _format_execution_output(self, result: dict[str, Any]) -> str:
         """Format execution result for display to model."""
@@ -3792,7 +3788,13 @@ class RLMEnv(vf.StatefulToolEnv):
         execution_time = perf_counter() - execution_start
         output = self._format_execution_output(result)
 
-        _update_rlm_repl_metrics(state, execution_time)
+        _ensure_rlm_metric_state(state)
+        state["repl_total_time_seconds"] += execution_time
+        state["repl_call_count"] += 1
+        if state["repl_call_count"] > 0:
+            state["repl_mean_time_seconds"] = (
+                state["repl_total_time_seconds"] / state["repl_call_count"]
+            )
 
         answer = result.get("answer", {})
         answer_ready = answer.get("ready", False)
@@ -4207,30 +4209,23 @@ class RLMEnv(vf.StatefulToolEnv):
             self._append_observable_messages(state, tool_messages)
         if "final_answer" in state:
             state["final_env_response"] = tool_messages
-        elif self._is_root_budget_exhausted(state):
+        elif (
+            self.root_max_completion_tokens is not None
+            and state.get("root_llm_completion_tokens", 0)
+            >= self.root_max_completion_tokens
+        ):
             await self._ensure_final_answer(state)
             state["final_env_response"] = tool_messages
-        elif self._is_max_turns_in_context_reached(state):
+        elif (
+            self.max_turns_in_context is not None
+            and self._main_turn_count(state)
+            - state.get("_keep_from_assistant_index", 0)
+            >= self.max_turns_in_context
+        ):
             state["max_turns_in_context_stopped"] = True
             await self._ensure_final_answer(state)
             state["final_env_response"] = tool_messages
         return tool_messages
-
-    def _is_root_budget_exhausted(self, state: State) -> bool:
-        """Check if root model completion token budget is exhausted."""
-        if self.root_max_completion_tokens is None:
-            return False
-        used = state.get("root_llm_completion_tokens", 0)
-        return used >= self.root_max_completion_tokens
-
-    def _is_max_turns_in_context_reached(self, state: State) -> bool:
-        """Check if visible turns in context exceed max_turns_in_context."""
-        if self.max_turns_in_context is None:
-            return False
-        visible = self._main_turn_count(state) - state.get(
-            "_keep_from_assistant_index", 0
-        )
-        return visible >= self.max_turns_in_context
 
     # =========================================================================
     # Stop Conditions

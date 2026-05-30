@@ -1,5 +1,6 @@
 """Tests for the OpenCodeRLMEnv class."""
 
+import asyncio
 import json
 import subprocess
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -7,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from datasets import Dataset
 
+import verifiers as vf
 from verifiers.envs.experimental.opencode_rlm_env import (
     OpenCodeRLMEnv,
     OpenCodeRLMMonitorRubric,
@@ -151,7 +153,10 @@ class TestOpenCodeConfig:
 class TestRunCommand:
     def test_run_command_installs_jq(self):
         env = build_env()
-        assert "apt-get install -y curl git unzip jq" in env.run_command
+        assert (
+            "apt-get -o Acquire::Retries=3 install -y curl git unzip jq"
+            in env.run_command
+        )
 
     def test_run_command_installs_bun(self):
         env = build_env()
@@ -237,45 +242,6 @@ class TestBuildEnvVars:
 
 
 # =============================================================================
-# Sub-LLM detection (header-based)
-# =============================================================================
-
-
-class TestIsSubLLMRequest:
-    def test_detects_sub_header(self):
-        assert (
-            OpenCodeRLMEnv._is_sub_llm_request({"headers": {"x-rlm-role": "sub"}})
-            is True
-        )
-
-    def test_rejects_no_headers(self):
-        assert OpenCodeRLMEnv._is_sub_llm_request({}) is False
-
-    def test_rejects_empty_headers(self):
-        assert OpenCodeRLMEnv._is_sub_llm_request({"headers": {}}) is False
-
-    def test_rejects_wrong_value(self):
-        assert (
-            OpenCodeRLMEnv._is_sub_llm_request({"headers": {"x-rlm-role": "main"}})
-            is False
-        )
-
-    def test_ignores_model_field(self):
-        """Model name should NOT be used for detection."""
-        assert (
-            OpenCodeRLMEnv._is_sub_llm_request({"model": "sub", "headers": {}}) is False
-        )
-
-    def test_header_takes_precedence(self):
-        assert (
-            OpenCodeRLMEnv._is_sub_llm_request(
-                {"model": "openai/gpt-5-mini", "headers": {"x-rlm-role": "sub"}}
-            )
-            is True
-        )
-
-
-# =============================================================================
 # State setup
 # =============================================================================
 
@@ -289,13 +255,13 @@ class TestSetupState:
             OpenCodeRLMEnv.__bases__[0],
             "setup_state",
             new_callable=AsyncMock,
-            return_value=state,
-        ):
-            result = await env.setup_state(state)
-        assert result["sub_llm_turns"] == 0
-        assert result["sub_llm_prompt_tokens"] == 0
-        assert result["sub_llm_completion_tokens"] == 0
-        assert result["_sub_llm_tasks"] == set()
+        ) as setup_state:
+            setup_state.return_value = None
+            await env.setup_state(state)
+        assert state["sub_llm_turns"] == 0
+        assert state["sub_llm_prompt_tokens"] == 0
+        assert state["sub_llm_completion_tokens"] == 0
+        assert state["_sub_llm_tasks"] == set()
 
     @pytest.mark.asyncio
     async def test_preserves_existing_sub_metrics(self):
@@ -305,10 +271,10 @@ class TestSetupState:
             OpenCodeRLMEnv.__bases__[0],
             "setup_state",
             new_callable=AsyncMock,
-            return_value=state,
-        ):
-            result = await env.setup_state(state)
-        assert result["sub_llm_turns"] == 3
+        ) as setup_state:
+            setup_state.return_value = None
+            await env.setup_state(state)
+        assert state["sub_llm_turns"] == 3
 
 
 # =============================================================================
@@ -327,17 +293,45 @@ class TestMetrics:
         response = MagicMock(spec=[])  # no usage attr
         assert OpenCodeRLMEnv._extract_token_counts(response) == (0, 0)
 
-    def test_update_sub_metrics(self):
+    @pytest.mark.asyncio
+    async def test_handle_sub_llm_request_updates_sub_metrics(self):
         env = build_env()
         state = {
+            "trajectory": [],
+            "model": "main-model",
             "sub_llm_turns": 0,
             "sub_llm_prompt_tokens": 0,
             "sub_llm_completion_tokens": 0,
         }
-        response = MagicMock()
-        response.usage.prompt_tokens = 50
-        response.usage.completion_tokens = 20
-        env._update_sub_metrics(state, response)
+        response = vf.Response(
+            id="resp",
+            created=0,
+            model="sub-model",
+            message=vf.ResponseMessage(
+                content="ok", finish_reason="stop", is_truncated=False
+            ),
+            usage=vf.Usage(
+                prompt_tokens=50,
+                completion_tokens=20,
+                reasoning_tokens=0,
+                total_tokens=70,
+            ),
+        )
+        future = asyncio.get_running_loop().create_future()
+        intercept = {
+            "messages": [{"role": "user", "content": "hello"}],
+            "headers": {"x-rlm-role": "sub"},
+            "response_future": future,
+        }
+        env._require_interception_server().intercepts["req"] = intercept
+        with patch.object(
+            vf.Environment,
+            "get_model_response",
+            new=AsyncMock(return_value=response),
+        ):
+            await env._handle_sub_llm_request(state, "req", intercept)
+
+        assert future.result() is response
         assert state["sub_llm_turns"] == 1
         assert state["sub_llm_prompt_tokens"] == 50
         assert state["sub_llm_completion_tokens"] == 20

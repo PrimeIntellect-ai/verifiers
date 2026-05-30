@@ -149,18 +149,12 @@ class TestRubricGroup:
             input=RolloutInput(
                 prompt=[{"role": "user", "content": "What is 1+1?"}],
                 answer="2",
-                task="default",
                 example_id=0,
             )
         )
         state["completion"] = [{"role": "assistant", "content": "2"}]
         state["trajectory"] = []
-        state["timing"] = RolloutTiming(
-            generation_ms=0.0,
-            scoring_ms=0.0,
-            total_ms=0.0,
-            start_time=0.0,
-        )
+        state["timing"] = RolloutTiming()
 
         await group.score_group([state])
 
@@ -188,18 +182,12 @@ class TestRubricGroup:
             input=RolloutInput(
                 prompt=[{"role": "user", "content": "What is 1+1?"}],
                 answer="2",
-                task="default",
                 example_id=0,
             )
         )
         state["completion"] = [{"role": "assistant", "content": "2"}]
         state["trajectory"] = []
-        state["timing"] = RolloutTiming(
-            generation_ms=0.0,
-            scoring_ms=0.0,
-            total_ms=0.0,
-            start_time=0.0,
-        )
+        state["timing"] = RolloutTiming()
 
         await group.score_group([state])
 
@@ -227,19 +215,13 @@ class TestRubricGroup:
             input=RolloutInput(
                 prompt=[{"role": "user", "content": "What is 1+1?"}],
                 answer="2",
-                task="default",
                 example_id=0,
                 info={"custom_param": "test"},
             )
         )
         state["completion"] = [{"role": "assistant", "content": "2"}]
         state["trajectory"] = []
-        state["timing"] = RolloutTiming(
-            generation_ms=0.0,
-            scoring_ms=0.0,
-            total_ms=0.0,
-            start_time=0.0,
-        )
+        state["timing"] = RolloutTiming()
 
         await group.score_group([state])
 
@@ -265,18 +247,12 @@ class TestRubricGroup:
             input=RolloutInput(
                 prompt=[{"role": "user", "content": "What is 1+1?"}],
                 answer="2",
-                task="default",
                 example_id=0,
             )
         )
         state["completion"] = [{"role": "assistant", "content": "2"}]
         state["trajectory"] = []
-        state["timing"] = RolloutTiming(
-            generation_ms=0.0,
-            scoring_ms=0.0,
-            total_ms=0.0,
-            start_time=0.0,
-        )
+        state["timing"] = RolloutTiming()
 
         await group.score_group([state])
 
@@ -339,7 +315,6 @@ class TestRubricGroup:
                 input=RolloutInput(
                     prompt=[{"role": "user", "content": "What is 1+1?"}],
                     answer="2",
-                    task="default",
                     example_id=0,
                 )
             ),
@@ -347,7 +322,6 @@ class TestRubricGroup:
                 input=RolloutInput(
                     prompt=[{"role": "user", "content": "What is 2+2?"}],
                     answer="4",
-                    task="default",
                     example_id=1,
                 )
             ),
@@ -355,12 +329,7 @@ class TestRubricGroup:
         for state in states:
             state["completion"] = [{"role": "assistant", "content": state["answer"]}]
             state["trajectory"] = []
-            state["timing"] = RolloutTiming(
-                generation_ms=0.0,
-                scoring_ms=0.0,
-                total_ms=0.0,
-                start_time=0.0,
-            )
+            state["timing"] = RolloutTiming()
 
         await group.score_group(states)
 
@@ -403,22 +372,13 @@ class TestRubricGroup:
         )
         state["completion"] = [{"role": "assistant", "content": "2"}]
         state["trajectory"] = []
-        state["timing"] = RolloutTiming(
-            generation_ms=100.0,
-            scoring_ms=0.0,
-            total_ms=100.0,
-            start_time=0.0,
-        )
+        state["timing"] = RolloutTiming()
 
         await group.score_rollout(state)
 
-        assert state["timing"]["scoring_ms"] >= 0.0
-        # total_ms should equal generation_ms plus the group's scoring_ms
-        assert state["timing"]["total_ms"] == pytest.approx(
-            100.0 + state["timing"]["scoring_ms"], abs=1.0
-        )
-        # scoring_ms should not accumulate across rubrics (not N * per-rubric time)
-        assert state["timing"]["scoring_ms"] < 1000.0
+        # RubricGroup no longer touches timing (scoring anchors are stamped by
+        # the outer Environment). Scoring stays at default 0.0s.
+        assert state["timing"].scoring.duration == 0.0
 
     @pytest.mark.asyncio
     async def test_rubric_group_score_group_timing(self):
@@ -446,22 +406,13 @@ class TestRubricGroup:
             )
             state["completion"] = [{"role": "assistant", "content": "2"}]
             state["trajectory"] = []
-            state["timing"] = RolloutTiming(
-                generation_ms=50.0,
-                scoring_ms=0.0,
-                total_ms=50.0,
-                start_time=0.0,
-            )
+            state["timing"] = RolloutTiming()
             states.append(state)
 
         await group.score_group(states)
 
         for state in states:
-            assert state["timing"]["scoring_ms"] >= 0.0
-            # total_ms should equal generation_ms plus the group's scoring_ms
-            assert state["timing"]["total_ms"] == pytest.approx(
-                50.0 + state["timing"]["scoring_ms"], abs=1.0
-            )
+            assert state["timing"].scoring.duration == 0.0
 
     @pytest.mark.asyncio
     async def test_rubric_group_score_rollout_uses_rubric_parser(self):
@@ -482,7 +433,6 @@ class TestRubricGroup:
             input=RolloutInput(
                 prompt=[{"role": "user", "content": "What is 6 * 7?"}],
                 answer="42",
-                task="default",
                 example_id=0,
             )
         )
@@ -490,12 +440,7 @@ class TestRubricGroup:
             {"role": "assistant", "content": "Let me think\n<answer>42</answer>"}
         ]
         state["trajectory"] = []
-        state["timing"] = RolloutTiming(
-            generation_ms=0.0,
-            scoring_ms=0.0,
-            total_ms=0.0,
-            start_time=0.0,
-        )
+        state["timing"] = RolloutTiming()
 
         await group.score_rollout(state)
 

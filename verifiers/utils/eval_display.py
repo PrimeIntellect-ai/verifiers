@@ -24,14 +24,27 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 from rich.text import Text
 
-from verifiers.types import EvalConfig, GenerateOutputs, TokenUsage
+from verifiers.types import EvalConfig, EvalCost, GenerateOutputs, TokenUsage
 from verifiers.utils.display_utils import (
     BaseDisplay,
     format_numeric,
     make_aligned_row,
     make_kv_line,
 )
+from verifiers.utils.display_utils import format_timing_rich
 from verifiers.utils.message_utils import format_messages
+from verifiers.utils.pricing_utils import format_cost_usd
+
+
+def _eval_label(config: EvalConfig) -> str:
+    return config.name or config.env_id
+
+
+def _eval_title(config: EvalConfig) -> str:
+    label = _eval_label(config)
+    if config.name and config.name != config.env_id:
+        return f"{label} ({config.env_id})"
+    return label
 
 
 @dataclass
@@ -51,6 +64,8 @@ class EnvEvalState:
     reward: float = 0.0  # reward (rolling avg)
     metrics: dict[str, float] = field(default_factory=dict)  # metrics (rolling avg)
     usage: TokenUsage | None = None
+    cost: EvalCost | None = None
+    avg_timing: dict[str, float] | None = None  # RolloutTiming fields + model, env
     error_rate: float = 0.0  # error rate (rolling avg)
 
     # path where results were saved (if save_results=true)
@@ -241,6 +256,8 @@ class EvalDisplay(BaseDisplay):
         reward: float | None = None,
         metrics: dict[str, float] | None = None,
         usage: TokenUsage | None = None,
+        cost: EvalCost | None = None,
+        avg_timing: dict[str, float] | None = None,
         error_rate: float | None = None,
         error: str | None = None,
         save_path: Path | None = None,
@@ -275,6 +292,12 @@ class EvalDisplay(BaseDisplay):
 
         if usage is not None:
             env_state.usage = usage
+
+        if cost is not None:
+            env_state.cost = cost
+
+        if avg_timing is not None:
+            env_state.avg_timing = avg_timing
 
         if error_rate is not None:
             env_state.error_rate = error_rate
@@ -340,7 +363,12 @@ class EvalDisplay(BaseDisplay):
         """Create a metrics row with metrics left-aligned and error_rate right-aligned."""
         metrics = {"reward": reward, **metrics}
 
-        metrics_text = make_kv_line({k: format_numeric(v) for k, v in metrics.items()})
+        metrics_text = make_kv_line(
+            {k: format_numeric(v) for k, v in metrics.items()},
+            prefix="╰─ ",
+            prefix_style="dim",
+            section_label="metrics",
+        )
 
         # build the right-aligned error_rate text
         error_text = Text()
@@ -352,30 +380,48 @@ class EvalDisplay(BaseDisplay):
 
         return make_aligned_row(metrics_text, error_text)
 
-    def _make_tokens_rows(self, usage: TokenUsage) -> list[Table]:
-        """Create token rows: input/output on one line, final_input/final_output below."""
-        rows: list[Table] = []
-        rows.append(
-            make_aligned_row(
-                make_kv_line(
-                    {
-                        "input": format_numeric(usage.get("input_tokens", 0.0)),
-                        "output": format_numeric(usage.get("output_tokens", 0.0)),
-                    }
-                ),
-                Text(),
-            )
+    @staticmethod
+    def _make_timing_row(timing: dict[str, float]) -> Text:
+        """Create a compact timing breakdown line with section label.
+
+        ``timing`` is the running-average dict built in eval_utils
+        (already-flattened to scalar durations), not a raw RolloutTiming dump.
+        """
+        rich_line = format_timing_rich(
+            setup=timing.get("setup", 0.0),
+            generation=timing.get("generation", 0.0),
+            scoring=timing.get("scoring", 0.0),
+            overhead=timing.get("overhead", 0.0),
+            model=timing.get("model", 0.0),
+            env=timing.get("env", 0.0),
         )
+        text = Text()
+        text.append("╰─ ", style="dim")
+        text.append("timing", style="bold dim")
+        text.append("  ")
+        text.append_text(rich_line)
+        return text
+
+    def _make_tokens_row(
+        self, usage: TokenUsage, cost: EvalCost | None = None
+    ) -> Table:
+        """Create a single usage line with section label."""
+        kv: dict[str, object] = {
+            "input": format_numeric(usage.get("input_tokens", 0.0)),
+            "output": format_numeric(usage.get("output_tokens", 0.0)),
+        }
         inp = usage.get("final_input_tokens")
         out = usage.get("final_output_tokens")
-        if inp is not None or out is not None:
-            kv: dict[str, object] = {}
-            if inp is not None:
-                kv["final input"] = format_numeric(inp)
-            if out is not None:
-                kv["final output"] = format_numeric(out)
-            rows.append(make_aligned_row(make_kv_line(kv), Text()))
-        return rows
+        if inp is not None:
+            kv["final_input"] = format_numeric(inp)
+        if out is not None:
+            kv["final_output"] = format_numeric(out)
+        if cost is not None:
+            kv["cost (all)"] = format_cost_usd(cost["total_usd"])
+        return make_aligned_row(
+            make_kv_line(kv, section_label="usage"),
+            Text(),
+        )
 
     @staticmethod
     def _format_client_target(config: EvalConfig) -> str:
@@ -474,10 +520,15 @@ class EvalDisplay(BaseDisplay):
         metrics_content = self._make_metrics_row(
             env_state.reward, env_state.metrics, env_state.error_rate
         )
-        tokens_rows = (
-            self._make_tokens_rows(env_state.usage)
+        tokens_row = (
+            self._make_tokens_row(env_state.usage, env_state.cost)
             if env_state.usage is not None
-            else []
+            else None
+        )
+        timing_row = (
+            self._make_timing_row(env_state.avg_timing)
+            if env_state.avg_timing is not None
+            else None
         )
 
         # log message for special events
@@ -510,10 +561,12 @@ class EvalDisplay(BaseDisplay):
             content_items.append(metrics_content)
         else:
             content_items.append(space)
-        if tokens_rows:
-            content_items.extend(tokens_rows)
+        if tokens_row is not None:
+            content_items.append(tokens_row)
         else:
             content_items.append(space)
+        if timing_row is not None:
+            content_items.append(timing_row)
         content_items.append(space)
         content_items.append(log_content)
         if error_content:
@@ -530,7 +583,7 @@ class EvalDisplay(BaseDisplay):
 
         # build title with env name (and index if multi-env)
         title = Text()
-        title.append(config.env_id, style="bold cyan")
+        title.append(_eval_title(config), style="bold cyan")
         if len(self.configs) > 1:
             title.append(f" (env {env_idx + 1}/{len(self.configs)})", style="dim")
 
@@ -698,9 +751,10 @@ class EvalDisplay(BaseDisplay):
 
         prefix = "\u25b6 " if selected else "  "
         line = Text()
+        label = _eval_label(config)
         if env_state.status == "completed":
             line.append(f"{prefix}\u2713 ", style="bold green")
-            line.append(config.env_id, style="green")
+            line.append(label, style="green")
             line.append("  reward ", style="dim")
             line.append(format_numeric(env_state.reward), style="bold")
             color = self._get_error_rate_color(env_state.error_rate)
@@ -712,7 +766,7 @@ class EvalDisplay(BaseDisplay):
             line.append(f"  {time_str}", style="dim")
         elif env_state.status == "failed":
             line.append(f"{prefix}\u2717 ", style="bold red")
-            line.append(config.env_id, style="red")
+            line.append(label, style="red")
             if env_state.error:
                 line.append("  ", style="dim")
                 line.append(env_state.error[:80], style="red")
@@ -728,7 +782,7 @@ class EvalDisplay(BaseDisplay):
             )
             total_str = "..." if env_state.total <= 0 else str(env_state.total)
             line.append(f"{prefix}\u25cf ", style="bold yellow")
-            line.append(config.env_id, style="yellow")
+            line.append(label, style="yellow")
             line.append(f"  {pct:.0f}%", style="bold")
             line.append(f" ({env_state.progress}/{total_str})", style="dim")
             line.append("  reward ", style="dim")
@@ -742,7 +796,7 @@ class EvalDisplay(BaseDisplay):
             line.append(f"  {time_str}", style="dim")
         else:
             line.append(f"{prefix}\u25cb ", style="dim")
-            line.append(config.env_id, style="dim")
+            line.append(label, style="dim")
             line.append("  pending", style="dim")
 
         return line
@@ -916,7 +970,7 @@ class EvalDisplay(BaseDisplay):
             self.console.print(
                 Panel(
                     self._make_env_detail(config, env_state, results),
-                    title=f"[bold blue]{config.env_id}[/bold blue]",
+                    title=f"[bold blue]{_eval_title(config)}[/bold blue]",
                     border_style="dim",
                 )
             )
@@ -938,12 +992,12 @@ class EvalDisplay(BaseDisplay):
             env_state = self.state.envs[idx]
             if env_state.error:
                 self.console.print()
-                self.console.print(f"[red]error in {config.env_id}:[/red]")
+                self.console.print(f"[red]error in {_eval_label(config)}:[/red]")
                 self.console.print(f"  {env_state.error}")
 
         # Summary table with main metrics (printed last)
         table = Table(title="Evaluation Summary")
-        table.add_column("env_id", style="cyan")
+        table.add_column("eval", style="cyan")
         table.add_column("status", justify="center")
         table.add_column("examples", justify="center")
         table.add_column("rollouts", justify="center")
@@ -959,6 +1013,16 @@ class EvalDisplay(BaseDisplay):
         if show_usage:
             table.add_column("input", justify="center")
             table.add_column("output", justify="center")
+        show_cost = any(
+            env_state.cost is not None
+            or (
+                env_state.results is not None
+                and env_state.results["metadata"].get("cost") is not None
+            )
+            for env_state in self.state.envs.values()
+        )
+        if show_cost:
+            table.add_column("cost (all)", justify="center")
         table.add_column("errors", justify="center")
         table.add_column("time", justify="center")
 
@@ -981,14 +1045,19 @@ class EvalDisplay(BaseDisplay):
             reward = f"{env_state.reward:.3f}"
             input_tokens = None
             output_tokens = None
+            cost_usd = None
             usage = None
             if env_state.results is not None:
                 usage = env_state.results["metadata"].get("usage")
+                cost = env_state.results["metadata"].get("cost")
             else:
                 usage = env_state.usage
+                cost = env_state.cost
             if usage is not None:
                 input_tokens = format_numeric(usage.get("input_tokens", 0.0))
                 output_tokens = format_numeric(usage.get("output_tokens", 0.0))
+            if cost is not None:
+                cost_usd = format_cost_usd(cost["total_usd"])
 
             # error rate with color coding
             error_rate = env_state.error_rate
@@ -1003,9 +1072,11 @@ class EvalDisplay(BaseDisplay):
             mins, secs = divmod(int(elapsed), 60)
             time_str = f"{mins}m {secs:02d}s" if mins > 0 else f"{secs}s"
 
-            row = [config.env_id, status, examples_str, rollouts_str, reward]
+            row = [_eval_label(config), status, examples_str, rollouts_str, reward]
             if show_usage:
                 row.extend([input_tokens or "-", output_tokens or "-"])
+            if show_cost:
+                row.append(cost_usd or "-")
             row.extend([error_str, time_str])
             table.add_row(*row)
 
@@ -1020,6 +1091,10 @@ class EvalDisplay(BaseDisplay):
         text = Text()
         text.append("model: ", style="dim")
         text.append(config.model, style="bold")
+        if config.name:
+            text.append("\n")
+            text.append("env: ", style="dim")
+            text.append(config.env_id, style="bold")
         text.append("\n")
         text.append("endpoint: ", style="dim")
         text.append(self._format_client_target(config))
@@ -1059,7 +1134,7 @@ class EvalDisplay(BaseDisplay):
         self, config: EvalConfig, env_state: EnvEvalState, results: GenerateOutputs
     ) -> Group:
         """Create detailed content for a single environment's summary."""
-        items: list[Panel] = []
+        items: list[RenderableType] = []
 
         # Settings panel (always shown)
         items.append(self._make_settings_panel(config, env_state))
@@ -1148,38 +1223,17 @@ class EvalDisplay(BaseDisplay):
                 )
             )
 
-        # Metrics
+        # Metrics (avg)
         if env_state.metrics:
             metrics_text = Text()
             for name, value in env_state.metrics.items():
                 value_str = format_numeric(value)
                 metrics_text.append(f"• {name}: ", style="cyan")
                 metrics_text.append(f"{value_str}\n")
-
             items.append(
                 Panel(
                     metrics_text,
                     title="[dim]metrics (avg)[/dim]",
-                    border_style="dim",
-                )
-            )
-
-        usage = results["metadata"].get("usage")
-        if usage is not None:
-            tokens_text = Text()
-            for name, value in usage.items():
-                value_str = (
-                    format_numeric(value)
-                    if isinstance(value, (int, float, str))
-                    else str(value)
-                )
-                label = name.replace("_", " ")
-                tokens_text.append(f"• {label}: ", style="cyan")
-                tokens_text.append(f"{value_str}\n")
-            items.append(
-                Panel(
-                    tokens_text,
-                    title="[dim]usage (avg)[/dim]",
                     border_style="dim",
                 )
             )

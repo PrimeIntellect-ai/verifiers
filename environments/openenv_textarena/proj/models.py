@@ -11,8 +11,6 @@ This module defines the action, observation, and state models for interacting
 with TextArena game environments (e.g., Wordle-v0).
 """
 
-from __future__ import annotations
-
 from pydantic import BaseModel, Field
 from typing import Any, Dict, List, Optional
 

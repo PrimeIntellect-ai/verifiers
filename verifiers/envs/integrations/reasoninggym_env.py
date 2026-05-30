@@ -85,7 +85,7 @@ class ReasoningGymEnv(vf.SingleTurnEnv):
             row = {
                 "question": x["question"],
                 "answer": str(i),  # in verifiers, an answer must be a string
-                "task": x["metadata"]["source_dataset"],
+                "info": {"source_dataset": x["metadata"]["source_dataset"]},
             }
             if i < self.num_train_examples:
                 train_dataset_rows.append(row)

@@ -23,14 +23,13 @@ Use `prime eval` to execute rollouts against any supported model provider and re
 
 ## Basic Usage
 
-Environments must be installed as Python packages before evaluation. From a local environment:
+Run evaluations directly against a local or Hub environment:
 
 ```bash
-prime env install my-env           # installs ./environments/my_env as a package
 prime eval run my-env -m openai/gpt-4.1-mini -n 10
 ```
 
-`prime eval` imports the environment module using Python's import system, calls its `load_environment()` function, runs 5 examples with 3 rollouts each (the default), scores them using the environment's rubric, and prints aggregate metrics.
+`prime eval` resolves and installs the environment when needed, imports the environment module using Python's import system, calls its `load_environment()` function, runs 5 examples with 3 rollouts each (the default), scores them using the environment's rubric, and prints aggregate metrics.
 
 ## Hosted Evaluations
 
@@ -57,17 +56,33 @@ For the full hosted workflow and hosted-only flags such as `--follow`, `--timeou
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
 | `env_id_or_path` | (positional) | — | Environment ID(s) or path to TOML config |
+| `--taskset.FIELD` / `--harness.FIELD` | — | — | Typed v1 `EnvConfig` overrides for single-environment runs |
 | `--env-args` | `-a` | `{}` | JSON object passed to `load_environment()` |
 | `--extra-env-kwargs` | `-x` | `{}` | JSON object passed to environment constructor |
+| `--timeout` | — | `None` | Per-rollout wall-clock timeout in seconds. Wins over equivalent values in `--extra-env-kwargs` or TOML `[eval.extra_env_kwargs]`. Bounds generation only — scoring is not bounded. |
 | `--env-dir-path` | `-p` | `./environments` | Base path for saving output files |
 
 The positional argument accepts two formats:
 - **Single environment**: `gsm8k` — evaluates one environment
 - **TOML config path**: `configs/eval/benchmark.toml` — evaluates multiple environments defined in the config file
 
-Environment IDs are converted to Python module names (`my-env` → `my_env`) and imported. Modules must be installed (via `prime env install` or `uv pip install`).
+Environment IDs are converted to Python module names (`my-env` → `my_env`) and imported after `prime eval run` resolves the environment package.
 
-The `--env-args` flag passes arguments to your `load_environment()` function:
+For v1 `load_environment(config: vf.EnvConfig)` loaders, prefer typed
+taskset/harness overrides. These flags are parsed against the concrete child
+config types from `load_taskset(config: ...)` and `load_harness(config: ...)`:
+
+```bash
+prime eval run my-v1-env --taskset.id my-taskset --harness.id my-harness --harness.max-turns 4
+```
+
+The positional environment ID selects the package to load. Dotted taskset and
+harness flags are fields on the typed child configs. If the loaded package does
+not provide a local child loader, `--taskset.id` and `--harness.id` select the
+taskset and harness loader packages.
+
+For legacy or direct-constructor environments, the `--env-args` flag passes
+arguments to your `load_environment()` function:
 
 ```bash
 prime eval run my-env -a '{"difficulty": "hard", "num_examples": 100}'
@@ -77,6 +92,22 @@ The `--extra-env-kwargs` flag passes arguments directly to the environment const
 
 ```bash
 prime eval run my-env -x '{"max_turns": 20}'
+```
+
+For per-rollout wall-clock timeouts, use the dedicated `--timeout` flag. It **wins over** equivalent values set via `--extra-env-kwargs` or TOML's `[eval.extra_env_kwargs]`:
+
+```bash
+prime eval run my-env --timeout 600
+```
+
+When the timeout fires, the rollout is marked `timed_out=True` with `stop_condition="timeout_reached"` and ends cleanly through the same finalize path as a normal completion (timing, completion rendering, and cleanup handlers all run). `is_truncated` is **not** set on timeout — that field tracks model-output truncation (token caps), not wall-clock pressure. Note that `--timeout` bounds the **generation** phase only — scoring (reward function execution) is not bounded by this flag.
+
+The same key works in TOML configs as a top-level entry of an `[[eval]]` table:
+
+```toml
+[[eval]]
+id = "my-env"
+timeout = 600
 ```
 
 #### Executor autoscaling
@@ -102,10 +133,12 @@ env.set_concurrency(256)
 | `--model` | `-m` | `openai/gpt-4.1-mini` | Model name or endpoint alias |
 | `--api-base-url` | `-b` | `https://api.pinference.ai/api/v1` | API base URL |
 | `--api-key-var` | `-k` | `PRIME_API_KEY` | Environment variable containing API key |
-| `--api-client-type` | — | `openai_chat_completions` | Client type: `openai_chat_completions`, `openai_completions`, `openai_chat_completions_token`, or `anthropic_messages` |
+| `--api-client-type` | — | `openai_chat_completions` | Client type: `openai_completions`, `openai_chat_completions`, `openai_chat_completions_token`, `openai_responses`, `renderer`, `anthropic_messages`, or `nemorl_chat_completions` |
 | `--endpoints-path` | `-e` | `./configs/endpoints.toml` | Path to TOML endpoints registry |
 | `--header` | — | — | Extra HTTP header (`Name: Value`), repeatable |
 | `--header-from-state` | — | `X-Session-ID: example_id` | Per-request header whose value is read from rollout state (`Name: state_key`), repeatable |
+
+The `renderer` client type requires the optional renderer package. Install it with `uv add "verifiers[renderers]"` before running evals with `--api-client-type renderer`.
 
 For convenience, define model endpoints in `./configs/endpoints.toml` to avoid repeating URL and key flags.
 
@@ -130,7 +163,7 @@ key = "ANTHROPIC_API_KEY"
 api_client_type = "anthropic_messages"
 ```
 
-Each endpoint entry supports an optional `api_client_type` field to select the client implementation (defaults to `"openai_chat_completions"`). Use `"anthropic_messages"` for Anthropic models when calling the Anthropic API directly.
+Each endpoint entry supports an optional `api_client_type` field to select the client implementation (defaults to `"openai_chat_completions"`). Use `"anthropic_messages"` for Anthropic models when calling the Anthropic API directly, and `"openai_responses"` for OpenAI-compatible Responses endpoints.
 
 Optional HTTP headers for inference requests use a short TOML key `headers` (inline table). The alias `extra_headers` is accepted with the same shape; do not set both on one row.
 
@@ -175,6 +208,24 @@ The `--sampling-args` flag accepts any parameters supported by the model's API:
 prime eval run my-env -S '{"temperature": 0.7, "top_p": 0.9}'
 ```
 
+In eval TOML configs, put generation parameters under `[sampling]`:
+
+```toml
+[sampling]
+max_tokens = 1024
+temperature = 0.7
+reasoning_effort = "medium"
+enable_thinking = true
+
+[[eval]]
+id = "my-env"
+```
+
+`reasoning_effort` and `enable_thinking` stay in `sampling_args` and are also
+mirrored into `extra_body.chat_template_kwargs` for OpenAI-compatible servers
+that read chat template options there. Keeping the top-level values lets the
+client translate them for the selected provider.
+
 ### Evaluation Scope
 
 | Flag | Short | Default | Description |
@@ -206,6 +257,8 @@ The `--num-workers` flag controls how many worker processes the env server spawn
 
 When evaluating multiple environments, the display shows an overview panel at the top with a compact status line per environment, and a detail panel below with full progress, metrics, and logs for one environment at a time. Use the **left/right arrow keys** to switch between environments. The overview scrolls to keep the selected environment visible and is capped at half the terminal height.
 
+When an eval runs against a Prime Inference endpoint and the model id has pricing available from `prime inference models`, token usage rows also show the estimated total USD cost as `cost (all)`. Cost appears after the final input/output token metrics in the live display and in the final summary. If pricing or token usage is unavailable, the cost field is omitted.
+
 ### Output and Saving
 
 | Flag | Short | Default | Description |
@@ -226,6 +279,8 @@ By default, results are saved to `./outputs/evals/{env_id}--{model}/{run_id}/`. 
 
 - `results.jsonl` — rollout outputs, one per line
 - `metadata.json` — evaluation configuration and aggregate metrics
+
+When Prime Inference pricing is available for the evaluated model, `metadata.json` includes a `cost` object with total-run `input_usd`, `output_usd`, and `total_usd`. The field is omitted for unpriced models, third-party providers, unavailable pricing, or missing usage.
 
 ### Resuming Evaluations
 
@@ -319,17 +374,18 @@ model = "openai/gpt-4.1-mini"
 num_examples = 50
 
 [[eval]]
-env_id = "gsm8k"
+id = "gsm8k"
+name = "gsm8k-baseline"
 num_examples = 100  # overrides global default
 rollouts_per_example = 5
 
 [[eval]]
-env_id = "alphabet-sort"
+id = "alphabet-sort"
 # Uses global num_examples (50)
 rollouts_per_example = 3
 
 [[eval]]
-env_id = "math-python"
+id = "math-python"
 # Uses global defaults and built-in defaults for unspecified values
 ```
 
@@ -337,32 +393,81 @@ A minimal config requires only a single `[[eval]]` section:
 
 ```toml
 [[eval]]
-env_id = "gsm8k"
+id = "gsm8k"
 ```
 
-Each `[[eval]]` section must contain an `env_id` field. All other fields are optional:
+Each `[[eval]]` section usually contains an `id` field. `env_id` is accepted as
+a legacy alias and normalizes to the same internal field. For Taskset/Harness
+configs, `id` may be omitted when `[eval.taskset].id` names the taskset loader
+package; the taskset id becomes the environment id for loading and outputs. All
+other fields are optional:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `env_id` | string | **Required.** Environment module name |
-| `env_args` | table | Arguments passed to `load_environment()` |
+| `id` | string | Environment module name; optional when `[eval.taskset].id` is set |
+| `name` | string | Optional eval label for display and saved result paths |
+| `args` | table | Arguments passed to `load_environment()` |
+| `taskset` | table | v1 taskset config passed through `EnvConfig.taskset` |
+| `harness` | table | v1 harness config passed through `EnvConfig.harness` |
 | `num_examples` | integer | Number of dataset examples to evaluate |
 | `rollouts_per_example` | integer | Rollouts per example |
 | `extra_env_kwargs` | table | Arguments passed to environment constructor |
 | `model` | string | Model to evaluate |
 | `endpoint_id` | string | Endpoint registry id (requires TOML `endpoints_path`) |
+| `sampling` | table | Shorthand for `sampling_args` generation parameters |
 
-Example with `env_args`:
+Use `name` to run the same environment more than once with different args:
 
 ```toml
 [[eval]]
-env_id = "math-python"
+id = "reverse-text"
+name = "reverse-text-short"
+
+[eval.args]
+max_length = 32
+
+[[eval]]
+id = "reverse-text"
+name = "reverse-text-long"
+
+[eval.args]
+max_length = 256
+```
+
+Example with legacy environment args:
+
+```toml
+[[eval]]
+id = "math-python"
 num_examples = 50
 
-[eval.env_args]
+[eval.args]
 difficulty = "hard"
 split = "test"
 ```
+
+For v1 BYO Harness environments, pass taskset/harness config through sibling
+`taskset` and `harness` sections:
+
+```toml
+[[eval]]
+id = "my-v1-env"
+
+[eval.sampling]
+max_tokens = 4096
+
+[eval.harness]
+max_turns = 4
+
+[eval.taskset.scoring.exact_answer]
+weight = 0.5
+```
+
+See [BYO Harness](byo-harness.md#toml-config) for the matching RL config shape
+and v1 callable/toolset patterns.
+
+The legacy inline `sampling_args = { ... }` spelling is still accepted and
+normalizes the same way as `[sampling]` / `[eval.sampling]`.
 
 ### Ablation Sweeps
 
@@ -376,23 +481,23 @@ num_examples = 50
 # Sweep temperature × difficulty → 6 eval configs
 # split is fixed across all combinations
 [[ablation]]
-env_id = "my-env"
-env_args = {split = "test"}
+id = "my-env"
+args = {split = "test"}
 
 [ablation.sweep]
 temperature = [0.0, 0.5, 1.0]
 
-[ablation.sweep.env_args]
+[ablation.sweep.args]
 difficulty = ["easy", "hard"]
 ```
 
-- **Fixed fields** in the `[[ablation]]` block (like `env_id`) apply to all expanded configs
+- **Fixed fields** in the `[[ablation]]` block (like `id`) apply to all expanded configs
 - **`[ablation.sweep]`** keys are lists of values crossed as a cartesian product
-- **`[ablation.sweep.env_args]`** keys are swept and merged into the `env_args` dict
-- **Fixed `env_args`** can be set alongside swept ones (e.g. `env_args = {split = "test"}` keeps `split` fixed while sweeping other env args). The same key cannot appear in both fixed and swept env_args.
+- **`[ablation.sweep.args]`** keys are swept and merged into environment args
+- **Fixed `args`** can be set alongside swept ones (e.g. `args = {split = "test"}` keeps `split` fixed while sweeping other env args). The same key cannot appear in both fixed and swept args.
 - Multiple `[[ablation]]` blocks are independent (no cross-product between blocks)
 - `[[ablation]]` and `[[eval]]` blocks can coexist in the same config file
-- `env_id` can be a fixed field or a sweep key (e.g. `env_id = ["env-a", "env-b"]`), but note that all swept envs must accept the same `env_args` — use separate `[[ablation]]` blocks for envs with different argument schemas
+- `id` can be a fixed field or a sweep key (e.g. `id = ["env-a", "env-b"]`), but note that all swept envs must accept the same `args` — use separate `[[ablation]]` blocks for envs with different argument schemas
 
 Use `--abbreviated-summary` (`-A`) to get a compact summary focused on settings and stats, which is useful when comparing many ablation runs.
 

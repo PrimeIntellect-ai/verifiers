@@ -1,0 +1,25 @@
+# Qwen3.5 MoE models. Uncomment exactly one model.
+model = "Qwen/Qwen3.5-35B-A3B"
+# model = "Qwen/Qwen3.5-122B-A10B"
+# model = "Qwen/Qwen3.5-397B-A17B"
+
+num_examples = 20
+rollouts_per_example = 1
+max_tokens = 2048
+
+[[eval]]
+env_id = "primeintellect/wiki-search"
+
+# [[eval]]
+# env_id = "primeintellect/reverse-text"
+
+# [[eval]]
+# env_id = "primeintellect/wordle"
+
+# [[eval]]
+# env_id = "primeintellect/dspy-flights"
+
+# [[eval]]
+# env_id = "primeintellect/opencode-harbor"
+
+# Hosted Training docs: https://docs.primeintellect.ai/hosted-training

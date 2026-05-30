@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="520" viewBox="0 0 1120 520" role="img" aria-labelledby="title desc">
+  <title id="title">Task Harness State lifecycle</title>
+  <desc id="desc">A task is passed to a harness, the harness resolves runtime resources and returns state. Tasksets and Envs are optional packaging and adapter layers around that core unit.</desc>
+  <defs>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#101828" flood-opacity="0.12"/>
+    </filter>
+    <marker id="arrow-blue" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#2563eb"/>
+    </marker>
+    <marker id="arrow-green" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#0f766e"/>
+    </marker>
+  </defs>
+  <rect width="1120" height="520" fill="#f8fafc"/>
+
+  <text x="56" y="58" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="30" font-weight="700" fill="#0f172a">The core unit is Task -&gt; Harness -&gt; State</text>
+  <text x="56" y="88" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="15" fill="#475569">This runner works on its own. Taskset and Env package it for datasets, evals, and training workers.</text>
+
+  <g filter="url(#shadow)">
+    <rect x="56" y="142" width="240" height="210" rx="12" fill="#ffffff" stroke="#c7d2fe" stroke-width="2"/>
+    <rect x="56" y="142" width="240" height="52" rx="12" fill="#eef2ff"/>
+    <text x="80" y="176" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="24" font-weight="700" fill="#3730a3">Task</text>
+    <text x="80" y="222" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="15" fill="#334155">Immutable input data</text>
+    <text x="80" y="250" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#475569">prompt</text>
+    <text x="80" y="274" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#475569">system_prompt</text>
+    <text x="80" y="298" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#475569">answer / info</text>
+    <text x="80" y="322" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#475569">max_turns / tools</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="440" y="118" width="280" height="258" rx="12" fill="#ffffff" stroke="#bfdbfe" stroke-width="2"/>
+    <rect x="440" y="118" width="280" height="52" rx="12" fill="#eff6ff"/>
+    <text x="464" y="152" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="24" font-weight="700" fill="#1d4ed8">Harness</text>
+    <text x="464" y="198" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="15" fill="#334155">Runs one task</text>
+    <text x="464" y="229" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="13" font-weight="700" fill="#0f172a">Resolves hidden runtime:</text>
+    <text x="484" y="255" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#475569">model/client endpoint</text>
+    <text x="484" y="279" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#475569">toolsets and MCP</text>
+    <text x="484" y="303" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#475569">sandbox leases</text>
+    <text x="484" y="327" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#475569">trajectory capture</text>
+    <text x="464" y="356" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="13" fill="#64748b">Base loop, Python entrypoint, or CLI program</text>
+  </g>
+
+  <g filter="url(#shadow)">
+    <rect x="824" y="142" width="240" height="210" rx="12" fill="#ffffff" stroke="#99f6e4" stroke-width="2"/>
+    <rect x="824" y="142" width="240" height="52" rx="12" fill="#f0fdfa"/>
+    <text x="848" y="176" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="24" font-weight="700" fill="#0f766e">State</text>
+    <text x="848" y="222" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="15" fill="#334155">Mutable rollout record</text>
+    <text x="848" y="250" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#475569">trajectory</text>
+    <text x="848" y="274" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#475569">completion</text>
+    <text x="848" y="298" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#475569">metrics / reward</text>
+    <text x="848" y="322" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" fill="#475569">artifacts / errors</text>
+  </g>
+
+  <path d="M316 247 H418" stroke="#2563eb" stroke-width="4" fill="none" marker-end="url(#arrow-blue)"/>
+  <path d="M742 247 H800" stroke="#0f766e" stroke-width="4" fill="none" marker-end="url(#arrow-green)"/>
+  <text x="330" y="232" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="13" font-weight="700" fill="#1d4ed8">harness.run(task)</text>
+  <text x="746" y="232" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="13" font-weight="700" fill="#0f766e">returns state</text>
+
+  <g>
+    <rect x="128" y="415" width="270" height="64" rx="10" fill="#fff7ed" stroke="#fdba74" stroke-width="2"/>
+    <text x="152" y="442" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="16" font-weight="700" fill="#9a3412">Taskset</text>
+    <text x="152" y="465" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="13" fill="#7c2d12">Packages many tasks plus task-owned tools and signals</text>
+  </g>
+  <path d="M263 415 V364" stroke="#f97316" stroke-width="3" stroke-dasharray="7 7" fill="none" marker-end="url(#arrow-blue)"/>
+
+  <g>
+    <rect x="722" y="415" width="270" height="64" rx="10" fill="#fdf2f8" stroke="#f9a8d4" stroke-width="2"/>
+    <text x="746" y="442" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="16" font-weight="700" fill="#be185d">Env</text>
+    <text x="746" y="465" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="13" fill="#831843">Adapts Taskset + Harness to eval and RL workers</text>
+  </g>
+  <path d="M857 415 V364" stroke="#db2777" stroke-width="3" stroke-dasharray="7 7" fill="none" marker-end="url(#arrow-green)"/>
+
+  <text x="442" y="446" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="15" fill="#0f172a">state = await harness.run(task)</text>
+</svg>

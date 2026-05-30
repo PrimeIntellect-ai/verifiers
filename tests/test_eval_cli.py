@@ -1,4 +1,3 @@
-import argparse
 import importlib
 import os
 import sys
@@ -11,9 +10,36 @@ import pytest
 
 import verifiers.scripts.eval as vf_eval
 import verifiers.utils.eval_utils
-from verifiers.types import GenerateOutputs
+from verifiers.types import EndpointConfig, EvalConfig, GenerateOutputs
 from verifiers.utils.eval_utils import load_toml_config
+from verifiers.utils.path_utils import get_eval_results_path
 from verifiers.utils.save_utils import states_to_outputs
+
+
+def fail_load_endpoints(*_: object) -> dict:
+    raise AssertionError("load_endpoints should not be called")
+
+
+def endpoint(**values: object) -> EndpointConfig:
+    return EndpointConfig.model_validate(values)
+
+
+def test_eval_config_accepts_id_shorthand():
+    config = EvalConfig.model_validate(
+        {
+            "id": "env1",
+            "env_args": {},
+            "env_dir_path": "./environments",
+            "model": "openai/gpt-4.1-mini",
+            "client_config": {},
+            "sampling_args": {},
+            "num_examples": 1,
+            "rollouts_per_example": 1,
+            "max_concurrent": 1,
+        }
+    )
+
+    assert config.env_id == "env1"
 
 
 @pytest.fixture
@@ -23,6 +49,7 @@ def run_cli(make_metadata, make_state, make_input):
         overrides,
         capture_all_configs: bool = False,
         endpoints: dict | None = None,
+        fail_on_load_endpoints: bool = False,
     ):
         """Run CLI with mocked arguments and capture config(s).
 
@@ -59,6 +86,7 @@ def run_cli(make_metadata, make_state, make_input):
             "save_to_hf_hub": False,
             "hf_hub_dataset_name": "",
             "extra_env_kwargs": {},
+            "env_config_overrides": [],
             "max_retries": 0,
             "fullscreen": False,
             "disable_tui": False,
@@ -70,13 +98,12 @@ def run_cli(make_metadata, make_state, make_input):
 
         captured: dict = {"sampling_args": None, "configs": []}
 
-        monkeypatch.setattr(
-            argparse.ArgumentParser,
-            "parse_args",
-            lambda self: args_namespace,
-        )
+        monkeypatch.setattr(vf_eval, "parse_args", lambda argv=None: args_namespace)
         monkeypatch.setattr(vf_eval, "setup_logging", lambda *_, **__: None)
-        monkeypatch.setattr(vf_eval, "load_endpoints", lambda *_: endpoints or {})
+        if fail_on_load_endpoints:
+            monkeypatch.setattr(vf_eval, "load_endpoints", fail_load_endpoints)
+        else:
+            monkeypatch.setattr(vf_eval, "load_endpoints", lambda *_: endpoints or {})
 
         async def fake_run_evaluation(config, **kwargs):
             captured["sampling_args"] = dict(config.sampling_args)
@@ -120,6 +147,97 @@ def test_cli_single_env_id(monkeypatch, run_cli):
     configs = captured["configs"]
     assert len(configs) == 1
     assert configs[0].env_id == "env1"
+
+
+def test_parse_args_accepts_v1_env_config_overrides():
+    args = vf_eval.parse_args(
+        [
+            "env1",
+            "--taskset.id",
+            "my-id",
+            "--harness.id",
+            "my-harness",
+            "--harness.max-turns",
+            "4",
+        ]
+    )
+
+    assert args.env_config_overrides == [
+        "--taskset.id",
+        "my-id",
+        "--harness.id",
+        "my-harness",
+        "--harness.max-turns",
+        "4",
+    ]
+
+
+def test_parse_args_rejects_unknown_eval_flags():
+    with pytest.raises(SystemExit):
+        vf_eval.parse_args(["env1", "--unknown-flag", "value"])
+
+
+def test_cli_v1_env_config_overrides_preserve_env_args_config(
+    tmp_path: Path, monkeypatch, run_cli
+):
+    module_name = f"cli_override_env_{time.time_ns()}"
+    (tmp_path / f"{module_name}.py").write_text(
+        """
+import verifiers as vf
+
+
+class DemoTasksetConfig(vf.TasksetConfig):
+    count: int = 1
+    enabled: bool = True
+
+
+class DemoHarnessConfig(vf.HarnessConfig):
+    label: str = "base"
+
+
+def load_taskset(config: DemoTasksetConfig):
+    raise RuntimeError("not used")
+
+
+def load_harness(config: DemoHarnessConfig):
+    raise RuntimeError("not used")
+
+
+def load_environment(config: vf.EnvConfig):
+    raise RuntimeError("not used")
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    importlib.invalidate_caches()
+
+    captured = run_cli(
+        monkeypatch,
+        {
+            "env_id_or_config": module_name,
+            "env_args": {"config": {"taskset": {"count": 2}}},
+            "env_config_overrides": [
+                "--taskset.id",
+                "override-id",
+                "--no-taskset.enabled",
+                "--harness.id",
+                "demo-harness",
+                "--harness.max-turns",
+                "4",
+            ],
+        },
+    )
+
+    assert captured["configs"][0].env_args == {
+        "config": {
+            "taskset": {
+                "taskset_id": "override-id",
+                "count": 2,
+                "enabled": False,
+            },
+            "harness": {"harness_id": "demo-harness", "max_turns": 4},
+        }
+    }
 
 
 def test_get_env_eval_defaults_for_package_module(tmp_path: Path, monkeypatch):
@@ -232,6 +350,36 @@ def test_cli_temperature_not_added_when_none(monkeypatch, run_cli):
     assert "temperature" not in sa
 
 
+def test_cli_extra_env_kwargs_support_timeout_seconds(monkeypatch, run_cli):
+    captured = run_cli(
+        monkeypatch,
+        {
+            "extra_env_kwargs": {"timeout_seconds": 30, "foo": "bar"},
+        },
+    )
+
+    assert captured["configs"][0].extra_env_kwargs == {
+        "timeout_seconds": 30,
+        "foo": "bar",
+    }
+
+
+def test_cli_timeout_flag_overrides_extra_env_kwargs(monkeypatch, run_cli):
+    """--timeout wins over timeout_seconds in --extra-env-kwargs."""
+    captured = run_cli(
+        monkeypatch,
+        {
+            "extra_env_kwargs": {"timeout_seconds": 30, "foo": "bar"},
+            "timeout": 600,
+        },
+    )
+
+    assert captured["configs"][0].extra_env_kwargs == {
+        "timeout_seconds": 600,
+        "foo": "bar",
+    }
+
+
 def test_cli_headers_table_and_list_merge(monkeypatch, run_cli):
     captured = run_cli(
         monkeypatch,
@@ -246,6 +394,25 @@ def test_cli_headers_table_and_list_merge(monkeypatch, run_cli):
         "X-A": "a",
         "X-B": "override",
         "X-C": "c",
+    }
+
+
+def test_cli_defaults_session_header_to_trajectory_id(monkeypatch, run_cli):
+    captured = run_cli(monkeypatch, {})
+
+    assert captured["configs"][0].client_config.extra_headers_from_state == {
+        "X-Session-ID": "trajectory_id"
+    }
+
+
+def test_cli_header_from_state_overrides_default_session_header(monkeypatch, run_cli):
+    captured = run_cli(
+        monkeypatch,
+        {"header_from_state": ["X-Session-ID: example_id"]},
+    )
+
+    assert captured["configs"][0].client_config.extra_headers_from_state == {
+        "X-Session-ID": "example_id"
     }
 
 
@@ -264,12 +431,12 @@ def test_cli_registry_headers_merged_with_eval_toml(tmp_path, monkeypatch, run_c
         {"env_id_or_config": str(cfg)},
         endpoints={
             "gpt-5-mini": [
-                {
-                    "model": "gpt-5-mini",
-                    "url": "https://a.example/v1",
-                    "key": "OPENAI_API_KEY",
-                    "extra_headers": {"X-Reg": "r"},
-                }
+                endpoint(
+                    model="gpt-5-mini",
+                    base_url="https://a.example/v1",
+                    api_key_var="OPENAI_API_KEY",
+                    extra_headers={"X-Reg": "r"},
+                )
             ]
         },
     )
@@ -292,18 +459,18 @@ def test_cli_multi_variant_preserves_per_row_registry_headers(monkeypatch, run_c
         },
         endpoints={
             "gpt-5-mini": [
-                {
-                    "model": "gpt-5-mini",
-                    "url": "https://a.example/v1",
-                    "key": "OPENAI_API_KEY",
-                    "extra_headers": {"X-Row": "a"},
-                },
-                {
-                    "model": "gpt-5-mini",
-                    "url": "https://b.example/v1",
-                    "key": "OPENAI_API_KEY",
-                    "extra_headers": {"X-Row": "b"},
-                },
+                endpoint(
+                    model="gpt-5-mini",
+                    base_url="https://a.example/v1",
+                    api_key_var="OPENAI_API_KEY",
+                    extra_headers={"X-Row": "a"},
+                ),
+                endpoint(
+                    model="gpt-5-mini",
+                    base_url="https://b.example/v1",
+                    api_key_var="OPENAI_API_KEY",
+                    extra_headers={"X-Row": "b"},
+                ),
             ]
         },
     )
@@ -323,16 +490,16 @@ def test_cli_endpoint_alias_multi_variant_sets_multi_base_urls(monkeypatch, run_
         },
         endpoints={
             "gpt-5-mini": [
-                {
-                    "model": "gpt-5-mini",
-                    "url": "https://a.example/v1",
-                    "key": "OPENAI_API_KEY",
-                },
-                {
-                    "model": "gpt-5-mini",
-                    "url": "https://b.example/v1",
-                    "key": "OPENAI_API_KEY",
-                },
+                endpoint(
+                    model="gpt-5-mini",
+                    base_url="https://a.example/v1",
+                    api_key_var="OPENAI_API_KEY",
+                ),
+                endpoint(
+                    model="gpt-5-mini",
+                    base_url="https://b.example/v1",
+                    api_key_var="OPENAI_API_KEY",
+                ),
             ]
         },
     )
@@ -359,11 +526,11 @@ def test_cli_model_flag_resolves_endpoint_alias_when_registry_present(
         },
         endpoints={
             "gpt-4.1-mini": [
-                {
-                    "model": "openai/gpt-4.1-mini",
-                    "url": "https://alias.example/v1",
-                    "key": "ALIAS_API_KEY",
-                }
+                endpoint(
+                    model="openai/gpt-4.1-mini",
+                    base_url="https://alias.example/v1",
+                    api_key_var="ALIAS_API_KEY",
+                )
             ]
         },
     )
@@ -385,12 +552,12 @@ def test_cli_model_flag_uses_endpoint_client_type_when_provided(monkeypatch, run
         },
         endpoints={
             "haiku": [
-                {
-                    "model": "claude-haiku-4-5",
-                    "url": "https://api.anthropic.com",
-                    "key": "ANTHROPIC_API_KEY",
-                    "api_client_type": "anthropic_messages",
-                }
+                endpoint(
+                    model="claude-haiku-4-5",
+                    base_url="https://api.anthropic.com",
+                    api_key_var="ANTHROPIC_API_KEY",
+                    api_client_type="anthropic_messages",
+                )
             ]
         },
     )
@@ -410,7 +577,7 @@ def test_cli_direct_fields_work_without_endpoint_registry(monkeypatch, run_cli):
             "api_key_var": "CUSTOM_API_KEY",
             "api_base_url": "https://custom.example/v1",
         },
-        endpoints={},
+        fail_on_load_endpoints=True,
     )
 
     config = captured["configs"][0]
@@ -418,6 +585,36 @@ def test_cli_direct_fields_work_without_endpoint_registry(monkeypatch, run_cli):
     assert config.model == "my/custom-model"
     assert config.client_config.api_key_var == "CUSTOM_API_KEY"
     assert config.client_config.api_base_url == "https://custom.example/v1"
+
+
+def test_cli_accepts_openai_responses_client_type(monkeypatch, run_cli):
+    captured = run_cli(
+        monkeypatch,
+        {
+            "model": "gpt-5.2",
+            "api_client_type": "openai_responses",
+            "api_key_var": "OPENAI_API_KEY",
+            "api_base_url": "https://api.openai.com/v1",
+        },
+    )
+
+    config = captured["configs"][0]
+    assert config.client_config.client_type == "openai_responses"
+
+
+def test_cli_accepts_nemorl_chat_completions_client_type(monkeypatch, run_cli):
+    captured = run_cli(
+        monkeypatch,
+        {
+            "model": "nemotron",
+            "api_client_type": "nemorl_chat_completions",
+            "api_key_var": "NEMO_API_KEY",
+            "api_base_url": "https://nemo.example/v1",
+        },
+    )
+
+    config = captured["configs"][0]
+    assert config.client_config.client_type == "nemorl_chat_completions"
 
 
 def test_cli_endpoint_alias_multi_variant_supports_mixed_keys(monkeypatch, run_cli):
@@ -430,16 +627,16 @@ def test_cli_endpoint_alias_multi_variant_supports_mixed_keys(monkeypatch, run_c
         },
         endpoints={
             "gpt-5-mini": [
-                {
-                    "model": "gpt-5-mini",
-                    "url": "https://a.example/v1",
-                    "key": "PRIME_API_KEY",
-                },
-                {
-                    "model": "gpt-5-mini",
-                    "url": "https://b.example/v1",
-                    "key": "OPENAI_API_KEY",
-                },
+                endpoint(
+                    model="gpt-5-mini",
+                    base_url="https://a.example/v1",
+                    api_key_var="PRIME_API_KEY",
+                ),
+                endpoint(
+                    model="gpt-5-mini",
+                    base_url="https://b.example/v1",
+                    api_key_var="OPENAI_API_KEY",
+                ),
             ]
         },
     )
@@ -463,16 +660,16 @@ def test_cli_endpoint_id_resolves_registry_alias(monkeypatch, run_cli):
             },
             endpoints={
                 "gpt-5-mini": [
-                    {
-                        "model": "gpt-5-mini",
-                        "url": "https://a.example/v1",
-                        "key": "OPENAI_API_KEY",
-                    },
-                    {
-                        "model": "gpt-5-mini",
-                        "url": "https://b.example/v1",
-                        "key": "OPENAI_API_KEY",
-                    },
+                    endpoint(
+                        model="gpt-5-mini",
+                        base_url="https://a.example/v1",
+                        api_key_var="OPENAI_API_KEY",
+                    ),
+                    endpoint(
+                        model="gpt-5-mini",
+                        base_url="https://b.example/v1",
+                        api_key_var="OPENAI_API_KEY",
+                    ),
                 ]
             },
         )
@@ -514,11 +711,11 @@ def test_cli_endpoint_id_accepts_directory_endpoints_path(monkeypatch, run_cli):
                 },
                 endpoints={
                     "gpt-5-mini": [
-                        {
-                            "model": "gpt-5-mini",
-                            "url": "https://a.example/v1",
-                            "key": "OPENAI_API_KEY",
-                        }
+                        endpoint(
+                            model="gpt-5-mini",
+                            base_url="https://a.example/v1",
+                            api_key_var="OPENAI_API_KEY",
+                        )
                     ]
                 },
             )
@@ -545,7 +742,7 @@ def test_cli_endpoint_id_not_found_raises(monkeypatch, run_cli):
 def test_cli_endpoint_id_requires_toml_endpoints_path(monkeypatch, run_cli):
     with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
         f.write(
-            'endpoints_path = "./configs/endpoints.py"\n\n'
+            'endpoints_path = "./configs/endpoints.json"\n\n'
             '[[eval]]\nenv_id = "env1"\nendpoint_id = "gpt-5-mini"\n'
         )
         f.flush()
@@ -559,11 +756,11 @@ def test_cli_endpoint_id_requires_toml_endpoints_path(monkeypatch, run_cli):
                 },
                 endpoints={
                     "gpt-5-mini": [
-                        {
-                            "model": "gpt-5-mini",
-                            "url": "https://a.example/v1",
-                            "key": "OPENAI_API_KEY",
-                        }
+                        endpoint(
+                            model="gpt-5-mini",
+                            base_url="https://a.example/v1",
+                            api_key_var="OPENAI_API_KEY",
+                        )
                     ]
                 },
             )
@@ -598,6 +795,26 @@ def test_load_toml_config_single_eval():
         assert result[0]["env_id"] == "env1"
 
 
+def test_load_toml_config_single_eval_id_alias():
+    """Single eval accepts id and normalizes to env_id."""
+    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
+        f.write('[[eval]]\nid = "env1"\n')
+        f.flush()
+        result = load_toml_config(Path(f.name))
+        assert len(result) == 1
+        assert result[0]["env_id"] == "env1"
+        assert "id" not in result[0]
+
+
+def test_load_toml_config_rejects_id_and_env_id():
+    """A single eval cannot use both id spellings."""
+    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
+        f.write('[[eval]]\nid = "env1"\nenv_id = "env2"\n')
+        f.flush()
+        with pytest.raises(ValueError, match="both id and env_id"):
+            load_toml_config(Path(f.name))
+
+
 def test_repo_eval_example_configs_are_valid():
     """Bundled example configs should parse with the current eval config schema."""
     config_paths = sorted(Path("configs/eval").glob("*.toml"))
@@ -618,6 +835,34 @@ def test_load_toml_config_multi_env():
         assert result[1]["env_id"] == "env2"
 
 
+def test_load_toml_config_duplicate_envs_accept_names():
+    """Duplicate env ids can be labeled and configured independently."""
+    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
+        f.write(
+            '[[eval]]\nid = "env1"\nname = "env1-short"\n'
+            "[eval.args]\n"
+            'split = "short"\n\n'
+            '[[eval]]\nid = "env1"\nname = "env1-long"\n'
+            "[eval.args]\n"
+            'split = "long"\n'
+        )
+        f.flush()
+        result = load_toml_config(Path(f.name))
+
+    assert len(result) == 2
+    assert [config["env_id"] for config in result] == ["env1", "env1"]
+    assert [config["name"] for config in result] == ["env1-short", "env1-long"]
+    assert [config["env_args"]["split"] for config in result] == ["short", "long"]
+
+
+def test_load_toml_config_rejects_global_name():
+    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
+        f.write('name = "shared-name"\n\n[[eval]]\nid = "env1"\n')
+        f.flush()
+        with pytest.raises(ValueError, match="Invalid global field"):
+            load_toml_config(Path(f.name))
+
+
 def test_load_toml_config_with_env_args():
     """Multiple sections with env_args field loads correctly."""
     with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
@@ -630,6 +875,146 @@ def test_load_toml_config_with_env_args():
         assert result[0]["env_id"] == "env1"
         assert result[0]["env_args"]["split"] == "train"
         assert result[0]["env_args"]["max_examples"] == 100
+
+
+def test_load_toml_config_sampling_section_mirrors_chat_template_kwargs():
+    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
+        f.write(
+            "[sampling]\n"
+            "max_tokens = 1024\n"
+            'reasoning_effort = "medium"\n'
+            "enable_thinking = false\n\n"
+            "[sampling.extra_body]\n"
+            'custom = "value"\n\n'
+            "[sampling.extra_body.chat_template_kwargs]\n"
+            "clear_thinking = true\n\n"
+            "[[eval]]\n"
+            'env_id = "env1"\n'
+        )
+        f.flush()
+        result = load_toml_config(Path(f.name))
+
+    assert result[0]["sampling_args"] == {
+        "max_tokens": 1024,
+        "reasoning_effort": "medium",
+        "enable_thinking": False,
+        "extra_body": {
+            "custom": "value",
+            "chat_template_kwargs": {
+                "clear_thinking": True,
+                "reasoning_effort": "medium",
+                "enable_thinking": False,
+            },
+        },
+    }
+
+
+def test_load_toml_config_sampling_args_mirrors_chat_template_kwargs():
+    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
+        f.write(
+            "[[eval]]\n"
+            'env_id = "env1"\n'
+            'sampling_args = { max_tokens = 256, reasoning_effort = "high", enable_thinking = true }\n'
+        )
+        f.flush()
+        result = load_toml_config(Path(f.name))
+
+    assert result[0]["sampling_args"] == {
+        "max_tokens": 256,
+        "reasoning_effort": "high",
+        "enable_thinking": True,
+        "extra_body": {
+            "chat_template_kwargs": {
+                "reasoning_effort": "high",
+                "enable_thinking": True,
+            }
+        },
+    }
+
+
+def test_cli_toml_eval_sampling_section_pipes_thinking_args(monkeypatch, run_cli):
+    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
+        f.write(
+            "[[eval]]\n"
+            'env_id = "env1"\n\n'
+            "[eval.sampling]\n"
+            "max_tokens = 512\n"
+            'reasoning_effort = "low"\n'
+            "enable_thinking = true\n"
+        )
+        f.flush()
+        captured = run_cli(
+            monkeypatch,
+            {
+                "env_id_or_config": f.name,
+            },
+        )
+
+    assert captured["sampling_args"] == {
+        "max_tokens": 512,
+        "reasoning_effort": "low",
+        "enable_thinking": True,
+        "extra_body": {
+            "chat_template_kwargs": {
+                "reasoning_effort": "low",
+                "enable_thinking": True,
+            }
+        },
+    }
+
+
+def test_load_toml_config_with_args_taskset_harness():
+    """args/taskset/harness sections normalize into load_environment kwargs."""
+    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
+        f.write(
+            '[[eval]]\nenv_id = "env1"\n'
+            "[eval.args]\n"
+            'split = "train"\n\n'
+            "[eval.taskset]\n"
+            'id = "user/taskset-package"\n'
+            "num_examples = 10\n\n"
+            "[eval.harness]\n"
+            'id = "user/harness-package"\n'
+            "max_turns = 5\n"
+        )
+        f.flush()
+        result = load_toml_config(Path(f.name))
+
+    assert len(result) == 1
+    assert result[0]["env_id"] == "env1"
+    assert result[0]["env_args"] == {
+        "split": "train",
+        "config": {
+            "taskset": {"id": "user/taskset-package", "num_examples": 10},
+            "harness": {"id": "user/harness-package", "max_turns": 5},
+        },
+    }
+    assert "args" not in result[0]
+    assert "taskset" not in result[0]
+    assert "harness" not in result[0]
+
+
+def test_load_toml_config_allows_taskset_id_without_env_id():
+    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
+        f.write(
+            "[[eval]]\n"
+            "[eval.taskset]\n"
+            'id = "tasksets.harbor"\n'
+            "num_examples = 10\n\n"
+            "[eval.harness]\n"
+            'id = "harnesses.opencode"\n'
+            "max_turns = 5\n"
+        )
+        f.flush()
+        result = load_toml_config(Path(f.name))
+
+    assert result[0]["env_id"] == "tasksets.harbor"
+    assert result[0]["env_args"] == {
+        "config": {
+            "taskset": {"id": "tasksets.harbor", "num_examples": 10},
+            "harness": {"id": "harnesses.opencode", "max_turns": 5},
+        },
+    }
 
 
 def test_load_toml_config_missing_env_section():
@@ -650,8 +1035,8 @@ def test_load_toml_config_empty_eval_list():
             load_toml_config(Path(f.name))
 
 
-def test_load_toml_config_missing_env_id():
-    """[[eval]] without env_id field raises ValueError."""
+def test_load_toml_config_missing_id():
+    """[[eval]] without id field raises ValueError."""
     with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
         f.write('[[eval]]\nname = "env1"\n')
         f.flush()
@@ -698,6 +1083,28 @@ def test_cli_multi_env_via_toml_config(monkeypatch, run_cli):
     assert configs[1].env_id == "env2"
 
 
+def test_cli_duplicate_env_names_disambiguate_result_paths(monkeypatch, run_cli):
+    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
+        f.write(
+            '[[eval]]\nid = "env1"\nname = "env1-short"\n'
+            "[eval.args]\n"
+            'split = "short"\n\n'
+            '[[eval]]\nid = "env1"\nname = "env1-long"\n'
+            "[eval.args]\n"
+            'split = "long"\n'
+        )
+        f.flush()
+        captured = run_cli(monkeypatch, {"env_id_or_config": f.name})
+
+    configs = captured["configs"]
+    assert len(configs) == 2
+    assert [config.env_id for config in configs] == ["env1", "env1"]
+    assert [config.name for config in configs] == ["env1-short", "env1-long"]
+    assert [config.env_args["split"] for config in configs] == ["short", "long"]
+    assert get_eval_results_path(configs[0]).parent.name.startswith("env1-short--")
+    assert get_eval_results_path(configs[1]).parent.name.startswith("env1-long--")
+
+
 def test_cli_toml_ignores_cli_args(monkeypatch, run_cli):
     """TOML config ignores CLI args, uses defaults for unspecified values."""
     with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
@@ -721,6 +1128,16 @@ def test_cli_toml_ignores_cli_args(monkeypatch, run_cli):
         assert config.rollouts_per_example == 3  # DEFAULT_ROLLOUTS_PER_EXAMPLE
         assert config.max_concurrent == 32  # default
         assert config.sampling_args["max_tokens"] is None  # default
+        assert config.save_results is True
+
+
+def test_cli_toml_respects_save_results_false(monkeypatch, run_cli):
+    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
+        f.write('[[eval]]\nenv_id = "env1"\nsave_results = false\n')
+        f.flush()
+        captured = run_cli(monkeypatch, {"env_id_or_config": f.name})
+
+    assert captured["configs"][0].save_results is False
 
 
 def test_cli_toml_per_env_num_examples(monkeypatch, run_cli):
@@ -872,6 +1289,27 @@ def test_load_toml_config_global_values_with_per_eval_override():
     assert result[1]["env_id"] == "env2"
     assert result[1]["model"] == "gpt-5"  # still inherits global
     assert result[1]["num_examples"] == 50  # per-eval override
+
+
+def test_load_toml_config_with_extra_env_kwargs():
+    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
+        f.write(
+            '[[eval]]\nenv_id = "env1"\n[eval.extra_env_kwargs]\ntimeout_seconds = 600\n'
+        )
+        f.flush()
+        result = load_toml_config(Path(f.name))
+
+    assert result[0]["extra_env_kwargs"] == {"timeout_seconds": 600}
+
+
+def test_load_toml_config_with_top_level_timeout():
+    """Top-level `timeout` is a recognized field on [[eval]] tables."""
+    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
+        f.write('[[eval]]\nenv_id = "env1"\ntimeout = 600\n')
+        f.flush()
+        result = load_toml_config(Path(f.name))
+
+    assert result[0]["timeout"] == 600
 
 
 def test_load_toml_config_invalid_global_field():
@@ -1027,15 +1465,15 @@ def test_ablation_cartesian_product():
     assert "gpt-4.1-mini" in models and "gpt-4.1" in models
 
 
-def test_ablation_env_args_sweep():
-    """sweep.env_args keys are merged into env_args dict."""
+def test_ablation_args_sweep():
+    """sweep.args keys are merged into env_args dict."""
     with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
         f.write(
             '[[ablation]]\nenv_id = "my-env"\n'
-            'env_args = {fixed_key = "fixed"}\n\n'
+            'args = {fixed_key = "fixed"}\n\n'
             "[ablation.sweep]\n"
             "temperature = [0.0, 1.0]\n\n"
-            "[ablation.sweep.env_args]\n"
+            "[ablation.sweep.args]\n"
             'difficulty = ["easy", "hard"]\n'
         )
         f.flush()
@@ -1045,6 +1483,17 @@ def test_ablation_env_args_sweep():
     for c in configs:
         assert c["env_args"]["fixed_key"] == "fixed"
         assert c["env_args"]["difficulty"] in ("easy", "hard")
+
+
+def test_ablation_args_sweep_key_is_explicitly_freeform():
+    """sweep.args and sweep.env_args do not rely on valid_fields membership."""
+    sweep = {"args": {"difficulty": []}, "env_args": {"split": []}}
+
+    invalid = verifiers.utils.eval_utils.invalid_ablation_sweep_fields(
+        sweep, valid_fields=set()
+    )
+
+    assert invalid == set()
 
 
 def test_ablation_global_defaults_apply():
@@ -1061,6 +1510,44 @@ def test_ablation_global_defaults_apply():
 
     assert len(configs) == 2
     assert all(c["num_examples"] == 100 for c in configs)
+
+
+def test_ablation_sampling_sweep_merges_with_global_sampling_defaults():
+    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
+        f.write(
+            "[sampling]\n"
+            "max_tokens = 1024\n"
+            'reasoning_effort = "medium"\n\n'
+            '[[ablation]]\nenv_id = "my-env"\n\n'
+            "[ablation.sweep]\n"
+            "sampling = [{ temperature = 0.0 }, { temperature = 1.0, enable_thinking = false }]\n"
+        )
+        f.flush()
+        configs = load_toml_config(Path(f.name))
+
+    assert len(configs) == 2
+    assert configs[0]["sampling_args"] == {
+        "max_tokens": 1024,
+        "reasoning_effort": "medium",
+        "temperature": 0.0,
+        "extra_body": {
+            "chat_template_kwargs": {
+                "reasoning_effort": "medium",
+            }
+        },
+    }
+    assert configs[1]["sampling_args"] == {
+        "max_tokens": 1024,
+        "reasoning_effort": "medium",
+        "temperature": 1.0,
+        "enable_thinking": False,
+        "extra_body": {
+            "chat_template_kwargs": {
+                "reasoning_effort": "medium",
+                "enable_thinking": False,
+            }
+        },
+    }
 
 
 def test_ablation_endpoint_id_override_removes_global_model():
@@ -1148,6 +1635,32 @@ def test_ablation_env_id_in_sweep():
     assert "env-a" in env_ids and "env-b" in env_ids
 
 
+def test_ablation_id_aliases_normalize_to_env_id():
+    """Ablation fixed and swept id aliases normalize to env_id."""
+    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
+        f.write(
+            '[[ablation]]\nid = "fixed-env"\n\n'
+            "[ablation.sweep]\n"
+            "temperature = [0.0, 1.0]\n"
+        )
+        f.flush()
+        fixed_configs = load_toml_config(Path(f.name))
+
+    assert all(c["env_id"] == "fixed-env" for c in fixed_configs)
+
+    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
+        f.write(
+            "[[ablation]]\n\n"
+            "[ablation.sweep]\n"
+            'id = ["env-a", "env-b"]\n'
+            "temperature = [0.0]\n"
+        )
+        f.flush()
+        swept_configs = load_toml_config(Path(f.name))
+
+    assert [c["env_id"] for c in swept_configs] == ["env-a", "env-b"]
+
+
 def test_ablation_empty_sweep_raises():
     """Ablation without sweep section raises ValueError."""
     with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
@@ -1183,24 +1696,24 @@ def test_ablation_invalid_sweep_field_raises():
             load_toml_config(Path(f.name))
 
 
-def test_ablation_missing_env_id_raises():
-    """Ablation without env_id (fixed or swept) raises ValueError."""
+def test_ablation_missing_id_raises():
+    """Ablation without id (fixed or swept) raises ValueError."""
     with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
         f.write("[[ablation]]\n\n[ablation.sweep]\ntemperature = [0.0, 1.0]\n")
         f.flush()
-        with pytest.raises(ValueError, match="env_id"):
+        with pytest.raises(ValueError, match="id"):
             load_toml_config(Path(f.name))
 
 
-def test_ablation_overlapping_env_args_raises():
-    """Same key in fixed env_args and sweep.env_args raises ValueError."""
+def test_ablation_overlapping_args_raises():
+    """Same key in fixed args and sweep.args raises ValueError."""
     with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
         f.write(
             '[[ablation]]\nenv_id = "my-env"\n'
-            'env_args = {difficulty = "easy"}\n\n'
+            'args = {difficulty = "easy"}\n\n'
             "[ablation.sweep]\n"
             "temperature = [0.0, 1.0]\n\n"
-            "[ablation.sweep.env_args]\n"
+            "[ablation.sweep.args]\n"
             'difficulty = ["easy", "hard"]\n'
         )
         f.flush()

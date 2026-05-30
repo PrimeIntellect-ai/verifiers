@@ -1,10 +1,14 @@
 import importlib.util
-import json
-import subprocess
+import sys
 from pathlib import Path
+from typing import Any, cast
+
+import verifiers as vf
+from harnesses import OpenCode, OpenCodeConfig, OpenCodeProgramConfig
+from tasksets import HarborTaskset
 
 
-def _load_opencode_module():
+def _load_opencode_module() -> Any:
     module_path = (
         Path(__file__).resolve().parent.parent
         / "environments"
@@ -18,40 +22,85 @@ def _load_opencode_module():
     assert spec.loader is not None
 
     module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
 
-def test_opencode_config_renders_valid_json_after_shell_expansion():
+def test_load_environment_uses_v1_taskset_and_harness() -> None:
     module = _load_opencode_module()
-    run_command = module._build_run_command(
-        "/app",
-        disabled_tools=["webfetch", "question"],
-        has_system_prompt=True,
+
+    env = module.load_environment(
+        config=vf.EnvConfig(
+            taskset=module.HarborTasksetConfig(),
+            harness=module.OpenCodeConfig(),
+        )
     )
 
-    prefix = "cat > ~/.config/opencode/opencode.json << EOFCONFIG\n"
-    suffix = "\nEOFCONFIG"
-    config_block = run_command.split(prefix, 1)[1].split(suffix, 1)[0]
-
-    script = f"""OPENAI_BASE_URL=https://example.invalid SCHEMA_DOLLAR='$' bash -lc 'cat <<EOFCONFIG
-{config_block}
-EOFCONFIG'"""
-    rendered = subprocess.run(
-        script,
-        shell=True,
-        executable="/bin/bash",
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout
-
-    config = json.loads(rendered)
-    assert config["$schema"] == "https://opencode.ai/config.json"
-    assert config["provider"]["intercepted"]["options"]["baseURL"] == (
-        "https://example.invalid"
+    assert isinstance(env, vf.Env)
+    assert isinstance(env.taskset, HarborTaskset)
+    assert isinstance(env.harness, OpenCode)
+    assert isinstance(env.harness.config, OpenCodeConfig)
+    assert not hasattr(module, "OpenCodeHarborHarnessConfig")
+    assert not hasattr(module, "TERMINAL_BENCH_SAMPLE_TASKS")
+    assert env.taskset.config.bundle_package == module.__name__
+    task = next(iter(env.taskset))
+    assert (
+        Path(cast(str, task["task_dir"])).parent
+        == Path(module.__file__).parent / "tasks"
     )
-    assert "agent" in config
-    assert config["agent"]["build"]["prompt"] == "{file:/opencode/prompt.txt}"
-    assert config["agent"]["build"]["tools"]["webfetch"] is False
-    assert config["agent"]["build"]["tools"]["question"] is False
+    assert env.harness.config.max_turns == 4
+    assert env.harness.config.program.disabled_tools == (
+        OpenCodeConfig().program.disabled_tools
+    )
+    assert "webfetch" in env.harness.config.program.disabled_tools
+    assert "question" in env.harness.config.program.disabled_tools
+
+    program = cast(dict[str, object], env.harness.config.program.data())
+    mcp_setup = cast(dict[str, object], program["channels"])["mcp"]
+    assert '"webfetch": false' in cast(str, mcp_setup)
+    assert '"question": false' in cast(str, mcp_setup)
+
+
+def test_load_environment_accepts_v1_taskset_and_harness_config() -> None:
+    module = _load_opencode_module()
+
+    env = module.load_environment(
+        config=vf.EnvConfig(
+            taskset=module.HarborTasksetConfig(
+                task_names=["hello-world"],
+                sandbox=vf.SandboxConfig(cpu_cores=1.5),
+            ),
+            harness=module.OpenCodeConfig(
+                program=OpenCodeProgramConfig(
+                    agent_workdir="/workspace",
+                    disabled_tools=["webfetch"],
+                ),
+                max_turns=2,
+            ),
+        )
+    )
+
+    assert env.taskset.config.bundle_package == module.__name__
+    task = next(iter(env.taskset))
+    assert task["task_dir"] == str(
+        Path(module.__file__).parent / "tasks" / "hello-world"
+    )
+    assert env.taskset.config.task_names == ["hello-world"]
+    assert env.taskset.config.sandbox.cpu_cores == 1.5
+    assert env.harness.config.program.agent_workdir == "/workspace"
+    assert env.harness.config.max_turns == 2
+
+    program = cast(dict[str, object], env.harness.config.program.data())
+    command = cast(list[object], program["command"])
+    mcp_setup = cast(dict[str, object], program["channels"])["mcp"]
+    assert "/workspace" in cast(str, command[2])
+    assert '"webfetch": false' in cast(str, mcp_setup)
+    assert '"question": false' not in cast(str, mcp_setup)
+
+
+def test_pyproject_does_not_define_unsupported_harness_defaults() -> None:
+    module = _load_opencode_module()
+    pyproject = Path(module.__file__).parent / "pyproject.toml"
+
+    assert "[tool.verifiers.harness]" not in pyproject.read_text()

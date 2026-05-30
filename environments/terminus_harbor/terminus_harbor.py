@@ -43,7 +43,7 @@ class TerminusHarborEnv(HarborEnv):
     async def build_env_vars(self, state: vf.State) -> dict[str, str]:
         """Add terminus-specific env vars."""
         env_vars = await super().build_env_vars(state)
-        env_vars["HARBOR_TASK_NAME"] = state.get("task", "")
+        env_vars["HARBOR_TASK_NAME"] = (state.get("info") or {}).get("task_name", "")
         env_vars["AGENT_NAME"] = self.agent_name
         env_vars["MODEL_NAME"] = self.model_name
         env_vars["LOGS_DIR"] = "/logs"
@@ -57,10 +57,13 @@ class TerminusHarborEnv(HarborEnv):
 
         sandbox_id = state["sandbox_id"]
 
-        # Install curl, git, uv, and Python
+        # Install curl, git, uv, and Python.
+        # Acquire::Retries=3 mitigates transient archive.ubuntu.com CDN sync
+        # mismatches that fail fresh-sandbox apt-get update mid-rollout
+        # (launchpad bug #1876035).
         await self.sandbox_client.execute_command(
             sandbox_id,
-            "apt-get update && apt-get install -y curl git 2>&1",
+            "apt-get -o Acquire::Retries=3 update && apt-get -o Acquire::Retries=3 install -y curl git 2>&1",
             working_dir=None,
             timeout=120,
         )
@@ -279,4 +282,5 @@ def load_environment(
         disk_size_gb=disk_size_gb,
         timeout_minutes=timeout_minutes,
         max_turns=max_turns,
+        env_id="terminus-harbor",
     )

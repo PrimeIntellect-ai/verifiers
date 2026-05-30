@@ -1,53 +1,150 @@
-import os
-
-from datasets import Dataset
+from collections.abc import Iterable
+from pathlib import Path
+import sys
+from typing import cast
 
 import verifiers as vf
-from verifiers.envs.experimental.mcp_env import MCPEnv
+
+SYSTEM_PROMPT = "Use the available MCP tools to answer the question."
+
+DEFAULT_EXAMPLES = [
+    {
+        "query": "ceramic battery recycling",
+        "question": "Use the MCP tools to find the record about ceramic battery recycling. What is the record title?",
+        "answer": "Kiln Battery Loop",
+    },
+    {
+        "query": "ocean drone algae bloom",
+        "question": "Use the MCP tools to find the record about ocean drones and algae blooms. What is the record title?",
+        "answer": "Tide Scout",
+    },
+    {
+        "query": "library robot sorting",
+        "question": "Use the MCP tools to find the record about library robot sorting. What is the record title?",
+        "answer": "Stacks Navigator",
+    },
+    {
+        "query": "green roof insulation",
+        "question": "Use the MCP tools to find the record about green roof insulation. What is the record title?",
+        "answer": "Moss Blanket",
+    },
+    {
+        "query": "satellite wildfire mapping",
+        "question": "Use the MCP tools to find the record about satellite wildfire mapping. What is the record title?",
+        "answer": "Ember Atlas",
+    },
+    {
+        "query": "fermentation sensor brewery",
+        "question": "Use the MCP tools to find the record about fermentation sensors in a brewery. What is the record title?",
+        "answer": "Yeast Whisper",
+    },
+    {
+        "query": "rail tunnel airflow",
+        "question": "Use the MCP tools to find the record about airflow in rail tunnels. What is the record title?",
+        "answer": "Tunnel Pulse",
+    },
+    {
+        "query": "museum climate microgrid",
+        "question": "Use the MCP tools to find the record about museum climate control and microgrids. What is the record title?",
+        "answer": "Gallery Grid",
+    },
+    {
+        "query": "orchard frost prediction",
+        "question": "Use the MCP tools to find the record about orchard frost prediction. What is the record title?",
+        "answer": "Frost Lantern",
+    },
+    {
+        "query": "city curb delivery",
+        "question": "Use the MCP tools to find the record about city curb delivery routing. What is the record title?",
+        "answer": "Curb Queue",
+    },
+]
+MCP_SERVER_PATH = str(Path(__file__).with_name("mcp_server.py"))
+DEFAULT_MCP_SERVERS: list[vf.ConfigData] = [
+    {
+        "name": "records",
+        "command": sys.executable,
+        "args": [MCP_SERVER_PATH],
+        "description": "Synthetic search-record MCP server",
+    },
+]
 
 
-def load_environment(
-    mcp_servers: list | None = None, dataset=None, **kwargs
-) -> vf.Environment:
-    """Load an MCPEnv environment with fetch server for testing."""
-    if mcp_servers is None:
-        mcp_servers = [
-            {
-                "name": "exa",
-                "command": "npx",
-                "args": ["-y", "exa-mcp-server"],
-                "env": {"EXA_API_KEY": os.getenv("EXA_API_KEY", "")},
-                "description": "Exa MCP server",
-            },
-            {
-                "name": "fetch",
-                "command": "uvx",
-                "args": ["mcp-server-fetch"],
-                "description": "Fetch MCP server",
-            },
-        ]
+class MCPSearchTasksetConfig(vf.TasksetConfig):
+    rewards: list[str] = ["exact_title_reward"]
+    mcp_servers: list[vf.ConfigData] | None = None
+    max_turns: int = 6
+    examples: list[vf.ConfigData] | None = None
 
-    dataset = dataset or Dataset.from_dict(
-        {
-            "question": [
-                "Find out what Prime Intellect's newest announcement was from their website, give me the headline in 2 words. Their url is primeintellect.ai",
-            ],
-            "answer": ["ENVIRONMENTS HUB"],
+
+class MCPSearchTaskset(vf.Taskset[MCPSearchTasksetConfig]):
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
+        return load_tasks(
+            examples=self.config.examples, max_turns=self.config.max_turns
+        )
+
+    def load_system_prompt(self, config: MCPSearchTasksetConfig) -> vf.SystemPrompt:
+        _ = config
+        return SYSTEM_PROMPT
+
+    def load_toolsets(self, config: MCPSearchTasksetConfig) -> vf.Toolsets:
+        servers = config.mcp_servers or [dict(server) for server in DEFAULT_MCP_SERVERS]
+        return {
+            "records": vf.Toolset(
+                tools=[
+                    vf.MCPTool(
+                        command=str(server["command"]),
+                        args=[
+                            str(arg)
+                            for arg in cast(
+                                Iterable[str | int | float | bool],
+                                server.get("args") or [],
+                            )
+                        ],
+                        env=cast(dict[str, str] | None, server.get("env")),
+                        cwd=cast(str | None, server.get("cwd")),
+                    )
+                    for server in servers
+                ]
+            )
         }
+
+
+def load_tasks(
+    examples: Iterable[vf.JsonData] | None = None,
+    *,
+    max_turns: int = 6,
+):
+    records = examples if examples is not None else DEFAULT_EXAMPLES
+    for index, record in enumerate(records):
+        question = str(record["question"])
+        yield {
+            **dict(record),
+            "example_id": index,
+            "max_turns": max_turns,
+            "prompt": [{"role": "user", "content": question}],
+        }
+
+
+@vf.reward(weight=1.0)
+async def exact_title_reward(task: vf.Task, state: vf.State) -> float:
+    completion = state.get("completion") or []
+    messages = (
+        vf.get_messages(completion, role="assistant")
+        if isinstance(completion, list)
+        else []
     )
+    response = str(messages[-1].content or "") if messages else ""
+    return float(str(task["answer"]).lower() in response.lower())
 
-    rubric = vf.JudgeRubric(judge_model="gpt-4.1-mini")
 
-    async def judge_reward(judge, prompt, completion, answer, state):
-        judge_response = await judge(prompt, completion, answer, state)
-        return 1.0 if "yes" in judge_response.lower() else 0.0
+class MCPSearchEnvConfig(vf.EnvConfig):
+    taskset: MCPSearchTasksetConfig = MCPSearchTasksetConfig()
+    harness: vf.HarnessConfig = vf.HarnessConfig()
 
-    rubric.add_reward_func(judge_reward, weight=1.0)
-    vf_env = MCPEnv(
-        mcp_servers=mcp_servers,
-        dataset=dataset,
-        rubric=rubric,
-        **kwargs,
+
+def load_environment(config: MCPSearchEnvConfig) -> vf.Env:
+    return vf.Env(
+        taskset=MCPSearchTaskset(config=config.taskset),
+        harness=vf.Harness(config=config.harness),
     )
-
-    return vf_env

@@ -37,8 +37,6 @@ escapes. That's a known limitation; SWE-bench instance ``test_patch``
 fields in practice do not contain such paths.
 """
 
-from __future__ import annotations
-
 import logging
 import tempfile
 from pathlib import Path
