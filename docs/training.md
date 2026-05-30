@@ -42,17 +42,20 @@ configs/
 │   ├── qwen-3-5.toml
 │   ├── qwen-3-5-moe.toml
 │   ├── nemotron-3.toml
-│   └── llama-3.toml
+│   ├── llama-3.toml
+│   └── gpt-oss.toml
 ├── rl/
 │   ├── qwen-3-5.toml
 │   ├── qwen-3-5-moe.toml
 │   ├── nemotron-3.toml
-│   └── llama-3.toml
+│   ├── llama-3.toml
+│   └── gpt-oss.toml
 └── gepa/
     ├── qwen-3-5.toml
     ├── qwen-3-5-moe.toml
     ├── nemotron-3.toml
-    └── llama-3.toml
+    ├── llama-3.toml
+    └── gpt-oss.toml
 ```
 
 Example configuration file for the `primeintellect/reverse-text` environment with `Qwen/Qwen3.5-4B`:

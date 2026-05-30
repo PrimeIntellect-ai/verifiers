@@ -126,7 +126,7 @@ Selects which `Client` implementation to use. Set via `ClientConfig.client_type`
 
 ```python
 class State(dict):
-    INPUT_FIELDS = ["prompt", "answer", "info", "example_id"]
+    INPUT_FIELDS = ["prompt", "answer", "info"]
 ```
 
 A `dict` subclass that tracks rollout information. Accessing keys in `INPUT_FIELDS` automatically forwards to the nested `input` object.
@@ -162,7 +162,6 @@ A `dict` subclass that tracks rollout information. Accessing keys in `INPUT_FIEL
 ```python
 class RolloutInput(TypedDict):
     prompt: Messages        # Required
-    example_id: int         # Framework-managed
     answer: str             # Optional
     info: Info              # Optional
 ```
@@ -172,7 +171,6 @@ class RolloutInput(TypedDict):
 ```python
 class RolloutOutput(dict):
     # Required fields
-    example_id: int  # Framework-managed
     prompt: Messages | None
     completion: Messages | None
     reward: float

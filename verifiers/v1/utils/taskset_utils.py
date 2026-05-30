@@ -38,10 +38,8 @@ def prepare_task(task: Task, taskset_id: str) -> Task:
         raise TypeError("v1 task loaders must return Task objects.")
     prepared = Task(cast(JsonData, dict(task)))
     prepared["taskset_id"] = taskset_id
-    if "task_id" in prepared:
+    if prepared.get("task_id") is not None:
         prepared["task_id"] = str(prepared["task_id"])
-    elif "example_id" in prepared:
-        prepared["task_id"] = str(prepared["example_id"])
     else:
         prepared["task_id"] = uuid.uuid4().hex
     return prepared.freeze()
@@ -51,13 +49,13 @@ def dataset_record_from_task(
     task: Task,
     taskset_id: str,
     index: int,
-    source: JsonData | None = None,
+    record: JsonData | None = None,
 ) -> JsonData:
     data = Task(cast(JsonData, dict(task)))
-    data.setdefault("example_id", source.get("example_id") if source else index)
+    data["example_id"] = index
     normalized = prepare_task(data, taskset_id)
     task_payload = dict(normalized)
-    dataset_record = deepcopy(dict(source or {}))
+    dataset_record = deepcopy(dict(record or {}))
     dataset_record["prompt"] = task_payload["prompt"]
     dataset_record["example_id"] = task_payload["example_id"]
     info = dataset_record.get("info")
@@ -82,9 +80,10 @@ def dataset_from_result(result: Tasks, taskset_id: str) -> Dataset:
     if isinstance(result, Dataset):
         records: list[JsonData] = []
         for index, record in enumerate(result):
-            source = cast(JsonData, dict(record))
-            task = task_from_dataset_record(source, taskset_id)
-            records.append(dataset_record_from_task(task, taskset_id, index, source))
+            row = cast(JsonData, dict(record))
+            row["example_id"] = index
+            task = task_from_dataset_record(row, taskset_id)
+            records.append(dataset_record_from_task(task, taskset_id, index, row))
         return Dataset.from_list(records)
     tasks = tasks_from_result(result, taskset_id)
     return Dataset.from_list(dataset_records_from_tasks(tasks, taskset_id))

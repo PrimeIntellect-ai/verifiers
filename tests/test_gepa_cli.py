@@ -189,6 +189,14 @@ def test_load_gepa_toml_config_requires_env_table(tmp_path: Path):
         load_gepa_toml_config(config_path)
 
 
+def test_repo_gepa_example_configs_are_valid():
+    config_paths = sorted(Path("configs/gepa").glob("*.toml"))
+    assert config_paths
+    for config_path in config_paths:
+        loaded = load_gepa_toml_config(config_path)
+        assert loaded["envs"], f"{config_path} should contain at least one [[env]]"
+
+
 def test_resolve_gepa_config_args_supports_plain_env_id():
     args = argparse.Namespace(env_id_or_config="primeintellect/wordle")
 
