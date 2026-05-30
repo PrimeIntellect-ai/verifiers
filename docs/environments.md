@@ -706,7 +706,8 @@ the taskset config type for TOML, CLI, eval, GEPA, RL, and Hosted Training.
 After `prime env init my-env --v1`, edit the generated taskset class:
 
 1. Add task settings to `TasksetConfig`.
-2. Return train/eval task records from `load_tasks`.
+2. Return task records from `train_tasks` and add `eval_tasks` only when the
+   taskset has an explicit eval source.
 3. Return task-owned tools from `load_toolsets` when needed.
 4. Add lifecycle, metric, reward, and advantage methods with `@vf.*`.
 
@@ -728,10 +729,8 @@ class MyTasksetConfig(vf.TasksetConfig):
 
 
 class MyTaskset(vf.Taskset[MyTasksetConfig]):
-    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
+    def train_tasks(self) -> vf.Tasks:
         """Return serializable task records as a list, generator, or Dataset."""
-        if split == "eval":
-            return []
         return [
             {
                 "prompt": [{"role": "user", "content": "Reverse abc."}],

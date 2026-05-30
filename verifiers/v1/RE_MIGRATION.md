@@ -18,7 +18,7 @@ class MyTasksetConfig(vf.TasksetConfig):
 
 
 class MyTaskset(vf.Taskset[MyTasksetConfig]):
-    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
+    def train_tasks(self) -> vf.Tasks:
         return [
             {
                 "prompt": [{"role": "user", "content": "Question?"}],
@@ -97,8 +97,9 @@ then port the dataset and scoring logic.
 
 ## Task Data
 
-Tasksets return serializable task records from `load_tasks(split=...)`. During a
-rollout, the framework materializes them as immutable `vf.Task` objects.
+Tasksets return serializable task records from `train_tasks()` and
+`eval_tasks()`. During a rollout, the framework materializes them as immutable
+`vf.Task` objects.
 
 ```python
 yield {
@@ -155,23 +156,20 @@ resolves the taskset side against the harness side. The available strategies are
 ## Single-Turn QA And Instruction Following
 
 Use the base harness unless the old environment owns a reusable execution
-mechanism. Move dataset construction into `load_tasks(split=...)` and move each
-reward/metric onto the taskset class.
+mechanism. Move dataset construction into `train_tasks()` and `eval_tasks()`,
+and move each reward/metric onto the taskset class.
 
 ```python
 class QATasksetConfig(vf.TasksetConfig):
     dataset_name: str = "gsm8k"
-    train_split: str = "train"
-    eval_split: str = "test"
 
 
 class QATaskset(vf.Taskset[QATasksetConfig]):
-    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
-        dataset_split = (
-            self.config.train_split if split == "train" else self.config.eval_split
-        )
-        dataset = load_dataset(self.config.dataset_name, "main", split=dataset_split)
-        return dataset
+    def train_tasks(self) -> vf.Tasks:
+        return load_dataset(self.config.dataset_name, "main", split="train")
+
+    def eval_tasks(self) -> vf.Tasks:
+        return load_dataset(self.config.dataset_name, "main", split="test")
 
     @vf.reward(weight=1.0)
     async def exact(self, task: vf.Task, state: vf.State) -> float:

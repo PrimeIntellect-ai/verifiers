@@ -1,6 +1,6 @@
 import asyncio
 from collections.abc import Iterable
-from typing import cast
+from typing import Protocol, cast
 
 from openreward import OpenReward
 from openreward.api.environments.client import Session as OpenRewardAPISession
@@ -15,6 +15,24 @@ import verifiers as vf
 from verifiers.v1.utils.serialization_utils import serializable
 
 
+class OpenRewardSplit(Protocol):
+    name: str
+    type: str
+
+
+class OpenRewardEnvironment(Protocol):
+    def list_splits(self) -> Iterable[OpenRewardSplit]: ...
+
+    def list_tasks(self, split: str) -> Iterable[OpenRewardTask]: ...
+
+    def get_task_range(
+        self,
+        split: str,
+        start: int | None = None,
+        stop: int | None = None,
+    ) -> Iterable[OpenRewardTask]: ...
+
+
 class OpenRewardTasksetConfig(vf.TasksetConfig):
     taskset_id: str | None = "openreward"
     bindings: vf.BindingsConfig = vf.BindingsConfig.model_validate(
@@ -27,7 +45,6 @@ class OpenRewardTasksetConfig(vf.TasksetConfig):
     variant: str | None = None
     base_url: str | None = None
     split: str = "train"
-    eval_split: str | None = None
     num_train_examples: int | None = None
     num_eval_examples: int = 0
 
@@ -129,30 +146,81 @@ class OpenRewardTaskset(vf.Taskset[OpenRewardTasksetConfig]):
     def load_toolsets(self, config: OpenRewardTasksetConfig) -> vf.Toolsets:
         return {"openreward": vf.Toolset(scope="rollout", handler=self.call_tool)}
 
-    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
+    def train_tasks(self) -> vf.Tasks:
+        return self.openreward_tasks(
+            task_split=self.config.split,
+            num_examples=self.config.num_train_examples,
+        )
+
+    def eval_tasks(self) -> vf.Tasks:
+        if self.config.num_eval_examples <= 0:
+            return []
+        return self.openreward_test_tasks(
+            num_examples=self.config.num_eval_examples,
+        )
+
+    def openreward_tasks(
+        self,
+        *,
+        task_split: str,
+        num_examples: int | None,
+    ) -> list[vf.JsonData]:
         config = self.config
-        task_split = config.split
-        num_examples = config.num_train_examples
-        if split == "eval":
-            if config.num_eval_examples <= 0:
-                return []
-            task_split = config.eval_split or config.split
-            num_examples = config.num_eval_examples
         with OpenReward() as client:
-            environment = client.environments.get(
-                name=config.environment,
-                variant=config.variant,
-                base_url=config.base_url,
+            environment = cast(
+                OpenRewardEnvironment,
+                client.environments.get(
+                    name=config.environment,
+                    variant=config.variant,
+                    base_url=config.base_url,
+                ),
             )
-            tasks = (
-                environment.list_tasks(split=task_split)
-                if num_examples is None
-                else environment.get_task_range(
-                    split=task_split,
-                    start=0,
-                    stop=num_examples,
-                )
+            tasks = self.openreward_source_tasks(environment, task_split, num_examples)
+        return self.openreward_task_records(tasks, task_split)
+
+    def openreward_test_tasks(self, *, num_examples: int) -> list[vf.JsonData]:
+        config = self.config
+        with OpenReward() as client:
+            environment = cast(
+                OpenRewardEnvironment,
+                client.environments.get(
+                    name=config.environment,
+                    variant=config.variant,
+                    base_url=config.base_url,
+                ),
             )
+            task_split = self.openreward_test_split(environment)
+            if task_split is None:
+                return []
+            tasks = self.openreward_source_tasks(environment, task_split, num_examples)
+        return self.openreward_task_records(tasks, task_split)
+
+    def openreward_test_split(self, environment: OpenRewardEnvironment) -> str | None:
+        for split in environment.list_splits():
+            if split.type == "test":
+                return split.name
+        return None
+
+    def openreward_source_tasks(
+        self,
+        environment: OpenRewardEnvironment,
+        task_split: str,
+        num_examples: int | None,
+    ) -> Iterable[OpenRewardTask]:
+        if num_examples is None:
+            return environment.list_tasks(split=task_split)
+        return environment.get_task_range(
+            split=task_split,
+            start=0,
+            stop=num_examples,
+        )
+
+    def openreward_task_records(
+        self,
+        tasks: Iterable[OpenRewardTask],
+        task_split: str,
+    ) -> list[vf.JsonData]:
+        config = self.config
         data: list[vf.JsonData] = []
         for task in tasks:
             task_spec = serializable(task.task_spec)

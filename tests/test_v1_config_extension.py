@@ -28,6 +28,7 @@ from verifiers.v1.utils.config_utils import coerce_config, explicit_config_data
 
 
 REF_MODULE = "v1_config_extension_refs"
+EVAL_FALLBACK_WARNING = "eval_dataset is not set, falling back to train dataset"
 
 
 def load_tasks(split: vf.TaskSplit = "train") -> list[dict[str, object]]:
@@ -782,11 +783,102 @@ async def test_sandbox_program_ref_uses_config_module(
     assert captured["fn_ref"] == f"{__name__}:program_fn"
 
 
-def test_taskset_get_eval_dataset_uses_eval_split() -> None:
+def test_taskset_get_eval_dataset_uses_eval_tasks() -> None:
     taskset = make_taskset()
 
     assert taskset.get_dataset()[0]["answer"] == "ok"
     assert taskset.get_eval_dataset()[0]["answer"] == "eval ok"
+
+
+def test_taskset_load_tasks_dispatches_to_train_and_eval_tasks() -> None:
+    class SplitTaskset(Taskset):
+        def train_tasks(self) -> vf.Tasks:
+            return [{"prompt": [], "answer": "train"}]
+
+        def eval_tasks(self) -> vf.Tasks:
+            return [{"prompt": [], "answer": "eval"}]
+
+    taskset = SplitTaskset()
+
+    assert taskset.load_tasks(split="train")[0]["answer"] == "train"
+    assert taskset.load_tasks(split="eval")[0]["answer"] == "eval"
+
+
+def test_taskset_get_eval_dataset_returns_empty_dataset_for_empty_eval_tasks() -> None:
+    class TrainOnlyTaskset(Taskset):
+        def train_tasks(self) -> vf.Tasks:
+            return [{"prompt": [], "answer": "train"}]
+
+    taskset = TrainOnlyTaskset()
+
+    assert taskset.get_dataset()[0]["answer"] == "train"
+    assert len(taskset.get_eval_dataset()) == 0
+
+
+def test_empty_eval_tasks_use_environment_train_fallback(monkeypatch) -> None:
+    class EmptyEvalTaskset(Taskset):
+        def train_tasks(self) -> vf.Tasks:
+            return [{"prompt": [], "answer": "train"}]
+
+    env = Env(taskset=EmptyEvalTaskset())
+    warnings: list[str] = []
+    monkeypatch.setattr(env.logger, "warning", warnings.append)
+
+    assert len(env.taskset.get_eval_dataset()) == 0
+    eval_rows = env.get_eval_dataset()
+
+    assert eval_rows[0]["answer"] == "train"
+    assert warnings == [EVAL_FALLBACK_WARNING]
+
+
+def test_empty_train_tasks_use_environment_eval_only_dataset() -> None:
+    class EmptyTrainTaskset(Taskset):
+        def eval_tasks(self) -> vf.Tasks:
+            return [{"prompt": [], "answer": "eval"}]
+
+    env = Env(taskset=EmptyTrainTaskset())
+
+    assert env.get_eval_dataset()[0]["answer"] == "eval"
+    with pytest.raises(ValueError, match="dataset is not set"):
+        env.get_dataset()
+
+
+def test_empty_train_and_eval_tasks_match_environment_missing_dataset_error(
+    monkeypatch,
+) -> None:
+    env = Env(taskset=Taskset())
+    warnings: list[str] = []
+    monkeypatch.setattr(env.logger, "warning", warnings.append)
+
+    with pytest.raises(ValueError, match="dataset is not set"):
+        env.get_dataset()
+    with pytest.raises(ValueError, match="dataset is not set"):
+        env.get_eval_dataset()
+    assert warnings == [EVAL_FALLBACK_WARNING]
+
+
+def test_empty_taskset_splits_are_checked_once_by_environment() -> None:
+    calls = {"train": 0, "eval": 0}
+
+    class EmptyTaskset(Taskset):
+        def train_tasks(self) -> vf.Tasks:
+            calls["train"] += 1
+            return []
+
+        def eval_tasks(self) -> vf.Tasks:
+            calls["eval"] += 1
+            return []
+
+    env = Env(taskset=EmptyTaskset())
+
+    for _ in range(2):
+        with pytest.raises(ValueError, match="dataset is not set"):
+            env.get_dataset()
+    for _ in range(2):
+        with pytest.raises(ValueError, match="dataset is not set"):
+            env.get_eval_dataset()
+
+    assert calls == {"train": 1, "eval": 1}
 
 
 def test_env_passes_taskset_eval_dataset_to_environment() -> None:

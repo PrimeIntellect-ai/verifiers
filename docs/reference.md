@@ -71,8 +71,10 @@ Tasks = datasets.Dataset | Iterable[JsonData] | Iterable[Task]
 TaskSplit = Literal["train", "eval"]
 ```
 
-v1 task loader return types. Override `load_tasks(split=...)` on a
-`vf.Taskset` subclass and return `vf.Tasks`.
+v1 task loader return types. Define `train_tasks()` / `eval_tasks()` on a
+`vf.Taskset` subclass and return `vf.Tasks`; `load_tasks(split=...)` is the
+split-dispatch API. In `vf.Env`, an empty split is treated as an absent base
+dataset.
 
 ### SystemPrompt
 
@@ -677,18 +679,21 @@ class Taskset:
     def __init__(config: TasksetConfig | None = None): ...
 
     def to_task(task: Task | JsonData) -> Task: ...
+    def train_tasks() -> Tasks: ...
+    def eval_tasks() -> Tasks: ...
+    def load_tasks(split: TaskSplit = "train") -> Tasks: ...
     async def init_group(task: Task, num_rollouts: int) -> tuple[list[Task], list[State]]: ...
     def get_dataset() -> Dataset: ...
     def get_eval_dataset() -> Dataset: ...
 ```
 
 Packages tasks and task-owned behavior. Tasksets usually define
-`load_tasks(split="train" | "eval")` returning `vf.Tasks`, which is
-`datasets.Dataset | Iterable[JsonData] | Iterable[Task]`. During rollout,
+`train_tasks()` and, when they have an explicit eval source, `eval_tasks()`;
+`load_tasks(split="train" | "eval")` is the split-dispatch API. During rollout,
 records are always materialized as `vf.Task`.
 `Taskset.__init__` is final; subclasses customize behavior through config,
-`load_tasks`, lifecycle handlers, `load_toolsets`, `load_user`, and other
-public load methods.
+task-loading methods, lifecycle handlers, `load_toolsets`, `load_user`, and
+other public load methods.
 
 #### Harness
 

@@ -177,11 +177,25 @@ class OpenEnvTaskset(vf.Taskset[OpenEnvTasksetConfig]):
     def load_toolsets(self, config: OpenEnvTasksetConfig) -> vf.Toolsets:
         return {"openenv": vf.Toolset(scope="rollout", handler=self.call_tool)}
 
-    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
-        config = self.config
-        num_examples = (
-            config.num_train_examples if split == "train" else config.num_eval_examples
+    def train_tasks(self) -> vf.Tasks:
+        return self.openenv_tasks(
+            num_examples=self.config.num_train_examples,
+            first_seed=self.config.seed,
         )
+
+    def eval_tasks(self) -> vf.Tasks:
+        return self.openenv_tasks(
+            num_examples=self.config.num_eval_examples,
+            first_seed=self.config.seed + self.config.num_train_examples,
+        )
+
+    def openenv_tasks(
+        self,
+        *,
+        num_examples: int,
+        first_seed: int,
+    ) -> vf.Tasks:
+        config = self.config
         if num_examples <= 0:
             return []
         project = Path(config.openenv_project).expanduser()
@@ -212,9 +226,6 @@ class OpenEnvTaskset(vf.Taskset[OpenEnvTasksetConfig]):
             backoff_factor=config.backoff_factor,
             max_backoff_seconds=config.max_backoff_seconds,
             jitter=config.jitter,
-        )
-        first_seed = (
-            config.seed if split == "train" else config.seed + config.num_train_examples
         )
         return [
             {
