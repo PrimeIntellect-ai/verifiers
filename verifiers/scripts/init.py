@@ -160,13 +160,10 @@ import verifiers as vf
 
 
 class {taskset_config_name}(vf.TasksetConfig):
-    pass
+    system_prompt: vf.SystemPrompt = "Replace this with the system prompt for {env_id_dash}."
 
 
 class {taskset_name}(vf.Taskset[{taskset_config_name}]):
-    def load_system_prompt(self, config: {taskset_config_name}) -> vf.SystemPrompt:
-        raise NotImplementedError("Load the system prompt for {env_id_dash}.")
-
     def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         raise NotImplementedError("Load tasks for {env_id_dash}.")
 
@@ -191,13 +188,10 @@ import verifiers as vf
 
 
 class {taskset_config_name}(vf.TasksetConfig):
-    pass
+    system_prompt: vf.SystemPrompt = "Replace this with the system prompt for {env_id_dash}."
 
 
 class {taskset_name}(vf.Taskset[{taskset_config_name}]):
-    def load_system_prompt(self, config: {taskset_config_name}) -> vf.SystemPrompt:
-        raise NotImplementedError("Load the system prompt for {env_id_dash}.")
-
     def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         raise NotImplementedError("Load tasks for {env_id_dash}.")
 
@@ -231,7 +225,7 @@ def load_environment(config: vf.EnvConfig) -> vf.Env:
 
 OPENENV_ENVIRONMENT_TEMPLATE = """\
 import verifiers as vf
-from tasksets.openenv import OpenEnvTaskset, OpenEnvTasksetConfig
+from tasksets import OpenEnvTaskset, OpenEnvTasksetConfig
 
 
 def load_taskset(config: OpenEnvTasksetConfig) -> OpenEnvTaskset:

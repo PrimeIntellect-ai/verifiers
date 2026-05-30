@@ -91,6 +91,7 @@ import verifiers as vf
 
 
 class MyTasksetConfig(vf.TasksetConfig):
+    system_prompt: vf.SystemPrompt = "Reverse text exactly."
     split: str = "train"
 
 
@@ -122,6 +123,10 @@ def load_environment(config: vf.EnvConfig) -> vf.Env:
     )
 ```
 See [BYO Harness](byo-harness.md) for the advanced v1 taskset/harness API.
+The child loader annotation is the config contract: keep root
+`load_environment` typed as `vf.EnvConfig`, put task settings on
+`TasksetConfig`, and add `load_harness(config: MyHarnessConfig)` only when the
+environment owns a reusable harness.
 Reusable v1 taskset and harness packages live in `tasksets` and `harnesses`.
 Install them with `uv add "verifiers[packages]"`, or with the narrower
 `verifiers[tasksets]`, `verifiers[harnesses]`, and backend-specific extras such

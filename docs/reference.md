@@ -78,6 +78,7 @@ v1 task loader return types. Override `load_tasks(split=...)` on a
 
 ```python
 SystemPrompt = str | Sequence[Message | JsonData]
+SystemPromptStrategy = Literal["HT", "TH", "H_OR_T", "T_OR_H", "H", "T", "REJECT"]
 
 class SystemPromptConfig:
     path: str | None = None
@@ -87,7 +88,9 @@ class SystemPromptConfig:
 v1 system prompt type. Plain strings are prompt text. Use
 `vf.SystemPromptConfig(path="system_prompt.txt")` for file-backed prompts, or
 override `load_system_prompt(config)` when prompt construction belongs to the
-class.
+class. System prompt resolution is per task: task prompt overrides taskset
+prompt for the taskset side, then the harness applies
+`system_prompt_strategy`. The default strategy is `HT`.
 
 ### RewardFunc
 
@@ -685,6 +688,9 @@ Packages tasks and task-owned behavior. Tasksets usually define
 `load_tasks(split="train" | "eval")` returning `vf.Tasks`, which is
 `datasets.Dataset | Iterable[JsonData] | Iterable[Task]`. During rollout,
 records are always materialized as `vf.Task`.
+`Taskset.__init__` is final; subclasses customize behavior through config,
+`load_tasks`, lifecycle handlers, `load_toolsets`, `load_user`, and other
+public load methods.
 
 #### Harness
 
@@ -708,6 +714,9 @@ Runs one task. All model calls go through the v1 interception endpoint so
 trajectory capture, sampling args, tool forwarding, and protocol translation use
 one path across local Python, sandboxed Python, command programs, and the base
 tool loop.
+`Harness.__init__` is final; subclasses customize behavior through config,
+`load_sandbox`, `load_toolsets`, `load_system_prompt`, lifecycle handlers, and
+program config.
 
 `HarnessConfig.program` is a `ProgramConfig`. Dict/TOML inputs are accepted as
 shorthand for the same config object:
@@ -770,6 +779,8 @@ hidden bindings, and tool-owned lifecycle handlers. `objects.*` bindings are
 private to the owning toolset/user and are not directly accessible from state.
 String binding sources are framework paths; literal strings should be bound via
 callable sources.
+Tasks show all toolsets/tools by default and can restrict them with `show` or
+`hide` visibility at `task["toolsets"]` and `task["tools"]`.
 
 #### v1 Config Models
 
@@ -1021,15 +1032,23 @@ class EnvConfig(Config):
 
 class TasksetConfig(Config):
     taskset_id: str | None = None  # `id` shorthand accepted
-    system_prompt: object | None = None
-    user: object | None = None
+    system_prompt: PromptInput | SystemPromptConfig | None = None
+    user: UserConfig | None = None
+    bindings: BindingsConfig = BindingsConfig()
+    objects: ObjectsConfig = ObjectsConfig()
+    artifacts: ArtifactsConfig = ArtifactsConfig()
 
 class HarnessConfig(Config):
     harness_id: str | None = None  # `id` shorthand accepted
     program: ProgramConfig = ProgramConfig()
-    system_prompt: object | None = None
-    sandbox: SandboxConfig | None = None
     model: ModelConfig = ModelConfig()
+    system_prompt: PromptInput | SystemPromptConfig | None = None
+    system_prompt_strategy: SystemPromptStrategy = "HT"
+    sandbox: SandboxConfig | None = None
+    user: UserConfig | None = None
+    bindings: BindingsConfig = BindingsConfig()
+    objects: ObjectsConfig = ObjectsConfig()
+    artifacts: ArtifactsConfig = ArtifactsConfig()
     max_turns: int = 10
 
 class ModelConfig(Config):
@@ -1040,12 +1059,11 @@ class ModelConfig(Config):
 
 `EnvConfig` is the typed v1 loader envelope. TOML `[env.taskset]` and
 `[env.harness]` sections populate `EnvConfig.taskset` and `EnvConfig.harness`.
-Environment-specific fields belong on the taskset or harness config that owns
-them; `EnvConfig` subclasses only bind concrete child config types.
-`taskset` must be typed as a `TasksetConfig` subclass, and `harness` must be
-typed as a `HarnessConfig` subclass.
-Nested config defaults should be explicit config objects, e.g.
-`taskset: MyTasksetConfig = MyTasksetConfig()`.
+The normal environment package loader stays typed as `load_environment(config:
+vf.EnvConfig)` and delegates child coercion to `vf.load_taskset` /
+`vf.load_harness`. Environment-specific fields belong on the taskset or harness
+config that owns them; do not subclass `EnvConfig` just to narrow child config
+types in ordinary environment packages.
 
 `Config` subclasses are strict Pydantic config models. Validate raw mappings
 with `MyConfig.model_validate(...)` or use the typed object directly.

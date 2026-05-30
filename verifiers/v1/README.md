@@ -43,11 +43,12 @@ defining a shallow subclass when a package needs a typed config surface.
 A `Task` is an immutable, JSON-serializable task record. It is the canonical
 place for per-example data such as prompts, answers, metadata, tool filters, and
 sandbox overrides. A task is frozen before rollout code sees it.
-`task["prompt"]` must not contain system messages. Use `task["system_prompt"]`
-for per-task system instructions, or set `TasksetConfig.system_prompt` /
-`HarnessConfig.system_prompt` for package-level instructions.
-Multiple system prompt sources reject by default; set `system_prompt_merge` in
-`HarnessConfig` only when that harness knows how they should combine.
+`task["prompt"]` must not contain system messages. System prompt resolution is
+per task: `task["system_prompt"]` overrides `TasksetConfig.system_prompt` for
+the taskset side, then the harness resolves that side against
+`HarnessConfig.system_prompt`. The default `system_prompt_strategy` is `HT`,
+meaning harness side followed by resolved taskset side. Other strategies are
+`TH`, `H_OR_T`, `T_OR_H`, `H`, `T`, and `REJECT`.
 Tasks may also set `max_turns`, `tools`, `toolsets`, and `sandbox` at top level
 for per-task runtime specialization. `toolsets` selects named toolsets, `tools`
 selects tools inside named toolsets, and `runtime` remains hidden framework
@@ -102,6 +103,8 @@ A `Taskset` provides tasks and task-owned logic:
 - cleanup.
 
 Taskset datasets are lazy-loaded and cached after first access.
+`Taskset.__init__` is final; subclasses customize behavior through config
+fields, public load methods, lifecycle handlers, and `load_tasks`.
 
 ### `Harness`
 
@@ -112,6 +115,8 @@ execution.
 The default harness is endpoint-backed: model calls go through a local
 interception endpoint so trajectory capture and tool forwarding use one path
 across local Python programs, command programs, and sandboxed programs.
+`Harness.__init__` is final; subclasses customize behavior through config
+fields, public load methods, lifecycle handlers, and `ProgramConfig`.
 
 ### `Env`
 
@@ -140,6 +145,7 @@ import verifiers as vf
 
 
 class ReverseTasksetConfig(vf.TasksetConfig):
+    system_prompt: vf.SystemPrompt = "Reverse text exactly."
     split: str = "train"
 
 
@@ -712,9 +718,9 @@ Tasksets and harnesses can pass toolsets as a list or a mapping:
 
 ```python
 class WikiTasksetConfig(vf.TasksetConfig):
-    toolsets: dict[str, dict[str, object]] = {
-        "wiki": {"fn": "load_wiki_toolset"},
-        "python": {"tools": ["python"]},
+    toolsets: dict[str, vf.ToolsetConfig] = {
+        "wiki": vf.ToolsetConfig(tools=["my_env.tools:search_wiki"]),
+        "python": vf.ToolsetConfig(tools=["my_env.tools:run_python"]),
     }
 
 
@@ -1203,6 +1209,7 @@ import verifiers as vf
 
 
 class MyTasksetConfig(vf.TasksetConfig):
+    system_prompt: vf.SystemPrompt = "Answer exactly."
     split: str = "train"
 
 
@@ -1258,7 +1265,8 @@ weight = 0.5
 
 For environment-specific settings, define leaf fields on the taskset or harness
 config that owns them. The `load_taskset` and `load_harness` annotations fix the
-concrete child config types for the loader.
+concrete child config types for the loader. Keep `load_environment` typed as
+`vf.EnvConfig`; do not subclass `EnvConfig` just to narrow child types.
 
 ```python
 class MyTasksetConfig(vf.TasksetConfig):
@@ -1266,7 +1274,6 @@ class MyTasksetConfig(vf.TasksetConfig):
 
 
 def load_taskset(config: MyTasksetConfig) -> MyTaskset:
-    assert isinstance(config, MyTasksetConfig)
     return MyTaskset(config=config)
 
 
@@ -1332,7 +1339,8 @@ taskset = MyTaskset(config=config)
 
 All construction-time settings live on config. Runtime mutation helpers such as
 `add_reward(...)` and `add_toolset(...)` are for live Python object wiring after
-construction.
+construction in notebooks, tests, or other direct object use. Package loaders
+should prefer config fields and `load_*` methods.
 
 ### Callable Config
 
@@ -1581,17 +1589,24 @@ different implementation.
 ```python
 class WikiTasksetConfig(vf.TasksetConfig):
     db_path: str = "wiki.db"
+    objects: vf.ObjectsConfig = vf.ObjectsConfig.model_validate(
+        {"index": "my_env.wiki:load_index"}
+    )
+    bindings: vf.BindingsConfig = vf.BindingsConfig.model_validate(
+        {"wiki.search_wiki.index": "objects.index"}
+    )
 
 
 class WikiTaskset(vf.Taskset[WikiTasksetConfig]):
     def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         raise NotImplementedError(f"Load tasks from {self.config.db_path}.")
 
+    def load_toolsets(self, config: WikiTasksetConfig) -> vf.Toolsets:
+        return {"wiki": vf.Toolset(tools=[search_wiki])}
+
 
 def load_taskset(config: WikiTasksetConfig) -> WikiTaskset:
-    taskset = WikiTaskset(config=config)
-    taskset.add_toolset(vf.Toolset(tools=[wiki_search_tool(config.db_path)]))
-    return taskset
+    return WikiTaskset(config=config)
 
 ```
 

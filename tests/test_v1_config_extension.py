@@ -1670,16 +1670,149 @@ def test_system_prompt_direct_string_can_contain_colon() -> None:
 
 
 @pytest.mark.asyncio
-async def test_harness_rejects_multiple_system_prompt_sources_by_default() -> None:
+async def test_harness_concats_multiple_system_prompt_sources_by_default() -> None:
     taskset = make_taskset(system_prompt="taskset sys")
     harness = make_harness(
         program={"fn": ref("config_program")}, system_prompt="harness sys"
     )
     Env(taskset=taskset, harness=harness)
     task = next(iter(taskset))
+    state = await harness.setup_state(task, State.for_task(task))
 
-    with pytest.raises(ValueError, match="Multiple system_prompt sources"):
+    assert state["system_prompt"] == [
+        {"role": "system", "content": "harness sys"},
+        {"role": "system", "content": "taskset sys"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_task_system_prompt_overrides_taskset_side_at_runtime() -> None:
+    taskset = make_taskset(system_prompt="taskset sys")
+    harness = make_harness(program={"fn": ref("config_program")})
+    Env(taskset=taskset, harness=harness)
+    task = Task(
+        {
+            "prompt": [{"role": "user", "content": "hi"}],
+            "system_prompt": "task sys",
+        }
+    ).freeze()
+    state = await harness.setup_state(task, State.for_task(task))
+
+    assert state["system_prompt"] == [{"role": "system", "content": "task sys"}]
+
+
+@pytest.mark.asyncio
+async def test_task_override_is_resolved_before_harness_concat() -> None:
+    taskset = make_taskset(system_prompt="taskset sys")
+    harness = make_harness(
+        program={"fn": ref("config_program")}, system_prompt="harness sys"
+    )
+    Env(taskset=taskset, harness=harness)
+    task = Task(
+        {
+            "prompt": [{"role": "user", "content": "hi"}],
+            "system_prompt": "task sys",
+        }
+    ).freeze()
+    state = await harness.setup_state(task, State.for_task(task))
+
+    assert state["system_prompt"] == [
+        {"role": "system", "content": "harness sys"},
+        {"role": "system", "content": "task sys"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_system_prompt_strategy_can_concat_taskset_side_first() -> None:
+    taskset = make_taskset(system_prompt="taskset sys")
+    harness = make_harness(
+        program={"fn": ref("config_program")},
+        system_prompt="harness sys",
+        system_prompt_strategy="TH",
+    )
+    Env(taskset=taskset, harness=harness)
+    task = next(iter(taskset))
+    state = await harness.setup_state(task, State.for_task(task))
+
+    assert state["system_prompt"] == [
+        {"role": "system", "content": "taskset sys"},
+        {"role": "system", "content": "harness sys"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_harness_can_reject_multiple_system_prompt_sides() -> None:
+    taskset = make_taskset(system_prompt="taskset sys")
+    harness = make_harness(
+        program={"fn": ref("config_program")},
+        system_prompt="harness sys",
+        system_prompt_strategy="REJECT",
+    )
+    Env(taskset=taskset, harness=harness)
+    task = next(iter(taskset))
+
+    with pytest.raises(ValueError, match="Multiple system_prompt sides"):
         await harness.setup_state(task, State.for_task(task))
+
+
+@pytest.mark.asyncio
+async def test_system_prompt_side_selection_uses_resolved_taskset_side() -> None:
+    taskset = make_taskset(system_prompt="taskset sys")
+    harness = make_harness(
+        program={"fn": ref("config_program")},
+        system_prompt="harness sys",
+        system_prompt_strategy="T_OR_H",
+    )
+    Env(taskset=taskset, harness=harness)
+    task = Task(
+        {
+            "prompt": [{"role": "user", "content": "hi"}],
+            "system_prompt": "task sys",
+        }
+    ).freeze()
+    state = await harness.setup_state(task, State.for_task(task))
+
+    assert state["system_prompt"] == [{"role": "system", "content": "task sys"}]
+
+
+@pytest.mark.asyncio
+async def test_system_prompt_side_selection_can_prefer_harness() -> None:
+    taskset = make_taskset(system_prompt="taskset sys")
+    harness = make_harness(
+        program={"fn": ref("config_program")},
+        system_prompt="harness sys",
+        system_prompt_strategy="H_OR_T",
+    )
+    Env(taskset=taskset, harness=harness)
+    task = next(iter(taskset))
+    state = await harness.setup_state(task, State.for_task(task))
+
+    assert state["system_prompt"] == [{"role": "system", "content": "harness sys"}]
+
+
+@pytest.mark.asyncio
+async def test_system_prompt_strategy_can_select_exact_sides() -> None:
+    taskset = make_taskset(system_prompt="taskset sys")
+    task = Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+
+    harness_t = make_harness(
+        program={"fn": ref("config_program")},
+        system_prompt="harness sys",
+        system_prompt_strategy="T",
+    )
+    Env(taskset=taskset, harness=harness_t)
+    state_t = await harness_t.setup_state(task, State.for_task(task))
+
+    harness_h = make_harness(
+        program={"fn": ref("config_program")},
+        system_prompt="harness sys",
+        system_prompt_strategy="H",
+    )
+    Env(taskset=taskset, harness=harness_h)
+    state_h = await harness_h.setup_state(task, State.for_task(task))
+
+    assert state_t["system_prompt"] == [{"role": "system", "content": "taskset sys"}]
+    assert state_h["system_prompt"] == [{"role": "system", "content": "harness sys"}]
 
 
 @pytest.mark.asyncio

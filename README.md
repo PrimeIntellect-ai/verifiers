@@ -145,6 +145,7 @@ import verifiers as vf
 
 
 class MyTasksetConfig(vf.TasksetConfig):
+    system_prompt: vf.SystemPrompt = "Reverse text exactly."
     split: str = "train"
 
 
@@ -170,14 +171,19 @@ def load_taskset(config: MyTasksetConfig) -> MyTaskset:
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
-    return vf.Env(taskset=vf.load_taskset(config=config.taskset))
+    return vf.Env(
+        taskset=vf.load_taskset(config=config.taskset),
+        harness=vf.Harness(config=config.harness),
+    )
 ```
-If no harness is passed, `vf.Env` uses the base endpoint-backed harness. See
+The child loader annotation defines the taskset config shape; root
+`load_environment` stays typed as `vf.EnvConfig`. See
 **[BYO Harness](docs/byo-harness.md)** for the advanced v1 taskset/harness API.
 Reusable taskset and harness packages live in `tasksets` and `harnesses`.
 Install them with `uv add "verifiers[packages]"`, or with the narrower
-`verifiers[tasksets]` and `verifiers[harnesses]` extras. For example, Harbor
-task directories can run through the bundled OpenCode CLI harness with:
+`verifiers[tasksets]`, `verifiers[harnesses]`, and backend-specific extras. For
+example, Harbor task directories can run through the bundled OpenCode CLI
+harness with:
 
 ```python
 from harnesses import OpenCode, OpenCodeConfig

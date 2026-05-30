@@ -1,4 +1,5 @@
 import importlib.util
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast
 
@@ -16,7 +17,46 @@ if TYPE_CHECKING:
     from ..task import Task
 
 
-SystemPromptMerge = Literal["reject", "concat", "task", "taskset", "harness"]
+SystemPromptStrategy = Literal["REJECT", "TH", "HT", "T", "H", "T_OR_H", "H_OR_T"]
+SystemPromptTasksetSource = Literal["task", "taskset"]
+
+
+@dataclass(frozen=True)
+class SystemPromptResolution:
+    harness: list[JsonData]
+    taskset: list[JsonData]
+    taskset_source: SystemPromptTasksetSource | None
+
+    def apply_strategy(self, strategy: SystemPromptStrategy) -> list[JsonData]:
+        if strategy == "HT":
+            return [*self._copy(self.harness), *self._copy(self.taskset)]
+        if strategy == "TH":
+            return [*self._copy(self.taskset), *self._copy(self.harness)]
+        if strategy == "REJECT":
+            if self.harness and self.taskset:
+                raise ValueError(
+                    "Multiple system_prompt sides cannot be resolved: "
+                    f"harness, {self.taskset_source or 'taskset'}. "
+                    "Set system_prompt_strategy='HT', 'TH', 'H', 'T', "
+                    "'H_OR_T', or 'T_OR_H'."
+                )
+            return [*self._copy(self.harness), *self._copy(self.taskset)]
+        if strategy == "H_OR_T":
+            return self._copy(self.harness or self.taskset)
+        if strategy == "T_OR_H":
+            return self._copy(self.taskset or self.harness)
+        if strategy == "H":
+            return self._copy(self.harness)
+        if strategy == "T":
+            return self._copy(self.taskset)
+        raise ValueError(
+            "system_prompt_strategy must be one of REJECT, TH, HT, T, H, "
+            "T_OR_H, H_OR_T."
+        )
+
+    @staticmethod
+    def _copy(messages: list[JsonData]) -> list[JsonData]:
+        return [dict(message) for message in messages]
 
 
 class SystemPromptConfig(Config):
@@ -110,36 +150,39 @@ def resolve_system_prompt(
     task: "Task",
     taskset_system_prompt: list[JsonData],
     harness_system_prompt: list[JsonData],
-    merge: str,
+    strategy: SystemPromptStrategy,
 ) -> list[JsonData]:
+    return system_prompt_resolution(
+        task=task,
+        taskset_system_prompt=taskset_system_prompt,
+        harness_system_prompt=harness_system_prompt,
+    ).apply_strategy(strategy)
+
+
+def system_prompt_resolution(
+    *,
+    task: "Task",
+    taskset_system_prompt: list[JsonData],
+    harness_system_prompt: list[JsonData],
+) -> SystemPromptResolution:
     task_system_prompt = normalize_system_prompt(
         cast(PromptInput | None, task.get("system_prompt")),
         field_name="task.system_prompt",
     )
-    sources = [
-        ("harness", harness_system_prompt),
-        ("taskset", taskset_system_prompt),
-        ("task", task_system_prompt),
-    ]
-    present = [(name, messages) for name, messages in sources if messages]
-
-    if merge == "reject":
-        if len(present) > 1:
-            names = ", ".join(name for name, _ in present)
-            raise ValueError(
-                f"Multiple system_prompt sources cannot be resolved: {names}. "
-                "Set system_prompt_merge='concat' or choose one source."
-            )
-        return [dict(message) for _, messages in present for message in messages]
-    if merge == "concat":
-        return [dict(message) for _, messages in present for message in messages]
-    if merge in {"task", "taskset", "harness"}:
-        for name, messages in present:
-            if name == merge:
-                return [dict(message) for message in messages]
-        return []
-    raise ValueError(
-        "system_prompt_merge must be one of reject, concat, task, taskset, harness."
+    return SystemPromptResolution(
+        harness=[dict(message) for message in harness_system_prompt],
+        taskset=(
+            [dict(message) for message in task_system_prompt]
+            if task_system_prompt
+            else [dict(message) for message in taskset_system_prompt]
+        ),
+        taskset_source=(
+            "task"
+            if task_system_prompt
+            else "taskset"
+            if taskset_system_prompt
+            else None
+        ),
     )
 
 
