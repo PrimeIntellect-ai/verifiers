@@ -120,7 +120,7 @@ version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = [
     "verifiers>={vf.__version__}",
-    "tasksets>=0.1.1",
+    "tasksets[openenv]>=0.1.1",
 ]
 
 [build-system]
