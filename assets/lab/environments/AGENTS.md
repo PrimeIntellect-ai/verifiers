@@ -703,25 +703,26 @@ environments/my_env/
 
 ### v1 Env Shape
 
-The golden v1 shape is one taskset class, one typed
-`load_taskset(config: MyTasksetConfig)` child factory, and a tiny
+The v1 template teaches the standard object layout: one taskset class, one
+typed `load_taskset(config: MyTasksetConfig)` child factory, and a tiny
 `load_environment(config: vf.EnvConfig)` root loader that delegates through
 `vf.load_taskset(config=config.taskset)` and
 `vf.load_harness(config=config.harness)`. The child factory annotation defines
 the taskset config type for TOML, CLI, eval, GEPA, RL, and Hosted Training.
 
+After `prime env init my-env --v1`, edit the generated taskset class:
+
+1. Add task settings to `TasksetConfig`.
+2. Return train/eval task records from `load_tasks`.
+3. Return task-owned tools from `load_toolsets` when needed.
+4. Add lifecycle, metric, reward, and advantage methods with `@vf.*`.
+
 Add a harness config, harness class, and `load_harness(config:
-MyHarnessConfig)` only when the environment owns reusable rollout behavior.
-Otherwise use the base harness through `vf.load_harness(config=config.harness)`.
+MyHarnessConfig)` when the environment owns reusable rollout behavior.
+Otherwise the generated root loader uses the base harness.
 
-The loader `config` parameter is a strict, non-optional config object supplied
-by the framework. Do not accept `None`, synthesize fallback configs, or mirror
-taskset/harness fields as root loader kwargs.
-
-`EnvConfig` is a lightweight envelope for the two child configs. Put environment
-knobs on `TasksetConfig` or `HarnessConfig`, not on `EnvConfig` itself. Do not
-subclass `EnvConfig` just to narrow child config types. Environment packages
-should not subclass `Env`.
+`EnvConfig` is the lightweight envelope for the two child configs. Put
+environment knobs on `TasksetConfig` or `HarnessConfig`.
 
 The taskset-only shape is:
 
@@ -735,18 +736,24 @@ class MyTasksetConfig(vf.TasksetConfig):
 
 class MyTaskset(vf.Taskset[MyTasksetConfig]):
     def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
-        records = [
+        """Return serializable task records as a list, generator, or Dataset."""
+        if split == "eval":
+            return []
+        return [
             {
                 "prompt": [{"role": "user", "content": "Reverse abc."}],
                 "answer": "cba",
-                "split": "train",
+                "max_turns": 1,
             }
         ]
-        return [record for record in records if record["split"] == split]
 
     @vf.reward(weight=1.0)
-    async def contains_answer(self, task, state) -> float:
-        return float(task["answer"] in str(state.get("completion") or ""))
+    async def correct_answer(self, task: vf.Task, state: vf.State) -> float:
+        messages = vf.get_messages(state.get("completion") or [], role="assistant")
+        if not messages:
+            return 0.0
+        response = str(messages[-1].content or "").strip()
+        return float(response == task["answer"])
 
 
 def load_taskset(config: MyTasksetConfig) -> MyTaskset:
@@ -769,7 +776,7 @@ class MyHarnessConfig(vf.HarnessConfig):
 
 
 class MyHarness(vf.Harness[MyHarnessConfig]):
-    pass
+    """Reusable execution behavior for this environment."""
 
 
 def load_taskset(config: MyTasksetConfig) -> MyTaskset:

@@ -9,6 +9,37 @@ For short v0-style `SingleTurnEnv`, `ToolEnv`, or `MultiTurnEnv` examples, see
 [Environments](environments.md). For API signatures, see
 [Reference](reference.md).
 
+## Start From The Template
+
+Initialize the v1 Taskset/Harness template first:
+
+```bash
+prime env init my-env --v1
+```
+
+Use a custom harness template only when the environment owns reusable execution
+behavior such as a command agent, framework adapter, sandboxed program, browser
+loop, endpoint interceptor, or nested harness:
+
+```bash
+prime env init my-env --v1 --with-harness
+```
+
+Open the generated `my_env.py` and edit it in this order:
+
+1. Add user-facing task settings to `MyTasksetConfig`.
+2. Fill `MyTaskset.load_tasks()` with train/eval task records.
+3. Add task-owned tools with `MyTaskset.load_toolsets()` when the task defines
+   an action space.
+4. Add task behavior with `@vf.setup`, `@vf.update`, `@vf.reward`, `@vf.metric`,
+   `@vf.cleanup`, and related lifecycle methods on `MyTaskset`.
+5. Add a `User` subclass and `load_user()` when the task owns simulated user
+   behavior.
+6. If `--with-harness` is used, put execution-level program, sandbox, endpoint,
+   model, or harness lifecycle behavior on `MyHarness`.
+7. Keep the generated loaders as the typed entrypoints: `load_taskset`,
+   optional `load_harness`, and the root `load_environment`.
+
 ## Golden Shape
 
 Every v1 environment has one root loader and typed child loaders:
@@ -23,6 +54,7 @@ class MyTasksetConfig(vf.TasksetConfig):
 
 class MyTaskset(vf.Taskset[MyTasksetConfig]):
     def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
+        """Return serializable task records as a list, generator, or Dataset."""
         return [
             {
                 "prompt": [{"role": "user", "content": "Reverse abc."}],
@@ -95,24 +127,19 @@ environment owns a reusable execution protocol such as a command agent,
 third-party framework adapter, browser loop, endpoint interceptor, primary
 sandbox placement, or program runner.
 
-## Hard Rules
+## Implementation Map
 
 - Import as `import verifiers as vf`.
 - Use `XXXConfig` classes for structured settings.
 - Put task behavior on the taskset config/class.
 - Put execution behavior on the harness config/class.
-- Do not subclass `vf.Env` for ordinary environment packages.
-- Do not subclass `vf.EnvConfig` just to narrow child config types.
-- Do not override `Taskset.__init__`, `Harness.__init__`, or `User.__init__`.
-- Do not accept `None`, mutate configs, or synthesize fallback configs in
-  loaders.
-- Do not put system messages in `task["prompt"]`; use `system_prompt`.
-- Do not add fallback parsing, fallback imports, compatibility aliases, or
-  silent degraded behavior to make one environment more permissive.
-- Put lifecycle behavior on the owning class with standard public methods or
-  `@vf.*` decorators.
-- Do not create one-off private helpers or bottom-of-file helper functions for
-  ordinary taskset/harness logic.
+- Use `vf.Env` and `vf.EnvConfig` for ordinary environment packages.
+- Let the base `Taskset`, `Harness`, and `User` constructors handle
+  construction; customize with config fields and public methods.
+- Put taskset/harness behavior on the owning class with standard public methods
+  or `@vf.*` decorators.
+- Use `system_prompt` for system messages.
+- Keep reusable multi-line internals in utility modules with clear names.
 
 Utility modules are appropriate only for reused, nontrivial internals or messy
 upstream adapters that users should not think about.
@@ -178,6 +205,7 @@ class GSM8KTasksetConfig(vf.TasksetConfig):
 
 class GSM8KTaskset(vf.Taskset[GSM8KTasksetConfig]):
     def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
+        """Return serializable task records as a list, generator, or Dataset."""
         dataset_split = (
             self.config.train_split if split == "train" else self.config.eval_split
         )
@@ -602,6 +630,7 @@ Before publishing or asking for review:
 10. Tools are exposed through `vf.Toolset`; task rows only show/hide them.
 11. Runtime-only resources live on state or runtime-managed owners.
 12. Metrics/rewards/setup/update/cleanup are decorated with `@vf.*`.
-13. One-off helper methods and bottom-of-file helper functions are absent.
-14. Install/load/eval has been validated with `prime eval run` or the relevant
+13. Generated component loaders remain the typed taskset/harness entrypoints.
+14. One-off helper methods and bottom-of-file helper functions are absent.
+15. Install/load/eval has been validated with `prime eval run` or the relevant
     package-install test.
