@@ -11,6 +11,7 @@ This folder contains installable example environments that showcase common usage
 ### SingleTurnEnv (prompt → single response)
 - **gsm8k**: Classic QA with exact-match reward and optional response-format reward.
 - **reverse_text**: XML formatting with non-binary LCS reward + format reward.
+- **thematic_generalization**: Infer a narrow latent theme from examples/anti-examples, score eight candidates, and reward the hidden true match by reciprocal rank.
 - **continuation_quality**: Completion-style generation (`message_type="completion"`) judged for prose quality with `JudgeRubric`.
 - **mmmu**: Multimodal inputs (image + text) packed in chat content; single-turn boxed-answer check.
 
@@ -86,7 +87,7 @@ This folder contains installable example environments that showcase common usage
 - **mmmu**: Demonstrates passing images via chat `content` items with `{type: "image_url", image_url: {url: ...}}` and standard answer parsing.
 
 ## What to look at for each pattern
-- **Minimal SingleTurnEnv**: `reverse_text`, `gsm8k`
+- **Minimal SingleTurnEnv**: `reverse_text`, `gsm8k`, `thematic_generalization`
 - **JudgeRubric end-to-end**: `continuation_quality`, `toxicity_explanation`, `self_reward`
 - **ToolEnv with real tools**: `wiki_search`, `math_python`
 - **Custom MultiTurnEnv**: `alphabet_sort`, `doublecheck`, `sentence_repeater`, `wordle`
