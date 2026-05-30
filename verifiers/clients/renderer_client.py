@@ -43,6 +43,7 @@ from renderers import ToolCall as RendererToolCall
 from renderers import ToolCallFunction
 from renderers.base import MODEL_RENDERER_MAP
 from renderers.client import _maybe_offload, generate
+from renderers.mm_store import image_asset_dir, run_id_from_env
 
 from verifiers.clients.client import Client
 from verifiers.clients.openai_chat_completions_client import (
@@ -317,15 +318,11 @@ def _mm_sidecar_stats(mm_data: Any) -> tuple[int, int, float]:
 # shared dir during the live rollout (and rewriting the URL to ``file://``)
 # keeps the env worker from retaining the full base64 transcript across turns —
 # the unbounded growth lives in ``state["trajectory"]``, which accumulates every
-# turn's prompt. Renderers load ``file://`` paths transparently, and the
-# renderer's content hash is computed from decoded pixels (not the URL), so the
-# rewrite is invisible to bridge matching, vLLM cache keys, and pixel
-# materialization. Offload is deterministic (content-addressed), so the same
-# image rewrites to the same path on both the current prompt and the stored
-# trajectory — which is what keeps bridge prefix matching valid.
+# turn's prompt. Renderers load ``file://`` paths transparently. The prompt is
+# stored into ``state["trajectory"]`` after the request, so each trajectory step
+# keeps the cheap references that were created while it was the live prompt.
 
 _IMAGE_OFFLOAD_MODE_ENV = "VF_RENDERER_IMAGE_OFFLOAD"
-_IMAGE_OFFLOAD_ROOT = Path("/data/outputs")
 _FILE_URL_PREFIX = "file://"
 _MEDIA_TYPE_EXT = {
     "jpeg": ".jpg",
@@ -344,11 +341,10 @@ def _image_offload_dir() -> Path:
     # The env worker runs in a separate pod that can't inherit the orchestrator's
     # env, but the platform injects RUN_ID into every container — so derive the
     # shared run dir from it. Must equal the orchestrator's ``config.output_dir``
-    # (``/data/outputs/run_<RUN_ID>`` in prod), where ``offload_images_to_disk``
-    # writes and ``materialize_pixels`` reads back by hash. Absolute by
-    # construction → the ``file://`` URL is always well-formed.
-    run_id = os.environ.get("RUN_ID", "")
-    return (_IMAGE_OFFLOAD_ROOT / f"run_{run_id}" / "assets" / "images").resolve()
+    # (``/data/outputs/run_<RUN_ID>/assets/images`` in prod), where
+    # ``offload_images_to_disk`` writes and ``materialize_pixels`` reads back by
+    # hash. Absolute by construction → the ``file://`` URL is always well-formed.
+    return image_asset_dir(run_id_from_env())
 
 
 def _media_type_ext(media_type: str) -> str:
@@ -407,7 +403,9 @@ def _offload_image_parts_inplace(value: Any, offload_dir: Path) -> "tuple[int, i
     """
     if isinstance(value, dict):
         count = nbytes = 0
-        if value.get("type") == "image_url" and isinstance(value.get("image_url"), dict):
+        if value.get("type") == "image_url" and isinstance(
+            value.get("image_url"), dict
+        ):
             res = _offload_image_url(value["image_url"].get("url"), offload_dir)
             if res is not None:
                 value["image_url"]["url"], n = res
@@ -428,7 +426,11 @@ def _offload_image_parts_inplace(value: Any, offload_dir: Path) -> "tuple[int, i
     # Pydantic image content part: ``part.type == "image_url"``, ``part.image_url.url``.
     if getattr(value, "type", None) == "image_url":
         src = getattr(value, "image_url", None)
-        res = _offload_image_url(getattr(src, "url", None), offload_dir) if src is not None else None
+        res = (
+            _offload_image_url(getattr(src, "url", None), offload_dir)
+            if src is not None
+            else None
+        )
         if res is not None:
             try:
                 src.url = res[0]
@@ -443,29 +445,13 @@ def _offload_image_parts_inplace(value: Any, offload_dir: Path) -> "tuple[int, i
     return 0, 0
 
 
-def _offload_prompt_and_trajectory_images(prompt: Any, state: Any) -> "dict[str, int]":
-    """Offload base64 images in the current ``prompt`` and the newest stored
-    trajectory step to disk, in place, BEFORE bridge prefix matching — so both
-    sides use identical ``file://`` URLs for the same image.
-
-    The trajectory is append-only, and the prompt that became each prior step
-    was offloaded on the turn it was the newest step — so only ``trajectory[-1]``
-    can still hold base64. (The very last step of the rollout is offloaded by
-    the orchestrator's ``offload_images_to_disk`` post-rollout.)
-    """
+def _offload_prompt_images(prompt: Any) -> "dict[str, int]":
+    """Offload base64 images in the current ``prompt`` to disk, in place."""
     offload_dir = _image_offload_dir()
     prompt_count, prompt_bytes = _offload_image_parts_inplace(prompt, offload_dir)
-    traj_count = traj_bytes = 0
-    trajectory = _get_value(state, "trajectory") if state is not None else None
-    if isinstance(trajectory, list) and trajectory:
-        last_prompt = _get_value(trajectory[-1], "prompt")
-        if last_prompt is not None:
-            traj_count, traj_bytes = _offload_image_parts_inplace(last_prompt, offload_dir)
     return {
         "prompt_rewritten": prompt_count,
         "prompt_bytes": prompt_bytes,
-        "trajectory_rewritten": traj_count,
-        "trajectory_bytes": traj_bytes,
     }
 
 
@@ -478,8 +464,8 @@ def _log_renderer_prompt_memory(
     context: Mapping[str, Any],
 ) -> None:
     prompt_images, prompt_image_bytes = _image_url_stats(prompt)
-    traj_images, traj_image_bytes, traj_prompt_json_bytes = _trajectory_prompt_image_stats(
-        trajectory
+    traj_images, traj_image_bytes, traj_prompt_json_bytes = (
+        _trajectory_prompt_image_stats(trajectory)
     )
     mm_descriptors, mm_payloads, mm_payload_mb = _mm_sidecar_stats(multi_modal_data)
     _mm_logger.info(
@@ -523,15 +509,57 @@ def _format_context(ctx: Mapping[str, Any]) -> str:
     return " ".join(parts)
 
 
-def _is_retryable_hash_only_failure(exc: Exception) -> bool:
-    status = getattr(exc, "status_code", None)
+_RETRYABLE_MM_ERROR_TYPES = {
+    "missing_mm_cache_item",
+    "missing_mm_feature_artifact",
+    "corrupt_mm_feature_artifact",
+}
+
+
+def _json_error_type(value: Any) -> str | None:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (TypeError, ValueError):
+            return None
+    if not isinstance(value, Mapping):
+        return None
+    error_type = value.get("error_type")
+    return error_type if isinstance(error_type, str) else None
+
+
+def _retryable_mm_error_type(exc: Exception) -> str | None:
+    candidates: list[Any] = []
+    body = getattr(exc, "body", None)
+    if body is not None:
+        candidates.append(body)
     response = getattr(exc, "response", None)
-    if status is None and response is not None:
-        status = getattr(response, "status_code", None)
-    if isinstance(status, int) and status >= 500:
-        return True
-    text = repr(exc)
-    return "Expected a cached item" in text or "mm_hash" in text
+    if response is not None:
+        try:
+            candidates.append(response.json())
+        except Exception:
+            text = getattr(response, "text", None)
+            if text is not None:
+                candidates.append(text)
+
+    for payload in candidates:
+        if not isinstance(payload, Mapping):
+            error_type = _json_error_type(payload)
+            if error_type in _RETRYABLE_MM_ERROR_TYPES:
+                return error_type
+            continue
+        error = payload.get("error")
+        if isinstance(error, Mapping):
+            error_type = error.get("type")
+            if error_type in _RETRYABLE_MM_ERROR_TYPES:
+                return cast(str, error_type)
+            error_type = _json_error_type(error.get("message"))
+            if error_type in _RETRYABLE_MM_ERROR_TYPES:
+                return error_type
+        error_type = _json_error_type(payload)
+        if error_type in _RETRYABLE_MM_ERROR_TYPES:
+            return error_type
+    return None
 
 
 async def _generate_with_mm_fallback(
@@ -555,7 +583,9 @@ async def _generate_with_mm_fallback(
     build on a pool thread — a copied context where a ``ContextVar.set`` would
     be invisible), is what keeps this correct.
     """
-    ctx: Mapping[str, Any] = mm_log_context if isinstance(mm_log_context, Mapping) else {}
+    ctx: Mapping[str, Any] = (
+        mm_log_context if isinstance(mm_log_context, Mapping) else {}
+    )
     mm_data = kwargs.get("multi_modal_data")
     descriptor_count, payload_count, _ = _mm_sidecar_stats(mm_data)
     has_hash_only = descriptor_count > 0
@@ -582,23 +612,28 @@ async def _generate_with_mm_fallback(
         try:
             return await generate(force_full_pixels=False, **kwargs)
         except Exception as exc:
-            retryable = _is_retryable_hash_only_failure(exc)
+            mm_error_type = _retryable_mm_error_type(exc)
+            retryable = mm_error_type in _RETRYABLE_MM_ERROR_TYPES and (
+                mm_error_type != "missing_mm_cache_item" or has_hash_only
+            )
             _mm_logger.info(
                 "renderer_mm_exception req=%d hash_only=%d retryable=%d "
-                "exc_type=%s ctx=%s",
+                "mm_error_type=%s exc_type=%s ctx=%s",
                 req_id,
                 int(has_hash_only),
                 int(retryable),
+                mm_error_type,
                 type(exc).__name__,
                 _format_context(ctx),
             )
-            if not (has_hash_only and retryable):
+            if not retryable:
                 raise
 
             _mm_logger.warning(
-                "renderer_mm_hash_only_failed req=%d; retrying with all "
-                "images materialized: %r ctx=%s",
+                "renderer_mm_repair_retry req=%d error_type=%s; retrying "
+                "with all images materialized: %r ctx=%s",
                 req_id,
+                mm_error_type,
                 exc,
                 _format_context(ctx),
             )
@@ -1032,9 +1067,12 @@ class RendererClient(
     async def to_native_prompt(
         self, messages: Messages
     ) -> tuple[list[RendererMessage], dict]:
+        extra_kwargs: dict[str, Any] = {}
+        if _image_offload_enabled():
+            extra_kwargs["_image_offload_stats"] = _offload_prompt_images(messages)
         return (
             _attach_tool_call_names([_to_renderer_message(m) for m in messages]),
-            {},
+            extra_kwargs,
         )
 
     async def to_native_tool(self, tool: Tool) -> ToolSpec:
@@ -1064,6 +1102,9 @@ class RendererClient(
             **dict(kwargs.pop("extra_headers", None) or {}),
         }
         sampling_params: dict[str, Any] = dict(args.pop("extra_body", None) or {})
+        offload_stats = cast(
+            "dict[str, int] | None", kwargs.pop("_image_offload_stats", None)
+        )
 
         # ``chat_template_kwargs`` belong to the renderer, not the engine —
         # peel them off the per-request sampling and fold them into the
@@ -1122,29 +1163,21 @@ class RendererClient(
             "prompt_msgs": len(prompt),
             "model": model,
             "cache_salt": cache_salt,
-            "client_idx": self._config.client_idx
-            if self._config is not None
-            else None,
+            "client_idx": self._config.client_idx if self._config is not None else None,
         }
 
-        # Offload base64 screenshots to a shared dir BEFORE bridge matching, so
-        # the current prompt and the stored trajectory it's compared against use
-        # identical ``file://`` URLs for the same image (deterministic by
-        # content hash). This also frees the unbounded retained transcript that
-        # would otherwise grow env-worker RSS turn over turn.
-        if _image_offload_enabled():
-            offload_stats = _offload_prompt_and_trajectory_images(prompt, state)
-            if offload_stats["prompt_rewritten"] or offload_stats["trajectory_rewritten"]:
-                _mm_logger.info(
-                    "renderer_image_offload prompt_rewritten=%d trajectory_rewritten=%d "
-                    "bytes_mb=%.1f dir=%s ctx=%s",
-                    offload_stats["prompt_rewritten"],
-                    offload_stats["trajectory_rewritten"],
-                    (offload_stats["prompt_bytes"] + offload_stats["trajectory_bytes"])
-                    / (1024.0 * 1024.0),
-                    _image_offload_dir(),
-                    _format_context(log_context),
-                )
+        # ``to_native_prompt`` offloads the original Verifiers prompt before
+        # conversion, so the step later stored in ``state["trajectory"]`` keeps
+        # the same cheap refs used by this native renderer prompt.
+        if offload_stats is not None and offload_stats["prompt_rewritten"]:
+            _mm_logger.info(
+                "renderer_image_offload prompt_rewritten=%d bytes_mb=%.1f "
+                "dir=%s ctx=%s",
+                offload_stats["prompt_rewritten"],
+                offload_stats["prompt_bytes"] / (1024.0 * 1024.0),
+                _image_offload_dir(),
+                _format_context(log_context),
+            )
 
         bridged = await _get_incremental_prompt_ids(
             renderer=renderer,

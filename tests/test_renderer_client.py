@@ -18,18 +18,26 @@ from verifiers.clients.renderer_client import (
     _get_incremental_prompt_ids,
     _is_valid_incremental_tail,
     _offload_image_parts_inplace,
-    _offload_prompt_and_trajectory_images,
+    _offload_prompt_images,
     _step_token_ids,
     _to_renderer_message,
 )
 from verifiers.errors import EmptyModelResponseError
 from verifiers.types import (
     AssistantMessage,
+    ImageUrlContentPart,
+    ImageUrlSource,
     SystemMessage,
     ToolCall,
     ToolMessage,
     UserMessage,
 )
+
+
+class _TypedMMError(RuntimeError):
+    def __init__(self, error_type: str):
+        super().__init__(error_type)
+        self.body = {"error": {"type": error_type, "message": error_type}}
 
 
 def test_renderer_client_honors_configured_renderer_config():
@@ -430,7 +438,7 @@ async def test_mm_fallback_retries_hash_only_failure_with_full_payloads():
         if calls == 1:
             # First attempt sends prior-turn images hash-only.
             assert force_full_pixels is False
-            raise RuntimeError("Expected a cached item for mm_hash=abc")
+            raise _TypedMMError("missing_mm_cache_item")
         # Fallback re-materializes every image and re-sends in full.
         assert force_full_pixels is True
         return {"content": "ok"}
@@ -462,12 +470,12 @@ async def test_mm_fallback_does_not_retry_without_hash_only_payloads():
     async def fake_generate(*, force_full_pixels=False, **_kwargs):
         nonlocal calls
         calls += 1
-        raise RuntimeError("Expected a cached item for mm_hash=abc")
+        raise _TypedMMError("missing_mm_cache_item")
 
     # No descriptor-only images means nothing was sent hash-only, so a
     # cache-miss-shaped error is not attributable to our hashing — don't retry.
     with patch.object(renderer_client_module, "generate", side_effect=fake_generate):
-        with pytest.raises(RuntimeError, match="Expected a cached item"):
+        with pytest.raises(RuntimeError, match="missing_mm_cache_item"):
             await renderer_client_module._generate_with_mm_fallback(
                 client=object(),
                 renderer=object(),
@@ -711,7 +719,9 @@ def _image_urls(value):
     """Collect every image url reachable from dicts/lists/Pydantic messages."""
     urls = []
     if isinstance(value, dict):
-        if value.get("type") == "image_url" and isinstance(value.get("image_url"), dict):
+        if value.get("type") == "image_url" and isinstance(
+            value.get("image_url"), dict
+        ):
             urls.append(value["image_url"].get("url"))
         for v in value.values():
             urls.extend(_image_urls(v))
@@ -729,17 +739,21 @@ def _image_urls(value):
 
 
 def test_offload_rewrites_prompt_base64_to_file(tmp_path, monkeypatch):
-    monkeypatch.setattr(renderer_client_module, "_IMAGE_OFFLOAD_ROOT", tmp_path)
+    monkeypatch.setenv("PRIME_RL_MM_FEATURE_ROOT", str(tmp_path))
+    monkeypatch.setenv("RUN_ID", "testrun")
     prompt = [
         {
             "role": "user",
             "content": [
                 {"type": "text", "text": "hi"},
-                {"type": "image_url", "image_url": {"url": _data_uri(b"img-A", "jpeg")}},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": _data_uri(b"img-A", "jpeg")},
+                },
             ],
         }
     ]
-    stats = _offload_prompt_and_trajectory_images(prompt, state=None)
+    stats = _offload_prompt_images(prompt)
 
     url = prompt[0]["content"][1]["image_url"]["url"]
     assert stats["prompt_rewritten"] == 1
@@ -752,9 +766,16 @@ def test_offload_rewrites_prompt_base64_to_file(tmp_path, monkeypatch):
     "make_prompt",
     [
         # plain-dict message (the native/wire representation)
-        lambda uri: [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": uri}}]}],
+        lambda uri: [
+            {
+                "role": "user",
+                "content": [{"type": "image_url", "image_url": {"url": uri}}],
+            }
+        ],
         # Pydantic message (how MultiTurnEnv stores trajectory prompts)
-        lambda uri: [UserMessage(content=[{"type": "image_url", "image_url": {"url": uri}}])],
+        lambda uri: [
+            UserMessage(content=[{"type": "image_url", "image_url": {"url": uri}}])
+        ],
     ],
     ids=["dict", "pydantic"],
 )
@@ -770,21 +791,30 @@ def test_offload_image_parts_handles_dict_and_pydantic(tmp_path, make_prompt):
     assert _offload_image_parts_inplace(messages, tmp_path)[0] == 0
 
 
-def test_offload_only_rewrites_newest_trajectory_step(tmp_path, monkeypatch):
-    # Append-only: prior steps were offloaded when they were newest, so the
-    # helper only needs to touch trajectory[-1]. (The old step here stays as-is.)
-    monkeypatch.setattr(renderer_client_module, "_IMAGE_OFFLOAD_ROOT", tmp_path)
-    old_uri = _data_uri(b"old", "png")
-    new_uri = _data_uri(b"new", "png")
-    state = {
-        "trajectory": [
-            {"prompt": [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": old_uri}}]}]},
-            {"prompt": [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": new_uri}}]}]},
-        ]
-    }
-    stats = _offload_prompt_and_trajectory_images([], state)
-    assert stats["trajectory_rewritten"] == 1
-    assert _image_urls(state["trajectory"][-1]["prompt"])[0].startswith("file://")
+@pytest.mark.asyncio
+async def test_to_native_prompt_offloads_original_verifiers_prompt(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("PRIME_RL_MM_FEATURE_ROOT", str(tmp_path))
+    monkeypatch.setenv("RUN_ID", "testrun")
+    client = object.__new__(RendererClient)
+    prompt = [
+        UserMessage(
+            content=[
+                ImageUrlContentPart(
+                    image_url=ImageUrlSource(url=_data_uri(b"typed-img", "png"))
+                )
+            ]
+        )
+    ]
+
+    native_prompt, extra_kwargs = await client.to_native_prompt(prompt)
+
+    original_url = _image_urls(prompt)[0]
+    native_url = _image_urls(native_prompt)[0]
+    assert original_url.startswith("file://")
+    assert native_url == original_url
+    assert extra_kwargs["_image_offload_stats"]["prompt_rewritten"] == 1
 
 
 def _multimodal_bridge_scenario():
@@ -826,7 +856,11 @@ def _multimodal_bridge_scenario():
             {
                 "prompt": prompt_messages,
                 "completion": completion_messages,
-                "tokens": {"prompt_ids": [1, 2], "completion_ids": [3, 99], "is_truncated": False},
+                "tokens": {
+                    "prompt_ids": [1, 2],
+                    "completion_ids": [3, 99],
+                    "is_truncated": False,
+                },
                 "is_truncated": False,
             }
         ]
@@ -836,18 +870,27 @@ def _multimodal_bridge_scenario():
 
 @pytest.mark.asyncio
 async def test_bridge_prefix_matching_survives_image_offload(tmp_path, monkeypatch):
-    """THE validation: after immediate base64->file:// offload of BOTH the
-    current prompt and the stored trajectory, the bridge prefix match must still
-    succeed (it compares the shared 'abc' screenshot by file path now)."""
-    monkeypatch.setattr(renderer_client_module, "_IMAGE_OFFLOAD_ROOT", tmp_path)
+    """Bridge matching survives when the live prompt is offloaded.
+
+    Stored trajectory prompts already carry file:// refs because they were
+    offloaded while they were the live prompt.
+    """
+    monkeypatch.setenv("PRIME_RL_MM_FEATURE_ROOT", str(tmp_path))
+    monkeypatch.setenv("RUN_ID", "testrun")
     renderer, prompt, state = _multimodal_bridge_scenario()
 
-    # Offload exactly as get_native_response does, before bridge matching.
-    _offload_prompt_and_trajectory_images(prompt, state)
+    # Simulate the append-only invariant from a prior model request.
+    _offload_prompt_images(state["trajectory"][0]["prompt"])
+    # Offload the current native prompt after the original prompt conversion does.
+    _offload_prompt_images(prompt)
 
     # The anchor screenshot resolved to the SAME file:// url on both sides.
-    prompt_prefix_url = _image_urls(prompt[1])[0]  # current prompt's prior-turn user image
-    traj_url = _image_urls(state["trajectory"][0]["prompt"])[0]  # stored trajectory image
+    prompt_prefix_url = _image_urls(prompt[1])[
+        0
+    ]  # current prompt's prior-turn user image
+    traj_url = _image_urls(state["trajectory"][0]["prompt"])[
+        0
+    ]  # stored trajectory image
     assert prompt_prefix_url.startswith("file://")
     assert prompt_prefix_url == traj_url
 
