@@ -25,10 +25,18 @@ class SandboxConfig(Config):
     install_timeout: int = 300
     setup_commands: list[str] = []
     setup_timeout: int = 300
+    # Per-sandbox tags forwarded to the sandbox provider's CreateSandboxRequest
+    # (already plumbed in ``utils/sandbox_utils.create_sandbox``). The field was
+    # originally added to ``v1/config.py:SandboxConfig`` in #1476 but was lost
+    # when #1475 moved ``SandboxConfig`` from ``config.py`` to this file —
+    # the labels-reading code in ``sandbox_utils.py`` survived the move, but
+    # the field declaration didn't. Restore it so downstream envs (forth_lang,
+    # etc.) can keep doing ``self.sandbox.labels`` without crashing.
+    labels: list[str] = []
     scope: Literal["rollout", "group", "global"] = "rollout"
     prefer: Literal["program"] | None = None
 
-    @field_validator("packages", "setup_commands", mode="before")
+    @field_validator("packages", "setup_commands", "labels", mode="before")
     @classmethod
     def validate_string_list(cls, value: object) -> object:
         if isinstance(value, str):
