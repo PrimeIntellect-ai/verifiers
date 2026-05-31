@@ -44,16 +44,9 @@ class SandboxConfig(Config):
 
 def merge_sandbox_data(base: ConfigData, override: ConfigData) -> ConfigData:
     merged = {**base, **override}
-    labels = merged_sandbox_labels(base.get("labels"), override.get("labels"))
-    if labels or "labels" in base or "labels" in override:
-        merged["labels"] = labels
-    return merged
-
-
-def merged_sandbox_labels(*values: object) -> list[str]:
     labels: list[str] = []
     seen: set[str] = set()
-    for value in values:
+    for value in (base.get("labels"), override.get("labels")):
         if not isinstance(value, list):
             continue
         for label in value:
@@ -61,4 +54,6 @@ def merged_sandbox_labels(*values: object) -> list[str]:
             if text not in seen:
                 labels.append(text)
                 seen.add(text)
-    return labels
+    if labels or "labels" in base or "labels" in override:
+        merged["labels"] = labels
+    return merged
