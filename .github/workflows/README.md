@@ -36,8 +36,8 @@ This directory contains automated workflows for the verifiers project.
 
 **Workflows**:
 - `tag-and-release.yml` publishes `verifiers` from `v*` tags with trusted publishing.
-- `publish-tasksets.yml` publishes `tasksets` from `tasksets-v*` tags with `PYPI_TASKSETS_TOKEN`. On `main`, it creates `tasksets-v<version>` when `packages/tasksets/tasksets/__init__.py` defines `__version__` and the matching remote tag does not already exist, then builds and publishes from that tag in the same workflow run.
-- `publish-harnesses.yml` publishes `harnesses` from `harnesses-v*` tags with `PYPI_HARNESSES_TOKEN`. On `main`, it creates `harnesses-v<version>` when `packages/harnesses/harnesses/__init__.py` defines `__version__` and the matching remote tag does not already exist, then builds and publishes from that tag in the same workflow run.
+- `publish-tasksets.yml` publishes `tasksets` from `tasksets-v*` tags with trusted publishing. On `main`, it creates `tasksets-v<version>` when `packages/tasksets/tasksets/__init__.py` defines `__version__` and the matching remote tag does not already exist, then builds and publishes from that tag in the same workflow run.
+- `publish-harnesses.yml` publishes `harnesses` from `harnesses-v*` tags with trusted publishing. On `main`, it creates `harnesses-v<version>` when `packages/harnesses/harnesses/__init__.py` defines `__version__` and the matching remote tag does not already exist, then builds and publishes from that tag in the same workflow run.
 - `publish-verifiers-rl.yml` publishes `verifiers-rl` from `verifiers-rl-v*` tags.
 
 ## Setting Up
