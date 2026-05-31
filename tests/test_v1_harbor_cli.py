@@ -420,6 +420,7 @@ def test_task_program_merges_into_command_program_without_collisions() -> None:
                 sandbox=True,
                 files={"/harness.txt": "harness"},
                 setup="echo harness",
+                post_setup="echo harness post",
                 channels={"mcp": "echo harness tools"},
                 env={"HARNESS": "1"},
                 artifacts=vf.ArtifactsConfig.model_validate(
@@ -436,6 +437,7 @@ def test_task_program_merges_into_command_program_without_collisions() -> None:
             "program": {
                 "files": {"/task/instruction.md": "task"},
                 "setup": "echo task",
+                "post_setup": "echo task post",
                 "env": {"TASK": "1"},
                 "artifacts": {"task_log": {"path": "/logs/task.log", "format": "text"}},
                 "args": ["--task"],
@@ -452,6 +454,7 @@ def test_task_program_merges_into_command_program_without_collisions() -> None:
         "/task/instruction.md": "task",
     }
     assert program["setup"] == ["echo harness", "echo task"]
+    assert program["post_setup"] == ["echo harness post", "echo task post"]
     assert program["channels"] == {"mcp": "echo harness tools"}
     assert program["env"] == {"HARNESS": "1", "TASK": "1"}
     assert program["args"] == ["--base", "--task"]

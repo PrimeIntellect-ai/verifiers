@@ -31,6 +31,7 @@ PROGRAM_OPTION_KEYS = {
     "files",
     "dirs",
     "setup",
+    "post_setup",
     "setup_timeout",
     "bindings",
     "env",
@@ -38,11 +39,19 @@ PROGRAM_OPTION_KEYS = {
     "channels",
 }
 PROGRAM_KEYS = PROGRAM_KIND_KEYS | PROGRAM_OPTION_KEYS | {"args"}
-SANDBOX_ONLY_PROGRAM_KEYS = {"files", "dirs", "setup", "setup_timeout", "artifacts"}
+SANDBOX_ONLY_PROGRAM_KEYS = {
+    "files",
+    "dirs",
+    "setup",
+    "post_setup",
+    "setup_timeout",
+    "artifacts",
+}
 TASK_PROGRAM_KEYS = {
     "files",
     "dirs",
     "setup",
+    "post_setup",
     "bindings",
     "env",
     "artifacts",
@@ -130,6 +139,9 @@ async def command_env(
         if isinstance(endpoint_root_url, str):
             env["ANTHROPIC_BASE_URL"] = endpoint_root_url
             env["ANTHROPIC_API_KEY"] = api_key
+    sandbox_record = state.runtime_state().get("sandbox")
+    if isinstance(sandbox_record, dict) and isinstance(sandbox_record.get("id"), str):
+        env["VF_SANDBOX_ID"] = sandbox_record["id"]
     raw_env = program.get("env", {})
     if not isinstance(raw_env, dict):
         raise TypeError("program.env must be a mapping.")
@@ -299,13 +311,14 @@ def program_binding_targets(
 
 def program_setup_callable_names(program: ConfigData) -> set[str]:
     names: set[str] = set()
-    setup = program.get("setup")
-    items = setup if isinstance(setup, list) else [setup]
-    for item in items:
-        callable_spec = program_value_callable(item)
-        if callable_spec is not None:
-            fn, _ = callable_spec
-            names.add(function_name(fn))
+    for key in ("setup", "post_setup"):
+        setup = program.get(key)
+        items = setup if isinstance(setup, list) else [setup]
+        for item in items:
+            callable_spec = program_value_callable(item)
+            if callable_spec is not None:
+                fn, _ = callable_spec
+                names.add(function_name(fn))
     return names
 
 
@@ -362,7 +375,7 @@ def validate_program_options(
     if unknown:
         raise ValueError(f"Unknown program keys: {unknown}.")
     validate_program_bindings(program)
-    if sandbox_config is None:
+    if sandbox_config is None and program.get("sandbox") is not False:
         sandbox_only = sorted(set(program) & SANDBOX_ONLY_PROGRAM_KEYS)
         if sandbox_only:
             raise ValueError(f"Program keys {sandbox_only} require sandbox placement.")
@@ -378,7 +391,11 @@ def validate_program_options(
         raise ValueError(
             "program.channels='callable' is only supported for base and fn programs."
         )
-    if kind == "base" and sandbox_config is None:
+    if (
+        kind == "base"
+        and sandbox_config is None
+        and program.get("sandbox") is not False
+    ):
         inert = sorted(set(program) & (PROGRAM_OPTION_KEYS - {"sandbox"}))
         if inert:
             raise ValueError(f"Base program keys {inert} require sandbox placement.")
@@ -399,7 +416,7 @@ def merge_task_program(program: ConfigData, task: Task, *, kind: str) -> ConfigD
     unknown = sorted(set(task_program) - TASK_PROGRAM_KEYS)
     if unknown:
         raise ValueError(
-            "task.program can only define files, dirs, setup, bindings, env, "
+            "task.program can only define files, dirs, setup, post_setup, bindings, env, "
             f"artifacts, and args; got {unknown}."
         )
     if kind != "command" and "args" in task_program:
@@ -415,6 +432,10 @@ def merge_task_program(program: ConfigData, task: Task, *, kind: str) -> ConfigD
     merged["setup"] = [
         *program_list_items(program.get("setup"), "program.setup"),
         *program_list_items(task_program.get("setup"), "task.program.setup"),
+    ]
+    merged["post_setup"] = [
+        *program_list_items(program.get("post_setup"), "program.post_setup"),
+        *program_list_items(task_program.get("post_setup"), "task.program.post_setup"),
     ]
     if kind == "command":
         merged["args"] = [

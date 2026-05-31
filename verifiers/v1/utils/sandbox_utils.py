@@ -7,7 +7,8 @@ import shlex
 import tarfile
 import tempfile
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from importlib.abc import Traversable
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol, TypeVar, cast
@@ -378,35 +379,10 @@ async def run_sandbox_command(
     state: State,
     runtime: Runtime,
 ) -> State:
-    validate_program_bindings(program)
-    sandbox_data = sandbox_config.data()
-    lease = await runtime.resolve_program_sandbox(sandbox_config, task, state)
-    async with lease.lock:
-        state["sandbox_id"] = lease.id
-        runtime_state = state.runtime_state()
-        lease_scope_key = lease.scope_key or runtime.scope_key(lease.scope, state)
-        lease.scope_key = lease_scope_key
-        runtime_state["sandbox"] = {
-            "id": lease.id,
-            "scope": lease.scope,
-            "key": lease.key,
-            "lease_key": [lease_scope_key, lease.key],
-        }
-        handle = SandboxHandle(lease, state)
-        use_sandbox_python_path = bool(
-            python_package_list(sandbox_data.get("packages"))
-        )
-        await runtime.setup_rollout(
-            task,
-            state,
-            setup_handlers=program_setup_handlers(
-                lease,
-                program,
-                runtime,
-                use_sandbox_python_path=use_sandbox_python_path,
-            ),
-            sandbox=handle,
-        )
+    async with prepared_program_sandbox(
+        program, sandbox_config, task, state, runtime
+    ) as prepared:
+        lease, use_sandbox_python_path = prepared
         workdir = sandbox_config.workdir
         if workdir:
             await lease.client.execute_command(
@@ -441,6 +417,46 @@ async def run_sandbox_command(
         return state
 
 
+@asynccontextmanager
+async def prepared_program_sandbox(
+    program: ConfigData,
+    sandbox_config: SandboxConfig,
+    task: Task,
+    state: State,
+    runtime: Runtime,
+) -> AsyncIterator[tuple[SandboxLease, bool]]:
+    validate_program_bindings(program)
+    sandbox_data = sandbox_config.data()
+    lease = await runtime.resolve_program_sandbox(sandbox_config, task, state)
+    async with lease.lock:
+        state["sandbox_id"] = lease.id
+        runtime_state = state.runtime_state()
+        lease_scope_key = lease.scope_key or runtime.scope_key(lease.scope, state)
+        lease.scope_key = lease_scope_key
+        runtime_state["sandbox"] = {
+            "id": lease.id,
+            "scope": lease.scope,
+            "key": lease.key,
+            "lease_key": [lease_scope_key, lease.key],
+        }
+        handle = SandboxHandle(lease, state)
+        use_sandbox_python_path = bool(
+            python_package_list(sandbox_data.get("packages"))
+        )
+        await runtime.setup_rollout(
+            task,
+            state,
+            setup_handlers=program_setup_handlers(
+                lease,
+                program,
+                runtime,
+                use_sandbox_python_path=use_sandbox_python_path,
+            ),
+            sandbox=handle,
+        )
+        yield lease, use_sandbox_python_path
+
+
 def program_setup_handlers(
     lease: SandboxLease,
     program: ConfigData,
@@ -472,6 +488,15 @@ def program_setup_handlers(
             run_program_setup,
             "program_setup",
             100,
+            use_sandbox_python_path=use_sandbox_python_path,
+        ),
+        _program_setup_handler(
+            lease,
+            program,
+            runtime,
+            run_program_post_setup,
+            "program_post_setup",
+            50,
             use_sandbox_python_path=use_sandbox_python_path,
         ),
         _program_setup_handler(
@@ -823,6 +848,28 @@ async def run_program_setup(
         runtime,
         key="setup",
         error_prefix="Program setup failed",
+        use_sandbox_python_path=use_sandbox_python_path,
+    )
+
+
+async def run_program_post_setup(
+    client: SandboxClient,
+    sandbox_id: str,
+    program: ConfigData,
+    task: Task,
+    state: State,
+    runtime: Runtime,
+    use_sandbox_python_path: bool = False,
+) -> None:
+    await run_program_commands(
+        client,
+        sandbox_id,
+        program,
+        task,
+        state,
+        runtime,
+        key="post_setup",
+        error_prefix="Program post_setup failed",
         use_sandbox_python_path=use_sandbox_python_path,
     )
 

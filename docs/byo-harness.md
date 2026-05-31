@@ -428,6 +428,19 @@ class PythonHarnessConfig(vf.HarnessConfig):
 Put sandbox overrides on tasks only when the taskset owns per-task images,
 files, resource sizing, or setup.
 
+Use `program.sandbox=False` when the agent should run on the host but still own
+a primary task sandbox. In that mode model/API calls stay on the host endpoint,
+while tools configured with `sandbox="program"` operate on the sandbox, including
+offline sandboxes with `network_access=False`. Host commands receive the primary
+sandbox id as `VF_SANDBOX_ID`.
+
+Program setup is staged for offline installation: `program.files` and
+`program.dirs` upload first, `program.setup` runs next, then
+`program.post_setup` runs before state input, channel setup, and the command.
+Upload wheelhouses, archives, binaries, or local checkouts with `program.dirs`
+and install from those local paths in `setup`; use `post_setup` for runtime
+configuration that must happen after the agent is installed.
+
 ## Lifecycle And Scoring
 
 Lifecycle decorators attach behavior to the owning class:

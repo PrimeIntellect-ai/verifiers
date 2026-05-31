@@ -736,6 +736,16 @@ the module file, and package modules use `pyproject.toml` inside the package
 directory. v1 uploads and installs that package in the program sandbox. Package
 dependencies come from normal `[project.dependencies]`.
 
+Set `program.sandbox=False` to keep the program or command on the host while
+still preparing a primary sandbox from `HarnessConfig.sandbox` or
+`task["sandbox"]`. Host-side programs can call models through the local
+interception endpoint and use tools bound with `sandbox="program"` to edit an
+offline sandbox; host commands also receive the primary sandbox id as
+`VF_SANDBOX_ID`. For sandbox setup, `files` and `dirs` upload first, `setup` runs
+next, then `post_setup` runs before state input, channels, and command execution;
+local archives and wheelhouses can be uploaded through `dirs` and installed
+without sandbox network access.
+
 #### Env
 
 ```python

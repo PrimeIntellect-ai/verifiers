@@ -123,27 +123,31 @@ class FakeCommandResult:
 
 class FakeSandboxClient:
     created: list[str] = []
+    requests: list[dict[str, object]] = []
     deleted: list[str] = []
     commands: list[tuple[str, str]] = []
     command_timeouts: list[int | None] = []
     background_jobs: list[tuple[str, str, int | None, str | None]] = []
     uploads: list[tuple[str, str, bytes]] = []
+    events: list[tuple[str, str, str]] = []
     wait_attempts: list[tuple[str, int]] = []
     closed = 0
 
     @classmethod
     def reset(cls) -> None:
         cls.created = []
+        cls.requests = []
         cls.deleted = []
         cls.commands = []
         cls.command_timeouts = []
         cls.background_jobs = []
         cls.uploads = []
+        cls.events = []
         cls.wait_attempts = []
         cls.closed = 0
 
     async def create(self, request: FakeCreateSandboxRequest) -> FakeSandboxResult:
-        _ = request
+        type(self).requests.append(dict(request.kwargs))
         sandbox_id = f"sbx-{len(type(self).created) + 1}"
         type(self).created.append(sandbox_id)
         return FakeSandboxResult(sandbox_id)
@@ -164,6 +168,7 @@ class FakeSandboxClient:
         timeout = cast(int | None, kwargs.get("timeout"))
         type(self).commands.append((sandbox_id, command))
         type(self).command_timeouts.append(timeout)
+        type(self).events.append(("command", sandbox_id, command))
         return FakeCommandResult()
 
     async def run_background_job(
@@ -175,6 +180,7 @@ class FakeSandboxClient:
         working_dir = cast(str | None, kwargs.get("working_dir"))
         type(self).commands.append((sandbox_id, command))
         type(self).background_jobs.append((sandbox_id, command, timeout, working_dir))
+        type(self).events.append(("background", sandbox_id, command))
         return FakeCommandResult()
 
     async def upload_bytes(self, *args: object, **kwargs: object) -> None:
@@ -182,6 +188,7 @@ class FakeSandboxClient:
         path = str(kwargs.get("file_path") or kwargs.get("path") or args[1])
         data = cast(bytes, kwargs.get("file_bytes") or args[2])
         type(self).uploads.append((sandbox_id, path, data))
+        type(self).events.append(("upload", sandbox_id, path))
 
     async def upload_file(self, *args: object, **kwargs: object) -> None:
         _ = args, kwargs
@@ -392,6 +399,13 @@ async def child_reads_program_sandbox(task, state) -> dict[str, object]:
     _ = task
     tools = state.get_tools()
     state["borrowed_sandbox_id"] = await tools["program_sandbox_id"]()
+    return state
+
+
+async def host_reads_program_sandbox(task, state) -> dict[str, object]:
+    _ = task
+    tools = state.get_tools()
+    state["host_sandbox_id"] = await tools["program_sandbox_id"]()
     return state
 
 
@@ -671,6 +685,7 @@ for _name, _value in {
     "configure_cli_endpoint": configure_cli_endpoint,
     "initialize_from_taskset": initialize_from_taskset,
     "child_reads_program_sandbox": child_reads_program_sandbox,
+    "host_reads_program_sandbox": host_reads_program_sandbox,
     "endpoint_program": endpoint_program,
     "endpoint_trajectory_program": endpoint_trajectory_program,
     "mcp_proxy_program": mcp_proxy_program,
@@ -1587,6 +1602,46 @@ async def test_rollout_setup_receives_program_sandbox_before_program_setup(
 
 
 @pytest.mark.asyncio
+async def test_program_post_setup_runs_after_setup_before_state_input(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sandboxes(monkeypatch)
+
+    harness = make_harness()
+    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+    state = vf.State.for_task(task)
+
+    await run_sandbox_command(
+        {
+            "command": ["true"],
+            "setup": "echo install-agent",
+            "post_setup": "echo inject-runtime",
+            VF_STATE_INPUT_PATH_KEY: "/tmp/vf_state_in.json",
+        },
+        vf.SandboxConfig(image="python:3.11-slim"),
+        task,
+        state,
+        harness.runtime,
+    )
+
+    events = [
+        value if value != "/tmp/vf_state_in.json" else "upload-state"
+        for event, _, value in FakeSandboxClient.events
+        if (
+            event in {"command", "background"}
+            and value in {"echo install-agent", "echo inject-runtime", "true"}
+        )
+        or (event == "upload" and value == "/tmp/vf_state_in.json")
+    ]
+    assert events == [
+        "echo install-agent",
+        "echo inject-runtime",
+        "upload-state",
+        "true",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_program_setup_uses_program_setup_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1688,6 +1743,41 @@ async def test_task_command_uses_background_job(
     await harness.run(task)
 
     assert ("sbx-1", "sleep 120", 120, "/app") in FakeSandboxClient.background_jobs
+
+
+@pytest.mark.asyncio
+async def test_local_command_prepares_offline_task_sandbox(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sandboxes(monkeypatch)
+
+    harness = make_harness(
+        program={
+            "command": [
+                "sh",
+                "-c",
+                'printf \'%s/%s\' "$VF_SANDBOX_ID" "$SEES_SANDBOX"',
+            ],
+            "sandbox": False,
+            "setup": "echo install-agent",
+            "post_setup": "echo inject-runtime",
+            "env": {"SEES_SANDBOX": "runtime.sandbox.id"},
+        },
+    )
+    task = vf.Task(
+        {
+            "prompt": [{"role": "user", "content": "hi"}],
+            "sandbox": {"network_access": False},
+        }
+    ).freeze()
+
+    state = await harness.run(task)
+
+    assert state["command"]["stdout"] == "sbx-1/sbx-1"
+    assert FakeSandboxClient.requests[0]["network_access"] is False
+    assert FakeSandboxClient.background_jobs == []
+    assert ("sbx-1", "echo install-agent") in FakeSandboxClient.commands
+    assert ("sbx-1", "echo inject-runtime") in FakeSandboxClient.commands
 
 
 @pytest.mark.asyncio
@@ -2593,6 +2683,25 @@ async def test_toolset_can_bind_to_primary_program_sandbox(
     assert result == state["sandbox_id"]
 
     await harness.cleanup_group([task], [state])
+
+
+@pytest.mark.asyncio
+async def test_host_program_can_use_offline_primary_program_sandbox(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sandboxes(monkeypatch)
+
+    harness = make_harness(
+        program={"fn": program_ref("host_reads_program_sandbox"), "sandbox": False},
+        sandbox={"image": "python:3.11-slim", "network_access": False},
+        toolsets=[vf.Toolset(tools=[program_sandbox_id], sandbox="program")],
+    )
+    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+
+    state = await harness.run(task)
+
+    assert state["host_sandbox_id"] == "sbx-1"
+    assert FakeSandboxClient.requests[0]["network_access"] is False
 
 
 @pytest.mark.asyncio
