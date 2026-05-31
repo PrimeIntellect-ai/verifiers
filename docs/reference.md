@@ -632,9 +632,14 @@ Common top-level fields:
 | `toolsets` | Toolset visibility: `{"show": [...]}` or `{"hide": [...]}`. |
 | `sandbox` | Per-task sandbox overrides for sandboxed programs. |
 | `artifacts` | Per-task text/JSON files collected after program execution. |
-| `program` | Task-owned files, dirs, env, setup, artifacts, bindings, and command args. |
+| `program` | Task-owned files, dirs, env, setup, post_setup, artifacts, bindings, and command args. |
 
 `task.runtime` is not public schema. Runtime metadata belongs on `State`.
+
+Sandboxed programs get bridge-backed endpoint URLs inside the sandbox, so
+offline sandboxes can still reach Verifiers model interception, `/vf/tools`,
+`/vf/user`, and `/vf/stop` over the sandbox control plane. `program.post_setup`
+runs after `program.setup` and before rollout state is uploaded.
 
 #### State
 
@@ -735,16 +740,6 @@ module root: single-file modules use `pyproject.toml` in the same directory as
 the module file, and package modules use `pyproject.toml` inside the package
 directory. v1 uploads and installs that package in the program sandbox. Package
 dependencies come from normal `[project.dependencies]`.
-
-Set `program.sandbox=False` to keep the program or command on the host while
-still preparing a primary sandbox from `HarnessConfig.sandbox` or
-`task["sandbox"]`. Host-side programs can call models through the local
-interception endpoint and use tools bound with `sandbox="program"` to edit an
-offline sandbox; host commands also receive the primary sandbox id as
-`VF_SANDBOX_ID`. For sandbox setup, `files` and `dirs` upload first, `setup` runs
-next, then `post_setup` runs before state input, channels, and command execution;
-local archives and wheelhouses can be uploaded through `dirs` and installed
-without sandbox network access.
 
 #### Env
 

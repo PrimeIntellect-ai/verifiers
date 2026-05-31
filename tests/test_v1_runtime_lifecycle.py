@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -22,8 +23,10 @@ from verifiers.types import ClientConfig
 from verifiers.types import Response, ResponseMessage, ToolCall
 from verifiers.types import Tool
 from verifiers.types import Usage
+from verifiers.utils.interception_utils import deliver_response
 from verifiers.v1.runtime import Runtime
 from verifiers.v1.utils import mcp_utils, sandbox_utils
+from verifiers.v1.utils.endpoint_utils import Endpoint
 from verifiers.v1.utils.mcp_proxy_utils import MCP_PROXY_CONFIG_PATH, MCP_PROXY_PATH
 from verifiers.v1.utils.mcp_proxy_utils import proxy_command, proxy_program
 from verifiers.v1.utils.program_utils import command_env
@@ -44,7 +47,9 @@ from verifiers.v1.utils.sandbox_program_utils import (
     sandbox_runner_program,
 )
 from verifiers.v1.utils.sandbox_utils import (
+    BRIDGE_PORT,
     VF_STATE_INPUT_PATH_KEY,
+    forward_sandbox_bridge_request,
     run_sandbox_command,
     upload_program_files,
 )
@@ -209,6 +214,33 @@ class FakeSandboxClient:
 
     def teardown(self) -> None:
         type(self).closed += 1
+
+
+class FakeBridgeLease:
+    def __init__(self, files: dict[str, str]):
+        self.files = files
+        self.uploads: dict[str, bytes] = {}
+        self.commands: list[str] = []
+
+    async def read_file(self, path: str) -> str:
+        return self.files[path]
+
+    async def upload_bytes(
+        self, path: str, content: bytes, filename: str | None = None
+    ) -> None:
+        _ = filename
+        self.uploads[path] = content
+
+    async def execute(
+        self,
+        command: str,
+        timeout: int | None = None,
+        working_dir: str | None = None,
+        env: dict[str, str] | None = None,
+    ) -> FakeCommandResult:
+        _ = timeout, working_dir, env
+        self.commands.append(command)
+        return FakeCommandResult()
 
 
 async def echo_tool(query: str) -> str:
@@ -403,13 +435,6 @@ async def child_reads_program_sandbox(task, state) -> dict[str, object]:
     _ = task
     tools = state.get_tools()
     state["borrowed_sandbox_id"] = await tools["program_sandbox_id"]()
-    return state
-
-
-async def host_reads_program_sandbox(task, state) -> dict[str, object]:
-    _ = task
-    tools = state.get_tools()
-    state["host_sandbox_id"] = await tools["program_sandbox_id"]()
     return state
 
 
@@ -689,7 +714,6 @@ for _name, _value in {
     "configure_cli_endpoint": configure_cli_endpoint,
     "initialize_from_taskset": initialize_from_taskset,
     "child_reads_program_sandbox": child_reads_program_sandbox,
-    "host_reads_program_sandbox": host_reads_program_sandbox,
     "endpoint_program": endpoint_program,
     "endpoint_trajectory_program": endpoint_trajectory_program,
     "mcp_proxy_program": mcp_proxy_program,
@@ -1071,6 +1095,54 @@ async def test_command_env_endpoint_auth_overrides_inherited_keys(monkeypatch) -
     assert env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:1/rollout/test"
     assert env["ANTHROPIC_API_KEY"] == harness.endpoint.secret
     assert explicit_env["OPENAI_API_KEY"] == "program-key"
+
+
+@pytest.mark.asyncio
+async def test_sandbox_bridge_forwards_model_requests_to_vf_interception() -> None:
+    endpoint = Endpoint()
+    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+    state = vf.State.for_task(task)
+    await endpoint.register_rollout(state, tool_defs=[])
+    rollout_key = state["endpoint_rollout_key"]
+    request_body = {
+        "model": "fake",
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+    request_path = f"{sandbox_utils.BRIDGE_ROOT}/requests/request.json"
+    response_path = f"{sandbox_utils.BRIDGE_ROOT}/responses/request.json"
+    lease = FakeBridgeLease(
+        {
+            request_path: json.dumps(
+                {
+                    "method": "POST",
+                    "path": f"/rollout/{rollout_key}/v1/chat/completions",
+                    "headers": {
+                        "authorization": f"Bearer {endpoint.secret}",
+                        "content-type": "application/json",
+                    },
+                    "body": base64.b64encode(
+                        json.dumps(request_body).encode()
+                    ).decode(),
+                }
+            )
+        }
+    )
+
+    forward = asyncio.create_task(
+        forward_sandbox_bridge_request(
+            cast(Any, lease), endpoint, request_path, response_path
+        )
+    )
+    request_id = await asyncio.wait_for(endpoint.rollout_queue(rollout_key).get(), 1)
+    request = endpoint.get_request(request_id)
+    deliver_response(request, fake_response(content="ok"), None)
+    await forward
+    await endpoint.teardown()
+
+    response = json.loads(lease.uploads[response_path].decode())
+    response_body = json.loads(base64.b64decode(response["body"]))
+    assert response["status"] == 200
+    assert response_body["choices"][0]["message"]["content"] == "ok"
 
 
 def test_sandbox_base_program_uses_openai_tool_payloads() -> None:
@@ -1646,6 +1718,32 @@ async def test_program_post_setup_runs_after_setup_before_state_input(
 
 
 @pytest.mark.asyncio
+async def test_sandbox_bridge_sets_local_endpoint_for_program_setup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sandboxes(monkeypatch)
+
+    harness = make_harness(
+        program={
+            "command": ["true"],
+            "sandbox": True,
+            "setup": "echo program-setup",
+        },
+        sandbox={"image": "python:3.11-slim", "network_access": False},
+    )
+    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+
+    await harness.run(task)
+
+    setup_index = FakeSandboxClient.commands.index(("sbx-1", "echo program-setup"))
+    setup_env = FakeSandboxClient.command_envs[setup_index]
+    assert setup_env is not None
+    assert setup_env["OPENAI_BASE_URL"].startswith(
+        f"http://127.0.0.1:{BRIDGE_PORT}/rollout/"
+    )
+
+
+@pytest.mark.asyncio
 async def test_program_setup_uses_program_setup_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1747,108 +1845,6 @@ async def test_task_command_uses_background_job(
     await harness.run(task)
 
     assert ("sbx-1", "sleep 120", 120, "/app") in FakeSandboxClient.background_jobs
-
-
-@pytest.mark.asyncio
-async def test_local_command_prepares_offline_task_sandbox(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    install_fake_sandboxes(monkeypatch)
-    install_fake_endpoint_tunnel(monkeypatch)
-
-    harness = make_harness(
-        program={
-            "command": [
-                "sh",
-                "-c",
-                'printf \'%s/%s\' "$VF_SANDBOX_ID" "$SEES_SANDBOX"',
-            ],
-            "sandbox": False,
-            "setup": "echo install-agent",
-            "post_setup": "echo inject-runtime",
-            "env": {"SEES_SANDBOX": "runtime.sandbox.id"},
-        },
-    )
-    task = vf.Task(
-        {
-            "prompt": [{"role": "user", "content": "hi"}],
-            "sandbox": {"network_access": False},
-        }
-    ).freeze()
-
-    state = await harness.run(task)
-
-    assert state["command"]["stdout"] == "sbx-1/sbx-1"
-    assert FakeSandboxClient.requests[0]["network_access"] is False
-    assert FakeSandboxClient.background_jobs == []
-    assert ("sbx-1", "echo install-agent") in FakeSandboxClient.commands
-    assert ("sbx-1", "echo inject-runtime") in FakeSandboxClient.commands
-    setup_index = FakeSandboxClient.commands.index(("sbx-1", "echo install-agent"))
-    setup_env = FakeSandboxClient.command_envs[setup_index]
-    assert setup_env is not None
-    assert setup_env["OPENAI_BASE_URL"].startswith("http://127.0.0.1:1/rollout/")
-
-
-@pytest.mark.asyncio
-async def test_local_program_sandbox_setup_uses_tunneled_endpoint(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    install_fake_sandboxes(monkeypatch)
-    install_fake_endpoint_tunnel(monkeypatch)
-
-    harness = make_harness(
-        program={
-            "command": ["true"],
-            "sandbox": False,
-            "setup": "printenv OPENAI_BASE_URL",
-        },
-        sandbox={"network_access": False},
-    )
-    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
-
-    await harness.run(task)
-
-    setup_index = FakeSandboxClient.commands.index(
-        ("sbx-1", "printenv OPENAI_BASE_URL")
-    )
-    setup_env = FakeSandboxClient.command_envs[setup_index]
-    assert setup_env is not None
-    assert setup_env["OPENAI_BASE_URL"].startswith("http://127.0.0.1:1/rollout/")
-
-
-@pytest.mark.asyncio
-async def test_local_program_setup_requires_primary_sandbox() -> None:
-    harness = make_harness(
-        program={
-            "command": ["true"],
-            "sandbox": False,
-            "setup": "echo install-agent",
-        },
-    )
-    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
-
-    with pytest.raises(ValueError, match="harness.sandbox or task.sandbox"):
-        await harness.run(task)
-
-
-@pytest.mark.asyncio
-async def test_local_program_task_args_do_not_require_primary_sandbox() -> None:
-    harness = make_harness(
-        program={
-            "command": ["printf", "%s"],
-            "sandbox": False,
-        },
-    )
-    task = vf.Task(
-        {
-            "prompt": [{"role": "user", "content": "hi"}],
-            "program": {"args": ["ok"]},
-        }
-    ).freeze()
-
-    state = await harness.run(task)
-
-    assert state["command"]["stdout"] == "ok"
 
 
 @pytest.mark.asyncio
@@ -2754,25 +2750,6 @@ async def test_toolset_can_bind_to_primary_program_sandbox(
     assert result == state["sandbox_id"]
 
     await harness.cleanup_group([task], [state])
-
-
-@pytest.mark.asyncio
-async def test_host_program_can_use_offline_primary_program_sandbox(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    install_fake_sandboxes(monkeypatch)
-
-    harness = make_harness(
-        program={"fn": program_ref("host_reads_program_sandbox"), "sandbox": False},
-        sandbox={"image": "python:3.11-slim", "network_access": False},
-        toolsets=[vf.Toolset(tools=[program_sandbox_id], sandbox="program")],
-    )
-    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
-
-    state = await harness.run(task)
-
-    assert state["host_sandbox_id"] == "sbx-1"
-    assert FakeSandboxClient.requests[0]["network_access"] is False
 
 
 @pytest.mark.asyncio

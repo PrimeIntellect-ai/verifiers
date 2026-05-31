@@ -62,12 +62,11 @@ from .utils.program_utils import (
     program_channels,
     program_kind,
     run_local_command,
-    SANDBOX_ONLY_PROGRAM_KEYS,
     validate_program_options,
     validate_program_sandbox_scope,
 )
 from .runtime import Runtime
-from .utils.sandbox_utils import prepared_program_sandbox, run_sandbox_command
+from .utils.sandbox_utils import run_sandbox_command
 from .utils.sandbox_program_utils import (
     python_program_sandbox,
     run_sandbox_python_program,
@@ -233,13 +232,7 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
         return config
 
     def load_endpoint(self) -> Endpoint:
-        local_program_sandbox = (
-            self.program_config.resolve().sandbox is False and self.sandbox is not None
-        )
-        return Endpoint(
-            use_tunnel=self.program_sandbox_config(self.program_config) is not None
-            or local_program_sandbox
-        )
+        return Endpoint()
 
     def rebuild_runtime(self) -> None:
         self.runtime = Runtime(taskset=self.taskset, harness=self)
@@ -399,11 +392,6 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
 
     async def run_program(self, task: Task, state: State) -> State:
         endpoint = self.resolved_endpoint(state)
-        if (
-            self.program_config.resolve().sandbox is False
-            and task.sandbox_config() is not None
-        ):
-            endpoint.use_tunnel = True
         result = await run_intercepted_program(
             self.program, endpoint, self.runtime, task, state
         )
@@ -439,7 +427,7 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
             validate_program_options(program_data, kind, sandbox_config)
             if sandbox_config is not None:
                 return self.sandbox_base_program(program_data, sandbox_config)
-            return self.local_base_program(program_data)
+            return self.base_program
         if kind == "fn":
             sandbox_config = self.program_sandbox_config(program)
             validate_program_options(program_data, kind, sandbox_config)
@@ -453,28 +441,16 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
             fn = import_config_ref(fn_ref)
             if not callable(fn):
                 raise TypeError("program.fn did not resolve to a callable.")
-            return self.local_callable_program(cast(Handler, fn), program_data)
+            return self.local_callable_program(cast(Handler, fn))
         if kind == "command":
             sandbox_config = self.program_sandbox_config(program)
             validate_program_options(program_data, kind, sandbox_config)
             return self.command_program(program_data, sandbox_config)
         raise AssertionError(f"Unhandled program kind: {kind}")
 
-    def local_callable_program(
-        self, fn: Handler, program: ConfigData | None = None
-    ) -> ProgramRunner:
+    def local_callable_program(self, fn: Handler) -> ProgramRunner:
         async def run(task: Task, state: State) -> ProgramResult:
-            program_data = merge_task_program(program or {}, task, kind="fn")
-            sandbox_config = self.local_program_sandbox_config(program_data, task)
-            if sandbox_config is None:
-                await self.runtime.setup_rollout(task, state)
-                return await call_program(task, state)
-            async with prepared_program_sandbox(
-                program_data, sandbox_config, task, state, self.runtime
-            ):
-                return await call_program(task, state)
-
-        async def call_program(task: Task, state: State) -> ProgramResult:
+            await self.runtime.setup_rollout(task, state)
             result = await maybe_call_with_named_args(
                 fn, task=task, state=state, runtime=self.runtime, harness=self
             )
@@ -484,24 +460,8 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
 
         return run
 
-    def local_base_program(self, program: ConfigData) -> ProgramRunner:
-        async def run(task: Task, state: State) -> State:
-            program_data = merge_task_program(program, task, kind="base")
-            sandbox_config = self.local_program_sandbox_config(program_data, task)
-            if sandbox_config is None:
-                return await self.base_program(task, state)
-            async with prepared_program_sandbox(
-                program_data, sandbox_config, task, state, self.runtime
-            ):
-                return await self.base_program(task, state, setup_rollout=False)
-
-        return run
-
-    async def base_program(
-        self, task: Task, state: State, *, setup_rollout: bool = True
-    ) -> State:
-        if setup_rollout:
-            await self.runtime.setup_rollout(task, state)
+    async def base_program(self, task: Task, state: State) -> State:
+        await self.runtime.setup_rollout(task, state)
         prompt = normalize_messages(
             cast(
                 Messages,
@@ -595,22 +555,16 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
             merged_program = merge_task_program(program, task, kind="command")
             if sandbox_config is not None:
                 return await run_sandbox_command(
-                    self.prepare_sandbox_program(merged_program, state),
+                    merged_program,
                     self.prepare_sandbox_config(
-                        merge_task_sandbox(sandbox_config, task), program
+                        merge_task_sandbox(sandbox_config, task), merged_program
                     ),
                     task,
                     state,
                     runtime,
+                    endpoint=self.resolved_endpoint(state),
+                    prepare_program=self.prepare_sandbox_program,
                 )
-            local_sandbox_config = self.local_program_sandbox_config(
-                merged_program, task
-            )
-            if local_sandbox_config is not None:
-                async with prepared_program_sandbox(
-                    merged_program, local_sandbox_config, task, state, runtime
-                ):
-                    return await run_local_command(merged_program, task, state, runtime)
             await runtime.setup_rollout(task, state)
             return await run_local_command(merged_program, task, state, runtime)
 
@@ -632,6 +586,8 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
                 mode="base",
                 fn_ref=None,
                 max_turns=state.get_max_turns(self.config.max_turns),
+                endpoint=self.resolved_endpoint(state),
+                prepare_program=self.prepare_sandbox_program,
             )
 
         return run
@@ -655,6 +611,8 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
                 mode="fn",
                 fn_ref=fn_ref,
                 max_turns=state.get_max_turns(self.config.max_turns),
+                endpoint=self.resolved_endpoint(state),
+                prepare_program=self.prepare_sandbox_program,
             )
 
         return run
@@ -669,27 +627,6 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
             return None
         validate_program_sandbox_scope(self.sandbox)
         return self.sandbox
-
-    def local_program_sandbox_config(
-        self, program: ConfigData, task: Task
-    ) -> SandboxConfig | None:
-        if program.get("sandbox") is not False:
-            return None
-        if self.sandbox is not None:
-            return merge_task_sandbox(self.sandbox, task)
-        if task.sandbox_config() is not None:
-            return merge_task_sandbox(SandboxConfig(), task)
-        sandbox_only = sorted(
-            key
-            for key in SANDBOX_ONLY_PROGRAM_KEYS
-            if key in program and program[key] not in (None, {}, [])
-        )
-        if sandbox_only:
-            raise ValueError(
-                f"Program keys {sandbox_only} require harness.sandbox or "
-                "task.sandbox when program.sandbox=False."
-            )
-        return None
 
     def prepare_sandbox_program(self, program: ConfigData, state: State) -> ConfigData:
         if "mcp" in program_channels(program):
