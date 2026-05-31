@@ -30,7 +30,7 @@ from .program import (
     ProgramConfig,
 )
 from .model import ModelConfig, model_config_from_task
-from .sandbox import SandboxConfig
+from .sandbox import SandboxConfig, merge_sandbox_data
 from .user import UserConfig
 from .utils.binding_utils import (
     BindingSources,
@@ -226,7 +226,7 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
         base = config.data() if config is not None else {}
         if sandbox is True:
             return SandboxConfig.model_validate(base)
-        return SandboxConfig.model_validate({**base, **sandbox.data()})
+        return SandboxConfig.model_validate(merge_sandbox_data(base, sandbox.data()))
 
     def load_model(self, config: ModelConfig) -> ModelConfig:
         return config

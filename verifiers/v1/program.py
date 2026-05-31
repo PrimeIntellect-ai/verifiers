@@ -5,7 +5,7 @@ from typing_extensions import TypeAliasType
 
 from .artifact import ArtifactsConfig
 from .config import Config
-from .sandbox import SandboxConfig
+from .sandbox import SandboxConfig, merge_sandbox_data
 from .types import ConfigData, ConfigValue
 from .utils.binding_utils import BindingsConfig
 from .utils.config_utils import explicit_config_data, string_mapping
@@ -227,7 +227,7 @@ def command_sandbox_config(
     base = {**COMMAND_SANDBOX_DEFAULTS, **dict(defaults or {})}
     if sandbox is True:
         return SandboxConfig.model_validate(base)
-    return SandboxConfig.model_validate({**base, **sandbox.data()})
+    return SandboxConfig.model_validate(merge_sandbox_data(base, sandbox.data()))
 
 
 def merge_command_program_config(

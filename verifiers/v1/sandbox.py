@@ -27,8 +27,9 @@ class SandboxConfig(Config):
     setup_timeout: int = 300
     scope: Literal["rollout", "group", "global"] = "rollout"
     prefer: Literal["program"] | None = None
+    labels: list[str] = []
 
-    @field_validator("packages", "setup_commands", mode="before")
+    @field_validator("packages", "setup_commands", "labels", mode="before")
     @classmethod
     def validate_string_list(cls, value: object) -> object:
         if isinstance(value, str):
@@ -39,3 +40,25 @@ class SandboxConfig(Config):
         if fill_defaults:
             return resolved_config_data(self)
         return explicit_config_data(self, SandboxConfig)
+
+
+def merge_sandbox_data(base: ConfigData, override: ConfigData) -> ConfigData:
+    merged = {**base, **override}
+    labels = merged_sandbox_labels(base.get("labels"), override.get("labels"))
+    if labels or "labels" in base or "labels" in override:
+        merged["labels"] = labels
+    return merged
+
+
+def merged_sandbox_labels(*values: object) -> list[str]:
+    labels: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if not isinstance(value, list):
+            continue
+        for label in value:
+            text = str(label)
+            if text not in seen:
+                labels.append(text)
+                seen.add(text)
+    return labels

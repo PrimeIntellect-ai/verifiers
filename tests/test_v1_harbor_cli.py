@@ -99,7 +99,9 @@ def test_harbor_taskset_loads_package_tasks_with_program_patch(
     package = write_harbor_package(tmp_path, monkeypatch)
     write_harbor_task(cast(Path, getattr(package, "tasks_root")))
 
-    taskset = getattr(package, "load_taskset")(config=HarborTasksetConfig())
+    taskset = getattr(package, "load_taskset")(
+        config=HarborTasksetConfig(sandbox=vf.SandboxConfig(labels=["taskset"]))
+    )
     task = next(iter(taskset))
 
     assert task["taskset_id"] == "harbor"
@@ -111,13 +113,13 @@ def test_harbor_taskset_loads_package_tasks_with_program_patch(
     assert task["sandbox"]["memory_gb"] == 2.0
     assert task["sandbox"]["disk_size_gb"] == 8.0
     assert task["sandbox"]["command_timeout"] == 600
+    assert task["sandbox"]["labels"] == ["taskset"]
     assert "network_access" not in task["sandbox"]
-    assert (
-        merge_task_sandbox(
-            vf.SandboxConfig(network_access=False, scope="rollout"), task
-        ).network_access
-        is False
+    merged_sandbox = merge_task_sandbox(
+        vf.SandboxConfig(network_access=False, scope="rollout", labels=["run"]), task
     )
+    assert merged_sandbox.network_access is False
+    assert merged_sandbox.labels == ["run", "taskset"]
     assert task["harbor"]["test_timeout"] == 300.0
     assert task["program"]["files"] == {
         "/task/instruction.md": {"task": "instruction"},

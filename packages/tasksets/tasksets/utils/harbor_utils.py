@@ -11,7 +11,7 @@ from importlib.resources import files
 from pathlib import Path
 from typing import cast
 
-from verifiers.v1.sandbox import SandboxConfig
+from verifiers.v1.sandbox import SandboxConfig, merge_sandbox_data
 from verifiers.v1.utils.sandbox_utils import SandboxClient
 
 TASKS_SUBDIR = "tasks"
@@ -31,7 +31,9 @@ def bundle_tasks_root(module_name: str) -> Path:
 
 def harbor_sandbox(default: SandboxConfig, configured: SandboxConfig) -> SandboxConfig:
     return SandboxConfig.model_validate(
-        {**default.data(fill_defaults=False), **configured.data(fill_defaults=False)}
+        merge_sandbox_data(
+            default.data(fill_defaults=False), configured.data(fill_defaults=False)
+        )
     )
 
 

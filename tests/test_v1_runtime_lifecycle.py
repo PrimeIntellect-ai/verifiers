@@ -124,6 +124,7 @@ class FakeCommandResult:
 class FakeSandboxClient:
     created: list[str] = []
     deleted: list[str] = []
+    requests: list[FakeCreateSandboxRequest] = []
     commands: list[tuple[str, str]] = []
     command_timeouts: list[int | None] = []
     background_jobs: list[tuple[str, str, int | None, str | None]] = []
@@ -135,6 +136,7 @@ class FakeSandboxClient:
     def reset(cls) -> None:
         cls.created = []
         cls.deleted = []
+        cls.requests = []
         cls.commands = []
         cls.command_timeouts = []
         cls.background_jobs = []
@@ -143,9 +145,9 @@ class FakeSandboxClient:
         cls.closed = 0
 
     async def create(self, request: FakeCreateSandboxRequest) -> FakeSandboxResult:
-        _ = request
         sandbox_id = f"sbx-{len(type(self).created) + 1}"
         type(self).created.append(sandbox_id)
+        type(self).requests.append(request)
         return FakeSandboxResult(sandbox_id)
 
     async def wait_for_creation(
@@ -1297,6 +1299,22 @@ async def test_create_sandbox_retries_create_and_bounds_wait(
         ("sbx-retry", sandbox_utils.SANDBOX_WAIT_FOR_CREATION_ATTEMPTS)
     ]
     assert client.deleted == []
+
+
+@pytest.mark.asyncio
+async def test_create_sandbox_passes_labels(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sandboxes(monkeypatch)
+    disable_sandbox_retry_sleep(monkeypatch)
+
+    sandbox_id = await sandbox_utils.create_sandbox(
+        cast(sandbox_utils.SandboxClient, FakeSandboxClient()),
+        {"image": "python:3.11-slim", "labels": ["run", "config"]},
+    )
+
+    assert sandbox_id == "sbx-1"
+    assert FakeSandboxClient.requests[0].kwargs["labels"] == ["run", "config"]
 
 
 @pytest.mark.asyncio

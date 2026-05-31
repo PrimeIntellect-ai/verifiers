@@ -22,7 +22,7 @@ from ..task import Task
 from .mcp_proxy_utils import validate_program_channels
 from ..artifact import ArtifactsConfig
 from ..program import ProgramChannel, ProgramValue
-from ..sandbox import SandboxConfig
+from ..sandbox import SandboxConfig, merge_sandbox_data
 from ..types import ConfigData, Handler, RuntimeData
 
 PROGRAM_KIND_KEYS = {"base", "fn", "command"}
@@ -430,7 +430,9 @@ def merge_task_sandbox(sandbox_config: SandboxConfig, task: Task) -> SandboxConf
         validate_program_sandbox_scope(sandbox_config)
         return sandbox_config
     config = SandboxConfig.model_validate(
-        {**sandbox_config.data(), **task_sandbox.data(fill_defaults=False)}
+        merge_sandbox_data(
+            sandbox_config.data(), task_sandbox.data(fill_defaults=False)
+        )
     )
     validate_program_sandbox_scope(config)
     return config

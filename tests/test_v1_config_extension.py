@@ -22,6 +22,7 @@ from verifiers import (
 )
 from verifiers.v1.toolset import normalize_toolset
 from verifiers.v1.types import ModelClient
+from verifiers.v1.utils.program_utils import merge_task_sandbox
 from harnesses import OpenCode
 from verifiers.utils.import_utils import load_toml
 from verifiers.v1.utils.config_utils import coerce_config, explicit_config_data
@@ -3406,6 +3407,7 @@ def test_nested_configs_validate_and_feed_runtime_objects() -> None:
         packages="numpy",
         setup_commands="echo ready",
         scope="group",
+        labels="config-label",
     )
     harness = make_harness(program={"sandbox": True}, sandbox=sandbox)
 
@@ -3414,6 +3416,7 @@ def test_nested_configs_validate_and_feed_runtime_objects() -> None:
     assert harness.sandbox.packages == ["numpy"]
     assert harness.sandbox.setup_commands == ["echo ready"]
     assert harness.sandbox.scope == "group"
+    assert harness.sandbox.labels == ["config-label"]
 
     toolset = Toolset(
         config=vf.ToolsetConfig(
@@ -3429,6 +3432,28 @@ def test_nested_configs_validate_and_feed_runtime_objects() -> None:
     assert toolset.write is True
     assert isinstance(toolset.sandbox, vf.SandboxConfig)
     assert toolset.sandbox.prefer == "program"
+
+
+def test_sandbox_labels_merge_across_harness_program_and_task() -> None:
+    harness = make_harness(
+        program={
+            "sandbox": {
+                "image": "python:3.12-slim",
+                "labels": ["program", "shared"],
+            },
+            "command": ["python", "-c", "print('ok')"],
+        },
+        sandbox={"labels": ["harness", "shared"], "scope": "group"},
+    )
+
+    assert harness.sandbox is not None
+    assert harness.sandbox.labels == ["harness", "shared", "program"]
+
+    task = Task({"sandbox": {"labels": ["task", "program"]}}).freeze()
+    merged = merge_task_sandbox(harness.sandbox, task)
+
+    assert task["sandbox"]["labels"] == ["task", "program"]
+    assert merged.labels == ["harness", "shared", "program", "task"]
 
 
 def test_nested_configs_reject_unknown_fields() -> None:
