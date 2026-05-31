@@ -18,8 +18,8 @@ MINI_SWE_AGENT_DEFAULT_PACKAGE_VERSION = "2.2.8"
 MINI_SWE_AGENT_DEFAULT_PACKAGE_SHA256 = (
     "694df4de1337e665e3cd82e99f93374f573bf52b8e7c362ac5d8045ad9f7c37c"
 )
-MINI_SWE_AGENT_DEFAULT_CONFIG_SPEC = "mini_textbased"
-MINI_SWE_AGENT_DEFAULT_MODEL_CLASS = "litellm_textbased"
+MINI_SWE_AGENT_DEFAULT_CONFIG_SPEC = "mini"
+MINI_SWE_AGENT_DEFAULT_MODEL_CLASS = "litellm"
 MINI_SWE_AGENT_DEFAULT_ENVIRONMENT_TIMEOUT = 120
 
 
@@ -71,6 +71,7 @@ class MiniSWEAgentProgramConfig(vf.ProgramConfig):
     config_spec: str = MINI_SWE_AGENT_DEFAULT_CONFIG_SPEC
     model_class: str = MINI_SWE_AGENT_DEFAULT_MODEL_CLASS
     environment_timeout: int = MINI_SWE_AGENT_DEFAULT_ENVIRONMENT_TIMEOUT
+    parallel_tool_calls: bool = True
     extra_config_specs: list[str] | None = None
     sandbox: vf.SandboxConfig | None = vf.SandboxConfig()
 
@@ -117,6 +118,8 @@ class MiniSWEAgentProgramConfig(vf.ProgramConfig):
             "model.cost_tracking=ignore_errors",
             "-c",
             "model.model_kwargs.custom_llm_provider=openai",
+            "-c",
+            f"model.model_kwargs.parallel_tool_calls={str(self.parallel_tool_calls).lower()}",
         ]
         for spec in self.extra_config_specs or []:
             config_args.extend(["-c", shlex.quote(spec)])
