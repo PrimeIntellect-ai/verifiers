@@ -3527,18 +3527,13 @@ class RLMEnv(vf.StatefulToolEnv):
             _ensure_rlm_metric_state(state)
             return state
         except Exception:
-            # Best-effort cleanup to avoid leaking tunnels/sandboxes on setup failure.
+            # Best-effort cleanup of the per-rollout executor state on setup failure.
             if rollout_id in self.active_rollouts:
                 del self.active_rollouts[rollout_id]
             try:
                 await self._executor.cleanup(state)
             except Exception:
                 logger.exception("Failed to cleanup RLM executor after setup error")
-            if not self.active_rollouts:
-                try:
-                    await self._teardown_interception_server()
-                finally:
-                    await self._teardown_tunnel()
             raise
 
     # =========================================================================
@@ -4279,12 +4274,7 @@ class RLMEnv(vf.StatefulToolEnv):
 
         if rollout_id and rollout_id in self.active_rollouts:
             del self.active_rollouts[rollout_id]
-        try:
-            await self._executor.cleanup(state)
-        finally:
-            if not self.active_rollouts:
-                await self._teardown_interception_server()
-                await self._teardown_tunnel()
+        await self._executor.cleanup(state)
 
     async def render_completion(self, state: State):
         """Render the tracked observable main-model rollout."""
