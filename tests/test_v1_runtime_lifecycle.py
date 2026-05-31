@@ -1781,6 +1781,21 @@ async def test_local_command_prepares_offline_task_sandbox(
 
 
 @pytest.mark.asyncio
+async def test_local_program_setup_requires_primary_sandbox() -> None:
+    harness = make_harness(
+        program={
+            "command": ["true"],
+            "sandbox": False,
+            "setup": "echo install-agent",
+        },
+    )
+    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+
+    with pytest.raises(ValueError, match="harness.sandbox or task.sandbox"):
+        await harness.run(task)
+
+
+@pytest.mark.asyncio
 async def test_program_channels_mcp_setup_accepts_config_ref_mappings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

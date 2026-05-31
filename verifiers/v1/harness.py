@@ -62,6 +62,7 @@ from .utils.program_utils import (
     program_channels,
     program_kind,
     run_local_command,
+    SANDBOX_ONLY_PROGRAM_KEYS,
     validate_program_options,
     validate_program_sandbox_scope,
 )
@@ -667,9 +668,15 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
             return None
         if self.sandbox is not None:
             return merge_task_sandbox(self.sandbox, task)
-        if task.sandbox_config() is None:
-            return None
-        return merge_task_sandbox(SandboxConfig(), task)
+        if task.sandbox_config() is not None:
+            return merge_task_sandbox(SandboxConfig(), task)
+        sandbox_only = sorted(set(program) & SANDBOX_ONLY_PROGRAM_KEYS)
+        if sandbox_only:
+            raise ValueError(
+                f"Program keys {sandbox_only} require harness.sandbox or "
+                "task.sandbox when program.sandbox=False."
+            )
+        return None
 
     def prepare_sandbox_program(self, program: ConfigData, state: State) -> ConfigData:
         if "mcp" in program_channels(program):
