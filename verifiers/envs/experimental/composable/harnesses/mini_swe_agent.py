@@ -24,8 +24,8 @@ DEFAULT_LOG_DIR = "/logs/agent"
 DEFAULT_LOG_PATH = f"{DEFAULT_LOG_DIR}/mini-swe-agent.log"
 DEFAULT_TRAJECTORY_PATH = f"{DEFAULT_LOG_DIR}/mini-swe-agent.traj.json"
 DEFAULT_AGENT_WORKDIR = "${AGENT_WORKDIR:-/app}"
-DEFAULT_CONFIG_SPEC = "mini_textbased"
-DEFAULT_MODEL_CLASS = "litellm_textbased"
+DEFAULT_CONFIG_SPEC = "mini"
+DEFAULT_MODEL_CLASS = "litellm"
 DEFAULT_ENVIRONMENT_TIMEOUT = 120
 
 
@@ -52,6 +52,7 @@ def build_mini_swe_agent_run_command(
     config_spec: str = DEFAULT_CONFIG_SPEC,
     model_class: str = DEFAULT_MODEL_CLASS,
     environment_timeout: int = DEFAULT_ENVIRONMENT_TIMEOUT,
+    parallel_tool_calls: bool = True,
     extra_config_specs: list[str] | None = None,
 ) -> str:
     """Build the shell command that configures and runs mini-SWE-agent.
@@ -80,6 +81,8 @@ def build_mini_swe_agent_run_command(
         "model.cost_tracking=ignore_errors",
         "-c",
         "model.model_kwargs.custom_llm_provider=openai",
+        "-c",
+        f"model.model_kwargs.parallel_tool_calls={str(parallel_tool_calls).lower()}",
     ]
     # Config specs are the mini CLI's native override format; use them for cwd,
     # timeout, model class, and optional system prompt wiring.
@@ -141,6 +144,7 @@ def mini_swe_agent_harness(
     config_spec: str = DEFAULT_CONFIG_SPEC,
     model_class: str = DEFAULT_MODEL_CLASS,
     environment_timeout: int = DEFAULT_ENVIRONMENT_TIMEOUT,
+    parallel_tool_calls: bool = True,
     extra_config_specs: list[str] | None = None,
 ):
     """Create a Harness configured for mini-SWE-agent."""
@@ -168,6 +172,7 @@ def mini_swe_agent_harness(
             config_spec=config_spec,
             model_class=model_class,
             environment_timeout=environment_timeout,
+            parallel_tool_calls=parallel_tool_calls,
             extra_config_specs=extra_config_specs,
         ),
         system_prompt=system_prompt,
