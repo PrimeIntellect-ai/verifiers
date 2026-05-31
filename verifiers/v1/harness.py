@@ -233,8 +233,12 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
         return config
 
     def load_endpoint(self) -> Endpoint:
+        local_program_sandbox = (
+            self.program_config.resolve().sandbox is False and self.sandbox is not None
+        )
         return Endpoint(
             use_tunnel=self.program_sandbox_config(self.program_config) is not None
+            or local_program_sandbox
         )
 
     def rebuild_runtime(self) -> None:
@@ -395,6 +399,11 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
 
     async def run_program(self, task: Task, state: State) -> State:
         endpoint = self.resolved_endpoint(state)
+        if (
+            self.program_config.resolve().sandbox is False
+            and task.sandbox_config() is not None
+        ):
+            endpoint.use_tunnel = True
         result = await run_intercepted_program(
             self.program, endpoint, self.runtime, task, state
         )
@@ -670,7 +679,11 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
             return merge_task_sandbox(self.sandbox, task)
         if task.sandbox_config() is not None:
             return merge_task_sandbox(SandboxConfig(), task)
-        sandbox_only = sorted(set(program) & SANDBOX_ONLY_PROGRAM_KEYS)
+        sandbox_only = sorted(
+            key
+            for key in SANDBOX_ONLY_PROGRAM_KEYS
+            if key in program and program[key] not in (None, {}, [])
+        )
         if sandbox_only:
             raise ValueError(
                 f"Program keys {sandbox_only} require harness.sandbox or "

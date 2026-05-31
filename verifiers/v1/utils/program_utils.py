@@ -376,7 +376,11 @@ def validate_program_options(
         raise ValueError(f"Unknown program keys: {unknown}.")
     validate_program_bindings(program)
     if sandbox_config is None and program.get("sandbox") is not False:
-        sandbox_only = sorted(set(program) & SANDBOX_ONLY_PROGRAM_KEYS)
+        sandbox_only = sorted(
+            key
+            for key in SANDBOX_ONLY_PROGRAM_KEYS
+            if key in program and program[key] not in (None, {}, [])
+        )
         if sandbox_only:
             raise ValueError(f"Program keys {sandbox_only} require sandbox placement.")
     channels = set(program_channels(program))

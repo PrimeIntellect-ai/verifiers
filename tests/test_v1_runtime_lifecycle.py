@@ -127,6 +127,7 @@ class FakeSandboxClient:
     deleted: list[str] = []
     commands: list[tuple[str, str]] = []
     command_timeouts: list[int | None] = []
+    command_envs: list[dict[str, str] | None] = []
     background_jobs: list[tuple[str, str, int | None, str | None]] = []
     uploads: list[tuple[str, str, bytes]] = []
     events: list[tuple[str, str, str]] = []
@@ -140,6 +141,7 @@ class FakeSandboxClient:
         cls.deleted = []
         cls.commands = []
         cls.command_timeouts = []
+        cls.command_envs = []
         cls.background_jobs = []
         cls.uploads = []
         cls.events = []
@@ -166,8 +168,10 @@ class FakeSandboxClient:
         sandbox_id = str(kwargs.get("sandbox_id") or args[0])
         command = str(kwargs.get("command") or args[1])
         timeout = cast(int | None, kwargs.get("timeout"))
+        env = cast(dict[str, str] | None, kwargs.get("env"))
         type(self).commands.append((sandbox_id, command))
         type(self).command_timeouts.append(timeout)
+        type(self).command_envs.append(env)
         type(self).events.append(("command", sandbox_id, command))
         return FakeCommandResult()
 
@@ -1750,6 +1754,7 @@ async def test_local_command_prepares_offline_task_sandbox(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     install_fake_sandboxes(monkeypatch)
+    install_fake_endpoint_tunnel(monkeypatch)
 
     harness = make_harness(
         program={
@@ -1778,6 +1783,37 @@ async def test_local_command_prepares_offline_task_sandbox(
     assert FakeSandboxClient.background_jobs == []
     assert ("sbx-1", "echo install-agent") in FakeSandboxClient.commands
     assert ("sbx-1", "echo inject-runtime") in FakeSandboxClient.commands
+    setup_index = FakeSandboxClient.commands.index(("sbx-1", "echo install-agent"))
+    setup_env = FakeSandboxClient.command_envs[setup_index]
+    assert setup_env is not None
+    assert setup_env["OPENAI_BASE_URL"].startswith("http://127.0.0.1:1/rollout/")
+
+
+@pytest.mark.asyncio
+async def test_local_program_sandbox_setup_uses_tunneled_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sandboxes(monkeypatch)
+    install_fake_endpoint_tunnel(monkeypatch)
+
+    harness = make_harness(
+        program={
+            "command": ["true"],
+            "sandbox": False,
+            "setup": "printenv OPENAI_BASE_URL",
+        },
+        sandbox={"network_access": False},
+    )
+    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+
+    await harness.run(task)
+
+    setup_index = FakeSandboxClient.commands.index(
+        ("sbx-1", "printenv OPENAI_BASE_URL")
+    )
+    setup_env = FakeSandboxClient.command_envs[setup_index]
+    assert setup_env is not None
+    assert setup_env["OPENAI_BASE_URL"].startswith("http://127.0.0.1:1/rollout/")
 
 
 @pytest.mark.asyncio
@@ -1793,6 +1829,26 @@ async def test_local_program_setup_requires_primary_sandbox() -> None:
 
     with pytest.raises(ValueError, match="harness.sandbox or task.sandbox"):
         await harness.run(task)
+
+
+@pytest.mark.asyncio
+async def test_local_program_task_args_do_not_require_primary_sandbox() -> None:
+    harness = make_harness(
+        program={
+            "command": ["printf", "%s"],
+            "sandbox": False,
+        },
+    )
+    task = vf.Task(
+        {
+            "prompt": [{"role": "user", "content": "hi"}],
+            "program": {"args": ["ok"]},
+        }
+    ).freeze()
+
+    state = await harness.run(task)
+
+    assert state["command"]["stdout"] == "ok"
 
 
 @pytest.mark.asyncio
