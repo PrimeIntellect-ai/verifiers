@@ -365,7 +365,10 @@ def _delta_intermediate_mm_data(trajectory: object) -> object:
 
     out: list = []
     prior_hashes: dict[str, list[str]] = {}
-    baselines: list[tuple[list[int] | None, dict[str, list[str]]]] = []
+    # Mirrors prime-rl's interleave_rollout active sample state: one current
+    # prefix per active branch. When a branch extends, replace its prefix rather
+    # than keeping historical prefixes that downstream will not merge into.
+    active_baselines: list[tuple[list[int] | None, dict[str, list[str]]]] = []
 
     for idx, raw_step in enumerate(trajectory):
         if not isinstance(raw_step, Mapping):
@@ -385,21 +388,28 @@ def _delta_intermediate_mm_data(trajectory: object) -> object:
         if idx == 0:
             out.append(step)
             prior_hashes = current_hashes
-            baselines.append((current_token_prefix, current_hashes))
+            active_baselines.append((current_token_prefix, current_hashes))
             continue
 
-        baseline_hashes = _select_delta_baseline_hashes(
-            baselines,
+        active_baseline_idx = _select_delta_baseline_idx(
+            active_baselines,
             current_prompt_ids=current_prompt_ids,
             current_hashes=current_hashes,
-            fallback_prior_hashes=prior_hashes,
         )
+        if active_baseline_idx is None:
+            baseline_hashes = None
+            if current_prompt_ids is None and _is_monotonic_extension(
+                prior_hashes, current_hashes
+            ):
+                baseline_hashes = prior_hashes
+        else:
+            baseline_hashes = active_baselines[active_baseline_idx][1]
 
         # No lossless token+image baseline: emit cumulative as-is and reset.
         if baseline_hashes is None:
             out.append(step)
             prior_hashes = current_hashes
-            baselines.append((current_token_prefix, current_hashes))
+            active_baselines.append((current_token_prefix, current_hashes))
             continue
 
         if isinstance(tokens, Mapping) and step_mm is not None:
@@ -409,12 +419,24 @@ def _delta_intermediate_mm_data(trajectory: object) -> object:
                 new_step["tokens"] = {**tokens, "multi_modal_data": delta}
                 out.append(new_step)
                 prior_hashes = current_hashes
-                baselines.append((current_token_prefix, current_hashes))
+                if active_baseline_idx is not None:
+                    active_baselines[active_baseline_idx] = (
+                        current_token_prefix,
+                        current_hashes,
+                    )
+                else:
+                    active_baselines.append((current_token_prefix, current_hashes))
                 continue
 
         out.append(step)
         prior_hashes = current_hashes
-        baselines.append((current_token_prefix, current_hashes))
+        if active_baseline_idx is not None:
+            active_baselines[active_baseline_idx] = (
+                current_token_prefix,
+                current_hashes,
+            )
+        else:
+            active_baselines.append((current_token_prefix, current_hashes))
     return out
 
 
@@ -462,31 +484,30 @@ def _is_token_prefix_extension(
     return current_prompt_ids[: len(prior_token_prefix)] == prior_token_prefix
 
 
-def _select_delta_baseline_hashes(
-    baselines: list[tuple[list[int] | None, dict[str, list[str]]]],
+def _select_delta_baseline_idx(
+    active_baselines: list[tuple[list[int] | None, dict[str, list[str]]]],
     *,
     current_prompt_ids: list[int] | None,
     current_hashes: dict[str, list[str]],
-    fallback_prior_hashes: dict[str, list[str]],
-) -> dict[str, list[str]] | None:
-    """Choose the prior mm hash baseline to diff against.
+) -> int | None:
+    """Choose the active mm baseline to diff against.
 
-    With token ids, prefer the most recent prior step whose exact token stream
-    prefixes the current prompt, mirroring downstream interleaving. Without
-    token ids, preserve the historical immediate-prior hash-only behavior.
+    Mirrors prime-rl's interleave_rollout: match only an active branch's
+    current prefix, in active-branch creation order. Historical prefixes from a
+    branch are intentionally not retained, because downstream will start a new
+    TrainingSample for a step-back to a stale prefix; that new sample needs the
+    step's full cumulative multimodal sidecar.
     """
     if current_prompt_ids is None:
-        if _is_monotonic_extension(fallback_prior_hashes, current_hashes):
-            return fallback_prior_hashes
         return None
 
-    for token_prefix, hashes in reversed(baselines):
+    for idx, (token_prefix, hashes) in enumerate(active_baselines):
         if token_prefix is None:
             continue
         if not _is_token_prefix_extension(token_prefix, current_prompt_ids):
             continue
         if _is_monotonic_extension(hashes, current_hashes):
-            return hashes
+            return idx
     return None
 
 

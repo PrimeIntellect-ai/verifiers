@@ -1046,6 +1046,44 @@ class TestDeltaIntermediateMmData:
         assert step2_mm.mm_items == {"image": [{"pixel_values": "px-B"}]}
         assert [p.offset for p in step2_mm.mm_placeholders["image"]] == [10]
 
+    def test_step_back_to_stale_prefix_emits_full_cumulative_mm_data(self):
+        """A branch step-back must not diff against an old historical prefix.
+
+        Downstream prime-rl tracks only the current prefix for each active
+        sample. Once step 1 extends step 0, a later step 2 that extends step 0's
+        old prefix starts a new TrainingSample, so it needs every image its
+        prompt references. Emitting only C would orphan the carried A
+        placeholder in that new sample.
+        """
+        traj = [
+            self._token_step(
+                self._mm("A"),
+                prompt_ids=[1, 2],
+                completion_ids=[3],
+            ),
+            self._token_step(
+                self._mm("A", "B"),
+                prompt_ids=[1, 2, 3, 4],
+                completion_ids=[5],
+            ),
+            self._token_step(
+                self._mm("A", "C"),
+                # Extends step 0's historical prefix [1, 2, 3], but not step
+                # 1's active prefix [1, 2, 3, 4, 5].
+                prompt_ids=[1, 2, 3, 9],
+                completion_ids=[10],
+            ),
+        ]
+        out = _delta_intermediate_mm_data(traj)
+
+        assert out[0]["tokens"]["multi_modal_data"].mm_hashes == {"image": ["A"]}
+        assert out[1]["tokens"]["multi_modal_data"].mm_hashes == {"image": ["B"]}
+        step2_mm = out[2]["tokens"]["multi_modal_data"]
+        assert step2_mm.mm_hashes == {"image": ["A", "C"]}
+        assert step2_mm.mm_items == {
+            "image": [{"pixel_values": "px-A"}, {"pixel_values": "px-C"}]
+        }
+
     def test_descriptor_only_items_delta_correctly(self):
         """Descriptor-only mm_items (``image_grid_thw`` but no ``pixel_values``)
         — the memory-lean shape the env worker now retains — still delta and
