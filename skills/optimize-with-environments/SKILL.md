@@ -37,11 +37,22 @@ prime eval run my-env -m openai/gpt-4.1-mini -n 50 -r 3 -s
 ```bash
 prime gepa run my-env -m openai/gpt-4.1-mini -M openai/gpt-4.1-mini -B 500 -n 100 -N 50
 ```
-4. Or run from config:
+4. Keep v1 environment settings under `taskset` and `harness` config sections:
+```toml
+[[env]]
+id = "my-env"
+
+[env.taskset]
+split = "train"
+
+[env.harness]
+max_turns = 8
+```
+5. Or run from config:
 ```bash
 prime gepa run configs/gepa/qwen-3-5.toml
 ```
-5. Re-evaluate with optimized prompt and compare against baseline.
+6. Re-evaluate with optimized prompt and compare against baseline.
 
 ## High-Value Settings
 1. `-B/--max-calls`: total optimization budget.
@@ -52,9 +63,10 @@ prime gepa run configs/gepa/qwen-3-5.toml
 
 ## Output Artifacts
 Expect and inspect:
-1. `best_prompt.txt`
+1. `system_prompt.txt`
 2. `pareto_frontier.jsonl`
 3. `metadata.json`
+Load optimized prompts with `vf.SystemMessage.from_path("/path/to/system_prompt.txt")` so the saved prompt is used verbatim.
 
 ## Quality Rules
 1. Do not optimize on top of broken reward logic.

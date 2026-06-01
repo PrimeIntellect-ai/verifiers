@@ -100,6 +100,7 @@ def is_retryable_sandbox_api_error(exception: BaseException) -> bool:
         "502",
         "503",
         "ConnectError",
+        "Read file timed out",
         "Temporary failure in name resolution",
     )
     return any(token in error_str for token in retry_tokens)

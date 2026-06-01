@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import time
 from collections.abc import Iterable, Mapping
 from typing import Any, TypeAlias
@@ -39,15 +37,6 @@ OpenAIResponsesTool: TypeAlias = dict[str, Any]
 OPENAI_RESPONSES_OUTPUT_FIELD = "openai_responses_output"
 
 
-def _as_mapping(value: Any) -> Mapping[str, Any] | None:
-    if isinstance(value, Mapping):
-        return value
-    if hasattr(value, "model_dump"):
-        dumped = value.model_dump(exclude_none=True)
-        return dumped if isinstance(dumped, Mapping) else None
-    return None
-
-
 def _get_field(value: Any, key: str, default: Any = None) -> Any:
     if isinstance(value, Mapping):
         return value.get(key, default)
@@ -84,8 +73,14 @@ class OpenAIResponsesClient(
         self, messages: Messages
     ) -> tuple[OpenAIResponsesInput, dict]:
         def normalize_content_part(part: Any) -> dict[str, Any]:
-            part_map = _as_mapping(part)
-            if part_map is None:
+            if isinstance(part, Mapping):
+                part_map = part
+            elif hasattr(part, "model_dump"):
+                dumped = part.model_dump(exclude_none=True)
+                part_map = dumped if isinstance(dumped, Mapping) else None
+            else:
+                part_map = None
+            if not isinstance(part_map, Mapping):
                 raise ValueError(f"Invalid content part type: {type(part)}")
 
             part_type = part_map.get("type")
@@ -120,12 +115,6 @@ class OpenAIResponsesClient(
             if content is None:
                 return ""
             return str(content)
-
-        def tool_output_content(content: Any) -> str:
-            if isinstance(content, str):
-                return content
-            text = content_to_text(content)
-            return text if text else str(content)
 
         def raw_output_items(message: AssistantMessage) -> list[dict[str, Any]]:
             raw = getattr(message, OPENAI_RESPONSES_OUTPUT_FIELD, None)
@@ -165,11 +154,15 @@ class OpenAIResponsesClient(
             if isinstance(message, TextMessage):
                 return [{"type": "message", "role": "user", "content": message.content}]
             if isinstance(message, ToolMessage):
+                output = message.content
+                if not isinstance(output, str):
+                    text = content_to_text(output)
+                    output = text if text else str(output)
                 return [
                     {
                         "type": "function_call_output",
                         "call_id": message.tool_call_id,
-                        "output": tool_output_content(message.content),
+                        "output": output,
                     }
                 ]
             if isinstance(message, AssistantMessage):

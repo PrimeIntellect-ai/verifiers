@@ -1,7 +1,5 @@
 """Utilities for detecting verifiers and environment version/commit info."""
 
-from __future__ import annotations
-
 import importlib.metadata
 import logging
 import subprocess

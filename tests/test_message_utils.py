@@ -1,5 +1,9 @@
-from verifiers.types import AssistantMessage
-from verifiers.utils.message_utils import from_raw_message, normalize_messages
+from verifiers.types import AssistantMessage, UserMessage
+from verifiers.utils.message_utils import (
+    from_raw_message,
+    get_messages,
+    normalize_messages,
+)
 
 
 def test_from_raw_message_normalizes_oai_tool_calls():
@@ -55,3 +59,30 @@ def test_normalize_messages_accepts_oai_tool_call_dicts():
     assert assistant.tool_calls[0].id == "call_2"
     assert assistant.tool_calls[0].name == "lookup"
     assert assistant.tool_calls[0].arguments == '{"q": "hello"}'
+
+
+def test_get_messages_returns_typed_messages():
+    messages = get_messages(
+        [
+            {"role": "user", "content": "question"},
+            {"role": "assistant", "content": "answer"},
+        ]
+    )
+
+    assert isinstance(messages[0], UserMessage)
+    assert isinstance(messages[1], AssistantMessage)
+    assert messages[-1].content == "answer"
+
+
+def test_get_messages_filters_by_role_with_typed_return():
+    messages = get_messages(
+        [
+            {"role": "user", "content": "question"},
+            {"role": "assistant", "content": "answer"},
+        ],
+        role="assistant",
+    )
+
+    assert len(messages) == 1
+    assert isinstance(messages[0], AssistantMessage)
+    assert messages[0].content == "answer"

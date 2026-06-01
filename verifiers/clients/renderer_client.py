@@ -8,9 +8,6 @@ A shared RendererPool (one per model) offloads sync tokenization to threads so
 concurrent rollouts tokenize in parallel instead of blocking the event loop.
 """
 
-from __future__ import annotations
-
-import asyncio
 import json
 import threading
 from collections.abc import Mapping
@@ -19,21 +16,30 @@ from typing import Any, ClassVar, cast
 from openai import AsyncOpenAI
 
 from renderers import Message as RendererMessage
+from renderers import OverlongPromptError as RendererOverlongPromptError
 from renderers import (
+    AutoRendererConfig,
+    MultimodalRenderer,
+    ParsedToolCall,
+    RenderedTokens,
     Renderer,
+    RendererConfig,
     RendererPool,
     ToolSpec,
+    config_from_name,
     create_renderer_pool,
+    is_multimodal,
 )
 from renderers import ToolCall as RendererToolCall
 from renderers import ToolCallFunction
-from renderers.client import generate
+from renderers.base import MODEL_RENDERER_MAP
+from renderers.client import _maybe_offload, generate
 
 from verifiers.clients.client import Client
 from verifiers.clients.openai_chat_completions_client import (
     handle_openai_overlong_prompt,
 )
-from verifiers.errors import EmptyModelResponseError
+from verifiers.errors import EmptyModelResponseError, OverlongPromptError
 from verifiers.types import (
     AssistantMessage,
     ClientConfig,
@@ -75,12 +81,6 @@ def reset_bridge_metrics() -> None:
             _bridge_metrics[k] = 0
 
 
-def _record_bridge(success: bool) -> None:
-    with _bridge_metrics_lock:
-        _bridge_metrics["attempts"] += 1
-        _bridge_metrics["successes" if success else "failures"] += 1
-
-
 # Size 1 by default. HF fast tokenizers encode a short chat prompt in a few
 # tens of microseconds, so even 2k rollouts tokenize serially in ~100ms — far
 # cheaper than dispatching each one through asyncio.to_thread and queueing on
@@ -92,17 +92,6 @@ _DEFAULT_POOL_SIZE = 1
 
 
 # ── Helpers ─────────────────────────────────────────────────────────
-
-
-async def _run_with_renderer(renderer: Renderer | RendererPool, fn):
-    if isinstance(renderer, RendererPool):
-
-        def _work():
-            with renderer.checkout() as r:
-                return fn(r)
-
-        return await asyncio.to_thread(_work)
-    return fn(renderer)
 
 
 def _get_value(obj: Any, key: str, default: Any = None) -> Any:
@@ -240,32 +229,17 @@ def _coerce_renderer_message(message: Any) -> RendererMessage:
     return _to_renderer_message(cast(Message, message))
 
 
-def _message_role(message: Any) -> str | None:
-    role = _get_value(message, "role")
-    return role if isinstance(role, str) else None
-
-
 def _is_valid_incremental_tail(messages: list[RendererMessage]) -> bool:
     if not messages:
         return False
 
-    roles = [_message_role(message) for message in messages]
+    roles = []
+    for message in messages:
+        role = _get_value(message, "role")
+        roles.append(role if isinstance(role, str) else None)
     if roles[-1] == "user":
         return all(role == "tool" for role in roles[:-1])
     return all(role == "tool" for role in roles)
-
-
-def _step_is_truncated(step: Any) -> bool:
-    if bool(_get_value(step, "is_truncated", False)):
-        return True
-
-    tokens = _get_value(step, "tokens")
-    if tokens is not None and bool(_get_value(tokens, "is_truncated", False)):
-        return True
-
-    response = _get_value(step, "response")
-    message = _get_value(response, "message")
-    return bool(_get_value(message, "is_truncated", False))
 
 
 def _step_token_ids(step: Any) -> tuple[list[int], list[int]] | None:
@@ -295,12 +269,26 @@ def _step_token_ids(step: Any) -> tuple[list[int], list[int]] | None:
     return list(prompt_ids), list(completion_ids)
 
 
-def _step_rendered_messages(step: Any) -> list[RendererMessage]:
-    prompt = list(_get_value(step, "prompt", []) or [])
-    completion = list(_get_value(step, "completion", []) or [])
-    return _attach_tool_call_names(
-        [_coerce_renderer_message(message) for message in prompt + completion]
-    )
+def _step_multi_modal_data(step: Any):
+    """Recover the previous turn's ``MultiModalData`` for bridging.
+
+    Mirrors :func:`_step_token_ids`: prefer ``step.tokens.multi_modal_data``
+    (post-parse_response_tokens), fall back to ``step.response.message.tokens``.
+    Returns ``None`` when no multimodal sidecar was emitted (text-only
+    rollouts) — the bridge handles that branch transparently.
+    """
+    tokens = _get_value(step, "tokens")
+    if tokens is not None:
+        mm = _get_value(tokens, "multi_modal_data")
+        if mm is not None:
+            return mm
+
+    response = _get_value(step, "response")
+    message = _get_value(response, "message")
+    raw_tokens = _get_value(message, "tokens")
+    if raw_tokens is None:
+        return None
+    return _get_value(raw_tokens, "multi_modal_data")
 
 
 async def _get_incremental_prompt_ids(
@@ -309,7 +297,13 @@ async def _get_incremental_prompt_ids(
     prompt: list[RendererMessage],
     state: Any,
     tools: list[ToolSpec] | None,
-) -> list[int] | None:
+) -> "tuple[RenderedTokens, int] | None":
+    """Return the bridged prompt and routed-experts replay start.
+
+    Returns ``None`` when no prior trajectory step lines up with the new
+    prompt's prefix or the renderer's ``bridge_to_next_turn`` can't extend
+    — both cases fall back to a full re-render in :func:`generate`.
+    """
     if not state:
         return None
 
@@ -329,7 +323,14 @@ async def _get_incremental_prompt_ids(
         if token_ids is None:
             continue
 
-        previous_messages = _step_rendered_messages(step)
+        step_prompt = list(_get_value(step, "prompt", []) or [])
+        step_completion = list(_get_value(step, "completion", []) or [])
+        previous_messages = _attach_tool_call_names(
+            [
+                _coerce_renderer_message(message)
+                for message in step_prompt + step_completion
+            ]
+        )
         if not previous_messages or len(previous_messages) >= len(prompt):
             continue
         prefix_len = len(previous_messages)
@@ -342,31 +343,88 @@ async def _get_incremental_prompt_ids(
             continue
 
         previous_prompt_ids, previous_completion_ids = token_ids
-        bridged = await _run_with_renderer(
-            renderer,
-            lambda r: r.bridge_to_next_turn(
+        previous_mm_data = _step_multi_modal_data(step)
+        # Multimodal renderers' bridge accepts ``previous_multi_modal_data``
+        # so earlier-turn images carry forward into the new prompt's
+        # ``mm_placeholders``. Without that carry-forward, vLLM sees
+        # placeholder counts that don't match the combined token sequence
+        # and silently falls back to hash-cache lookup (or errors).
+        # Text-only renderers' bridge signature doesn't include that
+        # kwarg. ``is_multimodal`` is type-cached so this dispatch is a
+        # dict lookup, not a runtime_checkable Protocol walk.
+        if is_multimodal(renderer):
+            mm_renderer = cast(MultimodalRenderer, renderer)
+            bridge = lambda: mm_renderer.bridge_to_next_turn(  # noqa: E731
                 previous_prompt_ids,
                 previous_completion_ids,
                 tail,
                 tools=tools,
-            ),
-        )
-        _record_bridge(success=bridged is not None)
-        return bridged
+                previous_multi_modal_data=previous_mm_data,
+            )
+        else:
+            bridge = lambda: renderer.bridge_to_next_turn(  # noqa: E731
+                previous_prompt_ids,
+                previous_completion_ids,
+                tail,
+                tools=tools,
+            )
+        bridged = await _maybe_offload(renderer, bridge)
+        with _bridge_metrics_lock:
+            _bridge_metrics["attempts"] += 1
+            _bridge_metrics["successes" if bridged is not None else "failures"] += 1
+        if bridged is not None:
+            start = max(len(previous_prompt_ids) + len(previous_completion_ids) - 1, 0)
+            return bridged, start
+        return None
 
     return None
 
 
-def _parse_finish_reason(raw: str | None) -> FinishReason:
-    match raw:
-        case "stop":
-            return "stop"
-        case "length":
-            return "length"
-        case "tool_calls":
-            return "tool_calls"
-        case _:
-            return None
+def _resolve_renderer_config(
+    base: RendererConfig | None,
+    chat_template_kwargs: Mapping[str, Any] | None,
+    *,
+    renderer_model: str,
+) -> RendererConfig | None:
+    """Merge ``chat_template_kwargs`` into a typed ``RendererConfig``.
+
+    When ``base`` is ``None`` or ``AutoRendererConfig`` (would auto-resolve
+    inside ``renderers.create_renderer``), we pull resolution forward via
+    ``MODEL_RENDERER_MAP`` so kwargs land on the concrete config variant
+    and pydantic validates them against the actual renderer's schema —
+    ``AutoRendererConfig`` intentionally carries only ``preserve_*`` and
+    would reject template kwargs like ``enable_thinking``. ``renderer_model``
+    must match what the pool will tokenize with (i.e.
+    ``ClientConfig.renderer_model_name`` when set, else the request model),
+    so resolution agrees with the tokenizer the renderer will hold.
+
+    Kwargs override fields with the same name on the (resolved) base.
+    Typed configs (``extra="forbid"``) reject unknown keys with a
+    field-path error; ``DefaultRendererConfig`` (``extra="allow"``) keeps
+    the escape hatch for arbitrary jinja kwargs.
+    """
+    if not chat_template_kwargs:
+        return base
+
+    # Resolve auto → concrete (mirrors ``renderers._resolve_auto``) so
+    # ``enable_thinking`` etc. validate against the right schema instead of
+    # ``AutoRendererConfig``'s minimal one. Carries ``preserve_*`` across.
+    if base is None or isinstance(base, AutoRendererConfig):
+        renderer_name = MODEL_RENDERER_MAP.get(renderer_model, "default")
+        # ``config_from_name`` returns ``None`` only for ``"auto"``, which
+        # ``MODEL_RENDERER_MAP.get(..., "default")`` excludes — assert for ty.
+        concrete = config_from_name(renderer_name)
+        assert concrete is not None
+        if isinstance(base, AutoRendererConfig):
+            concrete = concrete.model_copy(
+                update={
+                    "preserve_all_thinking": base.preserve_all_thinking,
+                    "preserve_thinking_between_tool_calls": base.preserve_thinking_between_tool_calls,
+                }
+            )
+        base = cast(RendererConfig, concrete)
+
+    return type(base).model_validate({**base.model_dump(), **chat_template_kwargs})
 
 
 class RendererClient(
@@ -381,14 +439,13 @@ class RendererClient(
     so that concurrent rollouts tokenize in parallel threads.
     """
 
-    # Cache key is (renderer_model_name, renderer_name, tool_parser,
-    # reasoning_parser, pool_size, preserve_all_thinking,
-    # preserve_thinking_between_tool_calls) so that different parser configs,
-    # pool sizes, or preserve-thinking bindings for the same model don't
-    # collide.
+    # Cache key is ``(renderer_model_name, pool_size, renderer_config_json)``.
+    # ``renderer_config`` is a frozen pydantic model so it's hashable directly,
+    # but we serialize it via ``model_dump_json()`` for a stable, deterministic
+    # key shape that's safe across pydantic version bumps.
     _shared_pools: ClassVar[
         dict[
-            tuple[str, str, str | None, str | None, int, bool, bool],
+            tuple[str, int, str | None],
             RendererPool,
         ]
     ] = {}
@@ -415,48 +472,35 @@ class RendererClient(
 
     # ── Renderer management ─────────────────────────────────────────
 
-    def _get_renderer_or_pool(self, model: str) -> Renderer | RendererPool:
+    def _get_renderer_or_pool(
+        self,
+        model: str,
+        *,
+        renderer_config: RendererConfig | None = None,
+    ) -> Renderer | RendererPool:
         if self._renderer is not None:
             return self._renderer
 
-        renderer_name = self._config.renderer if self._config is not None else "auto"
+        if renderer_config is None:
+            renderer_config = (
+                self._config.renderer_config if self._config is not None else None
+            )
         renderer_model = (
             self._config.renderer_model_name
             if self._config is not None and self._config.renderer_model_name is not None
             else model
         )
-        tool_parser = self._config.tool_parser if self._config is not None else None
-        reasoning_parser = (
-            self._config.reasoning_parser if self._config is not None else None
+        cfg_key = (
+            renderer_config.model_dump_json() if renderer_config is not None else None
         )
-        preserve_all_thinking = (
-            self._config.preserve_all_thinking if self._config is not None else False
-        )
-        preserve_thinking_between_tool_calls = (
-            self._config.preserve_thinking_between_tool_calls
-            if self._config is not None
-            else False
-        )
-        cache_key = (
-            renderer_model,
-            renderer_name,
-            tool_parser,
-            reasoning_parser,
-            self._pool_size,
-            preserve_all_thinking,
-            preserve_thinking_between_tool_calls,
-        )
+        cache_key = (renderer_model, self._pool_size, cfg_key)
 
         with self._shared_pools_lock:
             if cache_key not in self._shared_pools:
                 self._shared_pools[cache_key] = create_renderer_pool(
                     renderer_model,
-                    renderer=renderer_name,
+                    renderer_config,
                     size=self._pool_size,
-                    tool_parser=tool_parser,
-                    reasoning_parser=reasoning_parser,
-                    preserve_all_thinking=preserve_all_thinking,
-                    preserve_thinking_between_tool_calls=preserve_thinking_between_tool_calls,
                 )
 
         return self._shared_pools[cache_key]
@@ -492,10 +536,33 @@ class RendererClient(
         tools: list[ToolSpec] | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
-        renderer = self._get_renderer_or_pool(model)
-
         args = dict(sampling_args)
+        extra_headers = {
+            **dict(args.pop("extra_headers", None) or {}),
+            **dict(kwargs.pop("extra_headers", None) or {}),
+        }
         sampling_params: dict[str, Any] = dict(args.pop("extra_body", None) or {})
+
+        # ``chat_template_kwargs`` belong to the renderer, not the engine —
+        # peel them off the per-request sampling and fold them into the
+        # typed RendererConfig. Pool cache key already includes the
+        # effective config so identical kwargs reuse the same renderer.
+        chat_template_kwargs = sampling_params.pop("chat_template_kwargs", None)
+        # Auto-resolution must agree with the model the pool will tokenize
+        # against — ``renderer_model_name`` overrides the request ``model``
+        # when set (same precedence ``_get_renderer_or_pool`` uses below).
+        renderer_model = (
+            self._config.renderer_model_name
+            if self._config is not None and self._config.renderer_model_name is not None
+            else model
+        )
+        effective_cfg = _resolve_renderer_config(
+            self._config.renderer_config if self._config is not None else None,
+            chat_template_kwargs,
+            renderer_model=renderer_model,
+        )
+        renderer = self._get_renderer_or_pool(model, renderer_config=effective_cfg)
+
         for key in (
             "temperature",
             "top_p",
@@ -514,32 +581,64 @@ class RendererClient(
         if args.get("prompt_logprobs"):
             sampling_params["prompt_logprobs"] = 1
 
-        prompt_ids = await _get_incremental_prompt_ids(
+        bridged_with_start = await _get_incremental_prompt_ids(
             renderer=renderer,
             prompt=prompt,
             state=kwargs.get("state"),
             tools=tools,
         )
+        # ``bridged_with_start`` is (RenderedTokens, replay_start) | None.
+        # Unpack token_ids + mm_data (multimodal feature pass-through) and
+        # prompt_attribution (per-token mask sidecar). On the first turn
+        # (``bridged_with_start is None``), ``generate`` renders and emits the
+        # attribution itself.
+        if bridged_with_start is not None:
+            bridged, routed_experts_prompt_start = bridged_with_start
+            prompt_ids = bridged.token_ids
+            multi_modal_data = bridged.multi_modal_data
+            prompt_attribution = bridged
+            sampling_params["routed_experts_prompt_start"] = routed_experts_prompt_start
+        else:
+            prompt_ids = None
+            multi_modal_data = None
+            prompt_attribution = None
 
-        return await generate(
-            client=self.client,
-            renderer=renderer,
-            messages=prompt,
-            model=model,
-            prompt_ids=prompt_ids,
-            tools=tools,
-            sampling_params=sampling_params,
-            cache_salt=args.get("cache_salt")
-            or sampling_params.pop("cache_salt", None),
-            priority=args.get("priority") or sampling_params.pop("priority", None),
-            extra_headers=args.get("extra_headers"),
-        )
+        # ``renderers.client.generate`` discovers the engine's context-length
+        # cap on its own (via ``GET /v1/models``, cached) and raises
+        # ``renderers.OverlongPromptError`` on pre-flight overflow. Rebadge
+        # that into the verifiers-native ``OverlongPromptError`` so the
+        # ``MultiTurnEnv.prompt_too_long`` stop condition picks it up via
+        # the ``vf.Error`` hierarchy. The ``@handle_openai_overlong_prompt``
+        # decorator still handles the fallback case (cap unknown → engine
+        # 4xx → vf.OverlongPromptError) for engines whose ``/v1/models``
+        # doesn't expose ``max_model_len``.
+        try:
+            return await generate(
+                client=self.client,
+                renderer=renderer,
+                messages=prompt,
+                model=model,
+                prompt_ids=prompt_ids,
+                multi_modal_data=multi_modal_data,
+                prompt_attribution=prompt_attribution,
+                tools=tools,
+                sampling_params=sampling_params,
+                cache_salt=args.get("cache_salt")
+                or sampling_params.pop("cache_salt", None),
+                priority=args.get("priority") or sampling_params.pop("priority", None),
+                extra_headers=extra_headers or None,
+            )
+        except RendererOverlongPromptError as exc:
+            raise OverlongPromptError(str(exc)) from exc
 
     async def raise_from_native_response(self, response: dict[str, Any]) -> None:
         if response is None:
             raise EmptyModelResponseError("Model returned no response")
 
         has_content = bool(response.get("content"))
+        # ``tool_calls`` is now ``list[ParsedToolCall]`` (renderers >=0.1.8.dev1)
+        # — a non-empty list with only malformed attempts still counts as the
+        # model having tried to call a tool, so we don't filter by status here.
         has_tool_calls = bool(response.get("tool_calls"))
         has_reasoning = bool(response.get("reasoning_content"))
         if not (has_content or has_tool_calls or has_reasoning):
@@ -551,22 +650,39 @@ class RendererClient(
         """Parse the generate() result dict into a verifiers Response."""
         content = response.get("content", "")
         reasoning_content = response.get("reasoning_content")
-        finish_reason = _parse_finish_reason(response.get("finish_reason"))
+        match response.get("finish_reason"):
+            case "stop":
+                finish_reason: FinishReason = "stop"
+            case "length":
+                finish_reason = "length"
+            case "tool_calls":
+                finish_reason = "tool_calls"
+            case _:
+                finish_reason = None
 
+        # Forward any ``ParsedToolCall`` with a ``name`` regardless of
+        # ``.status``: argument errors surface to the model as tool-role
+        # validation messages via the env's ``call_tool`` for self-
+        # correction, instead of an empty ``tool_calls`` that terminates
+        # the rollout via ``no_tools_called``. ``status`` stays on each
+        # call for downstream filtering.
         tool_calls = None
-        raw_tcs = response.get("tool_calls")
-        if raw_tcs:
+        raw_tcs = response.get("tool_calls") or []
+        usable_tcs = [
+            tc for tc in raw_tcs if isinstance(tc, ParsedToolCall) and tc.name
+        ]
+        if usable_tcs:
             tool_calls = [
                 ToolCall(
-                    id=f"call_{i}",
-                    name=tc["function"]["name"],
+                    id=tc.id or f"call_{i}",
+                    name=tc.name or "",
                     arguments=(
-                        tc["function"]["arguments"]
-                        if isinstance(tc["function"]["arguments"], str)
-                        else json.dumps(tc["function"]["arguments"])
+                        tc.arguments
+                        if isinstance(tc.arguments, str)
+                        else json.dumps(tc.arguments or {})
                     ),
                 )
-                for i, tc in enumerate(raw_tcs)
+                for i, tc in enumerate(usable_tcs)
             ]
 
         prompt_ids = response.get("prompt_ids", [])
@@ -580,6 +696,8 @@ class RendererClient(
             completion_mask=[1] * len(completion_ids),
             completion_logprobs=completion_logprobs,
             routed_experts=response.get("routed_experts"),
+            multi_modal_data=response.get("multi_modal_data"),
+            prompt_attribution=response.get("prompt_attribution"),
         )
 
         # /inference/v1/generate doesn't return usage; reconstruct from tokens.

@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import json
 import logging
 import re
@@ -136,7 +134,7 @@ class SWELegoRubric(vf.Rubric):
         self.add_reward_func(self.solved)
 
     async def solved(self, state, info, **kwargs) -> float:
-        if isinstance(state.get("error"), vf.InfraError):
+        if state.get("error") is not None:
             return 0.0
         sandbox_client = state.get("sandbox_client")
         sandbox_id = state.get("sandbox_id")

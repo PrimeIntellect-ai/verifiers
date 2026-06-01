@@ -1,9 +1,12 @@
-from __future__ import annotations
-
+import importlib
 from pathlib import Path
+from types import ModuleType
 from typing import Any, cast
+from uuid import uuid4
 
-import verifiers.v1 as vf
+import pytest
+import verifiers as vf
+from harnesses import MiniSWEAgent, MiniSWEAgentConfig, MiniSWEAgentProgramConfig
 
 
 def write_harbor_task(root: Path) -> Path:
@@ -33,13 +36,48 @@ timeout_sec = 300
     return task_dir
 
 
-def test_mini_swe_agent_builds_sandbox_program():
-    harness = vf.MiniSWEAgent(system_prompt="Use tests.", agent_workdir="/app")
-    program = cast(dict[str, Any], harness.program)
+def write_harbor_package(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ModuleType:
+    package_name = f"mini_swe_harbor_pkg_{uuid4().hex}"
+    package_dir = tmp_path / package_name
+    tasks_root = package_dir / "tasks"
+    tasks_root.mkdir(parents=True)
+    (package_dir / "__init__.py").write_text(
+        """
+import verifiers as vf
+from harnesses import MiniSWEAgent, MiniSWEAgentConfig
+from tasksets import HarborTaskset, HarborTasksetConfig
 
-    assert isinstance(harness, vf.CLIHarness)
+
+def load_env():
+    return vf.Env(taskset=HarborTaskset(config=HarborTasksetConfig(bundle_package=__name__)), harness=MiniSWEAgent(config=MiniSWEAgentConfig()))
+""".lstrip()
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    importlib.invalidate_caches()
+    module = importlib.import_module(package_name)
+    setattr(module, "tasks_root", tasks_root)
+    return module
+
+
+def test_mini_swe_agent_builds_sandbox_program():
+    harness = MiniSWEAgent(
+        config=MiniSWEAgentConfig(
+            system_prompt="Use tests.",
+            program=MiniSWEAgentProgramConfig(
+                agent_workdir="/app",
+            ),
+        )
+    )
+    program = cast(dict[str, Any], harness.config.program.data())
+    command = cast(list[str], program["command"])
+    script = command[-1]
+
+    assert isinstance(harness, vf.Harness)
     assert program["sandbox"] is not False
     assert "OPENAI_MODEL" in cast(dict[str, object], program["env"])
+    assert "-c mini " in script
+    assert "model.model_class=litellm" in script
+    assert "model.model_kwargs.parallel_tool_calls=true" in script
     assert "apt-get -o Acquire::Retries=3 update" in cast(str, program["setup"])
     assert "apt-get -o Acquire::Retries=3 install" in cast(str, program["setup"])
     assert "/mini-swe-agent/prompt.txt" in cast(dict[str, object], program["files"])
@@ -47,19 +85,19 @@ def test_mini_swe_agent_builds_sandbox_program():
     assert "mini_swe_agent_log" in cast(dict[str, object], program["artifacts"])
 
 
-def test_mini_swe_agent_composes_with_harbor_taskset(tmp_path: Path):
-    write_harbor_task(tmp_path)
+def test_mini_swe_agent_composes_with_harbor_taskset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    package = write_harbor_package(tmp_path, monkeypatch)
+    write_harbor_task(cast(Path, getattr(package, "tasks_root")))
 
-    env = vf.Env(taskset=vf.HarborTaskset(tasks=tmp_path), harness=vf.MiniSWEAgent())
-    row = env.get_dataset()[0]
-    task = env.taskset.to_task(row)
+    env = getattr(package, "load_env")()
+    task = next(iter(env.taskset))
 
-    assert isinstance(env.harness, vf.MiniSWEAgent)
+    assert isinstance(env.harness, MiniSWEAgent)
     assert task["taskset_id"] == "harbor"
     assert task["instruction"] == "Fix the bug."
 
 
-def test_mini_swe_agent_is_reexported():
-    from verifiers.v1.packages.harnesses import MiniSWEAgent
-
-    assert vf.MiniSWEAgent is MiniSWEAgent
+def test_mini_swe_agent_imports_from_package():
+    assert MiniSWEAgent

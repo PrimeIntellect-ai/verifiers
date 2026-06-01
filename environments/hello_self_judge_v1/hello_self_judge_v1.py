@@ -1,13 +1,8 @@
-from __future__ import annotations
-
 import json
-from collections.abc import Mapping
-from typing import cast
 
-import verifiers.v1 as vf
+import verifiers as vf
 from verifiers.v1.utils.judge_utils import (
     clamp_float,
-    completion_text,
     parse_judge_json,
     truncate_command_record,
     truncate_text,
@@ -51,7 +46,7 @@ Use these criteria:
 """
 
 
-TASKS: list[dict[str, object]] = [
+TASKS: list[vf.ConfigData] = [
     {
         "task_id": "example-domains",
         "question": (
@@ -155,6 +150,11 @@ TASKS: list[dict[str, object]] = [
 
 
 class SelfJudgeTasksetConfig(vf.TasksetConfig):
+    toolsets: dict[str, dict[str, str]] = {"bash": {"fn": "load_bash_toolset"}}
+    updates: list[str] = ["sandbox_judge"]
+    rewards: list[str] = ["self_consistency_score"]
+    metrics: list[str] = ["bash_calls"]
+    system_prompt: str = SYSTEM_PROMPT
     num_examples: int = -1
 
 
@@ -192,9 +192,8 @@ async def bash_calls(task, state) -> float:
 @vf.reward(weight=1.0)
 async def self_consistency_score(task, state) -> float:
     updated = state.get("update_judge")
-    if not isinstance(updated, Mapping):
+    if not isinstance(updated, dict):
         return 0.0
-    updated = cast(Mapping[str, object], updated)
     findings = str(updated.get("findings") or "")
     if not findings:
         return 0.0
@@ -212,11 +211,14 @@ async def self_consistency_score(task, state) -> float:
     ).freeze()
     judge_state = state.for_task(judge_task, borrow="model")
     judge_state = await vf.Harness(
-        system_prompt=REWARD_JUDGE_SYSTEM_PROMPT,
-        max_turns=1,
+        config=vf.HarnessConfig(
+            system_prompt=REWARD_JUDGE_SYSTEM_PROMPT,
+            max_turns=1,
+        )
     ).run(judge_task, judge_state)
 
-    judge_text = completion_text(judge_state.get("completion"))
+    messages = vf.get_messages(judge_state.get("completion") or [], role="assistant")
+    judge_text = str(messages[-1].content or "") if messages else ""
     parsed = parse_judge_json(judge_text)
     score = clamp_float(parsed.get("score", 0.0))
     state["judge"] = {
@@ -229,7 +231,8 @@ async def self_consistency_score(task, state) -> float:
 
 @vf.update(priority=10)
 async def sandbox_judge(task, state) -> None:
-    response = completion_text(state.get("completion"))
+    messages = vf.get_messages(state.get("completion") or [], role="assistant")
+    response = str(messages[-1].content or "") if messages else ""
     judge_task = vf.Task(
         {
             "prompt": [
@@ -249,20 +252,24 @@ async def sandbox_judge(task, state) -> None:
     )
     bash_output_start = len(state.get("bash_tool_outputs", []))
     judge_state = await vf.Harness(
-        system_prompt=UPDATE_JUDGE_SYSTEM_PROMPT,
-        max_turns=3,
+        config=vf.HarnessConfig(
+            system_prompt=UPDATE_JUDGE_SYSTEM_PROMPT,
+            max_turns=3,
+        )
     ).run(judge_task, judge_state)
     judge_bash_outputs = state.get("bash_tool_outputs", [])[bash_output_start:]
 
+    messages = vf.get_messages(judge_state.get("completion") or [], role="assistant")
+    findings = str(messages[-1].content or "") if messages else ""
     state["update_judge"] = {
-        "findings": completion_text(judge_state.get("completion")),
+        "findings": findings,
         "trajectory_id": judge_state["trajectory_id"],
         "bash_calls": len(judge_bash_outputs),
     }
     state["sandbox_report"] = judge_bash_outputs
 
 
-def update_prompt(task: Mapping[str, object], response: str) -> str:
+def update_prompt(task: vf.Task, response: str) -> str:
     return (
         "Task:\n"
         f"{task['question']}\n\n"
@@ -288,7 +295,7 @@ def update_prompt(task: Mapping[str, object], response: str) -> str:
     )
 
 
-def score_prompt(task: Mapping[str, object], findings: str) -> str:
+def score_prompt(task: vf.Task, findings: str) -> str:
     return (
         "Task:\n"
         f"{task['question']}\n\n"
@@ -299,7 +306,7 @@ def score_prompt(task: Mapping[str, object], findings: str) -> str:
     )
 
 
-def source(num_examples: int = -1):
+def load_tasks(num_examples: int = -1):
     rows = TASKS if num_examples < 0 else TASKS[:num_examples]
     for index, row in enumerate(rows):
         question = str(row["question"])
@@ -321,74 +328,38 @@ def source(num_examples: int = -1):
         }
 
 
-def load_bash_toolset(config=None) -> vf.Toolset:
+def load_bash_toolset() -> vf.Toolset:
     return vf.Toolset(
         tools=[bash],
         write=True,
         scope="rollout",
-        sandbox={
-            "image": "python:3.11-slim",
-            "scope": "rollout",
-            "network_access": True,
-            "timeout_minutes": 30,
-            "command_timeout": 120,
-        },
+        sandbox=vf.SandboxConfig(
+            image="python:3.11-slim",
+            scope="rollout",
+            network_access=True,
+            timeout_minutes=30,
+            command_timeout=120,
+        ),
         cleanups=[collect_bash_commands],
-        config=config,
     )
 
 
-def load_taskset(
-    num_examples: int | None = None,
-    config: vf.TasksetConfig | None = None,
-) -> vf.Taskset:
-    config = SelfJudgeTasksetConfig(config, num_examples=num_examples)
-
-    def load_rows():
-        return source(num_examples=config.num_examples)
-
-    return vf.Taskset(
-        source=load_rows,
-        system_prompt=SYSTEM_PROMPT,
-        toolsets=[load_bash_toolset()],
-        updates=[sandbox_judge],
-        rewards=[self_consistency_score],
-        metrics=[bash_calls],
-        config=config,
-    )
+class SelfJudgeTaskset(vf.Taskset[SelfJudgeTasksetConfig]):
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
+        return load_tasks(num_examples=self.config.num_examples)
 
 
-def load_harness(
-    max_turns: int | None = None,
-    config: vf.HarnessConfig | None = None,
-) -> vf.Harness:
-    config = SelfJudgeHarnessConfig(config, max_turns=max_turns)
-    return vf.Harness(max_turns=config.max_turns, config=config)
+class SelfJudgeHarness(vf.Harness[SelfJudgeHarnessConfig]):
+    pass
 
 
-def load_environment(
-    num_examples: int = -1,
-    max_turns: int = 8,
-    config: vf.EnvConfig | None = None,
-) -> vf.Env:
-    config = vf.EnvConfig(
-        config,
-        taskset=SelfJudgeTasksetConfig(num_examples=num_examples),
-        harness=SelfJudgeHarnessConfig(max_turns=max_turns),
-    )
+class SelfJudgeEnvConfig(vf.EnvConfig):
+    taskset: SelfJudgeTasksetConfig = SelfJudgeTasksetConfig()
+    harness: SelfJudgeHarnessConfig = SelfJudgeHarnessConfig()
+
+
+def load_environment(config: SelfJudgeEnvConfig) -> vf.Env:
     return vf.Env(
-        taskset=load_taskset(config=config.taskset),
-        harness=load_harness(config=config.harness),
-    )
-
-
-def load_v1_environment(
-    num_examples: int = -1,
-    max_turns: int = 8,
-    config: vf.EnvConfig | None = None,
-) -> vf.Env:
-    return load_environment(
-        num_examples=num_examples,
-        max_turns=max_turns,
-        config=config,
+        taskset=SelfJudgeTaskset(config=config.taskset),
+        harness=SelfJudgeHarness(config=config.harness),
     )

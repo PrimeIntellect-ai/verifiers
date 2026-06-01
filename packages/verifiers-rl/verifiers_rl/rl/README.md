@@ -66,7 +66,7 @@ max_tokens = 512
 max_seq_len = 2048
 ```
 
-See more examples under `configs/local/vf-rl/`.
+See more examples under `packages/verifiers-rl/examples/`.
 
 ### Running with `vf-rl`
 

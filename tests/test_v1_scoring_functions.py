@@ -1,12 +1,9 @@
-from __future__ import annotations
-
-from collections.abc import Mapping
 from typing import Any, cast
 
 import pytest
 
 import verifiers as vf
-from verifiers.v1 import (
+from verifiers import (
     add_advantage,
     add_metric,
     add_reward,
@@ -46,13 +43,23 @@ async def explicit_advantage(tasks: list[dict], states: list[dict]) -> list[floa
     return [float(index) for index, _ in enumerate(states)]
 
 
+def task_and_state(
+    task_data: dict[str, Any], state_data: dict[str, Any]
+) -> tuple[vf.Task, vf.State]:
+    task = vf.Task(task_data).freeze()
+    state = vf.State.for_task(task)
+    state.update(state_data)
+    return task, state
+
+
 @pytest.mark.asyncio
 async def test_programmatic_metric_and_reward_share_signal_path() -> None:
     signals = build_signals()
     add_metric(signals, num_tool_calls)
     add_reward(signals, exact_answer)
-    task = {"answer": "4"}
-    state = {"answer": "4", "tool_calls": ["a", "b"]}
+    task, state = task_and_state(
+        {"answer": "4"}, {"answer": "4", "tool_calls": ["a", "b"]}
+    )
 
     await score_rollout(signals, task, state)
 
@@ -68,8 +75,7 @@ async def test_config_overrides_default_signal_metadata() -> None:
         scoring={"exact_answer": {"weight": 0.5}},
         rewards=[exact_answer],
     )
-    task = {"answer": "4"}
-    state = {"answer": "4"}
+    task, state = task_and_state({"answer": "4"}, {"answer": "4"})
 
     await score_rollout(signals, task, state)
 
@@ -82,8 +88,7 @@ async def test_config_tunes_imported_signal_by_name() -> None:
         metrics=[config_metric],
         scoring={"config_metric": {"priority": 10}},
     )
-    task = {"x": 2}
-    state = {"y": 3}
+    task, state = task_and_state({"x": 2}, {"y": 3})
 
     await score_rollout(signals, task, state)
 
@@ -99,28 +104,32 @@ def test_signal_name_collisions_hard_fail() -> None:
         collect_signals(taskset_signals, harness_signals)
 
 
-def test_group_signal_requires_plural_args_only() -> None:
+@pytest.mark.asyncio
+async def test_group_signal_reports_unresolved_required_args() -> None:
     @vf.metric(stage="group")
     async def bad_group_metric(task: dict, state: dict) -> float:
         return 0.0
 
-    with pytest.raises(ValueError, match="tasks and states"):
-        build_signals(metrics=[bad_group_metric])
+    signals = build_signals(metrics=[bad_group_metric])
+
+    with pytest.raises(TypeError, match="metric signal 'bad_group_metric'.*task"):
+        await score_group(signals, [{"answer": "a"}], [{"answer": "a"}])
 
 
 @pytest.mark.asyncio
 async def test_group_reward_scores_each_state() -> None:
     signals = build_signals(rewards=[best_answer_bonus])
-    tasks: list[dict[str, Any]] = [{"answer": "a"}, {"answer": "b"}]
-    states: list[dict[str, Any]] = [
-        {
-            "answer": "a",
-            "trajectory": [{"advantage": None}, {"advantage": 9.0}],
-        },
-        {"answer": "c", "trajectory": [{"advantage": None}]},
-    ]
+    task_a, state_a = task_and_state(
+        {"answer": "a"},
+        {"answer": "a", "trajectory": [{"advantage": None}, {"advantage": 9.0}]},
+    )
+    task_b, state_b = task_and_state(
+        {"answer": "b"}, {"answer": "c", "trajectory": [{"advantage": None}]}
+    )
+    tasks = [task_a, task_b]
+    states = [state_a, state_b]
 
-    await score_group(signals, cast(list[Mapping[str, Any]], tasks), states)
+    await score_group(signals, tasks, states)
 
     assert states[0]["reward"] == 1.0
     assert states[1]["reward"] == 0.0
@@ -135,10 +144,12 @@ async def test_group_reward_scores_each_state() -> None:
 async def test_advantage_signal_writes_group_advantages() -> None:
     signals = build_signals(rewards=[best_answer_bonus])
     add_advantage(signals, explicit_advantage)
-    tasks: list[dict[str, Any]] = [{"answer": "a"}, {"answer": "b"}]
-    states: list[dict[str, Any]] = [{"answer": "a"}, {"answer": "c"}]
+    task_a, state_a = task_and_state({"answer": "a"}, {"answer": "a"})
+    task_b, state_b = task_and_state({"answer": "b"}, {"answer": "c"})
+    tasks = [task_a, task_b]
+    states = [state_a, state_b]
 
-    await score_group(signals, cast(list[Mapping[str, Any]], tasks), states)
+    await score_group(signals, tasks, states)
 
     assert states[0]["advantage"] == 0.0
     assert states[1]["advantage"] == 1.0

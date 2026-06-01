@@ -35,20 +35,21 @@ Configure model and sampling:
 ```bash
 prime eval run {env_id_dash} \
   -m openai/gpt-4.1-mini \
-  -n 20 -r 3 -t 1024 -T 0.7 \
-  -a '{{"key": "value"}}'  # env-specific args as JSON
+  -n 20 -r 3 -t 1024 -T 0.7
 ```
 
 Notes:
-- Use `-a` / `--env-args` to pass environment-specific configuration as a JSON object.
+- Put task-owned settings under `[env.taskset]` and harness-owned settings under `[env.harness]` in TOML configs.
 
-### Environment Arguments
-Document any supported environment arguments and their meaning. Example:
+### Taskset Config
+Document any taskset config fields and their meaning. Example:
 
-| Arg | Type | Default | Description |
+| Field | Type | Default | Description |
 | --- | ---- | ------- | ----------- |
-| `foo` | str | `"bar"` | What this controls |
 | `max_examples` | int | `-1` | Limit on dataset size (use -1 for all) |
+
+### Harness Config
+Document any harness config fields and their meaning.
 
 ### Metrics
 Summarize key metrics your rubric emits and how they’re interpreted.
@@ -65,7 +66,7 @@ OPENENV_README_TEMPLATE = """\
 
 ### Overview
 - **Environment ID**: `{env_id_dash}`
-- **Short description**: OpenEnv-backed environment using `vf.OpenEnvEnv`.
+- **Short description**: OpenEnv-backed environment using `tasksets.OpenEnvTaskset`.
 - **Tags**: openenv, tools, multi-turn
 
 ### Structure
@@ -118,7 +119,8 @@ tags = ["openenv", "tools", "multi-turn"]
 version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = [
-    "verifiers[openenv]>={vf.__version__}",
+    "verifiers>={vf.__version__}",
+    "tasksets[openenv]>=0.1.1",
 ]
 
 [build-system]
@@ -134,52 +136,119 @@ rollouts_per_example = 3
 """
 
 INIT_TEMPLATE = """\
-from .{env_id} import load_environment
+from .{env_id} import {imports}
 
-__all__ = ["load_environment"]
+__all__ = {exports}
 """
 
-ENVIRONMENT_TEMPLATE = '''\
+V0_ENVIRONMENT_TEMPLATE = """\
 import verifiers as vf
 
 
 def load_environment(**kwargs) -> vf.Environment:
-    """
-    Loads a custom environment.
-    """
-    raise NotImplementedError("Implement your custom environment here.")
-'''
+    \"\"\"
+    Load this environment.
 
-OPENENV_ENVIRONMENT_TEMPLATE = """\
-from typing import Any
+    v0 environments typically return vf.SingleTurnEnv, vf.ToolEnv, etc.
+    For the v1 Taskset/Harness pattern: prime env init <name> --v1
+    \"\"\"
+    raise NotImplementedError("Implement load_environment here.")
+"""
 
+V1_TASKSET_TEMPLATE = """\
 import verifiers as vf
 
 
-def render_prompt(observation: Any) -> list[dict[str, Any]]:
-    if isinstance(observation, dict):
-        messages = observation.get("messages")
-        if isinstance(messages, list) and messages:
-            return messages
-        prompt = observation.get("prompt")
-        if isinstance(prompt, str) and prompt.strip():
-            return [{"role": "user", "content": prompt}]
-    raise RuntimeError(
-        "OpenEnv observation did not include a renderable prompt. "
-        "Update render_prompt() for your project's observation schema."
+class {taskset_config_name}(vf.TasksetConfig):
+    \"\"\"User-facing task settings for {env_id_dash}.\"\"\"
+
+    system_prompt: vf.SystemPrompt = "Answer exactly."
+
+
+class {taskset_name}(vf.Taskset[{taskset_config_name}]):
+    \"\"\"Taskset implementation for {env_id_dash}.
+
+    Add task loading, task-owned toolsets, user behavior, lifecycle hooks,
+    metrics, rewards, and advantages on this class.
+    \"\"\"
+
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
+        \"\"\"Return serializable task records as a list, generator, or Dataset.\"\"\"
+        if split == "eval":
+            return []
+        return [
+            {
+                "prompt": [{"role": "user", "content": "Reverse abc."}],
+                "answer": "cba",
+                "max_turns": 1,
+            }
+        ]
+
+    @vf.reward(weight=1.0)
+    async def correct_answer(self, task: vf.Task, state: vf.State) -> float:
+        \"\"\"Score the final assistant response for one rollout.\"\"\"
+        messages = vf.get_messages(state.get("completion") or [], role="assistant")
+        if not messages:
+            return 0.0
+        response = str(messages[-1].content or "").strip()
+        return float(response == task["answer"])
+
+
+def load_taskset(config: {taskset_config_name}) -> {taskset_name}:
+    \"\"\"Typed taskset loader used by vf.load_taskset.\"\"\"
+    return {taskset_name}(config=config)
+"""
+
+
+V1_HARNESS_TEMPLATE = """\
+
+class {harness_config_name}(vf.HarnessConfig):
+    \"\"\"Execution settings for {env_id_dash}.\"\"\"
+
+
+class {harness_name}(vf.Harness[{harness_config_name}]):
+    \"\"\"Reusable execution behavior for {env_id_dash}.
+
+    Add harness-owned program, sandbox, endpoint, model, toolset, or lifecycle
+    behavior here when this environment owns a custom execution mechanism.
+    \"\"\"
+
+
+def load_harness(config: {harness_config_name}) -> {harness_name}:
+    \"\"\"Typed harness loader used by vf.load_harness.\"\"\"
+    return {harness_name}(config=config)
+"""
+
+
+V1_ENV_LOADER_TEMPLATE = """\
+
+def load_environment(config: vf.EnvConfig) -> vf.Env:
+    \"\"\"Loader pattern for all Taskset/Harness environments.\"\"\"
+    return vf.Env(
+        taskset=vf.load_taskset(config=config.taskset),
+        harness=vf.load_harness(config=config.harness),
     )
+"""
+
+V1_ENVIRONMENT_TEMPLATE = V1_TASKSET_TEMPLATE + V1_ENV_LOADER_TEMPLATE
+V1_HARNESS_ENVIRONMENT_TEMPLATE = (
+    V1_TASKSET_TEMPLATE + V1_HARNESS_TEMPLATE + V1_ENV_LOADER_TEMPLATE
+)
+
+OPENENV_ENVIRONMENT_TEMPLATE = """\
+import verifiers as vf
+from tasksets import OpenEnvTaskset, OpenEnvTasksetConfig
 
 
-def load_environment(
-    num_train_examples: int = 100,
-    num_eval_examples: int = 50,
-    seed: int = 0,
-):
-    return vf.OpenEnvEnv(
-        num_train_examples=num_train_examples,
-        num_eval_examples=num_eval_examples,
-        seed=seed,
-        prompt_renderer=render_prompt,
+def load_taskset(config: OpenEnvTasksetConfig) -> OpenEnvTaskset:
+    return OpenEnvTaskset(config=config)
+
+
+def load_environment(config: vf.EnvConfig) -> vf.Env:
+    \"\"\"Loader pattern for all Taskset/Harness environments.\"\"\"
+    return vf.Env(
+        taskset=vf.load_taskset(config=config.taskset),
+        harness=vf.load_harness(config=config.harness),
     )
 """
 
@@ -221,7 +290,7 @@ version = "0.1.0"
 description = "OpenEnv project bundled with a verifiers environment"
 requires-python = ">=3.10"
 dependencies = [
-    "openenv-core[core]==0.2.1",
+    "openenv-core>=0.3.0",
     "fastapi>=0.115.0",
     "uvicorn>=0.24.0",
 ]
@@ -312,12 +381,23 @@ def _init_openenv_proj(
     _write_if_missing(server_dir / "__init__.py", "")
 
 
+def _class_name(env_id_underscore: str, suffix: str) -> str:
+    prefix = "".join(
+        part[:1].upper() + part[1:] for part in env_id_underscore.split("_") if part
+    )
+    if not prefix or not prefix[0].isalpha():
+        prefix = f"Env{prefix}"
+    return f"{prefix}{suffix}"
+
+
 def init_environment(
     env: str,
     path: str = "./environments",
     rewrite_readme: bool = False,
     multi_file: bool = False,
     openenv: bool = False,
+    v1: bool = False,
+    with_harness: bool = False,
 ) -> Path:
     """
     Initialize a new verifiers environment.
@@ -332,6 +412,15 @@ def init_environment(
 
     env_id_dash = env.replace("_", "-")
     env_id_underscore = env_id_dash.replace("-", "_")
+    taskset_config_name = _class_name(env_id_underscore, "TasksetConfig")
+    taskset_name = _class_name(env_id_underscore, "Taskset")
+    harness_config_name = _class_name(env_id_underscore, "HarnessConfig")
+    harness_name = _class_name(env_id_underscore, "Harness")
+    if openenv:
+        v1 = True
+    if with_harness and not v1:
+        print("--with-harness only applies with --v1; ignoring.")
+        with_harness = False
 
     # make environment parent directory if it doesn't exist
     local_dir = Path(path) / env_id_underscore
@@ -369,15 +458,39 @@ def init_environment(
     if multi_file:
         init_file = environment_dir / "__init__.py"
         if not init_file.exists():
-            init_file.write_text(INIT_TEMPLATE.format(env_id=env_id_underscore))
+            exports = ["load_environment"]
+            if v1:
+                exports.append("load_taskset")
+            if v1 and with_harness and not openenv:
+                exports.append("load_harness")
+            init_file.write_text(
+                INIT_TEMPLATE.format(
+                    env_id=env_id_underscore,
+                    imports=", ".join(exports),
+                    exports=repr(exports),
+                )
+            )
         else:
             print(f"__init__.py already exists at {init_file}, skipping...")
 
     # create environment file if it doesn't exist
     environment_file = environment_dir / f"{env_id_underscore}.py"
     if not environment_file.exists():
-        template = OPENENV_ENVIRONMENT_TEMPLATE if openenv else ENVIRONMENT_TEMPLATE
-        environment_file.write_text(template)
+        if openenv:
+            template = OPENENV_ENVIRONMENT_TEMPLATE
+        elif v1 and with_harness:
+            template = V1_HARNESS_ENVIRONMENT_TEMPLATE
+        elif v1:
+            template = V1_ENVIRONMENT_TEMPLATE
+        else:
+            template = V0_ENVIRONMENT_TEMPLATE
+        environment_file.write_text(
+            template.replace("{env_id_dash}", env_id_dash)
+            .replace("{taskset_config_name}", taskset_config_name)
+            .replace("{taskset_name}", taskset_name)
+            .replace("{harness_config_name}", harness_config_name)
+            .replace("{harness_name}", harness_name)
+        )
     else:
         print(
             f"{env_id_underscore}.py already exists at {environment_file}, skipping..."
@@ -421,6 +534,18 @@ def main():
         default=False,
         help="Initialize with the enforced OpenEnv layout (proj/ + vf-build workflow).",
     )
+    parser.add_argument(
+        "--v1",
+        action="store_true",
+        default=False,
+        help="Initialize a v1 Taskset/Harness environment template.",
+    )
+    parser.add_argument(
+        "--with-harness",
+        action="store_true",
+        default=False,
+        help="Include an explicit v1 load_harness stub. Requires --v1.",
+    )
     args = parser.parse_args()
 
     init_environment(
@@ -429,6 +554,8 @@ def main():
         rewrite_readme=args.rewrite_readme,
         multi_file=args.multi_file,
         openenv=args.openenv,
+        v1=args.v1,
+        with_harness=args.with_harness,
     )
 
 

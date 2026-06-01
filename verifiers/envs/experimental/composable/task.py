@@ -24,26 +24,15 @@ A **SandboxSpec** describes sandbox requirements (image, CPU, memory, etc.).
         async def evaluate(self, sandbox_client, sandbox_id, state) -> float: ...
 """
 
-from __future__ import annotations
-
 import importlib
 import importlib.resources as resources
 from dataclasses import dataclass
 from importlib.abc import Traversable
 from pathlib import Path
-from types import ModuleType
 from typing import Any, Callable
 
 from verifiers.envs.experimental.composable._filter import _resolve_filter_fn
 from verifiers.types import DatasetBuilder, Messages, State
-
-
-def _module_package_name(module: ModuleType) -> str | None:
-    """Return the package name for a module, or None if not in a package."""
-    if hasattr(module, "__path__"):
-        return module.__name__
-    package_name = getattr(module, "__package__", None)
-    return package_name or None
 
 
 def discover_sibling_dir(taskset_cls: type, dirname: str) -> Traversable | Path | None:
@@ -57,7 +46,11 @@ def discover_sibling_dir(taskset_cls: type, dirname: str) -> Traversable | Path 
     """
     module = importlib.import_module(taskset_cls.__module__)
 
-    package_name = _module_package_name(module)
+    package_name = (
+        module.__name__
+        if hasattr(module, "__path__")
+        else getattr(module, "__package__", None)
+    )
     if package_name:
         try:
             candidate = resources.files(package_name) / dirname
@@ -100,7 +93,7 @@ class Task:
     """
 
     def __init__(
-        self, taskset: TaskSet, prompt: Messages, info: dict, answer: str = ""
+        self, taskset: "TaskSet", prompt: Messages, info: dict, answer: str = ""
     ):
         self._taskset = taskset
         self.prompt = prompt
@@ -143,7 +136,7 @@ class TaskSet:
 
     def __init__(
         self,
-        dataset: Any | DatasetBuilder,
+        dataset: "Any | DatasetBuilder",
         name: str = "",
         filter_fn: str | None = None,
     ):
@@ -294,13 +287,13 @@ class TaskSet:
 
     # -- Combinators ---------------------------------------------------------
 
-    def filter(self, predicate: Callable[[dict], bool]) -> TaskSet:
+    def filter(self, predicate: Callable[[dict], bool]) -> "TaskSet":
         clone = object.__new__(type(self))
         clone.__dict__.update(self.__dict__)
         clone.dataset = self.dataset.filter(predicate)
         return clone
 
-    def take(self, n: int) -> TaskSet:
+    def take(self, n: int) -> "TaskSet":
         clone = object.__new__(type(self))
         clone.__dict__.update(self.__dict__)
         clone.dataset = self.dataset.select(range(min(n, len(self.dataset))))
@@ -435,13 +428,6 @@ class TaskSet:
         def _write_line(path: Path, line: str) -> None:
             with path.open("a") as f:
                 f.write(line)
-
-        async def _append_jsonl(row: dict) -> None:
-            if out_path_p is None:
-                return
-            line = json.dumps(row, default=str) + "\n"
-            async with write_lock:
-                await asyncio.to_thread(_write_line, out_path_p, line)
 
         # Sandbox-specific exception types — imported lazily so pure-LLM
         # tasksets don't pull in prime_sandboxes. Dispatch is via isinstance
@@ -659,7 +645,10 @@ class TaskSet:
                 for fut in asyncio.as_completed(tasks):
                     r = await fut
                     results.append(r)
-                    await _append_jsonl(r)
+                    if out_path_p is not None:
+                        line = json.dumps(r, default=str) + "\n"
+                        async with write_lock:
+                            await asyncio.to_thread(_write_line, out_path_p, line)
                     if r["valid"]:
                         passed += 1
                     rate = passed / len(results)

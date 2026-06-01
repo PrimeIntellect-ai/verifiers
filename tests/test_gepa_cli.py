@@ -11,14 +11,25 @@ from verifiers.scripts.gepa import (
     load_gepa_toml_config,
     resolve_gepa_config_args,
 )
+from verifiers.types import EndpointConfig
 
 
 def test_gepa_extra_headers_from_group_requires_consistent_variants():
     with pytest.raises(ValueError, match="different headers"):
         _gepa_extra_headers_from_group(
             [
-                {"extra_headers": {"X-A": "1"}},
-                {"extra_headers": {"X-A": "2"}},
+                EndpointConfig(
+                    api_key_var="K",
+                    base_url="https://a.example/v1",
+                    model="m",
+                    extra_headers={"X-A": "1"},
+                ),
+                EndpointConfig(
+                    api_key_var="K",
+                    base_url="https://a.example/v1",
+                    model="m",
+                    extra_headers={"X-A": "2"},
+                ),
             ],
             "my-alias",
         )
@@ -27,8 +38,18 @@ def test_gepa_extra_headers_from_group_requires_consistent_variants():
 def test_gepa_extra_headers_from_group_returns_first_row_dict():
     h = _gepa_extra_headers_from_group(
         [
-            {"extra_headers": {"X-A": "x"}},
-            {"extra_headers": {"X-A": "x"}},
+            EndpointConfig(
+                api_key_var="K",
+                base_url="https://a.example/v1",
+                model="m",
+                extra_headers={"X-A": "x"},
+            ),
+            EndpointConfig(
+                api_key_var="K",
+                base_url="https://a.example/v1",
+                model="m",
+                extra_headers={"X-A": "x"},
+            ),
         ],
         "my-alias",
     )
@@ -166,6 +187,14 @@ def test_load_gepa_toml_config_requires_env_table(tmp_path: Path):
         ValueError, match="must contain an \\[env\\] or \\[\\[env\\]\\]"
     ):
         load_gepa_toml_config(config_path)
+
+
+def test_repo_gepa_example_configs_are_valid():
+    config_paths = sorted(Path("configs/gepa").glob("*.toml"))
+    assert config_paths
+    for config_path in config_paths:
+        loaded = load_gepa_toml_config(config_path)
+        assert loaded["envs"], f"{config_path} should contain at least one [[env]]"
 
 
 def test_resolve_gepa_config_args_supports_plain_env_id():

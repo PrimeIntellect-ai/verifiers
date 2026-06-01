@@ -130,6 +130,9 @@ class _OverlongOpenAIChatClient:
     def __init__(self, message: str) -> None:
         self.chat = self._Chat(message)
 
+    async def post(self, *args, **kwargs):  # noqa: ANN002, ANN003
+        return await self.chat.completions.create(*args, **kwargs)
+
 
 @pytest.mark.parametrize(
     "error_message",

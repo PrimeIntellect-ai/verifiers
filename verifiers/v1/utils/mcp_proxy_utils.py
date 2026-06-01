@@ -1,9 +1,10 @@
-from __future__ import annotations
-
 import json
-import shlex
-from collections.abc import Mapping
 from typing import Literal, cast
+
+from ..types import ConfigData
+from .sandbox_python_utils import SANDBOX_PYTHON, python_package_list
+
+ProgramChannel = Literal["callable", "mcp"]
 
 MCP_PROXY_PATH = "/tmp/vf_mcp_tools.py"
 MCP_PROXY_CONFIG_PATH = "/tmp/vf_mcp_tools.json"
@@ -11,57 +12,54 @@ MCP_PACKAGE = "mcp>=1.14.1"
 REQUESTS_PACKAGE = "requests"
 
 
-ProgramToolType = Literal["callable", "mcp"]
-PROGRAM_TOOL_TYPES = {"callable", "mcp"}
-PROGRAM_TOOL_METADATA = {"priority"}
+PROGRAM_CHANNELS = {"callable", "mcp"}
+PROGRAM_CHANNEL_METADATA = {"priority"}
 
 
-def validate_program_tool_types(value: object) -> tuple[ProgramToolType, ...]:
+def validate_program_channels(value: object) -> tuple[ProgramChannel, ...]:
     if value is None:
         return ()
     if isinstance(value, str):
-        if value not in PROGRAM_TOOL_TYPES:
-            raise ValueError("program.tools must be 'callable' or 'mcp'.")
-        return (cast(ProgramToolType, value),)
+        if value not in PROGRAM_CHANNELS:
+            raise ValueError("program.channels must be 'callable' or 'mcp'.")
+        return (cast(ProgramChannel, value),)
     if isinstance(value, list):
-        result: list[ProgramToolType] = []
+        result: list[ProgramChannel] = []
         for item in value:
-            for tool_type in validate_program_tool_types(item):
-                if tool_type in result:
+            for channel in validate_program_channels(item):
+                if channel in result:
                     raise ValueError(
-                        f"program.tools defines {tool_type!r} more than once."
+                        f"program.channels defines {channel!r} more than once."
                     )
-                result.append(tool_type)
+                result.append(channel)
         return tuple(result)
-    if isinstance(value, Mapping):
+    if isinstance(value, dict):
         if not all(isinstance(key, str) for key in value):
-            raise TypeError("program.tools mapping keys must be strings.")
-        spec = cast(Mapping[str, object], value)
-        unknown = sorted(set(spec) - PROGRAM_TOOL_TYPES - PROGRAM_TOOL_METADATA)
+            raise TypeError("program.channels mapping keys must be strings.")
+        spec = cast(ConfigData, value)
+        unknown = sorted(set(spec) - PROGRAM_CHANNELS - PROGRAM_CHANNEL_METADATA)
         if unknown:
-            raise ValueError(f"program.tools has unknown tool interface: {unknown}.")
+            raise ValueError(f"program.channels has unknown channel: {unknown}.")
         if "priority" in spec:
             priority = spec["priority"]
             if not isinstance(priority, int) or isinstance(priority, bool):
-                raise TypeError("program.tools priority must be an integer.")
-        result = [
-            cast(ProgramToolType, key) for key in spec if key in PROGRAM_TOOL_TYPES
-        ]
+                raise TypeError("program.channels priority must be an integer.")
+        result = [cast(ProgramChannel, key) for key in spec if key in PROGRAM_CHANNELS]
         if not result:
-            raise ValueError("program.tools mapping must define a tool interface.")
+            raise ValueError("program.channels mapping must define a channel.")
         return tuple(result)
-    raise TypeError("program.tools must be a string, mapping, or list.")
+    raise TypeError("program.channels must be a string, mapping, or list.")
 
 
 def proxy_program(
-    program: Mapping[str, object], tool_base_url: str, tool_api_key: str
-) -> dict[str, object]:
-    files = dict(cast(Mapping[str, object], program.get("files") or {}))
+    program: ConfigData, tool_base_url: str, tool_auth_var: str
+) -> ConfigData:
+    files = dict(cast(ConfigData, program.get("files") or {}))
     if MCP_PROXY_PATH in files and files[MCP_PROXY_PATH] != proxy_source():
         raise ValueError(f"program.files cannot override {MCP_PROXY_PATH}.")
     config = {
         "tool_base_url": tool_base_url.rstrip("/"),
-        "tool_api_key": tool_api_key,
+        "tool_auth_var": tool_auth_var,
     }
     config_json = json.dumps(config)
     if MCP_PROXY_CONFIG_PATH in files and files[MCP_PROXY_CONFIG_PATH] != config_json:
@@ -72,12 +70,12 @@ def proxy_program(
 
 
 def proxy_command() -> list[str]:
-    return ["python3", MCP_PROXY_PATH, MCP_PROXY_CONFIG_PATH]
+    return [SANDBOX_PYTHON, MCP_PROXY_PATH, MCP_PROXY_CONFIG_PATH]
 
 
-def proxy_sandbox(sandbox_config: Mapping[str, object]) -> dict[str, object]:
+def proxy_sandbox(sandbox_config: ConfigData) -> ConfigData:
     config = dict(sandbox_config)
-    packages = package_list(config.get("packages"))
+    packages = python_package_list(config.get("packages"))
     if not any(str(package).startswith("mcp") for package in packages):
         packages.append(MCP_PACKAGE)
     if not any(str(package).startswith("requests") for package in packages):
@@ -86,22 +84,11 @@ def proxy_sandbox(sandbox_config: Mapping[str, object]) -> dict[str, object]:
     return config
 
 
-def package_list(value: object) -> list[str]:
-    if value is None:
-        return []
-    if isinstance(value, str):
-        return shlex.split(value)
-    if isinstance(value, list):
-        return [str(item) for item in value]
-    raise TypeError("sandbox.packages must be a list or string.")
-
-
 def proxy_source() -> str:
     return r"""
-from __future__ import annotations
-
 import asyncio
 import json
+import os
 import sys
 
 import requests
@@ -131,7 +118,10 @@ def tool_base_url() -> str:
 
 
 def auth_headers() -> dict[str, str]:
-    token = config().get("tool_api_key")
+    token_var = config().get("tool_auth_var")
+    if not token_var:
+        raise RuntimeError("tool_auth_var is required.")
+    token = os.environ.get(str(token_var), "")
     headers = {
         "Content-Type": "application/json",
         "Accept": "application/json",

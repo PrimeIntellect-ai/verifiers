@@ -1,10 +1,7 @@
-from __future__ import annotations
-
-from collections.abc import Mapping
 from difflib import SequenceMatcher
 from statistics import mean
 
-import verifiers.v1 as vf
+import verifiers as vf
 
 
 SYSTEM_PROMPT = """\
@@ -14,10 +11,24 @@ Return the assigned candidate exactly.
 
 
 class GroupRewardTasksetConfig(vf.TasksetConfig):
+    metrics: list[str] = [
+        "answer_length",
+        "group_quality",
+        "group_rank",
+    ]
+    rewards: list[str] = [
+        "rollout_similarity",
+        "relative_group_reward",
+    ]
+    advantages: list[str] = ["centered_group_advantage"]
+    updates: list[str] = ["summarize_group"]
+    cleanups: list[str] = ["mark_group_cleaned"]
+    system_prompt: str = SYSTEM_PROMPT
     num_examples: int = -1
 
 
 class GroupRewardHarnessConfig(vf.HarnessConfig):
+    program: vf.ProgramConfig = vf.ProgramConfig(fn="candidate_program")
     max_turns: int = 1
 
 
@@ -28,7 +39,7 @@ def group_reward_task(
     near: str,
     partial: str,
     wrong: str,
-) -> dict[str, object]:
+) -> vf.ConfigData:
     return {
         "task_id": task_id,
         "question": question,
@@ -42,7 +53,7 @@ def group_reward_task(
     }
 
 
-TASKS: list[dict[str, object]] = [
+TASKS: list[vf.ConfigData] = [
     group_reward_task(
         "distributed-systems",
         "Describe v1 verifiers in one short phrase.",
@@ -81,11 +92,11 @@ TASKS: list[dict[str, object]] = [
         "nested programs inherit active model endpoint controls",
         "programs inherit model endpoint controls",
         "model endpoint controls",
-        "hardcoded providers inside task rows",
+        "hardcoded providers inside tasks",
     ),
     group_reward_task(
-        "user-callbacks",
-        "Describe v1 user callbacks in one short phrase.",
+        "users",
+        "Describe v1 users in one short phrase.",
         "task-owned follow-up messages between assistant turns",
         "follow-up messages between assistant turns",
         "follow-up messages",
@@ -126,7 +137,10 @@ TASKS: list[dict[str, object]] = [
 ]
 
 
-class GroupRewardTaskset(vf.Taskset):
+class GroupRewardTaskset(vf.Taskset[GroupRewardTasksetConfig]):
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
+        return load_tasks(num_examples=self.config.num_examples)
+
     async def init_group(
         self, task: vf.Task, num_rollouts: int
     ) -> tuple[list[vf.Task], list[vf.State]]:
@@ -137,7 +151,7 @@ class GroupRewardTaskset(vf.Taskset):
         states: list[vf.State] = []
         for rollout_index in range(num_rollouts):
             candidate = candidates[rollout_index % len(candidates)]
-            if not isinstance(candidate, Mapping):
+            if not isinstance(candidate, dict):
                 raise TypeError("candidate entries must be mappings.")
             candidate_id = str(candidate["id"])
             candidate_answer = str(candidate["answer"])
@@ -170,6 +184,10 @@ class GroupRewardTaskset(vf.Taskset):
             tasks.append(group_task)
             states.append(state)
         return tasks, states
+
+
+class GroupRewardHarness(vf.Harness[GroupRewardHarnessConfig]):
+    pass
 
 
 async def candidate_program(task: vf.Task, state: vf.State) -> vf.State:
@@ -288,72 +306,30 @@ def dense_ranks(values: list[float]) -> list[int]:
     return [ordered.index(value) + 1 for value in values]
 
 
-def source(num_examples: int = -1):
-    rows = TASKS if num_examples < 0 else TASKS[:num_examples]
-    for index, row in enumerate(rows):
+def load_tasks(num_examples: int = -1):
+    records = TASKS if num_examples < 0 else TASKS[:num_examples]
+    for index, record in enumerate(records):
         yield {
-            **row,
+            **record,
             "example_id": index,
-            "answer": row["target"],
+            "answer": record["target"],
             "prompt": [
                 {
                     "role": "user",
-                    "content": str(row["question"]),
+                    "content": str(record["question"]),
                 }
             ],
             "max_turns": 1,
         }
 
 
-def load_taskset(
-    num_examples: int | None = None,
-    config: vf.TasksetConfig | None = None,
-) -> GroupRewardTaskset:
-    config = GroupRewardTasksetConfig(config, num_examples=num_examples)
-
-    def load_rows():
-        return source(num_examples=config.num_examples)
-
-    return GroupRewardTaskset(
-        source=load_rows,
-        system_prompt=SYSTEM_PROMPT,
-        metrics=[answer_length, group_quality, group_rank],
-        rewards=[rollout_similarity, relative_group_reward],
-        advantages=[centered_group_advantage],
-        updates=[summarize_group],
-        cleanups=[mark_group_cleaned],
-        config=config,
-    )
+class GroupRewardEnvConfig(vf.EnvConfig):
+    taskset: GroupRewardTasksetConfig = GroupRewardTasksetConfig()
+    harness: GroupRewardHarnessConfig = GroupRewardHarnessConfig()
 
 
-def load_harness(
-    max_turns: int | None = None,
-    config: vf.HarnessConfig | None = None,
-) -> vf.Harness:
-    config = GroupRewardHarnessConfig(config, max_turns=max_turns)
-    return vf.Harness(
-        program=candidate_program,
-        max_turns=config.max_turns,
-        config=config,
-    )
-
-
-def load_environment(
-    num_examples: int = -1,
-    config: vf.EnvConfig | None = None,
-) -> vf.Env:
-    config = vf.EnvConfig(
-        config,
-        taskset=GroupRewardTasksetConfig(num_examples=num_examples),
-    )
+def load_environment(config: GroupRewardEnvConfig) -> vf.Env:
     return vf.Env(
-        taskset=load_taskset(config=config.taskset),
-        harness=load_harness(config=config.harness),
+        taskset=GroupRewardTaskset(config=config.taskset),
+        harness=GroupRewardHarness(config=config.harness),
     )
-
-
-def load_v1_environment(
-    num_examples: int = -1,
-    config: vf.EnvConfig | None = None,
-) -> vf.Env:
-    return load_environment(num_examples=num_examples, config=config)

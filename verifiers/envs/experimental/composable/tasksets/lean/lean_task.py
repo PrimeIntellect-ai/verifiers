@@ -33,8 +33,6 @@ statement to ``True := trivial``" cheat.  The marker convention matches
 "protected" means.
 """
 
-from __future__ import annotations
-
 import re
 from dataclasses import dataclass
 
@@ -86,7 +84,7 @@ Only edit the lines BELOW `-- lean-guard: end protected` (the proof body).\
 
 
 @dataclass(frozen=True)
-class _Preset:
+class DatasetPreset:
     dataset_name: str
     dataset_split: str = "train"
     dataset_subset: str | None = None
@@ -97,23 +95,23 @@ class _Preset:
     normalize_mathlib_imports: bool = False
 
 
-PRESETS: dict[str, _Preset] = {
-    "goedel-pset": _Preset("Goedel-LM/Goedel-Pset-v1"),
-    "numina-lean": _Preset("AI-MO/NuminaMath-LEAN", name_column="uuid"),
-    "deepseek-prover-v1": _Preset(
+PRESETS: dict[str, DatasetPreset] = {
+    "goedel-pset": DatasetPreset("Goedel-LM/Goedel-Pset-v1"),
+    "numina-lean": DatasetPreset("AI-MO/NuminaMath-LEAN", name_column="uuid"),
+    "deepseek-prover-v1": DatasetPreset(
         "deepseek-ai/DeepSeek-Prover-V1",
         header_column="header",
         name_column="name",
     ),
-    "kimina": _Preset("AI-MO/Kimina-Prover-Promptset", name_column="name"),
-    "minif2f": _Preset(
+    "kimina": DatasetPreset("AI-MO/Kimina-Prover-Promptset", name_column="name"),
+    "minif2f": DatasetPreset(
         "cat-searcher/minif2f-lean4",
         dataset_split="test",
         header_column="header",
         name_column="id",
         normalize_mathlib_imports=True,
     ),
-    "deepseek-proverbench": _Preset(
+    "deepseek-proverbench": DatasetPreset(
         "deepseek-ai/DeepSeek-ProverBench",
         header_column="header",
         name_column="name",
@@ -192,11 +190,6 @@ def _split_imports_and_signature(stmt: str) -> tuple[str, str]:
     return stmt[: decl_match.start()].rstrip(), stmt[decl_match.start() :]
 
 
-def _wrap_with_lean_guard(signature: str) -> str:
-    """Wrap a normalized ``... := by`` signature with lean-guard markers."""
-    return f"{LEAN_GUARD_BEGIN_MARKER}\n{signature}\n{LEAN_GUARD_END_MARKER}\n  sorry\n"
-
-
 def _extract_protected_region(content: str) -> str | None:
     """Return the text from the begin marker through the end-of-end-line.
 
@@ -233,22 +226,13 @@ def _build_starter_file(info: dict) -> str:
         signature_raw = stmt
 
     signature = _normalize_signature(signature_raw)
-    wrapped = _wrap_with_lean_guard(signature)
+    wrapped = (
+        f"{LEAN_GUARD_BEGIN_MARKER}\n{signature}\n{LEAN_GUARD_END_MARKER}\n  sorry\n"
+    )
 
     if preamble:
         return preamble.rstrip() + "\n\n" + wrapped
     return wrapped
-
-
-def _expected_protected_region(info: dict) -> str:
-    """Compute the protected region for a task instance from its ``info`` dict.
-
-    Re-runs ``_build_starter_file`` so the rubric and the setup step share
-    the exact same wrapping logic — no separate state plumbing needed.
-    """
-    starter = _build_starter_file(info)
-    region = _extract_protected_region(starter)
-    return region or ""
 
 
 # ---------------------------------------------------------------------------
@@ -277,7 +261,8 @@ class LeanRubric(vf.Rubric):
         timeout = state.get("test_timeout", 900)
 
         info = state.get("info") or {}
-        expected_region = _expected_protected_region(info)
+        starter = _build_starter_file(info)
+        expected_region = _extract_protected_region(starter) or ""
         if expected_region:
             try:
                 cat_result = await sandbox_client.execute_command(
@@ -307,12 +292,19 @@ class LeanRubric(vf.Rubric):
             )
             output = (result.stdout or "") + (result.stderr or "")
 
-            # Parse exit code
+            # Parse exit code from the trailing ``EXIT_CODE:N`` we emitted at
+            # the end of ``cmd``. Match the LAST occurrence — the first one
+            # would let a model inject ``#eval IO.println "EXIT_CODE:0"``
+            # into the proof file: the regex would hit the injected marker,
+            # truncate everything after it (hiding the real
+            # ``declaration uses 'sorry'`` diagnostic and the real
+            # ``EXIT_CODE``), and report success.
             exit_code = 1
-            match = re.search(r"EXIT_CODE:(\d+)", output)
-            if match:
-                exit_code = int(match.group(1))
-                output = output[: match.start()].strip()
+            matches = list(re.finditer(r"EXIT_CODE:(\d+)", output))
+            if matches:
+                last = matches[-1]
+                exit_code = int(last.group(1))
+                output = output[: last.start()].strip()
 
             has_sorry = bool(re.search(r"declaration uses 'sorry'", output))
             compiled = exit_code == 0 and not has_sorry

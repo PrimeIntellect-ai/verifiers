@@ -1,7 +1,5 @@
 """RLM agent harness: install script, run command, and harness factory."""
 
-from __future__ import annotations
-
 import hashlib
 import random
 import shlex
@@ -298,18 +296,17 @@ def _build_summarize_resolver(
             raise ValueError(
                 f"summarize_at_tokens lo must be <= hi (got lo={lo}, hi={hi})"
             )
-        return lambda state: str(_draw_threshold(state, lo, hi))
+
+        def sampled_threshold(state: State) -> str:
+            prompt = _state_prompt_string(state)
+            digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+            return str(random.Random(int(digest[:16], 16)).randint(lo, hi))
+
+        return sampled_threshold
     raise ValueError(
         f"summarize_at_tokens must be int, (lo, hi), or None "
         f"(got {type(value).__name__})"
     )
-
-
-def _draw_threshold(state: State, lo: int, hi: int) -> int:
-    """Stable per-prompt uniform draw from ``[lo, hi]``."""
-    prompt = _state_prompt_string(state)
-    digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
-    return random.Random(int(digest[:16], 16)).randint(lo, hi)
 
 
 def _state_prompt_string(state: State) -> str:

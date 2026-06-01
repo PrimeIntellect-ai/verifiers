@@ -12,10 +12,12 @@ Build production-quality verifiers environments that work immediately in the Pri
 1. Prefer ecosystem-native setup before custom scaffolding.
 2. Use this default loop:
 ```bash
-prime env init my-env
+prime env init my-env --v1
 prime env install my-env
 prime eval run my-env -m openai/gpt-4.1-mini -n 5
 ```
+Use `prime env init my-env --v1 --with-harness` when the environment owns an
+explicit reusable harness.
 3. Treat `prime eval run` as the canonical eval path. It saves results automatically, so do not add `--skip-upload` unless the user explicitly requests that deviation.
 4. Prefer an existing environment as a starting point when possible:
 ```bash
@@ -42,9 +44,100 @@ prime env install math-python --from-repo
 - `ToolEnv` or `MCPEnv` for stateless tools.
 - `StatefulToolEnv` for per-rollout resources.
 - `CliAgentEnv` for running agent binaries in sandboxes with API interception. Override `get_sandbox_resources(state)` for per-instance resources, `build_env_vars(state)` for custom env vars.
-- V1 `vf.Env` with `vf.Taskset`/`vf.Harness` for the current taskset/harness environment pattern that separates the task collection from the rollout runner. Use this for new taskset/harness work that needs config-driven metrics, rewards, toolsets, user functions, endpoint interception, or sandboxed Python/command programs. Framework programs should build clients from `state.get_endpoint_config(api="chat")`.
-3. Implement `load_environment(...) -> vf.Environment` with explicit arguments.
-4. Add `pyproject.toml` defaults in `[tool.verifiers.eval]` only when stable.
+- V1 `vf.Env` with explicit `vf.Taskset`/`vf.Harness` objects for the current taskset/harness environment pattern that separates the task collection from the rollout runner. Use this for new taskset/harness work that needs config-driven metrics, rewards, toolsets, user functions, endpoint interception, or sandboxed Python/command programs. Framework programs should build clients from `state.get_endpoint_config(api="chat")`.
+3. For v1, start from the generated template. Edit `TasksetConfig` for task settings, `Taskset.load_tasks()` for task records, `Taskset.load_toolsets()` for task-owned tools, `User` subclasses for user behavior, and `@vf.*` methods for lifecycle, metrics, rewards, and advantages. Add a harness class only for reusable execution behavior.
+4. Keep `load_environment(config: vf.EnvConfig)` as the canonical Taskset/Harness shim:
+```python
+def load_environment(config: vf.EnvConfig) -> vf.Env:
+    """Loader pattern for all Taskset/Harness environments."""
+    return vf.Env(
+        taskset=vf.load_taskset(config=config.taskset),
+        harness=vf.load_harness(config=config.harness),
+    )
+```
+5. For v0 environments, keep the existing `vf.Environment` patterns and preserve v0 compatibility.
+6. Add `pyproject.toml` defaults in `[tool.verifiers.eval]` only when stable.
+
+### V1 Authoring Rules
+1. Keep v1 environment entrypoints tiny: `import verifiers as vf`, define `TasksetConfig` / optional `HarnessConfig` subclasses for user-facing knobs, define `Taskset` / optional `Harness` classes, then expose typed child loaders and the canonical `load_environment(config: vf.EnvConfig)` shim that delegates through `vf.load_taskset` and `vf.load_harness`.
+2. Keep shared dependencies behind the taskset or harness that owns them. Use bindings as the canonical injection path; prefer serializable loader paths for bound objects in config, and use no-arg loader callables only for Python-only construction. Do not pass already-instantiated resource objects through environment loaders. Do not introduce v1 Parser/Rubric wrappers; parsing is ordinary Python.
+3. Use `vf.get_messages(state.get("completion") or [], role="assistant")` when reading state completions. The helper returns typed message objects and should not receive `None`.
+4. Use `program.channels` for v1 program protocol/channel selection. Do not use stale `program.tools` terminology.
+5. Use generated child loaders as typed component entrypoints. Add implementation behavior to the taskset or harness class through config fields, `load_*` methods, `User` subclasses, `Toolset`, and `@vf.*` lifecycle methods.
+6. Put settings as leaf fields on the taskset or harness config that owns them.
+
+### V1 Taskset/Harness Shape
+1. Put task data, task-owned tools, user behavior, metrics, rewards, and task-specific configuration on the `Taskset`.
+2. Use the base `vf.Harness` unless the harness owns a reusable execution adapter such as a CLI, framework program, sandboxed program, or nested harness flow.
+3. Avoid one-off harness classes whose only purpose is to hold task behavior. That behavior belongs behind the taskset.
+4. Keep small example environments direct. Do not add private helper layers, duplicate loader paths, or optional knobs unless they clarify a real reusable boundary.
+5. Use the current config shape consistently:
+```toml
+[[eval]]
+env_id = "owner/my-env"
+
+[eval.taskset]
+num_examples = 100
+
+[eval.harness]
+max_turns = 8
+```
+For package-only composition, omit `env_id` and select loader packages through
+child config ids:
+```toml
+[[eval]]
+
+[eval.taskset]
+id = "tasksets.harbor"
+tasks_dir = "tasks"
+
+[eval.harness]
+id = "harnesses.opencode"
+max_turns = 8
+```
+6. In code, use the current class-based config shape:
+```python
+import verifiers as vf
+
+
+class MyTasksetConfig(vf.TasksetConfig):
+    system_prompt: vf.SystemPrompt = "Answer exactly."
+
+
+class MyTaskset(vf.Taskset[MyTasksetConfig]):
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
+        """Return serializable task records as a list, generator, or Dataset."""
+        if split == "eval":
+            return []
+        return [
+            {
+                "prompt": [{"role": "user", "content": "Reverse abc."}],
+                "answer": "cba",
+                "max_turns": 1,
+            }
+        ]
+
+    @vf.reward(weight=1.0)
+    async def correct_answer(self, task: vf.Task, state: vf.State) -> float:
+        messages = vf.get_messages(state.get("completion") or [], role="assistant")
+        if not messages:
+            return 0.0
+        response = str(messages[-1].content or "").strip()
+        return float(response == task["answer"])
+
+
+def load_taskset(config: MyTasksetConfig) -> MyTaskset:
+    return MyTaskset(config=config)
+
+
+def load_environment(config: vf.EnvConfig) -> vf.Env:
+    """Loader pattern for all Taskset/Harness environments."""
+    return vf.Env(
+        taskset=vf.load_taskset(config=config.taskset),
+        harness=vf.load_harness(config=config.harness),
+    )
+```
+7. Use `prime env init my-env --v1` as the reference shape when an implementation starts to drift.
 
 ### 2. Port From Another Library, Project, or Paper
 1. Create a strict source-to-target mapping before coding:
@@ -84,6 +177,10 @@ prime eval run my-env -m openai/gpt-4.1-mini -n 50 -r 1 -s
 If multi-turn or tool-heavy, also run with higher rollouts:
 ```bash
 prime eval run my-env -m openai/gpt-4.1-mini -n 30 -r 3 -s
+```
+For repo example environments, also use the package-install path when packaging or dependencies changed:
+```bash
+uv run pytest tests/test_envs.py -k my_env -vv
 ```
 
 ## Publish Gate Before Large Evals Or Training

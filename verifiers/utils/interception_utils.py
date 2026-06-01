@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 KEEPALIVE_INTERVAL_SECONDS = float(
     os.environ.get("INTERCEPTION_SERVER_KEEPALIVE_INTERVAL_SECONDS", "3.0")
 )
-DEFAULT_CLIENT_MAX_SIZE_BYTES = 16 * 1024 * 1024
+DEFAULT_CLIENT_MAX_SIZE_BYTES = 24 * 1024 * 1024
 
 
 class StreamInterrupted(InfraError):
@@ -58,16 +58,6 @@ class InterceptionError(InfraError):
     SSE body; a non-streaming failure returns HTTP 500 to the agent's
     OpenAI client and the agent sees a normal API error.
     """
-
-
-def protocol_from_path(path: str) -> str:
-    if path.endswith("/v1/messages"):
-        return "anthropic_messages"
-    if path.endswith("/v1/responses"):
-        return "openai_responses"
-    if path.endswith("/v1/completions"):
-        return "openai_completions"
-    return "openai_chat_completions"
 
 
 class InterceptionServer:
@@ -173,12 +163,20 @@ class InterceptionServer:
         """Attach `error` to the rollout's state if one is registered and
         unset. First error wins — later failures (e.g. the downstream
         `response_future` raising too) should not clobber the original cause.
+
+        Also skip when the rollout loop has already finalized via a clean
+        stop condition (e.g. ``state["prompt_too_long"]`` from an
+        ``OverlongPromptError``). Tail-end failures that happen after
+        that — e.g. ``write_eof`` to an agent that has already exited —
+        are consequences of the termination, not new infra problems, and
+        must not be surfaced as a spurious ``InterceptionError`` /
+        ``StreamInterrupted`` alongside the real stop signal.
         """
         context = self.active_rollouts.get(rollout_id)
         if context is None:
             return
         state = context.get("state")
-        if state is None or state.get("error"):
+        if state is None or state.get("error") or state.get("prompt_too_long"):
             return
         state["error"] = error
 
@@ -253,7 +251,15 @@ class InterceptionServer:
             asyncio.Queue() if is_streaming else None
         )
 
-        protocol = protocol_from_path(str(request.path))
+        path = str(request.path)
+        if path.endswith("/v1/messages"):
+            protocol = "anthropic_messages"
+        elif path.endswith("/v1/responses"):
+            protocol = "openai_responses"
+        elif path.endswith("/v1/completions"):
+            protocol = "openai_completions"
+        else:
+            protocol = "openai_chat_completions"
         intercept = {
             "request_id": request_id,
             "rollout_id": rollout_id,
@@ -295,7 +301,7 @@ class InterceptionServer:
                 self._set_rollout_error(
                     rollout_id,
                     InterceptionError(
-                        f"intercepted request failed: {type(e).__name__}: {e}"
+                        f"Intercepted request failed: {type(e).__name__}: {e}"
                     ),
                 )
                 return web.json_response({"error": str(e)}, status=500)
@@ -433,7 +439,7 @@ class InterceptionServer:
             )
             self._set_rollout_error(
                 rollout_id,
-                StreamInterrupted(f"prepare failed: {type(e).__name__}: {e}"),
+                StreamInterrupted(f"Prepare failed: {type(e).__name__}: {e}"),
             )
             return response
         # Reuse one get() task across keepalive cycles; asyncio.wait_for on
@@ -460,7 +466,7 @@ class InterceptionServer:
                         self._set_rollout_error(
                             rollout_id,
                             StreamInterrupted(
-                                f"keepalive write failed after {print_time(waited_s)}: "
+                                f"Keepalive write failed after {print_time(waited_s)}: "
                                 f"{type(e).__name__}: {e}"
                             ),
                         )
@@ -490,7 +496,7 @@ class InterceptionServer:
             self._set_rollout_error(
                 rollout_id,
                 StreamInterrupted(
-                    f"stream write failed after {print_time(waited_s)}: "
+                    f"Stream write failed after {print_time(waited_s)}: "
                     f"{type(e).__name__}: {e}"
                 ),
             )
@@ -510,7 +516,7 @@ class InterceptionServer:
             self._set_rollout_error(
                 rollout_id,
                 StreamInterrupted(
-                    f"streaming response_future failed: {type(e).__name__}: {e}"
+                    f"Streaming response_future failed: {type(e).__name__}: {e}"
                 ),
             )
 
@@ -527,7 +533,7 @@ class InterceptionServer:
             self._set_rollout_error(
                 rollout_id,
                 StreamInterrupted(
-                    f"write_eof failed after {print_time(waited_s)}: "
+                    f"Write EOF failed after {print_time(waited_s)}: "
                     f"{type(e).__name__}: {e}"
                 ),
             )
@@ -906,7 +912,11 @@ def serialize_openai_responses_response(response: Response) -> dict[str, Any]:
     if response.usage is not None:
         usage = {
             "input_tokens": response.usage.prompt_tokens,
+            "input_tokens_details": {"cached_tokens": 0},
             "output_tokens": response.usage.completion_tokens,
+            "output_tokens_details": {
+                "reasoning_tokens": response.usage.reasoning_tokens
+            },
             "total_tokens": response.usage.total_tokens,
         }
     return {

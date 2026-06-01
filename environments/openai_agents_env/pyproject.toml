@@ -16,3 +16,7 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build]
 include = ["openai_agents_env.py", "pyproject.toml"]
+
+[tool.verifiers.eval]
+num_examples = 5
+rollouts_per_example = 3

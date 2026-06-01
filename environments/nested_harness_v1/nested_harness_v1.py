@@ -1,10 +1,13 @@
-from __future__ import annotations
-
-import verifiers.v1 as vf
+import verifiers as vf
 
 
 class NestedHarnessConfig(vf.HarnessConfig):
-    toolset: vf.ToolsetConfig | None = None
+    program: vf.ProgramConfig = vf.ProgramConfig(fn="parent_program")
+    metrics: list[str] = ["child_calls"]
+
+
+class ChildHarnessConfig(vf.HarnessConfig):
+    program: vf.ProgramConfig = vf.ProgramConfig(fn="child_program")
 
 
 async def child_program(task, state):
@@ -13,9 +16,10 @@ async def child_program(task, state):
     return state
 
 
-async def call_harness(prompt, harness, state):
+async def call_harness(prompt, state):
     _ = state
     task = vf.Task({"prompt": prompt}).freeze()
+    harness = vf.Harness(config=ChildHarnessConfig())
     child_state = await harness.run(task)
     return child_state["answer"]
 
@@ -44,7 +48,8 @@ CHILD_PROMPT_GROUPS = [
 ]
 
 
-def source():
+def load_tasks(split: vf.TaskSplit = "train"):
+    _ = split
     return [
         {
             "prompt": (
@@ -55,21 +60,6 @@ def source():
         }
         for child_prompts in CHILD_PROMPT_GROUPS
     ]
-
-
-def load_child_harness():
-    return vf.Harness(program=child_program)
-
-
-def load_toolset(config: vf.ToolsetConfig | None = None):
-    return vf.Toolset(
-        tools=[call_harness],
-        objects={"child_harness": load_child_harness},
-        bindings={
-            "call_harness.harness": "objects.child_harness",
-        },
-        config=config,
-    )
 
 
 async def parent_program(task, state):
@@ -84,27 +74,28 @@ async def parent_program(task, state):
     return state
 
 
-def load_taskset(config: vf.TasksetConfig | None = None):
-    return vf.Taskset(
-        source=source,
-        rewards=[exact_answer],
-        config=config,
-    )
+class NestedHarness(vf.Harness[NestedHarnessConfig]):
+    def load_toolsets(self, config: NestedHarnessConfig) -> vf.Toolsets:
+        _ = config
+        return {"nested": vf.Toolset(tools=[call_harness])}
 
 
-def load_harness(config: NestedHarnessConfig | None = None):
-    config = NestedHarnessConfig(config)
-    return vf.Harness(
-        program=parent_program,
-        toolsets=[load_toolset(config.toolset)],
-        metrics=[child_calls],
-        config=config,
-    )
+class NestedTasksetConfig(vf.TasksetConfig):
+    rewards: list[str] = ["exact_answer"]
 
 
-def load_environment(config: vf.EnvConfig | None = None):
-    config = config or vf.EnvConfig()
+class NestedTaskset(vf.Taskset[NestedTasksetConfig]):
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
+        return load_tasks(split)
+
+
+class NestedEnvConfig(vf.EnvConfig):
+    taskset: NestedTasksetConfig = NestedTasksetConfig()
+    harness: NestedHarnessConfig = NestedHarnessConfig()
+
+
+def load_environment(config: NestedEnvConfig) -> vf.Env:
     return vf.Env(
-        taskset=load_taskset(config=config.taskset),
-        harness=load_harness(config=config.harness),
+        taskset=NestedTaskset(config=config.taskset),
+        harness=NestedHarness(config=config.harness),
     )

@@ -11,14 +11,14 @@ version and finishes cleanly.
   - Updated release notes in `assets/release/RELEASE_vX.Y.Z.md`.
   - Any ancillary artifacts or documentation updates that belong with the release.
 - Verify CI is green on the commit you intend to tag.
-- Confirm the organization secret `PYPI_TOKEN` is configured with publish permissions for the project.
+- Confirm the `verifiers` project on PyPI has a Trusted Publisher configured for repository `PrimeIntellect-ai/verifiers`, workflow `tag-and-release.yml`, environment `pypi-prod`. The publish job authenticates via OIDC — no PyPI token is required for `verifiers`.
 
 ## Triggering the workflow
 
 1. From `main`, create an annotated tag that matches the version string (for example `git tag -a v0.1.4 -m "Release v0.1.4"`).
 2. Push the tag to GitHub with `git push origin v0.1.4`. The push is the only automatic trigger for the workflow, so each
    version runs exactly once.
-3. Watch the **Actions → Tag and Release** run to confirm `uv build`, `uv publish`, and the GitHub Release creation succeed.
+3. Watch the **Actions → Tag and Release** run to confirm `uv build`, the PyPI publish (via `pypa/gh-action-pypi-publish` using OIDC), and the GitHub Release creation succeed. The job runs in the `pypi-prod` environment.
 
 > Optional: To republish an older tag without pushing again, start **Actions → Tag and Release** manually and provide the
 > existing tag (for example `v0.1.4`). The job checks out that tag and performs the same build and publish steps.

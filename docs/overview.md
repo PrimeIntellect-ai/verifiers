@@ -50,10 +50,18 @@ uv add verifiers && prime lab setup --skip-install
 
 Environments built with Verifiers are self-contained Python modules. To initialize a fresh environment template, do:
 ```bash
-prime env init my-env # creates a new template in ./environments/my_env
+prime env init my-env # creates a v0 stub in ./environments/my_env
+```
+For the v1 Taskset/Harness authoring path:
+```bash
+prime env init my-env --v1
+prime env init my-env --v1 --with-harness
 ```
 
-This will create a new module called `my_env` with a basic environment template.
+This will create a new module called `my_env` with a runnable environment
+template. For v1 templates, start by editing the generated `TasksetConfig`,
+`Taskset.load_tasks()`, and `@vf.reward` methods. Use `--with-harness` when the
+environment also owns reusable execution behavior.
 ```
 environments/my_env/
 ├── my_env.py           # Main implementation
@@ -61,7 +69,9 @@ environments/my_env/
 └── README.md           # Documentation
 ```
 
-Environment modules should expose a `load_environment` function which returns an instance of the Environment object, and which can accept custom arguments. For example: 
+Environment modules should expose a `load_environment` function which returns an
+environment object. For simple legacy environments, this can still be a direct
+constructor:
 ```python
 # my_env.py
 import verifiers as vf
@@ -80,49 +90,71 @@ For new environments with reusable tasksets, toolsets, custom programs, or
 custom harnesses, use the v1 Taskset/Harness path:
 ```python
 # my_env.py
-import verifiers.v1 as vf
+import verifiers as vf
 
-def source():
-    yield {
-        "prompt": [{"role": "user", "content": "Reverse abc."}],
-        "answer": "cba",
-        "max_turns": 1,
-    }
 
-@vf.reward(weight=1.0)
-async def contains_answer(task, state) -> float:
-    return float(task["answer"] in str(state.get("completion") or ""))
+class MyTasksetConfig(vf.TasksetConfig):
+    system_prompt: vf.SystemPrompt = "Answer exactly."
 
-def load_taskset(config: vf.TasksetConfig | None = None):
-    return vf.Taskset(source=source, rewards=[contains_answer], config=config)
 
-def load_environment(config: vf.EnvConfig | None = None) -> vf.Env:
-    config = config or vf.EnvConfig()
-    return vf.Env(taskset=load_taskset(config=config.taskset))
+class MyTaskset(vf.Taskset[MyTasksetConfig]):
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
+        """Return serializable task records as a list, generator, or Dataset."""
+        if split == "eval":
+            return []
+        return [
+            {
+                "prompt": [{"role": "user", "content": "Reverse abc."}],
+                "answer": "cba",
+                "max_turns": 1,
+            }
+        ]
+
+    @vf.reward(weight=1.0)
+    async def correct_answer(self, task: vf.Task, state: vf.State) -> float:
+        messages = vf.get_messages(state.get("completion") or [], role="assistant")
+        if not messages:
+            return 0.0
+        response = str(messages[-1].content or "").strip()
+        return float(response == task["answer"])
+
+
+def load_taskset(config: MyTasksetConfig) -> MyTaskset:
+    return MyTaskset(config=config)
+
+
+def load_environment(config: vf.EnvConfig) -> vf.Env:
+    """Loader pattern for all Taskset/Harness environments."""
+    return vf.Env(
+        taskset=vf.load_taskset(config=config.taskset),
+        harness=vf.load_harness(config=config.harness),
+    )
 ```
-If no harness is passed, `vf.Env` uses the base endpoint-backed harness. See
-[BYO Harness](byo-harness.md) for the advanced v1 taskset/harness API.
-Reusable v1 taskset and harness packages live under `verifiers.v1.packages`
-while the API stabilizes, and are re-exported from `verifiers.v1` for normal
-use. For example, Harbor task directories can run through the bundled OpenCode
-CLI harness with:
+See [BYO Harness](byo-harness.md) for the advanced v1 taskset/harness API.
+The child loader annotation is the config contract: keep root
+`load_environment` typed as `vf.EnvConfig`, put task settings on
+`TasksetConfig`, and add `load_harness(config: MyHarnessConfig)` only when the
+environment owns a reusable harness.
+Reusable v1 taskset and harness packages live in `tasksets` and `harnesses`.
+Install them with `uv add "verifiers[packages]"`, or with the narrower
+`verifiers[tasksets]`, `verifiers[harnesses]`, and backend-specific extras such
+as `verifiers[nemogym]`. For example, Harbor task directories can run through
+the bundled OpenCode CLI harness with:
 
 ```python
+from harnesses import OpenCode, OpenCodeConfig
+from tasksets import HarborTaskset, HarborTasksetConfig
+
 env = vf.Env(
-    taskset=vf.HarborTaskset(tasks="/path/to/harbor/tasks"),
-    harness=vf.OpenCode(),
+    taskset=HarborTaskset(config=HarborTasksetConfig(bundle_package=__name__)),
+    harness=OpenCode(config=OpenCodeConfig()),
 )
 ```
 
-To install the environment module into your project, do:
-```bash
-prime env install my-env # installs from ./environments/my_env
-```
-
-To install an environment from the Environments Hub into your project, do:
-```bash
-prime env install primeintellect/math-python
-```
+The packaged `Taskset` and `Harness` classes can also be constructed directly in
+ordinary Python code; loaders are the environment/config composition path.
+`NeMoGymTaskset` and `NeMoGymHarness` expose packaged NeMo Gym rows and rollout
+collection through the same taskset/harness composition boundary.
 
 To run a local evaluation with any OpenAI-compatible model, do:
 ```bash
@@ -132,7 +164,7 @@ Evaluations use [Prime Inference](https://docs.primeintellect.ai/inference/overv
 
 View local evaluation results in the terminal UI:
 ```bash
-prime eval tui
+prime eval view
 ```
 The TUI opens a single run browser (`environment -> model -> run`). Press `Enter` on a run to open rollout details, `b` to go back, `tab` to cycle panes, `e` and `x` to expand or collapse history, `pageup` and `pagedown` to scroll history, and `c` for Copy Mode.
 

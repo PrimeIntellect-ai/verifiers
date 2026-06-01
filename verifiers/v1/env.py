@@ -1,9 +1,6 @@
-from __future__ import annotations
-
 import asyncio
 import os
 import uuid
-from collections.abc import Mapping
 from typing import cast
 
 import verifiers as vf
@@ -11,21 +8,64 @@ from verifiers.clients import Client
 from verifiers.types import ClientConfig
 from verifiers.types import RolloutInput, SamplingArgs
 
-from .harness import Harness
+from .config import Config
+from .harness import Harness, HarnessConfig
 from .state import State
-from .taskset import Taskset
+from .taskset import Taskset, TasksetConfig
+from .types import JsonData, RuntimeData
+from .utils.taskset_utils import task_from_dataset_record
+
+
+class EnvConfig(Config):
+    taskset: TasksetConfig = TasksetConfig()
+    harness: HarnessConfig = HarnessConfig()
+
+    @classmethod
+    def __pydantic_init_subclass__(cls, **kwargs: object) -> None:
+        super().__pydantic_init_subclass__(**kwargs)
+        extra_fields = set(cls.model_fields) - set(EnvConfig.model_fields)
+        if extra_fields:
+            raise TypeError(
+                f"{cls.__name__} defines unsupported root env config fields: "
+                f"{', '.join(sorted(extra_fields))}. Put env-specific settings on "
+                "a TasksetConfig or HarnessConfig instead."
+            )
+        for field_name, expected_type in (
+            ("taskset", TasksetConfig),
+            ("harness", HarnessConfig),
+        ):
+            annotation = cls.model_fields[field_name].annotation
+            if not (
+                isinstance(annotation, type) and issubclass(annotation, expected_type)
+            ):
+                raise TypeError(
+                    f"{cls.__name__}.{field_name} must be typed as a "
+                    f"{expected_type.__name__} subclass."
+                )
 
 
 class Env(vf.Environment):
     def __init__(
         self,
-        taskset: Taskset,
+        *,
+        taskset: Taskset | None = None,
         harness: Harness | None = None,
     ):
-        harness = Harness() if harness is None else harness
+        if taskset is None:
+            raise TypeError("Env requires a taskset.")
+        if not isinstance(taskset, Taskset):
+            raise TypeError("Env taskset must be a Taskset.")
+        if harness is not None and not isinstance(harness, Harness):
+            raise TypeError("Env harness must be a Harness.")
         self.taskset = taskset
-        self.harness = harness
-        self.harness.attach_taskset(taskset)
+        self.harness = harness or Harness(config=HarnessConfig())
+        self.config = EnvConfig(
+            taskset=cast(TasksetConfig, self.taskset.config),
+            harness=cast(HarnessConfig, self.harness.config),
+        )
+        self.harness.taskset = self.taskset
+        self.taskset.runtime_refresh = self.harness.rebuild_runtime
+        self.harness.rebuild_runtime()
         super().__init__(
             dataset=self.taskset.get_dataset,
             eval_dataset=self.taskset.get_eval_dataset,
@@ -42,15 +82,12 @@ class Env(vf.Environment):
 
     @property
     def requires_group_rollouts(self) -> bool:
-        return self.harness.runtime.has_group_stage or self._uses_custom_init_group
+        uses_custom_init_group = type(self.taskset).init_group is not Taskset.init_group
+        return self.harness.runtime.has_group_stage or uses_custom_init_group
 
     @property
     def provides_advantages(self) -> bool:
         return self.harness.runtime.has_group_advantages
-
-    @property
-    def _uses_custom_init_group(self) -> bool:
-        return type(self.taskset).init_group is not Taskset.init_group
 
     async def rollout(
         self,
@@ -59,7 +96,7 @@ class Env(vf.Environment):
         model: str,
         sampling_args: SamplingArgs | None = None,
     ) -> State:
-        task = self.taskset.to_task(input)
+        task = task_from_dataset_record(cast(JsonData, input), self.taskset.taskset_id)
         state = State.for_task(task)
         self.apply_controls(
             [state],
@@ -88,7 +125,9 @@ class Env(vf.Environment):
         model: str,
         sampling_args: SamplingArgs,
     ) -> list[vf.State]:
-        base_task = self.taskset.to_task(group_inputs[0])
+        base_task = task_from_dataset_record(
+            cast(JsonData, group_inputs[0]), self.taskset.taskset_id
+        )
         tasks, states = await self.taskset.init_group(base_task, len(group_inputs))
         if len(tasks) != len(group_inputs) or len(states) != len(group_inputs):
             raise ValueError(
@@ -96,8 +135,7 @@ class Env(vf.Environment):
             )
         group_key = uuid.uuid4().hex
         for state in states:
-            state.setdefault("runtime", {})
-            state["runtime"]["group_key"] = group_key
+            state.runtime_state()["group_key"] = group_key
         self.apply_controls(
             states,
             {
@@ -121,7 +159,7 @@ class Env(vf.Environment):
         return cast(list[vf.State], states)
 
     def apply_controls(
-        self, states: list[State], controls: Mapping[str, object] | None = None
+        self, states: list[State], controls: RuntimeData | None = None
     ) -> list[State]:
         if controls is None:
             return states
@@ -129,7 +167,7 @@ class Env(vf.Environment):
             key: value for key, value in controls.items() if key != "client"
         }
         for state in states:
-            state.setdefault("runtime", {})
+            runtime_state = state.runtime_state()
             client = controls.get("client")
             self.harness.runtime.bind_model_client(
                 state,
@@ -137,5 +175,5 @@ class Env(vf.Environment):
                 if client is not None
                 else None,
             )
-            state["runtime"].update(serializable_controls)
+            runtime_state.update(serializable_controls)
         return states

@@ -37,7 +37,7 @@ prime env pull owner/name -t ./tmp-env
 ## Compare Candidates
 For each candidate, collect:
 1. Task type and horizon: single-turn, multi-turn, tool, sandbox, agent.
-2. Implementation style: classic `MultiTurnEnv`/`ToolEnv`, V1 `vf.Env` with `vf.Taskset`/`vf.Harness` for framework programs, or `CliAgentEnv` for sandboxed agent binaries with LLM-API interception.
+2. Implementation style: classic `MultiTurnEnv`/`ToolEnv`, V1 `vf.Env` with explicit `vf.Taskset`/`vf.Harness` objects for framework programs, or `CliAgentEnv` for sandboxed agent binaries with LLM-API interception.
 3. Reward type: binary, continuous, judge-based, mixed.
 4. Dependencies and secrets requirements.
 5. Latest action status and version signal.
@@ -61,7 +61,7 @@ prime eval run name -m openai/gpt-4.1-mini -n 5
 ```bash
 prime env install reverse-text --from-repo
 ```
-4. For v1 Taskset + Harness examples, inspect the environment package for `load_taskset`, `load_harness`, and the `load_environment(...)` wrapper that returns a `vf.Environment` for published eval and training runs.
+4. For v1 Taskset + Harness examples, inspect the environment package for `Taskset` / optional `Harness` classes plus `load_taskset(config: MyTasksetConfig)`, optional `load_harness(config: MyHarnessConfig)`, and the canonical `load_environment(config: vf.EnvConfig) -> vf.Env` shim delegating through `vf.load_taskset(config=config.taskset)` and `vf.load_harness(config=config.harness)`.
 
 ## Anti-Patterns
 1. Do not recommend building from scratch if a strong ecosystem option exists.

@@ -362,6 +362,9 @@ class OpenCodeEnv(CliAgentEnv):
         enable_interleaved: bool = True,
     ) -> str:
         """Build OpenCode config."""
+        agent_config: dict[str, object] = {
+            "title": {"disable": True},
+        }
         config: dict = {
             "${SCHEMA_DOLLAR}schema": "https://opencode.ai/config.json",
             "provider": {
@@ -388,6 +391,10 @@ class OpenCodeEnv(CliAgentEnv):
                 }
             },
             "model": "$OPENAI_MODEL",
+            # Keep the small-model pin to avoid falling back to the default small
+            # model and hitting rate limits; disable title calls below.
+            "small_model": "$OPENAI_MODEL",
+            "agent": agent_config,
         }
 
         if disable_compaction:
@@ -399,7 +406,7 @@ class OpenCodeEnv(CliAgentEnv):
                 build_config["prompt"] = "{file:" + system_prompt_path + "}"
             if disabled_tools:
                 build_config["tools"] = {tool: False for tool in disabled_tools}
-            config["agent"] = {"build": build_config}
+            agent_config["build"] = build_config
 
         return json.dumps(config, indent=2)
 

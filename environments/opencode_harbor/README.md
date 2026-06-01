@@ -35,21 +35,21 @@ Notes:
 
 | Arg | Type | Default | Description |
 | --- | ---- | ------- | ----------- |
-| `tasks` | str | bundled `tasks/` | Local Harbor task directory or dataset directory. |
 | `task_names` | list[str] | `null` | Explicit Harbor task names to run. |
-| `dataset` | str | `null` | `terminal-bench-sample` or `terminal-bench` task selection. |
+| `dataset` | str | `null` | Harbor Hub dataset id. Defaults to bundled `tasks/`. |
 
 OpenCode settings belong under the v1 harness config:
 
 ```toml
 [env.harness]
 max_turns = 4
-disabled_tools = ["webfetch", "question"]
+
+[env.harness.program]
 agent_workdir = "/app"
 ```
 
-By default, this environment uses `vf.OpenCode` with only `webfetch` and
-`question` disabled. Set `env.harness.disabled_tools` to override that list.
+This environment does not set a custom disabled-tool list. It inherits the
+packaged `OpenCodeConfig` defaults.
 
 ### Metrics
 Summarize key metrics your rubric emits and how they’re interpreted.
@@ -61,15 +61,15 @@ Summarize key metrics your rubric emits and how they’re interpreted.
 
 ## How It Works
 
-1. `vf.HarborTaskset` loads Harbor task rows and contributes sandbox settings,
+1. `HarborTaskset` loads Harbor tasks and contributes sandbox settings,
    task uploads, env vars, and the Harbor reward.
-2. `vf.OpenCode` contributes the reusable OpenCode CLI program, install/setup,
+2. `OpenCode` contributes the reusable OpenCode CLI program, install/setup,
    intercepted endpoint config, MCP tool proxy, and log artifact collection.
 3. The v1 runtime resolves both sides into one sandboxed command program at rollout time.
 4. Reward is computed by running the Harbor test scripts after the rollout.
 
-`HarborTaskset` and `OpenCode` are packaged under `verifiers.v1.packages` and
-re-exported from `verifiers.v1`.
+`HarborTaskset` and `OpenCode` are packaged under `tasksets` and `harnesses` and
+imported by the environment package.
 
 ## Requirements
 

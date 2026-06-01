@@ -42,18 +42,20 @@ configs/
 │   ├── qwen-3-5.toml
 │   ├── qwen-3-5-moe.toml
 │   ├── nemotron-3.toml
-│   └── llama-3.toml
+│   ├── llama-3.toml
+│   └── gpt-oss.toml
 ├── rl/
 │   ├── qwen-3-5.toml
 │   ├── qwen-3-5-moe.toml
-│   ├── qwen-3-5-moe-advanced.toml
 │   ├── nemotron-3.toml
-│   └── llama-3.toml
+│   ├── llama-3.toml
+│   └── gpt-oss.toml
 └── gepa/
     ├── qwen-3-5.toml
     ├── qwen-3-5-moe.toml
     ├── nemotron-3.toml
-    └── llama-3.toml
+    ├── llama-3.toml
+    └── gpt-oss.toml
 ```
 
 Example configuration file for the `primeintellect/reverse-text` environment with `Qwen/Qwen3.5-4B`:
@@ -91,14 +93,15 @@ max_tokens = 4096
 [[env]]
 id = "primeintellect/my-v1-env"
 
-[env.args]
-arg1 = "non-th-arg"
-
 [env.harness]
 max_turns = 8
 
+[env.taskset]
+system_prompt = "Answer exactly."
+
 [env.taskset.toolsets.search]
 tools = ["my_env.tools:search"]
+objects = { index = "my_env.tools:load_index" }
 bindings = { "search.index" = "objects.index" }
 
 [[env.taskset.rewards]]
@@ -143,14 +146,7 @@ To set up your workspace for training with `prime-rl`, run:
 prime lab setup --prime-rl
 ```
 
-This will clone and install the `prime-rl` trainer and its dependencies, and set up a default TOML config for training with the included `wiki-search` Environment on 8 GPUs.
-
-Then, you can start training with:
-```bash
-uv run prime-rl configs/prime-rl/wiki-search.toml
-```
-
-This will launch a tmux session with separate panes for the trainer, orchestrator, and inference server. For further configuration options, see the [prime-rl documentation](https://docs.primeintellect.ai/prime-rl). 
+This will clone and install the `prime-rl` trainer and its dependencies. For configuration files and launch commands, use the [prime-rl documentation](https://docs.primeintellect.ai/prime-rl).
 
 ## Prompt Optimization with `prime gepa run`
 
@@ -180,7 +176,7 @@ In TOML configs, set GEPA parameters such as `max_calls`, `num_train`, `num_val`
 ### Output
 
 After optimization, you'll find:
-- `system_prompt.txt` - The optimized system prompt. Load it with `vf.SystemMessage.from_path("/path/to/system_prompt.txt")`.
+- `system_prompt.txt` - The optimized system prompt. For v1 environments, expose the owner prompt that GEPA should optimize as a `system_prompt` config field and default it to `vf.SystemPromptConfig(path="system_prompt.txt")` when the prompt should be file-backed. Override `load_system_prompt(config)` only when prompt loading is computed from config or package resources.
 - `results.jsonl` - Candidate prompt rows for evaluation upload; GEPA-specific fields live under `info`.
 - `pareto_frontier.jsonl` - Best candidate references per validation example
 - `metadata.json` - Run configuration and summary

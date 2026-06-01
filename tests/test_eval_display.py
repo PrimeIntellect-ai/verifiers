@@ -1,3 +1,5 @@
+from rich.console import Console
+
 from verifiers.types import ClientConfig, EvalConfig
 from verifiers.utils.eval_display import EvalDisplay
 
@@ -9,9 +11,11 @@ def make_config(
     independent_scoring: bool = False,
     endpoint_id: str | None = None,
     client_config: ClientConfig | None = None,
+    name: str | None = None,
 ) -> EvalConfig:
     return EvalConfig(
         env_id="dummy-env",
+        name=name,
         env_args={},
         env_dir_path="./environments",
         endpoint_id=endpoint_id,
@@ -78,3 +82,58 @@ def test_format_client_target_uses_single_resolved_base_url() -> None:
     )
 
     assert EvalDisplay._format_client_target(config) == "http://localhost:8001/v1"
+
+
+def test_display_uses_eval_name_for_duplicate_env_labels() -> None:
+    display = EvalDisplay(
+        [
+            make_config(max_concurrent=1, name="dummy-env-short"),
+            make_config(max_concurrent=1, name="dummy-env-long"),
+        ]
+    )
+
+    rendered = render_plain(display._make_compact_env_row(0))
+
+    assert "dummy-env-short" in rendered
+    assert "dummy-env-long" not in rendered
+
+
+def render_plain(renderable) -> str:
+    console = Console(width=100, record=True)
+    console.print(renderable)
+    return console.export_text()
+
+
+def test_tokens_row_omits_cost_when_unavailable() -> None:
+    display = EvalDisplay([make_config(max_concurrent=1)])
+
+    rendered = render_plain(
+        display._make_tokens_row({"input_tokens": 12.0, "output_tokens": 7.0})
+    )
+
+    assert "input 12" in rendered
+    assert "output 7" in rendered
+    assert "cost" not in rendered
+
+
+def test_tokens_row_includes_cost_when_available() -> None:
+    display = EvalDisplay([make_config(max_concurrent=1)])
+
+    rendered = render_plain(
+        display._make_tokens_row(
+            {
+                "input_tokens": 12.0,
+                "output_tokens": 7.0,
+                "final_input_tokens": 10.0,
+                "final_output_tokens": 5.0,
+            },
+            {"input_usd": 0.005, "output_usd": 0.0073, "total_usd": 0.0123},
+        )
+    )
+
+    assert "input 12" in rendered
+    assert "output 7" in rendered
+    assert "final_input 10" in rendered
+    assert "final_output 5" in rendered
+    assert "cost (all) $0.0123" in rendered
+    assert rendered.index("final_output 5") < rendered.index("cost (all) $0.0123")

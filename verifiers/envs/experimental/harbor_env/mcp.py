@@ -1,7 +1,5 @@
 """MCP server lifecycle for Harbor-format tasks."""
 
-from __future__ import annotations
-
 import asyncio
 import logging
 import shlex
@@ -181,8 +179,11 @@ class HarborMCPMixin:
         jobs: dict[str, Any] = state.get("harbor_mcp_jobs") or {}
         for name in list(jobs):
             try:
+                pid_file = shlex.quote(self._mcp_pid_file(name))
                 await self.sandbox_client.execute_command(  # type: ignore[attr-defined]
-                    sandbox_id, self._mcp_stop_cmd(name), working_dir=None
+                    sandbox_id,
+                    f'kill -9 -"$(cat {pid_file} 2>/dev/null)" 2>/dev/null; rm -f {pid_file}',
+                    working_dir=None,
                 )
             except Exception as e:  # noqa: BLE001 — best-effort cleanup
                 logger.debug("Failed to stop MCP server %r: %s", name, e)
@@ -204,7 +205,10 @@ class HarborMCPMixin:
 
         job = await self.sandbox_client.start_background_job(  # type: ignore[attr-defined]
             sandbox_id=sandbox_id,
-            command=self._mcp_start_cmd(server.name, command),
+            command=(
+                f"setsid sh -c {shlex.quote(command)} & "
+                f"echo $! > {shlex.quote(self._mcp_pid_file(server.name))}; wait"
+            ),
             working_dir=None,
         )
         jobs: dict[str, Any] = state.setdefault("harbor_mcp_jobs", {})
@@ -218,11 +222,15 @@ class HarborMCPMixin:
     ) -> None:
         """Poll until the server is ready on localhost:port."""
         hc = self.mcp_healthcheck
-        health_cmd = (
-            hc.command.format(port=port)
-            if hc.command
-            else self._default_mcp_health_cmd(port)
-        )
+        if hc.command:
+            health_cmd = hc.command.format(port=port)
+        else:
+            port_hex = f"{port:04X}"
+            health_cmd = (
+                f'awk \'$4 == "0A" && $2 ~ /:{port_hex}$/ '
+                f"{{ok=1}} END {{exit !ok}}' "
+                f"/proc/net/tcp /proc/net/tcp6 2>/dev/null"
+            )
         probe_timeout = max(1, int(hc.timeout_sec))
 
         loop_time = asyncio.get_event_loop().time
@@ -321,24 +329,3 @@ class HarborMCPMixin:
     @staticmethod
     def _mcp_pid_file(name: str) -> str:
         return f"/tmp/harbor-mcp-{name}.pid"
-
-    def _mcp_start_cmd(self, name: str, command: str) -> str:
-        """Launch `command` in its own process group and record the group leader."""
-        pid_file = shlex.quote(self._mcp_pid_file(name))
-        quoted_cmd = shlex.quote(command)
-        return f"setsid sh -c {quoted_cmd} & echo $! > {pid_file}; wait"
-
-    def _mcp_stop_cmd(self, name: str) -> str:
-        """SIGKILL the recorded process group and remove the pidfile."""
-        pid_file = shlex.quote(self._mcp_pid_file(name))
-        return f'kill -9 -"$(cat {pid_file} 2>/dev/null)" 2>/dev/null; rm -f {pid_file}'
-
-    @staticmethod
-    def _default_mcp_health_cmd(port: int) -> str:
-        """Exit 0 iff some TCP listener is in LISTEN state on `port` (awk on `/proc/net/tcp{,6}`)."""
-        port_hex = f"{port:04X}"
-        return (
-            f'awk \'$4 == "0A" && $2 ~ /:{port_hex}$/ '
-            f"{{ok=1}} END {{exit !ok}}' "
-            f"/proc/net/tcp /proc/net/tcp6 2>/dev/null"
-        )

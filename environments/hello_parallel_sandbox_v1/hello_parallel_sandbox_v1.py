@@ -1,13 +1,9 @@
-from __future__ import annotations
-
 import asyncio
 import json
-from collections.abc import Mapping
 
-import verifiers.v1 as vf
+import verifiers as vf
 from verifiers.v1.utils.judge_utils import (
     clamp_float,
-    completion_text,
     parse_judge_json,
     truncate_command_record,
     truncate_text,
@@ -52,7 +48,7 @@ only:
 {"score": 0.0-1.0, "reason": "..."}
 """
 
-TASKS: list[dict[str, object]] = [
+TASKS: list[vf.ConfigData] = [
     {
         "task_id": "exact-token",
         "answer": "prime-v1-shared-sandbox",
@@ -135,10 +131,24 @@ PROGRAM_SANDBOX = {
 
 
 class ParallelSandboxTasksetConfig(vf.TasksetConfig):
+    toolsets: dict[str, vf.ToolsetConfig] = {
+        "bash": vf.ToolsetConfig(
+            tools=["bash"],
+            write=True,
+            sandbox="program",
+        )
+    }
+    updates: list[str] = ["parallel_sandbox_audit"]
+    rewards: list[str] = ["sandbox_stage_score"]
+    metrics: list[str] = ["bash_calls", "update_audits"]
+    cleanups: list[str] = ["collect_program_sandbox_commands"]
+    system_prompt: str = SYSTEM_PROMPT
     num_examples: int = -1
 
 
 class ParallelSandboxHarnessConfig(vf.HarnessConfig):
+    program: vf.ProgramConfig = vf.ProgramConfig(sandbox=True, channels="callable")
+    sandbox: vf.SandboxConfig = vf.SandboxConfig(**PROGRAM_SANDBOX)
     max_turns: int = 4
 
 
@@ -156,7 +166,8 @@ async def bash(command: str, sandbox, state) -> str:
 
 @vf.update(priority=10)
 async def parallel_sandbox_audit(task, state) -> None:
-    response = completion_text(state.get("completion"))
+    messages = vf.get_messages(state.get("completion") or [], role="assistant")
+    response = str(messages[-1].content or "") if messages else ""
     audit_specs = [
         (
             "file_audit",
@@ -186,8 +197,10 @@ async def parallel_sandbox_audit(task, state) -> None:
             transcript="append",
         )
         audit_state = await vf.Harness(
-            system_prompt=system_prompt,
-            max_turns=2,
+            config=vf.HarnessConfig(
+                system_prompt=system_prompt,
+                max_turns=2,
+            )
         ).run(audit_task, audit_state)
         return label, audit_state
 
@@ -197,14 +210,19 @@ async def parallel_sandbox_audit(task, state) -> None:
             for label, system_prompt, prompt in audit_specs
         )
     )
-    state["parallel_audits"] = [
-        {
-            "name": label,
-            "findings": completion_text(audit_state.get("completion")),
-            "trajectory_id": audit_state.get("trajectory_id"),
-        }
-        for label, audit_state in audit_states
-    ]
+    state["parallel_audits"] = []
+    for label, audit_state in audit_states:
+        messages = vf.get_messages(
+            audit_state.get("completion") or [], role="assistant"
+        )
+        findings = str(messages[-1].content or "") if messages else ""
+        state["parallel_audits"].append(
+            {
+                "name": label,
+                "findings": findings,
+                "trajectory_id": audit_state.get("trajectory_id"),
+            }
+        )
 
 
 @vf.reward(weight=1.0)
@@ -222,10 +240,13 @@ async def sandbox_stage_score(task, state) -> float:
     ).freeze()
     judge_state = state.for_task(judge_task, borrow=["model", "sandbox"], tools="bash")
     judge_state = await vf.Harness(
-        system_prompt=REWARD_JUDGE_SYSTEM_PROMPT,
-        max_turns=2,
+        config=vf.HarnessConfig(
+            system_prompt=REWARD_JUDGE_SYSTEM_PROMPT,
+            max_turns=2,
+        )
     ).run(judge_task, judge_state)
-    judge_text = completion_text(judge_state.get("completion"))
+    messages = vf.get_messages(judge_state.get("completion") or [], role="assistant")
+    judge_text = str(messages[-1].content or "") if messages else ""
     parsed = parse_judge_json(judge_text)
     score = clamp_float(parsed.get("score", 0.0))
     state["reward_judge"] = {
@@ -258,7 +279,7 @@ async def update_audits(task, state) -> float:
     return float(len(audits) if isinstance(audits, list) else 0)
 
 
-def file_audit_prompt(task: Mapping[str, object], response: str) -> str:
+def file_audit_prompt(task: vf.Task, response: str) -> str:
     return (
         "Task instruction:\n"
         f"{task['instruction']}\n\n"
@@ -279,7 +300,7 @@ def file_audit_prompt(task: Mapping[str, object], response: str) -> str:
     )
 
 
-def command_audit_prompt(task: Mapping[str, object]) -> str:
+def command_audit_prompt(task: vf.Task) -> str:
     return (
         "Task instruction:\n"
         f"{task['instruction']}\n\n"
@@ -298,14 +319,16 @@ def command_audit_prompt(task: Mapping[str, object]) -> str:
     )
 
 
-def reward_prompt(task: Mapping[str, object], state: Mapping[str, object]) -> str:
+def reward_prompt(task: vf.Task, state: vf.State) -> str:
+    messages = vf.get_messages(state.get("completion") or [], role="assistant")
+    response = str(messages[-1].content or "") if messages else ""
     return (
         "Task instruction:\n"
         f"{task['instruction']}\n\n"
         "Expected answer text:\n"
         f"{task['answer']}\n\n"
         "Assistant final answer:\n"
-        f"{completion_text(state.get('completion'))}\n\n"
+        f"{response}\n\n"
         "Update-stage audit findings:\n"
         f"{json.dumps(state.get('parallel_audits', []), indent=2)}\n\n"
         "Call bash to inspect `/tmp/answer.txt` directly, then score whether "
@@ -313,7 +336,7 @@ def reward_prompt(task: Mapping[str, object], state: Mapping[str, object]) -> st
     )
 
 
-def source(num_examples: int = -1):
+def load_tasks(num_examples: int = -1):
     rows = TASKS if num_examples < 0 else TASKS[:num_examples]
     for index, row in enumerate(rows):
         yield {
@@ -333,63 +356,22 @@ def source(num_examples: int = -1):
         }
 
 
-def load_taskset(
-    num_examples: int | None = None,
-    config: vf.TasksetConfig | None = None,
-) -> vf.Taskset:
-    config = ParallelSandboxTasksetConfig(config, num_examples=num_examples)
-
-    def load_rows():
-        return source(num_examples=config.num_examples)
-
-    return vf.Taskset(
-        source=load_rows,
-        system_prompt=SYSTEM_PROMPT,
-        toolsets=[vf.Toolset(tools=[bash], write=True, sandbox="program")],
-        updates=[parallel_sandbox_audit],
-        rewards=[sandbox_stage_score],
-        metrics=[bash_calls, update_audits],
-        cleanups=[collect_program_sandbox_commands],
-        config=config,
-    )
+class ParallelSandboxTaskset(vf.Taskset[ParallelSandboxTasksetConfig]):
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
+        return load_tasks(num_examples=self.config.num_examples)
 
 
-def load_harness(
-    max_turns: int | None = None,
-    config: vf.HarnessConfig | None = None,
-) -> vf.Harness:
-    config = ParallelSandboxHarnessConfig(config, max_turns=max_turns)
-    return vf.Harness(
-        program={"sandbox": True, "tools": "callable"},
-        sandbox=PROGRAM_SANDBOX,
-        max_turns=config.max_turns,
-        config=config,
-    )
+class ParallelSandboxHarness(vf.Harness[ParallelSandboxHarnessConfig]):
+    pass
 
 
-def load_environment(
-    num_examples: int = -1,
-    max_turns: int = 4,
-    config: vf.EnvConfig | None = None,
-) -> vf.Env:
-    config = vf.EnvConfig(
-        config,
-        taskset=ParallelSandboxTasksetConfig(num_examples=num_examples),
-        harness=ParallelSandboxHarnessConfig(max_turns=max_turns),
-    )
+class ParallelSandboxEnvConfig(vf.EnvConfig):
+    taskset: ParallelSandboxTasksetConfig = ParallelSandboxTasksetConfig()
+    harness: ParallelSandboxHarnessConfig = ParallelSandboxHarnessConfig()
+
+
+def load_environment(config: ParallelSandboxEnvConfig) -> vf.Env:
     return vf.Env(
-        taskset=load_taskset(config=config.taskset),
-        harness=load_harness(config=config.harness),
-    )
-
-
-def load_v1_environment(
-    num_examples: int = -1,
-    max_turns: int = 4,
-    config: vf.EnvConfig | None = None,
-) -> vf.Env:
-    return load_environment(
-        num_examples=num_examples,
-        max_turns=max_turns,
-        config=config,
+        taskset=ParallelSandboxTaskset(config=config.taskset),
+        harness=ParallelSandboxHarness(config=config.harness),
     )

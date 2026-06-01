@@ -17,7 +17,6 @@ program sandbox instead of creating a separate tool sandbox. The parent writes
    score.
 
 ```bash
-prime env install hello-parallel-sandbox-v1
 prime eval run hello-parallel-sandbox-v1 -m openai/gpt-5.4-mini -n 3 -r 1 -t 4096
 ```
 

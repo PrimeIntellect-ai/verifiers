@@ -107,8 +107,7 @@ uv add 'verifiers[all]'     # + training
 # Scaffold new environment
 prime env init new-environment
 
-# Install + test
-prime env install new-environment
+# Smoke test
 prime eval run new-environment -n 5 -m openai/gpt-4.1-mini
 ```
 

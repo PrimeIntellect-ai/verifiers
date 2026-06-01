@@ -108,7 +108,7 @@ class DisplayLogHandler(logging.Handler):
             pass
 
 
-class _FDToLogger(threading.Thread):
+class FDToLogger(threading.Thread):
     """Background reader that forwards a file descriptor's output to a logger."""
 
     def __init__(
@@ -175,8 +175,8 @@ class BaseDisplay:
         self._old_stdout_fd: int | None = None
         self._old_stderr_fd: int | None = None
         self._console_file: io.TextIOWrapper | None = None
-        self._stdout_thread: _FDToLogger | None = None
-        self._stderr_thread: _FDToLogger | None = None
+        self._stdout_thread: FDToLogger | None = None
+        self._stderr_thread: FDToLogger | None = None
         self._key_listener_thread: threading.Thread | None = None
         self._key_listener_stop: threading.Event | None = None
 
@@ -265,13 +265,13 @@ class BaseDisplay:
         os.close(stdout_w)
         os.dup2(stderr_w, 2)
         os.close(stderr_w)
-        self._stdout_thread = _FDToLogger(
+        self._stdout_thread = FDToLogger(
             stdout_r,
             logger.getChild("stdout"),
             logging.INFO,
             getattr(self._old_stdout, "encoding", None),
         )
-        self._stderr_thread = _FDToLogger(
+        self._stderr_thread = FDToLogger(
             stderr_r,
             logger.getChild("stderr"),
             logging.ERROR,
@@ -433,11 +433,6 @@ class BaseDisplay:
         fd = sys.stdin.fileno()
         old_settings = termios_module.tcgetattr(fd)
 
-        def drain_escape_sequence() -> None:
-            """Consume remaining chars of an escape sequence (mouse events, etc)."""
-            while select_module.select([sys.stdin], [], [], 0.01)[0]:
-                sys.stdin.read(1)
-
         try:
             # Use cbreak mode (not raw) - allows single char input without corrupting display
             tty_module.setcbreak(fd)
@@ -456,7 +451,8 @@ class BaseDisplay:
                         # Check if more chars follow (escape sequence vs standalone Esc)
                         if select_module.select([sys.stdin], [], [], 0.05)[0]:
                             # Escape sequence - drain it and ignore
-                            drain_escape_sequence()
+                            while select_module.select([sys.stdin], [], [], 0.01)[0]:
+                                sys.stdin.read(1)
                             continue
                         else:
                             # Standalone Escape key - exit
@@ -537,28 +533,6 @@ def _timing_parts(
     return parts
 
 
-def format_timing_line(
-    setup: float = 0.0,
-    generation: float = 0.0,
-    scoring: float = 0.0,
-    overhead: float = 0.0,
-    model: float = 0.0,
-    env: float = 0.0,
-) -> str:
-    """Format a compact timing breakdown string.
-
-    Example: setup 750ms + generation 30s (model 27s + env 3s) + scoring 100ms + overhead 250ms
-    """
-    parts = _timing_parts(setup, generation, scoring, overhead, model, env)
-    strs: list[str] = []
-    for label, value, subs in parts:
-        s = f"{label} {value}"
-        if subs:
-            s += " (" + " + ".join(f"{sl} {sv}" for sl, sv in subs) + ")"
-        strs.append(s)
-    return " + ".join(strs)
-
-
 def format_timing_rich(
     setup: float = 0.0,
     generation: float = 0.0,
@@ -569,7 +543,7 @@ def format_timing_rich(
     label_style: str = "dim",
     value_style: str = "white",
 ) -> Text:
-    """Like :func:`format_timing_line` but returns a :class:`rich.text.Text` with styled labels and values."""
+    """Return a styled compact timing breakdown."""
     parts = _timing_parts(setup, generation, scoring, overhead, model, env)
     text = Text()
     for i, (label, value, subs) in enumerate(parts):

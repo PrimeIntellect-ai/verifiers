@@ -99,6 +99,10 @@ Environments built with Verifiers are self-contained Python modules. To initiali
 ```bash
 prime env init my-env # creates a new template in ./environments/my_env
 ```
+Add an explicit harness loader when the environment owns harness behavior:
+```bash
+prime env init my-env --with-harness
+```
 For OpenEnv integration, use:
 ```bash
 prime env init my-openenv --openenv
@@ -116,7 +120,9 @@ environments/my_env/
 └── README.md           # Documentation
 ```
 
-Environment modules should expose a `load_environment` function which returns an instance of the Environment object, and which can accept custom arguments. For example: 
+Environment modules should expose a `load_environment` function which returns an
+environment object. For simple legacy environments, this can still be a direct
+constructor:
 ```python
 # my_env.py
 import verifiers as vf
@@ -135,43 +141,63 @@ For new environments with reusable tasksets, toolsets, custom programs, or
 custom harnesses, use the v1 Taskset/Harness path:
 ```python
 # my_env.py
-import verifiers.v1 as vf
+import verifiers as vf
 
-def source():
-    yield {
-        "prompt": [{"role": "user", "content": "Reverse abc."}],
-        "answer": "cba",
-        "max_turns": 1,
-    }
 
-@vf.reward(weight=1.0)
-async def contains_answer(task, state) -> float:
-    return float(task["answer"] in str(state.get("completion") or ""))
+class MyTasksetConfig(vf.TasksetConfig):
+    system_prompt: vf.SystemPrompt = "Reverse text exactly."
 
-def load_taskset(config: vf.TasksetConfig | None = None):
-    return vf.Taskset(source=source, rewards=[contains_answer], config=config)
 
-def load_environment(config: vf.EnvConfig | None = None) -> vf.Env:
-    config = config or vf.EnvConfig()
-    return vf.Env(taskset=load_taskset(config=config.taskset))
+class MyTaskset(vf.Taskset[MyTasksetConfig]):
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
+        rows = [
+            {
+                "prompt": [{"role": "user", "content": "Reverse abc."}],
+                "answer": "cba",
+                "split": "train",
+                "max_turns": 1,
+            }
+        ]
+        return [row for row in rows if row["split"] == split]
+
+    @vf.reward(weight=1.0)
+    async def contains_answer(self, task, state) -> float:
+        return float(task["answer"] in str(state.get("completion") or ""))
+
+
+def load_taskset(config: MyTasksetConfig) -> MyTaskset:
+    return MyTaskset(config=config)
+
+
+def load_environment(config: vf.EnvConfig) -> vf.Env:
+    """Loader pattern for all Taskset/Harness environments."""
+    return vf.Env(
+        taskset=vf.load_taskset(config=config.taskset),
+        harness=vf.load_harness(config=config.harness),
+    )
 ```
-If no harness is passed, `vf.Env` uses the base endpoint-backed harness. See
+The child loader annotation defines the taskset config shape; root
+`load_environment` stays typed as `vf.EnvConfig`. See
 **[BYO Harness](docs/byo-harness.md)** for the advanced v1 taskset/harness API.
-Reusable taskset and harness packages live under `verifiers.v1.packages` while
-the v1 API stabilizes, and are re-exported from `verifiers.v1` for normal use.
-For example, Harbor task directories can run through the bundled OpenCode CLI
+Reusable taskset and harness packages live in `tasksets` and `harnesses`.
+Install them with `uv add "verifiers[packages]"`, or with the narrower
+`verifiers[tasksets]`, `verifiers[harnesses]`, and backend-specific extras. For
+example, Harbor task directories can run through the bundled OpenCode CLI
 harness with:
 
 ```python
+from harnesses import OpenCode, OpenCodeConfig
+from tasksets import HarborTaskset, HarborTasksetConfig
+
 env = vf.Env(
-    taskset=vf.HarborTaskset(tasks="/path/to/harbor/tasks"),
-    harness=vf.OpenCode(),
+    taskset=HarborTaskset(config=HarborTasksetConfig(bundle_package=__name__)),
+    harness=OpenCode(config=OpenCodeConfig()),
 )
 ```
 
 The same environment package is the unit used by evals and `prime-rl`. The
-trainer owns model, endpoint, sampling, and rollout count; v1-specific taskset
-and harness options stay under `env.taskset` and `env.harness`:
+trainer owns model, endpoint, sampling, and rollout count; v1-specific options
+stay on the taskset or harness config that owns them:
 
 ```toml
 # configs/rl/my-v1-env.toml
@@ -186,11 +212,11 @@ max_tokens = 4096
 [[env]]
 id = "my-env"
 
-[env.args]
-arg1 = "non-th-arg"
-
 [env.harness]
 max_turns = 1
+
+[env.taskset]
+system_prompt = "Reverse text exactly."
 
 [env.taskset.scoring.contains_answer]
 weight = 1.0
@@ -198,18 +224,9 @@ weight = 1.0
 
 ```bash
 prime env install my-env
-uv run prime-rl configs/rl/my-v1-env.toml
 ```
 
-To install the environment module into your project, do:
-```bash
-prime env install my-env # installs from ./environments/my_env
-```
-
-To install an environment from the Environments Hub into your project, do:
-```bash
-prime env install primeintellect/math-python
-```
+For self-managed training launch commands, use the `prime-rl` documentation.
 
 To run a local evaluation with any OpenAI-compatible model, do:
 ```bash
@@ -219,7 +236,7 @@ Evaluations use [Prime Inference](https://docs.primeintellect.ai/inference/overv
 
 View local evaluation results in the terminal UI:
 ```bash
-prime eval tui
+prime eval view
 ```
 
 To publish the environment to the [Environments Hub](https://app.primeintellect.ai/dashboard/environments?ex_sort=most_stars), do:
