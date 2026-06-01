@@ -188,7 +188,7 @@ def has_navigation_tool_log(state: vf.State) -> bool:
     return isinstance(state.get(NAVIGATION_TOOL_CALLS_KEY), list)
 
 
-def iter_navigation_tool_calls(state: vf.State) -> Iterator[vf.ConfigMap]:
+def iter_navigation_tool_calls(state: vf.State) -> Iterator[vf.JsonData]:
     calls = state.get(NAVIGATION_TOOL_CALLS_KEY)
     if not isinstance(calls, list):
         return
@@ -353,7 +353,7 @@ def build_dataset(
             f"Your mission: {source} >> {target}\n\n"
             f"Here is the starting article:\n\n{starting}"
         )
-        info: vf.ConfigData = {
+        info: vf.JsonData = {
             "source": source,
             "target": target,
             "shortest_path": dist,
@@ -402,7 +402,7 @@ def load_tasks(
 
 def serialize_agent_completion(
     messages: Sequence[AgentMessage | vf.JsonData],
-) -> list[vf.ConfigData]:
+) -> list[vf.JsonData]:
     role_aliases = {
         "human": "user",
         "ai": "assistant",
@@ -410,7 +410,7 @@ def serialize_agent_completion(
         "system": "system",
     }
     call_names: dict[str, str] = {}
-    serialized: list[vf.ConfigData] = []
+    serialized: list[vf.JsonData] = []
     for message in messages:
         if isinstance(message, Mapping):
             payload = dict(message)
@@ -430,7 +430,7 @@ def serialize_agent_completion(
             )
         raw_role = payload.get("role") or payload.get("type") or "assistant"
         role = role_aliases.get(str(raw_role), str(raw_role))
-        item: vf.ConfigData = {
+        item: vf.JsonData = {
             "role": role,
             "content": payload.get("content", ""),
         }
@@ -541,7 +541,7 @@ def make_langchain_deep_agents_program(
             system_prompt=state_system_prompt or SYSTEM_PROMPT,
             name=AGENT_NAME,
         )
-        prompt = str(cast(list[vf.ConfigData], state["prompt"])[-1]["content"])
+        prompt = str(cast(list[vf.JsonData], state["prompt"])[-1]["content"])
         recursion_limit = state.get_max_turns(max_turns)
         runtime = state.get("runtime", {})
         runtime = runtime if isinstance(runtime, Mapping) else {}
