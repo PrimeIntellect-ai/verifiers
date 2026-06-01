@@ -70,4 +70,3 @@ See `verifiers/envs/experimental/README.md` for documentation on:
 - `CliAgentEnv` - Agent code in sandboxes with API call interception
 - V1 `vf.Env` / `vf.Taskset` / `vf.Harness` - taskset/harness agent composition
 - `HarborEnv` - Harbor-format task loading
-- `RLMEnv` - Recursive Language Models

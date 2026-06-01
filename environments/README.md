@@ -42,8 +42,7 @@ This folder contains installable example environments that showcase common usage
 - **MCPEnv (MCP server integration)**
   - **mcp_search_env**: Example environment demonstrating `vf.MCPEnv` for Model Context Protocol server integration.
 
-- **RLMEnv (Recursive Language Model)**
-  - **rlm_secrets**: Puzzle environment testing RLM functionality including root-level tools, sub-LLM tool use, and file operations.
+- **RLM (Recursive Language Model)**
   - **hello_rlm_v1**: v1 packaged `RLM` harness example with endpoint interception and metrics collection.
 
 - **V1 Taskset/Harness**
