@@ -31,6 +31,91 @@ prime eval run my-env -m openai/gpt-4.1-mini -n 10
 
 `prime eval` resolves and installs the environment when needed, imports the environment module using Python's import system, calls its `load_environment()` function, runs 5 examples with 3 rollouts each (the default), scores them using the environment's rubric, and prints aggregate metrics.
 
+### vf-eval-v1 (preview)
+
+`vf-eval-v1` is a parallel CLI built around the v1 taskset/harness model.
+Both the taskset and the harness are referenced by **installable module
+name**, and both are positional:
+
+```
+vf-eval-v1 <taskset> [<harness>] [--taskset.<field> ...] [--harness.<field> ...]
+```
+
+- `<taskset>` is an installed Python module exposing
+  `load_taskset(config: TasksetConfig)`.
+- `<harness>` is optional and is also an installed Python module — one
+  exposing `load_harness(config: HarnessConfig)`. When omitted, the harness
+  auto-resolves to the taskset module's own `load_harness` if present,
+  otherwise the base `verifiers.v1.Harness`.
+
+A pure v1 taskset module stops at the taskset surface — no `EnvConfig`
+subclass and no `load_environment` are required:
+
+```python
+# environments/v1/my_taskset/my_taskset.py
+import verifiers as vf
+
+
+class MyTasksetConfig(vf.TasksetConfig):
+    split: str = "train"
+
+
+class MyTaskset(vf.Taskset[MyTasksetConfig]):
+    def load_tasks(self) -> vf.Tasks:
+        return [{"prompt": [{"role": "user", "content": "..."}], "answer": "..."}]
+
+
+def load_taskset(config: MyTasksetConfig) -> MyTaskset:
+    return MyTaskset(config=config)
+```
+
+A v1 harness module is a parallel shape — a top-level module exposing
+`load_harness`:
+
+```python
+# environments/v1/harnesses/rlm/rlm.py
+from verifiers.v1.packages.harnesses import RLM, RLMConfig
+
+
+def load_harness(config: RLMConfig) -> RLM:
+    return RLM(config=config)
+```
+
+`vf-eval-v1` resolves the taskset module's `TasksetConfig` subclass and
+the harness module's `HarnessConfig` subclass at parse time, and validates
+`--taskset.*` / `--harness.*` / `--client.*` / `--sampling.*` against
+those typed schemas. `--help` shows the actual fields available for the
+chosen modules.
+
+```bash
+# default harness, default client + sampling config
+vf-eval-v1 my-taskset --num-examples 5
+
+# override fields on the taskset module's default harness
+vf-eval-v1 my-taskset --harness.max-turns 5 --harness.system-prompt-merge harness
+
+# select an external harness module (also installable; e.g. `pip install rlm-harness`)
+vf-eval-v1 my-taskset rlm --harness.rlm-max-turns 50
+
+# tweak taskset / client / sampling config (typed)
+vf-eval-v1 my-taskset \
+    --taskset.split test \
+    --client.model openai/gpt-4.1-mini --client.provider openai \
+    --sampling.temperature 0.7 --sampling.max-tokens 1024
+
+# load everything from TOML; CLI args layered on top win on conflict
+vf-eval-v1 @ configs/eval/my-taskset-rlm.toml --num-examples 10
+```
+
+For convenience, the harness identifier can equally be given as a flag —
+`vf-eval-v1 my-taskset --harness-name rlm` is identical to
+`vf-eval-v1 my-taskset rlm`.
+
+`vf-eval-v1` is **v1-only by design**. Taskset modules that don't expose
+`load_taskset` are rejected up front; there is no `--env-args` and no
+v0 fallback. Use the legacy `vf-eval` for environments that ship a
+`load_environment` function.
+
 ## Hosted Evaluations
 
 You can also run evaluations on Prime-managed infrastructure with `prime eval run --hosted`. Hosted evaluations require an environment that has already been published to the Environments Hub, and they are useful when you want Prime to manage execution, monitor logs remotely, or run against a shared Hub environment slug instead of a local package.

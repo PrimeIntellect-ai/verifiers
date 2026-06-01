@@ -23,6 +23,32 @@ def load_environment(env_id: str, **env_args) -> Environment:
     try:
         module = import_env_module(env_id)
 
+        # vf-eval-v1 dotted overrides: when the caller carries taskset/harness
+        # override markers, build the env via the v1 override dispatch path so
+        # the same configured taskset/harness pair is rebuilt in every worker.
+        from verifiers.utils.v1_loader_utils import (
+            build_v1_env,
+            has_v1_overrides,
+            pop_v1_overrides,
+        )
+
+        if has_v1_overrides(env_args):
+            original_env_args = dict(env_args)
+            taskset_overrides, harness_spec = pop_v1_overrides(env_args)
+            if env_args:
+                raise TypeError(
+                    "v1 dispatch does not accept additional env_args; "
+                    f"got {sorted(env_args)}."
+                )
+            env_instance = build_v1_env(
+                env_id,
+                taskset_overrides=taskset_overrides,
+                harness_spec=harness_spec,
+            )
+            env_instance.env_args = original_env_args
+            logger.info(f"Successfully loaded environment '{env_id}' (v1 dispatch).")
+            return env_instance
+
         env_load_func: Callable[..., Environment] | None = getattr(
             module, "load_environment", None
         )
