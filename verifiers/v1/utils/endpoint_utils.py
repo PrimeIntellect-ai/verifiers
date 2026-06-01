@@ -137,9 +137,6 @@ class Endpoint:
     ):
         self.use_tunnel = use_tunnel
         self.logger = logger or logging.getLogger(__name__)
-        # Pass port 0 unless one was requested: the server binds 0.0.0.0:0 and
-        # reads back the OS-assigned port — no pre-probe gap, no 127.0.0.1 vs
-        # 0.0.0.0 split.
         self.server = InterceptionServer(
             port if port is not None else 0,
             secret=secret or os.environ.get("ENDPOINT_SECRET"),
