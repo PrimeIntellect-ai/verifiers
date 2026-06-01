@@ -1,4 +1,4 @@
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable
 from copy import deepcopy
 from typing import SupportsIndex
 
@@ -82,7 +82,7 @@ class FrozenList(list):
 
 
 def freeze_value(value: object) -> object:
-    if isinstance(value, Mapping):
+    if isinstance(value, dict):
         return FrozenDict({key: freeze_value(item) for key, item in value.items()})
     if isinstance(value, list):
         return FrozenList(freeze_value(item) for item in value)

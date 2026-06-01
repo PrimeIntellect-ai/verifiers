@@ -17,7 +17,14 @@ from typing import (
     cast,
 )
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    computed_field,
+    field_validator,
+)
 
 if TYPE_CHECKING:
     from anthropic.types import RedactedThinkingBlock
@@ -185,6 +192,9 @@ class Tool(CustomBaseModel):
     strict: bool | None = None
 
 
+ToolLike: TypeAlias = str | Tool | Callable[..., object]
+
+
 class Usage(CustomBaseModel):
     prompt_tokens: int
     reasoning_tokens: int
@@ -196,6 +206,7 @@ class RoutedExpertsPayload(TypedDict):
     # Keep the raw response sidecar opaque so Pydantic does not validate memoryview.
     data: Any
     shape: list[int]
+    start: int
 
 
 class ResponseTokens(CustomBaseModel):
@@ -455,6 +466,7 @@ class State(dict):
     INTERNAL_KEYS = {"is_completed", "stop_condition", "is_truncated", "error"}
     RUNTIME_HANDLE_KEYS = {"runtime_id", "client_key"}
     ENDPOINT_HANDLE_KEYS = {
+        "endpoint_api_key_var",
         "endpoint_rollout_key",
         "endpoint_root_url",
         "endpoint_base_url",
@@ -652,7 +664,7 @@ class State(dict):
     def get_endpoint_config(
         self,
         api: EndpointApi | ClientType = "chat_completions",
-    ) -> dict[str, str]:
+    ) -> "EndpointConfig":
         from verifiers.v1.utils.endpoint_utils import endpoint_config_from_state
 
         return endpoint_config_from_state(self, api)
@@ -662,6 +674,47 @@ class State(dict):
 
         return load_tools_from_state(self)
 
+    def add_tool(self, toolset: str, tool: ToolLike) -> None:
+        from verifiers.v1.utils.toolset_utils import tool_item
+
+        if not isinstance(toolset, str) or not toolset:
+            raise TypeError("State.add_tool requires a named toolset.")
+        self._runtime().add_tool(toolset, tool_item(tool), self)
+
+    def add_step_reward(self, reward: float | int | None) -> None:
+        if reward is None:
+            return
+        if isinstance(reward, bool):
+            raise TypeError("State.add_step_reward requires a numeric reward.")
+        trajectory = self["trajectory"]
+        if not isinstance(trajectory, list):
+            raise TypeError("state.trajectory must be a list.")
+        if not trajectory:
+            raise RuntimeError("State.add_step_reward requires a trajectory step.")
+        step = trajectory[-1]
+        if not isinstance(step, dict):
+            raise TypeError("trajectory steps must be mappings.")
+        current = step.get("reward", 0.0) or 0.0
+        if isinstance(current, bool) or not isinstance(current, int | float):
+            raise TypeError("trajectory step reward must be numeric.")
+        step["reward"] = float(current) + float(reward)
+
+    def total_step_reward(self) -> float:
+        trajectory = self.get("trajectory") or []
+        if not isinstance(trajectory, list):
+            raise TypeError("state.trajectory must be a list.")
+        total = 0.0
+        for step in trajectory:
+            if not isinstance(step, dict):
+                raise TypeError("trajectory steps must be mappings.")
+            reward = step.get("reward", 0.0)
+            if reward is None:
+                continue
+            if isinstance(reward, bool) or not isinstance(reward, int | float):
+                raise TypeError("trajectory step reward must be numeric.")
+            total += float(reward)
+        return total
+
     def _runtime_handles(self) -> dict[str, Any]:
         runtime = self.runtime_state()
         handles = runtime.setdefault("resolved", {})
@@ -670,6 +723,13 @@ class State(dict):
         return handles
 
     def _runtime_handle(self, name: str) -> dict[str, Any]:
+        from verifiers.v1.runtime_handles import (
+            ModelRuntimeHandleConfig,
+            RuntimeHandleConfig,
+            SandboxRuntimeHandleConfig,
+            TrajectoryRuntimeHandleConfig,
+        )
+
         runtime = self.runtime_state()
         handles = runtime.get("resolved")
         if handles is not None:
@@ -695,40 +755,46 @@ class State(dict):
             for key in ("model", "client_type", "sampling_args"):
                 if key in runtime:
                     handle[key] = runtime[key]
-            return handle
+            return ModelRuntimeHandleConfig.model_validate(handle).model_dump(
+                mode="json", exclude_none=True
+            )
         if name == "endpoint":
-            return {"runtime_id": runtime_id}
+            return RuntimeHandleConfig(runtime_id=runtime_id).model_dump(mode="json")
         if name == "trajectory":
             runtime_obj = self._runtime()
             runtime_obj.register_trajectory(self)
             trajectory = self.get("trajectory") or []
             if not isinstance(trajectory, list):
                 raise TypeError("state.trajectory must be a list.")
-            return {
-                "runtime_id": runtime_id,
-                "trajectory_id": str(self["trajectory_id"]),
-                "start": len(trajectory),
-            }
+            return TrajectoryRuntimeHandleConfig(
+                runtime_id=runtime_id,
+                trajectory_id=str(self["trajectory_id"]),
+                start=len(trajectory),
+            ).model_dump(mode="json")
         if name == "sandbox":
             sandbox = runtime.get("sandbox")
             if not isinstance(sandbox, Mapping):
                 raise RuntimeError("State has no resolved primary sandbox.")
             handle = dict(sandbox)
             handle["runtime_id"] = runtime_id
-            return handle
+            return SandboxRuntimeHandleConfig.model_validate(handle).model_dump(
+                mode="json"
+            )
         raise KeyError(f"Unknown runtime handle {name!r}.")
 
     def _tools_handle(self, names: _ToolTarget) -> dict[str, Any] | None:
+        from verifiers.v1.runtime_handles import ToolsRuntimeHandleConfig
+
         tool_names = tuple(_tool_names(names))
         if not tool_names:
             return None
         runtime = self._runtime()
         handle_id = runtime.register_tool_handle(self, tool_names)
-        return {
-            "runtime_id": runtime.runtime_id,
-            "handle_id": handle_id,
-            "names": list(tool_names),
-        }
+        return ToolsRuntimeHandleConfig(
+            runtime_id=runtime.runtime_id,
+            handle_id=handle_id,
+            names=list(tool_names),
+        ).model_dump(mode="json")
 
     def _use_runtime_handle(self, name: str, handle: Mapping[str, Any]) -> "State":
         self._runtime_handles()[name] = dict(handle)
@@ -736,6 +802,49 @@ class State(dict):
 
     def strip_runtime_handles(self) -> None:
         _strip_runtime_handles(self)
+
+    def ensure_timing(self) -> dict[str, Any]:
+        timing = self.setdefault("timing", _timing_record())
+        if not isinstance(timing, dict):
+            raise TypeError("state.timing must be a mapping.")
+        timing = cast(dict[str, Any], timing)
+        if "generation_ms" in timing or "total_ms" in timing:
+            start = _float_value(timing.get("start_time"), time.time())
+            elapsed = (
+                _float_value(timing.get("total_ms", timing.get("generation_ms", 0.0)))
+                / 1000
+            )
+            timing.clear()
+            timing.update(_timing_record(start))
+            if elapsed > 0.0:
+                _set_timing_span(timing, "generation", start, start + elapsed)
+                _set_timing_total(timing, start + elapsed)
+        return timing
+
+    def record_generation_timing(self) -> None:
+        timing = self.ensure_timing()
+        start_time = _float_value(timing.get("start_time"), time.time())
+        end_time = time.time()
+        _set_timing_span(timing, "generation", start_time, end_time)
+        _set_timing_total(timing, end_time)
+
+    def record_scoring_timing(self, start_time: float) -> None:
+        timing = self.ensure_timing()
+        end_time = time.time()
+        _set_timing_span(timing, "scoring", start_time, end_time)
+        _set_timing_total(timing, end_time)
+
+    def record_model_timing(self, start_time: float, end_time: float) -> None:
+        timing = self.ensure_timing()
+        spans = timing.setdefault("model", _timing_spans_record())
+        if not isinstance(spans, dict):
+            raise TypeError("state.timing.model must be a mapping.")
+        spans = cast(dict[str, Any], spans)
+        span_list = spans.setdefault("spans", [])
+        if not isinstance(span_list, list):
+            raise TypeError("state.timing.model.spans must be a list.")
+        span_list.append(_timing_span_record(start_time, end_time))
+        spans["duration"] = _timing_duration(spans) + max(0.0, end_time - start_time)
 
     def finalize(self) -> "State":
         self.strip_runtime_handles()
@@ -811,11 +920,13 @@ def _uses_v1_contract(task: Mapping[str, Any], source_state: State | None) -> bo
 
 
 def _v1_state_for_task(cls: type[State], task: Mapping[str, Any]) -> State:
-    from verifiers.v1.utils.timing_utils import timing_record
+    from verifiers.v1.task import Task
 
+    task_object = task if isinstance(task, Task) else Task(dict(task))
+    task_object.freeze()
     state = cls(
         {
-            "task": dict(task),
+            "task": task_object,
             "runtime": {},
             "trajectory": [],
             "trajectory_id": uuid.uuid4().hex,
@@ -823,7 +934,7 @@ def _v1_state_for_task(cls: type[State], task: Mapping[str, Any]) -> State:
             "metrics": {},
             "reward": 0.0,
             "completion": None,
-            "timing": timing_record(),
+            "timing": _timing_record(),
         }
     )._enable_v1_contract()
     state._set_completed(False)
@@ -834,6 +945,67 @@ def _v1_state_for_task(cls: type[State], task: Mapping[str, Any]) -> State:
         if key in task:
             state[key] = deepcopy(task[key])
     return state
+
+
+def _timing_span_record(start: float = 0.0, end: float = 0.0) -> dict[str, float]:
+    return {
+        "start": start,
+        "end": end,
+        "duration": max(0.0, end - start) if end > 0.0 else 0.0,
+    }
+
+
+def _timing_spans_record() -> dict[str, Any]:
+    return {"spans": [], "duration": 0.0}
+
+
+def _timing_record(start_time: float | None = None) -> dict[str, Any]:
+    start = time.time() if start_time is None else start_time
+    return {
+        "start_time": start,
+        "setup": _timing_span_record(),
+        "generation": _timing_span_record(start=start),
+        "scoring": _timing_span_record(),
+        "model": _timing_spans_record(),
+        "env": _timing_spans_record(),
+        "total": 0.0,
+        "overhead": 0.0,
+    }
+
+
+def _set_timing_span(
+    timing: dict[str, Any], key: str, start_time: float, end_time: float
+) -> None:
+    timing[key] = _timing_span_record(start_time, end_time)
+
+
+def _set_timing_total(timing: dict[str, Any], end_time: float) -> None:
+    start_time = _float_value(timing.get("start_time"), end_time)
+    total = max(0.0, end_time - start_time)
+    timing["total"] = total
+    timing["overhead"] = max(
+        0.0,
+        total
+        - _timing_duration(timing.get("setup", {}))
+        - _timing_duration(timing.get("model", {}))
+        - _timing_duration(timing.get("env", {}))
+        - _timing_duration(timing.get("scoring", {})),
+    )
+
+
+def _timing_duration(value: object) -> float:
+    if not isinstance(value, dict):
+        return 0.0
+    value = cast(dict[str, Any], value)
+    return _float_value(value.get("duration", 0.0), 0.0)
+
+
+def _float_value(value: object, default: float = 0.0) -> float:
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, int | float | str):
+        return default
+    return float(value or 0.0)
 
 
 def _borrow_from_state(
@@ -1003,17 +1175,24 @@ class RolloutScores(TypedDict):
     metrics: dict[str, list[float]]
 
 
-Endpoint = TypedDict(
-    "Endpoint",
-    {
-        "key": str,
-        "url": str,
-        "model": str,
-        "api_client_type": NotRequired[ClientType],
-        "extra_headers": NotRequired[dict[str, str]],
-    },
-)
-Endpoints = dict[str, list[Endpoint]]
+class EndpointConfig(BaseModel):
+    """Endpoint connection config with credentials carried by env-var reference."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    model: str
+    base_url: str
+    api_key_var: str
+    api_client_type: ClientType | None = None
+    extra_headers: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("extra_headers", mode="before")
+    @classmethod
+    def validate_extra_headers(cls, value: object) -> dict[str, str]:
+        return _validate_extra_headers_value(value)
+
+
+Endpoints = dict[str, list[EndpointConfig]]
 
 
 def _validate_extra_headers_value(value: object) -> dict[str, str]:
@@ -1135,7 +1314,7 @@ class EvalConfig(BaseModel):
     """Pydantic model for evaluation configuration."""
 
     # environment
-    env_id: str
+    env_id: str = Field(validation_alias=AliasChoices("env_id", "id"))
     name: str | None = None
     env_args: dict
     env_dir_path: str

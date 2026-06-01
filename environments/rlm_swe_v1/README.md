@@ -13,13 +13,18 @@ Tune the taskset and harness through typed v1 config objects:
 
 ```python
 import verifiers as vf
-from verifiers.v1.packages.harnesses import RLMConfig
+from harnesses import RLMConfig, RLMProgramConfig
 from rlm_swe_v1 import RlmSweTasksetConfig, load_environment
 
 env = load_environment(
     config=vf.EnvConfig(
         taskset=RlmSweTasksetConfig(timeout_minutes=90),
-        harness=RLMConfig(rlm_repo_ref="main", rlm_tools=["bash", "edit"]),
+        harness=RLMConfig(
+            program=RLMProgramConfig(
+                local_checkout="/path/to/checkout",
+                rlm_tools=["bash", "edit"],
+            )
+        ),
     )
 )
 ```

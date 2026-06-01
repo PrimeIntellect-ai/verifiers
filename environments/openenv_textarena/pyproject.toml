@@ -1,11 +1,12 @@
 [project]
 name = "openenv-textarena"
-description = "OpenEnv TextArena (Wordle-v0) environment via the OpenEnvEnv adapter"
+description = "OpenEnv TextArena (Wordle-v0) environment via the v1 OpenEnv taskset"
 tags = ["openenv", "gym", "textarena", "wordle", "example"]
 version = "0.1.0"
 requires-python = ">=3.10"
 dependencies = [
-    "verifiers[openenv]>=0.1.10.dev4",
+    "verifiers>=0.1.15.dev11",
+    "tasksets[openenv]>=0.1.1",
 ]
 
 [build-system]

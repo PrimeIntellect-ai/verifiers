@@ -1,0 +1,33 @@
+# gpt-oss models. Update both fields when switching sizes.
+model = "openai/gpt-oss-20b"
+reflection_model = "openai/gpt-oss-20b"
+# model = "openai/gpt-oss-120b"
+# reflection_model = "openai/gpt-oss-120b"
+
+[[env]]
+env_id = "primeintellect/reverse-text"
+
+# [[env]]
+# env_id = "primeintellect/wordle"
+
+# [[env]]
+# env_id = "primeintellect/wiki-search"
+
+# [[env]]
+# env_id = "primeintellect/dspy-flights"
+
+# [[env]]
+# env_id = "primeintellect/opencode-harbor"
+
+[gepa]
+max_calls = 500
+num_train = 100
+num_val = 50
+minibatch_size = 3
+max_concurrent = 32
+
+[sampling]
+max_tokens = 1024
+reasoning_effort = "low"
+
+# Hosted Training docs: https://docs.primeintellect.ai/hosted-training

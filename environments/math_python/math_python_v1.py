@@ -144,7 +144,7 @@ def load_tasks(
 
 
 class MathPythonTaskset(vf.Taskset[MathPythonTasksetConfig]):
-    def load_tasks(self) -> vf.Tasks:
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         return load_tasks(
             dataset_name=self.config.dataset_name,
             dataset_split=self.config.dataset_split,
@@ -152,7 +152,7 @@ class MathPythonTaskset(vf.Taskset[MathPythonTasksetConfig]):
         )
 
 
-class MathPythonHarness(vf.Harness):
+class MathPythonHarness(vf.Harness[MathPythonHarnessConfig]):
     pass
 
 
@@ -164,25 +164,23 @@ def load_toolset(
     sandbox_gpu_count: int = 0,
     sandbox_timeout_minutes: int = 60,
     sandbox_timeout_per_command_seconds: int = 60,
-    config=None,
 ):
     packages = pip_install_packages.split() if pip_install_packages.strip() else []
     return vf.Toolset(
         tools=[python],
         write=True,
-        sandbox={
-            "image": "python:3.11-slim",
-            "scope": "group",
-            "cpu_cores": sandbox_cpu_cores,
-            "memory_gb": sandbox_memory_gb,
-            "disk_size_gb": sandbox_disk_size_gb,
-            "gpu_count": sandbox_gpu_count,
-            "timeout_minutes": sandbox_timeout_minutes,
-            "command_timeout": sandbox_timeout_per_command_seconds,
-            "packages": packages,
-        },
+        sandbox=vf.SandboxConfig(
+            image="python:3.11-slim",
+            scope="group",
+            cpu_cores=sandbox_cpu_cores,
+            memory_gb=sandbox_memory_gb,
+            disk_size_gb=sandbox_disk_size_gb,
+            gpu_count=sandbox_gpu_count,
+            timeout_minutes=sandbox_timeout_minutes,
+            command_timeout=sandbox_timeout_per_command_seconds,
+            packages=packages,
+        ),
         cleanups=[collect_python_commands],
-        config=config,
     )
 
 

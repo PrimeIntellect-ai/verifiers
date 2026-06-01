@@ -6,12 +6,14 @@ on:
     paths:
       - "**.py"
       - "pyproject.toml"
+      - "packages/**"
       - ".github/workflows/test.yml"
   push:
     branches: [main, master]
     paths:
       - "**.py"
       - "pyproject.toml"
+      - "packages/**"
       - ".github/workflows/test.yml"
 
 jobs:

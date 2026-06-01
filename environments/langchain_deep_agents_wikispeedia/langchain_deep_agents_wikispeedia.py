@@ -74,19 +74,19 @@ class WikispeediaTasksetConfig(vf.TasksetConfig):
 
 
 class WikispeediaHarnessConfig(vf.HarnessConfig):
+    program: vf.ProgramConfig = vf.ProgramConfig(
+        fn="run_langchain_deep_agents_wikispeedia_program"
+    )
     max_turns: int = 50
     timeout_seconds: float = 1200.0
 
 
 class WikispeediaTaskset(vf.Taskset[WikispeediaTasksetConfig]):
-    def load_tasks(self) -> vf.Tasks:
-        return load_tasks(self.config)
-
-    def load_eval_tasks(self) -> vf.Tasks:
-        return load_eval_tasks(self.config)
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
+        return load_tasks(self.config, split=split)
 
 
-class WikispeediaHarness(vf.Harness):
+class WikispeediaHarness(vf.Harness[WikispeediaHarnessConfig]):
     pass
 
 
@@ -388,28 +388,20 @@ def split_pairs(
     )
 
 
-def load_tasks(config: WikispeediaTasksetConfig) -> Dataset:
-    train, _ = split_pairs(config)
+def load_tasks(
+    config: WikispeediaTasksetConfig, split: vf.TaskSplit = "train"
+) -> Dataset:
+    train, eval_ = split_pairs(config)
     return build_dataset(
         load_wiki_graph(config.cache_dir),
-        train,
-        links_only=config.links_only,
-        max_turns=config.max_turns,
-    )
-
-
-def load_eval_tasks(config: WikispeediaTasksetConfig) -> Dataset:
-    _, eval_ = split_pairs(config)
-    return build_dataset(
-        load_wiki_graph(config.cache_dir),
-        eval_,
+        train if split == "train" else eval_,
         links_only=config.links_only,
         max_turns=config.max_turns,
     )
 
 
 def serialize_agent_completion(
-    messages: Sequence[AgentMessage | vf.ConfigMap],
+    messages: Sequence[AgentMessage | vf.JsonData],
 ) -> list[vf.ConfigData]:
     role_aliases = {
         "human": "user",
@@ -516,6 +508,7 @@ def make_langchain_deep_agents_program(
         from deepagents import create_deep_agent
         from langchain_openai import ChatOpenAI
         from langgraph.errors import GraphRecursionError
+        from openai import OpenAI
 
         state["current_article"] = state["info"]["source"]
         state["path"] = [state["info"]["source"]]
@@ -525,10 +518,13 @@ def make_langchain_deep_agents_program(
         state[NAVIGATION_TOOL_CALLS_KEY] = []
 
         endpoint_config = state.get_endpoint_config(api="chat")
+        endpoint_client = cast(OpenAI, state.get_client(api="chat", sync=True))
+        endpoint_api_key = endpoint_client.api_key
+        endpoint_client.close()
         model = ChatOpenAI(
-            model=endpoint_config["model"],
-            base_url=endpoint_config["api_base"],
-            api_key=endpoint_config["api_key"],
+            model=endpoint_config.model,
+            base_url=endpoint_config.base_url,
+            api_key=endpoint_api_key,
         )
         runtime_tools = state.get_tools()
         nav_tools = langchain_navigation_tools(runtime_tools)
@@ -599,6 +595,15 @@ def make_langchain_deep_agents_program(
     return run_langchain_deep_agents_wikispeedia_program
 
 
+async def run_langchain_deep_agents_wikispeedia_program(
+    task: vf.Task, state: vf.State, harness: WikispeediaHarness
+) -> vf.State:
+    return await make_langchain_deep_agents_program(
+        max_turns=harness.config.max_turns,
+        timeout_seconds=harness.config.timeout_seconds,
+    )(task, state)
+
+
 def load_taskset(
     config: WikispeediaTasksetConfig,
 ) -> WikispeediaTaskset:
@@ -651,12 +656,6 @@ def load_harness(
 ) -> WikispeediaHarness:
     harness = WikispeediaHarness(config=config)
     harness.add_update(restore_agent_completion)
-    harness._configure_runtime(
-        program=make_langchain_deep_agents_program(
-            max_turns=config.max_turns,
-            timeout_seconds=config.timeout_seconds,
-        )
-    )
     return harness
 
 
@@ -671,6 +670,6 @@ def load_environment(config: WikispeediaEnvConfig) -> vf.Env:
         vf.ensure_keys(["LANGSMITH_API_KEY"])
 
     return vf.Env(
-        taskset=load_taskset(config=config.taskset),
-        harness=load_harness(config=config.harness),
+        taskset=vf.load_taskset(config=config.taskset),
+        harness=vf.load_harness(config=config.harness),
     )

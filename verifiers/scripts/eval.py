@@ -10,18 +10,23 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "true")
 
 import argparse
 import asyncio
+import inspect
 import importlib.util
 import json
 import logging
 from pathlib import Path
 from typing import Any, cast
 
+from pydantic import BaseModel, create_model
+from pydantic_config import ConfigFileError
+from pydantic_config import cli as parse_pydantic_config_cli
+
 from verifiers import setup_logging
 from verifiers.types import (
     ClientConfig,
     ClientType,
-    Endpoint,
     EndpointClientConfig,
+    EndpointConfig,
     EvalConfig,
     EvalRunConfig,
     _validate_extra_headers_value,
@@ -34,8 +39,16 @@ from verifiers.utils.eval_utils import (
     run_evaluations,
     run_evaluations_tui,
 )
+from verifiers.utils.env_utils import (
+    env_config_annotation,
+    env_config_child_types,
+    import_env_module,
+    load_env_config,
+)
 from verifiers.utils.import_utils import load_toml
 from verifiers.utils.install_utils import check_hub_env_installed
+from verifiers.v1.env import EnvConfig
+from verifiers.v1.utils.config_utils import explicit_config_data
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +59,13 @@ DEFAULT_NUM_EXAMPLES = 5
 DEFAULT_ROLLOUTS_PER_EXAMPLE = 3
 DEFAULT_MAX_CONCURRENT = 32
 DEFAULT_CLIENT_TYPE = "openai_chat_completions"
+ENV_CONFIG_OVERRIDE_FLAG_PREFIXES = (
+    "--taskset.",
+    "--harness.",
+    "--no-taskset.",
+    "--no-harness.",
+)
+ENV_CONFIG_OVERRIDE_GROUP_FLAGS = {"--taskset", "--harness"}
 
 # Provider shorthand configs: maps provider name to (base_url, api_key_var[, client_type])
 PROVIDER_CONFIGS: dict[str, dict[str, str]] = {
@@ -238,6 +258,112 @@ def get_env_eval_defaults(env_id: str) -> dict[str, Any]:
         )
 
     return defaults
+
+
+def is_env_config_override_flag(token: str) -> bool:
+    return token in ENV_CONFIG_OVERRIDE_GROUP_FLAGS or token.startswith(
+        ENV_CONFIG_OVERRIDE_FLAG_PREFIXES
+    )
+
+
+def validate_env_config_override_args(
+    parser: argparse.ArgumentParser,
+    override_args: list[str],
+) -> None:
+    if not override_args:
+        return
+    if not is_env_config_override_flag(override_args[0]):
+        parser.error(f"unrecognized arguments: {' '.join(override_args)}")
+    invalid_flags = [
+        token
+        for token in override_args
+        if token.startswith("--") and not is_env_config_override_flag(token)
+    ]
+    if invalid_flags:
+        parser.error(f"unrecognized arguments: {' '.join(invalid_flags)}")
+
+
+def merge_config_data(
+    base: dict[str, Any],
+    overrides: dict[str, Any],
+) -> dict[str, Any]:
+    merged = dict(base)
+    for key, value in overrides.items():
+        existing = merged.get(key)
+        if isinstance(existing, dict) and isinstance(value, dict):
+            merged[key] = merge_config_data(existing, value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def env_config_cli_type(
+    config_type: type[EnvConfig],
+    default_config: EnvConfig,
+    child_types: dict[str, type[BaseModel]],
+) -> type[EnvConfig]:
+    fields = {
+        field_name: (child_type, getattr(default_config, field_name))
+        for field_name, child_type in child_types.items()
+    }
+    create_env_model = cast(Any, create_model)
+    return cast(
+        type[EnvConfig],
+        create_env_model(
+            f"{config_type.__name__}CliOverrides",
+            __base__=config_type,
+            **fields,
+        ),
+    )
+
+
+def apply_env_config_cli_overrides(
+    env_id: str,
+    env_args: dict[str, Any],
+    override_args: list[str],
+) -> dict[str, Any]:
+    if not override_args:
+        return dict(env_args)
+
+    module = import_env_module(env_id)
+    env_load_func = getattr(module, "load_environment", None)
+    config_type: type[EnvConfig] | None
+    if env_load_func is None:
+        config_type = EnvConfig
+    else:
+        sig = inspect.signature(env_load_func)
+        config_type = env_config_annotation(env_load_func, sig)
+    if config_type is None:
+        raise ValueError(
+            "Taskset/harness CLI overrides require a v1 loader shaped as "
+            "load_environment(config: vf.EnvConfig)."
+        )
+
+    merged_env_args = dict(env_args)
+    base_config_data = explicit_config_data(merged_env_args.get("config", {}))
+    child_types = env_config_child_types(module, config_type, base_config_data)
+    base_config = load_env_config(
+        module,
+        config_type,
+        merged_env_args.get("config", {}),
+        child_types=child_types,
+    )
+    cli_type = env_config_cli_type(config_type, base_config, child_types)
+    try:
+        config = parse_pydantic_config_cli(
+            cli_type,
+            args=override_args,
+            default=base_config,
+        )
+    except ConfigFileError as exc:
+        raise ValueError(f"Invalid taskset/harness override: {exc}") from exc
+
+    override_config_data = explicit_config_data(config)
+    merged_env_args["config"] = merge_config_data(
+        base_config_data,
+        override_config_data,
+    )
+    return merged_env_args
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -502,8 +628,12 @@ def build_parser() -> argparse.ArgumentParser:
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = build_parser()
     if argv is None:
-        return parser.parse_args()
-    return parser.parse_args(argv)
+        args, env_config_overrides = parser.parse_known_args()
+    else:
+        args, env_config_overrides = parser.parse_known_args(argv)
+    validate_env_config_override_args(parser, env_config_overrides)
+    args.env_config_overrides = env_config_overrides
+    return args
 
 
 def main(argv: list[str] | None = None):
@@ -521,6 +651,10 @@ def main(argv: list[str] | None = None):
 
     # Build raw configs: both paths produce list[dict]
     if args.env_id_or_config.endswith(".toml"):
+        if args.env_config_overrides:
+            raise ValueError(
+                "Taskset/harness CLI overrides are only supported with a single environment id, not TOML config files."
+            )
         path = Path(args.env_id_or_config)
         if not path.is_file():
             raise FileNotFoundError(
@@ -623,7 +757,7 @@ def main(argv: list[str] | None = None):
             raw_endpoint_id is None and api_key_override and api_base_url_override
         )
         endpoints = {} if direct_endpoint_config else load_endpoints(endpoints_path)
-        endpoint_group: list[Endpoint] | None = None
+        endpoint_group: list[EndpointConfig] | None = None
         resolved_endpoint_id: str | None = None
 
         if endpoint_lookup_id in endpoints:
@@ -632,17 +766,17 @@ def main(argv: list[str] | None = None):
             endpoint = endpoint_group[0]
 
             # Start from registry values
-            api_key_var = endpoint["key"]
-            api_base_url = endpoint["url"]
-            client_type = endpoint.get("api_client_type", DEFAULT_CLIENT_TYPE)
+            api_key_var = endpoint.api_key_var
+            api_base_url = endpoint.base_url
+            client_type = endpoint.api_client_type or DEFAULT_CLIENT_TYPE
 
-            endpoint_models = {entry["model"] for entry in endpoint_group}
+            endpoint_models = {entry.model for entry in endpoint_group}
             if len(endpoint_models) > 1:
                 raise ValueError(
                     f"Endpoint alias '{endpoint_lookup_id}' maps to multiple model ids {sorted(endpoint_models)}, "
                     "which is not yet supported by EvalConfig."
                 )
-            model = endpoint["model"]
+            model = endpoint.model
 
             # Provider overrides registry
             if raw_provider is not None:
@@ -720,7 +854,7 @@ def main(argv: list[str] | None = None):
 
         registry_headers_base: dict[str, str] = {}
         if endpoint_group is not None:
-            registry_headers_base = dict(endpoint_group[0].get("extra_headers", {}))
+            registry_headers_base = dict(endpoint_group[0].extra_headers)
 
         merged_headers: dict[str, str] = {
             **registry_headers_base,
@@ -743,11 +877,11 @@ def main(argv: list[str] | None = None):
             endpoint_configs = [
                 EndpointClientConfig(
                     api_key_var=(
-                        resolved_api_key_var if api_key_override else ep["key"]
+                        resolved_api_key_var if api_key_override else ep.api_key_var
                     ),
-                    api_base_url=ep["url"],
+                    api_base_url=ep.base_url,
                     extra_headers={
-                        **dict(ep.get("extra_headers", {})),
+                        **dict(ep.extra_headers),
                         **eval_headers_merged,
                     },
                 )
@@ -800,6 +934,12 @@ def main(argv: list[str] | None = None):
         else:
             raise ValueError(f"Invalid value for --resume: {resume_arg!r}")
 
+        env_args = apply_env_config_cli_overrides(
+            env_id,
+            dict(raw.get("env_args", {})),
+            list(raw.get("env_config_overrides", [])),
+        )
+
         extra_env_kwargs = dict(raw.get("extra_env_kwargs", {}))
         if raw.get("timeout") is not None:
             extra_env_kwargs["timeout_seconds"] = raw["timeout"]
@@ -807,7 +947,7 @@ def main(argv: list[str] | None = None):
         return EvalConfig(
             env_id=env_id,
             name=name,
-            env_args=raw.get("env_args", {}),
+            env_args=env_args,
             env_dir_path=raw.get("env_dir_path", DEFAULT_ENV_DIR_PATH),
             output_dir=raw.get("output_dir"),
             extra_env_kwargs=extra_env_kwargs,

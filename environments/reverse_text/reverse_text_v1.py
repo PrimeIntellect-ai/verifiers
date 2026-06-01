@@ -25,10 +25,14 @@ REVERSED_TEXT_EXTRACTOR = TagExtractor("reversed_text")
 class ReverseTextTasksetConfig(vf.TasksetConfig):
     dataset_name: str = "PrimeIntellect/Reverse-Text-RL"
     dataset_split: str = "train"
+    system_prompt: vf.SystemPrompt = (
+        "Reverse the text character-by-character. Put your answer in "
+        "<reversed_text> tags."
+    )
 
 
 class ReverseTextTaskset(vf.Taskset[ReverseTextTasksetConfig]):
-    def load_tasks(self) -> vf.Tasks:
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         def map_row(row):
             return {
                 "question": row["prompt"],
@@ -50,12 +54,6 @@ class ReverseTextTaskset(vf.Taskset[ReverseTextTasksetConfig]):
                 "info": row.get("info") or {},
             }
 
-    def load_system_prompt(self) -> vf.SystemPrompt:
-        return (
-            "Reverse the text character-by-character. Put your answer in "
-            "<reversed_text> tags."
-        )
-
     @vf.reward(weight=1.0)
     async def lcs_reward(self, task, state) -> float:
         response = REVERSED_TEXT_EXTRACTOR(state.get("completion") or [])
@@ -63,17 +61,13 @@ class ReverseTextTaskset(vf.Taskset[ReverseTextTasksetConfig]):
         return SequenceMatcher(None, response, answer).ratio()
 
 
-class ReverseTextEnvConfig(vf.EnvConfig):
-    taskset: ReverseTextTasksetConfig = ReverseTextTasksetConfig()
-    harness: vf.HarnessConfig = vf.HarnessConfig()
-
-
 def load_taskset(config: ReverseTextTasksetConfig) -> ReverseTextTaskset:
     return ReverseTextTaskset(config=config)
 
 
-def load_environment(config: ReverseTextEnvConfig) -> vf.Env:
+def load_environment(config: vf.EnvConfig) -> vf.Env:
+    """Loader pattern for all Taskset/Harness environments."""
     return vf.Env(
         taskset=vf.load_taskset(config=config.taskset),
-        harness=vf.Harness(config=config.harness),
+        harness=vf.load_harness(config=config.harness),
     )

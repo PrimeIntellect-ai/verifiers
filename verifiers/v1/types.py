@@ -1,55 +1,53 @@
-from collections.abc import (
-    Awaitable,
-    Callable,
-    Iterable,
-    Mapping,
-    MutableMapping,
-    Sequence,
-)
-from importlib.abc import Traversable
-from os import PathLike
-from typing import Literal, TypeAlias
+from collections.abc import Awaitable, Callable, Iterable, Sequence
+from typing import Literal, TYPE_CHECKING, TypeAlias
 
 from datasets import Dataset
 from verifiers.clients import Client
-from verifiers.types import ClientConfig, Message
+from verifiers.types import ClientConfig, Message, MessageContent, Messages
+from typing_extensions import TypeAliasType
 
-Handler: TypeAlias = Callable[..., object]
-GroupHandler: TypeAlias = Callable[..., Sequence[float] | Awaitable[Sequence[float]]]
-ConfigMap: TypeAlias = Mapping[str, object]
-ConfigData: TypeAlias = dict[str, object]
-ConfigInputMap: TypeAlias = Mapping[object, object]
-MutableConfigMap: TypeAlias = MutableMapping[str, object]
-JsonValue: TypeAlias = (
-    str | int | float | bool | None | list["JsonValue"] | dict[str, "JsonValue"]
+if TYPE_CHECKING:
+    from .task import Task
+
+JsonScalar: TypeAlias = str | int | float | bool | None
+JsonValue = TypeAliasType(
+    "JsonValue",
+    JsonScalar | list["JsonValue"] | dict[str, "JsonValue"],
 )
 JsonData: TypeAlias = dict[str, JsonValue]
-HandlerList: TypeAlias = Iterable[Handler]
+ConfigValue = TypeAliasType(
+    "ConfigValue",
+    JsonScalar
+    | list["ConfigValue"]
+    | tuple["ConfigValue", ...]
+    | dict[str, "ConfigValue"],
+)
+ConfigData: TypeAlias = dict[str, ConfigValue]
 
-TaskRow: TypeAlias = Mapping[str, object]
-Tasks: TypeAlias = Dataset | Iterable[TaskRow]
-TaskLoader: TypeAlias = Callable[..., Tasks]
+HandlerResult: TypeAlias = (
+    JsonValue
+    | JsonData
+    | ConfigData
+    | Message
+    | Messages
+    | MessageContent
+    | Sequence[float]
+    | None
+)
+Handler: TypeAlias = Callable[..., HandlerResult | Awaitable[HandlerResult]]
 
-PromptMessage: TypeAlias = Message | ConfigMap
+TaskSplit: TypeAlias = Literal["train", "eval"]
+Tasks: TypeAlias = Dataset | Iterable[JsonData] | Iterable["Task"]
+
+PromptMessage: TypeAlias = Message | JsonData
 PromptInput: TypeAlias = str | Sequence[PromptMessage]
-SystemPrompt: TypeAlias = PromptInput | PathLike[str]
-ToolSpec: TypeAlias = Handler | str | ConfigMap
-ToolSpecs: TypeAlias = ToolSpec | Sequence[ToolSpec]
-ToolsetSpecs: TypeAlias = ToolSpec | Sequence[ToolSpec] | ConfigMap
 
 ModelClient: TypeAlias = Client | ClientConfig
-
-ProgramScalar: TypeAlias = str | int | float | bool | None
-ProgramSource: TypeAlias = PathLike[str] | Traversable
-ProgramValue: TypeAlias = ProgramScalar | Handler | ConfigMap | ProgramSource
-ProgramCommand: TypeAlias = str | Sequence[ProgramValue]
-ProgramMap: TypeAlias = Mapping[str, object]
-ProgramData: TypeAlias = dict[str, object]
-ProgramOptionMap: TypeAlias = Mapping[str, ProgramValue]
-ProgramSetup: TypeAlias = ProgramValue | Sequence[ProgramValue]
-ProgramChannel: TypeAlias = Literal["callable", "mcp"]
-ProgramChannelSpec: TypeAlias = ProgramChannel | ConfigMap
-ProgramChannels: TypeAlias = ProgramChannelSpec | list[ProgramChannelSpec]
-
-ObjectLoader: TypeAlias = str | Callable[..., object | Awaitable[object]]
-Objects: TypeAlias = dict[str, ObjectLoader]
+RuntimeObject: TypeAlias = object
+RuntimeData: TypeAlias = dict[str, RuntimeObject]
+RuntimeCallableResult: TypeAlias = RuntimeObject | Awaitable[RuntimeObject]
+RuntimeCallable: TypeAlias = Callable[..., RuntimeCallableResult]
+ObjectFactoryResult: TypeAlias = RuntimeObject | Awaitable[RuntimeObject]
+ObjectFactory: TypeAlias = Callable[..., ObjectFactoryResult]
+Objects: TypeAlias = dict[str, ObjectFactory]
+ToolParameters: TypeAlias = dict[str, RuntimeObject]

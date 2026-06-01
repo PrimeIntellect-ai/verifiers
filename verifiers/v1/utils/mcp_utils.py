@@ -6,7 +6,7 @@ from verifiers.errors import ToolError
 from verifiers.types import Tool
 
 from ..toolset import MCPTool
-from ..types import ConfigData
+from ..types import RuntimeData
 
 
 class MCPToolHandle:
@@ -24,7 +24,7 @@ class MCPToolSession:
     def __init__(self, spec: MCPTool):
         self.spec = spec
         self.handles: list[MCPToolHandle] = []
-        self._queue: asyncio.Queue[tuple[str, str, ConfigData, asyncio.Future]] = (
+        self._queue: asyncio.Queue[tuple[str, str, RuntimeData, asyncio.Future]] = (
             asyncio.Queue()
         )
         self._ready: asyncio.Future[list[MCPToolHandle]] | None = None
@@ -40,7 +40,7 @@ class MCPToolSession:
     async def __aexit__(self, exc_type, exc, tb) -> None:
         await self.close()
 
-    async def call_tool(self, name: str, arguments: ConfigData) -> object:
+    async def call_tool(self, name: str, arguments: RuntimeData) -> object:
         loop = asyncio.get_running_loop()
         future = loop.create_future()
         await self._queue.put(("call", name, arguments, future))
@@ -118,7 +118,7 @@ def mcp_tool_def(tool: object) -> Tool:
     return Tool(
         name=name,
         description=str(getattr(tool, "description", "") or ""),
-        parameters=cast(ConfigData, schema),
+        parameters={str(key): item for key, item in schema.items()},
         strict=None,
     )
 

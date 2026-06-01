@@ -2,7 +2,6 @@ import asyncio
 import json
 
 import verifiers as vf
-from verifiers.v1.types import ConfigMap
 from verifiers.v1.utils.judge_utils import (
     clamp_float,
     parse_judge_json,
@@ -148,9 +147,7 @@ class ParallelSandboxTasksetConfig(vf.TasksetConfig):
 
 
 class ParallelSandboxHarnessConfig(vf.HarnessConfig):
-    program: vf.ProgramConfig | None = vf.ProgramConfig(
-        sandbox=True, channels="callable"
-    )
+    program: vf.ProgramConfig = vf.ProgramConfig(sandbox=True, channels="callable")
     sandbox: vf.SandboxConfig = vf.SandboxConfig(**PROGRAM_SANDBOX)
     max_turns: int = 4
 
@@ -282,7 +279,7 @@ async def update_audits(task, state) -> float:
     return float(len(audits) if isinstance(audits, list) else 0)
 
 
-def file_audit_prompt(task: ConfigMap, response: str) -> str:
+def file_audit_prompt(task: vf.Task, response: str) -> str:
     return (
         "Task instruction:\n"
         f"{task['instruction']}\n\n"
@@ -303,7 +300,7 @@ def file_audit_prompt(task: ConfigMap, response: str) -> str:
     )
 
 
-def command_audit_prompt(task: ConfigMap) -> str:
+def command_audit_prompt(task: vf.Task) -> str:
     return (
         "Task instruction:\n"
         f"{task['instruction']}\n\n"
@@ -322,7 +319,7 @@ def command_audit_prompt(task: ConfigMap) -> str:
     )
 
 
-def reward_prompt(task: ConfigMap, state: ConfigMap) -> str:
+def reward_prompt(task: vf.Task, state: vf.State) -> str:
     messages = vf.get_messages(state.get("completion") or [], role="assistant")
     response = str(messages[-1].content or "") if messages else ""
     return (
@@ -360,11 +357,11 @@ def load_tasks(num_examples: int = -1):
 
 
 class ParallelSandboxTaskset(vf.Taskset[ParallelSandboxTasksetConfig]):
-    def load_tasks(self) -> vf.Tasks:
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         return load_tasks(num_examples=self.config.num_examples)
 
 
-class ParallelSandboxHarness(vf.Harness):
+class ParallelSandboxHarness(vf.Harness[ParallelSandboxHarnessConfig]):
     pass
 
 
