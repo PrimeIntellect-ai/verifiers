@@ -12,13 +12,12 @@ def load_environment(
 ) -> vf.Environment:
     if v1:
         from reverse_text_v1 import (
-            ReverseTextEnvConfig,
             ReverseTextTasksetConfig,
             load_environment as load_v1,
         )
 
         return load_v1(
-            config=ReverseTextEnvConfig(
+            config=vf.EnvConfig(
                 taskset=ReverseTextTasksetConfig(
                     dataset_name=dataset_name,
                     dataset_split=dataset_split,

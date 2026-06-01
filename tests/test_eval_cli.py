@@ -1,4 +1,3 @@
-import argparse
 import importlib
 import os
 import sys
@@ -11,7 +10,7 @@ import pytest
 
 import verifiers.scripts.eval as vf_eval
 import verifiers.utils.eval_utils
-from verifiers.types import GenerateOutputs
+from verifiers.types import EndpointConfig, EvalConfig, GenerateOutputs
 from verifiers.utils.eval_utils import load_toml_config
 from verifiers.utils.path_utils import get_eval_results_path
 from verifiers.utils.save_utils import states_to_outputs
@@ -19,6 +18,28 @@ from verifiers.utils.save_utils import states_to_outputs
 
 def fail_load_endpoints(*_: object) -> dict:
     raise AssertionError("load_endpoints should not be called")
+
+
+def endpoint(**values: object) -> EndpointConfig:
+    return EndpointConfig.model_validate(values)
+
+
+def test_eval_config_accepts_id_shorthand():
+    config = EvalConfig.model_validate(
+        {
+            "id": "env1",
+            "env_args": {},
+            "env_dir_path": "./environments",
+            "model": "openai/gpt-4.1-mini",
+            "client_config": {},
+            "sampling_args": {},
+            "num_examples": 1,
+            "rollouts_per_example": 1,
+            "max_concurrent": 1,
+        }
+    )
+
+    assert config.env_id == "env1"
 
 
 @pytest.fixture
@@ -65,6 +86,7 @@ def run_cli(make_metadata, make_state, make_input):
             "save_to_hf_hub": False,
             "hf_hub_dataset_name": "",
             "extra_env_kwargs": {},
+            "env_config_overrides": [],
             "max_retries": 0,
             "fullscreen": False,
             "disable_tui": False,
@@ -76,11 +98,7 @@ def run_cli(make_metadata, make_state, make_input):
 
         captured: dict = {"sampling_args": None, "configs": []}
 
-        monkeypatch.setattr(
-            argparse.ArgumentParser,
-            "parse_args",
-            lambda self: args_namespace,
-        )
+        monkeypatch.setattr(vf_eval, "parse_args", lambda argv=None: args_namespace)
         monkeypatch.setattr(vf_eval, "setup_logging", lambda *_, **__: None)
         if fail_on_load_endpoints:
             monkeypatch.setattr(vf_eval, "load_endpoints", fail_load_endpoints)
@@ -129,6 +147,97 @@ def test_cli_single_env_id(monkeypatch, run_cli):
     configs = captured["configs"]
     assert len(configs) == 1
     assert configs[0].env_id == "env1"
+
+
+def test_parse_args_accepts_v1_env_config_overrides():
+    args = vf_eval.parse_args(
+        [
+            "env1",
+            "--taskset.id",
+            "my-id",
+            "--harness.id",
+            "my-harness",
+            "--harness.max-turns",
+            "4",
+        ]
+    )
+
+    assert args.env_config_overrides == [
+        "--taskset.id",
+        "my-id",
+        "--harness.id",
+        "my-harness",
+        "--harness.max-turns",
+        "4",
+    ]
+
+
+def test_parse_args_rejects_unknown_eval_flags():
+    with pytest.raises(SystemExit):
+        vf_eval.parse_args(["env1", "--unknown-flag", "value"])
+
+
+def test_cli_v1_env_config_overrides_preserve_env_args_config(
+    tmp_path: Path, monkeypatch, run_cli
+):
+    module_name = f"cli_override_env_{time.time_ns()}"
+    (tmp_path / f"{module_name}.py").write_text(
+        """
+import verifiers as vf
+
+
+class DemoTasksetConfig(vf.TasksetConfig):
+    count: int = 1
+    enabled: bool = True
+
+
+class DemoHarnessConfig(vf.HarnessConfig):
+    label: str = "base"
+
+
+def load_taskset(config: DemoTasksetConfig):
+    raise RuntimeError("not used")
+
+
+def load_harness(config: DemoHarnessConfig):
+    raise RuntimeError("not used")
+
+
+def load_environment(config: vf.EnvConfig):
+    raise RuntimeError("not used")
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    importlib.invalidate_caches()
+
+    captured = run_cli(
+        monkeypatch,
+        {
+            "env_id_or_config": module_name,
+            "env_args": {"config": {"taskset": {"count": 2}}},
+            "env_config_overrides": [
+                "--taskset.id",
+                "override-id",
+                "--no-taskset.enabled",
+                "--harness.id",
+                "demo-harness",
+                "--harness.max-turns",
+                "4",
+            ],
+        },
+    )
+
+    assert captured["configs"][0].env_args == {
+        "config": {
+            "taskset": {
+                "taskset_id": "override-id",
+                "count": 2,
+                "enabled": False,
+            },
+            "harness": {"harness_id": "demo-harness", "max_turns": 4},
+        }
+    }
 
 
 def test_get_env_eval_defaults_for_package_module(tmp_path: Path, monkeypatch):
@@ -322,12 +431,12 @@ def test_cli_registry_headers_merged_with_eval_toml(tmp_path, monkeypatch, run_c
         {"env_id_or_config": str(cfg)},
         endpoints={
             "gpt-5-mini": [
-                {
-                    "model": "gpt-5-mini",
-                    "url": "https://a.example/v1",
-                    "key": "OPENAI_API_KEY",
-                    "extra_headers": {"X-Reg": "r"},
-                }
+                endpoint(
+                    model="gpt-5-mini",
+                    base_url="https://a.example/v1",
+                    api_key_var="OPENAI_API_KEY",
+                    extra_headers={"X-Reg": "r"},
+                )
             ]
         },
     )
@@ -350,18 +459,18 @@ def test_cli_multi_variant_preserves_per_row_registry_headers(monkeypatch, run_c
         },
         endpoints={
             "gpt-5-mini": [
-                {
-                    "model": "gpt-5-mini",
-                    "url": "https://a.example/v1",
-                    "key": "OPENAI_API_KEY",
-                    "extra_headers": {"X-Row": "a"},
-                },
-                {
-                    "model": "gpt-5-mini",
-                    "url": "https://b.example/v1",
-                    "key": "OPENAI_API_KEY",
-                    "extra_headers": {"X-Row": "b"},
-                },
+                endpoint(
+                    model="gpt-5-mini",
+                    base_url="https://a.example/v1",
+                    api_key_var="OPENAI_API_KEY",
+                    extra_headers={"X-Row": "a"},
+                ),
+                endpoint(
+                    model="gpt-5-mini",
+                    base_url="https://b.example/v1",
+                    api_key_var="OPENAI_API_KEY",
+                    extra_headers={"X-Row": "b"},
+                ),
             ]
         },
     )
@@ -381,16 +490,16 @@ def test_cli_endpoint_alias_multi_variant_sets_multi_base_urls(monkeypatch, run_
         },
         endpoints={
             "gpt-5-mini": [
-                {
-                    "model": "gpt-5-mini",
-                    "url": "https://a.example/v1",
-                    "key": "OPENAI_API_KEY",
-                },
-                {
-                    "model": "gpt-5-mini",
-                    "url": "https://b.example/v1",
-                    "key": "OPENAI_API_KEY",
-                },
+                endpoint(
+                    model="gpt-5-mini",
+                    base_url="https://a.example/v1",
+                    api_key_var="OPENAI_API_KEY",
+                ),
+                endpoint(
+                    model="gpt-5-mini",
+                    base_url="https://b.example/v1",
+                    api_key_var="OPENAI_API_KEY",
+                ),
             ]
         },
     )
@@ -417,11 +526,11 @@ def test_cli_model_flag_resolves_endpoint_alias_when_registry_present(
         },
         endpoints={
             "gpt-4.1-mini": [
-                {
-                    "model": "openai/gpt-4.1-mini",
-                    "url": "https://alias.example/v1",
-                    "key": "ALIAS_API_KEY",
-                }
+                endpoint(
+                    model="openai/gpt-4.1-mini",
+                    base_url="https://alias.example/v1",
+                    api_key_var="ALIAS_API_KEY",
+                )
             ]
         },
     )
@@ -443,12 +552,12 @@ def test_cli_model_flag_uses_endpoint_client_type_when_provided(monkeypatch, run
         },
         endpoints={
             "haiku": [
-                {
-                    "model": "claude-haiku-4-5",
-                    "url": "https://api.anthropic.com",
-                    "key": "ANTHROPIC_API_KEY",
-                    "api_client_type": "anthropic_messages",
-                }
+                endpoint(
+                    model="claude-haiku-4-5",
+                    base_url="https://api.anthropic.com",
+                    api_key_var="ANTHROPIC_API_KEY",
+                    api_client_type="anthropic_messages",
+                )
             ]
         },
     )
@@ -518,16 +627,16 @@ def test_cli_endpoint_alias_multi_variant_supports_mixed_keys(monkeypatch, run_c
         },
         endpoints={
             "gpt-5-mini": [
-                {
-                    "model": "gpt-5-mini",
-                    "url": "https://a.example/v1",
-                    "key": "PRIME_API_KEY",
-                },
-                {
-                    "model": "gpt-5-mini",
-                    "url": "https://b.example/v1",
-                    "key": "OPENAI_API_KEY",
-                },
+                endpoint(
+                    model="gpt-5-mini",
+                    base_url="https://a.example/v1",
+                    api_key_var="PRIME_API_KEY",
+                ),
+                endpoint(
+                    model="gpt-5-mini",
+                    base_url="https://b.example/v1",
+                    api_key_var="OPENAI_API_KEY",
+                ),
             ]
         },
     )
@@ -551,16 +660,16 @@ def test_cli_endpoint_id_resolves_registry_alias(monkeypatch, run_cli):
             },
             endpoints={
                 "gpt-5-mini": [
-                    {
-                        "model": "gpt-5-mini",
-                        "url": "https://a.example/v1",
-                        "key": "OPENAI_API_KEY",
-                    },
-                    {
-                        "model": "gpt-5-mini",
-                        "url": "https://b.example/v1",
-                        "key": "OPENAI_API_KEY",
-                    },
+                    endpoint(
+                        model="gpt-5-mini",
+                        base_url="https://a.example/v1",
+                        api_key_var="OPENAI_API_KEY",
+                    ),
+                    endpoint(
+                        model="gpt-5-mini",
+                        base_url="https://b.example/v1",
+                        api_key_var="OPENAI_API_KEY",
+                    ),
                 ]
             },
         )
@@ -602,11 +711,11 @@ def test_cli_endpoint_id_accepts_directory_endpoints_path(monkeypatch, run_cli):
                 },
                 endpoints={
                     "gpt-5-mini": [
-                        {
-                            "model": "gpt-5-mini",
-                            "url": "https://a.example/v1",
-                            "key": "OPENAI_API_KEY",
-                        }
+                        endpoint(
+                            model="gpt-5-mini",
+                            base_url="https://a.example/v1",
+                            api_key_var="OPENAI_API_KEY",
+                        )
                     ]
                 },
             )
@@ -647,11 +756,11 @@ def test_cli_endpoint_id_requires_toml_endpoints_path(monkeypatch, run_cli):
                 },
                 endpoints={
                     "gpt-5-mini": [
-                        {
-                            "model": "gpt-5-mini",
-                            "url": "https://a.example/v1",
-                            "key": "OPENAI_API_KEY",
-                        }
+                        endpoint(
+                            model="gpt-5-mini",
+                            base_url="https://a.example/v1",
+                            api_key_var="OPENAI_API_KEY",
+                        )
                     ]
                 },
             )
@@ -883,6 +992,29 @@ def test_load_toml_config_with_args_taskset_harness():
     assert "args" not in result[0]
     assert "taskset" not in result[0]
     assert "harness" not in result[0]
+
+
+def test_load_toml_config_allows_taskset_id_without_env_id():
+    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
+        f.write(
+            "[[eval]]\n"
+            "[eval.taskset]\n"
+            'id = "tasksets.harbor"\n'
+            "num_examples = 10\n\n"
+            "[eval.harness]\n"
+            'id = "harnesses.opencode"\n'
+            "max_turns = 5\n"
+        )
+        f.flush()
+        result = load_toml_config(Path(f.name))
+
+    assert result[0]["env_id"] == "tasksets.harbor"
+    assert result[0]["env_args"] == {
+        "config": {
+            "taskset": {"id": "tasksets.harbor", "num_examples": 10},
+            "harness": {"id": "harnesses.opencode", "max_turns": 5},
+        },
+    }
 
 
 def test_load_toml_config_missing_env_section():

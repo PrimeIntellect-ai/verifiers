@@ -4,7 +4,7 @@ import logging
 import os
 import time
 import uuid
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable
 from typing import Literal, Protocol, cast
 
 from anthropic import Anthropic, AsyncAnthropic
@@ -15,6 +15,7 @@ from verifiers.types import (
     AssistantMessage,
     ClientType,
     EndpointApi,
+    EndpointConfig,
     Messages,
     SystemMessage,
     Tool,
@@ -22,7 +23,6 @@ from verifiers.types import (
     ToolMessage,
     UserMessage,
 )
-from verifiers.utils.async_utils import maybe_call_with_named_args
 from verifiers.utils.error_utils import error_info
 from verifiers.utils.interception_utils import (
     InterceptionServer,
@@ -32,10 +32,13 @@ from verifiers.utils.interception_utils import (
 from verifiers.utils.message_utils import normalize_messages
 from verifiers.utils.serve_utils import get_free_port
 
-from ..runtime import Runtime
+from ..runtime import ModelRequestContext, Runtime, TrajectoryVisibility
 from ..state import State
 from ..task import Task
-from ..types import ConfigData, ConfigMap, Handler, PromptMessage
+from ..types import ConfigData, PromptMessage, ToolParameters
+
+VF_TRAJECTORY_VISIBILITY_HEADER = "x-verifiers-trajectory"
+VF_ENDPOINT_API_KEY_VAR = "VF_ENDPOINT_API_KEY"
 
 
 class TunnelHandle(Protocol):
@@ -62,23 +65,20 @@ def client_from_state(
 def endpoint_config_from_state(
     state: State,
     api: EndpointApi | ClientType = "chat_completions",
-) -> dict[str, str]:
+) -> EndpointConfig:
     endpoint = endpoint_from_state(state)
     return endpoint.config(state, api=api)
 
 
 def endpoint_from_state(state: State) -> "Endpoint":
     runtime = state._runtime()
-    harness = getattr(runtime, "harness", None)
-    endpoint = getattr(harness, "endpoint", None)
+    harness = runtime.harness
+    if harness is None:
+        raise RuntimeError("State does not have an active model endpoint.")
+    endpoint = harness.endpoint
     if not isinstance(endpoint, Endpoint):
         raise RuntimeError("State does not have an active model endpoint.")
     return endpoint
-
-
-def endpoint_api_key(state: State) -> str:
-    endpoint = endpoint_from_state(state)
-    return str(endpoint.secret or "intercepted")
 
 
 def endpoint_api_client_type(
@@ -171,9 +171,11 @@ class Endpoint:
         )
         self._rollout_queues[rollout_key] = cast(asyncio.Queue[str], request_queue)
         endpoint_root_url = f"{await self.url_base()}/rollout/{rollout_key}"
+        api_key_var = f"{VF_ENDPOINT_API_KEY_VAR}_{rollout_key.upper()}"
         state["endpoint_rollout_key"] = rollout_key
         state["endpoint_root_url"] = endpoint_root_url
         state["endpoint_base_url"] = f"{endpoint_root_url}/v1"
+        state["endpoint_api_key_var"] = api_key_var
         return state["endpoint_base_url"]
 
     def client(
@@ -199,22 +201,19 @@ class Endpoint:
         self,
         state: State,
         api: EndpointApi | ClientType = "chat_completions",
-    ) -> dict[str, str]:
+    ) -> EndpointConfig:
         api = normalize_endpoint_api(api)
         base_url = (
             str(state["endpoint_root_url"])
             if api == "messages"
             else str(state["endpoint_base_url"])
         )
-        config = {
-            "model": state.get_model(),
-            "api_key": self.secret or "intercepted",
-            "base_url": base_url,
-            "api_client_type": endpoint_api_client_type(api),
-        }
-        if api != "messages":
-            config["api_base"] = base_url
-        return config
+        return EndpointConfig(
+            model=state.get_model(),
+            base_url=base_url,
+            api_key_var=str(state["endpoint_api_key_var"]),
+            api_client_type=endpoint_api_client_type(api),
+        )
 
     def unregister_rollout(self, rollout_key: str) -> None:
         self._rollout_queues.pop(rollout_key, None)
@@ -225,6 +224,39 @@ class Endpoint:
 
     def get_request(self, request_id: str) -> ConfigData:
         return cast(ConfigData, self.server.intercepts[request_id])
+
+    def request_context(
+        self, request_id: str, request: ConfigData
+    ) -> ModelRequestContext:
+        headers = request.get("headers") or {}
+        if not isinstance(headers, dict):
+            raise TypeError("Endpoint request headers must be a mapping.")
+        header_data: dict[str, str] = {}
+        for key, value in headers.items():
+            if not isinstance(key, str) or not isinstance(value, str):
+                raise TypeError("Endpoint request headers must be strings.")
+            header_data[key.lower()] = value
+        return ModelRequestContext(
+            source="endpoint",
+            endpoint_request_id=request_id,
+            headers=header_data,
+            trajectory_visibility=self.trajectory_visibility(header_data),
+        )
+
+    def trajectory_visibility(self, headers: dict[str, str]) -> TrajectoryVisibility:
+        value = headers.get(VF_TRAJECTORY_VISIBILITY_HEADER)
+        if value is None:
+            return "append"
+        if not isinstance(value, str):
+            raise TypeError(
+                f"{VF_TRAJECTORY_VISIBILITY_HEADER} must be 'append' or 'hidden'."
+            )
+        visibility = value.strip().lower()
+        if visibility not in {"append", "hidden"}:
+            raise ValueError(
+                f"{VF_TRAJECTORY_VISIBILITY_HEADER} must be 'append' or 'hidden'."
+            )
+        return cast(TrajectoryVisibility, visibility)
 
     async def url_base(self) -> str:
         if self.use_tunnel:
@@ -276,13 +308,13 @@ class Endpoint:
 
 
 async def run_intercepted_program(
-    program: Handler,
+    program: Callable[[Task, State], Awaitable[State | ConfigData | None]],
     endpoint: Endpoint,
     runtime: Runtime,
     task: Task,
     state: State,
 ) -> object:
-    async def call_tool(name: str, arguments: ConfigMap) -> object:
+    async def call_tool(name: str, arguments: ConfigData) -> object:
         return await runtime.call_tool(name, task, state, **dict(arguments))
 
     async def call_user(transcript: list[PromptMessage]) -> object:
@@ -301,9 +333,11 @@ async def run_intercepted_program(
         user_handler=call_user,
         stop_handler=check_stop,
     )
-    execution = asyncio.create_task(
-        maybe_call_with_named_args(program, task=task, state=state)
-    )
+
+    async def execute_program() -> State | ConfigData | None:
+        return await program(task, state)
+
+    execution = asyncio.create_task(execute_program())
     rollout_key = str(state["endpoint_rollout_key"])
     queue = endpoint.rollout_queue(rollout_key)
     pending: set[asyncio.Task[None]] = set()
@@ -409,11 +443,7 @@ async def forward_request(
             task,
             state,
             tool_defs=tool_defs,
-            extras={
-                "endpoint": True,
-                "endpoint_request_id": request_id,
-                "headers": request.get("headers") or {},
-            },
+            context=endpoint.request_context(request_id, request),
         )
     except BaseException as e:
         error = e
@@ -461,9 +491,9 @@ def normalize_anthropic_messages(request: ConfigData) -> Messages:
     if not isinstance(raw_messages, list):
         raise TypeError("Anthropic endpoint messages must be a list.")
     for raw_message in raw_messages:
-        if not isinstance(raw_message, Mapping):
+        if not isinstance(raw_message, dict):
             raise TypeError("Anthropic endpoint message entries must be dicts.")
-        raw_message = cast(ConfigMap, raw_message)
+        raw_message = cast(ConfigData, raw_message)
         role = raw_message.get("role")
         content = raw_message.get("content")
         if role == "user":
@@ -483,9 +513,9 @@ def normalize_anthropic_user_message(content: object) -> Messages:
     messages: Messages = []
     text_parts: list[str] = []
     for block in content:
-        if not isinstance(block, Mapping):
+        if not isinstance(block, dict):
             continue
-        block = cast(ConfigMap, block)
+        block = cast(ConfigData, block)
         block_type = block.get("type")
         if block_type == "text" and isinstance(block.get("text"), str):
             text_parts.append(str(block["text"]))
@@ -512,9 +542,9 @@ def normalize_anthropic_assistant_message(content: object) -> AssistantMessage:
     text_parts: list[str] = []
     tool_calls: list[ToolCall] = []
     for block in content:
-        if not isinstance(block, Mapping):
+        if not isinstance(block, dict):
             continue
-        block = cast(ConfigMap, block)
+        block = cast(ConfigData, block)
         block_type = block.get("type")
         if block_type == "text" and isinstance(block.get("text"), str):
             text_parts.append(str(block["text"]))
@@ -541,9 +571,9 @@ def anthropic_block_content_text(content: object) -> str:
     if isinstance(content, list):
         text_parts: list[str] = []
         for block in content:
-            if not isinstance(block, Mapping):
+            if not isinstance(block, dict):
                 continue
-            block = cast(ConfigMap, block)
+            block = cast(ConfigData, block)
             text = block.get("text")
             if isinstance(text, str):
                 text_parts.append(text)
@@ -558,9 +588,9 @@ def normalize_openai_responses_input(raw_input: object) -> Messages:
         raise TypeError("OpenAI Responses input must be a string or list.")
     messages: Messages = []
     for item in raw_input:
-        if not isinstance(item, Mapping):
+        if not isinstance(item, dict):
             raise TypeError("OpenAI Responses input entries must be dicts.")
-        item = cast(ConfigMap, item)
+        item = cast(ConfigData, item)
         item_type = item.get("type")
         if item_type == "function_call":
             call_id = item.get("call_id") or item.get("id")
@@ -591,7 +621,7 @@ def normalize_openai_responses_input(raw_input: object) -> Messages:
             continue
         role = item.get("role")
         content = responses_content_text(item.get("content"))
-        if role == "system":
+        if role in {"system", "developer"}:
             messages.append(SystemMessage(content=content))
         elif role == "assistant":
             messages.append(AssistantMessage(content=content))
@@ -606,8 +636,8 @@ def responses_content_text(content: object) -> str:
     if isinstance(content, list):
         text_parts: list[str] = []
         for part in content:
-            if isinstance(part, Mapping):
-                part = cast(ConfigMap, part)
+            if isinstance(part, dict):
+                part = cast(ConfigData, part)
                 text = part.get("text")
                 if isinstance(text, str):
                     text_parts.append(text)
@@ -627,42 +657,56 @@ def normalize_endpoint_tools(tools: object, protocol: str) -> list[Tool] | None:
             continue
         if not isinstance(raw_tool, dict):
             raise TypeError("Endpoint tool definitions must be dicts.")
-        raw_tool = cast(ConfigData, raw_tool)
+        raw_tool_data = cast(ToolParameters, raw_tool)
         if protocol == "anthropic_messages":
             normalized.append(
                 Tool(
-                    name=str(raw_tool.get("name", "")),
-                    description=str(raw_tool.get("description", "")),
-                    parameters=cast(ConfigData, raw_tool.get("input_schema") or {}),
+                    name=str(raw_tool_data.get("name", "")),
+                    description=str(raw_tool_data.get("description", "")),
+                    parameters=endpoint_tool_parameters(
+                        raw_tool_data.get("input_schema")
+                    ),
                 )
             )
             continue
         if protocol == "openai_responses":
             normalized.append(
                 Tool(
-                    name=str(raw_tool.get("name", "")),
-                    description=str(raw_tool.get("description", "")),
-                    parameters=cast(ConfigData, raw_tool.get("parameters") or {}),
-                    strict=cast(bool | None, raw_tool.get("strict")),
+                    name=str(raw_tool_data.get("name", "")),
+                    description=str(raw_tool_data.get("description", "")),
+                    parameters=endpoint_tool_parameters(
+                        raw_tool_data.get("parameters")
+                    ),
+                    strict=cast(bool | None, raw_tool_data.get("strict")),
                 )
             )
             continue
-        function_payload = raw_tool.get("function")
-        if raw_tool.get("type") == "function" and isinstance(function_payload, dict):
-            function_payload = cast(ConfigData, function_payload)
+        function_payload = raw_tool_data.get("function")
+        if raw_tool_data.get("type") == "function" and isinstance(
+            function_payload, dict
+        ):
+            function_payload = cast(ToolParameters, function_payload)
             normalized.append(
                 Tool(
                     name=str(function_payload.get("name", "")),
                     description=str(function_payload.get("description", "")),
-                    parameters=cast(
-                        ConfigData, function_payload.get("parameters") or {}
+                    parameters=endpoint_tool_parameters(
+                        function_payload.get("parameters")
                     ),
                     strict=cast(bool | None, function_payload.get("strict")),
                 )
             )
         else:
-            normalized.append(Tool.model_validate(raw_tool))
+            normalized.append(Tool.model_validate(raw_tool_data))
     return normalized
+
+
+def endpoint_tool_parameters(value: object) -> ToolParameters:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise TypeError("Endpoint tool parameters must be a mapping.")
+    return {str(key): item for key, item in value.items()}
 
 
 def assistant_completion_from_messages(

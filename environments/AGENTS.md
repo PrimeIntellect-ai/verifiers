@@ -702,20 +702,26 @@ environments/my_env/
 
 ### v1 Env Shape
 
-The golden v1 shape is one taskset config, one typed
-`load_taskset(config: MyTasksetConfig)` factory, and a tiny
-`load_environment(config: vf.EnvConfig)` that calls
-`vf.load_taskset(config=config.taskset)`. The factory signature defines
-the taskset config type.
-Add a harness config and harness class only when the environment owns reusable
-rollout behavior; otherwise omit `harness=` and `vf.Env` uses the base harness.
-The loader's `config` parameter is a strict, non-optional config object supplied
-by the framework; do not accept `None` or synthesize fallback configs.
+The v1 template teaches the standard object layout: one taskset class, one
+typed `load_taskset(config: MyTasksetConfig)` child factory, and a tiny
+`load_environment(config: vf.EnvConfig)` root loader that delegates through
+`vf.load_taskset(config=config.taskset)` and
+`vf.load_harness(config=config.harness)`. The child factory annotation defines
+the taskset config type for TOML, CLI, eval, GEPA, RL, and Hosted Training.
 
-`EnvConfig` is a lightweight envelope for the two child configs. Put environment
-knobs on `TasksetConfig` or `HarnessConfig`, not on `EnvConfig` itself. Do not
-subclass `EnvConfig` just to narrow child config types. Environment packages
-should not subclass `Env`.
+After `prime env init my-env --v1`, edit the generated taskset class:
+
+1. Add task settings to `TasksetConfig`.
+2. Return train/eval task records from `load_tasks`.
+3. Return task-owned tools from `load_toolsets` when needed.
+4. Add lifecycle, metric, reward, and advantage methods with `@vf.*`.
+
+Add a harness config, harness class, and `load_harness(config:
+MyHarnessConfig)` when the environment owns reusable rollout behavior.
+Otherwise the generated root loader uses the base harness.
+
+`EnvConfig` is the lightweight envelope for the two child configs. Put
+environment knobs on `TasksetConfig` or `HarnessConfig`.
 
 The taskset-only shape is:
 
@@ -724,23 +730,29 @@ import verifiers as vf
 
 
 class MyTasksetConfig(vf.TasksetConfig):
-    split: str = "train"
+    system_prompt: vf.SystemPrompt = "Answer exactly."
 
 
 class MyTaskset(vf.Taskset[MyTasksetConfig]):
-    def load_tasks(self) -> vf.Tasks:
-        rows = [
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
+        """Return serializable task records as a list, generator, or Dataset."""
+        if split == "eval":
+            return []
+        return [
             {
                 "prompt": [{"role": "user", "content": "Reverse abc."}],
                 "answer": "cba",
-                "split": "train",
+                "max_turns": 1,
             }
         ]
-        return [row for row in rows if row["split"] == self.config.split]
 
     @vf.reward(weight=1.0)
-    async def contains_answer(self, task, state) -> float:
-        return float(task["answer"] in str(state.get("completion") or ""))
+    async def correct_answer(self, task: vf.Task, state: vf.State) -> float:
+        messages = vf.get_messages(state.get("completion") or [], role="assistant")
+        if not messages:
+            return 0.0
+        response = str(messages[-1].content or "").strip()
+        return float(response == task["answer"])
 
 
 def load_taskset(config: MyTasksetConfig) -> MyTaskset:
@@ -748,7 +760,11 @@ def load_taskset(config: MyTasksetConfig) -> MyTaskset:
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
-    return vf.Env(taskset=vf.load_taskset(config=config.taskset))
+    """Loader pattern for all Taskset/Harness environments."""
+    return vf.Env(
+        taskset=vf.load_taskset(config=config.taskset),
+        harness=vf.load_harness(config=config.harness),
+    )
 ```
 
 With a reusable harness, keep the same explicit object boundary:
@@ -758,13 +774,12 @@ class MyHarnessConfig(vf.HarnessConfig):
     max_turns: int = 20
 
 
-class MyHarness(vf.Harness):
-    config: MyHarnessConfig
-    pass
+class MyHarness(vf.Harness[MyHarnessConfig]):
+    """Reusable execution behavior for this environment."""
 
 
-def load_taskset(config: MyTasksetConfig) -> vf.Taskset:
-    return vf.Taskset(config=config)
+def load_taskset(config: MyTasksetConfig) -> MyTaskset:
+    return MyTaskset(config=config)
 
 
 def load_harness(config: MyHarnessConfig) -> MyHarness:
@@ -772,6 +787,7 @@ def load_harness(config: MyHarnessConfig) -> MyHarness:
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
+    """Loader pattern for all Taskset/Harness environments."""
     return vf.Env(
         taskset=vf.load_taskset(config=config.taskset),
         harness=vf.load_harness(config=config.harness),
@@ -792,17 +808,19 @@ Judge-style rewards should read endpoint details from the rollout state:
 @vf.reward(weight=1.0)
 async def judge_reward(task, state) -> float:
     endpoint = state.get_endpoint_config(api="chat")
-    client = AsyncOpenAI(
-        base_url=endpoint["base_url"],
-        api_key=endpoint["api_key"],
-    )
-    model = str(task.get("judge_model") or endpoint["model"])
+    client = state.get_client(api="chat")
+    model = str(task.get("judge_model") or endpoint.model)
     ...
 ```
 
 Expose at most `judge_model: str | None = None` on the taskset config. Do not
 add judge endpoint URL/API-key fields or read `os.environ` inside reward/update
 handlers.
+
+For reusable tasksets and harnesses, [BYO Harness](byo-harness.md) is the
+canonical v1 implementation guide. It covers ownership, configs, task controls,
+system prompts, users, toolsets, programs, sandboxes, artifacts, nested
+harnesses, package adapters, and TOML/CLI overrides.
 
 ### pyproject.toml
 
@@ -998,8 +1016,9 @@ Supported third-party environment integrations include:
 - **`ReasoningGymEnv`** — wraps [reasoning-gym](https://github.com/open-thought/reasoning-gym) procedural datasets
 - **`BrowserEnv`** — unified browser automation via [Browserbase](https://browserbase.com) with DOM and CUA modes
 - **`OpenEnvEnv`** — wraps OpenEnv gym and MCP contracts using Prime Sandboxes with prebuilt images referenced from `.build.json`
+- **`NeMoGymTaskset` / `NeMoGymHarness`** — packaged v1 taskset/harness adapters for NeMo Gym JSONL rows and rollout collection
 
-These require additional dependencies installed via extras (e.g., `uv add 'verifiers[ta]'` for TextArena, `uv add 'verifiers[browser]'` for BrowserEnv). OpenEnvEnv uses the base Verifiers install; the bundled OpenEnv project under `proj/` owns its server dependencies and must be built with `uv run vf-build <env-id>` before evaluation or training.
+These require additional dependencies installed via extras (e.g., `uv add 'verifiers[ta]'` for TextArena, `uv add 'verifiers[browser]'` for BrowserEnv, `uv add 'verifiers[openenv]'` for OpenEnvEnv, `uv add 'verifiers[nemogym]'` for NeMo Gym). The bundled OpenEnv project under `proj/` owns its server dependencies and must be built with `uv run vf-build <env-id>` before evaluation or training.
 
 Newer and more experimental environment classes include:
 
@@ -1016,7 +1035,7 @@ Newer and more experimental environment classes include:
         timeouts=SandboxTimeouts(read_file=30.0, extract=180.0, poll=120.0),
     )
     ```
-- **`vf.Env` / `vf.Taskset` / `vf.Harness`** — preferred taskset/harness pattern for composing task data and program execution without subclassing. Use this for environments that need reusable tasksets, reusable harnesses, config-driven metrics, rewards, toolsets, users, endpoint interception, or sandboxed Python/command programs. `vf.Taskset` owns train/eval rows, prompt shaping, setup/update/reward hooks, and toolsets. `vf.Harness` owns the framework program, endpoint proxy, model controls, sandbox options, and runtime hooks. `vf.Env` wires them into the standard evaluation and training surface.
+- **`vf.Env` / `vf.Taskset` / `vf.Harness`** — preferred taskset/harness pattern for composing task data and program execution without subclassing. Use this for environments that need reusable tasksets, reusable harnesses, config-driven metrics, rewards, toolsets, users, endpoint interception, or sandboxed Python/command programs. `vf.Taskset` owns train/eval tasks, prompt shaping, setup/update/reward hooks, and toolsets. `vf.Harness` owns the framework program, endpoint proxy, model controls, sandbox options, and runtime hooks. `vf.Env` wires them into the standard evaluation and training surface.
 - **`SWEDebugEnv`** — no-agent debugger for SWE-style `SandboxTaskSet` instances. It creates the task sandbox, optionally runs `taskset.setup(state)`, performs one debug step (`none`, `gold_patch`, `command`, or `script`), and optionally runs the task tests and scorer. It records setup, sandbox creation, gold patch, debug command, and test timings in state for validation and timing investigations.
 - **`HarborEnv`** — loads Harbor-format agent benchmark tasks
 - **`RLMEnv`** — implements [Recursive Language Models](https://alexzhang13.github.io/blog/2025/rlm/) for unbounded context processing via REPL-based decomposition and recursive sub-LLM calls

@@ -162,10 +162,12 @@ class PassAtKMetric:
         self.reset()
 
     def add_output(self, output: RolloutOutput) -> None:
+        example_id = output["example_id"]
+        if example_id is None:
+            raise ValueError("output['example_id'] is required.")
         if not self._k_values:
             return
 
-        example_id = output.get("example_id", 0)
         self._example_counts[example_id] += 1
         if output.get("reward", 0.0) >= self.threshold:
             self._example_correct[example_id] += 1

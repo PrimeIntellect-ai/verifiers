@@ -14,17 +14,18 @@ from typing_extensions import TypedDict
 from verifiers.utils.async_utils import maybe_call_with_named_args
 
 from .binding_utils import ROLLOUT_FRAMEWORK_ARGS, function_name
-from .timing_utils import record_scoring_timing
-from ..types import ConfigData, ConfigMap, GroupHandler, Handler
+from ..state import State
+from ..task import Task
+from ..types import ConfigData, Handler, RuntimeData
 
 SignalKind = Literal["metric", "reward", "advantage"]
 SignalStage = Literal["rollout", "group"]
-SignalConfigMap = dict[str, ConfigMap]
+ScoringConfig = dict[str, ConfigData]
 SIGNAL_CONFIG_KEYS = {"stage", "priority", "weight", "skip"}
 
 
 class SignalRecord(TypedDict):
-    fn: Handler | GroupHandler
+    fn: Handler
     name: str
     kind: SignalKind
     stage: SignalStage
@@ -34,7 +35,7 @@ class SignalRecord(TypedDict):
 
 def build_signals(
     owner: object | None = None,
-    scoring: SignalConfigMap | None = None,
+    scoring: ScoringConfig | None = None,
     metrics: Iterable[Handler] | None = None,
     rewards: Iterable[Handler] | None = None,
     advantages: Iterable[Handler] | None = None,
@@ -80,19 +81,19 @@ def add_advantage(signals: MutableSequence[SignalRecord], fn: Handler) -> None:
 
 async def score_rollout(
     signals: Iterable[SignalRecord],
-    task: ConfigMap,
-    state: ConfigData,
+    task: Task,
+    state: State,
     resolve_kwargs: Callable[
         [
             Handler,
-            ConfigMap,
-            ConfigData,
+            Task,
+            State,
             set[str],
         ],
-        Awaitable[ConfigData],
+        Awaitable[RuntimeData],
     ]
     | None = None,
-) -> ConfigData:
+) -> State:
     start_time = time.time()
     reward = float_value(state.get("reward"), 0.0)
     metrics = dict(cast(dict[str, float], state.get("metrics") or {}))
@@ -101,7 +102,7 @@ async def score_rollout(
     for signal in sorted(signals, key=signal_sort_key):
         if signal["stage"] != "rollout":
             continue
-        extra_kwargs: ConfigData = {}
+        extra_kwargs: RuntimeData = {}
         if resolve_kwargs is not None:
             extra_kwargs = await resolve_kwargs(
                 cast(Handler, signal["fn"]),
@@ -115,25 +116,25 @@ async def score_rollout(
             reward += value * cast(float, signal["weight"])
     state["metrics"] = metrics
     state["reward"] = reward
-    record_scoring_timing(state, start_time)
+    state.record_scoring_timing(start_time)
     return state
 
 
 async def score_group(
     signals: Iterable[SignalRecord],
-    tasks: list[ConfigMap],
-    states: list[ConfigData],
+    tasks: list[Task],
+    states: list[State],
     resolve_kwargs: Callable[
         [
             Handler,
-            list[ConfigMap],
-            list[ConfigData],
+            list[Task],
+            list[State],
             set[str],
         ],
-        Awaitable[ConfigData],
+        Awaitable[RuntimeData],
     ]
     | None = None,
-) -> list[ConfigData]:
+) -> list[State]:
     start_time = time.time()
     rewards = [float_value(state.get("reward"), 0.0) for state in states]
     advantage_signals: list[SignalRecord] = []
@@ -145,7 +146,7 @@ async def score_group(
         if signal["kind"] == "advantage":
             advantage_signals.append(signal)
             continue
-        extra_kwargs: ConfigData = {}
+        extra_kwargs: RuntimeData = {}
         if resolve_kwargs is not None:
             extra_kwargs = await resolve_kwargs(
                 cast(Handler, signal["fn"]),
@@ -162,7 +163,7 @@ async def score_group(
                 rewards[index] += value * cast(float, signal["weight"])
     advantages: list[float] | None = None
     for signal in advantage_signals:
-        extra_kwargs = {}
+        extra_kwargs: RuntimeData = {}
         if resolve_kwargs is not None:
             extra_kwargs = await resolve_kwargs(
                 cast(Handler, signal["fn"]),
@@ -176,7 +177,7 @@ async def score_group(
         if advantages is not None:
             state["advantage"] = advantages[index]
             apply_advantage_to_trajectory(state, advantages[index])
-        record_scoring_timing(state, start_time)
+        state.record_scoring_timing(start_time)
     return states
 
 
@@ -189,7 +190,7 @@ def add_signal(signals: MutableSequence[SignalRecord], signal: SignalRecord) -> 
 
 
 def apply_scoring_config(
-    signals: MutableSequence[SignalRecord], scoring: SignalConfigMap
+    signals: MutableSequence[SignalRecord], scoring: ScoringConfig
 ) -> None:
     by_name = {cast(str, signal["name"]): signal for signal in signals}
     for name, config in scoring.items():
@@ -212,12 +213,13 @@ def apply_scoring_config(
 def decorated_signals(owner: object) -> list[SignalRecord]:
     signals: list[SignalRecord] = []
     for _, method in inspect.getmembers(owner, predicate=callable):
+        signal = cast(Handler, method)
         if getattr(method, "metric", False):
-            signals.append(signal_from_function(method, "metric"))
+            signals.append(signal_from_function(signal, "metric"))
         if getattr(method, "reward", False):
-            signals.append(signal_from_function(method, "reward"))
+            signals.append(signal_from_function(signal, "reward"))
         if getattr(method, "advantage", False):
-            signals.append(signal_from_function(method, "advantage"))
+            signals.append(signal_from_function(signal, "advantage"))
     return signals
 
 
@@ -247,7 +249,7 @@ def signal_from_function(fn: Handler, kind: SignalKind | None = None) -> SignalR
     }
 
 
-def apply_signal_config(signal: SignalRecord, config: ConfigMap) -> SignalRecord:
+def apply_signal_config(signal: SignalRecord, config: ConfigData) -> SignalRecord:
     kind = cast(SignalKind, signal["kind"])
     stage = get_optional_stage(config) or cast(SignalStage, signal["stage"])
     priority_value = get_optional_number(config, "priority")
@@ -298,10 +300,10 @@ def validate_signal(signal: SignalRecord) -> None:
 
 async def call_rollout_signal(
     signal: SignalRecord,
-    framework_kwargs: ConfigMap,
-    extra_kwargs: ConfigMap | None = None,
+    framework_kwargs: RuntimeData,
+    extra_kwargs: RuntimeData | None = None,
 ) -> float:
-    fn = cast(GroupHandler, signal["fn"])
+    fn = cast(Handler, signal["fn"])
     kwargs = {**dict(extra_kwargs or {}), **dict(framework_kwargs)}
     validate_required_kwargs(fn, kwargs, signal_context(signal))
     value = await maybe_call_with_named_args(fn, **kwargs)
@@ -310,8 +312,8 @@ async def call_rollout_signal(
 
 async def call_group_signal(
     signal: SignalRecord,
-    framework_kwargs: ConfigMap,
-    extra_kwargs: ConfigMap | None = None,
+    framework_kwargs: RuntimeData,
+    extra_kwargs: RuntimeData | None = None,
 ) -> list[float]:
     fn = cast(Handler, signal["fn"])
     kwargs = {**dict(extra_kwargs or {}), **dict(framework_kwargs)}
@@ -321,7 +323,7 @@ async def call_group_signal(
     if not isinstance(value, Sequence) or isinstance(value, str | bytes):
         raise TypeError(f"Group signal {name!r} must return a list of floats.")
     values = [float(item) for item in value]
-    states = cast(list[ConfigData], framework_kwargs["states"])
+    states = cast(list[State], framework_kwargs["states"])
     if len(values) != len(states):
         raise ValueError(
             f"Group signal {name!r} returned {len(values)} values for "
@@ -330,8 +332,8 @@ async def call_group_signal(
     return values
 
 
-def rollout_framework_kwargs(task: ConfigMap, state: ConfigData) -> ConfigData:
-    kwargs: ConfigData = {"task": task, "state": state}
+def rollout_framework_kwargs(task: Task, state: State) -> RuntimeData:
+    kwargs: RuntimeData = {"task": task, "state": state}
     for name in sorted(ROLLOUT_FRAMEWORK_ARGS - {"task", "state"}):
         if name in state:
             kwargs[name] = state[name]
@@ -340,13 +342,11 @@ def rollout_framework_kwargs(task: ConfigMap, state: ConfigData) -> ConfigData:
     return kwargs
 
 
-def group_framework_kwargs(
-    tasks: list[ConfigMap], states: list[ConfigData]
-) -> ConfigData:
+def group_framework_kwargs(tasks: list[Task], states: list[State]) -> RuntimeData:
     return {"tasks": tasks, "states": states}
 
 
-def validate_required_kwargs(fn: Handler, kwargs: ConfigMap, context: str) -> None:
+def validate_required_kwargs(fn: Handler, kwargs: RuntimeData, context: str) -> None:
     signature = inspect.signature(fn)
     missing: list[str] = []
     for parameter in signature.parameters.values():
@@ -369,14 +369,14 @@ def signal_context(signal: SignalRecord) -> str:
     return f"{signal['kind']} signal {signal['name']!r}"
 
 
-def validate_signal_config(name: str, config: ConfigMap) -> None:
+def validate_signal_config(name: str, config: ConfigData) -> None:
     unknown_keys = set(config) - SIGNAL_CONFIG_KEYS
     if unknown_keys:
         unknown = ", ".join(sorted(unknown_keys))
         raise ValueError(f"Signal config {name!r} has unknown keys: {unknown}.")
 
 
-def get_optional_str(config: ConfigMap, key: str) -> str | None:
+def get_optional_str(config: ConfigData, key: str) -> str | None:
     value = config.get(key)
     if value is None:
         return None
@@ -385,7 +385,7 @@ def get_optional_str(config: ConfigMap, key: str) -> str | None:
     return value
 
 
-def get_optional_stage(config: ConfigMap) -> SignalStage | None:
+def get_optional_stage(config: ConfigData) -> SignalStage | None:
     value = get_optional_str(config, "stage")
     if value is None:
         return None
@@ -394,7 +394,7 @@ def get_optional_stage(config: ConfigMap) -> SignalStage | None:
     return cast(SignalStage, value)
 
 
-def get_optional_number(config: ConfigMap, key: str) -> int | float | None:
+def get_optional_number(config: ConfigData, key: str) -> int | float | None:
     value = config.get(key)
     if value is None:
         return None
@@ -403,7 +403,7 @@ def get_optional_number(config: ConfigMap, key: str) -> int | float | None:
     return value
 
 
-def bool_config(config: ConfigMap, key: str, default: bool) -> bool:
+def bool_config(config: ConfigData, key: str, default: bool) -> bool:
     value = config.get(key, default)
     if not isinstance(value, bool):
         raise TypeError(f"Signal config key {key!r} must be a boolean.")
@@ -418,7 +418,7 @@ def float_value(value: object, default: float = 0.0) -> float:
     return float(value or 0.0)
 
 
-def apply_advantage_to_trajectory(state: ConfigData, advantage: float) -> None:
+def apply_advantage_to_trajectory(state: State, advantage: float) -> None:
     trajectory = state.get("trajectory", [])
     if not isinstance(trajectory, list):
         return

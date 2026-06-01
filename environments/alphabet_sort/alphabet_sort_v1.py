@@ -301,17 +301,22 @@ async def weighted_reward(task, state) -> float:
     return (total / actual_turns) ** similarity_power
 
 
-async def alphabet_user(task, state, messages) -> list[dict[str, str]]:
-    assistant_count = len(vf.get_messages(messages, role="assistant"))
-    follow_ups = state["info"]["follow_ups"]
-    if assistant_count <= 0 or assistant_count > len(follow_ups):
-        return []
-    return [{"role": "user", "content": follow_ups[assistant_count - 1]}]
+class AlphabetUserConfig(vf.UserConfig):
+    pass
+
+
+class AlphabetUser(vf.User[AlphabetUserConfig]):
+    async def get_response(self, task, state, messages) -> list[dict[str, str]]:
+        assistant_count = len(vf.get_messages(messages, role="assistant"))
+        follow_ups = state["info"]["follow_ups"]
+        if assistant_count <= 0 or assistant_count > len(follow_ups):
+            return []
+        return [{"role": "user", "content": follow_ups[assistant_count - 1]}]
 
 
 class AlphabetSortTasksetConfig(vf.TasksetConfig):
+    user: AlphabetUserConfig | None = AlphabetUserConfig()
     rewards: list[str] = ["weighted_reward"]
-    user: str | None = "alphabet_user"
     min_turns: int = 1
     max_turns: int = 3
     min_names_per_turn: int = 1
@@ -339,7 +344,7 @@ class AlphabetSortEnvConfig(vf.EnvConfig):
 
 
 class AlphabetSortTaskset(vf.Taskset[AlphabetSortTasksetConfig]):
-    def load_tasks(self) -> vf.Tasks:
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         return load_tasks(
             min_turns=self.config.min_turns,
             max_turns=self.config.max_turns,

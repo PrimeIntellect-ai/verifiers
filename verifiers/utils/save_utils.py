@@ -218,8 +218,12 @@ def state_to_output(
     else:
         raise TypeError("state['timing'] must be a RolloutTiming or mapping.")
 
+    example_id = state["example_id"]
+    if example_id is None:
+        raise ValueError("state['example_id'] is required.")
+
     output = RolloutOutput(
-        example_id=state.get("example_id", 0),
+        example_id=example_id,
         prompt=state.get("prompt"),
         completion=state.get("completion"),
         answer=state.get("answer", ""),
@@ -671,8 +675,15 @@ class GenerateOutputsBuilder:
     def build_outputs(self, sort_by_example_id: bool = False) -> list[RolloutOutput]:
         """Return (sorted) accumulated outputs"""
         if sort_by_example_id:
-            return sorted(self.outputs, key=lambda o: o.get("example_id", 0))
+            return sorted(self.outputs, key=self.output_example_id)
         return self.outputs
+
+    @staticmethod
+    def output_example_id(output: RolloutOutput) -> int:
+        example_id = output["example_id"]
+        if example_id is None:
+            raise ValueError("output['example_id'] is required.")
+        return example_id
 
     def build(self, sort_by_example_id: bool = False) -> GenerateOutputs:
         """Build GenerateOutputs from accumulated outputs."""

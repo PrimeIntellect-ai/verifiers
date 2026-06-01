@@ -1,28 +1,29 @@
 import asyncio
 import os
 import shlex
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from typing import cast
 
 from verifiers.errors import InfraError
 from verifiers.utils.async_utils import maybe_call_with_named_args
 
-from ..config import resolve_config_object, string_mapping
+from .config_utils import resolve_config_object, string_mapping
 from .binding_utils import (
+    BindingsConfig,
     binding_key_parts,
     function_name,
-    normalize_binding_map,
     read_path,
     validate_binding_source,
     validate_bound_arg,
-    validate_callable_source,
 )
 from ..runtime import Runtime
 from ..state import State
 from ..task import Task
 from .mcp_proxy_utils import validate_program_channels
-from ..types import ConfigData, ConfigInputMap, ConfigMap, Handler, ProgramChannel
-from ..types import ProgramValue
+from ..artifact import ArtifactsConfig
+from ..program import ProgramChannel, ProgramValue
+from ..sandbox import SandboxConfig
+from ..types import ConfigData, Handler, RuntimeData
 
 PROGRAM_KIND_KEYS = {"base", "fn", "command"}
 PROGRAM_OPTION_KEYS = {
@@ -50,7 +51,7 @@ TASK_PROGRAM_KEYS = {
 
 
 async def run_local_command(
-    program: ConfigMap, task: Task, state: State, runtime: Runtime
+    program: ConfigData, task: Task, state: State, runtime: Runtime
 ) -> State:
     if "mcp" in program_channels(program):
         raise ValueError("program.channels='mcp' requires sandbox command placement.")
@@ -82,7 +83,7 @@ async def run_local_command(
 
 
 async def command_argv(
-    program: ConfigMap, task: Task, state: State, runtime: Runtime
+    program: ConfigData, task: Task, state: State, runtime: Runtime
 ) -> list[str]:
     command = program.get("command")
     if isinstance(command, str):
@@ -107,7 +108,7 @@ async def command_argv(
 
 
 async def command_env(
-    program: ConfigMap,
+    program: ConfigData,
     task: Task,
     state: State,
     runtime: Runtime,
@@ -116,15 +117,21 @@ async def command_env(
     env = dict(os.environ) if include_base else {}
     endpoint_base_url = state.get("endpoint_base_url")
     if isinstance(endpoint_base_url, str):
-        api_key = endpoint_api_key(runtime)
+        harness = runtime.harness
+        if harness is None:
+            raise RuntimeError("Runtime has no active model endpoint.")
+        api_key = str(harness.endpoint.secret or "intercepted")
         endpoint_root_url = state.get("endpoint_root_url")
         env["OPENAI_BASE_URL"] = endpoint_base_url
         env["OPENAI_API_KEY"] = api_key
+        api_key_var = state.get("endpoint_api_key_var")
+        if isinstance(api_key_var, str):
+            env[api_key_var] = api_key
         if isinstance(endpoint_root_url, str):
             env["ANTHROPIC_BASE_URL"] = endpoint_root_url
             env["ANTHROPIC_API_KEY"] = api_key
     raw_env = program.get("env", {})
-    if not isinstance(raw_env, Mapping):
+    if not isinstance(raw_env, dict):
         raise TypeError("program.env must be a mapping.")
     for key, value in raw_env.items():
         if not isinstance(key, str):
@@ -140,12 +147,19 @@ async def resolve_program_value(
     task: Task,
     state: State,
     runtime: Runtime,
-    program: ConfigMap | None = None,
+    program: ConfigData | None = None,
 ) -> object:
-    fn = program_value_callable(value)
-    if fn is not None:
+    callable_spec = program_value_callable(value)
+    if callable_spec is not None:
+        fn, configured_kwargs = callable_spec
         kwargs = await program_binding_kwargs(fn, program, task, state, runtime)
-        return await maybe_call_with_named_args(fn, task=task, state=state, **kwargs)
+        for key, item in configured_kwargs.items():
+            kwargs[key] = await resolve_program_value(
+                item, task, state, runtime, program
+            )
+        return await maybe_call_with_named_args(
+            fn, task=task, state=state, runtime=runtime, **kwargs
+        )
     if isinstance(value, str):
         root, separator, tail = value.partition(".")
         if separator and root == "task":
@@ -153,8 +167,8 @@ async def resolve_program_value(
         if separator and root == "state":
             return read_path(state, tail)
         if separator and root == "runtime":
-            return read_path(state.get("runtime", {}), tail)
-    if isinstance(value, Mapping):
+            return read_path(state.runtime_state(), tail)
+    if isinstance(value, dict):
         if len(value) != 1:
             raise ValueError("Program value mappings must have exactly one root.")
         root, path = next(iter(value.items()))
@@ -163,40 +177,48 @@ async def resolve_program_value(
         if root == "state":
             return read_path(state, str(path))
         if root == "runtime":
-            return read_path(state.get("runtime", {}), str(path))
+            return read_path(state.runtime_state(), str(path))
         raise ValueError(f"Unknown program value root {root!r}.")
     return value
 
 
-def program_value_callable(value: object) -> Handler | None:
-    if callable(value):
-        return cast(Handler, value)
-    if isinstance(value, Mapping) and "fn" in value:
-        spec = cast(ConfigMap, value)
-        validate_callable_source(spec, "Program callable value")
+def program_value_callable(value: object) -> tuple[Handler, ConfigData] | None:
+    if isinstance(value, dict) and "fn" in value:
+        spec = cast(ConfigData, value)
+        validate_program_callable_source(spec)
         fn = resolve_config_object(spec["fn"])
         if not callable(fn):
             raise TypeError("Program callable value requires callable fn.")
-        return cast(Handler, fn)
+        kwargs = {key: item for key, item in spec.items() if key != "fn"}
+        return cast(Handler, fn), kwargs
     return None
+
+
+def validate_program_callable_source(source: ConfigData) -> None:
+    fn = source.get("fn")
+    if not isinstance(fn, str):
+        raise TypeError("Program callable value fn must be an import ref string.")
+    for key in source:
+        if not isinstance(key, str) or not key:
+            raise TypeError("Program callable value keys must be non-empty strings.")
 
 
 async def program_binding_kwargs(
     fn: Handler,
-    program: ConfigMap | None,
+    program: ConfigData | None,
     task: Task,
     state: State,
     runtime: Runtime,
-) -> ConfigData:
+) -> RuntimeData:
     if program is None:
         return {}
-    raw_bindings = normalize_binding_map(
-        program.get("bindings"), "program.bindings", allow_objects=False
+    raw_bindings = BindingsConfig.model_validate(program.get("bindings") or {}).entries(
+        "program.bindings", allow_objects=False
     )
     if not raw_bindings:
         return {}
     name = function_name(fn)
-    kwargs: ConfigData = {}
+    kwargs: RuntimeData = {}
     for binding_key, source in raw_bindings.items():
         target_name, arg_name = binding_key_parts(binding_key)
         if target_name != name:
@@ -211,9 +233,9 @@ async def program_binding_kwargs(
     return kwargs
 
 
-def validate_program_bindings(program: ConfigMap) -> None:
-    raw_bindings = normalize_binding_map(
-        program.get("bindings"), "program.bindings", allow_objects=False
+def validate_program_bindings(program: ConfigData) -> None:
+    raw_bindings = BindingsConfig.model_validate(program.get("bindings") or {}).entries(
+        "program.bindings", allow_objects=False
     )
     if not raw_bindings:
         return
@@ -238,14 +260,15 @@ def validate_program_bindings(program: ConfigMap) -> None:
 
 
 def program_binding_targets(
-    program: ConfigMap,
+    program: ConfigData,
 ) -> dict[str, Handler]:
     targets: dict[str, Handler] = {}
 
     def add(value: object) -> None:
-        fn = program_value_callable(value)
-        if fn is None:
+        callable_spec = program_value_callable(value)
+        if callable_spec is None:
             return
+        fn, _ = callable_spec
         name = function_name(fn)
         existing = targets.get(name)
         if existing is not None and existing is not fn:
@@ -268,24 +291,25 @@ def program_binding_targets(
         add(item)
     for key in ("files", "dirs", "env"):
         value = program.get(key)
-        if isinstance(value, Mapping):
+        if isinstance(value, dict):
             for item in value.values():
                 add(item)
     return targets
 
 
-def program_setup_callable_names(program: ConfigMap) -> set[str]:
+def program_setup_callable_names(program: ConfigData) -> set[str]:
     names: set[str] = set()
     setup = program.get("setup")
     items = setup if isinstance(setup, list) else [setup]
     for item in items:
-        fn = program_value_callable(item)
-        if fn is not None:
+        callable_spec = program_value_callable(item)
+        if callable_spec is not None:
+            fn, _ = callable_spec
             names.add(function_name(fn))
     return names
 
 
-def float_config(config: ConfigMap, key: str, default: float) -> float:
+def float_config(config: ConfigData, key: str, default: float) -> float:
     value = config.get(key)
     if value is None:
         return default
@@ -294,7 +318,7 @@ def float_config(config: ConfigMap, key: str, default: float) -> float:
     return float(value)
 
 
-def int_config(config: ConfigMap, key: str, default: int) -> int:
+def int_config(config: ConfigData, key: str, default: int) -> int:
     value = config.get(key)
     if value is None:
         return default
@@ -303,18 +327,11 @@ def int_config(config: ConfigMap, key: str, default: int) -> int:
     return int(value)
 
 
-def endpoint_api_key(runtime: Runtime) -> str:
-    harness = getattr(runtime, "harness", None)
-    endpoint = getattr(harness, "endpoint", None)
-    secret = getattr(endpoint, "secret", None)
-    return str(secret or "intercepted")
-
-
-def program_channels(program: ConfigMap) -> tuple[ProgramChannel, ...]:
+def program_channels(program: ConfigData) -> tuple[ProgramChannel, ...]:
     return validate_program_channels(program.get("channels"))
 
 
-def program_kind(program: ConfigMap) -> str:
+def program_kind(program: ConfigData) -> str:
     base = program.get("base", False)
     if not isinstance(base, bool):
         raise TypeError("program.base must be a boolean.")
@@ -337,9 +354,9 @@ def program_kind(program: ConfigMap) -> str:
 
 
 def validate_program_options(
-    program: ConfigMap,
+    program: ConfigData,
     kind: str,
-    sandbox_config: ConfigMap | None,
+    sandbox_config: SandboxConfig | None,
 ) -> None:
     unknown = sorted(set(program) - PROGRAM_KEYS)
     if unknown:
@@ -367,19 +384,18 @@ def validate_program_options(
             raise ValueError(f"Base program keys {inert} require sandbox placement.")
 
 
-def validate_program_sandbox_scope(sandbox_config: ConfigMap) -> None:
-    scope = str(sandbox_config.get("scope") or "rollout")
-    if scope not in {"rollout", "group", "global"}:
+def validate_program_sandbox_scope(sandbox_config: SandboxConfig) -> None:
+    if sandbox_config.scope not in {"rollout", "group", "global"}:
         raise ValueError("program sandbox scope must be rollout, group, or global.")
 
 
-def merge_task_program(program: ConfigMap, task: ConfigMap, *, kind: str) -> ConfigMap:
+def merge_task_program(program: ConfigData, task: Task, *, kind: str) -> ConfigData:
     task_program = task.get("program")
     if task_program is None:
         return program
-    if not isinstance(task_program, Mapping):
+    if not isinstance(task_program, dict):
         raise TypeError("task.program must be a mapping.")
-    task_program = cast(ConfigMap, task_program)
+    task_program = cast(ConfigData, task_program)
     unknown = sorted(set(task_program) - TASK_PROGRAM_KEYS)
     if unknown:
         raise ValueError(
@@ -408,11 +424,14 @@ def merge_task_program(program: ConfigMap, task: ConfigMap, *, kind: str) -> Con
     return merged
 
 
-def merge_task_sandbox(sandbox_config: ConfigMap, task: ConfigMap) -> ConfigMap:
-    config = dict(sandbox_config)
-    task_sandbox = task.get("sandbox")
-    if isinstance(task_sandbox, Mapping):
-        config.update(string_mapping(cast(ConfigInputMap, task_sandbox)))
+def merge_task_sandbox(sandbox_config: SandboxConfig, task: Task) -> SandboxConfig:
+    task_sandbox = task.sandbox_config()
+    if task_sandbox is None:
+        validate_program_sandbox_scope(sandbox_config)
+        return sandbox_config
+    config = SandboxConfig.model_validate(
+        {**sandbox_config.data(), **task_sandbox.data(fill_defaults=False)}
+    )
     validate_program_sandbox_scope(config)
     return config
 
@@ -420,8 +439,16 @@ def merge_task_sandbox(sandbox_config: ConfigMap, task: ConfigMap) -> ConfigMap:
 def merge_program_mapping_option(
     program_value: object, task_value: object, key: str
 ) -> ConfigData:
-    program_mapping = program_option_mapping(program_value, f"program.{key}")
-    task_mapping = program_option_mapping(task_value, f"task.program.{key}")
+    if key == "artifacts":
+        program_mapping = ArtifactsConfig.model_validate(program_value or {}).data(
+            "program.artifacts"
+        )
+        task_mapping = ArtifactsConfig.model_validate(task_value or {}).data(
+            "task.program.artifacts"
+        )
+    else:
+        program_mapping = program_option_mapping(program_value, f"program.{key}")
+        task_mapping = program_option_mapping(task_value, f"task.program.{key}")
     duplicate = sorted(set(program_mapping) & set(task_mapping))
     if duplicate:
         raise ValueError(
@@ -431,11 +458,11 @@ def merge_program_mapping_option(
 
 
 def merge_program_bindings(program_value: object, task_value: object) -> ConfigData:
-    program_bindings = normalize_binding_map(
-        program_value, "program.bindings", allow_objects=False
+    program_bindings = BindingsConfig.model_validate(program_value or {}).entries(
+        "program.bindings", allow_objects=False
     )
-    task_bindings = normalize_binding_map(
-        task_value, "task.program.bindings", allow_objects=False
+    task_bindings = BindingsConfig.model_validate(task_value or {}).entries(
+        "task.program.bindings", allow_objects=False
     )
     duplicate = sorted(set(program_bindings) & set(task_bindings))
     if duplicate:
@@ -443,20 +470,18 @@ def merge_program_bindings(program_value: object, task_value: object) -> ConfigD
             "program.bindings and task.program.bindings define the same keys: "
             f"{duplicate}."
         )
-    return {**program_bindings, **task_bindings}
+    return string_mapping({**program_bindings, **task_bindings})
 
 
 def program_option_mapping(value: object, field_name: str) -> ConfigData:
     if value is None:
         return {}
-    if not isinstance(value, Mapping):
+    if not isinstance(value, dict):
         raise TypeError(f"{field_name} must be a mapping.")
-    result: ConfigData = {}
-    for key, item in value.items():
-        if not isinstance(key, str):
-            raise TypeError(f"{field_name} keys must be strings.")
-        result[key] = item
-    return result
+    try:
+        return string_mapping(value)
+    except TypeError as exc:
+        raise TypeError(f"{field_name} keys must be strings.") from exc
 
 
 def program_list_items(value: object, field_name: str) -> list[ProgramValue]:
@@ -470,7 +495,7 @@ def program_list_items(value: object, field_name: str) -> list[ProgramValue]:
 
 
 def program_channel_setup(
-    program: ConfigMap,
+    program: ConfigData,
 ) -> list[tuple[ProgramChannel, ProgramValue, int]]:
     channels = program.get("channels")
     if channels is None or isinstance(channels, str):
@@ -480,11 +505,11 @@ def program_channel_setup(
         for item in channels:
             result.extend(program_channel_setup({"channels": item}))
         return result
-    if not isinstance(channels, Mapping):
+    if not isinstance(channels, dict):
         validate_program_channels(channels)
         return []
     channel_names = validate_program_channels(channels)
-    channels_map = cast(ConfigMap, channels)
+    channels_map = cast(ConfigData, channels)
     priority = cast(int, channels_map.get("priority", -100))
     result: list[tuple[ProgramChannel, ProgramValue, int]] = []
     for channel in channel_names:

@@ -146,6 +146,142 @@ async def test_parse_response_tokens_with_overlong_prompt():
     assert tokens["is_truncated"] is True
 
 
+@pytest.mark.asyncio
+async def test_parse_response_tokens_carries_prompt_attribution():
+    """``prompt_attribution`` moves from ResponseTokens to the parsed step
+    as a JSON-safe dict (move-not-copy, same policy as ``multi_modal_data``)."""
+    import dataclasses
+
+    from renderers.base import RenderedTokens
+
+    attribution = RenderedTokens(
+        token_ids=[1, 2, 3, 4],
+        message_indices=[0, 0, 1, 1],
+        sampled_mask=[False, False, False, False],
+        is_content=[False, True, False, True],
+        message_roles=["user", "tool"],
+    )
+    tokens_in = ResponseTokens(
+        prompt_ids=[1, 2, 3, 4],
+        prompt_mask=[0, 0, 0, 0],
+        completion_ids=[5, 6],
+        completion_mask=[1, 1],
+        completion_logprobs=[-0.1, -0.2],
+        prompt_attribution=attribution,
+    )
+    response = Response(
+        id="test-id",
+        created=0,
+        model="test-model",
+        message=ResponseMessage(
+            role="assistant",
+            content="Hello",
+            reasoning_content=None,
+            tool_calls=None,
+            finish_reason="stop",
+            is_truncated=False,
+            tokens=tokens_in,
+        ),
+    )
+
+    out = await parse_response_tokens(response)
+
+    assert out is not None
+    assert out["prompt_attribution"] == dataclasses.asdict(attribution)
+    assert tokens_in.prompt_attribution is None
+
+
+@pytest.mark.asyncio
+async def test_parse_response_tokens_truncates_prompt_attribution_with_overlong_prompt():
+    """On overlong-prompt truncation, the per-token arrays inside
+    ``prompt_attribution`` get sliced in lockstep with ``prompt_ids``;
+    ``message_roles`` stays intact (it's per-message, not per-token)."""
+    from renderers.base import RenderedTokens
+
+    attribution = RenderedTokens(
+        token_ids=[10, 11, 12, 13, 14],
+        message_indices=[0, 0, 1, 1, 1],
+        sampled_mask=[False, False, False, False, False],
+        is_content=[False, True, False, True, True],
+        message_roles=["user", "tool"],
+    )
+    response = Response(
+        id="test-id",
+        created=0,
+        model="test-model",
+        message=ResponseMessage(
+            role="assistant",
+            content="Hello",
+            reasoning_content=None,
+            tool_calls=None,
+            finish_reason="length",
+            is_truncated=True,
+            tokens=ResponseTokens(
+                prompt_ids=[10, 11, 12, 13, 14],
+                prompt_mask=[0, 0, 0, 0, 0],
+                completion_ids=[20, 21],
+                completion_mask=[1, 1],
+                completion_logprobs=[-0.1, -0.2],
+                prompt_attribution=attribution,
+            ),
+        ),
+    )
+
+    tokens = await parse_response_tokens(response, max_seq_len=3)
+
+    assert tokens is not None
+    assert tokens["overlong_prompt"] is True
+    out_attr = tokens["prompt_attribution"]
+    assert isinstance(out_attr, dict)
+    assert out_attr["token_ids"] == [10, 11, 12]
+    assert out_attr["message_indices"] == [0, 0, 1]
+    assert out_attr["sampled_mask"] == [False, False, False]
+    assert out_attr["is_content"] == [False, True, False]
+    assert out_attr["message_roles"] == ["user", "tool"]
+
+
+@pytest.mark.asyncio
+async def test_parsed_prompt_attribution_survives_v1_assert_serializable():
+    """Regression for PR #1414: a v1 state with ``prompt_attribution``
+    on a trajectory step must clear ``State.assert_serializable`` (the
+    ``json.dumps`` gate that pre-fix raised on the RenderedTokens dataclass).
+    """
+    from renderers.base import RenderedTokens
+
+    from verifiers.v1.utils.serialization_utils import serializable
+
+    response = Response(
+        id="t",
+        created=0,
+        model="m",
+        message=ResponseMessage(
+            role="assistant",
+            content="hi",
+            reasoning_content=None,
+            tool_calls=None,
+            finish_reason="stop",
+            is_truncated=False,
+            tokens=ResponseTokens(
+                prompt_ids=[1, 2],
+                prompt_mask=[0, 0],
+                completion_ids=[3],
+                completion_mask=[1],
+                completion_logprobs=[-0.1],
+                prompt_attribution=RenderedTokens(
+                    token_ids=[1, 2],
+                    message_indices=[0, 0],
+                    sampled_mask=[False, False],
+                    is_content=[False, True],
+                    message_roles=["user"],
+                ),
+            ),
+        ),
+    )
+    parsed = await parse_response_tokens(response)
+    step = {"tokens": serializable(parsed), "response": serializable(response)}
+    State({"trajectory": [step]}).assert_serializable()
+
+
 def test_process_trajectory_steps_for_training(make_input):
     """Test processing trajectory steps into training examples."""
     state1 = State(

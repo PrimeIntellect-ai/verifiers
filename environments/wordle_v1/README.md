@@ -16,5 +16,5 @@ prime eval run wordle-v1
 
 ### Configuration
 The environment uses the packaged `TextArenaTaskset` for generic TextArena mechanics.
-`wordle_v1.py` owns the Wordle prompt, feedback rendering, rewards, and defaults
-for `Wordle-v0`.
+`wordle_v1.py` owns the Wordle prompt, `WordleUser` response shaping, rewards,
+and defaults for `Wordle-v0`.

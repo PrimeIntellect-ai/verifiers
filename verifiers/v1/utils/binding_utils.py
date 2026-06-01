@@ -1,20 +1,160 @@
 import inspect
-from collections.abc import Mapping, Set
+from collections.abc import Set
 from typing import Literal, TypeAlias, cast
-from ..types import ConfigMap, Handler, ObjectLoader, Objects
-from .object_utils import validate_object_loader_spec
+
+from pydantic import ConfigDict, model_validator
+from typing_extensions import Self
+
+from ..config import Config, validate_serializable_value
+from ..types import ConfigData, Handler, ObjectFactory, Objects
+from .config_utils import resolve_config_object
+from .object_utils import validate_object_factory_spec, validate_object_loader_spec
 
 
 BindingRoot: TypeAlias = Literal[
-    "task", "state", "tasks", "states", "runtime", "objects", "tools"
+    "task",
+    "state",
+    "tasks",
+    "states",
+    "runtime",
+    "objects",
+    "tools",
+    "taskset",
+    "harness",
 ]
-CallableBindingSource: TypeAlias = Handler | ConfigMap
+CallableBindingSource: TypeAlias = Handler | ConfigData
 BindingSource: TypeAlias = str | CallableBindingSource
-BindingMap: TypeAlias = dict[str, BindingSource]
-Bindings: TypeAlias = dict[str, BindingSource]
+BindingSources: TypeAlias = dict[str, BindingSource]
+ObjectRefs: TypeAlias = dict[str, str]
+
+
+class BindingsConfig(Config):
+    model_config = ConfigDict(extra="allow")
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_mapping_input(cls, value: object) -> object:
+        if isinstance(value, BindingsConfig):
+            return value
+        if value is None:
+            return {}
+        if not isinstance(value, dict):
+            raise TypeError("BindingsConfig must be a mapping.")
+        for key, source in value.items():
+            if not isinstance(key, str):
+                raise TypeError("BindingsConfig keys must be strings.")
+            validate_serializable_value(source, f"bindings.{key}")
+            validate_binding_source(source, f"bindings source for {key!r}")
+        return value
+
+    @model_validator(mode="after")
+    def validate_config_entries(self) -> Self:
+        for key, source in self.raw_entries().items():
+            validate_serializable_value(source, f"bindings.{key}")
+            validate_binding_source(source, f"bindings source for {key!r}")
+        return self
+
+    def raw_entries(self) -> BindingSources:
+        return cast(BindingSources, dict(self.model_extra or {}))
+
+    def entries(
+        self,
+        field: str = "bindings",
+        *,
+        allow_objects: bool = True,
+        validate_sources: bool = True,
+        key_style: Literal["callable", "arg"] = "callable",
+    ) -> BindingSources:
+        result: BindingSources = {}
+        for raw_key, source in self.raw_entries().items():
+            if not isinstance(raw_key, str):
+                raise TypeError(f"{field} keys must be strings.")
+            if key_style == "callable":
+                binding_key_parts(raw_key)
+            elif not raw_key or "." in raw_key:
+                raise ValueError(f"{field} keys must be argument names.")
+            if validate_sources:
+                validate_binding_source(
+                    source,
+                    f"{field} source for {raw_key!r}",
+                    allow_objects=allow_objects,
+                )
+            result[raw_key] = source
+        return result
+
+
+def binding_sources(
+    value: BindingSources | BindingsConfig | None,
+    field: str = "bindings",
+) -> BindingSources:
+    if value is None:
+        return {}
+    if isinstance(value, BindingsConfig):
+        return value.entries(field)
+    if not isinstance(value, dict):
+        raise TypeError(f"{field} must be a mapping.")
+    result: BindingSources = {}
+    for raw_key, source in value.items():
+        if not isinstance(raw_key, str):
+            raise TypeError(f"{field} keys must be strings.")
+        binding_key_parts(raw_key)
+        validate_binding_source(source, f"{field} source for {raw_key!r}")
+        result[raw_key] = source
+    return result
+
+
+class ObjectsConfig(Config):
+    model_config = ConfigDict(extra="allow")
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_mapping_input(cls, value: object) -> object:
+        if isinstance(value, ObjectsConfig):
+            return value
+        if value is None:
+            return {}
+        if not isinstance(value, dict):
+            raise TypeError("ObjectsConfig must be a mapping.")
+        for key, source in value.items():
+            if not isinstance(key, str):
+                raise TypeError("ObjectsConfig keys must be strings.")
+            if not isinstance(source, str):
+                raise TypeError(f"objects entry {key!r} must be an import ref string.")
+            validate_object_loader_spec(source, f"objects entry {key!r}")
+        return value
+
+    def refs(self) -> ObjectRefs:
+        return cast(ObjectRefs, dict(self.model_extra or {}))
+
+    def objects(self, field: str = "objects") -> Objects:
+        resolved: Objects = {}
+        for name, source in self.refs().items():
+            factory = resolve_config_object(source)
+            validate_object_factory_spec(factory, f"{field}.{name}")
+            resolved[name] = cast(ObjectFactory, factory)
+        return resolved
+
+    @model_validator(mode="after")
+    def validate_entries(self) -> Self:
+        for key, source in self.refs().items():
+            if not isinstance(source, str):
+                raise TypeError(f"objects entry {key!r} must be an import ref string.")
+            validate_object_loader_spec(source, f"objects entry {key!r}")
+        return self
+
 
 VALID_BINDING_ROOTS: frozenset[str] = frozenset(
-    {"task", "state", "tasks", "states", "runtime", "objects", "tools"}
+    {
+        "task",
+        "state",
+        "tasks",
+        "states",
+        "runtime",
+        "objects",
+        "tools",
+        "taskset",
+        "harness",
+    }
 )
 ROLLOUT_FRAMEWORK_ARGS: frozenset[str] = frozenset(
     {
@@ -38,78 +178,26 @@ ROLLOUT_FRAMEWORK_ARGS: frozenset[str] = frozenset(
 GROUP_FRAMEWORK_ARGS: frozenset[str] = frozenset({"states", "tasks"})
 
 
-def normalize_binding_map(
-    value: object,
-    field: str,
-    *,
-    allow_objects: bool = True,
-    validate_sources: bool = True,
-    key_style: Literal["callable", "arg"] = "callable",
-) -> Bindings:
-    if value is None:
-        return {}
-    if not isinstance(value, Mapping):
-        raise TypeError(f"{field} must be a mapping.")
-    result: Bindings = {}
-    for raw_key, source in value.items():
-        if not isinstance(raw_key, str):
-            raise TypeError(f"{field} keys must be strings.")
-        if key_style == "callable":
-            binding_key_parts(raw_key)
-        elif not raw_key or "." in raw_key:
-            raise ValueError(f"{field} keys must be argument names.")
-        if validate_sources:
-            validate_binding_source(
-                source,
-                f"{field} source for {raw_key!r}",
-                allow_objects=allow_objects,
-            )
-        if isinstance(source, Mapping):
-            normalized_source = cast(ConfigMap, source)
-        elif isinstance(source, str) or callable(source):
-            normalized_source = source
-        else:
-            raise TypeError(
-                f"{field} source for {raw_key!r} must be a framework path or callable."
-            )
-        result[raw_key] = normalized_source
-    return result
-
-
-def normalize_object_map(value: object, field: str) -> Objects:
-    if value is None:
-        return {}
-    if not isinstance(value, Mapping):
-        raise TypeError(f"{field} must be a mapping.")
-    result: Objects = {}
-    for raw_key, source in value.items():
-        if not isinstance(raw_key, str):
-            raise TypeError(f"{field} keys must be strings.")
-        if not raw_key:
-            raise ValueError(f"{field} keys must be non-empty strings.")
-        validate_object_loader_spec(source, f"{field} entry {raw_key!r}")
-        result[raw_key] = cast(ObjectLoader, source)
-    return result
-
-
 def validate_binding_source(
     source: object, context: str, *, allow_objects: bool = True
 ) -> None:
     if (
         not isinstance(source, str)
         and not callable(source)
-        and not isinstance(source, Mapping)
+        and not isinstance(source, dict)
     ):
         raise TypeError(f"{context} must be a framework path or callable.")
     root = binding_source_root(source)
     validate_binding_source_root(root, context, allow_objects=allow_objects)
     if root == "objects":
         binding_object_name(source)
-    if isinstance(source, Mapping):
-        validate_callable_source(cast(ConfigMap, source), context)
+    if root in {"taskset", "harness"}:
+        owner_object_name(source)
+    if isinstance(source, dict):
+        validate_callable_source(cast(ConfigData, source), context)
 
 
-def validate_callable_source(source: ConfigMap, context: str) -> None:
+def validate_callable_source(source: ConfigData, context: str) -> None:
     if "fn" not in source:
         raise TypeError(f"{context} mapping sources must use an 'fn' key.")
     unknown = set(source) - {"fn"}
@@ -141,7 +229,7 @@ def binding_source_root(source: object) -> BindingRoot | None:
         return cast(BindingRoot, root)
     raise ValueError(
         "Binding string sources must start with task, state, tasks, states, "
-        f"runtime, objects, or tools; got {source!r}."
+        f"runtime, objects, tools, taskset, or harness; got {source!r}."
     )
 
 
@@ -166,15 +254,32 @@ def binding_object_name(source: object) -> str:
     return name
 
 
+def owner_object_name(source: object) -> str:
+    if not isinstance(source, str):
+        raise TypeError("Owner object binding source must be a string.")
+    root, separator, tail = source.partition(".")
+    if root not in {"taskset", "harness"} or not separator:
+        raise ValueError("Owner object binding source must be 'owner.objects.name'.")
+    objects_root, objects_separator, object_tail = tail.partition(".")
+    if objects_root != "objects" or not objects_separator:
+        raise ValueError("Owner object binding source must be 'owner.objects.name'.")
+    name, _, _ = object_tail.partition(".")
+    if not name:
+        raise ValueError("Owner object binding source must be 'owner.objects.name'.")
+    return name
+
+
 def validate_bound_arg(
-    fn: Handler | object,
+    fn: object,
     arg_name: str,
     context: str,
     protected_args: Set[str] = frozenset(),
+    *,
+    allow_reserved: bool = False,
 ) -> None:
     if arg_name in protected_args:
         return
-    if arg_name in {"task", "state", "runtime"}:
+    if not allow_reserved and arg_name in {"task", "state", "runtime"}:
         raise ValueError(f"{context} cannot bind reserved arg {arg_name!r}.")
     if not callable(fn):
         raise TypeError(f"{context} target is not callable.")
@@ -209,8 +314,8 @@ def read_path(value: object, path: str) -> object:
     for part in path.split("."):
         if not part:
             raise ValueError(f"Invalid empty path segment in {path!r}.")
-        if isinstance(current, Mapping):
-            current = cast(ConfigMap, current)[part]
+        if isinstance(current, dict):
+            current = cast(ConfigData, current)[part]
         elif isinstance(current, list):
             current = current[int(part)]
         else:

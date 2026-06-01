@@ -9,9 +9,9 @@ from typing import Callable, Union, cast, get_args, get_origin, get_type_hints
 from pydantic import BaseModel
 from verifiers.envs.environment import Environment
 from verifiers.utils.config_utils import MissingKeyError
-from verifiers.v1.config import EnvConfig, HarnessConfig, TasksetConfig
-from verifiers.v1.harness import Harness
-from verifiers.v1.taskset import Taskset
+from verifiers.v1.env import Env, EnvConfig
+from verifiers.v1.harness import Harness, HarnessConfig
+from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.utils.config_utils import coerce_config, explicit_config_data
 
 
@@ -23,16 +23,16 @@ def load_environment(env_id: str, **env_args) -> Environment:
     try:
         module = import_env_module(env_id)
 
-        if not hasattr(module, "load_environment"):
-            raise AttributeError(
-                f"Module '{module_name}' does not have a 'load_environment' function. "
-                f"This usually means there's a package name collision. Please either:\n"
-                f"1. Rename your environment (e.g. suffix with '-env')\n"
-                f"2. Remove unneeded files with the same name\n"
-                f"3. Check that you've installed the correct environment package"
-            )
+        env_load_func: Callable[..., Environment] | None = getattr(
+            module, "load_environment", None
+        )
+        if env_load_func is None:
+            env_instance = load_environment_from_components(module, env_args)
+            env_instance.env_id = env_instance.env_id or env_id
+            env_instance.env_args = env_instance.env_args or env_args
+            logger.info(f"Successfully loaded environment '{env_id}'")
+            return env_instance
 
-        env_load_func: Callable[..., Environment] = getattr(module, "load_environment")
         sig = inspect.signature(env_load_func)
         defaults_info = []
         for param_name, param in sig.parameters.items():
@@ -149,8 +149,12 @@ def load_taskset_from_module(
 ) -> Taskset:
     factory = getattr(module, "load_taskset", None)
     if factory is None:
+        taskset_id = child_loader_id(config, "taskset_id")
+        if taskset_id is not None and env_module_name(taskset_id) != module.__name__:
+            return load_taskset(taskset_id, config=config)
         raise AttributeError(
-            f"Module '{module.__name__}' does not expose load_taskset."
+            f"Module '{module.__name__}' does not expose load_taskset, and "
+            "config.taskset_id is not set to a taskset loader package."
         )
     config_type = factory_config_type(module, "load_taskset", TasksetConfig)
     if config_type is None:
@@ -170,9 +174,14 @@ def load_harness_from_module(
 ) -> Harness:
     factory = getattr(module, "load_harness", None)
     if factory is None:
-        raise AttributeError(
-            f"Module '{module.__name__}' does not expose load_harness."
-        )
+        harness_id = child_loader_id(config, "harness_id")
+        if harness_id is not None:
+            if env_module_name(harness_id) == module.__name__:
+                raise AttributeError(
+                    f"Module '{module.__name__}' does not expose load_harness."
+                )
+            return load_harness(harness_id, config=config)
+        return Harness(config=coerce_config(HarnessConfig, config))
     config_type = factory_config_type(module, "load_harness", HarnessConfig)
     if config_type is None:
         raise TypeError(f"{module.__name__}.load_harness must accept config.")
@@ -201,6 +210,23 @@ def prepare_typed_env_config(
     call_env_args = dict(env_args)
     call_env_args["config"] = load_env_config(module, config_type, config)
     return call_env_args
+
+
+def load_environment_from_components(
+    module: ModuleType,
+    env_args: dict,
+) -> Env:
+    extra_args = set(env_args) - {"config"}
+    if extra_args:
+        raise TypeError(
+            "Default Taskset/Harness environment loading only accepts config; "
+            f"got {sorted(extra_args)}."
+        )
+    config = load_env_config(module, EnvConfig, env_args.get("config", {}))
+    return Env(
+        taskset=load_taskset_from_module(module, config=config.taskset),
+        harness=load_harness_from_module(module, config=config.harness),
+    )
 
 
 def env_config_annotation(
@@ -235,31 +261,12 @@ def load_env_config(
     module: ModuleType,
     config_type: type[EnvConfig],
     value: object,
+    *,
+    child_types: Mapping[str, type[BaseModel]] | None = None,
 ) -> EnvConfig:
-    child_types: dict[str, type[BaseModel]] = {}
-    for field_name, factory_name, base_type in (
-        ("taskset", "load_taskset", TasksetConfig),
-        ("harness", "load_harness", HarnessConfig),
-    ):
-        field_type = config_type_from_annotation(
-            config_type.model_fields[field_name].annotation,
-            base_type,
-            f"{config_type.__name__}.{field_name}",
-        )
-        factory_type = factory_config_type(module, factory_name, base_type)
-        if factory_type is not None:
-            if not issubclass(factory_type, field_type):
-                raise TypeError(
-                    f"{module.__name__}.{factory_name} config type "
-                    f"{factory_type.__name__} does not match "
-                    f"{config_type.__name__}.{field_name}: {field_type.__name__}."
-                )
-            child_types[field_name] = factory_type
-        else:
-            child_types[field_name] = field_type
-
+    data: dict[str, object]
     if isinstance(value, config_type):
-        data = explicit_config_data(value)
+        data = dict(explicit_config_data(value))
     elif isinstance(value, BaseModel):
         raise TypeError(
             f"load_environment config must be {config_type.__name__}; "
@@ -268,9 +275,14 @@ def load_env_config(
     elif not isinstance(value, Mapping):
         raise TypeError("load_environment config must be a mapping or EnvConfig.")
     else:
-        data = explicit_config_data(value)
+        data = dict(explicit_config_data(value))
+    resolved_child_types = (
+        env_config_child_types(module, config_type, data)
+        if child_types is None
+        else child_types
+    )
     defaults: EnvConfig | None = None
-    for field_name, child_type in child_types.items():
+    for field_name, child_type in resolved_child_types.items():
         if field_name not in data:
             defaults = config_type() if defaults is None else defaults
             child = getattr(defaults, field_name)
@@ -283,7 +295,7 @@ def load_env_config(
             raise TypeError(f"config.{field_name} cannot be None.")
         data[field_name] = child_type.model_validate(explicit_config_data(child))
     config = config_type.model_validate(data)
-    for field_name, child_type in child_types.items():
+    for field_name, child_type in resolved_child_types.items():
         child = getattr(config, field_name)
         if not isinstance(child, child_type):
             raise TypeError(
@@ -291,6 +303,71 @@ def load_env_config(
                 f"got {type(child).__name__}."
             )
     return config
+
+
+def env_config_child_types(
+    module: ModuleType,
+    config_type: type[EnvConfig],
+    value: Mapping[str, object] | None = None,
+) -> dict[str, type[BaseModel]]:
+    child_types: dict[str, type[BaseModel]] = {}
+    for field_name, id_field, factory_name, base_type in (
+        ("taskset", "taskset_id", "load_taskset", TasksetConfig),
+        ("harness", "harness_id", "load_harness", HarnessConfig),
+    ):
+        field_type = config_type_from_annotation(
+            config_type.model_fields[field_name].annotation,
+            base_type,
+            f"{config_type.__name__}.{field_name}",
+        )
+        factory_type = factory_config_type(module, factory_name, base_type)
+        child_config = value.get(field_name) if value is not None else None
+        if (
+            factory_type is None
+            and field_type is base_type
+            and child_config_requires_loader_type(child_config, base_type)
+        ):
+            loader_id = child_loader_id(child_config, id_field)
+            if loader_id is not None and env_module_name(loader_id) != module.__name__:
+                factory_type = factory_config_type(
+                    import_env_module(loader_id), factory_name, base_type
+                )
+        if factory_type is not None:
+            if not issubclass(factory_type, field_type):
+                raise TypeError(
+                    f"{module.__name__}.{factory_name} config type "
+                    f"{factory_type.__name__} does not match "
+                    f"{config_type.__name__}.{field_name}: {field_type.__name__}."
+                )
+            child_types[field_name] = factory_type
+        else:
+            child_types[field_name] = field_type
+    return child_types
+
+
+def child_config_requires_loader_type(
+    config: object,
+    base_type: type[BaseModel],
+) -> bool:
+    if not isinstance(config, Mapping):
+        return False
+    base_fields = set(base_type.model_fields) | {"id"}
+    return bool(set(config) - base_fields)
+
+
+def child_loader_id(config: object, id_field: str) -> str | None:
+    if isinstance(config, BaseModel):
+        value = config.__dict__.get(id_field)
+    elif isinstance(config, Mapping):
+        config_data = dict(config)
+        value = config_data.get(id_field) or config_data.get("id")
+    else:
+        return None
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise TypeError(f"config.{id_field} must be a non-empty string.")
+    return value
 
 
 def factory_config_type(

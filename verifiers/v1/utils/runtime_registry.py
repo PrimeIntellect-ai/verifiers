@@ -1,10 +1,9 @@
 import weakref
-from collections.abc import Mapping
 from typing import TYPE_CHECKING, cast
-from ..types import ConfigMap
 
 if TYPE_CHECKING:
     from ..runtime import Runtime
+    from ..state import State
 
 _RUNTIME_REGISTRY: weakref.WeakValueDictionary[str, object] = (
     weakref.WeakValueDictionary()
@@ -26,11 +25,8 @@ def load_runtime(runtime_id: str) -> "Runtime":
     return cast("Runtime", runtime)
 
 
-def load_runtime_from_state(state: ConfigMap) -> "Runtime":
-    runtime_state = state.get("runtime")
-    if not isinstance(runtime_state, Mapping):
-        raise RuntimeError("State has no runtime metadata.")
-    runtime_state = cast(ConfigMap, runtime_state)
+def load_runtime_from_state(state: "State") -> "Runtime":
+    runtime_state = state.runtime_state()
     runtime_id = runtime_state.get("runtime_id")
     if not isinstance(runtime_id, str) or not runtime_id:
         raise RuntimeError("State has no live runtime id.")

@@ -57,6 +57,45 @@ def test_bfcl_row_preserves_hinted_holdout_functions() -> None:
     assert row["function_with_hints"] == [{"name": "hinted"}]
     assert row["missed_function"] == {"1": [{"name": "plain_holdout"}]}
     assert row["missed_function_with_hints"] == {"1": [{"name": "hinted_holdout"}]}
+    assert "toolsets" not in row
+
+
+@pytest.mark.asyncio
+async def test_bfcl_single_turn_tools_are_rollout_scoped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bfcl = load_bfcl_module()
+    utils_module = ModuleType("bfcl_eval.utils")
+    utils_module.is_multi_turn = lambda category: False
+    monkeypatch.setitem(sys.modules, "bfcl_eval", ModuleType("bfcl_eval"))
+    monkeypatch.setitem(sys.modules, "bfcl_eval.utils", utils_module)
+    monkeypatch.setattr(bfcl, "patch_bfcl_eval", lambda: None)
+    monkeypatch.setattr(
+        bfcl,
+        "bfcl_tool_defs",
+        lambda functions: [
+            vf.Tool(
+                name=str(functions[0]["name"]),
+                description="",
+                parameters={"type": "object", "properties": {}},
+            )
+        ],
+    )
+    taskset = bfcl.BFCLTaskset(config=bfcl.BFCLTasksetConfig(examples_per_category=0))
+    env = vf.Env(taskset=taskset)
+    task = vf.Task(
+        {
+            "prompt": [{"role": "user", "content": "call tool"}],
+            "category": "simple_python",
+            "function": [{"name": "lookup"}],
+        }
+    ).freeze()
+
+    state = await env.harness.setup_state(task, vf.State.for_task(task))
+    await env.harness.runtime.setup_rollout(task, state)
+
+    assert list(taskset.named_toolsets) == ["bfcl"]
+    assert state["tools"] == ["lookup"]
 
 
 def test_bfcl_empty_completion_has_no_tool_calls() -> None:

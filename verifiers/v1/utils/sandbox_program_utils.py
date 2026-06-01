@@ -4,7 +4,6 @@ import json
 import shlex
 import sys
 import sysconfig
-from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
@@ -12,18 +11,23 @@ from typing import cast
 from verifiers.utils.interception_utils import serialize_tool_defs
 
 from ..runtime import Runtime
+from ..sandbox import SandboxConfig
 from ..state import State
 from ..task import Task
 from .serialization_utils import serializable
 from .sandbox_utils import (
     VF_STATE_INPUT_PATH_KEY,
+    read_sandbox_artifact,
+    run_sandbox_command,
+)
+from .sandbox_python_utils import (
+    python_package_list,
     python_package_install_command,
     python_runtime_command,
     python_runtime_setup_command,
-    run_sandbox_command,
 )
 from .program_utils import program_list_items, program_option_mapping
-from ..types import ConfigData, ConfigMap
+from ..types import ConfigData
 
 TASK_PATH = "/tmp/vf_task.json"
 STATE_INPUT_PATH = "/tmp/vf_state_in.json"
@@ -32,20 +36,13 @@ RUNNER_CONFIG_PATH = "/tmp/vf_runner_config.json"
 TOOL_DEFS_PATH = "/tmp/vf_tool_defs.json"
 TOOL_DEFS_BY_PROTOCOL_PATH = "/tmp/vf_tool_defs_by_protocol.json"
 RUNNER_PATH = "/tmp/vf_program_runner.py"
-STATE_ARTIFACT = "__vf_state"
 PYTHON_PROGRAM_PACKAGES = ("openai", "anthropic", "requests")
 PACKAGE_ROOT = "/tmp/vf_program_package"
 
 
-def python_program_sandbox(sandbox_config: ConfigMap) -> ConfigData:
+def python_program_sandbox(sandbox_config: ConfigData) -> ConfigData:
     config = dict(sandbox_config)
-    raw_packages = config.get("packages") or []
-    if isinstance(raw_packages, str):
-        packages = shlex.split(raw_packages)
-    elif isinstance(raw_packages, list):
-        packages = [str(package) for package in raw_packages]
-    else:
-        raise TypeError("sandbox.packages must be a list or string.")
+    packages = python_package_list(config.get("packages"))
     for package in PYTHON_PROGRAM_PACKAGES:
         if not any(is_python_package(existing, package) for existing in packages):
             packages.append(package)
@@ -66,8 +63,8 @@ def is_python_package(requirement: str, package: str) -> bool:
 
 
 async def run_sandbox_python_program(
-    program: ConfigMap,
-    sandbox_config: ConfigMap,
+    program: ConfigData,
+    sandbox_config: SandboxConfig,
     task: Task,
     state: State,
     runtime: Runtime,
@@ -86,13 +83,18 @@ async def run_sandbox_python_program(
     )
     command_record = state.get("command")
     await run_sandbox_command(runner_program, sandbox_config, task, state, runtime)
-    output = state.get("artifacts", {}).pop(STATE_ARTIFACT, None)
-    if not isinstance(output, Mapping):
+    lease = runtime.active_program_sandbox_lease(state)
+    if lease is None:
+        raise RuntimeError("Sandbox Python program has no active sandbox lease.")
+    output = json.loads(
+        await read_sandbox_artifact(lease.client, lease.id, STATE_OUTPUT_PATH)
+    )
+    if not isinstance(output, dict):
         raise RuntimeError("Sandbox Python program did not return state.")
-    patch = dict(cast(ConfigMap, output))
+    patch = dict(cast(ConfigData, output))
     apply_internal_state_patch(state, patch, mode=mode)
     patch_artifacts = patch.pop("artifacts", None)
-    if isinstance(patch_artifacts, Mapping):
+    if isinstance(patch_artifacts, dict):
         state.setdefault("artifacts", {})
         state["artifacts"].update(dict(patch_artifacts))
     state.update(patch)
@@ -125,7 +127,7 @@ def apply_internal_state_patch(state: State, patch: ConfigData, *, mode: str) ->
 
 
 def sandbox_runner_program(
-    program: ConfigMap,
+    program: ConfigData,
     task: Task,
     state: State,
     mode: str,
@@ -154,8 +156,6 @@ def sandbox_runner_program(
     )
     files[RUNNER_PATH] = runner_source()
     files[RUNNER_CONFIG_PATH] = json.dumps({"max_turns": max_turns})
-    artifacts = program_option_mapping(program.get("artifacts"), "program.artifacts")
-    artifacts[STATE_ARTIFACT] = {"path": STATE_OUTPUT_PATH, "format": "json"}
     command = python_runtime_command(
         RUNNER_PATH,
         *([mode] if fn_ref is None else [mode, fn_ref]),
@@ -171,7 +171,6 @@ def sandbox_runner_program(
             *package_setup,
             *program_list_items(program.get("setup"), "program.setup"),
         ],
-        "artifacts": artifacts,
         VF_STATE_INPUT_PATH_KEY: STATE_INPUT_PATH,
     }
 
@@ -207,15 +206,15 @@ def sandbox_program_package(*, mode: str, fn_ref: str | None) -> SandboxPackage 
 
 
 def sandbox_program_with_package(
-    program: ConfigMap, package: SandboxPackage
-) -> ConfigMap:
+    program: ConfigData, package: SandboxPackage
+) -> ConfigData:
     merged = dict(program)
     dirs = program_option_mapping(merged.get("dirs"), "program.dirs")
     if package.remote_root in dirs:
         raise ValueError(
             f"program.dirs already defines internal package path {package.remote_root!r}."
         )
-    dirs[package.remote_root] = package.local_root
+    dirs[package.remote_root] = str(package.local_root)
     merged["dirs"] = dirs
     return merged
 
@@ -307,13 +306,13 @@ TOOL_DEFS_BY_PROTOCOL_PATH = "/tmp/vf_tool_defs_by_protocol.json"
 class Client:
     def __init__(self, state):
         self.openai = AsyncOpenAI(
-            api_key=endpoint_api_key(),
+            api_key=endpoint_token(),
             base_url=os.environ.get("OPENAI_BASE_URL")
             or state["endpoint_base_url"],
         )
         self.anthropic = AsyncAnthropic(
             api_key=os.environ.get("ANTHROPIC_API_KEY")
-            or endpoint_api_key(),
+            or endpoint_token(),
             base_url=os.environ.get("ANTHROPIC_BASE_URL")
             or state["endpoint_root_url"],
         )
@@ -326,7 +325,7 @@ class Client:
         await self.anthropic.close()
 
 
-def endpoint_api_key():
+def endpoint_token():
     return os.environ.get("OPENAI_API_KEY") or os.environ.get("ANTHROPIC_API_KEY") or "intercepted"
 
 
@@ -335,7 +334,7 @@ def endpoint_headers():
         "Content-Type": "application/json",
         "Accept": "application/json",
         "User-Agent": "python-requests/2.32.3",
-        "Authorization": f"Bearer {endpoint_api_key()}",
+        "Authorization": f"Bearer {endpoint_token()}",
     }
 
 

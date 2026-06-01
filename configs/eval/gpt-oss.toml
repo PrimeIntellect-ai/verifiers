@@ -1,0 +1,24 @@
+# gpt-oss models. Uncomment exactly one model.
+model = "openai/gpt-oss-20b"
+# model = "openai/gpt-oss-120b"
+
+num_examples = 20
+rollouts_per_example = 1
+max_tokens = 1024
+
+[[eval]]
+env_id = "primeintellect/reverse-text"
+
+# [[eval]]
+# env_id = "primeintellect/wordle"
+
+# [[eval]]
+# env_id = "primeintellect/wiki-search"
+
+# [[eval]]
+# env_id = "primeintellect/dspy-flights"
+
+# [[eval]]
+# env_id = "primeintellect/opencode-harbor"
+
+# Hosted Training docs: https://docs.primeintellect.ai/hosted-training

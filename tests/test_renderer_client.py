@@ -1,3 +1,4 @@
+import asyncio
 from functools import lru_cache
 from unittest.mock import patch
 
@@ -79,6 +80,155 @@ def test_renderer_client_uses_renderer_model_name_override():
         cfg,
         size=1,
     )
+
+
+def test_renderer_client_threads_chat_template_kwargs_into_pool():
+    """``sampling_args.extra_body.chat_template_kwargs`` land on the
+    concrete RendererConfig (resolving Auto/None against
+    ``MODEL_RENDERER_MAP`` when needed) and are stripped from the params
+    forwarded to /generate. Covers explicit / Auto / None bases."""
+    from renderers import AutoRendererConfig, Qwen3RendererConfig
+
+    bases = [
+        Qwen3RendererConfig(enable_thinking=True),
+        AutoRendererConfig(preserve_all_thinking=True),
+        None,
+    ]
+    for base in bases:
+        RendererClient._shared_pools.clear()
+
+        client = object.__new__(RendererClient)
+        client._renderer = None
+        client._pool_size = 1
+        client._config = vf.ClientConfig(client_type="renderer", renderer_config=base)
+        client._client = object()  # type: ignore[attr-defined]
+
+        sentinel_pool = RendererPool.__new__(RendererPool)
+        captured: dict = {}
+
+        async def _fake_generate(**kwargs):
+            captured.update(kwargs)
+            return {"content": "ok"}
+
+        with (
+            patch(
+                "verifiers.clients.renderer_client.create_renderer_pool",
+                return_value=sentinel_pool,
+            ) as create_pool_mock,
+            patch(
+                "verifiers.clients.renderer_client.generate",
+                side_effect=_fake_generate,
+            ),
+        ):
+            asyncio.run(
+                client.get_native_response(
+                    prompt=[{"role": "user", "content": "hi"}],
+                    model="Qwen/Qwen3-8B",
+                    sampling_args={
+                        "extra_body": {
+                            "chat_template_kwargs": {"enable_thinking": False},
+                            "top_k": 20,
+                        }
+                    },
+                    tools=None,
+                )
+            )
+
+        expected_preserve_all = (
+            base.preserve_all_thinking
+            if isinstance(base, AutoRendererConfig)
+            else False
+        )
+        create_pool_mock.assert_called_once_with(
+            "Qwen/Qwen3-8B",
+            Qwen3RendererConfig(
+                enable_thinking=False,
+                preserve_all_thinking=expected_preserve_all,
+            ),
+            size=1,
+        )
+        assert captured["sampling_params"] == {"top_k": 20}
+
+
+def test_renderer_client_auto_resolves_against_renderer_model_name_override():
+    """When ``ClientConfig.renderer_model_name`` overrides the API request
+    model, auto-resolution looks up the OVERRIDE in ``MODEL_RENDERER_MAP``
+    (it's what loads the tokenizer the renderer holds) — not the request
+    model, which may not be in the map at all."""
+    from renderers import Qwen3RendererConfig
+
+    RendererClient._shared_pools.clear()
+
+    client = object.__new__(RendererClient)
+    client._renderer = None
+    client._pool_size = 1
+    client._config = vf.ClientConfig(
+        client_type="renderer",
+        renderer_model_name="Qwen/Qwen3-8B",  # override
+    )
+    client._client = object()  # type: ignore[attr-defined]
+
+    sentinel_pool = RendererPool.__new__(RendererPool)
+
+    async def _fake_generate(**kwargs):
+        return {"content": "ok"}
+
+    with (
+        patch(
+            "verifiers.clients.renderer_client.create_renderer_pool",
+            return_value=sentinel_pool,
+        ) as create_pool_mock,
+        patch("verifiers.clients.renderer_client.generate", side_effect=_fake_generate),
+    ):
+        asyncio.run(
+            client.get_native_response(
+                prompt=[{"role": "user", "content": "hi"}],
+                model="r8-smoke",  # not in MODEL_RENDERER_MAP
+                sampling_args={
+                    "extra_body": {"chat_template_kwargs": {"enable_thinking": False}}
+                },
+                tools=None,
+            )
+        )
+
+    # Resolves against renderer_model_name (Qwen/Qwen3-8B → "qwen3") rather
+    # than the request "r8-smoke" (which would fall through to default).
+    create_pool_mock.assert_called_once_with(
+        "Qwen/Qwen3-8B",
+        Qwen3RendererConfig(enable_thinking=False),
+        size=1,
+    )
+
+
+def test_renderer_client_rejects_invalid_chat_template_kwargs():
+    """Unknown / mistyped chat_template_kwargs surface as a pydantic
+    ``ValidationError`` (``extra="forbid"`` on the typed RendererConfig)."""
+    from pydantic import ValidationError
+    from renderers import Qwen3RendererConfig
+
+    RendererClient._shared_pools.clear()
+
+    client = object.__new__(RendererClient)
+    client._renderer = None
+    client._pool_size = 1
+    client._config = vf.ClientConfig(
+        client_type="renderer", renderer_config=Qwen3RendererConfig()
+    )
+    client._client = object()  # type: ignore[attr-defined]
+
+    with pytest.raises(ValidationError, match="enable_thinkng"):
+        asyncio.run(
+            client.get_native_response(
+                prompt=[{"role": "user", "content": "hi"}],
+                model="Qwen/Qwen3-8B",
+                sampling_args={
+                    "extra_body": {
+                        "chat_template_kwargs": {"enable_thinkng": False},  # typo
+                    }
+                },
+                tools=None,
+            )
+        )
 
 
 # Provenance: Eli's review on PR #1068, comment 3150580768.
@@ -379,7 +529,9 @@ async def test_get_incremental_prompt_ids_matches_tool_tail_without_rerendering_
     )
 
     assert result is not None
-    assert result.token_ids == [1, 2, 3, 99, 30, 40]
+    bridged, routed_experts_prompt_start = result
+    assert bridged.token_ids == [1, 2, 3, 99, 30, 40]
+    assert routed_experts_prompt_start == 3
     # The bridge stitches over the completion without re-rendering it —
     # one bridge call, zero render_ids calls (older diff-based bridges
     # called render_ids twice).
@@ -422,7 +574,9 @@ async def test_get_incremental_prompt_ids_accepts_tool_then_user_tail():
     )
 
     assert result is not None
-    assert result.token_ids == [1, 2, 3, 99, 40, 50]
+    bridged, routed_experts_prompt_start = result
+    assert bridged.token_ids == [1, 2, 3, 99, 40, 50]
+    assert routed_experts_prompt_start == 3
 
 
 @pytest.mark.asyncio
@@ -482,7 +636,9 @@ async def test_get_incremental_prompt_ids_accepts_multimodal_tool_user_tail():
     )
 
     assert result is not None
-    assert result.token_ids == [1, 2, 3, 99, 40, 50]
+    bridged, routed_experts_prompt_start = result
+    assert bridged.token_ids == [1, 2, 3, 99, 40, 50]
+    assert routed_experts_prompt_start == 3
 
 
 # ── Parity across real renderers: truncated most-recent step ──────────
@@ -588,7 +744,9 @@ async def test_get_incremental_prompt_ids_bridges_over_truncated_step(
 
     prefix = list(prev_prompt_ids) + list(prev_completion_ids)
     assert result is not None, f"{model_id}: bridge returned None on truncated anchor"
-    result_ids = result.token_ids
+    bridged, routed_experts_prompt_start = result
+    result_ids = bridged.token_ids
+    assert routed_experts_prompt_start == len(prefix) - 1
     assert result_ids[: len(prefix)] == prefix, (
         f"{model_id}: bridge result does not prefix-preserve "
         f"prev_prompt + prev_completion"
@@ -730,3 +888,123 @@ def test_get_native_response_translates_renderer_overlong_to_vf_overlong():
                     tools=None,
                 )
             )
+
+
+# ---------------------------------------------------------------------------
+# Renderer prompt_attribution pass-through.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_native_response_threads_prompt_attribution_into_generate():
+    """Bridge result's :class:`RenderedTokens` is passed through as
+    ``generate(prompt_attribution=...)`` and surfaces unchanged on the
+    result dict."""
+    bridged = RenderedTokens(
+        token_ids=[1, 2, 3, 4],
+        message_indices=[-1, -1, 0, 0],
+        sampled_mask=[False, False, False, False],
+        is_content=[False, False, False, True],
+        message_roles=["tool"],
+    )
+    captured: dict = {}
+
+    async def _fake_get_incremental(**kwargs):
+        return bridged, 2
+
+    async def _fake_generate(**kwargs):
+        captured.update(kwargs)
+        return {
+            "request_id": "r-1",
+            "prompt_ids": list(bridged.token_ids),
+            "completion_ids": [5, 6],
+            "completion_logprobs": [-0.1, -0.2],
+            "content": "ok",
+            "reasoning_content": None,
+            "tool_calls": [],
+            "finish_reason": "stop",
+            "routed_experts": None,
+            "multi_modal_data": None,
+            "prompt_attribution": bridged,
+        }
+
+    client = object.__new__(RendererClient)
+    client._renderer = object()
+    client._pool_size = 1
+    client._config = vf.ClientConfig(client_type="renderer")
+    client._client = object()  # type: ignore[attr-defined]
+
+    with (
+        patch.object(RendererClient, "_get_renderer_or_pool", return_value=object()),
+        patch(
+            "verifiers.clients.renderer_client._get_incremental_prompt_ids",
+            side_effect=_fake_get_incremental,
+        ),
+        patch("verifiers.clients.renderer_client.generate", side_effect=_fake_generate),
+    ):
+        result = await client.get_native_response(
+            prompt=[
+                {"role": "user", "content": "first"},
+                {"role": "assistant", "content": "ok"},
+                {"role": "user", "content": "second"},
+            ],
+            model="test-model",
+            sampling_args={},
+            tools=None,
+            state={
+                "trajectory": [
+                    {
+                        "prompt": [{"role": "user", "content": "first"}],
+                        "completion": [{"role": "assistant", "content": "ok"}],
+                    }
+                ]
+            },
+        )
+
+    assert captured.get("prompt_attribution") is bridged
+    assert captured.get("prompt_ids") == list(bridged.token_ids)
+    assert captured["sampling_params"]["routed_experts_prompt_start"] == 2
+    assert result["prompt_attribution"] is bridged
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "attribution",
+    [
+        pytest.param(
+            RenderedTokens(
+                token_ids=[1, 2, 3],
+                message_indices=[0, 0, 0],
+                sampled_mask=[False, False, False],
+                is_content=[False, True, True],
+                message_roles=["user"],
+            ),
+            id="present",
+        ),
+        pytest.param(None, id="missing"),
+    ],
+)
+async def test_from_native_response_carries_prompt_attribution(attribution):
+    """``from_native_response`` lifts ``prompt_attribution`` from the raw
+    ``generate`` result dict onto :class:`ResponseTokens`. Missing key
+    resolves to ``None`` rather than ``KeyError``."""
+    client = object.__new__(RendererClient)
+    response_dict = {
+        "request_id": "r-2",
+        "content": "ok",
+        "reasoning_content": None,
+        "tool_calls": [],
+        "finish_reason": "stop",
+        "prompt_ids": [1, 2, 3],
+        "completion_ids": [4, 5],
+        "completion_logprobs": [-0.1, -0.2],
+        "routed_experts": None,
+        "multi_modal_data": None,
+    }
+    if attribution is not None:
+        response_dict["prompt_attribution"] = attribution
+
+    response = await client.from_native_response(response_dict)
+
+    assert response.message.tokens is not None
+    assert response.message.tokens.prompt_attribution is attribution
