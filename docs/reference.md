@@ -1047,7 +1047,7 @@ class HarnessConfig(Config):
     bindings: BindingsConfig = BindingsConfig()
     objects: ObjectsConfig = ObjectsConfig()
     artifacts: ArtifactsConfig = ArtifactsConfig()
-    max_turns: int = 10
+    max_turns: int = -1  # <= 0 means unbounded (run until a stop condition)
 
 class ModelConfig(Config):
     name: str | None = None
