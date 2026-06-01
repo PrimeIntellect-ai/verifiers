@@ -25,10 +25,11 @@ class SandboxConfig(Config):
     install_timeout: int = 300
     setup_commands: list[str] = []
     setup_timeout: int = 300
+    labels: list[str] = []
     scope: Literal["rollout", "group", "global"] = "rollout"
     prefer: Literal["program"] | None = None
 
-    @field_validator("packages", "setup_commands", mode="before")
+    @field_validator("packages", "setup_commands", "labels", mode="before")
     @classmethod
     def validate_string_list(cls, value: object) -> object:
         if isinstance(value, str):
