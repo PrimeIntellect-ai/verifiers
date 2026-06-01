@@ -388,11 +388,24 @@ async def test_wikispeedia_deep_agents_program_passes_langsmith_config(
 
     class FakeState(dict):
         def get_endpoint_config(self, api: str):
-            return {
-                "model": "model",
-                "api_base": "https://example.invalid/v1",
-                "api_key": "key",
-            }
+            _ = api
+
+            class EndpointConfig:
+                model = "model"
+                base_url = "https://example.invalid/v1"
+
+            return EndpointConfig()
+
+        def get_client(self, api: str, *, sync: bool = False):
+            _ = api, sync
+
+            class Client:
+                api_key = "key"
+
+                def close(self) -> None:
+                    return None
+
+            return Client()
 
         def get_tools(self):
             return {}
