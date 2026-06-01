@@ -91,7 +91,7 @@ class HarborTaskset(vf.Taskset[HarborTasksetConfig]):
             )
         ]
         assert rows, f"No valid Harbor tasks found in {root}."
-        return rows
+        return cast(vf.Tasks, rows)
 
     @vf.reward(weight=1.0)
     async def harbor_reward(self, task: vf.Task, state: vf.State) -> float:
