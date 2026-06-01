@@ -82,7 +82,6 @@ def test_rlm_harness_accepts_typed_config_surface():
             program=RLMProgramConfig(
                 local_checkout="/tmp/checkout",
                 rlm_tools=["bash", "edit"],
-                rlm_max_turns=7,
                 rlm_exec_timeout=11,
                 env_vars={"CUSTOM": "1"},
             )
@@ -93,7 +92,6 @@ def test_rlm_harness_accepts_typed_config_surface():
 
     assert harness.config.program.rlm_tools == ["bash", "edit"]
     assert program_env["RLM_TOOLS"] == "bash,edit"
-    assert program_env["RLM_MAX_TURNS"] == "7"
     assert program_env["RLM_EXEC_TIMEOUT"] == "11"
     assert program_env["CUSTOM"] == "1"
 
