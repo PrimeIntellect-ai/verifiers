@@ -389,6 +389,14 @@ def _offload_image_url(url: Any, offload_dir: Path) -> "tuple[str, int] | None":
             # in place rather than dropping the image.
             _mm_logger.warning("renderer_image_offload write failed: %r", exc)
             return None
+    else:
+        # Recurring image already on disk: refresh mtime so a future last-use
+        # sweep treats it as hot (consistent with the mm_feature writer). Images
+        # aren't evicted today; best-effort, ignore a concurrent-sweep race.
+        try:
+            path.touch()
+        except OSError:
+            pass
     return f"{_FILE_URL_PREFIX}{path}", len(raw)
 
 
