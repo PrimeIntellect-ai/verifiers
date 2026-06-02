@@ -31,9 +31,9 @@ import os
 import sys
 import tomllib
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
-from pydantic import AliasChoices, Field, create_model, field_validator
+from pydantic import AliasChoices, Field, create_model
 from pydantic_config import BaseConfig, cli
 
 from verifiers import setup_logging
@@ -70,7 +70,9 @@ logger = logging.getLogger(__name__)
 # Provider shorthand (mirrors the legacy ``vf-eval`` --provider table).
 # ---------------------------------------------------------------------------
 
-PROVIDERS: dict[str, dict[str, str]] = {
+Provider = Literal["prime", "openai", "anthropic", "openrouter", "deepseek", "local"]
+
+PROVIDERS: dict[Provider, dict[str, str]] = {
     "prime": {"url": "https://api.pinference.ai/api/v1", "key": "PRIME_API_KEY"},
     "openai": {"url": "https://api.openai.com/v1", "key": "OPENAI_API_KEY"},
     "anthropic": {
@@ -85,7 +87,7 @@ PROVIDERS: dict[str, dict[str, str]] = {
     "deepseek": {"url": "https://api.deepseek.com/v1", "key": "DEEPSEEK_API_KEY"},
     "local": {"url": "http://localhost:8000/v1", "key": "VLLM_API_KEY"},
 }
-DEFAULT_PROVIDER = "prime"
+DEFAULT_PROVIDER: Provider = "prime"
 
 
 # ---------------------------------------------------------------------------
@@ -115,10 +117,9 @@ class ClientConfig(BaseConfig):
     model: str = "openai/gpt-4.1-mini"
     """Model id to send to the inference API."""
 
-    provider: str | None = None
-    """Provider shorthand: one of prime, openai, anthropic, openrouter, deepseek, local.
-    Resolves ``base_url`` / ``api_key_var`` / ``client_type`` defaults; explicit
-    sub-fields still win on conflict."""
+    provider: Provider | None = None
+    """Provider shorthand. Resolves ``base_url`` / ``api_key_var`` /
+    ``client_type`` defaults; explicit sub-fields still win on conflict."""
 
     base_url: str | None = None
     """API base URL (overrides --client.provider)."""
@@ -131,15 +132,6 @@ class ClientConfig(BaseConfig):
 
     headers: dict[str, str] = {}
     """Extra HTTP headers to attach to every inference request."""
-
-    @field_validator("provider")
-    @classmethod
-    def _validate_provider(cls, value: str | None) -> str | None:
-        if value is not None and value not in PROVIDERS:
-            raise ValueError(
-                f"Unknown provider {value!r}; pick one of {sorted(PROVIDERS)}."
-            )
-        return value
 
 
 # ---------------------------------------------------------------------------
