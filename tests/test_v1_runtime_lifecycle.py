@@ -722,7 +722,12 @@ async def test_v1_records_default_metrics_usage_and_timing() -> None:
     state = await harness.run(task)
 
     assert state["metrics"]["num_turns"] == 1.0
-    assert state["token_usage"] == {"input_tokens": 11.0, "output_tokens": 7.0}
+    assert state["token_usage"] == {
+        "input_tokens": 11.0,
+        "output_tokens": 7.0,
+        "final_output_tokens": 7.0,
+        "final_input_tokens": 11.0,
+    }
     assert state["usage"] == state["token_usage"]
     assert state["timing"]["total"] > 0.0
     assert state["timing"]["generation"]["duration"] > 0.0
