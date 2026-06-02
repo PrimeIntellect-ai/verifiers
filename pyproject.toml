@@ -113,6 +113,9 @@ nemogym = [
     "harnesses[nemogym]>=0.1.1",
     "tasksets[nemogym]>=0.1.1",
 ]
+deepagents = [
+    "harnesses[deepagents]>=0.1.2",
+]
 renderers = [
     "renderers>=0.1.8.dev28",
 ]
@@ -153,6 +156,10 @@ conflicts = [
     [
         { extra = "nemogym" },
         { extra = "packages" },
+    ],
+    [
+        { extra = "nemogym" },
+        { extra = "deepagents" },
     ],
     [
         { extra = "ta" },

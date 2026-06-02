@@ -14,14 +14,12 @@ tags = [
     "train",
     "eval",
 ]
-version = "0.2.12"
+version = "0.3.0"
 requires-python = ">=3.11"
 dependencies = [
     "verifiers>=0.1.15.dev14",
     "datasets",
-    "deepagents>=0.5.5",
-    "langgraph",
-    "langchain-openai>=1.2.1",
+    "harnesses[deepagents]>=0.1.2",
 ]
 
 [build-system]

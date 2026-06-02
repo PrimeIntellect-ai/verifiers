@@ -1,8 +1,5 @@
 import importlib
-import inspect
 import sys
-import types
-import uuid
 from pathlib import Path
 
 import pytest
@@ -62,7 +59,7 @@ def test_wikispeedia_loads_as_v1_taskset_harness(
 
     assert isinstance(env, vf.Env)
     assert isinstance(env.taskset, vf.Taskset)
-    assert isinstance(env.harness, vf.Harness)
+    assert isinstance(env.harness, module.DeepAgents)
     assert env.taskset.taskset_id == "langchain-deep-agents-wikispeedia"
 
 
@@ -186,7 +183,7 @@ def test_wikispeedia_taskset_owns_navigation_tools(
 
     assert names == ["click_link", "go_back"]
     assert [tool.__name__ for tool in no_back.toolsets[0].tools] == ["click_link"]
-    assert module.load_harness(config=module.WikispeediaHarnessConfig()).toolsets == []
+    assert module.load_harness(config=module.DeepAgentsConfig()).toolsets == []
 
 
 def test_wikispeedia_system_prompt_matches_available_tools(
@@ -206,6 +203,45 @@ def test_wikispeedia_system_prompt_matches_available_tools(
     assert "Backtracking is disabled" in without_back.system_prompt[0]["content"]
 
 
+def test_wikispeedia_taskset_system_prompt_excludes_scaffolding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = load_module(monkeypatch)
+
+    taskset = module.load_taskset(config=module.WikispeediaTasksetConfig())
+
+    assert "deep-agent scaffolding" not in taskset.system_prompt[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_wikispeedia_setup_initializes_navigation_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = load_module(monkeypatch)
+    wiki = make_small_wiki(module)
+    monkeypatch.setattr(module, "load_wiki_graph", lambda cache_dir=None: wiki)
+    env = vf.Env(
+        taskset=module.load_taskset(
+            config=module.WikispeediaTasksetConfig(
+                train_size=2,
+                eval_size=1,
+                min_path_length=1,
+                max_path_length=1,
+            )
+        ),
+        harness=module.load_harness(config=module.DeepAgentsConfig()),
+    )
+    task = env.taskset.to_task(env.taskset.get_dataset()[0])
+    state = vf.State.for_task(task)
+    state = await env.harness.setup_state(task, state)
+    await env.harness.runtime.setup_rollout(task, state)
+
+    assert state["current_article"] == state["info"]["source"]
+    assert state["path"] == [state["info"]["source"]]
+    assert state["reached_target"] is False
+    assert state[module.NAVIGATION_TOOL_CALLS_KEY] == []
+
+
 @pytest.mark.asyncio
 async def test_wikispeedia_tools_resolve_through_v1_runtime(
     monkeypatch: pytest.MonkeyPatch,
@@ -222,7 +258,7 @@ async def test_wikispeedia_tools_resolve_through_v1_runtime(
                 max_path_length=1,
             )
         ),
-        harness=module.load_harness(config=module.WikispeediaHarnessConfig()),
+        harness=module.load_harness(config=module.DeepAgentsConfig()),
     )
     task = env.taskset.to_task(env.taskset.get_dataset()[0])
     state = module.vf.State.for_task(task)
@@ -243,253 +279,6 @@ async def test_wikispeedia_tools_resolve_through_v1_runtime(
         {"name": "click_link", "valid": True}
     ]
     assert await module.total_tool_calls(task, state) == 1.0
-
-
-@pytest.mark.asyncio
-async def test_wikispeedia_langchain_tools_keep_explicit_schema(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    module = load_module(monkeypatch)
-    fake_langchain_core = types.ModuleType("langchain_core")
-    fake_tools_module = types.ModuleType("langchain_core.tools")
-
-    def tool(func):
-        return func
-
-    fake_tools_module.tool = tool
-    fake_langchain_core.tools = fake_tools_module
-    monkeypatch.setitem(sys.modules, "langchain_core", fake_langchain_core)
-    monkeypatch.setitem(sys.modules, "langchain_core.tools", fake_tools_module)
-    calls = []
-
-    async def runtime_click_link(**kwargs):
-        calls.append(kwargs)
-        return "clicked"
-
-    async def runtime_go_back():
-        return "back"
-
-    tools = module.langchain_navigation_tools(
-        {"click_link": runtime_click_link, "go_back": runtime_go_back}
-    )
-
-    assert [tool.__name__ for tool in tools] == ["click_link", "go_back"]
-    assert list(inspect.signature(tools[0]).parameters) == ["article"]
-    assert list(inspect.signature(tools[1]).parameters) == []
-    assert await tools[0](article="B") == "clicked"
-    assert calls == [{"article": "B"}]
-
-
-@pytest.mark.asyncio
-async def test_wikispeedia_graph_recursion_limit_stops_rollout(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    module = load_module(monkeypatch)
-
-    class GraphRecursionError(Exception):
-        pass
-
-    class FakeState(dict):
-        def get_endpoint_config(self, api: str):
-            _ = api
-
-            class EndpointConfig:
-                model = "model"
-                base_url = "https://example.invalid/v1"
-
-            return EndpointConfig()
-
-        def get_client(self, api: str, *, sync: bool = False):
-            _ = api, sync
-
-            class Client:
-                api_key = "key"
-
-                def close(self) -> None:
-                    return None
-
-            return Client()
-
-        def get_tools(self):
-            return {}
-
-        def get_max_turns(self, default: int):
-            return default
-
-        def stop(self, reason: str):
-            self["stop_reason"] = reason
-
-    class FakeChatOpenAI:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
-
-    class FakeAgent:
-        async def ainvoke(self, payload, config=None):
-            raise GraphRecursionError("recursion limit")
-
-    created_system_prompts = []
-
-    def fake_create_deep_agent(**kwargs):
-        created_system_prompts.append(kwargs["system_prompt"])
-        return FakeAgent()
-
-    fake_deepagents = types.ModuleType("deepagents")
-    fake_langchain_openai = types.ModuleType("langchain_openai")
-    fake_langgraph = types.ModuleType("langgraph")
-    fake_langgraph_errors = types.ModuleType("langgraph.errors")
-    fake_langchain_core = types.ModuleType("langchain_core")
-    fake_tools_module = types.ModuleType("langchain_core.tools")
-
-    fake_deepagents.create_deep_agent = fake_create_deep_agent
-    fake_langchain_openai.ChatOpenAI = FakeChatOpenAI
-    fake_langgraph_errors.GraphRecursionError = GraphRecursionError
-    fake_langgraph.errors = fake_langgraph_errors
-    fake_tools_module.tool = lambda func: func
-    fake_langchain_core.tools = fake_tools_module
-    monkeypatch.setitem(sys.modules, "deepagents", fake_deepagents)
-    monkeypatch.setitem(sys.modules, "langchain_openai", fake_langchain_openai)
-    monkeypatch.setitem(sys.modules, "langgraph", fake_langgraph)
-    monkeypatch.setitem(sys.modules, "langgraph.errors", fake_langgraph_errors)
-    monkeypatch.setitem(sys.modules, "langchain_core", fake_langchain_core)
-    monkeypatch.setitem(sys.modules, "langchain_core.tools", fake_tools_module)
-
-    program = module.make_langchain_deep_agents_program(
-        max_turns=50,
-        timeout_seconds=30,
-    )
-    state = FakeState(
-        {
-            "trajectory_id": "0123456789abcdef0123456789abcdef",
-            "info": {"source": "A", "target": "B", "shortest_path": 1},
-            "prompt": [{"role": "user", "content": "start"}],
-            "system_prompt": [
-                {"role": "user", "content": "first prompt chunk"},
-                {"role": "system", "content": "second prompt chunk"},
-            ],
-        }
-    )
-
-    result = await program({}, state)
-
-    assert created_system_prompts == ["first prompt chunk\n\nsecond prompt chunk"]
-    assert result["agent_timeout"] is True
-    assert result["stop_reason"] == "agent_recursion_limit"
-    assert result["agent_completion"] == []
-
-
-@pytest.mark.asyncio
-async def test_wikispeedia_deep_agents_program_passes_langsmith_config(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    module = load_module(monkeypatch)
-
-    class GraphRecursionError(Exception):
-        pass
-
-    class FakeState(dict):
-        def get_endpoint_config(self, api: str):
-            _ = api
-
-            class EndpointConfig:
-                model = "model"
-                base_url = "https://example.invalid/v1"
-
-            return EndpointConfig()
-
-        def get_client(self, api: str, *, sync: bool = False):
-            _ = api, sync
-
-            class Client:
-                api_key = "key"
-
-                def close(self) -> None:
-                    return None
-
-            return Client()
-
-        def get_tools(self):
-            return {}
-
-        def get_max_turns(self, default: int):
-            return default
-
-        def stop(self, reason: str):
-            self["stop_reason"] = reason
-
-    class FakeChatOpenAI:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
-
-    class FakeAgent:
-        async def ainvoke(self, payload, config=None):
-            captured["payload"] = payload
-            captured["config"] = config
-            return {"messages": [{"role": "assistant", "content": "done"}]}
-
-    captured: dict[str, object] = {}
-    created: dict[str, object] = {}
-
-    def fake_create_deep_agent(**kwargs):
-        created.update(kwargs)
-        return FakeAgent()
-
-    fake_deepagents = types.ModuleType("deepagents")
-    fake_langchain_openai = types.ModuleType("langchain_openai")
-    fake_langgraph = types.ModuleType("langgraph")
-    fake_langgraph_errors = types.ModuleType("langgraph.errors")
-    fake_langchain_core = types.ModuleType("langchain_core")
-    fake_tools_module = types.ModuleType("langchain_core.tools")
-
-    fake_deepagents.create_deep_agent = fake_create_deep_agent
-    fake_langchain_openai.ChatOpenAI = FakeChatOpenAI
-    fake_langgraph_errors.GraphRecursionError = GraphRecursionError
-    fake_langgraph.errors = fake_langgraph_errors
-    fake_tools_module.tool = lambda func: func
-    fake_langchain_core.tools = fake_tools_module
-    monkeypatch.setitem(sys.modules, "deepagents", fake_deepagents)
-    monkeypatch.setitem(sys.modules, "langchain_openai", fake_langchain_openai)
-    monkeypatch.setitem(sys.modules, "langgraph", fake_langgraph)
-    monkeypatch.setitem(sys.modules, "langgraph.errors", fake_langgraph_errors)
-    monkeypatch.setitem(sys.modules, "langchain_core", fake_langchain_core)
-    monkeypatch.setitem(sys.modules, "langchain_core.tools", fake_tools_module)
-
-    trajectory_id = "0123456789abcdef0123456789abcdef"
-    run_id = uuid.UUID(hex=trajectory_id)
-    program = module.make_langchain_deep_agents_program(
-        max_turns=12,
-        timeout_seconds=30,
-    )
-    state = FakeState(
-        {
-            "trajectory_id": trajectory_id,
-            "runtime": {"group_key": "group-1"},
-            "info": {"source": "A", "target": "B", "shortest_path": 2},
-            "prompt": [{"role": "user", "content": "start"}],
-        }
-    )
-
-    result = await program({"task_id": "A->B"}, state)
-
-    assert created["name"] == "wikispeedia-navigator"
-    assert captured["payload"] == {"messages": [{"role": "user", "content": "start"}]}
-    assert captured["config"] == {
-        "run_name": "wikispeedia:A->B",
-        "run_id": run_id,
-        "configurable": {"thread_id": trajectory_id},
-        "metadata": {
-            "vf_env": "langchain-deep-agents-wikispeedia",
-            "vf_task_id": "A->B",
-            "vf_trajectory_id": trajectory_id,
-            "vf_group_key": "group-1",
-            "source": "A",
-            "target": "B",
-            "shortest_path": 2,
-        },
-        "tags": ["verifiers", "vf-v1", "langchain-deep-agents-wikispeedia"],
-        "recursion_limit": 12,
-    }
-    assert result["langsmith_run_id"] == str(run_id)
-    assert result["completion"] == [{"role": "assistant", "content": "done"}]
 
 
 @pytest.mark.asyncio

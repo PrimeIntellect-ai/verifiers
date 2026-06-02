@@ -1,24 +1,16 @@
-import asyncio
-import json
 import os
-import uuid
-from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
-from typing import Protocol, cast
+from collections.abc import Awaitable, Callable, Iterator, Mapping
 
 from datasets import Dataset
 
 import verifiers as vf
+from harnesses import DeepAgents, DeepAgentsConfig
 from verifiers.v1.utils.prompt_utils import normalize_system_prompt
 
 if __package__:
     from .wiki_graph import WikiGraph, WikiPair, load_wiki_graph
 else:
     from wiki_graph import WikiGraph, WikiPair, load_wiki_graph
-
-
-class AgentMessage(Protocol):
-    role: str
-    content: object
 
 
 def system_prompt(allow_go_back: bool = True) -> str:
@@ -38,12 +30,6 @@ Each article ends with a list of `Available links: ...` — those are the only \
 links you can follow. Use the `click_link` tool to navigate to one. \
 {backtracking}
 
-You also have access to deep-agent scaffolding tools (`write_todos`, \
-`write_file`, `read_file`, `ls`, `edit_file`, `task`). Use them when they help: \
-sketch a plan with `write_todos`, jot promising bridge concepts or dead-ends \
-in a file, and call `task` to spawn a focused sub-agent for a sub-search. They \
-are entirely optional.
-
 Try to be quick — think about which broader concepts connect the source to \
 the target, and aim for the article that most likely lists your destination \
 among its links.
@@ -52,9 +38,6 @@ When you reach the target the system will say `TARGET REACHED`. Stop calling \
 tools at that point and reply with a brief confirmation."""
 
 
-SYSTEM_PROMPT = system_prompt()
-ENV_ID = "langchain-deep-agents-wikispeedia"
-AGENT_NAME = "wikispeedia-navigator"
 NAVIGATION_TOOL_CALLS_KEY = "navigation_tool_calls"
 
 
@@ -73,21 +56,17 @@ class WikispeediaTasksetConfig(vf.TasksetConfig):
     stratify_path_length: bool = True
 
 
-class WikispeediaHarnessConfig(vf.HarnessConfig):
-    program: vf.ProgramConfig = vf.ProgramConfig(
-        fn="run_langchain_deep_agents_wikispeedia_program"
-    )
-    max_turns: int = 50
-    timeout_seconds: float = 1200.0
-
-
 class WikispeediaTaskset(vf.Taskset[WikispeediaTasksetConfig]):
     def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         return load_tasks(self.config, split=split)
 
-
-class WikispeediaHarness(vf.Harness[WikispeediaHarnessConfig]):
-    pass
+    @vf.setup
+    async def init_navigation_state(self, task: vf.Task, state: vf.State) -> None:
+        state["current_article"] = state["info"]["source"]
+        state["path"] = [state["info"]["source"]]
+        state["reached_target"] = False
+        state["links_only"] = bool(task.get("links_only", False))
+        state[NAVIGATION_TOOL_CALLS_KEY] = []
 
 
 def format_article(wiki: WikiGraph, article: str, links_only: bool = False) -> str:
@@ -178,10 +157,6 @@ async def path_length(task: vf.Task, state: vf.State) -> float:
 
 async def shortest_path(task: vf.Task, state: vf.State) -> float:
     return float(state.get("info", {}).get("shortest_path", 0))
-
-
-async def agent_timeout(task: vf.Task, state: vf.State) -> float:
-    return 1.0 if state.get("agent_timeout", False) else 0.0
 
 
 def has_navigation_tool_log(state: vf.State) -> bool:
@@ -333,13 +308,6 @@ async def invalid_link_rate(task: vf.Task, state: vf.State) -> float:
     return float(invalid / clicks) if clicks else 0.0
 
 
-@vf.update(priority=-200)
-async def restore_agent_completion(task: vf.Task, state: vf.State) -> None:
-    agent_completion = state.get("agent_completion")
-    if isinstance(agent_completion, list):
-        state["completion"] = agent_completion
-
-
 def build_dataset(
     wiki: WikiGraph,
     pairs: list[WikiPair],
@@ -400,210 +368,6 @@ def load_tasks(
     )
 
 
-def serialize_agent_completion(
-    messages: Sequence[AgentMessage | vf.JsonData],
-) -> list[vf.JsonData]:
-    role_aliases = {
-        "human": "user",
-        "ai": "assistant",
-        "tool": "tool",
-        "system": "system",
-    }
-    call_names: dict[str, str] = {}
-    serialized: list[vf.JsonData] = []
-    for message in messages:
-        if isinstance(message, Mapping):
-            payload = dict(message)
-        else:
-            model_dump = getattr(message, "model_dump", None)
-            payload = (
-                model_dump(mode="json", exclude_none=True)
-                if callable(model_dump)
-                else {
-                    "role": getattr(message, "role", None)
-                    or getattr(message, "type", "assistant"),
-                    "content": getattr(message, "content", str(message)),
-                    "name": getattr(message, "name", None),
-                    "tool_call_id": getattr(message, "tool_call_id", None),
-                    "tool_calls": getattr(message, "tool_calls", None),
-                }
-            )
-        raw_role = payload.get("role") or payload.get("type") or "assistant"
-        role = role_aliases.get(str(raw_role), str(raw_role))
-        item: vf.JsonData = {
-            "role": role,
-            "content": payload.get("content", ""),
-        }
-        tool_calls = payload.get("tool_calls")
-        if isinstance(tool_calls, list) and tool_calls:
-            normalized_tool_calls = []
-            for tool_call in tool_calls:
-                if not isinstance(tool_call, Mapping):
-                    continue
-                tool_call_payload = dict(tool_call)
-                name = tool_call_payload.get("name")
-                tool_id = tool_call_payload.get("id") or tool_call_payload.get(
-                    "tool_call_id"
-                )
-                if isinstance(tool_id, str) and isinstance(name, str):
-                    call_names[tool_id] = name
-                arguments = tool_call_payload.get("arguments")
-                if not isinstance(arguments, str):
-                    args = tool_call_payload.get("args", {})
-                    try:
-                        arguments = json.dumps(args if args is not None else {})
-                    except (TypeError, ValueError):
-                        arguments = str(args)
-                    tool_call_payload["arguments"] = arguments
-                normalized_tool_calls.append(tool_call_payload)
-            item["tool_calls"] = normalized_tool_calls
-        name = payload.get("name")
-        if isinstance(name, str):
-            item["name"] = name
-        tool_call_id = payload.get("tool_call_id")
-        if isinstance(tool_call_id, str):
-            item["tool_call_id"] = tool_call_id
-            if item["role"] == "tool" and "name" not in item:
-                name = call_names.get(tool_call_id)
-                if name is not None:
-                    item["name"] = name
-        serialized.append(item)
-    if serialized and serialized[0].get("role") == "user":
-        return serialized[1:]
-    return serialized
-
-
-def langchain_navigation_tools(runtime_tools):
-    from langchain_core.tools import tool
-
-    nav_tools = []
-    if "click_link" in runtime_tools:
-        click_link_tool = runtime_tools["click_link"]
-
-        @tool
-        async def click_link(article: str) -> str:
-            """Navigate to a linked Wikipedia article."""
-            return str(await click_link_tool(article=article))
-
-        nav_tools.append(click_link)
-    if "go_back" in runtime_tools:
-        go_back_tool = runtime_tools["go_back"]
-
-        @tool
-        async def go_back() -> str:
-            """Undo the last click_link and return to the previous article."""
-            return str(await go_back_tool())
-
-        nav_tools.append(go_back)
-    return nav_tools
-
-
-def make_langchain_deep_agents_program(
-    max_turns: int,
-    timeout_seconds: float,
-) -> Callable[[vf.Task, vf.State], Awaitable[vf.State]]:
-    async def run_langchain_deep_agents_wikispeedia_program(
-        task: vf.Task, state: vf.State
-    ) -> vf.State:
-        from deepagents import create_deep_agent
-        from langchain_openai import ChatOpenAI
-        from langgraph.errors import GraphRecursionError
-        from openai import OpenAI
-
-        state["current_article"] = state["info"]["source"]
-        state["path"] = [state["info"]["source"]]
-        state["reached_target"] = False
-        state["agent_timeout"] = False
-        state["links_only"] = bool(task.get("links_only", False))
-        state[NAVIGATION_TOOL_CALLS_KEY] = []
-
-        endpoint_config = state.get_endpoint_config(api="chat")
-        endpoint_client = cast(OpenAI, state.get_client(api="chat", sync=True))
-        endpoint_api_key = endpoint_client.api_key
-        endpoint_client.close()
-        model = ChatOpenAI(
-            model=endpoint_config.model,
-            base_url=endpoint_config.base_url,
-            api_key=endpoint_api_key,
-        )
-        runtime_tools = state.get_tools()
-        nav_tools = langchain_navigation_tools(runtime_tools)
-        state_system_prompt = ""
-        system_prompt_messages = state.get("system_prompt")
-        if isinstance(system_prompt_messages, list):
-            state_system_prompt = "\n\n".join(
-                str(message.content or "")
-                for message in vf.get_messages(system_prompt_messages)
-            )
-        agent = create_deep_agent(
-            model=model,
-            tools=nav_tools,
-            system_prompt=state_system_prompt or SYSTEM_PROMPT,
-            name=AGENT_NAME,
-        )
-        prompt = str(cast(list[vf.JsonData], state["prompt"])[-1]["content"])
-        recursion_limit = state.get_max_turns(max_turns)
-        runtime = state.get("runtime", {})
-        runtime = runtime if isinstance(runtime, Mapping) else {}
-        source = str(state["info"]["source"])
-        target = str(state["info"]["target"])
-        trajectory_id = str(state["trajectory_id"])
-        run_id = uuid.UUID(hex=trajectory_id)
-        state["langsmith_run_id"] = str(run_id)
-        invoke_metadata = {
-            "vf_env": ENV_ID,
-            "vf_task_id": str(task.get("task_id", "")),
-            "vf_trajectory_id": trajectory_id,
-            "vf_group_key": str(runtime.get("group_key", "")),
-            "source": source,
-            "target": target,
-            "shortest_path": int(state["info"]["shortest_path"]),
-        }
-        invoke_config: vf.ConfigData = {
-            "run_name": f"wikispeedia:{source}->{target}",
-            "run_id": run_id,
-            "configurable": {"thread_id": trajectory_id},
-            "metadata": invoke_metadata,
-            "tags": ["verifiers", "vf-v1", ENV_ID],
-        }
-        if recursion_limit > 0:
-            invoke_config["recursion_limit"] = recursion_limit
-        invoke = agent.ainvoke(
-            {"messages": [{"role": "user", "content": prompt}]},
-            config=invoke_config,
-        )
-        try:
-            result = await asyncio.wait_for(invoke, timeout=timeout_seconds)
-        except (TimeoutError, GraphRecursionError) as exc:
-            state["agent_timeout"] = True
-            state.stop(
-                "agent_timeout"
-                if isinstance(exc, TimeoutError)
-                else "agent_recursion_limit"
-            )
-            state.setdefault("agent_completion", [])
-            return state
-
-        messages = result.get("messages", []) if isinstance(result, Mapping) else []
-        completion = serialize_agent_completion(messages)
-        state["agent_completion"] = completion
-        state["completion"] = completion
-        if completion:
-            state["agent_result"] = str(completion[-1].get("content") or "")
-        return state
-
-    return run_langchain_deep_agents_wikispeedia_program
-
-
-async def run_langchain_deep_agents_wikispeedia_program(
-    task: vf.Task, state: vf.State, harness: WikispeediaHarness
-) -> vf.State:
-    return await make_langchain_deep_agents_program(
-        max_turns=harness.config.max_turns,
-        timeout_seconds=harness.config.timeout_seconds,
-    )(task, state)
-
-
 def load_taskset(
     config: WikispeediaTasksetConfig,
 ) -> WikispeediaTaskset:
@@ -611,7 +375,6 @@ def load_taskset(
     metrics = [
         path_length,
         shortest_path,
-        agent_timeout,
         total_tool_calls,
         assistant_turns,
         invalid_link_rate,
@@ -651,17 +414,18 @@ def load_taskset(
     return taskset
 
 
-def load_harness(
-    config: WikispeediaHarnessConfig,
-) -> WikispeediaHarness:
-    harness = WikispeediaHarness(config=config)
-    harness.add_update(restore_agent_completion)
-    return harness
+def load_harness(config: DeepAgentsConfig) -> DeepAgents:
+    return DeepAgents(config=config)
 
 
 class WikispeediaEnvConfig(vf.EnvConfig):
     taskset: WikispeediaTasksetConfig = WikispeediaTasksetConfig()
-    harness: WikispeediaHarnessConfig = WikispeediaHarnessConfig()
+    harness: DeepAgentsConfig = DeepAgentsConfig(
+        agent_name="wikispeedia-navigator",
+        max_turns=50,
+        timeout_seconds=1200.0,
+        system_prompt_strategy="TH",
+    )
 
 
 def load_environment(config: WikispeediaEnvConfig) -> vf.Env:
