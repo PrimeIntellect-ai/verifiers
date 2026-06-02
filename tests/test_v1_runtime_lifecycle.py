@@ -2946,6 +2946,80 @@ async def test_release_sandboxes_keeps_failed_delete_retryable(
 
 
 @pytest.mark.asyncio
+async def test_resolve_sandbox_lease_rejects_lease_being_deleted() -> None:
+    delete_started = asyncio.Event()
+    finish_delete = asyncio.Event()
+
+    class SlowDeleteClient:
+        async def delete(self, sandbox_id: str) -> None:
+            assert sandbox_id == "sbx-deleting"
+            delete_started.set()
+            await finish_delete.wait()
+
+    async def create_replacement() -> sandbox_utils.SandboxLease:
+        raise AssertionError("resolve should not create a replacement")
+
+    runtime = Runtime()
+    key = ("rollout:test", "program")
+    lease = sandbox_utils.SandboxLease(
+        cast(sandbox_utils.SandboxClient, SlowDeleteClient()),
+        "sbx-deleting",
+        "rollout",
+        "program",
+        owns_client=False,
+    )
+    runtime.sandbox_leases[key] = lease
+    deletion = asyncio.create_task(runtime.close_sandbox_lease(lease))
+    await delete_started.wait()
+
+    with pytest.raises(RuntimeError, match="being deleted"):
+        await runtime.resolve_sandbox_lease(key, create_replacement)
+
+    finish_delete.set()
+    await deletion
+
+
+@pytest.mark.asyncio
+async def test_resolve_sandbox_lease_rejects_creation_claimed_by_cleanup() -> None:
+    deleted: list[str] = []
+
+    class DeleteClient:
+        async def delete(self, sandbox_id: str) -> None:
+            deleted.append(sandbox_id)
+
+    runtime = Runtime()
+    key = ("rollout:test", "program")
+    create_started = asyncio.Event()
+    lease = sandbox_utils.SandboxLease(
+        cast(sandbox_utils.SandboxClient, DeleteClient()),
+        "sbx-cleanup-claimed",
+        "rollout",
+        "program",
+        owns_client=False,
+    )
+
+    async def create_lease() -> sandbox_utils.SandboxLease:
+        create_started.set()
+        try:
+            await asyncio.sleep(10)
+        except asyncio.CancelledError:
+            return lease
+        raise AssertionError("creation should be cancelled by cleanup")
+
+    resolver = asyncio.create_task(runtime.resolve_sandbox_lease(key, create_lease))
+    await create_started.wait()
+    creation_task = runtime.sandbox_creation_tasks[key]
+
+    await runtime.clear_sandbox_creation_tasks([(key, creation_task)])
+
+    with pytest.raises(RuntimeError, match="cancelled before"):
+        await resolver
+    assert deleted == ["sbx-cleanup-claimed"]
+    assert key not in runtime.sandbox_creation_tasks
+    assert key not in runtime.sandbox_leases
+
+
+@pytest.mark.asyncio
 async def test_clear_creation_tasks_keeps_failed_delete_retryable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3234,6 +3308,36 @@ async def test_cached_upload_archive_cancelled_awaiter_still_cleans_archive(
 
     assert runtime.upload_archive_tasks == {}
     assert not archive_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_cleanup_upload_archives_logs_unlink_errors(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    archive_path = tmp_path / "cached.tar.gz"
+    archive_path.write_bytes(b"archive")
+    runtime = Runtime()
+    runtime.upload_archive_tasks[("remote", "source", "digest")] = asyncio.create_task(
+        asyncio.sleep(0, result=archive_path)
+    )
+    warnings: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    def raise_unlink(path: Path, missing_ok: bool = False) -> None:
+        assert path == archive_path
+        assert missing_ok is True
+        raise PermissionError("locked")
+
+    def record_warning(*args: object, **kwargs: object) -> None:
+        warnings.append((args, kwargs))
+
+    monkeypatch.setattr(Path, "unlink", raise_unlink)
+    monkeypatch.setattr("verifiers.v1.runtime.logger.warning", record_warning)
+
+    await runtime.cleanup_upload_archives()
+
+    assert runtime.upload_archive_tasks == {}
+    assert warnings[0][0][0] == "Failed to delete cached upload archive %s: %s"
+    assert warnings[0][1]["exc_info"] is True
 
 
 @pytest.mark.asyncio

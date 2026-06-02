@@ -1163,8 +1163,17 @@ class Runtime:
         results = await asyncio.gather(*tasks, return_exceptions=True)
         self.upload_archive_tasks.clear()
         for result in results:
-            if isinstance(result, Path):
+            if not isinstance(result, Path):
+                continue
+            try:
                 result.unlink(missing_ok=True)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to delete cached upload archive %s: %s",
+                    result,
+                    exc,
+                    exc_info=True,
+                )
 
     async def close_sandbox_lease(self, lease: "SandboxLease") -> None:
         async with self.sandbox_delete_semaphore:
@@ -1180,26 +1189,30 @@ class Runtime:
     ) -> None:
         from .utils.sandbox_utils import SandboxLease as SandboxLeaseClass
 
-        for _, task in creations:
-            if not task.done():
-                task.cancel()
-        results = await asyncio.gather(
-            *(task for _, task in creations), return_exceptions=True
-        )
+        claimed_creations = []
         async with self.sandbox_lock:
             for key, task in creations:
                 if self.sandbox_creation_tasks.get(key) is task:
                     del self.sandbox_creation_tasks[key]
+                    claimed_creations.append((key, task))
 
-        for (key, _), result in zip(creations, results, strict=True):
+        for _, task in claimed_creations:
+            if not task.done():
+                task.cancel()
+        results = await asyncio.gather(
+            *(task for _, task in claimed_creations), return_exceptions=True
+        )
+
+        for (key, _), result in zip(claimed_creations, results, strict=True):
             if not isinstance(result, SandboxLeaseClass):
                 continue
-            async with self.sandbox_lock:
-                result.scope_key = key[0]
-                self.sandbox_leases[key] = result
+            result.scope_key = key[0]
             try:
                 await self.close_sandbox_lease(result)
             except Exception as exc:
+                async with self.sandbox_lock:
+                    if not result.deleted:
+                        self.sandbox_leases[key] = result
                 logger.warning(
                     "Failed to delete sandbox %s from cancelled creation: %s",
                     result.id,
@@ -1217,10 +1230,6 @@ class Runtime:
                             "scope": scope,
                         }
                     )
-            else:
-                async with self.sandbox_lock:
-                    if self.sandbox_leases.get(key) is result:
-                        del self.sandbox_leases[key]
 
     async def resolve_sandbox_lease(
         self, key: tuple[str, str], factory: Callable[[], Awaitable["SandboxLease"]]
@@ -1228,6 +1237,8 @@ class Runtime:
         async with self.sandbox_lock:
             lease = self.sandbox_leases.get(key)
             if lease is not None:
+                if lease.deleted:
+                    raise RuntimeError("Sandbox lease is being deleted.")
                 return lease
             task = self.sandbox_creation_tasks.get(key)
             if task is None:
@@ -1256,9 +1267,18 @@ class Runtime:
         async with self.sandbox_lock:
             existing = self.sandbox_leases.get(key)
             if existing is not None:
+                if existing.deleted:
+                    raise RuntimeError("Sandbox lease is being deleted.")
                 return existing
-            if self.sandbox_creation_tasks.get(key) is task:
-                del self.sandbox_creation_tasks[key]
+            if self.sandbox_creation_tasks.get(key) is not task:
+                raise RuntimeError(
+                    "Sandbox creation was cancelled before the lease was resolved."
+                )
+            del self.sandbox_creation_tasks[key]
+            if lease.deleted:
+                raise RuntimeError(
+                    "Sandbox lease was deleted before it could be resolved."
+                )
             lease.scope_key = key[0]
             self.sandbox_leases[key] = lease
             return lease
