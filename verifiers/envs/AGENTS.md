@@ -25,6 +25,15 @@ Base classes for building environments:
 - `SandboxEnv` - Sandboxed container execution using `prime` sandboxes. All sandbox setup logic should be included in the start command and queued via `setup_state`, but not awaited—await resources only when first needed to overlap provisioning with rollout. See `python_env.py` for an example.
 - `PythonEnv` - Persistent Python REPL in sandbox
 
+## Optional Flags
+
+`ToolEnv(mask_all_failed_tool_calls=True)` marks a rollout as
+`state["masked"] = True` when it made at least one tool call and every recorded
+tool call failed. Tool outcomes are recorded in `state["tool_call_outcomes"]` as
+`"ok"` or `"error"`, and masked rollouts receive zero reward while exposing the
+`void_turn_rollouts` metric. This follows the SimpleTIR void-turn masking pattern
+for skipping all-tool-failed rollouts during reward computation.
+
 ## Integrations
 
 Third-party library wrappers that require additional dependencies:
