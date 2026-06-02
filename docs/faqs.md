@@ -10,8 +10,6 @@ Use `prime eval run` with a small sample:
 prime eval run my-environment -m openai/gpt-4.1-mini -n 5
 ```
 
-The `-s` flag prints sample outputs so you can see what's happening.
-
 ### How do I see what the model is outputting?
 
 **If using `prime eval run`**: Results are saved automatically. Browse them interactively with:
