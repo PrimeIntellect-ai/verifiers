@@ -33,7 +33,7 @@ import tomllib
 from pathlib import Path
 from typing import Any, cast
 
-from pydantic import Field, create_model, field_validator
+from pydantic import AliasChoices, Field, create_model, field_validator
 from pydantic_config import BaseConfig, cli
 
 from verifiers import setup_logging
@@ -172,10 +172,12 @@ class EvalConfigBase(BaseConfig):
     sampling: SamplingConfig = SamplingConfig()
     """Sampling arguments."""
 
-    num_examples: int = 5
+    num_examples: int = Field(5, validation_alias=AliasChoices("num_examples", "n"))
     """Number of examples to evaluate."""
 
-    rollouts_per_example: int = 3
+    rollouts_per_example: int = Field(
+        3, validation_alias=AliasChoices("rollouts_per_example", "r")
+    )
     """Rollouts per example (groups)."""
 
     max_concurrent: int = 32
