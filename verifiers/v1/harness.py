@@ -112,7 +112,7 @@ class HarnessConfig(LifecycleConfig):
     bindings: BindingsConfig = BindingsConfig()
     objects: ObjectsConfig = ObjectsConfig()
     artifacts: ArtifactsConfig = ArtifactsConfig()
-    max_turns: int = 10
+    max_turns: int = -1
 
     @classmethod
     def __pydantic_init_subclass__(cls, **kwargs: object) -> None:
@@ -576,7 +576,7 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
         async def run(task: Task, state: State) -> State:
             merged_program = merge_task_program(program, task, kind="base")
             return await run_sandbox_python_program(
-                program=self.prepare_sandbox_program(merged_program, state),
+                program=merged_program,
                 sandbox_config=self.prepare_sandbox_config(
                     merge_task_sandbox(sandbox_config, task), merged_program
                 ),
@@ -601,7 +601,7 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
         async def run(task: Task, state: State) -> State:
             merged_program = merge_task_program(program, task, kind="fn")
             return await run_sandbox_python_program(
-                program=self.prepare_sandbox_program(merged_program, state),
+                program=merged_program,
                 sandbox_config=self.prepare_sandbox_config(
                     merge_task_sandbox(sandbox_config, task), merged_program
                 ),

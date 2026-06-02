@@ -12,7 +12,6 @@ from .utils.rlm_utils import (
 
 RLM_DEFAULT_REPO_URL = "github.com/PrimeIntellect-ai/rlm-harness.git"
 RLM_DEFAULT_REPO_REF = "main"
-RLM_DEFAULT_MAX_TURNS = 100
 RLM_DEFAULT_EXEC_TIMEOUT = 300
 RLM_DEFAULT_MAX_DEPTH = 0
 RLM_DEFAULT_INSTRUCTION_PATH = "/rlm/instruction.txt"
@@ -27,7 +26,6 @@ class RLMProgramConfig(vf.ProgramConfig):
     instruction_path: str = RLM_DEFAULT_INSTRUCTION_PATH
     rlm_repo_url: str = RLM_DEFAULT_REPO_URL
     rlm_repo_ref: str = RLM_DEFAULT_REPO_REF
-    rlm_max_turns: int = RLM_DEFAULT_MAX_TURNS
     rlm_exec_timeout: int = RLM_DEFAULT_EXEC_TIMEOUT
     rlm_max_depth: int = RLM_DEFAULT_MAX_DEPTH
     summarize_at_tokens: int | None = None
@@ -74,7 +72,6 @@ class RLMProgramConfig(vf.ProgramConfig):
             "OPENAI_MODEL": "runtime.model",
             "RLM_MODEL": "runtime.model",
             "RLM_TOOLS": ",".join(self.rlm_tools),
-            "RLM_MAX_TURNS": str(self.rlm_max_turns),
             "RLM_EXEC_TIMEOUT": str(self.rlm_exec_timeout),
             "RLM_MAX_DEPTH": str(self.rlm_max_depth),
             **self.env_vars,

@@ -69,10 +69,15 @@ def test_mini_swe_agent_builds_sandbox_program():
         )
     )
     program = cast(dict[str, Any], harness.config.program.data())
+    command = cast(list[str], program["command"])
+    script = command[-1]
 
     assert isinstance(harness, vf.Harness)
     assert program["sandbox"] is not False
     assert "OPENAI_MODEL" in cast(dict[str, object], program["env"])
+    assert "-c mini " in script
+    assert "model.model_class=litellm" in script
+    assert "model.model_kwargs.parallel_tool_calls=true" in script
     assert "apt-get -o Acquire::Retries=3 update" in cast(str, program["setup"])
     assert "apt-get -o Acquire::Retries=3 install" in cast(str, program["setup"])
     assert "/mini-swe-agent/prompt.txt" in cast(dict[str, object], program["files"])
