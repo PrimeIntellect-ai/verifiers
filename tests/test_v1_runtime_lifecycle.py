@@ -2915,12 +2915,12 @@ async def test_clear_creation_tasks_keeps_failed_delete_retryable(
 
 
 @pytest.mark.asyncio
-async def test_teardown_cleans_client_and_registry_after_failed_delete(
+async def test_teardown_keeps_failed_delete_retryable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     disable_sandbox_retry_sleep(monkeypatch)
 
-    class FailingDeleteClient:
+    class DeleteFailsThenSucceeds:
         def __init__(self, sandbox_id: str):
             self.sandbox_id = sandbox_id
             self.delete_calls = 0
@@ -2929,13 +2929,14 @@ async def test_teardown_cleans_client_and_registry_after_failed_delete(
         async def delete(self, sandbox_id: str) -> None:
             assert sandbox_id == self.sandbox_id
             self.delete_calls += 1
-            raise RuntimeError("delete failed")
+            if self.delete_calls <= sandbox_utils.SANDBOX_RETRY_ATTEMPTS:
+                raise RuntimeError("delete failed")
 
         async def aclose(self) -> None:
             self.closed = True
 
-    client = FailingDeleteClient("sbx-terminal-fail")
-    owned_client = FailingDeleteClient("sbx-owned-terminal-fail")
+    client = DeleteFailsThenSucceeds("sbx-terminal-fail")
+    owned_client = DeleteFailsThenSucceeds("sbx-owned-terminal-fail")
     runtime = Runtime()
     runtime._sandbox_client = cast(sandbox_utils.SandboxClient, client)
     key = ("rollout:test", "program")
@@ -2958,8 +2959,18 @@ async def test_teardown_cleans_client_and_registry_after_failed_delete(
     await runtime.teardown()
 
     assert client.delete_calls == sandbox_utils.SANDBOX_RETRY_ATTEMPTS
-    assert client.closed is True
+    assert client.closed is False
     assert owned_client.delete_calls == sandbox_utils.SANDBOX_RETRY_ATTEMPTS
+    assert owned_client.closed is False
+    assert runtime.sandbox_leases[key] is lease
+    assert owned_key in runtime.sandbox_leases
+    assert load_runtime(runtime.runtime_id) is runtime
+
+    await runtime.teardown()
+
+    assert client.delete_calls == sandbox_utils.SANDBOX_RETRY_ATTEMPTS + 1
+    assert client.closed is True
+    assert owned_client.delete_calls == sandbox_utils.SANDBOX_RETRY_ATTEMPTS + 1
     assert owned_client.closed is True
     assert runtime.sandbox_leases == {}
     with pytest.raises(RuntimeError, match="No live v1 runtime registered"):

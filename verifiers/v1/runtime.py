@@ -1053,6 +1053,7 @@ class Runtime:
     async def teardown(self) -> None:
         await run_handlers(self.teardown_handlers)
         await self.release_runtime_objects()
+        failed_sandbox_deletions = []
         try:
             if self.sandbox_creation_tasks:
                 await self.clear_sandbox_creation_tasks(
@@ -1068,29 +1069,24 @@ class Runtime:
                         exc,
                         exc_info=True,
                     )
-                    if handle.owns_client:
-                        from .utils.sandbox_utils import close_sandbox_client
-
-                        try:
-                            await close_sandbox_client(handle.client)
-                        except Exception as close_exc:
-                            logger.warning(
-                                "Failed to close sandbox client for %s during teardown: %s",
-                                handle.id,
-                                close_exc,
-                                exc_info=True,
-                            )
-                async with self.sandbox_lock:
-                    if self.sandbox_leases.get(key) is handle:
-                        del self.sandbox_leases[key]
+                    failed_sandbox_deletions.append(handle)
+                else:
+                    async with self.sandbox_lock:
+                        if self.sandbox_leases.get(key) is handle:
+                            del self.sandbox_leases[key]
         finally:
-            await self.teardown_sandbox_client()
+            if not any(
+                handle.client is self._sandbox_client
+                for handle in failed_sandbox_deletions
+            ):
+                await self.teardown_sandbox_client()
             await self.cleanup_upload_archives()
         self.tool_handles.clear()
         self.scoped_tools.clear()
         await self.close_all_mcp_tools()
         await self.release_all_model_clients()
-        unregister_runtime(self.runtime_id)
+        if not failed_sandbox_deletions:
+            unregister_runtime(self.runtime_id)
 
     def sandbox_client(self) -> "SandboxClient":
         if self._sandbox_client is None:
