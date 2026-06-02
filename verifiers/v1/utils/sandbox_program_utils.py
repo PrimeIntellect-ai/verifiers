@@ -4,6 +4,7 @@ import json
 import shlex
 import sys
 import sysconfig
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
@@ -11,7 +12,6 @@ from typing import cast
 from verifiers.utils.interception_utils import serialize_tool_defs
 
 from .endpoint_utils import Endpoint
-from .sandbox_utils import ProgramPrepare
 from ..runtime import Runtime
 from ..sandbox import SandboxConfig
 from ..state import State
@@ -74,7 +74,7 @@ async def run_sandbox_python_program(
     fn_ref: str | None,
     max_turns: int,
     endpoint: Endpoint | None = None,
-    prepare_program: ProgramPrepare | None = None,
+    prepare_program: Callable[[ConfigData, State], ConfigData] | None = None,
 ) -> State:
     runner_program = sandbox_runner_program(
         program=program,

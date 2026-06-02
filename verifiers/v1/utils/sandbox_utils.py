@@ -51,7 +51,6 @@ SANDBOX_RETRY_ATTEMPTS = 6
 SANDBOX_WAIT_FOR_CREATION_ATTEMPTS = 120
 T = TypeVar("T")
 logger = logging.getLogger(__name__)
-ProgramPrepare = Callable[[ConfigData, State], ConfigData]
 
 
 class SandboxRecord(Protocol):
@@ -462,7 +461,7 @@ async def run_sandbox_command(
     state: State,
     runtime: Runtime,
     endpoint: "Endpoint | None" = None,
-    prepare_program: ProgramPrepare | None = None,
+    prepare_program: Callable[[ConfigData, State], ConfigData] | None = None,
 ) -> State:
     sandbox_data = sandbox_config.data()
     try:
@@ -560,45 +559,26 @@ async def sandbox_interception_bridge(
 
     original_root = state.get("endpoint_root_url")
     original_base = state.get("endpoint_base_url")
-    await start_sandbox_bridge_proxy(lease)
-    stop = asyncio.Event()
-    forwarder = asyncio.create_task(run_sandbox_bridge_forwarder(lease, endpoint, stop))
-    state["endpoint_root_url"] = f"http://127.0.0.1:{BRIDGE_PORT}/rollout/{rollout_key}"
-    state["endpoint_base_url"] = f"{state['endpoint_root_url']}/v1"
-    try:
-        yield
-    finally:
-        stop.set()
-        await asyncio.gather(forwarder, return_exceptions=True)
-        await stop_sandbox_bridge_proxy(lease)
-        if isinstance(original_root, str):
-            state["endpoint_root_url"] = original_root
-        if isinstance(original_base, str):
-            state["endpoint_base_url"] = original_base
-
-
-async def start_sandbox_bridge_proxy(lease: SandboxLease) -> None:
-    await lease.upload_bytes(BRIDGE_PROXY_PATH, sandbox_bridge_proxy_source().encode())
     root = shlex.quote(BRIDGE_ROOT)
     proxy_path = shlex.quote(BRIDGE_PROXY_PATH)
-    command = (
-        f"mkdir -p {root}/requests {root}/responses && "
-        f"rm -f {root}/requests/*.json {root}/responses/*.json && "
-        "PYTHON=$(command -v python3 || command -v python) && "
-        f'(nohup "$PYTHON" {proxy_path} --root {root} --port {BRIDGE_PORT} '
-        f"> {root}/proxy.log 2>&1 & echo $! > {root}/proxy.pid)"
-    )
-    result = await lease.execute(command, timeout=10)
-    if result.exit_code:
-        raise SandboxError(f"Sandbox interception bridge failed: {result.stderr}")
-    await wait_for_sandbox_bridge_proxy(lease)
+    started = False
+    stop: asyncio.Event | None = None
+    forwarder: asyncio.Task[None] | None = None
+    try:
+        await lease.upload_bytes(BRIDGE_PROXY_PATH, BRIDGE_PROXY_SOURCE.encode())
+        command = (
+            f"mkdir -p {root}/requests {root}/responses && "
+            f"rm -f {root}/requests/*.json {root}/responses/*.json && "
+            "PYTHON=$(command -v python3 || command -v python) && "
+            f'(nohup "$PYTHON" {proxy_path} --root {root} --port {BRIDGE_PORT} '
+            f"> {root}/proxy.log 2>&1 & echo $! > {root}/proxy.pid)"
+        )
+        result = await lease.execute(command, timeout=10)
+        if result.exit_code:
+            raise SandboxError(f"Sandbox interception bridge failed: {result.stderr}")
+        started = True
 
-
-async def wait_for_sandbox_bridge_proxy(lease: SandboxLease) -> None:
-    command = (
-        "PYTHON=$(command -v python3 || command -v python) && "
-        '"$PYTHON" -c '
-        + shlex.quote(
+        ready_check = (
             "import socket, sys, time\n"
             "deadline = time.time() + 10\n"
             "while time.time() < deadline:\n"
@@ -609,18 +589,36 @@ async def wait_for_sandbox_bridge_proxy(lease: SandboxLease) -> None:
             "        time.sleep(0.1)\n"
             "sys.exit(1)\n"
         )
-    )
-    result = await lease.execute(command, timeout=15)
-    if result.exit_code:
-        raise SandboxError("Sandbox interception bridge did not become ready.")
+        result = await lease.execute(
+            "PYTHON=$(command -v python3 || command -v python) && "
+            f'"$PYTHON" -c {shlex.quote(ready_check)}',
+            timeout=15,
+        )
+        if result.exit_code:
+            raise SandboxError("Sandbox interception bridge did not become ready.")
 
-
-async def stop_sandbox_bridge_proxy(lease: SandboxLease) -> None:
-    root = shlex.quote(BRIDGE_ROOT)
-    await lease.execute(
-        f"if [ -f {root}/proxy.pid ]; then kill $(cat {root}/proxy.pid) 2>/dev/null || true; fi",
-        timeout=10,
-    )
+        stop = asyncio.Event()
+        forwarder = asyncio.create_task(
+            run_sandbox_bridge_forwarder(lease, endpoint, stop)
+        )
+        state["endpoint_root_url"] = (
+            f"http://127.0.0.1:{BRIDGE_PORT}/rollout/{rollout_key}"
+        )
+        state["endpoint_base_url"] = f"{state['endpoint_root_url']}/v1"
+        yield
+    finally:
+        if stop is not None and forwarder is not None:
+            stop.set()
+            await asyncio.gather(forwarder, return_exceptions=True)
+        if started:
+            await lease.execute(
+                f"if [ -f {root}/proxy.pid ]; then kill $(cat {root}/proxy.pid) 2>/dev/null || true; fi",
+                timeout=10,
+            )
+        if isinstance(original_root, str):
+            state["endpoint_root_url"] = original_root
+        if isinstance(original_base, str):
+            state["endpoint_base_url"] = original_base
 
 
 async def run_sandbox_bridge_forwarder(
@@ -630,18 +628,28 @@ async def run_sandbox_bridge_forwarder(
 ) -> None:
     pending: set[asyncio.Task[None]] = set()
     seen: set[str] = set()
+    request_dir = f"{BRIDGE_ROOT}/requests"
+    find_requests = (
+        f"find {shlex.quote(request_dir)} -maxdepth 1 -type f "
+        "-name '*.json' -print 2>/dev/null || true"
+    )
     while not stop.is_set():
-        for path in await list_sandbox_bridge_requests(lease):
-            if path in seen:
+        result = await lease.execute(find_requests, timeout=5)
+        for request_path in (result.stdout or "").splitlines():
+            if request_path in seen:
                 continue
-            seen.add(path)
+            if not request_path.startswith(request_dir) or not request_path.endswith(
+                ".json"
+            ):
+                continue
+            seen.add(request_path)
             pending.add(
                 asyncio.create_task(
                     forward_sandbox_bridge_request(
                         lease,
                         endpoint,
-                        path,
-                        bridge_response_path(path),
+                        request_path,
+                        f"{BRIDGE_ROOT}/responses/{Path(request_path).name}",
                     )
                 )
             )
@@ -652,23 +660,6 @@ async def run_sandbox_bridge_forwarder(
         await asyncio.sleep(0.05)
     if pending:
         await asyncio.gather(*pending)
-
-
-async def list_sandbox_bridge_requests(lease: SandboxLease) -> list[str]:
-    root = shlex.quote(f"{BRIDGE_ROOT}/requests")
-    result = await lease.execute(
-        f"find {root} -maxdepth 1 -type f -name '*.json' -print 2>/dev/null || true",
-        timeout=5,
-    )
-    return [
-        line
-        for line in (result.stdout or "").splitlines()
-        if line.startswith(f"{BRIDGE_ROOT}/requests/") and line.endswith(".json")
-    ]
-
-
-def bridge_response_path(request_path: str) -> str:
-    return f"{BRIDGE_ROOT}/responses/{Path(request_path).name}"
 
 
 async def forward_sandbox_bridge_request(
@@ -682,7 +673,11 @@ async def forward_sandbox_bridge_request(
         raw_request = raw_request.content
     request = json.loads(str(raw_request))
     body = base64.b64decode(str(request.get("body") or ""))
-    headers = bridge_request_headers(request.get("headers"))
+    headers = dict(cast(ConfigData, request.get("headers") or {}))
+    for key in ("host", "content-length", "connection", "transfer-encoding"):
+        headers.pop(key, None)
+        headers.pop(key.title(), None)
+    headers = {str(key): str(item) for key, item in headers.items()}
     method = str(request.get("method") or "POST")
     path = str(request.get("path") or "/")
     timeout = httpx.Timeout(None)
@@ -709,16 +704,7 @@ async def forward_sandbox_bridge_request(
     await lease.execute(f"rm -f {shlex.quote(request_path)}", timeout=5)
 
 
-def bridge_request_headers(value: object) -> dict[str, str]:
-    headers = dict(cast(ConfigData, value or {}))
-    for key in ("host", "content-length", "connection", "transfer-encoding"):
-        headers.pop(key, None)
-        headers.pop(key.title(), None)
-    return {str(key): str(item) for key, item in headers.items()}
-
-
-def sandbox_bridge_proxy_source() -> str:
-    return r"""
+BRIDGE_PROXY_SOURCE = r"""
 import argparse
 import base64
 import json
