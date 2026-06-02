@@ -50,18 +50,38 @@ def resolve_client(client_or_config: Client | ClientConfig) -> Client:
                 return AnthropicMessagesClient(client_or_config)
             case "nemorl_chat_completions":
                 return NeMoRLChatCompletionsClient(client_or_config)
+            case "bedrock_converse":
+                BedrockConverseClient = _load_bedrock_client()
+                return BedrockConverseClient(client_or_config)
     else:
         raise ValueError(f"Unsupported client type: {type(client_or_config)}")
+
+
+def _load_bedrock_client():
+    try:
+        from verifiers.clients.bedrock_converse_client import BedrockConverseClient
+    except ModuleNotFoundError as e:
+        missing = e.name or ""
+        if missing == "boto3" or missing.startswith("boto"):
+            raise ImportError(
+                "BedrockConverseClient requires the bedrock extra; install "
+                "`verifiers[bedrock]`."
+            ) from e
+        raise
+    return BedrockConverseClient
 
 
 def __getattr__(name: str):
     if name == "RendererClient":
         return _load_renderer_client()
+    if name == "BedrockConverseClient":
+        return _load_bedrock_client()
     raise AttributeError(f"module 'verifiers.clients' has no attribute '{name}'")
 
 
 __all__ = [
     "AnthropicMessagesClient",
+    "BedrockConverseClient",
     "NeMoRLChatCompletionsClient",
     "OpenAICompletionsClient",
     "OpenAIChatCompletionsClient",

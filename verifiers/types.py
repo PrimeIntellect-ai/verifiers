@@ -60,6 +60,7 @@ ClientType = Literal[
     "renderer",
     "anthropic_messages",
     "nemorl_chat_completions",
+    "bedrock_converse",
 ]
 EndpointApi = Literal[
     "chat",
