@@ -14,11 +14,12 @@ This is the **pure v1 shape**: the whole env is a `Taskset` plus a `load_taskset
 class ReverseTextTasksetConfig(vf.TasksetConfig):
     dataset_name: str = "PrimeIntellect/Reverse-Text-RL"
     dataset_split: str = "train"
+    instruction: str = "Reverse the text character-by-character. ..."
 
 
 class ReverseTextTaskset(vf.Taskset[ReverseTextTasksetConfig]):
+    # The task instruction is prepended to each user prompt (no system prompt).
     def load_tasks(self) -> vf.Tasks: ...
-    def load_system_prompt(self) -> vf.SystemPrompt: ...
 
     @vf.reward(weight=1.0)
     async def lcs_reward(self, task, state) -> float: ...

@@ -38,7 +38,7 @@ REVERSED_TEXT_EXTRACTOR = TagExtractor("reversed_text")
 class ReverseTextTasksetConfig(vf.TasksetConfig):
     dataset_name: str = "PrimeIntellect/Reverse-Text-RL"
     dataset_split: str = "train"
-    system_prompt: vf.SystemPrompt = (
+    instruction: str = (
         "Reverse the text character-by-character. Put your answer in "
         "<reversed_text> tags."
     )
@@ -58,11 +58,14 @@ class ReverseTextTaskset(vf.Taskset[ReverseTextTasksetConfig]):
             split=self.config.dataset_split,
         ).map(map_row)
         dataset = dataset.remove_columns(["prompt"])
+        instruction = self.config.instruction
         for index, row in enumerate(dataset):
+            question = row["question"]
+            content = f"{instruction}\n\n{question}" if instruction else question
             yield {
                 "example_id": index,
-                "prompt": [{"role": "user", "content": row["question"]}],
-                "question": row["question"],
+                "prompt": [{"role": "user", "content": content}],
+                "question": question,
                 "answer": row["answer"],
                 "info": row.get("info") or {},
             }
