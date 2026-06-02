@@ -7,18 +7,11 @@ from verifiers.utils.data_utils import (
 
 
 def load_environment(**kwargs):
-    # env 1: gsm8k
     parser = vf.Parser(extract_fn=extract_boxed_answer)
 
-    def gsm8k_answer_reward_func(parser, completion, answer, **kwargs):
-        response = parser.parse_answer(completion) or ""
-        return 1.0 if response == answer else 0.0
-
-    rubric1 = vf.Rubric(
-        parser=parser,
-        funcs=[gsm8k_answer_reward_func, parser.get_format_reward_func()],
-        weights=[1.0, 0.0],
-    )
+    # env 1: gsm8k
+    rubric1 = vf.MathRubric(parser=parser)
+    rubric1.add_metric(parser.get_format_reward_func())
 
     def build_gsm8k_dataset():
         return load_example_dataset("gsm8k", split="train").select(range(1000))
@@ -31,15 +24,8 @@ def load_environment(**kwargs):
     )
 
     # env 2: math
-    def math_answer_reward_func(completion, answer, **kwargs):
-        response = parser.parse_answer(completion) or ""
-        return 1.0 if response == answer else 0.0
-
-    rubric2 = vf.Rubric(
-        parser=parser,
-        funcs=[math_answer_reward_func, parser.get_format_reward_func()],
-        weights=[1.0, 0.2],
-    )
+    rubric2 = vf.MathRubric(parser=parser)
+    rubric2.add_reward_func(parser.get_format_reward_func(), weight=0.2)
 
     def build_math_dataset():
         return load_example_dataset("math", split="train").select(range(1000))
