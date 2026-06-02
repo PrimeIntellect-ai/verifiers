@@ -10,7 +10,7 @@ This implementation mirrors AweAgent's ``ScaleSWETask`` +
 
 1. Run the row's ``pre_commands`` in ``workdir`` before the agent/debug step.
 2. Apply the candidate patch with AweAgent's multi-strategy patch helper.
-3. Restore likely test files to ``HEAD`` before evaluation.
+3. Restore likely test files to the row base commit before evaluation.
 4. Apply ``f2p_patch`` if present, upload ``f2p_script`` as
    ``test_fail_to_pass.py``, and run merged F2P + P2P pytest ids through an
    injected pytest runner.
@@ -258,7 +258,7 @@ exit "$fail"
     ) -> str:
         info = state["info"]
         workdir = self.get_workdir(info)
-        await self._restore_test_files(sandbox_client, sandbox_id, workdir)
+        await self._restore_test_files(sandbox_client, sandbox_id, workdir, info)
 
         f2p_patch = info.get("f2p_patch") or ""
         if f2p_patch.strip():
@@ -331,20 +331,36 @@ exit "$fail"
         return raw_output
 
     async def _restore_test_files(
-        self, sandbox_client: Any, sandbox_id: str, workdir: str
+        self, sandbox_client: Any, sandbox_id: str, workdir: str, info: dict
     ) -> None:
-        commands = [
-            "git checkout HEAD -- tests/ test/ Test/ Tests/ 2>/dev/null || true",
-            (
-                "git checkout HEAD -- "
-                "$(git ls-files '**/test_*.py' '**/*_test.py' '**/conftest.py' "
-                "2>/dev/null) 2>/dev/null || true"
-            ),
-        ]
-        for command in commands:
-            await sandbox_client.execute_command(
-                sandbox_id, command, working_dir=workdir, timeout=120
-            )
+        base_commit = info.get("parent_commit") or info.get("base_commit") or ""
+        if not base_commit:
+            raise RuntimeError("Scale-SWE row missing parent_commit/base_commit")
+
+        command = f"""
+base={shlex.quote(base_commit)}
+git checkout "$base" -- tests/ test/ Test/ Tests/ 2>/dev/null || true
+git ls-tree -r --name-only "$base" 2>/dev/null | while IFS= read -r path; do
+  case "$path" in
+    test_*.py|*/test_*.py|*_test.py|*/*_test.py|conftest.py|*/conftest.py)
+      git checkout "$base" -- "$path" 2>/dev/null || true
+      ;;
+  esac
+done
+git ls-files 2>/dev/null | while IFS= read -r path; do
+  case "$path" in
+    tests/*|test/*|Test/*|Tests/*|test_*.py|*/test_*.py|*_test.py|*/*_test.py|conftest.py|*/conftest.py)
+      if ! git cat-file -e "$base:$path" 2>/dev/null; then
+        rm -f -- "$path"
+        git rm -q --cached -- "$path" 2>/dev/null || true
+      fi
+      ;;
+  esac
+done
+"""
+        await sandbox_client.execute_command(
+            sandbox_id, command, working_dir=workdir, timeout=120
+        )
 
     def _calculate_reward(self, test_output: str, info: dict) -> float:
         if not test_output or test_output.startswith(_ERROR_PREFIX):
