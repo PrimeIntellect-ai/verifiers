@@ -15,7 +15,7 @@ Upstream grading (``scripts/eval.py``):
 3. Run ``install_config.test_cmd`` — the image ships with all deps
    pre-installed, so ``install_config.install`` is *not* re-run here.
 4. Parse output with the parser named by ``install_config.log_parser``
-   (looked up in ``swe_rebench_v2_log_parsers.NAME_TO_PARSER``).
+   (looked up in ``log_parsers.NAME_TO_PARSER``).
 5. Reward is 1.0 iff every ``FAIL_TO_PASS`` and ``PASS_TO_PASS`` id maps to
    ``PASSED`` in the resulting status map (timing suffixes normalized to
    match upstream).
@@ -35,12 +35,11 @@ import verifiers as vf
 from datasets import load_dataset
 from verifiers.envs.experimental.composable import SandboxSpec, SandboxTaskSet
 
-from verifiers.envs.experimental.composable.tasksets.swe import (
-    swe_rebench_v2_log_parsers as _lp,
-)
 from verifiers.envs.experimental.composable.tasksets.swe._test_patch import (
     revert_and_reapply_test_patch,
 )
+
+from . import log_parsers as _lp
 
 logger = logging.getLogger(__name__)
 
