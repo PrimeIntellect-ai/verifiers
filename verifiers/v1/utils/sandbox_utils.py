@@ -173,7 +173,7 @@ def mark_sandbox_failure(
     exc: BaseException,
     *,
     phase: str | None = None,
-) -> None:
+) -> str | None:
     kind = sandbox_failure_kind(exc)
     if kind == "oom":
         state["sandbox_oom"] = True
@@ -191,6 +191,7 @@ def mark_sandbox_failure(
             failure["sandbox_id"] = lease.id
             failure["scope"] = lease.scope
         state.setdefault("sandbox_failures", []).append(failure)
+    return kind
 
 
 class SandboxLease:
@@ -296,8 +297,12 @@ class SandboxLease:
         async with self.delete_lock:
             if self.deleted:
                 return
-            await with_sandbox_retry(lambda: self.client.delete(self.id))
             self.deleted = True
+            try:
+                await with_sandbox_retry(lambda: self.client.delete(self.id))
+            except BaseException:
+                self.deleted = False
+                raise
             if self.owns_client:
                 await close_sandbox_client(self.client)
 
@@ -328,8 +333,7 @@ class SandboxHandle:
         except Error:
             raise
         except Exception as exc:
-            mark_sandbox_failure(self.state, self.lease, exc, phase="execute")
-            kind = sandbox_failure_kind(exc)
+            kind = mark_sandbox_failure(self.state, self.lease, exc, phase="execute")
             if kind is not None:
                 raise SandboxError(
                     f"Sandbox {self.lease.id} failed during execute ({kind}): {exc}"
@@ -375,8 +379,9 @@ class SandboxHandle:
         except Error:
             raise
         except Exception as exc:
-            mark_sandbox_failure(self.state, self.lease, exc, phase="background_job")
-            kind = sandbox_failure_kind(exc)
+            kind = mark_sandbox_failure(
+                self.state, self.lease, exc, phase="background_job"
+            )
             if kind is not None:
                 raise SandboxError(
                     f"Sandbox {self.lease.id} failed during background job ({kind}): {exc}"
@@ -489,8 +494,7 @@ async def run_sandbox_command(
         except Error:
             raise
         except Exception as exc:
-            mark_sandbox_failure(state, lease, exc, phase="command")
-            kind = sandbox_failure_kind(exc)
+            kind = mark_sandbox_failure(state, lease, exc, phase="command")
             if kind is not None:
                 raise SandboxError(
                     f"Sandbox {lease.id} failed during command ({kind}): {exc}"
