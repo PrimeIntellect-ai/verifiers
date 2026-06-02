@@ -17,6 +17,8 @@ class SandboxConfig(Config):
     memory_gb: float = 2.0
     disk_size_gb: float = 5.0
     gpu_count: int = 0
+    gpu_type: str | None = None
+    vm: bool | None = None
     network_access: bool = True
     timeout_minutes: int = 60
     workdir: str | None = None

@@ -566,6 +566,8 @@ def _program_channel_setup_handler(
 async def create_sandbox(client: SandboxClient, sandbox_config: ConfigData) -> str:
     from prime_sandboxes import CreateSandboxRequest
 
+    gpu_count = int_config(sandbox_config, "gpu_count", 0)
+    vm = sandbox_config.get("vm")
     labels = sandbox_config.get("labels")
     request = CreateSandboxRequest(
         name=f"vf-v1-{uuid.uuid4().hex[:8]}",
@@ -574,7 +576,9 @@ async def create_sandbox(client: SandboxClient, sandbox_config: ConfigData) -> s
         cpu_cores=float_config(sandbox_config, "cpu_cores", 1.0),
         memory_gb=float_config(sandbox_config, "memory_gb", 2.0),
         disk_size_gb=float_config(sandbox_config, "disk_size_gb", 5.0),
-        gpu_count=int_config(sandbox_config, "gpu_count", 0),
+        gpu_count=gpu_count,
+        gpu_type=cast(str | None, sandbox_config.get("gpu_type")),
+        vm=bool(vm) if vm is not None else gpu_count > 0,
         network_access=bool(sandbox_config.get("network_access", True)),
         timeout_minutes=int_config(sandbox_config, "timeout_minutes", 60),
         labels=[str(label) for label in labels] if isinstance(labels, list) else [],
