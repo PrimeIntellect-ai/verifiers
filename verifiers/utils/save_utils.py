@@ -243,12 +243,30 @@ def state_to_output(
             "input_tokens": usage.get("input_tokens", 0.0),
             "output_tokens": usage.get("output_tokens", 0.0),
         }
-        # Add context token metrics from trajectory
-        trajectory = state.get("trajectory", [])
-        if isinstance(trajectory, list):
-            from verifiers.utils.usage_utils import compute_context_token_metrics
+        # Context ("final") token metrics. v1 records these at write time from
+        # the live Response (the serialized trajectory can't be re-derived since
+        # responses are plain dicts), so prefer them when present. Classic envs
+        # keep live Response objects in the trajectory, so recompute there.
+        raw_usage = state.get("token_usage")
+        final_output = (
+            raw_usage.get("final_output_tokens")
+            if isinstance(raw_usage, Mapping)
+            else None
+        )
+        final_input = (
+            raw_usage.get("final_input_tokens")
+            if isinstance(raw_usage, Mapping)
+            else None
+        )
+        if final_output is not None and final_input is not None:
+            token_usage["final_output_tokens"] = float(final_output)
+            token_usage["final_input_tokens"] = float(final_input)
+        else:
+            trajectory = state.get("trajectory", [])
+            if isinstance(trajectory, list):
+                from verifiers.utils.usage_utils import compute_context_token_metrics
 
-            token_usage.update(compute_context_token_metrics(trajectory))
+                token_usage.update(compute_context_token_metrics(trajectory))
         output["token_usage"] = token_usage
 
     # sanitize messages (handle None for error cases)
