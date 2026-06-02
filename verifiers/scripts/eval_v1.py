@@ -98,10 +98,14 @@ DEFAULT_PROVIDER: Provider = "prime"
 class SamplingConfig(BaseConfig):
     """Sampling arguments handed to the inference API."""
 
-    temperature: float | None = None
+    temperature: float | None = Field(
+        None, validation_alias=AliasChoices("temperature", "T")
+    )
     """Sampling temperature."""
 
-    max_tokens: int | None = None
+    max_tokens: int | None = Field(
+        None, validation_alias=AliasChoices("max_tokens", "t")
+    )
     """Cap on completion tokens per turn."""
 
     top_p: float | None = None
@@ -114,17 +118,23 @@ class SamplingConfig(BaseConfig):
 class ClientConfig(BaseConfig):
     """Inference client configuration."""
 
-    model: str = "openai/gpt-4.1-mini"
+    model: str = Field(
+        "openai/gpt-4.1-mini", validation_alias=AliasChoices("model", "m")
+    )
     """Model id to send to the inference API."""
 
-    provider: Provider | None = None
+    provider: Provider | None = Field(
+        None, validation_alias=AliasChoices("provider", "p")
+    )
     """Provider shorthand. Resolves ``base_url`` / ``api_key_var`` /
     ``client_type`` defaults; explicit sub-fields still win on conflict."""
 
-    base_url: str | None = None
+    base_url: str | None = Field(None, validation_alias=AliasChoices("base_url", "b"))
     """API base URL (overrides --client.provider)."""
 
-    api_key_var: str | None = None
+    api_key_var: str | None = Field(
+        None, validation_alias=AliasChoices("api_key_var", "k")
+    )
     """Env var holding the API key (overrides --client.provider)."""
 
     client_type: ClientType | None = None
@@ -168,11 +178,13 @@ class EvalConfigBase(BaseConfig):
     """Number of examples to evaluate."""
 
     rollouts_per_example: int = Field(
-        3, validation_alias=AliasChoices("rollouts_per_example", "r")
+        3, validation_alias=AliasChoices("rollouts_per_example", "group_size", "r")
     )
     """Rollouts per example (groups)."""
 
-    max_concurrent: int = 32
+    max_concurrent: int = Field(
+        32, validation_alias=AliasChoices("max_concurrent", "c")
+    )
     """Maximum concurrent rollouts."""
 
     max_retries: int = 0
@@ -181,45 +193,59 @@ class EvalConfigBase(BaseConfig):
     timeout: float | None = None
     """Per-rollout wall-clock timeout (seconds)."""
 
-    num_workers: Literal["auto"] | int = "auto"
+    num_workers: Literal["auto"] | int = Field(
+        "auto", validation_alias=AliasChoices("num_workers", "w")
+    )
     """Env server workers (``auto`` or an integer)."""
 
-    disable_env_server: bool = Field(
-        False, validation_alias=AliasChoices("disable_env_server", "d")
-    )
+    disable_env_server: bool = False
     """Run rollouts in-process instead of starting env workers."""
 
-    independent_scoring: bool = False
+    independent_scoring: bool = Field(
+        False, validation_alias=AliasChoices("independent_scoring", "i")
+    )
     """Score each rollout individually instead of by group."""
 
-    output_dir: Path | None = None
+    output_dir: Path | None = Field(
+        None, validation_alias=AliasChoices("output_dir", "o")
+    )
     """Custom output directory for evaluation results and logs."""
 
-    save_results: bool = False
+    save_results: bool = Field(
+        False, validation_alias=AliasChoices("save_results", "s")
+    )
     """Save full rollouts to disk."""
 
-    state_columns: list[str] = []
+    state_columns: list[str] = Field(
+        default_factory=list, validation_alias=AliasChoices("state_columns", "C")
+    )
     """State columns to include in the saved rollouts."""
 
-    resume: Path | None = None
+    resume: Path | None = Field(None, validation_alias=AliasChoices("resume", "R"))
     """Resume from an explicit results path."""
 
-    save_to_hf_hub: bool = False
+    save_to_hf_hub: bool = Field(
+        False, validation_alias=AliasChoices("save_to_hf_hub", "H")
+    )
     """Push the result dataset to the Hugging Face Hub."""
 
-    hf_hub_dataset_name: str = ""
+    hf_hub_dataset_name: str = Field(
+        "", validation_alias=AliasChoices("hf_hub_dataset_name", "D")
+    )
     """Hugging Face Hub dataset name (used with --save-to-hf-hub)."""
 
     verbose: bool = Field(False, validation_alias=AliasChoices("verbose", "v"))
     """Verbose logging."""
 
-    fullscreen: bool = False
+    fullscreen: bool = Field(False, validation_alias=AliasChoices("fullscreen", "f"))
     """Use Rich's alternate-screen TUI."""
 
-    disable_tui: bool = False
+    disable_tui: bool = Field(False, validation_alias=AliasChoices("disable_tui", "d"))
     """Disable the Rich TUI and fall back to plain logging."""
 
-    abbreviated_summary: bool = False
+    abbreviated_summary: bool = Field(
+        False, validation_alias=AliasChoices("abbreviated_summary", "A")
+    )
     """Show the compact end-of-run summary (no per-example block)."""
 
     heartbeat_url: str | None = None
