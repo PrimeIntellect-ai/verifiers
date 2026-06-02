@@ -248,13 +248,19 @@ def state_to_output(
         # responses are plain dicts), so prefer them when present. Classic envs
         # keep live Response objects in the trajectory, so recompute there.
         raw_usage = state.get("token_usage")
-        if isinstance(raw_usage, Mapping) and "final_output_tokens" in raw_usage:
-            token_usage["final_output_tokens"] = float(
-                raw_usage.get("final_output_tokens", 0.0)
-            )
-            token_usage["final_input_tokens"] = float(
-                raw_usage.get("final_input_tokens", 0.0)
-            )
+        final_output = (
+            raw_usage.get("final_output_tokens")
+            if isinstance(raw_usage, Mapping)
+            else None
+        )
+        final_input = (
+            raw_usage.get("final_input_tokens")
+            if isinstance(raw_usage, Mapping)
+            else None
+        )
+        if final_output is not None and final_input is not None:
+            token_usage["final_output_tokens"] = float(final_output)
+            token_usage["final_input_tokens"] = float(final_input)
         else:
             trajectory = state.get("trajectory", [])
             if isinstance(trajectory, list):
