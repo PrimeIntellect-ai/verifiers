@@ -192,7 +192,9 @@ class EvalConfigBase(BaseConfig):
     num_workers: str | int = "auto"
     """Env server workers (``auto`` or an integer)."""
 
-    disable_env_server: bool = False
+    disable_env_server: bool = Field(
+        False, validation_alias=AliasChoices("disable_env_server", "d")
+    )
     """Run rollouts in-process instead of starting env workers."""
 
     independent_scoring: bool = False
@@ -216,7 +218,7 @@ class EvalConfigBase(BaseConfig):
     hf_hub_dataset_name: str = ""
     """Hugging Face Hub dataset name (used with --save-to-hf-hub)."""
 
-    verbose: bool = False
+    verbose: bool = Field(False, validation_alias=AliasChoices("verbose", "v"))
     """Verbose logging."""
 
     fullscreen: bool = False
