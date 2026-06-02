@@ -632,9 +632,14 @@ Common top-level fields:
 | `toolsets` | Toolset visibility: `{"show": [...]}` or `{"hide": [...]}`. |
 | `sandbox` | Per-task sandbox overrides for sandboxed programs. |
 | `artifacts` | Per-task text/JSON files collected after program execution. |
-| `program` | Task-owned files, dirs, env, setup, artifacts, bindings, and command args. |
+| `program` | Task-owned files, dirs, env, setup, post_setup, artifacts, bindings, and command args. |
 
 `task.runtime` is not public schema. Runtime metadata belongs on `State`.
+
+Sandboxed programs get bridge-backed endpoint URLs inside the sandbox, so
+offline sandboxes can still reach Verifiers model interception, `/vf/tools`,
+`/vf/user`, and `/vf/stop` over the sandbox control plane. `program.post_setup`
+runs after `program.setup` and before rollout state is uploaded.
 
 #### State
 

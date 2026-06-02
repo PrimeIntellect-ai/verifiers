@@ -237,7 +237,7 @@ Common task fields:
 | `toolsets` | Toolset visibility: `{"show": [...]}` or `{"hide": [...]}`. |
 | `tools` | Per-toolset tool visibility: `{"search": {"show": [...]}}`. |
 | `sandbox` | Per-task sandbox override. |
-| `program` | Task-owned files, dirs, setup, env, artifacts, bindings, and args. |
+| `program` | Task-owned files, dirs, setup, post_setup, env, artifacts, bindings, and args. |
 | `artifacts` | Task-owned artifacts collected after program execution. |
 
 Users should not manage task/example IDs. Preserve upstream IDs only as ordinary
@@ -427,6 +427,18 @@ class PythonHarnessConfig(vf.HarnessConfig):
 
 Put sandbox overrides on tasks only when the taskset owns per-task images,
 files, resource sizing, or setup.
+
+Sandboxed programs use a Verifiers interception bridge for model, user, stop,
+and tool traffic. The command sees local endpoint URLs such as
+`http://127.0.0.1:13131/...` inside the sandbox, while the host forwards those
+requests into the rollout's normal interception server. This keeps offline
+sandboxes offline without cutting the program off from model calls or `/vf`
+tool endpoints.
+
+Program `setup` commands run after files and dirs are uploaded. `post_setup`
+commands run after `setup` and before the per-rollout state input is uploaded,
+which is useful for installing an agent first and then writing rollout-specific
+configuration that points at the bridge.
 
 ## Lifecycle And Scoring
 

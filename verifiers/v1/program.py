@@ -40,6 +40,7 @@ COMMAND_PROGRAM_PATCH_KEYS = {
     "files",
     "dirs",
     "setup",
+    "post_setup",
     "setup_timeout",
     "bindings",
     "env",
@@ -47,7 +48,7 @@ COMMAND_PROGRAM_PATCH_KEYS = {
     "args",
 }
 COMMAND_PROGRAM_MAP_PATCH_KEYS = {"files", "dirs", "bindings", "env", "artifacts"}
-COMMAND_PROGRAM_LIST_PATCH_KEYS = {"setup", "args"}
+COMMAND_PROGRAM_LIST_PATCH_KEYS = {"setup", "post_setup", "args"}
 
 __all__ = [
     "ProgramArgs",
@@ -73,6 +74,7 @@ class ProgramConfig(Config):
     files: ProgramFiles = {}
     dirs: ProgramDirs = {}
     setup: ProgramSetup = []
+    post_setup: ProgramSetup = []
     setup_timeout: int = 300
     bindings: BindingsConfig = BindingsConfig()
     env: ProgramEnv = {}
@@ -121,6 +123,7 @@ class ProgramConfig(Config):
             ("files", self.files),
             ("dirs", self.dirs),
             ("setup", self.setup),
+            ("post_setup", self.post_setup),
             ("env", self.env),
             ("artifacts", self.artifacts),
             ("channels", self.channels),
@@ -149,6 +152,7 @@ class ProgramConfig(Config):
         files: ProgramFiles | None = None,
         dirs: ProgramDirs | None = None,
         setup: ProgramSetup | None = None,
+        post_setup: ProgramSetup | None = None,
         setup_timeout: int | None = None,
         bindings: ConfigData | None = None,
         env: ProgramEnv | None = None,
@@ -180,6 +184,8 @@ class ProgramConfig(Config):
             data["dirs"] = dict(dirs)
         if setup is not None:
             data["setup"] = setup
+        if post_setup is not None:
+            data["post_setup"] = post_setup
         if setup_timeout is not None:
             data["setup_timeout"] = setup_timeout
         if bindings is not None:

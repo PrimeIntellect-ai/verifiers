@@ -31,6 +31,7 @@ PROGRAM_OPTION_KEYS = {
     "files",
     "dirs",
     "setup",
+    "post_setup",
     "setup_timeout",
     "bindings",
     "env",
@@ -38,11 +39,19 @@ PROGRAM_OPTION_KEYS = {
     "channels",
 }
 PROGRAM_KEYS = PROGRAM_KIND_KEYS | PROGRAM_OPTION_KEYS | {"args"}
-SANDBOX_ONLY_PROGRAM_KEYS = {"files", "dirs", "setup", "setup_timeout", "artifacts"}
+SANDBOX_ONLY_PROGRAM_KEYS = {
+    "files",
+    "dirs",
+    "setup",
+    "post_setup",
+    "setup_timeout",
+    "artifacts",
+}
 TASK_PROGRAM_KEYS = {
     "files",
     "dirs",
     "setup",
+    "post_setup",
     "bindings",
     "env",
     "artifacts",
@@ -399,8 +408,8 @@ def merge_task_program(program: ConfigData, task: Task, *, kind: str) -> ConfigD
     unknown = sorted(set(task_program) - TASK_PROGRAM_KEYS)
     if unknown:
         raise ValueError(
-            "task.program can only define files, dirs, setup, bindings, env, "
-            f"artifacts, and args; got {unknown}."
+            "task.program can only define files, dirs, setup, post_setup, bindings, "
+            f"env, artifacts, and args; got {unknown}."
         )
     if kind != "command" and "args" in task_program:
         raise ValueError("task.program.args is only supported for command programs.")
@@ -415,6 +424,10 @@ def merge_task_program(program: ConfigData, task: Task, *, kind: str) -> ConfigD
     merged["setup"] = [
         *program_list_items(program.get("setup"), "program.setup"),
         *program_list_items(task_program.get("setup"), "task.program.setup"),
+    ]
+    merged["post_setup"] = [
+        *program_list_items(program.get("post_setup"), "program.post_setup"),
+        *program_list_items(task_program.get("post_setup"), "task.program.post_setup"),
     ]
     if kind == "command":
         merged["args"] = [

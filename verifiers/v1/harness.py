@@ -232,9 +232,7 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
         return config
 
     def load_endpoint(self) -> Endpoint:
-        return Endpoint(
-            use_tunnel=self.program_sandbox_config(self.program_config) is not None
-        )
+        return Endpoint()
 
     def rebuild_runtime(self) -> None:
         self.runtime = Runtime(taskset=self.taskset, harness=self)
@@ -557,13 +555,15 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
             merged_program = merge_task_program(program, task, kind="command")
             if sandbox_config is not None:
                 return await run_sandbox_command(
-                    self.prepare_sandbox_program(merged_program, state),
+                    merged_program,
                     self.prepare_sandbox_config(
-                        merge_task_sandbox(sandbox_config, task), program
+                        merge_task_sandbox(sandbox_config, task), merged_program
                     ),
                     task,
                     state,
                     runtime,
+                    endpoint=self.resolved_endpoint(state),
+                    prepare_program=self.prepare_sandbox_program,
                 )
             await runtime.setup_rollout(task, state)
             return await run_local_command(merged_program, task, state, runtime)
@@ -576,7 +576,7 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
         async def run(task: Task, state: State) -> State:
             merged_program = merge_task_program(program, task, kind="base")
             return await run_sandbox_python_program(
-                program=self.prepare_sandbox_program(merged_program, state),
+                program=merged_program,
                 sandbox_config=self.prepare_sandbox_config(
                     merge_task_sandbox(sandbox_config, task), merged_program
                 ),
@@ -586,6 +586,8 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
                 mode="base",
                 fn_ref=None,
                 max_turns=state.get_max_turns(self.config.max_turns),
+                endpoint=self.resolved_endpoint(state),
+                prepare_program=self.prepare_sandbox_program,
             )
 
         return run
@@ -599,7 +601,7 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
         async def run(task: Task, state: State) -> State:
             merged_program = merge_task_program(program, task, kind="fn")
             return await run_sandbox_python_program(
-                program=self.prepare_sandbox_program(merged_program, state),
+                program=merged_program,
                 sandbox_config=self.prepare_sandbox_config(
                     merge_task_sandbox(sandbox_config, task), merged_program
                 ),
@@ -609,6 +611,8 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
                 mode="fn",
                 fn_ref=fn_ref,
                 max_turns=state.get_max_turns(self.config.max_turns),
+                endpoint=self.resolved_endpoint(state),
+                prepare_program=self.prepare_sandbox_program,
             )
 
         return run

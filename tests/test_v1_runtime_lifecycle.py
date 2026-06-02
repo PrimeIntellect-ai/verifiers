@@ -45,6 +45,7 @@ from verifiers.v1.utils.sandbox_program_utils import (
     sandbox_runner_program,
 )
 from verifiers.v1.utils.sandbox_utils import (
+    BRIDGE_PORT,
     VF_STATE_INPUT_PATH_KEY,
     run_sandbox_command,
     upload_program_dirs,
@@ -128,8 +129,10 @@ class FakeSandboxClient:
     deleted: list[str] = []
     commands: list[tuple[str, str]] = []
     command_timeouts: list[int | None] = []
+    command_envs: list[dict[str, str] | None] = []
     background_jobs: list[tuple[str, str, int | None, str | None, int]] = []
     uploads: list[tuple[str, str, bytes]] = []
+    events: list[tuple[str, str, str]] = []
     wait_attempts: list[tuple[str, int]] = []
     closed = 0
 
@@ -143,8 +146,10 @@ class FakeSandboxClient:
         cls.deleted = []
         cls.commands = []
         cls.command_timeouts = []
+        cls.command_envs = []
         cls.background_jobs = []
         cls.uploads = []
+        cls.events = []
         cls.wait_attempts = []
         cls.closed = 0
 
@@ -168,8 +173,11 @@ class FakeSandboxClient:
         sandbox_id = str(kwargs.get("sandbox_id") or args[0])
         command = str(kwargs.get("command") or args[1])
         timeout = cast(int | None, kwargs.get("timeout"))
+        env = cast(dict[str, str] | None, kwargs.get("env"))
         type(self).commands.append((sandbox_id, command))
         type(self).command_timeouts.append(timeout)
+        type(self).command_envs.append(env)
+        type(self).events.append(("command", sandbox_id, command))
         return FakeCommandResult()
 
     async def run_background_job(
@@ -184,6 +192,7 @@ class FakeSandboxClient:
         type(self).background_jobs.append(
             (sandbox_id, command, timeout, working_dir, poll_interval)
         )
+        type(self).events.append(("background", sandbox_id, command))
         return FakeCommandResult()
 
     async def upload_bytes(self, *args: object, **kwargs: object) -> None:
@@ -191,6 +200,7 @@ class FakeSandboxClient:
         path = str(kwargs.get("file_path") or kwargs.get("path") or args[1])
         data = cast(bytes, kwargs.get("file_bytes") or args[2])
         type(self).uploads.append((sandbox_id, path, data))
+        type(self).events.append(("upload", sandbox_id, path))
 
     async def upload_file(self, *args: object, **kwargs: object) -> None:
         _ = args, kwargs
@@ -1659,6 +1669,72 @@ async def test_rollout_setup_receives_program_sandbox_before_program_setup(
     assert state["early_setup_sandbox_id"] == "sbx-1"
     assert early_setup_index < program_setup_index
     assert program_setup_index < lifecycle_setup_index < command_index
+
+
+@pytest.mark.asyncio
+async def test_program_post_setup_runs_after_setup_before_state_input(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sandboxes(monkeypatch)
+
+    harness = make_harness()
+    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+    state = vf.State.for_task(task)
+
+    await run_sandbox_command(
+        {
+            "command": ["true"],
+            "setup": "echo install-agent",
+            "post_setup": "echo inject-runtime",
+            VF_STATE_INPUT_PATH_KEY: "/tmp/vf_state_in.json",
+        },
+        vf.SandboxConfig(image="python:3.11-slim"),
+        task,
+        state,
+        harness.runtime,
+    )
+
+    events = [
+        value if value != "/tmp/vf_state_in.json" else "upload-state"
+        for event, _, value in FakeSandboxClient.events
+        if (
+            event in {"command", "background"}
+            and value in {"echo install-agent", "echo inject-runtime", "true"}
+        )
+        or (event == "upload" and value == "/tmp/vf_state_in.json")
+    ]
+    assert events == [
+        "echo install-agent",
+        "echo inject-runtime",
+        "upload-state",
+        "true",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_sandbox_bridge_sets_local_endpoint_for_program_setup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sandboxes(monkeypatch)
+
+    harness = make_harness(
+        program={
+            "command": ["true"],
+            "sandbox": True,
+            "setup": "echo program-setup",
+        },
+        sandbox={"image": "python:3.11-slim", "network_access": False},
+    )
+    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+
+    await harness.run(task)
+
+    setup_index = FakeSandboxClient.commands.index(("sbx-1", "echo program-setup"))
+    setup_env = FakeSandboxClient.command_envs[setup_index]
+    assert setup_env is not None
+    assert setup_env["OPENAI_BASE_URL"].startswith(
+        f"http://127.0.0.1:{BRIDGE_PORT}/rollout/"
+    )
 
 
 @pytest.mark.asyncio

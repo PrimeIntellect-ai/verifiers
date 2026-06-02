@@ -758,8 +758,19 @@ async def test_sandbox_program_ref_uses_config_module(
         mode: str,
         fn_ref: str | None,
         max_turns: int,
+        endpoint: object | None = None,
+        prepare_program: object | None = None,
     ) -> State:
-        _ = program, sandbox_config, task, runtime, mode, max_turns
+        _ = (
+            program,
+            sandbox_config,
+            task,
+            runtime,
+            mode,
+            max_turns,
+            endpoint,
+            prepare_program,
+        )
         captured["fn_ref"] = fn_ref
         return state
 
