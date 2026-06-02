@@ -45,14 +45,14 @@ T = TypeVar("T")
 logger = logging.getLogger(__name__)
 
 
+class SandboxRecord(Protocol):
+    id: object
+
+
 class RetryLogger(Protocol):
     def log(
         self, level: int, msg: str, /, *args: object, **kwargs: object
     ) -> object: ...
-
-
-class SandboxRecord(Protocol):
-    id: object
 
 
 class SandboxCommandResult(Protocol):
@@ -127,6 +127,7 @@ class SandboxClient(Protocol):
         timeout: int | None = None,
         working_dir: str | None = None,
         env: dict[str, str] | None = None,
+        poll_interval: int = 3,
     ) -> SandboxCommandResult: ...
 
 
@@ -136,16 +137,12 @@ async def with_sandbox_retry(operation: Callable[[], Awaitable[T]]) -> T:
         stop=tc.stop_after_attempt(SANDBOX_RETRY_ATTEMPTS),
         wait=tc.wait_exponential_jitter(initial=0.5, max=30, jitter=1e-3),
         before_sleep=tc.before_sleep_log(retry_logger, logging.WARNING),
-        sleep=sandbox_retry_sleep,
+        sleep=asyncio.sleep,
         reraise=True,
     ):
         with attempt:
             return await operation()
     raise AssertionError("sandbox retry loop exited without running")
-
-
-async def sandbox_retry_sleep(seconds: float) -> None:
-    await asyncio.sleep(seconds)
 
 
 async def close_sandbox_client(client: SandboxClient) -> None:
@@ -156,6 +153,44 @@ async def close_sandbox_client(client: SandboxClient) -> None:
     aclose = getattr(client, "aclose", None)
     if callable(aclose):
         await aclose()
+
+
+def sandbox_failure_kind(exc: BaseException) -> str | None:
+    if isinstance(exc, TimeoutError):
+        return "timeout"
+    name = type(exc).__name__
+    text = str(exc)
+    if name == "SandboxOOMError" or "OOM" in text or "OOM_KILLED" in text:
+        return "oom"
+    if name in {"SandboxTimeoutError", "CommandTimeoutError"} or "timed out" in text:
+        return "timeout"
+    return None
+
+
+def mark_sandbox_failure(
+    state: State,
+    lease: "SandboxLease | None",
+    exc: BaseException,
+    *,
+    phase: str | None = None,
+) -> None:
+    kind = sandbox_failure_kind(exc)
+    if kind == "oom":
+        state["sandbox_oom"] = True
+    elif kind == "timeout":
+        state["sandbox_timeout"] = True
+    if kind is not None:
+        failure: ConfigData = {
+            "kind": kind,
+            "type": type(exc).__name__,
+            "message": str(exc),
+        }
+        if phase is not None:
+            failure["phase"] = phase
+        if lease is not None:
+            failure["sandbox_id"] = lease.id
+            failure["scope"] = lease.scope
+        state.setdefault("sandbox_failures", []).append(failure)
 
 
 class SandboxLease:
@@ -176,6 +211,7 @@ class SandboxLease:
         self.scope_key: str | None = None
         self.deleted = False
         self.lock = asyncio.Lock()
+        self.delete_lock = asyncio.Lock()
 
     async def execute(
         self,
@@ -240,12 +276,14 @@ class SandboxLease:
         timeout: int | None = None,
         working_dir: str | None = None,
         env: dict[str, str] | None = None,
+        poll_interval: int = 3,
     ) -> SandboxCommandResult:
         call_args: ConfigData = {
             "sandbox_id": self.id,
             "command": command,
             "working_dir": working_dir,
             "env": env,
+            "poll_interval": poll_interval,
         }
         if timeout is not None:
             call_args["timeout"] = timeout
@@ -255,12 +293,11 @@ class SandboxLease:
         )
 
     async def delete(self) -> None:
-        if self.deleted:
-            return
-        self.deleted = True
-        try:
+        async with self.delete_lock:
+            if self.deleted:
+                return
             await with_sandbox_retry(lambda: self.client.delete(self.id))
-        finally:
+            self.deleted = True
             if self.owns_client:
                 await close_sandbox_client(self.client)
 
@@ -281,12 +318,23 @@ class SandboxHandle:
         working_dir: str | None = None,
         env: dict[str, str] | None = None,
     ) -> SandboxCommandResult:
-        result = await self.lease.execute(
-            command=command,
-            timeout=timeout,
-            working_dir=working_dir,
-            env=env,
-        )
+        try:
+            result = await self.lease.execute(
+                command=command,
+                timeout=timeout,
+                working_dir=working_dir,
+                env=env,
+            )
+        except Error:
+            raise
+        except Exception as exc:
+            mark_sandbox_failure(self.state, self.lease, exc, phase="execute")
+            kind = sandbox_failure_kind(exc)
+            if kind is not None:
+                raise SandboxError(
+                    f"Sandbox {self.lease.id} failed during execute ({kind}): {exc}"
+                ) from exc
+            raise
         record_tool_sandbox_command(self.state, self.lease, command, result)
         return result
 
@@ -314,13 +362,26 @@ class SandboxHandle:
         timeout: int | None = None,
         working_dir: str | None = None,
         env: dict[str, str] | None = None,
-    ) -> object:
-        result = await self.lease.run_background_job(
-            command=command,
-            timeout=timeout,
-            working_dir=working_dir,
-            env=env,
-        )
+        poll_interval: int = 3,
+    ) -> SandboxCommandResult:
+        try:
+            result = await self.lease.run_background_job(
+                command=command,
+                timeout=timeout,
+                working_dir=working_dir,
+                env=env,
+                poll_interval=poll_interval,
+            )
+        except Error:
+            raise
+        except Exception as exc:
+            mark_sandbox_failure(self.state, self.lease, exc, phase="background_job")
+            kind = sandbox_failure_kind(exc)
+            if kind is not None:
+                raise SandboxError(
+                    f"Sandbox {self.lease.id} failed during background job ({kind}): {exc}"
+                ) from exc
+            raise
         record_tool_sandbox_command(self.state, self.lease, command, result)
         return result
 
@@ -328,14 +389,10 @@ class SandboxHandle:
         await self.lease.delete()
 
 
-async def create_tool_sandbox_lease(
-    toolset: "Toolset", client: SandboxClient | None = None
-) -> SandboxLease:
-    return await create_scoped_sandbox_lease(toolset, tool_sandbox_key(toolset), client)
-
-
 async def create_sandbox_lease(
-    sandbox_config: SandboxConfig, key: str, client: SandboxClient | None = None
+    sandbox_config: SandboxConfig,
+    key: str,
+    client: SandboxClient | None = None,
 ) -> SandboxLease:
     sandbox_data = sandbox_config.data()
     owns_client = client is None
@@ -343,19 +400,14 @@ async def create_sandbox_lease(
         from verifiers.utils.threaded_sandbox_client import ThreadedAsyncSandboxClient
 
         client = cast(SandboxClient, ThreadedAsyncSandboxClient())
-    try:
-        sandbox_id = await create_sandbox(client, sandbox_data)
-    except BaseException:
-        if owns_client:
-            await close_sandbox_client(client)
-        raise
+    sandbox_id = await create_sandbox(client, sandbox_data, owns_client=owns_client)
     lease = SandboxLease(
         client, sandbox_id, sandbox_config.scope, key, owns_client=owns_client
     )
     try:
         await setup_sandbox(lease, sandbox_data)
     except BaseException:
-        await lease.delete()
+        await asyncio.shield(lease.delete())
         raise
     return lease
 
@@ -380,7 +432,11 @@ async def run_sandbox_command(
 ) -> State:
     validate_program_bindings(program)
     sandbox_data = sandbox_config.data()
-    lease = await runtime.resolve_program_sandbox(sandbox_config, task, state)
+    try:
+        lease = await runtime.resolve_program_sandbox(sandbox_config, task, state)
+    except Exception as exc:
+        mark_sandbox_failure(state, None, exc, phase="create")
+        raise
     async with lease.lock:
         state["sandbox_id"] = lease.id
         runtime_state = state.runtime_state()
@@ -396,17 +452,21 @@ async def run_sandbox_command(
         use_sandbox_python_path = bool(
             python_package_list(sandbox_data.get("packages"))
         )
-        await runtime.setup_rollout(
-            task,
-            state,
-            setup_handlers=program_setup_handlers(
-                lease,
-                program,
-                runtime,
-                use_sandbox_python_path=use_sandbox_python_path,
-            ),
-            sandbox=handle,
-        )
+        try:
+            await runtime.setup_rollout(
+                task,
+                state,
+                setup_handlers=program_setup_handlers(
+                    lease,
+                    program,
+                    runtime,
+                    use_sandbox_python_path=use_sandbox_python_path,
+                ),
+                sandbox=handle,
+            )
+        except Exception as exc:
+            mark_sandbox_failure(state, lease, exc, phase="setup")
+            raise
         workdir = sandbox_config.workdir
         if workdir:
             await lease.client.execute_command(
@@ -418,12 +478,24 @@ async def run_sandbox_command(
         if use_sandbox_python_path or "mcp" in program_channels(program):
             command = sandbox_python_path_command(command)
         command_timeout = sandbox_config.command_timeout
-        result = await lease.run_background_job(
-            command,
-            timeout=command_timeout,
-            working_dir=workdir,
-            env=env,
-        )
+        try:
+            result = await lease.run_background_job(
+                command,
+                timeout=command_timeout,
+                working_dir=workdir,
+                env=env,
+                poll_interval=int_config(sandbox_data, "poll_interval", 3),
+            )
+        except Error:
+            raise
+        except Exception as exc:
+            mark_sandbox_failure(state, lease, exc, phase="command")
+            kind = sandbox_failure_kind(exc)
+            if kind is not None:
+                raise SandboxError(
+                    f"Sandbox {lease.id} failed during command ({kind}): {exc}"
+                ) from exc
+            raise
         state["command"] = {
             "argv": argv,
             "returncode": result.exit_code,
@@ -563,10 +635,19 @@ def _program_channel_setup_handler(
     return setup_handler(handler, priority=priority)
 
 
-async def create_sandbox(client: SandboxClient, sandbox_config: ConfigData) -> str:
+async def create_sandbox(
+    client: SandboxClient,
+    sandbox_config: ConfigData,
+    *,
+    owns_client: bool = False,
+) -> str:
     from prime_sandboxes import CreateSandboxRequest
 
     labels = sandbox_config.get("labels")
+    gpu_count = int_config(sandbox_config, "gpu_count", 0)
+    vm = sandbox_config.get("vm")
+    environment_vars = sandbox_config.get("environment_vars")
+    secrets = sandbox_config.get("secrets")
     request = CreateSandboxRequest(
         name=f"vf-v1-{uuid.uuid4().hex[:8]}",
         docker_image=str(sandbox_config.get("image") or "python:3.11-slim"),
@@ -574,30 +655,108 @@ async def create_sandbox(client: SandboxClient, sandbox_config: ConfigData) -> s
         cpu_cores=float_config(sandbox_config, "cpu_cores", 1.0),
         memory_gb=float_config(sandbox_config, "memory_gb", 2.0),
         disk_size_gb=float_config(sandbox_config, "disk_size_gb", 5.0),
-        gpu_count=int_config(sandbox_config, "gpu_count", 0),
+        gpu_count=gpu_count,
+        gpu_type=str(sandbox_config["gpu_type"])
+        if sandbox_config.get("gpu_type") is not None
+        else None,
+        vm=bool(vm) if vm is not None else gpu_count > 0,
         network_access=bool(sandbox_config.get("network_access", True)),
         timeout_minutes=int_config(sandbox_config, "timeout_minutes", 60),
         labels=[str(label) for label in labels] if isinstance(labels, list) else [],
+        environment_vars={
+            str(key): str(value) for key, value in environment_vars.items()
+        }
+        if isinstance(environment_vars, dict) and environment_vars
+        else None,
+        secrets={str(key): str(value) for key, value in secrets.items()}
+        if isinstance(secrets, dict) and secrets
+        else None,
+        team_id=str(sandbox_config["team_id"])
+        if sandbox_config.get("team_id") is not None
+        else None,
+        region=str(sandbox_config["region"])
+        if sandbox_config.get("region") is not None
+        else None,
+        registry_credentials_id=str(sandbox_config["registry_credentials_id"])
+        if sandbox_config.get("registry_credentials_id") is not None
+        else None,
+        guaranteed=bool(sandbox_config.get("guaranteed", False)),
     )
-    sandbox = await with_sandbox_retry(lambda: client.create(request))
+    create_task = asyncio.create_task(
+        with_sandbox_retry(lambda: client.create(request))
+    )
+    try:
+        create_waiter = asyncio.shield(create_task)
+        if sandbox_config.get("create_timeout") is not None:
+            sandbox = await asyncio.wait_for(
+                create_waiter, int_config(sandbox_config, "create_timeout", 0)
+            )
+        else:
+            sandbox = await create_waiter
+    except (asyncio.CancelledError, TimeoutError):
+        try:
+            sandbox = cast(SandboxRecord, await asyncio.shield(create_task))
+        except BaseException:
+            if owns_client:
+                await close_sandbox_client(client)
+            raise
+        await asyncio.shield(
+            delete_sandbox_id(
+                client,
+                str(sandbox.id),
+                close_client=owns_client,
+                reason="cancelled creation",
+            )
+        )
+        raise
+    except BaseException:
+        if owns_client:
+            await close_sandbox_client(client)
+        raise
     sandbox_id = str(sandbox.id)
     try:
-        await client.wait_for_creation(
+        wait = client.wait_for_creation(
             sandbox_id,
             max_attempts=SANDBOX_WAIT_FOR_CREATION_ATTEMPTS,
         )
+        if sandbox_config.get("wait_timeout") is not None:
+            await asyncio.wait_for(wait, int_config(sandbox_config, "wait_timeout", 0))
+        else:
+            await wait
     except BaseException:
-        try:
-            await with_sandbox_retry(lambda: client.delete(sandbox_id))
-        except Exception as cleanup_exc:
-            logger.warning(
-                "Failed to delete sandbox %s after creation failure: %s",
+        delete_task = asyncio.create_task(
+            delete_sandbox_id(
+                client,
                 sandbox_id,
-                cleanup_exc,
-                exc_info=True,
+                close_client=owns_client,
+                reason="creation failure",
             )
+        )
+        await asyncio.shield(delete_task)
         raise
     return sandbox_id
+
+
+async def delete_sandbox_id(
+    client: SandboxClient,
+    sandbox_id: str,
+    *,
+    close_client: bool,
+    reason: str,
+) -> None:
+    try:
+        await with_sandbox_retry(lambda: client.delete(sandbox_id))
+    except Exception as cleanup_exc:
+        logger.warning(
+            "Failed to delete sandbox %s after %s: %s",
+            sandbox_id,
+            reason,
+            cleanup_exc,
+            exc_info=True,
+        )
+    finally:
+        if close_client:
+            await close_sandbox_client(client)
 
 
 async def setup_sandbox(handle: SandboxLease, sandbox_config: ConfigData) -> None:
@@ -639,9 +798,7 @@ async def setup_sandbox(handle: SandboxLease, sandbox_config: ConfigData) -> Non
 
 
 def attach_sandbox_ref(state: State, lease: SandboxLease) -> None:
-    sandboxes = state.runtime_state().setdefault("sandboxes", {})
-    if not isinstance(sandboxes, dict):
-        raise TypeError("state.runtime.sandboxes must be a mapping.")
+    sandboxes = cast(ConfigData, state.runtime_state().setdefault("sandboxes", {}))
     sandboxes[lease.key] = {"id": lease.id, "scope": lease.scope}
 
 
@@ -654,21 +811,15 @@ def record_tool_sandbox_command(
         "stdout": result.stdout or "",
         "stderr": result.stderr or "",
     }
-    commands = state.setdefault("sandbox_commands", [])
-    if not isinstance(commands, list):
-        raise TypeError("state.sandbox_commands must be a list.")
-    commands = cast(list[ConfigData], commands)
+    commands = cast(list[ConfigData], state.setdefault("sandbox_commands", []))
     commands.append(command_record)
-    sandboxes = state.runtime_state().setdefault("sandboxes", {})
-    if isinstance(sandboxes, dict):
-        tool_state = sandboxes.setdefault(
-            lease.key, {"id": lease.id, "scope": lease.scope}
-        )
-        if isinstance(tool_state, dict):
-            tool_commands = tool_state.setdefault("commands", [])
-            if isinstance(tool_commands, list):
-                tool_commands = cast(list[ConfigData], tool_commands)
-                tool_commands.append(command_record)
+    sandboxes = cast(ConfigData, state.runtime_state().setdefault("sandboxes", {}))
+    tool_state = cast(
+        ConfigData,
+        sandboxes.setdefault(lease.key, {"id": lease.id, "scope": lease.scope}),
+    )
+    tool_commands = cast(list[ConfigData], tool_state.setdefault("commands", []))
+    tool_commands.append(command_record)
 
 
 def tool_sandbox_key(toolset: "Toolset") -> str:
@@ -741,50 +892,45 @@ async def upload_program_dirs(
         )
         if local_source is None:
             continue
-        await upload_program_dir(client, sandbox_id, path, local_source)
-
-
-async def upload_program_dir(
-    client: SandboxClient, sandbox_id: str, remote_path: str, local_source: object
-) -> None:
-    if isinstance(local_source, str):
-        local_source = Path(local_source)
-    if not isinstance(local_source, (Path, Traversable)):
-        raise TypeError("program.dirs values must resolve to paths.")
-    remote_tar = f"/tmp/_vf_upload_{remote_path.strip('/').replace('/', '_')}.tar.gz"
-    tmp_path = await asyncio.to_thread(build_dir_archive, local_source, remote_path)
-    try:
+        if isinstance(local_source, str):
+            local_source = Path(local_source)
+        if not isinstance(local_source, (Path, Traversable)):
+            raise TypeError("program.dirs values must resolve to paths.")
+        remote_tar = f"/tmp/_vf_upload_{path.strip('/').replace('/', '_')}.tar.gz"
+        archive_path = await runtime.cached_upload_archive(local_source, path)
         await maybe_call_with_named_args(
             client.upload_file,
             sandbox_id=sandbox_id,
             file_path=remote_tar,
-            local_file_path=str(tmp_path),
+            local_file_path=str(archive_path),
         )
         result = await maybe_call_with_named_args(
             client.execute_command,
             sandbox_id=sandbox_id,
             command=(
-                f"mkdir -p {shlex.quote(str(Path(remote_path).parent))} && "
+                f"mkdir -p {shlex.quote(str(Path(path).parent))} && "
                 f"tar -xzf {shlex.quote(remote_tar)} -C / && "
                 f"rm -f {shlex.quote(remote_tar)}"
             ),
         )
         if result.exit_code:
             raise SandboxError(f"Program dir upload failed: {result.stderr}")
-    finally:
-        tmp_path.unlink(missing_ok=True)
 
 
 def build_dir_archive(local_source: Path | Traversable, remote_path: str) -> Path:
     with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp_file:
         tar_path = Path(tmp_file.name)
     arcname = remote_path.lstrip("/")
-    with tarfile.open(tar_path, "w:gz") as tar:
-        if isinstance(local_source, Path):
-            tar.add(local_source, arcname=arcname, filter=upload_tar_filter)
-        else:
-            with resources.as_file(local_source) as local_path:
-                tar.add(local_path, arcname=arcname, filter=upload_tar_filter)
+    try:
+        with tarfile.open(tar_path, "w:gz") as tar:
+            if isinstance(local_source, Path):
+                tar.add(local_source, arcname=arcname, filter=upload_tar_filter)
+            else:
+                with resources.as_file(local_source) as local_path:
+                    tar.add(local_path, arcname=arcname, filter=upload_tar_filter)
+    except BaseException:
+        tar_path.unlink(missing_ok=True)
+        raise
     return tar_path
 
 
