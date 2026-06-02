@@ -451,6 +451,18 @@ class AnthropicMessagesClient(
 
         input_tokens = response.usage.input_tokens
         output_tokens = response.usage.output_tokens
+        cached_input_tokens = getattr(response.usage, "cache_read_input_tokens", None)
+        cache_creation_input_tokens = getattr(
+            response.usage, "cache_creation_input_tokens", None
+        )
+        if isinstance(cache_creation_input_tokens, int) and not isinstance(
+            cache_creation_input_tokens, bool
+        ):
+            input_tokens += cache_creation_input_tokens
+        if not isinstance(cached_input_tokens, int) or isinstance(
+            cached_input_tokens, bool
+        ):
+            cached_input_tokens = None
 
         return Response(
             id=response.id,
@@ -461,6 +473,7 @@ class AnthropicMessagesClient(
                 completion_tokens=output_tokens,
                 reasoning_tokens=0,
                 total_tokens=input_tokens + output_tokens,
+                cached_input_tokens=cached_input_tokens,
             ),
             message=ResponseMessage(
                 content=content,

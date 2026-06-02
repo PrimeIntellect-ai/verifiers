@@ -39,30 +39,45 @@ class StateUsageTracker:
         input_tokens: int | float = 0,
         output_tokens: int | float = 0,
         *,
+        cached_input_tokens: int | float | None = None,
         mark_seen: bool = True,
     ) -> None:
         input_delta = float(input_tokens or 0.0)
         output_delta = float(output_tokens or 0.0)
-        if input_delta < 0 or output_delta < 0:
+        cached_input_delta = float(cached_input_tokens or 0.0)
+        if input_delta < 0 or output_delta < 0 or cached_input_delta < 0:
             raise ValueError("Token usage increments must be non-negative.")
         if mark_seen:
             self._usage_seen = True
         self._usage_totals["input_tokens"] += input_delta
         self._usage_totals["output_tokens"] += output_delta
+        if cached_input_tokens is not None:
+            self._usage_totals["cached_input_tokens"] = (
+                self._usage_totals.get("cached_input_tokens", 0.0) + cached_input_delta
+            )
 
     def increment_from_response(self, response: Response) -> None:
         if response.usage is None:
             return
         input_tokens, output_tokens = response_usage_tokens(response)
-        self.increment(input_tokens, output_tokens, mark_seen=True)
+        self.increment(
+            input_tokens,
+            output_tokens,
+            cached_input_tokens=response.usage.cached_input_tokens,
+            mark_seen=True,
+        )
 
     def snapshot(self) -> TokenUsage | None:
         if not self._usage_seen:
             return None
-        return {
+        usage: TokenUsage = {
             "input_tokens": self._usage_totals["input_tokens"],
             "output_tokens": self._usage_totals["output_tokens"],
         }
+        cached_input_tokens = self._usage_totals.get("cached_input_tokens", 0.0)
+        if cached_input_tokens > 0:
+            usage["cached_input_tokens"] = cached_input_tokens
+        return usage
 
 
 def compute_context_token_metrics(
@@ -95,7 +110,11 @@ def compute_context_token_metrics(
         if not isinstance(response, Response) or response.usage is None:
             continue
         prompt_tokens, completion_tokens = response_usage_tokens(response)
-        last_step_total = prompt_tokens + completion_tokens
+        last_step_total = (
+            prompt_tokens
+            + (response.usage.cached_input_tokens or 0)
+            + completion_tokens
+        )
         found = True
         break
 

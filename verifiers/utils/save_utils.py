@@ -29,6 +29,7 @@ from verifiers.utils.message_utils import (
     serialize_messages_for_output,
 )
 from verifiers.utils.metric_utils import (
+    CachedInputTokensMetric,
     EnvMetrics,
     ErrorRateMetric,
     FinalInputTokensMetric,
@@ -128,6 +129,13 @@ def _token_usage_from_mapping(value: object, context: str) -> TokenUsage | None:
     for key in ("final_input_tokens", "final_output_tokens"):
         if key in mapping_value and mapping_value[key] is not None:
             usage[key] = _token_count(mapping_value[key], f"{context}.{key}")
+    if (
+        "cached_input_tokens" in mapping_value
+        and mapping_value["cached_input_tokens"] is not None
+    ):
+        usage["cached_input_tokens"] = _token_count(
+            mapping_value["cached_input_tokens"], f"{context}.cached_input_tokens"
+        )
     return usage
 
 
@@ -136,6 +144,7 @@ def _token_usage_from_trajectory(trajectory: object) -> TokenUsage | None:
         return None
     input_tokens = 0
     output_tokens = 0
+    cached_input_tokens = 0
     usage_seen = False
     for index, step in enumerate(trajectory):
         if not isinstance(step, Mapping):
@@ -150,12 +159,16 @@ def _token_usage_from_trajectory(trajectory: object) -> TokenUsage | None:
         step_input_tokens, step_output_tokens = response_usage_tokens(response)
         input_tokens += step_input_tokens
         output_tokens += step_output_tokens
+        cached_input_tokens += response.usage.cached_input_tokens or 0
     if not usage_seen:
         return None
-    return TokenUsage(
+    usage = TokenUsage(
         input_tokens=float(input_tokens),
         output_tokens=float(output_tokens),
     )
+    if cached_input_tokens > 0:
+        usage["cached_input_tokens"] = float(cached_input_tokens)
+    return usage
 
 
 def _extract_state_token_usage(state: State) -> TokenUsage | None:
@@ -243,6 +256,8 @@ def state_to_output(
             "input_tokens": usage.get("input_tokens", 0.0),
             "output_tokens": usage.get("output_tokens", 0.0),
         }
+        if usage.get("cached_input_tokens") is not None:
+            token_usage["cached_input_tokens"] = usage["cached_input_tokens"]
         # Add context token metrics from trajectory
         trajectory = state.get("trajectory", [])
         if isinstance(trajectory, list):
@@ -571,6 +586,7 @@ class GenerateOutputsBuilder:
         self.env_metrics = EnvMetrics()
         self.input_tokens = InputTokensMetric()
         self.output_tokens = OutputTokensMetric()
+        self.cached_input_tokens = CachedInputTokensMetric()
         self.final_input_tokens = FinalInputTokensMetric()
         self.final_output_tokens = FinalOutputTokensMetric()
         self.pass_at_k = PassAtKMetric(rollouts_per_example, threshold=pass_threshold)
@@ -621,6 +637,7 @@ class GenerateOutputsBuilder:
         self.env_metrics.add_outputs(new_outputs)
         self.input_tokens.add_outputs(new_outputs)
         self.output_tokens.add_outputs(new_outputs)
+        self.cached_input_tokens.add_outputs(new_outputs)
         self.final_input_tokens.add_outputs(new_outputs)
         self.final_output_tokens.add_outputs(new_outputs)
         self.pass_at_k.add_outputs(new_outputs)
@@ -645,6 +662,8 @@ class GenerateOutputsBuilder:
                 input_tokens=self.input_tokens.compute(),
                 output_tokens=self.output_tokens.compute(),
             )
+            if self.cached_input_tokens.count > 0:
+                usage["cached_input_tokens"] = self.cached_input_tokens.compute()
             if self.final_input_tokens.count > 0:
                 usage["final_input_tokens"] = self.final_input_tokens.compute()
                 usage["final_output_tokens"] = self.final_output_tokens.compute()

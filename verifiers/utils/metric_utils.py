@@ -92,6 +92,12 @@ class OutputTokensMetric(TokenUsageKeyMetric):
     _key = "output_tokens"
 
 
+class CachedInputTokensMetric(TokenUsageKeyMetric):
+    """Mean cached_input_tokens per output."""
+
+    _key = "cached_input_tokens"
+
+
 class FinalInputTokensMetric(TokenUsageKeyMetric):
     """Mean final_input_tokens (non-completion context tokens) per output."""
 

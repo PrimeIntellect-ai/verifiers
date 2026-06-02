@@ -908,6 +908,8 @@ def print_usage(results: GenerateOutputs):
     usage_count = 0
     input_total = 0.0
     output_total = 0.0
+    cached_input_total = 0.0
+    cached_input_count = 0
     final_input_total = 0.0
     final_output_total = 0.0
     context_count = 0
@@ -918,6 +920,10 @@ def print_usage(results: GenerateOutputs):
         usage_count += 1
         input_total += float(token_usage.get("input_tokens", 0.0))
         output_total += float(token_usage.get("output_tokens", 0.0))
+        cached = token_usage.get("cached_input_tokens")
+        if cached is not None:
+            cached_input_total += float(cached)
+            cached_input_count += 1
         inp = token_usage.get("final_input_tokens")
         out = token_usage.get("final_output_tokens")
         if inp is not None and out is not None:
@@ -931,6 +937,8 @@ def print_usage(results: GenerateOutputs):
             input_tokens=input_total / usage_count,
             output_tokens=output_total / usage_count,
         )
+        if cached_input_count > 0:
+            usage["cached_input_tokens"] = cached_input_total / cached_input_count
         if context_count > 0:
             usage["final_input_tokens"] = final_input_total / context_count
             usage["final_output_tokens"] = final_output_total / context_count
@@ -942,6 +950,9 @@ def print_usage(results: GenerateOutputs):
 
     print("Usage:")
     print(f"input_tokens (avg): {float(usage.get('input_tokens', 0.0)):.3f}")
+    cached = usage.get("cached_input_tokens")
+    if cached is not None:
+        print(f"cached_input_tokens (avg): {float(cached):.3f}")
     print(f"output_tokens (avg): {float(usage.get('output_tokens', 0.0)):.3f}")
     inp = usage.get("final_input_tokens")
     out = usage.get("final_output_tokens")

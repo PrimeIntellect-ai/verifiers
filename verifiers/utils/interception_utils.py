@@ -866,6 +866,8 @@ def serialize_anthropic_message_response(response: Response) -> dict[str, Any]:
             "input_tokens": response.usage.prompt_tokens,
             "output_tokens": response.usage.completion_tokens,
         }
+        if response.usage.cached_input_tokens is not None:
+            usage["cache_read_input_tokens"] = response.usage.cached_input_tokens
     return {
         "id": response.id,
         "type": "message",

@@ -380,8 +380,21 @@ class OpenAIResponsesClient(
                 completion_tokens, int
             ):
                 return None
+            input_details = get_usage_field(usage, "input_tokens_details")
+            if input_details is None:
+                input_details = get_usage_field(usage, "prompt_tokens_details")
+            cached_tokens = None
+            if input_details is not None:
+                reported_cached_tokens = get_usage_field(input_details, "cached_tokens")
+                if isinstance(reported_cached_tokens, int) and not isinstance(
+                    reported_cached_tokens, bool
+                ):
+                    cached_tokens = reported_cached_tokens
+                    prompt_tokens = max(0, prompt_tokens - cached_tokens)
             if not isinstance(total_tokens, int):
                 total_tokens = prompt_tokens + completion_tokens
+            elif cached_tokens is not None:
+                total_tokens = max(0, total_tokens - cached_tokens)
             if not isinstance(reasoning_tokens, int):
                 reasoning_tokens = 0
             return Usage(
@@ -389,6 +402,7 @@ class OpenAIResponsesClient(
                 reasoning_tokens=reasoning_tokens,
                 completion_tokens=completion_tokens,
                 total_tokens=total_tokens,
+                cached_input_tokens=cached_tokens,
             )
 
         def parse_is_truncated(response: OpenAIResponsesNativeResponse) -> bool:

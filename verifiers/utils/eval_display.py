@@ -410,6 +410,9 @@ class EvalDisplay(BaseDisplay):
             "input": format_numeric(usage.get("input_tokens", 0.0)),
             "output": format_numeric(usage.get("output_tokens", 0.0)),
         }
+        cached = usage.get("cached_input_tokens")
+        if cached is not None:
+            kv["cached_input"] = format_numeric(cached)
         inp = usage.get("final_input_tokens")
         out = usage.get("final_output_tokens")
         if inp is not None:

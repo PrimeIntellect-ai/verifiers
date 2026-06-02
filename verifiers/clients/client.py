@@ -19,6 +19,7 @@ from verifiers.types import (
     SamplingArgs,
     Tool,
 )
+from verifiers.utils.prompt_cache_utils import apply_prompt_cache_to_kwargs
 
 if TYPE_CHECKING:
     pass
@@ -128,6 +129,11 @@ class Client(ABC, Generic[ClientT, MessagesT, ResponseT, ToolT]):
 
             native_prompt, extra_kwargs = await self.to_native_prompt(prompt)
             native_tools = await self.to_native_tools(tools)
+            extra_kwargs = apply_prompt_cache_to_kwargs(
+                config=self._config,
+                sampling_args=sampling_args,
+                extra_kwargs=extra_kwargs,
+            )
             native_response = await self.get_native_response(
                 native_prompt,
                 model,
