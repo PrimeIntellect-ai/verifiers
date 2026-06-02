@@ -52,7 +52,6 @@ ENV_VARS_SCALE_SWE = {
 _JUNIT_START = "SCALESWE_JUNIT_XML_START"
 _JUNIT_END = "SCALESWE_JUNIT_XML_END"
 _ERROR_PREFIX = "SCALESWE_ERROR="
-_PYTEST_SUCCESS_MARKER = "<pytest>true</pytest>"
 
 _PYTEST_RUNNER_SCRIPT = """\
 import json, sys, os
@@ -370,8 +369,6 @@ done
         )
         if not expected:
             return 0.0
-        if _PYTEST_SUCCESS_MARKER in test_output:
-            return 1.0
         xml_content = _extract_between(test_output, _JUNIT_START, _JUNIT_END)
         if not xml_content:
             return 0.0
