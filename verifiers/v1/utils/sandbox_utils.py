@@ -1,7 +1,6 @@
 import asyncio
 import base64
 import hashlib
-import inspect
 import importlib.resources as resources
 import json
 import logging
@@ -229,7 +228,7 @@ class SandboxLease:
         working_dir: str | None = None,
         env: dict[str, str] | None = None,
     ) -> SandboxCommandResult:
-        result = await call_sandbox_client(
+        result = await maybe_call_with_named_args(
             self.client.execute_command,
             sandbox_id=self.id,
             command=command,
@@ -242,7 +241,7 @@ class SandboxLease:
     async def upload_bytes(
         self, path: str, content: bytes, filename: str | None = None
     ) -> object:
-        return await call_sandbox_client(
+        return await maybe_call_with_named_args(
             self.client.upload_bytes,
             sandbox_id=self.id,
             file_path=path,
@@ -253,7 +252,7 @@ class SandboxLease:
     async def upload_file(
         self, path: str, local_path: str, timeout: int | None = None
     ) -> object:
-        return await call_sandbox_client(
+        return await maybe_call_with_named_args(
             self.client.upload_file,
             sandbox_id=self.id,
             file_path=path,
@@ -264,7 +263,7 @@ class SandboxLease:
     async def download_file(
         self, path: str, local_path: str, timeout: int | None = None
     ) -> object:
-        return await call_sandbox_client(
+        return await maybe_call_with_named_args(
             self.client.download_file,
             sandbox_id=self.id,
             file_path=path,
@@ -273,7 +272,7 @@ class SandboxLease:
         )
 
     async def read_file(self, path: str) -> object:
-        return await call_sandbox_client(
+        return await maybe_call_with_named_args(
             self.client.read_file,
             sandbox_id=self.id,
             file_path=path,
@@ -297,7 +296,7 @@ class SandboxLease:
         }
         if timeout is not None:
             call_args["timeout"] = timeout
-        result = await call_sandbox_client(
+        result = await maybe_call_with_named_args(
             getattr(self.client, "run_background_job"),
             **call_args,
         )
@@ -315,22 +314,6 @@ class SandboxLease:
                 raise
             if self.owns_client:
                 await close_sandbox_client(self.client)
-
-
-async def call_sandbox_client(func: Callable, **objects: object) -> object:
-    sig = inspect.signature(func)
-    if any(p.kind == p.VAR_KEYWORD for p in sig.parameters.values()):
-        call_args = objects
-    else:
-        call_args = {
-            key: value for key, value in objects.items() if key in sig.parameters
-        }
-    if inspect.iscoroutinefunction(func):
-        return await func(**call_args)
-    result = await asyncio.to_thread(func, **call_args)
-    if inspect.isawaitable(result):
-        return await result
-    return result
 
 
 class SandboxHandle:
@@ -557,27 +540,23 @@ async def sandbox_interception_bridge(
         yield
         return
 
-    original_root = state.get("endpoint_root_url")
-    original_base = state.get("endpoint_base_url")
+    original_root = str(state["endpoint_root_url"])
+    original_base = str(state["endpoint_base_url"])
     root = shlex.quote(BRIDGE_ROOT)
     proxy_path = shlex.quote(BRIDGE_PROXY_PATH)
-    started = False
-    stop: asyncio.Event | None = None
-    forwarder: asyncio.Task[None] | None = None
-    try:
-        await lease.upload_bytes(BRIDGE_PROXY_PATH, BRIDGE_PROXY_SOURCE.encode())
-        command = (
-            f"mkdir -p {root}/requests {root}/responses && "
-            f"rm -f {root}/requests/*.json {root}/responses/*.json && "
-            "PYTHON=$(command -v python3 || command -v python) && "
-            f'(nohup "$PYTHON" {proxy_path} --root {root} --port {BRIDGE_PORT} '
-            f"> {root}/proxy.log 2>&1 & echo $! > {root}/proxy.pid)"
-        )
-        result = await lease.execute(command, timeout=10)
-        if result.exit_code:
-            raise SandboxError(f"Sandbox interception bridge failed: {result.stderr}")
-        started = True
+    await lease.upload_bytes(BRIDGE_PROXY_PATH, BRIDGE_PROXY_SOURCE.encode())
+    command = (
+        f"mkdir -p {root}/requests {root}/responses && "
+        f"rm -f {root}/requests/*.json {root}/responses/*.json && "
+        "PYTHON=$(command -v python3 || command -v python) && "
+        f'(nohup "$PYTHON" {proxy_path} --root {root} --port {BRIDGE_PORT} '
+        f"> {root}/proxy.log 2>&1 & echo $! > {root}/proxy.pid)"
+    )
+    result = await lease.execute(command, timeout=10)
+    if result.exit_code:
+        raise SandboxError(f"Sandbox interception bridge failed: {result.stderr}")
 
+    try:
         ready_check = (
             "import socket, sys, time\n"
             "deadline = time.time() + 10\n"
@@ -605,20 +584,18 @@ async def sandbox_interception_bridge(
             f"http://127.0.0.1:{BRIDGE_PORT}/rollout/{rollout_key}"
         )
         state["endpoint_base_url"] = f"{state['endpoint_root_url']}/v1"
-        yield
-    finally:
-        if stop is not None and forwarder is not None:
+        try:
+            yield
+        finally:
             stop.set()
             await asyncio.gather(forwarder, return_exceptions=True)
-        if started:
-            await lease.execute(
-                f"if [ -f {root}/proxy.pid ]; then kill $(cat {root}/proxy.pid) 2>/dev/null || true; fi",
-                timeout=10,
-            )
-        if isinstance(original_root, str):
             state["endpoint_root_url"] = original_root
-        if isinstance(original_base, str):
             state["endpoint_base_url"] = original_base
+    finally:
+        await lease.execute(
+            f"if [ -f {root}/proxy.pid ]; then kill $(cat {root}/proxy.pid) 2>/dev/null || true; fi",
+            timeout=10,
+        )
 
 
 async def run_sandbox_bridge_forwarder(
@@ -669,15 +646,14 @@ async def forward_sandbox_bridge_request(
     response_path: str,
 ) -> None:
     raw_request = await lease.read_file(request_path)
-    if hasattr(raw_request, "content"):
-        raw_request = raw_request.content
-    request = json.loads(str(raw_request))
+    request = json.loads(str(getattr(raw_request, "content", raw_request)))
     body = base64.b64decode(str(request.get("body") or ""))
-    headers = dict(cast(ConfigData, request.get("headers") or {}))
-    for key in ("host", "content-length", "connection", "transfer-encoding"):
-        headers.pop(key, None)
-        headers.pop(key.title(), None)
-    headers = {str(key): str(item) for key, item in headers.items()}
+    excluded_headers = {"host", "content-length", "connection", "transfer-encoding"}
+    headers = {
+        str(key): str(value)
+        for key, value in dict(cast(ConfigData, request.get("headers") or {})).items()
+        if str(key).lower() not in excluded_headers
+    }
     method = str(request.get("method") or "POST")
     path = str(request.get("path") or "/")
     timeout = httpx.Timeout(None)
@@ -1310,7 +1286,7 @@ async def run_program_items(
             command = sandbox_python_path_command(command)
         result = cast(
             SandboxCommandResult,
-            await call_sandbox_client(
+            await maybe_call_with_named_args(
                 client.execute_command,
                 sandbox_id=sandbox_id,
                 command=command,
