@@ -2483,30 +2483,21 @@ class Runtime:
                 raise TypeError("Owner sandbox must be SandboxConfig or 'program'.")
             if sandbox.scope != "global":
                 continue
-            if isinstance(owner, Toolset):
-                sandbox_key = tool_sandbox_key(owner)
-                await self.resolve_sandbox_lease(
-                    ("global", sandbox_key),
-                    lambda owner=owner, sandbox_key=sandbox_key: (
-                        create_scoped_sandbox_lease(
-                            owner,
-                            sandbox_key,
-                            client=self.sandbox_client(),
-                        )
-                    ),
-                )
-            else:
-                sandbox_key = sandbox_owner_key(owner)
-                await self.resolve_sandbox_lease(
-                    ("global", sandbox_key),
-                    lambda owner=owner, sandbox_key=sandbox_key: (
-                        create_scoped_sandbox_lease(
-                            owner,
-                            sandbox_key,
-                            client=self.sandbox_client(),
-                        )
-                    ),
-                )
+            sandbox_key = (
+                tool_sandbox_key(owner)
+                if isinstance(owner, Toolset)
+                else sandbox_owner_key(owner)
+            )
+            await self.resolve_sandbox_lease(
+                ("global", sandbox_key),
+                lambda owner=owner, sandbox_key=sandbox_key: (
+                    create_scoped_sandbox_lease(
+                        owner,
+                        sandbox_key,
+                        client=self.sandbox_client(),
+                    )
+                ),
+            )
 
     def bind_global_sandboxes(self, state: State) -> None:
         from .utils.sandbox_utils import attach_sandbox_ref
