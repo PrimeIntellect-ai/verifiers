@@ -107,7 +107,7 @@ class SamplingConfig(BaseConfig):
     top_p: float | None = None
     """Nucleus sampling top-p."""
 
-    extras: dict = {}
+    extras: dict[str, Any] = {}
     """Additional sampling args passed through to the inference API as-is."""
 
 
@@ -181,7 +181,7 @@ class EvalConfigBase(BaseConfig):
     timeout: float | None = None
     """Per-rollout wall-clock timeout (seconds)."""
 
-    num_workers: str | int = "auto"
+    num_workers: Literal["auto"] | int = "auto"
     """Env server workers (``auto`` or an integer)."""
 
     disable_env_server: bool = Field(
@@ -192,7 +192,7 @@ class EvalConfigBase(BaseConfig):
     independent_scoring: bool = False
     """Score each rollout individually instead of by group."""
 
-    output_dir: str | None = None
+    output_dir: Path | None = None
     """Custom output directory for evaluation results and logs."""
 
     save_results: bool = False
@@ -201,7 +201,7 @@ class EvalConfigBase(BaseConfig):
     state_columns: list[str] = []
     """State columns to include in the saved rollouts."""
 
-    resume: str | None = None
+    resume: Path | None = None
     """Resume from an explicit results path."""
 
     save_to_hf_hub: bool = False
@@ -251,6 +251,13 @@ def _build_v1_eval_config(
 
 
 def _resolve_taskset_config_class(env_module: Any) -> type[TasksetConfig]:
+    """Resolve the concrete ``TasksetConfig`` subclass a taskset module declares.
+
+    Inspects the module's ``load_taskset(config: ...)`` factory signature so the
+    CLI can type ``--taskset.*`` flags against the real config. This is the
+    taskset twin of ``harness_config_type_from_module`` (no shared helper exists
+    for tasksets yet); both delegate to ``factory_config_type``.
+    """
     config_type = factory_config_type(env_module, "load_taskset", TasksetConfig)
     if config_type is None:
         raise TypeError(
@@ -262,6 +269,12 @@ def _resolve_taskset_config_class(env_module: Any) -> type[TasksetConfig]:
 def _resolve_harness_config_class(
     env_module: Any, harness_name: str | None
 ) -> type[HarnessConfig]:
+    """Pick the ``HarnessConfig`` subclass to type ``--harness.*`` flags against.
+
+    Precedence: an explicit ``--harness`` module's ``load_harness`` config; else
+    the taskset module's own ``load_harness`` if it defines one; else the base
+    ``HarnessConfig``.
+    """
     if harness_name is not None:
         harness_module = resolve_harness_module(harness_name)
         return harness_config_type_from_module(harness_module)
@@ -286,106 +299,85 @@ def _peek_toml(path: Path) -> dict[str, Any]:
         return {}
 
 
+def _peek_toml_files(args: list[str]) -> list[dict[str, Any]]:
+    """Parse every ``@ file`` / ``@file`` config reference found in ``args``."""
+    files: list[dict[str, Any]] = []
+    i = 0
+    while i < len(args):
+        token = args[i]
+        if token == "@" and i + 1 < len(args):
+            files.append(_peek_toml(Path(args[i + 1])))
+            i += 2
+        elif token.startswith("@") and token != "@":
+            files.append(_peek_toml(Path(token[1:])))
+            i += 1
+        else:
+            i += 1
+    return files
+
+
+def _name_from_flag(args: list[str], flag: str) -> str | None:
+    """Value of ``--flag value`` / ``--flag=value`` in ``args`` (or None)."""
+    for i, token in enumerate(args):
+        if token == flag and i + 1 < len(args):
+            return args[i + 1]
+        if token.startswith(flag + "="):
+            return token.split("=", 1)[1]
+    return None
+
+
+def _has_flag(args: list[str], flag: str) -> bool:
+    return any(a == flag or a.startswith(flag + "=") for a in args)
+
+
 def _extract_initial_args(
     argv: list[str],
 ) -> tuple[list[str], str | None, str | None]:
-    """Pull leading positionals + ``--taskset-name`` / ``--harness-name`` out of argv.
+    """Resolve the taskset / harness names from argv before the typed parse.
 
-    Returns ``(cleaned_argv, taskset_name, harness_name)``.
+    The ``--taskset.*`` / ``--harness.*`` schema is built per-module, so the
+    names must be known up front. They can come from (in precedence order):
+    leading positionals, explicit ``--taskset-name`` / ``--harness-name``
+    flags, or a ``@ config.toml`` file. Leading positionals are re-injected as
+    the matching flags so the downstream pydantic-config parse sees them as
+    ordinary fields.
 
-    Positionals are recognised at the front of argv only: scanning stops at
-    the first ``-``/``--``/``@`` token. The bare positionals are dropped from
-    the cleaned argv and re-injected as ``--taskset-name`` / ``--harness-name``
-    flags so the downstream pydantic-config parse sees them as ordinary fields.
-
-    Also reads ``--taskset-name`` / ``--harness-name`` explicit flags from
-    anywhere in argv, and peeks at any ``@ path/to.toml`` argument to backfill
-    when the user hasn't already set them on the command line. Explicit flags
-    / positionals win over TOML values.
-
-    Raises ``SystemExit`` if more than two bare positionals appear.
+    Returns ``(cleaned_argv, taskset_name, harness_name)``. Raises
+    ``SystemExit`` if more than two leading positionals appear.
     """
-    taskset_name: str | None = None
-    harness_name: str | None = None
+    prog, *args = argv
 
-    # Pass 1: leading positionals (stop at first non-positional).
-    consumed_positionals = 0
-    cursor = 1
-    while cursor < len(argv):
-        token = argv[cursor]
+    # Leading positionals only — stop at the first flag / @-file token.
+    positionals: list[str] = []
+    for token in args:
         if token.startswith("-") or token.startswith("@"):
             break
-        if consumed_positionals == 0:
-            taskset_name = token
-        elif consumed_positionals == 1:
-            harness_name = token
-        else:
-            raise SystemExit(
-                "vf-eval-v1 takes at most two positionals (taskset + optional "
-                f"harness); got {token!r}."
-            )
-        consumed_positionals += 1
-        cursor += 1
+        positionals.append(token)
+    if len(positionals) > 2:
+        raise SystemExit(
+            "vf-eval-v1 takes at most two positionals (taskset + optional "
+            f"harness); got {positionals[2]!r}."
+        )
+    rest = args[len(positionals) :]
+    taskset_name = positionals[0] if positionals else None
+    harness_name = positionals[1] if len(positionals) > 1 else None
 
-    rest = argv[cursor:]
-    cleaned = [argv[0], *rest]
+    # Explicit flags win over positionals; TOML only backfills what's unset.
+    taskset_name = _name_from_flag(rest, "--taskset-name") or taskset_name
+    harness_name = _name_from_flag(rest, "--harness-name") or harness_name
+    if taskset_name is None or harness_name is None:
+        for data in _peek_toml_files(rest):
+            if taskset_name is None and isinstance(data.get("taskset_name"), str):
+                taskset_name = data["taskset_name"]
+            if harness_name is None and isinstance(data.get("harness_name"), str):
+                harness_name = data["harness_name"]
 
-    # Pass 2: explicit --taskset-name / --harness-name flags anywhere in rest.
-    j = 0
-    while j < len(rest):
-        token = rest[j]
-        for flag, setter in (
-            ("--taskset-name", "taskset"),
-            ("--harness-name", "harness"),
-        ):
-            if token == flag and j + 1 < len(rest):
-                if setter == "taskset":
-                    taskset_name = rest[j + 1]
-                else:
-                    harness_name = rest[j + 1]
-                break
-            if token.startswith(flag + "="):
-                value = token.split("=", 1)[1]
-                if setter == "taskset":
-                    taskset_name = value
-                else:
-                    harness_name = value
-                break
-        j += 1
-
-    # Pass 3: TOML peek for any @ file references.
-    j = 0
-    while j < len(rest):
-        token = rest[j]
-        toml_path: Path | None = None
-        if token == "@" and j + 1 < len(rest):
-            toml_path = Path(rest[j + 1])
-            j += 2
-        elif token.startswith("@") and token != "@":
-            toml_path = Path(token[1:])
-            j += 1
-        else:
-            j += 1
-            continue
-        if toml_path is None:
-            continue
-        data = _peek_toml(toml_path)
-        if taskset_name is None and isinstance(data.get("taskset_name"), str):
-            taskset_name = data["taskset_name"]
-        if harness_name is None and isinstance(data.get("harness_name"), str):
-            harness_name = data["harness_name"]
-
-    # Re-inject the positionals as explicit flags if they aren't already on
-    # the command line. The explicit flag form wins on conflict because we
-    # already updated taskset_name / harness_name from it in pass 2.
-    def _has_flag(name: str) -> bool:
-        return any(a == name or a.startswith(name + "=") for a in cleaned[1:])
-
-    if taskset_name is not None and not _has_flag("--taskset-name"):
-        cleaned.extend(["--taskset-name", taskset_name])
-    if harness_name is not None and not _has_flag("--harness-name"):
-        cleaned.extend(["--harness-name", harness_name])
-
+    # Re-inject positionals as flags (skip if the flag is already present).
+    cleaned = [prog, *rest]
+    if taskset_name is not None and not _has_flag(rest, "--taskset-name"):
+        cleaned += ["--taskset-name", taskset_name]
+    if harness_name is not None and not _has_flag(rest, "--harness-name"):
+        cleaned += ["--harness-name", harness_name]
     return cleaned, taskset_name, harness_name
 
 
@@ -484,10 +476,10 @@ def _build_eval_config(config: EvalConfigBase, env_args: dict[str, Any]) -> Eval
         disable_env_server=config.disable_env_server,
         verbose=config.verbose,
         disable_tui=config.disable_tui,
-        output_dir=config.output_dir,
+        output_dir=str(config.output_dir) if config.output_dir else None,
         state_columns=config.state_columns,
         save_results=config.save_results,
-        resume_path=Path(config.resume) if config.resume else None,
+        resume_path=config.resume,
         save_to_hf_hub=config.save_to_hf_hub,
         hf_hub_dataset_name=config.hf_hub_dataset_name,
     )
