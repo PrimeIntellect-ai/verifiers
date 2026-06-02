@@ -30,7 +30,6 @@ from verifiers.utils.interception_utils import (
     synthesize_stream,
 )
 from verifiers.utils.message_utils import normalize_messages
-from verifiers.utils.serve_utils import get_free_port
 
 from ..runtime import ModelRequestContext, Runtime, TrajectoryVisibility
 from ..state import State
@@ -136,11 +135,11 @@ class Endpoint:
         use_tunnel: bool = False,
         logger: logging.Logger | None = None,
     ):
-        self.port = get_free_port() if port is None else port
         self.use_tunnel = use_tunnel
         self.logger = logger or logging.getLogger(__name__)
         self.server = InterceptionServer(
-            self.port, secret=secret or os.environ.get("ENDPOINT_SECRET")
+            port if port is not None else 0,
+            secret=secret or os.environ.get("ENDPOINT_SECRET"),
         )
         self.secret = self.server.secret
         self._tunnel: TunnelHandle | None = None
@@ -261,7 +260,7 @@ class Endpoint:
     async def url_base(self) -> str:
         if self.use_tunnel:
             return await self.get_tunnel_url()
-        return f"http://127.0.0.1:{self.port}"
+        return f"http://127.0.0.1:{self.server.port}"
 
     async def get_tunnel_url(self) -> str:
         from prime_tunnel import Tunnel
@@ -282,7 +281,7 @@ class Endpoint:
                         self._tunnel = None
 
             if self._tunnel is None:
-                tunnel = cast(TunnelHandle, Tunnel(local_port=self.port))
+                tunnel = cast(TunnelHandle, Tunnel(local_port=self.server.port))
                 url = await tunnel.start()
                 self._tunnel = tunnel
                 self._tunnel_last_checked = time.time()
