@@ -657,7 +657,7 @@ async def run_sandbox_bridge_forwarder(
         for task in done:
             pending.remove(task)
             await task
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(0.2)
     if pending:
         await asyncio.gather(*pending)
 
@@ -721,31 +721,21 @@ class BridgeHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.forward()
 
-    def do_POST(self):
-        self.forward()
-
-    def do_OPTIONS(self):
-        self.forward()
+    do_POST = do_GET
+    do_OPTIONS = do_GET
 
     def forward(self):
-        if self.path == "/health":
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write(b"ok")
-            return
-        length = int(self.headers.get("Content-Length") or "0")
-        body = self.rfile.read(length) if length else b""
+        body = self.rfile.read(int(self.headers.get("Content-Length") or "0"))
         request_id = uuid.uuid4().hex
         root = Path(self.server.bridge_root)
         request_path = root / "requests" / f"{request_id}.json"
         response_path = root / "responses" / f"{request_id}.json"
-        payload = {
-            "id": request_id,
-            "method": self.command,
-            "path": self.path,
-            "headers": {k: v for k, v in self.headers.items()},
-            "body": base64.b64encode(body).decode(),
-        }
+        payload = dict(
+            method=self.command,
+            path=self.path,
+            headers={k: v for k, v in self.headers.items()},
+            body=base64.b64encode(body).decode(),
+        )
         tmp_path = request_path.with_suffix(".tmp")
         tmp_path.write_text(json.dumps(payload))
         os.replace(tmp_path, request_path)
@@ -759,12 +749,12 @@ class BridgeHandler(BaseHTTPRequestHandler):
                     if key.lower() in {"content-length", "connection", "transfer-encoding"}:
                         continue
                     self.send_header(str(key), str(value))
-                data = base64.b64decode(str(response.get("body") or ""))
-                self.send_header("Content-Length", str(len(data)))
+                body = base64.b64decode(str(response.get("body") or ""))
+                self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
-                self.wfile.write(data)
+                self.wfile.write(body)
                 return
-            time.sleep(0.05)
+            time.sleep(0.1)
         self.send_response(504)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
@@ -781,8 +771,8 @@ def main():
     parser.add_argument("--timeout", type=float, default=3600.0)
     args = parser.parse_args()
     root = Path(args.root)
-    (root / "requests").mkdir(parents=True, exist_ok=True)
-    (root / "responses").mkdir(parents=True, exist_ok=True)
+    for name in ("requests", "responses"):
+        (root / name).mkdir(parents=True, exist_ok=True)
     server = ThreadingHTTPServer(("127.0.0.1", args.port), BridgeHandler)
     server.bridge_root = str(root)
     server.bridge_timeout = args.timeout
@@ -822,19 +812,23 @@ def program_setup_handlers(
             lease,
             program,
             runtime,
-            run_program_setup,
+            run_program_commands,
             "program_setup",
             100,
             use_sandbox_python_path=use_sandbox_python_path,
+            key="setup",
+            error_prefix="Program setup failed",
         ),
         _program_setup_handler(
             lease,
             program,
             runtime,
-            run_program_post_setup,
+            run_program_commands,
             "program_post_setup",
             50,
             use_sandbox_python_path=use_sandbox_python_path,
+            key="post_setup",
+            error_prefix="Program post_setup failed",
         ),
         _program_setup_handler(
             lease,
@@ -868,6 +862,7 @@ def _program_setup_handler(
     name: str,
     priority: int,
     use_sandbox_python_path: bool = False,
+    **extra: object,
 ) -> Handler:
     async def handler(task: Task, state: State) -> None:
         try:
@@ -880,6 +875,7 @@ def _program_setup_handler(
                 state=state,
                 runtime=runtime,
                 use_sandbox_python_path=use_sandbox_python_path,
+                **extra,
             )
         except Error:
             raise
@@ -1239,50 +1235,6 @@ def upload_tar_filter(tarinfo: tarfile.TarInfo) -> tarfile.TarInfo | None:
     if any(part in UPLOAD_IGNORE_PARTS for part in Path(tarinfo.name).parts):
         return None
     return tarinfo
-
-
-async def run_program_setup(
-    client: SandboxClient,
-    sandbox_id: str,
-    program: ConfigData,
-    task: Task,
-    state: State,
-    runtime: Runtime,
-    use_sandbox_python_path: bool = False,
-) -> None:
-    await run_program_commands(
-        client,
-        sandbox_id,
-        program,
-        task,
-        state,
-        runtime,
-        key="setup",
-        error_prefix="Program setup failed",
-        use_sandbox_python_path=use_sandbox_python_path,
-    )
-
-
-async def run_program_post_setup(
-    client: SandboxClient,
-    sandbox_id: str,
-    program: ConfigData,
-    task: Task,
-    state: State,
-    runtime: Runtime,
-    use_sandbox_python_path: bool = False,
-) -> None:
-    await run_program_commands(
-        client,
-        sandbox_id,
-        program,
-        task,
-        state,
-        runtime,
-        key="post_setup",
-        error_prefix="Program post_setup failed",
-        use_sandbox_python_path=use_sandbox_python_path,
-    )
 
 
 async def upload_state_input(

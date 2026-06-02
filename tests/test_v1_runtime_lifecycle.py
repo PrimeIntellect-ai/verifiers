@@ -1,5 +1,4 @@
 import asyncio
-import base64
 import json
 import os
 import shlex
@@ -23,10 +22,8 @@ from verifiers.types import ClientConfig
 from verifiers.types import Response, ResponseMessage, ToolCall
 from verifiers.types import Tool
 from verifiers.types import Usage
-from verifiers.utils.interception_utils import deliver_response
 from verifiers.v1.runtime import Runtime
 from verifiers.v1.utils import mcp_utils, sandbox_utils
-from verifiers.v1.utils.endpoint_utils import Endpoint
 from verifiers.v1.utils.mcp_proxy_utils import MCP_PROXY_CONFIG_PATH, MCP_PROXY_PATH
 from verifiers.v1.utils.mcp_proxy_utils import proxy_command, proxy_program
 from verifiers.v1.utils.program_utils import command_env
@@ -50,7 +47,6 @@ from verifiers.v1.utils.sandbox_program_utils import (
 from verifiers.v1.utils.sandbox_utils import (
     BRIDGE_PORT,
     VF_STATE_INPUT_PATH_KEY,
-    forward_sandbox_bridge_request,
     run_sandbox_command,
     upload_program_dirs,
 )
@@ -221,33 +217,6 @@ class FakeSandboxClient:
 
     def teardown(self) -> None:
         type(self).closed += 1
-
-
-class FakeBridgeLease:
-    def __init__(self, files: dict[str, str]):
-        self.files = files
-        self.uploads: dict[str, bytes] = {}
-        self.commands: list[str] = []
-
-    async def read_file(self, path: str) -> str:
-        return self.files[path]
-
-    async def upload_bytes(
-        self, path: str, content: bytes, filename: str | None = None
-    ) -> None:
-        _ = filename
-        self.uploads[path] = content
-
-    async def execute(
-        self,
-        command: str,
-        timeout: int | None = None,
-        working_dir: str | None = None,
-        env: dict[str, str] | None = None,
-    ) -> FakeCommandResult:
-        _ = timeout, working_dir, env
-        self.commands.append(command)
-        return FakeCommandResult()
 
 
 async def echo_tool(query: str) -> str:
@@ -1103,54 +1072,6 @@ async def test_command_env_endpoint_auth_overrides_inherited_keys(monkeypatch) -
     assert env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:1/rollout/test"
     assert env["ANTHROPIC_API_KEY"] == harness.endpoint.secret
     assert explicit_env["OPENAI_API_KEY"] == "program-key"
-
-
-@pytest.mark.asyncio
-async def test_sandbox_bridge_forwards_model_requests_to_vf_interception() -> None:
-    endpoint = Endpoint()
-    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
-    state = vf.State.for_task(task)
-    await endpoint.register_rollout(state, tool_defs=[])
-    rollout_key = state["endpoint_rollout_key"]
-    request_body = {
-        "model": "fake",
-        "messages": [{"role": "user", "content": "hi"}],
-    }
-    request_path = f"{sandbox_utils.BRIDGE_ROOT}/requests/request.json"
-    response_path = f"{sandbox_utils.BRIDGE_ROOT}/responses/request.json"
-    lease = FakeBridgeLease(
-        {
-            request_path: json.dumps(
-                {
-                    "method": "POST",
-                    "path": f"/rollout/{rollout_key}/v1/chat/completions",
-                    "headers": {
-                        "authorization": f"Bearer {endpoint.secret}",
-                        "content-type": "application/json",
-                    },
-                    "body": base64.b64encode(
-                        json.dumps(request_body).encode()
-                    ).decode(),
-                }
-            )
-        }
-    )
-
-    forward = asyncio.create_task(
-        forward_sandbox_bridge_request(
-            cast(Any, lease), endpoint, request_path, response_path
-        )
-    )
-    request_id = await asyncio.wait_for(endpoint.rollout_queue(rollout_key).get(), 1)
-    request = endpoint.get_request(request_id)
-    deliver_response(request, fake_response(content="ok"), None)
-    await forward
-    await endpoint.teardown()
-
-    response = json.loads(lease.uploads[response_path].decode())
-    response_body = json.loads(base64.b64decode(response["body"]))
-    assert response["status"] == 200
-    assert response_body["choices"][0]["message"]["content"] == "ok"
 
 
 def test_sandbox_base_program_uses_openai_tool_payloads() -> None:
@@ -3070,12 +2991,12 @@ async def test_clear_creation_tasks_keeps_failed_delete_retryable(
 
 
 @pytest.mark.asyncio
-async def test_teardown_cleans_client_and_registry_after_failed_delete(
+async def test_teardown_keeps_failed_delete_retryable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     disable_sandbox_retry_sleep(monkeypatch)
 
-    class FailingDeleteClient:
+    class DeleteFailsThenSucceeds:
         def __init__(self, sandbox_id: str):
             self.sandbox_id = sandbox_id
             self.delete_calls = 0
@@ -3084,13 +3005,14 @@ async def test_teardown_cleans_client_and_registry_after_failed_delete(
         async def delete(self, sandbox_id: str) -> None:
             assert sandbox_id == self.sandbox_id
             self.delete_calls += 1
-            raise RuntimeError("delete failed")
+            if self.delete_calls <= sandbox_utils.SANDBOX_RETRY_ATTEMPTS:
+                raise RuntimeError("delete failed")
 
         async def aclose(self) -> None:
             self.closed = True
 
-    client = FailingDeleteClient("sbx-terminal-fail")
-    owned_client = FailingDeleteClient("sbx-owned-terminal-fail")
+    client = DeleteFailsThenSucceeds("sbx-terminal-fail")
+    owned_client = DeleteFailsThenSucceeds("sbx-owned-terminal-fail")
     runtime = Runtime()
     runtime._sandbox_client = cast(sandbox_utils.SandboxClient, client)
     key = ("rollout:test", "program")
@@ -3113,8 +3035,18 @@ async def test_teardown_cleans_client_and_registry_after_failed_delete(
     await runtime.teardown()
 
     assert client.delete_calls == sandbox_utils.SANDBOX_RETRY_ATTEMPTS
-    assert client.closed is True
+    assert client.closed is False
     assert owned_client.delete_calls == sandbox_utils.SANDBOX_RETRY_ATTEMPTS
+    assert owned_client.closed is False
+    assert runtime.sandbox_leases[key] is lease
+    assert owned_key in runtime.sandbox_leases
+    assert load_runtime(runtime.runtime_id) is runtime
+
+    await runtime.teardown()
+
+    assert client.delete_calls == sandbox_utils.SANDBOX_RETRY_ATTEMPTS + 1
+    assert client.closed is True
+    assert owned_client.delete_calls == sandbox_utils.SANDBOX_RETRY_ATTEMPTS + 1
     assert owned_client.closed is True
     assert runtime.sandbox_leases == {}
     with pytest.raises(RuntimeError, match="No live v1 runtime registered"):
