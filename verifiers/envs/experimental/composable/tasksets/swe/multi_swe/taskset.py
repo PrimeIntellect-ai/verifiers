@@ -285,7 +285,7 @@ class MultiSWETaskSet(SandboxTaskSet):
         base = multiswe_row.get("base")
         base_commit = base.get("sha") if isinstance(base, dict) else None
         base_commit = base_commit or "HEAD"
-        script_path = SCRIPTS_DIR / "extract_multiswe_fix_patch.sh"
+        script_path = SCRIPTS_DIR / "extract_fix_patch.sh"
         await sandbox_client.upload_file(
             sandbox_id, "/home/extract_multiswe_fix_patch.sh", str(script_path)
         )
