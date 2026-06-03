@@ -167,6 +167,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.build-tag.outputs.tag }}
-          body_path: assets/release/RELEASE_${{ needs.build-tag.outputs.tag }}.md
+          generate_release_notes: true
           files: |
             dist/*

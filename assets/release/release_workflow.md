@@ -9,69 +9,21 @@ PyPI. Versions are **git-driven** via `hatch-vcs` — there is no version string
 
 ## Before cutting a stable release
 
-- Land a PR on `main` with the release notes in `assets/release/RELEASE_vX.Y.Z.md` (see
-  [Writing the release notes](#writing-the-release-notes)) and any ancillary artifacts/documentation for the release.
 - Verify CI is green on the commit you intend to tag.
 - Confirm the `verifiers` project on PyPI has a Trusted Publisher configured for repository
   `PrimeIntellect-ai/verifiers`, workflow `publish-verifiers.yml`, environment `pypi-prod`. The publish job authenticates
   via OIDC — no PyPI token is required for `verifiers`.
 
-## Writing the release notes
+## Release notes
 
-GitHub Releases are only created for **stable `vX.Y.Z` tags**, and the body is read verbatim from a file in this
-directory by the workflow's `github-release-tag` job:
+Release notes are a **GitHub concern, not a repo concern** — they are not stored in this repository. The
+`github-release-tag` job creates the GitHub Release with `generate_release_notes: true`, so GitHub builds the notes
+from the merged PRs since the previous tag (a "What's Changed" list, new contributors, and a full-changelog compare
+link). Clean PR titles drive the quality of this list.
 
-```yaml
-body_path: assets/release/RELEASE_${tag}.md
-```
-
-So the notes are part of the repo, reviewed in the release-prep PR, and must exist on the tagged commit.
-
-Rules:
-
-- **Filename must match the tag exactly.** Tag `v0.1.15` -> `assets/release/RELEASE_v0.1.15.md`. If the file is missing
-  when the tag is built, the `github-release-tag` job fails.
-- **Dev pre-releases do not need a notes file.** Pushes to `main` publish `0.1.X.dev<N>` to PyPI but do **not** create a
-  GitHub Release, so no `RELEASE_*.dev*.md` is required. (The older `RELEASE_*.dev*.md` files predate this workflow and
-  are kept only as history; don't add new ones.)
-- Author the notes in the release-prep PR, before tagging, so they are reviewed alongside the release.
-
-### Format
-
-Follow the structure used by recent releases (e.g. `RELEASE_v0.1.14.md`):
-
-```markdown
-# Verifiers vX.Y.Z Release Notes
-
-*Date:* MM/DD/YYYY
-
-## Highlights since <previous-release>
-
-- **Short theme.** One or two sentences describing the most user-visible changes.
-- **Another theme.** Group related PRs into a narrative rather than listing every commit.
-
-## Changes included in vX.Y.Z (since <previous-release>)
-
-### Features and enhancements
-
-- Short description (#PR)
-
-### Fixes and maintenance
-
-- Short description (#PR)
-
-**Full Changelog**: https://github.com/PrimeIntellect-ai/verifiers/compare/<previous-release>...vX.Y.Z
-```
-
-- `<previous-release>` is the last stable tag (e.g. `v0.1.14`). The compare link gives reviewers the full diff.
-- Section headings are flexible — group changes in whatever buckets read clearly (e.g. `### v1 runtime`,
-  `### Harnesses and packaging`). The `### Features and enhancements` / `### Fixes and maintenance` split is the common
-  default.
-- To draft the change list quickly, generate the merged-PR log between tags and edit it down:
-
-  ```bash
-  git log --pretty='- %s' v0.1.14..HEAD
-  ```
+After the workflow publishes the release, a maintainer may curate the generated notes (e.g. add a short "Highlights"
+section) directly on the GitHub Release before announcing it — for example with `gh release edit <tag> --notes-file -`.
+There is no `RELEASE_*.md` file to author or review in a PR.
 
 ## Cutting a stable release
 
