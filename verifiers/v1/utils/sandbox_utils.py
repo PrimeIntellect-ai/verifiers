@@ -6,6 +6,7 @@ import logging
 import shlex
 import tarfile
 import tempfile
+import time
 import uuid
 from collections.abc import Awaitable, Callable
 from importlib.abc import Traversable
@@ -17,6 +18,7 @@ import tenacity as tc
 from verifiers.decorators import setup as setup_handler
 from verifiers.errors import Error, SandboxError
 from verifiers.utils.async_utils import maybe_call_with_named_args
+from verifiers.utils.logging_utils import print_size, print_time
 
 from .program_utils import command_argv, command_env, float_config, int_config
 from .program_utils import program_channels
@@ -686,6 +688,14 @@ async def create_sandbox(
         else None,
         guaranteed=bool(sandbox_config.get("guaranteed", False)),
     )
+    started = time.monotonic()
+    logger.info(
+        "Creating sandbox (image=%s, cpu=%s, mem=%sGB, gpu=%d)",
+        request.docker_image,
+        request.cpu_cores,
+        request.memory_gb,
+        gpu_count,
+    )
     create_task = asyncio.create_task(
         with_sandbox_retry(lambda: client.create(request))
     )
@@ -738,6 +748,11 @@ async def create_sandbox(
         )
         await asyncio.shield(delete_task)
         raise
+    logger.info(
+        "[sandbox %s] ready in %s",
+        sandbox_id,
+        print_time(time.monotonic() - started),
+    )
     return sandbox_id
 
 
@@ -863,7 +878,12 @@ async def upload_program_files(
     from prime_sandboxes import APIError, UploadTimeoutError
 
     files = program_option_mapping(program.get("files"), "program.files")
+    if not files:
+        return
+    started = time.monotonic()
+    logger.info("[sandbox %s] uploading %d program file(s)", sandbox_id, len(files))
     for path, source in files.items():
+        file_started = time.monotonic()
         content = await resolve_program_value(source, task, state, runtime, program)
         if not isinstance(content, str):
             content = str(content)
@@ -879,6 +899,19 @@ async def upload_program_files(
             raise SandboxError(
                 f"Program file upload failed for {path!r} in sandbox {sandbox_id}: {exc}"
             ) from exc
+        logger.debug(
+            "[sandbox %s] uploaded %s (%s) in %s",
+            sandbox_id,
+            path,
+            print_size(len(content.encode())),
+            print_time(time.monotonic() - file_started),
+        )
+    logger.info(
+        "[sandbox %s] uploaded %d program file(s) in %s",
+        sandbox_id,
+        len(files),
+        print_time(time.monotonic() - started),
+    )
 
 
 async def upload_program_dirs(
@@ -890,11 +923,18 @@ async def upload_program_dirs(
     runtime: Runtime,
 ) -> None:
     dirs = program_option_mapping(program.get("dirs"), "program.dirs")
+    if not dirs:
+        return
+    started = time.monotonic()
+    logger.info("[sandbox %s] uploading %d program dir(s)", sandbox_id, len(dirs))
+    uploaded = 0
     for path, source in dirs.items():
+        dir_started = time.monotonic()
         local_source = await resolve_program_value(
             source, task, state, runtime, program
         )
         if local_source is None:
+            logger.debug("[sandbox %s] skipped dir %s (no source)", sandbox_id, path)
             continue
         if isinstance(local_source, str):
             local_source = Path(local_source)
@@ -902,6 +942,7 @@ async def upload_program_dirs(
             raise TypeError("program.dirs values must resolve to paths.")
         remote_tar = f"/tmp/_vf_upload_{path.strip('/').replace('/', '_')}.tar.gz"
         archive_path = await runtime.cached_upload_archive(local_source, path)
+        archive_size = Path(archive_path).stat().st_size
         await maybe_call_with_named_args(
             client.upload_file,
             sandbox_id=sandbox_id,
@@ -919,6 +960,20 @@ async def upload_program_dirs(
         )
         if result.exit_code:
             raise SandboxError(f"Program dir upload failed: {result.stderr}")
+        uploaded += 1
+        logger.debug(
+            "[sandbox %s] uploaded dir %s (%s archive) in %s",
+            sandbox_id,
+            path,
+            print_size(archive_size),
+            print_time(time.monotonic() - dir_started),
+        )
+    logger.info(
+        "[sandbox %s] uploaded %d program dir(s) in %s",
+        sandbox_id,
+        uploaded,
+        print_time(time.monotonic() - started),
+    )
 
 
 def build_dir_archive(local_source: Path | Traversable, remote_path: str) -> Path:
@@ -1043,7 +1098,17 @@ async def run_program_items(
 ) -> None:
     env = await command_env(program, task, state, runtime, include_base=False)
     timeout = int_config(program, "setup_timeout", 300)
-    for command in items:
+    if not items:
+        return
+    started = time.monotonic()
+    logger.info(
+        "[sandbox %s] running %d %s command(s)",
+        sandbox_id,
+        len(items),
+        error_prefix.lower().split()[0],
+    )
+    for index, command in enumerate(items, start=1):
+        command_started = time.monotonic()
         command = await resolve_program_value(command, task, state, runtime, program)
         command = str(command)
         if use_sandbox_python_path:
@@ -1057,6 +1122,21 @@ async def run_program_items(
         )
         if result.exit_code:
             raise SandboxError(f"{error_prefix}: {result.stderr}")
+        logger.debug(
+            "[sandbox %s] %s command %d/%d done in %s",
+            sandbox_id,
+            error_prefix.lower().split()[0],
+            index,
+            len(items),
+            print_time(time.monotonic() - command_started),
+        )
+    logger.info(
+        "[sandbox %s] ran %d %s command(s) in %s",
+        sandbox_id,
+        len(items),
+        error_prefix.lower().split()[0],
+        print_time(time.monotonic() - started),
+    )
 
 
 async def read_sandbox_artifact(
