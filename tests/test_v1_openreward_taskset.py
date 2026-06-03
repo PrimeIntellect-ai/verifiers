@@ -175,7 +175,7 @@ def test_openreward_taskset_loads_serializable_tasks(fake_openreward_client):
     assert set(taskset.named_toolsets) == {"openreward"}
 
 
-def test_openreward_taskset_eval_tasks_use_test_split(fake_openreward_client):
+def test_openreward_taskset_load_tasks_eval_uses_test_split(fake_openreward_client):
     taskset = openreward.OpenRewardTaskset(
         config=openreward.OpenRewardTasksetConfig(
             environment="owner/env",
@@ -184,14 +184,14 @@ def test_openreward_taskset_eval_tasks_use_test_split(fake_openreward_client):
         )
     )
 
-    tasks = list(taskset.eval_tasks())
+    tasks = list(taskset.load_tasks(split="eval"))
 
     assert fake_openreward_client.task_range_calls == [("official-test", 0, 2)]
     assert tasks[0]["openreward"]["split"] == "official-test"
     assert tasks[0]["openreward"]["task"]["task_spec"] == {"id": "official-test-0"}
 
 
-def test_openreward_taskset_eval_tasks_empty_without_test_split(
+def test_openreward_taskset_eval_split_empty_without_test_split(
     fake_openreward_client,
 ):
     fake_openreward_client.splits = [FakeOpenRewardSplit(name="train", type="train")]

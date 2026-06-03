@@ -27,7 +27,7 @@ def test_init_v1_writes_taskset_template(tmp_path: Path) -> None:
     assert "class BarTaskset(vf.Taskset[BarTasksetConfig]):" in content
     assert 'system_prompt: vf.SystemPrompt = "Answer exactly."' in content
     assert '"""Taskset implementation for bar.' in content
-    assert "def train_tasks(self) -> vf.Tasks:" in content
+    assert 'def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:' in content
     assert (
         '"""Return serializable task records as a list, generator, or Dataset."""'
         in content

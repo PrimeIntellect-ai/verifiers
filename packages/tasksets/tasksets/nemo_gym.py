@@ -66,7 +66,9 @@ class NeMoGymTaskset(vf.Taskset[NeMoGymTasksetConfig]):
             )
         return None
 
-    def train_tasks(self) -> vf.Tasks:
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
+        if split == "eval":
+            return []
         jsonl_path = self.jsonl_path()
         if jsonl_path is None:
             raise ValueError("NeMoGymTaskset requires nemo_env=... or jsonl_path=...")

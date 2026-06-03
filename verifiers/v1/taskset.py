@@ -119,18 +119,10 @@ class Taskset(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
             return prepare_task(task, self.taskset_id)
         return task_from_dataset_record(task, self.taskset_id)
 
-    def train_tasks(self) -> Tasks:
-        return []
-
-    def eval_tasks(self) -> Tasks:
-        return []
-
     def load_tasks(self, split: TaskSplit = "train") -> Tasks:
-        if split == "train":
-            return self.train_tasks()
-        if split == "eval":
-            return self.eval_tasks()
-        raise ValueError(f"Unknown task split: {split}")
+        if split not in ("train", "eval"):
+            raise ValueError(f"Unknown task split: {split}")
+        return []
 
     async def init_group(
         self, task: Task, num_rollouts: int

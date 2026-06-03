@@ -172,8 +172,10 @@ class {taskset_name}(vf.Taskset[{taskset_config_name}]):
     metrics, rewards, and advantages on this class.
     \"\"\"
 
-    def train_tasks(self) -> vf.Tasks:
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         \"\"\"Return serializable task records as a list, generator, or Dataset.\"\"\"
+        if split == "eval":
+            return []
         return [
             {
                 "prompt": [{"role": "user", "content": "Reverse abc."}],

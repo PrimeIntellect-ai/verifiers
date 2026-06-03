@@ -146,17 +146,16 @@ class OpenRewardTaskset(vf.Taskset[OpenRewardTasksetConfig]):
     def load_toolsets(self, config: OpenRewardTasksetConfig) -> vf.Toolsets:
         return {"openreward": vf.Toolset(scope="rollout", handler=self.call_tool)}
 
-    def train_tasks(self) -> vf.Tasks:
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
+        if split == "eval":
+            if self.config.num_eval_examples <= 0:
+                return []
+            return self.openreward_test_tasks(
+                num_examples=self.config.num_eval_examples,
+            )
         return self.openreward_tasks(
             task_split=self.config.split,
             num_examples=self.config.num_train_examples,
-        )
-
-    def eval_tasks(self) -> vf.Tasks:
-        if self.config.num_eval_examples <= 0:
-            return []
-        return self.openreward_test_tasks(
-            num_examples=self.config.num_eval_examples,
         )
 
     def openreward_tasks(

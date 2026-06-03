@@ -28,8 +28,7 @@ prime env init my-env --v1 --with-harness
 Open the generated `my_env.py` and edit it in this order:
 
 1. Add user-facing task settings to `MyTasksetConfig`.
-2. Fill `MyTaskset.train_tasks()` with task records and add `eval_tasks()` only
-   when the taskset has an explicit eval source.
+2. Fill `MyTaskset.load_tasks(split=...)` with train/eval task records.
 3. Add task-owned tools with `MyTaskset.load_toolsets()` when the task defines
    an action space.
 4. Add task behavior with `@vf.setup`, `@vf.update`, `@vf.reward`, `@vf.metric`,
@@ -54,8 +53,10 @@ class MyTasksetConfig(vf.TasksetConfig):
 
 
 class MyTaskset(vf.Taskset[MyTasksetConfig]):
-    def train_tasks(self) -> vf.Tasks:
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         """Return serializable task records as a list, generator, or Dataset."""
+        if split == "eval":
+            return []
         return [
             {
                 "prompt": [{"role": "user", "content": "Reverse abc."}],
@@ -193,9 +194,7 @@ task payload.
 
 ## Tasks
 
-Tasksets load train and eval data through `train_tasks()` and `eval_tasks()`.
-The base `load_tasks(split=...)` method is the split-dispatch API used by
-`get_dataset()` and `get_eval_dataset()`:
+Tasksets load train and eval data through `load_tasks(split=...)`:
 
 ```python
 class GSM8KTasksetConfig(vf.TasksetConfig):
@@ -204,15 +203,10 @@ class GSM8KTasksetConfig(vf.TasksetConfig):
 
 
 class GSM8KTaskset(vf.Taskset[GSM8KTasksetConfig]):
-    def train_tasks(self) -> vf.Tasks:
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         """Return serializable task records as a list, generator, or Dataset."""
-        dataset = load_dataset(self.config.dataset_name, "main", split="train")
-        if self.config.num_examples is not None:
-            dataset = dataset.select(range(self.config.num_examples))
-        return dataset
-
-    def eval_tasks(self) -> vf.Tasks:
-        dataset = load_dataset(self.config.dataset_name, "main", split="test")
+        dataset_split = "test" if split == "eval" else "train"
+        dataset = load_dataset(self.config.dataset_name, "main", split=dataset_split)
         if self.config.num_examples is not None:
             dataset = dataset.select(range(self.config.num_examples))
         return dataset
@@ -224,10 +218,10 @@ an iterable of `vf.Task` objects. During rollout, records become immutable
 
 Return a `datasets.Dataset` directly when the source already has standard
 columns such as `question` and `answer`; the framework derives `prompt` from
-`question`. Hardcode fixed upstream split names inside `train_tasks()` and
-`eval_tasks()`. Only expose split-name config when the upstream split choice is
+`question`. Hardcode fixed upstream split names inside `load_tasks(split=...)`.
+Only expose split-name config when the upstream split choice is
 genuine user-space configuration, not the way v1 decides whether eval exists.
-Leave `eval_tasks()` unset when the taskset has no explicit eval source;
+Return `[]` for `split == "eval"` when the taskset has no explicit eval source;
 `vf.Env` treats the empty split as an absent eval dataset, so
 `Environment.get_eval_dataset()` falls back to train data with the standard
 warning.

@@ -70,16 +70,15 @@ def _content_text(content: object) -> str:
 
 
 class TextArenaTaskset(vf.Taskset[TextArenaConfigT], Generic[TextArenaConfigT]):
-    def train_tasks(self) -> vf.Tasks:
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
+        if split == "eval":
+            return self.textarena_tasks(
+                num_examples=self.config.num_eval_examples,
+                first_seed_offset=self.config.num_train_examples,
+            )
         return self.textarena_tasks(
             num_examples=self.config.num_train_examples,
             first_seed_offset=0,
-        )
-
-    def eval_tasks(self) -> vf.Tasks:
-        return self.textarena_tasks(
-            num_examples=self.config.num_eval_examples,
-            first_seed_offset=self.config.num_train_examples,
         )
 
     def textarena_tasks(

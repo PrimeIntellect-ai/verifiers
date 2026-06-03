@@ -113,8 +113,8 @@ task, it belongs to the harness.
   tools.
 - Runtime-only resources live on `state` or runtime-managed owners, not on task
   data or config.
-- Do not add generic split config fields that duplicate `train_tasks()` and
-  `eval_tasks()`. Use config only when a split choice is a real taskset setting
+- Do not add generic split config fields that duplicate `load_tasks(split=...)`.
+  Use config only when a split choice is a real taskset setting
   rather than an adapter detail.
 
 ## Task Rules

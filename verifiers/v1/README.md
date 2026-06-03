@@ -37,7 +37,9 @@ class ReverseTasksetConfig(vf.TasksetConfig):
 
 
 class ReverseTaskset(vf.Taskset[ReverseTasksetConfig]):
-    def train_tasks(self) -> vf.Tasks:
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
+        if split == "eval":
+            return []
         return [
             {
                 "prompt": [{"role": "user", "content": "Reverse abc."}],
@@ -185,29 +187,25 @@ Override `load_system_prompt(config)` only when prompt construction is computed.
 
 ## Tasksets
 
-Tasksets load train and eval data through owner methods:
+Tasksets load train and eval data through `load_tasks(split=...)`:
 
 ```python
 class MyTaskset(vf.Taskset[MyTasksetConfig]):
-    def train_tasks(self) -> vf.Tasks:
-        ...
-
-    def eval_tasks(self) -> vf.Tasks:
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         ...
 ```
 
 `vf.Tasks` can be a `datasets.Dataset`, an iterable of serializable records, or
 an iterable of `vf.Task` objects. `Taskset.get_dataset()` calls
 `load_tasks(split="train")`; `Taskset.get_eval_dataset()` calls
-`load_tasks(split="eval")`. The base `load_tasks(split=...)` implementation
-dispatches to `train_tasks()` and `eval_tasks()`.
+`load_tasks(split="eval")`.
 
 Prefer returning a `datasets.Dataset` directly when source columns already
-match the task contract, such as `question` and `answer`. Do not add generic
-split config fields that duplicate the taskset split methods. Only expose
+match the task contract, such as `question` and `answer`. Hardcode fixed
+upstream split names inside `load_tasks(split=...)`. Only expose
 split-name config when the upstream split choice is genuine user-space
-configuration, not the way v1 decides whether eval exists. Leave `eval_tasks()`
-unset when the taskset has no explicit eval source; `vf.Env` treats the empty
+configuration, not the way v1 decides whether eval exists. Return `[]` for
+`split == "eval"` when the taskset has no explicit eval source; `vf.Env` treats the empty
 split as an absent eval dataset so the base environment can fall back to train
 data with its standard warning.
 

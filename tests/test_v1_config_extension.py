@@ -783,20 +783,18 @@ async def test_sandbox_program_ref_uses_config_module(
     assert captured["fn_ref"] == f"{__name__}:program_fn"
 
 
-def test_taskset_get_eval_dataset_uses_eval_tasks() -> None:
+def test_taskset_get_eval_dataset_uses_load_tasks_eval_split() -> None:
     taskset = make_taskset()
 
     assert taskset.get_dataset()[0]["answer"] == "ok"
     assert taskset.get_eval_dataset()[0]["answer"] == "eval ok"
 
 
-def test_taskset_load_tasks_dispatches_to_train_and_eval_tasks() -> None:
+def test_taskset_load_tasks_accepts_train_and_eval_splits() -> None:
     class SplitTaskset(Taskset):
-        def train_tasks(self) -> vf.Tasks:
-            return [{"prompt": [], "answer": "train"}]
-
-        def eval_tasks(self) -> vf.Tasks:
-            return [{"prompt": [], "answer": "eval"}]
+        def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
+            answer = "eval" if split == "eval" else "train"
+            return [{"prompt": [], "answer": answer}]
 
     taskset = SplitTaskset()
 
@@ -804,9 +802,11 @@ def test_taskset_load_tasks_dispatches_to_train_and_eval_tasks() -> None:
     assert taskset.load_tasks(split="eval")[0]["answer"] == "eval"
 
 
-def test_taskset_get_eval_dataset_returns_empty_dataset_for_empty_eval_tasks() -> None:
+def test_taskset_get_eval_dataset_returns_empty_dataset_for_empty_eval_split() -> None:
     class TrainOnlyTaskset(Taskset):
-        def train_tasks(self) -> vf.Tasks:
+        def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
+            if split == "eval":
+                return []
             return [{"prompt": [], "answer": "train"}]
 
     taskset = TrainOnlyTaskset()
@@ -815,9 +815,11 @@ def test_taskset_get_eval_dataset_returns_empty_dataset_for_empty_eval_tasks() -
     assert len(taskset.get_eval_dataset()) == 0
 
 
-def test_empty_eval_tasks_use_environment_train_fallback(monkeypatch) -> None:
+def test_empty_eval_split_uses_environment_train_fallback(monkeypatch) -> None:
     class EmptyEvalTaskset(Taskset):
-        def train_tasks(self) -> vf.Tasks:
+        def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
+            if split == "eval":
+                return []
             return [{"prompt": [], "answer": "train"}]
 
     env = Env(taskset=EmptyEvalTaskset())
@@ -831,9 +833,11 @@ def test_empty_eval_tasks_use_environment_train_fallback(monkeypatch) -> None:
     assert warnings == [EVAL_FALLBACK_WARNING]
 
 
-def test_empty_train_tasks_use_environment_eval_only_dataset() -> None:
+def test_empty_train_split_uses_environment_eval_only_dataset() -> None:
     class EmptyTrainTaskset(Taskset):
-        def eval_tasks(self) -> vf.Tasks:
+        def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
+            if split == "train":
+                return []
             return [{"prompt": [], "answer": "eval"}]
 
     env = Env(taskset=EmptyTrainTaskset())
@@ -843,7 +847,7 @@ def test_empty_train_tasks_use_environment_eval_only_dataset() -> None:
         env.get_dataset()
 
 
-def test_empty_train_and_eval_tasks_match_environment_missing_dataset_error(
+def test_empty_train_and_eval_splits_match_environment_missing_dataset_error(
     monkeypatch,
 ) -> None:
     env = Env(taskset=Taskset())
@@ -861,12 +865,11 @@ def test_empty_taskset_splits_are_checked_once_by_environment() -> None:
     calls = {"train": 0, "eval": 0}
 
     class EmptyTaskset(Taskset):
-        def train_tasks(self) -> vf.Tasks:
-            calls["train"] += 1
-            return []
-
-        def eval_tasks(self) -> vf.Tasks:
-            calls["eval"] += 1
+        def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
+            if split == "train":
+                calls["train"] += 1
+            else:
+                calls["eval"] += 1
             return []
 
     env = Env(taskset=EmptyTaskset())
@@ -2474,7 +2477,6 @@ def test_config_schema_is_visible_from_primary_types() -> None:
     assert "- toolsets:" in taskset_schema
     assert "- toolsets:" in HarnessConfig.schema_text()
     assert "- tasks:" not in taskset_schema
-    assert "- eval_tasks:" not in taskset_schema
     assert "- program:" in HarnessConfig.schema_text()
     assert "- image:" in vf.SandboxConfig.schema_text()
     assert "- bindings:" in vf.ToolsetConfig.schema_text()

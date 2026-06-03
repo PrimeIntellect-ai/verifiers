@@ -60,7 +60,7 @@ prime env init my-env --v1 --with-harness
 
 This will create a new module called `my_env` with a runnable environment
 template. For v1 templates, start by editing the generated `TasksetConfig`,
-`Taskset.train_tasks()`, and `@vf.reward` methods. Use `--with-harness` when the
+`Taskset.load_tasks()`, and `@vf.reward` methods. Use `--with-harness` when the
 environment also owns reusable execution behavior.
 ```
 environments/my_env/
@@ -98,8 +98,10 @@ class MyTasksetConfig(vf.TasksetConfig):
 
 
 class MyTaskset(vf.Taskset[MyTasksetConfig]):
-    def train_tasks(self) -> vf.Tasks:
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         """Return serializable task records as a list, generator, or Dataset."""
+        if split == "eval":
+            return []
         return [
             {
                 "prompt": [{"role": "user", "content": "Reverse abc."}],
