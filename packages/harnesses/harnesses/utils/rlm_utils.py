@@ -17,7 +17,9 @@ from verifiers.envs.experimental.utils.git_checkout_cache import (
 )
 from verifiers.v1.runtime import Runtime
 from verifiers.v1.state import State
+from verifiers.v1.task import Task
 from verifiers.v1.types import ConfigData
+from verifiers.v1.utils.prompt_utils import state_system_prompt_text
 
 DEFAULT_RLM_CHECKOUT_PATH = "/tmp/rlm-checkout"
 DEFAULT_RLM_SKILLS_PATH = "/task/rlm-skills"
@@ -28,6 +30,21 @@ DEFAULT_RLM_LOCAL_CHECKOUT_CACHE_ROOT = (
     Path.home() / ".cache" / "verifiers" / "rlm-checkouts"
 )
 REQUIRED_RLM_CHECKOUT_FILES = ("install.sh", "pyproject.toml")
+
+
+def rlm_append_to_system_prompt(task: Task, state: State, append: str = "") -> str:
+    """Text appended to the RLM agent's built-in system prompt.
+
+    The ``rlm`` tool builds its own coding-agent system prompt and tacks
+    ``RLM_APPEND_TO_SYSTEM_PROMPT`` on after it, so the agent reads the
+    harness prompt first and the task instructions second. We feed that env
+    var the resolved ``state["system_prompt"]`` (harness + taskset/task,
+    ordered by the harness ``system_prompt_strategy``) joined with the
+    program's static ``append_to_system_prompt`` — otherwise a taskset's
+    ``load_system_prompt`` is silently dropped under the RLM harness.
+    """
+    resolved = state_system_prompt_text(task, state)
+    return "\n\n".join(part for part in (resolved, append) if part)
 
 
 def rlm_checkout_path(

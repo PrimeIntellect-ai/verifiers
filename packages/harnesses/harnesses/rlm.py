@@ -42,7 +42,10 @@ class RLMProgramConfig(vf.ProgramConfig):
                 "fn": "verifiers.v1.utils.prompt_utils:task_text",
                 "keys": ["instruction", "question"],
             },
-            RLM_DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH: self.append_to_system_prompt,
+            RLM_DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH: {
+                "fn": "harnesses.utils.rlm_utils:rlm_append_to_system_prompt",
+                "append": self.append_to_system_prompt,
+            },
             DEFAULT_RLM_TOOL_SKILLS_ARCHIVE_PATH: {
                 "fn": "harnesses.utils.rlm_utils:rlm_tool_skills_archive"
             },
