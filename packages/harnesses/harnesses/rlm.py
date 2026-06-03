@@ -113,14 +113,17 @@ class RLMProgramConfig(vf.ProgramConfig):
                 }
             }
         )
+        sandbox_override = (
+            self.sandbox if isinstance(self.sandbox, vf.SandboxConfig) else None
+        )
         command_timeout = 600
         setup_timeout = command_timeout
-        if self.sandbox is not None and "setup_timeout" in self.sandbox.data(
+        if sandbox_override is not None and "setup_timeout" in sandbox_override.data(
             fill_defaults=False
         ):
-            setup_timeout = self.sandbox.setup_timeout
+            setup_timeout = sandbox_override.setup_timeout
 
-        if self.sandbox is None:
+        if sandbox_override is None:
             sandbox = vf.SandboxConfig(
                 image="python:3.11-slim",
                 workdir=self.workdir,
@@ -137,7 +140,7 @@ class RLMProgramConfig(vf.ProgramConfig):
                 {
                     "workdir": self.workdir,
                     "command_timeout": command_timeout,
-                    **self.sandbox.data(),
+                    **sandbox_override.data(),
                     "setup_timeout": setup_timeout,
                 }
             )
