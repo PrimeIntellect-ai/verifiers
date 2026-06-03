@@ -28,7 +28,7 @@ prime env init my-env --v1 --with-harness
 Open the generated `my_env.py` and edit it in this order:
 
 1. Add user-facing task settings to `MyTasksetConfig`.
-2. Fill `MyTaskset.load_tasks()` with train/eval task records.
+2. Fill `MyTaskset.load_tasks(split=...)` with train/eval task records.
 3. Add task-owned tools with `MyTaskset.load_toolsets()` when the task defines
    an action space.
 4. Add task behavior with `@vf.setup`, `@vf.update`, `@vf.reward`, `@vf.metric`,
@@ -55,11 +55,12 @@ class MyTasksetConfig(vf.TasksetConfig):
 class MyTaskset(vf.Taskset[MyTasksetConfig]):
     def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         """Return serializable task records as a list, generator, or Dataset."""
+        if split == "eval":
+            return []
         return [
             {
                 "prompt": [{"role": "user", "content": "Reverse abc."}],
                 "answer": "cba",
-                "split": split,
                 "max_turns": 1,
             }
         ]
@@ -198,17 +199,13 @@ Tasksets load train and eval data through `load_tasks(split=...)`:
 ```python
 class GSM8KTasksetConfig(vf.TasksetConfig):
     dataset_name: str = "gsm8k"
-    train_split: str = "train"
-    eval_split: str = "test"
     num_examples: int | None = None
 
 
 class GSM8KTaskset(vf.Taskset[GSM8KTasksetConfig]):
     def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         """Return serializable task records as a list, generator, or Dataset."""
-        dataset_split = (
-            self.config.train_split if split == "train" else self.config.eval_split
-        )
+        dataset_split = "test" if split == "eval" else "train"
         dataset = load_dataset(self.config.dataset_name, "main", split=dataset_split)
         if self.config.num_examples is not None:
             dataset = dataset.select(range(self.config.num_examples))
@@ -221,9 +218,13 @@ an iterable of `vf.Task` objects. During rollout, records become immutable
 
 Return a `datasets.Dataset` directly when the source already has standard
 columns such as `question` and `answer`; the framework derives `prompt` from
-`question`. Use config fields like `train_split` and `eval_split` only to map
-v1 split names to upstream source split names. Do not add generic split config
-that duplicates `load_tasks(split=...)`.
+`question`. Hardcode fixed upstream split names inside `load_tasks(split=...)`.
+Only expose split-name config when the upstream split choice is
+genuine user-space configuration, not the way v1 decides whether eval exists.
+Return `[]` for `split == "eval"` when the taskset has no explicit eval source;
+`vf.Env` treats the empty split as an absent eval dataset, so
+`Environment.get_eval_dataset()` falls back to train data with the standard
+warning.
 
 Common task fields:
 

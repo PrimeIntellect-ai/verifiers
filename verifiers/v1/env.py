@@ -1,6 +1,6 @@
 import asyncio
 import uuid
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 import verifiers as vf
 from verifiers.clients import Client
@@ -13,6 +13,9 @@ from .state import State
 from .taskset import Taskset, TasksetConfig
 from .types import JsonData, RuntimeData
 from .utils.taskset_utils import task_from_dataset_record
+
+if TYPE_CHECKING:
+    from datasets import Dataset
 
 
 class EnvConfig(Config):
@@ -70,6 +73,32 @@ class Env(vf.Environment):
             eval_dataset=self.taskset.get_eval_dataset,
             rubric=vf.Rubric(),
         )
+        self._empty_dataset_checked = False
+        self._empty_eval_dataset_checked = False
+
+    def build_dataset(self) -> "Dataset | None":
+        if self.dataset is not None:
+            return self.dataset
+        if self._empty_dataset_checked:
+            return None
+        dataset = self.taskset.get_dataset()
+        if not len(dataset):
+            self._empty_dataset_checked = True
+            return None
+        self.dataset = self._format_dataset_source(dataset)
+        return self.dataset
+
+    def build_eval_dataset(self) -> "Dataset | None":
+        if self.eval_dataset is not None:
+            return self.eval_dataset
+        if self._empty_eval_dataset_checked:
+            return None
+        eval_dataset = self.taskset.get_eval_dataset()
+        if not len(eval_dataset):
+            self._empty_eval_dataset_checked = True
+            return None
+        self.eval_dataset = self._format_dataset_source(eval_dataset)
+        return self.eval_dataset
 
     @vf.teardown
     async def teardown_harness(self) -> None:
