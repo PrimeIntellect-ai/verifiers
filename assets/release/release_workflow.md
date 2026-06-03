@@ -3,8 +3,10 @@
 The `Publish verifiers` GitHub Actions workflow (`.github/workflows/publish-verifiers.yml`) publishes `verifiers` to
 PyPI. Versions are **git-driven** via `hatch-vcs` — there is no version string to hand-edit.
 
-- **Dev pre-releases** happen automatically: every push to `main` builds and publishes `0.1.X.dev<commits-since-last-tag>`
-  (installable with `pip install --pre verifiers`). No action and no per-commit tags are required.
+- **Dev pre-releases** happen automatically: every push to `main` builds and publishes the next release as a
+  pre-release — the latest `vX.Y.Z` tag with its final segment bumped, plus `.dev<commits-since-last-tag>` (e.g. while
+  the latest tag is `v0.1.14`, builds are `0.1.15.dev<N>`). Installable with `pip install --pre verifiers`. No action and
+  no per-commit tags are required.
 - **Stable releases** happen when a maintainer pushes a `vX.Y.Z` tag. Building that tag yields exactly `X.Y.Z`.
 
 ## Before cutting a stable release
@@ -40,8 +42,8 @@ There is no `RELEASE_*.md` file to author or review in a PR.
 ## After the release
 
 - Verify the new version appears on PyPI and that the GitHub Release contains the built `dist/` artifacts.
-- Dev pre-releases automatically resume on the next push to `main` as `0.1.16.dev<N>` (the next release guessed from the
-  new tag). No development-version bump PR is needed.
+- Dev pre-releases automatically resume on the next push to `main`, now guessed from the new tag (e.g. after `v0.1.15`,
+  builds become `0.1.16.dev<N>`). No development-version bump PR is needed.
 
 ## Troubleshooting
 

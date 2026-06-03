@@ -1,8 +1,9 @@
 name: Publish verifiers
 
 # Versioning is git-driven via hatch-vcs (see pyproject.toml):
-# - Every push to `main` publishes a pre-release `0.1.X.dev<N>` (N = commits since
-#   the last `vX.Y.Z` release tag). No per-commit tags are created.
+# - Every push to `main` publishes a pre-release for the next release: the last
+#   `vX.Y.Z` tag with its final segment bumped, plus `.dev<N>` where N = commits
+#   since that tag (e.g. `v0.1.14` -> `0.1.15.dev<N>`). No per-commit tags created.
 # - Pushing a `vX.Y.Z` tag (or dispatching with one) publishes that exact stable
 #   release to PyPI and creates a GitHub release.
 
@@ -24,7 +25,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Dev pre-release: every push to main publishes the next 0.1.X.dev<N>.
+  # Dev pre-release: every push to main publishes the next release's `.dev<N>`.
   build-dev:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
