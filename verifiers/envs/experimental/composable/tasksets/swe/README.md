@@ -2,8 +2,8 @@
 
 ## Legend
 
-- Prime images: ✅ means a taskset image was found in `prime images list`;
-  ❌ means no taskset image was found.
+- Prime images: ✅ means task images are in our registry; ❌ means the taskset
+  still points at external images.
 - Validation: ✅ repeated no-op and gold-patch validation passed with
   [`SWEDebugEnv`](../../../../../../docs/environments.md#integrations-and-experimental-environments),
   — not yet complete.
@@ -32,7 +32,7 @@
       <td><code>python</code></td>
       <td>500</td>
       <td>500</td>
-      <td>❌</td>
+      <td>✅</td>
       <td>—</td>
       <td>—</td>
     </tr>
@@ -43,7 +43,7 @@
       <td><code>python</code></td>
       <td>4,578</td>
       <td>4,578</td>
-      <td>❌</td>
+      <td>✅</td>
       <td>—</td>
       <td>—</td>
     </tr>
@@ -54,7 +54,7 @@
       <td><strong>all</strong></td>
       <td><strong>4,703</strong></td>
       <td><strong>4,703</strong></td>
-      <td rowspan="8">❌</td>
+      <td rowspan="8">✅</td>
       <td rowspan="8">—</td>
       <td rowspan="8"><a href="https://github.com/PrimeIntellect-ai/prime-data/pull/6">#6</a></td>
     </tr>
@@ -133,7 +133,7 @@
       <td><strong>all</strong></td>
       <td><strong>32,079</strong></td>
       <td><strong>6,304</strong></td>
-      <td rowspan="21">❌</td>
+      <td rowspan="21">✅</td>
       <td rowspan="21">✅</td>
       <td rowspan="21">
         <a href="https://github.com/PrimeIntellect-ai/prime-data/pull/20">#20</a>,
