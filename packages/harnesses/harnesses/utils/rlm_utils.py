@@ -43,6 +43,7 @@ def rlm_checkout_path(
 
 
 def rlm_tool_skills_archive(state: State, runtime: Runtime) -> str:
+    """Package the runtime's verifier tools as RLM skills and return them as a base64-encoded tar.gz."""
     tool_defs = runtime.tool_defs(state) or []
     if not tool_defs:
         return ""
@@ -255,6 +256,7 @@ Tool schema:
 
 
 def rlm_skills_dir(state: State, runtime: Runtime) -> Path | Traversable | None:
+    """Resolve the skills directory for the RLM run: `program.skills` if set, else the taskset's `skills` upload dir."""
     from harnesses.rlm import RLM
 
     harness = runtime.harness
