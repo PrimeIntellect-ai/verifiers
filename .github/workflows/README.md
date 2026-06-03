@@ -36,7 +36,7 @@ This directory contains automated workflows for the verifiers project.
 
 **Workflows**:
 - `tag-and-release.yml` publishes `verifiers` from `v*` tags with trusted publishing.
-- `dev-release.yml` publishes a `verifiers` pre-release on every push to `main`. It derives the base release from `verifiers/__init__.py` and appends `.dev<commit-count>`, builds, and publishes to PyPI via trusted publishing with `skip-existing` so each push is a unique pre-release installable with `pip install --pre verifiers`.
+- `dev-release.yml` publishes a `verifiers` pre-release on every push to `main`. It takes the base release from `verifiers/__init__.py`, finds the highest `.dev<N>` already published to PyPI for that base, and publishes the next one (`...dev18` -> `...dev19`; `dev0` if none exists). Builds and publishes via trusted publishing with `skip-existing`, installable with `pip install --pre verifiers`.
 - `publish-tasksets.yml` publishes `tasksets` from `tasksets-v*` tags with trusted publishing. On `main`, it creates `tasksets-v<version>` when `packages/tasksets/tasksets/__init__.py` defines `__version__` and the matching remote tag does not already exist, then builds and publishes from that tag in the same workflow run.
 - `publish-harnesses.yml` publishes `harnesses` from `harnesses-v*` tags with trusted publishing. On `main`, it creates `harnesses-v<version>` when `packages/harnesses/harnesses/__init__.py` defines `__version__` and the matching remote tag does not already exist, then builds and publishes from that tag in the same workflow run.
 - `publish-verifiers-rl.yml` publishes `verifiers-rl` from `verifiers-rl-v*` tags.
@@ -44,7 +44,7 @@ This directory contains automated workflows for the verifiers project.
 #### `verifiers` versioning convention
 `__version__` in `verifiers/__init__.py` should always point at the **next, unreleased** target release in `.dev` form (e.g. `0.1.15.dev0` while the latest stable is `0.1.14`). This ordering matters: `0.1.15.devN` sorts after the stable `0.1.14` but before the eventual stable `0.1.15`, so `pip install --pre verifiers` resolves to the newest dev build.
 
-- Do **not** hand-bump the `.dev<N>` suffix per PR. `dev-release.yml` ignores the suffix, reads only the base (`0.1.15`), and appends its own `.dev<commit-count>`, so it publishes a unique pre-release on every push to `main` automatically.
+- Do **not** hand-bump the `.dev<N>` suffix per PR. `dev-release.yml` reads only the base (`0.1.15`) and auto-increments the dev counter from the latest pre-release on PyPI, so it publishes the next `.dev<N>` on every push to `main` automatically.
 - To cut a stable release, set `__version__` to the bare base (e.g. `0.1.15`). `tag-and-release.yml` only fires when `__version__` changes, so leaving the `.dev` value untouched keeps it quiet until you intentionally release; then bump to the next `.dev` cycle (e.g. `0.1.16.dev0`).
 
 ## Setting Up

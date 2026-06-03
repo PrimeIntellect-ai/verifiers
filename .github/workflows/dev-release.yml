@@ -56,7 +56,31 @@ jobs:
           PY
           )
 
-          DEV_VERSION="${BASE}.dev$(git rev-list --count HEAD)"
+          # Auto-increment from the latest dev release already on PyPI for this
+          # base (e.g. ...dev18 -> ...dev19); start at dev0 if none exists yet.
+          NEXT=$(python - "$BASE" <<'PY'
+          import json
+          import re
+          import sys
+          import urllib.error
+          import urllib.request
+
+          base = sys.argv[1]
+          try:
+              with urllib.request.urlopen("https://pypi.org/pypi/verifiers/json", timeout=30) as resp:
+                  releases = json.load(resp).get("releases", {})
+          except urllib.error.HTTPError as exc:
+              if exc.code != 404:
+                  raise
+              releases = {}
+
+          pattern = re.compile(rf"^{re.escape(base)}\.dev(\d+)$")
+          nums = [int(m.group(1)) for v in releases if (m := pattern.match(v))]
+          print(max(nums) + 1 if nums else 0)
+          PY
+          )
+
+          DEV_VERSION="${BASE}.dev${NEXT}"
 
           python - "$DEV_VERSION" <<'PY'
           import re
