@@ -40,13 +40,6 @@ This directory contains automated workflows for the verifiers project.
 - `publish-harnesses.yml` publishes `harnesses` from `harnesses-v*` tags with trusted publishing. On `main`, it creates `harnesses-v<version>` when `packages/harnesses/harnesses/__init__.py` defines `__version__` and the matching remote tag does not already exist, then builds and publishes from that tag in the same workflow run.
 - `publish-verifiers-rl.yml` publishes `verifiers-rl` from `verifiers-rl-v*` tags.
 
-#### `verifiers` versioning convention
-`verifiers` versions are **git-driven** via `hatch-vcs` (setuptools-scm); there is no hand-edited version literal. `verifiers/__init__.py` reads `__version__` from installed package metadata (`importlib.metadata`).
-
-- The version is computed from `git describe` against core `vX.Y.Z` release tags (the describe filter ignores `.dev`/`rc` tags and the `tasksets-`/`harnesses-`/`verifiers-rl-` namespaces). `no-local-version` strips the `+g<sha>` segment that PyPI rejects.
-- Any commit that is not exactly on a release tag builds the next release as a pre-release, e.g. `0.1.15.dev<commits-since-v0.1.14>`. Every push to `main` publishes one automatically — no per-commit tags are created. Install the latest with `pip install --pre verifiers`.
-- To cut a stable release, push a release tag: `git tag v0.1.15 && git push origin v0.1.15`. Building that tag yields exactly `0.1.15`, which `publish-verifiers.yml` publishes to PyPI alongside a GitHub release.
-
 ## Setting Up
 
 ### Branch Protection
