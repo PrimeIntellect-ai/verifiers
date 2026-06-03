@@ -8,59 +8,63 @@ async def exact_answer(task, state) -> float:
     return float(str(task["answer"]).lower() in stdout.lower())
 
 
+# Each task exercises a distinct RLM capability end-to-end. Indices are stable
+# so callers can pin a subset via `task_idx` on the taskset config.
+TASKS: list[dict[str, str]] = [
+    # 0: plain text echo — no tools needed.
+    {
+        "question": "Reply with exactly 'hello rlm'.",
+        "answer": "hello rlm",
+    },
+    # 1: ipython tool — model must run Python in the persistent REPL to print
+    # the answer rather than answering inline.
+    {
+        "question": (
+            "Use your ipython tool to print exactly the string 'hello rlm' "
+            "(no quotes, no extra text). Do not answer in plain text."
+        ),
+        "answer": "hello rlm",
+    },
+    # 2: ipython shell escape — exercise the `!cmd` shell passthrough.
+    {
+        "question": (
+            "Inside an ipython cell, use the `!` shell escape to run "
+            "`echo hello rlm` so the shell prints the literal string."
+        ),
+        "answer": "hello rlm",
+    },
+    # 3: ipython arithmetic — answer requires actual computation, not echo.
+    {
+        "question": (
+            "Use the ipython tool to compute 7! (the factorial of 7) and "
+            "report the result as a single integer."
+        ),
+        "answer": "5040",
+    },
+]
+
+
 def load_tasks(split: vf.TaskSplit = "train"):
     _ = split
-    return [
-        {
-            "question": "Reply with exactly hello rlm.",
-            "answer": "hello rlm",
-        },
-        {
-            "question": "Reply with exactly taskset harness.",
-            "answer": "taskset harness",
-        },
-        {
-            "question": "Reply with exactly runtime boundary.",
-            "answer": "runtime boundary",
-        },
-        {
-            "question": "Reply with exactly sandbox lease.",
-            "answer": "sandbox lease",
-        },
-        {
-            "question": "Reply with exactly toolset scope.",
-            "answer": "toolset scope",
-        },
-        {
-            "question": "Reply with exactly group reward.",
-            "answer": "group reward",
-        },
-        {
-            "question": "Reply with exactly endpoint proxy.",
-            "answer": "endpoint proxy",
-        },
-        {
-            "question": "Reply with exactly cleanup signal.",
-            "answer": "cleanup signal",
-        },
-        {
-            "question": "Reply with exactly harbor task.",
-            "answer": "harbor task",
-        },
-        {
-            "question": "Reply with exactly recursive model.",
-            "answer": "recursive model",
-        },
-    ]
+    return list(TASKS)
 
 
 class HelloRLMTasksetConfig(vf.TasksetConfig):
     rewards: list[str] = ["exact_answer"]
+    task_idx: int | list[int] | None = None
+    """Restrict the taskset to a subset of `TASKS` by index. Useful for dev
+    runs that only want to exercise one capability (e.g. `task_idx=1` for the
+    ipython-tool test). `None` means run all tasks."""
 
 
 class HelloRLMTaskset(vf.Taskset[HelloRLMTasksetConfig]):
     def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
-        return load_tasks(split)
+        tasks = load_tasks(split)
+        idx = self.config.task_idx
+        if idx is None:
+            return tasks
+        wanted = [idx] if isinstance(idx, int) else list(idx)
+        return [tasks[i] for i in wanted]
 
 
 def load_taskset(config: HelloRLMTasksetConfig) -> HelloRLMTaskset:
