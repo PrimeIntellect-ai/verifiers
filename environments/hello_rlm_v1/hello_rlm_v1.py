@@ -28,7 +28,7 @@ class HelloRLMTaskset(vf.Taskset[HelloRLMTasksetConfig]):
         return [tasks[i] for i in wanted]
 
     @vf.reward(weight=1.0)
-    async def exact_answer(task, state) -> float:
+    async def exact_answer(self, task, state) -> float:
         stdout = str(state.get("command", {}).get("stdout") or "")
         return float(str(task["answer"]).lower() in stdout.lower())
 
