@@ -2,8 +2,8 @@
 
 ## Legend
 
-- Prime images: ✅ means task images are in our registry; ❌ means the taskset
-  still points at external images.
+- Prime images: ✅ means task images are available in our registry; ❌ means
+  they are not known to be available there yet.
 - Validation: ✅ repeated no-op and gold-patch validation passed with
   [`SWEDebugEnv`](../../../../../../docs/environments.md#integrations-and-experimental-environments),
   — not yet complete.
@@ -111,7 +111,7 @@
       <td><code>python</code></td>
       <td>20,181</td>
       <td>17,202</td>
-      <td>❌</td>
+      <td>✅</td>
       <td>✅</td>
       <td><a href="https://github.com/PrimeIntellect-ai/prime-data/pull/31">#31</a></td>
     </tr>
