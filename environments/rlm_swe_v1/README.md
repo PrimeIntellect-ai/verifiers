@@ -21,8 +21,8 @@ env = load_environment(
         taskset=RlmSweTasksetConfig(timeout_minutes=90),
         harness=RLMConfig(
             program=RLMProgramConfig(
-                local_checkout="/path/to/checkout",
-                rlm_tools=["bash", "edit"],
+                repo_path="/path/to/checkout",
+                tools=["bash", "edit"],
             )
         ),
     )

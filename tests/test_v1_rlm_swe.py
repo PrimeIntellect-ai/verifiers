@@ -59,7 +59,7 @@ def tool_skills_archive(harness: vf.Harness, state: vf.State) -> bytes:
 def test_rlm_harness_builds_sandbox_program_without_eager_checkout():
     harness = RLM(
         config=RLMConfig(
-            program=RLMProgramConfig(local_checkout="/tmp/does-not-need-to-exist-yet")
+            program=RLMProgramConfig(repo_path="/tmp/does-not-need-to-exist-yet")
         )
     )
     program = as_dict(harness.config.program)
@@ -80,9 +80,8 @@ def test_rlm_harness_accepts_typed_config_surface():
     harness = RLM(
         config=RLMConfig(
             program=RLMProgramConfig(
-                local_checkout="/tmp/checkout",
-                rlm_tools=["bash", "edit"],
-                rlm_exec_timeout=11,
+                repo_path="/tmp/checkout",
+                tools=["bash", "edit"],
                 env_vars={"CUSTOM": "1"},
             )
         )
@@ -90,16 +89,13 @@ def test_rlm_harness_accepts_typed_config_surface():
     program = as_dict(harness.config.program)
     program_env = as_dict(program["env"])
 
-    assert harness.config.program.rlm_tools == ["bash", "edit"]
+    assert harness.config.program.tools == ["bash", "edit"]
     assert program_env["RLM_TOOLS"] == "bash,edit"
-    assert program_env["RLM_EXEC_TIMEOUT"] == "11"
     assert program_env["CUSTOM"] == "1"
 
 
 def test_rlm_endpoint_hides_nested_depth_requests():
-    harness = RLM(
-        config=RLMConfig(program=RLMProgramConfig(local_checkout="/tmp/checkout"))
-    )
+    harness = RLM(config=RLMConfig(program=RLMProgramConfig(repo_path="/tmp/checkout")))
 
     assert harness.endpoint.trajectory_visibility({"x-rlm-depth": "0"}) == "append"
     assert harness.endpoint.trajectory_visibility({"x-rlm-depth": "1"}) == "hidden"
@@ -115,7 +111,7 @@ def test_rlm_harness_preserves_program_setup_timeout_override():
     harness = RLM(
         config=RLMConfig(
             program=RLMProgramConfig(
-                local_checkout="/tmp/checkout",
+                repo_path="/tmp/checkout",
                 setup_timeout=123,
             ),
         )
@@ -129,7 +125,7 @@ def test_rlm_harness_uses_sandbox_setup_timeout_default():
     harness = RLM(
         config=RLMConfig(
             program=RLMProgramConfig(
-                local_checkout="/tmp/checkout",
+                repo_path="/tmp/checkout",
                 sandbox=vf.SandboxConfig(setup_timeout=777),
             ),
         )
@@ -143,7 +139,7 @@ def test_rlm_harness_keeps_minimum_setup_timeout_for_default_sandbox_config():
     harness = RLM(
         config=RLMConfig(
             program=RLMProgramConfig(
-                local_checkout="/tmp/checkout",
+                repo_path="/tmp/checkout",
                 sandbox=vf.SandboxConfig(),
             ),
         )
@@ -162,7 +158,7 @@ def test_rlm_harness_can_upload_skills(tmp_path: Path):
 
     harness = RLM(
         config=RLMConfig(
-            program=RLMProgramConfig(local_checkout="/tmp/checkout", skills=str(skills))
+            program=RLMProgramConfig(repo_path="/tmp/checkout", skills=str(skills))
         )
     )
     program = as_dict(harness.config.program)
@@ -194,7 +190,7 @@ def test_rlm_harness_uploads_taskset_skills_by_default(tmp_path: Path):
     env = vf.Env(
         taskset=SkillTaskset(config=vf.TasksetConfig()),
         harness=RLM(
-            config=RLMConfig(program=RLMProgramConfig(local_checkout="/tmp/checkout"))
+            config=RLMConfig(program=RLMProgramConfig(repo_path="/tmp/checkout"))
         ),
     )
     program = as_dict(env.harness.config.program)
@@ -223,9 +219,7 @@ def test_rlm_harness_recomputes_taskset_skills(tmp_path: Path):
         def get_upload_dirs(self):
             return {}
 
-    harness = RLM(
-        config=RLMConfig(program=RLMProgramConfig(local_checkout="/tmp/checkout"))
-    )
+    harness = RLM(config=RLMConfig(program=RLMProgramConfig(repo_path="/tmp/checkout")))
     vf.Env(
         taskset=SkillTaskset(config=SkillTasksetConfig(skills_path=str(first_skills))),
         harness=harness,
@@ -258,7 +252,7 @@ async def test_rlm_harness_generates_skills_for_v1_tools():
     env = vf.Env(
         taskset=taskset,
         harness=RLM(
-            config=RLMConfig(program=RLMProgramConfig(local_checkout="/tmp/checkout"))
+            config=RLMConfig(program=RLMProgramConfig(repo_path="/tmp/checkout"))
         ),
     )
     task = next(iter(env.taskset))
@@ -298,7 +292,7 @@ async def test_vf_tool_skill_falls_back_for_runtime_bound_tools():
     env = vf.Env(
         taskset=taskset,
         harness=RLM(
-            config=RLMConfig(program=RLMProgramConfig(local_checkout="/tmp/checkout"))
+            config=RLMConfig(program=RLMProgramConfig(repo_path="/tmp/checkout"))
         ),
     )
     task = next(iter(env.taskset))
@@ -323,7 +317,7 @@ def test_rlm_tool_skills_archive_avoids_base_skill_name_collisions(tmp_path: Pat
     (skills / "lookup_order").mkdir(parents=True)
     harness = RLM(
         config=RLMConfig(
-            program=RLMProgramConfig(local_checkout="/tmp/checkout", skills=str(skills))
+            program=RLMProgramConfig(repo_path="/tmp/checkout", skills=str(skills))
         )
     )
     tool_def = Tool(
@@ -349,9 +343,7 @@ def test_rlm_tool_skills_archive_avoids_base_skill_name_collisions(tmp_path: Pat
 
 
 def test_vf_tool_skill_uses_arguments_dict_for_tool_parameters():
-    harness = RLM(
-        config=RLMConfig(program=RLMProgramConfig(local_checkout="/tmp/checkout"))
-    )
+    harness = RLM(config=RLMConfig(program=RLMProgramConfig(repo_path="/tmp/checkout")))
     tool_def = Tool(
         name="reserved_param",
         description="Reserved parameter.",
@@ -385,9 +377,7 @@ def test_vf_tool_skill_uses_arguments_dict_for_tool_parameters():
 async def test_vf_tool_skill_filters_extra_kwargs_for_closed_schemas(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    harness = RLM(
-        config=RLMConfig(program=RLMProgramConfig(local_checkout="/tmp/checkout"))
-    )
+    harness = RLM(config=RLMConfig(program=RLMProgramConfig(repo_path="/tmp/checkout")))
     tool_def = Tool(
         name="list_events",
         description="List calendar events.",
@@ -441,9 +431,7 @@ async def test_vf_tool_skill_filters_extra_kwargs_for_closed_schemas(
 async def test_vf_tool_skill_omits_unset_optional_arguments(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    harness = RLM(
-        config=RLMConfig(program=RLMProgramConfig(local_checkout="/tmp/checkout"))
-    )
+    harness = RLM(config=RLMConfig(program=RLMProgramConfig(repo_path="/tmp/checkout")))
     tool_def = Tool(
         name="search",
         description="Search documents.",
@@ -500,9 +488,7 @@ async def test_vf_tool_skill_omits_unset_optional_arguments(
 async def test_vf_tool_skill_surfaces_verifier_tool_errors(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    harness = RLM(
-        config=RLMConfig(program=RLMProgramConfig(local_checkout="/tmp/checkout"))
-    )
+    harness = RLM(config=RLMConfig(program=RLMProgramConfig(repo_path="/tmp/checkout")))
     tool_def = Tool(
         name="list_events",
         description="List calendar events.",
@@ -584,7 +570,7 @@ def test_rlm_harness_explicit_skills_override_taskset_skills(tmp_path: Path):
         harness=RLM(
             config=RLMConfig(
                 program=RLMProgramConfig(
-                    local_checkout="/tmp/checkout",
+                    repo_path="/tmp/checkout",
                     skills=str(explicit_skills),
                 )
             )
@@ -616,7 +602,7 @@ def test_rlm_swe_environment_uses_v1_r2e_taskset(monkeypatch):
             ),
             harness=rlm_swe_v1.RlmSweHarnessConfig(
                 program=rlm_swe_v1.RlmSweProgramConfig(
-                    local_checkout="/tmp/checkout",
+                    repo_path="/tmp/checkout",
                     env_vars={"CALLER": "1"},
                 )
             ),

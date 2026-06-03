@@ -31,23 +31,23 @@ REQUIRED_RLM_CHECKOUT_FILES = ("install.sh", "pyproject.toml")
 
 
 def rlm_checkout_path(
-    rlm_repo_url: str,
-    rlm_repo_ref: str,
-    local_checkout: str | None = None,
+    repo_url: str,
+    repo_ref: str,
+    repo_path: str | None = None,
     gh_token_var: str | None = "GH_TOKEN",
 ) -> Path:
     return rlm_checkout_loader(
-        local_checkout=local_checkout,
-        rlm_repo_url=rlm_repo_url,
-        rlm_repo_ref=rlm_repo_ref,
+        repo_path=repo_path,
+        repo_url=repo_url,
+        repo_ref=repo_ref,
         gh_token_var=gh_token_var,
     )()
 
 
 def rlm_checkout_loader(
-    local_checkout: str | Path | None,
-    rlm_repo_url: str,
-    rlm_repo_ref: str,
+    repo_path: str | Path | None,
+    repo_url: str,
+    repo_ref: str,
     gh_token_var: str | None,
 ) -> Callable[[], Path]:
     checkout: Path | None = None
@@ -56,15 +56,15 @@ def rlm_checkout_loader(
         nonlocal checkout
         if checkout is not None:
             return checkout
-        if local_checkout is not None:
+        if repo_path is not None:
             checkout = validate_git_checkout(
-                Path(local_checkout),
+                Path(repo_path),
                 required_files=REQUIRED_RLM_CHECKOUT_FILES,
             )
         else:
             checkout = resolve_git_checkout(
-                repo_url=rlm_repo_url,
-                ref=rlm_repo_ref,
+                repo_url=repo_url,
+                ref=repo_ref,
                 cache_root=DEFAULT_RLM_LOCAL_CHECKOUT_CACHE_ROOT,
                 gh_token=os.environ.get(gh_token_var) if gh_token_var else None,
                 required_files=REQUIRED_RLM_CHECKOUT_FILES,
