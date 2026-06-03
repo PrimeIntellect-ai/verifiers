@@ -661,6 +661,7 @@ def load_toml_config(
         "max_concurrent",
         "independent_scoring",
         "max_retries",
+        "continue_on_error",
         "num_workers",
         "disable_env_server",
         "timeout",
