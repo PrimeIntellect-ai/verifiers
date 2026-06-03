@@ -22,78 +22,57 @@ class RLMProgramConfig(vf.ProgramConfig):
     how the `rlm` CLI is invoked at run time.
     """
 
-    sandbox: vf.SandboxConfig | None = Field(
-        default=None,
-        description=(
-            "Sandbox override. When None, RLM provisions a python:3.11-slim "
-            "baseline; when set, the provided fields are merged on top "
-            "(workdir and command_timeout are always forced by RLM)."
-        ),
-    )
-    workdir: str = Field(
-        default="/workspace",
-        description="In-sandbox working directory the `rlm` CLI cd's into; must be absolute.",
-    )
-    instruction_path: str = Field(
-        default="/rlm/instruction.txt",
-        description="In-sandbox path to the rendered task instruction file; must be absolute.",
-    )
-    repo_url: str = Field(
-        default="github.com/PrimeIntellect-ai/rlm-harness.git",
-        description="Git URL of the RLM harness checkout (ignored if `repo_path` is set).",
-    )
-    repo_ref: str = Field(
-        default="main",
-        description="Git ref to check out from `repo_url`.",
-    )
-    max_depth: int = Field(
-        default=0,
-        description="Max RLM recursion depth; 0 disables sub-LLM calls.",
-    )
-    summarize_at_tokens: int | None = Field(
-        default=None,
-        description="Trigger RLM context summarization when the token count exceeds this.",
-    )
-    append_to_system_prompt: str = Field(
-        default="",
-        description="Extra text appended to the RLM system prompt.",
-    )
-    repo_path: str | None = Field(
-        default=None,
-        description=(
-            "Local path to an existing RLM checkout. If set, takes precedence "
-            "over `repo_url` / `repo_ref` (no clone is performed)."
-        ),
-    )
-    gh_token_var: str | None = Field(
-        default="GH_TOKEN",
-        description="Env var holding the GitHub token used to fetch `repo_url`.",
-    )
-    tools: list[str] = Field(
-        default=["ipython"],
-        description="RLM tool plugins to load (passed as `RLM_TOOLS`).",
-    )
-    env_vars: dict[str, str] = Field(
-        default={},
-        description="Extra env vars exported into the sandbox.",
-    )
-    skills: str | None = Field(
-        default=None,
-        description="Override path to a skills directory; defaults to the taskset's `skills` upload dir.",
-    )
+    sandbox: vf.SandboxConfig | None = None
+    """Sandbox override. When None, RLM provisions a python:3.11-slim baseline;
+    when set, the provided fields are merged on top (workdir and
+    command_timeout are always forced by RLM)."""
+
+    workdir: str = "/workspace"
+    """In-sandbox working directory the `rlm` CLI cd's into; must be absolute."""
+
+    instruction_path: str = "/rlm/instruction.txt"
+    """In-sandbox path to the rendered task instruction file; must be absolute."""
+
+    repo_url: str = "github.com/PrimeIntellect-ai/rlm-harness.git"
+    """Git URL of the RLM harness checkout (ignored if `repo_path` is set)."""
+
+    repo_ref: str = "main"
+    """Git ref to check out from `repo_url`."""
+
+    repo_path: str | None = None
+    """Local path to an existing RLM checkout. If set, takes precedence over
+    `repo_url` / `repo_ref` (no clone is performed)."""
+
+    gh_token_var: str | None = "GH_TOKEN"
+    """Env var holding the GitHub token used to fetch `repo_url`."""
+
+    max_depth: int = Field(default=0, ge=0)
+    """Max RLM recursion depth; 0 disables sub-LLM calls."""
+
+    summarize_at_tokens: int | None = Field(default=None, gt=0)
+    """Trigger RLM context summarization when the token count exceeds this."""
+
+    append_to_system_prompt: str = ""
+    """Extra text appended to the RLM system prompt."""
+
+    tools: list[str] = ["ipython"]
+    """RLM tool plugins to load (passed as `RLM_TOOLS`)."""
+
+    env_vars: dict[str, str] = {}
+    """Extra env vars exported into the sandbox."""
+
+    skills: str | None = None
+    """Override path to a skills directory; defaults to the taskset's `skills`
+    upload dir."""
 
     @model_validator(mode="after")
-    def _check(self) -> "RLMProgramConfig":
+    def _check_absolute_paths(self) -> "RLMProgramConfig":
         if not self.workdir.startswith("/"):
             raise ValueError(f"workdir must be absolute, got {self.workdir!r}")
         if not self.instruction_path.startswith("/"):
             raise ValueError(
                 f"instruction_path must be absolute, got {self.instruction_path!r}"
             )
-        if self.max_depth < 0:
-            raise ValueError("max_depth must be >= 0")
-        if self.summarize_at_tokens is not None and self.summarize_at_tokens <= 0:
-            raise ValueError("summarize_at_tokens must be > 0")
         return self
 
     def resolve(self) -> vf.ProgramConfig:
