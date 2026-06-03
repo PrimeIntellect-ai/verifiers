@@ -71,7 +71,7 @@ from .utils.sandbox_program_utils import (
     python_program_sandbox,
     run_sandbox_python_program,
 )
-from .utils.rollout_log_utils import log_rollout_finish, log_rollout_start
+from .utils.logging_utils import log_rollout_finish, log_rollout_start
 from .utils.prompt_utils import (
     SystemPrompt,
     SystemPromptStrategy,
