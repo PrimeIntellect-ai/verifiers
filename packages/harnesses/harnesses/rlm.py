@@ -12,16 +12,8 @@ from .utils.rlm_utils import (
     DEFAULT_RLM_TOOL_SKILLS_MANIFEST_NAME,
 )
 
-_APPEND_TO_SYSTEM_PROMPT_PATH = "/rlm/append_to_system_prompt.txt"
-
 
 class RLMProgramConfig(vf.ProgramConfig):
-    """Program config for the RLM harness.
-
-    Drives how the RLM repo is fetched, what gets staged into the sandbox, and
-    how the `rlm` CLI is invoked at run time.
-    """
-
     sandbox: vf.SandboxConfig | None = None
     """Sandbox override. When None, RLM provisions a python:3.11-slim baseline;
     when set, the provided fields are merged on top (workdir and
@@ -43,9 +35,6 @@ class RLMProgramConfig(vf.ProgramConfig):
     """Local path to an existing RLM checkout. If set, takes precedence over
     `repo_url` / `repo_ref` (no clone is performed)."""
 
-    gh_token_var: str | None = "GH_TOKEN"
-    """Env var holding the GitHub token used to fetch `repo_url`."""
-
     max_depth: int = Field(default=0, ge=0)
     """Max RLM recursion depth; 0 disables sub-LLM calls."""
 
@@ -57,6 +46,9 @@ class RLMProgramConfig(vf.ProgramConfig):
 
     tools: list[str] = ["ipython"]
     """RLM tool plugins to load (passed as `RLM_TOOLS`)."""
+
+    allow_git: bool = False
+    """Disable RLM's restricted git-history guard (sets `RLM_ALLOW_GIT=1`)."""
 
     env_vars: dict[str, str] = {}
     """Extra env vars exported into the sandbox."""
@@ -76,12 +68,14 @@ class RLMProgramConfig(vf.ProgramConfig):
         return self
 
     def resolve(self) -> vf.ProgramConfig:
+        append_to_system_prompt_path = "/rlm/append_to_system_prompt.txt"
+
         files: dict[str, vf.ProgramValue] = {
             self.instruction_path: {
                 "fn": "verifiers.v1.utils.prompt_utils:task_text",
                 "keys": ["instruction", "question"],
             },
-            _APPEND_TO_SYSTEM_PROMPT_PATH: self.append_to_system_prompt,
+            append_to_system_prompt_path: self.append_to_system_prompt,
             DEFAULT_RLM_TOOL_SKILLS_ARCHIVE_PATH: {
                 "fn": "harnesses.utils.rlm_utils:rlm_tool_skills_archive"
             },
@@ -92,7 +86,6 @@ class RLMProgramConfig(vf.ProgramConfig):
                 **({"repo_path": self.repo_path} if self.repo_path else {}),
                 "repo_url": self.repo_url,
                 "repo_ref": self.repo_ref,
-                **({"gh_token_var": self.gh_token_var} if self.gh_token_var else {}),
             }
         }
         if self.skills is not None:
@@ -112,6 +105,8 @@ class RLMProgramConfig(vf.ProgramConfig):
         }
         if self.summarize_at_tokens is not None:
             env["RLM_SUMMARIZE_AT_TOKENS"] = str(self.summarize_at_tokens)
+        if self.allow_git:
+            env["RLM_ALLOW_GIT"] = "1"
 
         artifacts = vf.ArtifactsConfig.model_validate(
             {
@@ -188,7 +183,7 @@ set -eo pipefail
 export PATH="$HOME/.local/bin:${{AGENT_PATH:-$PATH}}"
 export RLM_MODEL="${{RLM_MODEL:-$OPENAI_MODEL}}"
 export OPENAI_API_KEY="${{OPENAI_API_KEY:-intercepted}}"
-export RLM_APPEND_TO_SYSTEM_PROMPT="$(cat {shlex.quote(_APPEND_TO_SYSTEM_PROMPT_PATH)} 2>/dev/null || true)"
+export RLM_APPEND_TO_SYSTEM_PROMPT="$(cat {shlex.quote(append_to_system_prompt_path)} 2>/dev/null || true)"
 cd "${{AGENT_WORKDIR:-{self.workdir}}}"
 rlm "$(cat {shlex.quote(self.instruction_path)})"
 """

@@ -2,7 +2,6 @@ import base64
 import io
 import json
 import keyword
-import os
 import re
 import tarfile
 import textwrap
@@ -34,13 +33,11 @@ def rlm_checkout_path(
     repo_url: str,
     repo_ref: str,
     repo_path: str | None = None,
-    gh_token_var: str | None = "GH_TOKEN",
 ) -> Path:
     return rlm_checkout_loader(
         repo_path=repo_path,
         repo_url=repo_url,
         repo_ref=repo_ref,
-        gh_token_var=gh_token_var,
     )()
 
 
@@ -48,7 +45,6 @@ def rlm_checkout_loader(
     repo_path: str | Path | None,
     repo_url: str,
     repo_ref: str,
-    gh_token_var: str | None,
 ) -> Callable[[], Path]:
     checkout: Path | None = None
 
@@ -66,7 +62,6 @@ def rlm_checkout_loader(
                 repo_url=repo_url,
                 ref=repo_ref,
                 cache_root=DEFAULT_RLM_LOCAL_CHECKOUT_CACHE_ROOT,
-                gh_token=os.environ.get(gh_token_var) if gh_token_var else None,
                 required_files=REQUIRED_RLM_CHECKOUT_FILES,
             )
         return checkout
