@@ -2,8 +2,8 @@
 
 ## Legend
 
-- Image sample: sample task images checked against `prime images list`.
-  ✅ means every sampled image was found; ❌ means no sampled image was found.
+- Prime images: ✅ means a taskset image was found in `prime images list`;
+  ❌ means no taskset image was found.
 - Validation: ✅ repeated no-op and gold-patch validation passed with
   [`SWEDebugEnv`](../../../../../../docs/environments.md#integrations-and-experimental-environments),
   — not yet complete.
@@ -18,7 +18,7 @@
       <th>Default HF dataset</th>
       <th>Original</th>
       <th>Filtered</th>
-      <th>Image sample</th>
+      <th>Prime images</th>
       <th>Validation</th>
       <th>Prime-data PRs</th>
     </tr>
@@ -30,7 +30,7 @@
       <td><a href="https://huggingface.co/datasets/princeton-nlp/SWE-bench_Verified"><code>princeton-nlp/SWE-bench_Verified</code></a></td>
       <td>500</td>
       <td>500</td>
-      <td>❌ 0/3 found</td>
+      <td>❌</td>
       <td>—</td>
       <td>—</td>
     </tr>
@@ -40,7 +40,7 @@
       <td><a href="https://huggingface.co/datasets/R2E-Gym/R2E-Gym-Subset"><code>R2E-Gym/R2E-Gym-Subset</code></a></td>
       <td>4,578</td>
       <td>4,578</td>
-      <td>❌ 0/3 found</td>
+      <td>❌</td>
       <td>—</td>
       <td>—</td>
     </tr>
@@ -72,7 +72,7 @@
           <li><code>ts</code>: 408</li>
         </ul>
       </td>
-      <td>❌ 0/3 found</td>
+      <td>❌</td>
       <td>—</td>
       <td><a href="https://github.com/PrimeIntellect-ai/prime-data/pull/6">#6</a></td>
     </tr>
@@ -82,7 +82,7 @@
       <td><a href="https://huggingface.co/datasets/GAIR/OpenSWE"><code>GAIR/OpenSWE</code></a> <code>openswe_oss</code></td>
       <td>45,320</td>
       <td>36,884</td>
-      <td>✅ 4/4 found</td>
+      <td>✅</td>
       <td>—</td>
       <td>—</td>
     </tr>
@@ -92,7 +92,7 @@
       <td><a href="https://huggingface.co/datasets/PrimeIntellect/Scale-SWE"><code>PrimeIntellect/Scale-SWE</code></a></td>
       <td>20,181</td>
       <td>17,202</td>
-      <td>❌ 0/3 found</td>
+      <td>❌</td>
       <td>✅</td>
       <td><a href="https://github.com/PrimeIntellect-ai/prime-data/pull/31">#31</a></td>
     </tr>
@@ -102,7 +102,7 @@
       <td><a href="https://huggingface.co/datasets/PrimeIntellect/SWE-Lego-Real-Data"><code>PrimeIntellect/SWE-Lego-Real-Data</code></a> <code>resolved</code></td>
       <td>5,009</td>
       <td>4,432</td>
-      <td>❌ 0/3 found</td>
+      <td>❌</td>
       <td>—</td>
       <td><a href="https://github.com/PrimeIntellect-ai/prime-data/pull/17">#17</a></td>
     </tr>
@@ -157,7 +157,7 @@
           <li><code>ts</code>: 734</li>
         </ul>
       </td>
-      <td>❌ 0/3 found</td>
+      <td>❌</td>
       <td>✅</td>
       <td>
         <a href="https://github.com/PrimeIntellect-ai/prime-data/pull/20">#20</a>,
@@ -194,7 +194,7 @@
           <li><code>php</code>: 1</li>
         </ul>
       </td>
-      <td>❌ 0/8 found</td>
+      <td>❌</td>
       <td>—</td>
       <td>—</td>
     </tr>
