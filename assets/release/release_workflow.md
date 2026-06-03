@@ -1,40 +1,44 @@
 # Release workflow
 
-The `Tag and Release` GitHub Actions workflow (`.github/workflows/tag-and-release.yml`) publishes a new `verifiers`
-version whenever a maintainer pushes a `v*` tag. Follow the checklist below to guarantee the workflow only runs once per
-version and finishes cleanly.
+The `Publish verifiers` GitHub Actions workflow (`.github/workflows/publish-verifiers.yml`) publishes `verifiers` to
+PyPI. Versions are **git-driven** via `hatch-vcs` — there is no version string to hand-edit.
 
-## Before triggering a release
+- **Dev pre-releases** happen automatically: every push to `main` builds and publishes `0.1.X.dev<commits-since-last-tag>`
+  (installable with `pip install --pre verifiers`). No action and no per-commit tags are required.
+- **Stable releases** happen when a maintainer pushes a `vX.Y.Z` tag. Building that tag yields exactly `X.Y.Z`.
 
-- Land a release prep PR on `main` with:
-  - `verifiers/__init__.py` set to the final version (for example `0.1.4`).
-  - Updated release notes in `assets/release/RELEASE_vX.Y.Z.md`.
-  - Any ancillary artifacts or documentation updates that belong with the release.
+## Before cutting a stable release
+
+- Land a PR on `main` with the release notes in `assets/release/RELEASE_vX.Y.Z.md` (the GitHub Release step reads this
+  file) and any ancillary artifacts/documentation for the release.
 - Verify CI is green on the commit you intend to tag.
-- Confirm the `verifiers` project on PyPI has a Trusted Publisher configured for repository `PrimeIntellect-ai/verifiers`, workflow `tag-and-release.yml`, environment `pypi-prod`. The publish job authenticates via OIDC — no PyPI token is required for `verifiers`.
+- Confirm the `verifiers` project on PyPI has a Trusted Publisher configured for repository
+  `PrimeIntellect-ai/verifiers`, workflow `publish-verifiers.yml`, environment `pypi-prod`. The publish job authenticates
+  via OIDC — no PyPI token is required for `verifiers`.
 
-## Triggering the workflow
+## Cutting a stable release
 
-1. From `main`, create an annotated tag that matches the version string (for example `git tag -a v0.1.4 -m "Release v0.1.4"`).
-2. Push the tag to GitHub with `git push origin v0.1.4`. The push is the only automatic trigger for the workflow, so each
-   version runs exactly once.
-3. Watch the **Actions → Tag and Release** run to confirm `uv build`, the PyPI publish (via `pypa/gh-action-pypi-publish` using OIDC), and the GitHub Release creation succeed. The job runs in the `pypi-prod` environment.
+1. From the commit you want to release, create an annotated tag matching the version (for example
+   `git tag -a v0.1.15 -m "Release v0.1.15"`).
+2. Push the tag with `git push origin v0.1.15`. The pushed tag is the trigger, so each version runs exactly once.
+3. Watch the **Actions → Publish verifiers** run to confirm `uv build`, the PyPI publish (via
+   `pypa/gh-action-pypi-publish` using OIDC), and the GitHub Release creation succeed. The publish jobs run in the
+   `pypi-prod` environment.
 
-> Optional: To republish an older tag without pushing again, start **Actions → Tag and Release** manually and provide the
-> existing tag (for example `v0.1.4`). The job checks out that tag and performs the same build and publish steps.
+> Optional: To republish an existing tag, start **Actions → Publish verifiers** manually and provide the existing tag
+> (for example `v0.1.15`). The job checks out that tag and performs the same build and publish steps.
 
 ## After the release
 
 - Verify the new version appears on PyPI and that the GitHub Release contains the built `dist/` artifacts.
-- Draft follow-up communication (blog post, changelog announcement) if needed.
-- Open a short PR that bumps `verifiers/__init__.py` to the next development version (for example `0.1.5.dev0`).
+- Dev pre-releases automatically resume on the next push to `main` as `0.1.16.dev<N>` (the next release guessed from the
+  new tag). No development-version bump PR is needed.
 
 ## Troubleshooting
 
-- **Workflow failed before publishing to PyPI**: fix the underlying issue and re-run the failed job from the Actions UI. The
-  rerun builds from the same tag.
-- **PyPI publish failed**: address the error locally, then re-run the workflow manually with the same tag once the issue is
-  resolved. PyPI will reject duplicate uploads, so delete the partially uploaded files (if any) from the failed run before
-  retrying.
-- **Version mismatch error**: ensure the tag you pushed (e.g. `v0.1.4`) matches the version string committed to
-  `verifiers/__init__.py` before retrying.
+- **Workflow failed before publishing to PyPI**: fix the underlying issue and re-run the failed job from the Actions UI.
+  The rerun builds from the same ref.
+- **PyPI publish failed**: address the error locally, then re-run the workflow. PyPI rejects duplicate uploads; the dev
+  job uses `skip-existing`, but for a stable tag delete any partially uploaded files from the failed run before retrying.
+- **OIDC / trusted publishing rejected**: confirm the PyPI Trusted Publisher entry names the current workflow file
+  (`publish-verifiers.yml`) and the `pypi-prod` environment.
