@@ -14,11 +14,6 @@ from .utils.rlm_utils import (
 
 
 class RLMProgramConfig(vf.ProgramConfig):
-    sandbox: vf.SandboxConfig | None = None
-    """Sandbox override. When None, RLM provisions a python:3.11-slim baseline;
-    when set, the provided fields are merged on top (workdir and
-    command_timeout are always forced by RLM)."""
-
     workdir: str = "/workspace"
     """In-sandbox working directory the `rlm` CLI cd's into; must be absolute."""
 
