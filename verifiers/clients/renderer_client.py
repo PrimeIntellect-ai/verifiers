@@ -16,7 +16,6 @@ import json
 import logging
 import os
 import threading
-import time
 from collections.abc import Mapping
 from multiprocessing import current_process
 from pathlib import Path
@@ -132,13 +131,6 @@ def _rss_mb() -> float:
     return 0.0
 
 
-def _os_thread_count() -> int:
-    try:
-        return len(os.listdir("/proc/self/task"))
-    except OSError:
-        return 0
-
-
 def _cleanup_min_delta_mb() -> float:
     raw = os.environ.get("VF_RENDERER_MM_CLEANUP_MIN_DELTA_MB")
     if raw:
@@ -232,66 +224,6 @@ def _value_nbytes(value: Any) -> int:
     if isinstance(value, (list, tuple)):
         return sum(_value_nbytes(v) for v in value)
     return 0
-
-
-def _json_bytes(value: Any) -> int:
-    try:
-        return len(json.dumps(value, ensure_ascii=False, default=str).encode("utf-8"))
-    except Exception:
-        return 0
-
-
-def _image_url_payload_bytes(url: Any) -> int:
-    if not isinstance(url, str):
-        return 0
-    marker = ";base64,"
-    if not url.startswith("data:image/") or marker not in url:
-        return 0
-    return len(url.split(marker, 1)[1])
-
-
-def _image_url_stats(value: Any) -> tuple[int, int]:
-    if isinstance(value, Mapping):
-        count = 0
-        nbytes = 0
-        if value.get("type") == "image_url":
-            url_payload = value.get("image_url")
-            if isinstance(url_payload, Mapping):
-                image_bytes = _image_url_payload_bytes(url_payload.get("url"))
-                if image_bytes:
-                    count += 1
-                    nbytes += image_bytes
-        for child in value.values():
-            child_count, child_bytes = _image_url_stats(child)
-            count += child_count
-            nbytes += child_bytes
-        return count, nbytes
-    if isinstance(value, (list, tuple)):
-        count = 0
-        nbytes = 0
-        for child in value:
-            child_count, child_bytes = _image_url_stats(child)
-            count += child_count
-            nbytes += child_bytes
-        return count, nbytes
-    return 0, 0
-
-
-def _trajectory_prompt_image_stats(trajectory: Any) -> tuple[int, int, int]:
-    if not isinstance(trajectory, list):
-        return 0, 0, 0
-    image_count = 0
-    image_bytes = 0
-    prompt_json_bytes = 0
-    for step in trajectory:
-        prompt = _get_value(step, "prompt")
-        if prompt is None:
-            continue
-        prompt_json_bytes += _json_bytes(prompt)
-        count, nbytes = _image_url_stats(prompt)
-        image_count += count
-        image_bytes += nbytes
-    return image_count, image_bytes, prompt_json_bytes
 
 
 def _mm_sidecar_stats(mm_data: Any) -> tuple[int, int, float]:
@@ -463,43 +395,6 @@ def _offload_prompt_images(prompt: Any) -> "dict[str, int]":
     }
 
 
-def _log_renderer_prompt_memory(
-    *,
-    prompt: list[RendererMessage],
-    trajectory: Any,
-    multi_modal_data: Any,
-    bridged: bool,
-    context: Mapping[str, Any],
-) -> None:
-    prompt_images, prompt_image_bytes = _image_url_stats(prompt)
-    traj_images, traj_image_bytes, traj_prompt_json_bytes = (
-        _trajectory_prompt_image_stats(trajectory)
-    )
-    mm_descriptors, mm_payloads, mm_payload_mb = _mm_sidecar_stats(multi_modal_data)
-    _mm_logger.info(
-        "renderer_prompt_mem prompt_msgs=%d prompt_images=%d "
-        "prompt_image_mb=%.1f prompt_json_mb=%.1f traj_steps=%d "
-        "traj_prompt_images=%d traj_prompt_image_mb=%.1f "
-        "traj_prompt_json_mb=%.1f mm_descriptors=%d mm_payloads=%d "
-        "mm_payload_mb=%.1f bridged=%d rss_mb=%.1f threads=%d ctx=%s",
-        len(prompt),
-        prompt_images,
-        prompt_image_bytes / (1024.0 * 1024.0),
-        _json_bytes(prompt) / (1024.0 * 1024.0),
-        len(trajectory) if isinstance(trajectory, list) else 0,
-        traj_images,
-        traj_image_bytes / (1024.0 * 1024.0),
-        traj_prompt_json_bytes / (1024.0 * 1024.0),
-        mm_descriptors,
-        mm_payloads,
-        mm_payload_mb,
-        int(bridged),
-        _rss_mb(),
-        _os_thread_count(),
-        _format_context(context),
-    )
-
-
 def _format_context(ctx: Mapping[str, Any]) -> str:
     parts = [f"pid={os.getpid()}", f"proc={current_process().name}"]
     for key in (
@@ -605,61 +500,28 @@ async def _generate_with_mm_fallback(
         req_id = _mm_request_counter
 
     start_rss = _rss_mb()
-    start = time.monotonic()
     try:
-        _mm_logger.debug(
-            "renderer_mm_generate_start req=%d hash_only=%d full=%d "
-            "rss_mb=%.1f threads=%d ctx=%s",
+        return await generate(force_full_pixels=False, **kwargs)
+    except Exception as exc:
+        mm_error_type = _retryable_mm_error_type(exc)
+        retryable = mm_error_type in _RETRYABLE_MM_ERROR_TYPES and (
+            mm_error_type != "missing_mm_cache_item" or has_hash_only
+        )
+        if not retryable:
+            raise
+
+        _mm_logger.warning(
+            "renderer_mm_repair_retry req=%d error_type=%s; retrying "
+            "with all images materialized: %r ctx=%s",
             req_id,
-            descriptor_count,
-            payload_count,
-            start_rss,
-            _os_thread_count(),
+            mm_error_type,
+            exc,
             _format_context(ctx),
         )
-        try:
-            return await generate(force_full_pixels=False, **kwargs)
-        except Exception as exc:
-            mm_error_type = _retryable_mm_error_type(exc)
-            retryable = mm_error_type in _RETRYABLE_MM_ERROR_TYPES and (
-                mm_error_type != "missing_mm_cache_item" or has_hash_only
-            )
-            _mm_logger.info(
-                "renderer_mm_exception req=%d hash_only=%d retryable=%d "
-                "mm_error_type=%s exc_type=%s ctx=%s",
-                req_id,
-                int(has_hash_only),
-                int(retryable),
-                mm_error_type,
-                type(exc).__name__,
-                _format_context(ctx),
-            )
-            if not retryable:
-                raise
-
-            _mm_logger.warning(
-                "renderer_mm_repair_retry req=%d error_type=%s; retrying "
-                "with all images materialized: %r ctx=%s",
-                req_id,
-                mm_error_type,
-                exc,
-                _format_context(ctx),
-            )
-            built_full = True
-            return await generate(force_full_pixels=True, **kwargs)
+        built_full = True
+        return await generate(force_full_pixels=True, **kwargs)
     finally:
         _maybe_cleanup_mm_request(req_id, built_full, start_rss, ctx)
-        _mm_logger.debug(
-            "renderer_mm_generate_end req=%d elapsed_s=%.1f rss_start_mb=%.1f "
-            "rss_end_mb=%.1f threads=%d built_full=%d ctx=%s",
-            req_id,
-            time.monotonic() - start,
-            start_rss,
-            _rss_mb(),
-            _os_thread_count(),
-            int(built_full),
-            _format_context(ctx),
-        )
 
 
 def _get_value(obj: Any, key: str, default: Any = None) -> Any:
@@ -1205,14 +1067,6 @@ class RendererClient(
             prompt_ids = None
             multi_modal_data = None
             prompt_attribution = None
-
-        _log_renderer_prompt_memory(
-            prompt=prompt,
-            trajectory=trajectory,
-            multi_modal_data=multi_modal_data,
-            bridged=bridged is not None,
-            context=log_context,
-        )
 
         # ``renderers.client.generate`` discovers the engine's context-length
         # cap on its own (via ``GET /v1/models``, cached) and raises
