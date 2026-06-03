@@ -66,13 +66,11 @@ def error_info(
     info = ErrorInfo(
         error=type(error).__name__,
         message=str(error) or type(error).__name__,
+        stage=stage,
+        details=dict(details or {}),
         error_chain_repr=repr(error_chain),
         error_chain_str=str(error_chain),
     )
-    if stage is not None:
-        info["stage"] = stage
-    if details:
-        info["details"] = dict(details)
     return info
 
 

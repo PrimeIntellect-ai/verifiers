@@ -288,25 +288,23 @@ def state_to_output(
             "error_chain_repr",
             "error_chain_str",
         } <= set(error):
-            error_payload: dict[str, Any] = {
-                "error": str(error["error"]),
-                "error_chain_repr": str(error["error_chain_repr"]),
-                "error_chain_str": str(error["error_chain_str"]),
-            }
-            if "message" in error:
-                error_payload["message"] = str(error["message"])
-            if "stage" in error:
-                stage = error["stage"]
-                error_payload["stage"] = None if stage is None else str(stage)
+            stage = error.get("stage")
             details = error.get("details")
-            if isinstance(details, Mapping):
-                error_payload["details"] = dict(details)
-            output["error"] = cast(ErrorInfo, error_payload)
+            output["error"] = ErrorInfo(
+                error=str(error["error"]),
+                message=str(error.get("message") or error["error"]),
+                stage=None if stage is None else str(stage),
+                details=dict(details) if isinstance(details, Mapping) else {},
+                error_chain_repr=str(error["error_chain_repr"]),
+                error_chain_str=str(error["error_chain_str"]),
+            )
         else:
             error_chain = ErrorChain(cast(BaseException, error))
             output["error"] = ErrorInfo(
                 error=type(error).__name__,
                 message=str(error) or type(error).__name__,
+                stage=None,
+                details={},
                 error_chain_repr=repr(error_chain),
                 error_chain_str=str(error_chain),
             )

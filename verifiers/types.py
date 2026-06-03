@@ -390,11 +390,11 @@ class RolloutTiming(CustomBaseModel):
 
 class ErrorInfo(TypedDict):
     error: str
+    message: str
+    stage: str | None
+    details: dict[str, Any]
     error_chain_repr: str
     error_chain_str: str
-    message: NotRequired[str]
-    stage: NotRequired[str | None]
-    details: NotRequired[dict[str, Any]]
 
 
 class RolloutOutput(dict):
