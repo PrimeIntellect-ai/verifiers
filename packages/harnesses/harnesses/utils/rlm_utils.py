@@ -256,21 +256,11 @@ Tool schema:
 
 
 def rlm_skills_dir(state: State, runtime: Runtime) -> Path | Traversable | None:
-    """Resolve the skills directory for the RLM run: `program.skills` if set, else the taskset's `skills` upload dir."""
-    from harnesses.rlm import RLM
-
-    harness = runtime.harness
-    if not isinstance(harness, RLM):
-        raise TypeError("rlm_skills_dir requires an RLM harness runtime.")
-    if harness.config.program.skills is not None:
-        return Path(harness.config.program.skills)
+    """Return the taskset's `skills` upload directory, or None if none is provided."""
+    _ = state
     taskset = runtime.taskset
     if taskset is None:
         return None
-    upload_dirs = taskset.get_upload_dirs()
-    assert isinstance(upload_dirs, dict)
-    skills_dir = upload_dirs.get("skills")
-    if skills_dir is None:
-        return None
-    assert isinstance(skills_dir, (Path, Traversable))
+    skills_dir = taskset.get_upload_dirs().get("skills")
+    assert skills_dir is None or isinstance(skills_dir, (Path, Traversable))
     return skills_dir

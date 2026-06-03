@@ -82,7 +82,6 @@ def test_rlm_harness_accepts_typed_config_surface():
             program=RLMProgramConfig(
                 repo_path="/tmp/checkout",
                 tools=["bash", "edit"],
-                env_vars={"CUSTOM": "1"},
             )
         )
     )
@@ -91,7 +90,6 @@ def test_rlm_harness_accepts_typed_config_surface():
 
     assert harness.config.program.tools == ["bash", "edit"]
     assert program_env["RLM_TOOLS"] == "bash,edit"
-    assert program_env["CUSTOM"] == "1"
 
 
 def test_rlm_endpoint_hides_nested_depth_requests():
@@ -151,22 +149,12 @@ def test_rlm_harness_keeps_minimum_setup_timeout_for_default_sandbox_config():
     assert sandbox["setup_timeout"] == 600
 
 
-def test_rlm_harness_can_upload_skills(tmp_path: Path):
-    skills = tmp_path / "skills"
-    (skills / "edit").mkdir(parents=True)
-    (skills / "edit" / "SKILL.md").write_text("---\nname: edit\n---\n")
-
-    harness = RLM(
-        config=RLMConfig(
-            program=RLMProgramConfig(repo_path="/tmp/checkout", skills=str(skills))
-        )
-    )
+def test_rlm_harness_installs_tool_skills_archive():
+    harness = RLM(config=RLMConfig(program=RLMProgramConfig(repo_path="/tmp/checkout")))
     program = as_dict(harness.config.program)
-    dirs = as_dict(program["dirs"])
     files = as_dict(program["files"])
     setup = cast(list[str], program["setup"])
 
-    assert dirs["/task/rlm-skills"] == str(skills)
     assert files[DEFAULT_RLM_TOOL_SKILLS_ARCHIVE_PATH] == {
         "fn": "harnesses.utils.rlm_utils:rlm_tool_skills_archive"
     }
@@ -315,11 +303,13 @@ async def test_vf_tool_skill_falls_back_for_runtime_bound_tools():
 def test_rlm_tool_skills_archive_avoids_base_skill_name_collisions(tmp_path: Path):
     skills = tmp_path / "skills"
     (skills / "lookup_order").mkdir(parents=True)
-    harness = RLM(
-        config=RLMConfig(
-            program=RLMProgramConfig(repo_path="/tmp/checkout", skills=str(skills))
-        )
-    )
+
+    class SkillTaskset(vf.Taskset):
+        def get_upload_dirs(self):
+            return {"skills": skills}
+
+    harness = RLM(config=RLMConfig(program=RLMProgramConfig(repo_path="/tmp/checkout")))
+    vf.Env(taskset=SkillTaskset(config=vf.TasksetConfig()), harness=harness)
     tool_def = Tool(
         name="lookup_order",
         description="Look up an order.",
@@ -555,33 +545,6 @@ def test_taskset_discovers_sibling_skills_dir_by_default(
     assert taskset.get_upload_dirs() == {"skills": skills}
 
 
-def test_rlm_harness_explicit_skills_override_taskset_skills(tmp_path: Path):
-    taskset_skills = tmp_path / "taskset-skills"
-    explicit_skills = tmp_path / "explicit-skills"
-    taskset_skills.mkdir()
-    explicit_skills.mkdir()
-
-    class SkillTaskset(vf.Taskset):
-        def get_upload_dirs(self):
-            return {"skills": taskset_skills}
-
-    env = vf.Env(
-        taskset=SkillTaskset(config=vf.TasksetConfig()),
-        harness=RLM(
-            config=RLMConfig(
-                program=RLMProgramConfig(
-                    repo_path="/tmp/checkout",
-                    skills=str(explicit_skills),
-                )
-            )
-        ),
-    )
-    program = as_dict(env.harness.config.program)
-    dirs = as_dict(program["dirs"])
-
-    assert dirs["/task/rlm-skills"] == str(explicit_skills)
-
-
 def test_rlm_swe_environment_uses_v1_r2e_taskset(monkeypatch):
     calls: dict[str, object] = {}
 
@@ -603,7 +566,6 @@ def test_rlm_swe_environment_uses_v1_r2e_taskset(monkeypatch):
             harness=rlm_swe_v1.RlmSweHarnessConfig(
                 program=rlm_swe_v1.RlmSweProgramConfig(
                     repo_path="/tmp/checkout",
-                    env_vars={"CALLER": "1"},
                 )
             ),
         ),
@@ -633,14 +595,12 @@ def test_rlm_swe_environment_uses_v1_r2e_taskset(monkeypatch):
     assert task_program_env["PAGER"] == "cat"
     assert task_program_env["CUSTOM"] == "1"
     assert "CUSTOM" not in program_env
-    assert program_env["CALLER"] == "1"
     assert program_env["RLM_TOOLS"] == "bash,edit"
     assert merged_sandbox["workdir"] == "/workspace/repo"
     assert merged_env["AGENT_WORKDIR"] == "/workspace/repo"
     assert "/workspace/repo/.venv/bin" in merged_env["AGENT_PATH"]
     assert merged_env["PAGER"] == "cat"
     assert merged_env["CUSTOM"] == "1"
-    assert merged_env["CALLER"] == "1"
 
 
 def test_rlm_swe_taskset_hooks_are_registered_with_runtime():

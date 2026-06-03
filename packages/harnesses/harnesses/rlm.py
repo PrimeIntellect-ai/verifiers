@@ -1,6 +1,6 @@
 import shlex
 
-from pydantic import Field, model_validator
+from pydantic import Field
 
 import verifiers as vf
 
@@ -12,14 +12,12 @@ from .utils.rlm_utils import (
     DEFAULT_RLM_TOOL_SKILLS_MANIFEST_NAME,
 )
 
+RLM_WORKDIR = "/workspace"
+RLM_INSTRUCTION_PATH = "/rlm/instruction.txt"
+RLM_APPEND_TO_SYSTEM_PROMPT_PATH = "/rlm/append_to_system_prompt.txt"
+
 
 class RLMProgramConfig(vf.ProgramConfig):
-    workdir: str = "/workspace"
-    """In-sandbox working directory the `rlm` CLI cd's into; must be absolute."""
-
-    instruction_path: str = "/rlm/instruction.txt"
-    """In-sandbox path to the rendered task instruction file; must be absolute."""
-
     repo_url: str = "github.com/PrimeIntellect-ai/rlm-harness.git"
     """Git URL of the RLM harness checkout (ignored if `repo_path` is set)."""
 
@@ -30,6 +28,9 @@ class RLMProgramConfig(vf.ProgramConfig):
     """Local path to an existing RLM checkout. If set, takes precedence over
     `repo_url` / `repo_ref` (no clone is performed)."""
 
+    tools: list[str] = ["ipython"]
+    """RLM tool plugins to load (passed as `RLM_TOOLS`)."""
+
     max_depth: int = Field(default=0, ge=0)
     """Max RLM recursion depth; 0 disables sub-LLM calls."""
 
@@ -39,38 +40,16 @@ class RLMProgramConfig(vf.ProgramConfig):
     append_to_system_prompt: str = ""
     """Extra text appended to the RLM system prompt."""
 
-    tools: list[str] = ["ipython"]
-    """RLM tool plugins to load (passed as `RLM_TOOLS`)."""
-
     allow_git: bool = False
     """Disable RLM's restricted git-history guard (sets `RLM_ALLOW_GIT=1`)."""
 
-    env_vars: dict[str, str] = {}
-    """Extra env vars exported into the sandbox."""
-
-    skills: str | None = None
-    """Override path to a skills directory; defaults to the taskset's `skills`
-    upload dir."""
-
-    @model_validator(mode="after")
-    def _check_absolute_paths(self) -> "RLMProgramConfig":
-        if not self.workdir.startswith("/"):
-            raise ValueError(f"workdir must be absolute, got {self.workdir!r}")
-        if not self.instruction_path.startswith("/"):
-            raise ValueError(
-                f"instruction_path must be absolute, got {self.instruction_path!r}"
-            )
-        return self
-
     def resolve(self) -> vf.ProgramConfig:
-        append_to_system_prompt_path = "/rlm/append_to_system_prompt.txt"
-
         files: dict[str, vf.ProgramValue] = {
-            self.instruction_path: {
+            RLM_INSTRUCTION_PATH: {
                 "fn": "verifiers.v1.utils.prompt_utils:task_text",
                 "keys": ["instruction", "question"],
             },
-            append_to_system_prompt_path: self.append_to_system_prompt,
+            RLM_APPEND_TO_SYSTEM_PROMPT_PATH: self.append_to_system_prompt,
             DEFAULT_RLM_TOOL_SKILLS_ARCHIVE_PATH: {
                 "fn": "harnesses.utils.rlm_utils:rlm_tool_skills_archive"
             },
@@ -81,14 +60,9 @@ class RLMProgramConfig(vf.ProgramConfig):
                 **({"repo_path": self.repo_path} if self.repo_path else {}),
                 "repo_url": self.repo_url,
                 "repo_ref": self.repo_ref,
-            }
+            },
+            DEFAULT_RLM_SKILLS_PATH: {"fn": "harnesses.utils.rlm_utils:rlm_skills_dir"},
         }
-        if self.skills is not None:
-            dirs[DEFAULT_RLM_SKILLS_PATH] = self.skills
-        else:
-            dirs[DEFAULT_RLM_SKILLS_PATH] = {
-                "fn": "harnesses.utils.rlm_utils:rlm_skills_dir"
-            }
 
         env: dict[str, vf.ProgramValue] = {
             "PATH": "/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
@@ -96,7 +70,6 @@ class RLMProgramConfig(vf.ProgramConfig):
             "RLM_MODEL": "runtime.model",
             "RLM_TOOLS": ",".join(self.tools),
             "RLM_MAX_DEPTH": str(self.max_depth),
-            **self.env_vars,
         }
         if self.summarize_at_tokens is not None:
             env["RLM_SUMMARIZE_AT_TOKENS"] = str(self.summarize_at_tokens)
@@ -106,7 +79,7 @@ class RLMProgramConfig(vf.ProgramConfig):
         artifacts = vf.ArtifactsConfig.model_validate(
             {
                 "rlm_metrics": {
-                    "path": f"{self.workdir}/.rlm/sessions/*/meta.json",
+                    "path": f"{RLM_WORKDIR}/.rlm/sessions/*/meta.json",
                     "format": "json",
                     "key": "metrics",
                     "optional": True,
@@ -126,7 +99,7 @@ class RLMProgramConfig(vf.ProgramConfig):
         if sandbox_override is None:
             sandbox = vf.SandboxConfig(
                 image="python:3.11-slim",
-                workdir=self.workdir,
+                workdir=RLM_WORKDIR,
                 cpu_cores=1,
                 memory_gb=2,
                 disk_size_gb=5,
@@ -138,7 +111,7 @@ class RLMProgramConfig(vf.ProgramConfig):
         else:
             sandbox = vf.SandboxConfig.model_validate(
                 {
-                    "workdir": self.workdir,
+                    "workdir": RLM_WORKDIR,
                     "command_timeout": command_timeout,
                     **sandbox_override.data(),
                     "setup_timeout": setup_timeout,
@@ -181,9 +154,9 @@ set -eo pipefail
 export PATH="$HOME/.local/bin:${{AGENT_PATH:-$PATH}}"
 export RLM_MODEL="${{RLM_MODEL:-$OPENAI_MODEL}}"
 export OPENAI_API_KEY="${{OPENAI_API_KEY:-intercepted}}"
-export RLM_APPEND_TO_SYSTEM_PROMPT="$(cat {shlex.quote(append_to_system_prompt_path)} 2>/dev/null || true)"
-cd "${{AGENT_WORKDIR:-{self.workdir}}}"
-rlm "$(cat {shlex.quote(self.instruction_path)})"
+export RLM_APPEND_TO_SYSTEM_PROMPT="$(cat {shlex.quote(RLM_APPEND_TO_SYSTEM_PROMPT_PATH)} 2>/dev/null || true)"
+cd "${{AGENT_WORKDIR:-{RLM_WORKDIR}}}"
+rlm "$(cat {shlex.quote(RLM_INSTRUCTION_PATH)})"
 """
         return self.resolve_command(
             command=["bash", "-lc", run_script],
