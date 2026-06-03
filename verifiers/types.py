@@ -392,6 +392,9 @@ class ErrorInfo(TypedDict):
     error: str
     error_chain_repr: str
     error_chain_str: str
+    message: NotRequired[str]
+    stage: NotRequired[str | None]
+    details: NotRequired[dict[str, Any]]
 
 
 class RolloutOutput(dict):

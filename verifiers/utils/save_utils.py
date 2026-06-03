@@ -288,15 +288,25 @@ def state_to_output(
             "error_chain_repr",
             "error_chain_str",
         } <= set(error):
-            output["error"] = ErrorInfo(
-                error=str(error["error"]),
-                error_chain_repr=str(error["error_chain_repr"]),
-                error_chain_str=str(error["error_chain_str"]),
-            )
+            error_payload: dict[str, Any] = {
+                "error": str(error["error"]),
+                "error_chain_repr": str(error["error_chain_repr"]),
+                "error_chain_str": str(error["error_chain_str"]),
+            }
+            if "message" in error:
+                error_payload["message"] = str(error["message"])
+            if "stage" in error:
+                stage = error["stage"]
+                error_payload["stage"] = None if stage is None else str(stage)
+            details = error.get("details")
+            if isinstance(details, Mapping):
+                error_payload["details"] = dict(details)
+            output["error"] = cast(ErrorInfo, error_payload)
         else:
             error_chain = ErrorChain(cast(BaseException, error))
             output["error"] = ErrorInfo(
                 error=type(error).__name__,
+                message=str(error) or type(error).__name__,
                 error_chain_repr=repr(error_chain),
                 error_chain_str=str(error_chain),
             )
@@ -307,6 +317,9 @@ def state_to_output(
         output.pop("answer")
     if "info" in output and not output["info"]:
         output.pop("info")
+    for key in ("sandbox_failures", "artifact_errors", "cleanup_errors"):
+        if key in state:
+            output[key] = state[key]
     # flatten metrics to top-level keys (backwards compatibility)
     state_metrics = state.get("metrics") or {}
     for k, v in state_metrics.items():

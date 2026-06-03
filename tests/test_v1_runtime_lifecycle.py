@@ -22,6 +22,7 @@ from verifiers.types import ClientConfig
 from verifiers.types import Response, ResponseMessage, ToolCall
 from verifiers.types import Tool
 from verifiers.types import Usage
+from verifiers.utils.save_utils import state_to_output
 from verifiers.v1.runtime import Runtime
 from verifiers.v1.utils import mcp_utils, sandbox_utils
 from verifiers.v1.utils.mcp_proxy_utils import MCP_PROXY_CONFIG_PATH, MCP_PROXY_PATH
@@ -3221,6 +3222,62 @@ async def test_sandbox_program_artifact_collected_by_runtime(
     state = await harness.run(task)
 
     assert state["artifacts"]["command_log"] == "ok\n"
+
+
+@pytest.mark.asyncio
+async def test_failed_sandbox_program_preserves_primary_error_and_artifact_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sandboxes(monkeypatch)
+    install_fake_endpoint_tunnel(monkeypatch)
+
+    class SandboxOOMError(Exception):
+        pass
+
+    class MissingArtifactResult(FakeCommandResult):
+        exit_code = 2
+        stdout = ""
+        stderr = ""
+
+    class FailedProgramMissingArtifactClient(FakeSandboxClient):
+        async def run_background_job(
+            self, *args: object, **kwargs: object
+        ) -> FakeCommandResult:
+            _ = args, kwargs
+            raise SandboxOOMError("Container exceeded memory limit")
+
+        async def execute_command(
+            self, *args: object, **kwargs: object
+        ) -> FakeCommandResult:
+            _ = args, kwargs
+            return MissingArtifactResult()
+
+    monkeypatch.setattr(
+        "verifiers.utils.threaded_sandbox_client.ThreadedAsyncSandboxClient",
+        FailedProgramMissingArtifactClient,
+    )
+
+    harness = make_harness(
+        program={
+            "command": ["true"],
+            "sandbox": True,
+            "artifacts": {"agent_log": {"path": "/logs/agent/terminus_2.log"}},
+        },
+        sandbox={"image": "python:3.11-slim"},
+    )
+    task = vf.Task(
+        {"example_id": 0, "prompt": [{"role": "user", "content": "hi"}]}
+    ).freeze()
+
+    state = await harness.run(task)
+
+    assert state["error"]["error"] == "SandboxError"
+    assert state["artifact_errors"][0]["error"] == "FileNotFoundError"
+    assert state["artifact_errors"][0]["stage"] == "artifact_collection"
+    assert state["stop_condition"] == "has_error"
+    output = state_to_output(state)
+    assert output["artifact_errors"] == state["artifact_errors"]
+    assert output["error"]["message"].startswith("Sandbox")
 
 
 @pytest.mark.asyncio

@@ -243,6 +243,7 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
         state = await self.init_state(task) if state is None else state
         timing_recorded = False
         completed = False
+        rollout_failed = False
         try:
             try:
                 state = await self.setup_state(task, state)
@@ -250,9 +251,17 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
                     state = await self.run_program(task, state)
                     await self.runtime.is_completed(task, state)
                 state._set_stop_condition("program_completed")
-                await self.runtime.collect_artifacts(task, state)
             except Error as e:
+                rollout_failed = True
                 self.record_error(state, e)
+            try:
+                await self.runtime.collect_artifacts(task, state)
+            except Exception as e:
+                if not rollout_failed:
+                    raise
+                state.setdefault("artifact_errors", []).append(
+                    error_info(e, stage="artifact_collection")
+                )
             await self.runtime.update_rollout(task, state)
             state.record_generation_timing()
             timing_recorded = True

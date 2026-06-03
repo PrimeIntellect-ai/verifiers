@@ -56,13 +56,24 @@ class ErrorChain:
         return " -> ".join([repr(e) for e in self.chain])
 
 
-def error_info(error: BaseException) -> ErrorInfo:
+def error_info(
+    error: BaseException,
+    *,
+    stage: str | None = None,
+    details: Mapping[str, object] | None = None,
+) -> ErrorInfo:
     error_chain = ErrorChain(error)
-    return ErrorInfo(
+    info = ErrorInfo(
         error=type(error).__name__,
+        message=str(error) or type(error).__name__,
         error_chain_repr=repr(error_chain),
         error_chain_str=str(error_chain),
     )
+    if stage is not None:
+        info["stage"] = stage
+    if details:
+        info["details"] = dict(details)
+    return info
 
 
 def error_info_to_exception(

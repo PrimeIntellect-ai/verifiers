@@ -88,6 +88,19 @@ class DummyEnvironment(Environment):
         return state
 
 
+class RuntimeFailingEnvironment(DummyEnvironment):
+    async def rollout(
+        self,
+        input: RolloutInput,
+        client,
+        model: str,
+        sampling_args: SamplingArgs | None = None,
+    ):
+        if input["example_id"] == 1:
+            raise RuntimeError("rollout exploded")
+        return await super().rollout(input, client, model, sampling_args)
+
+
 @pytest.fixture
 def make_dummy_env():
     def _make_dummy_env(
@@ -311,6 +324,72 @@ async def test_generate_inside_running_loop(mock_client, make_dummy_env, make_in
     states = outputs["outputs"]
     assert len(states) == 1
     assert states[0].get("completion") is not None
+
+
+@pytest.mark.asyncio
+async def test_generate_continues_after_unexpected_independent_rollout_error(
+    mock_client, make_input
+):
+    dataset = Dataset.from_dict({"question": ["q1", "q2"], "answer": ["a1", "a2"]})
+    env = RuntimeFailingEnvironment(
+        dataset=dataset, parser=Parser(), rubric=Rubric(), score_rollouts=False
+    )
+    outputs = await env.generate(
+        [make_input(example_id=0), make_input(example_id=1)],
+        client=mock_client,
+        model="test-model",
+        independent_scoring=True,
+        state_columns=["trajectory"],
+        on_progress=lambda *args: None,
+    )
+
+    states = outputs["outputs"]
+    assert len(states) == 2
+    assert states[0]["error"] is None
+    assert states[1]["completion"] is None
+    assert states[1]["trajectory"] == []
+    assert states[1]["error"]["error"] == "RuntimeError"
+    assert states[1]["error"]["message"] == "rollout exploded"
+    assert states[1]["error"]["stage"] == "rollout"
+    assert outputs["metadata"]["avg_error"] == 0.5
+
+
+@pytest.mark.asyncio
+async def test_generate_can_still_fail_fast_when_requested(mock_client, make_input):
+    dataset = Dataset.from_dict({"question": ["q1"], "answer": ["a1"]})
+    env = RuntimeFailingEnvironment(
+        dataset=dataset, parser=Parser(), rubric=Rubric(), score_rollouts=False
+    )
+
+    with pytest.raises(RuntimeError, match="rollout exploded"):
+        await env.generate(
+            [make_input(example_id=1)],
+            client=mock_client,
+            model="test-model",
+            independent_scoring=True,
+            continue_on_error=False,
+            on_progress=lambda *args: None,
+        )
+
+
+@pytest.mark.asyncio
+async def test_generate_continues_after_unexpected_group_rollout_error(
+    mock_client, make_input
+):
+    dataset = Dataset.from_dict({"question": ["q1", "q2"], "answer": ["a1", "a2"]})
+    env = RuntimeFailingEnvironment(dataset=dataset, parser=Parser(), rubric=Rubric())
+    outputs = await env.generate(
+        [make_input(example_id=0), make_input(example_id=1)],
+        client=mock_client,
+        model="test-model",
+        on_progress=lambda *args: None,
+    )
+
+    states = outputs["outputs"]
+    assert len(states) == 2
+    assert states[0]["error"] is None
+    assert states[1]["error"]["stage"] == "group_rollout"
+    assert states[1]["error"]["details"] == {"example_id": 1}
 
 
 @pytest.mark.asyncio
