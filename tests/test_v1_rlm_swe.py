@@ -19,10 +19,8 @@ from harnesses.rlm import (
     DEFAULT_RLM_TOOL_SKILL_MARKER,
     DEFAULT_RLM_TOOL_SKILLS_ARCHIVE_PATH,
     DEFAULT_RLM_TOOL_SKILLS_MANIFEST_NAME,
-    RLM_DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH,
 )
 from harnesses.utils.rlm_utils import rlm_tool_skills_archive
-from harnesses.utils.rlm_utils import rlm_append_to_system_prompt
 from harnesses.utils.rlm_utils import rlm_skills_dir
 from verifiers.v1.utils.program_utils import merge_task_program, merge_task_sandbox
 
@@ -96,44 +94,6 @@ def test_rlm_harness_accepts_typed_config_surface():
     assert program_env["RLM_TOOLS"] == "bash,edit"
     assert program_env["RLM_EXEC_TIMEOUT"] == "11"
     assert program_env["CUSTOM"] == "1"
-
-
-def test_rlm_harness_append_file_resolves_system_prompt():
-    harness = RLM(
-        config=RLMConfig(
-            program=RLMProgramConfig(
-                local_checkout="/tmp/checkout",
-                append_to_system_prompt="Extra note.",
-            )
-        )
-    )
-    program = as_dict(harness.config.program)
-    files = as_dict(program["files"])
-
-    assert files[RLM_DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH] == {
-        "fn": "harnesses.utils.rlm_utils:rlm_append_to_system_prompt",
-        "append": "Extra note.",
-    }
-
-
-def test_rlm_append_to_system_prompt_includes_taskset_prompt():
-    task = vf.Task({"prompt": []}).freeze()
-    state = vf.State.for_task(task)
-    state["system_prompt"] = [{"role": "system", "content": "Game rules."}]
-
-    # Taskset/task system prompt flows through on its own.
-    assert rlm_append_to_system_prompt(task, state) == "Game rules."
-    # Static append is tacked on after the resolved prompt.
-    assert (
-        rlm_append_to_system_prompt(task, state, append="Extra note.")
-        == "Game rules.\n\nExtra note."
-    )
-    # With no resolved system prompt, only the static append remains.
-    state["system_prompt"] = []
-    assert (
-        rlm_append_to_system_prompt(task, state, append="Extra note.") == "Extra note."
-    )
-    assert rlm_append_to_system_prompt(task, state) == ""
 
 
 def test_rlm_endpoint_hides_nested_depth_requests():

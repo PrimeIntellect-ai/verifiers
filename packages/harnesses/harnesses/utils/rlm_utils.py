@@ -33,16 +33,9 @@ REQUIRED_RLM_CHECKOUT_FILES = ("install.sh", "pyproject.toml")
 
 
 def rlm_append_to_system_prompt(task: Task, state: State, append: str = "") -> str:
-    """Text appended to the RLM agent's built-in system prompt.
-
-    The ``rlm`` tool builds its own coding-agent system prompt and tacks
-    ``RLM_APPEND_TO_SYSTEM_PROMPT`` on after it, so the agent reads the
-    harness prompt first and the task instructions second. We feed that env
-    var the resolved ``state["system_prompt"]`` (harness + taskset/task,
-    ordered by the harness ``system_prompt_strategy``) joined with the
-    program's static ``append_to_system_prompt`` — otherwise a taskset's
-    ``load_system_prompt`` is silently dropped under the RLM harness.
-    """
+    """Resolved ``state["system_prompt"]`` joined with the static ``append``,
+    fed to ``RLM_APPEND_TO_SYSTEM_PROMPT`` so the rlm tool tacks the task
+    system prompt onto its built-in coding-agent prompt."""
     resolved = state_system_prompt_text(task, state)
     return "\n\n".join(part for part in (resolved, append) if part)
 
