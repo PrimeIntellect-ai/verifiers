@@ -11,7 +11,7 @@ logger = logging.getLogger("verifiers.v1.rollout")
 
 def log_rollout_start(state: State) -> None:
     logger.info(
-        f"Started  example_id={state.get('example_id')} "
+        f"Started example_id={state.get('example_id')} "
         f"| trajectory_id={state.get('trajectory_id')}"
     )
 
