@@ -11,7 +11,6 @@ from typing import cast
 
 from verifiers.envs.experimental.utils.git_checkout_cache import (
     resolve_git_checkout,
-    validate_git_checkout,
 )
 from verifiers.v1.runtime import Runtime
 from verifiers.v1.state import State
@@ -34,15 +33,11 @@ def rlm_checkout_path(
     repo_path: str | None = None,
 ) -> Path:
     """Return a local path to an RLM checkout — `repo_path` if given, else a cached clone of `repo_url`@`repo_ref`."""
-    if repo_path is not None:
-        return validate_git_checkout(
-            Path(repo_path),
-            required_files=REQUIRED_RLM_CHECKOUT_FILES,
-        )
     return resolve_git_checkout(
         repo_url=repo_url,
         ref=repo_ref,
         cache_root=DEFAULT_RLM_LOCAL_CHECKOUT_CACHE_ROOT,
+        local_checkout=repo_path,
         required_files=REQUIRED_RLM_CHECKOUT_FILES,
     )
 
