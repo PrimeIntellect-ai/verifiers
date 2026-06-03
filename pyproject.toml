@@ -219,12 +219,6 @@ vf-tui = "verifiers.scripts.tui:main"
 vf-vllm = "verifiers.scripts.vllm:main"
 
 # hatchling configuration
-# Version is derived from git tags via hatch-vcs (setuptools-scm under the hood):
-# a release tag `vX.Y.Z` builds exactly `X.Y.Z`, while any other commit builds the
-# next release as a pre-release, e.g. `0.1.15.dev<commits-since-vX.Y.Z>`. The
-# describe filter anchors only on core `v*` release tags (ignoring `.dev`/`rc`
-# tags and the tasksets-/harnesses-/verifiers-rl- namespaces), and
-# `no-local-version` drops the `+g<sha>` segment that PyPI rejects.
 [tool.hatch.version]
 source = "vcs"
 
