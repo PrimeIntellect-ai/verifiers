@@ -676,13 +676,14 @@ class Environment(ABC):
         )
 
         state["timing"].scoring.start = time.time()
-        if self.score_rollouts:
-            await self.rubric.score_rollout(state)
-        else:
-            await self.rubric.dummy_score_rollout(state)
-        state["timing"].scoring.end = time.time()
-
-        await self.rubric.cleanup(state)
+        try:
+            if self.score_rollouts:
+                await self.rubric.score_rollout(state)
+            else:
+                await self.rubric.dummy_score_rollout(state)
+        finally:
+            state["timing"].scoring.end = time.time()
+            await self.rubric.cleanup(state)
         return state
 
     async def _run_group_states(
@@ -693,29 +694,47 @@ class Environment(ABC):
         sampling_args: SamplingArgs,
     ) -> list[State]:
         rollout_tasks = [
-            self.rollout(
-                input,
-                client,
-                model,
-                sampling_args,
+            asyncio.create_task(
+                self.rollout(
+                    input,
+                    client,
+                    model,
+                    sampling_args,
+                )
             )
             for input in group_inputs
         ]
-        group_states = await asyncio.gather(*rollout_tasks)
+        try:
+            group_states = await asyncio.gather(*rollout_tasks)
+        except BaseException:
+            pending = [task for task in rollout_tasks if not task.done()]
+            for task in pending:
+                task.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+            completed_states = [
+                task.result()
+                for task in rollout_tasks
+                if task.done() and not task.cancelled() and task.exception() is None
+            ]
+            for state in completed_states:
+                await self.rubric.cleanup(state)
+            raise
 
         start_scoring = time.time()
         for state in group_states:
             state["timing"].scoring.start = start_scoring
-        if self.score_rollouts:
-            await self.rubric.score_group(group_states)
-        else:
-            await self.rubric.dummy_score_group(group_states)
-        end_scoring = time.time()
-        for state in group_states:
-            state["timing"].scoring.end = end_scoring
-
-        for state in group_states:
-            await self.rubric.cleanup(state)
+        try:
+            if self.score_rollouts:
+                await self.rubric.score_group(group_states)
+            else:
+                await self.rubric.dummy_score_group(group_states)
+        finally:
+            end_scoring = time.time()
+            for state in group_states:
+                state["timing"].scoring.end = end_scoring
+            for state in group_states:
+                await self.rubric.cleanup(state)
 
         return group_states
 
@@ -985,6 +1004,7 @@ class Environment(ABC):
             *,
             grouped: bool,
         ) -> list[RolloutOutput]:
+            task_start = time.time()
             try:
                 if grouped:
                     return await self.run_group(
@@ -1016,8 +1036,9 @@ class Environment(ABC):
                 )
                 outputs: list[RolloutOutput] = []
                 for rollout_input in rollout_inputs:
-                    timing = RolloutTiming()
+                    timing = RolloutTiming(start_time=task_start)
                     end_time = time.time()
+                    timing.generation.start = task_start
                     timing.generation.end = end_time
                     timing.scoring.start = end_time
                     timing.scoring.end = end_time

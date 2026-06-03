@@ -351,7 +351,47 @@ async def test_generate_continues_after_unexpected_independent_rollout_error(
     assert states[1]["error"]["error"] == "RuntimeError"
     assert states[1]["error"]["message"] == "rollout exploded"
     assert states[1]["error"]["stage"] == "rollout"
+    timing = states[1]["timing"]
+    assert timing["generation"]["start"] > 0
+    assert timing["generation"]["end"] >= timing["generation"]["start"]
+    assert timing["total"] < 60
     assert outputs["metadata"]["avg_error"] == 0.5
+
+
+@pytest.mark.asyncio
+async def test_generate_cleans_up_state_after_rollout_scoring_error(
+    mock_client, make_input
+):
+    class ScoreFailingRubric(Rubric):
+        def __init__(self):
+            super().__init__()
+            self.cleaned: list[int] = []
+
+        async def score_rollout(self, state):
+            raise RuntimeError("score exploded")
+
+        async def cleanup(self, state):
+            self.cleaned.append(state["example_id"])
+
+    rubric = ScoreFailingRubric()
+    env = DummyEnvironment(
+        dataset=Dataset.from_dict({"question": ["q1"], "answer": ["a1"]}),
+        parser=Parser(),
+        rubric=rubric,
+    )
+
+    outputs = await env.generate(
+        [make_input(example_id=0)],
+        client=mock_client,
+        model="test-model",
+        independent_scoring=True,
+        on_progress=lambda *args: None,
+    )
+
+    assert rubric.cleaned == [0]
+    state = outputs["outputs"][0]
+    assert state["error"]["message"] == "score exploded"
+    assert state["error"]["stage"] == "rollout"
 
 
 @pytest.mark.asyncio
@@ -390,6 +430,116 @@ async def test_generate_continues_after_unexpected_group_rollout_error(
     assert states[0]["error"] is None
     assert states[1]["error"]["stage"] == "group_rollout"
     assert states[1]["error"]["details"] == {"example_id": 1}
+
+
+@pytest.mark.asyncio
+async def test_generate_cleans_up_states_after_group_scoring_error(
+    mock_client, make_input
+):
+    class GroupScoreFailingRubric(Rubric):
+        def __init__(self):
+            super().__init__()
+            self.cleaned: list[str] = []
+
+        async def score_group(self, states):
+            raise RuntimeError("group score exploded")
+
+        async def cleanup(self, state):
+            self.cleaned.append(state["answer"])
+
+    rubric = GroupScoreFailingRubric()
+    env = DummyEnvironment(
+        dataset=Dataset.from_dict({"question": ["q1"], "answer": ["a1"]}),
+        parser=Parser(),
+        rubric=rubric,
+    )
+    outputs = await env.generate(
+        [
+            make_input(example_id=0, answer="a"),
+            make_input(example_id=0, answer="b"),
+        ],
+        client=mock_client,
+        model="test-model",
+        on_progress=lambda *args: None,
+    )
+
+    assert rubric.cleaned == ["a", "b"]
+    assert [state["error"]["stage"] for state in outputs["outputs"]] == [
+        "group_rollout",
+        "group_rollout",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_group_rollout_failure_cancels_pending_and_cleans_completed_state(
+    mock_client, make_input
+):
+    class CleanupTrackingRubric(Rubric):
+        def __init__(self):
+            super().__init__()
+            self.cleaned: list[str] = []
+
+        async def cleanup(self, state):
+            info = state["info"]
+            assert isinstance(info, dict)
+            self.cleaned.append(str(info["mode"]))
+
+    class GroupFanoutFailingEnvironment(DummyEnvironment):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.done_returned = asyncio.Event()
+            self.slow_started = asyncio.Event()
+            self.slow_cancelled = asyncio.Event()
+
+        async def rollout(
+            self,
+            input: RolloutInput,
+            client,
+            model: str,
+            sampling_args: SamplingArgs | None = None,
+        ):
+            info = input["info"]
+            assert isinstance(info, dict)
+            mode = info["mode"]
+            if mode == "done":
+                state = await super().rollout(input, client, model, sampling_args)
+                self.done_returned.set()
+                return state
+            if mode == "slow":
+                self.slow_started.set()
+                try:
+                    await asyncio.sleep(60)
+                except asyncio.CancelledError:
+                    self.slow_cancelled.set()
+                    raise
+            await self.done_returned.wait()
+            await self.slow_started.wait()
+            raise RuntimeError("group sibling exploded")
+
+    rubric = CleanupTrackingRubric()
+    env = GroupFanoutFailingEnvironment(
+        dataset=Dataset.from_dict({"question": ["q1"], "answer": ["a1"]}),
+        parser=Parser(),
+        rubric=rubric,
+    )
+    outputs = await env.generate(
+        [
+            make_input(example_id=0, info={"mode": "done"}),
+            make_input(example_id=0, info={"mode": "slow"}),
+            make_input(example_id=0, info={"mode": "fail"}),
+        ],
+        client=mock_client,
+        model="test-model",
+        on_progress=lambda *args: None,
+    )
+
+    assert env.slow_cancelled.is_set()
+    assert rubric.cleaned == ["done"]
+    assert [state["error"]["stage"] for state in outputs["outputs"]] == [
+        "group_rollout",
+        "group_rollout",
+        "group_rollout",
+    ]
 
 
 @pytest.mark.asyncio

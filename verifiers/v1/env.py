@@ -169,9 +169,22 @@ class Env(vf.Environment):
                 "score_rollout": self.score_rollouts,
             },
         )
-        states = await asyncio.gather(
-            *[self.harness.run(task, state) for task, state in zip(tasks, states)]
-        )
+        run_tasks = [
+            asyncio.create_task(self.harness.run(task, state))
+            for task, state in zip(tasks, states)
+        ]
+        try:
+            states = await asyncio.gather(*run_tasks)
+        except BaseException:
+            pending = [task for task in run_tasks if not task.done()]
+            for task in pending:
+                task.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+            await self.harness.cleanup_group(tasks, states)
+            for state in states:
+                state.strip_runtime_handles()
+            raise
         try:
             if self.score_rollouts:
                 await self.harness.score_group(tasks, states)

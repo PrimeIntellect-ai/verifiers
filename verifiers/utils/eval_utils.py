@@ -1135,6 +1135,7 @@ async def run_evaluation(
             hf_hub_dataset_name=config.hf_hub_dataset_name,
             independent_scoring=config.independent_scoring,
             max_retries=config.max_retries,
+            continue_on_error=config.continue_on_error,
             on_start=on_start,
             on_progress=on_progress,
             on_log=on_log,
