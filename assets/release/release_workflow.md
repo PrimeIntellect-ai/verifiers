@@ -12,9 +12,6 @@ PyPI. Versions are **git-driven** via `hatch-vcs` — there is no version string
 ## Before cutting a stable release
 
 - Verify CI is green on the commit you intend to tag.
-- Confirm the `verifiers` project on PyPI has a Trusted Publisher configured for repository
-  `PrimeIntellect-ai/verifiers`, workflow `publish-verifiers.yml`, environment `pypi-prod`. The publish job authenticates
-  via OIDC — no PyPI token is required for `verifiers`.
 
 ## Release notes
 
