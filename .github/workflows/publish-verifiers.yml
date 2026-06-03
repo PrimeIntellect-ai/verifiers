@@ -19,6 +19,7 @@ on:
       - main
     tags:
       - 'v[0-9]*'
+      - '!v[0-9]*dev*'  # `.dev` tags are auto-versioning artifacts, not releases
 
 concurrency:
   group: publish-verifiers-${{ github.ref }}
@@ -108,6 +109,10 @@ jobs:
           fi
 
           case "$TAG" in
+            *dev*)
+              echo "Dev tags are auto-versioning artifacts, not stable releases (received '$TAG')" >&2
+              exit 1
+              ;;
             v[0-9]*) ;;
             *)
               echo "Release tags must look like 'vX.Y.Z' (received '$TAG')" >&2
