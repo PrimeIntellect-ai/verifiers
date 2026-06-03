@@ -3498,6 +3498,10 @@ def test_nested_configs_validate_and_feed_runtime_objects() -> None:
         packages="numpy",
         setup_commands="echo ready",
         scope="group",
+        create_concurrency=7,
+        create_rate_per_second=1.5,
+        delete_concurrency=3,
+        delete_rate_per_second=2.5,
     )
     harness = make_harness(program={"sandbox": True}, sandbox=sandbox)
 
@@ -3506,6 +3510,10 @@ def test_nested_configs_validate_and_feed_runtime_objects() -> None:
     assert harness.sandbox.packages == ["numpy"]
     assert harness.sandbox.setup_commands == ["echo ready"]
     assert harness.sandbox.scope == "group"
+    assert harness.sandbox.create_concurrency == 7
+    assert harness.sandbox.create_rate_per_second == 1.5
+    assert harness.sandbox.delete_concurrency == 3
+    assert harness.sandbox.delete_rate_per_second == 2.5
 
     toolset = Toolset(
         config=vf.ToolsetConfig(
@@ -3526,6 +3534,9 @@ def test_nested_configs_validate_and_feed_runtime_objects() -> None:
 def test_nested_configs_reject_unknown_fields() -> None:
     with pytest.raises(ValueError):
         vf.SandboxConfig.model_validate({"image": "python:3.11", "unknown": True})
+
+    with pytest.raises(ValueError):
+        HarnessConfig.model_validate({"sandbox_create_concurrency": 2})
 
     with pytest.raises(ValueError):
         vf.ToolsetConfig.model_validate({"tools": [], "show": ["a"], "hide": ["b"]})

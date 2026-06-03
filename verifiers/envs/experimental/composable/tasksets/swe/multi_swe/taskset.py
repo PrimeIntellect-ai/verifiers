@@ -261,7 +261,7 @@ class MultiSWETaskSet(SandboxTaskSet):
             # Acquire::Retries=3: harden against transient archive.ubuntu.com CDN
             # mirror-sync mismatches mid-rollout (launchpad bug #1876035).
             "command -v patch || (apt-get -o Acquire::Retries=3 update && apt-get -o Acquire::Retries=3 install -y patch)",
-            "rm -f /home/fix.patch /home/test_output.txt /home/create_fix_patch.sh",
+            "rm -f /home/fix.patch /home/test_output.txt /home/create_fix_patch.sh /home/extract_multiswe_fix_patch.sh",
         ]
         for command in commands:
             results = await sandbox_client.execute_command(
@@ -281,21 +281,26 @@ class MultiSWETaskSet(SandboxTaskSet):
         test_timeout: int,
     ) -> str:
         repo_path = self.get_workdir(state["info"])
-        script_path = SCRIPTS_DIR / "create_fix_patch.sh"
+        multiswe_row = restore_row(state["info"])
+        base = multiswe_row.get("base")
+        base_commit = base.get("sha") if isinstance(base, dict) else None
+        base_commit = base_commit or "HEAD"
+        script_path = SCRIPTS_DIR / "extract_fix_patch.sh"
         await sandbox_client.upload_file(
-            sandbox_id, "/home/create_fix_patch.sh", str(script_path)
+            sandbox_id, "/home/extract_multiswe_fix_patch.sh", str(script_path)
         )
 
         prep = await sandbox_client.execute_command(
             sandbox_id,
-            "chmod +x /home/create_fix_patch.sh && bash /home/create_fix_patch.sh",
+            "chmod +x /home/extract_multiswe_fix_patch.sh"
+            f" && bash /home/extract_multiswe_fix_patch.sh . {shlex.quote(base_commit)}",
             working_dir=repo_path,
             timeout=min(test_timeout, 300),
         )
         if prep.exit_code != 0:
             stderr = (prep.stderr or "")[:1000]
             raise RuntimeError(
-                f"Failed to create Multi-SWE fix patch: exit_code={prep.exit_code} stderr={stderr}"
+                f"Failed to extract Multi-SWE fix patch: exit_code={prep.exit_code} stderr={stderr}"
             )
 
         command = "bash -o pipefail -c 'bash /home/fix-run.sh 2>&1 | tee /home/test_output.txt'"

@@ -1,10 +1,11 @@
 import asyncio
 import json
-import logging
 import os
 import shlex
 import sys
 import tempfile
+import threading
+import time
 import urllib.request
 from contextlib import AsyncExitStack
 from pathlib import Path
@@ -17,7 +18,6 @@ from pydantic import BaseModel
 
 import verifiers as vf
 from verifiers.clients import Client
-from verifiers.errors import SandboxError
 from verifiers.types import ClientConfig
 from verifiers.types import Response, ResponseMessage, ToolCall
 from verifiers.types import Tool
@@ -27,6 +27,7 @@ from verifiers.v1.utils import mcp_utils, sandbox_utils
 from verifiers.v1.utils.mcp_proxy_utils import MCP_PROXY_CONFIG_PATH, MCP_PROXY_PATH
 from verifiers.v1.utils.mcp_proxy_utils import proxy_command, proxy_program
 from verifiers.v1.utils.program_utils import command_env
+from verifiers.v1.utils.runtime_registry import load_runtime
 from verifiers.v1.utils.sandbox_python_utils import (
     SANDBOX_PYTHON,
     SANDBOX_UV,
@@ -46,7 +47,7 @@ from verifiers.v1.utils.sandbox_program_utils import (
 from verifiers.v1.utils.sandbox_utils import (
     VF_STATE_INPUT_PATH_KEY,
     run_sandbox_command,
-    upload_program_files,
+    upload_program_dirs,
 )
 
 PROGRAM_REF_MODULE = "v1_runtime_lifecycle_refs"
@@ -123,17 +124,22 @@ class FakeCommandResult:
 
 class FakeSandboxClient:
     created: list[str] = []
+    requests: list[dict[str, object]] = []
     deleted: list[str] = []
     commands: list[tuple[str, str]] = []
     command_timeouts: list[int | None] = []
-    background_jobs: list[tuple[str, str, int | None, str | None]] = []
+    background_jobs: list[tuple[str, str, int | None, str | None, int]] = []
     uploads: list[tuple[str, str, bytes]] = []
     wait_attempts: list[tuple[str, int]] = []
     closed = 0
 
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        _ = args, kwargs
+
     @classmethod
     def reset(cls) -> None:
         cls.created = []
+        cls.requests = []
         cls.deleted = []
         cls.commands = []
         cls.command_timeouts = []
@@ -143,7 +149,7 @@ class FakeSandboxClient:
         cls.closed = 0
 
     async def create(self, request: FakeCreateSandboxRequest) -> FakeSandboxResult:
-        _ = request
+        type(self).requests.append(dict(request.kwargs))
         sandbox_id = f"sbx-{len(type(self).created) + 1}"
         type(self).created.append(sandbox_id)
         return FakeSandboxResult(sandbox_id)
@@ -173,8 +179,11 @@ class FakeSandboxClient:
         command = str(kwargs.get("command") or args[1])
         timeout = cast(int | None, kwargs.get("timeout", 900))
         working_dir = cast(str | None, kwargs.get("working_dir"))
+        poll_interval = cast(int, kwargs.get("poll_interval", 3))
         type(self).commands.append((sandbox_id, command))
-        type(self).background_jobs.append((sandbox_id, command, timeout, working_dir))
+        type(self).background_jobs.append(
+            (sandbox_id, command, timeout, working_dir, poll_interval)
+        )
         return FakeCommandResult()
 
     async def upload_bytes(self, *args: object, **kwargs: object) -> None:
@@ -411,10 +420,11 @@ def install_fake_sandboxes(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def disable_sandbox_retry_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def no_sleep(seconds: float) -> None:
+    async def no_sleep(seconds: float, result: object | None = None) -> object | None:
         _ = seconds
+        return result
 
-    monkeypatch.setattr(sandbox_utils, "sandbox_retry_sleep", no_sleep)
+    monkeypatch.setattr(sandbox_utils.asyncio, "sleep", no_sleep)
 
 
 def install_fake_endpoint_tunnel(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -722,7 +732,12 @@ async def test_v1_records_default_metrics_usage_and_timing() -> None:
     state = await harness.run(task)
 
     assert state["metrics"]["num_turns"] == 1.0
-    assert state["token_usage"] == {"input_tokens": 11.0, "output_tokens": 7.0}
+    assert state["token_usage"] == {
+        "input_tokens": 11.0,
+        "output_tokens": 7.0,
+        "final_output_tokens": 7.0,
+        "final_input_tokens": 11.0,
+    }
     assert state["usage"] == state["token_usage"]
     assert state["timing"]["total"] > 0.0
     assert state["timing"]["generation"]["duration"] > 0.0
@@ -1342,68 +1357,133 @@ async def test_create_sandbox_cleans_up_wait_failure_with_retry(
 
 
 @pytest.mark.asyncio
-async def test_setup_sandbox_wraps_package_install_exceptions() -> None:
-    class ExecuteFailingLease:
-        async def execute(self, command: str, timeout: int | None = None):
-            _ = command, timeout
-            raise RuntimeError("gateway down")
+async def test_create_sandbox_cancellation_deletes_late_provider_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sandboxes(monkeypatch)
+    disable_sandbox_retry_sleep(monkeypatch)
+    started = asyncio.Event()
+    finish = asyncio.Event()
+    deleted: list[str] = []
 
-    with pytest.raises(
-        SandboxError, match="Sandbox package install failed: gateway down"
-    ):
-        await sandbox_utils.setup_sandbox(
-            cast(sandbox_utils.SandboxLease, ExecuteFailingLease()),
-            {"packages": ["requests"]},
+    class SlowCreateClient:
+        async def create(self, request: FakeCreateSandboxRequest) -> FakeSandboxResult:
+            _ = request
+            started.set()
+            await finish.wait()
+            return FakeSandboxResult("sbx-created-after-cancel")
+
+        async def wait_for_creation(
+            self,
+            sandbox_id: str,
+            *,
+            max_attempts: int = sandbox_utils.SANDBOX_WAIT_FOR_CREATION_ATTEMPTS,
+        ) -> None:
+            _ = sandbox_id, max_attempts
+
+        async def delete(self, sandbox_id: str) -> None:
+            deleted.append(sandbox_id)
+
+    task = asyncio.create_task(
+        sandbox_utils.create_sandbox(
+            cast(sandbox_utils.SandboxClient, SlowCreateClient()),
+            {"image": "python:3.11-slim"},
         )
+    )
+    await started.wait()
+
+    task.cancel()
+    finish.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert deleted == ["sbx-created-after-cancel"]
 
 
 @pytest.mark.asyncio
-async def test_setup_sandbox_wraps_setup_command_exceptions() -> None:
-    class ExecuteFailingLease:
-        async def execute(self, command: str, timeout: int | None = None):
-            _ = command, timeout
-            raise RuntimeError("gateway down")
+async def test_create_sandbox_wait_cancellation_deletes_known_sandbox(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sandboxes(monkeypatch)
+    disable_sandbox_retry_sleep(monkeypatch)
+    waiting = asyncio.Event()
+    deleted: list[str] = []
 
-    with pytest.raises(
-        SandboxError, match="Sandbox setup command failed: gateway down"
-    ):
-        await sandbox_utils.setup_sandbox(
-            cast(sandbox_utils.SandboxLease, ExecuteFailingLease()),
-            {"setup_commands": ["echo setup"]},
+    class WaitingClient:
+        async def create(self, request: FakeCreateSandboxRequest) -> FakeSandboxResult:
+            _ = request
+            return FakeSandboxResult("sbx-wait-cancel")
+
+        async def wait_for_creation(
+            self,
+            sandbox_id: str,
+            *,
+            max_attempts: int = sandbox_utils.SANDBOX_WAIT_FOR_CREATION_ATTEMPTS,
+        ) -> None:
+            _ = sandbox_id, max_attempts
+            waiting.set()
+            await asyncio.Event().wait()
+
+        async def delete(self, sandbox_id: str) -> None:
+            deleted.append(sandbox_id)
+
+    task = asyncio.create_task(
+        sandbox_utils.create_sandbox(
+            cast(sandbox_utils.SandboxClient, WaitingClient()),
+            {"image": "python:3.11-slim"},
         )
+    )
+    await waiting.wait()
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert deleted == ["sbx-wait-cancel"]
 
 
 @pytest.mark.asyncio
-async def test_program_setup_handler_wraps_unexpected_exceptions() -> None:
-    class ExecuteFailingClient:
-        async def execute_command(self, *args: object, **kwargs: object) -> None:
-            _ = args, kwargs
-            raise RuntimeError("gateway down")
+async def test_create_sandbox_threads_v1_request_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sandboxes(monkeypatch)
 
-    lease = sandbox_utils.SandboxLease(
-        cast(sandbox_utils.SandboxClient, ExecuteFailingClient()),
-        "sbx-1",
-        "rollout",
-        "program",
-        owns_client=False,
+    await sandbox_utils.create_sandbox(
+        cast(sandbox_utils.SandboxClient, FakeSandboxClient()),
+        {
+            "image": "custom:latest",
+            "start_command": "sleep infinity",
+            "cpu_cores": 2,
+            "memory_gb": 8,
+            "disk_size_gb": 20,
+            "gpu_count": 1,
+            "gpu_type": "a10",
+            "vm": True,
+            "network_access": False,
+            "timeout_minutes": 30,
+            "environment_vars": {"NUMBER": 7},
+            "secrets": {"TOKEN": "secret"},
+            "team_id": "team",
+            "region": "us",
+            "registry_credentials_id": "registry",
+            "guaranteed": True,
+            "labels": ["v1"],
+        },
     )
-    handler = next(
-        handler
-        for handler in sandbox_utils.program_setup_handlers(
-            lease,
-            {"setup": "echo setup"},
-            Runtime(),
-        )
-        if handler.__name__ == "program_setup"
-    )
-    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
-    state = vf.State.for_task(task)
 
-    with pytest.raises(
-        SandboxError,
-        match="Sandbox setup handler program_setup failed: gateway down",
-    ):
-        await handler(task, state)
+    request = FakeSandboxClient.requests[0]
+    assert request["docker_image"] == "custom:latest"
+    assert request["memory_gb"] == 8.0
+    assert request["disk_size_gb"] == 20.0
+    assert request["gpu_type"] == "a10"
+    assert request["vm"] is True
+    assert request["network_access"] is False
+    assert request["environment_vars"] == {"NUMBER": "7"}
+    assert request["secrets"] == {"TOKEN": "secret"}
+    assert request["team_id"] == "team"
+    assert request["region"] == "us"
+    assert request["registry_credentials_id"] == "registry"
+    assert request["guaranteed"] is True
 
 
 @pytest.mark.asyncio
@@ -1620,7 +1700,7 @@ async def test_program_setup_uses_program_setup_timeout(
 
 
 @pytest.mark.asyncio
-async def test_sandbox_command_uses_client_default_timeout_when_omitted(
+async def test_sandbox_command_uses_configured_poll_interval(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     install_fake_sandboxes(monkeypatch)
@@ -1628,13 +1708,86 @@ async def test_sandbox_command_uses_client_default_timeout_when_omitted(
 
     harness = make_harness(
         program={"command": ["true"], "sandbox": True},
-        sandbox={"image": "python:3.11-slim"},
+        sandbox={"image": "python:3.11-slim", "poll_interval": 11},
     )
     task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
 
     await harness.run(task)
 
-    assert FakeSandboxClient.background_jobs == [("sbx-1", "true", 900, None)]
+    assert FakeSandboxClient.background_jobs == [("sbx-1", "true", 900, None, 11)]
+
+
+@pytest.mark.asyncio
+async def test_sandbox_handle_forwards_background_job_poll_interval() -> None:
+    class BackgroundJobClient:
+        poll_intervals: list[int] = []
+
+        async def run_background_job(
+            self,
+            sandbox_id: str,
+            command: str,
+            *,
+            poll_interval: int = 3,
+            **kwargs: object,
+        ) -> FakeCommandResult:
+            _ = sandbox_id, command, kwargs
+            self.poll_intervals.append(poll_interval)
+            return FakeCommandResult()
+
+    client = BackgroundJobClient()
+    lease = sandbox_utils.SandboxLease(
+        cast(sandbox_utils.SandboxClient, client),
+        "sbx-1",
+        "rollout",
+        "program",
+        owns_client=False,
+    )
+    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+    state = vf.State.for_task(task)
+    handle = sandbox_utils.SandboxHandle(lease, state)
+
+    await handle.run_background_job("true", poll_interval=11)
+
+    assert client.poll_intervals == [11]
+
+
+@pytest.mark.asyncio
+async def test_sandbox_command_marks_oom_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sandboxes(monkeypatch)
+    install_fake_endpoint_tunnel(monkeypatch)
+
+    class SandboxOOMError(Exception):
+        pass
+
+    class OOMSandboxClient(FakeSandboxClient):
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            _ = args, kwargs
+
+        async def run_background_job(
+            self, *args: object, **kwargs: object
+        ) -> FakeCommandResult:
+            _ = args, kwargs
+            raise SandboxOOMError("Container exceeded memory limit")
+
+    monkeypatch.setattr(
+        "verifiers.utils.threaded_sandbox_client.ThreadedAsyncSandboxClient",
+        OOMSandboxClient,
+    )
+
+    harness = make_harness(
+        program={"command": ["true"], "sandbox": True},
+        sandbox={"image": "python:3.11-slim"},
+    )
+    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+
+    state = await harness.run(task)
+
+    assert state["sandbox_oom"] is True
+    assert state["sandbox_failures"][0]["kind"] == "oom"
+    assert state["sandbox_failures"][0]["phase"] == "command"
+    assert state["error"]["error"] == "SandboxError"
 
 
 @pytest.mark.asyncio
@@ -1687,7 +1840,7 @@ async def test_task_command_uses_background_job(
 
     await harness.run(task)
 
-    assert ("sbx-1", "sleep 120", 120, "/app") in FakeSandboxClient.background_jobs
+    assert ("sbx-1", "sleep 120", 120, "/app", 3) in FakeSandboxClient.background_jobs
 
 
 @pytest.mark.asyncio
@@ -2220,6 +2373,36 @@ async def test_runtime_owned_model_clients_close_after_rollout(
 
 
 @pytest.mark.asyncio
+async def test_runtime_owned_model_clients_live_until_group_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = Runtime()
+    client = FakeClient()
+    state = vf.State.for_task(vf.Task({}).freeze())
+    state["runtime"]["group_key"] = "group"
+
+    monkeypatch.setattr("verifiers.v1.runtime.resolve_client", lambda config: client)
+
+    runtime.bind_model_client(
+        state,
+        ClientConfig(
+            client_type="openai_chat_completions",
+            api_base_url="https://example.com/v1",
+            api_key_var="KEY",
+        ),
+    )
+    await runtime.release_model_client(state)
+
+    assert client.closed is False
+    assert len(runtime.model_clients) == 1
+
+    await runtime.release_model_client(state, group=True)
+
+    assert client.closed is True
+    assert runtime.model_clients == {}
+
+
+@pytest.mark.asyncio
 async def test_mcp_lifetime_follows_toolset_scope(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2313,24 +2496,21 @@ async def test_shared_sandbox_delete_retries_transient_failures(
 
 
 @pytest.mark.asyncio
-async def test_shared_sandbox_delete_surfaces_delete_failures(
+async def test_sandbox_delete_failure_leaves_lease_retryable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     disable_sandbox_retry_sleep(monkeypatch)
 
-    class DeleteFailingClient:
-        closed = 0
-        delete_calls = 0
+    class DeleteFailsThenSucceeds:
+        calls = 0
 
         async def delete(self, sandbox_id: str) -> None:
             _ = sandbox_id
-            type(self).delete_calls += 1
-            raise RuntimeError("delete failed")
+            self.calls += 1
+            if self.calls <= sandbox_utils.SANDBOX_RETRY_ATTEMPTS:
+                raise RuntimeError("delete failed")
 
-        async def aclose(self) -> None:
-            type(self).closed += 1
-
-    client = DeleteFailingClient()
+    client = DeleteFailsThenSucceeds()
     lease = sandbox_utils.SandboxLease(
         cast(sandbox_utils.SandboxClient, client),
         "sbx-1",
@@ -2342,41 +2522,464 @@ async def test_shared_sandbox_delete_surfaces_delete_failures(
     with pytest.raises(RuntimeError, match="delete failed"):
         await lease.delete()
 
-    assert client.delete_calls == sandbox_utils.SANDBOX_RETRY_ATTEMPTS
-    assert client.closed == 0
+    assert lease.deleted is False
+
+    await lease.delete()
+
+    assert lease.deleted is True
+    assert client.calls == sandbox_utils.SANDBOX_RETRY_ATTEMPTS + 1
 
 
 @pytest.mark.asyncio
-async def test_release_sandboxes_logs_and_removes_delete_failures(
-    caplog: pytest.LogCaptureFixture,
+async def test_owned_sandbox_delete_failure_keeps_client_retryable(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    class DeleteFailingLease:
-        id = "sbx-1"
-        scope = "rollout"
+    disable_sandbox_retry_sleep(monkeypatch)
 
-        async def delete(self) -> None:
-            raise RuntimeError("delete failed")
+    class DeleteFailsThenSucceeds:
+        calls = 0
+        closed = 0
 
+        async def delete(self, sandbox_id: str) -> None:
+            _ = sandbox_id
+            self.calls += 1
+            if self.calls <= sandbox_utils.SANDBOX_RETRY_ATTEMPTS:
+                raise RuntimeError("delete failed")
+
+        async def aclose(self) -> None:
+            self.closed += 1
+
+    client = DeleteFailsThenSucceeds()
+    lease = sandbox_utils.SandboxLease(
+        cast(sandbox_utils.SandboxClient, client),
+        "sbx-1",
+        "rollout",
+        "program",
+    )
+
+    with pytest.raises(RuntimeError, match="delete failed"):
+        await lease.delete()
+
+    assert lease.deleted is False
+    assert client.calls == sandbox_utils.SANDBOX_RETRY_ATTEMPTS
+    assert client.closed == 0
+
+    await lease.delete()
+
+    assert lease.deleted is True
+    assert client.calls == sandbox_utils.SANDBOX_RETRY_ATTEMPTS + 1
+    assert client.closed == 1
+
+
+@pytest.mark.asyncio
+async def test_program_sandbox_creations_are_concurrent_and_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sandboxes(monkeypatch)
+
+    class SlowSandboxClient(FakeSandboxClient):
+        active = 0
+        max_active = 0
+
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            _ = args, kwargs
+
+        async def create(self, request: FakeCreateSandboxRequest) -> FakeSandboxResult:
+            type(self).active += 1
+            type(self).max_active = max(type(self).max_active, type(self).active)
+            await asyncio.sleep(0.01)
+            try:
+                return await super().create(request)
+            finally:
+                type(self).active -= 1
+
+    monkeypatch.setattr(
+        "verifiers.utils.threaded_sandbox_client.ThreadedAsyncSandboxClient",
+        SlowSandboxClient,
+    )
+
+    class RecordingRateLimiter:
+        wait_calls = 0
+
+        async def wait(self) -> None:
+            self.wait_calls += 1
+
+    harness = make_harness(sandbox={"create_concurrency": 2})
+    limiter = RecordingRateLimiter()
+    harness.runtime.sandbox_create_rate_limiter = limiter
+    sandbox = vf.SandboxConfig(image="python:3.11-slim")
+    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+    states = [vf.State.for_task(task) for _ in range(4)]
+
+    await asyncio.gather(
+        *(
+            harness.runtime.resolve_program_sandbox(sandbox, task, state)
+            for state in states
+        )
+    )
+
+    assert SlowSandboxClient.max_active == 2
+    assert len(FakeSandboxClient.created) == 4
+    assert limiter.wait_calls == 4
+
+    await harness.teardown()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_sandbox_awaiter_teardown_deletes_completed_creation() -> None:
+    deleted: list[str] = []
+    started = asyncio.Event()
+    finish = asyncio.Event()
+
+    class DeleteClient:
+        async def delete(self, sandbox_id: str) -> None:
+            deleted.append(sandbox_id)
+
+    async def create_late_lease() -> sandbox_utils.SandboxLease:
+        started.set()
+        await finish.wait()
+        return sandbox_utils.SandboxLease(
+            cast(sandbox_utils.SandboxClient, DeleteClient()),
+            "sbx-late",
+            "rollout",
+            "program",
+            owns_client=False,
+        )
+
+    runtime = Runtime()
+    key = ("rollout:test", "program")
+    waiter = asyncio.create_task(runtime.resolve_sandbox_lease(key, create_late_lease))
+    await started.wait()
+
+    waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+
+    assert key in runtime.sandbox_creation_tasks
+    finish.set()
+    await asyncio.wait_for(runtime.sandbox_creation_tasks[key], timeout=1)
+
+    await runtime.teardown()
+
+    assert deleted == ["sbx-late"]
+    assert key not in runtime.sandbox_creation_tasks
+
+
+@pytest.mark.asyncio
+async def test_teardown_deletes_late_provider_create_before_closing_client() -> None:
+    started = asyncio.Event()
+    finish = asyncio.Event()
+    delete_closed_states: list[bool] = []
+
+    class SlowCreateClient:
+        closed = False
+
+        async def create(self, request: FakeCreateSandboxRequest) -> FakeSandboxResult:
+            _ = request
+            started.set()
+            await finish.wait()
+            return FakeSandboxResult("sbx-late-provider")
+
+        async def wait_for_creation(
+            self,
+            sandbox_id: str,
+            *,
+            max_attempts: int = sandbox_utils.SANDBOX_WAIT_FOR_CREATION_ATTEMPTS,
+        ) -> None:
+            _ = sandbox_id, max_attempts
+
+        async def delete(self, sandbox_id: str) -> None:
+            assert sandbox_id == "sbx-late-provider"
+            delete_closed_states.append(self.closed)
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    client = SlowCreateClient()
+    runtime = Runtime()
+    runtime._sandbox_client = cast(sandbox_utils.SandboxClient, client)
+    sandbox = vf.SandboxConfig(image="python:3.11-slim")
+    key = ("rollout:test", "program")
+    waiter = asyncio.create_task(
+        runtime.resolve_sandbox_lease(
+            key,
+            lambda: sandbox_utils.create_sandbox_lease(
+                sandbox,
+                key[1],
+                client=cast(sandbox_utils.SandboxClient, client),
+            ),
+        )
+    )
+    await started.wait()
+
+    teardown = asyncio.create_task(runtime.teardown())
+    await asyncio.sleep(0)
+    assert teardown.done() is False
+
+    finish.set()
+    await teardown
+
+    assert delete_closed_states == [False]
+    assert client.closed is True
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+
+
+@pytest.mark.asyncio
+async def test_release_sandboxes_deletes_completed_unclaimed_creation() -> None:
+    deleted: list[str] = []
+
+    class DeleteClient:
+        async def delete(self, sandbox_id: str) -> None:
+            deleted.append(sandbox_id)
+
+    runtime = Runtime()
     task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
     state = vf.State.for_task(task)
-    runtime = Runtime()
     key = (runtime.scope_key("rollout", state), "program")
-    runtime.sandbox_leases[key] = cast(sandbox_utils.SandboxLease, DeleteFailingLease())
+    lease = sandbox_utils.SandboxLease(
+        cast(sandbox_utils.SandboxClient, DeleteClient()),
+        "sbx-unclaimed",
+        "rollout",
+        "program",
+        owns_client=False,
+    )
+    runtime.sandbox_creation_tasks[key] = asyncio.create_task(
+        asyncio.sleep(0, result=lease)
+    )
+    await runtime.sandbox_creation_tasks[key]
 
-    package_logger = logging.getLogger("verifiers")
-    package_logger.addHandler(caplog.handler)
-    try:
-        with caplog.at_level(logging.WARNING, logger="verifiers.v1.runtime"):
-            await runtime.release_sandboxes("rollout", state)
-    finally:
-        package_logger.removeHandler(caplog.handler)
+    await runtime.release_sandboxes("rollout", state)
+    await runtime.teardown()
+
+    assert deleted == ["sbx-unclaimed"]
+    assert key not in runtime.sandbox_creation_tasks
+
+
+@pytest.mark.asyncio
+async def test_release_sandboxes_keeps_failed_delete_retryable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    disable_sandbox_retry_sleep(monkeypatch)
+
+    class RetryableDeleteClient:
+        calls = 0
+
+        async def delete(self, sandbox_id: str) -> None:
+            assert sandbox_id == "sbx-retryable-delete"
+            self.calls += 1
+            if self.calls <= sandbox_utils.SANDBOX_RETRY_ATTEMPTS:
+                raise RuntimeError("delete failed")
+
+    runtime = Runtime()
+    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+    state = vf.State.for_task(task)
+    key = (runtime.scope_key("rollout", state), "program")
+    lease = sandbox_utils.SandboxLease(
+        cast(sandbox_utils.SandboxClient, RetryableDeleteClient()),
+        "sbx-retryable-delete",
+        "rollout",
+        "program",
+        owns_client=False,
+    )
+    runtime.sandbox_leases[key] = lease
+
+    await runtime.release_sandboxes("rollout", state)
+
+    assert runtime.sandbox_leases[key] is lease
+    assert len(state["cleanup_errors"]) == 1
+
+    await runtime.release_sandboxes("rollout", state)
+    await runtime.teardown()
 
     assert key not in runtime.sandbox_leases
-    messages = [record.getMessage() for record in caplog.records]
-    assert any("Failed to delete rollout sandbox sbx-1" in msg for msg in messages)
-    assert any(
-        "1/1 rollout sandbox deletions failed during cleanup" in msg for msg in messages
+
+
+@pytest.mark.asyncio
+async def test_resolve_sandbox_lease_rejects_lease_being_deleted() -> None:
+    delete_started = asyncio.Event()
+    finish_delete = asyncio.Event()
+
+    class SlowDeleteClient:
+        async def delete(self, sandbox_id: str) -> None:
+            assert sandbox_id == "sbx-deleting"
+            delete_started.set()
+            await finish_delete.wait()
+
+    async def create_replacement() -> sandbox_utils.SandboxLease:
+        raise AssertionError("resolve should not create a replacement")
+
+    runtime = Runtime()
+    key = ("rollout:test", "program")
+    lease = sandbox_utils.SandboxLease(
+        cast(sandbox_utils.SandboxClient, SlowDeleteClient()),
+        "sbx-deleting",
+        "rollout",
+        "program",
+        owns_client=False,
     )
+    runtime.sandbox_leases[key] = lease
+    deletion = asyncio.create_task(runtime.close_sandbox_lease(lease))
+    await delete_started.wait()
+
+    with pytest.raises(RuntimeError, match="being deleted"):
+        await runtime.resolve_sandbox_lease(key, create_replacement)
+
+    finish_delete.set()
+    await deletion
+
+
+@pytest.mark.asyncio
+async def test_resolve_sandbox_lease_rejects_creation_claimed_by_cleanup() -> None:
+    deleted: list[str] = []
+
+    class DeleteClient:
+        async def delete(self, sandbox_id: str) -> None:
+            deleted.append(sandbox_id)
+
+    runtime = Runtime()
+    key = ("rollout:test", "program")
+    create_started = asyncio.Event()
+    lease = sandbox_utils.SandboxLease(
+        cast(sandbox_utils.SandboxClient, DeleteClient()),
+        "sbx-cleanup-claimed",
+        "rollout",
+        "program",
+        owns_client=False,
+    )
+
+    async def create_lease() -> sandbox_utils.SandboxLease:
+        create_started.set()
+        try:
+            await asyncio.sleep(10)
+        except asyncio.CancelledError:
+            return lease
+        raise AssertionError("creation should be cancelled by cleanup")
+
+    resolver = asyncio.create_task(runtime.resolve_sandbox_lease(key, create_lease))
+    await create_started.wait()
+    creation_task = runtime.sandbox_creation_tasks[key]
+
+    await runtime.clear_sandbox_creation_tasks([(key, creation_task)])
+
+    with pytest.raises(RuntimeError, match="cancelled before"):
+        await resolver
+    assert deleted == ["sbx-cleanup-claimed"]
+    assert key not in runtime.sandbox_creation_tasks
+    assert key not in runtime.sandbox_leases
+
+
+@pytest.mark.asyncio
+async def test_clear_creation_tasks_keeps_failed_delete_retryable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    disable_sandbox_retry_sleep(monkeypatch)
+
+    class RetryableDeleteClient:
+        calls = 0
+
+        async def delete(self, sandbox_id: str) -> None:
+            assert sandbox_id == "sbx-unclaimed-retry"
+            self.calls += 1
+            if self.calls <= sandbox_utils.SANDBOX_RETRY_ATTEMPTS:
+                raise RuntimeError("delete failed")
+
+    runtime = Runtime()
+    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+    state = vf.State.for_task(task)
+    key = (runtime.scope_key("rollout", state), "program")
+    lease = sandbox_utils.SandboxLease(
+        cast(sandbox_utils.SandboxClient, RetryableDeleteClient()),
+        "sbx-unclaimed-retry",
+        "rollout",
+        "program",
+        owns_client=False,
+    )
+
+    async def finished_creation() -> sandbox_utils.SandboxLease:
+        return lease
+
+    creation_task = asyncio.create_task(finished_creation())
+    runtime.sandbox_creation_tasks[key] = creation_task
+    await creation_task
+
+    await runtime.clear_sandbox_creation_tasks(
+        [(key, creation_task)],
+        state=state,
+        scope="rollout",
+    )
+
+    assert key not in runtime.sandbox_creation_tasks
+    assert runtime.sandbox_leases[key] is lease
+    assert len(state["cleanup_errors"]) == 1
+
+    await runtime.release_sandboxes("rollout", state)
+    await runtime.teardown()
+
+    assert key not in runtime.sandbox_leases
+
+
+@pytest.mark.asyncio
+async def test_teardown_keeps_failed_delete_retryable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    disable_sandbox_retry_sleep(monkeypatch)
+
+    class DeleteFailsThenSucceeds:
+        def __init__(self, sandbox_id: str):
+            self.sandbox_id = sandbox_id
+            self.delete_calls = 0
+            self.closed = False
+
+        async def delete(self, sandbox_id: str) -> None:
+            assert sandbox_id == self.sandbox_id
+            self.delete_calls += 1
+            if self.delete_calls <= sandbox_utils.SANDBOX_RETRY_ATTEMPTS:
+                raise RuntimeError("delete failed")
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    client = DeleteFailsThenSucceeds("sbx-terminal-fail")
+    owned_client = DeleteFailsThenSucceeds("sbx-owned-terminal-fail")
+    runtime = Runtime()
+    runtime._sandbox_client = cast(sandbox_utils.SandboxClient, client)
+    key = ("rollout:test", "program")
+    lease = sandbox_utils.SandboxLease(
+        cast(sandbox_utils.SandboxClient, client),
+        "sbx-terminal-fail",
+        "rollout",
+        "program",
+        owns_client=False,
+    )
+    runtime.sandbox_leases[key] = lease
+    owned_key = ("rollout:test", "owned")
+    runtime.sandbox_leases[owned_key] = sandbox_utils.SandboxLease(
+        cast(sandbox_utils.SandboxClient, owned_client),
+        "sbx-owned-terminal-fail",
+        "rollout",
+        "owned",
+    )
+
+    await runtime.teardown()
+
+    assert client.delete_calls == sandbox_utils.SANDBOX_RETRY_ATTEMPTS
+    assert client.closed is False
+    assert owned_client.delete_calls == sandbox_utils.SANDBOX_RETRY_ATTEMPTS
+    assert owned_client.closed is False
+    assert runtime.sandbox_leases[key] is lease
+    assert owned_key in runtime.sandbox_leases
+    assert load_runtime(runtime.runtime_id) is runtime
+
+    await runtime.teardown()
+
+    assert client.delete_calls == sandbox_utils.SANDBOX_RETRY_ATTEMPTS + 1
+    assert client.closed is True
+    assert owned_client.delete_calls == sandbox_utils.SANDBOX_RETRY_ATTEMPTS + 1
+    assert owned_client.closed is True
+    assert runtime.sandbox_leases == {}
+    with pytest.raises(RuntimeError, match="No live v1 runtime registered"):
+        load_runtime(runtime.runtime_id)
 
 
 @pytest.mark.asyncio
@@ -2396,8 +2999,10 @@ async def test_program_sandbox_group_scope_reuses_and_cleans(
     state_b = vf.State.for_task(task)
     state_b["runtime"]["group_key"] = "group"
 
-    state_a = await harness.run(task, state_a)
-    state_b = await harness.run(task, state_b)
+    state_a, state_b = await asyncio.gather(
+        harness.run(task, state_a),
+        harness.run(task, state_b),
+    )
 
     assert FakeSandboxClient.created == ["sbx-1"]
     assert state_a["sandbox_id"] == "sbx-1"
@@ -2445,28 +3050,155 @@ async def test_program_sandbox_global_scope_lives_until_teardown(
 
 
 @pytest.mark.asyncio
-async def test_upload_program_files_wraps_sandbox_upload_timeout(
-    monkeypatch: pytest.MonkeyPatch,
+async def test_upload_program_dirs_reuses_runtime_archive_cache(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    install_fake_sandboxes(monkeypatch)
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    (source_dir / "module.py").write_text("VALUE = 1\n")
+    archive_path = tmp_path / "cached.tar.gz"
+    build_calls = 0
 
-    class TimeoutUploadClient:
-        async def upload_bytes(self, *args: object, **kwargs: object) -> None:
-            _ = args, kwargs
-            raise FakeUploadTimeoutError("timed out")
+    def fake_build_dir_archive(local_source: Path, remote_path: str) -> Path:
+        nonlocal build_calls
+        assert local_source == source_dir
+        assert remote_path == "/remote/pkg"
+        build_calls += 1
+        time.sleep(0.05)
+        archive_path.write_bytes(b"archive")
+        return archive_path
 
+    class UploadClient:
+        uploads: list[tuple[str, str, str]] = []
+        commands: list[tuple[str, str]] = []
+
+        async def upload_file(self, *args: object, **kwargs: object) -> None:
+            sandbox_id = str(kwargs.get("sandbox_id") or args[0])
+            file_path = str(kwargs.get("file_path") or args[1])
+            local_path = str(kwargs.get("local_file_path") or args[2])
+            self.uploads.append((sandbox_id, file_path, local_path))
+
+        async def execute_command(
+            self, *args: object, **kwargs: object
+        ) -> FakeCommandResult:
+            sandbox_id = str(kwargs.get("sandbox_id") or args[0])
+            command = str(kwargs.get("command") or args[1])
+            self.commands.append((sandbox_id, command))
+            return FakeCommandResult()
+
+    monkeypatch.setattr(sandbox_utils, "build_dir_archive", fake_build_dir_archive)
+    runtime = Runtime()
+    client = UploadClient()
     task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
-    state = vf.State.for_task(task)
+    program = {"dirs": {"/remote/pkg": str(source_dir)}}
+    states = [vf.State.for_task(task), vf.State.for_task(task)]
 
-    with pytest.raises(SandboxError, match="Program file upload failed"):
-        await upload_program_files(
-            cast(sandbox_utils.SandboxClient, TimeoutUploadClient()),
-            "sbx-1",
-            {"files": {"/mini-swe-agent/prompt.txt": "hello"}},
-            task,
-            state,
-            cast(Runtime, SimpleNamespace()),
+    await asyncio.gather(
+        *(
+            upload_program_dirs(
+                cast(sandbox_utils.SandboxClient, client),
+                sandbox_id,
+                program,
+                task,
+                state,
+                runtime,
+            )
+            for sandbox_id, state in zip(["sbx-1", "sbx-2"], states, strict=True)
         )
+    )
+
+    assert build_calls == 1
+    assert client.uploads == [
+        ("sbx-1", "/tmp/_vf_upload_remote_pkg.tar.gz", str(archive_path)),
+        ("sbx-2", "/tmp/_vf_upload_remote_pkg.tar.gz", str(archive_path)),
+    ]
+    assert archive_path.exists()
+
+    (source_dir / "module.py").write_text("VALUE = 2\n")
+    await upload_program_dirs(
+        cast(sandbox_utils.SandboxClient, client),
+        "sbx-3",
+        program,
+        task,
+        vf.State.for_task(task),
+        runtime,
+    )
+
+    assert build_calls == 2
+    assert client.uploads[-1] == (
+        "sbx-3",
+        "/tmp/_vf_upload_remote_pkg.tar.gz",
+        str(archive_path),
+    )
+
+    await runtime.teardown()
+
+    assert not archive_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_cached_upload_archive_cancelled_awaiter_still_cleans_archive(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    (source_dir / "module.py").write_text("VALUE = 1\n")
+    archive_path = tmp_path / "cached.tar.gz"
+    started = threading.Event()
+    finish = threading.Event()
+
+    def fake_build_dir_archive(local_source: Path, remote_path: str) -> Path:
+        assert local_source == source_dir
+        assert remote_path == "/remote/pkg"
+        started.set()
+        finish.wait(timeout=1)
+        archive_path.write_bytes(b"archive")
+        return archive_path
+
+    monkeypatch.setattr(sandbox_utils, "build_dir_archive", fake_build_dir_archive)
+    runtime = Runtime()
+    task = asyncio.create_task(runtime.cached_upload_archive(source_dir, "/remote/pkg"))
+    await asyncio.to_thread(started.wait)
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    finish.set()
+    await runtime.teardown()
+
+    assert runtime.upload_archive_tasks == {}
+    assert not archive_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_cleanup_upload_archives_logs_unlink_errors(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    archive_path = tmp_path / "cached.tar.gz"
+    archive_path.write_bytes(b"archive")
+    runtime = Runtime()
+    runtime.upload_archive_tasks[("remote", "source", "digest")] = asyncio.create_task(
+        asyncio.sleep(0, result=archive_path)
+    )
+    warnings: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    def raise_unlink(path: Path, missing_ok: bool = False) -> None:
+        assert path == archive_path
+        assert missing_ok is True
+        raise PermissionError("locked")
+
+    def record_warning(*args: object, **kwargs: object) -> None:
+        warnings.append((args, kwargs))
+
+    monkeypatch.setattr(Path, "unlink", raise_unlink)
+    monkeypatch.setattr("verifiers.v1.runtime.logger.warning", record_warning)
+
+    await runtime.cleanup_upload_archives()
+
+    assert runtime.upload_archive_tasks == {}
+    assert warnings[0][0][0] == "Failed to delete cached upload archive %s: %s"
+    assert warnings[0][1]["exc_info"] is True
 
 
 @pytest.mark.asyncio
@@ -2489,38 +3221,6 @@ async def test_sandbox_program_artifact_collected_by_runtime(
     state = await harness.run(task)
 
     assert state["artifacts"]["command_log"] == "ok\n"
-
-
-@pytest.mark.asyncio
-async def test_optional_sandbox_program_artifact_records_none() -> None:
-    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
-    state = vf.State.for_task(task)
-    client = SimpleNamespace(
-        execute_command=lambda **kwargs: SimpleNamespace(
-            exit_code=2, stdout="", stderr=""
-        )
-    )
-    sandbox_lease = SimpleNamespace(client=client, id="sbx")
-    runtime = Runtime()
-
-    result = await runtime.collect_artifact(
-        vf.ArtifactConfig(path="/tmp/missing.log", format="text", optional=True),
-        task,
-        state,
-        sandbox_lease=cast(Any, sandbox_lease),
-    )
-
-    await runtime.teardown()
-
-    assert result is None
-
-
-@pytest.mark.asyncio
-async def test_sandbox_program_artifact_optional_must_be_boolean() -> None:
-    with pytest.raises(ValueError, match="optional"):
-        vf.ArtifactConfig.model_validate(
-            {"path": "/tmp/missing.log", "optional": "true"}
-        )
 
 
 @pytest.mark.asyncio
