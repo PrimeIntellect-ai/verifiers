@@ -5,7 +5,6 @@ import keyword
 import re
 import tarfile
 import textwrap
-from collections.abc import Callable
 from importlib.abc import Traversable
 from pathlib import Path
 from typing import cast
@@ -34,39 +33,18 @@ def rlm_checkout_path(
     repo_ref: str,
     repo_path: str | None = None,
 ) -> Path:
-    return rlm_checkout_loader(
-        repo_path=repo_path,
+    """Return a local path to an RLM checkout — `repo_path` if given, else a cached clone of `repo_url`@`repo_ref`."""
+    if repo_path is not None:
+        return validate_git_checkout(
+            Path(repo_path),
+            required_files=REQUIRED_RLM_CHECKOUT_FILES,
+        )
+    return resolve_git_checkout(
         repo_url=repo_url,
-        repo_ref=repo_ref,
-    )()
-
-
-def rlm_checkout_loader(
-    repo_path: str | Path | None,
-    repo_url: str,
-    repo_ref: str,
-) -> Callable[[], Path]:
-    checkout: Path | None = None
-
-    def load() -> Path:
-        nonlocal checkout
-        if checkout is not None:
-            return checkout
-        if repo_path is not None:
-            checkout = validate_git_checkout(
-                Path(repo_path),
-                required_files=REQUIRED_RLM_CHECKOUT_FILES,
-            )
-        else:
-            checkout = resolve_git_checkout(
-                repo_url=repo_url,
-                ref=repo_ref,
-                cache_root=DEFAULT_RLM_LOCAL_CHECKOUT_CACHE_ROOT,
-                required_files=REQUIRED_RLM_CHECKOUT_FILES,
-            )
-        return checkout
-
-    return load
+        ref=repo_ref,
+        cache_root=DEFAULT_RLM_LOCAL_CHECKOUT_CACHE_ROOT,
+        required_files=REQUIRED_RLM_CHECKOUT_FILES,
+    )
 
 
 def rlm_tool_skills_archive(state: State, runtime: Runtime) -> str:
