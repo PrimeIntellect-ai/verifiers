@@ -105,11 +105,11 @@ def test_log_rollout_start_and_finish_lines() -> None:
     start_line, finish_line = handler.messages
     assert start_line == "Started  example_id=7 | trajectory_id=abc123"
     assert "Finished example_id=7 | trajectory_id=abc123" in finish_line
-    assert "turns=3" in finish_line
-    assert "tools=[search:2,read:1]" in finish_line
+    assert "turns=" not in finish_line
+    assert "tools=[search: 2, read: 1]" in finish_line
     assert "stop=program_completed" in finish_line
     assert "reward=1.5" in finish_line
-    assert "num_turns:3.0" in finish_line
+    assert "metrics={num_turns: 3, correct: 1}" in finish_line
     assert "truncated" not in finish_line
     assert "error=" not in finish_line
 

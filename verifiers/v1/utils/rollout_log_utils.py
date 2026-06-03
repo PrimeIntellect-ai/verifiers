@@ -2,7 +2,7 @@ import logging
 from collections import Counter
 from typing import cast
 
-from verifiers.utils.display_utils import format_timing_plain
+from verifiers.utils.display_utils import format_numeric, format_timing_plain
 from verifiers.utils.logging_utils import truncate
 
 from ..state import State
@@ -28,15 +28,16 @@ def log_rollout_finish(state: State) -> None:
         return
     trajectory = state.get("trajectory") or []
     tool_counts = rollout_tool_counts(trajectory)
-    tools_str = ",".join(f"{name}:{count}" for name, count in tool_counts.most_common())
+    tools_str = ", ".join(
+        f"{name}: {count}" for name, count in tool_counts.most_common()
+    )
     parts = [
         f"Finished example_id={state.get('example_id')}",
         f"trajectory_id={state.get('trajectory_id')}",
-        f"turns={len(trajectory)}",
         f"tools=[{tools_str}]",
         f"timing={rollout_timing_summary(state.get('timing'))}",
         f"stop={state.get('stop_condition')}",
-        f"reward={state.get('reward')}",
+        f"reward={format_reward(state.get('reward'))}",
         f"metrics={format_metrics(state.get('metrics'))}",
     ]
     error = state.get("error")
@@ -118,11 +119,19 @@ def as_float(value: object) -> float:
     return float(value) if isinstance(value, (int, float)) else 0.0
 
 
+def format_reward(reward: object) -> str:
+    return format_numeric(reward) if isinstance(reward, (int, float)) else str(reward)
+
+
 def format_metrics(metrics: object) -> str:
     if not isinstance(metrics, dict):
         return "{}"
     items = cast("dict[str, float]", metrics).items()
-    return "{" + ",".join(f"{name}:{value}" for name, value in items) + "}"
+    return (
+        "{"
+        + ", ".join(f"{name}: {format_numeric(value)}" for name, value in items)
+        + "}"
+    )
 
 
 def format_error(error: object) -> str:
