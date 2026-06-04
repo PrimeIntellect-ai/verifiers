@@ -79,6 +79,34 @@ async def test_openai_chat_rejects_reasoning_only_native_response():
 
 
 @pytest.mark.asyncio
+async def test_openai_chat_accepts_refusal_with_reasoning_native_response():
+    client = OpenAIChatCompletionsClient(object())
+    native_response = SimpleNamespace(
+        id="chatcmpl_refusal",
+        created=0,
+        model="gpt-5.2",
+        usage=None,
+        choices=[
+            SimpleNamespace(
+                finish_reason="stop",
+                message=_OpenAIMessage(
+                    content=None,
+                    refusal="I cannot help with that.",
+                    reasoning_content="hidden chain",
+                    tool_calls=None,
+                ),
+            )
+        ],
+    )
+
+    await client.raise_from_native_response(native_response)
+    response = await client.from_native_response(native_response)
+
+    assert response.message.content == "I cannot help with that."
+    assert response.message.reasoning_content == "hidden chain"
+
+
+@pytest.mark.asyncio
 async def test_anthropic_to_native_prompt_with_typed_multimodal_content_parts():
     pytest.importorskip("anthropic")
     from verifiers.clients.anthropic_messages_client import AnthropicMessagesClient
