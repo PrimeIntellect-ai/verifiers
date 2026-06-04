@@ -1,5 +1,6 @@
 import asyncio
 import glob
+import hashlib
 import inspect
 import logging
 import time
@@ -7,6 +8,8 @@ import uuid
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
+from importlib.abc import Traversable
+from pathlib import Path
 from typing import (
     TYPE_CHECKING,
     Literal,
@@ -62,8 +65,6 @@ from .runtime_handles import (
     RuntimeHandleConfig,
     SandboxRuntimeHandleConfig,
     SandboxRuntimeStateConfig,
-    ToolsRuntimeHandleConfig,
-    TrajectoryRuntimeHandleConfig,
 )
 from .utils.tool_utils import schema_callable, tool_schema, tool_visible
 from .utils.tool_utils import toolset_object_scope
@@ -193,6 +194,24 @@ class BorrowedTool:
         )
 
 
+class AsyncRateLimiter:
+    def __init__(self, rate_per_second: float | None):
+        self.interval = 0.0 if rate_per_second is None else 1.0 / rate_per_second
+        self.next_at = 0.0
+        self.lock = asyncio.Lock()
+
+    async def wait(self) -> None:
+        if not self.interval:
+            return
+        async with self.lock:
+            now = time.monotonic()
+            delay = self.next_at - now
+            if delay > 0:
+                await asyncio.sleep(delay)
+                now = time.monotonic()
+            self.next_at = max(now, self.next_at) + self.interval
+
+
 class Runtime:
     def __init__(
         self, taskset: "Taskset | None" = None, harness: "Harness | None" = None
@@ -218,7 +237,24 @@ class Runtime:
         self.owned_model_clients: set[str] = set()
         self._sandbox_client = None
         self.sandbox_leases: dict[tuple[str, str], SandboxLease] = {}
+        self.sandbox_creation_tasks: dict[
+            tuple[str, str], asyncio.Task[SandboxLease]
+        ] = {}
+        self.upload_archive_tasks: dict[tuple[str, str, str], asyncio.Task[Path]] = {}
         self.sandbox_lock = asyncio.Lock()
+        sandbox_config = (
+            self.harness.sandbox
+            if self.harness is not None and self.harness.sandbox is not None
+            else SandboxConfig()
+        )
+        create_concurrency = sandbox_config.create_concurrency
+        create_rate = sandbox_config.create_rate_per_second
+        delete_concurrency = sandbox_config.delete_concurrency
+        delete_rate = sandbox_config.delete_rate_per_second
+        self.sandbox_create_semaphore = asyncio.Semaphore(create_concurrency)
+        self.sandbox_create_rate_limiter = AsyncRateLimiter(create_rate)
+        self.sandbox_delete_semaphore = asyncio.Semaphore(delete_concurrency)
+        self.sandbox_delete_rate_limiter = AsyncRateLimiter(delete_rate)
         self.mcp_exit_stacks: dict[str, AsyncExitStack] = {}
         self.mcp_tools: dict[str, RuntimeTools] = {}
         self.mcp_tool_parents: dict[str, dict[str, tuple[Toolset, ...]]] = {}
@@ -416,23 +452,11 @@ class Runtime:
     def endpoint_handle(self, state: State) -> RuntimeHandleConfig | None:
         return self.resolved_handles(state).endpoint
 
-    def trajectory_handle(self, state: State) -> TrajectoryRuntimeHandleConfig | None:
-        return self.resolved_handles(state).trajectory
-
     def sandbox_handle(self, state: State) -> SandboxRuntimeHandleConfig | None:
         return self.resolved_handles(state).sandbox
 
-    def tools_handle(self, state: State) -> ToolsRuntimeHandleConfig | None:
-        return self.resolved_handles(state).tools
-
-    def sandbox_state(self, state: State) -> SandboxRuntimeStateConfig | None:
-        sandbox_record = state.runtime_state().get("sandbox")
-        if sandbox_record is None:
-            return None
-        return SandboxRuntimeStateConfig.model_validate(sandbox_record)
-
     def resolve_trajectory(self, state: State) -> None:
-        handle = self.trajectory_handle(state)
+        handle = self.resolved_handles(state).trajectory
         if handle is None:
             state.setdefault("trajectory", [])
             self.register_trajectory(state)
@@ -969,6 +993,7 @@ class Runtime:
             await self.release_sandboxes(scope="group", state=state)
             await self.close_mcp_tools(state, scope="group")
             self.release_scoped_tools("group", state)
+            await self.release_model_client(state, group=True)
 
     async def collect_artifacts(self, task: Task, state: State) -> None:
         artifacts = self.runtime_artifacts(task, state)
@@ -1028,17 +1053,40 @@ class Runtime:
     async def teardown(self) -> None:
         await run_handlers(self.teardown_handlers)
         await self.release_runtime_objects()
+        failed_sandbox_deletions = []
         try:
-            for handle in list(self.sandbox_leases.values()):
-                await close_object(handle)
-            self.sandbox_leases.clear()
+            if self.sandbox_creation_tasks:
+                await self.clear_sandbox_creation_tasks(
+                    list(self.sandbox_creation_tasks.items())
+                )
+            for key, handle in list(self.sandbox_leases.items()):
+                try:
+                    await self.close_sandbox_lease(handle)
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to delete sandbox %s during teardown: %s",
+                        handle.id,
+                        exc,
+                        exc_info=True,
+                    )
+                    failed_sandbox_deletions.append(handle)
+                else:
+                    async with self.sandbox_lock:
+                        if self.sandbox_leases.get(key) is handle:
+                            del self.sandbox_leases[key]
         finally:
-            await self.teardown_sandbox_client()
+            if not any(
+                handle.client is self._sandbox_client
+                for handle in failed_sandbox_deletions
+            ):
+                await self.teardown_sandbox_client()
+            await self.cleanup_upload_archives()
         self.tool_handles.clear()
         self.scoped_tools.clear()
         await self.close_all_mcp_tools()
         await self.release_all_model_clients()
-        unregister_runtime(self.runtime_id)
+        if not failed_sandbox_deletions:
+            unregister_runtime(self.runtime_id)
 
     def sandbox_client(self) -> "SandboxClient":
         if self._sandbox_client is None:
@@ -1048,7 +1096,10 @@ class Runtime:
 
             from .utils.sandbox_utils import SandboxClient
 
-            self._sandbox_client = cast(SandboxClient, ThreadedAsyncSandboxClient())
+            self._sandbox_client = cast(
+                SandboxClient,
+                ThreadedAsyncSandboxClient(),
+            )
         return self._sandbox_client
 
     async def teardown_sandbox_client(self) -> None:
@@ -1058,6 +1109,175 @@ class Runtime:
 
         await close_sandbox_client(self._sandbox_client)
         self._sandbox_client = None
+
+    async def cached_upload_archive(
+        self, local_source: Path | Traversable, remote_path: str
+    ) -> Path:
+        from .utils.sandbox_utils import UPLOAD_IGNORE_PARTS, build_dir_archive
+
+        if isinstance(local_source, Path):
+            root = local_source.resolve()
+            digest = hashlib.sha256()
+            paths = [root]
+            if root.is_dir():
+                paths = []
+                directories = [root]
+                while directories:
+                    for path in sorted(directories.pop().iterdir()):
+                        if path.name in UPLOAD_IGNORE_PARTS:
+                            continue
+                        paths.append(path)
+                        if path.is_dir():
+                            directories.append(path)
+            for path in paths:
+                relative = (
+                    path.relative_to(root).as_posix() if path != root else path.name
+                )
+                stat = path.stat()
+                kind = "d" if path.is_dir() else "f"
+                digest.update(
+                    f"{kind}:{relative}:{stat.st_mtime_ns}:{stat.st_size}\0".encode()
+                )
+            key = (remote_path, str(root), digest.hexdigest())
+        else:
+            key = (remote_path, str(local_source), "resource")
+        task = self.upload_archive_tasks.get(key)
+        if task is None:
+            task = asyncio.create_task(
+                asyncio.to_thread(build_dir_archive, local_source, remote_path)
+            )
+            self.upload_archive_tasks[key] = task
+        try:
+            return await asyncio.shield(task)
+        except Exception:
+            if self.upload_archive_tasks.get(key) is task:
+                del self.upload_archive_tasks[key]
+            raise
+
+    async def cleanup_upload_archives(self) -> None:
+        tasks = list(self.upload_archive_tasks.values())
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        self.upload_archive_tasks.clear()
+        for result in results:
+            if not isinstance(result, Path):
+                continue
+            try:
+                result.unlink(missing_ok=True)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to delete cached upload archive %s: %s",
+                    result,
+                    exc,
+                    exc_info=True,
+                )
+
+    async def close_sandbox_lease(self, lease: "SandboxLease") -> None:
+        async with self.sandbox_delete_semaphore:
+            await self.sandbox_delete_rate_limiter.wait()
+            await close_object(lease)
+
+    async def clear_sandbox_creation_tasks(
+        self,
+        creations: Sequence[tuple[tuple[str, str], asyncio.Task["SandboxLease"]]],
+        *,
+        state: State | None = None,
+        scope: str | None = None,
+    ) -> None:
+        from .utils.sandbox_utils import SandboxLease as SandboxLeaseClass
+
+        claimed_creations = []
+        async with self.sandbox_lock:
+            for key, task in creations:
+                if self.sandbox_creation_tasks.get(key) is task:
+                    del self.sandbox_creation_tasks[key]
+                    claimed_creations.append((key, task))
+
+        for _, task in claimed_creations:
+            if not task.done():
+                task.cancel()
+        results = await asyncio.gather(
+            *(task for _, task in claimed_creations), return_exceptions=True
+        )
+
+        for (key, _), result in zip(claimed_creations, results, strict=True):
+            if not isinstance(result, SandboxLeaseClass):
+                continue
+            result.scope_key = key[0]
+            try:
+                await self.close_sandbox_lease(result)
+            except Exception as exc:
+                async with self.sandbox_lock:
+                    if not result.deleted:
+                        self.sandbox_leases[key] = result
+                logger.warning(
+                    "Failed to delete sandbox %s from cancelled creation: %s",
+                    result.id,
+                    exc,
+                    exc_info=True,
+                )
+                if state is not None and scope is not None:
+                    cleanup_errors = cast(
+                        list[ConfigData], state.setdefault("cleanup_errors", [])
+                    )
+                    cleanup_errors.append(
+                        {
+                            "type": type(exc).__name__,
+                            "message": str(exc),
+                            "scope": scope,
+                        }
+                    )
+
+    async def resolve_sandbox_lease(
+        self, key: tuple[str, str], factory: Callable[[], Awaitable["SandboxLease"]]
+    ) -> "SandboxLease":
+        async with self.sandbox_lock:
+            lease = self.sandbox_leases.get(key)
+            if lease is not None:
+                if lease.deleted:
+                    raise RuntimeError("Sandbox lease is being deleted.")
+                return lease
+            task = self.sandbox_creation_tasks.get(key)
+            if task is None:
+
+                async def create_sandbox_lease() -> "SandboxLease":
+                    async with self.sandbox_create_semaphore:
+                        await self.sandbox_create_rate_limiter.wait()
+                        return await factory()
+
+                task = asyncio.create_task(create_sandbox_lease())
+                self.sandbox_creation_tasks[key] = task
+
+        try:
+            lease = await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if task.cancelled():
+                async with self.sandbox_lock:
+                    if self.sandbox_creation_tasks.get(key) is task:
+                        del self.sandbox_creation_tasks[key]
+            raise
+        except BaseException:
+            async with self.sandbox_lock:
+                if self.sandbox_creation_tasks.get(key) is task:
+                    del self.sandbox_creation_tasks[key]
+            raise
+        async with self.sandbox_lock:
+            existing = self.sandbox_leases.get(key)
+            if existing is not None:
+                if existing.deleted:
+                    raise RuntimeError("Sandbox lease is being deleted.")
+                return existing
+            if self.sandbox_creation_tasks.get(key) is not task:
+                raise RuntimeError(
+                    "Sandbox creation was cancelled before the lease was resolved."
+                )
+            del self.sandbox_creation_tasks[key]
+            if lease.deleted:
+                raise RuntimeError(
+                    "Sandbox lease was deleted before it could be resolved."
+                )
+            lease.scope_key = key[0]
+            self.sandbox_leases[key] = lease
+            return lease
 
     async def run_rollout_handlers(
         self,
@@ -2052,8 +2272,10 @@ class Runtime:
             return str(state.get("trajectory_id"))
         raise ValueError("Object scope must be 'rollout', 'group', or 'global'.")
 
-    async def release_model_client(self, state: State) -> None:
+    async def release_model_client(self, state: State, *, group: bool = False) -> None:
         if self.model_handle(state) is not None:
+            return
+        if not group and "group_key" in state.runtime_state():
             return
         key = state.runtime_state().get("client_key")
         if not isinstance(key, str):
@@ -2077,7 +2299,7 @@ class Runtime:
     ) -> object:
         from .utils.sandbox_utils import (
             SandboxHandle,
-            create_tool_sandbox_lease,
+            create_scoped_sandbox_lease,
             tool_sandbox_key,
         )
 
@@ -2101,22 +2323,24 @@ class Runtime:
                 return SandboxHandle(lease, state)
         scope = sandbox.scope
         key = (self.scope_key(scope, state), tool_sandbox_key(toolset))
-        async with self.sandbox_lock:
-            lease = self.sandbox_leases.get(key)
-            if lease is None:
-                lease = await create_tool_sandbox_lease(
-                    toolset, client=self.sandbox_client()
-                )
-                self.sandbox_leases[key] = lease
+        lease = await self.resolve_sandbox_lease(
+            key,
+            lambda: create_scoped_sandbox_lease(
+                toolset,
+                key[1],
+                client=self.sandbox_client(),
+            ),
+        )
         return SandboxHandle(lease, state)
 
     def active_program_sandbox_lease(self, state: State) -> "SandboxLease | None":
         sandbox_handle = self.sandbox_handle(state)
         if sandbox_handle is not None:
             return self.sandbox_lease_from_handle(sandbox_handle, "sandbox")
-        sandbox_record = self.sandbox_state(state)
-        if sandbox_record is None:
+        sandbox_state = state.runtime_state().get("sandbox")
+        if sandbox_state is None:
             return None
+        sandbox_record = SandboxRuntimeStateConfig.model_validate(sandbox_state)
         resolved_lease_key = sandbox_record.lease_key
         lease = self.sandbox_leases.get(resolved_lease_key)
         if lease is None:
@@ -2137,14 +2361,14 @@ class Runtime:
             return self.sandbox_lease_from_handle(sandbox_handle, "sandbox")
         scope = sandbox_config.scope
         key = (self.scope_key(scope, state), program_sandbox_key(sandbox_config))
-        async with self.sandbox_lock:
-            lease = self.sandbox_leases.get(key)
-            if lease is None:
-                lease = await create_sandbox_lease(
-                    sandbox_config, key[1], client=self.sandbox_client()
-                )
-                self.sandbox_leases[key] = lease
-                lease.scope_key = key[0]
+        lease = await self.resolve_sandbox_lease(
+            key,
+            lambda: create_sandbox_lease(
+                sandbox_config,
+                key[1],
+                client=self.sandbox_client(),
+            ),
+        )
         return lease
 
     def sandbox_lease_from_handle(
@@ -2172,26 +2396,37 @@ class Runtime:
             raise TypeError("User sandbox must be configured.")
         scope = sandbox.scope
         key = (self.scope_key(scope, state), sandbox_owner_key(user))
-        async with self.sandbox_lock:
-            lease = self.sandbox_leases.get(key)
-            if lease is None:
-                lease = await create_scoped_sandbox_lease(
-                    user, key[1], client=self.sandbox_client()
-                )
-                self.sandbox_leases[key] = lease
+        lease = await self.resolve_sandbox_lease(
+            key,
+            lambda: create_scoped_sandbox_lease(
+                user,
+                key[1],
+                client=self.sandbox_client(),
+            ),
+        )
         return SandboxHandle(lease, state)
 
     async def release_sandboxes(self, scope: str, state: State) -> None:
         scope_key = self.scope_key(scope, state)
-        scoped_leases = [
-            (key, handle)
-            for key, handle in self.sandbox_leases.items()
-            if key[0] == scope_key and handle.scope == scope
-        ]
+        async with self.sandbox_lock:
+            pending_creations = [
+                (key, task)
+                for key, task in self.sandbox_creation_tasks.items()
+                if key[0] == scope_key
+            ]
+            scoped_leases = [
+                (key, handle)
+                for key, handle in self.sandbox_leases.items()
+                if key[0] == scope_key and handle.scope == scope
+            ]
+        if pending_creations:
+            await self.clear_sandbox_creation_tasks(
+                pending_creations, state=state, scope=scope
+            )
         deletion_failures = 0
         for key, handle in scoped_leases:
             try:
-                await close_object(handle)
+                await self.close_sandbox_lease(handle)
             except Exception as exc:
                 deletion_failures += 1
                 logger.warning(
@@ -2202,16 +2437,20 @@ class Runtime:
                     exc,
                     exc_info=True,
                 )
-                cleanup_errors = state.setdefault("cleanup_errors", [])
-                if isinstance(cleanup_errors, list):
-                    cleanup_errors.append(
-                        {
-                            "type": type(exc).__name__,
-                            "message": str(exc),
-                            "scope": scope,
-                        }
-                    )
-            del self.sandbox_leases[key]
+                cleanup_errors = cast(
+                    list[ConfigData], state.setdefault("cleanup_errors", [])
+                )
+                cleanup_errors.append(
+                    {
+                        "type": type(exc).__name__,
+                        "message": str(exc),
+                        "scope": scope,
+                    }
+                )
+            else:
+                async with self.sandbox_lock:
+                    if self.sandbox_leases.get(key) is handle:
+                        del self.sandbox_leases[key]
         if deletion_failures:
             logger.error(
                 "%s/%s %s sandbox deletions failed during cleanup",
@@ -2223,35 +2462,38 @@ class Runtime:
     async def ensure_global_sandboxes(self, state: State | None = None) -> None:
         from .utils.sandbox_utils import (
             create_scoped_sandbox_lease,
-            create_tool_sandbox_lease,
             sandbox_owner_key,
             tool_sandbox_key,
         )
 
-        async with self.sandbox_lock:
-            for owner in self.sandbox_owners(state):
-                sandbox = owner.sandbox
-                if sandbox is None or sandbox == "program":
-                    continue
-                if not isinstance(sandbox, SandboxConfig):
-                    raise TypeError("Owner sandbox must be SandboxConfig or 'program'.")
-                if sandbox.scope != "global":
-                    continue
-                if isinstance(owner, Toolset):
-                    sandbox_key = tool_sandbox_key(owner)
-                else:
-                    sandbox_key = sandbox_owner_key(owner)
-                key = ("global", sandbox_key)
-                if key in self.sandbox_leases:
-                    continue
-                if isinstance(owner, Toolset):
-                    self.sandbox_leases[key] = await create_tool_sandbox_lease(
-                        owner, client=self.sandbox_client()
+        toolsets = self.active_toolsets(state) if state is not None else self.toolsets
+        owners: list[Toolset | User] = [*iter_toolsets(toolsets)]
+        user = self.active_user()
+        if user is not None:
+            owners.append(user)
+        for owner in owners:
+            sandbox = owner.sandbox
+            if sandbox is None or sandbox == "program":
+                continue
+            if not isinstance(sandbox, SandboxConfig):
+                raise TypeError("Owner sandbox must be SandboxConfig or 'program'.")
+            if sandbox.scope != "global":
+                continue
+            sandbox_key = (
+                tool_sandbox_key(owner)
+                if isinstance(owner, Toolset)
+                else sandbox_owner_key(owner)
+            )
+            await self.resolve_sandbox_lease(
+                ("global", sandbox_key),
+                lambda owner=owner, sandbox_key=sandbox_key: (
+                    create_scoped_sandbox_lease(
+                        owner,
+                        sandbox_key,
+                        client=self.sandbox_client(),
                     )
-                else:
-                    self.sandbox_leases[key] = await create_scoped_sandbox_lease(
-                        owner, sandbox_key, client=self.sandbox_client()
-                    )
+                ),
+            )
 
     def bind_global_sandboxes(self, state: State) -> None:
         from .utils.sandbox_utils import attach_sandbox_ref
@@ -2261,14 +2503,6 @@ class Runtime:
             if scope_key != "global":
                 continue
             attach_sandbox_ref(state, lease)
-
-    def sandbox_owners(self, state: State | None = None) -> list[Toolset | User]:
-        toolsets = self.active_toolsets(state) if state is not None else self.toolsets
-        owners: list[Toolset | User] = [*iter_toolsets(toolsets)]
-        user = self.active_user()
-        if user is not None:
-            owners.append(user)
-        return owners
 
     async def ensure_mcp_tools(self, state: State) -> None:
         from .utils.mcp_utils import connect_mcp_tool
@@ -2396,7 +2630,7 @@ class Runtime:
         return tools
 
     def borrowed_tools_for_state(self, state: State) -> RuntimeTools:
-        handle = self.tools_handle(state)
+        handle = self.resolved_handles(state).tools
         if handle is None:
             return {}
         source_runtime = self.resolved_runtime(handle)
@@ -2416,7 +2650,12 @@ class Runtime:
     ) -> dict[str, VisibilityConfig]:
         task = self.task_for_state(state)
         task_tools = task.tools_config()
-        active_named_toolsets = self._active_named_toolsets(active_toolsets)
+        active_ids = {id(toolset) for toolset in iter_toolsets(active_toolsets)}
+        active_named_toolsets = {
+            name: toolset
+            for name, toolset in self.named_toolsets.items()
+            if id(toolset) in active_ids
+        }
         filters: dict[str, VisibilityConfig] = {}
         for name, filter_config in task_tools.items():
             if name not in active_named_toolsets:
@@ -2433,16 +2672,6 @@ class Runtime:
                     raise KeyError(f"Unknown tools for toolset {name!r}: {unknown}.")
             filters[name] = filter_config
         return filters
-
-    def _active_named_toolsets(
-        self, active_toolsets: Sequence[Toolset]
-    ) -> dict[str, Toolset]:
-        active_ids = {id(toolset) for toolset in iter_toolsets(active_toolsets)}
-        return {
-            name: toolset
-            for name, toolset in self.named_toolsets.items()
-            if id(toolset) in active_ids
-        }
 
     def _tool_names_for_toolset(self, toolset: Toolset, state: State) -> list[str]:
         names: list[str] = []

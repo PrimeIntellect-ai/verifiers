@@ -293,9 +293,13 @@ class OpenAIResponsesClient(
                     ):
                         has_text = True
 
-        if not (has_text or has_tool_call or has_reasoning):
+        if not (has_text or has_tool_call):
+            if has_reasoning:
+                raise EmptyModelResponseError(
+                    "Model returned reasoning but no content and did not call any tools"
+                )
             raise EmptyModelResponseError(
-                "Model returned no content, reasoning, and did not call any tools"
+                "Model returned no content and did not call any tools"
             )
 
     async def from_native_response(

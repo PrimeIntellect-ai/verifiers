@@ -60,3 +60,17 @@ own a reusable execution mechanism.
 Harness implementations resolve to one `ProgramConfig` shape. Command harness
 configs may expose task-relevant execution knobs, but the harness owns command
 construction, channel wiring, sandbox placement, and artifacts.
+
+## Agent Versions
+
+Command agents use `name@version` specs where their installer supports a
+versioned package or release. Use `@latest` for a moving latest install:
+
+```toml
+[eval.harness.program]
+# OpenCode
+release = "PrimeIntellect-ai/opencode@latest"
+
+# MiniSWEAgent or Pi
+package = "mini-swe-agent@2.2.8"
+```

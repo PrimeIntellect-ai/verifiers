@@ -69,6 +69,7 @@ class InterceptionServer:
     """
 
     def __init__(self, port: int, secret: str | None = None):
+        self._initial_port = port  # requested port (0 = OS-assigned); see stop()
         self.port = port
         self.secret = secret or secrets.token_urlsafe(32)
         self._app: Any = None
@@ -158,6 +159,9 @@ class InterceptionServer:
                     self._runner = None
                     self._site = None
                     self._app = None
+                    # Reset to the requested port so the next start() re-resolves
+                    # a fresh OS port instead of re-binding the stale cached one.
+                    self.port = self._initial_port
 
     def _set_rollout_error(self, rollout_id: str, error: BaseException) -> None:
         """Attach `error` to the rollout's state if one is registered and

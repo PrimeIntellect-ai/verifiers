@@ -4,6 +4,8 @@ from pathlib import PurePosixPath
 import verifiers as vf
 from verifiers.v1.utils.sandbox_python_utils import python_runtime_setup_command
 
+from .utils import split_versioned_agent_spec
+
 DEFAULT_INSTALL_DIR = "/opt/mini-swe-agent"
 DEFAULT_PREFIX_DIR = f"{DEFAULT_INSTALL_DIR}/prefix"
 DEFAULT_SITE_PACKAGES_DIR = f"{DEFAULT_PREFIX_DIR}/site-packages"
@@ -14,41 +16,30 @@ MINI_SWE_AGENT_DEFAULT_INSTRUCTION_PATH = "/mini-swe-agent/prompt.txt"
 MINI_SWE_AGENT_DEFAULT_SYSTEM_PROMPT_PATH = "/mini-swe-agent/system.txt"
 MINI_SWE_AGENT_DEFAULT_LOG_PATH = "/logs/agent/mini-swe-agent.log"
 MINI_SWE_AGENT_DEFAULT_TRAJECTORY_PATH = "/logs/agent/mini-swe-agent.traj.json"
-MINI_SWE_AGENT_DEFAULT_PACKAGE_VERSION = "2.2.8"
-MINI_SWE_AGENT_DEFAULT_PACKAGE_SHA256 = (
-    "694df4de1337e665e3cd82e99f93374f573bf52b8e7c362ac5d8045ad9f7c37c"
-)
+MINI_SWE_AGENT_DEFAULT_PACKAGE = "mini-swe-agent@2.2.8"
 MINI_SWE_AGENT_DEFAULT_CONFIG_SPEC = "mini"
 MINI_SWE_AGENT_DEFAULT_MODEL_CLASS = "litellm"
 MINI_SWE_AGENT_DEFAULT_ENVIRONMENT_TIMEOUT = 120
 
 
 def build_mini_swe_agent_install_script(
-    package_version: str = MINI_SWE_AGENT_DEFAULT_PACKAGE_VERSION,
-    package_sha256: str = MINI_SWE_AGENT_DEFAULT_PACKAGE_SHA256,
+    package: str = MINI_SWE_AGENT_DEFAULT_PACKAGE,
     prefix_dir: str = DEFAULT_PREFIX_DIR,
 ) -> str:
     install_dir = str(PurePosixPath(prefix_dir).parent)
     site_packages_dir = f"{prefix_dir.rstrip('/')}/site-packages"
-    wheel_filename = f"mini_swe_agent-{package_version}-py3-none-any.whl"
-    wheel_url = (
-        f"https://files.pythonhosted.org/packages/py3/m/mini-swe-agent/{wheel_filename}"
-    )
     setup_prefix_dir = shlex.quote(prefix_dir)
     setup_site_packages_dir = shlex.quote(site_packages_dir)
+    package_name, package_version = split_versioned_agent_spec(package)
+    package_requirement = package_name
+    if package_version and package_version != "latest":
+        package_requirement = f"{package_name}=={package_version}"
     return f"""\
 set -e
 {python_runtime_setup_command()}
 rm -rf {setup_prefix_dir}
 mkdir -p {shlex.quote(install_dir)} {setup_prefix_dir}/bin {setup_site_packages_dir} {shlex.quote(DEFAULT_LOG_DIR)} /mini-swe-agent
-MINI_SWE_AGENT_WHEEL_DIR="$(mktemp -d)"
-trap 'rm -rf "$MINI_SWE_AGENT_WHEEL_DIR"' EXIT
-MINI_SWE_AGENT_WHEEL="$MINI_SWE_AGENT_WHEEL_DIR/{wheel_filename}"
-MINI_SWE_AGENT_WHEEL_URL={shlex.quote(wheel_url)}
-export MINI_SWE_AGENT_WHEEL MINI_SWE_AGENT_WHEEL_URL
-"$VF_PYTHON" -c 'import os, urllib.request; urllib.request.urlretrieve(os.environ["MINI_SWE_AGENT_WHEEL_URL"], os.environ["MINI_SWE_AGENT_WHEEL"])'
-echo "{package_sha256}  $MINI_SWE_AGENT_WHEEL" | sha256sum -c -
-vf_python_install --target {setup_site_packages_dir} "$MINI_SWE_AGENT_WHEEL"
+vf_python_install --target {setup_site_packages_dir} {shlex.quote(package_requirement)}
 echo "$VF_PYTHON" > {setup_prefix_dir}/python
 cat > {setup_prefix_dir}/bin/mini <<'EOF'
 #!/usr/bin/env sh
@@ -66,8 +57,7 @@ class MiniSWEAgentProgramConfig(vf.ProgramConfig):
     system_prompt_path: str = MINI_SWE_AGENT_DEFAULT_SYSTEM_PROMPT_PATH
     log_path: str = MINI_SWE_AGENT_DEFAULT_LOG_PATH
     trajectory_path: str = MINI_SWE_AGENT_DEFAULT_TRAJECTORY_PATH
-    package_version: str = MINI_SWE_AGENT_DEFAULT_PACKAGE_VERSION
-    package_sha256: str = MINI_SWE_AGENT_DEFAULT_PACKAGE_SHA256
+    package: str = MINI_SWE_AGENT_DEFAULT_PACKAGE
     config_spec: str = MINI_SWE_AGENT_DEFAULT_CONFIG_SPEC
     model_class: str = MINI_SWE_AGENT_DEFAULT_MODEL_CLASS
     environment_timeout: int = MINI_SWE_AGENT_DEFAULT_ENVIRONMENT_TIMEOUT
@@ -125,8 +115,7 @@ class MiniSWEAgentProgramConfig(vf.ProgramConfig):
             config_args.extend(["-c", shlex.quote(spec)])
 
         setup = build_mini_swe_agent_install_script(
-            package_version=self.package_version,
-            package_sha256=self.package_sha256,
+            package=self.package,
         )
         log_dir = str(PurePosixPath(self.log_path).parent)
         trajectory_dir = str(PurePosixPath(self.trajectory_path).parent)

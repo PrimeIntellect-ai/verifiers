@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [project]
@@ -7,7 +7,7 @@ name = "verifiers"
 authors = [
     {name = "William Brown", email = "williambrown97@gmail.com"},
 ]
-dynamic = ["version"]  # load from verifiers/__init__.py
+dynamic = ["version"]  # derived from git tags via hatch-vcs
 description = "Verifiers: Environments for LLM Reinforcement Learning"
 readme = "README.md"
 license = "MIT"
@@ -227,7 +227,20 @@ vf-vllm = "verifiers.scripts.vllm:main"
 
 # hatchling configuration
 [tool.hatch.version]
-path = "verifiers/__init__.py"
+source = "vcs"
+
+[tool.hatch.version.raw-options]
+local_scheme = "no-local-version"
+git_describe_command = [
+    "git",
+    "describe",
+    "--tags",
+    "--long",
+    "--match",
+    "v[0-9]*.[0-9]*.[0-9]*",
+    "--exclude",
+    "*dev*",
+]
 
 [tool.hatch.build.targets.sdist]
 include = [

@@ -1,0 +1,171 @@
+name: Publish verifiers
+
+# Versioning is git-driven via hatch-vcs (see pyproject.toml):
+# - Every push to `main` publishes a pre-release for the next release: the last
+#   `vX.Y.Z` tag with its final segment bumped, plus `.dev<N>` where N = commits
+#   since that tag (e.g. `v0.1.14` -> `0.1.15.dev<N>`). No per-commit tags created.
+# - Pushing a `vX.Y.Z` tag (or dispatching with one) publishes that exact stable
+#   release to PyPI and creates a GitHub release.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to release (e.g. v0.1.15)'
+        required: true
+        type: string
+  push:
+    branches:
+      - main
+    tags:
+      - 'v[0-9]*.[0-9]*.[0-9]*'
+      - '!v[0-9]*dev*'  # `.dev` tags are auto-versioning artifacts, not releases
+
+concurrency:
+  group: publish-verifiers-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # Dev pre-release: every push to main publishes the next release's `.dev<N>`.
+  build-dev:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Build sdist and wheel
+        run: uv build
+
+      - name: Show derived version
+        run: ls -1 dist/
+
+      - name: Upload dist artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: verifiers-dev-dist
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish-dev:
+    needs: build-dev
+    runs-on: ubuntu-latest
+    environment: pypi-prod
+    permissions:
+      id-token: write
+    steps:
+      - name: Download dist artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: verifiers-dev-dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
+        with:
+          skip-existing: true
+
+  # Stable release: a pushed `vX.Y.Z` tag or a manual dispatch with an existing tag.
+  build-tag:
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+    steps:
+      - name: Checkout tagged release (dispatch)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: refs/tags/${{ inputs.tag }}
+
+      - name: Checkout tagged release (push)
+        if: github.event_name != 'workflow_dispatch'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve release tag
+        id: release
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PUSHED_REF: ${{ github.ref_name }}
+          INPUT_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || '' }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            TAG="$INPUT_TAG"
+          else
+            TAG="$PUSHED_REF"
+          fi
+
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Release tags must look like 'vX.Y.Z' (received '$TAG')" >&2
+            exit 1
+          fi
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Build sdist and wheel
+        run: uv build
+
+      - name: Upload dist artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: verifiers-dist
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish-tag:
+    needs: build-tag
+    runs-on: ubuntu-latest
+    environment: pypi-prod
+    permissions:
+      id-token: write
+    steps:
+      - name: Download dist artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: verifiers-dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
+
+  github-release-tag:
+    needs: [build-tag, publish-tag]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout tag
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ needs.build-tag.outputs.tag }}
+
+      - name: Download dist artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: verifiers-dist
+          path: dist/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.build-tag.outputs.tag }}
+          generate_release_notes: true
+          files: |
+            dist/*
