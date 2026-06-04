@@ -18,5 +18,5 @@ build-backend = "hatchling.build"
 include = ["sft_replay.py", "README.md", "pyproject.toml", "data/**/*"]
 
 [tool.verifiers.eval]
-num_examples = 1
-rollouts_per_example = 1
+num_examples = 5
+rollouts_per_example = 3
