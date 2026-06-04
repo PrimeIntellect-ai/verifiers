@@ -1,5 +1,7 @@
 import shlex
 
+from pydantic import Field
+
 import verifiers as vf
 
 from .utils.rlm_utils import (
@@ -10,39 +12,45 @@ from .utils.rlm_utils import (
     DEFAULT_RLM_TOOL_SKILLS_MANIFEST_NAME,
 )
 
-RLM_DEFAULT_REPO_URL = "github.com/PrimeIntellect-ai/rlm-harness.git"
-RLM_DEFAULT_REPO_REF = "main"
-RLM_DEFAULT_EXEC_TIMEOUT = 300
-RLM_DEFAULT_MAX_DEPTH = 0
-RLM_DEFAULT_INSTRUCTION_PATH = "/rlm/instruction.txt"
-RLM_DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH = "/rlm/append_to_system_prompt.txt"
-RLM_DEFAULT_WORKDIR = "/workspace"
-RLM_DEFAULT_TOOLS = ["ipython"]
+RLM_WORKDIR = "/workspace"
+RLM_INSTRUCTION_PATH = "/rlm/instruction.txt"
+RLM_APPEND_TO_SYSTEM_PROMPT_PATH = "/rlm/append_to_system_prompt.txt"
+RLM_HOME = "/rlm"
 
 
 class RLMProgramConfig(vf.ProgramConfig):
-    sandbox: vf.SandboxConfig | None = None
-    workdir: str = RLM_DEFAULT_WORKDIR
-    instruction_path: str = RLM_DEFAULT_INSTRUCTION_PATH
-    rlm_repo_url: str = RLM_DEFAULT_REPO_URL
-    rlm_repo_ref: str = RLM_DEFAULT_REPO_REF
-    rlm_exec_timeout: int = RLM_DEFAULT_EXEC_TIMEOUT
-    rlm_max_depth: int = RLM_DEFAULT_MAX_DEPTH
-    summarize_at_tokens: int | None = None
+    repo_url: str = "github.com/PrimeIntellect-ai/rlm-harness.git"
+    """Git URL of the RLM harness checkout (ignored if `repo_path` is set)."""
+
+    repo_ref: str = "main"
+    """Git ref to check out from `repo_url`."""
+
+    repo_path: str | None = None
+    """Local path to an existing RLM checkout. If set, takes precedence over
+    `repo_url` / `repo_ref` (no clone is performed)."""
+
+    tools: list[str] = ["ipython"]
+    """RLM tool plugins to load (passed as `RLM_TOOLS`)."""
+
+    max_depth: int = Field(default=0, ge=0)
+    """Max RLM recursion depth; 0 disables sub-LLM calls."""
+
+    summarize_at_tokens: int | None = Field(default=None, gt=0)
+    """Trigger RLM context summarization when the token count exceeds this."""
+
     append_to_system_prompt: str = ""
-    local_checkout: str | None = None
-    gh_token_var: str | None = "GH_TOKEN"
-    rlm_tools: list[str] = RLM_DEFAULT_TOOLS
-    env_vars: dict[str, str] = {}
-    skills: str | None = None
+    """Extra text appended to the RLM system prompt."""
+
+    allow_git: bool = False
+    """Disable RLM's restricted git-history guard (sets `RLM_ALLOW_GIT=1`)."""
 
     def resolve(self) -> vf.ProgramConfig:
         files: dict[str, vf.ProgramValue] = {
-            self.instruction_path: {
+            RLM_INSTRUCTION_PATH: {
                 "fn": "verifiers.v1.utils.prompt_utils:task_text",
                 "keys": ["instruction", "question"],
             },
-            RLM_DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH: self.append_to_system_prompt,
+            RLM_APPEND_TO_SYSTEM_PROMPT_PATH: self.append_to_system_prompt,
             DEFAULT_RLM_TOOL_SKILLS_ARCHIVE_PATH: {
                 "fn": "harnesses.utils.rlm_utils:rlm_tool_skills_archive"
             },
@@ -50,57 +58,50 @@ class RLMProgramConfig(vf.ProgramConfig):
         dirs: dict[str, vf.ProgramValue] = {
             DEFAULT_RLM_CHECKOUT_PATH: {
                 "fn": "harnesses.utils.rlm_utils:rlm_checkout_path",
-                **(
-                    {"local_checkout": self.local_checkout}
-                    if self.local_checkout
-                    else {}
-                ),
-                "rlm_repo_url": self.rlm_repo_url,
-                "rlm_repo_ref": self.rlm_repo_ref,
-                **({"gh_token_var": self.gh_token_var} if self.gh_token_var else {}),
-            }
+                **({"repo_path": self.repo_path} if self.repo_path else {}),
+                "repo_url": self.repo_url,
+                "repo_ref": self.repo_ref,
+            },
+            DEFAULT_RLM_SKILLS_PATH: {"fn": "harnesses.utils.rlm_utils:rlm_skills_dir"},
         }
-        if self.skills is not None:
-            dirs[DEFAULT_RLM_SKILLS_PATH] = self.skills
-        else:
-            dirs[DEFAULT_RLM_SKILLS_PATH] = {
-                "fn": "harnesses.utils.rlm_utils:rlm_skills_dir"
-            }
 
         env: dict[str, vf.ProgramValue] = {
             "PATH": "/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
             "OPENAI_MODEL": "runtime.model",
             "RLM_MODEL": "runtime.model",
-            "RLM_TOOLS": ",".join(self.rlm_tools),
-            "RLM_EXEC_TIMEOUT": str(self.rlm_exec_timeout),
-            "RLM_MAX_DEPTH": str(self.rlm_max_depth),
-            **self.env_vars,
+            "RLM_TOOLS": ",".join(self.tools),
+            "RLM_MAX_DEPTH": str(self.max_depth),
+            "RLM_HOME": RLM_HOME,
         }
         if self.summarize_at_tokens is not None:
-            assert self.summarize_at_tokens > 0
             env["RLM_SUMMARIZE_AT_TOKENS"] = str(self.summarize_at_tokens)
+        if self.allow_git:
+            env["RLM_ALLOW_GIT"] = "1"
 
         artifacts = vf.ArtifactsConfig.model_validate(
             {
                 "rlm_metrics": {
-                    "path": f"{self.workdir}/.rlm/sessions/*/meta.json",
+                    "path": f"{RLM_HOME}/sessions/*/meta.json",
                     "format": "json",
                     "key": "metrics",
                     "optional": True,
                 }
             }
         )
-        command_timeout = max(self.rlm_exec_timeout + 120, 600)
+        sandbox_override = (
+            self.sandbox if isinstance(self.sandbox, vf.SandboxConfig) else None
+        )
+        command_timeout = 600
         setup_timeout = command_timeout
-        if self.sandbox is not None and "setup_timeout" in self.sandbox.data(
+        if sandbox_override is not None and "setup_timeout" in sandbox_override.data(
             fill_defaults=False
         ):
-            setup_timeout = self.sandbox.setup_timeout
+            setup_timeout = sandbox_override.setup_timeout
 
-        if self.sandbox is None:
+        if sandbox_override is None:
             sandbox = vf.SandboxConfig(
                 image="python:3.11-slim",
-                workdir=self.workdir,
+                workdir=RLM_WORKDIR,
                 cpu_cores=1,
                 memory_gb=2,
                 disk_size_gb=5,
@@ -112,9 +113,9 @@ class RLMProgramConfig(vf.ProgramConfig):
         else:
             sandbox = vf.SandboxConfig.model_validate(
                 {
-                    "workdir": self.workdir,
+                    "workdir": RLM_WORKDIR,
                     "command_timeout": command_timeout,
-                    **self.sandbox.data(),
+                    **sandbox_override.data(),
                     "setup_timeout": setup_timeout,
                 }
             )
@@ -155,9 +156,9 @@ set -eo pipefail
 export PATH="$HOME/.local/bin:${{AGENT_PATH:-$PATH}}"
 export RLM_MODEL="${{RLM_MODEL:-$OPENAI_MODEL}}"
 export OPENAI_API_KEY="${{OPENAI_API_KEY:-intercepted}}"
-export RLM_APPEND_TO_SYSTEM_PROMPT="$(cat {shlex.quote(RLM_DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH)} 2>/dev/null || true)"
-cd "${{AGENT_WORKDIR:-{self.workdir}}}"
-rlm "$(cat {shlex.quote(self.instruction_path)})"
+export RLM_APPEND_TO_SYSTEM_PROMPT="$(cat {shlex.quote(RLM_APPEND_TO_SYSTEM_PROMPT_PATH)} 2>/dev/null || true)"
+cd "${{AGENT_WORKDIR:-{RLM_WORKDIR}}}"
+rlm "$(cat {shlex.quote(RLM_INSTRUCTION_PATH)})"
 """
         return self.resolve_command(
             command=["bash", "-lc", run_script],

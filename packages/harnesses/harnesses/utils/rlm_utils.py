@@ -2,18 +2,15 @@ import base64
 import io
 import json
 import keyword
-import os
 import re
 import tarfile
 import textwrap
-from collections.abc import Callable
 from importlib.abc import Traversable
 from pathlib import Path
 from typing import cast
 
 from verifiers.envs.experimental.utils.git_checkout_cache import (
     resolve_git_checkout,
-    validate_git_checkout,
 )
 from verifiers.v1.runtime import Runtime
 from verifiers.v1.state import State
@@ -31,50 +28,22 @@ REQUIRED_RLM_CHECKOUT_FILES = ("install.sh", "pyproject.toml")
 
 
 def rlm_checkout_path(
-    rlm_repo_url: str,
-    rlm_repo_ref: str,
-    local_checkout: str | None = None,
-    gh_token_var: str | None = "GH_TOKEN",
+    repo_url: str,
+    repo_ref: str,
+    repo_path: str | None = None,
 ) -> Path:
-    return rlm_checkout_loader(
-        local_checkout=local_checkout,
-        rlm_repo_url=rlm_repo_url,
-        rlm_repo_ref=rlm_repo_ref,
-        gh_token_var=gh_token_var,
-    )()
-
-
-def rlm_checkout_loader(
-    local_checkout: str | Path | None,
-    rlm_repo_url: str,
-    rlm_repo_ref: str,
-    gh_token_var: str | None,
-) -> Callable[[], Path]:
-    checkout: Path | None = None
-
-    def load() -> Path:
-        nonlocal checkout
-        if checkout is not None:
-            return checkout
-        if local_checkout is not None:
-            checkout = validate_git_checkout(
-                Path(local_checkout),
-                required_files=REQUIRED_RLM_CHECKOUT_FILES,
-            )
-        else:
-            checkout = resolve_git_checkout(
-                repo_url=rlm_repo_url,
-                ref=rlm_repo_ref,
-                cache_root=DEFAULT_RLM_LOCAL_CHECKOUT_CACHE_ROOT,
-                gh_token=os.environ.get(gh_token_var) if gh_token_var else None,
-                required_files=REQUIRED_RLM_CHECKOUT_FILES,
-            )
-        return checkout
-
-    return load
+    """Return a local path to an RLM checkout — `repo_path` if given, else a cached clone of `repo_url`@`repo_ref`."""
+    return resolve_git_checkout(
+        repo_url=repo_url,
+        ref=repo_ref,
+        cache_root=DEFAULT_RLM_LOCAL_CHECKOUT_CACHE_ROOT,
+        local_checkout=repo_path,
+        required_files=REQUIRED_RLM_CHECKOUT_FILES,
+    )
 
 
 def rlm_tool_skills_archive(state: State, runtime: Runtime) -> str:
+    """Package the runtime's verifier tools as RLM skills and return them as a base64-encoded tar.gz."""
     tool_defs = runtime.tool_defs(state) or []
     if not tool_defs:
         return ""
@@ -287,20 +256,11 @@ Tool schema:
 
 
 def rlm_skills_dir(state: State, runtime: Runtime) -> Path | Traversable | None:
-    from harnesses.rlm import RLM
-
-    harness = runtime.harness
-    if not isinstance(harness, RLM):
-        raise TypeError("rlm_skills_dir requires an RLM harness runtime.")
-    if harness.config.program.skills is not None:
-        return Path(harness.config.program.skills)
+    """Return the taskset's `skills` upload directory, or None if none is provided."""
+    _ = state
     taskset = runtime.taskset
     if taskset is None:
         return None
-    upload_dirs = taskset.get_upload_dirs()
-    assert isinstance(upload_dirs, dict)
-    skills_dir = upload_dirs.get("skills")
-    if skills_dir is None:
-        return None
-    assert isinstance(skills_dir, (Path, Traversable))
+    skills_dir = taskset.get_upload_dirs().get("skills")
+    assert skills_dir is None or isinstance(skills_dir, (Path, Traversable))
     return skills_dir
