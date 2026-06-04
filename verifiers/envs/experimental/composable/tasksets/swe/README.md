@@ -4,7 +4,8 @@
 
 - Prime images: ✅ means task images are available in our registry; ❌ means
   they are not known to be available there yet.
-- Validation: ✅ repeated no-op and gold-patch validation passed with
+- Validation: ✅ means the taskset has a linked `prime-data` PR and was
+  validated with
   [`SWEDebugEnv`](../../../../../../docs/environments.md#integrations-and-experimental-environments),
   — not yet complete.
 
@@ -55,7 +56,7 @@
       <td><strong>4,703</strong></td>
       <td><strong>4,703</strong></td>
       <td rowspan="8">✅</td>
-      <td rowspan="8">—</td>
+      <td rowspan="8">✅</td>
       <td rowspan="8"><a href="https://github.com/PrimeIntellect-ai/prime-data/pull/6">#6</a></td>
     </tr>
     <tr>
@@ -100,7 +101,7 @@
       <td><code>python</code></td>
       <td>45,320</td>
       <td>36,884</td>
-      <td>✅</td>
+      <td>❌</td>
       <td>—</td>
       <td>—</td>
     </tr>
@@ -122,8 +123,8 @@
       <td><code>python</code></td>
       <td>5,009</td>
       <td>4,432</td>
-      <td>❌</td>
-      <td>—</td>
+      <td>✅</td>
+      <td>✅</td>
       <td><a href="https://github.com/PrimeIntellect-ai/prime-data/pull/17">#17</a></td>
     </tr>
     <tr>
@@ -298,12 +299,12 @@
 
 1. Add or port the taskset under this directory and register its backend in
    [`make_swe_taskset(...)`](swe_tasksets.py).
-2. Prefer the upstream dataset shape and evaluation lifecycle, then publish a
-   filtered Prime dataset through `prime-data` when validation identifies rows
-   to exclude.
-3. Mirror task images that will run at scale into the Prime image registry so
+2. Mirror task images that will run at scale into the Prime image registry so
    sandbox startup uses quick pulls and large sweeps avoid upstream registry
    rate limits.
+3. Prefer the upstream dataset shape and evaluation lifecycle, then publish a
+   filtered Prime dataset through `prime-data` when validation identifies rows
+   to exclude.
 4. Validate with
    [`SWEDebugEnv`](../../swe_debug_env.py): no-op runs should fail real tasks,
    gold-patch runs should pass, and repeated passes should separate task
