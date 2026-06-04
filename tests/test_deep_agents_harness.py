@@ -399,3 +399,77 @@ async def test_run_deep_agent_emits_generic_tracing_config(
     }
     assert result["langsmith_run_id"] == str(run_id)
     assert result["completion"] == [{"role": "assistant", "content": "done"}]
+
+
+@pytest.mark.asyncio
+async def test_run_deep_agent_forwards_prompt_messages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class GraphRecursionError(Exception):
+        pass
+
+    captured: dict[str, object] = {}
+
+    class FakeAgent:
+        async def ainvoke(self, payload, config=None):
+            captured["payload"] = payload
+            return {"messages": [{"role": "assistant", "content": "done"}]}
+
+    def fake_create_deep_agent(**kwargs):
+        return FakeAgent()
+
+    install_fake_deepagents_stack(
+        monkeypatch,
+        create_deep_agent=fake_create_deep_agent,
+        graph_recursion_error=GraphRecursionError,
+    )
+
+    harness = FakeHarness(
+        FakeConfig(agent_name="deep-agent", timeout_seconds=30, max_turns=12)
+    )
+    prompt = [
+        {"role": "user", "content": "context"},
+        {"role": "user", "content": "question"},
+    ]
+    state = FakeState(
+        {"trajectory_id": "0123456789abcdef0123456789abcdef", "prompt": prompt}
+    )
+
+    result = await run_deep_agent({"task_id": "t"}, state, harness)
+
+    assert captured["payload"] == {"messages": prompt}
+    assert result["completion"] == [{"role": "assistant", "content": "done"}]
+
+
+@pytest.mark.asyncio
+async def test_run_deep_agent_handles_empty_or_missing_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class GraphRecursionError(Exception):
+        pass
+
+    captured: dict[str, object] = {}
+
+    class FakeAgent:
+        async def ainvoke(self, payload, config=None):
+            captured["payload"] = payload
+            return {"messages": [{"role": "assistant", "content": "done"}]}
+
+    def fake_create_deep_agent(**kwargs):
+        return FakeAgent()
+
+    install_fake_deepagents_stack(
+        monkeypatch,
+        create_deep_agent=fake_create_deep_agent,
+        graph_recursion_error=GraphRecursionError,
+    )
+
+    harness = FakeHarness(
+        FakeConfig(agent_name="deep-agent", timeout_seconds=30, max_turns=12)
+    )
+    state = FakeState({"trajectory_id": "0123456789abcdef0123456789abcdef"})
+
+    result = await run_deep_agent({"task_id": "t"}, state, harness)
+
+    assert captured["payload"] == {"messages": []}
+    assert result["completion"] == [{"role": "assistant", "content": "done"}]

@@ -86,19 +86,21 @@ async def run_deep_agent(
         system_prompt=deep_agent_system_prompt(state),
         name=config.agent_name,
     )
-    prompt = str(cast(list[vf.JsonData], state["prompt"])[-1]["content"])
+    prompt_messages = state.get("prompt")
+    if not isinstance(prompt_messages, list):
+        prompt_messages = []
     recursion_limit = state.get_max_turns(config.max_turns)
     invoke = agent.ainvoke(
-        {"messages": [{"role": "user", "content": prompt}]},
+        {"messages": prompt_messages},
         config=deep_agent_invoke_config(task, state, recursion_limit),
     )
     try:
         result = await asyncio.wait_for(invoke, timeout=config.timeout_seconds)
-    except (TimeoutError, GraphRecursionError) as exc:
+    except (asyncio.TimeoutError, GraphRecursionError) as exc:
         reason = (
-            "agent_timeout"
-            if isinstance(exc, TimeoutError)
-            else "agent_recursion_limit"
+            "agent_recursion_limit"
+            if isinstance(exc, GraphRecursionError)
+            else "agent_timeout"
         )
         state[reason] = True
         state.stop(reason)
