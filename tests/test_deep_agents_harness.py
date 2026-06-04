@@ -1,3 +1,4 @@
+import asyncio
 import sys
 import types
 import uuid
@@ -121,6 +122,58 @@ async def test_langchain_tools_from_state_skips_unbacked_defs(
     assert tools[0].description == "Call the click_link tool."
 
 
+@pytest.mark.asyncio
+async def test_langchain_tools_from_state_real_structured_tool() -> None:
+    pytest.importorskip("langchain_core")
+    from langchain_core.tools import StructuredTool
+    from langchain_core.utils.function_calling import convert_to_openai_tool
+
+    calls: list[dict[str, object]] = []
+
+    async def click_link(**kwargs):
+        calls.append(kwargs)
+        return "clicked"
+
+    async def go_back(**kwargs):
+        return "back"
+
+    class RealState(dict):
+        def get_tools(self):
+            return {"click_link": click_link, "go_back": go_back}
+
+    class RealRuntime:
+        def tool_defs(self, state):
+            return [
+                FakeToolDef(
+                    "click_link",
+                    "Navigate to a linked Wikipedia article.",
+                    {
+                        "type": "object",
+                        "properties": {"article": {"type": "string"}},
+                        "required": ["article"],
+                    },
+                ),
+                FakeToolDef(
+                    "go_back",
+                    "Undo the last click_link.",
+                    {"type": "object", "properties": {}},
+                ),
+            ]
+
+    tools = langchain_tools_from_state(RealState(), RealRuntime())
+
+    assert all(isinstance(tool, StructuredTool) for tool in tools)
+    assert [tool.name for tool in tools] == ["click_link", "go_back"]
+    schema = convert_to_openai_tool(tools[0])["function"]
+    assert schema["name"] == "click_link"
+    assert schema["description"] == "Navigate to a linked Wikipedia article."
+    assert schema["parameters"]["properties"] == {"article": {"type": "string"}}
+    assert schema["parameters"].get("required") == ["article"]
+    assert await tools[0].ainvoke({"article": "B"}) == "clicked"
+    assert calls == [{"article": "B"}]
+    assert await tools[1].ainvoke({}) == "back"
+
+
 class FakeEndpointConfig:
     model = "model"
     base_url = "https://example.invalid/v1"
@@ -238,8 +291,49 @@ async def test_run_deep_agent_recursion_limit_stops_rollout(
     result = await run_deep_agent({}, state, harness)
 
     assert created_system_prompts == ["first prompt chunk\n\nsecond prompt chunk"]
-    assert result["agent_timeout"] is True
+    assert result["agent_recursion_limit"] is True
+    assert "agent_timeout" not in result
     assert result["stop_reason"] == "agent_recursion_limit"
+    assert result["agent_completion"] == []
+
+
+@pytest.mark.asyncio
+async def test_run_deep_agent_timeout_sets_timeout_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class GraphRecursionError(Exception):
+        pass
+
+    class FakeAgent:
+        async def ainvoke(self, payload, config=None):
+            await asyncio.sleep(1)
+            return {"messages": []}
+
+    def fake_create_deep_agent(**kwargs):
+        return FakeAgent()
+
+    install_fake_deepagents_stack(
+        monkeypatch,
+        create_deep_agent=fake_create_deep_agent,
+        graph_recursion_error=GraphRecursionError,
+    )
+
+    harness = FakeHarness(
+        FakeConfig(agent_name="deep-agent", timeout_seconds=0.01, max_turns=50)
+    )
+    state = FakeState(
+        {
+            "trajectory_id": "0123456789abcdef0123456789abcdef",
+            "info": {"source": "A", "target": "B", "shortest_path": 1},
+            "prompt": [{"role": "user", "content": "start"}],
+        }
+    )
+
+    result = await run_deep_agent({}, state, harness)
+
+    assert result["agent_timeout"] is True
+    assert "agent_recursion_limit" not in result
+    assert result["stop_reason"] == "agent_timeout"
     assert result["agent_completion"] == []
 
 

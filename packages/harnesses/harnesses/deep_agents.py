@@ -95,12 +95,13 @@ async def run_deep_agent(
     try:
         result = await asyncio.wait_for(invoke, timeout=config.timeout_seconds)
     except (TimeoutError, GraphRecursionError) as exc:
-        state["agent_timeout"] = True
-        state.stop(
+        reason = (
             "agent_timeout"
             if isinstance(exc, TimeoutError)
             else "agent_recursion_limit"
         )
+        state[reason] = True
+        state.stop(reason)
         state.setdefault("agent_completion", [])
         return state
 
@@ -125,6 +126,10 @@ class DeepAgents(vf.Harness[DeepAgentsConfig]):
     @vf.metric
     async def agent_timeout(self, state: vf.State) -> float:
         return 1.0 if state.get("agent_timeout", False) else 0.0
+
+    @vf.metric
+    async def agent_recursion_limit(self, state: vf.State) -> float:
+        return 1.0 if state.get("agent_recursion_limit", False) else 0.0
 
 
 def load_harness(config: DeepAgentsConfig) -> DeepAgents:
