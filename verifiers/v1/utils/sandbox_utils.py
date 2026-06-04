@@ -689,7 +689,7 @@ async def create_sandbox(
         guaranteed=bool(sandbox_config.get("guaranteed", False)),
     )
     started = time.monotonic()
-    logger.info(
+    logger.debug(
         "Creating sandbox (image=%s, cpu=%s, mem=%sGB, gpu=%d)",
         request.docker_image,
         request.cpu_cores,
@@ -748,7 +748,7 @@ async def create_sandbox(
         )
         await asyncio.shield(delete_task)
         raise
-    logger.info(
+    logger.debug(
         "[sandbox %s] ready in %s",
         sandbox_id,
         print_time(time.monotonic() - started),
@@ -881,7 +881,7 @@ async def upload_program_files(
     if not files:
         return
     started = time.monotonic()
-    logger.info("[sandbox %s] uploading %d program file(s)", sandbox_id, len(files))
+    logger.debug("[sandbox %s] uploading %d program file(s)", sandbox_id, len(files))
     for path, source in files.items():
         file_started = time.monotonic()
         content = await resolve_program_value(source, task, state, runtime, program)
@@ -906,7 +906,7 @@ async def upload_program_files(
             print_size(len(content.encode())),
             print_time(time.monotonic() - file_started),
         )
-    logger.info(
+    logger.debug(
         "[sandbox %s] uploaded %d program file(s) in %s",
         sandbox_id,
         len(files),
@@ -926,7 +926,7 @@ async def upload_program_dirs(
     if not dirs:
         return
     started = time.monotonic()
-    logger.info("[sandbox %s] uploading %d program dir(s)", sandbox_id, len(dirs))
+    logger.debug("[sandbox %s] uploading %d program dir(s)", sandbox_id, len(dirs))
     uploaded = 0
     for path, source in dirs.items():
         dir_started = time.monotonic()
@@ -968,7 +968,7 @@ async def upload_program_dirs(
             print_size(archive_size),
             print_time(time.monotonic() - dir_started),
         )
-    logger.info(
+    logger.debug(
         "[sandbox %s] uploaded %d program dir(s) in %s",
         sandbox_id,
         uploaded,
@@ -1101,7 +1101,7 @@ async def run_program_items(
     if not items:
         return
     started = time.monotonic()
-    logger.info(
+    logger.debug(
         "[sandbox %s] running %d %s command(s)",
         sandbox_id,
         len(items),
@@ -1130,7 +1130,7 @@ async def run_program_items(
             len(items),
             print_time(time.monotonic() - command_started),
         )
-    logger.info(
+    logger.debug(
         "[sandbox %s] ran %d %s command(s) in %s",
         sandbox_id,
         len(items),

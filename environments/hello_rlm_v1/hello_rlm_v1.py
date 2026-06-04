@@ -1,7 +1,7 @@
 import verifiers as vf
 from harnesses import RLM, RLMConfig
 
-TASKS: list[dict[str, str]] = [
+TASKS = [
     # 0: plain text
     {"question": "Say 'hello rlm'.", "answer": "hello rlm"},
     # 1: python
