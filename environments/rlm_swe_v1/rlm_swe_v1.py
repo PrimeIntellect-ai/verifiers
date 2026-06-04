@@ -17,14 +17,33 @@ REGISTRY_PREFIX = "us-central1-docker.pkg.dev/prime-intellect-platform/prod-sand
 
 class RlmSweTasksetConfig(vf.TasksetConfig):
     taskset_id: str = "swe/r2e"
+    """Identifier surfaced to the runtime and stamped on each task row."""
+
     dataset_name: str = "R2E-Gym/R2E-Gym-Subset"
+    """HuggingFace dataset to load SWE instances from."""
+
     repo_path: str = "/testbed"
+    """In-sandbox path to the checked-out repo. Also exported as
+    `AGENT_WORKDIR` and used as the sandbox `workdir`."""
+
     filter_repos: list[str] | None = None
-    ds_num_proc: int | None = None
-    ds_keep_in_memory: bool = True
+    """Optional `repo_name` allow-out list; rows whose `repo_name` is in this
+    set are dropped before task rows are built."""
+
     timeout_minutes: int | None = None
+    """Per-task sandbox timeout in minutes. None leaves the sandbox default
+    (60). Also drives `test_timeout` (`timeout_minutes * 60`)."""
+
     hide_tests_from_agent: bool = True
+    """When True, `/r2e_tests` is archived off the sandbox during setup and
+    restored just before scoring so the agent can't read or modify the test
+    suite. When False, `/r2e_tests` is moved into `repo_path/r2e_tests` and
+    left visible."""
+
     env: vf.ConfigData | None = None
+    """Extra environment variables to merge on top of the SWE baseline
+    (`PATH`, `PAGER`, etc.). Exported into both the agent program env and
+    the test-run env."""
 
 
 def sandbox_config(
@@ -76,16 +95,9 @@ class R2ESWETaskset(vf.Taskset[RlmSweTasksetConfig]):
     def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         repo_path = self.config.repo_path
         task_env = dict(self.config.env or {})
-        dataset_kwargs = dict(
-            num_proc=self.config.ds_num_proc,
-            keep_in_memory=self.config.ds_keep_in_memory,
-            load_from_cache_file=False,
-        )
+        dataset_kwargs = dict(keep_in_memory=True, load_from_cache_file=False)
         dataset = load_dataset(
-            self.config.dataset_name,
-            split="train",
-            keep_in_memory=self.config.ds_keep_in_memory,
-            num_proc=self.config.ds_num_proc,
+            self.config.dataset_name, split="train", keep_in_memory=True
         )
         if self.config.filter_repos:
             filter_set = frozenset(self.config.filter_repos)
