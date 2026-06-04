@@ -245,7 +245,6 @@ Multiple rollouts per example enable metrics like pass@k and help measure varian
 | `--no-interleave-scoring` | `-N` | false | Disable interleaved scoring |
 | `--independent-scoring` | `-i` | false | Score each rollout individually instead of by group |
 | `--max-retries` | — | 0 | Retries per rollout on transient `InfraError` |
-| `--fail-fast` | — | false | Abort on the first rollout exception instead of returning failed rollout outputs |
 | `--num-workers` | `-w` | `auto` | Number of env server worker processes (`auto` = concurrency ÷ 256, minimum 1) |
 
 By default, scoring runs interleaved with generation. Use `--no-interleave-scoring` to score all rollouts after generation completes.
@@ -412,7 +411,6 @@ other fields are optional:
 | `harness` | table | v1 harness config passed through `EnvConfig.harness` |
 | `num_examples` | integer | Number of dataset examples to evaluate |
 | `rollouts_per_example` | integer | Rollouts per example |
-| `continue_on_error` | boolean | Continue after rollout exceptions by returning failed rollout outputs; set `false` to fail fast |
 | `extra_env_kwargs` | table | Arguments passed to environment constructor |
 | `model` | string | Model to evaluate |
 | `endpoint_id` | string | Endpoint registry id (requires TOML `endpoints_path`) |

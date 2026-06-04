@@ -396,8 +396,6 @@ Abstract base class for all environments.
 | `evaluate(client, model, ...)` | `GenerateOutputs` | Evaluate on eval_dataset |
 | `evaluate_sync(client, model, ...)` | `GenerateOutputs` | Synchronous evaluation |
 
-`generate()` and `evaluate()` default to `continue_on_error=True`: unexpected per-rollout failures are logged and returned as failed `RolloutOutput` records with `reward=0.0`, `completion=None`, `stop_condition="rollout_error"`, and structured error details. Pass `continue_on_error=False` to re-raise the first rollout exception and fail fast.
-
 **Dataset methods:**
 
 | Method | Returns | Description |
@@ -1135,7 +1133,6 @@ class EvalConfig(BaseModel):
     independent_scoring: bool = False
     extra_env_kwargs: dict = {}
     max_retries: int = 0
-    continue_on_error: bool = True
     verbose: bool = False
     state_columns: list[str] | None = None
     save_results: bool = False

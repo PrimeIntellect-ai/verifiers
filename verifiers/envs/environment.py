@@ -71,7 +71,7 @@ from verifiers.utils.async_utils import (
     maybe_semaphore,
     with_sem,
 )
-from verifiers.utils.error_utils import ErrorChain, error_info
+from verifiers.utils.error_utils import ErrorChain
 from verifiers.utils.message_utils import normalize_messages
 from verifiers.utils.save_utils import (
     GenerateOutputsBuilder,
@@ -850,7 +850,6 @@ class Environment(ABC):
         hf_hub_dataset_name: str | None = None,
         independent_scoring: bool = False,
         max_retries: int = 0,
-        continue_on_error: bool = True,
         on_start: StartCallback | None = None,
         on_progress: ProgressCallback | list[ProgressCallback] | None = None,
         on_log: LogCallback | None = None,
@@ -996,83 +995,6 @@ class Environment(ABC):
             assert single_client is not None
             return single_client
 
-        # Keep each scheduled unit responsible for producing outputs, including
-        # failed-output records, so the as_completed loop can keep draining.
-        async def run_generate_task(
-            rollout_inputs: list[RolloutInput],
-            task_client: Client | ClientConfig,
-            *,
-            grouped: bool,
-        ) -> list[RolloutOutput]:
-            task_start = time.time()
-            try:
-                if grouped:
-                    return await self.run_group(
-                        rollout_inputs,
-                        task_client,
-                        model,
-                        sampling_args,
-                        max_retries=max_retries,
-                        state_columns=state_columns,
-                    )
-                output = await self.run_rollout(
-                    rollout_inputs[0],
-                    task_client,
-                    model,
-                    sampling_args,
-                    max_retries=max_retries,
-                    state_columns=state_columns,
-                )
-                return [output]
-            except Exception as exc:
-                if not continue_on_error:
-                    raise
-                stage = "group_rollout" if grouped else "rollout"
-                example_ids = [item.get("example_id") for item in rollout_inputs]
-                self.logger.exception(
-                    "Continuing after %s failed for example_id(s) %s",
-                    stage,
-                    example_ids,
-                )
-                outputs: list[RolloutOutput] = []
-                for rollout_input in rollout_inputs:
-                    timing = RolloutTiming(start_time=task_start)
-                    end_time = time.time()
-                    timing.generation.start = task_start
-                    timing.generation.end = end_time
-                    timing.scoring.start = end_time
-                    timing.scoring.end = end_time
-                    info = rollout_input.get("info", {})
-                    if not isinstance(info, Mapping):
-                        info = {}
-                    output = RolloutOutput(
-                        example_id=rollout_input["example_id"],
-                        prompt=rollout_input.get("prompt"),
-                        completion=None,
-                        answer=rollout_input.get("answer", ""),
-                        info=info,
-                        reward=0.0,
-                        error=error_info(
-                            exc,
-                            stage=stage,
-                            details={"example_id": rollout_input["example_id"]},
-                        ),
-                        timing=timing.model_dump(),
-                        is_completed=False,
-                        is_truncated=False,
-                        stop_condition="rollout_error",
-                        metrics={},
-                        tool_defs=None,
-                    )
-                    output["error_chain"] = output["error"]["error_chain_repr"]
-                    output["long_error_chain"] = output["error"]["error_chain_str"]
-                    for column in state_columns or []:
-                        output[column] = (
-                            [] if column == "trajectory" else rollout_input.get(column)
-                        )
-                    outputs.append(output)
-                return outputs
-
         try:
             if self.env_client is None and endpoint_client_configs:
                 for endpoint_config in endpoint_client_configs:
@@ -1110,7 +1032,7 @@ class Environment(ABC):
             if save_results:
                 on_log(f"Saving results to {builder.results_path}")
 
-            tasks: dict[asyncio.Task[list[RolloutOutput]], list[RolloutInput]] = {}
+            tasks: dict[asyncio.Task, list[RolloutInput]] = {}
             try:
                 # create tasks based on mode
                 if independent_scoring:
@@ -1119,10 +1041,13 @@ class Environment(ABC):
                         task = asyncio.create_task(
                             with_sem(
                                 sem,
-                                run_generate_task(
-                                    [rollout_input],
+                                self.run_rollout(
+                                    rollout_input,
                                     get_client_for_group(),
-                                    grouped=False,
+                                    model,
+                                    sampling_args,
+                                    max_retries=max_retries,
+                                    state_columns=state_columns,
                                 ),
                             ),
                         )
@@ -1142,15 +1067,21 @@ class Environment(ABC):
                         task = asyncio.create_task(
                             with_sem(
                                 sem,
-                                run_generate_task(
-                                    group_input, group_client, grouped=True
+                                self.run_group(
+                                    group_input,
+                                    group_client,
+                                    model,
+                                    sampling_args,
+                                    max_retries=max_retries,
+                                    state_columns=state_columns,
                                 ),
                             ),
                         )
                         tasks[task] = group_input
 
                 for coro in asyncio.as_completed(tasks.keys()):
-                    new_outputs = await coro
+                    result = await coro
+                    new_outputs = [result] if independent_scoring else result
                     builder.add_outputs(new_outputs)
                     metadata = builder.build_metadata()
 
@@ -1262,7 +1193,6 @@ class Environment(ABC):
         hf_hub_dataset_name: str | None = None,
         independent_scoring: bool = False,
         max_retries: int = 0,
-        continue_on_error: bool = True,
         on_start: StartCallback | None = None,
         on_progress: ProgressCallback | list[ProgressCallback] | None = None,
         on_log: LogCallback | None = None,
@@ -1290,7 +1220,6 @@ class Environment(ABC):
             hf_hub_dataset_name=hf_hub_dataset_name,
             independent_scoring=independent_scoring,
             max_retries=max_retries,
-            continue_on_error=continue_on_error,
             on_start=on_start,
             on_progress=on_progress,
             on_log=on_log,
@@ -1312,7 +1241,6 @@ class Environment(ABC):
         hf_hub_dataset_name: str | None = None,
         independent_scoring: bool = False,
         max_retries: int = 0,
-        continue_on_error: bool = True,
     ) -> GenerateOutputs:
         """
         Evaluate model on the Environment evaluation dataset synchronously.
@@ -1331,7 +1259,6 @@ class Environment(ABC):
             hf_hub_dataset_name=hf_hub_dataset_name,
             independent_scoring=independent_scoring,
             max_retries=max_retries,
-            continue_on_error=continue_on_error,
         )
 
     # setters for use by trainers

@@ -327,35 +327,22 @@ async def test_generate_inside_running_loop(mock_client, make_dummy_env, make_in
 
 
 @pytest.mark.asyncio
-async def test_generate_continues_after_unexpected_independent_rollout_error(
+async def test_generate_aborts_on_unexpected_independent_rollout_error(
     mock_client, make_input
 ):
     dataset = Dataset.from_dict({"question": ["q1", "q2"], "answer": ["a1", "a2"]})
     env = RuntimeFailingEnvironment(
         dataset=dataset, parser=Parser(), rubric=Rubric(), score_rollouts=False
     )
-    outputs = await env.generate(
-        [make_input(example_id=0), make_input(example_id=1)],
-        client=mock_client,
-        model="test-model",
-        independent_scoring=True,
-        state_columns=["trajectory"],
-        on_progress=lambda *args: None,
-    )
-
-    states = outputs["outputs"]
-    assert len(states) == 2
-    assert states[0]["error"] is None
-    assert states[1]["completion"] is None
-    assert states[1]["trajectory"] == []
-    assert states[1]["error"]["error"] == "RuntimeError"
-    assert states[1]["error"]["message"] == "rollout exploded"
-    assert states[1]["error"]["stage"] == "rollout"
-    timing = states[1]["timing"]
-    assert timing["generation"]["start"] > 0
-    assert timing["generation"]["end"] >= timing["generation"]["start"]
-    assert timing["total"] < 60
-    assert outputs["metadata"]["avg_error"] == 0.5
+    with pytest.raises(RuntimeError, match="rollout exploded"):
+        await env.generate(
+            [make_input(example_id=0), make_input(example_id=1)],
+            client=mock_client,
+            model="test-model",
+            independent_scoring=True,
+            state_columns=["trajectory"],
+            on_progress=lambda *args: None,
+        )
 
 
 @pytest.mark.asyncio
@@ -380,56 +367,32 @@ async def test_generate_cleans_up_state_after_rollout_scoring_error(
         rubric=rubric,
     )
 
-    outputs = await env.generate(
-        [make_input(example_id=0)],
-        client=mock_client,
-        model="test-model",
-        independent_scoring=True,
-        on_progress=lambda *args: None,
-    )
-
-    assert rubric.cleaned == [0]
-    state = outputs["outputs"][0]
-    assert state["error"]["message"] == "score exploded"
-    assert state["error"]["stage"] == "rollout"
-
-
-@pytest.mark.asyncio
-async def test_generate_can_still_fail_fast_when_requested(mock_client, make_input):
-    dataset = Dataset.from_dict({"question": ["q1"], "answer": ["a1"]})
-    env = RuntimeFailingEnvironment(
-        dataset=dataset, parser=Parser(), rubric=Rubric(), score_rollouts=False
-    )
-
-    with pytest.raises(RuntimeError, match="rollout exploded"):
+    with pytest.raises(RuntimeError, match="score exploded"):
         await env.generate(
-            [make_input(example_id=1)],
+            [make_input(example_id=0)],
             client=mock_client,
             model="test-model",
             independent_scoring=True,
-            continue_on_error=False,
             on_progress=lambda *args: None,
         )
 
+    assert rubric.cleaned == [0]
+
 
 @pytest.mark.asyncio
-async def test_generate_continues_after_unexpected_group_rollout_error(
+async def test_generate_aborts_on_unexpected_group_rollout_error(
     mock_client, make_input
 ):
     dataset = Dataset.from_dict({"question": ["q1", "q2"], "answer": ["a1", "a2"]})
     env = RuntimeFailingEnvironment(dataset=dataset, parser=Parser(), rubric=Rubric())
-    outputs = await env.generate(
-        [make_input(example_id=0), make_input(example_id=1)],
-        client=mock_client,
-        model="test-model",
-        on_progress=lambda *args: None,
-    )
 
-    states = outputs["outputs"]
-    assert len(states) == 2
-    assert states[0]["error"] is None
-    assert states[1]["error"]["stage"] == "group_rollout"
-    assert states[1]["error"]["details"] == {"example_id": 1}
+    with pytest.raises(RuntimeError, match="rollout exploded"):
+        await env.generate(
+            [make_input(example_id=0), make_input(example_id=1)],
+            client=mock_client,
+            model="test-model",
+            on_progress=lambda *args: None,
+        )
 
 
 @pytest.mark.asyncio
@@ -453,21 +416,18 @@ async def test_generate_cleans_up_states_after_group_scoring_error(
         parser=Parser(),
         rubric=rubric,
     )
-    outputs = await env.generate(
-        [
-            make_input(example_id=0, answer="a"),
-            make_input(example_id=0, answer="b"),
-        ],
-        client=mock_client,
-        model="test-model",
-        on_progress=lambda *args: None,
-    )
+    with pytest.raises(RuntimeError, match="group score exploded"):
+        await env.generate(
+            [
+                make_input(example_id=0, answer="a"),
+                make_input(example_id=0, answer="b"),
+            ],
+            client=mock_client,
+            model="test-model",
+            on_progress=lambda *args: None,
+        )
 
     assert rubric.cleaned == ["a", "b"]
-    assert [state["error"]["stage"] for state in outputs["outputs"]] == [
-        "group_rollout",
-        "group_rollout",
-    ]
 
 
 @pytest.mark.asyncio
@@ -522,24 +482,20 @@ async def test_group_rollout_failure_cancels_pending_and_cleans_completed_state(
         parser=Parser(),
         rubric=rubric,
     )
-    outputs = await env.generate(
-        [
-            make_input(example_id=0, info={"mode": "done"}),
-            make_input(example_id=0, info={"mode": "slow"}),
-            make_input(example_id=0, info={"mode": "fail"}),
-        ],
-        client=mock_client,
-        model="test-model",
-        on_progress=lambda *args: None,
-    )
+    with pytest.raises(RuntimeError, match="group sibling exploded"):
+        await env.generate(
+            [
+                make_input(example_id=0, info={"mode": "done"}),
+                make_input(example_id=0, info={"mode": "slow"}),
+                make_input(example_id=0, info={"mode": "fail"}),
+            ],
+            client=mock_client,
+            model="test-model",
+            on_progress=lambda *args: None,
+        )
 
     assert env.slow_cancelled.is_set()
     assert rubric.cleaned == ["done"]
-    assert [state["error"]["stage"] for state in outputs["outputs"]] == [
-        "group_rollout",
-        "group_rollout",
-        "group_rollout",
-    ]
 
 
 @pytest.mark.asyncio

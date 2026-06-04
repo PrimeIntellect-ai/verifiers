@@ -88,7 +88,6 @@ def run_cli(make_metadata, make_state, make_input):
             "extra_env_kwargs": {},
             "env_config_overrides": [],
             "max_retries": 0,
-            "continue_on_error": True,
             "fullscreen": False,
             "disable_tui": False,
             "abbreviated_summary": False,
@@ -176,12 +175,6 @@ def test_parse_args_accepts_v1_env_config_overrides():
 def test_parse_args_rejects_unknown_eval_flags():
     with pytest.raises(SystemExit):
         vf_eval.parse_args(["env1", "--unknown-flag", "value"])
-
-
-def test_parse_args_fail_fast_sets_continue_on_error_false():
-    args = vf_eval.parse_args(["env1", "--fail-fast"])
-
-    assert args.continue_on_error is False
 
 
 def test_cli_v1_env_config_overrides_preserve_env_args_config(
@@ -1090,19 +1083,6 @@ def test_cli_multi_env_via_toml_config(monkeypatch, run_cli):
     assert configs[1].env_id == "env2"
 
 
-def test_cli_toml_config_can_disable_continue_on_error(monkeypatch, run_cli):
-    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
-        f.write('[[eval]]\nenv_id = "env1"\ncontinue_on_error = false\n')
-        f.flush()
-        captured = run_cli(
-            monkeypatch,
-            {"env_id_or_config": f.name},
-            capture_all_configs=True,
-        )
-
-    assert captured["configs"][0].continue_on_error is False
-
-
 def test_cli_duplicate_env_names_disambiguate_result_paths(monkeypatch, run_cli):
     with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
         f.write(
@@ -1330,15 +1310,6 @@ def test_load_toml_config_with_top_level_timeout():
         result = load_toml_config(Path(f.name))
 
     assert result[0]["timeout"] == 600
-
-
-def test_load_toml_config_with_continue_on_error():
-    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
-        f.write('[[eval]]\nenv_id = "env1"\ncontinue_on_error = false\n')
-        f.flush()
-        result = load_toml_config(Path(f.name))
-
-    assert result[0]["continue_on_error"] is False
 
 
 def test_load_toml_config_invalid_global_field():

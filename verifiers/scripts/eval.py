@@ -598,13 +598,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Max retries for transient infrastructure errors (default: 0)",
     )
     parser.add_argument(
-        "--fail-fast",
-        dest="continue_on_error",
-        default=True,
-        action="store_false",
-        help="Abort evaluation on the first rollout exception instead of returning failed rollout outputs",
-    )
-    parser.add_argument(
         "--disable-env-server",
         default=False,
         action="store_true",
@@ -966,7 +959,6 @@ def main(argv: list[str] | None = None):
             rollouts_per_example=rollouts_per_example,
             max_concurrent=raw.get("max_concurrent", DEFAULT_MAX_CONCURRENT),
             max_retries=raw.get("max_retries", 0),
-            continue_on_error=raw.get("continue_on_error", True),
             num_workers=raw.get("num_workers", "auto"),
             disable_env_server=raw.get("disable_env_server", False),
             verbose=raw.get("verbose", False),
