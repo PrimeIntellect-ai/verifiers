@@ -15,6 +15,7 @@ from .utils.rlm_utils import (
 RLM_WORKDIR = "/workspace"
 RLM_INSTRUCTION_PATH = "/rlm/instruction.txt"
 RLM_APPEND_TO_SYSTEM_PROMPT_PATH = "/rlm/append_to_system_prompt.txt"
+RLM_HOME = "/rlm"
 
 
 class RLMProgramConfig(vf.ProgramConfig):
@@ -70,6 +71,7 @@ class RLMProgramConfig(vf.ProgramConfig):
             "RLM_MODEL": "runtime.model",
             "RLM_TOOLS": ",".join(self.tools),
             "RLM_MAX_DEPTH": str(self.max_depth),
+            "RLM_HOME": RLM_HOME,
         }
         if self.summarize_at_tokens is not None:
             env["RLM_SUMMARIZE_AT_TOKENS"] = str(self.summarize_at_tokens)
@@ -79,7 +81,7 @@ class RLMProgramConfig(vf.ProgramConfig):
         artifacts = vf.ArtifactsConfig.model_validate(
             {
                 "rlm_metrics": {
-                    "path": f"{RLM_WORKDIR}/.rlm/sessions/*/meta.json",
+                    "path": f"{RLM_HOME}/sessions/*/meta.json",
                     "format": "json",
                     "key": "metrics",
                     "optional": True,
