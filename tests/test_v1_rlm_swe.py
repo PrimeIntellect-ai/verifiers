@@ -556,17 +556,15 @@ def test_rlm_swe_environment_uses_v1_r2e_taskset(monkeypatch):
     monkeypatch.setattr(rlm_swe_v1, "load_dataset", fake_load_dataset)
 
     env = rlm_swe_v1.load_environment(
-        config=rlm_swe_v1.RlmSweEnvConfig(
+        config=vf.EnvConfig(
             taskset=rlm_swe_v1.RlmSweTasksetConfig(
                 dataset_name="fake-r2e",
                 repo_path="/workspace/repo",
                 timeout_minutes=30,
                 env={"CUSTOM": "1"},
             ),
-            harness=rlm_swe_v1.RlmSweHarnessConfig(
-                program=rlm_swe_v1.RlmSweProgramConfig(
-                    repo_path="/tmp/checkout",
-                )
+            harness=RLMConfig(
+                program=RLMProgramConfig(repo_path="/tmp/checkout"),
             ),
         ),
     )
@@ -595,7 +593,7 @@ def test_rlm_swe_environment_uses_v1_r2e_taskset(monkeypatch):
     assert task_program_env["PAGER"] == "cat"
     assert task_program_env["CUSTOM"] == "1"
     assert "CUSTOM" not in program_env
-    assert program_env["RLM_TOOLS"] == "bash,edit"
+    assert program_env["RLM_TOOLS"] == "ipython"
     assert merged_sandbox["workdir"] == "/workspace/repo"
     assert merged_env["AGENT_WORKDIR"] == "/workspace/repo"
     assert "/workspace/repo/.venv/bin" in merged_env["AGENT_PATH"]

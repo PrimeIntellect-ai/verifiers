@@ -4,124 +4,27 @@ import re
 import shlex
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Protocol, cast
+from typing import cast
 
 from datasets import load_dataset
 import verifiers as vf
-from harnesses import RLM, RLMConfig, RLMProgramConfig
+from harnesses import RLM, RLMConfig
 
 logger = logging.getLogger(__name__)
 
 REGISTRY_PREFIX = "us-central1-docker.pkg.dev/prime-intellect-platform/prod-sandbox"
-DEFAULT_DATASET_NAME = "R2E-Gym/R2E-Gym-Subset"
-DEFAULT_REPO_PATH = "/testbed"
-DEFAULT_ALT_PATH = "/root"
-DEFAULT_RLM_TOOLS = ("bash", "edit")
 
 
 class RlmSweTasksetConfig(vf.TasksetConfig):
     taskset_id: str = "swe/r2e"
-    dataset_name: str = DEFAULT_DATASET_NAME
-    repo_path: str = DEFAULT_REPO_PATH
-    alt_path: str = DEFAULT_ALT_PATH
+    dataset_name: str = "R2E-Gym/R2E-Gym-Subset"
+    repo_path: str = "/testbed"
     filter_repos: list[str] | None = None
     ds_num_proc: int | None = None
     ds_keep_in_memory: bool = True
     timeout_minutes: int | None = None
     hide_tests_from_agent: bool = True
     env: vf.ConfigData | None = None
-
-
-class SandboxCommandResult(Protocol):
-    exit_code: int
-    stdout: str | None
-    stderr: str | None
-
-
-class R2ESandbox(Protocol):
-    id: str
-
-    async def execute(
-        self,
-        command: str,
-        working_dir: str | None = None,
-        timeout: int = 90,
-    ) -> SandboxCommandResult: ...
-
-    async def download_file(
-        self, remote_path: str, local_path: str, timeout: int = 300
-    ) -> None: ...
-
-    async def upload_file(
-        self, remote_path: str, local_path: str, timeout: int = 300
-    ) -> None: ...
-
-    async def upload_bytes(self, remote_path: str, data: bytes, name: str) -> None: ...
-
-    async def run_background_job(
-        self, command: str, timeout: int, working_dir: str
-    ) -> SandboxCommandResult: ...
-
-
-def load_tasks(
-    dataset_name: str = DEFAULT_DATASET_NAME,
-    repo_path: str = DEFAULT_REPO_PATH,
-    filter_repos: list[str] | None = None,
-    ds_num_proc: int | None = None,
-    ds_keep_in_memory: bool = True,
-    timeout_minutes: int | None = None,
-    env: vf.ConfigData | None = None,
-) -> list[vf.JsonData]:
-    dataset_kwargs = dict(
-        num_proc=ds_num_proc,
-        keep_in_memory=ds_keep_in_memory,
-        load_from_cache_file=False,
-    )
-    dataset = load_dataset(
-        dataset_name,
-        split="train",
-        keep_in_memory=ds_keep_in_memory,
-        num_proc=ds_num_proc,
-    )
-    if filter_repos:
-        filter_set = frozenset(filter_repos)
-        dataset = dataset.filter(
-            lambda row: row.get("repo_name") not in filter_set,
-            **dataset_kwargs,
-        )
-    dataset = dataset.map(
-        process_r2e_example,
-        remove_columns=dataset.column_names,
-        **dataset_kwargs,
-    )
-    task_env = dict(env or {})
-    rows: list[vf.JsonData] = []
-    for index, row in enumerate(dataset):
-        row = dict(row)
-        info = dict(row["info"])
-        instruction = str(info["problem_statement"])
-        program_env = env_vars(repo_path=repo_path, env=task_env)
-        agent_path = program_env.pop("PATH", None)
-        if agent_path is not None:
-            program_env.setdefault("AGENT_PATH", agent_path)
-        program_env.setdefault("AGENT_WORKDIR", repo_path)
-        task_row: vf.JsonData = {
-            "example_id": index,
-            "task_id": info.get("instance_id") or index,
-            "question": row.get("question", instruction),
-            "instruction": instruction,
-            "prompt": [{"role": "user", "content": instruction}],
-            "answer": row.get("answer", ""),
-            "info": info,
-            "sandbox": sandbox_config(
-                info=info,
-                repo_path=repo_path,
-                timeout_minutes=timeout_minutes,
-            ),
-            "program": {"env": program_env},
-        }
-        rows.append(task_row)
-    return rows
 
 
 def sandbox_config(
@@ -171,21 +74,64 @@ class R2ESWETaskset(vf.Taskset[RlmSweTasksetConfig]):
         )
 
     def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
-        return load_tasks(
-            dataset_name=self.config.dataset_name,
-            repo_path=self.config.repo_path,
-            filter_repos=self.config.filter_repos,
-            ds_num_proc=self.config.ds_num_proc,
-            ds_keep_in_memory=self.config.ds_keep_in_memory,
-            timeout_minutes=self.config.timeout_minutes,
-            env=dict(self.config.env or {}),
+        repo_path = self.config.repo_path
+        task_env = dict(self.config.env or {})
+        dataset_kwargs = dict(
+            num_proc=self.config.ds_num_proc,
+            keep_in_memory=self.config.ds_keep_in_memory,
+            load_from_cache_file=False,
         )
+        dataset = load_dataset(
+            self.config.dataset_name,
+            split="train",
+            keep_in_memory=self.config.ds_keep_in_memory,
+            num_proc=self.config.ds_num_proc,
+        )
+        if self.config.filter_repos:
+            filter_set = frozenset(self.config.filter_repos)
+            dataset = dataset.filter(
+                lambda row: row.get("repo_name") not in filter_set,
+                **dataset_kwargs,
+            )
+        dataset = dataset.map(
+            process_r2e_example,
+            remove_columns=dataset.column_names,
+            **dataset_kwargs,
+        )
+        rows: list[vf.JsonData] = []
+        for index, row in enumerate(dataset):
+            row = dict(row)
+            info = dict(row["info"])
+            instruction = str(info["problem_statement"])
+            program_env = env_vars(repo_path=repo_path, env=task_env)
+            agent_path = program_env.pop("PATH", None)
+            if agent_path is not None:
+                program_env.setdefault("AGENT_PATH", agent_path)
+            program_env.setdefault("AGENT_WORKDIR", repo_path)
+            rows.append(
+                {
+                    "example_id": index,
+                    "task_id": info.get("instance_id") or index,
+                    "question": row.get("question", instruction),
+                    "instruction": instruction,
+                    "prompt": [{"role": "user", "content": instruction}],
+                    "answer": row.get("answer", ""),
+                    "info": info,
+                    "sandbox": sandbox_config(
+                        info=info,
+                        repo_path=repo_path,
+                        timeout_minutes=self.config.timeout_minutes,
+                    ),
+                    "program": {"env": program_env},
+                }
+            )
+        return rows
 
     @vf.setup(priority=250)
     async def setup_r2e_sandbox(self, task, state, sandbox=None) -> None:
         if sandbox is None:
             raise RuntimeError("R2E SWE setup requires the active program sandbox.")
-        state["_rlm_swe_sandbox"] = sandbox
+        state["sandbox"] = sandbox
         state["sandbox_id"] = getattr(sandbox, "id", state.get("sandbox_id"))
         sandbox_config = task.get("sandbox")
         if isinstance(sandbox_config, Mapping):
@@ -193,7 +139,7 @@ class R2ESWETaskset(vf.Taskset[RlmSweTasksetConfig]):
             state.setdefault("test_timeout", timeout_minutes * 60)
         await self.setup_sandbox(sandbox, state)
 
-    async def setup_sandbox(self, sandbox: R2ESandbox, state: vf.State) -> None:
+    async def setup_sandbox(self, sandbox, state: vf.State) -> None:
         async def exec_checked(
             command: str, working_dir: str | None = None, timeout: int = 90
         ):
@@ -205,15 +151,6 @@ class R2ESWETaskset(vf.Taskset[RlmSweTasksetConfig]):
                     f"Setup command failed: {command} exit_code={result.exit_code}"
                 )
             return result
-
-        link_commands = [
-            f"ln -s {self.config.repo_path}/.venv {self.config.alt_path}/.venv",
-            f"ln -s {self.config.repo_path}/.venv/bin/python {self.config.alt_path}/.local/bin/python",
-            f"ln -s {self.config.repo_path}/.venv/bin/python {self.config.alt_path}/.local/bin/python3",
-            f"find {self.config.repo_path}/.venv/bin -type f -executable -exec ln -sfn {{}} {self.config.alt_path}/.local/bin/ \\;",
-        ]
-        for command in link_commands:
-            await exec_checked(command)
 
         try:
             cleanup_commands = [
@@ -257,7 +194,7 @@ class R2ESWETaskset(vf.Taskset[RlmSweTasksetConfig]):
     async def solved(self, task, state) -> float:
         if state.get("error") is not None:
             return 0.0
-        sandbox = state.get("_rlm_swe_sandbox")
+        sandbox = state.get("sandbox")
         if sandbox is None:
             return 0.0
         try:
@@ -275,7 +212,7 @@ class R2ESWETaskset(vf.Taskset[RlmSweTasksetConfig]):
 
     async def run_tests(
         self,
-        sandbox: R2ESandbox,
+        sandbox,
         state: vf.State,
         test_timeout: int,
     ) -> str:
@@ -334,7 +271,7 @@ class R2ESWETaskset(vf.Taskset[RlmSweTasksetConfig]):
                 return 0.0
         return 1.0
 
-    async def apply_gold_patch(self, sandbox: R2ESandbox, state: vf.State) -> None:
+    async def apply_gold_patch(self, sandbox, state: vf.State) -> None:
         info = cast(vf.JsonData, state["info"])
         assert isinstance(info, Mapping)
         patch = extract_gold_patch(
@@ -360,7 +297,7 @@ class R2ESWETaskset(vf.Taskset[RlmSweTasksetConfig]):
             )
 
     async def validate_instance(self, state: vf.State) -> bool:
-        sandbox = cast(R2ESandbox, state["_rlm_swe_sandbox"])
+        sandbox = state["sandbox"]
         await self.apply_gold_patch(sandbox, state)
         test_timeout = state.get("test_timeout", 900)
         assert isinstance(test_timeout, int)
@@ -379,7 +316,7 @@ class R2ESWETaskset(vf.Taskset[RlmSweTasksetConfig]):
         archive = state.pop("r2e_tests_archive_local_path", None)
         if isinstance(archive, str):
             Path(archive).unlink(missing_ok=True)
-        state.pop("_rlm_swe_sandbox", None)
+        state.pop("sandbox", None)
 
 
 def process_r2e_example(row: vf.JsonData) -> vf.JsonData:
@@ -485,30 +422,16 @@ def extract_gold_patch(
     return patch
 
 
-def load_taskset(
-    config: RlmSweTasksetConfig,
-) -> R2ESWETaskset:
+def load_taskset(config: RlmSweTasksetConfig) -> R2ESWETaskset:
     return R2ESWETaskset(config=config)
 
 
-class RlmSweProgramConfig(RLMProgramConfig):
-    tools: list[str] = list(DEFAULT_RLM_TOOLS)
-
-
-class RlmSweHarnessConfig(RLMConfig):
-    program: RlmSweProgramConfig = RlmSweProgramConfig()
-
-
-def load_harness(config: RlmSweHarnessConfig) -> RLM:
+def load_harness(config: RLMConfig) -> RLM:
     return RLM(config=config)
 
 
-class RlmSweEnvConfig(vf.EnvConfig):
-    taskset: RlmSweTasksetConfig = RlmSweTasksetConfig()
-    harness: RlmSweHarnessConfig = RlmSweHarnessConfig()
-
-
-def load_environment(config: RlmSweEnvConfig) -> vf.Env:
-    taskset = load_taskset(config=config.taskset)
-    harness = load_harness(config=config.harness)
-    return vf.Env(taskset=taskset, harness=harness)
+def load_environment(config: vf.EnvConfig) -> vf.Env:
+    return vf.Env(
+        taskset=vf.load_taskset(config=config.taskset),
+        harness=vf.load_harness(config=config.harness),
+    )
