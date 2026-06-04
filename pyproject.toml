@@ -92,10 +92,10 @@ tasksets = [
     "tasksets[openenv,openreward,ta]>=0.1.1",
 ]
 harnesses = [
-    "harnesses>=0.1.1",
+    "harnesses>=0.1.2",
 ]
 packages = [
-    "harnesses>=0.1.1",
+    "harnesses>=0.1.2",
     "tasksets[openenv,openreward,ta]>=0.1.1",
 ]
 browser = [
