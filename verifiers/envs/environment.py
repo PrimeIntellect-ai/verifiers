@@ -1032,7 +1032,7 @@ class Environment(ABC):
             if save_results:
                 on_log(f"Saving results to {builder.results_path}")
 
-            tasks: dict[asyncio.Task, list[RolloutInput]] = {}
+            tasks: list[asyncio.Task] = []
             try:
                 # create tasks based on mode
                 if independent_scoring:
@@ -1051,7 +1051,7 @@ class Environment(ABC):
                                 ),
                             ),
                         )
-                        tasks[task] = [rollout_input]
+                        tasks.append(task)
                 else:
                     group_inputs: dict[int, list[RolloutInput]] = defaultdict(list)
                     for rollout_input in filtered_inputs:
@@ -1077,9 +1077,9 @@ class Environment(ABC):
                                 ),
                             ),
                         )
-                        tasks[task] = group_input
+                        tasks.append(task)
 
-                for coro in asyncio.as_completed(tasks.keys()):
+                for coro in asyncio.as_completed(tasks):
                     result = await coro
                     new_outputs = [result] if independent_scoring else result
                     builder.add_outputs(new_outputs)
@@ -1099,7 +1099,7 @@ class Environment(ABC):
                         )
             finally:
                 # cancel all outstanding tasks and await their completion
-                pending = [task for task in tasks.keys() if not task.done()]
+                pending = [task for task in tasks if not task.done()]
                 if pending:
                     for task in pending:
                         task.cancel()
