@@ -384,6 +384,12 @@ def test_cli_rollout_timeout_flag_overrides_extra_env_kwargs(monkeypatch, run_cl
     assert captured["configs"][0].rollout_timeout_seconds == 600
 
 
+def test_cli_legacy_timeout_maps_to_rollout_timeout(monkeypatch, run_cli):
+    captured = run_cli(monkeypatch, {"timeout": 600})
+
+    assert captured["configs"][0].rollout_timeout_seconds == 600
+
+
 def test_cli_task_and_global_timeout_flags(monkeypatch, run_cli):
     captured = run_cli(
         monkeypatch,
@@ -1332,6 +1338,16 @@ def test_load_toml_config_with_top_level_timeout():
     assert result[0]["rollout_timeout_seconds"] == 600
     assert result[0]["task_timeout_seconds"] == 120
     assert result[0]["global_timeout_seconds"] == 1800
+
+
+def test_load_toml_config_maps_legacy_timeout_to_rollout_timeout():
+    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
+        f.write('[[eval]]\nenv_id = "env1"\ntimeout = 600\n')
+        f.flush()
+        result = load_toml_config(Path(f.name))
+
+    assert result[0]["rollout_timeout_seconds"] == 600
+    assert "timeout" not in result[0]
 
 
 def test_load_toml_config_invalid_global_field():

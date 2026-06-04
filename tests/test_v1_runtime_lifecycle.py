@@ -854,6 +854,41 @@ async def test_rollout_timeout_includes_scoring() -> None:
     assert state["stop_condition"] == "timeout_reached"
 
 
+@pytest.mark.asyncio
+async def test_group_scoring_timeout_does_not_relabel_completed_rollouts() -> None:
+    taskset = make_taskset()
+
+    async def init_group(task: vf.Task, n: int):
+        _ = task
+        tasks = [
+            vf.Task({"prompt": [], "answer": f"solved-{idx}"}).freeze()
+            for idx in range(n)
+        ]
+        states = [vf.State.for_task(task) for task in tasks]
+        return tasks, states
+
+    async def slow_score_group(tasks, states):
+        _ = tasks, states
+        await asyncio.sleep(0.02)
+
+    taskset.init_group = init_group
+    harness = make_harness(program={"fn": program_ref("replay_answer_program")})
+    harness.score_group = slow_score_group
+    env = vf.Env(taskset=taskset, harness=harness)
+    env.rollout_timeout_seconds = 0.01
+
+    states = await env._run_group_states(
+        [{"prompt": [], "answer": "solved"}] * 2,
+        cast(Client, FakeModelClient([])),
+        "fake",
+        {},
+    )
+
+    assert all(state["is_completed"] is True for state in states)
+    assert all(state.get("timed_out") is None for state in states)
+    assert all(state["stop_condition"] == "program_completed" for state in states)
+
+
 def test_v1_state_does_not_copy_task_answer_to_top_level() -> None:
     task = vf.Task({"answer": "gold"}).freeze()
     state = vf.State.for_task(task)

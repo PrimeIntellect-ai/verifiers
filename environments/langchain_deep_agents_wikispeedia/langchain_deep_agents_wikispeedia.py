@@ -50,6 +50,7 @@ tools at that point and reply with a brief confirmation."""
 
 
 SYSTEM_PROMPT = system_prompt()
+WIKISPEEDIA_TASK_TIMEOUT_SECONDS = 1200.0
 
 
 class WikispeediaTasksetConfig(vf.TasksetConfig):
@@ -576,7 +577,9 @@ class WikispeediaEnvConfig(vf.EnvConfig):
 
 
 def load_environment(config: WikispeediaEnvConfig) -> vf.Env:
-    return vf.Env(
+    env = vf.Env(
         taskset=vf.load_taskset(config=config.taskset),
         harness=vf.load_harness(config=config.harness),
     )
+    env.task_timeout_seconds = WIKISPEEDIA_TASK_TIMEOUT_SECONDS
+    return env

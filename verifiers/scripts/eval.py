@@ -579,6 +579,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Per-rollout wall-clock timeout in seconds.",
     )
     parser.add_argument(
+        "--timeout",
+        dest="rollout_timeout_seconds",
+        type=float,
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
         "--task-timeout",
         dest="task_timeout_seconds",
         type=float,
@@ -955,6 +962,10 @@ def main(argv: list[str] | None = None):
             list(raw.get("env_config_overrides", [])),
         )
 
+        rollout_timeout_seconds = raw.get("rollout_timeout_seconds")
+        if rollout_timeout_seconds is None:
+            rollout_timeout_seconds = raw.get("timeout")
+
         return EvalConfig(
             env_id=env_id,
             name=name,
@@ -973,7 +984,7 @@ def main(argv: list[str] | None = None):
             num_workers=raw.get("num_workers", "auto"),
             disable_env_server=raw.get("disable_env_server", False),
             global_timeout_seconds=raw.get("global_timeout_seconds"),
-            rollout_timeout_seconds=raw.get("rollout_timeout_seconds"),
+            rollout_timeout_seconds=rollout_timeout_seconds,
             task_timeout_seconds=raw.get("task_timeout_seconds"),
             verbose=raw.get("verbose", False),
             disable_tui=raw.get("disable_tui", False),

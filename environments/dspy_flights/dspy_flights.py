@@ -12,9 +12,6 @@ import verifiers as vf
 PROGRAM_SANDBOX = {
     "image": "python:3.11-slim",
     "network_access": True,
-    "timeout_minutes": 60,
-    "command_timeout": 900,
-    "install_timeout": 900,
 }
 
 

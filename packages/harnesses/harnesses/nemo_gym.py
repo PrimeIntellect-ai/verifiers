@@ -16,6 +16,7 @@ from aiohttp import ClientSession, web
 from pydantic import Field
 
 from verifiers.types import AssistantMessage, ToolCall, ToolMessage
+from verifiers.utils.async_utils import timeout_after
 from verifiers.utils.serve_utils import get_free_port
 
 logger = logging.getLogger(__name__)
@@ -294,7 +295,7 @@ class PersistentNeMoGymRunner:
             agent_name=agent_name,
             endpoint_config=endpoint_config,
         )
-        async with asyncio.timeout(task_timeout_seconds):
+        async with timeout_after(task_timeout_seconds):
             return await run_once
 
     async def _ensure_started(

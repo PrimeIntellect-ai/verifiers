@@ -6,6 +6,7 @@ import verifiers as vf
 from verifiers.clients import Client
 from verifiers.types import ClientConfig
 from verifiers.types import RolloutInput, SamplingArgs
+from verifiers.utils.async_utils import timeout_after
 
 from .config import Config
 from .harness import Harness, HarnessConfig
@@ -187,10 +188,12 @@ class Env(vf.Environment):
                 *[self.harness.run(task, state) for task, state in zip(tasks, states)]
             )
             if self.score_rollouts:
-                async with asyncio.timeout(self.rollout_timeout_seconds):
+                async with timeout_after(self.rollout_timeout_seconds):
                     await self.harness.score_group(tasks, states)
         except TimeoutError:
             for state in states:
+                if state.get("is_completed"):
+                    continue
                 state["timed_out"] = True
                 state.stop("timeout_reached")
         finally:

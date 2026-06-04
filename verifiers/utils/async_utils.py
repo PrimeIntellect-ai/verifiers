@@ -4,8 +4,9 @@ import logging
 from collections import deque
 from collections.abc import Mapping
 from collections.abc import Coroutine
+from contextlib import asynccontextmanager
 from time import perf_counter
-from typing import Any, AsyncContextManager, Callable, Optional, TypeVar
+from typing import Any, AsyncContextManager, AsyncIterator, Callable, Optional, TypeVar
 
 import numpy as np
 import tenacity as tc
@@ -44,6 +45,33 @@ async def maybe_call_with_named_args(func: Callable, **objects):
         return await maybe_await(func, **objects)
     allowed = {key: value for key, value in objects.items() if key in sig.parameters}
     return await maybe_await(func, **allowed)
+
+
+@asynccontextmanager
+async def timeout_after(seconds: float | None) -> AsyncIterator[None]:
+    if seconds is None:
+        yield
+        return
+    task = asyncio.current_task()
+    if task is None:
+        yield
+        return
+    timed_out = False
+
+    def cancel_task() -> None:
+        nonlocal timed_out
+        timed_out = True
+        task.cancel()
+
+    handle = asyncio.get_running_loop().call_later(seconds, cancel_task)
+    try:
+        yield
+    except asyncio.CancelledError:
+        if timed_out:
+            raise TimeoutError from None
+        raise
+    finally:
+        handle.cancel()
 
 
 class NullAsyncContext:

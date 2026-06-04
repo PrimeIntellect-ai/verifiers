@@ -35,7 +35,7 @@ from verifiers.types import (
     TokenUsage,
     _validate_extra_headers_value,
 )
-from verifiers.utils.async_utils import EventLoopLagMonitor
+from verifiers.utils.async_utils import EventLoopLagMonitor, timeout_after
 from verifiers.utils.env_config_utils import config_table, normalize_env_config_sections
 from verifiers.utils.import_utils import load_toml
 from verifiers.utils.logging_utils import (
@@ -55,6 +55,13 @@ from verifiers.utils.save_utils import save_metadata
 logger = logging.getLogger(__name__)
 FREEFORM_ABLATION_SWEEP_FIELDS = {"args", "env_args"}
 CHAT_TEMPLATE_KWARG_FIELDS = ("reasoning_effort", "enable_thinking")
+
+
+def normalize_timeout_config(config: dict) -> dict:
+    if "timeout" in config and "rollout_timeout_seconds" not in config:
+        config["rollout_timeout_seconds"] = config["timeout"]
+    config.pop("timeout", None)
+    return config
 
 
 def _sum_output_usage(outputs: list[RolloutOutput]) -> TokenUsage | None:
@@ -663,6 +670,7 @@ def load_toml_config(
         "max_retries",
         "num_workers",
         "disable_env_server",
+        "timeout",
         "global_timeout_seconds",
         "rollout_timeout_seconds",
         "task_timeout_seconds",
@@ -710,7 +718,9 @@ def load_toml_config(
             merged.pop("model", None)
         if "model" in eval_config and "endpoint_id" not in eval_config:
             merged.pop("endpoint_id", None)
-        merged_eval_list.append(normalize_env_config_sections(merged))
+        merged_eval_list.append(
+            normalize_timeout_config(normalize_env_config_sections(merged))
+        )
 
     # expand [[ablation]] blocks into eval configs
     for ablation in ablation_list:
@@ -740,11 +750,13 @@ def load_toml_config(
                 f"Valid fields are: {sorted(valid_fields)}"
             )
         expanded = [
-            normalize_env_config_sections(
-                normalize_sampling_config(
-                    config,
-                    "expanded [[ablation]] config",
-                    merge_sampling_with_existing=True,
+            normalize_timeout_config(
+                normalize_env_config_sections(
+                    normalize_sampling_config(
+                        config,
+                        "expanded [[ablation]] config",
+                        merge_sampling_with_existing=True,
+                    )
                 )
             )
             for config in _expand_ablation(ablation, global_defaults)
@@ -1064,7 +1076,7 @@ async def run_evaluation(
     on_progress = _with_eval_metadata(on_progress, model_pricing, config.name)
 
     try:
-        async with asyncio.timeout(config.global_timeout_seconds):
+        async with timeout_after(config.global_timeout_seconds):
             if not config.disable_env_server:
                 extra_env_kwargs = dict(extra_env_kwargs)
                 # resolve total concurrency

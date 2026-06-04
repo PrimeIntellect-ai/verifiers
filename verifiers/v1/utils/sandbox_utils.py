@@ -16,7 +16,7 @@ import tenacity as tc
 
 from verifiers.decorators import setup as setup_handler
 from verifiers.errors import Error, SandboxError
-from verifiers.utils.async_utils import maybe_call_with_named_args
+from verifiers.utils.async_utils import maybe_call_with_named_args, timeout_after
 
 from .program_utils import command_argv, command_env, float_config, int_config
 from .program_utils import program_channels
@@ -523,7 +523,7 @@ async def run_sandbox_command(
 
         timeout = cast(float | None, state.runtime_state().get("task_timeout_seconds"))
         try:
-            async with asyncio.timeout(timeout):
+            async with timeout_after(timeout):
                 await active_command()
         except TimeoutError:
             state["timed_out"] = True

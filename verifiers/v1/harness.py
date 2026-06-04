@@ -14,7 +14,7 @@ from verifiers.types import (
     SamplingArgs,
     ToolMessage,
 )
-from verifiers.utils.async_utils import maybe_call_with_named_args
+from verifiers.utils.async_utils import maybe_call_with_named_args, timeout_after
 from verifiers.utils.error_utils import error_info
 from verifiers.utils.message_utils import normalize_messages
 from verifiers.utils.response_utils import parse_response_message
@@ -251,7 +251,7 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
                     float | None,
                     state.runtime_state().get("rollout_timeout_seconds"),
                 )
-                async with asyncio.timeout(timeout):
+                async with timeout_after(timeout):
                     state = await self.setup_state(task, state)
                     if not await self.runtime.is_completed(task, state):
                         state = await self.run_program(task, state)
@@ -468,7 +468,7 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
                 float | None, state.runtime_state().get("task_timeout_seconds")
             )
             try:
-                async with asyncio.timeout(timeout):
+                async with timeout_after(timeout):
                     result = await maybe_call_with_named_args(
                         fn, task=task, state=state, runtime=self.runtime, harness=self
                     )
@@ -513,7 +513,7 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
         max_turns = state.get_max_turns(self.config.max_turns)
         timeout = cast(float | None, state.runtime_state().get("task_timeout_seconds"))
         try:
-            async with asyncio.timeout(timeout):
+            async with timeout_after(timeout):
                 while max_turns <= 0 or turn < max_turns:
                     if await self.runtime.is_completed(task, state):
                         return state
@@ -598,7 +598,7 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
                 float | None, state.runtime_state().get("task_timeout_seconds")
             )
             try:
-                async with asyncio.timeout(timeout):
+                async with timeout_after(timeout):
                     await run_local_command(merged_program, task, state, runtime)
             except TimeoutError:
                 state["timed_out"] = True
