@@ -5,7 +5,7 @@ from pathlib import PurePosixPath
 import verifiers as vf
 from verifiers.v1.utils.mcp_proxy_utils import proxy_command
 
-PI_DEFAULT_PACKAGE = "@earendil-works/pi-coding-agent@latest"
+PI_DEFAULT_INSTALL_SPEC = "@earendil-works/pi-coding-agent@latest"
 PI_DEFAULT_WORKDIR = "/app"
 PI_DEFAULT_INSTRUCTION_PATH = "/pi/instruction.txt"
 PI_DEFAULT_SYSTEM_PROMPT_PATH = "/pi/system.txt"
@@ -18,7 +18,7 @@ class PiProgramConfig(vf.ProgramConfig):
     instruction_path: str = PI_DEFAULT_INSTRUCTION_PATH
     system_prompt_path: str = PI_DEFAULT_SYSTEM_PROMPT_PATH
     log_path: str = PI_DEFAULT_LOG_PATH
-    package: str = PI_DEFAULT_PACKAGE
+    install_spec: str = PI_DEFAULT_INSTALL_SPEC
     install_mcp_adapter: bool = True
     sandbox: vf.SandboxConfig | None = vf.SandboxConfig()
 
@@ -82,7 +82,7 @@ apt-get -o Acquire::Retries=3 update -qq && apt-get -o Acquire::Retries=3 instal
 npm install -g --ignore-scripts n
 n 22.19.0
 hash -r
-npm install -g --ignore-scripts {shlex.quote(self.package)}
+npm install -g --ignore-scripts {shlex.quote(self.install_spec)}
 """
         artifacts = vf.ArtifactsConfig.model_validate(
             {

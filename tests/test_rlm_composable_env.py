@@ -227,8 +227,8 @@ def test_resolve_local_checkout_materializes_host_cache_for_named_ref(
     )
 
     resolved = resolve_local_checkout(
-        rlm_repo_url=str(source_checkout),
-        rlm_ref="main",
+        repo_url=str(source_checkout),
+        ref="main",
     )
 
     assert resolved.name == source_commit
@@ -250,8 +250,8 @@ def test_rlm_harness_uses_default_host_cache_when_local_checkout_unspecified(
     )
 
     harness = rlm_harness(
-        rlm_repo_url=str(source_checkout),
-        rlm_ref="main",
+        repo_url=str(source_checkout),
+        ref="main",
     )
 
     assert harness.get_upload_dirs is not None
@@ -272,8 +272,8 @@ def test_rlm_harness_memoizes_resolved_checkout_per_instance(tmp_path, monkeypat
     )
 
     harness = rlm_harness(
-        rlm_repo_url=str(source_checkout),
-        rlm_ref="main",
+        repo_url=str(source_checkout),
+        ref="main",
     )
     first_upload_checkout = harness.get_upload_dirs()["rlm_checkout"]
 
@@ -302,8 +302,8 @@ def test_rlm_harness_preserves_prior_checkout_while_leased(tmp_path, monkeypatch
     )
 
     first_harness = rlm_harness(
-        rlm_repo_url=str(source_checkout),
-        rlm_ref="main",
+        repo_url=str(source_checkout),
+        ref="main",
     )
     first_checkout = first_harness.get_upload_dirs()["rlm_checkout"]
     assert isinstance(first_checkout, Path)
@@ -312,8 +312,8 @@ def test_rlm_harness_preserves_prior_checkout_while_leased(tmp_path, monkeypatch
     second_commit = _commit_file(source_checkout, "README.md", "updated\n")
 
     second_harness = rlm_harness(
-        rlm_repo_url=str(source_checkout),
-        rlm_ref="main",
+        repo_url=str(source_checkout),
+        ref="main",
     )
     second_checkout = second_harness.get_upload_dirs()["rlm_checkout"]
     assert isinstance(second_checkout, Path)
@@ -333,15 +333,15 @@ def test_rlm_harness_prunes_stale_checkout_after_lease_released(tmp_path, monkey
     )
 
     first_checkout = rlm_harness(
-        rlm_repo_url=str(source_checkout),
-        rlm_ref="main",
+        repo_url=str(source_checkout),
+        ref="main",
     ).get_upload_dirs()["rlm_checkout"]
     _commit_file(source_checkout, "README.md", "updated\n")
     git_checkout_cache_module._release_all_in_use_locks()
 
     second_checkout = rlm_harness(
-        rlm_repo_url=str(source_checkout),
-        rlm_ref="main",
+        repo_url=str(source_checkout),
+        ref="main",
     ).get_upload_dirs()["rlm_checkout"]
     assert second_checkout != first_checkout
     assert not first_checkout.exists()
@@ -364,8 +364,8 @@ def test_rlm_harness_skips_pruning_externally_locked_stale_checkout(
     )
 
     first_harness = rlm_harness(
-        rlm_repo_url=str(source_checkout),
-        rlm_ref="main",
+        repo_url=str(source_checkout),
+        ref="main",
     )
     first_checkout = first_harness.get_upload_dirs()["rlm_checkout"]
     assert first_checkout.name == first_commit
@@ -375,16 +375,16 @@ def test_rlm_harness_skips_pruning_externally_locked_stale_checkout(
 
     with shared_path_lock(first_checkout, suffix=".in-use.lock"):
         second_checkout = rlm_harness(
-            rlm_repo_url=str(source_checkout),
-            rlm_ref="main",
+            repo_url=str(source_checkout),
+            ref="main",
         ).get_upload_dirs()["rlm_checkout"]
         assert second_checkout.name == second_commit
         assert first_checkout.exists()
 
     git_checkout_cache_module._release_all_in_use_locks()
     third_checkout = rlm_harness(
-        rlm_repo_url=str(source_checkout),
-        rlm_ref="main",
+        repo_url=str(source_checkout),
+        ref="main",
     ).get_upload_dirs()["rlm_checkout"]
     assert third_checkout == second_checkout
     assert not first_checkout.exists()
@@ -415,8 +415,8 @@ def test_resolve_local_checkout_redacts_gh_token_on_clone_failure(
 
     with pytest.raises(RuntimeError) as exc_info:
         resolve_local_checkout(
-            rlm_repo_url="github.com/PrimeIntellect-ai/rlm.git",
-            rlm_ref="main",
+            repo_url="github.com/PrimeIntellect-ai/rlm.git",
+            ref="main",
             gh_token=token,
         )
 
@@ -437,8 +437,8 @@ def test_resolve_local_checkout_materializes_host_cache_for_exact_commit(
     )
 
     resolved = resolve_local_checkout(
-        rlm_repo_url=str(source_checkout),
-        rlm_ref=second_commit,
+        repo_url=str(source_checkout),
+        ref=second_commit,
     )
 
     assert resolved.name == second_commit

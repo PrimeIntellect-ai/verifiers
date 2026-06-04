@@ -68,8 +68,8 @@ versioned package or release. Use `@latest` for a moving latest install:
 ```toml
 [eval.harness.program]
 # OpenCode
-release = "PrimeIntellect-ai/opencode@latest"
+install_spec = "PrimeIntellect-ai/opencode@latest"
 
 # MiniSWEAgent or Pi
-package = "mini-swe-agent@2.2.8"
+install_spec = "mini-swe-agent@2.2.8"
 ```

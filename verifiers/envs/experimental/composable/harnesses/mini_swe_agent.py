@@ -4,8 +4,8 @@ from pathlib import PurePosixPath
 import shlex
 
 from harnesses.mini_swe_agent import (
-    MINI_SWE_AGENT_DEFAULT_PACKAGE,
-    build_mini_swe_agent_install_script as build_packaged_mini_swe_agent_install_script,
+    MINI_SWE_AGENT_DEFAULT_INSTALL_SPEC,
+    build_mini_swe_agent_install_script as build_packaged_install_script,
 )
 
 DEFAULT_INSTALL_DIR = "/opt/mini-swe-agent"
@@ -14,7 +14,7 @@ DEFAULT_SITE_PACKAGES_DIR = f"{DEFAULT_PREFIX_DIR}/site-packages"
 DEFAULT_MINI_BINARY = f"{DEFAULT_PREFIX_DIR}/bin/mini"
 MINI_SWE_AGENT_CLI_PACKAGE = "mini-swe-agent"
 MINI_SWE_AGENT_CLI_VERSION = "2.2.8"
-DEFAULT_PACKAGE = MINI_SWE_AGENT_DEFAULT_PACKAGE
+DEFAULT_INSTALL_SPEC = MINI_SWE_AGENT_DEFAULT_INSTALL_SPEC
 DEFAULT_INSTRUCTION_PATH = "/mini-swe-agent/prompt.txt"
 DEFAULT_SYSTEM_PROMPT_PATH = "/mini-swe-agent/system.txt"
 DEFAULT_LOG_DIR = "/logs/agent"
@@ -27,12 +27,12 @@ DEFAULT_ENVIRONMENT_TIMEOUT = 120
 
 
 def build_mini_swe_agent_install_script(
-    package: str = DEFAULT_PACKAGE,
+    install_spec: str = DEFAULT_INSTALL_SPEC,
     prefix_dir: str = DEFAULT_PREFIX_DIR,
 ) -> str:
     """Build the shell script that installs mini-SWE-agent."""
-    return build_packaged_mini_swe_agent_install_script(
-        package=package,
+    return build_packaged_install_script(
+        install_spec=install_spec,
         prefix_dir=prefix_dir,
     )
 
@@ -59,9 +59,9 @@ def build_mini_swe_agent_run_command(
     # Keep the default workdir shell-expanded for env-level overrides, mirroring
     # the other harnesses.
     if agent_workdir == DEFAULT_AGENT_WORKDIR:
-        workdir_assignment = f"MINI_SWE_AGENT_WORKDIR={DEFAULT_AGENT_WORKDIR}"
+        workdir_line = f"MINI_SWE_AGENT_WORKDIR={DEFAULT_AGENT_WORKDIR}"
     else:
-        workdir_assignment = f"MINI_SWE_AGENT_WORKDIR={shlex.quote(agent_workdir)}"
+        workdir_line = f"MINI_SWE_AGENT_WORKDIR={shlex.quote(agent_workdir)}"
 
     config_args = [
         "-c",
@@ -95,7 +95,7 @@ export MSWEA_SILENT_STARTUP=true
 export MSWEA_GLOBAL_CONFIG_DIR=/tmp/mini-swe-agent-config
 export OPENAI_API_KEY="${{OPENAI_API_KEY:-intercepted}}"
 
-{workdir_assignment}
+{workdir_line}
 mkdir -p {shlex.quote(log_dir)} {shlex.quote(trajectory_dir)} "$MINI_SWE_AGENT_WORKDIR" "$MSWEA_GLOBAL_CONFIG_DIR"
 
 MINI_SWE_AGENT_TASK="$(cat {shlex.quote(instruction_path)})"
@@ -133,7 +133,7 @@ def mini_swe_agent_harness(
     system_prompt_path: str = DEFAULT_SYSTEM_PROMPT_PATH,
     log_path: str = DEFAULT_LOG_PATH,
     trajectory_path: str = DEFAULT_TRAJECTORY_PATH,
-    package: str = DEFAULT_PACKAGE,
+    install_spec: str = DEFAULT_INSTALL_SPEC,
     config_spec: str = DEFAULT_CONFIG_SPEC,
     model_class: str = DEFAULT_MODEL_CLASS,
     environment_timeout: int = DEFAULT_ENVIRONMENT_TIMEOUT,
@@ -153,7 +153,7 @@ def mini_swe_agent_harness(
     # into mini's agent.system_template at runtime.
     return Harness(
         install_script=build_mini_swe_agent_install_script(
-            package=package,
+            install_spec=install_spec,
         ),
         run_command=build_mini_swe_agent_run_command(
             agent_workdir=agent_workdir,

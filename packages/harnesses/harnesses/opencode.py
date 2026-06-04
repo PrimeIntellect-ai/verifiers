@@ -7,7 +7,7 @@ from verifiers.v1.utils.mcp_proxy_utils import proxy_command
 
 from .utils import split_versioned_agent_spec
 
-OPENCODE_DEFAULT_RELEASE = "PrimeIntellect-ai/opencode@1.1.63-rl2"
+OPENCODE_DEFAULT_INSTALL_SPEC = "PrimeIntellect-ai/opencode@1.1.63-rl2"
 OPENCODE_DEFAULT_AGENT_WORKDIR = "/app"
 OPENCODE_DEFAULT_INSTRUCTION_PATH = "/opencode/instruction.txt"
 OPENCODE_DEFAULT_SYSTEM_PROMPT_PATH = "/opencode/system.txt"
@@ -50,7 +50,7 @@ class OpenCodeProgramConfig(vf.ProgramConfig):
     disabled_tools: list[str] = OPENCODE_DEFAULT_DISABLED_TOOLS
     allow_git: bool = False
     disable_compaction: bool = True
-    release: str = OPENCODE_DEFAULT_RELEASE
+    install_spec: str = OPENCODE_DEFAULT_INSTALL_SPEC
     install_ripgrep: bool = True
     provider_timeout_ms: int = 3_600_000
 
@@ -70,29 +70,25 @@ class OpenCodeProgramConfig(vf.ProgramConfig):
                 }
             }
         )
-        rg_install = (
+        ripgrep_install = (
             "apt-get -o Acquire::Retries=3 install -y -qq ripgrep > /dev/null 2>&1 || true"
             if self.install_ripgrep
             else ""
         )
-        release_repo, release_version = split_versioned_agent_spec(self.release)
-        release_path = "releases/latest/download"
-        if release_version and release_version != "latest":
-            release_tag = (
-                release_version
-                if release_version.startswith("v")
-                else f"v{release_version}"
-            )
-            release_path = f"releases/download/{release_tag}"
+        repo, version = split_versioned_agent_spec(self.install_spec)
+        path = "releases/latest/download"
+        if version and version != "latest":
+            tag = version if version.startswith("v") else f"v{version}"
+            path = f"releases/download/{tag}"
         # Acquire::Retries=3 mitigates transient archive.ubuntu.com CDN sync
         # mismatches that fail fresh-sandbox apt-get calls mid-rollout.
         setup = f"""\
 set -e
 apt-get -o Acquire::Retries=3 update -qq && apt-get -o Acquire::Retries=3 install -y -qq curl tar ca-certificates > /dev/null 2>&1
-{rg_install}
+{ripgrep_install}
 
-OPENCODE_RELEASE_REPO={shlex.quote(release_repo)}
-OPENCODE_RELEASE_PATH={shlex.quote(release_path)}
+OPENCODE_RELEASE_REPO={shlex.quote(repo)}
+OPENCODE_RELEASE_PATH={shlex.quote(path)}
 
 case "$(uname -m)" in
   x86_64) OPENCODE_ARCH=x64 ;;

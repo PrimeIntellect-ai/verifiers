@@ -8,7 +8,7 @@ TERMINUS_2_DEFAULT_AGENT_WORKDIR = "/app"
 TERMINUS_2_DEFAULT_INSTRUCTION_PATH = "/terminus_2/instruction.md"
 TERMINUS_2_DEFAULT_SYSTEM_PROMPT_PATH = "/terminus_2/system_prompt.txt"
 TERMINUS_2_DEFAULT_LOG_PATH = "/logs/agent/terminus_2.log"
-TERMINUS_2_DEFAULT_HARBOR_PACKAGE = "harbor==0.6.6"
+TERMINUS_2_DEFAULT_HARBOR_INSTALL_SPEC = "harbor==0.6.6"
 TERMINUS_2_DEFAULT_PYTHON_VERSION = "3.12"
 TERMINUS_2_DEFAULT_MODEL_NAME = "openai/gpt-4.1-mini"
 TERMINUS_2_DEFAULT_API_BASE_URL = "https://api.pinference.ai/api/v1"
@@ -19,7 +19,7 @@ class Terminus2ProgramConfig(vf.ProgramConfig):
     instruction_path: str = TERMINUS_2_DEFAULT_INSTRUCTION_PATH
     system_prompt_path: str = TERMINUS_2_DEFAULT_SYSTEM_PROMPT_PATH
     log_path: str = TERMINUS_2_DEFAULT_LOG_PATH
-    harbor_package: str = TERMINUS_2_DEFAULT_HARBOR_PACKAGE
+    harbor_install_spec: str = TERMINUS_2_DEFAULT_HARBOR_INSTALL_SPEC
     python_version: str = TERMINUS_2_DEFAULT_PYTHON_VERSION
     model_name: str = TERMINUS_2_DEFAULT_MODEL_NAME
     api_base_url: str = TERMINUS_2_DEFAULT_API_BASE_URL
@@ -171,7 +171,7 @@ mkdir -p {shlex.quote(log_dir)} "$TERMINUS_2_WORKDIR"
 cd "$TERMINUS_2_WORKDIR"
 uv --no-config run --no-project --quiet \
   --python {shlex.quote(self.python_version)} \
-  --with {shlex.quote(self.harbor_package)} \
+  --with {shlex.quote(self.harbor_install_spec)} \
   python - <<'PY' 2>&1 | tee -a {shlex.quote(self.log_path)}
 {agent_script}
 PY

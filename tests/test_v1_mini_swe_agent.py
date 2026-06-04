@@ -86,10 +86,16 @@ def test_mini_swe_agent_builds_sandbox_program():
     assert "mini_swe_agent_log" in cast(dict[str, object], program["artifacts"])
 
 
-@pytest.mark.parametrize("package", ["mini-swe-agent@latest", "  mini-swe-agent  "])
-def test_mini_swe_agent_latest_package_uses_unpinned_pip_requirement(package: str):
+@pytest.mark.parametrize(
+    "install_spec", ["mini-swe-agent@latest", "  mini-swe-agent  "]
+)
+def test_mini_swe_agent_latest_install_spec_uses_unpinned_pip_requirement(
+    install_spec: str,
+):
     harness = MiniSWEAgent(
-        config=MiniSWEAgentConfig(program=MiniSWEAgentProgramConfig(package=package))
+        config=MiniSWEAgentConfig(
+            program=MiniSWEAgentProgramConfig(install_spec=install_spec)
+        )
     )
     program = cast(dict[str, Any], harness.config.program.data())
     setup = cast(str, program["setup"])
@@ -100,10 +106,10 @@ def test_mini_swe_agent_latest_package_uses_unpinned_pip_requirement(package: st
     )
 
 
-def test_mini_swe_agent_pinned_package_uses_pip_requirement():
+def test_mini_swe_agent_pinned_install_spec_uses_pip_requirement():
     harness = MiniSWEAgent(
         config=MiniSWEAgentConfig(
-            program=MiniSWEAgentProgramConfig(package="mini-swe-agent@2.2.7")
+            program=MiniSWEAgentProgramConfig(install_spec="mini-swe-agent@2.2.7")
         )
     )
     program = cast(dict[str, Any], harness.config.program.data())
