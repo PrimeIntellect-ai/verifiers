@@ -1067,6 +1067,77 @@ async def test_v1_group_preserves_scoring_error_when_cleanup_fails() -> None:
 
 
 @pytest.mark.asyncio
+async def test_v1_group_surfaces_cancelled_sibling_cleanup_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    slow_started = asyncio.Event()
+    created_states: list[vf.State] = []
+
+    class CancelledSiblingTaskset(vf.Taskset):
+        async def init_group(
+            self, task: vf.Task, num_rollouts: int
+        ) -> tuple[list[vf.Task], list[vf.State]]:
+            tasks = [task for _ in range(num_rollouts)]
+            states = [vf.State.for_task(task) for task in tasks]
+            states[0]["mode"] = "slow"
+            states[1]["mode"] = "fail"
+            created_states.extend(states)
+            return tasks, states
+
+    @vf.setup
+    async def fail_or_wait(task, state) -> None:
+        _ = task
+        if state["mode"] == "fail":
+            await slow_started.wait()
+            raise RuntimeError("primary sibling exploded")
+        slow_started.set()
+        await asyncio.sleep(60)
+
+    @vf.cleanup
+    async def failing_slow_cleanup(task, state) -> None:
+        _ = task
+        if state["mode"] == "slow":
+            raise RuntimeError("cancelled cleanup exploded")
+
+    inputs = cast(
+        list[vf.RolloutInput],
+        [
+            {
+                "example_id": 0,
+                "prompt": [{"role": "user", "content": "hi"}],
+            },
+            {
+                "example_id": 0,
+                "prompt": [{"role": "user", "content": "hi"}],
+            },
+        ],
+    )
+    env = vf.Env(taskset=CancelledSiblingTaskset(), harness=make_harness())
+    env.harness.add_setup(fail_or_wait)
+    env.harness.add_cleanup(failing_slow_cleanup)
+    logged_errors: list[str] = []
+    monkeypatch.setattr(
+        env.logger,
+        "error",
+        lambda message, *args, **kwargs: logged_errors.append(message % args),
+    )
+
+    with pytest.raises(RuntimeError, match="primary sibling exploded") as exc_info:
+        await env._run_group_states(inputs, cast(Client, FakeClient()), "fake", {})
+
+    notes = "\n".join(getattr(exc_info.value, "__notes__", []))
+    assert "cancelled group sibling" in notes
+    assert "cancelled cleanup exploded" in notes
+    assert created_states[0]["cleanup_errors"][0]["message"] == (
+        "cancelled cleanup exploded"
+    )
+    assert any(
+        "Cancelled v1 group sibling reported secondary error" in error
+        for error in logged_errors
+    )
+
+
+@pytest.mark.asyncio
 async def test_callable_tool_can_accept_name_argument() -> None:
     harness = make_harness(toolsets=[vf.Toolset(tools=[named_tool])])
     task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
