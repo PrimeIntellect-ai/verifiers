@@ -17,7 +17,7 @@ from harnesses.utils import split_versioned_agent_spec
 
 # ── Defaults ─────────────────────────────────────────────────────────────
 
-DEFAULT_RELEASE = "PrimeIntellect-ai/opencode@1.1.63-rl2"
+DEFAULT_VERSION = "PrimeIntellect-ai/opencode@1.1.63-rl2"
 DEFAULT_SYSTEM_PROMPT = (Path(__file__).parent / "prompt.txt").read_text()
 
 DEFAULT_DISABLED_TOOLS = [
@@ -47,34 +47,30 @@ DEFAULT_DISABLED_TOOLS = [
 
 
 def build_install_script(
-    release: str = DEFAULT_RELEASE,
+    version: str = DEFAULT_VERSION,
     install_ripgrep: bool = True,
 ) -> str:
     """Build the shell script that installs OpenCode in a sandbox."""
-    rg_install = (
+    ripgrep_install = (
         "apt-get -o Acquire::Retries=3 install -y -qq ripgrep > /dev/null 2>&1 || true"
         if install_ripgrep
         else ""
     )
-    release_repo, release_version = split_versioned_agent_spec(release)
-    release_path = "releases/latest/download"
-    if release_version and release_version != "latest":
-        release_tag = (
-            release_version
-            if release_version.startswith("v")
-            else f"v{release_version}"
-        )
-        release_path = f"releases/download/{release_tag}"
+    repo, parsed_version = split_versioned_agent_spec(version)
+    path = "releases/latest/download"
+    if parsed_version and parsed_version != "latest":
+        tag = parsed_version if parsed_version.startswith("v") else f"v{parsed_version}"
+        path = f"releases/download/{tag}"
     # Acquire::Retries=3 mitigates transient archive.ubuntu.com CDN sync mismatches
     # (e.g. "File has unexpected size ... Mirror sync in progress?"). See launchpad
     # bug #1876035. apt's default retries is 0, so one bad fetch fails the rollout.
     return f"""\
 set -e
 apt-get -o Acquire::Retries=3 update -qq && apt-get -o Acquire::Retries=3 install -y -qq curl tar > /dev/null 2>&1
-{rg_install}
+{ripgrep_install}
 
-OPENCODE_RELEASE_REPO={shlex.quote(release_repo)}
-OPENCODE_RELEASE_PATH={shlex.quote(release_path)}
+OPENCODE_RELEASE_REPO={shlex.quote(repo)}
+OPENCODE_RELEASE_PATH={shlex.quote(path)}
 
 case "$(uname -m)" in
   x86_64) OPENCODE_ARCH=x64 ;;
@@ -248,7 +244,7 @@ def opencode_harness(
     agent_workdir: str = "/app",
     allow_git: bool = False,
     disable_compaction: bool = True,
-    release: str = DEFAULT_RELEASE,
+    version: str = DEFAULT_VERSION,
     instruction_path: str = "/opencode/prompt.txt",
     system_prompt_path: str = "/opencode/system.txt",
     log_path: str = "/opencode/logs.txt",
@@ -276,7 +272,7 @@ def opencode_harness(
 
     return Harness(
         install_script=build_install_script(
-            release=release,
+            version=version,
         ),
         run_command=build_opencode_run_command(
             agent_workdir=agent_workdir,

@@ -66,10 +66,13 @@ Command agents use `name@version` specs where their installer supports a
 versioned package or release. Use `@latest` for a moving latest install:
 
 ```toml
-[eval.harness.program]
-# OpenCode
-release = "PrimeIntellect-ai/opencode@latest"
+[eval.harness]
+id = "harnesses.opencode"
+version = "PrimeIntellect-ai/opencode@latest"
+```
 
-# MiniSWEAgent or Pi
-package = "mini-swe-agent@2.2.8"
+```toml
+[eval.harness]
+id = "harnesses.mini_swe_agent"
+version = "mini-swe-agent@2.2.8"
 ```

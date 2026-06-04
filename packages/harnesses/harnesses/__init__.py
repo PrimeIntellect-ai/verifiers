@@ -1,4 +1,4 @@
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 
 from .mini_swe_agent import MiniSWEAgent, MiniSWEAgentConfig, MiniSWEAgentProgramConfig
 from .opencode import OpenCode, OpenCodeConfig, OpenCodeProgramConfig
