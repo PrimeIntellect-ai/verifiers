@@ -13,26 +13,16 @@ from harnesses import RLM, RLMConfig
 logger = logging.getLogger(__name__)
 
 REGISTRY_PREFIX = "us-central1-docker.pkg.dev/prime-intellect-platform/prod-sandbox"
+REPO_PATH = "/testbed"
 
 
 class RlmSweTasksetConfig(vf.TasksetConfig):
-    taskset_id: str = "swe/r2e"
-    """Identifier surfaced to the runtime and stamped on each task row."""
-
     dataset_name: str = "R2E-Gym/R2E-Gym-Subset"
     """HuggingFace dataset to load SWE instances from."""
-
-    repo_path: str = "/testbed"
-    """In-sandbox path to the checked-out repo. Also exported as
-    `AGENT_WORKDIR` and used as the sandbox `workdir`."""
 
     filter_repos: list[str] | None = None
     """Optional `repo_name` allow-out list; rows whose `repo_name` is in this
     set are dropped before task rows are built."""
-
-    timeout_minutes: int | None = None
-    """Per-task sandbox timeout in minutes. None leaves the sandbox default
-    (60). Also drives `test_timeout` (`timeout_minutes * 60`)."""
 
     hide_tests_from_agent: bool = True
     """When True, `/r2e_tests` is archived off the sandbox during setup and
@@ -40,61 +30,23 @@ class RlmSweTasksetConfig(vf.TasksetConfig):
     suite. When False, `/r2e_tests` is moved into `repo_path/r2e_tests` and
     left visible."""
 
-    env: vf.ConfigData | None = None
-    """Extra environment variables to merge on top of the SWE baseline
-    (`PATH`, `PAGER`, etc.). Exported into both the agent program env and
-    the test-run env."""
 
-
-def sandbox_config(
-    *, info: vf.JsonData, repo_path: str, timeout_minutes: int | None
-) -> vf.JsonData:
-    config: vf.JsonData = {
-        "image": f"{REGISTRY_PREFIX}/{info['docker_image']}",
-        "cpu_cores": 4,
-        "memory_gb": 4,
-        "disk_size_gb": 10,
-        "gpu_count": 0,
-        "workdir": repo_path,
-        "scope": "rollout",
-    }
-    if timeout_minutes is not None:
-        config["timeout_minutes"] = timeout_minutes
-    return config
-
-
-def env_vars(*, repo_path: str, env: vf.ConfigData) -> dict[str, str]:
-    return {
-        "PATH": (
-            f"/opt/miniconda3/bin:{repo_path}/.venv/bin:/root/.local/bin:"
-            "/root/.cargo/bin:/go/bin:/usr/local/go/bin:/usr/local/cargo:"
-            "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-        ),
-        "PAGER": "cat",
-        "MANPAGER": "cat",
-        "LESS": "-R",
-        "PIP_PROGRESS_BAR": "off",
-        "TQDM_DISABLE": "1",
-        **{str(key): str(value) for key, value in env.items()},
-    }
+SANDBOX_PATH = (
+    f"/opt/miniconda3/bin:{REPO_PATH}/.venv/bin:/root/.local/bin:"
+    "/root/.cargo/bin:/go/bin:/usr/local/go/bin:/usr/local/cargo:"
+    "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+)
+SANDBOX_ENV = {
+    "PAGER": "cat",
+    "MANPAGER": "cat",
+    "LESS": "-R",
+    "PIP_PROGRESS_BAR": "off",
+    "TQDM_DISABLE": "1",
+}
 
 
 class R2ESWETaskset(vf.Taskset[RlmSweTasksetConfig]):
-    def sandbox_config(self, info: vf.JsonData) -> vf.JsonData:
-        return sandbox_config(
-            info=info,
-            repo_path=self.config.repo_path,
-            timeout_minutes=self.config.timeout_minutes,
-        )
-
-    def get_env_vars(self) -> dict[str, str]:
-        return env_vars(
-            repo_path=self.config.repo_path, env=dict(self.config.env or {})
-        )
-
     def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
-        repo_path = self.config.repo_path
-        task_env = dict(self.config.env or {})
         dataset_kwargs = dict(keep_in_memory=True, load_from_cache_file=False)
         dataset = load_dataset(
             self.config.dataset_name, split="train", keep_in_memory=True
@@ -115,11 +67,6 @@ class R2ESWETaskset(vf.Taskset[RlmSweTasksetConfig]):
             row = dict(row)
             info = dict(row["info"])
             instruction = str(info["problem_statement"])
-            program_env = env_vars(repo_path=repo_path, env=task_env)
-            agent_path = program_env.pop("PATH", None)
-            if agent_path is not None:
-                program_env.setdefault("AGENT_PATH", agent_path)
-            program_env.setdefault("AGENT_WORKDIR", repo_path)
             rows.append(
                 {
                     "example_id": index,
@@ -129,12 +76,22 @@ class R2ESWETaskset(vf.Taskset[RlmSweTasksetConfig]):
                     "prompt": [{"role": "user", "content": instruction}],
                     "answer": row.get("answer", ""),
                     "info": info,
-                    "sandbox": sandbox_config(
-                        info=info,
-                        repo_path=repo_path,
-                        timeout_minutes=self.config.timeout_minutes,
-                    ),
-                    "program": {"env": program_env},
+                    "sandbox": {
+                        "image": f"{REGISTRY_PREFIX}/{info['docker_image']}",
+                        "cpu_cores": 4,
+                        "memory_gb": 4,
+                        "disk_size_gb": 10,
+                        "gpu_count": 0,
+                        "workdir": REPO_PATH,
+                        "scope": "rollout",
+                    },
+                    "program": {
+                        "env": {
+                            **SANDBOX_ENV,
+                            "AGENT_PATH": SANDBOX_PATH,
+                            "AGENT_WORKDIR": REPO_PATH,
+                        }
+                    },
                 }
             )
         return rows
@@ -168,11 +125,11 @@ class R2ESWETaskset(vf.Taskset[RlmSweTasksetConfig]):
             cleanup_commands = [
                 (
                     "timeout 30 bash -c 'shopt -s globstar; rm -rf **/*.pyc **/__pycache__' 2>/dev/null || timeout 30 find . -name '*.pyc' -delete || true",
-                    self.config.repo_path,
+                    REPO_PATH,
                 ),
                 (
                     "timeout 30 bash -c 'shopt -s globstar; rm -rf **/__pycache__' 2>/dev/null || timeout 30 find . -name '__pycache__' -exec rm -rf {} + || true",
-                    self.config.repo_path,
+                    REPO_PATH,
                 ),
                 (
                     "timeout 30 bash -c 'shopt -s globstar; rm -rf /r2e_tests/**/*.pyc /r2e_tests/**/__pycache__' 2>/dev/null || timeout 30 find /r2e_tests -name '*.pyc' -delete || true",
@@ -189,9 +146,7 @@ class R2ESWETaskset(vf.Taskset[RlmSweTasksetConfig]):
             logger.warning("Continuing without deleting pycache: %r", exc)
 
         if not self.config.hide_tests_from_agent:
-            await exec_checked(
-                f"mv /r2e_tests {self.config.repo_path}/r2e_tests", timeout=60
-            )
+            await exec_checked(f"mv /r2e_tests {REPO_PATH}/r2e_tests", timeout=60)
             return
 
         remote_archive = "/tmp/r2e_tests.tar.gz"
@@ -235,7 +190,7 @@ class R2ESWETaskset(vf.Taskset[RlmSweTasksetConfig]):
                 remote_archive, str(local_archive_path), timeout=300
             )
             result = await sandbox.execute(
-                f"tar -C {self.config.repo_path} -xzf {remote_archive}",
+                f"tar -C {REPO_PATH} -xzf {remote_archive}",
                 timeout=300,
             )
             if result.exit_code != 0:
@@ -251,17 +206,15 @@ class R2ESWETaskset(vf.Taskset[RlmSweTasksetConfig]):
 
         env_str = " ".join(
             f"{shlex.quote(key)}={shlex.quote(value)}"
-            for key, value in self.get_env_vars().items()
+            for key, value in {**SANDBOX_ENV, "PATH": SANDBOX_PATH}.items()
         )
         command = f"export {env_str}; /bin/bash run_tests.sh > test_output.txt 2>&1"
         result = await sandbox.run_background_job(
-            command, timeout=test_timeout, working_dir=self.config.repo_path
+            command, timeout=test_timeout, working_dir=REPO_PATH
         )
         if result.exit_code > 1:
             raise RuntimeError(f"Error running tests: exit_code={result.exit_code}")
-        result = await sandbox.execute(
-            f"cat {self.config.repo_path}/test_output.txt", timeout=300
-        )
+        result = await sandbox.execute(f"cat {REPO_PATH}/test_output.txt", timeout=300)
         return result.stdout or ""
 
     def calculate_reward(self, test_output: str, info: vf.JsonData) -> float:
@@ -299,7 +252,7 @@ class R2ESWETaskset(vf.Taskset[RlmSweTasksetConfig]):
         await sandbox.upload_bytes("/tmp/gold.patch", patch.encode(), "gold.patch")
         result = await sandbox.execute(
             "git apply --whitespace=fix /tmp/gold.patch",
-            working_dir=self.config.repo_path,
+            working_dir=REPO_PATH,
             timeout=30,
         )
         if result.exit_code != 0:

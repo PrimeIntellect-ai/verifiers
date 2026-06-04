@@ -557,12 +557,7 @@ def test_rlm_swe_environment_uses_v1_r2e_taskset(monkeypatch):
 
     env = rlm_swe_v1.load_environment(
         config=vf.EnvConfig(
-            taskset=rlm_swe_v1.RlmSweTasksetConfig(
-                dataset_name="fake-r2e",
-                repo_path="/workspace/repo",
-                timeout_minutes=30,
-                env={"CUSTOM": "1"},
-            ),
+            taskset=rlm_swe_v1.RlmSweTasksetConfig(dataset_name="fake-r2e"),
             harness=RLMConfig(
                 program=RLMProgramConfig(repo_path="/tmp/checkout"),
             ),
@@ -580,25 +575,20 @@ def test_rlm_swe_environment_uses_v1_r2e_taskset(monkeypatch):
     assert isinstance(env.taskset, rlm_swe_v1.R2ESWETaskset)
     assert isinstance(env.harness, RLM)
     assert calls["dataset_name"] == "fake-r2e"
-    assert task["taskset_id"] == "swe/r2e"
     assert task["instruction"] == "Fix repo-0."
     assert task["sandbox"]["image"] == (
         f"{rlm_swe_v1.REGISTRY_PREFIX}/r2e/image:latest"
     )
-    assert task["sandbox"]["workdir"] == "/workspace/repo"
-    assert task["sandbox"]["timeout_minutes"] == 30
+    assert task["sandbox"]["workdir"] == rlm_swe_v1.REPO_PATH
     task_program_env = as_dict(as_dict(task["program"])["env"])
-    assert task_program_env["AGENT_WORKDIR"] == "/workspace/repo"
-    assert "/workspace/repo/.venv/bin" in task_program_env["AGENT_PATH"]
+    assert task_program_env["AGENT_WORKDIR"] == rlm_swe_v1.REPO_PATH
+    assert f"{rlm_swe_v1.REPO_PATH}/.venv/bin" in task_program_env["AGENT_PATH"]
     assert task_program_env["PAGER"] == "cat"
-    assert task_program_env["CUSTOM"] == "1"
-    assert "CUSTOM" not in program_env
     assert program_env["RLM_TOOLS"] == "ipython"
-    assert merged_sandbox["workdir"] == "/workspace/repo"
-    assert merged_env["AGENT_WORKDIR"] == "/workspace/repo"
-    assert "/workspace/repo/.venv/bin" in merged_env["AGENT_PATH"]
+    assert merged_sandbox["workdir"] == rlm_swe_v1.REPO_PATH
+    assert merged_env["AGENT_WORKDIR"] == rlm_swe_v1.REPO_PATH
+    assert f"{rlm_swe_v1.REPO_PATH}/.venv/bin" in merged_env["AGENT_PATH"]
     assert merged_env["PAGER"] == "cat"
-    assert merged_env["CUSTOM"] == "1"
 
 
 def test_rlm_swe_taskset_hooks_are_registered_with_runtime():
@@ -621,9 +611,7 @@ async def test_rlm_swe_taskset_setup_and_reward(monkeypatch):
     monkeypatch.setattr(
         rlm_swe_v1, "load_dataset", lambda *args, **kwargs: fake_r2e_dataset()
     )
-    taskset = rlm_swe_v1.load_taskset(
-        config=rlm_swe_v1.RlmSweTasksetConfig(timeout_minutes=30)
-    )
+    taskset = rlm_swe_v1.load_taskset(config=rlm_swe_v1.RlmSweTasksetConfig())
     task = next(iter(taskset))
     state = vf.State.for_task(task)
     sandbox = FakeSandbox()
@@ -653,21 +641,18 @@ PASSED tests/test_example.py::test_fix
 
     assert calls["setup_sandbox"] is sandbox
     assert calls["setup_state"] is state
-    assert calls["run_tests"] == (sandbox, state, 1800)
+    assert calls["run_tests"] == (sandbox, state, 3600)
     assert state["sandbox_id"] == "sandbox-1"
-    assert state["test_timeout"] == 1800
+    assert state["test_timeout"] == 3600
     assert reward == 1.0
     assert "sandbox_client" not in state
-    assert "_rlm_swe_sandbox" not in state
+    assert "sandbox" not in state
 
 
 @pytest.mark.asyncio
 async def test_rlm_swe_run_tests_quotes_env_values():
     taskset = rlm_swe_v1.load_taskset(
-        config=rlm_swe_v1.RlmSweTasksetConfig(
-            hide_tests_from_agent=False,
-            env={"SAFE": "two words; $(echo nope)", "QUOTE": "it's ok"},
-        )
+        config=rlm_swe_v1.RlmSweTasksetConfig(hide_tests_from_agent=False)
     )
     sandbox = RecordingSandbox()
 
@@ -676,20 +661,9 @@ async def test_rlm_swe_run_tests_quotes_env_values():
     assert output == "test output"
     assert len(sandbox.background_jobs) == 1
     command = sandbox.background_jobs[0]["command"]
-    assert "SAFE='two words; $(echo nope)'" in command
-    assert "QUOTE='it'\"'\"'s ok'" in command
+    # PATH includes the venv on the hardcoded repo path
+    assert f"{rlm_swe_v1.REPO_PATH}/.venv/bin" in command
     assert command.endswith("/bin/bash run_tests.sh > test_output.txt 2>&1")
-
-
-def test_rlm_swe_get_env_vars_uses_configured_repo_path():
-    taskset = rlm_swe_v1.load_taskset(
-        config=rlm_swe_v1.RlmSweTasksetConfig(repo_path="/workspace/repo")
-    )
-
-    path = taskset.get_env_vars()["PATH"]
-
-    assert "/workspace/repo/.venv/bin" in path
-    assert "/testbed/.venv/bin" not in path
 
 
 def test_rlm_swe_reward_rejects_pytest_summary_without_nodeid():
