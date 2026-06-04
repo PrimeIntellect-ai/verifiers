@@ -95,7 +95,6 @@ rules:
         - /environments/dspy_rlm/dspy_rlm.py
         - /environments/hello_group_reward_v1/hello_group_reward_v1.py
         - /environments/hello_parallel_sandbox_v1/hello_parallel_sandbox_v1.py
-        - /environments/hello_rlm_v1/hello_rlm_v1.py
         - /environments/hello_self_judge_v1/hello_self_judge_v1.py
         - /environments/hello_subagent_v1/hello_subagent_v1.py
         - /environments/langchain_deep_agents_wikispeedia/langchain_deep_agents_wikispeedia.py
