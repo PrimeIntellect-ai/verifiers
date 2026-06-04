@@ -1,5 +1,6 @@
 """Tests for the base Environment class."""
 
+import importlib
 import json
 from typing import cast
 from unittest.mock import AsyncMock, Mock, patch
@@ -20,6 +21,23 @@ from verifiers.types import (
     ToolCall,
 )
 from verifiers.utils.save_utils import make_dataset as build_dataset
+
+
+def test_importlib_traversable_modules_import():
+    """Import modules that use the version-tolerant Traversable import."""
+    module_names = (
+        "verifiers.v1.runtime",
+        "verifiers.v1.taskset",
+        "verifiers.v1.utils.sandbox_utils",
+        "verifiers.v1.utils.taskset_utils",
+        "verifiers.envs.experimental.composable.composable_env",
+        "verifiers.envs.experimental.composable.harness",
+        "verifiers.envs.experimental.composable.task",
+        "verifiers.envs.experimental.composable.harnesses.rlm",
+    )
+
+    for module_name in module_names:
+        assert importlib.import_module(module_name)
 
 
 # Create a concrete implementation for testing the abstract base class

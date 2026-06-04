@@ -1,6 +1,10 @@
-from importlib.abc import Traversable
 from pathlib import Path
 from typing import Generic, TypeVar, cast, final
+
+try:
+    from importlib.resources.abc import Traversable
+except ImportError:  # Python < 3.14
+    from importlib.abc import Traversable
 
 from datasets import Dataset
 from pydantic import AliasChoices, Field

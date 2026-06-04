@@ -3,9 +3,13 @@
 import hashlib
 import random
 import shlex
-from importlib.abc import Traversable
 from pathlib import Path
 from typing import Callable
+
+try:
+    from importlib.resources.abc import Traversable
+except ImportError:  # Python < 3.14
+    from importlib.abc import Traversable
 
 from verifiers.envs.experimental.composable import Harness
 from verifiers.envs.experimental.utils.git_checkout_cache import (
