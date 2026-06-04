@@ -107,7 +107,7 @@ async def run_deep_agent(
         state.setdefault("agent_completion", [])
         return state
 
-    messages = result.get("messages", []) if isinstance(result, dict) else []
+    messages = (result.get("messages") or []) if isinstance(result, dict) else []
     completion = serialize_agent_completion(messages)
     state["agent_completion"] = completion
     state["completion"] = completion

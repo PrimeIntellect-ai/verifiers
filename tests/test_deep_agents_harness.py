@@ -6,7 +6,10 @@ import uuid
 import pytest
 
 from harnesses.deep_agents import run_deep_agent
-from harnesses.utils.deep_agents_utils import langchain_tools_from_state
+from harnesses.utils.deep_agents_utils import (
+    langchain_tools_from_state,
+    serialize_agent_completion,
+)
 
 
 class FakeStructuredTool:
@@ -172,6 +175,37 @@ async def test_langchain_tools_from_state_real_structured_tool() -> None:
     assert await tools[0].ainvoke({"article": "B"}) == "clicked"
     assert calls == [{"article": "B"}]
     assert await tools[1].ainvoke({}) == "back"
+
+
+def test_serialize_agent_completion_preserves_langchain_tool_calls() -> None:
+    pytest.importorskip("langchain_core")
+    from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+    messages = [
+        HumanMessage(content="start"),
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "click_link",
+                    "args": {"article": "B"},
+                    "id": "call_1",
+                    "type": "tool_call",
+                }
+            ],
+        ),
+        ToolMessage(content="clicked", tool_call_id="call_1"),
+    ]
+
+    out = serialize_agent_completion(messages)
+
+    assert [message["role"] for message in out] == ["assistant", "tool"]
+    assistant, tool_message = out
+    assert assistant["tool_calls"][0]["name"] == "click_link"
+    assert assistant["tool_calls"][0]["id"] == "call_1"
+    assert assistant["tool_calls"][0]["arguments"] == '{"article": "B"}'
+    assert tool_message["tool_call_id"] == "call_1"
+    assert tool_message["name"] == "click_link"
 
 
 class FakeEndpointConfig:
@@ -473,3 +507,41 @@ async def test_run_deep_agent_handles_empty_or_missing_prompt(
 
     assert captured["payload"] == {"messages": []}
     assert result["completion"] == [{"role": "assistant", "content": "done"}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("agent_result", [{"messages": None}, {}, "not-a-dict"])
+async def test_run_deep_agent_handles_missing_or_null_messages(
+    monkeypatch: pytest.MonkeyPatch,
+    agent_result: object,
+) -> None:
+    class GraphRecursionError(Exception):
+        pass
+
+    class FakeAgent:
+        async def ainvoke(self, payload, config=None):
+            return agent_result
+
+    def fake_create_deep_agent(**kwargs):
+        return FakeAgent()
+
+    install_fake_deepagents_stack(
+        monkeypatch,
+        create_deep_agent=fake_create_deep_agent,
+        graph_recursion_error=GraphRecursionError,
+    )
+
+    harness = FakeHarness(
+        FakeConfig(agent_name="deep-agent", timeout_seconds=30, max_turns=12)
+    )
+    state = FakeState(
+        {
+            "trajectory_id": "0123456789abcdef0123456789abcdef",
+            "prompt": [{"role": "user", "content": "start"}],
+        }
+    )
+
+    result = await run_deep_agent({"task_id": "t"}, state, harness)
+
+    assert result["agent_completion"] == []
+    assert result["completion"] == []
