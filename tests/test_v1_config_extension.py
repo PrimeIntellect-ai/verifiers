@@ -2738,6 +2738,68 @@ def test_load_environment_validates_typed_env_config_arg(
     }
 
 
+def test_load_environment_accepts_top_level_taskset_harness_shorthand(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_name = "typed_env_config_shorthand"
+    module = types.ModuleType(module_name)
+    seen: dict[str, object] = {}
+
+    def load_environment(split: str = "train", *, config: EnvConfig) -> Env:
+        seen["split"] = split
+        seen["config"] = config
+        return Env(
+            taskset=make_taskset(config=config.taskset),
+            harness=make_harness(config=config.harness),
+        )
+
+    module.load_environment = load_environment
+    monkeypatch.setitem(sys.modules, module_name, module)
+
+    env = vf.load_environment(
+        "typed-env-config-shorthand",
+        split="test",
+        taskset={"taskset_id": "top-level"},
+        harness={"model": {"name": "top-level-model"}},
+    )
+
+    assert seen["split"] == "test"
+    config = seen["config"]
+    assert isinstance(config, EnvConfig)
+    assert config.taskset.taskset_id == "top-level"
+    assert config.harness.model.name == "top-level-model"
+    assert env.taskset.config.taskset_id == "top-level"
+    assert env.harness.config.model.name == "top-level-model"
+    assert env.env_args == {
+        "split": "test",
+        "taskset": {"taskset_id": "top-level"},
+        "harness": {"model": {"name": "top-level-model"}},
+    }
+
+
+def test_load_environment_rejects_duplicate_top_level_config_shorthand(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_name = "typed_env_config_duplicate_shorthand"
+    module = types.ModuleType(module_name)
+
+    def load_environment(config: EnvConfig) -> Env:
+        return Env(
+            taskset=make_taskset(config=config.taskset),
+            harness=make_harness(config=config.harness),
+        )
+
+    module.load_environment = load_environment
+    monkeypatch.setitem(sys.modules, module_name, module)
+
+    with pytest.raises(RuntimeError, match="not both"):
+        vf.load_environment(
+            "typed-env-config-duplicate-shorthand",
+            config={"taskset": {"taskset_id": "nested"}},
+            taskset={"taskset_id": "top-level"},
+        )
+
+
 def test_load_environment_validates_env_config_subclass_sections(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3097,6 +3159,36 @@ def test_load_environment_composes_component_package_without_root_loader(
     assert env.taskset.get_dataset()[0]["answer"] == "train:composed"
     assert type(env.harness) is Harness
     assert env.harness.config.max_turns == 3
+
+
+def test_load_environment_component_package_accepts_top_level_config_shorthand(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_name = "component_only_taskset_shorthand"
+    module = types.ModuleType(module_name)
+
+    class LocalTasksetConfig(TasksetConfig):
+        answer: str = "configured"
+
+    class LocalTaskset(Taskset[LocalTasksetConfig]):
+        def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
+            return [{"prompt": [], "answer": f"{split}:{self.config.answer}"}]
+
+    def load_taskset(config: LocalTasksetConfig) -> LocalTaskset:
+        return LocalTaskset(config=config)
+
+    module.load_taskset = load_taskset
+    monkeypatch.setitem(sys.modules, module_name, module)
+
+    env = vf.load_environment(
+        "component-only-taskset-shorthand",
+        taskset={"answer": "top-level"},
+        harness={"max_turns": 2},
+    )
+
+    assert env.taskset.get_dataset()[0]["answer"] == "train:top-level"
+    assert type(env.harness) is Harness
+    assert env.harness.config.max_turns == 2
 
 
 def test_load_environment_delegates_missing_child_loaders_by_config_id(

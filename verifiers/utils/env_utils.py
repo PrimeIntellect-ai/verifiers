@@ -14,6 +14,8 @@ from verifiers.v1.harness import Harness, HarnessConfig
 from verifiers.v1.taskset import Taskset, TasksetConfig
 from verifiers.v1.utils.config_utils import coerce_config, explicit_config_data
 
+ENV_CONFIG_SHORTHAND_FIELDS = ("taskset", "harness")
+
 
 def load_environment(env_id: str, **env_args) -> Environment:
     logger = logging.getLogger("verifiers.utils.env_utils")
@@ -203,11 +205,7 @@ def prepare_typed_env_config(
     if config_type is None:
         return env_args
 
-    config = env_args.get("config", {})
-    if config is None:
-        raise TypeError("load_environment config must be a concrete EnvConfig object.")
-
-    call_env_args = dict(env_args)
+    config, call_env_args = normalize_env_config_args(env_args, config_type)
     call_env_args["config"] = load_env_config(module, config_type, config)
     return call_env_args
 
@@ -216,17 +214,60 @@ def load_environment_from_components(
     module: ModuleType,
     env_args: dict,
 ) -> Env:
-    extra_args = set(env_args) - {"config"}
+    config, call_env_args = normalize_env_config_args(env_args, EnvConfig)
+    extra_args = set(call_env_args)
     if extra_args:
         raise TypeError(
             "Default Taskset/Harness environment loading only accepts config; "
             f"got {sorted(extra_args)}."
         )
-    config = load_env_config(module, EnvConfig, env_args.get("config", {}))
+    config = load_env_config(module, EnvConfig, config)
     return Env(
         taskset=load_taskset_from_module(module, config=config.taskset),
         harness=load_harness_from_module(module, config=config.harness),
     )
+
+
+def normalize_env_config_args(
+    env_args: Mapping[str, object],
+    config_type: type[EnvConfig],
+) -> tuple[object, dict[str, object]]:
+    call_env_args = dict(env_args)
+    config = call_env_args.pop("config", {})
+    if config is None:
+        raise TypeError("load_environment config must be a concrete EnvConfig object.")
+
+    shorthand = {
+        field_name: call_env_args.pop(field_name)
+        for field_name in ENV_CONFIG_SHORTHAND_FIELDS
+        if field_name in call_env_args
+    }
+    if not shorthand:
+        return config, call_env_args
+
+    config_data: dict[str, object]
+    if isinstance(config, config_type):
+        config_data = dict(explicit_config_data(config))
+    elif isinstance(config, BaseModel):
+        raise TypeError(
+            f"load_environment config must be {config_type.__name__}; "
+            f"got {type(config).__name__}."
+        )
+    elif isinstance(config, Mapping):
+        config_data = dict(explicit_config_data(config))
+    else:
+        raise TypeError("load_environment config must be a mapping or EnvConfig.")
+
+    duplicate_fields = sorted(set(config_data) & set(shorthand))
+    if duplicate_fields:
+        raise TypeError(
+            "Specify load_environment taskset/harness settings either under config "
+            f"or at top level, not both: {duplicate_fields}."
+        )
+
+    for field_name, value in shorthand.items():
+        config_data[field_name] = value
+    return config_data, call_env_args
 
 
 def env_config_annotation(
