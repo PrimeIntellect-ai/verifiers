@@ -17,7 +17,7 @@ from harnesses.utils import split_versioned_agent_spec
 
 # ── Defaults ─────────────────────────────────────────────────────────────
 
-DEFAULT_INSTALL_SPEC = "PrimeIntellect-ai/opencode@1.1.63-rl2"
+DEFAULT_VERSION = "PrimeIntellect-ai/opencode@1.1.63-rl2"
 DEFAULT_SYSTEM_PROMPT = (Path(__file__).parent / "prompt.txt").read_text()
 
 DEFAULT_DISABLED_TOOLS = [
@@ -47,7 +47,7 @@ DEFAULT_DISABLED_TOOLS = [
 
 
 def build_install_script(
-    install_spec: str = DEFAULT_INSTALL_SPEC,
+    version: str = DEFAULT_VERSION,
     install_ripgrep: bool = True,
 ) -> str:
     """Build the shell script that installs OpenCode in a sandbox."""
@@ -56,10 +56,10 @@ def build_install_script(
         if install_ripgrep
         else ""
     )
-    repo, version = split_versioned_agent_spec(install_spec)
+    repo, parsed_version = split_versioned_agent_spec(version)
     path = "releases/latest/download"
-    if version and version != "latest":
-        tag = version if version.startswith("v") else f"v{version}"
+    if parsed_version and parsed_version != "latest":
+        tag = parsed_version if parsed_version.startswith("v") else f"v{parsed_version}"
         path = f"releases/download/{tag}"
     # Acquire::Retries=3 mitigates transient archive.ubuntu.com CDN sync mismatches
     # (e.g. "File has unexpected size ... Mirror sync in progress?"). See launchpad
@@ -244,7 +244,7 @@ def opencode_harness(
     agent_workdir: str = "/app",
     allow_git: bool = False,
     disable_compaction: bool = True,
-    install_spec: str = DEFAULT_INSTALL_SPEC,
+    version: str = DEFAULT_VERSION,
     instruction_path: str = "/opencode/prompt.txt",
     system_prompt_path: str = "/opencode/system.txt",
     log_path: str = "/opencode/logs.txt",
@@ -272,7 +272,7 @@ def opencode_harness(
 
     return Harness(
         install_script=build_install_script(
-            install_spec=install_spec,
+            version=version,
         ),
         run_command=build_opencode_run_command(
             agent_workdir=agent_workdir,

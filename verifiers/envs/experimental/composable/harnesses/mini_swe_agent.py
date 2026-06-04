@@ -4,7 +4,7 @@ from pathlib import PurePosixPath
 import shlex
 
 from harnesses.mini_swe_agent import (
-    MINI_SWE_AGENT_DEFAULT_INSTALL_SPEC,
+    MINI_SWE_AGENT_DEFAULT_VERSION,
     build_mini_swe_agent_install_script as build_packaged_install_script,
 )
 
@@ -14,7 +14,7 @@ DEFAULT_SITE_PACKAGES_DIR = f"{DEFAULT_PREFIX_DIR}/site-packages"
 DEFAULT_MINI_BINARY = f"{DEFAULT_PREFIX_DIR}/bin/mini"
 MINI_SWE_AGENT_CLI_PACKAGE = "mini-swe-agent"
 MINI_SWE_AGENT_CLI_VERSION = "2.2.8"
-DEFAULT_INSTALL_SPEC = MINI_SWE_AGENT_DEFAULT_INSTALL_SPEC
+DEFAULT_VERSION = MINI_SWE_AGENT_DEFAULT_VERSION
 DEFAULT_INSTRUCTION_PATH = "/mini-swe-agent/prompt.txt"
 DEFAULT_SYSTEM_PROMPT_PATH = "/mini-swe-agent/system.txt"
 DEFAULT_LOG_DIR = "/logs/agent"
@@ -27,12 +27,12 @@ DEFAULT_ENVIRONMENT_TIMEOUT = 120
 
 
 def build_mini_swe_agent_install_script(
-    install_spec: str = DEFAULT_INSTALL_SPEC,
+    version: str = DEFAULT_VERSION,
     prefix_dir: str = DEFAULT_PREFIX_DIR,
 ) -> str:
     """Build the shell script that installs mini-SWE-agent."""
     return build_packaged_install_script(
-        install_spec=install_spec,
+        version=version,
         prefix_dir=prefix_dir,
     )
 
@@ -133,7 +133,7 @@ def mini_swe_agent_harness(
     system_prompt_path: str = DEFAULT_SYSTEM_PROMPT_PATH,
     log_path: str = DEFAULT_LOG_PATH,
     trajectory_path: str = DEFAULT_TRAJECTORY_PATH,
-    install_spec: str = DEFAULT_INSTALL_SPEC,
+    version: str = DEFAULT_VERSION,
     config_spec: str = DEFAULT_CONFIG_SPEC,
     model_class: str = DEFAULT_MODEL_CLASS,
     environment_timeout: int = DEFAULT_ENVIRONMENT_TIMEOUT,
@@ -153,7 +153,7 @@ def mini_swe_agent_harness(
     # into mini's agent.system_template at runtime.
     return Harness(
         install_script=build_mini_swe_agent_install_script(
-            install_spec=install_spec,
+            version=version,
         ),
         run_command=build_mini_swe_agent_run_command(
             agent_workdir=agent_workdir,

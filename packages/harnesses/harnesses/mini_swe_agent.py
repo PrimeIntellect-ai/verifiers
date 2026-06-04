@@ -16,23 +16,23 @@ MINI_SWE_AGENT_DEFAULT_INSTRUCTION_PATH = "/mini-swe-agent/prompt.txt"
 MINI_SWE_AGENT_DEFAULT_SYSTEM_PROMPT_PATH = "/mini-swe-agent/system.txt"
 MINI_SWE_AGENT_DEFAULT_LOG_PATH = "/logs/agent/mini-swe-agent.log"
 MINI_SWE_AGENT_DEFAULT_TRAJECTORY_PATH = "/logs/agent/mini-swe-agent.traj.json"
-MINI_SWE_AGENT_DEFAULT_INSTALL_SPEC = "mini-swe-agent@2.2.8"
+MINI_SWE_AGENT_DEFAULT_VERSION = "mini-swe-agent@2.2.8"
 MINI_SWE_AGENT_DEFAULT_CONFIG_SPEC = "mini"
 MINI_SWE_AGENT_DEFAULT_MODEL_CLASS = "litellm"
 MINI_SWE_AGENT_DEFAULT_ENVIRONMENT_TIMEOUT = 120
 
 
 def build_mini_swe_agent_install_script(
-    install_spec: str = MINI_SWE_AGENT_DEFAULT_INSTALL_SPEC,
+    version: str = MINI_SWE_AGENT_DEFAULT_VERSION,
     prefix_dir: str = DEFAULT_PREFIX_DIR,
 ) -> str:
     root = shlex.quote(str(PurePosixPath(prefix_dir).parent))
     prefix = shlex.quote(prefix_dir)
     site_packages = shlex.quote(f"{prefix_dir.rstrip('/')}/site-packages")
-    name, version = split_versioned_agent_spec(install_spec)
+    name, parsed_version = split_versioned_agent_spec(version)
     requirement = name
-    if version and version != "latest":
-        requirement = f"{name}=={version}"
+    if parsed_version and parsed_version != "latest":
+        requirement = f"{name}=={parsed_version}"
     return f"""\
 set -e
 {python_runtime_setup_command()}
@@ -56,7 +56,6 @@ class MiniSWEAgentProgramConfig(vf.ProgramConfig):
     system_prompt_path: str = MINI_SWE_AGENT_DEFAULT_SYSTEM_PROMPT_PATH
     log_path: str = MINI_SWE_AGENT_DEFAULT_LOG_PATH
     trajectory_path: str = MINI_SWE_AGENT_DEFAULT_TRAJECTORY_PATH
-    install_spec: str = MINI_SWE_AGENT_DEFAULT_INSTALL_SPEC
     config_spec: str = MINI_SWE_AGENT_DEFAULT_CONFIG_SPEC
     model_class: str = MINI_SWE_AGENT_DEFAULT_MODEL_CLASS
     environment_timeout: int = MINI_SWE_AGENT_DEFAULT_ENVIRONMENT_TIMEOUT
@@ -64,7 +63,9 @@ class MiniSWEAgentProgramConfig(vf.ProgramConfig):
     extra_config_specs: list[str] | None = None
     sandbox: vf.SandboxConfig | None = vf.SandboxConfig()
 
-    def resolve(self) -> vf.ProgramConfig:
+    def resolve(
+        self, version: str = MINI_SWE_AGENT_DEFAULT_VERSION
+    ) -> vf.ProgramConfig:
         files: dict[str, vf.ProgramValue] = {
             self.instruction_path: {"fn": "verifiers.v1.utils.prompt_utils:task_text"},
             self.system_prompt_path: {
@@ -112,7 +113,7 @@ class MiniSWEAgentProgramConfig(vf.ProgramConfig):
             config_args.extend(["-c", shlex.quote(spec)])
 
         setup = build_mini_swe_agent_install_script(
-            install_spec=self.install_spec,
+            version=version,
         )
         log_dir = str(PurePosixPath(self.log_path).parent)
         trajectory_dir = str(PurePosixPath(self.trajectory_path).parent)
@@ -155,12 +156,16 @@ timeout --kill-after=30s "${{AGENT_TIMEOUT_SECONDS:-3600}}" {shlex.quote(DEFAULT
 
 
 class MiniSWEAgentConfig(vf.HarnessConfig):
+    version: str = MINI_SWE_AGENT_DEFAULT_VERSION
     program: MiniSWEAgentProgramConfig = MiniSWEAgentProgramConfig()
     max_turns: int = 4
 
 
 class MiniSWEAgent(vf.Harness[MiniSWEAgentConfig]):
     config: MiniSWEAgentConfig
+
+    def load_program_config(self, config: MiniSWEAgentConfig) -> vf.ProgramConfig:
+        return config.program.resolve(version=config.version)
 
 
 def load_harness(config: MiniSWEAgentConfig) -> MiniSWEAgent:

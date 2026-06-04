@@ -193,8 +193,8 @@ def test_taskset_repr():
     assert "3" in repr(ts)
 
 
-def test_composable_mini_swe_agent_unversioned_install_spec_uses_unpinned_requirement():
-    setup = build_mini_swe_agent_install_script(install_spec="  mini-swe-agent  ")
+def test_composable_mini_swe_agent_unversioned_version_uses_unpinned_requirement():
+    setup = build_mini_swe_agent_install_script(version="  mini-swe-agent  ")
 
     assert (
         "vf_python_install --target /opt/mini-swe-agent/prefix/site-packages mini-swe-agent"
@@ -203,9 +203,9 @@ def test_composable_mini_swe_agent_unversioned_install_spec_uses_unpinned_requir
     assert "mini-swe-agent==mini-swe-agent" not in setup
 
 
-def test_composable_opencode_unversioned_install_spec_uses_latest_download_url():
+def test_composable_opencode_unversioned_version_uses_latest_download_url():
     setup = build_opencode_install_script(
-        install_spec="  PrimeIntellect-ai/opencode  ",
+        version="  PrimeIntellect-ai/opencode  ",
         install_ripgrep=False,
     )
 

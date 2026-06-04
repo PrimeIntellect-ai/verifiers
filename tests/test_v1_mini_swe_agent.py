@@ -68,7 +68,7 @@ def test_mini_swe_agent_builds_sandbox_program():
             ),
         )
     )
-    program = cast(dict[str, Any], harness.config.program.data())
+    program = cast(dict[str, Any], harness.program_config.data())
     command = cast(list[str], program["command"])
     script = command[-1]
 
@@ -86,18 +86,12 @@ def test_mini_swe_agent_builds_sandbox_program():
     assert "mini_swe_agent_log" in cast(dict[str, object], program["artifacts"])
 
 
-@pytest.mark.parametrize(
-    "install_spec", ["mini-swe-agent@latest", "  mini-swe-agent  "]
-)
-def test_mini_swe_agent_latest_install_spec_uses_unpinned_pip_requirement(
-    install_spec: str,
+@pytest.mark.parametrize("version", ["mini-swe-agent@latest", "  mini-swe-agent  "])
+def test_mini_swe_agent_latest_version_uses_unpinned_pip_requirement(
+    version: str,
 ):
-    harness = MiniSWEAgent(
-        config=MiniSWEAgentConfig(
-            program=MiniSWEAgentProgramConfig(install_spec=install_spec)
-        )
-    )
-    program = cast(dict[str, Any], harness.config.program.data())
+    harness = MiniSWEAgent(config=MiniSWEAgentConfig(version=version))
+    program = cast(dict[str, Any], harness.program_config.data())
     setup = cast(str, program["setup"])
 
     assert (
@@ -106,13 +100,9 @@ def test_mini_swe_agent_latest_install_spec_uses_unpinned_pip_requirement(
     )
 
 
-def test_mini_swe_agent_pinned_install_spec_uses_pip_requirement():
-    harness = MiniSWEAgent(
-        config=MiniSWEAgentConfig(
-            program=MiniSWEAgentProgramConfig(install_spec="mini-swe-agent@2.2.7")
-        )
-    )
-    program = cast(dict[str, Any], harness.config.program.data())
+def test_mini_swe_agent_pinned_version_uses_pip_requirement():
+    harness = MiniSWEAgent(config=MiniSWEAgentConfig(version="mini-swe-agent@2.2.7"))
+    program = cast(dict[str, Any], harness.program_config.data())
     setup = cast(str, program["setup"])
 
     assert "mini-swe-agent==2.2.7" in setup

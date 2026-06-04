@@ -7,7 +7,7 @@ from verifiers.v1.utils.mcp_proxy_utils import proxy_command
 
 from .utils import split_versioned_agent_spec
 
-OPENCODE_DEFAULT_INSTALL_SPEC = "PrimeIntellect-ai/opencode@1.1.63-rl2"
+OPENCODE_DEFAULT_VERSION = "PrimeIntellect-ai/opencode@1.1.63-rl2"
 OPENCODE_DEFAULT_AGENT_WORKDIR = "/app"
 OPENCODE_DEFAULT_INSTRUCTION_PATH = "/opencode/instruction.txt"
 OPENCODE_DEFAULT_SYSTEM_PROMPT_PATH = "/opencode/system.txt"
@@ -50,11 +50,10 @@ class OpenCodeProgramConfig(vf.ProgramConfig):
     disabled_tools: list[str] = OPENCODE_DEFAULT_DISABLED_TOOLS
     allow_git: bool = False
     disable_compaction: bool = True
-    install_spec: str = OPENCODE_DEFAULT_INSTALL_SPEC
     install_ripgrep: bool = True
     provider_timeout_ms: int = 3_600_000
 
-    def resolve(self) -> vf.ProgramConfig:
+    def resolve(self, version: str = OPENCODE_DEFAULT_VERSION) -> vf.ProgramConfig:
         files: dict[str, vf.ProgramValue] = {
             self.instruction_path: {"fn": "verifiers.v1.utils.prompt_utils:task_text"},
             self.system_prompt_path: {
@@ -75,10 +74,14 @@ class OpenCodeProgramConfig(vf.ProgramConfig):
             if self.install_ripgrep
             else ""
         )
-        repo, version = split_versioned_agent_spec(self.install_spec)
+        repo, parsed_version = split_versioned_agent_spec(version)
         path = "releases/latest/download"
-        if version and version != "latest":
-            tag = version if version.startswith("v") else f"v{version}"
+        if parsed_version and parsed_version != "latest":
+            tag = (
+                parsed_version
+                if parsed_version.startswith("v")
+                else f"v{parsed_version}"
+            )
             path = f"releases/download/{tag}"
         # Acquire::Retries=3 mitigates transient archive.ubuntu.com CDN sync
         # mismatches that fail fresh-sandbox apt-get calls mid-rollout.
@@ -197,12 +200,16 @@ class OpenCodeConfig(vf.HarnessConfig):
     system_prompt: vf.PromptInput | vf.SystemPromptConfig | None = (
         OPENCODE_DEFAULT_SYSTEM_PROMPT
     )
+    version: str = OPENCODE_DEFAULT_VERSION
     program: OpenCodeProgramConfig = OpenCodeProgramConfig()
     max_turns: int = 4
 
 
 class OpenCode(vf.Harness[OpenCodeConfig]):
     config: OpenCodeConfig
+
+    def load_program_config(self, config: OpenCodeConfig) -> vf.ProgramConfig:
+        return config.program.resolve(version=config.version)
 
 
 def load_harness(config: OpenCodeConfig) -> OpenCode:
