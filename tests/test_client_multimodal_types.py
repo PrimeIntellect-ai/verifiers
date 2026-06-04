@@ -53,6 +53,43 @@ async def test_openai_to_native_prompt_with_typed_multimodal_content_parts():
 
 
 @pytest.mark.asyncio
+async def test_openai_tool_image_outputs_are_bridged_through_user_message():
+    client = OpenAIChatCompletionsClient(object())
+    messages = [
+        AssistantMessage(
+            content=None,
+            tool_calls=[
+                ToolCall(id="call_1", name="browser_screenshot", arguments="{}")
+            ],
+        ),
+        ToolMessage(
+            tool_call_id="call_1",
+            content=[
+                TextContentPart(text='{"ok": true, "action": "screenshot"}'),
+                ImageUrlContentPart(
+                    image_url=ImageUrlSource(url="data:image/png;base64,abc123")
+                ),
+            ],
+        ),
+    ]
+
+    prompt, kwargs = await client.to_native_prompt(messages)
+
+    assert kwargs == {}
+    assert len(prompt) == 3
+    assert prompt[1]["role"] == "tool"
+    assert prompt[1]["content"] == '{"ok": true, "action": "screenshot"}'
+    assert prompt[2]["role"] == "user"
+    assert prompt[2]["content"] == [
+        {"type": "text", "text": '{"ok": true, "action": "screenshot"}'},
+        {
+            "type": "image_url",
+            "image_url": {"url": "data:image/png;base64,abc123"},
+        },
+    ]
+
+
+@pytest.mark.asyncio
 async def test_anthropic_to_native_prompt_with_typed_multimodal_content_parts():
     pytest.importorskip("anthropic")
     from verifiers.clients.anthropic_messages_client import AnthropicMessagesClient
