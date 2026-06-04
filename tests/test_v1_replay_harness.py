@@ -92,6 +92,28 @@ async def test_replay_harness_prints_assistant_messages_into_trajectory() -> Non
     assert "tokens" not in second["response"]["message"]
 
 
+@pytest.mark.asyncio
+async def test_replay_harness_marks_partial_replay_as_truncated() -> None:
+    env = vf.Env(
+        taskset=InlineReplayTaskset(),
+        harness=ReplayHarness(config=vf.HarnessConfig(max_turns=1)),
+    )
+
+    state = await env.rollout(
+        dict(env.get_dataset()[0]),
+        client=NoModelClient(),
+        model="mock-model",
+    )
+
+    assert state["stop_condition"] == "max_turns_reached"
+    assert state["is_truncated"] is True
+    assert state["num_model_requests"] == 1
+    assert state["completion"] == [{"role": "assistant", "content": "cba"}]
+    step = state["trajectory"][0]
+    assert step["is_truncated"] is True
+    assert step["response"]["message"]["is_truncated"] is True
+
+
 def test_replay_taskset_loads_env_local_json_data(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
