@@ -969,6 +969,21 @@ class TestDeltaIntermediateMmData:
     def _step(self, mm):
         return {"tokens": {"multi_modal_data": mm}}
 
+    def _token_step(
+        self,
+        mm,
+        *,
+        prompt_ids: list[int],
+        completion_ids: list[int],
+    ):
+        return {
+            "tokens": {
+                "prompt_ids": prompt_ids,
+                "completion_ids": completion_ids,
+                "multi_modal_data": mm,
+            }
+        }
+
     def test_none_and_single_step_passthrough(self):
         assert _delta_intermediate_mm_data(None) is None
         assert _delta_intermediate_mm_data([]) == []
@@ -994,6 +1009,138 @@ class TestDeltaIntermediateMmData:
             out[2]["tokens"]["multi_modal_data"].mm_placeholders["image"][0].offset
             == 20
         )
+
+    def test_token_prefix_break_emits_full_cumulative_mm_data(self):
+        """Image-monotonic full re-renders must not be saved as deltas."""
+        traj = [
+            self._token_step(
+                self._mm("A"),
+                prompt_ids=[1, 2],
+                completion_ids=[3, 4],
+            ),
+            self._token_step(
+                self._mm("A", "B"),
+                # Image-wise this extends step 0, but token-wise it is a
+                # full re-render that no longer starts with [1, 2, 3, 4].
+                prompt_ids=[90, 91, 92],
+                completion_ids=[93],
+            ),
+        ]
+        out = _delta_intermediate_mm_data(traj)
+
+        assert out[0]["tokens"]["multi_modal_data"].mm_hashes == {"image": ["A"]}
+        step1_mm = out[1]["tokens"]["multi_modal_data"]
+        assert step1_mm.mm_hashes == {"image": ["A", "B"]}
+        assert step1_mm.mm_items == {
+            "image": [{"pixel_values": "px-A"}, {"pixel_values": "px-B"}]
+        }
+        assert [p.offset for p in step1_mm.mm_placeholders["image"]] == [0, 10]
+
+    def test_non_adjacent_token_prefix_deltas_against_matching_baseline(self):
+        """Interleaved trajectories should diff against the matching prior step.
+
+        Step 2 extends step 0 rather than the immediate prior step 1. Emitting
+        step 2's full cumulative mm_data would duplicate A when downstream
+        assemblers union step indices [0, 2].
+        """
+        traj = [
+            self._token_step(
+                self._mm("A"),
+                prompt_ids=[1, 2],
+                completion_ids=[3],
+            ),
+            self._token_step(
+                self._mm("X"),
+                prompt_ids=[50],
+                completion_ids=[51],
+            ),
+            self._token_step(
+                self._mm("A", "B"),
+                prompt_ids=[1, 2, 3, 4],
+                completion_ids=[5],
+            ),
+        ]
+        out = _delta_intermediate_mm_data(traj)
+
+        assert out[0]["tokens"]["multi_modal_data"].mm_hashes == {"image": ["A"]}
+        assert out[1]["tokens"]["multi_modal_data"].mm_hashes == {"image": ["X"]}
+        step2_mm = out[2]["tokens"]["multi_modal_data"]
+        assert step2_mm.mm_hashes == {"image": ["B"]}
+        assert step2_mm.mm_items == {"image": [{"pixel_values": "px-B"}]}
+        assert [p.offset for p in step2_mm.mm_placeholders["image"]] == [10]
+
+    def test_step_back_to_stale_prefix_emits_full_cumulative_mm_data(self):
+        """A branch step-back must not diff against an old historical prefix.
+
+        Downstream prime-rl tracks only the current prefix for each active
+        sample. Once step 1 extends step 0, a later step 2 that extends step 0's
+        old prefix starts a new TrainingSample, so it needs every image its
+        prompt references. Emitting only C would orphan the carried A
+        placeholder in that new sample.
+        """
+        traj = [
+            self._token_step(
+                self._mm("A"),
+                prompt_ids=[1, 2],
+                completion_ids=[3],
+            ),
+            self._token_step(
+                self._mm("A", "B"),
+                prompt_ids=[1, 2, 3, 4],
+                completion_ids=[5],
+            ),
+            self._token_step(
+                self._mm("A", "C"),
+                # Extends step 0's historical prefix [1, 2, 3], but not step
+                # 1's active prefix [1, 2, 3, 4, 5].
+                prompt_ids=[1, 2, 3, 9],
+                completion_ids=[10],
+            ),
+        ]
+        out = _delta_intermediate_mm_data(traj)
+
+        assert out[0]["tokens"]["multi_modal_data"].mm_hashes == {"image": ["A"]}
+        assert out[1]["tokens"]["multi_modal_data"].mm_hashes == {"image": ["B"]}
+        step2_mm = out[2]["tokens"]["multi_modal_data"]
+        assert step2_mm.mm_hashes == {"image": ["A", "C"]}
+        assert step2_mm.mm_items == {
+            "image": [{"pixel_values": "px-A"}, {"pixel_values": "px-C"}]
+        }
+
+    def test_descriptor_only_items_delta_correctly(self):
+        """Descriptor-only mm_items (``image_grid_thw`` but no ``pixel_values``)
+        — the memory-lean shape the env worker now retains — still delta and
+        reindex correctly. The diff is hash-driven and reindexes items
+        opaquely, so dropping ``pixel_values`` must not change the outcome.
+        """
+        from renderers.base import MultiModalData, PlaceholderRange
+
+        def desc_step(*hashes: str):
+            return {
+                "tokens": {
+                    "multi_modal_data": MultiModalData(
+                        mm_hashes={"image": list(hashes)},
+                        mm_placeholders={
+                            "image": [
+                                PlaceholderRange(offset=i * 10, length=4)
+                                for i in range(len(hashes))
+                            ]
+                        },
+                        mm_items={
+                            "image": [{"image_grid_thw": [1, 4, 4]} for _ in hashes]
+                        },
+                    )
+                }
+            }
+
+        traj = [desc_step("A"), desc_step("A", "B"), desc_step("A", "B", "C")]
+        out = _delta_intermediate_mm_data(traj)
+
+        assert out[1]["tokens"]["multi_modal_data"].mm_hashes == {"image": ["B"]}
+        assert out[2]["tokens"]["multi_modal_data"].mm_hashes == {"image": ["C"]}
+        items1 = out[1]["tokens"]["multi_modal_data"].mm_items["image"]
+        assert items1 == [{"image_grid_thw": [1, 4, 4]}]
+        assert all("pixel_values" not in it for it in items1)
 
     def test_compaction_two_training_samples_assemble_correctly(self):
         """Rollout with one compaction event → two TrainingSamples.

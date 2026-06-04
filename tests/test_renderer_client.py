@@ -1,10 +1,14 @@
 import asyncio
+import base64
 from functools import lru_cache
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
 import verifiers as vf
+import verifiers.clients.renderer_client as renderer_client_module
 from renderers import RendererPool
 from renderers import config_from_name
 from renderers.base import ParsedResponse, RenderedTokens, create_renderer
@@ -13,17 +17,27 @@ from verifiers.clients.renderer_client import (
     _attach_tool_call_names,
     _get_incremental_prompt_ids,
     _is_valid_incremental_tail,
+    _offload_image_parts_inplace,
+    _offload_prompt_images,
     _step_token_ids,
     _to_renderer_message,
 )
 from verifiers.errors import EmptyModelResponseError
 from verifiers.types import (
     AssistantMessage,
+    ImageUrlContentPart,
+    ImageUrlSource,
     SystemMessage,
     ToolCall,
     ToolMessage,
     UserMessage,
 )
+
+
+class _TypedMMError(RuntimeError):
+    def __init__(self, error_type: str):
+        super().__init__(error_type)
+        self.body = {"error": {"type": error_type, "message": error_type}}
 
 
 def test_renderer_client_honors_configured_renderer_config():
@@ -414,6 +428,65 @@ async def test_get_native_response_forwards_extra_headers_to_generate():
     }
 
 
+@pytest.mark.asyncio
+async def test_mm_fallback_retries_hash_only_failure_with_full_payloads():
+    calls = 0
+
+    async def fake_generate(*, force_full_pixels=False, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            # First attempt sends prior-turn images hash-only.
+            assert force_full_pixels is False
+            raise _TypedMMError("missing_mm_cache_item")
+        # Fallback re-materializes every image and re-sends in full.
+        assert force_full_pixels is True
+        return {"content": "ok"}
+
+    # A descriptor-only image (no pixel_values) is what gets sent hash-only, so
+    # a cache-miss on it is retryable. The retry decision is made locally from
+    # this sidecar — no ContextVar crosses the renderer's thread boundary.
+    mm_data = SimpleNamespace(
+        mm_items={"image": [{"pixel_values": None, "image_grid_thw": [1, 2, 2]}]}
+    )
+
+    with patch.object(renderer_client_module, "generate", side_effect=fake_generate):
+        result = await renderer_client_module._generate_with_mm_fallback(
+            client=object(),
+            renderer=object(),
+            messages=[],
+            model="test-model",
+            multi_modal_data=mm_data,
+        )
+
+    assert calls == 2
+    assert result == {"content": "ok"}
+
+
+@pytest.mark.asyncio
+async def test_mm_fallback_does_not_retry_without_hash_only_payloads():
+    calls = 0
+
+    async def fake_generate(*, force_full_pixels=False, **_kwargs):
+        nonlocal calls
+        calls += 1
+        raise _TypedMMError("missing_mm_cache_item")
+
+    # No descriptor-only images means nothing was sent hash-only, so a
+    # cache-miss-shaped error is not attributable to our hashing — don't retry.
+    with patch.object(renderer_client_module, "generate", side_effect=fake_generate):
+        with pytest.raises(RuntimeError, match="missing_mm_cache_item"):
+            await renderer_client_module._generate_with_mm_fallback(
+                client=object(),
+                renderer=object(),
+                messages=[],
+                model="test-model",
+                multi_modal_data=None,
+            )
+
+    assert calls == 1
+
+
 class _BridgeRenderer:
     supports_tools = True
 
@@ -639,6 +712,216 @@ async def test_get_incremental_prompt_ids_accepts_multimodal_tool_user_tail():
     bridged, routed_experts_prompt_start = result
     assert bridged.token_ids == [1, 2, 3, 99, 40, 50]
     assert routed_experts_prompt_start == 3
+
+
+# ── Live image offload + bridge-matching validation ───────────────────
+
+
+def _data_uri(payload: bytes, media: str = "jpeg") -> str:
+    return f"data:image/{media};base64," + base64.b64encode(payload).decode("ascii")
+
+
+def _image_urls(value):
+    """Collect every image url reachable from dicts/lists/Pydantic messages."""
+    urls = []
+    if isinstance(value, dict):
+        if value.get("type") == "image_url" and isinstance(
+            value.get("image_url"), dict
+        ):
+            urls.append(value["image_url"].get("url"))
+        for v in value.values():
+            urls.extend(_image_urls(v))
+    elif isinstance(value, (list, tuple)):
+        for v in value:
+            urls.extend(_image_urls(v))
+    elif getattr(value, "type", None) == "image_url":
+        src = getattr(value, "image_url", None)
+        urls.append(getattr(src, "url", None))
+    else:
+        content = getattr(value, "content", None)
+        if isinstance(content, (list, tuple)):
+            urls.extend(_image_urls(content))
+    return [u for u in urls if u is not None]
+
+
+def test_offload_rewrites_prompt_base64_to_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("PRIME_RL_MM_FEATURE_ROOT", str(tmp_path))
+    monkeypatch.setenv("RUN_ID", "testrun")
+    prompt = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "hi"},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": _data_uri(b"img-A", "jpeg")},
+                },
+            ],
+        }
+    ]
+    stats = _offload_prompt_images(prompt)
+
+    url = prompt[0]["content"][1]["image_url"]["url"]
+    assert stats["prompt_rewritten"] == 1
+    assert url.startswith("file://") and url.endswith(".jpg")
+    # File holds the decoded bytes (not the base64), content-addressed.
+    assert Path(url[len("file://") :]).read_bytes() == b"img-A"
+
+
+@pytest.mark.parametrize(
+    "make_prompt",
+    [
+        # plain-dict message (the native/wire representation)
+        lambda uri: [
+            {
+                "role": "user",
+                "content": [{"type": "image_url", "image_url": {"url": uri}}],
+            }
+        ],
+        # Pydantic message (how MultiTurnEnv stores trajectory prompts)
+        lambda uri: [
+            UserMessage(content=[{"type": "image_url", "image_url": {"url": uri}}])
+        ],
+    ],
+    ids=["dict", "pydantic"],
+)
+def test_offload_image_parts_handles_dict_and_pydantic(tmp_path, make_prompt):
+    uri = _data_uri(b"traj-img", "png")
+    messages = make_prompt(uri)
+
+    count, _ = _offload_image_parts_inplace(messages, tmp_path)
+
+    assert count == 1
+    assert _image_urls(messages)[0].startswith("file://")
+    # Idempotent: a second pass finds nothing to rewrite.
+    assert _offload_image_parts_inplace(messages, tmp_path)[0] == 0
+
+
+@pytest.mark.asyncio
+async def test_to_native_prompt_offloads_original_verifiers_prompt(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("PRIME_RL_MM_FEATURE_ROOT", str(tmp_path))
+    monkeypatch.setenv("RUN_ID", "testrun")
+    client = object.__new__(RendererClient)
+    prompt = [
+        UserMessage(
+            content=[
+                ImageUrlContentPart(
+                    image_url=ImageUrlSource(url=_data_uri(b"typed-img", "png"))
+                )
+            ]
+        )
+    ]
+
+    native_prompt, extra_kwargs = await client.to_native_prompt(prompt)
+
+    original_url = _image_urls(prompt)[0]
+    native_url = _image_urls(native_prompt)[0]
+    assert original_url.startswith("file://")
+    assert native_url == original_url
+    assert extra_kwargs["_image_offload_stats"]["prompt_rewritten"] == 1
+
+
+def _multimodal_bridge_scenario():
+    """Current prompt extends a stored trajectory step; both reference the same
+    'abc' screenshot in the shared prefix (the bridge anchor)."""
+    abc = _data_uri(b"screenshot-abc", "png")
+    deff = _data_uri(b"screenshot-def", "png")
+    renderer = _BridgeRenderer(bridge_base=[10, 99], bridge_full=[10, 99, 40, 50])
+    prompt_messages = [
+        SystemMessage(content="s"),
+        UserMessage(
+            content=[
+                {"type": "text", "text": "inspect"},
+                {"type": "image_url", "image_url": {"url": abc}},
+            ]
+        ),
+    ]
+    completion_messages = [
+        AssistantMessage(
+            content=None,
+            tool_calls=[ToolCall(id="call_0", name="lookup", arguments="{}")],
+        )
+    ]
+    prompt = [
+        *[_to_renderer_message(m) for m in prompt_messages + completion_messages],
+        _to_renderer_message(
+            ToolMessage(
+                content=[
+                    {"type": "text", "text": "result"},
+                    {"type": "image_url", "image_url": {"url": deff}},
+                ],
+                tool_call_id="call_0",
+            )
+        ),
+        _to_renderer_message(UserMessage(content="continue")),
+    ]
+    state = {
+        "trajectory": [
+            {
+                "prompt": prompt_messages,
+                "completion": completion_messages,
+                "tokens": {
+                    "prompt_ids": [1, 2],
+                    "completion_ids": [3, 99],
+                    "is_truncated": False,
+                },
+                "is_truncated": False,
+            }
+        ]
+    }
+    return renderer, prompt, state
+
+
+@pytest.mark.asyncio
+async def test_bridge_prefix_matching_survives_image_offload(tmp_path, monkeypatch):
+    """Bridge matching survives when the live prompt is offloaded.
+
+    Stored trajectory prompts already carry file:// refs because they were
+    offloaded while they were the live prompt.
+    """
+    monkeypatch.setenv("PRIME_RL_MM_FEATURE_ROOT", str(tmp_path))
+    monkeypatch.setenv("RUN_ID", "testrun")
+    renderer, prompt, state = _multimodal_bridge_scenario()
+
+    # Simulate the append-only invariant from a prior model request.
+    _offload_prompt_images(state["trajectory"][0]["prompt"])
+    # Offload the current native prompt after the original prompt conversion does.
+    _offload_prompt_images(prompt)
+
+    # The anchor screenshot resolved to the SAME file:// url on both sides.
+    prompt_prefix_url = _image_urls(prompt[1])[
+        0
+    ]  # current prompt's prior-turn user image
+    traj_url = _image_urls(state["trajectory"][0]["prompt"])[
+        0
+    ]  # stored trajectory image
+    assert prompt_prefix_url.startswith("file://")
+    assert prompt_prefix_url == traj_url
+
+    result = await _get_incremental_prompt_ids(
+        renderer=renderer, prompt=prompt, state=state, tools=None
+    )
+    # Bridge still matched and extended — prefix logic intact under offload.
+    assert result is not None
+    assert result.token_ids == [1, 2, 3, 99, 40, 50]
+
+
+@pytest.mark.asyncio
+async def test_bridge_misses_if_trajectory_not_offloaded(tmp_path):
+    """Negative control proving the test has teeth: if only the current prompt is
+    offloaded (file://) while the trajectory keeps base64, the prefix no longer
+    matches and the bridge bails. This is why get_native_response must offload
+    BOTH sides before matching."""
+    renderer, prompt, state = _multimodal_bridge_scenario()
+    # Offload ONLY the current prompt; leave the trajectory as base64.
+    _offload_image_parts_inplace(prompt, tmp_path)
+
+    result = await _get_incremental_prompt_ids(
+        renderer=renderer, prompt=prompt, state=state, tools=None
+    )
+    assert result is None
 
 
 # ── Parity across real renderers: truncated most-recent step ──────────

@@ -332,9 +332,9 @@ def _delta_intermediate_mm_data(trajectory: object) -> object:
 
     The renderer's ``bridge_to_next_turn`` merges ``previous_multi_modal_data``
     into the new turn, so each step carries the cumulative set of every
-    image rendered so far in the trajectory. For each step after the
-    first, drop items whose ``mm_hash`` already appeared in the immediately
-    prior step. The first step is left as-is (all items are new).
+    image rendered so far in the trajectory. For each step after the first,
+    drop items whose ``mm_hash`` already appeared in the selected prior
+    baseline step. The first step is left as-is (all items are new).
 
     ``parse_response_tokens`` moves the sidecar onto ``step["tokens"]``
     and clears the duplicate on ``response.message.tokens``, so only one
@@ -348,14 +348,17 @@ def _delta_intermediate_mm_data(trajectory: object) -> object:
     step-deltas in that window. Placeholder offsets stay relative to the
     step's own cumulative token sequence; the assembler shifts them.
 
-    Non-monotonic trajectories: the diff is lossless only when the prior
-    step's cumulative is a multiset-subset of the current step's. When
-    that breaks — e.g. a compaction step that preserves a subset of prior
-    images, a pruning harness that drops earlier turns, or a sliding-window
-    context that rolls items out — diffing against ``prior`` would drop
-    items that should have survived. Such steps emit their full cumulative
-    as-is and reset the prior baseline, so per-window assemblers always
-    see at least their window's images.
+    Non-monotonic trajectories: the diff is lossless only when the baseline
+    step's cumulative is a multiset-subset of the current step's and, when
+    token ids are available, the current prompt prefix-extends that baseline's
+    exact prompt+completion token stream. When that breaks — e.g. a compaction
+    step that preserves a subset of prior images, a pruning harness that drops
+    earlier turns, a sliding-window context that rolls items out, or a full
+    re-render whose images are cumulative but whose tokens no longer
+    prefix-extend — diffing against ``prior`` would drop items that should have
+    survived. Such steps emit their full cumulative as-is and reset the prior
+    baseline, so per-window assemblers always see at least their window's
+    images.
 
     Returns a new list of step dicts (shallow copies for rewritten
     entries) so the input state isn't mutated. Non-list inputs and
@@ -366,6 +369,10 @@ def _delta_intermediate_mm_data(trajectory: object) -> object:
 
     out: list = []
     prior_hashes: dict[str, list[str]] = {}
+    # Mirrors prime-rl's interleave_rollout active sample state: one current
+    # prefix per active branch. When a branch extends, replace its prefix rather
+    # than keeping historical prefixes that downstream will not merge into.
+    active_baselines: list[tuple[list[int] | None, dict[str, list[str]]]] = []
 
     for idx, raw_step in enumerate(trajectory):
         if not isinstance(raw_step, Mapping):
@@ -377,30 +384,63 @@ def _delta_intermediate_mm_data(trajectory: object) -> object:
             tokens.get("multi_modal_data") if isinstance(tokens, Mapping) else None
         )
         current_hashes = _read_mm_hashes(step_mm)
+        current_prompt_ids = _read_token_ids(tokens, "prompt_ids")
+        current_token_prefix = _combine_token_ids(
+            current_prompt_ids, _read_token_ids(tokens, "completion_ids")
+        )
 
         if idx == 0:
             out.append(step)
             prior_hashes = current_hashes
+            active_baselines.append((current_token_prefix, current_hashes))
             continue
 
-        # Non-monotonic transition (e.g. partial compaction): emit
-        # cumulative as-is and reset the baseline. See helper docstring.
-        if not _is_monotonic_extension(prior_hashes, current_hashes):
+        active_baseline_idx = _select_delta_baseline_idx(
+            active_baselines,
+            current_prompt_ids=current_prompt_ids,
+            current_hashes=current_hashes,
+        )
+        if active_baseline_idx is None:
+            baseline_hashes = None
+            if current_prompt_ids is None and _is_monotonic_extension(
+                prior_hashes, current_hashes
+            ):
+                baseline_hashes = prior_hashes
+        else:
+            baseline_hashes = active_baselines[active_baseline_idx][1]
+
+        # No lossless token+image baseline: emit cumulative as-is and reset.
+        if baseline_hashes is None:
             out.append(step)
             prior_hashes = current_hashes
+            active_baselines.append((current_token_prefix, current_hashes))
             continue
 
         if isinstance(tokens, Mapping) and step_mm is not None:
-            delta = _diff_mm_data(step_mm, prior_hashes)
+            delta = _diff_mm_data(step_mm, baseline_hashes)
             if delta is not step_mm:
                 new_step: dict[str, Any] = dict(step)
                 new_step["tokens"] = {**tokens, "multi_modal_data": delta}
                 out.append(new_step)
                 prior_hashes = current_hashes
+                if active_baseline_idx is not None:
+                    active_baselines[active_baseline_idx] = (
+                        current_token_prefix,
+                        current_hashes,
+                    )
+                else:
+                    active_baselines.append((current_token_prefix, current_hashes))
                 continue
 
         out.append(step)
         prior_hashes = current_hashes
+        if active_baseline_idx is not None:
+            active_baselines[active_baseline_idx] = (
+                current_token_prefix,
+                current_hashes,
+            )
+        else:
+            active_baselines.append((current_token_prefix, current_hashes))
     return out
 
 
@@ -422,6 +462,57 @@ def _read_mm_hashes(mm: object) -> dict[str, list[str]]:
     return {
         modality: list(hs) for modality, hs in hashes.items() if isinstance(hs, list)
     }
+
+
+def _read_token_ids(tokens: object, key: str) -> list[int] | None:
+    """Read token id lists from a TrajectoryStepTokens-like mapping."""
+    if not isinstance(tokens, Mapping):
+        return None
+    ids = tokens.get(key)
+    if not isinstance(ids, list):
+        return None
+    return list(ids)
+
+
+def _combine_token_ids(
+    prompt_ids: list[int] | None, completion_ids: list[int] | None
+) -> list[int] | None:
+    if prompt_ids is None or completion_ids is None:
+        return None
+    return prompt_ids + completion_ids
+
+
+def _is_token_prefix_extension(
+    prior_token_prefix: list[int], current_prompt_ids: list[int]
+) -> bool:
+    return current_prompt_ids[: len(prior_token_prefix)] == prior_token_prefix
+
+
+def _select_delta_baseline_idx(
+    active_baselines: list[tuple[list[int] | None, dict[str, list[str]]]],
+    *,
+    current_prompt_ids: list[int] | None,
+    current_hashes: dict[str, list[str]],
+) -> int | None:
+    """Choose the active mm baseline to diff against.
+
+    Mirrors prime-rl's interleave_rollout: match only an active branch's
+    current prefix, in active-branch creation order. Historical prefixes from a
+    branch are intentionally not retained, because downstream will start a new
+    TrainingSample for a step-back to a stale prefix; that new sample needs the
+    step's full cumulative multimodal sidecar.
+    """
+    if current_prompt_ids is None:
+        return None
+
+    for idx, (token_prefix, hashes) in enumerate(active_baselines):
+        if token_prefix is None:
+            continue
+        if not _is_token_prefix_extension(token_prefix, current_prompt_ids):
+            continue
+        if _is_monotonic_extension(hashes, current_hashes):
+            return idx
+    return None
 
 
 def _is_monotonic_extension(
