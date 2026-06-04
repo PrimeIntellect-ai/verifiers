@@ -17,6 +17,12 @@ from verifiers.envs.experimental.composable import (
     TaskSet,
     discover_sibling_dir,
 )
+from verifiers.envs.experimental.composable.harnesses.mini_swe_agent import (
+    build_mini_swe_agent_install_script,
+)
+from verifiers.envs.experimental.composable.harnesses.opencode import (
+    build_install_script as build_opencode_install_script,
+)
 
 
 # ── Mock Rubrics ──────────────────────────────────────────────────────
@@ -185,6 +191,27 @@ def test_taskset_repr():
     ts = MockTaskSet(dataset=_make_dataset(), name="mytest")
     assert "mytest" in repr(ts)
     assert "3" in repr(ts)
+
+
+def test_composable_mini_swe_agent_unversioned_package_uses_unpinned_requirement():
+    setup = build_mini_swe_agent_install_script(package="  mini-swe-agent  ")
+
+    assert (
+        "vf_python_install --target /opt/mini-swe-agent/prefix/site-packages mini-swe-agent"
+        in setup
+    )
+    assert "mini-swe-agent==mini-swe-agent" not in setup
+
+
+def test_composable_opencode_unversioned_release_uses_latest_download_url():
+    setup = build_opencode_install_script(
+        release="  PrimeIntellect-ai/opencode  ",
+        install_ripgrep=False,
+    )
+
+    assert "OPENCODE_RELEASE_REPO=PrimeIntellect-ai/opencode" in setup
+    assert "OPENCODE_RELEASE_PATH=releases/latest/download" in setup
+    assert "releases/download/vPrimeIntellect-ai/opencode" not in setup
 
 
 @pytest.mark.asyncio
