@@ -1,5 +1,6 @@
 """Tests for the Rubric class."""
 
+import math
 from typing import cast
 
 import pytest
@@ -172,6 +173,42 @@ class TestRubric:
         assert state["metrics"]["func1"] == 1.0  # completion == answer
         assert state["metrics"]["func2"] == 0.4  # len("test") * 0.1
         assert state["reward"] == 1.0 * 1.0 + 0.4 * 0.5  # Weighted sum
+
+    @pytest.mark.asyncio
+    async def test_score_rollout_zero_weight_metric_nan_does_not_poison_reward(self):
+        """A weight-0 metric returning NaN must not poison the reward.
+
+        Zero-weight terms are skipped in the reward sum; otherwise 0.0 * nan = nan
+        would make the whole reward (and any downstream advantage/loss) NaN.
+        """
+
+        def reward_func(completion, answer, **kwargs):
+            return 1.0 if completion == answer else 0.0
+
+        def nan_metric(completion, **kwargs):
+            return float("nan")
+
+        rubric = Rubric()
+        rubric.add_reward_func(reward_func, weight=1.0)
+        rubric.add_metric(nan_metric)  # default weight 0.0
+
+        state = State(
+            input=RolloutInput(
+                prompt="test prompt",
+                answer="test",
+                example_id=0,
+            )
+        )
+        state["completion"] = "test"
+        state["trajectory"] = []
+        state["timing"] = RolloutTiming()
+
+        await rubric.score_rollout(state)
+
+        # The metric is still recorded (as NaN) but excluded from the reward sum.
+        assert math.isnan(state["metrics"]["nan_metric"])
+        assert math.isfinite(state["reward"])
+        assert state["reward"] == 1.0
 
     @pytest.mark.asyncio
     async def test_score_rollout_with_list_completion(self):
