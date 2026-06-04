@@ -8,6 +8,7 @@ import pytest
 import verifiers as vf
 from harnesses import ReplayHarness
 from tasksets import ReplayTaskset, ReplayTasksetConfig
+from tasksets.replay import replay_task_record
 
 
 class NoModelClient:
@@ -152,3 +153,49 @@ def test_replay_taskset_loads_env_local_json_data(
             ]
         }
     ]
+
+
+def test_replay_taskset_canonicalizes_messages() -> None:
+    task = replay_task_record(
+        {
+            "messages": [
+                {"role": "user", "content": "Use the tool."},
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {
+                                "name": "search",
+                                "arguments": {"query": "abc"},
+                            },
+                        }
+                    ],
+                },
+            ]
+        }
+    )
+
+    assert task["messages"] == [
+        {"role": "user", "content": "Use the tool."},
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "name": "search",
+                    "arguments": '{"query": "abc"}',
+                }
+            ],
+        },
+    ]
+
+
+def test_replay_taskset_rejects_invalid_messages() -> None:
+    with pytest.raises(TypeError, match="messages must be a list"):
+        replay_task_record({"messages": "not a transcript"})
+
+    with pytest.raises(ValueError, match="Unknown role"):
+        replay_task_record({"messages": [{"role": "assistantish", "content": "no"}]})

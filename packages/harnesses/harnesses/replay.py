@@ -13,7 +13,7 @@ class ReplayHarness(vf.Harness[vf.HarnessConfig]):
         assistant_indices = [
             index
             for index, message in enumerate(messages)
-            if message["role"] == "assistant"
+            if message.role == "assistant"
         ]
         if not assistant_indices:
             raise ValueError("task.messages has no assistant messages.")
@@ -28,10 +28,10 @@ class ReplayHarness(vf.Harness[vf.HarnessConfig]):
         final_turn = len(assistant_indices) - 1
         for turn, message_index in enumerate(assistant_indices):
             message = messages[message_index]
-            prompt = messages[:message_index]
-            completion = [message]
+            prompt = replay_messages_data(messages[:message_index])
+            completion = [replay_message_data(message)]
             is_truncated = (max_turns_reached and turn == final_turn) or bool(
-                message.get("is_truncated", False)
+                completion[0].get("is_truncated", False)
             )
             response = replay_response(
                 message=message,
@@ -58,20 +58,19 @@ class ReplayHarness(vf.Harness[vf.HarnessConfig]):
         return state
 
 
-def replay_messages(task: vf.Task) -> list[vf.JsonData]:
+def replay_messages(task: vf.Task) -> vf.Messages:
     value = task.get("messages")
     if not isinstance(value, list):
         raise TypeError("task.messages must be a list.")
+    return vf.get_messages(value)
 
-    messages: list[vf.JsonData] = []
-    for message in value:
-        if not isinstance(message, dict):
-            raise TypeError("task.messages must contain JSON objects.")
-        role = message.get("role")
-        if not isinstance(role, str):
-            raise TypeError("task.messages message role must be a string.")
-        messages.append(cast(vf.JsonData, dict(message)))
-    return messages
+
+def replay_message_data(message: vf.Message) -> vf.JsonData:
+    return cast(vf.JsonData, message.model_dump(mode="json", exclude_none=True))
+
+
+def replay_messages_data(messages: list[vf.Message]) -> list[vf.JsonData]:
+    return [replay_message_data(message) for message in messages]
 
 
 def replay_trajectory_step(
@@ -101,14 +100,14 @@ def replay_trajectory_step(
 
 def replay_response(
     *,
-    message: vf.JsonData,
+    message: vf.Message,
     model: str,
     created: int,
     turn: int,
     trajectory_id: str,
     is_truncated: bool,
 ) -> vf.JsonData:
-    message_data = dict(message)
+    message_data = replay_message_data(message)
     message_data.setdefault(
         "finish_reason", "tool_calls" if message_data.get("tool_calls") else "stop"
     )
