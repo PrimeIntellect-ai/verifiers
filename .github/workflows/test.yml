@@ -16,6 +16,9 @@ on:
       - "packages/**"
       - ".github/workflows/test.yml"
 
+env:
+  HF_HOME: ${{ github.workspace }}/.cache/huggingface
+
 jobs:
   test:
     name: Verifiers
@@ -23,6 +26,7 @@ jobs:
     env:
       PRIME_API_KEY: ${{ secrets.PRIME_API_KEY }}
       PRIME_TEAM_ID: ${{ secrets.PRIME_TEAM_ID }}
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
     strategy:
       fail-fast: false
       matrix:
@@ -38,6 +42,14 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
+
+      - name: Cache Hugging Face tokenizers
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.HF_HOME }}
+          key: hf-tokenizers-${{ runner.os }}-${{ hashFiles('uv.lock', 'tests/test_renderer_client.py', 'tests/test_renderer_e2e.py') }}
+          restore-keys: |
+            hf-tokenizers-${{ runner.os }}-
 
       - name: Install dependencies
         run: uv sync
