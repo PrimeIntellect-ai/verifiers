@@ -32,10 +32,6 @@ class HelloRLMTaskset(vf.Taskset[HelloRLMTasksetConfig]):
         stdout = str(state.get("command", {}).get("stdout") or "")
         return float(str(task["answer"]).lower() in stdout.lower())
 
-    @vf.stop
-    async def max_turns_reached(self, state) -> bool:
-        return len(state.get("trajectory", [])) >= 1
-
 
 def load_taskset(config: HelloRLMTasksetConfig) -> HelloRLMTaskset:
     return HelloRLMTaskset(config=config)
