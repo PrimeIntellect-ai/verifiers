@@ -6,6 +6,7 @@ import verifiers as vf
 from verifiers.clients import Client
 from verifiers.types import ClientConfig
 from verifiers.types import RolloutInput, SamplingArgs
+from verifiers.utils.error_utils import error_info, note_secondary_error
 
 from .config import Config
 from .harness import Harness, HarnessConfig
@@ -175,21 +176,43 @@ class Env(vf.Environment):
         ]
         try:
             states = await asyncio.gather(*run_tasks)
-        except BaseException:
+        except BaseException as primary_error:
             pending = [task for task in run_tasks if not task.done()]
             for task in pending:
                 task.cancel()
             if pending:
                 await asyncio.gather(*pending, return_exceptions=True)
-            await self.harness.cleanup_group(tasks, states)
+            try:
+                await self.harness.cleanup_group(tasks, states)
+            except Exception as cleanup_error:
+                for state in states:
+                    state.setdefault("cleanup_errors", []).append(
+                        error_info(cleanup_error, stage="cleanup")
+                    )
+                note_secondary_error(primary_error, cleanup_error, stage="cleanup")
+                self.logger.exception("Cleanup failed after v1 group rollout error")
             for state in states:
                 state.strip_runtime_handles()
             raise
+        primary_error = None
         try:
             if self.score_rollouts:
                 await self.harness.score_group(tasks, states)
+        except BaseException as exc:
+            primary_error = exc
+            raise
         finally:
-            await self.harness.cleanup_group(tasks, states)
+            try:
+                await self.harness.cleanup_group(tasks, states)
+            except Exception as cleanup_error:
+                if primary_error is None:
+                    raise
+                for state in states:
+                    state.setdefault("cleanup_errors", []).append(
+                        error_info(cleanup_error, stage="cleanup")
+                    )
+                note_secondary_error(primary_error, cleanup_error, stage="cleanup")
+                self.logger.exception("Cleanup failed after v1 group scoring error")
         for state in states:
             state.strip_runtime_handles()
             state.assert_serializable()

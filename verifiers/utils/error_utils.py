@@ -74,6 +74,27 @@ def error_info(
     return info
 
 
+def note_secondary_error(
+    primary_error: BaseException,
+    secondary_error: BaseException,
+    *,
+    stage: str,
+) -> None:
+    note = (
+        f"{stage} failed while handling {type(primary_error).__name__}: "
+        f"{repr(ErrorChain(secondary_error))}"
+    )
+    add_note = getattr(primary_error, "add_note", None)
+    if callable(add_note):
+        add_note(note)
+        return
+    notes = getattr(primary_error, "__notes__", [])
+    if not isinstance(notes, list):
+        notes = [str(notes)]
+    notes.append(note)
+    setattr(primary_error, "__notes__", notes)
+
+
 def error_info_to_exception(
     error: Mapping[str, object],
     error_types: tuple[type[Exception], ...],

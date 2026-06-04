@@ -71,7 +71,7 @@ from verifiers.utils.async_utils import (
     maybe_semaphore,
     with_sem,
 )
-from verifiers.utils.error_utils import ErrorChain
+from verifiers.utils.error_utils import ErrorChain, error_info, note_secondary_error
 from verifiers.utils.message_utils import normalize_messages
 from verifiers.utils.save_utils import (
     GenerateOutputsBuilder,
@@ -676,14 +676,31 @@ class Environment(ABC):
         )
 
         state["timing"].scoring.start = time.time()
+        primary_error: BaseException | None = None
         try:
             if self.score_rollouts:
                 await self.rubric.score_rollout(state)
             else:
                 await self.rubric.dummy_score_rollout(state)
+        except BaseException as exc:
+            primary_error = exc
+            raise
         finally:
             state["timing"].scoring.end = time.time()
-            await self.rubric.cleanup(state)
+            try:
+                await self.rubric.cleanup(state)
+            except Exception as cleanup_error:
+                if primary_error is None:
+                    raise
+                state.setdefault("cleanup_errors", []).append(
+                    error_info(
+                        cleanup_error,
+                        stage="cleanup",
+                        details={"example_id": state.get("example_id")},
+                    )
+                )
+                note_secondary_error(primary_error, cleanup_error, stage="cleanup")
+                self.logger.exception("Cleanup failed after rollout error")
         return state
 
     async def _run_group_states(
@@ -706,7 +723,7 @@ class Environment(ABC):
         ]
         try:
             group_states = await asyncio.gather(*rollout_tasks)
-        except BaseException:
+        except BaseException as primary_error:
             pending = [task for task in rollout_tasks if not task.done()]
             for task in pending:
                 task.cancel()
@@ -718,23 +735,51 @@ class Environment(ABC):
                 if task.done() and not task.cancelled() and task.exception() is None
             ]
             for state in completed_states:
-                await self.rubric.cleanup(state)
+                try:
+                    await self.rubric.cleanup(state)
+                except Exception as cleanup_error:
+                    state.setdefault("cleanup_errors", []).append(
+                        error_info(
+                            cleanup_error,
+                            stage="cleanup",
+                            details={"example_id": state.get("example_id")},
+                        )
+                    )
+                    note_secondary_error(primary_error, cleanup_error, stage="cleanup")
+                    self.logger.exception("Cleanup failed after group rollout error")
             raise
 
         start_scoring = time.time()
         for state in group_states:
             state["timing"].scoring.start = start_scoring
+        primary_error = None
         try:
             if self.score_rollouts:
                 await self.rubric.score_group(group_states)
             else:
                 await self.rubric.dummy_score_group(group_states)
+        except BaseException as exc:
+            primary_error = exc
+            raise
         finally:
             end_scoring = time.time()
             for state in group_states:
                 state["timing"].scoring.end = end_scoring
             for state in group_states:
-                await self.rubric.cleanup(state)
+                try:
+                    await self.rubric.cleanup(state)
+                except Exception as cleanup_error:
+                    if primary_error is None:
+                        raise
+                    state.setdefault("cleanup_errors", []).append(
+                        error_info(
+                            cleanup_error,
+                            stage="cleanup",
+                            details={"example_id": state.get("example_id")},
+                        )
+                    )
+                    note_secondary_error(primary_error, cleanup_error, stage="cleanup")
+                    self.logger.exception("Cleanup failed after group scoring error")
 
         return group_states
 

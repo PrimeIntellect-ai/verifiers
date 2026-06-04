@@ -982,6 +982,91 @@ async def test_taskset_setup_initializes_base_harness_prompt_and_sampling() -> N
 
 
 @pytest.mark.asyncio
+async def test_v1_harness_preserves_rollout_scoring_error_when_cleanup_fails() -> None:
+    @vf.reward
+    async def failing_reward(task, state) -> float:
+        _ = task, state
+        raise RuntimeError("v1 score exploded")
+
+    @vf.cleanup
+    async def failing_cleanup(task, state) -> None:
+        _ = task
+        state["cleanup_ran"] = True
+        raise RuntimeError("v1 cleanup exploded")
+
+    client = FakeModelClient([fake_response(content="ok")])
+    harness = make_harness(client=cast(Client, client), model="fake", max_turns=1)
+    harness.add_reward(failing_reward)
+    harness.add_cleanup(failing_cleanup)
+    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+    state = vf.State.for_task(task)
+
+    with pytest.raises(RuntimeError, match="v1 score exploded") as exc_info:
+        await harness.run(task, state)
+
+    assert state["cleanup_ran"] is True
+    assert state["cleanup_errors"][0]["stage"] == "cleanup_rollout"
+    assert "v1 cleanup exploded" in "\n".join(getattr(exc_info.value, "__notes__", []))
+
+
+@pytest.mark.asyncio
+async def test_v1_group_preserves_scoring_error_when_cleanup_fails() -> None:
+    class SimpleTaskset(vf.Taskset):
+        def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
+            _ = split
+            return cast(
+                vf.Tasks,
+                [
+                    {
+                        "example_id": 0,
+                        "prompt": [{"role": "user", "content": "hi"}],
+                        "answer": "ok",
+                    }
+                ],
+            )
+
+    inputs = cast(
+        list[vf.RolloutInput],
+        [
+            {
+                "example_id": 0,
+                "prompt": [{"role": "user", "content": "hi"}],
+                "answer": "ok",
+            },
+            {
+                "example_id": 0,
+                "prompt": [{"role": "user", "content": "hi"}],
+                "answer": "ok",
+            },
+        ],
+    )
+
+    @vf.reward(stage="group")
+    async def failing_group_reward(tasks, states) -> list[float]:
+        _ = tasks, states
+        raise RuntimeError("v1 group score exploded")
+
+    @vf.cleanup(stage="group")
+    async def failing_group_cleanup(tasks, states) -> None:
+        _ = tasks
+        for state in states:
+            state["group_cleanup_ran"] = True
+        raise RuntimeError("v1 group cleanup exploded")
+
+    client = FakeModelClient([fake_response(content="ok"), fake_response(content="ok")])
+    env = vf.Env(taskset=SimpleTaskset(), harness=make_harness(max_turns=1))
+    env.harness.add_reward(failing_group_reward)
+    env.harness.add_cleanup(failing_group_cleanup)
+
+    with pytest.raises(RuntimeError, match="v1 group score exploded") as exc_info:
+        await env._run_group_states(inputs, cast(Client, client), "fake", {})
+
+    assert "v1 group cleanup exploded" in "\n".join(
+        getattr(exc_info.value, "__notes__", [])
+    )
+
+
+@pytest.mark.asyncio
 async def test_callable_tool_can_accept_name_argument() -> None:
     harness = make_harness(toolsets=[vf.Toolset(tools=[named_tool])])
     task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()

@@ -380,6 +380,44 @@ async def test_generate_cleans_up_state_after_rollout_scoring_error(
 
 
 @pytest.mark.asyncio
+async def test_generate_preserves_rollout_scoring_error_when_cleanup_fails(
+    mock_client, make_input
+):
+    class ScoreAndCleanupFailingRubric(Rubric):
+        def __init__(self):
+            super().__init__()
+            self.cleaned_states: list[vf.State] = []
+
+        async def score_rollout(self, state):
+            raise RuntimeError("score exploded")
+
+        async def cleanup(self, state):
+            self.cleaned_states.append(state)
+            raise RuntimeError("cleanup exploded")
+
+    rubric = ScoreAndCleanupFailingRubric()
+    env = DummyEnvironment(
+        dataset=Dataset.from_dict({"question": ["q1"], "answer": ["a1"]}),
+        parser=Parser(),
+        rubric=rubric,
+    )
+
+    with pytest.raises(RuntimeError, match="score exploded") as exc_info:
+        await env.generate(
+            [make_input(example_id=0)],
+            client=mock_client,
+            model="test-model",
+            independent_scoring=True,
+            on_progress=lambda *args: None,
+        )
+
+    assert "cleanup exploded" in "\n".join(getattr(exc_info.value, "__notes__", []))
+    assert rubric.cleaned_states[0]["cleanup_errors"][0]["message"] == (
+        "cleanup exploded"
+    )
+
+
+@pytest.mark.asyncio
 async def test_generate_aborts_on_unexpected_group_rollout_error(
     mock_client, make_input
 ):
@@ -428,6 +466,47 @@ async def test_generate_cleans_up_states_after_group_scoring_error(
         )
 
     assert rubric.cleaned == ["a", "b"]
+
+
+@pytest.mark.asyncio
+async def test_generate_preserves_group_scoring_error_when_cleanup_fails(
+    mock_client, make_input
+):
+    class GroupScoreAndCleanupFailingRubric(Rubric):
+        def __init__(self):
+            super().__init__()
+            self.cleaned_states: list[vf.State] = []
+
+        async def score_group(self, states):
+            raise RuntimeError("group score exploded")
+
+        async def cleanup(self, state):
+            self.cleaned_states.append(state)
+            raise RuntimeError("group cleanup exploded")
+
+    rubric = GroupScoreAndCleanupFailingRubric()
+    env = DummyEnvironment(
+        dataset=Dataset.from_dict({"question": ["q1"], "answer": ["a1"]}),
+        parser=Parser(),
+        rubric=rubric,
+    )
+    with pytest.raises(RuntimeError, match="group score exploded") as exc_info:
+        await env.generate(
+            [
+                make_input(example_id=0, answer="a"),
+                make_input(example_id=0, answer="b"),
+            ],
+            client=mock_client,
+            model="test-model",
+            on_progress=lambda *args: None,
+        )
+
+    assert "group cleanup exploded" in "\n".join(
+        getattr(exc_info.value, "__notes__", [])
+    )
+    assert [
+        state["cleanup_errors"][0]["message"] for state in rubric.cleaned_states
+    ] == ["group cleanup exploded", "group cleanup exploded"]
 
 
 @pytest.mark.asyncio

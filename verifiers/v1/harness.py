@@ -15,7 +15,7 @@ from verifiers.types import (
     ToolMessage,
 )
 from verifiers.utils.async_utils import maybe_call_with_named_args
-from verifiers.utils.error_utils import error_info
+from verifiers.utils.error_utils import error_info, note_secondary_error
 from verifiers.utils.message_utils import normalize_messages
 from verifiers.utils.response_utils import parse_response_message
 from verifiers.utils.tool_utils import is_valid_tool_content_parts
@@ -244,6 +244,7 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
         timing_recorded = False
         completed = False
         rollout_failed = False
+        primary_error: BaseException | None = None
         try:
             try:
                 state = await self.setup_state(task, state)
@@ -269,12 +270,35 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
                 await self.runtime.score_rollout(task, state)
             state._set_completed(True)
             completed = True
+        except BaseException as exc:
+            primary_error = exc
+            raise
         finally:
             if not timing_recorded:
                 state.record_generation_timing()
-            await self.runtime.cleanup_rollout(task, state)
+            try:
+                await self.runtime.cleanup_rollout(task, state)
+            except Exception as cleanup_error:
+                if primary_error is None:
+                    raise
+                state.setdefault("cleanup_errors", []).append(
+                    error_info(cleanup_error, stage="cleanup_rollout")
+                )
+                note_secondary_error(
+                    primary_error, cleanup_error, stage="cleanup_rollout"
+                )
             if "group_key" not in state.runtime_state():
-                await self.runtime.cleanup_group([task], [state])
+                try:
+                    await self.runtime.cleanup_group([task], [state])
+                except Exception as cleanup_error:
+                    if primary_error is None:
+                        raise
+                    state.setdefault("cleanup_errors", []).append(
+                        error_info(cleanup_error, stage="cleanup_group")
+                    )
+                    note_secondary_error(
+                        primary_error, cleanup_error, stage="cleanup_group"
+                    )
                 if completed:
                     state.finalize()
                 else:
