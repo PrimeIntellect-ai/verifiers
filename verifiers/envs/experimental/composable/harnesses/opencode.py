@@ -245,6 +245,9 @@ def opencode_harness(
     allow_git: bool = False,
     disable_compaction: bool = True,
     version: str = DEFAULT_VERSION,
+    release_repo: str | None = None,
+    release_version: str | None = None,
+    release_sha256: str | None = None,
     instruction_path: str = "/opencode/prompt.txt",
     system_prompt_path: str = "/opencode/system.txt",
     log_path: str = "/opencode/logs.txt",
@@ -269,6 +272,8 @@ def opencode_harness(
             system_prompt = system_prompt + "\n" + task_system_prompt
         else:
             system_prompt = task_system_prompt
+    if release_repo is not None:
+        version = f"{release_repo}@{release_version or 'latest'}"
 
     return Harness(
         install_script=build_install_script(
