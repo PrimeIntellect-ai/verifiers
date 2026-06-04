@@ -594,8 +594,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--max-retries",
         type=int,
-        default=0,
-        help="Max retries for transient infrastructure errors (default: 0)",
+        default=3,
+        help="Max retries for transient infrastructure errors (default: 3)",
     )
     parser.add_argument(
         "--disable-env-server",
@@ -958,7 +958,7 @@ def main(argv: list[str] | None = None):
             num_examples=num_examples,
             rollouts_per_example=rollouts_per_example,
             max_concurrent=raw.get("max_concurrent", DEFAULT_MAX_CONCURRENT),
-            max_retries=raw.get("max_retries", 0),
+            max_retries=raw.get("max_retries", 3),
             num_workers=raw.get("num_workers", "auto"),
             disable_env_server=raw.get("disable_env_server", False),
             verbose=raw.get("verbose", False),
