@@ -8,6 +8,7 @@ import verifiers as vf
 from renderers import RendererPool
 from renderers import config_from_name
 from renderers.base import ParsedResponse, RenderedTokens, create_renderer
+from tests.conftest import load_cached_hf_tokenizer
 from verifiers.clients.renderer_client import (
     RendererClient,
     _attach_tool_call_names,
@@ -684,9 +685,7 @@ _TRUNCATED_ANCHOR_MODELS = [
 
 @lru_cache(maxsize=None)
 def _load_tokenizer_and_renderer(model_name: str, renderer_name: str):
-    from transformers import AutoTokenizer
-
-    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+    tokenizer = load_cached_hf_tokenizer(model_name)
     renderer = create_renderer(tokenizer, config_from_name(renderer_name))
     return tokenizer, renderer
 

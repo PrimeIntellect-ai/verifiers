@@ -26,6 +26,7 @@ import pytest
 import verifiers as vf
 from datasets import Dataset
 from renderers import config_from_name, create_renderer
+from tests.conftest import load_cached_hf_tokenizer
 from verifiers.clients.renderer_client import RendererClient, _to_renderer_message
 from verifiers.types import Messages, State
 
@@ -81,9 +82,7 @@ _renderer_cache: dict[tuple[str, str], tuple[Any, Any]] = {}
 def _load(model_name: str, renderer_name: str):
     key = (model_name, renderer_name)
     if key not in _renderer_cache:
-        from transformers import AutoTokenizer
-
-        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+        tokenizer = load_cached_hf_tokenizer(model_name)
         renderer = create_renderer(tokenizer, config_from_name(renderer_name))
         _renderer_cache[key] = (tokenizer, renderer)
     return _renderer_cache[key]

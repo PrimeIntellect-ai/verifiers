@@ -1,5 +1,6 @@
 """Pytest configuration and fixtures for verifiers tests."""
 
+from functools import lru_cache
 import logging
 from pathlib import Path
 from typing import Any, Callable
@@ -37,6 +38,21 @@ from verifiers.types import (
     TrajectoryStep,
 )
 from verifiers.utils.save_utils import state_to_output
+
+
+@lru_cache(maxsize=None)
+def load_cached_hf_tokenizer(model_name: str) -> Any:
+    transformers = pytest.importorskip("transformers")
+    try:
+        return transformers.AutoTokenizer.from_pretrained(
+            model_name,
+            trust_remote_code=True,
+            local_files_only=True,
+        )
+    except OSError:
+        pytest.skip(
+            f"Hugging Face tokenizer {model_name!r} is not available in the local cache"
+        )
 
 
 @pytest.fixture
