@@ -155,6 +155,29 @@ def test_replay_taskset_loads_env_local_json_data(
     ]
 
 
+def test_replay_taskset_rejects_empty_env_local_data_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env_dir = tmp_path / "empty_replay_env"
+    data_dir = env_dir / "data"
+    data_dir.mkdir(parents=True)
+    (env_dir / "empty_replay_env.py").write_text("", encoding="utf-8")
+
+    module = types.ModuleType("empty_replay_env")
+    module.__file__ = str(env_dir / "empty_replay_env.py")
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    local_taskset_type = type(
+        "EmptyReplayTaskset",
+        (ReplayTaskset,),
+        {"__module__": module.__name__},
+    )
+
+    taskset = local_taskset_type(config=ReplayTasksetConfig())
+
+    with pytest.raises(FileNotFoundError, match="must contain at least one .json"):
+        taskset.load_tasks()
+
+
 def test_replay_taskset_canonicalizes_messages() -> None:
     task = replay_task_record(
         {

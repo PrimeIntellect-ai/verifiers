@@ -125,12 +125,12 @@ def discover_sibling_dir(
             ValueError,
         ):
             candidate = resources.files(package_name) / dirname
-            if candidate.is_dir() and any(candidate.iterdir()):
+            if candidate.is_dir():
                 return candidate
     module_file = module.__dict__.get("__file__")
     if isinstance(module_file, str):
         candidate_path = Path(module_file).resolve().parent / dirname
-        if candidate_path.is_dir() and any(candidate_path.iterdir()):
+        if candidate_path.is_dir():
             return candidate_path
     return None
 
