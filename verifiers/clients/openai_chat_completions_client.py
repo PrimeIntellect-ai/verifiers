@@ -334,9 +334,13 @@ class OpenAIChatCompletionsClient(
         has_content = bool(content_to_text(getattr(message, "content", None)))
         has_tool_calls = bool(getattr(message, "tool_calls", None))
         has_reasoning = bool(parse_reasoning_content(message))
-        if not (has_content or has_tool_calls or has_reasoning):
+        if not (has_content or has_tool_calls):
+            if has_reasoning:
+                raise EmptyModelResponseError(
+                    "Model returned reasoning but no content and did not call any tools"
+                )
             raise EmptyModelResponseError(
-                "Model returned no content, reasoning, and did not call any tools"
+                "Model returned no content and did not call any tools"
             )
 
     async def from_native_response(self, response: OpenAIChatResponse) -> Response:
