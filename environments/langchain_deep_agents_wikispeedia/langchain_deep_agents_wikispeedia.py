@@ -1,4 +1,3 @@
-import asyncio
 import json
 from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from typing import Protocol, cast
@@ -73,7 +72,6 @@ class WikispeediaHarnessConfig(vf.HarnessConfig):
         fn="run_langchain_deep_agents_wikispeedia_program"
     )
     max_turns: int = 50
-    timeout_seconds: float = 1200.0
 
 
 class WikispeediaTaskset(vf.Taskset[WikispeediaTasksetConfig]):
@@ -444,7 +442,6 @@ def langchain_navigation_tools(runtime_tools):
 
 def make_langchain_deep_agents_program(
     max_turns: int,
-    timeout_seconds: float,
 ) -> Callable[[vf.Task, vf.State], Awaitable[vf.State]]:
     async def run_langchain_deep_agents_wikispeedia_program(
         task: vf.Task, state: vf.State
@@ -488,19 +485,14 @@ def make_langchain_deep_agents_program(
         invoke_config = (
             {"recursion_limit": recursion_limit} if recursion_limit > 0 else None
         )
-        invoke = agent.ainvoke(
-            {"messages": [{"role": "user", "content": prompt}]},
-            config=invoke_config,
-        )
         try:
-            result = await asyncio.wait_for(invoke, timeout=timeout_seconds)
-        except (TimeoutError, GraphRecursionError) as exc:
-            state["agent_timeout"] = True
-            state.stop(
-                "agent_timeout"
-                if isinstance(exc, TimeoutError)
-                else "agent_recursion_limit"
+            result = await agent.ainvoke(
+                {"messages": [{"role": "user", "content": prompt}]},
+                config=invoke_config,
             )
+        except GraphRecursionError:
+            state["agent_timeout"] = True
+            state.stop("agent_recursion_limit")
             state.setdefault("agent_completion", [])
             return state
 
@@ -520,7 +512,6 @@ async def run_langchain_deep_agents_wikispeedia_program(
 ) -> vf.State:
     return await make_langchain_deep_agents_program(
         max_turns=harness.config.max_turns,
-        timeout_seconds=harness.config.timeout_seconds,
     )(task, state)
 
 

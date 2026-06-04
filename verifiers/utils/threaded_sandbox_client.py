@@ -79,7 +79,7 @@ class ThreadedAsyncSandboxClient:
         self,
         sandbox_id: str,
         command: str,
-        timeout: int = 900,
+        timeout: int | None = None,
         working_dir: str | None = None,
         env: dict[str, str] | None = None,
         poll_interval: int = 3,
@@ -91,12 +91,13 @@ class ThreadedAsyncSandboxClient:
             working_dir=working_dir,
             env=env,
         )
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while deadline is None or time.monotonic() < deadline:
             status = await self.get_background_job(sandbox_id, job)
             if status.completed:
                 return status
             await asyncio.sleep(poll_interval)
+        assert timeout is not None
         raise CommandTimeoutError(sandbox_id, command, timeout)
 
     def teardown(self, wait: bool = True) -> None:

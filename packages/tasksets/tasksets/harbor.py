@@ -22,9 +22,7 @@ HARBOR_DEFAULT_SANDBOX = vf.SandboxConfig(
     cpu_cores=2.0,
     memory_gb=4.0,
     disk_size_gb=10.0,
-    timeout_minutes=120,
     workdir="/app",
-    command_timeout=900,
 )
 
 
@@ -36,7 +34,6 @@ class HarborTasksetConfig(vf.TasksetConfig):
     cache_dir: str | None = None
     refresh: bool = False
     sandbox: vf.SandboxConfig = HARBOR_DEFAULT_SANDBOX
-    verifier_timeout_seconds: float = 900.0
     task_dir: str = "/task"
     env: dict[str, str] = {}
 
@@ -98,12 +95,6 @@ class HarborTaskset(vf.Taskset[HarborTasksetConfig]):
                     "disk_size_gb": parse_gb(
                         environment.get("storage"), sandbox.disk_size_gb
                     ),
-                    "command_timeout": int(
-                        parse_number(
-                            agent_config.get("timeout_sec"),
-                            sandbox.command_timeout or 900,
-                        )
-                    ),
                     **(
                         {"network_access": bool(environment["allow_internet"])}
                         if "allow_internet" in environment
@@ -141,10 +132,6 @@ class HarborTaskset(vf.Taskset[HarborTasksetConfig]):
                         "task_name": task_dir.name,
                         "config": task_config,
                         "docker_image": environment.get("docker_image"),
-                        "test_timeout": parse_number(
-                            verifier_config.get("timeout_sec"),
-                            config.verifier_timeout_seconds,
-                        ),
                     },
                     "info": {
                         "harbor": {
@@ -171,12 +158,10 @@ class HarborTaskset(vf.Taskset[HarborTasksetConfig]):
         client = cast(SandboxClient, AsyncSandboxClient())
         try:
             await upload_harbor_tests(client, sandbox_id, task_dir)
-            test_timeout = int(parse_number(harbor.get("test_timeout"), 900))
             result = await client.run_background_job(
                 sandbox_id=sandbox_id,
                 command="bash test.sh",
                 working_dir="/tests",
-                timeout=test_timeout,
             )
             state["harbor_tests"] = {
                 "returncode": result.exit_code,

@@ -7,6 +7,14 @@ import requests
 import tenacity as tc
 from openenv.core.containers.runtime.providers import ContainerProvider
 from verifiers.v1.types import JsonData
+from verifiers.v1.utils.timeout_utils import (
+    OPENENV_HEALTH_REQUEST_TIMEOUT_SECONDS,
+    OPENENV_SCHEMA_REQUEST_TIMEOUT_SECONDS,
+    OPENENV_STARTUP_POLL_INTERVAL_SECONDS,
+    OPENENV_STARTUP_TIMEOUT_SECONDS,
+    OPENENV_WAIT_FOR_CREATION_ATTEMPTS,
+    SANDBOX_LEASE_TTL_MINUTES,
+)
 
 T = TypeVar("T")
 
@@ -54,7 +62,7 @@ class PrimeSandboxOpenEnvProvider(ContainerProvider):
             cpu_cores=2,
             memory_gb=4,
             disk_size_gb=10,
-            timeout_minutes=60,
+            timeout_minutes=SANDBOX_LEASE_TTL_MINUTES,
             environment_vars={"ENABLE_WEB_INTERFACE": "false", **dict(env_vars or {})},
         )
         sandbox_id: str | None = None
@@ -66,7 +74,7 @@ class PrimeSandboxOpenEnvProvider(ContainerProvider):
             self.sandbox_id = sandbox_id
             client.wait_for_creation(
                 sandbox_id,
-                max_attempts=self.spec.wait_for_creation_max_attempts,
+                max_attempts=OPENENV_WAIT_FOR_CREATION_ATTEMPTS,
             )
             exposure = client.expose(
                 sandbox_id,
@@ -129,21 +137,21 @@ class PrimeSandboxOpenEnvProvider(ContainerProvider):
         del timeout_s
         start_time = time.monotonic()
         last_error = "no attempts"
-        while time.monotonic() - start_time < self.spec.startup_timeout_seconds:
+        while time.monotonic() - start_time < OPENENV_STARTUP_TIMEOUT_SECONDS:
             try:
                 response = requests.get(
                     f"{base_url}/health",
-                    timeout=self.spec.health_request_timeout_seconds,
+                    timeout=OPENENV_HEALTH_REQUEST_TIMEOUT_SECONDS,
                 )
                 if response.status_code == 200:
                     return
                 last_error = f"HTTP {response.status_code}: {response.text[:200]}"
             except Exception as exc:
                 last_error = f"{type(exc).__name__}: {exc}"
-            time.sleep(self.spec.startup_poll_interval_seconds)
+            time.sleep(OPENENV_STARTUP_POLL_INTERVAL_SECONDS)
         raise RuntimeError(
             "OpenEnv server not ready. "
-            f"Health timeout={self.spec.startup_timeout_seconds}s, "
+            f"Health timeout={OPENENV_STARTUP_TIMEOUT_SECONDS}s, "
             f"url={base_url}, last error: {last_error}"
         )
 
@@ -151,7 +159,7 @@ class PrimeSandboxOpenEnvProvider(ContainerProvider):
         def request_schema() -> JsonData:
             response = requests.get(
                 f"{self.base_url}/schema",
-                timeout=self.spec.schema_request_timeout_seconds,
+                timeout=OPENENV_SCHEMA_REQUEST_TIMEOUT_SECONDS,
             )
             response.raise_for_status()
             data = response.json()

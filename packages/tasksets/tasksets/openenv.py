@@ -60,11 +60,6 @@ class OpenEnvRuntimeConfig(vf.Config):
     start_command: str
     contract: Literal["gym", "mcp"]
     seed: int
-    startup_timeout_seconds: int
-    startup_poll_interval_seconds: float
-    health_request_timeout_seconds: float
-    schema_request_timeout_seconds: float
-    wait_for_creation_max_attempts: int
     max_retries: int
     base_delay: float
     backoff_factor: float
@@ -99,11 +94,6 @@ class OpenEnvTasksetConfig(vf.TasksetConfig):
     num_train_examples: int = 100
     num_eval_examples: int = 50
     seed: int = 0
-    startup_timeout_seconds: int = 30
-    startup_poll_interval_seconds: float = 1.0
-    health_request_timeout_seconds: float = 2.0
-    schema_request_timeout_seconds: float = 5.0
-    wait_for_creation_max_attempts: int = 20
     max_retries: int = 5
     base_delay: float = 0.5
     backoff_factor: float = 2.0
@@ -215,11 +205,6 @@ class OpenEnvTaskset(vf.Taskset[OpenEnvTasksetConfig]):
             start_command=build.start_command,
             contract=build.contract,
             seed=config.seed,
-            startup_timeout_seconds=config.startup_timeout_seconds,
-            startup_poll_interval_seconds=config.startup_poll_interval_seconds,
-            health_request_timeout_seconds=config.health_request_timeout_seconds,
-            schema_request_timeout_seconds=config.schema_request_timeout_seconds,
-            wait_for_creation_max_attempts=config.wait_for_creation_max_attempts,
             max_retries=config.max_retries,
             base_delay=config.base_delay,
             backoff_factor=config.backoff_factor,

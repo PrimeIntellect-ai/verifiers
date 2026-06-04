@@ -19,7 +19,6 @@ MINI_SWE_AGENT_DEFAULT_TRAJECTORY_PATH = "/logs/agent/mini-swe-agent.traj.json"
 MINI_SWE_AGENT_DEFAULT_PACKAGE = "mini-swe-agent@2.2.8"
 MINI_SWE_AGENT_DEFAULT_CONFIG_SPEC = "mini"
 MINI_SWE_AGENT_DEFAULT_MODEL_CLASS = "litellm"
-MINI_SWE_AGENT_DEFAULT_ENVIRONMENT_TIMEOUT = 120
 
 
 def build_mini_swe_agent_install_script(
@@ -60,7 +59,6 @@ class MiniSWEAgentProgramConfig(vf.ProgramConfig):
     package: str = MINI_SWE_AGENT_DEFAULT_PACKAGE
     config_spec: str = MINI_SWE_AGENT_DEFAULT_CONFIG_SPEC
     model_class: str = MINI_SWE_AGENT_DEFAULT_MODEL_CLASS
-    environment_timeout: int = MINI_SWE_AGENT_DEFAULT_ENVIRONMENT_TIMEOUT
     parallel_tool_calls: bool = True
     extra_config_specs: list[str] | None = None
     sandbox: vf.SandboxConfig | None = vf.SandboxConfig()
@@ -101,8 +99,6 @@ class MiniSWEAgentProgramConfig(vf.ProgramConfig):
             "-c",
             "agent.cost_limit=0",
             "-c",
-            f"environment.timeout={self.environment_timeout}",
-            "-c",
             f"model.model_class={shlex.quote(self.model_class)}",
             "-c",
             "model.cost_tracking=ignore_errors",
@@ -139,7 +135,7 @@ if [ -s {system_prompt_path} ]; then
   CONFIG_ARGS+=(-c "agent.system_template=$(cat {system_prompt_path})")
 fi
 cd "$MINI_SWE_AGENT_WORKDIR"
-timeout --kill-after=30s "${{AGENT_TIMEOUT_SECONDS:-3600}}" {shlex.quote(DEFAULT_MINI_BINARY)} \\
+{shlex.quote(DEFAULT_MINI_BINARY)} \\
   --model "$OPENAI_MODEL" \\
   --task "$MINI_SWE_AGENT_TASK" \\
   --output {shlex.quote(self.trajectory_path)} \\

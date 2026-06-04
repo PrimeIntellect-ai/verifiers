@@ -28,6 +28,13 @@ from .sandbox_python_utils import (
     python_package_list,
     sandbox_python_path_command,
 )
+from .timeout_utils import (
+    BACKGROUND_JOB_POLL_INTERVAL_SECONDS,
+    SANDBOX_CREATE_TIMEOUT_SECONDS,
+    SANDBOX_LEASE_TTL_MINUTES,
+    SANDBOX_READY_TIMEOUT_SECONDS,
+    SANDBOX_SETUP_STEP_TIMEOUT_SECONDS,
+)
 from ..runtime import Runtime
 from ..sandbox import SandboxConfig
 from ..program import ProgramValue
@@ -405,7 +412,11 @@ async def create_sandbox_lease(
         from verifiers.utils.threaded_sandbox_client import ThreadedAsyncSandboxClient
 
         client = cast(SandboxClient, ThreadedAsyncSandboxClient())
-    sandbox_id = await create_sandbox(client, sandbox_data, owns_client=owns_client)
+    sandbox_id = await create_sandbox(
+        client,
+        sandbox_data,
+        owns_client=owns_client,
+    )
     lease = SandboxLease(
         client, sandbox_id, sandbox_config.scope, key, owns_client=owns_client
     )
@@ -425,7 +436,11 @@ async def create_scoped_sandbox_lease(
     sandbox = owner.sandbox
     if not isinstance(sandbox, SandboxConfig):
         raise TypeError("Sandbox owner must define a sandbox config.")
-    return await create_sandbox_lease(sandbox, key or sandbox_owner_key(owner), client)
+    return await create_sandbox_lease(
+        sandbox,
+        key or sandbox_owner_key(owner),
+        client,
+    )
 
 
 async def run_sandbox_command(
@@ -482,15 +497,38 @@ async def run_sandbox_command(
         command = shlex.join(argv)
         if use_sandbox_python_path or "mcp" in program_channels(program):
             command = sandbox_python_path_command(command)
-        command_timeout = sandbox_config.command_timeout
-        try:
+
+        async def active_command() -> State:
             result = await lease.run_background_job(
                 command,
-                timeout=command_timeout,
                 working_dir=workdir,
                 env=env,
-                poll_interval=int_config(sandbox_data, "poll_interval", 3),
+                poll_interval=BACKGROUND_JOB_POLL_INTERVAL_SECONDS,
             )
+            state["command"] = {
+                "argv": argv,
+                "returncode": result.exit_code,
+                "stdout": result.stdout or "",
+                "stderr": result.stderr or "",
+            }
+            state["completion"] = [
+                {"role": "assistant", "content": state["command"]["stdout"].strip()}
+            ]
+            if result.exit_code:
+                raise SandboxError(
+                    f"Sandbox command exited with {result.exit_code}: {result.stderr}"
+                )
+            state._set_stop_condition("command_completed")
+            return state
+
+        timeout = cast(float | None, state.runtime_state().get("task_timeout_seconds"))
+        try:
+            async with asyncio.timeout(timeout):
+                await active_command()
+        except TimeoutError:
+            state["timed_out"] = True
+            state["task_timed_out"] = True
+            state.stop("timeout_reached")
         except Error:
             raise
         except Exception as exc:
@@ -500,20 +538,6 @@ async def run_sandbox_command(
                     f"Sandbox {lease.id} failed during command ({kind}): {exc}"
                 ) from exc
             raise
-        state["command"] = {
-            "argv": argv,
-            "returncode": result.exit_code,
-            "stdout": result.stdout or "",
-            "stderr": result.stderr or "",
-        }
-        state["completion"] = [
-            {"role": "assistant", "content": state["command"]["stdout"].strip()}
-        ]
-        if result.exit_code:
-            raise SandboxError(
-                f"Sandbox command exited with {result.exit_code}: {result.stderr}"
-            )
-        state._set_stop_condition("command_completed")
         return state
 
 
@@ -665,7 +689,7 @@ async def create_sandbox(
         else None,
         vm=bool(vm) if vm is not None else gpu_count > 0,
         network_access=bool(sandbox_config.get("network_access", True)),
-        timeout_minutes=int_config(sandbox_config, "timeout_minutes", 60),
+        timeout_minutes=SANDBOX_LEASE_TTL_MINUTES,
         labels=[str(label) for label in labels] if isinstance(labels, list) else [],
         environment_vars={
             str(key): str(value) for key, value in environment_vars.items()
@@ -691,12 +715,7 @@ async def create_sandbox(
     )
     try:
         create_waiter = asyncio.shield(create_task)
-        if sandbox_config.get("create_timeout") is not None:
-            sandbox = await asyncio.wait_for(
-                create_waiter, int_config(sandbox_config, "create_timeout", 0)
-            )
-        else:
-            sandbox = await create_waiter
+        sandbox = await asyncio.wait_for(create_waiter, SANDBOX_CREATE_TIMEOUT_SECONDS)
     except (asyncio.CancelledError, TimeoutError):
         try:
             sandbox = cast(SandboxRecord, await asyncio.shield(create_task))
@@ -723,10 +742,7 @@ async def create_sandbox(
             sandbox_id,
             max_attempts=SANDBOX_WAIT_FOR_CREATION_ATTEMPTS,
         )
-        if sandbox_config.get("wait_timeout") is not None:
-            await asyncio.wait_for(wait, int_config(sandbox_config, "wait_timeout", 0))
-        else:
-            await wait
+        await asyncio.wait_for(wait, SANDBOX_READY_TIMEOUT_SECONDS)
     except BaseException:
         delete_task = asyncio.create_task(
             delete_sandbox_id(
@@ -770,7 +786,7 @@ async def setup_sandbox(handle: SandboxLease, sandbox_config: ConfigData) -> Non
         try:
             result = await handle.execute(
                 python_package_install_command(package_args),
-                timeout=int_config(sandbox_config, "install_timeout", 300),
+                timeout=SANDBOX_SETUP_STEP_TIMEOUT_SECONDS,
             )
         except Error:
             raise
@@ -791,7 +807,7 @@ async def setup_sandbox(handle: SandboxLease, sandbox_config: ConfigData) -> Non
         try:
             result = await handle.execute(
                 command,
-                timeout=int_config(sandbox_config, "setup_timeout", 300),
+                timeout=SANDBOX_SETUP_STEP_TIMEOUT_SECONDS,
             )
         except Error:
             raise
@@ -1042,7 +1058,6 @@ async def run_program_items(
     use_sandbox_python_path: bool = False,
 ) -> None:
     env = await command_env(program, task, state, runtime, include_base=False)
-    timeout = int_config(program, "setup_timeout", 300)
     for command in items:
         command = await resolve_program_value(command, task, state, runtime, program)
         command = str(command)
@@ -1053,7 +1068,7 @@ async def run_program_items(
             sandbox_id=sandbox_id,
             command=command,
             env=env,
-            timeout=timeout,
+            timeout=SANDBOX_SETUP_STEP_TIMEOUT_SECONDS,
         )
         if result.exit_code:
             raise SandboxError(f"{error_prefix}: {result.stderr}")

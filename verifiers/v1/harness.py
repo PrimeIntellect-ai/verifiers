@@ -247,21 +247,29 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
         completed = False
         try:
             try:
-                state = await self.setup_state(task, state)
-                if not await self.runtime.is_completed(task, state):
-                    state = await self.run_program(task, state)
-                    await self.runtime.is_completed(task, state)
-                state._set_stop_condition("program_completed")
-                await self.runtime.collect_artifacts(task, state)
+                timeout = cast(
+                    float | None,
+                    state.runtime_state().get("rollout_timeout_seconds"),
+                )
+                async with asyncio.timeout(timeout):
+                    state = await self.setup_state(task, state)
+                    if not await self.runtime.is_completed(task, state):
+                        state = await self.run_program(task, state)
+                        await self.runtime.is_completed(task, state)
+                    state._set_stop_condition("program_completed")
+                    await self.runtime.collect_artifacts(task, state)
+                    await self.runtime.update_rollout(task, state)
+                    state.record_generation_timing()
+                    timing_recorded = True
+                    if state.runtime_state().get("score_rollout", True):
+                        await self.runtime.score_rollout(task, state)
+                    state._set_completed(True)
+                    completed = True
+            except TimeoutError:
+                state["timed_out"] = True
+                state.stop("timeout_reached")
             except Error as e:
                 self.record_error(state, e)
-            await self.runtime.update_rollout(task, state)
-            state.record_generation_timing()
-            timing_recorded = True
-            if state.runtime_state().get("score_rollout", True):
-                await self.runtime.score_rollout(task, state)
-            state._set_completed(True)
-            completed = True
         finally:
             if not timing_recorded:
                 state.record_generation_timing()
@@ -456,9 +464,19 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
     def local_callable_program(self, fn: Handler) -> ProgramRunner:
         async def run(task: Task, state: State) -> ProgramResult:
             await self.runtime.setup_rollout(task, state)
-            result = await maybe_call_with_named_args(
-                fn, task=task, state=state, runtime=self.runtime, harness=self
+            timeout = cast(
+                float | None, state.runtime_state().get("task_timeout_seconds")
             )
+            try:
+                async with asyncio.timeout(timeout):
+                    result = await maybe_call_with_named_args(
+                        fn, task=task, state=state, runtime=self.runtime, harness=self
+                    )
+            except TimeoutError:
+                state["timed_out"] = True
+                state["task_timed_out"] = True
+                state.stop("timeout_reached")
+                return state
             if result is None or isinstance(result, State | dict):
                 return cast(ProgramResult, result)
             raise TypeError("program.fn must return None, State, or a mapping.")
@@ -493,63 +511,70 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
 
         turn = 0
         max_turns = state.get_max_turns(self.config.max_turns)
-        while max_turns <= 0 or turn < max_turns:
-            if await self.runtime.is_completed(task, state):
-                return state
-            response = await self.runtime.submit_model_request(
-                messages,
-                task,
-                state,
-                tool_defs=self.runtime.tool_defs(state),
-            )
-            turn += 1
-            messages.extend(await parse_response_message(response))
-            rendered_messages = sync_completion()
-            tool_calls = list(response.message.tool_calls or [])
-            if not tool_calls:
-                user_messages = await self.runtime.user_messages(
-                    task, state, transcript=rendered_messages
-                )
-                if user_messages:
+        timeout = cast(float | None, state.runtime_state().get("task_timeout_seconds"))
+        try:
+            async with asyncio.timeout(timeout):
+                while max_turns <= 0 or turn < max_turns:
+                    if await self.runtime.is_completed(task, state):
+                        return state
+                    response = await self.runtime.submit_model_request(
+                        messages,
+                        task,
+                        state,
+                        tool_defs=self.runtime.tool_defs(state),
+                    )
+                    turn += 1
+                    messages.extend(await parse_response_message(response))
+                    rendered_messages = sync_completion()
+                    tool_calls = list(response.message.tool_calls or [])
+                    if not tool_calls:
+                        user_messages = await self.runtime.user_messages(
+                            task, state, transcript=rendered_messages
+                        )
+                        if user_messages:
+                            messages.extend(
+                                normalize_messages(
+                                    cast(Messages, user_messages),
+                                    field_name="user_messages",
+                                )
+                            )
+                            sync_completion()
+                            continue
+                        state._set_stop_condition("no_tools")
+                        return state
+                    callable_tools = state.get_tools()
+
+                    async def call_tool(tool_call) -> ToolMessage:
+                        content: MessageContent
+                        try:
+                            name = tool_call.name
+                            result = await maybe_call_with_named_args(
+                                callable_tools[name], **json_args(tool_call.arguments)
+                            )
+                            content = (
+                                cast(MessageContent, result)
+                                if is_valid_tool_content_parts(result)
+                                else str(result)
+                            )
+                        except Exception as e:
+                            content = tool_error_content(e)
+                        return ToolMessage(tool_call_id=tool_call.id, content=content)
+
                     messages.extend(
-                        normalize_messages(
-                            cast(Messages, user_messages),
-                            field_name="user_messages",
+                        await asyncio.gather(
+                            *(call_tool(tool_call) for tool_call in tool_calls)
                         )
                     )
                     sync_completion()
-                    continue
-                state._set_stop_condition("no_tools")
-                return state
-            callable_tools = state.get_tools()
-
-            async def call_tool(tool_call) -> ToolMessage:
-                content: MessageContent
-                try:
-                    name = tool_call.name
-                    result = await maybe_call_with_named_args(
-                        callable_tools[name], **json_args(tool_call.arguments)
-                    )
-                    content = (
-                        cast(MessageContent, result)
-                        if is_valid_tool_content_parts(result)
-                        else str(result)
-                    )
-                except Exception as e:
-                    content = tool_error_content(e)
-                return ToolMessage(tool_call_id=tool_call.id, content=content)
-
-            messages.extend(
-                await asyncio.gather(
-                    *(call_tool(tool_call) for tool_call in tool_calls)
-                )
-            )
-            sync_completion()
-            if await self.runtime.is_completed(task, state):
-                return state
-            if max_turns > 0 and turn >= max_turns:
-                state._set_stop_condition("max_turns_reached", overwrite=True)
-                return state
+                    if await self.runtime.is_completed(task, state):
+                        return state
+                    if max_turns > 0 and turn >= max_turns:
+                        state._set_stop_condition("max_turns_reached", overwrite=True)
+                        return state
+        except TimeoutError:
+            state["timed_out"] = True
+            state["task_timed_out"] = True
+            state.stop("timeout_reached")
         return state
 
     def command_program(
@@ -569,7 +594,17 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
                     runtime,
                 )
             await runtime.setup_rollout(task, state)
-            return await run_local_command(merged_program, task, state, runtime)
+            timeout = cast(
+                float | None, state.runtime_state().get("task_timeout_seconds")
+            )
+            try:
+                async with asyncio.timeout(timeout):
+                    await run_local_command(merged_program, task, state, runtime)
+            except TimeoutError:
+                state["timed_out"] = True
+                state["task_timed_out"] = True
+                state.stop("timeout_reached")
+            return state
 
         return run
 

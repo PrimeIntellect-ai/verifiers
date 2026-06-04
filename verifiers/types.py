@@ -1227,7 +1227,7 @@ class ClientConfig(BaseModel):
     api_key_var: str = "PRIME_API_KEY"
     api_base_url: str = "https://api.pinference.ai/api/v1"
     endpoint_configs: list["EndpointClientConfig"] = Field(default_factory=list)
-    timeout: float = 3600.0
+    timeout: float = 21600.0
     connect_timeout: float = 5.0
     max_connections: int = 28000
     max_keepalive_connections: int = 28000
@@ -1294,7 +1294,7 @@ class EndpointClientConfig(BaseModel):
     client_idx: int = 0
     api_key_var: str = "PRIME_API_KEY"
     api_base_url: str = "https://api.pinference.ai/api/v1"
-    timeout: float = 3600.0
+    timeout: float = 21600.0
     connect_timeout: float = 5.0
     max_connections: int = 28000
     max_keepalive_connections: int = 28000
@@ -1328,6 +1328,9 @@ class EvalConfig(BaseModel):
     max_concurrent: int
     num_workers: int | str = "auto"
     independent_scoring: bool = False
+    global_timeout_seconds: float | None = None
+    rollout_timeout_seconds: float | None = None
+    task_timeout_seconds: float | None = None
     extra_env_kwargs: dict = {}
     max_retries: int = 3
     disable_env_server: bool = False

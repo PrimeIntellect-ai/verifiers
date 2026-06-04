@@ -31,14 +31,13 @@ PROGRAM_OPTION_KEYS = {
     "files",
     "dirs",
     "setup",
-    "setup_timeout",
     "bindings",
     "env",
     "artifacts",
     "channels",
 }
 PROGRAM_KEYS = PROGRAM_KIND_KEYS | PROGRAM_OPTION_KEYS | {"args"}
-SANDBOX_ONLY_PROGRAM_KEYS = {"files", "dirs", "setup", "setup_timeout", "artifacts"}
+SANDBOX_ONLY_PROGRAM_KEYS = {"files", "dirs", "setup", "artifacts"}
 TASK_PROGRAM_KEYS = {
     "files",
     "dirs",
@@ -64,7 +63,16 @@ async def run_local_command(
         stderr=asyncio.subprocess.PIPE,
         env=env,
     )
-    stdout, stderr = await proc.communicate()
+    try:
+        stdout, stderr = await proc.communicate()
+    except asyncio.CancelledError:
+        proc.terminate()
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=5)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+        raise
     state["command"] = {
         "argv": argv,
         "returncode": proc.returncode,

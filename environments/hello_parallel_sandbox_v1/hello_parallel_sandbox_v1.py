@@ -125,8 +125,6 @@ PROGRAM_SANDBOX = {
     "image": "python:3.11-slim",
     "scope": "rollout",
     "network_access": True,
-    "timeout_minutes": 20,
-    "command_timeout": 120,
 }
 
 
@@ -154,7 +152,7 @@ class ParallelSandboxHarnessConfig(vf.HarnessConfig):
 
 async def bash(command: str, sandbox, state) -> str:
     """Run a bash command in the active program sandbox."""
-    result = await sandbox.execute(command, timeout=120, working_dir="/tmp")
+    result = await sandbox.execute(command, working_dir="/tmp")
     output = {
         "exit_code": int(getattr(result, "exit_code", 0)),
         "stdout": truncate_text(str(getattr(result, "stdout", "") or "")),

@@ -1261,6 +1261,12 @@ class Environment(ABC):
             else:
                 setattr(self, key, value)
 
+    def set_rollout_timeout_seconds(self, value: float | None) -> None:
+        timeout = None if value is None else float(value)
+        self.rollout_timeout_seconds = timeout
+        if hasattr(self, "timeout_seconds"):
+            self.timeout_seconds = timeout
+
     def add_rubric(self, rubric: Rubric) -> None:
         if self.rubric is None:
             self.rubric = rubric

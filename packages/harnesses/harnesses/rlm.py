@@ -12,7 +12,6 @@ from .utils.rlm_utils import (
 
 RLM_DEFAULT_REPO_URL = "github.com/PrimeIntellect-ai/rlm-harness.git"
 RLM_DEFAULT_REPO_REF = "main"
-RLM_DEFAULT_EXEC_TIMEOUT = 300
 RLM_DEFAULT_MAX_DEPTH = 0
 RLM_DEFAULT_INSTRUCTION_PATH = "/rlm/instruction.txt"
 RLM_DEFAULT_APPEND_TO_SYSTEM_PROMPT_PATH = "/rlm/append_to_system_prompt.txt"
@@ -26,7 +25,6 @@ class RLMProgramConfig(vf.ProgramConfig):
     instruction_path: str = RLM_DEFAULT_INSTRUCTION_PATH
     rlm_repo_url: str = RLM_DEFAULT_REPO_URL
     rlm_repo_ref: str = RLM_DEFAULT_REPO_REF
-    rlm_exec_timeout: int = RLM_DEFAULT_EXEC_TIMEOUT
     rlm_max_depth: int = RLM_DEFAULT_MAX_DEPTH
     summarize_at_tokens: int | None = None
     append_to_system_prompt: str = ""
@@ -72,7 +70,6 @@ class RLMProgramConfig(vf.ProgramConfig):
             "OPENAI_MODEL": "runtime.model",
             "RLM_MODEL": "runtime.model",
             "RLM_TOOLS": ",".join(self.rlm_tools),
-            "RLM_EXEC_TIMEOUT": str(self.rlm_exec_timeout),
             "RLM_MAX_DEPTH": str(self.rlm_max_depth),
             **self.env_vars,
         }
@@ -90,13 +87,6 @@ class RLMProgramConfig(vf.ProgramConfig):
                 }
             }
         )
-        command_timeout = max(self.rlm_exec_timeout + 120, 600)
-        setup_timeout = command_timeout
-        if self.sandbox is not None and "setup_timeout" in self.sandbox.data(
-            fill_defaults=False
-        ):
-            setup_timeout = self.sandbox.setup_timeout
-
         if self.sandbox is None:
             sandbox = vf.SandboxConfig(
                 image="python:3.11-slim",
@@ -105,17 +95,12 @@ class RLMProgramConfig(vf.ProgramConfig):
                 memory_gb=2,
                 disk_size_gb=5,
                 network_access=True,
-                timeout_minutes=60,
-                command_timeout=command_timeout,
-                setup_timeout=setup_timeout,
             )
         else:
             sandbox = vf.SandboxConfig.model_validate(
                 {
                     "workdir": self.workdir,
-                    "command_timeout": command_timeout,
                     **self.sandbox.data(),
-                    "setup_timeout": setup_timeout,
                 }
             )
 
@@ -173,7 +158,6 @@ rlm "$(cat {shlex.quote(self.instruction_path)})"
             env=env,
             artifacts=artifacts,
             sandbox=sandbox,
-            setup_timeout=setup_timeout,
         )
 
 

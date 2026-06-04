@@ -69,6 +69,7 @@ from .runtime_handles import (
 from .utils.tool_utils import schema_callable, tool_schema, tool_visible
 from .utils.tool_utils import toolset_object_scope
 from .utils.usage_utils import record_response_usage
+from .utils.timeout_utils import MODEL_NO_RESPONSE_TIMEOUT_SECONDS
 from .state import State
 from .task import Task
 from .toolset import (
@@ -860,12 +861,15 @@ class Runtime:
         context = context or ModelRequestContext()
         client = self.model_client(state)
         request_start = time.time()
-        response = await client.get_response(
+        request = client.get_response(
             prompt=prompt,
             model=self.model(state),
             tools=tool_defs,
             sampling_args=self.sampling_args(state),
             state=state,
+        )
+        response = await asyncio.wait_for(
+            request, timeout=MODEL_NO_RESPONSE_TIMEOUT_SECONDS
         )
         request_end = time.time()
         state.record_model_timing(request_start, request_end)

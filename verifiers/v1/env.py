@@ -75,6 +75,14 @@ class Env(vf.Environment):
         )
         self._empty_dataset_checked = False
         self._empty_eval_dataset_checked = False
+        self.rollout_timeout_seconds: float | None = None
+        self.task_timeout_seconds: float | None = None
+
+    def set_rollout_timeout_seconds(self, value: float | None) -> None:
+        self.rollout_timeout_seconds = None if value is None else float(value)
+
+    def set_task_timeout_seconds(self, value: float | None) -> None:
+        self.task_timeout_seconds = None if value is None else float(value)
 
     def build_dataset(self) -> "Dataset | None":
         if self.dataset is not None:
@@ -129,6 +137,8 @@ class Env(vf.Environment):
                 "model": model,
                 "sampling_args": sampling_args or {},
                 "score_rollout": self.score_rollouts,
+                "rollout_timeout_seconds": self.rollout_timeout_seconds,
+                "task_timeout_seconds": self.task_timeout_seconds,
             },
         )
         return await self.harness.run(task, state)
@@ -167,14 +177,22 @@ class Env(vf.Environment):
                 "model": model,
                 "sampling_args": sampling_args,
                 "score_rollout": self.score_rollouts,
+                "rollout_timeout_seconds": self.rollout_timeout_seconds,
+                "task_timeout_seconds": self.task_timeout_seconds,
             },
         )
-        states = await asyncio.gather(
-            *[self.harness.run(task, state) for task, state in zip(tasks, states)]
-        )
+
         try:
+            states = await asyncio.gather(
+                *[self.harness.run(task, state) for task, state in zip(tasks, states)]
+            )
             if self.score_rollouts:
-                await self.harness.score_group(tasks, states)
+                async with asyncio.timeout(self.rollout_timeout_seconds):
+                    await self.harness.score_group(tasks, states)
+        except TimeoutError:
+            for state in states:
+                state["timed_out"] = True
+                state.stop("timeout_reached")
         finally:
             await self.harness.cleanup_group(tasks, states)
         for state in states:
