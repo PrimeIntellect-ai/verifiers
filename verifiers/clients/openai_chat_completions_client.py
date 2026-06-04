@@ -1,4 +1,5 @@
 import functools
+import json
 from collections.abc import Iterable, Mapping
 from typing import Any, TypeAlias, cast
 
@@ -175,15 +176,47 @@ class OpenAIChatCompletionsClient(
                 return [normalize_content_part(p) for p in content]
             return content
 
-        def from_chat_message(message: Message) -> OpenAIChatMessage:
+        def split_tool_content_for_chat_completions(
+            content: Any,
+        ) -> tuple[Any, list[dict[str, Any]] | None]:
+            """Keep tool messages provider-legal and bridge images via user role."""
+
+            normalized = normalize_content(content)
+            if not isinstance(normalized, list):
+                return normalized, None
+
+            tool_text_parts: list[str] = []
+            bridged_parts: list[dict[str, Any]] = []
+            for part in normalized:
+                part_type = part.get("type") if isinstance(part, Mapping) else None
+                if part_type == "image_url":
+                    bridged_parts.append(dict(part))
+                    continue
+                if part_type == "text":
+                    text = part.get("text")
+                    if isinstance(text, str) and text:
+                        tool_text_parts.append(text)
+                        bridged_parts.append({"type": "text", "text": text})
+                    continue
+                tool_text_parts.append(json.dumps(part, ensure_ascii=False))
+
+            if not bridged_parts:
+                return normalized, None
+            return "\n".join(tool_text_parts) or "[tool image output]", bridged_parts
+
+        def from_chat_message(message: Message) -> list[OpenAIChatMessage]:
             if isinstance(message, SystemMessage):
-                return ChatCompletionSystemMessageParam(
-                    role="system", content=normalize_content(message.content)
-                )
+                return [
+                    ChatCompletionSystemMessageParam(
+                        role="system", content=normalize_content(message.content)
+                    )
+                ]
             elif isinstance(message, UserMessage):
-                return ChatCompletionUserMessageParam(
-                    role="user", content=normalize_content(message.content)
-                )
+                return [
+                    ChatCompletionUserMessageParam(
+                        role="user", content=normalize_content(message.content)
+                    )
+                ]
             elif isinstance(message, AssistantMessage):
                 if message.tool_calls is not None:
                     oai_tool_calls: (
@@ -201,26 +234,44 @@ class OpenAIChatCompletionsClient(
                     ]
                 else:
                     oai_tool_calls = None
-                return ChatCompletionAssistantMessageParam(
-                    role="assistant",
-                    content=cast(Any, normalize_content(message.content)),
-                    tool_calls=cast(Any, oai_tool_calls),
-                    reasoning_content=message.reasoning_content,  # type: ignore[arg-type]
-                )
+                return [
+                    ChatCompletionAssistantMessageParam(
+                        role="assistant",
+                        content=cast(Any, normalize_content(message.content)),
+                        tool_calls=cast(Any, oai_tool_calls),
+                        reasoning_content=message.reasoning_content,  # type: ignore[arg-type]
+                    )
+                ]
             elif isinstance(message, ToolMessage):
-                return ChatCompletionToolMessageParam(
-                    role="tool",
-                    tool_call_id=message.tool_call_id,
-                    content=cast(Any, normalize_content(message.content)),
+                tool_content, bridged_parts = split_tool_content_for_chat_completions(
+                    message.content
                 )
+                messages: list[OpenAIChatMessage] = [
+                    ChatCompletionToolMessageParam(
+                        role="tool",
+                        tool_call_id=message.tool_call_id,
+                        content=cast(Any, tool_content),
+                    )
+                ]
+                if bridged_parts is not None:
+                    messages.append(
+                        ChatCompletionUserMessageParam(
+                            role="user",
+                            content=cast(Any, bridged_parts),
+                        )
+                    )
+                return messages
             elif isinstance(message, TextMessage):
-                return ChatCompletionUserMessageParam(
-                    role="user", content=message.content
-                )
+                return [
+                    ChatCompletionUserMessageParam(role="user", content=message.content)
+                ]
             else:
                 raise ValueError(f"Invalid chat message: {message}")
 
-        return [from_chat_message(message) for message in messages], {}
+        native_messages: OpenAIChatMessages = []
+        for message in messages:
+            native_messages.extend(from_chat_message(message))
+        return native_messages, {}
 
     async def to_native_tool(self, tool: Tool) -> OpenAITool:
         if tool.strict is None:
