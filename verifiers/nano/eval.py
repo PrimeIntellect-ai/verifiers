@@ -16,11 +16,11 @@ from openai import AsyncOpenAI
 from pydantic import Field, model_validator
 from pydantic_config import BaseConfig
 
-from verifiers.v2.clients import Client, OpenAIChatCompletionsClient
-from verifiers.v2.environment import EnvConfig, Environment
-from verifiers.v2.output import EvalMetadata, save_results
-from verifiers.v2.transcript import Transcript
-from verifiers.v2.types import SamplingConfig
+from verifiers.nano.clients import Client, OpenAIChatCompletionsClient
+from verifiers.nano.environment import EnvConfig, Environment
+from verifiers.nano.output import EvalMetadata, save_results
+from verifiers.nano.transcript import Transcript
+from verifiers.nano.types import SamplingConfig
 
 PRIME_INFERENCE_HOST = "pinference.ai"
 PRIME_TEAM_ID_HEADER = "X-Prime-Team-ID"

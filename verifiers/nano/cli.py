@@ -1,4 +1,4 @@
-"""The eval CLI: `python -m verifiers.v2 <env-id> [options]`.
+"""The eval CLI: `python -m verifiers.nano <env-id> [options]`.
 
 Mirrors the `~/prime-rl` entrypoint pattern (`config = cli(Config)`). The env id
 is the first positional argument; it selects the env's `EnvConfig` subclass so
@@ -11,10 +11,10 @@ import sys
 
 from pydantic_config import cli
 
-import verifiers.v2 as vf
+import verifiers.nano as vf
 
 USAGE = (
-    "usage: python -m verifiers.v2 <env-id> [--model ... --num-tasks ... @ eval.toml]"
+    "usage: python -m verifiers.nano <env-id> [--model ... --num-tasks ... @ eval.toml]"
 )
 
 

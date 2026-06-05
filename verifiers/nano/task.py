@@ -10,7 +10,7 @@ from typing import TypeVar
 
 from pydantic import ConfigDict
 
-from verifiers.v2.types import StrictBaseModel
+from verifiers.nano.types import StrictBaseModel
 
 
 class Task(StrictBaseModel):

@@ -8,7 +8,7 @@ instruction is baked into the single user prompt at load time.
 import re
 from difflib import SequenceMatcher
 
-import verifiers.v2 as vf
+import verifiers.nano as vf
 
 TAG = re.compile(r"<reversed_text>(.*?)</reversed_text>", re.DOTALL)
 INSTRUCTION = (

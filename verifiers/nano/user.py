@@ -9,9 +9,9 @@ from typing import Generic, TypeVar
 
 from pydantic_config import BaseConfig
 
-from verifiers.v2.task import Task
-from verifiers.v2.transcript import Transcript
-from verifiers.v2.types import Messages, UserMessage
+from verifiers.nano.task import Task
+from verifiers.nano.transcript import Transcript
+from verifiers.nano.types import Messages, UserMessage
 
 
 class UserConfig(BaseConfig):

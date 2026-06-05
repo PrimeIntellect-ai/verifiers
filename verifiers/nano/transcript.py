@@ -14,8 +14,8 @@ from typing import Generic, TypeVar
 
 from pydantic import Field, computed_field
 
-from verifiers.v2.task import TaskT
-from verifiers.v2.types import Messages, Response, StrictBaseModel
+from verifiers.nano.task import TaskT
+from verifiers.nano.types import Messages, Response, StrictBaseModel
 
 
 class TimeSpan(StrictBaseModel):

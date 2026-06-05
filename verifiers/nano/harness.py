@@ -17,14 +17,14 @@ from typing import Generic
 
 from pydantic_config import BaseConfig
 
-from verifiers.v2.clients import Client
-from verifiers.v2.decorators import discover_decorated, stop
-from verifiers.v2.errors import RolloutError
-from verifiers.v2.task import TaskT
-from verifiers.v2.tools import Toolset
-from verifiers.v2.transcript import Transcript, TranscriptT, Turn
-from verifiers.v2.types import Messages, Response, SamplingConfig, Tool, UserMessage
-from verifiers.v2.user import User
+from verifiers.nano.clients import Client
+from verifiers.nano.decorators import discover_decorated, stop
+from verifiers.nano.errors import RolloutError
+from verifiers.nano.task import TaskT
+from verifiers.nano.tools import Toolset
+from verifiers.nano.transcript import Transcript, TranscriptT, Turn
+from verifiers.nano.types import Messages, Response, SamplingConfig, Tool, UserMessage
+from verifiers.nano.user import User
 
 
 @dataclass(frozen=True)

@@ -13,11 +13,11 @@ from typing import Generic, TypeVar
 
 from pydantic_config import BaseConfig
 
-from verifiers.v2 import scoring
-from verifiers.v2.task import TaskT
-from verifiers.v2.tools import Toolset
-from verifiers.v2.transcript import Transcript
-from verifiers.v2.user import User
+from verifiers.nano import scoring
+from verifiers.nano.task import TaskT
+from verifiers.nano.tools import Toolset
+from verifiers.nano.transcript import Transcript
+from verifiers.nano.user import User
 
 
 class TasksetConfig(BaseConfig):

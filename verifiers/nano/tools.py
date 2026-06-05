@@ -12,7 +12,7 @@ from typing import Awaitable, Callable
 
 from agents.function_schema import function_schema
 
-from verifiers.v2.types import Tool, ToolCall, ToolMessage
+from verifiers.nano.types import Tool, ToolCall, ToolMessage
 
 ToolFn = Callable[..., object | Awaitable[object]]
 

@@ -8,9 +8,9 @@ typed `Response`.
 
 from openai import AsyncOpenAI, OpenAIError
 
-from verifiers.v2.clients.client import Client
-from verifiers.v2.errors import ModelError
-from verifiers.v2.types import (
+from verifiers.nano.clients.client import Client
+from verifiers.nano.errors import ModelError
+from verifiers.nano.types import (
     AssistantMessage,
     FinishReason,
     Message,

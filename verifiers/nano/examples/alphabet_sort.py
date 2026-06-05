@@ -10,7 +10,7 @@ user simulator and the reward without any dict access.
 import re
 from difflib import SequenceMatcher
 
-import verifiers.v2 as vf
+import verifiers.nano as vf
 
 TAG = re.compile(r"<sorted>(.*?)</sorted>", re.DOTALL)
 FORMAT = "Put your answer inside <sorted> tags, one name per line."

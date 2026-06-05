@@ -1,26 +1,27 @@
-"""verifiers v2 — a clean-slate, heavily-typed reimplementation.
+"""verifiers nano — a clean-slate, heavily-typed reimplementation.
 
-Public surface is re-exported here so environments can `import verifiers.v2 as vf`
+Public surface is re-exported here so environments can `import verifiers.nano as vf`
 and reach everything they need. Built up milestone by milestone.
 """
 
-from verifiers.v2.clients import Client
-from verifiers.v2.decorators import cleanup, metric, reward, setup, stop
-from verifiers.v2.environment import EnvConfig, Environment
-from verifiers.v2.errors import ModelError, RolloutError, ToolError
-from verifiers.v2.eval import ClientConfig, EvalConfig, resolve_client, run_eval
-from verifiers.v2.harness import Harness, HarnessConfig, RolloutContext
-from verifiers.v2.loaders import (
+from verifiers.nano.clients import Client
+from verifiers.nano.decorators import cleanup, metric, reward, setup, stop
+from verifiers.nano.environment import EnvConfig, Environment
+from verifiers.nano.errors import ModelError, ProgramError, RolloutError, ToolError
+from verifiers.nano.eval import ClientConfig, EvalConfig, resolve_client, run_eval
+from verifiers.nano.harness import Harness, HarnessConfig, RolloutContext
+from verifiers.nano.loaders import (
     import_env,
     load_environment,
     load_harness,
     load_taskset,
 )
-from verifiers.v2.output import EvalMetadata, save_results
-from verifiers.v2.scoring import score
-from verifiers.v2.task import Task
-from verifiers.v2.taskset import Taskset, TasksetConfig
-from verifiers.v2.transcript import (
+from verifiers.nano.output import EvalMetadata, save_results
+from verifiers.nano.program import ProgramConfig, ProgramHarness
+from verifiers.nano.scoring import score
+from verifiers.nano.task import Task
+from verifiers.nano.taskset import Taskset, TasksetConfig
+from verifiers.nano.transcript import (
     Error,
     TimeSpan,
     Timing,
@@ -28,8 +29,8 @@ from verifiers.v2.transcript import (
     Turn,
     TurnTokens,
 )
-from verifiers.v2.tools import Toolset
-from verifiers.v2.types import (
+from verifiers.nano.tools import Toolset
+from verifiers.nano.types import (
     AssistantMessage,
     Message,
     Messages,
@@ -43,7 +44,7 @@ from verifiers.v2.types import (
     Usage,
     UserMessage,
 )
-from verifiers.v2.user import User, UserConfig
+from verifiers.nano.user import User, UserConfig
 
 __all__ = [
     # types
@@ -79,6 +80,7 @@ __all__ = [
     "RolloutError",
     "ModelError",
     "ToolError",
+    "ProgramError",
     # clients
     "Client",
     "ClientConfig",
@@ -93,6 +95,8 @@ __all__ = [
     "Harness",
     "HarnessConfig",
     "RolloutContext",
+    "ProgramHarness",
+    "ProgramConfig",
     "Environment",
     "EnvConfig",
     # loaders

@@ -1,7 +1,7 @@
 """The exception tree the rollout catches and records.
 
 Only errors the rollout deliberately catches (and records into `transcript.error` as a
-`verifiers.v2.transcript.Error`) live here. Everything else propagates with its
+`verifiers.nano.transcript.Error`) live here. Everything else propagates with its
 built-in traceback — we own the code, so we don't wrap internal invariants in
 custom messages.
 """
@@ -17,3 +17,7 @@ class ModelError(RolloutError):
 
 class ToolError(RolloutError):
     """A tool invocation failed."""
+
+
+class ProgramError(RolloutError):
+    """A program failed (non-zero exit or timeout)."""

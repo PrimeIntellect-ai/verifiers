@@ -6,7 +6,7 @@ abstract method. Each concrete client owns its own wire translation internally.
 
 from abc import ABC, abstractmethod
 
-from verifiers.v2.types import Messages, Response, SamplingConfig, Tool
+from verifiers.nano.types import Messages, Response, SamplingConfig, Tool
 
 
 class Client(ABC):

@@ -7,12 +7,12 @@ with the taskset. Any taskset can be paired with any compatible harness on the f
 
 from pydantic_config import BaseConfig
 
-from verifiers.v2.clients import Client
-from verifiers.v2.harness import Harness, HarnessConfig, RolloutContext
-from verifiers.v2.task import Task
-from verifiers.v2.taskset import Taskset, TasksetConfig
-from verifiers.v2.transcript import Transcript
-from verifiers.v2.types import SamplingConfig
+from verifiers.nano.clients import Client
+from verifiers.nano.harness import Harness, HarnessConfig, RolloutContext
+from verifiers.nano.task import Task
+from verifiers.nano.taskset import Taskset, TasksetConfig
+from verifiers.nano.transcript import Transcript
+from verifiers.nano.types import SamplingConfig
 
 
 class EnvConfig(BaseConfig):

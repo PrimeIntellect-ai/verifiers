@@ -10,14 +10,14 @@ import importlib
 import importlib.util
 from types import ModuleType
 
-from verifiers.v2.environment import EnvConfig, Environment
-from verifiers.v2.harness import Harness, HarnessConfig
-from verifiers.v2.taskset import Taskset, TasksetConfig
+from verifiers.nano.environment import EnvConfig, Environment
+from verifiers.nano.harness import Harness, HarnessConfig
+from verifiers.nano.taskset import Taskset, TasksetConfig
 
 
 def import_env(env_id: str) -> ModuleType:
     name = env_id.replace("-", "_")
-    bundled = f"verifiers.v2.examples.{name}"
+    bundled = f"verifiers.nano.examples.{name}"
     if importlib.util.find_spec(bundled) is not None:
         return importlib.import_module(bundled)
     return importlib.import_module(name)

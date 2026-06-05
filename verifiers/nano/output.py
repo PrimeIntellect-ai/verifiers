@@ -7,8 +7,8 @@ intermediate record; saving is just `transcript.model_dump_json()`.
 
 from pathlib import Path
 
-from verifiers.v2.transcript import Transcript
-from verifiers.v2.types import SamplingConfig, StrictBaseModel
+from verifiers.nano.transcript import Transcript
+from verifiers.nano.types import SamplingConfig, StrictBaseModel
 
 
 class EvalMetadata(StrictBaseModel):

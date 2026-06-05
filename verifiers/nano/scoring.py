@@ -8,8 +8,8 @@ signal machinery (string-named config rewards + named-arg injection):
   `transcript.reward` is the computed sum of those contributions.
 """
 
-from verifiers.v2.decorators import discover_decorated
-from verifiers.v2.transcript import Transcript
+from verifiers.nano.decorators import discover_decorated
+from verifiers.nano.transcript import Transcript
 
 
 async def score(taskset: object, transcript: Transcript) -> None:
