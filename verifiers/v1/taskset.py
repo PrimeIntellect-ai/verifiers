@@ -108,7 +108,7 @@ class Taskset(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
         self._eval_dataset: Dataset | None = None
 
     def get_skills_dir(self) -> Traversable | Path | None:
-        return discover_sibling_dir(type(self), "skills")
+        return discover_sibling_dir(type(self), "skills", require_non_empty=True)
 
     def get_upload_dirs(self) -> dict[str, Traversable | Path]:
         skills = self.get_skills_dir()
