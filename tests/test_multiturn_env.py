@@ -31,6 +31,24 @@ class TestMultiTurnEnv:
         assert env.max_turns == -1  # Default value
         assert env.timeout_seconds is None
 
+    def test_rollout_timeout_setter_updates_timeout_seconds(
+        self, mock_client, sample_chat_dataset
+    ):
+        from tests.conftest import SimpleMultiTurnEnv
+
+        env = SimpleMultiTurnEnv(
+            client=mock_client,
+            model="test-model",
+            dataset=sample_chat_dataset,
+            parser=Parser(),
+            rubric=Rubric(),
+        )
+
+        env.set_kwargs(rollout_timeout_seconds=600)
+
+        assert env.rollout_timeout_seconds == 600.0
+        assert env.timeout_seconds == 600.0
+
     @pytest.mark.asyncio
     async def test_setup_state_supports_in_place_and_returned_state(
         self, mock_client, sample_chat_dataset, make_input

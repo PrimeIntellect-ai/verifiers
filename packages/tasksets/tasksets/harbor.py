@@ -4,6 +4,7 @@ from typing import cast
 import verifiers as vf
 from verifiers.utils.import_utils import load_toml
 from verifiers.v1.utils.sandbox_utils import SandboxClient
+from verifiers.v1.utils.timeout_utils import test_phase_timeout_seconds
 
 from tasksets.utils.harbor_utils import (
     TASKS_SUBDIR,
@@ -82,6 +83,9 @@ class HarborTaskset(vf.Taskset[HarborTasksetConfig]):
                 raise TypeError(f"{task_toml_path} [agent] must be a mapping.")
             if not isinstance(verifier_config, dict):
                 raise TypeError(f"{task_toml_path} [verifier] must be a mapping.")
+            test_timeout_seconds = test_phase_timeout_seconds(
+                verifier_config.get("timeout_sec")
+            )
             instruction = instruction_path.read_text().strip()
             task_remote_dir = config.task_dir.rstrip("/") or "/task"
             sandbox = harbor_sandbox(HARBOR_DEFAULT_SANDBOX, config.sandbox)
@@ -132,6 +136,11 @@ class HarborTaskset(vf.Taskset[HarborTasksetConfig]):
                         "task_name": task_dir.name,
                         "config": task_config,
                         "docker_image": environment.get("docker_image"),
+                        **(
+                            {"test_timeout_seconds": test_timeout_seconds}
+                            if test_timeout_seconds is not None
+                            else {}
+                        ),
                     },
                     "info": {
                         "harbor": {
@@ -153,6 +162,7 @@ class HarborTaskset(vf.Taskset[HarborTasksetConfig]):
         harbor = task["harbor"]
         assert isinstance(harbor, dict)
         task_dir = Path(str(harbor["task_dir"]))
+        test_timeout = test_phase_timeout_seconds(harbor.get("test_timeout_seconds"))
         from prime_sandboxes import AsyncSandboxClient
 
         client = cast(SandboxClient, AsyncSandboxClient())
@@ -162,6 +172,7 @@ class HarborTaskset(vf.Taskset[HarborTasksetConfig]):
                 sandbox_id=sandbox_id,
                 command="bash test.sh",
                 working_dir="/tests",
+                timeout=test_timeout,
             )
             state["harbor_tests"] = {
                 "returncode": result.exit_code,

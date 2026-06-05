@@ -390,6 +390,12 @@ def test_cli_legacy_timeout_maps_to_rollout_timeout(monkeypatch, run_cli):
     assert captured["configs"][0].rollout_timeout_seconds == 600
 
 
+def test_parse_args_legacy_timeout_alias_maps_to_rollout_timeout():
+    args = vf_eval.parse_args(["dummy-env", "--timeout", "600"])
+
+    assert args.rollout_timeout_seconds == 600
+
+
 def test_cli_task_and_global_timeout_flags(monkeypatch, run_cli):
     captured = run_cli(
         monkeypatch,
