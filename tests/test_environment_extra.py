@@ -606,6 +606,82 @@ async def test_group_rollout_failure_cancels_pending_and_cleans_completed_state(
 
 
 @pytest.mark.asyncio
+async def test_group_rollout_failure_logs_cancelled_sibling_cleanup_error(
+    monkeypatch, mock_client, make_input
+):
+    class CleanupTrackingRubric(Rubric):
+        def __init__(self):
+            super().__init__()
+            self.cleaned: list[str] = []
+
+        async def cleanup(self, state):
+            info = state["info"]
+            assert isinstance(info, dict)
+            self.cleaned.append(str(info["mode"]))
+
+    class CleanupFailingCancelledEnvironment(DummyEnvironment):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.done_returned = asyncio.Event()
+            self.slow_started = asyncio.Event()
+            self.slow_cancelled = asyncio.Event()
+
+        async def rollout(
+            self,
+            input: RolloutInput,
+            client,
+            model: str,
+            sampling_args: SamplingArgs | None = None,
+        ):
+            info = input["info"]
+            assert isinstance(info, dict)
+            mode = info["mode"]
+            if mode == "done":
+                state = await super().rollout(input, client, model, sampling_args)
+                self.done_returned.set()
+                return state
+            if mode == "slow":
+                self.slow_started.set()
+                try:
+                    await asyncio.sleep(60)
+                except asyncio.CancelledError as exc:
+                    self.slow_cancelled.set()
+                    raise RuntimeError("cancelled cleanup exploded") from exc
+            await self.done_returned.wait()
+            await self.slow_started.wait()
+            raise RuntimeError("group sibling exploded")
+
+    rubric = CleanupTrackingRubric()
+    env = CleanupFailingCancelledEnvironment(
+        dataset=Dataset.from_dict({"question": ["q1"], "answer": ["a1"]}),
+        parser=Parser(),
+        rubric=rubric,
+    )
+    warnings: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    def record_warning(*args: object, **kwargs: object) -> None:
+        warnings.append((args, kwargs))
+
+    monkeypatch.setattr(env.logger, "warning", record_warning)
+    with pytest.raises(RuntimeError, match="group sibling exploded"):
+        await env.generate(
+            [
+                make_input(example_id=0, info={"mode": "done"}),
+                make_input(example_id=0, info={"mode": "slow"}),
+                make_input(example_id=0, info={"mode": "fail"}),
+            ],
+            client=mock_client,
+            model="test-model",
+            on_progress=lambda *args: None,
+        )
+
+    assert env.slow_cancelled.is_set()
+    assert rubric.cleaned == ["done"]
+    assert warnings[0][0][0] == "Cancelled group rollout failed during cleanup"
+    assert warnings[0][1]["exc_info"][0] is RuntimeError
+
+
+@pytest.mark.asyncio
 async def test_generate_grouped_scoring_distributes_per_group(
     mock_client, make_dummy_env, make_input
 ):

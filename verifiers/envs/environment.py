@@ -722,7 +722,20 @@ class Environment(ABC):
             for task in pending:
                 task.cancel()
             if pending:
-                await asyncio.gather(*pending, return_exceptions=True)
+                drained_errors = await asyncio.gather(*pending, return_exceptions=True)
+                for drained_error in drained_errors:
+                    if not isinstance(drained_error, BaseException):
+                        continue
+                    if isinstance(drained_error, asyncio.CancelledError):
+                        continue
+                    self.logger.warning(
+                        "Cancelled group rollout failed during cleanup",
+                        exc_info=(
+                            type(drained_error),
+                            drained_error,
+                            drained_error.__traceback__,
+                        ),
+                    )
             completed_states = [
                 task.result()
                 for task in rollout_tasks
