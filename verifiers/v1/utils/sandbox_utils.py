@@ -16,6 +16,7 @@ import tenacity as tc
 
 from verifiers.decorators import setup as setup_handler
 from verifiers.errors import Error, SandboxError
+from verifiers.types import SandboxFailureData, SandboxFailureKind, SandboxFailurePhase
 from verifiers.utils.async_utils import maybe_call_with_named_args
 
 from .program_utils import command_argv, command_env, float_config, int_config
@@ -155,7 +156,7 @@ async def close_sandbox_client(client: SandboxClient) -> None:
         await aclose()
 
 
-def sandbox_failure_kind(exc: BaseException) -> str | None:
+def sandbox_failure_kind(exc: BaseException) -> SandboxFailureKind | None:
     if isinstance(exc, TimeoutError):
         return "timeout"
     name = type(exc).__name__
@@ -172,19 +173,19 @@ def mark_sandbox_failure(
     lease: "SandboxLease | None",
     exc: BaseException,
     *,
-    phase: str | None = None,
-) -> str | None:
+    phase: SandboxFailurePhase | None = None,
+) -> SandboxFailureKind | None:
     kind = sandbox_failure_kind(exc)
     if kind == "oom":
         state["sandbox_oom"] = True
     elif kind == "timeout":
         state["sandbox_timeout"] = True
     if kind is not None:
-        failure: ConfigData = {
-            "kind": kind,
-            "type": type(exc).__name__,
-            "message": str(exc),
-        }
+        failure = SandboxFailureData(
+            kind=kind,
+            type=type(exc).__name__,
+            message=str(exc),
+        )
         if phase is not None:
             failure["phase"] = phase
         if lease is not None:
