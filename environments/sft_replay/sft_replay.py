@@ -1,14 +1,15 @@
 import verifiers as vf
 from harnesses import ReplayHarness
-from tasksets import ReplayTaskset, ReplayTasksetConfig
+from tasksets import ReplayTaskset as BaseReplayTaskset
+from tasksets import ReplayTasksetConfig
 
 
-class SFTReplayTaskset(ReplayTaskset):
+class ReplayTaskset(BaseReplayTaskset):
     pass
 
 
-def load_taskset(config: ReplayTasksetConfig) -> SFTReplayTaskset:
-    return SFTReplayTaskset(config=config)
+def load_taskset(config: ReplayTasksetConfig) -> ReplayTaskset:
+    return ReplayTaskset(config=config)
 
 
 def load_harness(config: vf.HarnessConfig) -> ReplayHarness:
