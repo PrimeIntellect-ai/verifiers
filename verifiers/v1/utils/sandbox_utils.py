@@ -720,7 +720,7 @@ async def create_sandbox(
     try:
         create_waiter = asyncio.shield(create_task)
         sandbox = await asyncio.wait_for(create_waiter, SANDBOX_CREATE_TIMEOUT_SECONDS)
-    except TimeoutError:
+    except (asyncio.TimeoutError, TimeoutError) as exc:
         asyncio.create_task(
             delete_late_sandbox_create(
                 client,
@@ -729,7 +729,7 @@ async def create_sandbox(
                 reason="timed out creation",
             )
         )
-        raise
+        raise TimeoutError("Sandbox creation timed out.") from exc
     except asyncio.CancelledError:
         try:
             sandbox = cast(SandboxRecord, await asyncio.shield(create_task))
@@ -785,7 +785,7 @@ async def delete_late_sandbox_create(
                 asyncio.shield(create_task), SANDBOX_CREATE_TIMEOUT_SECONDS
             ),
         )
-    except TimeoutError:
+    except (asyncio.TimeoutError, TimeoutError):
         create_task.cancel()
         logger.warning("Timed out waiting for late sandbox create cleanup.")
         if owns_client:
