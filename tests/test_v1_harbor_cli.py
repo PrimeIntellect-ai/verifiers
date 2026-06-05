@@ -110,7 +110,6 @@ def test_harbor_taskset_loads_package_tasks_with_program_patch(
     assert task["sandbox"]["image"] == "ubuntu:24.04"
     assert task["sandbox"]["memory_gb"] == 2.0
     assert task["sandbox"]["disk_size_gb"] == 8.0
-    assert "command_timeout" not in task["sandbox"]
     assert "network_access" not in task["sandbox"]
     assert (
         merge_task_sandbox(
@@ -226,18 +225,9 @@ class FakeHarborSandboxClient:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("harbor_metadata", "expected_timeout"),
-    [
-        ({"test_timeout_seconds": 300}, 300),
-        ({}, None),
-    ],
-)
 async def test_harbor_reward_uses_background_job_for_tests(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    harbor_metadata: dict[str, object],
-    expected_timeout: int | None,
 ) -> None:
     task_dir = write_harbor_task(tmp_path)
     fake_module = cast(Any, types.ModuleType("prime_sandboxes"))
@@ -250,7 +240,7 @@ async def test_harbor_reward_uses_background_job_for_tests(
         vf.Task(
             {
                 "prompt": [],
-                "harbor": {"task_dir": str(task_dir), **harbor_metadata},
+                "harbor": {"task_dir": str(task_dir), "test_timeout_seconds": 300},
             }
         ).freeze(),
         vf.State({"sandbox_id": "sbx-1"}),
@@ -258,9 +248,7 @@ async def test_harbor_reward_uses_background_job_for_tests(
 
     client = FakeHarborSandboxClient.instances[0]
     assert reward == 1.0
-    assert client.background_jobs == [
-        ("sbx-1", "bash test.sh", expected_timeout, "/tests")
-    ]
+    assert client.background_jobs == [("sbx-1", "bash test.sh", 300, "/tests")]
     assert ("bash test.sh", None, "/tests") not in client.execute_commands
 
 

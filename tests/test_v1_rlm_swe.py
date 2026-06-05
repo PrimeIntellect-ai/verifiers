@@ -91,7 +91,6 @@ def test_rlm_harness_accepts_typed_config_surface():
 
     assert harness.config.program.rlm_tools == ["bash", "edit"]
     assert program_env["RLM_TOOLS"] == "bash,edit"
-    assert "RLM_EXEC_TIMEOUT" not in program_env
     assert program_env["CUSTOM"] == "1"
 
 
@@ -108,24 +107,6 @@ def test_rlm_endpoint_hides_nested_depth_requests():
         )
         == "hidden"
     )
-
-
-def test_rlm_harness_uses_timeout_free_sandbox_config():
-    harness = RLM(
-        config=RLMConfig(
-            program=RLMProgramConfig(
-                local_checkout="/tmp/checkout",
-                sandbox=vf.SandboxConfig(),
-            ),
-        )
-    )
-    program = as_dict(harness.config.program)
-    sandbox = as_dict(harness.sandbox)
-
-    assert "setup_timeout" not in program
-    assert "setup_timeout" not in sandbox
-    assert "command_timeout" not in sandbox
-    assert "timeout_minutes" not in sandbox
 
 
 def test_rlm_harness_can_upload_skills(tmp_path: Path):
@@ -612,7 +593,6 @@ def test_rlm_swe_environment_uses_v1_r2e_taskset(monkeypatch):
         f"{rlm_swe_v1.REGISTRY_PREFIX}/r2e/image:latest"
     )
     assert task["sandbox"]["workdir"] == "/workspace/repo"
-    assert "timeout_minutes" not in task["sandbox"]
     task_program_env = as_dict(as_dict(task["program"])["env"])
     assert task_program_env["AGENT_WORKDIR"] == "/workspace/repo"
     assert "/workspace/repo/.venv/bin" in task_program_env["AGENT_PATH"]

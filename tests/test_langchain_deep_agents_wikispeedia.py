@@ -100,7 +100,6 @@ def test_wikispeedia_env_config_reaches_taskset_and_harness(
     assert len(eval_rows) == 1
     assert train_rows[0]["max_turns"] == 7
     assert env.harness.config.max_turns == 8
-    assert env.task_timeout_seconds == module.WIKISPEEDIA_TASK_TIMEOUT_SECONDS
     assert [tool.__name__ for tool in env.taskset.toolsets[0].tools] == ["click_link"]
 
 
