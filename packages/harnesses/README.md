@@ -90,3 +90,17 @@ Non-assistant messages may appear before, between, or after assistant messages.
 
 The replayed trajectory keeps `tokens=None`; token IDs and logprobs remain the
 responsibility of the trainer or renderer that consumes the final transcript.
+
+## Agent Versions
+
+Command agents use `name@version` specs where their installer supports a
+versioned package or release. Use `@latest` for a moving latest install:
+
+```toml
+[eval.harness.program]
+# OpenCode
+release = "PrimeIntellect-ai/opencode@latest"
+
+# MiniSWEAgent or Pi
+package = "mini-swe-agent@2.2.8"
+```

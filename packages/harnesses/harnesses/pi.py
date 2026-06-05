@@ -5,7 +5,7 @@ from pathlib import PurePosixPath
 import verifiers as vf
 from verifiers.v1.utils.mcp_proxy_utils import proxy_command
 
-PI_DEFAULT_PACKAGE = "@earendil-works/pi-coding-agent"
+PI_DEFAULT_PACKAGE = "@earendil-works/pi-coding-agent@latest"
 PI_DEFAULT_WORKDIR = "/app"
 PI_DEFAULT_INSTRUCTION_PATH = "/pi/instruction.txt"
 PI_DEFAULT_SYSTEM_PROMPT_PATH = "/pi/system.txt"
