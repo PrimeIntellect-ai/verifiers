@@ -44,7 +44,9 @@ fi
 
     quoted_prefix_dir = shlex.quote(prefix_dir)
     site_packages_dir = f"{prefix_dir}/site-packages"
-    package_requirement = f"{MINI_SWE_AGENT_CLI_PACKAGE}=={package_version}"
+    package_requirement = MINI_SWE_AGENT_CLI_PACKAGE
+    if package_version != "latest":
+        package_requirement = f"{MINI_SWE_AGENT_CLI_PACKAGE}=={package_version}"
     quoted_site_packages_dir = shlex.quote(site_packages_dir)
     quoted_install_dir = shlex.quote(DEFAULT_INSTALL_DIR)
     quoted_uv_site_packages_dir = shlex.quote(DEFAULT_UV_SITE_PACKAGES_DIR)

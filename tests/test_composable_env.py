@@ -200,15 +200,31 @@ def test_composable_mini_swe_agent_install_script_uses_pip_requirement():
     assert "files.pythonhosted.org" not in setup
 
 
+def test_composable_mini_swe_agent_latest_uses_unpinned_requirement():
+    setup = build_mini_swe_agent_install_script(package_version="latest")
+
+    assert "mini-swe-agent==latest" not in setup
+    assert "target /opt/mini-swe-agent/prefix/site-packages mini-swe-agent" in setup
+
+
 def test_composable_opencode_install_script_owns_release_download():
     setup = build_opencode_install_script(
         install_ripgrep=False,
     )
 
     assert "OPENCODE_RELEASE_REPO=PrimeIntellect-ai/opencode" in setup
-    assert "OPENCODE_RELEASE_VERSION=1.1.63-rl2" in setup
-    assert "releases/download/v$OPENCODE_RELEASE_TAG" in setup
+    assert "OPENCODE_RELEASE_PATH=releases/download/v1.1.63-rl2" in setup
     assert "tar -xzf /tmp/opencode.tar.gz" in setup
+
+
+def test_composable_opencode_latest_uses_latest_download_url():
+    setup = build_opencode_install_script(
+        release_version="latest",
+        install_ripgrep=False,
+    )
+
+    assert "OPENCODE_RELEASE_PATH=releases/latest/download" in setup
+    assert "releases/download/vlatest" not in setup
 
 
 @pytest.mark.asyncio

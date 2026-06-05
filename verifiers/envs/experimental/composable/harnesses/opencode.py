@@ -51,6 +51,14 @@ def build_install_script(
     install_ripgrep: bool = True,
 ) -> str:
     """Build the shell script that installs OpenCode in a sandbox."""
+    release_path = "releases/latest/download"
+    if release_version != "latest":
+        release_tag = (
+            release_version
+            if release_version.startswith("v")
+            else f"v{release_version}"
+        )
+        release_path = f"releases/download/{release_tag}"
     rg_install = (
         "apt-get -o Acquire::Retries=3 install -y -qq ripgrep > /dev/null 2>&1 || true"
         if install_ripgrep
@@ -65,7 +73,7 @@ apt-get -o Acquire::Retries=3 update -qq && apt-get -o Acquire::Retries=3 instal
 {rg_install}
 
 OPENCODE_RELEASE_REPO={shlex.quote(release_repo)}
-OPENCODE_RELEASE_VERSION={shlex.quote(release_version)}
+OPENCODE_RELEASE_PATH={shlex.quote(release_path)}
 
 case "$(uname -m)" in
   x86_64) OPENCODE_ARCH=x64 ;;
@@ -74,8 +82,7 @@ case "$(uname -m)" in
 esac
 
 OPENCODE_ASSET="opencode-linux-$OPENCODE_ARCH.tar.gz"
-OPENCODE_RELEASE_TAG="${{OPENCODE_RELEASE_VERSION#v}}"
-OPENCODE_RELEASE_URL="https://github.com/$OPENCODE_RELEASE_REPO/releases/download/v$OPENCODE_RELEASE_TAG/$OPENCODE_ASSET"
+OPENCODE_RELEASE_URL="https://github.com/$OPENCODE_RELEASE_REPO/$OPENCODE_RELEASE_PATH/$OPENCODE_ASSET"
 
 mkdir -p "$HOME/.opencode/bin"
 if [ -x "$HOME/.opencode/bin/opencode" ]; then
