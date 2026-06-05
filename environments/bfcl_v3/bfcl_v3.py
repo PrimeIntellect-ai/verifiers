@@ -487,8 +487,6 @@ async def bfcl_multi_turn_program(
     turn_idx = 0
     steps_per_turn = 0
     runtime = harness.runtime
-    max_model_requests = state.get_max_turns(harness.config.max_turns)
-    model_requests = 0
 
     execute_multi_turn_func_call(
         [],
@@ -499,7 +497,7 @@ async def bfcl_multi_turn_program(
         long_context=("long_context" in category or "composite" in category),
     )
 
-    while max_model_requests <= 0 or model_requests < max_model_requests:
+    while True:
         if await runtime.is_completed(task, state):
             return state
         response = await runtime.submit_model_request(
@@ -508,7 +506,6 @@ async def bfcl_multi_turn_program(
             state,
             tool_defs=tool_defs,
         )
-        model_requests += 1
         messages.append(response.message)
         sync_completion()
         tool_calls = list(response.message.tool_calls or [])
@@ -561,9 +558,6 @@ async def bfcl_multi_turn_program(
         else:
             messages.extend(normalize_messages(cast(Messages, next_prompt)))
         sync_completion()
-
-    state.stop("max_turns_reached")
-    return state
 
 
 class BFCLTaskset(vf.Taskset[BFCLTasksetConfig]):

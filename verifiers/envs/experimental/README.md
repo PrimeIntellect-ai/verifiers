@@ -26,7 +26,3 @@ Environment for running custom agent code inside sandboxes. Intercepts the agent
 ## HarborEnv
 
 `CliAgentEnv` subclass that loads Harbor-format tasks. Harbor is a task format for agent benchmarks with structured task directories containing `task.toml` configuration and `instruction.md` prompts, along with test scripts for computing rewards.
-
-## RLMEnv
-
-Environment implementing [Recursive Language Models](https://alexzhang13.github.io/blog/2025/rlm/) (RLMs), an inference strategy where language models can decompose and recursively interact with input context of unbounded length through REPL environments.

@@ -1,6 +1,7 @@
-__version__ = "0.1.4"
+__version__ = "0.1.5"
 
 from .harbor import HarborTaskset, HarborTasksetConfig
+from .replay import ReplayTaskset, ReplayTasksetConfig
 
 LAZY_EXPORTS = {
     "NeMoGymTaskset": (".nemo_gym", "NeMoGymTaskset"),
@@ -16,6 +17,8 @@ LAZY_EXPORTS = {
 __all__ = [
     "HarborTaskset",
     "HarborTasksetConfig",
+    "ReplayTaskset",
+    "ReplayTasksetConfig",
     *LAZY_EXPORTS,
 ]
 

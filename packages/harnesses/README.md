@@ -54,11 +54,45 @@ own a reusable execution mechanism.
 | `MiniSWEAgent` | mini-swe-agent. |
 | `Terminus2` | Harbor Terminus agent. |
 | `RLM` | Recursive language model command harness. |
+| `ReplayHarness` | Replays stored assistant messages into trajectory steps without model calls. |
 | `NeMoGymHarness` | NeMo Gym rollout collection. |
 
 Harness implementations resolve to one `ProgramConfig` shape. Command harness
 configs may expose task-relevant execution knobs, but the harness owns command
 construction, channel wiring, sandbox placement, and artifacts.
+
+## Replay Stored Transcripts
+
+Use `ReplayHarness` when each task row already contains a top-level `messages`
+chat transcript and each assistant message should become one trajectory step:
+
+```python
+from pathlib import Path
+
+import verifiers as vf
+from harnesses import ReplayHarness
+from tasksets import ReplayTaskset, ReplayTasksetConfig
+
+
+class MyReplayTaskset(ReplayTaskset):
+    data_dir = str(Path(__file__).parent / "data")
+
+
+def load_taskset(config: ReplayTasksetConfig) -> MyReplayTaskset:
+    return MyReplayTaskset(config=config)
+
+
+def load_harness(config: vf.HarnessConfig) -> ReplayHarness:
+    return ReplayHarness(config=config)
+```
+
+`messages` must be a JSON array of message objects with string `role` fields.
+Non-assistant messages may appear before, between, or after assistant messages.
+`vf.HarnessConfig` defaults to replaying every assistant message; set
+`max_turns` only when the replay should be capped.
+
+The replayed trajectory keeps `tokens=None`; token IDs and logprobs remain the
+responsibility of the trainer or renderer that consumes the final transcript.
 
 ## Agent Versions
 
