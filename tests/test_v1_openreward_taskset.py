@@ -59,10 +59,23 @@ class FakeOpenRewardSession:
         )
 
 
+class FakeOpenRewardSplit:
+    def __init__(self, name: str, type: str):
+        self.name = name
+        self.type = type
+
+
 class FakeOpenRewardEnvironment:
     def __init__(self):
         self.sessions: list[FakeOpenRewardSession] = []
         self.task_range_calls: list[tuple[str, int | None, int | None]] = []
+        self.splits = [
+            FakeOpenRewardSplit(name="train", type="train"),
+            FakeOpenRewardSplit(name="official-test", type="test"),
+        ]
+
+    def list_splits(self) -> list[FakeOpenRewardSplit]:
+        return self.splits
 
     def list_tasks(self, split: str) -> list[OpenRewardTask]:
         return [
@@ -160,6 +173,37 @@ def test_openreward_taskset_loads_serializable_tasks(fake_openreward_client):
         "task_spec": {"id": "train-0"},
     }
     assert set(taskset.named_toolsets) == {"openreward"}
+
+
+def test_openreward_taskset_load_tasks_eval_uses_test_split(fake_openreward_client):
+    taskset = openreward.OpenRewardTaskset(
+        config=openreward.OpenRewardTasksetConfig(
+            environment="owner/env",
+            split="train",
+            num_eval_examples=2,
+        )
+    )
+
+    tasks = list(taskset.load_tasks(split="eval"))
+
+    assert fake_openreward_client.task_range_calls == [("official-test", 0, 2)]
+    assert tasks[0]["openreward"]["split"] == "official-test"
+    assert tasks[0]["openreward"]["task"]["task_spec"] == {"id": "official-test-0"}
+
+
+def test_openreward_taskset_eval_split_empty_without_test_split(
+    fake_openreward_client,
+):
+    fake_openreward_client.splits = [FakeOpenRewardSplit(name="train", type="train")]
+    taskset = openreward.OpenRewardTaskset(
+        config=openreward.OpenRewardTasksetConfig(
+            environment="owner/env",
+            num_eval_examples=2,
+        )
+    )
+
+    assert len(taskset.get_eval_dataset()) == 0
+    assert fake_openreward_client.task_range_calls == []
 
 
 @pytest.mark.asyncio

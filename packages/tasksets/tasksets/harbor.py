@@ -43,8 +43,9 @@ class HarborTasksetConfig(vf.TasksetConfig):
 
 class HarborTaskset(vf.Taskset[HarborTasksetConfig]):
     def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
+        if split == "eval":
+            return []
         config = self.config
-        assert split in ("train", "eval")
         if config.dataset is not None:
             cache_dir_path = (
                 Path(str(config.cache_dir)).expanduser() if config.cache_dir else None

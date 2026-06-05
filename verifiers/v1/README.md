@@ -38,6 +38,8 @@ class ReverseTasksetConfig(vf.TasksetConfig):
 
 class ReverseTaskset(vf.Taskset[ReverseTasksetConfig]):
     def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
+        if split == "eval":
+            return []
         return [
             {
                 "prompt": [{"role": "user", "content": "Reverse abc."}],
@@ -185,7 +187,7 @@ Override `load_system_prompt(config)` only when prompt construction is computed.
 
 ## Tasksets
 
-Tasksets load train and eval data through one method:
+Tasksets load train and eval data through `load_tasks(split=...)`:
 
 ```python
 class MyTaskset(vf.Taskset[MyTasksetConfig]):
@@ -199,9 +201,13 @@ an iterable of `vf.Task` objects. `Taskset.get_dataset()` calls
 `load_tasks(split="eval")`.
 
 Prefer returning a `datasets.Dataset` directly when source columns already
-match the task contract, such as `question` and `answer`. Do not add a generic
-split config field that duplicates `load_tasks(split=...)`; use owner config
-only to map v1 split names to upstream source split names.
+match the task contract, such as `question` and `answer`. Hardcode fixed
+upstream split names inside `load_tasks(split=...)`. Only expose
+split-name config when the upstream split choice is genuine user-space
+configuration, not the way v1 decides whether eval exists. Return `[]` for
+`split == "eval"` when the taskset has no explicit eval source; `vf.Env` treats the empty
+split as an absent eval dataset so the base environment can fall back to train
+data with its standard warning.
 
 Use tasksets for:
 

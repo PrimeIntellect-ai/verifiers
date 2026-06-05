@@ -22,6 +22,7 @@ def make_swe_taskset(
         "openswe": make_openswe_taskset,
         "multiswe": make_multiswe_taskset,
         "swelego-real": make_swelego_real_taskset,
+        "scaleswe": make_scaleswe_taskset,
         "swerebench-v2": make_swerebench_v2_taskset,
         "swesmith-py": make_swesmith_py_taskset,
         "swesmith-go": make_swesmith_go_taskset,
@@ -87,6 +88,15 @@ def make_swelego_real_taskset(**kwargs: Any) -> TaskSet:
     )
 
     return SWELegoTaskSet(**kwargs)
+
+
+def make_scaleswe_taskset(**kwargs: Any) -> TaskSet:
+    """Scale-SWE TaskSet (AweAI-Team/Scale-SWE, Python issue-resolving tasks)."""
+    from verifiers.envs.experimental.composable.tasksets.swe.scale_swe import (
+        ScaleSWETaskSet,
+    )
+
+    return ScaleSWETaskSet(**kwargs)
 
 
 def make_swerebench_v2_taskset(**kwargs: Any) -> TaskSet:

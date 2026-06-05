@@ -370,6 +370,14 @@ async def test_renderer_client_rejects_empty_dict_native_response():
 
 
 @pytest.mark.asyncio
+async def test_renderer_client_rejects_reasoning_only_native_response():
+    client = object.__new__(RendererClient)
+
+    with pytest.raises(EmptyModelResponseError, match="reasoning but no content"):
+        await client.raise_from_native_response({"reasoning_content": "hidden chain"})
+
+
+@pytest.mark.asyncio
 async def test_from_native_response_uses_request_id_and_token_lengths():
     """vLLM's /inference/v1/generate returns ``request_id`` (not ``id``) and
     no ``usage``/``model``/``created``. ``Response.id`` should pick up
@@ -905,7 +913,8 @@ async def test_bridge_prefix_matching_survives_image_offload(tmp_path, monkeypat
     )
     # Bridge still matched and extended — prefix logic intact under offload.
     assert result is not None
-    assert result.token_ids == [1, 2, 3, 99, 40, 50]
+    bridged, _routed_experts_prompt_start = result
+    assert bridged.token_ids == [1, 2, 3, 99, 40, 50]
 
 
 @pytest.mark.asyncio

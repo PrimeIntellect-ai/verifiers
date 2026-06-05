@@ -80,9 +80,36 @@ def test_mini_swe_agent_builds_sandbox_program():
     assert "model.model_kwargs.parallel_tool_calls=true" in script
     assert "apt-get -o Acquire::Retries=3 update" in cast(str, program["setup"])
     assert "apt-get -o Acquire::Retries=3 install" in cast(str, program["setup"])
+    assert "mini-swe-agent==2.2.8" in cast(str, program["setup"])
     assert "/mini-swe-agent/prompt.txt" in cast(dict[str, object], program["files"])
     assert "/mini-swe-agent/system.txt" in cast(dict[str, object], program["files"])
     assert "mini_swe_agent_log" in cast(dict[str, object], program["artifacts"])
+
+
+@pytest.mark.parametrize("package", ["mini-swe-agent@latest", "  mini-swe-agent  "])
+def test_mini_swe_agent_latest_package_uses_unpinned_pip_requirement(package: str):
+    harness = MiniSWEAgent(
+        config=MiniSWEAgentConfig(program=MiniSWEAgentProgramConfig(package=package))
+    )
+    program = cast(dict[str, Any], harness.config.program.data())
+    setup = cast(str, program["setup"])
+
+    assert (
+        "vf_python_install --target /opt/mini-swe-agent/prefix/site-packages mini-swe-agent"
+        in setup
+    )
+
+
+def test_mini_swe_agent_pinned_package_uses_pip_requirement():
+    harness = MiniSWEAgent(
+        config=MiniSWEAgentConfig(
+            program=MiniSWEAgentProgramConfig(package="mini-swe-agent@2.2.7")
+        )
+    )
+    program = cast(dict[str, Any], harness.config.program.data())
+    setup = cast(str, program["setup"])
+
+    assert "mini-swe-agent==2.2.7" in setup
 
 
 def test_mini_swe_agent_composes_with_harbor_taskset(

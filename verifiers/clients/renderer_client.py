@@ -1052,12 +1052,6 @@ class RendererClient(
                 _format_context(log_context),
             )
 
-        # Merge resolution (dev18 + ephemeral-mm-pixels): keep Eli's image-offload
-        # logging block above, but call through dev18's tuple-returning
-        # ``_get_incremental_prompt_ids`` — ``bridged_with_start`` is
-        # (RenderedTokens, routed_experts_prompt_start) | None and is unpacked by
-        # the consumer below. Eli's branch predates the routed-experts change, so
-        # its scalar ``bridged = ...`` would crash on the tuple.
         bridged_with_start = await _get_incremental_prompt_ids(
             renderer=renderer,
             prompt=prompt,
@@ -1118,9 +1112,13 @@ class RendererClient(
         # model having tried to call a tool, so we don't filter by status here.
         has_tool_calls = bool(response.get("tool_calls"))
         has_reasoning = bool(response.get("reasoning_content"))
-        if not (has_content or has_tool_calls or has_reasoning):
+        if not (has_content or has_tool_calls):
+            if has_reasoning:
+                raise EmptyModelResponseError(
+                    "Model returned reasoning but no content and did not call any tools"
+                )
             raise EmptyModelResponseError(
-                "Model returned no content, reasoning, and did not call any tools"
+                "Model returned no content and did not call any tools"
             )
 
     async def from_native_response(self, response: dict[str, Any]) -> Response:

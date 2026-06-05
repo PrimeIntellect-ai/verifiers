@@ -71,6 +71,7 @@ from .utils.sandbox_program_utils import (
     python_program_sandbox,
     run_sandbox_python_program,
 )
+from .utils.logging_utils import log_rollout_finish, log_rollout_start
 from .utils.prompt_utils import (
     SystemPrompt,
     SystemPromptStrategy,
@@ -112,7 +113,7 @@ class HarnessConfig(LifecycleConfig):
     bindings: BindingsConfig = BindingsConfig()
     objects: ObjectsConfig = ObjectsConfig()
     artifacts: ArtifactsConfig = ArtifactsConfig()
-    max_turns: int = 10
+    max_turns: int = -1
 
     @classmethod
     def __pydantic_init_subclass__(cls, **kwargs: object) -> None:
@@ -241,6 +242,7 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
 
     async def run(self, task: Task, state: State | None = None) -> State:
         state = await self.init_state(task) if state is None else state
+        log_rollout_start(state)
         timing_recorded = False
         completed = False
         try:
@@ -272,6 +274,7 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
                     state.strip_runtime_handles()
             elif completed:
                 state.assert_serializable()
+            log_rollout_finish(state)
         return state
 
     def record_error(self, state: State, error: Error) -> None:

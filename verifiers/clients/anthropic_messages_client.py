@@ -29,7 +29,7 @@ from anthropic.types import (
 )
 
 from verifiers.clients.client import Client
-from verifiers.errors import OverlongPromptError
+from verifiers.errors import EmptyModelResponseError, OverlongPromptError
 from verifiers.types import (
     AssistantMessage,
     ClientConfig,
@@ -378,7 +378,29 @@ class AnthropicMessagesClient(
             )
 
     async def raise_from_native_response(self, response: AnthropicMessage) -> None:
-        pass
+        if response is None:
+            raise EmptyModelResponseError("Model returned no response")
+
+        has_text = False
+        has_tool_call = False
+        has_reasoning = False
+        for content_block in getattr(response, "content", []) or []:
+            block_type = getattr(content_block, "type", None)
+            if block_type == "text" and getattr(content_block, "text", None):
+                has_text = True
+            elif block_type == "tool_use":
+                has_tool_call = True
+            elif block_type in {"thinking", "redacted_thinking"}:
+                has_reasoning = True
+
+        if not (has_text or has_tool_call):
+            if has_reasoning:
+                raise EmptyModelResponseError(
+                    "Model returned reasoning but no content and did not call any tools"
+                )
+            raise EmptyModelResponseError(
+                "Model returned no content and did not call any tools"
+            )
 
     async def from_native_response(self, response: AnthropicMessage) -> Response:
         def parse_content(

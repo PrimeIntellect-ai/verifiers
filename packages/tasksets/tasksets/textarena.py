@@ -71,10 +71,23 @@ def _content_text(content: object) -> str:
 
 class TextArenaTaskset(vf.Taskset[TextArenaConfigT], Generic[TextArenaConfigT]):
     def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
-        config = self.config
-        num_examples = (
-            config.num_train_examples if split == "train" else config.num_eval_examples
+        if split == "eval":
+            return self.textarena_tasks(
+                num_examples=self.config.num_eval_examples,
+                first_seed_offset=self.config.num_train_examples,
+            )
+        return self.textarena_tasks(
+            num_examples=self.config.num_train_examples,
+            first_seed_offset=0,
         )
+
+    def textarena_tasks(
+        self,
+        *,
+        num_examples: int,
+        first_seed_offset: int,
+    ) -> vf.Tasks:
+        config = self.config
         if num_examples <= 0:
             return []
         nltk.download("words", quiet=True)
@@ -95,7 +108,6 @@ class TextArenaTaskset(vf.Taskset[TextArenaConfigT], Generic[TextArenaConfigT]):
         word_list = [str(word) for word in words]
         assert word_list
         rng = random.Random(config.seed)
-        first_seed_offset = 0 if split == "train" else config.num_train_examples
         for _ in range(first_seed_offset):
             rng.choice(word_list)
         return [
