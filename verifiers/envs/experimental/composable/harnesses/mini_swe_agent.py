@@ -12,7 +12,6 @@ MINI_SWE_AGENT_CLI_PACKAGE = "mini-swe-agent"
 MINI_SWE_AGENT_CLI_VERSION = "2.2.8"
 MINI_SWE_AGENT_PYTHON_VERSION = "3.11"
 UV_PACKAGE_VERSION = "0.11.7"
-DEFAULT_PACKAGE_VERSION = MINI_SWE_AGENT_CLI_VERSION
 DEFAULT_INSTRUCTION_PATH = "/mini-swe-agent/prompt.txt"
 DEFAULT_SYSTEM_PROMPT_PATH = "/mini-swe-agent/system.txt"
 DEFAULT_LOG_DIR = "/logs/agent"
@@ -25,7 +24,6 @@ DEFAULT_ENVIRONMENT_TIMEOUT = 120
 
 
 def build_mini_swe_agent_install_script(
-    package_version: str = DEFAULT_PACKAGE_VERSION,
     prefix_dir: str = DEFAULT_PREFIX_DIR,
     install_python: bool = True,
 ) -> str:
@@ -44,9 +42,7 @@ fi
 
     quoted_prefix_dir = shlex.quote(prefix_dir)
     site_packages_dir = f"{prefix_dir}/site-packages"
-    package_requirement = MINI_SWE_AGENT_CLI_PACKAGE
-    if package_version != "latest":
-        package_requirement = f"{MINI_SWE_AGENT_CLI_PACKAGE}=={package_version}"
+    package_requirement = f"{MINI_SWE_AGENT_CLI_PACKAGE}=={MINI_SWE_AGENT_CLI_VERSION}"
     quoted_site_packages_dir = shlex.quote(site_packages_dir)
     quoted_install_dir = shlex.quote(DEFAULT_INSTALL_DIR)
     quoted_uv_site_packages_dir = shlex.quote(DEFAULT_UV_SITE_PACKAGES_DIR)
@@ -179,7 +175,6 @@ def mini_swe_agent_harness(
     system_prompt_path: str = DEFAULT_SYSTEM_PROMPT_PATH,
     log_path: str = DEFAULT_LOG_PATH,
     trajectory_path: str = DEFAULT_TRAJECTORY_PATH,
-    package_version: str = DEFAULT_PACKAGE_VERSION,
     config_spec: str = DEFAULT_CONFIG_SPEC,
     model_class: str = DEFAULT_MODEL_CLASS,
     environment_timeout: int = DEFAULT_ENVIRONMENT_TIMEOUT,
@@ -198,9 +193,7 @@ def mini_swe_agent_harness(
     # The system prompt is passed through ComposableEnv as a file and injected
     # into mini's agent.system_template at runtime.
     return Harness(
-        install_script=build_mini_swe_agent_install_script(
-            package_version=package_version,
-        ),
+        install_script=build_mini_swe_agent_install_script(),
         run_command=build_mini_swe_agent_run_command(
             agent_workdir=agent_workdir,
             instruction_path=instruction_path,

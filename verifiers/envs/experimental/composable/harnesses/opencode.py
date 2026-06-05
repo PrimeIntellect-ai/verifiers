@@ -46,19 +46,9 @@ DEFAULT_DISABLED_TOOLS = [
 
 
 def build_install_script(
-    release_repo: str = DEFAULT_RELEASE_REPO,
-    release_version: str = DEFAULT_RELEASE_VERSION,
     install_ripgrep: bool = True,
 ) -> str:
     """Build the shell script that installs OpenCode in a sandbox."""
-    release_path = "releases/latest/download"
-    if release_version != "latest":
-        release_tag = (
-            release_version
-            if release_version.startswith("v")
-            else f"v{release_version}"
-        )
-        release_path = f"releases/download/{release_tag}"
     rg_install = (
         "apt-get -o Acquire::Retries=3 install -y -qq ripgrep > /dev/null 2>&1 || true"
         if install_ripgrep
@@ -72,9 +62,6 @@ set -e
 apt-get -o Acquire::Retries=3 update -qq && apt-get -o Acquire::Retries=3 install -y -qq curl tar > /dev/null 2>&1
 {rg_install}
 
-OPENCODE_RELEASE_REPO={shlex.quote(release_repo)}
-OPENCODE_RELEASE_PATH={shlex.quote(release_path)}
-
 case "$(uname -m)" in
   x86_64) OPENCODE_ARCH=x64 ;;
   aarch64|arm64) OPENCODE_ARCH=arm64 ;;
@@ -82,7 +69,7 @@ case "$(uname -m)" in
 esac
 
 OPENCODE_ASSET="opencode-linux-$OPENCODE_ARCH.tar.gz"
-OPENCODE_RELEASE_URL="https://github.com/$OPENCODE_RELEASE_REPO/$OPENCODE_RELEASE_PATH/$OPENCODE_ASSET"
+OPENCODE_RELEASE_URL="https://github.com/{DEFAULT_RELEASE_REPO}/releases/download/v{DEFAULT_RELEASE_VERSION}/$OPENCODE_ASSET"
 
 mkdir -p "$HOME/.opencode/bin"
 if [ -x "$HOME/.opencode/bin/opencode" ]; then
@@ -247,8 +234,6 @@ def opencode_harness(
     agent_workdir: str = "/app",
     allow_git: bool = False,
     disable_compaction: bool = True,
-    release_repo: str = DEFAULT_RELEASE_REPO,
-    release_version: str = DEFAULT_RELEASE_VERSION,
     instruction_path: str = "/opencode/prompt.txt",
     system_prompt_path: str = "/opencode/system.txt",
     log_path: str = "/opencode/logs.txt",
@@ -275,10 +260,7 @@ def opencode_harness(
             system_prompt = task_system_prompt
 
     return Harness(
-        install_script=build_install_script(
-            release_repo=release_repo,
-            release_version=release_version,
-        ),
+        install_script=build_install_script(),
         run_command=build_opencode_run_command(
             agent_workdir=agent_workdir,
             prompt_path=instruction_path,
