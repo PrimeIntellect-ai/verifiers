@@ -61,6 +61,7 @@ This folder contains installable example environments that showcase common usage
   - **dspy_flights**: Sandboxed DSPy flight-support `program.fn` entrypoint installed from its package `pyproject.toml` and configured against the v1 interception endpoint.
   - **hello_group_reward_v1**: Deterministic v1 reference for group updates, metrics, rewards, advantages, and cleanup.
   - **nemo_gym_env**: Minimal v1 example that wraps a packaged NeMo Gym task with `NeMoGymTaskset` and `NeMoGymHarness`.
+  - **sft-replay**: Thin v1 replay environment using `ReplayTaskset` and `ReplayHarness` to turn stored transcripts into trajectory steps without model calls.
   - **tau2_bench_v1**: `tau2-bench-v1` τ²-bench taskset/user/tool pattern on the v1 harness runtime.
   - **wordle_v1**: TextArena Wordle through the packaged v1 `TextArenaTaskset` boundary.
 

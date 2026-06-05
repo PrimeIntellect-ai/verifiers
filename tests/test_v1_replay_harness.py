@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 import verifiers as vf
-from harnesses import ReplayHarness
+from harnesses import ReplayHarness, ReplayHarnessConfig
 from tasksets import ReplayTaskset, ReplayTasksetConfig
 from tasksets.replay import replay_task_record
 
@@ -42,11 +42,22 @@ class InlineReplayTaskset(ReplayTaskset):
         ]
 
 
+class ManyTurnReplayTaskset(ReplayTaskset):
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
+        if split == "eval":
+            return []
+        messages = []
+        for index in range(11):
+            messages.append({"role": "user", "content": f"Turn {index}?"})
+            messages.append({"role": "assistant", "content": f"reply {index}"})
+        return [{"messages": messages}]
+
+
 @pytest.mark.asyncio
 async def test_replay_harness_prints_assistant_messages_into_trajectory() -> None:
     env = vf.Env(
         taskset=InlineReplayTaskset(),
-        harness=ReplayHarness(config=vf.HarnessConfig()),
+        harness=ReplayHarness(config=ReplayHarnessConfig()),
     )
     client = NoModelClient()
 
@@ -97,7 +108,7 @@ async def test_replay_harness_prints_assistant_messages_into_trajectory() -> Non
 async def test_replay_harness_marks_partial_replay_as_truncated() -> None:
     env = vf.Env(
         taskset=InlineReplayTaskset(),
-        harness=ReplayHarness(config=vf.HarnessConfig(max_turns=1)),
+        harness=ReplayHarness(config=ReplayHarnessConfig(max_turns=1)),
     )
 
     state = await env.rollout(
@@ -113,6 +124,26 @@ async def test_replay_harness_marks_partial_replay_as_truncated() -> None:
     step = state["trajectory"][0]
     assert step["is_truncated"] is True
     assert step["response"]["message"]["is_truncated"] is True
+
+
+@pytest.mark.asyncio
+async def test_replay_harness_defaults_to_all_assistant_messages() -> None:
+    env = vf.Env(
+        taskset=ManyTurnReplayTaskset(),
+        harness=ReplayHarness(config=ReplayHarnessConfig()),
+    )
+
+    state = await env.rollout(
+        dict(env.get_dataset()[0]),
+        client=NoModelClient(),
+        model="mock-model",
+    )
+
+    assert state["stop_condition"] == "replayed_messages"
+    assert state["is_truncated"] is False
+    assert state["num_model_requests"] == 11
+    assert len(state["trajectory"]) == 11
+    assert state["completion"][-1] == {"role": "assistant", "content": "reply 10"}
 
 
 def test_replay_taskset_loads_env_local_json_data(

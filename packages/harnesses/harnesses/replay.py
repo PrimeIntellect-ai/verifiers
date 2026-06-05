@@ -5,7 +5,11 @@ import verifiers as vf
 from verifiers.types import TrajectoryStep
 
 
-class ReplayHarness(vf.Harness[vf.HarnessConfig]):
+class ReplayHarnessConfig(vf.HarnessConfig):
+    max_turns: int = 0
+
+
+class ReplayHarness(vf.Harness[ReplayHarnessConfig]):
     async def base_program(self, task: vf.Task, state: vf.State) -> vf.State:
         await self.runtime.setup_rollout(task, state)
         messages = replay_messages(task)
@@ -123,5 +127,5 @@ def replay_response(
     }
 
 
-def load_harness(config: vf.HarnessConfig) -> ReplayHarness:
+def load_harness(config: ReplayHarnessConfig) -> ReplayHarness:
     return ReplayHarness(config=config)

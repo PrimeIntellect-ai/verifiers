@@ -96,8 +96,7 @@ Make the env-local taskset an empty subclass so the `data/` directory belongs to
 the environment package:
 
 ```python
-import verifiers as vf
-from harnesses import ReplayHarness
+from harnesses import ReplayHarness, ReplayHarnessConfig
 from tasksets import ReplayTaskset, ReplayTasksetConfig
 
 
@@ -109,7 +108,7 @@ def load_taskset(config: ReplayTasksetConfig) -> MyReplayTaskset:
     return MyReplayTaskset(config=config)
 
 
-def load_harness(config: vf.HarnessConfig) -> ReplayHarness:
+def load_harness(config: ReplayHarnessConfig) -> ReplayHarness:
     return ReplayHarness(config=config)
 ```
 

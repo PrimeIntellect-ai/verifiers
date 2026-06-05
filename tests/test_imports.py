@@ -18,6 +18,7 @@ PACKAGE_SYMBOLS = {
     "Pi",
     "PiConfig",
     "ReplayHarness",
+    "ReplayHarnessConfig",
     "ReplayTaskset",
     "ReplayTasksetConfig",
     "RLM",

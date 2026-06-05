@@ -3,7 +3,7 @@ __version__ = "0.1.2"
 from .mini_swe_agent import MiniSWEAgent, MiniSWEAgentConfig, MiniSWEAgentProgramConfig
 from .opencode import OpenCode, OpenCodeConfig, OpenCodeProgramConfig
 from .pi import Pi, PiConfig, PiProgramConfig
-from .replay import ReplayHarness
+from .replay import ReplayHarness, ReplayHarnessConfig
 from .rlm import RLM, RLMConfig, RLMProgramConfig
 from .terminus_2 import Terminus2, Terminus2Config, Terminus2ProgramConfig
 
@@ -24,6 +24,7 @@ __all__ = [
     "PiConfig",
     "PiProgramConfig",
     "ReplayHarness",
+    "ReplayHarnessConfig",
     "RLM",
     "RLMConfig",
     "RLMProgramConfig",

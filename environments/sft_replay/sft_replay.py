@@ -1,5 +1,5 @@
 import verifiers as vf
-from harnesses import ReplayHarness
+from harnesses import ReplayHarness, ReplayHarnessConfig
 from tasksets import ReplayTaskset as BaseReplayTaskset
 from tasksets import ReplayTasksetConfig
 
@@ -12,7 +12,7 @@ def load_taskset(config: ReplayTasksetConfig) -> ReplayTaskset:
     return ReplayTaskset(config=config)
 
 
-def load_harness(config: vf.HarnessConfig) -> ReplayHarness:
+def load_harness(config: ReplayHarnessConfig) -> ReplayHarness:
     return ReplayHarness(config=config)
 
 
