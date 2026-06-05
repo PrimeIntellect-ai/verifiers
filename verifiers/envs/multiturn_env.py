@@ -6,6 +6,7 @@ from typing import final
 
 import verifiers as vf
 from verifiers.clients import Client
+from verifiers.decorators import discover_decorated
 from verifiers.types import (
     Messages,
     Response,
@@ -47,6 +48,8 @@ class MultiTurnEnv(vf.Environment):
         self.max_turns = max_turns
         self.timeout_seconds = timeout_seconds
         self.max_total_completion_tokens: int = -1
+
+        self._step_reward_handlers = discover_decorated(self, "step_reward")
 
         self.add_rubric(MultiTurnMonitorRubric())
 
@@ -136,6 +139,16 @@ class MultiTurnEnv(vf.Environment):
         """Override to set intermediate rewards, advantages, or extra metadata."""
         state["trajectory"].append(trajectory_step)
 
+    async def _apply_step_rewards(self, state: State) -> None:
+        """Invoke all @vf.step_reward handlers and accumulate into the latest step."""
+        if not self._step_reward_handlers:
+            return
+        for handler in self._step_reward_handlers:
+            reward = await handler(state)
+            if reward is not None:
+                weight = getattr(handler, "step_reward_weight", 1.0)
+                state.add_step_reward(float(reward) * weight)
+
     async def add_model_response(
         self,
         state: State,
@@ -206,6 +219,7 @@ class MultiTurnEnv(vf.Environment):
                     end_time = time.time()
                     timing.model.spans.append(TimeSpan(start=start_time, end=end_time))
                     await self.add_model_response(state, prompt_messages, response)
+                    await self._apply_step_rewards(state)
                 except vf.Error as e:
                     if isinstance(e, vf.OverlongPromptError):
                         state["prompt_too_long"] = True
