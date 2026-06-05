@@ -1131,6 +1131,48 @@ async def test_v1_harness_preserves_rollout_scoring_error_when_cleanup_fails(
 
 
 @pytest.mark.asyncio
+async def test_v1_harness_preserves_recorded_error_when_cleanup_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    @vf.setup
+    async def failing_setup(task, state) -> None:
+        _ = task, state
+        raise vf.SandboxError("setup sandbox failed")
+
+    @vf.cleanup
+    async def failing_rollout_cleanup(task, state) -> None:
+        _ = task
+        state["rollout_cleanup_ran"] = True
+        raise RuntimeError("rollout cleanup exploded")
+
+    @vf.cleanup(stage="group")
+    async def failing_group_cleanup(tasks, states) -> None:
+        _ = tasks
+        states[0]["group_cleanup_ran"] = True
+        raise RuntimeError("group cleanup exploded")
+
+    harness = make_harness(max_turns=1)
+    harness.add_setup(failing_setup)
+    harness.add_cleanup(failing_rollout_cleanup)
+    harness.add_cleanup(failing_group_cleanup)
+    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+    warnings = record_log_calls(monkeypatch, "verifiers.v1.harness.logger.warning")
+
+    state = await harness.run(task)
+
+    assert state["error"]["error"] == "SandboxError"
+    assert state["error"]["message"] == "setup sandbox failed"
+    assert state["rollout_cleanup_ran"] is True
+    assert state["group_cleanup_ran"] is True
+    assert "cleanup_errors" not in state
+    assert [call[0][0] for call in warnings] == [
+        "Rollout cleanup failed after rollout error",
+        "Group cleanup failed after rollout error",
+    ]
+    assert all(call[1]["exc_info"] is True for call in warnings)
+
+
+@pytest.mark.asyncio
 async def test_v1_group_preserves_scoring_error_when_cleanup_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -294,7 +294,7 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
             try:
                 await self.runtime.cleanup_rollout(task, state)
             except Exception:
-                if primary_error is None:
+                if primary_error is None and state.get("error") is None:
                     raise
                 logger.warning(
                     "Rollout cleanup failed after rollout error",
@@ -304,7 +304,7 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
                 try:
                     await self.runtime.cleanup_group([task], [state])
                 except Exception:
-                    if primary_error is None:
+                    if primary_error is None and state.get("error") is None:
                         raise
                     logger.warning(
                         "Group cleanup failed after rollout error",
