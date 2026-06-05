@@ -314,6 +314,11 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
             raise TypeError("state.trajectory must be a list.")
         return float(len(trajectory))
 
+    @vf.stop
+    async def max_turns_reached(self, state: State) -> bool:
+        max_turns = state.get_max_turns(self.config.max_turns)
+        return max_turns > 0 and self.runtime.visible_model_requests(state) >= max_turns
+
     async def setup_state(self, task: Task, state: State) -> State:
         await self.setup_runtime_state(task, state)
         await self.setup_model_state(task, state)
@@ -546,9 +551,6 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
             )
             sync_completion()
             if await self.runtime.is_completed(task, state):
-                return state
-            if max_turns > 0 and turn >= max_turns:
-                state._set_stop_condition("max_turns_reached", overwrite=True)
                 return state
         return state
 
