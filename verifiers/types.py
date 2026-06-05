@@ -26,6 +26,8 @@ from pydantic import (
     field_validator,
 )
 
+from verifiers.errors import Error
+
 if TYPE_CHECKING:
     from anthropic.types import RedactedThinkingBlock
     from anthropic.types import ThinkingBlock as AnthropicThinkingBlock
@@ -33,7 +35,6 @@ if TYPE_CHECKING:
     from renderers import RendererConfig
 
     from verifiers.clients import Client
-    from verifiers.errors import Error
 else:
     RedactedThinkingBlock = Any
     AnthropicThinkingBlock = Any
@@ -388,8 +389,9 @@ class RolloutTiming(CustomBaseModel):
         )
 
 
-class ErrorInfo(TypedDict):
+class ErrorData(TypedDict):
     error: str
+    message: str
     error_chain_repr: str
     error_chain_str: str
 
@@ -420,7 +422,7 @@ class RolloutOutput(dict):
     # Optional fields
     answer: str
     info: Info
-    error: ErrorInfo | None
+    error: ErrorData | None
     stop_condition: str | None
     trajectory: list["TrajectoryStep"]
     tool_defs: list[Tool]
@@ -489,7 +491,7 @@ class State(dict):
     advantage: float | None
     metrics: dict[str, float] | None
     timing: RolloutTiming | None
-    error: "Error | ErrorInfo | None"
+    error: "Error | None"
     usage: TokenUsage | None
     usage_tracker: object
     _vf_state_contract: Literal["legacy", "v1"]
@@ -589,7 +591,9 @@ class State(dict):
     def _set_completed(self, value: bool = True) -> None:
         self._set_internal("is_completed", value)
 
-    def _set_error(self, value: Any) -> None:
+    def _set_error(self, value: Error | None) -> None:
+        if value is not None and not isinstance(value, Error):
+            raise TypeError("state.error must be a vf.Error or None.")
         self._set_internal("error", value)
 
     def _set_stop_condition(
@@ -848,8 +852,16 @@ class State(dict):
 
     def finalize(self) -> "State":
         self.strip_runtime_handles()
+        self.serialize_error()
         self.assert_serializable()
         return self
+
+    def serialize_error(self) -> None:
+        error = self.get("error")
+        if isinstance(error, Error):
+            from verifiers.utils.error_utils import error_data
+
+            self._set_internal("error", error_data(error))
 
     @classmethod
     def _legacy_for_task(cls, task: Mapping[str, Any]) -> "State":

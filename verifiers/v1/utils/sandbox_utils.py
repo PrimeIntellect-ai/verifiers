@@ -155,7 +155,7 @@ async def close_sandbox_client(client: SandboxClient) -> None:
         await aclose()
 
 
-def sandbox_failure_kind(exc: BaseException) -> str | None:
+def sandbox_failure_kind(exc: BaseException) -> Literal["oom", "timeout"] | None:
     if isinstance(exc, TimeoutError):
         return "timeout"
     name = type(exc).__name__
@@ -172,25 +172,24 @@ def mark_sandbox_failure(
     lease: "SandboxLease | None",
     exc: BaseException,
     *,
-    phase: str | None = None,
-) -> str | None:
+    phase: Literal["background_job", "create", "setup", "execute", "command"]
+    | None = None,
+) -> Literal["oom", "timeout"] | None:
     kind = sandbox_failure_kind(exc)
     if kind == "oom":
         state["sandbox_oom"] = True
     elif kind == "timeout":
         state["sandbox_timeout"] = True
     if kind is not None:
-        failure: ConfigData = {
-            "kind": kind,
-            "type": type(exc).__name__,
-            "message": str(exc),
-        }
-        if phase is not None:
-            failure["phase"] = phase
-        if lease is not None:
-            failure["sandbox_id"] = lease.id
-            failure["scope"] = lease.scope
-        state.setdefault("sandbox_failures", []).append(failure)
+        logger.warning(
+            "Sandbox failure detected (kind=%s, phase=%s, sandbox_id=%s, scope=%s): %s",
+            kind,
+            phase,
+            lease.id if lease is not None else None,
+            lease.scope if lease is not None else None,
+            exc,
+            exc_info=True,
+        )
     return kind
 
 

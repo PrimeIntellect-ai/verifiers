@@ -169,16 +169,86 @@ class Env(vf.Environment):
                 "score_rollout": self.score_rollouts,
             },
         )
-        states = await asyncio.gather(
-            *[self.harness.run(task, state) for task, state in zip(tasks, states)]
-        )
+
+        async def run_group_task(index: int, task: vf.Task, state: State) -> State:
+            try:
+                result = await self.harness.run(task, state)
+            except BaseException as exc:
+                task_state = getattr(exc, "_vf_state", None)
+                if isinstance(task_state, State):
+                    states[index] = task_state
+                raise
+            states[index] = result
+            return result
+
+        run_tasks = [
+            asyncio.create_task(run_group_task(index, task, state))
+            for index, (task, state) in enumerate(zip(tasks, states))
+        ]
+        try:
+            states = await asyncio.gather(*run_tasks)
+        except BaseException:
+            pending_state_pairs = [
+                (index, task) for index, task in enumerate(run_tasks) if not task.done()
+            ]
+            pending = [task for _, task in pending_state_pairs]
+            for task in pending:
+                task.cancel()
+            if pending:
+                drained_errors = await asyncio.gather(*pending, return_exceptions=True)
+                for (index, _), drained_error in zip(
+                    pending_state_pairs, drained_errors, strict=True
+                ):
+                    if not isinstance(drained_error, BaseException):
+                        continue
+                    task_state = getattr(drained_error, "_vf_state", None)
+                    if isinstance(task_state, State):
+                        states[index] = task_state
+                    if isinstance(drained_error, asyncio.CancelledError):
+                        continue
+                    self.logger.warning(
+                        "Cancelled v1 group rollout failed during recovery",
+                        exc_info=(
+                            type(drained_error),
+                            drained_error,
+                            drained_error.__traceback__,
+                        ),
+                    )
+            for index, task in enumerate(run_tasks):
+                if not task.done() or task.cancelled():
+                    continue
+                task_error = task.exception()
+                if task_error is None:
+                    states[index] = task.result()
+                    continue
+                task_state = getattr(task_error, "_vf_state", None)
+                if isinstance(task_state, State):
+                    states[index] = task_state
+            try:
+                await self.harness.cleanup_group(tasks, states)
+            except Exception:
+                self.logger.exception("Cleanup failed after v1 group rollout error")
+            for state in states:
+                state.strip_runtime_handles()
+            raise
+        primary_error = None
         try:
             if self.score_rollouts:
                 await self.harness.score_group(tasks, states)
+        except BaseException as exc:
+            primary_error = exc
+            raise
         finally:
-            await self.harness.cleanup_group(tasks, states)
+            try:
+                await self.harness.cleanup_group(tasks, states)
+            except Exception:
+                if primary_error is None:
+                    self.logger.exception("Cleanup failed after v1 group scoring")
+                    raise
+                self.logger.exception("Cleanup failed after v1 group scoring error")
         for state in states:
             state.strip_runtime_handles()
+            state.serialize_error()
             state.assert_serializable()
         return cast(list[vf.State], states)
 

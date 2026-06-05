@@ -1646,14 +1646,20 @@ def test_sandbox_program_patch_cannot_set_lifecycle_fields() -> None:
     patch = {
         "stop_condition": "no_tools",
         "is_truncated": True,
-        "error": {"message": "handled"},
+        "error": vf.ErrorData(
+            error="SandboxError",
+            message="handled",
+            error_chain_repr="SandboxError('handled')",
+            error_chain_str="SandboxError",
+        ),
     }
     apply_internal_state_patch(state, patch, mode="base")
 
     assert patch == {}
     assert state["stop_condition"] == "no_tools"
     assert state["is_truncated"] is True
-    assert state["error"] == {"message": "handled"}
+    assert isinstance(state["error"], vf.SandboxError)
+    assert str(state["error"]) == "handled"
 
 
 def test_program_channels_mcp_injects_proxy_into_sandbox_program() -> None:
@@ -1891,8 +1897,6 @@ async def test_sandbox_command_marks_oom_failures(
     state = await harness.run(task)
 
     assert state["sandbox_oom"] is True
-    assert state["sandbox_failures"][0]["kind"] == "oom"
-    assert state["sandbox_failures"][0]["phase"] == "command"
     assert state["error"]["error"] == "SandboxError"
 
 
@@ -2893,7 +2897,6 @@ async def test_release_sandboxes_keeps_failed_delete_retryable(
     await runtime.release_sandboxes("rollout", state)
 
     assert runtime.sandbox_leases[key] is lease
-    assert len(state["cleanup_errors"]) == 1
 
     await runtime.release_sandboxes("rollout", state)
     await runtime.teardown()
@@ -3009,15 +3012,10 @@ async def test_clear_creation_tasks_keeps_failed_delete_retryable(
     runtime.sandbox_creation_tasks[key] = creation_task
     await creation_task
 
-    await runtime.clear_sandbox_creation_tasks(
-        [(key, creation_task)],
-        state=state,
-        scope="rollout",
-    )
+    await runtime.clear_sandbox_creation_tasks([(key, creation_task)])
 
     assert key not in runtime.sandbox_creation_tasks
     assert runtime.sandbox_leases[key] is lease
-    assert len(state["cleanup_errors"]) == 1
 
     await runtime.release_sandboxes("rollout", state)
     await runtime.teardown()

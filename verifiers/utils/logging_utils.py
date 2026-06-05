@@ -10,7 +10,7 @@ from rich.table import Table
 from rich.text import Text
 
 from verifiers.errors import Error
-from verifiers.types import ErrorInfo, Messages
+from verifiers.types import ErrorData, Messages
 from verifiers.utils.error_utils import ErrorChain
 
 LOGGER_NAME = "verifiers"
@@ -156,7 +156,7 @@ def quiet_verifiers():
 def print_prompt_completions_sample(
     prompts: list[Messages],
     completions: list[Messages],
-    errors: list[Error | ErrorInfo | None],
+    errors: list[Error | ErrorData | None],
     rewards: list[float],
     step: int,
     num_samples: int = 1,

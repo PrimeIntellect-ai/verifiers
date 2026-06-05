@@ -21,7 +21,12 @@ from typing import (
 )
 
 from verifiers.clients import Client, resolve_client
-from verifiers.types import Messages, Response, ResponseMessage, Tool
+from verifiers.types import (
+    Messages,
+    Response,
+    ResponseMessage,
+    Tool,
+)
 from verifiers.types import ClientConfig, ClientType, SamplingArgs
 from verifiers.utils.async_utils import maybe_call_with_named_args
 from verifiers.utils.client_utils import resolve_client_config
@@ -1253,9 +1258,6 @@ class Runtime:
     async def clear_sandbox_creation_tasks(
         self,
         creations: Sequence[tuple[tuple[str, str], asyncio.Task["SandboxLease"]]],
-        *,
-        state: State | None = None,
-        scope: str | None = None,
     ) -> None:
         from .utils.sandbox_utils import SandboxLease as SandboxLeaseClass
 
@@ -1289,17 +1291,6 @@ class Runtime:
                     exc,
                     exc_info=True,
                 )
-                if state is not None and scope is not None:
-                    cleanup_errors = cast(
-                        list[ConfigData], state.setdefault("cleanup_errors", [])
-                    )
-                    cleanup_errors.append(
-                        {
-                            "type": type(exc).__name__,
-                            "message": str(exc),
-                            "scope": scope,
-                        }
-                    )
 
     async def resolve_sandbox_lease(
         self, key: tuple[str, str], factory: Callable[[], Awaitable["SandboxLease"]]
@@ -2494,9 +2485,7 @@ class Runtime:
                 if key[0] == scope_key and handle.scope == scope
             ]
         if pending_creations:
-            await self.clear_sandbox_creation_tasks(
-                pending_creations, state=state, scope=scope
-            )
+            await self.clear_sandbox_creation_tasks(pending_creations)
         deletion_failures = 0
         for key, handle in scoped_leases:
             try:
@@ -2510,16 +2499,6 @@ class Runtime:
                     key[0],
                     exc,
                     exc_info=True,
-                )
-                cleanup_errors = cast(
-                    list[ConfigData], state.setdefault("cleanup_errors", [])
-                )
-                cleanup_errors.append(
-                    {
-                        "type": type(exc).__name__,
-                        "message": str(exc),
-                        "scope": scope,
-                    }
                 )
             else:
                 async with self.sandbox_lock:

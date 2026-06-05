@@ -71,7 +71,9 @@ from verifiers.utils.async_utils import (
     maybe_semaphore,
     with_sem,
 )
-from verifiers.utils.error_utils import ErrorChain
+from verifiers.utils.error_utils import (
+    ErrorChain,
+)
 from verifiers.utils.message_utils import normalize_messages
 from verifiers.utils.save_utils import (
     GenerateOutputsBuilder,
@@ -676,13 +678,23 @@ class Environment(ABC):
         )
 
         state["timing"].scoring.start = time.time()
-        if self.score_rollouts:
-            await self.rubric.score_rollout(state)
-        else:
-            await self.rubric.dummy_score_rollout(state)
-        state["timing"].scoring.end = time.time()
-
-        await self.rubric.cleanup(state)
+        primary_error: BaseException | None = None
+        try:
+            if self.score_rollouts:
+                await self.rubric.score_rollout(state)
+            else:
+                await self.rubric.dummy_score_rollout(state)
+        except BaseException as exc:
+            primary_error = exc
+            raise
+        finally:
+            state["timing"].scoring.end = time.time()
+            try:
+                await self.rubric.cleanup(state)
+            except Exception:
+                if primary_error is None:
+                    raise
+                self.logger.exception("Cleanup failed after rollout error")
         return state
 
     async def _run_group_states(
@@ -693,29 +705,78 @@ class Environment(ABC):
         sampling_args: SamplingArgs,
     ) -> list[State]:
         rollout_tasks = [
-            self.rollout(
-                input,
-                client,
-                model,
-                sampling_args,
+            asyncio.create_task(
+                self.rollout(
+                    input,
+                    client,
+                    model,
+                    sampling_args,
+                )
             )
             for input in group_inputs
         ]
-        group_states = await asyncio.gather(*rollout_tasks)
+        try:
+            group_states = await asyncio.gather(*rollout_tasks)
+        except BaseException:
+            pending = [task for task in rollout_tasks if not task.done()]
+            for task in pending:
+                task.cancel()
+            if pending:
+                drained_errors = await asyncio.gather(*pending, return_exceptions=True)
+                for drained_error in drained_errors:
+                    if not isinstance(drained_error, BaseException):
+                        continue
+                    if isinstance(drained_error, asyncio.CancelledError):
+                        continue
+                    self.logger.warning(
+                        "Cancelled group rollout failed during cleanup",
+                        exc_info=(
+                            type(drained_error),
+                            drained_error,
+                            drained_error.__traceback__,
+                        ),
+                    )
+            completed_states = [
+                task.result()
+                for task in rollout_tasks
+                if task.done() and not task.cancelled() and task.exception() is None
+            ]
+            for state in completed_states:
+                try:
+                    await self.rubric.cleanup(state)
+                except Exception:
+                    self.logger.exception("Cleanup failed after group rollout error")
+            raise
 
         start_scoring = time.time()
         for state in group_states:
             state["timing"].scoring.start = start_scoring
-        if self.score_rollouts:
-            await self.rubric.score_group(group_states)
-        else:
-            await self.rubric.dummy_score_group(group_states)
-        end_scoring = time.time()
-        for state in group_states:
-            state["timing"].scoring.end = end_scoring
-
-        for state in group_states:
-            await self.rubric.cleanup(state)
+        primary_error = None
+        try:
+            if self.score_rollouts:
+                await self.rubric.score_group(group_states)
+            else:
+                await self.rubric.dummy_score_group(group_states)
+        except BaseException as exc:
+            primary_error = exc
+            raise
+        finally:
+            end_scoring = time.time()
+            for state in group_states:
+                state["timing"].scoring.end = end_scoring
+            cleanup_primary_error = primary_error
+            for state in group_states:
+                try:
+                    await self.rubric.cleanup(state)
+                except Exception as cleanup_error:
+                    if cleanup_primary_error is None:
+                        cleanup_primary_error = cleanup_error
+                    message = "Cleanup failed after group scoring"
+                    if primary_error is not None:
+                        message = "Cleanup failed after group scoring error"
+                    self.logger.exception(message)
+            if primary_error is None and cleanup_primary_error is not None:
+                raise cleanup_primary_error
 
         return group_states
 
@@ -1013,12 +1074,12 @@ class Environment(ABC):
             if save_results:
                 on_log(f"Saving results to {builder.results_path}")
 
-            tasks: dict[asyncio.Task, int] = {}
+            tasks: list[asyncio.Task] = []
             try:
                 # create tasks based on mode
                 if independent_scoring:
                     on_start(raw_inputs, filtered_inputs)
-                    for i, rollout_input in enumerate(filtered_inputs):
+                    for rollout_input in filtered_inputs:
                         task = asyncio.create_task(
                             with_sem(
                                 sem,
@@ -1032,7 +1093,7 @@ class Environment(ABC):
                                 ),
                             ),
                         )
-                        tasks[task] = i
+                        tasks.append(task)
                 else:
                     group_inputs: dict[int, list[RolloutInput]] = defaultdict(list)
                     for rollout_input in filtered_inputs:
@@ -1041,7 +1102,7 @@ class Environment(ABC):
                     filtered_group_inputs = list(group_inputs.values())
                     on_start(raw_inputs, filtered_group_inputs)
 
-                    for i, group_input in enumerate(filtered_group_inputs):
+                    for group_input in filtered_group_inputs:
                         # For grouped scoring, keep each group on one endpoint so
                         # rollouts in the same group can benefit from shared KV cache.
                         group_client = get_client_for_group()
@@ -1058,12 +1119,10 @@ class Environment(ABC):
                                 ),
                             ),
                         )
-                        tasks[task] = i
+                        tasks.append(task)
 
-                for coro in asyncio.as_completed(tasks.keys()):
+                for coro in asyncio.as_completed(tasks):
                     result = await coro
-
-                    # normalize: independent_scoring returns RolloutOutput, group returns list[RolloutOutput]
                     new_outputs = [result] if independent_scoring else result
                     builder.add_outputs(new_outputs)
                     metadata = builder.build_metadata()
@@ -1082,7 +1141,7 @@ class Environment(ABC):
                         )
             finally:
                 # cancel all outstanding tasks and await their completion
-                pending = [task for task in tasks.keys() if not task.done()]
+                pending = [task for task in tasks if not task.done()]
                 if pending:
                     for task in pending:
                         task.cancel()

@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
+from verifiers.errors import Error
+from verifiers.utils.error_utils import error_from_data, validate_error_data
 from verifiers.utils.interception_utils import serialize_tool_defs
 
 from ..runtime import Runtime
@@ -119,11 +121,17 @@ def apply_internal_state_patch(state: State, patch: ConfigData, *, mode: str) ->
         elif key == "is_truncated":
             state._set_truncated(bool(value), overwrite=True)
         elif key == "error":
-            state._set_error(value)
+            state._set_error(state_error(value))
         else:
             raise RuntimeError(
                 f"Sandbox Python program cannot set framework-managed state key {key!r}."
             )
+
+
+def state_error(value: object) -> Error | None:
+    if value is None:
+        return None
+    return error_from_data(validate_error_data(value))
 
 
 def sandbox_runner_program(
