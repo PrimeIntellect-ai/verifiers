@@ -6,7 +6,11 @@ import verifiers as vf
 from verifiers.clients import Client
 from verifiers.types import ClientConfig
 from verifiers.types import RolloutInput, SamplingArgs
-from verifiers.utils.error_utils import error_info, note_secondary_error
+from verifiers.utils.error_utils import (
+    diagnostic_error_data,
+    note_secondary_error,
+    validate_diagnostic_error_data,
+)
 
 from .config import Config
 from .harness import Harness, HarnessConfig
@@ -195,14 +199,14 @@ class Env(vf.Environment):
                         secondary_notes.append(f"cancelled group sibling: {note}")
                 for _, state in pending_state_pairs:
                     for cleanup_error in state.get("cleanup_errors", []):
-                        if not isinstance(cleanup_error, dict):
+                        try:
+                            diagnostic = validate_diagnostic_error_data(cleanup_error)
+                        except TypeError:
                             continue
-                        stage = cleanup_error.get("stage") or "cleanup"
-                        message = cleanup_error.get("message") or cleanup_error.get(
-                            "error"
-                        )
                         secondary_notes.append(
-                            f"cancelled group sibling {stage} failed: {message}"
+                            "cancelled group sibling "
+                            f"{diagnostic['phase']} failed: "
+                            f"{diagnostic['error']['message']}"
                         )
                 for secondary_note in dict.fromkeys(secondary_notes):
                     add_note = getattr(primary_error, "add_note", None)
@@ -223,9 +227,9 @@ class Env(vf.Environment):
             except Exception as cleanup_error:
                 for state in states:
                     state.setdefault("cleanup_errors", []).append(
-                        error_info(cleanup_error, stage="cleanup")
+                        diagnostic_error_data(cleanup_error, phase="cleanup")
                     )
-                note_secondary_error(primary_error, cleanup_error, stage="cleanup")
+                note_secondary_error(primary_error, cleanup_error, phase="cleanup")
                 self.logger.exception("Cleanup failed after v1 group rollout error")
             for state in states:
                 state.strip_runtime_handles()
@@ -245,9 +249,9 @@ class Env(vf.Environment):
                     raise
                 for state in states:
                     state.setdefault("cleanup_errors", []).append(
-                        error_info(cleanup_error, stage="cleanup")
+                        diagnostic_error_data(cleanup_error, phase="cleanup")
                     )
-                note_secondary_error(primary_error, cleanup_error, stage="cleanup")
+                note_secondary_error(primary_error, cleanup_error, phase="cleanup")
                 self.logger.exception("Cleanup failed after v1 group scoring error")
         for state in states:
             state.strip_runtime_handles()

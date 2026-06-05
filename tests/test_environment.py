@@ -673,8 +673,8 @@ class TestMaybeRetry:
         rollout_outputs = outputs["outputs"]
         assert env.call_counts[0] == 1  # No retries for non-retryable error
         assert rollout_outputs[0].get("error") is not None
-        error_info = rollout_outputs[0]["error"]
-        assert "ToolError" == error_info["error"]
+        error_data = rollout_outputs[0]["error"]
+        assert "ToolError" == error_data["error"]
 
     @pytest.mark.asyncio
     async def test_error_in_state_after_max_retries_exhausted(
@@ -694,8 +694,8 @@ class TestMaybeRetry:
         rollout_outputs = outputs["outputs"]
         assert env.call_counts[0] == 3  # 1 initial + 2 retries
         assert rollout_outputs[0].get("error") is not None
-        error_info = rollout_outputs[0]["error"]
-        assert "InfraError" == error_info["error"]
+        error_data = rollout_outputs[0]["error"]
+        assert "InfraError" == error_data["error"]
 
 
 class TestEmptyModelResponseErrors:

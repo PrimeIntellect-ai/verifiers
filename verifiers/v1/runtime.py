@@ -21,10 +21,11 @@ from typing import (
 )
 
 from verifiers.clients import Client, resolve_client
-from verifiers.types import Messages, Response, Tool
+from verifiers.types import DiagnosticErrorData, Messages, Response, Tool
 from verifiers.types import ClientConfig, ClientType, SamplingArgs
 from verifiers.utils.async_utils import maybe_call_with_named_args
 from verifiers.utils.client_utils import resolve_client_config
+from verifiers.utils.error_utils import diagnostic_error_data
 from verifiers.utils.message_utils import normalize_messages
 from verifiers.utils.response_utils import parse_response_message, parse_response_tokens
 from verifiers.utils.tool_utils import convert_func_to_tool_def
@@ -1217,14 +1218,11 @@ class Runtime:
                 )
                 if state is not None and scope is not None:
                     cleanup_errors = cast(
-                        list[ConfigData], state.setdefault("cleanup_errors", [])
+                        list[DiagnosticErrorData],
+                        state.setdefault("cleanup_errors", []),
                     )
                     cleanup_errors.append(
-                        {
-                            "type": type(exc).__name__,
-                            "message": str(exc),
-                            "scope": scope,
-                        }
+                        diagnostic_error_data(exc, phase="sandbox_cleanup", scope=scope)
                     )
 
     async def resolve_sandbox_lease(
@@ -2438,14 +2436,10 @@ class Runtime:
                     exc_info=True,
                 )
                 cleanup_errors = cast(
-                    list[ConfigData], state.setdefault("cleanup_errors", [])
+                    list[DiagnosticErrorData], state.setdefault("cleanup_errors", [])
                 )
                 cleanup_errors.append(
-                    {
-                        "type": type(exc).__name__,
-                        "message": str(exc),
-                        "scope": scope,
-                    }
+                    diagnostic_error_data(exc, phase="sandbox_cleanup", scope=scope)
                 )
             else:
                 async with self.sandbox_lock:

@@ -1005,7 +1005,7 @@ async def test_v1_harness_preserves_rollout_scoring_error_when_cleanup_fails() -
         await harness.run(task, state)
 
     assert state["cleanup_ran"] is True
-    assert state["cleanup_errors"][0]["stage"] == "cleanup_rollout"
+    assert state["cleanup_errors"][0]["phase"] == "cleanup_rollout"
     assert "v1 cleanup exploded" in "\n".join(getattr(exc_info.value, "__notes__", []))
 
 
@@ -1128,7 +1128,7 @@ async def test_v1_group_surfaces_cancelled_sibling_cleanup_errors(
     notes = "\n".join(getattr(exc_info.value, "__notes__", []))
     assert "cancelled group sibling" in notes
     assert "cancelled cleanup exploded" in notes
-    assert created_states[0]["cleanup_errors"][0]["message"] == (
+    assert created_states[0]["cleanup_errors"][0]["error"]["message"] == (
         "cancelled cleanup exploded"
     )
     assert any(
@@ -1697,14 +1697,19 @@ def test_sandbox_program_patch_cannot_set_lifecycle_fields() -> None:
     patch = {
         "stop_condition": "no_tools",
         "is_truncated": True,
-        "error": {"message": "handled"},
+        "error": vf.ErrorData(
+            error="SandboxError",
+            message="handled",
+            error_chain_repr="SandboxError('handled')",
+            error_chain_str="SandboxError",
+        ),
     }
     apply_internal_state_patch(state, patch, mode="base")
 
     assert patch == {}
     assert state["stop_condition"] == "no_tools"
     assert state["is_truncated"] is True
-    assert state["error"] == {"message": "handled"}
+    assert isinstance(state["error"], vf.SandboxError)
 
 
 def test_program_channels_mcp_injects_proxy_into_sandbox_program() -> None:
@@ -1945,6 +1950,9 @@ async def test_sandbox_command_marks_oom_failures(
     assert state["sandbox_failures"][0]["kind"] == "oom"
     assert state["sandbox_failures"][0]["phase"] == "command"
     assert state["error"]["error"] == "SandboxError"
+    state["example_id"] = 0
+    output = state_to_output(state)
+    assert output["sandbox_failures"] == state["sandbox_failures"]
 
 
 @pytest.mark.asyncio
@@ -3428,8 +3436,8 @@ async def test_failed_sandbox_program_preserves_primary_error_and_artifact_error
     state = await harness.run(task)
 
     assert state["error"]["error"] == "SandboxError"
-    assert state["artifact_errors"][0]["error"] == "FileNotFoundError"
-    assert state["artifact_errors"][0]["stage"] == "artifact_collection"
+    assert state["artifact_errors"][0]["error"]["error"] == "FileNotFoundError"
+    assert state["artifact_errors"][0]["phase"] == "artifact_collection"
     assert state["stop_condition"] == "has_error"
     output = state_to_output(state)
     assert output["artifact_errors"] == state["artifact_errors"]

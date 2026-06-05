@@ -71,7 +71,11 @@ from verifiers.utils.async_utils import (
     maybe_semaphore,
     with_sem,
 )
-from verifiers.utils.error_utils import ErrorChain, error_info, note_secondary_error
+from verifiers.utils.error_utils import (
+    ErrorChain,
+    diagnostic_error_data,
+    note_secondary_error,
+)
 from verifiers.utils.message_utils import normalize_messages
 from verifiers.utils.save_utils import (
     GenerateOutputsBuilder,
@@ -693,13 +697,9 @@ class Environment(ABC):
                 if primary_error is None:
                     raise
                 state.setdefault("cleanup_errors", []).append(
-                    error_info(
-                        cleanup_error,
-                        stage="cleanup",
-                        details={"example_id": state.get("example_id")},
-                    )
+                    diagnostic_error_data(cleanup_error, phase="cleanup")
                 )
-                note_secondary_error(primary_error, cleanup_error, stage="cleanup")
+                note_secondary_error(primary_error, cleanup_error, phase="cleanup")
                 self.logger.exception("Cleanup failed after rollout error")
         return state
 
@@ -739,13 +739,9 @@ class Environment(ABC):
                     await self.rubric.cleanup(state)
                 except Exception as cleanup_error:
                     state.setdefault("cleanup_errors", []).append(
-                        error_info(
-                            cleanup_error,
-                            stage="cleanup",
-                            details={"example_id": state.get("example_id")},
-                        )
+                        diagnostic_error_data(cleanup_error, phase="cleanup")
                     )
-                    note_secondary_error(primary_error, cleanup_error, stage="cleanup")
+                    note_secondary_error(primary_error, cleanup_error, phase="cleanup")
                     self.logger.exception("Cleanup failed after group rollout error")
             raise
 
@@ -772,13 +768,9 @@ class Environment(ABC):
                     if primary_error is None:
                         raise
                     state.setdefault("cleanup_errors", []).append(
-                        error_info(
-                            cleanup_error,
-                            stage="cleanup",
-                            details={"example_id": state.get("example_id")},
-                        )
+                        diagnostic_error_data(cleanup_error, phase="cleanup")
                     )
-                    note_secondary_error(primary_error, cleanup_error, stage="cleanup")
+                    note_secondary_error(primary_error, cleanup_error, phase="cleanup")
                     self.logger.exception("Cleanup failed after group scoring error")
 
         return group_states

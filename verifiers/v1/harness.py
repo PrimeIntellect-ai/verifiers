@@ -15,7 +15,7 @@ from verifiers.types import (
     ToolMessage,
 )
 from verifiers.utils.async_utils import maybe_call_with_named_args
-from verifiers.utils.error_utils import error_info, note_secondary_error
+from verifiers.utils.error_utils import diagnostic_error_data, note_secondary_error
 from verifiers.utils.message_utils import normalize_messages
 from verifiers.utils.response_utils import parse_response_message
 from verifiers.utils.tool_utils import is_valid_tool_content_parts
@@ -261,7 +261,7 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
                 if not rollout_failed:
                     raise
                 state.setdefault("artifact_errors", []).append(
-                    error_info(e, stage="artifact_collection")
+                    diagnostic_error_data(e, phase="artifact_collection")
                 )
             await self.runtime.update_rollout(task, state)
             state.record_generation_timing()
@@ -282,10 +282,10 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
                 if primary_error is None:
                     raise
                 state.setdefault("cleanup_errors", []).append(
-                    error_info(cleanup_error, stage="cleanup_rollout")
+                    diagnostic_error_data(cleanup_error, phase="cleanup_rollout")
                 )
                 note_secondary_error(
-                    primary_error, cleanup_error, stage="cleanup_rollout"
+                    primary_error, cleanup_error, phase="cleanup_rollout"
                 )
             if "group_key" not in state.runtime_state():
                 try:
@@ -294,16 +294,17 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
                     if primary_error is None:
                         raise
                     state.setdefault("cleanup_errors", []).append(
-                        error_info(cleanup_error, stage="cleanup_group")
+                        diagnostic_error_data(cleanup_error, phase="cleanup_group")
                     )
                     note_secondary_error(
-                        primary_error, cleanup_error, stage="cleanup_group"
+                        primary_error, cleanup_error, phase="cleanup_group"
                     )
                 if completed:
                     state.finalize()
                 else:
                     state.strip_runtime_handles()
             elif completed:
+                state.serialize_error()
                 state.assert_serializable()
         return state
 
@@ -313,7 +314,7 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
             state._set_truncated(True)
             state._set_stop_condition("prompt_too_long", overwrite=True)
             return
-        state._set_error(error_info(error))
+        state._set_error(error)
         state._set_stop_condition("has_error", overwrite=True)
 
     async def score_group(self, tasks: list[Task], states: list[State]) -> list[State]:

@@ -412,7 +412,7 @@ async def test_generate_preserves_rollout_scoring_error_when_cleanup_fails(
         )
 
     assert "cleanup exploded" in "\n".join(getattr(exc_info.value, "__notes__", []))
-    assert rubric.cleaned_states[0]["cleanup_errors"][0]["message"] == (
+    assert rubric.cleaned_states[0]["cleanup_errors"][0]["error"]["message"] == (
         "cleanup exploded"
     )
 
@@ -505,7 +505,8 @@ async def test_generate_preserves_group_scoring_error_when_cleanup_fails(
         getattr(exc_info.value, "__notes__", [])
     )
     assert [
-        state["cleanup_errors"][0]["message"] for state in rubric.cleaned_states
+        state["cleanup_errors"][0]["error"]["message"]
+        for state in rubric.cleaned_states
     ] == ["group cleanup exploded", "group cleanup exploded"]
 
 

@@ -23,7 +23,6 @@ from verifiers.types import (
     ToolMessage,
     UserMessage,
 )
-from verifiers.utils.error_utils import error_info
 from verifiers.utils.interception_utils import (
     InterceptionServer,
     deliver_response,
@@ -447,7 +446,7 @@ async def forward_request(
     except BaseException as e:
         error = e
         if isinstance(e, Error):
-            state._set_error(error_info(e))
+            state._set_error(e)
         raise
     finally:
         if bool(request.get("stream")):
