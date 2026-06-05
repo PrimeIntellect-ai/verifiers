@@ -209,7 +209,15 @@ def test_composable_opencode_install_script_owns_release_download():
     assert "OPENCODE_RELEASE_REPO=PrimeIntellect-ai/opencode" in setup
     assert "OPENCODE_RELEASE_VERSION=1.1.63-rl2" in setup
     assert "releases/download/v$OPENCODE_RELEASE_TAG" in setup
-    assert "47f4102796da50769e27d2c9ea6a9cf7941f76898390cb497278cab39c4b6ed4" in setup
+    assert (
+        "x64) OPENCODE_RELEASE_SHA256="
+        "47f4102796da50769e27d2c9ea6a9cf7941f76898390cb497278cab39c4b6ed4 ;;" in setup
+    )
+    assert "No SHA256 configured for OpenCode" in setup
+    assert (
+        'echo "$OPENCODE_RELEASE_SHA256  /tmp/opencode.tar.gz" | sha256sum -c -'
+        in setup
+    )
 
 
 @pytest.mark.asyncio
