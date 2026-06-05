@@ -5,7 +5,7 @@ import os
 import time
 import uuid
 from collections.abc import Awaitable, Callable
-from typing import Literal, Protocol, cast
+from typing import Literal, Protocol, TypeAlias, cast
 
 from anthropic import Anthropic, AsyncAnthropic
 from openai import AsyncOpenAI, OpenAI
@@ -15,6 +15,7 @@ from verifiers.types import (
     AssistantMessage,
     ClientType,
     EndpointApi,
+    EndpointClient,
     EndpointConfig,
     Messages,
     SystemMessage,
@@ -23,7 +24,6 @@ from verifiers.types import (
     ToolMessage,
     UserMessage,
 )
-from verifiers.utils.error_utils import error_info
 from verifiers.utils.interception_utils import (
     InterceptionServer,
     deliver_response,
@@ -34,21 +34,27 @@ from verifiers.utils.message_utils import normalize_messages
 from ..runtime import ModelRequestContext, Runtime, TrajectoryVisibility
 from ..state import State
 from ..task import Task
-from ..types import ConfigData, PromptMessage, ToolParameters
+from ..types import ConfigData, JsonData, PromptMessage, ToolParameters
 
 VF_TRAJECTORY_VISIBILITY_HEADER = "x-verifiers-trajectory"
 VF_ENDPOINT_API_KEY_VAR = "VF_ENDPOINT_API_KEY"
+NormalizedEndpointApi: TypeAlias = Literal[
+    "chat_completions",
+    "completions",
+    "responses",
+    "messages",
+]
 
 
 class TunnelHandle(Protocol):
     is_running: bool
-    url: object
+    url: str | None
 
-    async def start(self) -> object: ...
+    async def start(self) -> str: ...
 
     async def check_registered(self) -> bool: ...
 
-    def sync_stop(self) -> object: ...
+    def sync_stop(self) -> None: ...
 
 
 def client_from_state(
@@ -56,7 +62,7 @@ def client_from_state(
     api: EndpointApi | ClientType = "chat_completions",
     *,
     sync: bool = False,
-) -> object:
+) -> EndpointClient:
     endpoint = endpoint_from_state(state)
     return endpoint.client(state, api=api, sync=sync)
 
@@ -81,7 +87,7 @@ def endpoint_from_state(state: State) -> "Endpoint":
 
 
 def endpoint_api_client_type(
-    api: Literal["chat_completions", "completions", "responses", "messages"],
+    api: NormalizedEndpointApi,
 ) -> Literal[
     "openai_chat_completions",
     "openai_completions",
@@ -99,7 +105,7 @@ def endpoint_api_client_type(
 
 def normalize_endpoint_api(
     api: EndpointApi | ClientType,
-) -> Literal["chat_completions", "completions", "responses", "messages"]:
+) -> NormalizedEndpointApi:
     if api in {
         "chat_completions",
         "openai_chat_completions",
@@ -154,7 +160,7 @@ class Endpoint:
         self,
         state: State,
         tool_handler: object | None = None,
-        tool_defs: object | None = None,
+        tool_defs: list[Tool] | None = None,
         user_handler: object | None = None,
         stop_handler: object | None = None,
     ) -> str:
@@ -183,7 +189,7 @@ class Endpoint:
         api: EndpointApi | ClientType = "chat_completions",
         *,
         sync: bool = False,
-    ) -> AsyncOpenAI | OpenAI | AsyncAnthropic | Anthropic:
+    ) -> EndpointClient:
         api = normalize_endpoint_api(api)
         api_key = self.secret or "intercepted"
         if api == "messages":
@@ -312,14 +318,14 @@ async def run_intercepted_program(
     runtime: Runtime,
     task: Task,
     state: State,
-) -> object:
+) -> State | ConfigData | None:
     async def call_tool(name: str, arguments: ConfigData) -> object:
         return await runtime.call_tool(name, task, state, **dict(arguments))
 
-    async def call_user(transcript: list[PromptMessage]) -> object:
+    async def call_user(transcript: list[PromptMessage]) -> list[JsonData]:
         return await runtime.user_messages(task, state, transcript=transcript)
 
-    async def check_stop() -> object:
+    async def check_stop() -> ConfigData:
         return {
             "done": await runtime.is_completed(task, state),
             "stop_condition": state.get("stop_condition"),
@@ -414,7 +420,9 @@ async def cancel_forwarders(pending: set[asyncio.Task[None]]) -> None:
         await asyncio.gather(*pending, return_exceptions=True)
 
 
-async def raise_execution_error(execution: asyncio.Task[object]) -> None:
+async def raise_execution_error(
+    execution: asyncio.Task[State | ConfigData | None],
+) -> None:
     if execution.cancelled():
         await execution
     error = execution.exception()
@@ -447,7 +455,7 @@ async def forward_request(
     except BaseException as e:
         error = e
         if isinstance(e, Error):
-            state._set_error(error_info(e))
+            state._set_error(e)
         raise
     finally:
         if bool(request.get("stream")):

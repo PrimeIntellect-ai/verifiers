@@ -1646,14 +1646,19 @@ def test_sandbox_program_patch_cannot_set_lifecycle_fields() -> None:
     patch = {
         "stop_condition": "no_tools",
         "is_truncated": True,
-        "error": {"message": "handled"},
+        "error": vf.ErrorData(
+            error="SandboxError",
+            message="handled",
+            error_chain_repr="SandboxError('handled')",
+            error_chain_str="SandboxError",
+        ),
     }
     apply_internal_state_patch(state, patch, mode="base")
 
     assert patch == {}
     assert state["stop_condition"] == "no_tools"
     assert state["is_truncated"] is True
-    assert state["error"] == {"message": "handled"}
+    assert isinstance(state["error"], vf.SandboxError)
 
 
 def test_program_channels_mcp_injects_proxy_into_sandbox_program() -> None:

@@ -190,8 +190,12 @@ def validate_binding_source(
     root = binding_source_root(source)
     validate_binding_source_root(root, context, allow_objects=allow_objects)
     if root == "objects":
+        if not isinstance(source, str):
+            raise TypeError(f"{context} must be a string source.")
         binding_object_name(source)
     if root in {"taskset", "harness"}:
+        if not isinstance(source, str):
+            raise TypeError(f"{context} must be a string source.")
         owner_object_name(source)
     if isinstance(source, dict):
         validate_callable_source(cast(ConfigData, source), context)
@@ -212,7 +216,7 @@ def function_name(fn: Handler) -> str:
     return name
 
 
-def binding_key_parts(key: object) -> tuple[str, str]:
+def binding_key_parts(key: str) -> tuple[str, str]:
     if not isinstance(key, str):
         raise TypeError("Binding keys must be strings.")
     target, separator, arg_name = key.partition(".")
@@ -242,7 +246,7 @@ def validate_binding_source_root(
         raise ValueError(f"{context} cannot use objects.* sources.")
 
 
-def binding_object_name(source: object) -> str:
+def binding_object_name(source: str) -> str:
     if not isinstance(source, str):
         raise TypeError("Object binding source must be a string.")
     root, separator, tail = source.partition(".")
@@ -254,7 +258,7 @@ def binding_object_name(source: object) -> str:
     return name
 
 
-def owner_object_name(source: object) -> str:
+def owner_object_name(source: str) -> str:
     if not isinstance(source, str):
         raise TypeError("Owner object binding source must be a string.")
     root, separator, tail = source.partition(".")

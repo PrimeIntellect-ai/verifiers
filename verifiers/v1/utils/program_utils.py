@@ -1,8 +1,7 @@
 import asyncio
 import os
 import shlex
-from collections.abc import Sequence
-from typing import cast
+from typing import TypeAlias, cast
 
 from verifiers.errors import InfraError
 from verifiers.utils.async_utils import maybe_call_with_named_args
@@ -24,6 +23,9 @@ from ..artifact import ArtifactsConfig
 from ..program import ProgramChannel, ProgramValue
 from ..sandbox import SandboxConfig
 from ..types import ConfigData, Handler, RuntimeData
+
+ProgramMappingInput: TypeAlias = dict[str, ProgramValue] | None
+ProgramListInput: TypeAlias = ProgramValue | None
 
 PROGRAM_KIND_KEYS = {"base", "fn", "command"}
 PROGRAM_OPTION_KEYS = {
@@ -88,9 +90,13 @@ async def command_argv(
     command = program.get("command")
     if isinstance(command, str):
         argv = shlex.split(command)
-    elif isinstance(command, Sequence):
+    elif isinstance(command, list):
         argv = [
-            str(await resolve_program_value(part, task, state, runtime, program))
+            str(
+                await resolve_program_value(
+                    cast(ProgramValue, part), task, state, runtime, program
+                )
+            )
             for part in command
         ]
     else:
@@ -100,7 +106,11 @@ async def command_argv(
         raise TypeError("program.args must be a list.")
     for arg in args:
         argv.append(
-            str(await resolve_program_value(arg, task, state, runtime, program))
+            str(
+                await resolve_program_value(
+                    cast(ProgramValue, arg), task, state, runtime, program
+                )
+            )
         )
     if not argv:
         raise ValueError("program.command cannot be empty.")
@@ -137,13 +147,15 @@ async def command_env(
         if not isinstance(key, str):
             raise TypeError("program.env keys must be strings.")
         env[key] = str(
-            await resolve_program_value(value, task, state, runtime, program)
+            await resolve_program_value(
+                cast(ProgramValue, value), task, state, runtime, program
+            )
         )
     return env
 
 
 async def resolve_program_value(
-    value: object,
+    value: ProgramValue,
     task: Task,
     state: State,
     runtime: Runtime,
@@ -155,7 +167,7 @@ async def resolve_program_value(
         kwargs = await program_binding_kwargs(fn, program, task, state, runtime)
         for key, item in configured_kwargs.items():
             kwargs[key] = await resolve_program_value(
-                item, task, state, runtime, program
+                cast(ProgramValue, item), task, state, runtime, program
             )
         return await maybe_call_with_named_args(
             fn, task=task, state=state, runtime=runtime, **kwargs
@@ -182,7 +194,7 @@ async def resolve_program_value(
     return value
 
 
-def program_value_callable(value: object) -> tuple[Handler, ConfigData] | None:
+def program_value_callable(value: ProgramValue) -> tuple[Handler, ConfigData] | None:
     if isinstance(value, dict) and "fn" in value:
         spec = cast(ConfigData, value)
         validate_program_callable_source(spec)
@@ -265,7 +277,7 @@ def program_binding_targets(
     targets: dict[str, Handler] = {}
 
     def add(value: object) -> None:
-        callable_spec = program_value_callable(value)
+        callable_spec = program_value_callable(cast(ProgramValue, value))
         if callable_spec is None:
             return
         fn, _ = callable_spec
@@ -283,7 +295,7 @@ def program_binding_targets(
             add(value)
 
     command = program.get("command")
-    if isinstance(command, Sequence) and not isinstance(command, str):
+    if isinstance(command, list):
         for item in command:
             add(item)
     add_items(program.get("args"))
@@ -302,7 +314,7 @@ def program_setup_callable_names(program: ConfigData) -> set[str]:
     setup = program.get("setup")
     items = setup if isinstance(setup, list) else [setup]
     for item in items:
-        callable_spec = program_value_callable(item)
+        callable_spec = program_value_callable(cast(ProgramValue, item))
         if callable_spec is not None:
             fn, _ = callable_spec
             names.add(function_name(fn))
@@ -407,19 +419,30 @@ def merge_task_program(program: ConfigData, task: Task, *, kind: str) -> ConfigD
     merged = dict(program)
     for key in ("files", "dirs", "env", "artifacts"):
         merged[key] = merge_program_mapping_option(
-            program.get(key), task_program.get(key), key
+            cast(ProgramMappingInput, program.get(key)),
+            cast(ProgramMappingInput, task_program.get(key)),
+            key,
         )
     merged["bindings"] = merge_program_bindings(
-        program.get("bindings"), task_program.get("bindings")
+        cast(ProgramMappingInput, program.get("bindings")),
+        cast(ProgramMappingInput, task_program.get("bindings")),
     )
     merged["setup"] = [
-        *program_list_items(program.get("setup"), "program.setup"),
-        *program_list_items(task_program.get("setup"), "task.program.setup"),
+        *program_list_items(
+            cast(ProgramListInput, program.get("setup")), "program.setup"
+        ),
+        *program_list_items(
+            cast(ProgramListInput, task_program.get("setup")), "task.program.setup"
+        ),
     ]
     if kind == "command":
         merged["args"] = [
-            *program_list_items(program.get("args"), "program.args"),
-            *program_list_items(task_program.get("args"), "task.program.args"),
+            *program_list_items(
+                cast(ProgramListInput, program.get("args")), "program.args"
+            ),
+            *program_list_items(
+                cast(ProgramListInput, task_program.get("args")), "task.program.args"
+            ),
         ]
     return merged
 
@@ -437,7 +460,7 @@ def merge_task_sandbox(sandbox_config: SandboxConfig, task: Task) -> SandboxConf
 
 
 def merge_program_mapping_option(
-    program_value: object, task_value: object, key: str
+    program_value: ProgramMappingInput, task_value: ProgramMappingInput, key: str
 ) -> ConfigData:
     if key == "artifacts":
         program_mapping = ArtifactsConfig.model_validate(program_value or {}).data(
@@ -457,7 +480,9 @@ def merge_program_mapping_option(
     return {**program_mapping, **task_mapping}
 
 
-def merge_program_bindings(program_value: object, task_value: object) -> ConfigData:
+def merge_program_bindings(
+    program_value: ProgramMappingInput, task_value: ProgramMappingInput
+) -> ConfigData:
     program_bindings = BindingsConfig.model_validate(program_value or {}).entries(
         "program.bindings", allow_objects=False
     )
@@ -473,23 +498,27 @@ def merge_program_bindings(program_value: object, task_value: object) -> ConfigD
     return string_mapping({**program_bindings, **task_bindings})
 
 
-def program_option_mapping(value: object, field_name: str) -> ConfigData:
+def program_option_mapping(
+    value: ProgramMappingInput, field_name: str
+) -> dict[str, ProgramValue]:
     if value is None:
         return {}
     if not isinstance(value, dict):
         raise TypeError(f"{field_name} must be a mapping.")
     try:
-        return string_mapping(value)
+        return cast(dict[str, ProgramValue], string_mapping(value))
     except TypeError as exc:
         raise TypeError(f"{field_name} keys must be strings.") from exc
 
 
-def program_list_items(value: object, field_name: str) -> list[ProgramValue]:
+def program_list_items(value: ProgramListInput, field_name: str) -> list[ProgramValue]:
     if value is None:
         return []
     if isinstance(value, str):
         return [value]
-    if not isinstance(value, Sequence):
+    if isinstance(value, tuple):
+        raise TypeError(f"{field_name} must be a string, mapping, or list.")
+    if not isinstance(value, list):
         return [cast(ProgramValue, value)]
     return [cast(ProgramValue, item) for item in value]
 

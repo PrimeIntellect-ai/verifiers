@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
+from verifiers.errors import Error
+from verifiers.utils.error_utils import error_from_data, validate_error_data
 from verifiers.utils.interception_utils import serialize_tool_defs
 
 from ..runtime import Runtime
@@ -26,7 +28,12 @@ from .sandbox_python_utils import (
     python_runtime_command,
     python_runtime_setup_command,
 )
-from .program_utils import program_list_items, program_option_mapping
+from .program_utils import (
+    ProgramListInput,
+    ProgramMappingInput,
+    program_list_items,
+    program_option_mapping,
+)
 from ..types import ConfigData
 
 TASK_PATH = "/tmp/vf_task.json"
@@ -119,11 +126,19 @@ def apply_internal_state_patch(state: State, patch: ConfigData, *, mode: str) ->
         elif key == "is_truncated":
             state._set_truncated(bool(value), overwrite=True)
         elif key == "error":
-            state._set_error(value)
+            state._set_error(state_error(value))
         else:
             raise RuntimeError(
                 f"Sandbox Python program cannot set framework-managed state key {key!r}."
             )
+
+
+def state_error(value: object) -> Error | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise TypeError("Sandbox Python program error patch must be a mapping or None.")
+    return error_from_data(validate_error_data(value))
 
 
 def sandbox_runner_program(
@@ -138,7 +153,9 @@ def sandbox_runner_program(
     package = sandbox_program_package(mode=mode, fn_ref=fn_ref)
     if package is not None:
         program = sandbox_program_with_package(program, package)
-    files = program_option_mapping(program.get("files"), "program.files")
+    files = program_option_mapping(
+        cast(ProgramMappingInput, program.get("files")), "program.files"
+    )
     files[TASK_PATH] = json.dumps(task)
     files[TOOL_DEFS_PATH] = json.dumps(
         serializable(serialize_tool_defs(tool_defs or [], "openai_chat_completions"))
@@ -165,11 +182,15 @@ def sandbox_runner_program(
         **dict(program),
         "files": files,
         "command": command,
-        "env": program_option_mapping(program.get("env"), "program.env"),
+        "env": program_option_mapping(
+            cast(ProgramMappingInput, program.get("env")), "program.env"
+        ),
         "setup": [
             python_runtime_setup_command(),
             *package_setup,
-            *program_list_items(program.get("setup"), "program.setup"),
+            *program_list_items(
+                cast(ProgramListInput, program.get("setup")), "program.setup"
+            ),
         ],
         VF_STATE_INPUT_PATH_KEY: STATE_INPUT_PATH,
     }
@@ -209,7 +230,9 @@ def sandbox_program_with_package(
     program: ConfigData, package: SandboxPackage
 ) -> ConfigData:
     merged = dict(program)
-    dirs = program_option_mapping(merged.get("dirs"), "program.dirs")
+    dirs = program_option_mapping(
+        cast(ProgramMappingInput, merged.get("dirs")), "program.dirs"
+    )
     if package.remote_root in dirs:
         raise ValueError(
             f"program.dirs already defines internal package path {package.remote_root!r}."
