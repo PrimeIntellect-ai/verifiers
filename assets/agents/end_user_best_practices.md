@@ -13,6 +13,7 @@ Use this guidance in projects created via `prime lab setup`.
 - Use the bundled skills first for create/browse/review/eval/GEPA/train/brainstorm workflows before ad hoc approaches.
 - Keep endpoint aliases in `configs/endpoints.toml` and keep workspace configs under `configs/`.
 - NEVER initialize environment source code manually; ALWAYS create new environments with `prime env init`.
+- NEVER write freeform environment READMEs manually; ALWAYS start from the `prime env init` generated `README.md` template and fill in its sections.
 - Keep each environment self-contained under `environments/<env_name>/` with `pyproject.toml`, implementation, and README so each abstraction has a dedicated home and the workspace stays maintainable.
 - Follow environment best practices strictly (for example `load_environment(...)`, `vf.ensure_keys(...)`, and the documented environment class patterns) to avoid brittle or messy implementations.
 - Use the Prime CLI for all environment lifecycle operations (`prime env init` -> `prime env install` -> `prime eval run` -> `prime env push`) rather than ad hoc scripts.
