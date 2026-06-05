@@ -469,6 +469,40 @@ async def test_generate_cleans_up_states_after_group_scoring_error(
 
 
 @pytest.mark.asyncio
+async def test_generate_cleans_up_all_group_states_before_raising_cleanup_error(
+    mock_client, make_input
+):
+    class GroupCleanupFailingRubric(Rubric):
+        def __init__(self):
+            super().__init__()
+            self.cleaned: list[str] = []
+
+        async def cleanup(self, state):
+            self.cleaned.append(state["answer"])
+            if state["answer"] == "a":
+                raise RuntimeError("group cleanup exploded")
+
+    rubric = GroupCleanupFailingRubric()
+    env = DummyEnvironment(
+        dataset=Dataset.from_dict({"question": ["q1"], "answer": ["a1"]}),
+        parser=Parser(),
+        rubric=rubric,
+    )
+    with pytest.raises(RuntimeError, match="group cleanup exploded"):
+        await env.generate(
+            [
+                make_input(example_id=0, answer="a"),
+                make_input(example_id=0, answer="b"),
+            ],
+            client=mock_client,
+            model="test-model",
+            on_progress=lambda *args: None,
+        )
+
+    assert rubric.cleaned == ["a", "b"]
+
+
+@pytest.mark.asyncio
 async def test_generate_preserves_group_scoring_error_when_cleanup_fails(
     mock_client, make_input
 ):

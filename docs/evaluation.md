@@ -280,6 +280,13 @@ By default, results are saved to `./outputs/evals/{env_id}--{model}/{run_id}/`. 
 - `results.jsonl` — rollout outputs, one per line
 - `metadata.json` — evaluation configuration and aggregate metrics
 
+Each `results.jsonl` row contains the serialized rollout output. When a rollout has diagnostics, the row may include:
+
+- `error` — the primary rollout failure as structured error data
+- `artifact_errors` — artifact collection failures that occurred after a primary rollout error
+- `cleanup_errors` — cleanup failures recorded without replacing the primary failure
+- `sandbox_failures` — sandbox OOM or timeout records reported by sandbox execution helpers
+
 When Prime Inference pricing is available for the evaluated model, `metadata.json` includes a `cost` object with total-run `input_usd`, `output_usd`, and `total_usd`. The field is omitted for unpriced models, third-party providers, unavailable pricing, or missing usage.
 
 ### Resuming Evaluations

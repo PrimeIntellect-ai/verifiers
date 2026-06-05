@@ -1173,6 +1173,50 @@ async def test_v1_group_preserves_scoring_error_when_cleanup_fails() -> None:
 
 
 @pytest.mark.asyncio
+async def test_v1_group_scoring_sees_live_rollout_error_before_serialization() -> None:
+    class GroupTaskset(vf.Taskset):
+        async def init_group(
+            self, task: vf.Task, num_rollouts: int
+        ) -> tuple[list[vf.Task], list[vf.State]]:
+            tasks = [task for _ in range(num_rollouts)]
+            states = [vf.State.for_task(task) for task in tasks]
+            states[0]["mode"] = "fail"
+            states[1]["mode"] = "ok"
+            return tasks, states
+
+    @vf.setup
+    async def fail_or_finish(task, state) -> None:
+        _ = task
+        if state["mode"] == "fail":
+            raise vf.SandboxError("setup sandbox failed")
+        state.stop("setup_done")
+
+    @vf.reward(stage="group")
+    async def inspect_group_errors(tasks, states) -> list[float]:
+        _ = tasks
+        assert isinstance(states[0]["error"], vf.SandboxError)
+        states[0]["group_saw_live_error"] = True
+        return [0.0, 1.0]
+
+    inputs = cast(
+        list[vf.RolloutInput],
+        [
+            {"example_id": 0, "prompt": []},
+            {"example_id": 0, "prompt": []},
+        ],
+    )
+    env = vf.Env(taskset=GroupTaskset(), harness=make_harness())
+    env.harness.add_setup(fail_or_finish)
+    env.harness.add_reward(inspect_group_errors)
+
+    states = await env._run_group_states(inputs, cast(Client, FakeClient()), "fake", {})
+
+    assert states[0]["group_saw_live_error"] is True
+    assert states[0]["error"]["error"] == "SandboxError"
+    assert states[0]["error"]["message"] == "setup sandbox failed"
+
+
+@pytest.mark.asyncio
 async def test_v1_group_surfaces_cancelled_sibling_cleanup_errors(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3548,6 +3592,55 @@ async def test_failed_sandbox_program_preserves_primary_error_and_artifact_error
     output = state_to_output(state)
     assert output["artifact_errors"] == state["artifact_errors"]
     assert output["error"]["message"].startswith("Sandbox")
+
+
+@pytest.mark.asyncio
+async def test_artifact_vf_error_becomes_primary_rollout_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    @vf.setup
+    async def finish_in_setup(task, state) -> None:
+        _ = task
+        state.stop("setup_done")
+
+    async def fail_collect_artifacts(task, state) -> None:
+        _ = task, state
+        raise vf.SandboxError("artifact sandbox failed")
+
+    harness = make_harness()
+    harness.add_setup(finish_in_setup)
+    monkeypatch.setattr(harness.runtime, "collect_artifacts", fail_collect_artifacts)
+    task = vf.Task({"example_id": 0, "prompt": []}).freeze()
+
+    state = await harness.run(task)
+
+    assert state["error"]["error"] == "SandboxError"
+    assert state["error"]["message"] == "artifact sandbox failed"
+    assert state["stop_condition"] == "has_error"
+    assert "artifact_errors" not in state
+    assert state_to_output(state)["error"] == state["error"]
+
+
+@pytest.mark.asyncio
+async def test_artifact_non_vf_error_without_primary_failure_is_fatal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    @vf.setup
+    async def finish_in_setup(task, state) -> None:
+        _ = task
+        state.stop("setup_done")
+
+    async def fail_collect_artifacts(task, state) -> None:
+        _ = task, state
+        raise RuntimeError("artifact framework bug")
+
+    harness = make_harness()
+    harness.add_setup(finish_in_setup)
+    monkeypatch.setattr(harness.runtime, "collect_artifacts", fail_collect_artifacts)
+    task = vf.Task({"example_id": 0, "prompt": []}).freeze()
+
+    with pytest.raises(RuntimeError, match="artifact framework bug"):
+        await harness.run(task)
 
 
 @pytest.mark.asyncio

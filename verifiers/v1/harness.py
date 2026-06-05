@@ -263,6 +263,14 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
                 self.record_error(state, e)
             try:
                 await self.runtime.collect_artifacts(task, state)
+            except Error as e:
+                if rollout_failed:
+                    state.setdefault("artifact_errors", []).append(
+                        diagnostic_error_data(e, phase="artifact_collection")
+                    )
+                else:
+                    rollout_failed = True
+                    self.record_error(state, e)
             except Exception as e:
                 if not rollout_failed:
                     raise
@@ -309,9 +317,6 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
                     state.finalize()
                 else:
                     state.strip_runtime_handles()
-            elif completed:
-                state.serialize_error()
-                state.assert_serializable()
             log_rollout_finish(state)
         return state
 

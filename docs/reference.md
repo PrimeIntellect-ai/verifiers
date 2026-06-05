@@ -156,7 +156,7 @@ A `dict` subclass that tracks rollout information. Accessing keys in `INPUT_FIEL
 | `advantage` | `float \| None` | Advantage over group mean |
 | `metrics` | `dict[str, float] \| None` | Per-function metrics |
 | `stop_condition` | `str \| None` | Name of triggered stop condition |
-| `error` | `Error \| None` | Error if rollout failed |
+| `error` | `Error \| ErrorData \| None` | Error if rollout failed. V1 keeps a live `Error` during runtime and serializes it before output. |
 
 ### RolloutInput
 
@@ -182,7 +182,10 @@ class RolloutOutput(dict):
     # Optional fields
     answer: str
     info: Info
-    error: str | None
+    error: ErrorData | None
+    artifact_errors: list[DiagnosticErrorData]
+    cleanup_errors: list[DiagnosticErrorData]
+    sandbox_failures: list[SandboxFailureData]
     stop_condition: str | None
     token_usage: TokenUsage
     trajectory: list[TrajectoryStep]
@@ -190,6 +193,25 @@ class RolloutOutput(dict):
 ```
 
 Serialized output from a rollout. This is a `dict` subclass that provides typed access to known fields while supporting arbitrary additional fields from `state_columns`. All values must be JSON-serializable. Used in `GenerateOutputs` and for saving results to disk.
+
+`error` is the primary rollout failure, when one exists. It is serialized as `ErrorData` with:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `error` | `str` | Exception class name |
+| `message` | `str` | Exception message, or the class name when the message is empty |
+| `error_chain_repr` | `str` | Detailed repr of the causal exception chain |
+| `error_chain_str` | `str` | Compact causal exception chain |
+
+Secondary diagnostics are included only when present:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `artifact_errors` | `list[DiagnosticErrorData]` | Artifact collection failures that happened after a rollout already had a primary `vf.Error` |
+| `cleanup_errors` | `list[DiagnosticErrorData]` | Cleanup failures captured while preserving an existing primary failure |
+| `sandbox_failures` | `list[SandboxFailureData]` | Sandbox OOM or timeout signals reported by sandbox execution helpers |
+
+`DiagnosticErrorData` has `phase`, `error`, and optional `scope` fields. `error` uses the same `ErrorData` shape as the primary rollout error.
 
 ### TrajectoryStep
 

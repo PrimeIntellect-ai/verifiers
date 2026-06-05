@@ -761,17 +761,23 @@ class Environment(ABC):
             end_scoring = time.time()
             for state in group_states:
                 state["timing"].scoring.end = end_scoring
+            cleanup_primary_error = primary_error
             for state in group_states:
                 try:
                     await self.rubric.cleanup(state)
                 except Exception as cleanup_error:
-                    if primary_error is None:
-                        raise
                     state.setdefault("cleanup_errors", []).append(
                         diagnostic_error_data(cleanup_error, phase="cleanup")
                     )
-                    note_secondary_error(primary_error, cleanup_error, phase="cleanup")
+                    if cleanup_primary_error is None:
+                        cleanup_primary_error = cleanup_error
+                    else:
+                        note_secondary_error(
+                            cleanup_primary_error, cleanup_error, phase="cleanup"
+                        )
                     self.logger.exception("Cleanup failed after group scoring error")
+            if primary_error is None and cleanup_primary_error is not None:
+                raise cleanup_primary_error
 
         return group_states
 

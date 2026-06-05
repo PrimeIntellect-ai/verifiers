@@ -255,6 +255,7 @@ class Env(vf.Environment):
                 self.logger.exception("Cleanup failed after v1 group scoring error")
         for state in states:
             state.strip_runtime_handles()
+            state.serialize_error()
             state.assert_serializable()
         return cast(list[vf.State], states)
 
