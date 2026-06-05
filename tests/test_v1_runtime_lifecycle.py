@@ -1236,6 +1236,60 @@ async def test_v1_group_preserves_scoring_error_when_cleanup_fails(
 
 
 @pytest.mark.asyncio
+async def test_v1_group_logs_cleanup_failure_after_successful_scoring(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class SimpleTaskset(vf.Taskset):
+        def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
+            _ = split
+            return cast(
+                vf.Tasks,
+                [
+                    {
+                        "example_id": 0,
+                        "prompt": [{"role": "user", "content": "hi"}],
+                        "answer": "ok",
+                    }
+                ],
+            )
+
+    @vf.cleanup(stage="group")
+    async def failing_group_cleanup(tasks, states) -> None:
+        _ = tasks, states
+        raise RuntimeError("v1 group cleanup exploded")
+
+    inputs = cast(
+        list[vf.RolloutInput],
+        [
+            {
+                "example_id": 0,
+                "prompt": [{"role": "user", "content": "hi"}],
+                "answer": "ok",
+            },
+            {
+                "example_id": 0,
+                "prompt": [{"role": "user", "content": "hi"}],
+                "answer": "ok",
+            },
+        ],
+    )
+    client = FakeModelClient([fake_response(content="ok"), fake_response(content="ok")])
+    env = vf.Env(taskset=SimpleTaskset(), harness=make_harness(max_turns=1))
+    env.harness.add_cleanup(failing_group_cleanup)
+    exceptions: list[LogCall] = []
+
+    def record_exception(*args: object, **kwargs: object) -> None:
+        exceptions.append((args, kwargs))
+
+    monkeypatch.setattr(env.logger, "exception", record_exception)
+
+    with pytest.raises(RuntimeError, match="v1 group cleanup exploded"):
+        await env._run_group_states(inputs, cast(Client, client), "fake", {})
+
+    assert exceptions[0][0][0] == "Cleanup failed after v1 group scoring"
+
+
+@pytest.mark.asyncio
 async def test_v1_group_scoring_sees_live_rollout_error_before_serialization() -> None:
     class GroupTaskset(vf.Taskset):
         async def init_group(

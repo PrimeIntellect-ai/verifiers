@@ -222,6 +222,7 @@ class Env(vf.Environment):
                 await self.harness.cleanup_group(tasks, states)
             except Exception:
                 if primary_error is None:
+                    self.logger.exception("Cleanup failed after v1 group scoring")
                     raise
                 self.logger.exception("Cleanup failed after v1 group scoring error")
         for state in states:
