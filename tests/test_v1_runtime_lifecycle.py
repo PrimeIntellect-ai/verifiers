@@ -1971,6 +1971,7 @@ def test_sandbox_program_patch_cannot_set_lifecycle_fields() -> None:
     assert state["stop_condition"] == "no_tools"
     assert state["is_truncated"] is True
     assert isinstance(state["error"], vf.SandboxError)
+    assert str(state["error"]) == "handled"
 
 
 def test_program_channels_mcp_injects_proxy_into_sandbox_program() -> None:

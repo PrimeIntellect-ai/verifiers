@@ -94,7 +94,7 @@ def error_data_to_exception(
     error_types: tuple[type[Exception], ...],
 ) -> Exception | None:
     chain = error["error_chain_str"] or error["error"]
-    detail = error["error_chain_repr"] or error["error"]
+    detail = error["message"] or error["error_chain_repr"] or error["error"]
     for error_type in error_types:
         if error_type.__name__ in chain:
             return error_type(detail)
@@ -105,7 +105,7 @@ def error_from_data(error: ErrorData) -> vf.Error:
     exception = error_data_to_exception(error, vf_error_types())
     if isinstance(exception, vf.Error):
         return exception
-    detail = error["error_chain_repr"] or error["error"]
+    detail = error["message"] or error["error_chain_repr"] or error["error"]
     return vf.Error(detail)
 
 
