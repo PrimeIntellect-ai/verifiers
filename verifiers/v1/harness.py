@@ -294,8 +294,9 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
                 state.record_generation_timing()
             try:
                 await self.runtime.cleanup_rollout(task, state)
-            except Exception:
+            except Exception as exc:
                 if primary_error is None and state.get("error") is None:
+                    setattr(exc, "_vf_state", state)
                     raise
                 logger.warning(
                     "Rollout cleanup failed after rollout error",
@@ -304,8 +305,9 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
             if "group_key" not in state.runtime_state():
                 try:
                     await self.runtime.cleanup_group([task], [state])
-                except Exception:
+                except Exception as exc:
                     if primary_error is None and state.get("error") is None:
+                        setattr(exc, "_vf_state", state)
                         raise
                     logger.warning(
                         "Group cleanup failed after rollout error",
