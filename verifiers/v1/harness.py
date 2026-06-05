@@ -314,9 +314,7 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
     @vf.stop
     async def max_turns_reached(self, state: State) -> bool:
         max_turns = state.get_max_turns(self.config.max_turns)
-        return (
-            max_turns > 0 and self.runtime.visible_model_requests(state) >= max_turns
-        )
+        return max_turns > 0 and self.runtime.visible_model_requests(state) >= max_turns
 
     async def setup_state(self, task: Task, state: State) -> State:
         await self.setup_runtime_state(task, state)

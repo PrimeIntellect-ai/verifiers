@@ -18,7 +18,7 @@ from pydantic import BaseModel
 
 import verifiers as vf
 from verifiers.clients import Client
-from verifiers.types import ClientConfig
+from verifiers.types import ClientConfig, Messages
 from verifiers.types import Response, ResponseMessage, ToolCall
 from verifiers.types import Tool
 from verifiers.types import Usage
@@ -1037,6 +1037,23 @@ async def test_base_program_max_turns_uses_stop_condition() -> None:
     assert len(client.requests) == 1
     assert len(state["trajectory"]) == 1
     assert state["stop_condition"] == "max_turns_reached"
+
+
+@pytest.mark.asyncio
+async def test_model_request_reservation_released_when_client_resolution_fails() -> (
+    None
+):
+    harness = make_harness(model="fake", max_turns=1)
+    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+    state = await harness.setup_state(task, vf.State.for_task(task))
+
+    with pytest.raises(RuntimeError, match="no model client"):
+        await harness.runtime.submit_model_request(
+            cast(Messages, state["prompt"]), task, state
+        )
+
+    assert harness.runtime.visible_model_requests(state) == 0
+    assert state["trajectory"] == []
 
 
 @pytest.mark.asyncio

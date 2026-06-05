@@ -453,7 +453,8 @@ class Runtime:
         completed = sum(
             1
             for step in trajectory
-            if isinstance(step, dict) and str(step.get("trajectory_id")) == trajectory_id
+            if isinstance(step, dict)
+            and str(step.get("trajectory_id")) == trajectory_id
         )
         return completed + self._inflight_visible_model_requests.get(trajectory_id, 0)
 
@@ -881,9 +882,9 @@ class Runtime:
         if not reserved:
             return self._completed_model_response(state)
         released = False
-        client = self.model_client(state)
-        request_start = time.time()
         try:
+            client = self.model_client(state)
+            request_start = time.time()
             response = await client.get_response(
                 prompt=prompt,
                 model=self.model(state),
@@ -939,7 +940,9 @@ class Runtime:
             )
             return True
 
-    def _release_model_request(self, state: State, context: ModelRequestContext) -> None:
+    def _release_model_request(
+        self, state: State, context: ModelRequestContext
+    ) -> None:
         if context.trajectory_visibility != "append":
             return
         key = str(state["trajectory_id"])
