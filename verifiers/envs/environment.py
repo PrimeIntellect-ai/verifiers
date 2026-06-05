@@ -775,7 +775,10 @@ class Environment(ABC):
                         note_secondary_error(
                             cleanup_primary_error, cleanup_error, phase="cleanup"
                         )
-                    self.logger.exception("Cleanup failed after group scoring error")
+                    message = "Cleanup failed after group scoring"
+                    if primary_error is not None:
+                        message = "Cleanup failed after group scoring error"
+                    self.logger.exception(message)
             if primary_error is None and cleanup_primary_error is not None:
                 raise cleanup_primary_error
 

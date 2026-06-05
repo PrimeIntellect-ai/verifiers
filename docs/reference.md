@@ -142,7 +142,7 @@ A `dict` subclass that tracks rollout information. Accessing keys in `INPUT_FIEL
 | `sampling_args` | `SamplingArgs \| None` | Generation parameters |
 | `is_completed` | `bool` | Whether rollout has ended |
 | `is_truncated` | `bool` | Whether generation was truncated |
-| `tool_defs` | `list[Tool] \| None` | Available tool definitions |
+| `tool_defs` | `list[Tool]` | Available tool definitions |
 | `trajectory` | `list[TrajectoryStep]` | Multi-turn trajectory |
 | `trajectory_id` | `str` | UUID for this rollout |
 | `timing` | `RolloutTiming` | Timing information |
@@ -189,7 +189,7 @@ class RolloutOutput(dict):
     stop_condition: str | None
     token_usage: TokenUsage
     trajectory: list[TrajectoryStep]
-    tool_defs: list[Tool] | None
+    tool_defs: list[Tool]
 ```
 
 Serialized output from a rollout. This is a `dict` subclass that provides typed access to known fields while supporting arbitrary additional fields from `state_columns`. All values must be JSON-serializable. Used in `GenerateOutputs` and for saving results to disk.
