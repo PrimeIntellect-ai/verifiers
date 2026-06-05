@@ -11,7 +11,7 @@ from .utils.rlm_utils import (
 )
 
 RLM_DEFAULT_REPO_URL = "github.com/PrimeIntellect-ai/rlm-harness.git"
-RLM_DEFAULT_REPO_REF = "main"
+RLM_DEFAULT_REF = "main"
 RLM_DEFAULT_EXEC_TIMEOUT = 300
 RLM_DEFAULT_MAX_DEPTH = 0
 RLM_DEFAULT_INSTRUCTION_PATH = "/rlm/instruction.txt"
@@ -24,15 +24,15 @@ class RLMProgramConfig(vf.ProgramConfig):
     sandbox: vf.SandboxConfig | None = None
     workdir: str = RLM_DEFAULT_WORKDIR
     instruction_path: str = RLM_DEFAULT_INSTRUCTION_PATH
-    rlm_repo_url: str = RLM_DEFAULT_REPO_URL
-    rlm_repo_ref: str = RLM_DEFAULT_REPO_REF
-    rlm_exec_timeout: int = RLM_DEFAULT_EXEC_TIMEOUT
-    rlm_max_depth: int = RLM_DEFAULT_MAX_DEPTH
+    repo_url: str = RLM_DEFAULT_REPO_URL
+    ref: str = RLM_DEFAULT_REF
+    exec_timeout: int = RLM_DEFAULT_EXEC_TIMEOUT
+    max_depth: int = RLM_DEFAULT_MAX_DEPTH
     summarize_at_tokens: int | None = None
     append_to_system_prompt: str = ""
     local_checkout: str | None = None
     gh_token_var: str | None = "GH_TOKEN"
-    rlm_tools: list[str] = RLM_DEFAULT_TOOLS
+    tools: list[str] = RLM_DEFAULT_TOOLS
     env_vars: dict[str, str] = {}
     skills: str | None = None
 
@@ -55,8 +55,8 @@ class RLMProgramConfig(vf.ProgramConfig):
                     if self.local_checkout
                     else {}
                 ),
-                "rlm_repo_url": self.rlm_repo_url,
-                "rlm_repo_ref": self.rlm_repo_ref,
+                "repo_url": self.repo_url,
+                "ref": self.ref,
                 **({"gh_token_var": self.gh_token_var} if self.gh_token_var else {}),
             }
         }
@@ -71,9 +71,9 @@ class RLMProgramConfig(vf.ProgramConfig):
             "PATH": "/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
             "OPENAI_MODEL": "runtime.model",
             "RLM_MODEL": "runtime.model",
-            "RLM_TOOLS": ",".join(self.rlm_tools),
-            "RLM_EXEC_TIMEOUT": str(self.rlm_exec_timeout),
-            "RLM_MAX_DEPTH": str(self.rlm_max_depth),
+            "RLM_TOOLS": ",".join(self.tools),
+            "RLM_EXEC_TIMEOUT": str(self.exec_timeout),
+            "RLM_MAX_DEPTH": str(self.max_depth),
             **self.env_vars,
         }
         if self.summarize_at_tokens is not None:
@@ -90,7 +90,7 @@ class RLMProgramConfig(vf.ProgramConfig):
                 }
             }
         )
-        command_timeout = max(self.rlm_exec_timeout + 120, 600)
+        command_timeout = max(self.exec_timeout + 120, 600)
         setup_timeout = command_timeout
         if self.sandbox is not None and "setup_timeout" in self.sandbox.data(
             fill_defaults=False

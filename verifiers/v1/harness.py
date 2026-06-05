@@ -106,6 +106,7 @@ class HarnessConfig(LifecycleConfig):
     )
     program: ProgramConfig = ProgramConfig()
     model: ModelConfig = ModelConfig()
+    version: str | None = None
     system_prompt: SystemPrompt = None
     system_prompt_strategy: SystemPromptStrategy = "HT"
     sandbox: SandboxConfig | None = None
@@ -189,7 +190,7 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
             ):
                 raise TypeError("harness_id must be a string.")
             self.harness_id = resolved_harness_id or type(self).__name__
-            self.program_config = self.config.program.resolve()
+            self.program_config = self.load_program_config(self.config)
             system_prompt_value = self.load_system_prompt(self.config)
             self.system_prompt = normalize_system_prompt(
                 system_prompt_value, field_name="harness.system_prompt"
@@ -219,6 +220,9 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
 
     def load_system_prompt(self, config: ConfigT) -> SystemPrompt:
         return config.system_prompt
+
+    def load_program_config(self, config: ConfigT) -> ProgramConfig:
+        return config.program.resolve()
 
     def load_sandbox(self, config: SandboxConfig | None) -> SandboxConfig | None:
         sandbox = self.program_config.sandbox
