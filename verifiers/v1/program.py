@@ -31,8 +31,6 @@ COMMAND_SANDBOX_DEFAULTS: ConfigData = {
     "image": "python:3.11-slim",
     "workdir": "/app",
     "scope": "rollout",
-    "timeout_minutes": 120,
-    "command_timeout": 900,
     "network_access": True,
 }
 COMMAND_PROGRAM_PATCH_KEYS = {
@@ -40,7 +38,6 @@ COMMAND_PROGRAM_PATCH_KEYS = {
     "files",
     "dirs",
     "setup",
-    "setup_timeout",
     "bindings",
     "env",
     "artifacts",
@@ -73,7 +70,6 @@ class ProgramConfig(Config):
     files: ProgramFiles = {}
     dirs: ProgramDirs = {}
     setup: ProgramSetup = []
-    setup_timeout: int = 300
     bindings: BindingsConfig = BindingsConfig()
     env: ProgramEnv = {}
     artifacts: ArtifactsConfig = ArtifactsConfig()
@@ -149,7 +145,6 @@ class ProgramConfig(Config):
         files: ProgramFiles | None = None,
         dirs: ProgramDirs | None = None,
         setup: ProgramSetup | None = None,
-        setup_timeout: int | None = None,
         bindings: ConfigData | None = None,
         env: ProgramEnv | None = None,
         artifacts: ArtifactsConfig | ConfigData | None = None,
@@ -180,8 +175,6 @@ class ProgramConfig(Config):
             data["dirs"] = dict(dirs)
         if setup is not None:
             data["setup"] = setup
-        if setup_timeout is not None:
-            data["setup_timeout"] = setup_timeout
         if bindings is not None:
             data["bindings"] = dict(bindings)
         if env is not None:

@@ -22,7 +22,7 @@ env = load_environment(
         harness=RLMConfig(
             program=RLMProgramConfig(
                 local_checkout="/path/to/checkout",
-                tools=["bash", "edit"],
+                rlm_tools=["bash", "edit"],
             )
         ),
     )

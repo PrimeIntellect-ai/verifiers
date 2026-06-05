@@ -110,7 +110,6 @@ def test_harbor_taskset_loads_package_tasks_with_program_patch(
     assert task["sandbox"]["image"] == "ubuntu:24.04"
     assert task["sandbox"]["memory_gb"] == 2.0
     assert task["sandbox"]["disk_size_gb"] == 8.0
-    assert task["sandbox"]["command_timeout"] == 600
     assert "network_access" not in task["sandbox"]
     assert (
         merge_task_sandbox(
@@ -118,7 +117,7 @@ def test_harbor_taskset_loads_package_tasks_with_program_patch(
         ).network_access
         is False
     )
-    assert task["harbor"]["test_timeout"] == 300.0
+    assert task["harbor"]["test_timeout_seconds"] == 300
     assert task["program"]["files"] == {
         "/task/instruction.md": {"task": "instruction"},
         "/task/task.toml": {"task": "task_toml"},
@@ -227,7 +226,8 @@ class FakeHarborSandboxClient:
 
 @pytest.mark.asyncio
 async def test_harbor_reward_uses_background_job_for_tests(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     task_dir = write_harbor_task(tmp_path)
     fake_module = cast(Any, types.ModuleType("prime_sandboxes"))
@@ -238,15 +238,18 @@ async def test_harbor_reward_uses_background_job_for_tests(
     taskset = HarborTaskset(config=HarborTasksetConfig(bundle_package=__name__))
     reward = await taskset.harbor_reward(
         vf.Task(
-            {"prompt": [], "harbor": {"task_dir": str(task_dir), "test_timeout": 120}}
+            {
+                "prompt": [],
+                "harbor": {"task_dir": str(task_dir), "test_timeout_seconds": 300},
+            }
         ).freeze(),
         vf.State({"sandbox_id": "sbx-1"}),
     )
 
     client = FakeHarborSandboxClient.instances[0]
     assert reward == 1.0
-    assert client.background_jobs == [("sbx-1", "bash test.sh", 120, "/tests")]
-    assert ("bash test.sh", 120, "/tests") not in client.execute_commands
+    assert client.background_jobs == [("sbx-1", "bash test.sh", 300, "/tests")]
+    assert ("bash test.sh", None, "/tests") not in client.execute_commands
 
 
 def test_packaged_harbor_and_opencode_imports_are_available_from_packages() -> None:
@@ -504,15 +507,6 @@ def test_task_program_merges_into_command_program_without_collisions() -> None:
         "log": {"path": "/logs/harness.log", "format": "text"},
         "task_log": {"path": "/logs/task.log", "format": "text"},
     }
-
-
-def test_command_program_patch_preserves_explicit_default_values() -> None:
-    program = vf.ProgramConfig(setup_timeout=300).resolve_command(
-        command=["tool"],
-        setup_timeout=600,
-    )
-
-    assert program.data()["setup_timeout"] == 300
 
 
 def test_task_program_rejects_harness_owned_keys() -> None:

@@ -139,8 +139,6 @@ class FakeSandboxClient:
     requests: list[dict[str, object]] = []
     deleted: list[str] = []
     commands: list[tuple[str, str]] = []
-    command_timeouts: list[int | None] = []
-    background_jobs: list[tuple[str, str, int | None, str | None, int]] = []
     uploads: list[tuple[str, str, bytes]] = []
     wait_attempts: list[tuple[str, int]] = []
     closed = 0
@@ -154,8 +152,6 @@ class FakeSandboxClient:
         cls.requests = []
         cls.deleted = []
         cls.commands = []
-        cls.command_timeouts = []
-        cls.background_jobs = []
         cls.uploads = []
         cls.wait_attempts = []
         cls.closed = 0
@@ -179,9 +175,7 @@ class FakeSandboxClient:
     ) -> FakeCommandResult:
         sandbox_id = str(kwargs.get("sandbox_id") or args[0])
         command = str(kwargs.get("command") or args[1])
-        timeout = cast(int | None, kwargs.get("timeout"))
         type(self).commands.append((sandbox_id, command))
-        type(self).command_timeouts.append(timeout)
         return FakeCommandResult()
 
     async def run_background_job(
@@ -189,13 +183,7 @@ class FakeSandboxClient:
     ) -> FakeCommandResult:
         sandbox_id = str(kwargs.get("sandbox_id") or args[0])
         command = str(kwargs.get("command") or args[1])
-        timeout = cast(int | None, kwargs.get("timeout", 900))
-        working_dir = cast(str | None, kwargs.get("working_dir"))
-        poll_interval = cast(int, kwargs.get("poll_interval", 3))
         type(self).commands.append((sandbox_id, command))
-        type(self).background_jobs.append(
-            (sandbox_id, command, timeout, working_dir, poll_interval)
-        )
         return FakeCommandResult()
 
     async def upload_bytes(self, *args: object, **kwargs: object) -> None:
@@ -711,6 +699,23 @@ async def replay_answer_program(task, state):
     return state
 
 
+async def timeout_error_program(task, state):
+    _ = task, state
+    raise TimeoutError("client timed out")
+
+
+async def sandbox_error_program(task, state):
+    _ = task, state
+    raise vf.SandboxError("sandbox failed")
+
+
+async def slow_program(task, state):
+    _ = task
+    await asyncio.sleep(0.05)
+    state["answer"] = "late"
+    return state
+
+
 @vf.reward
 async def replay_reward(task, state) -> float:
     return float(state.get("answer") == task.get("answer"))
@@ -738,6 +743,9 @@ for _name, _value in {
     "state_tools_program": state_tools_program,
     "state_tool_program": state_tool_program,
     "replay_answer_program": replay_answer_program,
+    "timeout_error_program": timeout_error_program,
+    "sandbox_error_program": sandbox_error_program,
+    "slow_program": slow_program,
     "replay_reward": replay_reward,
 }.items():
     setattr(ref_module, _name, _value)
@@ -786,6 +794,101 @@ async def test_v1_records_default_metrics_usage_and_timing() -> None:
     assert state["timing"]["total"] > 0.0
     assert state["timing"]["generation"]["duration"] > 0.0
     assert state["timing"]["model"]["duration"] > 0.0
+
+
+@pytest.mark.asyncio
+async def test_task_timeout_limits_active_execution() -> None:
+    harness = make_harness(program={"fn": program_ref("slow_program")})
+    task = vf.Task({"prompt": []}).freeze()
+    state = vf.State.for_task(task)
+    state.runtime_state()["task_timeout_seconds"] = 0.01
+
+    state = await harness.run(task, state)
+
+    assert state["timed_out"] is True
+    assert state["task_timed_out"] is True
+    assert state["is_completed"] is True
+    assert state["stop_condition"] == "timeout_reached"
+    assert "answer" not in state
+
+
+@pytest.mark.asyncio
+async def test_user_timeout_error_is_not_task_timeout() -> None:
+    harness = make_harness(program={"fn": program_ref("timeout_error_program")})
+    task = vf.Task({"prompt": []}).freeze()
+    state = vf.State.for_task(task)
+    state.runtime_state()["task_timeout_seconds"] = 10
+
+    with pytest.raises(TimeoutError, match="client timed out"):
+        await harness.run(task, state)
+
+    assert state.get("timed_out") is None
+    assert state.get("task_timed_out") is None
+
+
+@pytest.mark.asyncio
+async def test_error_rollout_is_scored_and_completed() -> None:
+    harness = make_harness(
+        program={"fn": program_ref("sandbox_error_program")},
+        rewards=[program_ref("replay_reward")],
+    )
+    task = vf.Task({"prompt": [], "answer": "solved"}).freeze()
+
+    state = await harness.run(task)
+
+    assert state["error"]["error"] == "SandboxError"
+    assert state["reward"] == 0.0
+    assert state["is_completed"] is True
+    assert state["stop_condition"] == "has_error"
+    assert state["runtime"] == {}
+
+
+@pytest.mark.asyncio
+async def test_group_scoring_shares_rollout_timeout() -> None:
+    taskset = make_taskset()
+
+    async def init_group(task: vf.Task, n: int):
+        _ = task
+        tasks = [
+            vf.Task({"prompt": [], "answer": f"solved-{idx}"}).freeze()
+            for idx in range(n)
+        ]
+        states = [vf.State.for_task(task) for task in tasks]
+        return tasks, states
+
+    async def slow_completed_run(task, state):
+        _ = task
+        await asyncio.sleep(0.02)
+        state._set_completed(True)
+        state._set_stop_condition("program_completed")
+        return state
+
+    async def slow_score_group(tasks, states):
+        _ = tasks
+        await asyncio.sleep(0.05)
+        for state in states:
+            state["group_scored"] = True
+
+    taskset.init_group = init_group
+    harness = make_harness(program={"fn": program_ref("replay_answer_program")})
+    harness.run = slow_completed_run
+    harness.score_group = slow_score_group
+    env = vf.Env(taskset=taskset, harness=harness)
+    env.rollout_timeout_seconds = 0.04
+
+    start = time.perf_counter()
+    states = await env._run_group_states(
+        [{"prompt": [], "answer": "solved"}] * 2,
+        cast(Client, FakeModelClient([])),
+        "fake",
+        {},
+    )
+    elapsed = time.perf_counter() - start
+
+    assert elapsed < 0.08
+    assert all(state["is_completed"] is True for state in states)
+    assert all(state.get("group_scored") is None for state in states)
+    assert all(state.get("timed_out") is None for state in states)
 
 
 def test_v1_state_does_not_copy_task_answer_to_top_level() -> None:
@@ -1507,6 +1610,50 @@ async def test_create_sandbox_cancellation_deletes_late_provider_result(
 
 
 @pytest.mark.asyncio
+async def test_create_sandbox_timeout_returns_before_provider_finishes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sandboxes(monkeypatch)
+    disable_sandbox_retry_sleep(monkeypatch)
+    monkeypatch.setattr(sandbox_utils, "SANDBOX_CREATE_TIMEOUT_SECONDS", 0.05)
+    started = asyncio.Event()
+    finish = asyncio.Event()
+    deleted = asyncio.Event()
+
+    class SlowCreateClient:
+        async def create(self, request: FakeCreateSandboxRequest) -> FakeSandboxResult:
+            _ = request
+            started.set()
+            await finish.wait()
+            return FakeSandboxResult("sbx-created-after-timeout")
+
+        async def wait_for_creation(
+            self,
+            sandbox_id: str,
+            *,
+            max_attempts: int = sandbox_utils.SANDBOX_WAIT_FOR_CREATION_ATTEMPTS,
+        ) -> None:
+            _ = sandbox_id, max_attempts
+
+        async def delete(self, sandbox_id: str) -> None:
+            assert sandbox_id == "sbx-created-after-timeout"
+            deleted.set()
+
+    start = time.perf_counter()
+    with pytest.raises(TimeoutError):
+        await sandbox_utils.create_sandbox(
+            cast(sandbox_utils.SandboxClient, SlowCreateClient()),
+            {"image": "python:3.11-slim"},
+        )
+    elapsed = time.perf_counter() - start
+
+    assert started.is_set()
+    assert elapsed < 0.2
+    finish.set()
+    await asyncio.wait_for(deleted.wait(), timeout=1)
+
+
+@pytest.mark.asyncio
 async def test_create_sandbox_wait_cancellation_deletes_known_sandbox(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1566,7 +1713,6 @@ async def test_create_sandbox_threads_v1_request_fields(
             "gpu_type": "a10",
             "vm": True,
             "network_access": False,
-            "timeout_minutes": 30,
             "environment_vars": {"NUMBER": 7},
             "secrets": {"TOKEN": "secret"},
             "team_id": "team",
@@ -1773,57 +1919,6 @@ async def test_rollout_setup_receives_program_sandbox_before_program_setup(
 
 
 @pytest.mark.asyncio
-async def test_program_setup_uses_program_setup_timeout(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    install_fake_sandboxes(monkeypatch)
-    install_fake_endpoint_tunnel(monkeypatch)
-
-    harness = make_harness(
-        program={
-            "command": ["true"],
-            "sandbox": True,
-            "setup": "echo program-setup",
-            "setup_timeout": 777,
-        },
-        sandbox={"image": "python:3.11-slim"},
-    )
-    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
-
-    await harness.run(task)
-
-    setup_commands = FakeSandboxClient.commands[
-        : len(FakeSandboxClient.command_timeouts)
-    ]
-    command_timeouts = dict(
-        zip(
-            [command for _, command in setup_commands],
-            FakeSandboxClient.command_timeouts,
-            strict=True,
-        )
-    )
-    assert command_timeouts["echo program-setup"] == 777
-
-
-@pytest.mark.asyncio
-async def test_sandbox_command_uses_configured_poll_interval(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    install_fake_sandboxes(monkeypatch)
-    install_fake_endpoint_tunnel(monkeypatch)
-
-    harness = make_harness(
-        program={"command": ["true"], "sandbox": True},
-        sandbox={"image": "python:3.11-slim", "poll_interval": 11},
-    )
-    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
-
-    await harness.run(task)
-
-    assert FakeSandboxClient.background_jobs == [("sbx-1", "true", 900, None, 11)]
-
-
-@pytest.mark.asyncio
 async def test_sandbox_handle_forwards_background_job_poll_interval() -> None:
     class BackgroundJobClient:
         poll_intervals: list[int] = []
@@ -1924,29 +2019,6 @@ async def test_sandbox_state_input_upload_runs_after_rollout_setup(
         if path == "/tmp/vf_state_in.json"
     }
     assert uploads["/tmp/vf_state_in.json"]["state_input_setup"] is True
-
-
-@pytest.mark.asyncio
-async def test_task_command_uses_background_job(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    install_fake_sandboxes(monkeypatch)
-    install_fake_endpoint_tunnel(monkeypatch)
-
-    harness = make_harness(
-        program={"command": ["sleep", "120"], "sandbox": True},
-        sandbox={"image": "python:3.11-slim", "workdir": "/app"},
-    )
-    task = vf.Task(
-        {
-            "prompt": [{"role": "user", "content": "hi"}],
-            "sandbox": {"command_timeout": 120},
-        }
-    ).freeze()
-
-    await harness.run(task)
-
-    assert ("sbx-1", "sleep 120", 120, "/app", 3) in FakeSandboxClient.background_jobs
 
 
 @pytest.mark.asyncio
@@ -2083,8 +2155,6 @@ async def test_real_sandbox_base_program_calls_host_callable_tool() -> None:
             "image": "python:3.11-slim",
             "scope": "group",
             "network_access": True,
-            "timeout_minutes": 20,
-            "command_timeout": 120,
         },
         toolsets=[
             vf.Toolset(
@@ -2127,8 +2197,6 @@ async def test_real_sandbox_command_program_uses_mcp_tool_proxy() -> None:
         sandbox={
             "image": "python:3.9-slim",
             "network_access": True,
-            "timeout_minutes": 20,
-            "command_timeout": 120,
         },
         toolsets=[vf.Toolset(tools=[echo_tool])],
     )

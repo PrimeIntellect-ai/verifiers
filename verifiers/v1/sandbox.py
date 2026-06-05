@@ -20,9 +20,6 @@ class SandboxConfig(Config):
     gpu_type: str | None = None
     vm: bool | None = None
     network_access: bool = True
-    timeout_minutes: int = 60
-    create_timeout: int | None = None
-    wait_timeout: int | None = None
     environment_vars: dict[str, str] = {}
     secrets: dict[str, str] = {}
     team_id: str | None = None
@@ -30,12 +27,8 @@ class SandboxConfig(Config):
     registry_credentials_id: str | None = None
     guaranteed: bool = False
     workdir: str | None = None
-    command_timeout: int | None = None
-    poll_interval: int = 3
     packages: list[str] = []
-    install_timeout: int = 300
     setup_commands: list[str] = []
-    setup_timeout: int = 300
     labels: list[str] = []
     scope: Literal["rollout", "group", "global"] = "rollout"
     prefer: Literal["program"] | None = None

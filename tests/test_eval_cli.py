@@ -86,6 +86,9 @@ def run_cli(make_metadata, make_state, make_input):
             "save_to_hf_hub": False,
             "hf_hub_dataset_name": "",
             "extra_env_kwargs": {},
+            "rollout_timeout_seconds": None,
+            "task_timeout_seconds": None,
+            "global_timeout_seconds": None,
             "env_config_overrides": [],
             "max_retries": 0,
             "fullscreen": False,
@@ -350,34 +353,10 @@ def test_cli_temperature_not_added_when_none(monkeypatch, run_cli):
     assert "temperature" not in sa
 
 
-def test_cli_extra_env_kwargs_support_timeout_seconds(monkeypatch, run_cli):
-    captured = run_cli(
-        monkeypatch,
-        {
-            "extra_env_kwargs": {"timeout_seconds": 30, "foo": "bar"},
-        },
-    )
+def test_parse_args_legacy_timeout_alias_maps_to_rollout_timeout():
+    args = vf_eval.parse_args(["dummy-env", "--timeout", "600"])
 
-    assert captured["configs"][0].extra_env_kwargs == {
-        "timeout_seconds": 30,
-        "foo": "bar",
-    }
-
-
-def test_cli_timeout_flag_overrides_extra_env_kwargs(monkeypatch, run_cli):
-    """--timeout wins over timeout_seconds in --extra-env-kwargs."""
-    captured = run_cli(
-        monkeypatch,
-        {
-            "extra_env_kwargs": {"timeout_seconds": 30, "foo": "bar"},
-            "timeout": 600,
-        },
-    )
-
-    assert captured["configs"][0].extra_env_kwargs == {
-        "timeout_seconds": 600,
-        "foo": "bar",
-    }
+    assert args.rollout_timeout_seconds == 600
 
 
 def test_cli_headers_table_and_list_merge(monkeypatch, run_cli):
@@ -1294,22 +1273,22 @@ def test_load_toml_config_global_values_with_per_eval_override():
 def test_load_toml_config_with_extra_env_kwargs():
     with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
         f.write(
-            '[[eval]]\nenv_id = "env1"\n[eval.extra_env_kwargs]\ntimeout_seconds = 600\n'
+            '[[eval]]\nenv_id = "env1"\n[eval.extra_env_kwargs]\nrollout_timeout_seconds = 600\n'
         )
         f.flush()
         result = load_toml_config(Path(f.name))
 
-    assert result[0]["extra_env_kwargs"] == {"timeout_seconds": 600}
+    assert result[0]["extra_env_kwargs"] == {"rollout_timeout_seconds": 600}
 
 
-def test_load_toml_config_with_top_level_timeout():
-    """Top-level `timeout` is a recognized field on [[eval]] tables."""
+def test_load_toml_config_maps_legacy_timeout_to_rollout_timeout():
     with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
         f.write('[[eval]]\nenv_id = "env1"\ntimeout = 600\n')
         f.flush()
         result = load_toml_config(Path(f.name))
 
-    assert result[0]["timeout"] == 600
+    assert result[0]["rollout_timeout_seconds"] == 600
+    assert "timeout" not in result[0]
 
 
 def test_load_toml_config_invalid_global_field():

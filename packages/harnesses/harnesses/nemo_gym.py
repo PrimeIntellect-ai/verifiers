@@ -16,6 +16,7 @@ from aiohttp import ClientSession, web
 from pydantic import Field
 
 from verifiers.types import AssistantMessage, ToolCall, ToolMessage
+from verifiers.utils.async_utils import FrameworkTimeoutError, timeout_after
 from verifiers.utils.serve_utils import get_free_port
 
 logger = logging.getLogger(__name__)
@@ -41,7 +42,6 @@ class NeMoGymHarnessConfig(vf.HarnessConfig):
     config_paths: list[str] = Field(default_factory=list)
     server_name: str | None = None
     agent_name: str | None = None
-    timeout_seconds: float | None = None
     global_config: ConfigMap = Field(default_factory=dict)
 
 
@@ -54,7 +54,7 @@ class NeMoGymRunner(Protocol):
         server_name: str | None,
         agent_name: str | None,
         endpoint_config: EndpointConfig,
-        timeout_seconds: float | None,
+        task_timeout_seconds: float | None,
         global_config: ConfigMap,
     ) -> ConfigMap: ...
 
@@ -196,15 +196,23 @@ class NeMoGymHarness(vf.Harness[NeMoGymHarnessConfig]):
             raise RuntimeError("NeMo Gym harness runner has not been compiled.")
         endpoint_config = await nemo_gym_rollout_endpoint_config(state)
         row = nemo_gym_row_from_task(cast(ConfigMap, task), self.config.agent_name)
-        result = await runner.run(
-            row,
-            config_paths=self._config_paths(),
-            server_name=self.config.server_name,
-            agent_name=self.config.agent_name,
-            endpoint_config=endpoint_config,
-            timeout_seconds=self.config.timeout_seconds,
-            global_config=self.config.global_config,
-        )
+        try:
+            result = await runner.run(
+                row,
+                config_paths=self._config_paths(),
+                server_name=self.config.server_name,
+                agent_name=self.config.agent_name,
+                endpoint_config=endpoint_config,
+                task_timeout_seconds=cast(
+                    float | None, state.runtime_state().get("task_timeout_seconds")
+                ),
+                global_config=self.config.global_config,
+            )
+        except FrameworkTimeoutError:
+            state["timed_out"] = True
+            state["task_timed_out"] = True
+            state.stop("timeout_reached")
+            return state
         apply_nemo_gym_result(state, result)
         return state
 
@@ -272,7 +280,7 @@ class PersistentNeMoGymRunner:
         server_name: str | None,
         agent_name: str | None,
         endpoint_config: EndpointConfig,
-        timeout_seconds: float | None,
+        task_timeout_seconds: float | None,
         global_config: ConfigMap,
     ) -> ConfigMap:
         async with self._lifecycle_lock:
@@ -287,9 +295,8 @@ class PersistentNeMoGymRunner:
             agent_name=agent_name,
             endpoint_config=endpoint_config,
         )
-        if timeout_seconds is None:
+        async with timeout_after(task_timeout_seconds):
             return await run_once
-        return await asyncio.wait_for(run_once, timeout=timeout_seconds)
 
     async def _ensure_started(
         self, *, config_paths: Sequence[str], global_config: ConfigMap

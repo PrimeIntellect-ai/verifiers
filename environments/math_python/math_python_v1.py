@@ -104,8 +104,6 @@ class MathPythonHarnessConfig(vf.HarnessConfig):
     sandbox_memory_gb: int = 2
     sandbox_disk_size_gb: int = 5
     sandbox_gpu_count: int = 0
-    sandbox_timeout_minutes: int = 60
-    sandbox_timeout_per_command_seconds: int = 60
 
 
 class MathPythonEnvConfig(vf.EnvConfig):
@@ -162,8 +160,6 @@ def load_toolset(
     sandbox_memory_gb: int = 2,
     sandbox_disk_size_gb: int = 5,
     sandbox_gpu_count: int = 0,
-    sandbox_timeout_minutes: int = 60,
-    sandbox_timeout_per_command_seconds: int = 60,
 ):
     packages = pip_install_packages.split() if pip_install_packages.strip() else []
     return vf.Toolset(
@@ -176,8 +172,6 @@ def load_toolset(
             memory_gb=sandbox_memory_gb,
             disk_size_gb=sandbox_disk_size_gb,
             gpu_count=sandbox_gpu_count,
-            timeout_minutes=sandbox_timeout_minutes,
-            command_timeout=sandbox_timeout_per_command_seconds,
             packages=packages,
         ),
         cleanups=[collect_python_commands],
@@ -195,10 +189,6 @@ def load_environment(config: MathPythonEnvConfig) -> vf.Env:
                     sandbox_memory_gb=config.harness.sandbox_memory_gb,
                     sandbox_disk_size_gb=config.harness.sandbox_disk_size_gb,
                     sandbox_gpu_count=config.harness.sandbox_gpu_count,
-                    sandbox_timeout_minutes=config.harness.sandbox_timeout_minutes,
-                    sandbox_timeout_per_command_seconds=(
-                        config.harness.sandbox_timeout_per_command_seconds
-                    ),
                 )
             }
         )

@@ -35,7 +35,7 @@ from verifiers.types import (
     TokenUsage,
     _validate_extra_headers_value,
 )
-from verifiers.utils.async_utils import EventLoopLagMonitor
+from verifiers.utils.async_utils import EventLoopLagMonitor, timeout_after
 from verifiers.utils.env_config_utils import config_table, normalize_env_config_sections
 from verifiers.utils.import_utils import load_toml
 from verifiers.utils.logging_utils import (
@@ -55,6 +55,13 @@ from verifiers.utils.save_utils import save_metadata
 logger = logging.getLogger(__name__)
 FREEFORM_ABLATION_SWEEP_FIELDS = {"args", "env_args"}
 CHAT_TEMPLATE_KWARG_FIELDS = ("reasoning_effort", "enable_thinking")
+
+
+def normalize_timeout_config(config: dict) -> dict:
+    if "timeout" in config and "rollout_timeout_seconds" not in config:
+        config["rollout_timeout_seconds"] = config["timeout"]
+    config.pop("timeout", None)
+    return config
 
 
 def _sum_output_usage(outputs: list[RolloutOutput]) -> TokenUsage | None:
@@ -664,6 +671,9 @@ def load_toml_config(
         "num_workers",
         "disable_env_server",
         "timeout",
+        "global_timeout_seconds",
+        "rollout_timeout_seconds",
+        "task_timeout_seconds",
         # logging
         "verbose",
         "disable_tui",
@@ -708,7 +718,9 @@ def load_toml_config(
             merged.pop("model", None)
         if "model" in eval_config and "endpoint_id" not in eval_config:
             merged.pop("endpoint_id", None)
-        merged_eval_list.append(normalize_env_config_sections(merged))
+        merged_eval_list.append(
+            normalize_timeout_config(normalize_env_config_sections(merged))
+        )
 
     # expand [[ablation]] blocks into eval configs
     for ablation in ablation_list:
@@ -738,11 +750,13 @@ def load_toml_config(
                 f"Valid fields are: {sorted(valid_fields)}"
             )
         expanded = [
-            normalize_env_config_sections(
-                normalize_sampling_config(
-                    config,
-                    "expanded [[ablation]] config",
-                    merge_sampling_with_existing=True,
+            normalize_timeout_config(
+                normalize_env_config_sections(
+                    normalize_sampling_config(
+                        config,
+                        "expanded [[ablation]] config",
+                        merge_sampling_with_existing=True,
+                    )
                 )
             )
             for config in _expand_ablation(ablation, global_defaults)
@@ -1038,10 +1052,16 @@ async def run_evaluation(
     with maybe_suppress_logs:
         vf_env = vf.load_environment(env_id=config.env_id, **config.env_args)
 
+    extra_env_kwargs = dict(config.extra_env_kwargs)
+    if config.rollout_timeout_seconds is not None:
+        extra_env_kwargs["rollout_timeout_seconds"] = config.rollout_timeout_seconds
+    if config.task_timeout_seconds is not None:
+        extra_env_kwargs["task_timeout_seconds"] = config.task_timeout_seconds
+
     # set extra environment kwargs
-    if config.extra_env_kwargs:
-        logger.info(f"Setting extra environment kwargs: {config.extra_env_kwargs}")
-        vf_env.set_kwargs(**config.extra_env_kwargs)
+    if extra_env_kwargs:
+        logger.info(f"Setting extra environment kwargs: {extra_env_kwargs}")
+        vf_env.set_kwargs(**extra_env_kwargs)
 
     results_path = config.resume_path or get_eval_results_path(config)
     if config.client_config.endpoint_configs:
@@ -1056,92 +1076,93 @@ async def run_evaluation(
     on_progress = _with_eval_metadata(on_progress, model_pricing, config.name)
 
     try:
-        if not config.disable_env_server:
-            extra_env_kwargs = dict(config.extra_env_kwargs)
-            # resolve total concurrency
-            if "concurrency" not in extra_env_kwargs:
-                if config.max_concurrent <= 0:
-                    concurrency = config.num_examples * config.rollouts_per_example
+        async with timeout_after(config.global_timeout_seconds):
+            if not config.disable_env_server:
+                extra_env_kwargs = dict(extra_env_kwargs)
+                # resolve total concurrency
+                if "concurrency" not in extra_env_kwargs:
+                    if config.max_concurrent <= 0:
+                        concurrency = config.num_examples * config.rollouts_per_example
+                    else:
+                        concurrency = config.max_concurrent
+                    logger.info(f"Automatically determined {concurrency=}")
                 else:
-                    concurrency = config.max_concurrent
-                logger.info(f"Automatically determined {concurrency=}")
-            else:
-                concurrency = extra_env_kwargs["concurrency"]
+                    concurrency = extra_env_kwargs["concurrency"]
 
-            # resolve num_workers
-            num_workers = config.num_workers
-            if num_workers == "auto":
-                num_workers = max(1, math.ceil(concurrency / 256))
-            else:
-                num_workers = int(num_workers)
-                if num_workers < 1:
-                    raise ValueError(f"num_workers must be >= 1, got {num_workers}")
+                # resolve num_workers
+                num_workers = config.num_workers
+                if num_workers == "auto":
+                    num_workers = max(1, math.ceil(concurrency / 256))
+                else:
+                    num_workers = int(num_workers)
+                    if num_workers < 1:
+                        raise ValueError(f"num_workers must be >= 1, got {num_workers}")
 
-            # per-worker concurrency
-            per_worker = max(1, concurrency // num_workers)
-            extra_env_kwargs["concurrency"] = per_worker
-            logger.info(
-                f"Using {num_workers=} env server worker(s), "
-                f"per-worker concurrency: {per_worker} (total {concurrency})"
-            )
-
-            log_dir = str(results_path)
-            results_path.mkdir(parents=True, exist_ok=True)
-            await vf_env.start_server(
-                extra_env_kwargs=extra_env_kwargs,
-                num_workers=num_workers,
-                log_level=get_log_level(config.verbose),
-                log_dir=log_dir,
-                console_logging=config.disable_tui,
-            )
-            if on_log_file is not None:
-                from verifiers.serve import EnvServer
-
-                for path in EnvServer.get_all_log_files(log_dir, num_workers):
-                    on_log_file(path)
-
-        logger.debug(f"Starting evaluation with model: {config.model}")
-        logger.debug(
-            f"Configuration: num_examples={config.num_examples}, rollouts_per_example={config.rollouts_per_example}, max_concurrent={config.max_concurrent}"
-        )
-
-        effective_group_max_concurrent = config.max_concurrent
-        if (
-            not config.independent_scoring
-            and config.max_concurrent > 0
-            and config.rollouts_per_example > 1
-        ):
-            # Grouped scoring applies the semaphore at group level. Convert
-            # rollout-level concurrency to group-level slots.
-            effective_group_max_concurrent = math.ceil(
-                config.max_concurrent / config.rollouts_per_example
-            )
-            if config.num_examples > 0:
-                effective_group_max_concurrent = min(
-                    effective_group_max_concurrent, config.num_examples
+                # per-worker concurrency
+                per_worker = max(1, concurrency // num_workers)
+                extra_env_kwargs["concurrency"] = per_worker
+                logger.info(
+                    f"Using {num_workers=} env server worker(s), "
+                    f"per-worker concurrency: {per_worker} (total {concurrency})"
                 )
 
-        outputs = await vf_env.evaluate(
-            client=config.client_config,
-            model=config.model,
-            sampling_args=config.sampling_args,
-            num_examples=config.num_examples,
-            rollouts_per_example=config.rollouts_per_example,
-            max_concurrent=effective_group_max_concurrent,
-            results_path=results_path,
-            state_columns=config.state_columns,
-            save_results=config.save_results,
-            push_to_hf_hub=config.save_to_hf_hub,
-            hf_hub_dataset_name=config.hf_hub_dataset_name,
-            independent_scoring=config.independent_scoring,
-            max_retries=config.max_retries,
-            on_start=on_start,
-            on_progress=on_progress,
-            on_log=on_log,
-        )
+                log_dir = str(results_path)
+                results_path.mkdir(parents=True, exist_ok=True)
+                await vf_env.start_server(
+                    extra_env_kwargs=extra_env_kwargs,
+                    num_workers=num_workers,
+                    log_level=get_log_level(config.verbose),
+                    log_dir=log_dir,
+                    console_logging=config.disable_tui,
+                )
+                if on_log_file is not None:
+                    from verifiers.serve import EnvServer
+
+                    for path in EnvServer.get_all_log_files(log_dir, num_workers):
+                        on_log_file(path)
+
+            logger.debug(f"Starting evaluation with model: {config.model}")
+            logger.debug(
+                f"Configuration: num_examples={config.num_examples}, rollouts_per_example={config.rollouts_per_example}, max_concurrent={config.max_concurrent}"
+            )
+
+            effective_group_max_concurrent = config.max_concurrent
+            if (
+                not config.independent_scoring
+                and config.max_concurrent > 0
+                and config.rollouts_per_example > 1
+            ):
+                # Grouped scoring applies the semaphore at group level. Convert
+                # rollout-level concurrency to group-level slots.
+                effective_group_max_concurrent = math.ceil(
+                    config.max_concurrent / config.rollouts_per_example
+                )
+                if config.num_examples > 0:
+                    effective_group_max_concurrent = min(
+                        effective_group_max_concurrent, config.num_examples
+                    )
+
+            outputs = await vf_env.evaluate(
+                client=config.client_config,
+                model=config.model,
+                sampling_args=config.sampling_args,
+                num_examples=config.num_examples,
+                rollouts_per_example=config.rollouts_per_example,
+                max_concurrent=effective_group_max_concurrent,
+                results_path=results_path,
+                state_columns=config.state_columns,
+                save_results=config.save_results,
+                push_to_hf_hub=config.save_to_hf_hub,
+                hf_hub_dataset_name=config.hf_hub_dataset_name,
+                independent_scoring=config.independent_scoring,
+                max_retries=config.max_retries,
+                on_start=on_start,
+                on_progress=on_progress,
+                on_log=on_log,
+            )
     finally:
         if not config.disable_env_server:
-            await vf_env.stop_server()
+            await asyncio.wait_for(vf_env.stop_server(), timeout=600)
 
     metadata_changed = _attach_metadata_name(outputs["metadata"], config.name)
     if _attach_metadata_cost(outputs["metadata"], model_pricing, outputs["outputs"]):

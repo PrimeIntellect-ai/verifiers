@@ -86,7 +86,6 @@ def test_wikispeedia_env_config_reaches_taskset_and_harness(
             },
             harness={
                 "max_turns": 8,
-                "timeout_seconds": 9.0,
             },
         )
     )
@@ -101,7 +100,6 @@ def test_wikispeedia_env_config_reaches_taskset_and_harness(
     assert len(eval_rows) == 1
     assert train_rows[0]["max_turns"] == 7
     assert env.harness.config.max_turns == 8
-    assert env.harness.config.timeout_seconds == 9.0
     assert [tool.__name__ for tool in env.taskset.toolsets[0].tools] == ["click_link"]
 
 
@@ -350,7 +348,6 @@ async def test_wikispeedia_graph_recursion_limit_stops_rollout(
 
     program = module.make_langchain_deep_agents_program(
         max_turns=50,
-        timeout_seconds=30,
     )
     state = FakeState(
         {

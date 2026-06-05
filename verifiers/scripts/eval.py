@@ -572,10 +572,32 @@ def build_parser() -> argparse.ArgumentParser:
         help='Extra environment as JSON object (e.g., \'{"key": "value", "num": 42}\'). Passed to environment constructor.',
     )
     parser.add_argument(
-        "--timeout",
+        "--rollout-timeout",
+        dest="rollout_timeout_seconds",
         type=float,
         default=None,
-        help="Per-rollout wall-clock timeout in seconds. Overrides timeout_seconds in --extra-env-kwargs.",
+        help="Per-rollout wall-clock timeout in seconds.",
+    )
+    parser.add_argument(
+        "--timeout",
+        dest="rollout_timeout_seconds",
+        type=float,
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--task-timeout",
+        dest="task_timeout_seconds",
+        type=float,
+        default=None,
+        help="Per-task active agent timeout in seconds.",
+    )
+    parser.add_argument(
+        "--global-timeout",
+        dest="global_timeout_seconds",
+        type=float,
+        default=None,
+        help="Whole evaluation run timeout in seconds.",
     )
     parser.add_argument(
         "--fullscreen",
@@ -940,9 +962,9 @@ def main(argv: list[str] | None = None):
             list(raw.get("env_config_overrides", [])),
         )
 
-        extra_env_kwargs = dict(raw.get("extra_env_kwargs", {}))
-        if raw.get("timeout") is not None:
-            extra_env_kwargs["timeout_seconds"] = raw["timeout"]
+        rollout_timeout_seconds = raw.get("rollout_timeout_seconds")
+        if rollout_timeout_seconds is None:
+            rollout_timeout_seconds = raw.get("timeout")
 
         return EvalConfig(
             env_id=env_id,
@@ -950,7 +972,7 @@ def main(argv: list[str] | None = None):
             env_args=env_args,
             env_dir_path=raw.get("env_dir_path", DEFAULT_ENV_DIR_PATH),
             output_dir=raw.get("output_dir"),
-            extra_env_kwargs=extra_env_kwargs,
+            extra_env_kwargs=dict(raw.get("extra_env_kwargs", {})),
             endpoint_id=resolved_endpoint_id,
             model=model,
             client_config=client_config,
@@ -961,6 +983,9 @@ def main(argv: list[str] | None = None):
             max_retries=raw.get("max_retries", 3),
             num_workers=raw.get("num_workers", "auto"),
             disable_env_server=raw.get("disable_env_server", False),
+            global_timeout_seconds=raw.get("global_timeout_seconds"),
+            rollout_timeout_seconds=rollout_timeout_seconds,
+            task_timeout_seconds=raw.get("task_timeout_seconds"),
             verbose=raw.get("verbose", False),
             disable_tui=raw.get("disable_tui", False),
             state_columns=raw.get("state_columns", []),

@@ -13,6 +13,7 @@ from typing import cast
 
 from verifiers.v1.sandbox import SandboxConfig
 from verifiers.v1.utils.sandbox_utils import SandboxClient
+from verifiers.v1.utils.timeout_utils import FILE_TRANSFER_TIMEOUT_SECONDS
 
 TASKS_SUBDIR = "tasks"
 
@@ -152,7 +153,7 @@ async def upload_harbor_tests(
                 f"mkdir -p /oracle /tests /logs/verifier && "
                 f"tar -xzf {remote_tar} -C / && rm {remote_tar}"
             ),
-            timeout=900,
+            timeout=FILE_TRANSFER_TIMEOUT_SECONDS,
         )
     finally:
         tar_path.unlink(missing_ok=True)

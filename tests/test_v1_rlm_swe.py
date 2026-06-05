@@ -81,8 +81,7 @@ def test_rlm_harness_accepts_typed_config_surface():
         config=RLMConfig(
             program=RLMProgramConfig(
                 local_checkout="/tmp/checkout",
-                tools=["bash", "edit"],
-                exec_timeout=11,
+                rlm_tools=["bash", "edit"],
                 env_vars={"CUSTOM": "1"},
             )
         )
@@ -90,9 +89,8 @@ def test_rlm_harness_accepts_typed_config_surface():
     program = as_dict(harness.config.program)
     program_env = as_dict(program["env"])
 
-    assert harness.config.program.tools == ["bash", "edit"]
+    assert harness.config.program.rlm_tools == ["bash", "edit"]
     assert program_env["RLM_TOOLS"] == "bash,edit"
-    assert program_env["RLM_EXEC_TIMEOUT"] == "11"
     assert program_env["CUSTOM"] == "1"
 
 
@@ -109,50 +107,6 @@ def test_rlm_endpoint_hides_nested_depth_requests():
         )
         == "hidden"
     )
-
-
-def test_rlm_harness_preserves_program_setup_timeout_override():
-    harness = RLM(
-        config=RLMConfig(
-            program=RLMProgramConfig(
-                local_checkout="/tmp/checkout",
-                setup_timeout=123,
-            ),
-        )
-    )
-    program = as_dict(harness.config.program)
-
-    assert program["setup_timeout"] == 123
-
-
-def test_rlm_harness_uses_sandbox_setup_timeout_default():
-    harness = RLM(
-        config=RLMConfig(
-            program=RLMProgramConfig(
-                local_checkout="/tmp/checkout",
-                sandbox=vf.SandboxConfig(setup_timeout=777),
-            ),
-        )
-    )
-    program = as_dict(harness.config.program)
-
-    assert program["setup_timeout"] == 777
-
-
-def test_rlm_harness_keeps_minimum_setup_timeout_for_default_sandbox_config():
-    harness = RLM(
-        config=RLMConfig(
-            program=RLMProgramConfig(
-                local_checkout="/tmp/checkout",
-                sandbox=vf.SandboxConfig(),
-            ),
-        )
-    )
-    program = as_dict(harness.config.program)
-    sandbox = as_dict(harness.sandbox)
-
-    assert program["setup_timeout"] == 600
-    assert sandbox["setup_timeout"] == 600
 
 
 def test_rlm_harness_can_upload_skills(tmp_path: Path):
@@ -611,7 +565,6 @@ def test_rlm_swe_environment_uses_v1_r2e_taskset(monkeypatch):
             taskset=rlm_swe_v1.RlmSweTasksetConfig(
                 dataset_name="fake-r2e",
                 repo_path="/workspace/repo",
-                timeout_minutes=30,
                 env={"CUSTOM": "1"},
             ),
             harness=rlm_swe_v1.RlmSweHarnessConfig(
@@ -640,7 +593,6 @@ def test_rlm_swe_environment_uses_v1_r2e_taskset(monkeypatch):
         f"{rlm_swe_v1.REGISTRY_PREFIX}/r2e/image:latest"
     )
     assert task["sandbox"]["workdir"] == "/workspace/repo"
-    assert task["sandbox"]["timeout_minutes"] == 30
     task_program_env = as_dict(as_dict(task["program"])["env"])
     assert task_program_env["AGENT_WORKDIR"] == "/workspace/repo"
     assert "/workspace/repo/.venv/bin" in task_program_env["AGENT_PATH"]
@@ -677,9 +629,7 @@ async def test_rlm_swe_taskset_setup_and_reward(monkeypatch):
     monkeypatch.setattr(
         rlm_swe_v1, "load_dataset", lambda *args, **kwargs: fake_r2e_dataset()
     )
-    taskset = rlm_swe_v1.load_taskset(
-        config=rlm_swe_v1.RlmSweTasksetConfig(timeout_minutes=30)
-    )
+    taskset = rlm_swe_v1.load_taskset(config=rlm_swe_v1.RlmSweTasksetConfig())
     task = next(iter(taskset))
     state = vf.State.for_task(task)
     sandbox = FakeSandbox()
@@ -692,9 +642,8 @@ async def test_rlm_swe_taskset_setup_and_reward(monkeypatch):
     async def fake_run_tests(
         sandbox_arg: object,
         state_arg: vf.State,
-        test_timeout: int,
     ) -> str:
-        calls["run_tests"] = (sandbox_arg, state_arg, test_timeout)
+        calls["run_tests"] = (sandbox_arg, state_arg)
         return """
 =========================== short test summary info ============================
 PASSED tests/test_example.py::test_fix
@@ -709,9 +658,11 @@ PASSED tests/test_example.py::test_fix
 
     assert calls["setup_sandbox"] is sandbox
     assert calls["setup_state"] is state
-    assert calls["run_tests"] == (sandbox, state, 1800)
+    assert calls["run_tests"] == (
+        sandbox,
+        state,
+    )
     assert state["sandbox_id"] == "sandbox-1"
-    assert state["test_timeout"] == 1800
     assert reward == 1.0
     assert "sandbox_client" not in state
     assert "_rlm_swe_sandbox" not in state
@@ -727,7 +678,7 @@ async def test_rlm_swe_run_tests_quotes_env_values():
     )
     sandbox = RecordingSandbox()
 
-    output = await taskset.run_tests(sandbox, {}, 123)
+    output = await taskset.run_tests(sandbox, {})
 
     assert output == "test output"
     assert len(sandbox.background_jobs) == 1

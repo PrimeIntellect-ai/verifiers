@@ -27,7 +27,6 @@ class RlmSweTasksetConfig(vf.TasksetConfig):
     filter_repos: list[str] | None = None
     ds_num_proc: int | None = None
     ds_keep_in_memory: bool = True
-    timeout_minutes: int | None = None
     hide_tests_from_agent: bool = True
     env: vf.ConfigData | None = None
 
@@ -59,7 +58,7 @@ class R2ESandbox(Protocol):
     async def upload_bytes(self, remote_path: str, data: bytes, name: str) -> None: ...
 
     async def run_background_job(
-        self, command: str, timeout: int, working_dir: str
+        self, command: str, working_dir: str
     ) -> SandboxCommandResult: ...
 
 
@@ -69,7 +68,6 @@ def load_tasks(
     filter_repos: list[str] | None = None,
     ds_num_proc: int | None = None,
     ds_keep_in_memory: bool = True,
-    timeout_minutes: int | None = None,
     env: vf.ConfigData | None = None,
 ) -> list[vf.JsonData]:
     dataset_kwargs = dict(
@@ -116,7 +114,6 @@ def load_tasks(
             "sandbox": sandbox_config(
                 info=info,
                 repo_path=repo_path,
-                timeout_minutes=timeout_minutes,
             ),
             "program": {"env": program_env},
         }
@@ -124,10 +121,8 @@ def load_tasks(
     return rows
 
 
-def sandbox_config(
-    *, info: vf.JsonData, repo_path: str, timeout_minutes: int | None
-) -> vf.JsonData:
-    config: vf.JsonData = {
+def sandbox_config(*, info: vf.JsonData, repo_path: str) -> vf.JsonData:
+    return {
         "image": f"{REGISTRY_PREFIX}/{info['docker_image']}",
         "cpu_cores": 4,
         "memory_gb": 4,
@@ -136,9 +131,6 @@ def sandbox_config(
         "workdir": repo_path,
         "scope": "rollout",
     }
-    if timeout_minutes is not None:
-        config["timeout_minutes"] = timeout_minutes
-    return config
 
 
 def env_vars(*, repo_path: str, env: vf.ConfigData) -> dict[str, str]:
@@ -162,7 +154,6 @@ class R2ESWETaskset(vf.Taskset[RlmSweTasksetConfig]):
         return sandbox_config(
             info=info,
             repo_path=self.config.repo_path,
-            timeout_minutes=self.config.timeout_minutes,
         )
 
     def get_env_vars(self) -> dict[str, str]:
@@ -177,7 +168,6 @@ class R2ESWETaskset(vf.Taskset[RlmSweTasksetConfig]):
             filter_repos=self.config.filter_repos,
             ds_num_proc=self.config.ds_num_proc,
             ds_keep_in_memory=self.config.ds_keep_in_memory,
-            timeout_minutes=self.config.timeout_minutes,
             env=dict(self.config.env or {}),
         )
 
@@ -187,10 +177,6 @@ class R2ESWETaskset(vf.Taskset[RlmSweTasksetConfig]):
             raise RuntimeError("R2E SWE setup requires the active program sandbox.")
         state["_rlm_swe_sandbox"] = sandbox
         state["sandbox_id"] = getattr(sandbox, "id", state.get("sandbox_id"))
-        sandbox_config = task.get("sandbox")
-        if isinstance(sandbox_config, Mapping):
-            timeout_minutes = int(sandbox_config.get("timeout_minutes") or 60)
-            state.setdefault("test_timeout", timeout_minutes * 60)
         await self.setup_sandbox(sandbox, state)
 
     async def setup_sandbox(self, sandbox: R2ESandbox, state: vf.State) -> None:
@@ -261,11 +247,7 @@ class R2ESWETaskset(vf.Taskset[RlmSweTasksetConfig]):
         if sandbox is None:
             return 0.0
         try:
-            test_output = await self.run_tests(
-                sandbox,
-                state,
-                int(state.get("test_timeout", 900)),
-            )
+            test_output = await self.run_tests(sandbox, state)
             state["test_output"] = test_output
         except Exception as exc:
             logger.warning("Test execution failed: %r", exc)
@@ -277,7 +259,6 @@ class R2ESWETaskset(vf.Taskset[RlmSweTasksetConfig]):
         self,
         sandbox: R2ESandbox,
         state: vf.State,
-        test_timeout: int,
     ) -> str:
         local_archive_path = state.get("r2e_tests_archive_local_path")
         if local_archive_path and Path(str(local_archive_path)).exists():
@@ -306,7 +287,7 @@ class R2ESWETaskset(vf.Taskset[RlmSweTasksetConfig]):
         )
         command = f"export {env_str}; /bin/bash run_tests.sh > test_output.txt 2>&1"
         result = await sandbox.run_background_job(
-            command, timeout=test_timeout, working_dir=self.config.repo_path
+            command, working_dir=self.config.repo_path
         )
         if result.exit_code > 1:
             raise RuntimeError(f"Error running tests: exit_code={result.exit_code}")
@@ -362,12 +343,9 @@ class R2ESWETaskset(vf.Taskset[RlmSweTasksetConfig]):
     async def validate_instance(self, state: vf.State) -> bool:
         sandbox = cast(R2ESandbox, state["_rlm_swe_sandbox"])
         await self.apply_gold_patch(sandbox, state)
-        test_timeout = state.get("test_timeout", 900)
-        assert isinstance(test_timeout, int)
         test_output = await self.run_tests(
             sandbox,
             state,
-            test_timeout,
         )
         state["test_output"] = test_output
         info = cast(vf.JsonData, state["info"])
@@ -493,7 +471,7 @@ def load_taskset(
 
 class RlmSweProgramConfig(RLMProgramConfig):
     workdir: str = DEFAULT_REPO_PATH
-    tools: list[str] = list(DEFAULT_RLM_TOOLS)
+    rlm_tools: list[str] = list(DEFAULT_RLM_TOOLS)
 
 
 class RlmSweHarnessConfig(RLMConfig):

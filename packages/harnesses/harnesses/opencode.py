@@ -51,7 +51,6 @@ class OpenCodeProgramConfig(vf.ProgramConfig):
     allow_git: bool = False
     disable_compaction: bool = True
     install_ripgrep: bool = True
-    provider_timeout_ms: int = 3_600_000
 
     def resolve(self, version: str = OPENCODE_DEFAULT_VERSION) -> vf.ProgramConfig:
         files: dict[str, vf.ProgramValue] = {
@@ -124,7 +123,6 @@ fi
                     "options": {
                         "baseURL": "$OPENAI_BASE_URL",
                         "apiKey": "${OPENAI_API_KEY:-intercepted}",
-                        "timeout": self.provider_timeout_ms,
                     },
                     "models": {
                         "model": {

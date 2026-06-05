@@ -25,6 +25,10 @@ def load_environment(
             unsupported.append("max_startup_wait_seconds")
         if sandbox_client_max_workers is not None:
             unsupported.append("sandbox_client_max_workers")
+        if sandbox_timeout_minutes != 60:
+            unsupported.append("sandbox_timeout_minutes")
+        if sandbox_timeout_per_command_seconds != 60:
+            unsupported.append("sandbox_timeout_per_command_seconds")
         if unsupported:
             unexpected = ", ".join(sorted(unsupported))
             raise TypeError(f"Unsupported v1 load_environment kwargs: {unexpected}")
@@ -52,8 +56,6 @@ def load_environment(
                     sandbox_memory_gb=sandbox_memory_gb,
                     sandbox_disk_size_gb=sandbox_disk_size_gb,
                     sandbox_gpu_count=sandbox_gpu_count,
-                    sandbox_timeout_minutes=sandbox_timeout_minutes,
-                    sandbox_timeout_per_command_seconds=sandbox_timeout_per_command_seconds,
                 ),
             )
         )
