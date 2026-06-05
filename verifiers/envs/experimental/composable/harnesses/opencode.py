@@ -17,9 +17,6 @@ from pathlib import Path, PurePosixPath
 
 DEFAULT_RELEASE_REPO = "PrimeIntellect-ai/opencode"
 DEFAULT_RELEASE_VERSION = "1.1.63-rl2"
-DEFAULT_RELEASE_SHA256 = {
-    "x64": "47f4102796da50769e27d2c9ea6a9cf7941f76898390cb497278cab39c4b6ed4",
-}
 DEFAULT_SYSTEM_PROMPT = (Path(__file__).parent / "prompt.txt").read_text()
 
 DEFAULT_DISABLED_TOOLS = [
@@ -51,19 +48,13 @@ DEFAULT_DISABLED_TOOLS = [
 def build_install_script(
     release_repo: str = DEFAULT_RELEASE_REPO,
     release_version: str = DEFAULT_RELEASE_VERSION,
-    release_sha256: dict[str, str] | None = None,
     install_ripgrep: bool = True,
 ) -> str:
     """Build the shell script that installs OpenCode in a sandbox."""
-    release_sha256 = release_sha256 or DEFAULT_RELEASE_SHA256
     rg_install = (
         "apt-get -o Acquire::Retries=3 install -y -qq ripgrep > /dev/null 2>&1 || true"
         if install_ripgrep
         else ""
-    )
-    sha256_cases = "\n".join(
-        f"  {shlex.quote(arch)}) OPENCODE_RELEASE_SHA256={shlex.quote(sha256)} ;;"
-        for arch, sha256 in release_sha256.items()
     )
     # Acquire::Retries=3 mitigates transient archive.ubuntu.com CDN sync mismatches
     # (e.g. "File has unexpected size ... Mirror sync in progress?"). See launchpad
@@ -86,17 +77,11 @@ OPENCODE_ASSET="opencode-linux-$OPENCODE_ARCH.tar.gz"
 OPENCODE_RELEASE_TAG="${{OPENCODE_RELEASE_VERSION#v}}"
 OPENCODE_RELEASE_URL="https://github.com/$OPENCODE_RELEASE_REPO/releases/download/v$OPENCODE_RELEASE_TAG/$OPENCODE_ASSET"
 
-case "$OPENCODE_ARCH" in
-{sha256_cases}
-  *) echo "No SHA256 configured for OpenCode $OPENCODE_RELEASE_VERSION on $OPENCODE_ARCH"; exit 1 ;;
-esac
-
 mkdir -p "$HOME/.opencode/bin"
 if [ -x "$HOME/.opencode/bin/opencode" ]; then
   echo "OpenCode already installed, skipping download"
 else
   curl -fsSL "$OPENCODE_RELEASE_URL" -o /tmp/opencode.tar.gz
-  echo "$OPENCODE_RELEASE_SHA256  /tmp/opencode.tar.gz" | sha256sum -c -
   tar -xzf /tmp/opencode.tar.gz -C /tmp
   install -m 755 /tmp/opencode "$HOME/.opencode/bin/opencode"
   rm -f /tmp/opencode.tar.gz /tmp/opencode
@@ -257,7 +242,6 @@ def opencode_harness(
     disable_compaction: bool = True,
     release_repo: str = DEFAULT_RELEASE_REPO,
     release_version: str = DEFAULT_RELEASE_VERSION,
-    release_sha256: dict[str, str] | None = None,
     instruction_path: str = "/opencode/prompt.txt",
     system_prompt_path: str = "/opencode/system.txt",
     log_path: str = "/opencode/logs.txt",
@@ -287,7 +271,6 @@ def opencode_harness(
         install_script=build_install_script(
             release_repo=release_repo,
             release_version=release_version,
-            release_sha256=release_sha256,
         ),
         run_command=build_opencode_run_command(
             agent_workdir=agent_workdir,

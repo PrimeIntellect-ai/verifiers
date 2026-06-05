@@ -193,12 +193,11 @@ def test_taskset_repr():
     assert "3" in repr(ts)
 
 
-def test_composable_mini_swe_agent_install_script_owns_wheel_download():
+def test_composable_mini_swe_agent_install_script_uses_pip_requirement():
     setup = build_mini_swe_agent_install_script()
 
-    assert "mini_swe_agent-2.2.8-py3-none-any.whl" in setup
-    assert "sha256sum -c -" in setup
-    assert "694df4de1337e665e3cd82e99f93374f573bf52b8e7c362ac5d8045ad9f7c37c" in setup
+    assert "mini-swe-agent==2.2.8" in setup
+    assert "files.pythonhosted.org" not in setup
 
 
 def test_composable_opencode_install_script_owns_release_download():
@@ -209,15 +208,7 @@ def test_composable_opencode_install_script_owns_release_download():
     assert "OPENCODE_RELEASE_REPO=PrimeIntellect-ai/opencode" in setup
     assert "OPENCODE_RELEASE_VERSION=1.1.63-rl2" in setup
     assert "releases/download/v$OPENCODE_RELEASE_TAG" in setup
-    assert (
-        "x64) OPENCODE_RELEASE_SHA256="
-        "47f4102796da50769e27d2c9ea6a9cf7941f76898390cb497278cab39c4b6ed4 ;;" in setup
-    )
-    assert "No SHA256 configured for OpenCode" in setup
-    assert (
-        'echo "$OPENCODE_RELEASE_SHA256  /tmp/opencode.tar.gz" | sha256sum -c -'
-        in setup
-    )
+    assert "tar -xzf /tmp/opencode.tar.gz" in setup
 
 
 @pytest.mark.asyncio

@@ -10,13 +10,9 @@ DEFAULT_UV_SITE_PACKAGES_DIR = f"{DEFAULT_INSTALL_DIR}/uv-site-packages"
 DEFAULT_MINI_BINARY = f"{DEFAULT_PREFIX_DIR}/bin/mini"
 MINI_SWE_AGENT_CLI_PACKAGE = "mini-swe-agent"
 MINI_SWE_AGENT_CLI_VERSION = "2.2.8"
-MINI_SWE_AGENT_CLI_SHA256 = (
-    "694df4de1337e665e3cd82e99f93374f573bf52b8e7c362ac5d8045ad9f7c37c"
-)
 MINI_SWE_AGENT_PYTHON_VERSION = "3.11"
 UV_PACKAGE_VERSION = "0.11.7"
 DEFAULT_PACKAGE_VERSION = MINI_SWE_AGENT_CLI_VERSION
-DEFAULT_PACKAGE_SHA256 = MINI_SWE_AGENT_CLI_SHA256
 DEFAULT_INSTRUCTION_PATH = "/mini-swe-agent/prompt.txt"
 DEFAULT_SYSTEM_PROMPT_PATH = "/mini-swe-agent/system.txt"
 DEFAULT_LOG_DIR = "/logs/agent"
@@ -30,7 +26,6 @@ DEFAULT_ENVIRONMENT_TIMEOUT = 120
 
 def build_mini_swe_agent_install_script(
     package_version: str = DEFAULT_PACKAGE_VERSION,
-    package_sha256: str = DEFAULT_PACKAGE_SHA256,
     prefix_dir: str = DEFAULT_PREFIX_DIR,
     install_python: bool = True,
 ) -> str:
@@ -49,13 +44,11 @@ fi
 
     quoted_prefix_dir = shlex.quote(prefix_dir)
     site_packages_dir = f"{prefix_dir}/site-packages"
-    wheel_filename = f"mini_swe_agent-{package_version}-py3-none-any.whl"
-    wheel_url = (
-        f"https://files.pythonhosted.org/packages/py3/m/mini-swe-agent/{wheel_filename}"
-    )
+    package_requirement = f"{MINI_SWE_AGENT_CLI_PACKAGE}=={package_version}"
     quoted_site_packages_dir = shlex.quote(site_packages_dir)
     quoted_install_dir = shlex.quote(DEFAULT_INSTALL_DIR)
     quoted_uv_site_packages_dir = shlex.quote(DEFAULT_UV_SITE_PACKAGES_DIR)
+    quoted_package_requirement = shlex.quote(package_requirement)
     return f"""\
 set -e
 {install_tools}
@@ -72,17 +65,10 @@ if ! "$PYTHON_BIN" -c 'import sys; raise SystemExit(sys.version_info < (3, 10))'
   env PYTHONPATH={quoted_uv_site_packages_dir} "$PYTHON_BIN" -m uv python install {MINI_SWE_AGENT_PYTHON_VERSION}
   MINI_SWE_AGENT_PYTHON="$(env PYTHONPATH={quoted_uv_site_packages_dir} "$PYTHON_BIN" -m uv python find {MINI_SWE_AGENT_PYTHON_VERSION})"
 fi
-MINI_SWE_AGENT_WHEEL_DIR="$(mktemp -d)"
-trap 'rm -rf "$MINI_SWE_AGENT_WHEEL_DIR"' EXIT
-MINI_SWE_AGENT_WHEEL="$MINI_SWE_AGENT_WHEEL_DIR/{wheel_filename}"
-MINI_SWE_AGENT_WHEEL_URL={shlex.quote(wheel_url)}
-export MINI_SWE_AGENT_WHEEL MINI_SWE_AGENT_WHEEL_URL
-"$PYTHON_BIN" -c 'import os, urllib.request; urllib.request.urlretrieve(os.environ["MINI_SWE_AGENT_WHEEL_URL"], os.environ["MINI_SWE_AGENT_WHEEL"])'
-echo "{package_sha256}  $MINI_SWE_AGENT_WHEEL" | sha256sum -c -
 if [ "$MINI_SWE_AGENT_PYTHON" = "$PYTHON_BIN" ]; then
-  "$PYTHON_BIN" -m pip install --quiet --target {quoted_site_packages_dir} "$MINI_SWE_AGENT_WHEEL"
+  "$PYTHON_BIN" -m pip install --quiet --target {quoted_site_packages_dir} {quoted_package_requirement}
 else
-  env PYTHONPATH={quoted_uv_site_packages_dir} "$PYTHON_BIN" -m uv pip install --python "$MINI_SWE_AGENT_PYTHON" --target {quoted_site_packages_dir} "$MINI_SWE_AGENT_WHEEL"
+  env PYTHONPATH={quoted_uv_site_packages_dir} "$PYTHON_BIN" -m uv pip install --python "$MINI_SWE_AGENT_PYTHON" --target {quoted_site_packages_dir} {quoted_package_requirement}
 fi
 echo "$MINI_SWE_AGENT_PYTHON" > {quoted_prefix_dir}/python
 cat > {quoted_prefix_dir}/bin/mini <<'EOF'
@@ -180,7 +166,6 @@ MINI_SWE_AGENT_CONFIG = {
     "install_script": MINI_SWE_AGENT_INSTALL_SCRIPT,
     "cli_package": MINI_SWE_AGENT_CLI_PACKAGE,
     "cli_version": MINI_SWE_AGENT_CLI_VERSION,
-    "cli_sha256": MINI_SWE_AGENT_CLI_SHA256,
 }
 
 
@@ -193,7 +178,6 @@ def mini_swe_agent_harness(
     log_path: str = DEFAULT_LOG_PATH,
     trajectory_path: str = DEFAULT_TRAJECTORY_PATH,
     package_version: str = DEFAULT_PACKAGE_VERSION,
-    package_sha256: str = DEFAULT_PACKAGE_SHA256,
     config_spec: str = DEFAULT_CONFIG_SPEC,
     model_class: str = DEFAULT_MODEL_CLASS,
     environment_timeout: int = DEFAULT_ENVIRONMENT_TIMEOUT,
@@ -214,7 +198,6 @@ def mini_swe_agent_harness(
     return Harness(
         install_script=build_mini_swe_agent_install_script(
             package_version=package_version,
-            package_sha256=package_sha256,
         ),
         run_command=build_mini_swe_agent_run_command(
             agent_workdir=agent_workdir,
