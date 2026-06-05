@@ -1,11 +1,7 @@
 from typing import Callable, TypeGuard, cast
 
 import verifiers as vf
-from verifiers.types import (
-    DiagnosticErrorData,
-    DiagnosticErrorPhase,
-    ErrorData,
-)
+from verifiers.types import ErrorData
 
 
 def get_error_chain(
@@ -91,78 +87,6 @@ def validate_error_data(value: object) -> ErrorData:
             "and error_chain_str fields."
         )
     return value
-
-
-def diagnostic_error_data(
-    error: BaseException,
-    *,
-    phase: DiagnosticErrorPhase,
-    scope: str | None = None,
-) -> DiagnosticErrorData:
-    diagnostic = DiagnosticErrorData(phase=phase, error=error_data(error))
-    if scope is not None:
-        diagnostic["scope"] = scope
-    return diagnostic
-
-
-def is_diagnostic_error_data(value: object) -> TypeGuard[DiagnosticErrorData]:
-    if not isinstance(value, dict):
-        return False
-    match value:
-        case {"phase": str() as phase, "error": error}:
-            if set(value) == {"phase", "error"}:
-                scope_valid = True
-            elif set(value) == {"phase", "error", "scope"}:
-                match value:
-                    case {"scope": str()}:
-                        scope_valid = True
-                    case _:
-                        scope_valid = False
-            else:
-                scope_valid = False
-        case _:
-            return False
-    if phase not in {
-        "artifact_collection",
-        "cleanup",
-        "cleanup_rollout",
-        "cleanup_group",
-        "sandbox_cleanup",
-    }:
-        return False
-    if not is_error_data(error):
-        return False
-    return scope_valid
-
-
-def validate_diagnostic_error_data(value: object) -> DiagnosticErrorData:
-    if not is_diagnostic_error_data(value):
-        raise TypeError(
-            "DiagnosticErrorData must contain phase and error fields, "
-            "with optional string scope."
-        )
-    return value
-
-
-def note_secondary_error(
-    primary_error: BaseException,
-    secondary_error: BaseException,
-    *,
-    phase: DiagnosticErrorPhase,
-) -> None:
-    note = (
-        f"{phase} failed while handling {type(primary_error).__name__}: "
-        f"{repr(ErrorChain(secondary_error))}"
-    )
-    add_note = getattr(primary_error, "add_note", None)
-    if callable(add_note):
-        add_note(note)
-        return
-    notes = getattr(primary_error, "__notes__", [])
-    if not isinstance(notes, list):
-        notes = [str(notes)]
-    notes.append(note)
-    setattr(primary_error, "__notes__", notes)
 
 
 def error_data_to_exception(

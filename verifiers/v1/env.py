@@ -6,11 +6,6 @@ import verifiers as vf
 from verifiers.clients import Client
 from verifiers.types import ClientConfig
 from verifiers.types import RolloutInput, SamplingArgs
-from verifiers.utils.error_utils import (
-    diagnostic_error_data,
-    note_secondary_error,
-    validate_diagnostic_error_data,
-)
 
 from .config import Config
 from .harness import Harness, HarnessConfig
@@ -180,7 +175,7 @@ class Env(vf.Environment):
         ]
         try:
             states = await asyncio.gather(*run_tasks)
-        except BaseException as primary_error:
+        except BaseException:
             pending_state_pairs = [
                 (task, state)
                 for task, state in zip(run_tasks, states)
@@ -189,47 +184,11 @@ class Env(vf.Environment):
             pending = [task for task, _ in pending_state_pairs]
             for task in pending:
                 task.cancel()
-            secondary_notes: list[str] = []
             if pending:
-                drained_errors = await asyncio.gather(*pending, return_exceptions=True)
-                for drained_error in drained_errors:
-                    if not isinstance(drained_error, BaseException):
-                        continue
-                    for note in getattr(drained_error, "__notes__", []):
-                        secondary_notes.append(f"cancelled group sibling: {note}")
-                for _, state in pending_state_pairs:
-                    for cleanup_error in state.get("cleanup_errors", []):
-                        try:
-                            diagnostic = validate_diagnostic_error_data(cleanup_error)
-                        except TypeError:
-                            continue
-                        secondary_notes.append(
-                            "cancelled group sibling "
-                            f"{diagnostic['phase']} failed: "
-                            f"{diagnostic['error']['message']}"
-                        )
-                for secondary_note in dict.fromkeys(secondary_notes):
-                    add_note = getattr(primary_error, "add_note", None)
-                    if callable(add_note):
-                        add_note(secondary_note)
-                    else:
-                        notes = getattr(primary_error, "__notes__", [])
-                        if not isinstance(notes, list):
-                            notes = [str(notes)]
-                        notes.append(secondary_note)
-                        setattr(primary_error, "__notes__", notes)
-                    self.logger.error(
-                        "Cancelled v1 group sibling reported secondary error: %s",
-                        secondary_note,
-                    )
+                await asyncio.gather(*pending, return_exceptions=True)
             try:
                 await self.harness.cleanup_group(tasks, states)
-            except Exception as cleanup_error:
-                for state in states:
-                    state.setdefault("cleanup_errors", []).append(
-                        diagnostic_error_data(cleanup_error, phase="cleanup")
-                    )
-                note_secondary_error(primary_error, cleanup_error, phase="cleanup")
+            except Exception:
                 self.logger.exception("Cleanup failed after v1 group rollout error")
             for state in states:
                 state.strip_runtime_handles()
@@ -244,14 +203,9 @@ class Env(vf.Environment):
         finally:
             try:
                 await self.harness.cleanup_group(tasks, states)
-            except Exception as cleanup_error:
+            except Exception:
                 if primary_error is None:
                     raise
-                for state in states:
-                    state.setdefault("cleanup_errors", []).append(
-                        diagnostic_error_data(cleanup_error, phase="cleanup")
-                    )
-                note_secondary_error(primary_error, cleanup_error, phase="cleanup")
                 self.logger.exception("Cleanup failed after v1 group scoring error")
         for state in states:
             state.strip_runtime_handles()

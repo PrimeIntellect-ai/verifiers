@@ -183,9 +183,6 @@ class RolloutOutput(dict):
     answer: str
     info: Info
     error: ErrorData | None
-    artifact_errors: list[DiagnosticErrorData]
-    cleanup_errors: list[DiagnosticErrorData]
-    sandbox_failures: list[SandboxFailureData]
     stop_condition: str | None
     token_usage: TokenUsage
     trajectory: list[TrajectoryStep]
@@ -203,15 +200,11 @@ Serialized output from a rollout. This is a `dict` subclass that provides typed 
 | `error_chain_repr` | `str` | Detailed repr of the causal exception chain |
 | `error_chain_str` | `str` | Compact causal exception chain |
 
-Secondary diagnostics are included only when present:
+Secondary artifact and cleanup failures are logged instead of being persisted in
+rollout outputs. Sandbox OOM and timeout detections set `sandbox_oom` /
+`sandbox_timeout` state flags and log their context; detailed sandbox failure
+records are not persisted.
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `artifact_errors` | `list[DiagnosticErrorData]` | Artifact collection failures that happened after a rollout already had a primary `vf.Error` |
-| `cleanup_errors` | `list[DiagnosticErrorData]` | Cleanup failures captured while preserving an existing primary failure |
-| `sandbox_failures` | `list[SandboxFailureData]` | Sandbox OOM or timeout signals reported by sandbox execution helpers |
-
-`DiagnosticErrorData` has `phase`, `error`, and optional `scope` fields. `error` uses the same `ErrorData` shape as the primary rollout error.
 
 ### TrajectoryStep
 

@@ -6,7 +6,6 @@ from collections.abc import Mapping
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any, cast
-from typing import TypeGuard
 
 from datasets import Dataset
 from openai import AsyncOpenAI
@@ -14,12 +13,10 @@ from pydantic import BaseModel
 
 from verifiers.types import (
     ClientConfig,
-    DiagnosticErrorData,
     GenerateMetadata,
     GenerateOutputs,
     Response,
     RolloutOutput,
-    SandboxFailureData,
     SamplingArgs,
     State,
     TokenUsage,
@@ -27,7 +24,6 @@ from verifiers.types import (
 )
 from verifiers.utils.error_utils import (
     error_data,
-    validate_diagnostic_error_data,
     validate_error_data,
 )
 from verifiers.utils.message_utils import (
@@ -52,62 +48,6 @@ from verifiers.utils.usage_utils import (
 from verifiers.utils.version_utils import get_version_info
 
 logger = logging.getLogger(__name__)
-
-
-def diagnostic_errors(value: object, field_name: str) -> list[DiagnosticErrorData]:
-    if not isinstance(value, list):
-        raise TypeError(f"state.{field_name} must be a list.")
-    return [validate_diagnostic_error_data(item) for item in value]
-
-
-def is_sandbox_failure_data(value: object) -> TypeGuard[SandboxFailureData]:
-    if not isinstance(value, dict):
-        return False
-    data = cast(dict[str, object], value)
-    expected = {"kind", "type", "message"}
-    optional = {"phase", "sandbox_id", "scope"}
-    if not expected <= set(data) <= expected | optional:
-        return False
-    match data:
-        case {
-            "kind": str() as kind,
-            "type": str(),
-            "message": str(),
-        }:
-            pass
-        case _:
-            return False
-    if kind not in {"oom", "timeout"}:
-        return False
-    if "phase" in data:
-        phase = data["phase"]
-        if not isinstance(phase, str) or phase not in {
-            "background_job",
-            "create",
-            "setup",
-            "execute",
-            "command",
-        }:
-            return False
-    for field in ("sandbox_id", "scope"):
-        if field in data and not isinstance(data[field], str):
-            return False
-    return True
-
-
-def validate_sandbox_failure_data(value: object) -> SandboxFailureData:
-    if not is_sandbox_failure_data(value):
-        raise TypeError(
-            "SandboxFailureData must contain string kind, type, and message "
-            "fields, with optional phase, sandbox_id, and scope strings."
-        )
-    return value
-
-
-def sandbox_failures(value: object, field_name: str) -> list[SandboxFailureData]:
-    if not isinstance(value, list):
-        raise TypeError(f"state.{field_name} must be a list.")
-    return [validate_sandbox_failure_data(item) for item in value]
 
 
 def is_json_serializable(value: object) -> bool:
@@ -355,13 +295,6 @@ def state_to_output(
         output.pop("answer")
     if "info" in output and not output["info"]:
         output.pop("info")
-    for key in ("artifact_errors", "cleanup_errors"):
-        if key in state:
-            output[key] = diagnostic_errors(state[key], key)
-    if "sandbox_failures" in state:
-        output["sandbox_failures"] = sandbox_failures(
-            state["sandbox_failures"], "sandbox_failures"
-        )
     # flatten metrics to top-level keys (backwards compatibility)
     state_metrics = state.get("metrics") or {}
     for k, v in state_metrics.items():

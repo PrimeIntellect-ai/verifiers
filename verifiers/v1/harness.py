@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Generic, TypeAlias, TypeVar, cast, final
 
@@ -15,7 +16,6 @@ from verifiers.types import (
     ToolMessage,
 )
 from verifiers.utils.async_utils import maybe_call_with_named_args
-from verifiers.utils.error_utils import diagnostic_error_data, note_secondary_error
 from verifiers.utils.message_utils import normalize_messages
 from verifiers.utils.response_utils import parse_response_message
 from verifiers.utils.tool_utils import is_valid_tool_content_parts
@@ -90,6 +90,8 @@ from .types import (
     JsonData,
     Objects,
 )
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from .taskset import Taskset
@@ -249,7 +251,6 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
         log_rollout_start(state)
         timing_recorded = False
         completed = False
-        rollout_failed = False
         primary_error: BaseException | None = None
         try:
             try:
@@ -259,23 +260,23 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
                     await self.runtime.is_completed(task, state)
                 state._set_stop_condition("program_completed")
             except Error as e:
-                rollout_failed = True
                 self.record_error(state, e)
             try:
                 await self.runtime.collect_artifacts(task, state)
             except Error as e:
-                if rollout_failed:
-                    state.setdefault("artifact_errors", []).append(
-                        diagnostic_error_data(e, phase="artifact_collection")
+                if state.get("error") is not None:
+                    logger.warning(
+                        "Artifact collection failed after rollout error",
+                        exc_info=True,
                     )
                 else:
-                    rollout_failed = True
                     self.record_error(state, e)
-            except Exception as e:
-                if not rollout_failed:
+            except Exception:
+                if state.get("error") is None:
                     raise
-                state.setdefault("artifact_errors", []).append(
-                    diagnostic_error_data(e, phase="artifact_collection")
+                logger.warning(
+                    "Artifact collection failed after rollout error",
+                    exc_info=True,
                 )
             await self.runtime.update_rollout(task, state)
             state.record_generation_timing()
@@ -292,26 +293,22 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
                 state.record_generation_timing()
             try:
                 await self.runtime.cleanup_rollout(task, state)
-            except Exception as cleanup_error:
+            except Exception:
                 if primary_error is None:
                     raise
-                state.setdefault("cleanup_errors", []).append(
-                    diagnostic_error_data(cleanup_error, phase="cleanup_rollout")
-                )
-                note_secondary_error(
-                    primary_error, cleanup_error, phase="cleanup_rollout"
+                logger.warning(
+                    "Rollout cleanup failed after rollout error",
+                    exc_info=True,
                 )
             if "group_key" not in state.runtime_state():
                 try:
                     await self.runtime.cleanup_group([task], [state])
-                except Exception as cleanup_error:
+                except Exception:
                     if primary_error is None:
                         raise
-                    state.setdefault("cleanup_errors", []).append(
-                        diagnostic_error_data(cleanup_error, phase="cleanup_group")
-                    )
-                    note_secondary_error(
-                        primary_error, cleanup_error, phase="cleanup_group"
+                    logger.warning(
+                        "Group cleanup failed after rollout error",
+                        exc_info=True,
                     )
                 if completed:
                     state.finalize()

@@ -402,7 +402,7 @@ async def test_generate_preserves_rollout_scoring_error_when_cleanup_fails(
         rubric=rubric,
     )
 
-    with pytest.raises(RuntimeError, match="score exploded") as exc_info:
+    with pytest.raises(RuntimeError, match="score exploded"):
         await env.generate(
             [make_input(example_id=0)],
             client=mock_client,
@@ -411,10 +411,8 @@ async def test_generate_preserves_rollout_scoring_error_when_cleanup_fails(
             on_progress=lambda *args: None,
         )
 
-    assert "cleanup exploded" in "\n".join(getattr(exc_info.value, "__notes__", []))
-    assert rubric.cleaned_states[0]["cleanup_errors"][0]["error"]["message"] == (
-        "cleanup exploded"
-    )
+    assert len(rubric.cleaned_states) == 1
+    assert "cleanup_errors" not in rubric.cleaned_states[0]
 
 
 @pytest.mark.asyncio
@@ -524,7 +522,7 @@ async def test_generate_preserves_group_scoring_error_when_cleanup_fails(
         parser=Parser(),
         rubric=rubric,
     )
-    with pytest.raises(RuntimeError, match="group score exploded") as exc_info:
+    with pytest.raises(RuntimeError, match="group score exploded"):
         await env.generate(
             [
                 make_input(example_id=0, answer="a"),
@@ -535,13 +533,8 @@ async def test_generate_preserves_group_scoring_error_when_cleanup_fails(
             on_progress=lambda *args: None,
         )
 
-    assert "group cleanup exploded" in "\n".join(
-        getattr(exc_info.value, "__notes__", [])
-    )
-    assert [
-        state["cleanup_errors"][0]["error"]["message"]
-        for state in rubric.cleaned_states
-    ] == ["group cleanup exploded", "group cleanup exploded"]
+    assert len(rubric.cleaned_states) == 2
+    assert all("cleanup_errors" not in state for state in rubric.cleaned_states)
 
 
 @pytest.mark.asyncio

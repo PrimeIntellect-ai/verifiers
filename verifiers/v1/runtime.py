@@ -22,7 +22,6 @@ from typing import (
 
 from verifiers.clients import Client, resolve_client
 from verifiers.types import (
-    DiagnosticErrorData,
     Messages,
     Response,
     ResponseMessage,
@@ -31,7 +30,6 @@ from verifiers.types import (
 from verifiers.types import ClientConfig, ClientType, SamplingArgs
 from verifiers.utils.async_utils import maybe_call_with_named_args
 from verifiers.utils.client_utils import resolve_client_config
-from verifiers.utils.error_utils import diagnostic_error_data
 from verifiers.utils.message_utils import normalize_messages
 from verifiers.utils.response_utils import parse_response_message, parse_response_tokens
 from verifiers.utils.tool_utils import convert_func_to_tool_def
@@ -1260,9 +1258,6 @@ class Runtime:
     async def clear_sandbox_creation_tasks(
         self,
         creations: Sequence[tuple[tuple[str, str], asyncio.Task["SandboxLease"]]],
-        *,
-        state: State | None = None,
-        scope: str | None = None,
     ) -> None:
         from .utils.sandbox_utils import SandboxLease as SandboxLeaseClass
 
@@ -1296,14 +1291,6 @@ class Runtime:
                     exc,
                     exc_info=True,
                 )
-                if state is not None and scope is not None:
-                    cleanup_errors = cast(
-                        list[DiagnosticErrorData],
-                        state.setdefault("cleanup_errors", []),
-                    )
-                    cleanup_errors.append(
-                        diagnostic_error_data(exc, phase="sandbox_cleanup", scope=scope)
-                    )
 
     async def resolve_sandbox_lease(
         self, key: tuple[str, str], factory: Callable[[], Awaitable["SandboxLease"]]
@@ -2498,9 +2485,7 @@ class Runtime:
                 if key[0] == scope_key and handle.scope == scope
             ]
         if pending_creations:
-            await self.clear_sandbox_creation_tasks(
-                pending_creations, state=state, scope=scope
-            )
+            await self.clear_sandbox_creation_tasks(pending_creations)
         deletion_failures = 0
         for key, handle in scoped_leases:
             try:
@@ -2514,12 +2499,6 @@ class Runtime:
                     key[0],
                     exc,
                     exc_info=True,
-                )
-                cleanup_errors = cast(
-                    list[DiagnosticErrorData], state.setdefault("cleanup_errors", [])
-                )
-                cleanup_errors.append(
-                    diagnostic_error_data(exc, phase="sandbox_cleanup", scope=scope)
                 )
             else:
                 async with self.sandbox_lock:

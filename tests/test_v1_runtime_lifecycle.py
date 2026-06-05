@@ -1088,7 +1088,9 @@ async def test_taskset_setup_initializes_base_harness_prompt_and_sampling() -> N
 
 
 @pytest.mark.asyncio
-async def test_v1_harness_preserves_rollout_scoring_error_when_cleanup_fails() -> None:
+async def test_v1_harness_preserves_rollout_scoring_error_when_cleanup_fails(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     @vf.reward
     async def failing_reward(task, state) -> float:
         _ = task, state
@@ -1107,16 +1109,18 @@ async def test_v1_harness_preserves_rollout_scoring_error_when_cleanup_fails() -
     task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
     state = vf.State.for_task(task)
 
-    with pytest.raises(RuntimeError, match="v1 score exploded") as exc_info:
+    with pytest.raises(RuntimeError, match="v1 score exploded"):
         await harness.run(task, state)
 
     assert state["cleanup_ran"] is True
-    assert state["cleanup_errors"][0]["phase"] == "cleanup_rollout"
-    assert "v1 cleanup exploded" in "\n".join(getattr(exc_info.value, "__notes__", []))
+    assert "cleanup_errors" not in state
+    assert "Rollout cleanup failed after rollout error" in capsys.readouterr().err
 
 
 @pytest.mark.asyncio
-async def test_v1_group_preserves_scoring_error_when_cleanup_fails() -> None:
+async def test_v1_group_preserves_scoring_error_when_cleanup_fails(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     class SimpleTaskset(vf.Taskset):
         def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
             _ = split
@@ -1164,12 +1168,10 @@ async def test_v1_group_preserves_scoring_error_when_cleanup_fails() -> None:
     env.harness.add_reward(failing_group_reward)
     env.harness.add_cleanup(failing_group_cleanup)
 
-    with pytest.raises(RuntimeError, match="v1 group score exploded") as exc_info:
+    with pytest.raises(RuntimeError, match="v1 group score exploded"):
         await env._run_group_states(inputs, cast(Client, client), "fake", {})
 
-    assert "v1 group cleanup exploded" in "\n".join(
-        getattr(exc_info.value, "__notes__", [])
-    )
+    assert "Cleanup failed after v1 group scoring error" in capsys.readouterr().err
 
 
 @pytest.mark.asyncio
@@ -1217,8 +1219,8 @@ async def test_v1_group_scoring_sees_live_rollout_error_before_serialization() -
 
 
 @pytest.mark.asyncio
-async def test_v1_group_surfaces_cancelled_sibling_cleanup_errors(
-    monkeypatch: pytest.MonkeyPatch,
+async def test_v1_group_logs_cancelled_sibling_cleanup_errors(
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     slow_started = asyncio.Event()
     created_states: list[vf.State] = []
@@ -1265,26 +1267,12 @@ async def test_v1_group_surfaces_cancelled_sibling_cleanup_errors(
     env = vf.Env(taskset=CancelledSiblingTaskset(), harness=make_harness())
     env.harness.add_setup(fail_or_wait)
     env.harness.add_cleanup(failing_slow_cleanup)
-    logged_errors: list[str] = []
-    monkeypatch.setattr(
-        env.logger,
-        "error",
-        lambda message, *args, **kwargs: logged_errors.append(message % args),
-    )
 
-    with pytest.raises(RuntimeError, match="primary sibling exploded") as exc_info:
+    with pytest.raises(RuntimeError, match="primary sibling exploded"):
         await env._run_group_states(inputs, cast(Client, FakeClient()), "fake", {})
 
-    notes = "\n".join(getattr(exc_info.value, "__notes__", []))
-    assert "cancelled group sibling" in notes
-    assert "cancelled cleanup exploded" in notes
-    assert created_states[0]["cleanup_errors"][0]["error"]["message"] == (
-        "cancelled cleanup exploded"
-    )
-    assert any(
-        "Cancelled v1 group sibling reported secondary error" in error
-        for error in logged_errors
-    )
+    assert "cleanup_errors" not in created_states[0]
+    assert "Rollout cleanup failed after rollout error" in capsys.readouterr().err
 
 
 @pytest.mark.asyncio
@@ -2066,6 +2054,7 @@ async def test_sandbox_handle_forwards_background_job_poll_interval() -> None:
 @pytest.mark.asyncio
 async def test_sandbox_command_marks_oom_failures(
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     install_fake_sandboxes(monkeypatch)
     install_fake_endpoint_tunnel(monkeypatch)
@@ -2097,12 +2086,14 @@ async def test_sandbox_command_marks_oom_failures(
     state = await harness.run(task)
 
     assert state["sandbox_oom"] is True
-    assert state["sandbox_failures"][0]["kind"] == "oom"
-    assert state["sandbox_failures"][0]["phase"] == "command"
+    assert "sandbox_failures" not in state
+    assert (
+        "Sandbox failure detected (kind=oom, phase=command" in capsys.readouterr().err
+    )
     assert state["error"]["error"] == "SandboxError"
     state["example_id"] = 0
     output = state_to_output(state)
-    assert output["sandbox_failures"] == state["sandbox_failures"]
+    assert "sandbox_failures" not in output
 
 
 @pytest.mark.asyncio
@@ -3074,6 +3065,7 @@ async def test_release_sandboxes_deletes_completed_unclaimed_creation() -> None:
 @pytest.mark.asyncio
 async def test_release_sandboxes_keeps_failed_delete_retryable(
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     disable_sandbox_retry_sleep(monkeypatch)
 
@@ -3102,7 +3094,11 @@ async def test_release_sandboxes_keeps_failed_delete_retryable(
     await runtime.release_sandboxes("rollout", state)
 
     assert runtime.sandbox_leases[key] is lease
-    assert len(state["cleanup_errors"]) == 1
+    assert "cleanup_errors" not in state
+    assert (
+        "Failed to delete rollout sandbox sbx-retryable-delete"
+        in capsys.readouterr().err
+    )
 
     await runtime.release_sandboxes("rollout", state)
     await runtime.teardown()
@@ -3187,6 +3183,7 @@ async def test_resolve_sandbox_lease_rejects_creation_claimed_by_cleanup() -> No
 @pytest.mark.asyncio
 async def test_clear_creation_tasks_keeps_failed_delete_retryable(
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     disable_sandbox_retry_sleep(monkeypatch)
 
@@ -3218,15 +3215,15 @@ async def test_clear_creation_tasks_keeps_failed_delete_retryable(
     runtime.sandbox_creation_tasks[key] = creation_task
     await creation_task
 
-    await runtime.clear_sandbox_creation_tasks(
-        [(key, creation_task)],
-        state=state,
-        scope="rollout",
-    )
+    await runtime.clear_sandbox_creation_tasks([(key, creation_task)])
 
     assert key not in runtime.sandbox_creation_tasks
     assert runtime.sandbox_leases[key] is lease
-    assert len(state["cleanup_errors"]) == 1
+    assert "cleanup_errors" not in state
+    assert (
+        "Failed to delete sandbox sbx-unclaimed-retry from cancelled creation"
+        in capsys.readouterr().err
+    )
 
     await runtime.release_sandboxes("rollout", state)
     await runtime.teardown()
@@ -3539,8 +3536,9 @@ async def test_sandbox_program_artifact_collected_by_runtime(
 
 
 @pytest.mark.asyncio
-async def test_failed_sandbox_program_preserves_primary_error_and_artifact_error(
+async def test_failed_sandbox_program_preserves_primary_error_and_logs_artifact_error(
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     install_fake_sandboxes(monkeypatch)
     install_fake_endpoint_tunnel(monkeypatch)
@@ -3586,11 +3584,11 @@ async def test_failed_sandbox_program_preserves_primary_error_and_artifact_error
     state = await harness.run(task)
 
     assert state["error"]["error"] == "SandboxError"
-    assert state["artifact_errors"][0]["error"]["error"] == "FileNotFoundError"
-    assert state["artifact_errors"][0]["phase"] == "artifact_collection"
+    assert "artifact_errors" not in state
+    assert "Artifact collection failed after rollout error" in capsys.readouterr().err
     assert state["stop_condition"] == "has_error"
     output = state_to_output(state)
-    assert output["artifact_errors"] == state["artifact_errors"]
+    assert "artifact_errors" not in output
     assert output["error"]["message"].startswith("Sandbox")
 
 
@@ -3619,6 +3617,33 @@ async def test_artifact_vf_error_becomes_primary_rollout_error(
     assert state["stop_condition"] == "has_error"
     assert "artifact_errors" not in state
     assert state_to_output(state)["error"] == state["error"]
+
+
+@pytest.mark.asyncio
+async def test_artifact_vf_error_after_overlong_prompt_becomes_primary_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    @vf.setup
+    async def fail_with_overlong_prompt(task, state) -> None:
+        _ = task, state
+        raise vf.OverlongPromptError("prompt too long")
+
+    async def fail_collect_artifacts(task, state) -> None:
+        _ = task, state
+        raise vf.SandboxError("artifact sandbox failed")
+
+    harness = make_harness()
+    harness.add_setup(fail_with_overlong_prompt)
+    monkeypatch.setattr(harness.runtime, "collect_artifacts", fail_collect_artifacts)
+    task = vf.Task({"example_id": 0, "prompt": []}).freeze()
+
+    state = await harness.run(task)
+
+    assert state["prompt_too_long"] is True
+    assert state["is_truncated"] is True
+    assert state["error"]["error"] == "SandboxError"
+    assert state["error"]["message"] == "artifact sandbox failed"
+    assert "artifact_errors" not in state
 
 
 @pytest.mark.asyncio

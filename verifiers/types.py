@@ -396,40 +396,6 @@ class ErrorData(TypedDict):
     error_chain_str: str
 
 
-DiagnosticErrorPhase: TypeAlias = Literal[
-    "artifact_collection",
-    "cleanup",
-    "cleanup_rollout",
-    "cleanup_group",
-    "sandbox_cleanup",
-]
-
-
-class DiagnosticErrorData(TypedDict):
-    phase: DiagnosticErrorPhase
-    error: ErrorData
-    scope: NotRequired[str]
-
-
-SandboxFailureKind: TypeAlias = Literal["oom", "timeout"]
-SandboxFailurePhase: TypeAlias = Literal[
-    "background_job",
-    "create",
-    "setup",
-    "execute",
-    "command",
-]
-
-
-class SandboxFailureData(TypedDict):
-    kind: SandboxFailureKind
-    type: str
-    message: str
-    phase: NotRequired[SandboxFailurePhase]
-    sandbox_id: NotRequired[str]
-    scope: NotRequired[str]
-
-
 class RolloutOutput(dict):
     """Serialized output from a rollout (mirrors RolloutInput).
 
@@ -457,9 +423,6 @@ class RolloutOutput(dict):
     answer: str
     info: Info
     error: ErrorData | None
-    artifact_errors: list[DiagnosticErrorData]
-    cleanup_errors: list[DiagnosticErrorData]
-    sandbox_failures: list[SandboxFailureData]
     stop_condition: str | None
     trajectory: list["TrajectoryStep"]
     tool_defs: list[Tool]

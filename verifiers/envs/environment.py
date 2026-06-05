@@ -73,8 +73,6 @@ from verifiers.utils.async_utils import (
 )
 from verifiers.utils.error_utils import (
     ErrorChain,
-    diagnostic_error_data,
-    note_secondary_error,
 )
 from verifiers.utils.message_utils import normalize_messages
 from verifiers.utils.save_utils import (
@@ -693,13 +691,9 @@ class Environment(ABC):
             state["timing"].scoring.end = time.time()
             try:
                 await self.rubric.cleanup(state)
-            except Exception as cleanup_error:
+            except Exception:
                 if primary_error is None:
                     raise
-                state.setdefault("cleanup_errors", []).append(
-                    diagnostic_error_data(cleanup_error, phase="cleanup")
-                )
-                note_secondary_error(primary_error, cleanup_error, phase="cleanup")
                 self.logger.exception("Cleanup failed after rollout error")
         return state
 
@@ -723,7 +717,7 @@ class Environment(ABC):
         ]
         try:
             group_states = await asyncio.gather(*rollout_tasks)
-        except BaseException as primary_error:
+        except BaseException:
             pending = [task for task in rollout_tasks if not task.done()]
             for task in pending:
                 task.cancel()
@@ -737,11 +731,7 @@ class Environment(ABC):
             for state in completed_states:
                 try:
                     await self.rubric.cleanup(state)
-                except Exception as cleanup_error:
-                    state.setdefault("cleanup_errors", []).append(
-                        diagnostic_error_data(cleanup_error, phase="cleanup")
-                    )
-                    note_secondary_error(primary_error, cleanup_error, phase="cleanup")
+                except Exception:
                     self.logger.exception("Cleanup failed after group rollout error")
             raise
 
@@ -766,15 +756,8 @@ class Environment(ABC):
                 try:
                     await self.rubric.cleanup(state)
                 except Exception as cleanup_error:
-                    state.setdefault("cleanup_errors", []).append(
-                        diagnostic_error_data(cleanup_error, phase="cleanup")
-                    )
                     if cleanup_primary_error is None:
                         cleanup_primary_error = cleanup_error
-                    else:
-                        note_secondary_error(
-                            cleanup_primary_error, cleanup_error, phase="cleanup"
-                        )
                     message = "Cleanup failed after group scoring"
                     if primary_error is not None:
                         message = "Cleanup failed after group scoring error"
