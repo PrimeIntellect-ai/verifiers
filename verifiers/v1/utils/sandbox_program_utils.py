@@ -434,6 +434,9 @@ def message_from_response(response):
     content = getattr(message, "content", None)
     if content is not None:
         data["content"] = content
+    reasoning_content = getattr(message, "reasoning_content", None)
+    if reasoning_content is not None:
+        data["reasoning_content"] = reasoning_content
     tool_calls = getattr(message, "tool_calls", None)
     if tool_calls:
         data["tool_calls"] = [
@@ -463,6 +466,19 @@ def tool_call_arguments(tool_call):
 
 def tool_error_content(error):
     return str(error)
+
+
+def is_tool_content_parts(value):
+    # Mirror verifiers.utils.tool_utils.is_valid_tool_content_parts (not importable
+    # into the dependency-light sandbox runner): a list of {"type": text|image_url}
+    # content parts must pass through to the model intact (e.g. screenshots),
+    # rather than being collapsed by str().
+    if not isinstance(value, list):
+        return False
+    return all(
+        isinstance(part, dict) and part.get("type") in ("text", "image_url")
+        for part in value
+    )
 
 
 def client_type(state):
@@ -704,7 +720,7 @@ async def run_base(task, state, client):
                 result = await call_tool(
                     state, tool_call_name(tool_call), tool_call_arguments(tool_call)
                 )
-                content = str(result)
+                content = result if is_tool_content_parts(result) else str(result)
             except Exception as exc:
                 content = tool_error_content(exc)
             messages.append(
