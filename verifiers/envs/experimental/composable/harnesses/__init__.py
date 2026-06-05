@@ -9,7 +9,9 @@ from verifiers.envs.experimental.composable.harnesses.rlm import (
 )
 from verifiers.envs.experimental.composable.harnesses.opencode import (
     DEFAULT_DISABLED_TOOLS,
-    DEFAULT_RELEASE,
+    DEFAULT_RELEASE_REPO,
+    DEFAULT_RELEASE_SHA256,
+    DEFAULT_RELEASE_VERSION,
     DEFAULT_SYSTEM_PROMPT,
     OPENCODE_INSTALL_SCRIPT,
     build_install_script as build_opencode_install_script,
@@ -39,7 +41,9 @@ __all__ = [
     "build_opencode_run_command",
     "OPENCODE_INSTALL_SCRIPT",
     "DEFAULT_DISABLED_TOOLS",
-    "DEFAULT_RELEASE",
+    "DEFAULT_RELEASE_REPO",
+    "DEFAULT_RELEASE_VERSION",
+    "DEFAULT_RELEASE_SHA256",
     "DEFAULT_SYSTEM_PROMPT",
     "mini_swe_agent_harness",
     "build_mini_swe_agent_install_script",
