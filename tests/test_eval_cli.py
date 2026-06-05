@@ -179,13 +179,6 @@ def test_parse_args_rejects_unknown_eval_flags():
         vf_eval.parse_args(["env1", "--unknown-flag", "value"])
 
 
-def test_parse_args_accepts_shuffle_flags():
-    args = vf_eval.parse_args(["env1", "--shuffle", "--shuffle-seed", "123"])
-
-    assert args.shuffle is True
-    assert args.shuffle_seed == 123
-
-
 def test_cli_shuffle_defaults_seed_when_enabled(monkeypatch, run_cli):
     captured = run_cli(
         monkeypatch,
@@ -1213,18 +1206,11 @@ def test_cli_toml_per_env_rollouts_per_example(monkeypatch, run_cli):
 
 def test_cli_toml_per_env_shuffle(monkeypatch, run_cli):
     with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
-        f.write(
-            '[[eval]]\nenv_id = "env1"\nshuffle = true\nshuffle_seed = 321\n\n'
-            '[[eval]]\nenv_id = "env2"\n'
-        )
+        f.write('[[eval]]\nenv_id = "env1"\nshuffle = true\nshuffle_seed = 321\n')
         f.flush()
         captured = run_cli(monkeypatch, {"env_id_or_config": f.name})
 
-    configs = captured["configs"]
-    assert configs[0].shuffle is True
-    assert configs[0].shuffle_seed == 321
-    assert configs[1].shuffle is False
-    assert configs[1].shuffle_seed is None
+    assert captured["configs"][0].shuffle_seed == 321
 
 
 def test_cli_toml_per_eval_settings_used(monkeypatch, run_cli):

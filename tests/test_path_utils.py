@@ -114,8 +114,7 @@ def test_find_latest_incomplete_eval_results_path_matches_shuffle_metadata(
         env_dir_path=str(tmp_path / "environments"),
     )
 
-    assert result is not None
-    assert result.resolve() == matching_run.resolve()
+    assert result.resolve() == matching_run
 
 
 def test_get_eval_runs_dir_uses_name_as_result_label(tmp_path: Path):

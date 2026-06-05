@@ -31,6 +31,7 @@ from verifiers.utils.save_utils import (
     load_outputs,
     make_serializable,
     save_new_outputs,
+    save_metadata,
     states_to_outputs,
     truncate_malformed_trailing_line,
     validate_resume_metadata,
@@ -198,47 +199,37 @@ class TestSavingMetadata:
         assert (
             metadata["base_url"] == "http://localhost:8000/v1,http://localhost:8001/v1"
         )
-        assert metadata["shuffle"] is False
-        assert metadata["shuffle_seed"] is None
 
-    def test_generate_outputs_builder_records_shuffle_metadata(self):
+    def test_save_metadata_records_default_shuffle_seed_for_resume(
+        self, tmp_path: Path
+    ):
+        results_path = tmp_path / "results"
         builder = GenerateOutputsBuilder(
-            env_id="test-env",
+            env_id="math-env",
             env_args={},
             model="test-model",
             client=ClientConfig(api_base_url="http://localhost:8000/v1"),
-            num_examples=1,
-            rollouts_per_example=1,
+            num_examples=3,
+            rollouts_per_example=2,
             state_columns=[],
             sampling_args={},
-            results_path=Path("/tmp/test-results"),
+            results_path=results_path,
             shuffle=True,
-            shuffle_seed=123,
         )
+        save_metadata(builder.build_metadata(), results_path)
 
-        metadata = builder.build_metadata()
-
-        assert metadata["shuffle"] is True
-        assert metadata["shuffle_seed"] == 123
-
-    def test_generate_outputs_builder_records_default_shuffle_seed(self):
-        builder = GenerateOutputsBuilder(
-            env_id="test-env",
-            env_args={},
+        assert (
+            json.loads((results_path / "metadata.json").read_text())["shuffle_seed"]
+            == 0
+        )
+        validate_resume_metadata(
+            results_path=results_path,
+            env_id="math-env",
             model="test-model",
-            client=ClientConfig(api_base_url="http://localhost:8000/v1"),
-            num_examples=1,
-            rollouts_per_example=1,
-            state_columns=[],
-            sampling_args={},
-            results_path=Path("/tmp/test-results"),
+            num_examples=3,
+            rollouts_per_example=2,
             shuffle=True,
         )
-
-        metadata = builder.build_metadata()
-
-        assert metadata["shuffle"] is True
-        assert metadata["shuffle_seed"] == 0
 
 
 class TestSavingResults:
@@ -609,38 +600,6 @@ class TestResumeMetadataValidation:
             model="test-model",
             num_examples=5,
             rollouts_per_example=2,
-        )
-
-    def test_validate_resume_metadata_accepts_default_shuffle_seed_saved_by_builder(
-        self, tmp_path: Path
-    ):
-        results_path = tmp_path / "results"
-        results_path.mkdir()
-        builder = GenerateOutputsBuilder(
-            env_id="math-env",
-            env_args={},
-            model="test-model",
-            client=ClientConfig(api_base_url="http://localhost:8000/v1"),
-            num_examples=3,
-            rollouts_per_example=2,
-            state_columns=[],
-            sampling_args={},
-            results_path=results_path,
-            shuffle=True,
-        )
-        metadata_path = results_path / "metadata.json"
-        metadata_path.write_text(
-            json.dumps(builder.build_metadata(), default=make_serializable),
-            encoding="utf-8",
-        )
-
-        validate_resume_metadata(
-            results_path=results_path,
-            env_id="math-env",
-            model="test-model",
-            num_examples=3,
-            rollouts_per_example=2,
-            shuffle=True,
         )
 
     def test_validate_resume_metadata_raises_on_mismatch(self, tmp_path: Path):

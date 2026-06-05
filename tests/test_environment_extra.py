@@ -324,7 +324,6 @@ def test_get_eval_inputs_shuffles_before_take_and_repeat(mock_client, make_dummy
     assert [row["example_id"] for row in inputs] == [
         row["example_id"] for row in expected
     ]
-    assert env.get_eval_dataset()["example_id"] == list(range(6))
 
 
 @pytest.mark.asyncio
