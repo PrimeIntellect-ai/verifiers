@@ -22,7 +22,6 @@ from verifiers.envs.experimental.composable.harnesses.mini_swe_agent import (
 )
 from verifiers.envs.experimental.composable.harnesses.opencode import (
     build_install_script as build_opencode_install_script,
-    opencode_harness,
 )
 
 
@@ -194,8 +193,8 @@ def test_taskset_repr():
     assert "3" in repr(ts)
 
 
-def test_composable_mini_swe_agent_unversioned_version_uses_unpinned_requirement():
-    setup = build_mini_swe_agent_install_script(version="  mini-swe-agent  ")
+def test_composable_mini_swe_agent_unversioned_package_uses_unpinned_requirement():
+    setup = build_mini_swe_agent_install_script(package="  mini-swe-agent  ")
 
     assert (
         "vf_python_install --target /opt/mini-swe-agent/prefix/site-packages mini-swe-agent"
@@ -204,29 +203,15 @@ def test_composable_mini_swe_agent_unversioned_version_uses_unpinned_requirement
     assert "mini-swe-agent==mini-swe-agent" not in setup
 
 
-def test_composable_opencode_unversioned_version_uses_latest_download_url():
+def test_composable_opencode_unversioned_release_uses_latest_download_url():
     setup = build_opencode_install_script(
-        version="  PrimeIntellect-ai/opencode  ",
+        release="  PrimeIntellect-ai/opencode  ",
         install_ripgrep=False,
     )
 
     assert "OPENCODE_RELEASE_REPO=PrimeIntellect-ai/opencode" in setup
     assert "OPENCODE_RELEASE_PATH=releases/latest/download" in setup
     assert "releases/download/vPrimeIntellect-ai/opencode" not in setup
-
-
-def test_composable_opencode_accepts_opencode_swe_release_kwargs():
-    harness = opencode_harness(
-        system_prompt=None,
-        release_repo="PrimeIntellect-ai/opencode",
-        release_version="1.1.63-rl1",
-        release_sha256="17104d601b8bf6fd03dd46a6de055b422414b9ada524fe085b09683f455ccac1",
-    )
-
-    assert "OPENCODE_RELEASE_REPO=PrimeIntellect-ai/opencode" in harness.install_script
-    assert (
-        "OPENCODE_RELEASE_PATH=releases/download/v1.1.63-rl1" in harness.install_script
-    )
 
 
 @pytest.mark.asyncio

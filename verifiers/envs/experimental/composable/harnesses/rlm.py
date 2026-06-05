@@ -79,8 +79,8 @@ def render_rlm_completion(state: State) -> None:
 def resolve_local_checkout(
     local_checkout: str | Path | None = None,
     *,
-    repo_url: str = DEFAULT_RLM_REPO_URL,
-    ref: str = DEFAULT_RLM_REF,
+    rlm_repo_url: str = DEFAULT_RLM_REPO_URL,
+    rlm_ref: str = DEFAULT_RLM_REF,
     gh_token: str | None = None,
 ) -> Path:
     if local_checkout is not None:
@@ -89,8 +89,8 @@ def resolve_local_checkout(
             required_files=_REQUIRED_CHECKOUT_FILES,
         )
     return resolve_git_checkout(
-        repo_url=repo_url,
-        ref=ref,
+        repo_url=rlm_repo_url,
+        ref=rlm_ref,
         cache_root=DEFAULT_RLM_LOCAL_CHECKOUT_CACHE_ROOT,
         gh_token=gh_token,
         required_files=_REQUIRED_CHECKOUT_FILES,
@@ -127,17 +127,17 @@ rlm "$(cat {instruction_path})"
 def rlm_harness(
     workdir: str = "/testbed",
     instruction_path: str = "/task/instruction.md",
-    repo_url: str = DEFAULT_RLM_REPO_URL,
-    ref: str = DEFAULT_RLM_REF,
-    max_turns: int = DEFAULT_RLM_MAX_TURNS,
-    exec_timeout: int = DEFAULT_RLM_EXEC_TIMEOUT,
-    max_depth: int = DEFAULT_RLM_MAX_DEPTH,
+    rlm_repo_url: str = DEFAULT_RLM_REPO_URL,
+    rlm_ref: str = DEFAULT_RLM_REF,
+    rlm_max_turns: int = DEFAULT_RLM_MAX_TURNS,
+    rlm_exec_timeout: int = DEFAULT_RLM_EXEC_TIMEOUT,
+    rlm_max_depth: int = DEFAULT_RLM_MAX_DEPTH,
     summarize_at_tokens: int | tuple[int, int] | list[int] | None = None,
     include_sub_rlm_trajectories: bool = False,
     append_to_system_prompt: str | None = None,
     local_checkout: str | Path | None = None,
     gh_token: str | None = None,
-    tools: list[str] | None = None,
+    rlm_tools: list[str] | None = None,
 ) -> Harness:
     """Build an RLM harness.
 
@@ -146,11 +146,11 @@ def rlm_harness(
     to ``Harness.environment_vars`` and merged into the sandbox by
     ``ComposableEnv`` (harness-wins):
 
-    - ``tools`` → ``RLM_TOOLS`` (also drives ``Harness.tool_names`` so
+    - ``rlm_tools`` → ``RLM_TOOLS`` (also drives ``Harness.tool_names`` so
       ``ToolMonitorRubric`` tracks exactly the active tools)
-    - ``max_turns`` → ``RLM_MAX_TURNS``
-    - ``exec_timeout`` → ``RLM_EXEC_TIMEOUT``
-    - ``max_depth`` → ``RLM_MAX_DEPTH``: deepest sub-agent level
+    - ``rlm_max_turns`` → ``RLM_MAX_TURNS``
+    - ``rlm_exec_timeout`` → ``RLM_EXEC_TIMEOUT``
+    - ``rlm_max_depth`` → ``RLM_MAX_DEPTH``: deepest sub-agent level
       allowed. ``0`` (default) disables ``rlm()`` recursion from inside
       ipython entirely; ``1`` lets the parent spawn sub-agents but
       blocks them from spawning their own; etc.
@@ -200,15 +200,15 @@ def rlm_harness(
         upload_dirs: dict[str, Traversable | Path] = {
             DEFAULT_RLM_CHECKOUT_UPLOAD_NAME: resolve_local_checkout(
                 local_checkout,
-                repo_url=repo_url,
-                ref=ref,
+                rlm_repo_url=rlm_repo_url,
+                rlm_ref=rlm_ref,
                 gh_token=gh_token,
             ),
         }
         resolved_upload_dirs = upload_dirs
         return resolved_upload_dirs
 
-    tool_names = list(tools) if tools is not None else ["ipython"]
+    tool_names = list(rlm_tools) if rlm_tools is not None else ["ipython"]
 
     # Validate summarize_at_tokens shape eagerly so configuration errors
     # surface at harness-build time, not per-rollout inside the closure.
@@ -216,9 +216,9 @@ def rlm_harness(
 
     static_env_vars = {
         "RLM_TOOLS": ",".join(tool_names),
-        "RLM_MAX_TURNS": str(max_turns),
-        "RLM_EXEC_TIMEOUT": str(exec_timeout),
-        "RLM_MAX_DEPTH": str(max_depth),
+        "RLM_MAX_TURNS": str(rlm_max_turns),
+        "RLM_EXEC_TIMEOUT": str(rlm_exec_timeout),
+        "RLM_MAX_DEPTH": str(rlm_max_depth),
     }
 
     def env_vars_for_rollout(state: State) -> dict[str, str]:

@@ -17,6 +17,7 @@ MINI_SWE_AGENT_DEFAULT_SYSTEM_PROMPT_PATH = "/mini-swe-agent/system.txt"
 MINI_SWE_AGENT_DEFAULT_LOG_PATH = "/logs/agent/mini-swe-agent.log"
 MINI_SWE_AGENT_DEFAULT_TRAJECTORY_PATH = "/logs/agent/mini-swe-agent.traj.json"
 MINI_SWE_AGENT_DEFAULT_VERSION = "mini-swe-agent@2.2.8"
+MINI_SWE_AGENT_DEFAULT_PACKAGE = MINI_SWE_AGENT_DEFAULT_VERSION
 MINI_SWE_AGENT_DEFAULT_CONFIG_SPEC = "mini"
 MINI_SWE_AGENT_DEFAULT_MODEL_CLASS = "litellm"
 MINI_SWE_AGENT_DEFAULT_ENVIRONMENT_TIMEOUT = 120
@@ -25,10 +26,13 @@ MINI_SWE_AGENT_DEFAULT_ENVIRONMENT_TIMEOUT = 120
 def build_mini_swe_agent_install_script(
     version: str = MINI_SWE_AGENT_DEFAULT_VERSION,
     prefix_dir: str = DEFAULT_PREFIX_DIR,
+    package: str | None = None,
 ) -> str:
     root = shlex.quote(str(PurePosixPath(prefix_dir).parent))
     prefix = shlex.quote(prefix_dir)
     site_packages = shlex.quote(f"{prefix_dir.rstrip('/')}/site-packages")
+    if package is not None:
+        version = package
     name, parsed_version = split_versioned_agent_spec(version)
     requirement = name
     if parsed_version and parsed_version != "latest":
