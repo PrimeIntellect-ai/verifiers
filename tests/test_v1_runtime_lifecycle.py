@@ -98,6 +98,18 @@ class CapturingModelClient(FakeModelClient):
         return await super().get_response(**kwargs)
 
 
+class BlockingModelClient(CapturingModelClient):
+    def __init__(self, responses: list[Response]):
+        super().__init__(responses)
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def get_response(self, **kwargs: object) -> Response:
+        self.entered.set()
+        await self.release.wait()
+        return await super().get_response(**kwargs)
+
+
 class FakeCreateSandboxRequest:
     def __init__(self, **kwargs: object):
         self.kwargs = kwargs
@@ -537,6 +549,37 @@ async def endpoint_trajectory_program(task, state):
     return state
 
 
+async def concurrent_endpoint_program(task, state):
+    _ = task
+    root = state["endpoint_root_url"].rstrip("/")
+    config = state.get_endpoint_config(api="chat")
+    endpoint_client = cast(OpenAI, state.get_client(api="chat", sync=True))
+    api_key = endpoint_client.api_key
+    endpoint_client.close()
+
+    def post_chat(content: str) -> dict[str, object]:
+        payload = {
+            "model": config.model,
+            "messages": [{"role": "user", "content": content}],
+        }
+        request = urllib.request.Request(
+            f"{root}/v1/chat/completions",
+            data=json.dumps(payload).encode(),
+            headers={
+                "content-type": "application/json",
+                "Authorization": f"Bearer {api_key}",
+            },
+        )
+        with urllib.request.urlopen(request) as response:
+            return json.loads(response.read().decode())
+
+    state["endpoint_concurrent_responses"] = await asyncio.gather(
+        asyncio.to_thread(post_chat, "first"),
+        asyncio.to_thread(post_chat, "second"),
+    )
+    return state
+
+
 async def mcp_proxy_program(task, state):
     _ = task
     from mcp import ClientSession, StdioServerParameters
@@ -683,6 +726,7 @@ for _name, _value in {
     "child_reads_program_sandbox": child_reads_program_sandbox,
     "endpoint_program": endpoint_program,
     "endpoint_trajectory_program": endpoint_trajectory_program,
+    "concurrent_endpoint_program": concurrent_endpoint_program,
     "mcp_proxy_program": mcp_proxy_program,
     "child_program": child_program,
     "parent_program": parent_program,
@@ -806,6 +850,36 @@ async def test_endpoint_request_can_hide_internal_model_call_from_trajectory() -
     assert (
         state["endpoint_shown_response"]["choices"][0]["message"]["content"] == "shown"
     )
+
+
+@pytest.mark.asyncio
+async def test_endpoint_max_turns_counts_inflight_visible_requests() -> None:
+    client = BlockingModelClient(
+        [fake_response("allowed"), fake_response("unexpected")]
+    )
+    harness = make_harness(
+        program={"fn": program_ref("concurrent_endpoint_program")},
+        client=client,
+        model="test-model",
+        max_turns=1,
+    )
+    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+
+    run_task = asyncio.create_task(harness.run(task))
+    await asyncio.wait_for(client.entered.wait(), timeout=1.0)
+    await asyncio.sleep(0.05)
+    client.release.set()
+    state = await run_task
+    await harness.teardown()
+
+    contents = [
+        response["choices"][0]["message"]["content"]
+        for response in state["endpoint_concurrent_responses"]
+    ]
+    assert sorted(contents) == ["", "allowed"]
+    assert len(client.requests) == 1
+    assert len(state["trajectory"]) == 1
+    assert state["stop_condition"] == "max_turns_reached"
 
 
 @pytest.mark.asyncio
@@ -948,6 +1022,21 @@ async def test_base_program_submits_system_prompt_before_prompt() -> None:
     ]
     assert state["prompt"][0]["role"] == "system"
     assert state["completion"][-1]["content"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_base_program_max_turns_uses_stop_condition() -> None:
+    client = CapturingModelClient(
+        [fake_response(content="done"), fake_response(content="unexpected")]
+    )
+    harness = make_harness(client=cast(Client, client), model="fake", max_turns=1)
+    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+
+    state = await harness.run(task)
+
+    assert len(client.requests) == 1
+    assert len(state["trajectory"]) == 1
+    assert state["stop_condition"] == "max_turns_reached"
 
 
 @pytest.mark.asyncio
