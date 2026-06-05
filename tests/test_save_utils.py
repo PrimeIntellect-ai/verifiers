@@ -221,6 +221,25 @@ class TestSavingMetadata:
         assert metadata["shuffle"] is True
         assert metadata["shuffle_seed"] == 123
 
+    def test_generate_outputs_builder_records_default_shuffle_seed(self):
+        builder = GenerateOutputsBuilder(
+            env_id="test-env",
+            env_args={},
+            model="test-model",
+            client=ClientConfig(api_base_url="http://localhost:8000/v1"),
+            num_examples=1,
+            rollouts_per_example=1,
+            state_columns=[],
+            sampling_args={},
+            results_path=Path("/tmp/test-results"),
+            shuffle=True,
+        )
+
+        metadata = builder.build_metadata()
+
+        assert metadata["shuffle"] is True
+        assert metadata["shuffle_seed"] == 0
+
 
 class TestSavingResults:
     def test_response_usage_tokens_prompt_completion(self):
@@ -590,6 +609,38 @@ class TestResumeMetadataValidation:
             model="test-model",
             num_examples=5,
             rollouts_per_example=2,
+        )
+
+    def test_validate_resume_metadata_accepts_default_shuffle_seed_saved_by_builder(
+        self, tmp_path: Path
+    ):
+        results_path = tmp_path / "results"
+        results_path.mkdir()
+        builder = GenerateOutputsBuilder(
+            env_id="math-env",
+            env_args={},
+            model="test-model",
+            client=ClientConfig(api_base_url="http://localhost:8000/v1"),
+            num_examples=3,
+            rollouts_per_example=2,
+            state_columns=[],
+            sampling_args={},
+            results_path=results_path,
+            shuffle=True,
+        )
+        metadata_path = results_path / "metadata.json"
+        metadata_path.write_text(
+            json.dumps(builder.build_metadata(), default=make_serializable),
+            encoding="utf-8",
+        )
+
+        validate_resume_metadata(
+            results_path=results_path,
+            env_id="math-env",
+            model="test-model",
+            num_examples=3,
+            rollouts_per_example=2,
+            shuffle=True,
         )
 
     def test_validate_resume_metadata_raises_on_mismatch(self, tmp_path: Path):

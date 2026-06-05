@@ -938,6 +938,9 @@ class Environment(ABC):
         total_rollouts = len(raw_inputs)
         num_examples = len(set([i["example_id"] for i in raw_inputs]))
         rollouts_per_example = total_rollouts // num_examples if num_examples > 0 else 0
+        resolved_shuffle_seed = (
+            (0 if shuffle_seed is None else shuffle_seed) if shuffle else None
+        )
         builder = GenerateOutputsBuilder(
             env_id=self.env_id,
             env_args=self.env_args,
@@ -950,7 +953,7 @@ class Environment(ABC):
             results_path=results_path,
             pass_threshold=self.pass_threshold,
             shuffle=shuffle,
-            shuffle_seed=shuffle_seed if shuffle else None,
+            shuffle_seed=resolved_shuffle_seed,
         )
 
         single_client: Client | None = None
@@ -996,7 +999,7 @@ class Environment(ABC):
                     num_examples=num_examples,
                     rollouts_per_example=rollouts_per_example,
                     shuffle=shuffle,
-                    shuffle_seed=shuffle_seed if shuffle else None,
+                    shuffle_seed=resolved_shuffle_seed,
                 )
                 on_log(f"Resuming evaluation from {results_path}")
                 outputs = load_outputs(results_path)

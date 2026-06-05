@@ -575,7 +575,9 @@ class GenerateOutputsBuilder:
         self.num_examples = num_examples
         self.rollouts_per_example = rollouts_per_example
         self.shuffle = shuffle
-        self.shuffle_seed = shuffle_seed if shuffle else None
+        self.shuffle_seed = (
+            (0 if shuffle_seed is None else shuffle_seed) if shuffle else None
+        )
         self.state_columns = state_columns or []
         self.sampling_args = sampling_args
         self.results_path = results_path or get_results_path(env_id, model)
