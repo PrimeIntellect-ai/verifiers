@@ -199,6 +199,10 @@ class Env(vf.Environment):
                             drained_error.__traceback__,
                         ),
                     )
+            for index, task in enumerate(run_tasks):
+                if not task.done() or task.cancelled() or task.exception() is not None:
+                    continue
+                states[index] = task.result()
             try:
                 await self.harness.cleanup_group(tasks, states)
             except Exception:

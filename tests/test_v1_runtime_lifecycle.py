@@ -1399,6 +1399,62 @@ async def test_v1_group_logs_non_cancelled_drain_errors(
 
 
 @pytest.mark.asyncio
+async def test_v1_group_cleanup_uses_completed_replacement_states_on_failure() -> None:
+    completed = asyncio.Event()
+    cleaned_markers: list[str] = []
+
+    class ReplacementTaskset(vf.Taskset):
+        async def init_group(
+            self, task: vf.Task, num_rollouts: int
+        ) -> tuple[list[vf.Task], list[vf.State]]:
+            tasks = [task for _ in range(num_rollouts)]
+            states = [vf.State.for_task(task) for task in tasks]
+            states[0]["mode"] = "complete"
+            states[0]["marker"] = "completed-original"
+            states[1]["mode"] = "fail"
+            states[1]["marker"] = "failed-original"
+            return tasks, states
+
+    class ReplacementHarness(vf.Harness):
+        async def run(self, task: vf.Task, state: vf.State | None = None) -> vf.State:
+            assert state is not None
+            if state["mode"] == "complete":
+                replacement = vf.State.for_task(task)
+                replacement["mode"] = "complete"
+                replacement["marker"] = "completed-replacement"
+                completed.set()
+                return replacement
+            await completed.wait()
+            raise RuntimeError("primary sibling exploded")
+
+        async def cleanup_group(
+            self, tasks: list[vf.Task], states: list[vf.State]
+        ) -> None:
+            _ = tasks
+            cleaned_markers.extend(cast(str, state["marker"]) for state in states)
+
+    inputs = cast(
+        list[vf.RolloutInput],
+        [
+            {
+                "example_id": 0,
+                "prompt": [{"role": "user", "content": "hi"}],
+            },
+            {
+                "example_id": 0,
+                "prompt": [{"role": "user", "content": "hi"}],
+            },
+        ],
+    )
+    env = vf.Env(taskset=ReplacementTaskset(), harness=ReplacementHarness())
+
+    with pytest.raises(RuntimeError, match="primary sibling exploded"):
+        await env._run_group_states(inputs, cast(Client, FakeClient()), "fake", {})
+
+    assert cleaned_markers == ["completed-replacement", "failed-original"]
+
+
+@pytest.mark.asyncio
 async def test_callable_tool_can_accept_name_argument() -> None:
     harness = make_harness(toolsets=[vf.Toolset(tools=[named_tool])])
     task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
