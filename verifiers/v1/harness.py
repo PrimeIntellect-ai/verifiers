@@ -14,7 +14,11 @@ from verifiers.types import (
     SamplingArgs,
     ToolMessage,
 )
-from verifiers.utils.async_utils import maybe_call_with_named_args, timeout_after
+from verifiers.utils.async_utils import (
+    FrameworkTimeoutError,
+    maybe_call_with_named_args,
+    timeout_after,
+)
 from verifiers.utils.error_utils import error_info
 from verifiers.utils.message_utils import normalize_messages
 from verifiers.utils.response_utils import parse_response_message
@@ -256,12 +260,15 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
                     state.runtime_state().get("rollout_timeout_seconds"),
                 )
                 async with timeout_after(timeout):
-                    state = await self.setup_state(task, state)
-                    if not await self.runtime.is_completed(task, state):
-                        state = await self.run_program(task, state)
-                        await self.runtime.is_completed(task, state)
-                    state._set_stop_condition("program_completed")
-                    await self.runtime.collect_artifacts(task, state)
+                    try:
+                        state = await self.setup_state(task, state)
+                        if not await self.runtime.is_completed(task, state):
+                            state = await self.run_program(task, state)
+                            await self.runtime.is_completed(task, state)
+                        state._set_stop_condition("program_completed")
+                        await self.runtime.collect_artifacts(task, state)
+                    except Error as e:
+                        self.record_error(state, e)
                     await self.runtime.update_rollout(task, state)
                     state.record_generation_timing()
                     timing_recorded = True
@@ -269,11 +276,9 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
                         await self.runtime.score_rollout(task, state)
                     state._set_completed(True)
                     completed = True
-            except TimeoutError:
+            except FrameworkTimeoutError:
                 state["timed_out"] = True
                 state.stop("timeout_reached")
-            except Error as e:
-                self.record_error(state, e)
         finally:
             if not timing_recorded:
                 state.record_generation_timing()
@@ -481,7 +486,7 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
                     result = await maybe_call_with_named_args(
                         fn, task=task, state=state, runtime=self.runtime, harness=self
                     )
-            except TimeoutError:
+            except FrameworkTimeoutError:
                 state["timed_out"] = True
                 state["task_timed_out"] = True
                 state.stop("timeout_reached")
@@ -577,7 +582,7 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
                     sync_completion()
                     if await self.runtime.is_completed(task, state):
                         return state
-        except TimeoutError:
+        except FrameworkTimeoutError:
             state["timed_out"] = True
             state["task_timed_out"] = True
             state.stop("timeout_reached")
@@ -606,7 +611,7 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
             try:
                 async with timeout_after(timeout):
                     await run_local_command(merged_program, task, state, runtime)
-            except TimeoutError:
+            except FrameworkTimeoutError:
                 state["timed_out"] = True
                 state["task_timed_out"] = True
                 state.stop("timeout_reached")

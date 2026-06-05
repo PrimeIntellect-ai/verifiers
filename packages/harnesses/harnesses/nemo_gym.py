@@ -16,7 +16,7 @@ from aiohttp import ClientSession, web
 from pydantic import Field
 
 from verifiers.types import AssistantMessage, ToolCall, ToolMessage
-from verifiers.utils.async_utils import timeout_after
+from verifiers.utils.async_utils import FrameworkTimeoutError, timeout_after
 from verifiers.utils.serve_utils import get_free_port
 
 logger = logging.getLogger(__name__)
@@ -208,7 +208,7 @@ class NeMoGymHarness(vf.Harness[NeMoGymHarnessConfig]):
                 ),
                 global_config=self.config.global_config,
             )
-        except TimeoutError:
+        except FrameworkTimeoutError:
             state["timed_out"] = True
             state["task_timed_out"] = True
             state.stop("timeout_reached")

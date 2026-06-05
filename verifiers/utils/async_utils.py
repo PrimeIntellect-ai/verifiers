@@ -22,6 +22,10 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T")
 
 
+class FrameworkTimeoutError(TimeoutError):
+    """Raised only when a Verifiers-managed timeout expires."""
+
+
 async def with_sem(sem: AsyncContextManager, coro: Coroutine[Any, Any, T]) -> T:
     """Wrap a coroutine with a context manager (typically a semaphore)."""
     try:
@@ -68,7 +72,7 @@ async def timeout_after(seconds: float | None) -> AsyncIterator[None]:
         yield
     except asyncio.CancelledError:
         if timed_out:
-            raise TimeoutError from None
+            raise FrameworkTimeoutError from None
         raise
     finally:
         handle.cancel()

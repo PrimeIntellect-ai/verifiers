@@ -16,7 +16,11 @@ import tenacity as tc
 
 from verifiers.decorators import setup as setup_handler
 from verifiers.errors import Error, SandboxError
-from verifiers.utils.async_utils import maybe_call_with_named_args, timeout_after
+from verifiers.utils.async_utils import (
+    FrameworkTimeoutError,
+    maybe_call_with_named_args,
+    timeout_after,
+)
 
 from .program_utils import command_argv, command_env, float_config, int_config
 from .program_utils import program_channels
@@ -525,7 +529,7 @@ async def run_sandbox_command(
         try:
             async with timeout_after(timeout):
                 await active_command()
-        except TimeoutError:
+        except FrameworkTimeoutError:
             state["timed_out"] = True
             state["task_timed_out"] = True
             state.stop("timeout_reached")
@@ -716,7 +720,17 @@ async def create_sandbox(
     try:
         create_waiter = asyncio.shield(create_task)
         sandbox = await asyncio.wait_for(create_waiter, SANDBOX_CREATE_TIMEOUT_SECONDS)
-    except (asyncio.CancelledError, TimeoutError):
+    except TimeoutError:
+        asyncio.create_task(
+            delete_late_sandbox_create(
+                client,
+                create_task,
+                owns_client=owns_client,
+                reason="timed out creation",
+            )
+        )
+        raise
+    except asyncio.CancelledError:
         try:
             sandbox = cast(SandboxRecord, await asyncio.shield(create_task))
         except BaseException:
@@ -755,6 +769,38 @@ async def create_sandbox(
         await asyncio.shield(delete_task)
         raise
     return sandbox_id
+
+
+async def delete_late_sandbox_create(
+    client: SandboxClient,
+    create_task: asyncio.Task[object],
+    *,
+    owns_client: bool,
+    reason: str,
+) -> None:
+    try:
+        sandbox = cast(
+            SandboxRecord,
+            await asyncio.wait_for(
+                asyncio.shield(create_task), SANDBOX_CREATE_TIMEOUT_SECONDS
+            ),
+        )
+    except TimeoutError:
+        create_task.cancel()
+        logger.warning("Timed out waiting for late sandbox create cleanup.")
+        if owns_client:
+            await close_sandbox_client(client)
+        return
+    except BaseException:
+        if owns_client:
+            await close_sandbox_client(client)
+        return
+    await delete_sandbox_id(
+        client,
+        str(sandbox.id),
+        close_client=owns_client,
+        reason=reason,
+    )
 
 
 async def delete_sandbox_id(

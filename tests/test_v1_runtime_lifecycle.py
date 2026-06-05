@@ -712,6 +712,16 @@ async def replay_answer_program(task, state):
     return state
 
 
+async def timeout_error_program(task, state):
+    _ = task, state
+    raise TimeoutError("client timed out")
+
+
+async def sandbox_error_program(task, state):
+    _ = task, state
+    raise vf.SandboxError("sandbox failed")
+
+
 @vf.setup
 async def slow_setup(task, state) -> None:
     _ = task, state
@@ -759,6 +769,8 @@ for _name, _value in {
     "state_tools_program": state_tools_program,
     "state_tool_program": state_tool_program,
     "replay_answer_program": replay_answer_program,
+    "timeout_error_program": timeout_error_program,
+    "sandbox_error_program": sandbox_error_program,
     "slow_setup": slow_setup,
     "slow_program": slow_program,
     "replay_reward": replay_reward,
@@ -843,6 +855,37 @@ async def test_task_timeout_limits_active_execution() -> None:
     assert state["is_completed"] is True
     assert state["stop_condition"] == "timeout_reached"
     assert "answer" not in state
+
+
+@pytest.mark.asyncio
+async def test_user_timeout_error_is_not_task_timeout() -> None:
+    harness = make_harness(program={"fn": program_ref("timeout_error_program")})
+    task = vf.Task({"prompt": []}).freeze()
+    state = vf.State.for_task(task)
+    state.runtime_state()["task_timeout_seconds"] = 10
+
+    with pytest.raises(TimeoutError, match="client timed out"):
+        await harness.run(task, state)
+
+    assert state.get("timed_out") is None
+    assert state.get("task_timed_out") is None
+
+
+@pytest.mark.asyncio
+async def test_error_rollout_is_scored_and_completed() -> None:
+    harness = make_harness(
+        program={"fn": program_ref("sandbox_error_program")},
+        rewards=[program_ref("replay_reward")],
+    )
+    task = vf.Task({"prompt": [], "answer": "solved"}).freeze()
+
+    state = await harness.run(task)
+
+    assert state["error"]["error"] == "SandboxError"
+    assert state["reward"] == 0.0
+    assert state["is_completed"] is True
+    assert state["stop_condition"] == "has_error"
+    assert state["runtime"] == {}
 
 
 @pytest.mark.asyncio
@@ -938,6 +981,54 @@ async def test_group_scoring_timeout_does_not_relabel_completed_rollouts() -> No
     assert all(state["is_completed"] is True for state in states)
     assert all(state.get("timed_out") is None for state in states)
     assert all(state["stop_condition"] == "program_completed" for state in states)
+
+
+@pytest.mark.asyncio
+async def test_group_scoring_shares_rollout_timeout() -> None:
+    taskset = make_taskset()
+
+    async def init_group(task: vf.Task, n: int):
+        _ = task
+        tasks = [
+            vf.Task({"prompt": [], "answer": f"solved-{idx}"}).freeze()
+            for idx in range(n)
+        ]
+        states = [vf.State.for_task(task) for task in tasks]
+        return tasks, states
+
+    async def slow_completed_run(task, state):
+        _ = task
+        await asyncio.sleep(0.02)
+        state._set_completed(True)
+        state._set_stop_condition("program_completed")
+        return state
+
+    async def slow_score_group(tasks, states):
+        _ = tasks
+        await asyncio.sleep(0.05)
+        for state in states:
+            state["group_scored"] = True
+
+    taskset.init_group = init_group
+    harness = make_harness(program={"fn": program_ref("replay_answer_program")})
+    harness.run = slow_completed_run
+    harness.score_group = slow_score_group
+    env = vf.Env(taskset=taskset, harness=harness)
+    env.rollout_timeout_seconds = 0.04
+
+    start = time.perf_counter()
+    states = await env._run_group_states(
+        [{"prompt": [], "answer": "solved"}] * 2,
+        cast(Client, FakeModelClient([])),
+        "fake",
+        {},
+    )
+    elapsed = time.perf_counter() - start
+
+    assert elapsed < 0.08
+    assert all(state["is_completed"] is True for state in states)
+    assert all(state.get("group_scored") is None for state in states)
+    assert all(state.get("timed_out") is None for state in states)
 
 
 def test_v1_state_does_not_copy_task_answer_to_top_level() -> None:
@@ -1656,6 +1747,50 @@ async def test_create_sandbox_cancellation_deletes_late_provider_result(
         await task
 
     assert deleted == ["sbx-created-after-cancel"]
+
+
+@pytest.mark.asyncio
+async def test_create_sandbox_timeout_returns_before_provider_finishes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sandboxes(monkeypatch)
+    disable_sandbox_retry_sleep(monkeypatch)
+    monkeypatch.setattr(sandbox_utils, "SANDBOX_CREATE_TIMEOUT_SECONDS", 0.05)
+    started = asyncio.Event()
+    finish = asyncio.Event()
+    deleted = asyncio.Event()
+
+    class SlowCreateClient:
+        async def create(self, request: FakeCreateSandboxRequest) -> FakeSandboxResult:
+            _ = request
+            started.set()
+            await finish.wait()
+            return FakeSandboxResult("sbx-created-after-timeout")
+
+        async def wait_for_creation(
+            self,
+            sandbox_id: str,
+            *,
+            max_attempts: int = sandbox_utils.SANDBOX_WAIT_FOR_CREATION_ATTEMPTS,
+        ) -> None:
+            _ = sandbox_id, max_attempts
+
+        async def delete(self, sandbox_id: str) -> None:
+            assert sandbox_id == "sbx-created-after-timeout"
+            deleted.set()
+
+    start = time.perf_counter()
+    with pytest.raises(TimeoutError):
+        await sandbox_utils.create_sandbox(
+            cast(sandbox_utils.SandboxClient, SlowCreateClient()),
+            {"image": "python:3.11-slim"},
+        )
+    elapsed = time.perf_counter() - start
+
+    assert started.is_set()
+    assert elapsed < 0.2
+    finish.set()
+    await asyncio.wait_for(deleted.wait(), timeout=1)
 
 
 @pytest.mark.asyncio
