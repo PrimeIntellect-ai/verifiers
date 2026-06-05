@@ -21,7 +21,9 @@ The paired `rlm_search` environment prompts RLM to write this file and provides 
 
 Generated scripts may request URL-backed verification. PDF URLs are detected and parsed with the upstream QUEST PDF parser path before falling back to generic webpage retrieval.
 
-A reward of `0.0` with no `state["error"]` means the QUEST evaluator ran and judged the answer incorrect. Infrastructure and evaluator failures are represented with `vf.Error` subclasses instead of ad hoc success metrics.
+This port intentionally preserves upstream QUEST behavior for URL-backed verification semantics. The upstream verifier generally treats invalid, irrelevant, or inaccessible cited webpages as unsupported claims, which can assign `0.0` to the affected verification node even when the immediate cause is source access such as a bot challenge, rate limit, timeout, or parser failure. Future work should consider a finer-grained source-access taxonomy so verifier infrastructure limitations can be distinguished from model-provided bad URLs or unsupported claims.
+
+A reward of `0.0` with no `state["error"]` means the QUEST evaluator ran and judged the answer incorrect under the upstream-compatible scoring path. Infrastructure and evaluator failures outside normal QUEST source verification are represented with `vf.Error` subclasses instead of ad hoc success metrics.
 
 ## Error Handling
 
