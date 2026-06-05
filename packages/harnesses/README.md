@@ -69,7 +69,8 @@ chat transcript and each assistant message should become one trajectory step:
 ```python
 from pathlib import Path
 
-from harnesses import ReplayHarness, ReplayHarnessConfig
+import verifiers as vf
+from harnesses import ReplayHarness
 from tasksets import ReplayTaskset, ReplayTasksetConfig
 
 
@@ -81,13 +82,13 @@ def load_taskset(config: ReplayTasksetConfig) -> MyReplayTaskset:
     return MyReplayTaskset(config=config)
 
 
-def load_harness(config: ReplayHarnessConfig) -> ReplayHarness:
+def load_harness(config: vf.HarnessConfig) -> ReplayHarness:
     return ReplayHarness(config=config)
 ```
 
 `messages` must be a JSON array of message objects with string `role` fields.
 Non-assistant messages may appear before, between, or after assistant messages.
-`ReplayHarnessConfig` defaults to replaying every assistant message; set
+`vf.HarnessConfig` defaults to replaying every assistant message; set
 `max_turns` only when the replay should be capped.
 
 The replayed trajectory keeps `tokens=None`; token IDs and logprobs remain the

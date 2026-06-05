@@ -52,7 +52,7 @@ Notes:
 | `data_dir` | str \| null | `null` | Local JSONL directory. When unset, `sft-replay` uses its packaged `data/` directory. |
 
 ### Harness Config
-Uses `ReplayHarnessConfig`. By default, every assistant message is replayed.
+Uses `vf.HarnessConfig`. By default, every assistant message is replayed.
 Set `max_turns` to cap the number of assistant messages replayed per rollout.
 
 ### Metrics

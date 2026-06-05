@@ -93,7 +93,8 @@ on the env-local taskset subclass:
 ```python
 from pathlib import Path
 
-from harnesses import ReplayHarness, ReplayHarnessConfig
+import verifiers as vf
+from harnesses import ReplayHarness
 from tasksets import ReplayTaskset, ReplayTasksetConfig
 
 
@@ -105,7 +106,7 @@ def load_taskset(config: ReplayTasksetConfig) -> MyReplayTaskset:
     return MyReplayTaskset(config=config)
 
 
-def load_harness(config: ReplayHarnessConfig) -> ReplayHarness:
+def load_harness(config: vf.HarnessConfig) -> ReplayHarness:
     return ReplayHarness(config=config)
 ```
 

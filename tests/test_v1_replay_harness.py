@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 import verifiers as vf
-from harnesses import ReplayHarness, ReplayHarnessConfig
+from harnesses import ReplayHarness
 from tasksets import ReplayTaskset, ReplayTasksetConfig
 from tasksets.replay import replay_task_record
 
@@ -55,7 +55,7 @@ class ManyTurnReplayTaskset(ReplayTaskset):
 async def test_replay_harness_prints_assistant_messages_into_trajectory() -> None:
     env = vf.Env(
         taskset=InlineReplayTaskset(),
-        harness=ReplayHarness(config=ReplayHarnessConfig()),
+        harness=ReplayHarness(config=vf.HarnessConfig()),
     )
     client = NoModelClient()
 
@@ -106,7 +106,7 @@ async def test_replay_harness_prints_assistant_messages_into_trajectory() -> Non
 async def test_replay_harness_marks_partial_replay_as_truncated() -> None:
     env = vf.Env(
         taskset=InlineReplayTaskset(),
-        harness=ReplayHarness(config=ReplayHarnessConfig(max_turns=1)),
+        harness=ReplayHarness(config=vf.HarnessConfig(max_turns=1)),
     )
 
     state = await env.rollout(
@@ -126,9 +126,10 @@ async def test_replay_harness_marks_partial_replay_as_truncated() -> None:
 
 @pytest.mark.asyncio
 async def test_replay_harness_defaults_to_all_assistant_messages() -> None:
+    assert vf.HarnessConfig().max_turns == -1
     env = vf.Env(
         taskset=ManyTurnReplayTaskset(),
-        harness=ReplayHarness(config=ReplayHarnessConfig()),
+        harness=ReplayHarness(config=vf.HarnessConfig()),
     )
 
     state = await env.rollout(

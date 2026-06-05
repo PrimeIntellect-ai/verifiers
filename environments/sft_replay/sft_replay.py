@@ -1,7 +1,7 @@
 from pathlib import Path
 
 import verifiers as vf
-from harnesses import ReplayHarness, ReplayHarnessConfig
+from harnesses import ReplayHarness
 from tasksets import ReplayTaskset, ReplayTasksetConfig
 
 
@@ -13,7 +13,7 @@ def load_taskset(config: ReplayTasksetConfig) -> SFTReplayTaskset:
     return SFTReplayTaskset(config=config)
 
 
-def load_harness(config: ReplayHarnessConfig) -> ReplayHarness:
+def load_harness(config: vf.HarnessConfig) -> ReplayHarness:
     return ReplayHarness(config=config)
 
 
