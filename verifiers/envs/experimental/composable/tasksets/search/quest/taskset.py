@@ -20,7 +20,7 @@ from typing import Any
 import httpx
 import verifiers as vf
 from datasets import Dataset, load_dataset
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, OpenAIError
 from pydantic import BaseModel
 from verifiers.envs.experimental.composable import SandboxSpec, SandboxTaskSet
 
@@ -73,23 +73,28 @@ class QuestOpenAIClient:
         model = kwargs.pop("model", self.model) or self.model
         request_kwargs = dict(self.sampling_args)
         request_kwargs.update(kwargs)
-        if isinstance(response_format, type) and issubclass(response_format, BaseModel):
-            response = await self._client.beta.chat.completions.parse(
+        try:
+            if isinstance(response_format, type) and issubclass(
+                response_format, BaseModel
+            ):
+                response = await self._client.beta.chat.completions.parse(
+                    model=model,
+                    messages=messages,
+                    response_format=response_format,
+                    **request_kwargs,
+                )
+                parsed = response.choices[0].message.parsed
+                usage = _usage_dict(response)
+                return (parsed, usage) if count_token else parsed
+            if response_format is not None:
+                request_kwargs["response_format"] = response_format
+            response = await self._client.chat.completions.create(
                 model=model,
                 messages=messages,
-                response_format=response_format,
                 **request_kwargs,
             )
-            parsed = response.choices[0].message.parsed
-            usage = _usage_dict(response)
-            return (parsed, usage) if count_token else parsed
-        if response_format is not None:
-            request_kwargs["response_format"] = response_format
-        response = await self._client.chat.completions.create(
-            model=model,
-            messages=messages,
-            **request_kwargs,
-        )
+        except OpenAIError as exc:
+            raise vf.ModelError(f"QUEST judge model request failed: {exc}") from exc
         content = response.choices[0].message.content or ""
         usage = _usage_dict(response)
         return (content, usage) if count_token else content
@@ -387,18 +392,41 @@ class QuestRubric(vf.Rubric):
         self._semaphore = asyncio.Semaphore(eval_concurrency)
         self._scripts_root: Path | None = None
         self.add_reward_func(self.objective_reward, weight=1.0)
-        self.add_metric(self.quest_eval_succeeded)
+
+    async def score_rollout(self, state: vf.State) -> None:
+        """Score one rollout and preserve QUEST infrastructure failures as ``vf.Error`` values."""
+        if state.get("error") is not None:
+            state["reward"] = 0.0
+            state["metrics"] = {"objective_reward": 0.0}
+            return
+        try:
+            score = await self.objective_reward(state)
+        except vf.Error as exc:
+            state["error"] = exc
+            score = 0.0
+        except Exception as exc:
+            error = vf.InfraError("QUEST objective scoring failed")
+            error.__cause__ = exc
+            state["error"] = error
+            score = 0.0
+        state["reward"] = score
+        state["metrics"] = {"objective_reward": score}
 
     async def objective_reward(self, state: vf.State, **_: Any) -> float:
         sandbox_client = state.get("sandbox_client")
         sandbox_id = state.get("sandbox_id")
         if not sandbox_client or not sandbox_id:
-            return 0.0
-        result = await sandbox_client.execute_command(
-            sandbox_id,
-            f"cat {self.answer_file} 2>/dev/null || true",
-            working_dir=None,
-        )
+            raise vf.SandboxError("QUEST scoring requires a live sandbox")
+        try:
+            result = await sandbox_client.execute_command(
+                sandbox_id,
+                f"cat {self.answer_file} 2>/dev/null || true",
+                working_dir=None,
+            )
+        except Exception as exc:
+            raise vf.SandboxError(
+                f"Failed to read QUEST answer file {self.answer_file}"
+            ) from exc
         answer = (result.stdout or "").strip()
         answer_source = "answer_file"
         if not answer:
@@ -412,23 +440,32 @@ class QuestRubric(vf.Rubric):
         info = state.get("info") or {}
         task_id = info.get("task_id")
         if not isinstance(task_id, str) or not task_id:
-            state["quest_eval_error"] = "missing_task_id"
-            return 0.0
+            raise vf.InfraError("QUEST objective task is missing task_id metadata")
         state["quest_task_id"] = task_id
         script_path = self._script_path(task_id)
         cache = CacheFileSys(str(self.cache_dir / _safe_module_component(task_id)))
-        evaluate_answer = _load_eval_script(script_path)
+        try:
+            evaluate_answer = _load_eval_script(script_path)
+        except Exception as exc:
+            raise vf.InfraError(
+                f"Failed to load QUEST eval script for task_id={task_id!r}"
+            ) from exc
         client = self._get_client()
-        summary = await evaluate_answer(
-            client=client,
-            answer=answer,
-            agent_name="rlm",
-            answer_name=str(state.get("trajectory_id") or task_id),
-            cache=cache,
-            semaphore=self._semaphore,
-            logger=logger,
-            model=self.quest_eval_model,
-        )
+        try:
+            summary = await evaluate_answer(
+                client=client,
+                answer=answer,
+                agent_name="rlm",
+                answer_name=str(state.get("trajectory_id") or task_id),
+                cache=cache,
+                semaphore=self._semaphore,
+                logger=logger,
+                model=self.quest_eval_model,
+            )
+        except vf.Error:
+            raise
+        except Exception as exc:
+            raise vf.InfraError(f"QUEST eval failed for task_id={task_id!r}") from exc
         state["quest_eval_summary"] = summary
         final_score = float(summary.get("final_score", 0.0) or 0.0)
         if not math.isfinite(final_score):
@@ -437,15 +474,12 @@ class QuestRubric(vf.Rubric):
         state["quest_final_score"] = final_score
         return final_score
 
-    async def quest_eval_succeeded(self, state: vf.State, **_: Any) -> float:
-        return 1.0 if isinstance(state.get("quest_eval_summary"), dict) else 0.0
-
     def _get_client(self) -> QuestOpenAIClient:
         if self._client is not None:
             return self._client
         api_key = os.environ.get(self.judge_api_key_var)
         if not api_key:
-            raise ValueError(
+            raise vf.ModelError(
                 f"{self.judge_api_key_var} environment variable is required for QUEST evaluation"
             )
         headers: dict[str, str] = {}
@@ -466,7 +500,7 @@ class QuestRubric(vf.Rubric):
         scripts_root = self._ensure_eval_scripts_dir()
         script_path = scripts_root / "eval_scripts" / f"{task_id}.py"
         if not script_path.is_file():
-            raise FileNotFoundError(
+            raise vf.InfraError(
                 f"QUEST eval script not found for task_id={task_id!r}: {script_path}"
             )
         return script_path
@@ -477,13 +511,18 @@ class QuestRubric(vf.Rubric):
         if self.eval_scripts_dir is not None:
             self._scripts_root = self.eval_scripts_dir
             return self._scripts_root
-        from huggingface_hub import snapshot_download
+        try:
+            from huggingface_hub import snapshot_download
 
-        root = snapshot_download(
-            repo_id=self.dataset_name,
-            repo_type="dataset",
-            allow_patterns="eval_scripts/*.py",
-        )
+            root = snapshot_download(
+                repo_id=self.dataset_name,
+                repo_type="dataset",
+                allow_patterns="eval_scripts/*.py",
+            )
+        except Exception as exc:
+            raise vf.InfraError(
+                f"Failed to download QUEST eval scripts from {self.dataset_name}"
+            ) from exc
         self._scripts_root = Path(root)
         return self._scripts_root
 
