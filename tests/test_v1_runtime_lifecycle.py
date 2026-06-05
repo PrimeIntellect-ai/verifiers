@@ -915,8 +915,15 @@ async def test_group_scoring_timeout_does_not_relabel_completed_rollouts() -> No
         _ = tasks, states
         await asyncio.sleep(0.02)
 
+    async def completed_run(task, state):
+        _ = task
+        state._set_completed(True)
+        state._set_stop_condition("program_completed")
+        return state
+
     taskset.init_group = init_group
     harness = make_harness(program={"fn": program_ref("replay_answer_program")})
+    harness.run = completed_run
     harness.score_group = slow_score_group
     env = vf.Env(taskset=taskset, harness=harness)
     env.rollout_timeout_seconds = 0.01
