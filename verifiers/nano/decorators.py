@@ -4,7 +4,7 @@ Each decorator just tags a method with attributes; `discover_decorated` collects
 the tagged bound methods, sorted by descending priority then name. Copied nearly
 verbatim from the (already clean) v1 `decorators.py`.
 
-Usage on a Taskset / Harness subclass (all handlers must be `async`):
+Usage on a Taskset subclass (all handlers must be `async`):
 
     @vf.reward(weight=1.0)
     async def my_reward(self, task, transcript) -> float: ...

@@ -1,8 +1,9 @@
-"""reverse-text: a single-turn environment.
+"""reverse-text: a minimal single-task-style environment.
 
 The model is asked to reverse a string and wrap the result in <reversed_text>
-tags; the reward is the character-level similarity to the true reversal. The
-instruction is baked into the single user prompt at load time.
+tags; the reward is the character-level similarity to the true reversal. It runs
+through the built-in agent (which may use its bash tool), and the reward reads the
+final tagged answer. The instruction is baked into the user prompt at load time.
 """
 
 import re
@@ -50,13 +51,14 @@ def load_taskset(config: vf.TasksetConfig | None = None) -> ReverseTextTaskset:
     return ReverseTextTaskset(config or vf.TasksetConfig())
 
 
-def load_harness(config: vf.HarnessConfig | None = None) -> vf.Harness:
-    return vf.Harness(config or vf.HarnessConfig(max_turns=1))
+def load_agent(config: vf.AgentConfig | None = None) -> vf.Agent:
+    return vf.make_agent(config or vf.DefaultAgentConfig())
 
 
 def load_environment(config: vf.EnvConfig | None = None) -> vf.Environment:
     config = config or vf.EnvConfig()
     return vf.Environment(
         taskset=load_taskset(config.taskset),
-        harness=load_harness(config.harness),
+        agent=load_agent(config.agent),
+        runtime=config.runtime,
     )

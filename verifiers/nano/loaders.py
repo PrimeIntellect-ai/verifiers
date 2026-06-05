@@ -1,6 +1,6 @@
-"""Loaders: resolve an env id to its taskset / harness / environment.
+"""Loaders: resolve an env id to its taskset / agent / environment.
 
-The convention from v1 (a module exposes `load_taskset`/`load_harness`/
+The convention from v1 (a module exposes `load_taskset`/`load_agent`/
 `load_environment`), with none of the 412-line config-introspection machinery.
 An env id resolves to a bundled `examples.<name>` module, else a top-level module
 of that name. Each env module's typed factories validate their own configs.
@@ -10,8 +10,8 @@ import importlib
 import importlib.util
 from types import ModuleType
 
+from verifiers.nano.agent import Agent, AgentConfig
 from verifiers.nano.environment import EnvConfig, Environment
-from verifiers.nano.harness import Harness, HarnessConfig
 from verifiers.nano.taskset import Taskset, TasksetConfig
 
 
@@ -29,8 +29,8 @@ def load_taskset(env_id: str, config: TasksetConfig | None = None) -> Taskset:
     return import_env(env_id).load_taskset(config)
 
 
-def load_harness(env_id: str, config: HarnessConfig | None = None) -> Harness:
-    return import_env(env_id).load_harness(config)
+def load_agent(env_id: str, config: AgentConfig | None = None) -> Agent:
+    return import_env(env_id).load_agent(config)
 
 
 def load_environment(env_id: str, config: EnvConfig | None = None) -> Environment:

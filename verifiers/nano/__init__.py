@@ -4,21 +4,35 @@ Public surface is re-exported here so environments can `import verifiers.nano as
 and reach everything they need. Built up milestone by milestone.
 """
 
+from verifiers.nano.agent import (
+    Agent,
+    AgentConfig,
+    DefaultAgent,
+    DefaultAgentConfig,
+    RLMAgent,
+    RLMAgentConfig,
+    make_agent,
+)
 from verifiers.nano.clients import Client
+from verifiers.nano.context import RolloutContext
 from verifiers.nano.decorators import cleanup, metric, reward, setup, stop
 from verifiers.nano.environment import EnvConfig, Environment
 from verifiers.nano.errors import ModelError, ProgramError, RolloutError, ToolError
 from verifiers.nano.eval import ClientConfig, EvalConfig, resolve_client, run_eval
-from verifiers.nano.harness import Harness, HarnessConfig, RolloutContext
 from verifiers.nano.loaders import (
     import_env,
+    load_agent,
     load_environment,
-    load_harness,
     load_taskset,
 )
+from verifiers.nano.runtime import (
+    DockerConfig,
+    PrimeConfig,
+    Runtime,
+    RuntimeConfig,
+    SubprocessConfig,
+)
 from verifiers.nano.output import EvalMetadata, save_results
-from verifiers.nano.program import ProgramConfig, ProgramHarness
-from verifiers.nano.scoring import score
 from verifiers.nano.task import Task
 from verifiers.nano.taskset import Taskset, TasksetConfig
 from verifiers.nano.transcript import (
@@ -29,7 +43,7 @@ from verifiers.nano.transcript import (
     Turn,
     TurnTokens,
 )
-from verifiers.nano.tools import Toolset
+from verifiers.nano.toolset import Toolset
 from verifiers.nano.types import (
     AssistantMessage,
     Message,
@@ -74,8 +88,6 @@ __all__ = [
     "stop",
     "metric",
     "reward",
-    # scoring
-    "score",
     # errors
     "RolloutError",
     "ModelError",
@@ -89,21 +101,29 @@ __all__ = [
     "Toolset",
     "User",
     "UserConfig",
-    # taskset / harness / environment
+    # taskset / agent / runtime / environment
     "Taskset",
     "TasksetConfig",
-    "Harness",
-    "HarnessConfig",
+    "Agent",
+    "AgentConfig",
+    "make_agent",
+    "DefaultAgent",
+    "DefaultAgentConfig",
+    "RLMAgent",
+    "RLMAgentConfig",
     "RolloutContext",
-    "ProgramHarness",
-    "ProgramConfig",
+    "Runtime",
+    "RuntimeConfig",
+    "SubprocessConfig",
+    "DockerConfig",
+    "PrimeConfig",
     "Environment",
     "EnvConfig",
     # loaders
     "import_env",
     "load_environment",
     "load_taskset",
-    "load_harness",
+    "load_agent",
     # eval
     "EvalConfig",
     "run_eval",

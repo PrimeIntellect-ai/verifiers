@@ -4,7 +4,7 @@ A `Transcript[TaskT]` carries the typed task plus everything produced during a
 rollout (conversation, per-turn responses, reward, metrics, timing, error). It is
 the canonical full data dump — written to disk (`results.jsonl`) and consumed by
 the platform (visualization) and prime-rl (training). Environments subclass it to
-add typed scratch/result fields. The harness mutates it directly; this replaces
+add typed scratch/result fields. The rollout mutates it directly; this replaces
 v1's 600-line `dict`-subclass `State` and its dual "contract version" machinery.
 """
 

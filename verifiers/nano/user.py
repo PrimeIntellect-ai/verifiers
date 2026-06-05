@@ -1,8 +1,9 @@
 """The user simulator for multi-turn rollouts.
 
-A `User` produces the next user message(s) given the transcript; returning an
-empty list ends the conversation. Same API as v1's user-facing `User`, minus the
-bindings/objects/artifacts/registry machinery.
+A `User` supplies the scripted user turns that follow the first instruction — one
+message per subsequent turn, an empty list meaning single-turn. These are passed
+to the agent program up front (only the model endpoint is intercepted for now);
+dynamic, model-driven users await a future user-interception endpoint.
 """
 
 from typing import Generic, TypeVar
@@ -10,8 +11,6 @@ from typing import Generic, TypeVar
 from pydantic_config import BaseConfig
 
 from verifiers.nano.task import Task
-from verifiers.nano.transcript import Transcript
-from verifiers.nano.types import Messages, UserMessage
 
 
 class UserConfig(BaseConfig):
@@ -25,8 +24,6 @@ class User(Generic[UserConfigT]):
     def __init__(self, config: UserConfigT) -> None:
         self.config = config
 
-    async def get_response(
-        self, task: Task, transcript: Transcript, messages: Messages
-    ) -> list[UserMessage]:
-        """Return the next user message(s); an empty list ends the conversation."""
+    async def follow_ups(self, task: Task) -> list[str]:
+        """The scripted user turns after the first; empty means single-turn."""
         return []

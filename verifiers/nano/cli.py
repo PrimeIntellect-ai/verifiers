@@ -3,31 +3,37 @@
 Mirrors the `~/prime-rl` entrypoint pattern (`config = cli(Config)`). The env id
 is the first positional argument; it selects the env's `EnvConfig` subclass so
 the single `prime-pydantic-config` parse keeps env-specific fields typed and
-overridable via `--env.taskset.<field>` / `@ eval.toml`.
+overridable via dotted flags (e.g. `--env.runtime.kind docker`, `--env.agent.kind rlm`) / `@ eval.toml`.
+
+`-h`/`--help` (or no env id) prints the available envs plus the full, rich
+pydantic-config option help; `<env-id> --help` prints that env's typed help.
 """
 
 import asyncio
 import sys
+from pathlib import Path
 
 from pydantic_config import cli
 
 import verifiers.nano as vf
+from verifiers.nano import examples
 
-USAGE = (
-    "usage: python -m verifiers.nano <env-id> [--model ... --num-tasks ... @ eval.toml]"
-)
+USAGE = "usage: python -m verifiers.nano <env-id> [options] [@ file.toml]"
 
 
-def peel_env_id(argv: list[str]) -> tuple[str, list[str]]:
-    if argv and not argv[0].startswith(("-", "@")):
-        return argv[0], argv[1:]
-    raise SystemExit(USAGE)
+def available_envs() -> list[str]:
+    """The built-in example env ids (hyphenated module names under examples/)."""
+    return sorted(
+        path.stem.replace("_", "-")
+        for path in Path(examples.__file__).parent.glob("*.py")
+        if path.stem != "__init__"
+    )
 
 
 def eval_config_type(env_id: str) -> type[vf.EvalConfig]:
     """The eval config type for `env_id`, narrowing `env` to the env's EnvConfig."""
     env_config_type = getattr(vf.import_env(env_id), "EnvConfig", vf.EnvConfig)
-    if env_config_type is vf.EnvConfig:
+    if env_config_type is vf.EvalConfig:
         return vf.EvalConfig
     return type(
         "EvalConfig",
@@ -38,7 +44,17 @@ def eval_config_type(env_id: str) -> type[vf.EvalConfig]:
 
 def main(argv: list[str] | None = None) -> None:
     argv = list(sys.argv[1:]) if argv is None else list(argv)
-    env_id, rest = peel_env_id(argv)
+
+    if not argv or argv[0] in ("-h", "--help"):
+        print(USAGE)
+        print("\nexample envs:", ", ".join(available_envs()))
+        sys.argv = [sys.argv[0], "--help"]
+        cli(vf.EvalConfig)  # renders the full option help (incl. runtimes), then exits
+        return
+    if argv[0].startswith(("-", "@")):
+        raise SystemExit(USAGE)  # options given but no env id
+
+    env_id, rest = argv[0], argv[1:]
     config_type = eval_config_type(env_id)
     sys.argv = [sys.argv[0], *rest]  # let prime-pydantic-config render help/errors
     config = cli(config_type)

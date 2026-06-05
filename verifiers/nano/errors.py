@@ -8,7 +8,7 @@ custom messages.
 
 
 class RolloutError(Exception):
-    """Base for errors the harness records into the transcript rather than crashing on."""
+    """Base for errors recorded into the transcript rather than crashing the rollout."""
 
 
 class ModelError(RolloutError):

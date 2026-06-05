@@ -1,21 +1,19 @@
-"""Run an external program (python script / bash executable) as the agent.
+"""The per-rollout interception server.
 
-The program makes OpenAI-style API calls; a small per-rollout `InterceptionServer`
-catches them, routes each to our `Client`, records a `Turn`, and returns the
-result in OpenAI shape. We inject `OPENAI_BASE_URL`/`OPENAI_API_KEY` so the
-program's SDK talks to us. A much simpler take on v1's interception machinery:
-one ephemeral localhost server per rollout, chat-completions only, no streaming.
+Every rollout runs an agent program whose OpenAI-style calls are caught here:
+this small localhost server routes each `POST /v1/chat/completions` to our
+`Client`, records a `Turn`, and returns the result in OpenAI shape. We inject
+`OPENAI_BASE_URL`/`OPENAI_API_KEY` so the program's SDK talks to us. Chat
+completions only, no streaming — only the model endpoint is intercepted (tools
+and the user simulator are handled out-of-band for now).
 """
 
-import asyncio
-import os
 import secrets
+from collections.abc import Awaitable, Callable
 
 from aiohttp import web
-from pydantic import Field
 
-from verifiers.nano.errors import ProgramError
-from verifiers.nano.harness import Harness, HarnessConfig, RolloutContext
+from verifiers.nano.context import RolloutContext
 from verifiers.nano.transcript import Transcript, Turn
 from verifiers.nano.types import (
     AssistantMessage,
@@ -27,23 +25,6 @@ from verifiers.nano.types import (
     ToolCall,
     ToolMessage,
     UserMessage,
-)
-
-# Host provider credentials are scrubbed from the subprocess so the program can
-# only reach our interception endpoint (not a real provider). A program with its
-# own provider precedence (e.g. rlm prefers PRIME_API_KEY) would otherwise bypass
-# interception entirely.
-PROVIDER_ENV_VARS = (
-    "OPENAI_API_KEY",
-    "OPENAI_BASE_URL",
-    "PRIME_API_KEY",
-    "PRIME_TEAM_ID",
-    "ANTHROPIC_API_KEY",
-    "ANTHROPIC_BASE_URL",
-    "RLM_API_KEY",
-    "RLM_BASE_URL",
-    "GEMINI_API_KEY",
-    "GOOGLE_API_KEY",
 )
 
 
@@ -126,31 +107,44 @@ def serialize_completion(response: Response, model: str) -> dict:
 class InterceptionServer:
     """A localhost server that proxies one rollout's chat-completions calls."""
 
-    def __init__(self, ctx: RolloutContext, transcript: Transcript) -> None:
+    def __init__(
+        self,
+        ctx: RolloutContext,
+        transcript: Transcript,
+        stops: list[Callable[[Transcript], Awaitable[bool]]] | None = None,
+    ) -> None:
         self.ctx = ctx
         self.transcript = transcript
+        self.stops = stops or []
         self.secret = secrets.token_urlsafe(16)
-        self.base_url = ""
-        self._runner: web.AppRunner | None = None
+        self.port = 0
+        self.runner: web.AppRunner | None = None
 
     async def __aenter__(self) -> "InterceptionServer":
         app = web.Application()
         app.router.add_post("/v1/chat/completions", self.handle_chat)
-        self._runner = web.AppRunner(app)
-        await self._runner.setup()
-        site = web.TCPSite(self._runner, "127.0.0.1", 0)
+        self.runner = web.AppRunner(app)
+        await self.runner.setup()
+        site = web.TCPSite(self.runner, "127.0.0.1", 0)
         await site.start()
-        port = site._server.sockets[0].getsockname()[1]  # actual ephemeral port
-        self.base_url = f"http://127.0.0.1:{port}/v1"
+        self.port = site._server.sockets[0].getsockname()[1]  # actual ephemeral port
         return self
 
     async def __aexit__(self, *exc) -> None:
-        if self._runner is not None:
-            await self._runner.cleanup()
+        if self.runner is not None:
+            await self.runner.cleanup()
 
     async def handle_chat(self, request: web.Request) -> web.Response:
         if request.headers.get("Authorization") != f"Bearer {self.secret}":
             return web.json_response({"error": "unauthorized"}, status=401)
+        # A @stop firing here refuses the turn before it is served, which halts the
+        # agent (its model call errors out); Agent.run treats that exit as clean.
+        for stop in self.stops:
+            if await stop(self.transcript):
+                self.transcript.stop(stop.__name__)
+                return web.json_response(
+                    {"error": f"rollout stopped: {stop.__name__}"}, status=400
+                )
         body = await request.json()
         prompt: Messages = [parse_message(m) for m in body.get("messages", [])]
         tools = parse_tools(body.get("tools"))
@@ -161,46 +155,5 @@ class InterceptionServer:
         except Exception as e:  # surface to the program as an API error
             return web.json_response({"error": str(e)}, status=502)
         self.transcript.trajectory.append(Turn(prompt=prompt, response=response))
-        self.transcript.messages.append(response.message)
+        self.transcript.messages = [*prompt, response.message]  # full conversation
         return web.json_response(serialize_completion(response, self.ctx.model))
-
-
-class ProgramConfig(HarnessConfig):
-    command: list[str] = Field(default_factory=list)
-    """Program argv; the task instruction is appended as the final argument."""
-    cwd: str | None = None
-    env: dict[str, str] = Field(default_factory=dict)
-
-
-class ProgramHarness(Harness):
-    """Runs `config.command <instruction>` with its model calls intercepted."""
-
-    config: ProgramConfig
-
-    async def run_turns(self, ctx: RolloutContext, transcript: Transcript) -> None:
-        async with InterceptionServer(ctx, transcript) as server:
-            env = {k: v for k, v in os.environ.items() if k not in PROVIDER_ENV_VARS}
-            env.update(
-                {
-                    "OPENAI_BASE_URL": server.base_url,
-                    "OPENAI_API_KEY": server.secret,
-                    "OPENAI_MODEL": ctx.model,
-                    "RLM_MODEL": ctx.model,
-                    "VF_INSTRUCTION": transcript.task.instruction,
-                    **self.config.env,
-                }
-            )
-            argv = [*self.config.command, transcript.task.instruction]
-            proc = await asyncio.create_subprocess_exec(
-                *argv,
-                env=env,
-                cwd=self.config.cwd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            _stdout, stderr = await proc.communicate()
-        if proc.returncode != 0:
-            raise ProgramError(
-                f"program exited {proc.returncode}: {stderr.decode(errors='replace')[:1000]}"
-            )
-        transcript.stop("program_completed")
