@@ -219,8 +219,10 @@ class MultiTurnEnv(vf.Environment):
                     response = await self.get_model_response(state, prompt_messages)
                     end_time = time.time()
                     timing.model.spans.append(TimeSpan(start=start_time, end=end_time))
+                    prev_len = len(state["trajectory"])
                     await self.add_model_response(state, prompt_messages, response)
-                    await self._apply_step_rewards(state)
+                    if len(state["trajectory"]) > prev_len:
+                        await self._apply_step_rewards(state)
                 except vf.Error as e:
                     if isinstance(e, vf.OverlongPromptError):
                         state["prompt_too_long"] = True
