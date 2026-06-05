@@ -51,6 +51,26 @@ Any PR that adds or removes an environment from the `environments/` folder must 
 
 If an environment is added or removed without a corresponding `environments/README.md` update, request that the author add the necessary changes.
 
+## Environment Template Compliance
+
+All environments must follow the `prime env init` authoring pattern. New
+environment packages must be created with the Prime CLI, and existing
+environment packages should preserve the generated file structure and entrypoint
+shape unless the PR is explicitly changing the template itself.
+
+Request changes when an environment:
+
+- Is hand-scaffolded instead of generated with `prime env init`
+- Replaces the generated `README.md` section structure with freeform prose
+- Omits or rewrites the generated `load_environment(...)`, `load_taskset(...)`,
+  or `load_harness(...)` entrypoint pattern for v1 taskset/harness environments
+- Changes environment package structure in a way that no longer resembles the
+  CLI template
+
+Freeform environment READMEs are expressly disallowed. Authors should generate
+the template with `prime env init` and fill in the generated sections rather
+than inventing a new README shape.
+
 ## Skills Updates
 
 Any PR that changes user-facing Prime or Verifiers workflows for environment development, browsing, review, evaluation, GEPA optimization, or RL training must update the corresponding skills under `skills/`.

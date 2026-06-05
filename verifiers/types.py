@@ -1378,7 +1378,7 @@ class EvalConfig(BaseModel):
     num_workers: int | str = "auto"
     independent_scoring: bool = False
     extra_env_kwargs: dict = {}
-    max_retries: int = 0
+    max_retries: int = 3
     disable_env_server: bool = False
     # logging
     verbose: bool = False

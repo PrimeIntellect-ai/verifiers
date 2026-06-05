@@ -106,7 +106,7 @@ def test_init_openenv_writes_v1_taskset_template(tmp_path: Path) -> None:
     assert "taskset=vf.load_taskset(config=config.taskset)" in content
     assert "harness=vf.load_harness(config=config.harness)" in content
     assert "vf.OpenEnvEnv" not in content
-    assert '"tasksets[openenv]>=0.1.1"' in pyproject
+    assert '"tasksets[openenv]>=0.1.5"' in pyproject
 
 
 def test_init_openenv_multifile_exports_taskset_loader(tmp_path: Path) -> None:

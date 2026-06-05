@@ -533,6 +533,25 @@ def _timing_parts(
     return parts
 
 
+def format_timing_plain(
+    setup: float = 0.0,
+    generation: float = 0.0,
+    scoring: float = 0.0,
+    overhead: float = 0.0,
+    model: float = 0.0,
+    env: float = 0.0,
+) -> str:
+    """Return a plain-text compact timing breakdown (no Rich styling)."""
+    parts = _timing_parts(setup, generation, scoring, overhead, model, env)
+    segments: list[str] = []
+    for label, value, subs in parts:
+        segment = f"{label} {value}"
+        if subs:
+            segment += " (" + " + ".join(f"{sl} {sv}" for sl, sv in subs) + ")"
+        segments.append(segment)
+    return " + ".join(segments)
+
+
 def format_timing_rich(
     setup: float = 0.0,
     generation: float = 0.0,

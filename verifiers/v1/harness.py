@@ -71,6 +71,7 @@ from .utils.sandbox_program_utils import (
     python_program_sandbox,
     run_sandbox_python_program,
 )
+from .utils.logging_utils import log_rollout_finish, log_rollout_start
 from .utils.prompt_utils import (
     SystemPrompt,
     SystemPromptStrategy,
@@ -241,6 +242,7 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
 
     async def run(self, task: Task, state: State | None = None) -> State:
         state = await self.init_state(task) if state is None else state
+        log_rollout_start(state)
         timing_recorded = False
         completed = False
         rollout_failed = False
@@ -306,6 +308,7 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
             elif completed:
                 state.serialize_error()
                 state.assert_serializable()
+            log_rollout_finish(state)
         return state
 
     def record_error(self, state: State, error: Error) -> None:
@@ -344,6 +347,11 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
         if not isinstance(trajectory, list):
             raise TypeError("state.trajectory must be a list.")
         return float(len(trajectory))
+
+    @vf.stop
+    async def max_turns_reached(self, state: State) -> bool:
+        max_turns = state.get_max_turns(self.config.max_turns)
+        return max_turns > 0 and self.runtime.visible_model_requests(state) >= max_turns
 
     async def setup_state(self, task: Task, state: State) -> State:
         await self.setup_runtime_state(task, state)
@@ -577,9 +585,6 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
             )
             sync_completion()
             if await self.runtime.is_completed(task, state):
-                return state
-            if max_turns > 0 and turn >= max_turns:
-                state._set_stop_condition("max_turns_reached", overwrite=True)
                 return state
         return state
 

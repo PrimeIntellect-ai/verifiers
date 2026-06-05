@@ -21,7 +21,13 @@ from typing import (
 )
 
 from verifiers.clients import Client, resolve_client
-from verifiers.types import DiagnosticErrorData, Messages, Response, Tool
+from verifiers.types import (
+    DiagnosticErrorData,
+    Messages,
+    Response,
+    ResponseMessage,
+    Tool,
+)
 from verifiers.types import ClientConfig, ClientType, SamplingArgs
 from verifiers.utils.async_utils import maybe_call_with_named_args
 from verifiers.utils.client_utils import resolve_client_config
@@ -227,40 +233,7 @@ class Runtime:
             if owner is not None:
                 self.toolsets.extend(iter_toolsets(owner.toolsets))
         self.named_toolsets = self._collect_named_toolsets()
-        self.scoped_tools: dict[tuple[int, str, str], list[ToolEntry]] = {}
-        self.runtime_objects: dict[RuntimeObjectOwner, RuntimeObjectStore] = {
-            "toolset": {},
-            "user": {},
-            "taskset": {},
-            "harness": {},
-        }
-        self.model_clients: dict[str, Client] = {}
-        self.owned_model_clients: set[str] = set()
-        self._sandbox_client = None
-        self.sandbox_leases: dict[tuple[str, str], SandboxLease] = {}
-        self.sandbox_creation_tasks: dict[
-            tuple[str, str], asyncio.Task[SandboxLease]
-        ] = {}
-        self.upload_archive_tasks: dict[tuple[str, str, str], asyncio.Task[Path]] = {}
-        self.sandbox_lock = asyncio.Lock()
-        sandbox_config = (
-            self.harness.sandbox
-            if self.harness is not None and self.harness.sandbox is not None
-            else SandboxConfig()
-        )
-        create_concurrency = sandbox_config.create_concurrency
-        create_rate = sandbox_config.create_rate_per_second
-        delete_concurrency = sandbox_config.delete_concurrency
-        delete_rate = sandbox_config.delete_rate_per_second
-        self.sandbox_create_semaphore = asyncio.Semaphore(create_concurrency)
-        self.sandbox_create_rate_limiter = AsyncRateLimiter(create_rate)
-        self.sandbox_delete_semaphore = asyncio.Semaphore(delete_concurrency)
-        self.sandbox_delete_rate_limiter = AsyncRateLimiter(delete_rate)
-        self.mcp_exit_stacks: dict[str, AsyncExitStack] = {}
-        self.mcp_tools: dict[str, RuntimeTools] = {}
-        self.mcp_tool_parents: dict[str, dict[str, tuple[Toolset, ...]]] = {}
-        self.trajectories: dict[str, list[JsonData]] = {}
-        self.tool_handles: dict[str, tuple[Task, State, tuple[str, ...]]] = {}
+
         self.stop_conditions = collect_handlers(
             self._handler_owners(),
             "stop",
@@ -326,6 +299,46 @@ class Runtime:
                 "teardown", owners=(self.taskset, self.harness, *self.toolsets)
             ),
         )
+
+        self.trajectories: dict[str, list[JsonData]] = {}
+        self.model_clients: dict[str, Client] = {}
+        self.owned_model_clients: set[str] = set()
+        self._model_request_locks: dict[str, asyncio.Lock] = {}
+        self._inflight_visible_model_requests: dict[str, int] = {}
+
+        self.scoped_tools: dict[tuple[int, str, str], list[ToolEntry]] = {}
+        self.tool_handles: dict[str, tuple[Task, State, tuple[str, ...]]] = {}
+        self.runtime_objects: dict[RuntimeObjectOwner, RuntimeObjectStore] = {
+            "toolset": {},
+            "user": {},
+            "taskset": {},
+            "harness": {},
+        }
+
+        self._sandbox_client = None
+        self.sandbox_leases: dict[tuple[str, str], SandboxLease] = {}
+        self.sandbox_creation_tasks: dict[
+            tuple[str, str], asyncio.Task[SandboxLease]
+        ] = {}
+        self.upload_archive_tasks: dict[tuple[str, str, str], asyncio.Task[Path]] = {}
+        self.sandbox_lock = asyncio.Lock()
+        sandbox_config = (
+            self.harness.sandbox
+            if self.harness is not None and self.harness.sandbox is not None
+            else SandboxConfig()
+        )
+        create_concurrency = sandbox_config.create_concurrency
+        create_rate = sandbox_config.create_rate_per_second
+        delete_concurrency = sandbox_config.delete_concurrency
+        delete_rate = sandbox_config.delete_rate_per_second
+        self.sandbox_create_semaphore = asyncio.Semaphore(create_concurrency)
+        self.sandbox_create_rate_limiter = AsyncRateLimiter(create_rate)
+        self.sandbox_delete_semaphore = asyncio.Semaphore(delete_concurrency)
+        self.sandbox_delete_rate_limiter = AsyncRateLimiter(delete_rate)
+
+        self.mcp_exit_stacks: dict[str, AsyncExitStack] = {}
+        self.mcp_tools: dict[str, RuntimeTools] = {}
+        self.mcp_tool_parents: dict[str, dict[str, tuple[Toolset, ...]]] = {}
 
     @property
     def has_group_signals(self) -> bool:
@@ -438,6 +451,19 @@ class Runtime:
         self.trajectories[str(state["trajectory_id"])] = cast(
             list[JsonData], trajectory
         )
+
+    def visible_model_requests(self, state: State) -> int:
+        trajectory = state.get("trajectory") or []
+        if not isinstance(trajectory, list):
+            raise TypeError("state.trajectory must be a list.")
+        trajectory_id = str(state["trajectory_id"])
+        completed = sum(
+            1
+            for step in trajectory
+            if isinstance(step, dict)
+            and str(step.get("trajectory_id")) == trajectory_id
+        )
+        return completed + self._inflight_visible_model_requests.get(trajectory_id, 0)
 
     def resolved_handles(self, state: State) -> ResolvedRuntimeHandlesConfig:
         runtime = state.runtime_state()
@@ -859,41 +885,92 @@ class Runtime:
         context: ModelRequestContext | None = None,
     ) -> Response:
         context = context or ModelRequestContext()
-        client = self.model_client(state)
-        request_start = time.time()
-        response = await client.get_response(
-            prompt=prompt,
-            model=self.model(state),
-            tools=tool_defs,
-            sampling_args=self.sampling_args(state),
-            state=state,
-        )
-        request_end = time.time()
-        state.record_model_timing(request_start, request_end)
-        record_response_usage(state, response)
-        completion = await parse_response_message(response)
-        tokens = await parse_response_tokens(response)
-        is_truncated = response.message.is_truncated or (
-            tokens is not None and bool(tokens.get("is_truncated"))
-        )
-        step = {
-            "prompt": serializable(prompt),
-            "completion": serializable(completion),
-            "response": serializable(response),
-            "tokens": serializable(tokens),
-            "reward": None,
-            "advantage": None,
-            "is_truncated": bool(is_truncated),
-            "trajectory_id": str(state["trajectory_id"]),
-            "extras": context.extras(),
-        }
-        if context.trajectory_visibility == "append":
-            state["trajectory"].append(step)
-        elif context.trajectory_visibility != "hidden":
-            raise AssertionError(
-                f"Unknown trajectory visibility: {context.trajectory_visibility!r}"
+        reserved = await self._reserve_model_request(task, state, context)
+        if not reserved:
+            return self._completed_model_response(state)
+        released = False
+        try:
+            client = self.model_client(state)
+            request_start = time.time()
+            response = await client.get_response(
+                prompt=prompt,
+                model=self.model(state),
+                tools=tool_defs,
+                sampling_args=self.sampling_args(state),
+                state=state,
             )
-        return response
+            request_end = time.time()
+            state.record_model_timing(request_start, request_end)
+            record_response_usage(state, response)
+            completion = await parse_response_message(response)
+            tokens = await parse_response_tokens(response)
+            is_truncated = response.message.is_truncated or (
+                tokens is not None and bool(tokens.get("is_truncated"))
+            )
+            step = {
+                "prompt": serializable(prompt),
+                "completion": serializable(completion),
+                "response": serializable(response),
+                "tokens": serializable(tokens),
+                "reward": None,
+                "advantage": None,
+                "is_truncated": bool(is_truncated),
+                "trajectory_id": str(state["trajectory_id"]),
+                "extras": context.extras(),
+            }
+            if context.trajectory_visibility == "append":
+                state["trajectory"].append(step)
+                self._release_model_request(state, context)
+                released = True
+                await self.is_completed(task, state)
+            elif context.trajectory_visibility != "hidden":
+                raise AssertionError(
+                    f"Unknown trajectory visibility: {context.trajectory_visibility!r}"
+                )
+            return response
+        finally:
+            if not released:
+                self._release_model_request(state, context)
+
+    async def _reserve_model_request(
+        self, task: Task, state: State, context: ModelRequestContext
+    ) -> bool:
+        key = str(state["trajectory_id"])
+        lock = self._model_request_locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            if await self.is_completed(task, state):
+                return False
+            if context.trajectory_visibility != "append":
+                return True
+            self._inflight_visible_model_requests[key] = (
+                self._inflight_visible_model_requests.get(key, 0) + 1
+            )
+            return True
+
+    def _release_model_request(
+        self, state: State, context: ModelRequestContext
+    ) -> None:
+        if context.trajectory_visibility != "append":
+            return
+        key = str(state["trajectory_id"])
+        count = self._inflight_visible_model_requests.get(key, 0)
+        if count <= 1:
+            self._inflight_visible_model_requests.pop(key, None)
+        else:
+            self._inflight_visible_model_requests[key] = count - 1
+
+    def _completed_model_response(self, state: State) -> Response:
+        return Response(
+            id=f"completed_{uuid.uuid4().hex}",
+            created=int(time.time()),
+            model=self.model(state),
+            message=ResponseMessage(
+                role="assistant",
+                content="",
+                finish_reason="stop",
+                is_truncated=False,
+            ),
+        )
 
     async def setup_rollout(
         self,
@@ -979,6 +1056,9 @@ class Runtime:
         await self.close_mcp_tools(state)
         self.release_scoped_tools("rollout", state)
         await self.release_model_client(state)
+        key = str(state["trajectory_id"])
+        self._model_request_locks.pop(key, None)
+        self._inflight_visible_model_requests.pop(key, None)
         self.release_tool_handles(state)
 
     async def cleanup_group(self, tasks: list[Task], states: list[State]) -> None:

@@ -34,6 +34,7 @@ from verifiers.envs.experimental.composable import SandboxSpec, SandboxTaskSet
 logger = logging.getLogger(__name__)
 
 DATASET_NAME = "AweAI-Team/Scale-SWE"
+REGISTRY_PREFIX = "us-central1-docker.pkg.dev/prime-intellect-platform/prod-sandbox"
 
 ENV_VARS_SCALE_SWE = {
     "PATH": (
@@ -68,6 +69,13 @@ if __name__ == "__main__":
     ret = pytest.main(args)
     print("<pytest>true</pytest>" if ret == 0 else "<pytest>false</pytest>")
 """
+
+
+def _build_docker_image(info: dict) -> str:
+    image = info["image_url"]
+    if image.startswith(REGISTRY_PREFIX):
+        return image
+    return f"{REGISTRY_PREFIX}/{image}"
 
 
 class ScaleSWERubric(vf.Rubric):
@@ -155,7 +163,7 @@ class ScaleSWETaskSet(SandboxTaskSet):
 
     def get_sandbox_spec(self, info: dict) -> SandboxSpec:
         return SandboxSpec(
-            image=info["image_url"],
+            image=_build_docker_image(info),
             timeout_minutes=self.timeout_minutes,
         )
 
