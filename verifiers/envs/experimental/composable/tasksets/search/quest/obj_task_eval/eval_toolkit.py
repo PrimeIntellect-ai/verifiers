@@ -175,6 +175,7 @@ class BaseEvaluator:
             "[Visit] Invalid request format",
             "[Visit] Invalid URL protocol",
             "[document_parser]",
+            "PDF extraction failed",
         )
         if text.startswith(invalid_prefixes):
             return False
@@ -204,7 +205,24 @@ class BaseEvaluator:
                 self.logger.debug(f"Page info retrieval cancelled for {url}")
                 return None, None
 
-            if VisitTool is not None:
+            try:
+                if await tool_pdf.is_pdf(url, self.logger):
+                    screenshot_b64, page_text = await self.pdf_parser.extract(url)
+                    if not self._is_valid_tool_visit_text(page_text):
+                        self.logger.info(
+                            "PDF extraction returned unusable content for %s",
+                            url,
+                        )
+                        page_text = None
+                        screenshot_b64 = None
+                    else:
+                        self.logger.info("PDF extraction succeeded for %s", url)
+            except Exception as e:
+                self.logger.info(f"PDF detection/extraction failed for {url}: {e}")
+                page_text = None
+                screenshot_b64 = None
+
+            if page_text is None and VisitTool is not None:
                 _visit_timeout = float(
                     os.environ.get("EVAL_VISIT_TIMEOUT_SECONDS", "300")
                 )

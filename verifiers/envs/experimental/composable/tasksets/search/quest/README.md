@@ -19,6 +19,8 @@ The paired `rlm_search` environment prompts RLM to write this file and provides 
 
 `QuestRubric` loads the generated eval script for the example's `task_id` and calls its async `evaluate_answer(...)` entrypoint using the vendored minimal `obj_task_eval` runtime. The rollout reward is `summary["final_score"]`, clipped to `[0.0, 1.0]`.
 
+Generated scripts may request URL-backed verification. PDF URLs are detected and parsed with the upstream QUEST PDF parser path before falling back to generic webpage retrieval.
+
 A reward of `0.0` with no `state["error"]` means the QUEST evaluator ran and judged the answer incorrect. Infrastructure and evaluator failures are represented with `vf.Error` subclasses instead of ad hoc success metrics.
 
 ## Error Handling
