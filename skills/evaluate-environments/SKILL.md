@@ -25,11 +25,12 @@ prime eval run owner/my-env -m openai/gpt-4.1-mini -n 5
 ```
 3. Scale only after smoke pass:
 ```bash
-prime eval run owner/my-env -m openai/gpt-4.1-mini -n 200 -r 3 -s
+prime eval run owner/my-env -m openai/gpt-4.1-mini -n 200 -r 3 --shuffle -s
 ```
-4. Treat ownerless env ids as local-first. If not found locally, rely on Prime resolution for your remote env where applicable.
-5. When the user asks for a "real" or "base" eval, do not substitute a tiny smoke run. Use the requested model/env and make the run size explicit before interpreting results.
-6. If the user says the defaults are fine or asks for no flags, use the shortest canonical command and rely on global config:
+4. Use `--shuffle` for representative dataset sampling once smoke tests pass. Set `--shuffle-seed` explicitly for reproducible reports; if omitted, the default seed is `0`.
+5. Treat ownerless env ids as local-first. If not found locally, rely on Prime resolution for your remote env where applicable.
+6. When the user asks for a "real" or "base" eval, do not substitute a tiny smoke run. Use the requested model/env and make the run size explicit before interpreting results.
+7. If the user says the defaults are fine or asks for no flags, use the shortest canonical command and rely on global config:
 ```bash
 prime eval run my-env
 prime eval run my-env -m openai/gpt-4.1-mini
@@ -98,6 +99,7 @@ prime eval run configs/eval/my-benchmark.toml
 ```
 3. Make config files the default for benchmark sweeps, multi-model comparisons, and recurring reports.
 4. Use `name` on individual `[[eval]]` entries when the same environment appears multiple times. `id` selects the environment to load; `name` labels the run in displays, summaries, metadata, and saved result paths.
+5. Put `shuffle = true` and, for reproducibility, `shuffle_seed = <int>` in each `[[eval]]` entry that should sample from a shuffled dataset before selecting `num_examples`.
 
 ## Common Evaluation Patterns
 1. For single-environment v1 smoke runs, override typed taskset and harness config with dotted flags:
@@ -131,15 +133,29 @@ prime eval run my-env -s -C "judge_response,parsed_answer"
 ```bash
 prime eval run my-env -n 1000 -s --resume
 ```
-7. Save results to a custom output directory:
+Resume matching includes `--shuffle` and `--shuffle-seed`. Use the same shuffle settings as the interrupted run; only increase `-n/--num-examples` when extending a saved run.
+7. Shuffle examples before selecting the evaluation subset:
+```bash
+prime eval run my-env -n 200 -r 3 --shuffle --shuffle-seed 123 -s
+```
+8. Configure shuffle in TOML:
+```toml
+[[eval]]
+id = "my-env"
+num_examples = 200
+rollouts_per_example = 3
+shuffle = true
+shuffle_seed = 123
+```
+9. Save results to a custom output directory:
 ```bash
 prime eval run my-env -s -o /path/to/output
 ```
-8. Run multi-environment TOML suites:
+10. Run multi-environment TOML suites:
 ```bash
 prime eval run configs/eval/my-benchmark.toml
 ```
-9. Run the same environment more than once with different args by giving each entry a `name`:
+11. Run the same environment more than once with different args by giving each entry a `name`:
 ```toml
 [[eval]]
 id = "reverse-text"
@@ -155,7 +171,7 @@ name = "reverse-text-long"
 [eval.args]
 max_length = 256
 ```
-9. Put generation parameters in TOML sampling sections:
+12. Put generation parameters in TOML sampling sections:
 ```toml
 [sampling]
 max_tokens = 1024
@@ -167,18 +183,18 @@ enable_thinking = true
 env_id = "my-env"
 ```
 Use `[eval.sampling]` for per-eval overrides. `[sampling]` is shorthand for `sampling_args`; `reasoning_effort` and `enable_thinking` stay top-level and are mirrored into `extra_body.chat_template_kwargs`.
-10. Pass extra HTTP headers via CLI (repeatable):
+13. Pass extra HTTP headers via CLI (repeatable):
 ```bash
 prime eval run my-env -m my-proxy --header "X-Custom-Header: value"
 ```
-11. Set headers in `[[eval]]` TOML configs as a table or list (merge order: registry row < `headers` table < `header` list / `--header`):
+14. Set headers in `[[eval]]` TOML configs as a table or list (merge order: registry row < `headers` table < `header` list / `--header`):
 ```toml
 [[eval]]
 env_id = "my-env"
 headers = { "X-Custom-Header" = "value" }
 header = ["X-Another: val"]
 ```
-12. Run ablation sweeps using `[[ablation]]` blocks in TOML configs:
+15. Run ablation sweeps using `[[ablation]]` blocks in TOML configs:
 ```toml
 [[ablation]]
 env_id = "my-env"
