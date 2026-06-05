@@ -200,9 +200,15 @@ class Env(vf.Environment):
                         ),
                     )
             for index, task in enumerate(run_tasks):
-                if not task.done() or task.cancelled() or task.exception() is not None:
+                if not task.done() or task.cancelled():
                     continue
-                states[index] = task.result()
+                task_error = task.exception()
+                if task_error is None:
+                    states[index] = task.result()
+                    continue
+                task_state = getattr(task_error, "_vf_state", None)
+                if isinstance(task_state, State):
+                    states[index] = task_state
             try:
                 await self.harness.cleanup_group(tasks, states)
             except Exception:

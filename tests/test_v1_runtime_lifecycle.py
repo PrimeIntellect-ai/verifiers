@@ -1509,6 +1509,69 @@ async def test_v1_group_cleanup_uses_completed_replacement_states_on_failure() -
 
 
 @pytest.mark.asyncio
+async def test_v1_group_cleanup_uses_failed_replacement_states_on_failure() -> None:
+    cleaned_markers: list[str] = []
+
+    async def failed_replacement_program(task, state):
+        replacement = vf.State.for_task(task)
+        replacement.runtime_state().update(state.runtime_state())
+        replacement["mode"] = state["mode"]
+        replacement["marker"] = f"{state['mode']}-replacement"
+        return replacement
+
+    setattr(ref_module, "failed_replacement_program", failed_replacement_program)
+
+    class ReplacementTaskset(vf.Taskset):
+        async def init_group(
+            self, task: vf.Task, num_rollouts: int
+        ) -> tuple[list[vf.Task], list[vf.State]]:
+            tasks = [task for _ in range(num_rollouts)]
+            states = [vf.State.for_task(task) for task in tasks]
+            states[0]["mode"] = "failed"
+            states[0]["marker"] = "failed-original"
+            states[1]["mode"] = "completed"
+            states[1]["marker"] = "completed-original"
+            return tasks, states
+
+    @vf.update
+    async def fail_after_replacement(task, state) -> None:
+        _ = task
+        if state["mode"] == "failed":
+            raise RuntimeError("primary sibling exploded")
+
+    @vf.cleanup(stage="group")
+    async def record_group_cleanup(tasks, states) -> None:
+        _ = tasks
+        cleaned_markers.extend(cast(str, state["marker"]) for state in states)
+
+    inputs = cast(
+        list[vf.RolloutInput],
+        [
+            {
+                "example_id": 0,
+                "prompt": [{"role": "user", "content": "hi"}],
+            },
+            {
+                "example_id": 0,
+                "prompt": [{"role": "user", "content": "hi"}],
+            },
+        ],
+    )
+    env = vf.Env(
+        taskset=ReplacementTaskset(),
+        harness=make_harness(program={"fn": program_ref("failed_replacement_program")}),
+    )
+    env.harness.add_update(fail_after_replacement)
+    env.harness.add_cleanup(record_group_cleanup)
+
+    with pytest.raises(RuntimeError, match="primary sibling exploded"):
+        await env._run_group_states(inputs, cast(Client, FakeClient()), "fake", {})
+
+    assert cleaned_markers[0] == "failed-replacement"
+    assert "failed-original" not in cleaned_markers
+
+
+@pytest.mark.asyncio
 async def test_callable_tool_can_accept_name_argument() -> None:
     harness = make_harness(toolsets=[vf.Toolset(tools=[named_tool])])
     task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()

@@ -287,6 +287,7 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
             completed = True
         except BaseException as exc:
             primary_error = exc
+            setattr(exc, "_vf_state", state)
             raise
         finally:
             if not timing_recorded:
