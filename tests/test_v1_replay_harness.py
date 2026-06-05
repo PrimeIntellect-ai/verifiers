@@ -144,18 +144,31 @@ async def test_replay_harness_defaults_to_all_assistant_messages() -> None:
     assert state["completion"][-1] == {"role": "assistant", "content": "reply 10"}
 
 
-def test_replay_taskset_loads_configured_local_json_data(tmp_path: Path) -> None:
+def test_replay_taskset_loads_configured_local_jsonl_data(tmp_path: Path) -> None:
     data_dir = tmp_path / "data"
     data_dir.mkdir(parents=True)
-    (data_dir / "example.json").write_text(
-        json.dumps(
-            {
-                "messages": [
-                    {"role": "user", "content": "Say ok."},
-                    {"role": "assistant", "content": "ok"},
-                ]
-            }
-        ),
+    (data_dir / "examples.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "messages": [
+                            {"role": "user", "content": "Say ok."},
+                            {"role": "assistant", "content": "ok"},
+                        ]
+                    }
+                ),
+                json.dumps(
+                    {
+                        "messages": [
+                            {"role": "user", "content": "Say yes."},
+                            {"role": "assistant", "content": "yes"},
+                        ]
+                    }
+                ),
+            ]
+        )
+        + "\n",
         encoding="utf-8",
     )
 
@@ -167,14 +180,20 @@ def test_replay_taskset_loads_configured_local_json_data(tmp_path: Path) -> None
                 {"role": "user", "content": "Say ok."},
                 {"role": "assistant", "content": "ok"},
             ]
-        }
+        },
+        {
+            "messages": [
+                {"role": "user", "content": "Say yes."},
+                {"role": "assistant", "content": "yes"},
+            ]
+        },
     ]
 
 
-def test_replay_taskset_loads_subclass_local_json_data(tmp_path: Path) -> None:
+def test_replay_taskset_loads_subclass_local_jsonl_data(tmp_path: Path) -> None:
     data_dir = tmp_path / "data"
     data_dir.mkdir(parents=True)
-    (data_dir / "example.json").write_text(
+    (data_dir / "example.jsonl").write_text(
         json.dumps(
             {
                 "messages": [
@@ -182,7 +201,8 @@ def test_replay_taskset_loads_subclass_local_json_data(tmp_path: Path) -> None:
                     {"role": "assistant", "content": "ok"},
                 ]
             }
-        ),
+        )
+        + "\n",
         encoding="utf-8",
     )
     local_taskset_type = type(
@@ -224,7 +244,39 @@ def test_replay_taskset_rejects_empty_local_data_dir(tmp_path: Path) -> None:
 
     taskset = ReplayTaskset(config=ReplayTasksetConfig(data_dir=str(data_dir)))
 
-    with pytest.raises(FileNotFoundError, match="must contain at least one .json"):
+    with pytest.raises(FileNotFoundError, match="must contain at least one JSONL"):
+        taskset.load_tasks()
+
+
+def test_replay_taskset_rejects_json_files(tmp_path: Path) -> None:
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True)
+    (data_dir / "example.json").write_text(
+        json.dumps(
+            {
+                "messages": [
+                    {"role": "user", "content": "Say ok."},
+                    {"role": "assistant", "content": "ok"},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    taskset = ReplayTaskset(config=ReplayTasksetConfig(data_dir=str(data_dir)))
+
+    with pytest.raises(ValueError, match=r"accepts only \.jsonl files"):
+        taskset.load_tasks()
+
+
+def test_replay_taskset_rejects_non_object_jsonl_rows(tmp_path: Path) -> None:
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True)
+    (data_dir / "example.jsonl").write_text("[]\n", encoding="utf-8")
+
+    taskset = ReplayTaskset(config=ReplayTasksetConfig(data_dir=str(data_dir)))
+
+    with pytest.raises(TypeError, match="example.jsonl:1 must contain one JSON object"):
         taskset.load_tasks()
 
 

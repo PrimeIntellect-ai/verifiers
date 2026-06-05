@@ -7,6 +7,7 @@ from datasets import load_dataset
 import verifiers as vf
 
 DATA_DIR_FIELD = "data_dir"
+DATA_FILE_SUFFIX = ".jsonl"
 
 
 class ReplayTasksetConfig(vf.TasksetConfig):
@@ -38,20 +39,26 @@ class ReplayTaskset(vf.Taskset[ReplayTasksetConfig]):
             raise FileNotFoundError(
                 f"{type(self).__name__} requires dataset or data_dir."
             )
+        if not data_dir.is_dir():
+            raise FileNotFoundError(f"{DATA_DIR_FIELD} must be a directory: {data_dir}")
         tasks: list[vf.JsonData] = []
         for item in sorted(data_dir.iterdir(), key=lambda path: path.name):
-            if not item.is_file() or not item.name.endswith(".json"):
+            if not item.is_file() or not item.name.endswith(DATA_FILE_SUFFIX):
                 raise ValueError(
-                    f"{DATA_DIR_FIELD} accepts only .json files; found {item.name!r}."
+                    f"{DATA_DIR_FIELD} accepts only {DATA_FILE_SUFFIX} files; "
+                    f"found {item.name!r}."
                 )
             with item.open(encoding="utf-8") as f:
-                record = json.load(f)
-            if not isinstance(record, dict):
-                raise TypeError(f"{item.name} must contain one JSON object.")
-            tasks.append(replay_task_record(record))
+                for line_number, line in enumerate(f, start=1):
+                    record = json.loads(line)
+                    if not isinstance(record, dict):
+                        raise TypeError(
+                            f"{item.name}:{line_number} must contain one JSON object."
+                        )
+                    tasks.append(replay_task_record(record))
         if not tasks:
             raise FileNotFoundError(
-                f"{DATA_DIR_FIELD} must contain at least one .json file."
+                f"{DATA_DIR_FIELD} must contain at least one JSONL record."
             )
         return tasks
 

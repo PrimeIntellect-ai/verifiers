@@ -6,19 +6,14 @@
 - **Tags**: replay, sft, v1
 
 ### Datasets
-- **Primary dataset(s)**: Local `data/*.json` files or a Hugging Face dataset configured with `[env.taskset].dataset`.
+- **Primary dataset(s)**: Local `data/*.jsonl` files or a Hugging Face dataset configured with `[env.taskset].dataset`.
 - **Source links**: User-provided.
 - **Split sizes**: All loaded rows are used for train; eval is empty by default.
 
-Each local example is one JSON object under `data/` with a `messages` list:
+Each local example is one JSONL row under `data/` with a `messages` list:
 
-```json
-{
-  "messages": [
-    {"role": "user", "content": "Reverse abc."},
-    {"role": "assistant", "content": "cba"}
-  ]
-}
+```jsonl
+{"messages":[{"role":"user","content":"Reverse abc."},{"role":"assistant","content":"cba"}]}
 ```
 
 `messages` must coerce to `vf.Messages`. Raw OpenAI-compatible message objects
@@ -53,8 +48,8 @@ Notes:
 
 | Field | Type | Default | Description |
 | --- | ---- | ------- | ----------- |
-| `dataset` | str \| null | `null` | Hugging Face dataset ID to load instead of env-local `data/*.json` files. |
-| `data_dir` | str \| null | `null` | Local JSON directory. When unset, `sft-replay` uses its packaged `data/` directory. |
+| `dataset` | str \| null | `null` | Hugging Face dataset ID to load instead of env-local `data/*.jsonl` files. |
+| `data_dir` | str \| null | `null` | Local JSONL directory. When unset, `sft-replay` uses its packaged `data/` directory. |
 
 ### Harness Config
 Uses `ReplayHarnessConfig`. By default, every assistant message is replayed.

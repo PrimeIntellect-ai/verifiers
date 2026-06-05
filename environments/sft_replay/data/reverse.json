@@ -1,6 +1,0 @@
-{
-  "messages": [
-    {"role": "user", "content": "Reverse abc."},
-    {"role": "assistant", "content": "cba"}
-  ]
-}

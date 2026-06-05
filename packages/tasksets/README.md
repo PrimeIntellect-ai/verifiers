@@ -61,7 +61,7 @@ the intended config from Python/TOML.
 | `HarborTaskset` | Harbor task directories and Harbor Hub datasets. |
 | `OpenEnvTaskset` | Upstream OpenEnv projects with out-of-the-box task/tool use. |
 | `OpenRewardTaskset` | Upstream OpenReward environments and rollout-local session tools. |
-| `ReplayTaskset` | HF or explicit local JSON chat transcripts for replay data. |
+| `ReplayTaskset` | HF datasets or explicit local JSONL chat transcripts for replay data. |
 | `TextArenaTaskset` | Compatible TextArena single-player games with a taskset-owned `vf.User`. |
 | `NeMoGymTaskset` | NeMo Gym JSONL task rows. |
 
@@ -75,16 +75,11 @@ Use `ReplayTaskset` with `ReplayHarness` when each training example is already a
 chat transcript row and each assistant message should become one trajectory
 step.
 
-For local data, put one JSON object per file under a directory owned by the env
-package:
+For local data, put one JSON object per line in `.jsonl` files under a directory
+owned by the env package:
 
-```json
-{
-  "messages": [
-    {"role": "user", "content": "Reverse abc."},
-    {"role": "assistant", "content": "cba"}
-  ]
-}
+```jsonl
+{"messages":[{"role":"user","content":"Reverse abc."},{"role":"assistant","content":"cba"}]}
 ```
 
 `messages` must be a JSON array of message objects. Each message must have a
