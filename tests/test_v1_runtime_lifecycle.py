@@ -52,6 +52,17 @@ from verifiers.v1.utils.sandbox_utils import (
 )
 
 PROGRAM_REF_MODULE = "v1_runtime_lifecycle_refs"
+LogCall = tuple[tuple[object, ...], dict[str, object]]
+
+
+def record_log_calls(monkeypatch: pytest.MonkeyPatch, target: str) -> list[LogCall]:
+    calls: list[LogCall] = []
+
+    def record(*args: object, **kwargs: object) -> None:
+        calls.append((args, kwargs))
+
+    monkeypatch.setattr(target, record)
+    return calls
 
 
 class FakeMCPHandle:
@@ -1089,7 +1100,7 @@ async def test_taskset_setup_initializes_base_harness_prompt_and_sampling() -> N
 
 @pytest.mark.asyncio
 async def test_v1_harness_preserves_rollout_scoring_error_when_cleanup_fails(
-    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     @vf.reward
     async def failing_reward(task, state) -> float:
@@ -1108,18 +1119,20 @@ async def test_v1_harness_preserves_rollout_scoring_error_when_cleanup_fails(
     harness.add_cleanup(failing_cleanup)
     task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
     state = vf.State.for_task(task)
+    warnings = record_log_calls(monkeypatch, "verifiers.v1.harness.logger.warning")
 
     with pytest.raises(RuntimeError, match="v1 score exploded"):
         await harness.run(task, state)
 
     assert state["cleanup_ran"] is True
     assert "cleanup_errors" not in state
-    assert "Rollout cleanup failed after rollout error" in capsys.readouterr().err
+    assert warnings[0][0][0] == "Rollout cleanup failed after rollout error"
+    assert warnings[0][1]["exc_info"] is True
 
 
 @pytest.mark.asyncio
 async def test_v1_group_preserves_scoring_error_when_cleanup_fails(
-    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class SimpleTaskset(vf.Taskset):
         def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
@@ -1167,11 +1180,17 @@ async def test_v1_group_preserves_scoring_error_when_cleanup_fails(
     env = vf.Env(taskset=SimpleTaskset(), harness=make_harness(max_turns=1))
     env.harness.add_reward(failing_group_reward)
     env.harness.add_cleanup(failing_group_cleanup)
+    exceptions: list[LogCall] = []
+
+    def record_exception(*args: object, **kwargs: object) -> None:
+        exceptions.append((args, kwargs))
+
+    monkeypatch.setattr(env.logger, "exception", record_exception)
 
     with pytest.raises(RuntimeError, match="v1 group score exploded"):
         await env._run_group_states(inputs, cast(Client, client), "fake", {})
 
-    assert "Cleanup failed after v1 group scoring error" in capsys.readouterr().err
+    assert exceptions[0][0][0] == "Cleanup failed after v1 group scoring error"
 
 
 @pytest.mark.asyncio
@@ -1220,7 +1239,7 @@ async def test_v1_group_scoring_sees_live_rollout_error_before_serialization() -
 
 @pytest.mark.asyncio
 async def test_v1_group_logs_cancelled_sibling_cleanup_errors(
-    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     slow_started = asyncio.Event()
     created_states: list[vf.State] = []
@@ -1267,12 +1286,14 @@ async def test_v1_group_logs_cancelled_sibling_cleanup_errors(
     env = vf.Env(taskset=CancelledSiblingTaskset(), harness=make_harness())
     env.harness.add_setup(fail_or_wait)
     env.harness.add_cleanup(failing_slow_cleanup)
+    warnings = record_log_calls(monkeypatch, "verifiers.v1.harness.logger.warning")
 
     with pytest.raises(RuntimeError, match="primary sibling exploded"):
         await env._run_group_states(inputs, cast(Client, FakeClient()), "fake", {})
 
     assert "cleanup_errors" not in created_states[0]
-    assert "Rollout cleanup failed after rollout error" in capsys.readouterr().err
+    assert warnings[0][0][0] == "Rollout cleanup failed after rollout error"
+    assert warnings[0][1]["exc_info"] is True
 
 
 @pytest.mark.asyncio
@@ -2054,7 +2075,6 @@ async def test_sandbox_handle_forwards_background_job_poll_interval() -> None:
 @pytest.mark.asyncio
 async def test_sandbox_command_marks_oom_failures(
     monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
 ) -> None:
     install_fake_sandboxes(monkeypatch)
     install_fake_endpoint_tunnel(monkeypatch)
@@ -2082,13 +2102,18 @@ async def test_sandbox_command_marks_oom_failures(
         sandbox={"image": "python:3.11-slim"},
     )
     task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+    warnings = record_log_calls(
+        monkeypatch, "verifiers.v1.utils.sandbox_utils.logger.warning"
+    )
 
     state = await harness.run(task)
 
     assert state["sandbox_oom"] is True
     assert "sandbox_failures" not in state
-    assert (
-        "Sandbox failure detected (kind=oom, phase=command" in capsys.readouterr().err
+    assert any(
+        call[0][0]
+        == "Sandbox failure detected (kind=%s, phase=%s, sandbox_id=%s, scope=%s): %s"
+        for call in warnings
     )
     assert state["error"]["error"] == "SandboxError"
     state["example_id"] = 0
@@ -3065,7 +3090,6 @@ async def test_release_sandboxes_deletes_completed_unclaimed_creation() -> None:
 @pytest.mark.asyncio
 async def test_release_sandboxes_keeps_failed_delete_retryable(
     monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
 ) -> None:
     disable_sandbox_retry_sleep(monkeypatch)
 
@@ -3090,14 +3114,15 @@ async def test_release_sandboxes_keeps_failed_delete_retryable(
         owns_client=False,
     )
     runtime.sandbox_leases[key] = lease
+    warnings = record_log_calls(monkeypatch, "verifiers.v1.runtime.logger.warning")
 
     await runtime.release_sandboxes("rollout", state)
 
     assert runtime.sandbox_leases[key] is lease
     assert "cleanup_errors" not in state
-    assert (
-        "Failed to delete rollout sandbox sbx-retryable-delete"
-        in capsys.readouterr().err
+    assert any(
+        call[0][0] == "Failed to delete %s sandbox %s for scope key %s: %s"
+        for call in warnings
     )
 
     await runtime.release_sandboxes("rollout", state)
@@ -3183,7 +3208,6 @@ async def test_resolve_sandbox_lease_rejects_creation_claimed_by_cleanup() -> No
 @pytest.mark.asyncio
 async def test_clear_creation_tasks_keeps_failed_delete_retryable(
     monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
 ) -> None:
     disable_sandbox_retry_sleep(monkeypatch)
 
@@ -3214,15 +3238,16 @@ async def test_clear_creation_tasks_keeps_failed_delete_retryable(
     creation_task = asyncio.create_task(finished_creation())
     runtime.sandbox_creation_tasks[key] = creation_task
     await creation_task
+    warnings = record_log_calls(monkeypatch, "verifiers.v1.runtime.logger.warning")
 
     await runtime.clear_sandbox_creation_tasks([(key, creation_task)])
 
     assert key not in runtime.sandbox_creation_tasks
     assert runtime.sandbox_leases[key] is lease
     assert "cleanup_errors" not in state
-    assert (
-        "Failed to delete sandbox sbx-unclaimed-retry from cancelled creation"
-        in capsys.readouterr().err
+    assert any(
+        call[0][0] == "Failed to delete sandbox %s from cancelled creation: %s"
+        for call in warnings
     )
 
     await runtime.release_sandboxes("rollout", state)
@@ -3538,7 +3563,6 @@ async def test_sandbox_program_artifact_collected_by_runtime(
 @pytest.mark.asyncio
 async def test_failed_sandbox_program_preserves_primary_error_and_logs_artifact_error(
     monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
 ) -> None:
     install_fake_sandboxes(monkeypatch)
     install_fake_endpoint_tunnel(monkeypatch)
@@ -3580,12 +3604,16 @@ async def test_failed_sandbox_program_preserves_primary_error_and_logs_artifact_
     task = vf.Task(
         {"example_id": 0, "prompt": [{"role": "user", "content": "hi"}]}
     ).freeze()
+    warnings = record_log_calls(monkeypatch, "verifiers.v1.harness.logger.warning")
 
     state = await harness.run(task)
 
     assert state["error"]["error"] == "SandboxError"
     assert "artifact_errors" not in state
-    assert "Artifact collection failed after rollout error" in capsys.readouterr().err
+    assert any(
+        call[0][0] == "Artifact collection failed after rollout error"
+        for call in warnings
+    )
     assert state["stop_condition"] == "has_error"
     output = state_to_output(state)
     assert "artifact_errors" not in output
