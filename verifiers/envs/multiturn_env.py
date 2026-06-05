@@ -16,6 +16,7 @@ from verifiers.types import (
     TimeSpan,
     TrajectoryStep,
 )
+from verifiers.utils.async_utils import maybe_await
 from verifiers.utils.message_utils import (
     concat_messages,
     maybe_normalize_messages,
@@ -144,7 +145,7 @@ class MultiTurnEnv(vf.Environment):
         if not self._step_reward_handlers:
             return
         for handler in self._step_reward_handlers:
-            reward = await handler(state)
+            reward = await maybe_await(handler, state)
             if reward is not None:
                 weight = getattr(handler, "step_reward_weight", 1.0)
                 state.add_step_reward(float(reward) * weight)

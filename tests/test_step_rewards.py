@@ -1,3 +1,5 @@
+"""Tests for step-level dense rewards."""
+
 import pytest
 
 from verifiers import MultiTurnEnv, Parser, Rubric, State, step_reward
@@ -9,6 +11,8 @@ from verifiers.utils.step_reward_utils import (
 
 
 class TestComputeDiscountedReturns:
+    """Test cases for compute_discounted_returns."""
+
     def test_empty(self):
         assert compute_discounted_returns([]) == []
 
@@ -34,6 +38,8 @@ class TestComputeDiscountedReturns:
 
 
 class TestApplyStepAdvantages:
+    """Test cases for apply_step_advantages."""
+
     def _make_state(self, step_rewards):
         trajectory = [
             {"reward": r, "advantage": None, "prompt": [], "completion": []}
@@ -86,6 +92,8 @@ class TestApplyStepAdvantages:
 
 
 class TestStepRewardDecorator:
+    """Test cases for the @step_reward decorator."""
+
     def test_bare_decorator(self):
         @step_reward
         def my_func(state):
@@ -106,6 +114,8 @@ class TestStepRewardDecorator:
 
 
 class TestStepRewardInRollout:
+    """Test cases for step rewards during rollout."""
+
     @pytest.mark.asyncio
     async def test_step_reward_called_per_turn(
         self, mock_client, sample_chat_dataset, make_input
@@ -248,8 +258,46 @@ class TestStepRewardInRollout:
         for step in state["trajectory"]:
             assert step["reward"] is None
 
+    @pytest.mark.asyncio
+    async def test_sync_step_reward_handler(
+        self, mock_client, sample_chat_dataset, make_input
+    ):
+        """Synchronous step_reward handlers should work without raising TypeError."""
+
+        class SyncEnv(MultiTurnEnv):
+            @step_reward
+            def sync_reward(self, state: State) -> float:
+                return 0.5
+
+            async def env_response(self, messages, state, **kwargs):
+                return [{"role": "user", "content": "Continue"}]
+
+        mock_client.set_default_response("response")
+        env = SyncEnv(
+            client=mock_client,
+            model="test-model",
+            dataset=sample_chat_dataset,
+            max_turns=2,
+            parser=Parser(),
+            rubric=Rubric(),
+        )
+
+        state = await env.rollout(
+            input=make_input(
+                prompt=[{"role": "user", "content": "Start"}],
+                answer="answer",
+            ),
+            client=mock_client,
+            model="test-model",
+        )
+
+        for step in state["trajectory"]:
+            assert step["reward"] == 0.5
+
 
 class TestStepRewardRubric:
+    """Test cases for StepRewardRubric."""
+
     @pytest.mark.asyncio
     async def test_score_group(self):
         rubric = StepRewardRubric(gamma=1.0)

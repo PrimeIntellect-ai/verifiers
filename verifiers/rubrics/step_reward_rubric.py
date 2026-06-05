@@ -16,6 +16,11 @@ class StepRewardRubric(vf.Rubric):
         super().__init__(funcs=[_sum_step_rewards], weights=[weight], **kwargs)
         self.gamma = gamma
 
+    async def score_rollout(self, state: State):
+        """Score a single rollout by summing step rewards."""
+        state["reward"] = _sum_step_rewards(state)
+        state["metrics"] = {"step_reward_sum": cast(float, state["reward"])}
+
     async def score_group(self, states: list[State]):
         num_states = len(states)
         if num_states == 0:
