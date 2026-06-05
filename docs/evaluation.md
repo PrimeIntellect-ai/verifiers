@@ -232,8 +232,12 @@ client translate them for the selected provider.
 |------|-------|---------|-------------|
 | `--num-examples` | `-n` | 5 | Number of dataset examples to evaluate |
 | `--rollouts-per-example` | `-r` | 3 | Rollouts per example (for pass@k, variance) |
+| `--shuffle` | — | false | Shuffle the evaluation dataset before selecting examples |
+| `--shuffle-seed` | — | 0 when shuffled | Seed used with `--shuffle` |
 
 Multiple rollouts per example enable metrics like pass@k and help measure variance. The total number of rollouts is `num_examples × rollouts_per_example`.
+
+When `--shuffle` is enabled, Verifiers shuffles the full evaluation dataset first, then selects `--num-examples`, then repeats each selected example according to `--rollouts-per-example`. This applies to standard environments, composable tasksets, and v1 Taskset/Harness environments because it happens in the shared evaluation input-selection layer.
 
 ### Concurrency
 
@@ -300,7 +304,7 @@ With `-s` (save results) enabled, partial results are written to disk after each
 prime eval run my-env -n 1000 -s --resume ./environments/my_env/outputs/evals/my-env--openai--gpt-4.1-mini/abc12345
 ```
 
-When a resume path is provided, it must point to a valid evaluation results directory containing both `results.jsonl` and `metadata.json`. With `--resume` and no path, verifiers scans the environment/model output directory and picks the most recent incomplete run matching `env_id`, `model`, and `rollouts_per_example` where saved `num_examples` is less than or equal to the current run. When resuming:
+When a resume path is provided, it must point to a valid evaluation results directory containing both `results.jsonl` and `metadata.json`. With `--resume` and no path, verifiers scans the environment/model output directory and picks the most recent incomplete run matching `env_id`, `model`, `rollouts_per_example`, `shuffle`, and `shuffle_seed` where saved `num_examples` is less than or equal to the current run. When resuming:
 
 1. Existing completed rollouts are loaded from the checkpoint
 2. Remaining rollouts are computed based on the example ids and group size
@@ -311,7 +315,7 @@ If all rollouts are already complete, the evaluation returns immediately with th
 
 **Configuration compatibility:**
 
-When resuming, the current run configuration should match the original run. Mismatches in parameters like `--model`, `--env-args`, or `--rollouts-per-example` can lead to undefined behavior. For reliable results, resume with the same configuration used to create the checkpoint, only increasing `--num-examples` if you need additional rollouts beyond the original target.
+When resuming, the current run configuration should match the original run. Mismatches in parameters like `--model`, `--env-args`, `--rollouts-per-example`, `--shuffle`, or `--shuffle-seed` can lead to undefined behavior. For reliable results, resume with the same configuration used to create the checkpoint, only increasing `--num-examples` if you need additional rollouts beyond the original target.
 
 **Example workflow:**
 
@@ -411,6 +415,8 @@ other fields are optional:
 | `harness` | table | v1 harness config passed through `EnvConfig.harness` |
 | `num_examples` | integer | Number of dataset examples to evaluate |
 | `rollouts_per_example` | integer | Rollouts per example |
+| `shuffle` | boolean | Shuffle the evaluation dataset before selecting examples |
+| `shuffle_seed` | integer | Seed used when `shuffle = true` |
 | `extra_env_kwargs` | table | Arguments passed to environment constructor |
 | `model` | string | Model to evaluate |
 | `endpoint_id` | string | Endpoint registry id (requires TOML `endpoints_path`) |

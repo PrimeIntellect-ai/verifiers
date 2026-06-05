@@ -565,6 +565,8 @@ class GenerateOutputsBuilder:
         sampling_args: SamplingArgs,
         results_path: Path | None,
         pass_threshold: float = 0.5,
+        shuffle: bool = False,
+        shuffle_seed: int | None = None,
     ):
         self.env_id = env_id
         self.env_args = env_args
@@ -572,6 +574,8 @@ class GenerateOutputsBuilder:
         self.client = client
         self.num_examples = num_examples
         self.rollouts_per_example = rollouts_per_example
+        self.shuffle = shuffle
+        self.shuffle_seed = shuffle_seed if shuffle else None
         self.state_columns = state_columns or []
         self.sampling_args = sampling_args
         self.results_path = results_path or get_results_path(env_id, model)
@@ -674,6 +678,8 @@ class GenerateOutputsBuilder:
             base_url=self.base_url,
             num_examples=self.num_examples,
             rollouts_per_example=self.rollouts_per_example,
+            shuffle=self.shuffle,
+            shuffle_seed=self.shuffle_seed,
             sampling_args=self.sampling_args,
             date=datetime.now().isoformat(),
             time=time.time() - self.start_time,
@@ -748,6 +754,8 @@ def validate_resume_metadata(
     model: str,
     num_examples: int,
     rollouts_per_example: int,
+    shuffle: bool = False,
+    shuffle_seed: int | None = None,
 ) -> None:
     """Validate saved metadata matches the current resume configuration.
 
@@ -792,6 +800,17 @@ def validate_resume_metadata(
         mismatches.append(
             f"num_examples: saved={saved_num_examples!r}, current={num_examples!r} (current must be >= saved)"
         )
+
+    saved_shuffle = bool(saved_metadata.get("shuffle", False))
+    if saved_shuffle != shuffle:
+        mismatches.append(f"shuffle: saved={saved_shuffle!r}, current={shuffle!r}")
+    if shuffle:
+        expected_shuffle_seed = 0 if shuffle_seed is None else shuffle_seed
+        saved_shuffle_seed = saved_metadata.get("shuffle_seed", "<missing>")
+        if saved_shuffle_seed != expected_shuffle_seed:
+            mismatches.append(
+                f"shuffle_seed: saved={saved_shuffle_seed!r}, current={expected_shuffle_seed!r}"
+            )
 
     if mismatches:
         mismatch_text = "; ".join(mismatches)
