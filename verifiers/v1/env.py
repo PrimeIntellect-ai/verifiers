@@ -169,26 +169,41 @@ class Env(vf.Environment):
                 "score_rollout": self.score_rollouts,
             },
         )
+
+        async def run_group_task(index: int, task: vf.Task, state: State) -> State:
+            try:
+                result = await self.harness.run(task, state)
+            except BaseException as exc:
+                task_state = getattr(exc, "_vf_state", None)
+                if isinstance(task_state, State):
+                    states[index] = task_state
+                raise
+            states[index] = result
+            return result
+
         run_tasks = [
-            asyncio.create_task(self.harness.run(task, state))
-            for task, state in zip(tasks, states)
+            asyncio.create_task(run_group_task(index, task, state))
+            for index, (task, state) in enumerate(zip(tasks, states))
         ]
         try:
             states = await asyncio.gather(*run_tasks)
         except BaseException:
             pending_state_pairs = [
-                (task, state)
-                for task, state in zip(run_tasks, states)
-                if not task.done()
+                (index, task) for index, task in enumerate(run_tasks) if not task.done()
             ]
-            pending = [task for task, _ in pending_state_pairs]
+            pending = [task for _, task in pending_state_pairs]
             for task in pending:
                 task.cancel()
             if pending:
                 drained_errors = await asyncio.gather(*pending, return_exceptions=True)
-                for drained_error in drained_errors:
+                for (index, _), drained_error in zip(
+                    pending_state_pairs, drained_errors, strict=True
+                ):
                     if not isinstance(drained_error, BaseException):
                         continue
+                    task_state = getattr(drained_error, "_vf_state", None)
+                    if isinstance(task_state, State):
+                        states[index] = task_state
                     if isinstance(drained_error, asyncio.CancelledError):
                         continue
                     self.logger.warning(
