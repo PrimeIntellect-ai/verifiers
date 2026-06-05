@@ -53,8 +53,8 @@ class RLMProgramConfig(vf.ProgramConfig):
                     if self.local_checkout
                     else {}
                 ),
-                "rlm_repo_url": self.rlm_repo_url,
-                "rlm_repo_ref": self.rlm_repo_ref,
+                "repo_url": self.rlm_repo_url,
+                "ref": self.rlm_repo_ref,
                 **({"gh_token_var": self.gh_token_var} if self.gh_token_var else {}),
             }
         }

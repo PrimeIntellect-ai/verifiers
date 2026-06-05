@@ -16,37 +16,40 @@ MINI_SWE_AGENT_DEFAULT_INSTRUCTION_PATH = "/mini-swe-agent/prompt.txt"
 MINI_SWE_AGENT_DEFAULT_SYSTEM_PROMPT_PATH = "/mini-swe-agent/system.txt"
 MINI_SWE_AGENT_DEFAULT_LOG_PATH = "/logs/agent/mini-swe-agent.log"
 MINI_SWE_AGENT_DEFAULT_TRAJECTORY_PATH = "/logs/agent/mini-swe-agent.traj.json"
-MINI_SWE_AGENT_DEFAULT_PACKAGE = "mini-swe-agent@2.2.8"
+MINI_SWE_AGENT_DEFAULT_VERSION = "mini-swe-agent@2.2.8"
+MINI_SWE_AGENT_DEFAULT_PACKAGE = MINI_SWE_AGENT_DEFAULT_VERSION
 MINI_SWE_AGENT_DEFAULT_CONFIG_SPEC = "mini"
 MINI_SWE_AGENT_DEFAULT_MODEL_CLASS = "litellm"
 
 
 def build_mini_swe_agent_install_script(
-    package: str = MINI_SWE_AGENT_DEFAULT_PACKAGE,
+    version: str = MINI_SWE_AGENT_DEFAULT_VERSION,
     prefix_dir: str = DEFAULT_PREFIX_DIR,
+    package: str | None = None,
 ) -> str:
-    install_dir = str(PurePosixPath(prefix_dir).parent)
-    site_packages_dir = f"{prefix_dir.rstrip('/')}/site-packages"
-    setup_prefix_dir = shlex.quote(prefix_dir)
-    setup_site_packages_dir = shlex.quote(site_packages_dir)
-    package_name, package_version = split_versioned_agent_spec(package)
-    package_requirement = package_name
-    if package_version and package_version != "latest":
-        package_requirement = f"{package_name}=={package_version}"
+    root = shlex.quote(str(PurePosixPath(prefix_dir).parent))
+    prefix = shlex.quote(prefix_dir)
+    site_packages = shlex.quote(f"{prefix_dir.rstrip('/')}/site-packages")
+    if package is not None:
+        version = package
+    name, parsed_version = split_versioned_agent_spec(version)
+    requirement = name
+    if parsed_version and parsed_version != "latest":
+        requirement = f"{name}=={parsed_version}"
     return f"""\
 set -e
 {python_runtime_setup_command()}
-rm -rf {setup_prefix_dir}
-mkdir -p {shlex.quote(install_dir)} {setup_prefix_dir}/bin {setup_site_packages_dir} {shlex.quote(DEFAULT_LOG_DIR)} /mini-swe-agent
-vf_python_install --target {setup_site_packages_dir} {shlex.quote(package_requirement)}
-echo "$VF_PYTHON" > {setup_prefix_dir}/python
-cat > {setup_prefix_dir}/bin/mini <<'EOF'
+rm -rf {prefix}
+mkdir -p {root} {prefix}/bin {site_packages} {shlex.quote(DEFAULT_LOG_DIR)} /mini-swe-agent
+vf_python_install --target {site_packages} {shlex.quote(requirement)}
+echo "$VF_PYTHON" > {prefix}/python
+cat > {prefix}/bin/mini <<'EOF'
 #!/usr/bin/env sh
-export PYTHONPATH={setup_site_packages_dir}:${{PYTHONPATH:-}}
-exec "$(cat {setup_prefix_dir}/python)" -m minisweagent.run.mini "$@"
+export PYTHONPATH={site_packages}:${{PYTHONPATH:-}}
+exec "$(cat {prefix}/python)" -m minisweagent.run.mini "$@"
 EOF
-chmod +x {setup_prefix_dir}/bin/mini
-test -x {setup_prefix_dir}/bin/mini
+chmod +x {prefix}/bin/mini
+test -x {prefix}/bin/mini
 """
 
 
@@ -56,14 +59,15 @@ class MiniSWEAgentProgramConfig(vf.ProgramConfig):
     system_prompt_path: str = MINI_SWE_AGENT_DEFAULT_SYSTEM_PROMPT_PATH
     log_path: str = MINI_SWE_AGENT_DEFAULT_LOG_PATH
     trajectory_path: str = MINI_SWE_AGENT_DEFAULT_TRAJECTORY_PATH
-    package: str = MINI_SWE_AGENT_DEFAULT_PACKAGE
     config_spec: str = MINI_SWE_AGENT_DEFAULT_CONFIG_SPEC
     model_class: str = MINI_SWE_AGENT_DEFAULT_MODEL_CLASS
     parallel_tool_calls: bool = True
     extra_config_specs: list[str] | None = None
     sandbox: vf.SandboxConfig | None = vf.SandboxConfig()
 
-    def resolve(self) -> vf.ProgramConfig:
+    def resolve(
+        self, version: str = MINI_SWE_AGENT_DEFAULT_VERSION
+    ) -> vf.ProgramConfig:
         files: dict[str, vf.ProgramValue] = {
             self.instruction_path: {"fn": "verifiers.v1.utils.prompt_utils:task_text"},
             self.system_prompt_path: {
@@ -85,13 +89,11 @@ class MiniSWEAgentProgramConfig(vf.ProgramConfig):
             }
         )
         if self.agent_workdir == MINI_SWE_AGENT_DEFAULT_AGENT_WORKDIR:
-            workdir_assignment = (
+            workdir_line = (
                 f"MINI_SWE_AGENT_WORKDIR={MINI_SWE_AGENT_DEFAULT_AGENT_WORKDIR}"
             )
         else:
-            workdir_assignment = (
-                f"MINI_SWE_AGENT_WORKDIR={shlex.quote(self.agent_workdir)}"
-            )
+            workdir_line = f"MINI_SWE_AGENT_WORKDIR={shlex.quote(self.agent_workdir)}"
 
         config_args = [
             "-c",
@@ -111,11 +113,11 @@ class MiniSWEAgentProgramConfig(vf.ProgramConfig):
             config_args.extend(["-c", shlex.quote(spec)])
 
         setup = build_mini_swe_agent_install_script(
-            package=self.package,
+            version=version,
         )
         log_dir = str(PurePosixPath(self.log_path).parent)
         trajectory_dir = str(PurePosixPath(self.trajectory_path).parent)
-        system_prompt_path = shlex.quote(self.system_prompt_path)
+        system_prompt_file = shlex.quote(self.system_prompt_path)
         script = f"""\
 set -eo pipefail
 export PATH={shlex.quote(DEFAULT_PREFIX_DIR)}/bin:"$PATH"
@@ -125,14 +127,14 @@ export MSWEA_SILENT_STARTUP=true
 export MSWEA_GLOBAL_CONFIG_DIR=/tmp/mini-swe-agent-config
 export OPENAI_API_KEY="${{OPENAI_API_KEY:-intercepted}}"
 
-{workdir_assignment}
+{workdir_line}
 mkdir -p {shlex.quote(log_dir)} {shlex.quote(trajectory_dir)} "$MINI_SWE_AGENT_WORKDIR" "$MSWEA_GLOBAL_CONFIG_DIR"
 
 MINI_SWE_AGENT_TASK="$(cat {shlex.quote(self.instruction_path)})"
 CONFIG_ARGS=({" ".join(config_args)})
 CONFIG_ARGS+=(-c "environment.cwd=$MINI_SWE_AGENT_WORKDIR")
-if [ -s {system_prompt_path} ]; then
-  CONFIG_ARGS+=(-c "agent.system_template=$(cat {system_prompt_path})")
+if [ -s {system_prompt_file} ]; then
+  CONFIG_ARGS+=(-c "agent.system_template=$(cat {system_prompt_file})")
 fi
 cd "$MINI_SWE_AGENT_WORKDIR"
 {shlex.quote(DEFAULT_MINI_BINARY)} \\
@@ -154,12 +156,16 @@ cd "$MINI_SWE_AGENT_WORKDIR"
 
 
 class MiniSWEAgentConfig(vf.HarnessConfig):
+    version: str = MINI_SWE_AGENT_DEFAULT_VERSION
     program: MiniSWEAgentProgramConfig = MiniSWEAgentProgramConfig()
     max_turns: int = 4
 
 
 class MiniSWEAgent(vf.Harness[MiniSWEAgentConfig]):
     config: MiniSWEAgentConfig
+
+    def load_program_config(self, config: MiniSWEAgentConfig) -> vf.ProgramConfig:
+        return config.program.resolve(version=config.version)
 
 
 def load_harness(config: MiniSWEAgentConfig) -> MiniSWEAgent:
