@@ -185,7 +185,20 @@ class Env(vf.Environment):
             for task in pending:
                 task.cancel()
             if pending:
-                await asyncio.gather(*pending, return_exceptions=True)
+                drained_errors = await asyncio.gather(*pending, return_exceptions=True)
+                for drained_error in drained_errors:
+                    if not isinstance(drained_error, BaseException):
+                        continue
+                    if isinstance(drained_error, asyncio.CancelledError):
+                        continue
+                    self.logger.warning(
+                        "Cancelled v1 group rollout failed during recovery",
+                        exc_info=(
+                            type(drained_error),
+                            drained_error,
+                            drained_error.__traceback__,
+                        ),
+                    )
             try:
                 await self.harness.cleanup_group(tasks, states)
             except Exception:

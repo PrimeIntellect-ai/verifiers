@@ -1339,6 +1339,66 @@ async def test_v1_group_logs_cancelled_sibling_cleanup_errors(
 
 
 @pytest.mark.asyncio
+async def test_v1_group_logs_non_cancelled_drain_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    slow_started = asyncio.Event()
+
+    class CancelledSiblingTaskset(vf.Taskset):
+        async def init_group(
+            self, task: vf.Task, num_rollouts: int
+        ) -> tuple[list[vf.Task], list[vf.State]]:
+            tasks = [task for _ in range(num_rollouts)]
+            states = [vf.State.for_task(task) for task in tasks]
+            states[0]["mode"] = "slow"
+            states[1]["mode"] = "fail"
+            return tasks, states
+
+    class DrainHarness(vf.Harness):
+        async def run(self, task: vf.Task, state: vf.State | None = None) -> vf.State:
+            _ = task
+            assert state is not None
+            if state["mode"] == "fail":
+                await slow_started.wait()
+                raise RuntimeError("primary sibling exploded")
+            slow_started.set()
+            try:
+                await asyncio.sleep(60)
+            except asyncio.CancelledError as exc:
+                raise RuntimeError("cancelled sibling exploded") from exc
+
+    inputs = cast(
+        list[vf.RolloutInput],
+        [
+            {
+                "example_id": 0,
+                "prompt": [{"role": "user", "content": "hi"}],
+            },
+            {
+                "example_id": 0,
+                "prompt": [{"role": "user", "content": "hi"}],
+            },
+        ],
+    )
+    env = vf.Env(taskset=CancelledSiblingTaskset(), harness=DrainHarness())
+    warnings: list[LogCall] = []
+
+    def record_warning(*args: object, **kwargs: object) -> None:
+        warnings.append((args, kwargs))
+
+    monkeypatch.setattr(env.logger, "warning", record_warning)
+
+    with pytest.raises(RuntimeError, match="primary sibling exploded"):
+        await env._run_group_states(inputs, cast(Client, FakeClient()), "fake", {})
+
+    assert warnings[0][0][0] == "Cancelled v1 group rollout failed during recovery"
+    exc_info = warnings[0][1]["exc_info"]
+    assert isinstance(exc_info, tuple)
+    assert exc_info[0] is RuntimeError
+    assert str(exc_info[1]) == "cancelled sibling exploded"
+
+
+@pytest.mark.asyncio
 async def test_callable_tool_can_accept_name_argument() -> None:
     harness = make_harness(toolsets=[vf.Toolset(tools=[named_tool])])
     task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
