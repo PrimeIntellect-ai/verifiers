@@ -54,10 +54,11 @@ Notes:
 | Field | Type | Default | Description |
 | --- | ---- | ------- | ----------- |
 | `dataset` | str \| null | `null` | Hugging Face dataset ID to load instead of env-local `data/*.json` files. |
+| `data_dir` | str \| null | `null` | Local JSON directory. When unset, `sft-replay` uses its packaged `data/` directory. |
 
 ### Harness Config
-Uses the standard `vf.HarnessConfig`, including `max_turns` to cap the number
-of assistant messages replayed per rollout.
+Uses `ReplayHarnessConfig`. By default, every assistant message is replayed.
+Set `max_turns` to cap the number of assistant messages replayed per rollout.
 
 ### Metrics
 

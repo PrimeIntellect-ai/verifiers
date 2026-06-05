@@ -61,7 +61,7 @@ the intended config from Python/TOML.
 | `HarborTaskset` | Harbor task directories and Harbor Hub datasets. |
 | `OpenEnvTaskset` | Upstream OpenEnv projects with out-of-the-box task/tool use. |
 | `OpenRewardTaskset` | Upstream OpenReward environments and rollout-local session tools. |
-| `ReplayTaskset` | HF or env-local JSON chat transcripts for replay data. |
+| `ReplayTaskset` | HF or explicit local JSON chat transcripts for replay data. |
 | `TextArenaTaskset` | Compatible TextArena single-player games with a taskset-owned `vf.User`. |
 | `NeMoGymTaskset` | NeMo Gym JSONL task rows. |
 
@@ -75,7 +75,7 @@ Use `ReplayTaskset` with `ReplayHarness` when each training example is already a
 chat transcript row and each assistant message should become one trajectory
 step.
 
-For env-local data, put one JSON object per file under `data/` in the env
+For local data, put one JSON object per file under a directory owned by the env
 package:
 
 ```json
@@ -92,16 +92,18 @@ string `role`; all other message fields are preserved. Assistant messages may
 appear anywhere in the transcript, and every assistant message is replayed as
 one trajectory step.
 
-Make the env-local taskset an empty subclass so the `data/` directory belongs to
-the environment package:
+Set that local directory explicitly, either through `[env.taskset].data_dir` or
+on the env-local taskset subclass:
 
 ```python
+from pathlib import Path
+
 from harnesses import ReplayHarness, ReplayHarnessConfig
 from tasksets import ReplayTaskset, ReplayTasksetConfig
 
 
 class MyReplayTaskset(ReplayTaskset):
-    pass
+    data_dir = str(Path(__file__).parent / "data")
 
 
 def load_taskset(config: ReplayTasksetConfig) -> MyReplayTaskset:
@@ -113,4 +115,5 @@ def load_harness(config: ReplayHarnessConfig) -> ReplayHarness:
 ```
 
 For HF data, set `dataset` to a dataset whose `train` split has a top-level
-`messages` field in the same format.
+`messages` field in the same format. Set either `dataset` or `data_dir`, not
+both.

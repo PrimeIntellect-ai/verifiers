@@ -67,12 +67,14 @@ Use `ReplayHarness` when each task row already contains a top-level `messages`
 chat transcript and each assistant message should become one trajectory step:
 
 ```python
+from pathlib import Path
+
 from harnesses import ReplayHarness, ReplayHarnessConfig
 from tasksets import ReplayTaskset, ReplayTasksetConfig
 
 
 class MyReplayTaskset(ReplayTaskset):
-    pass
+    data_dir = str(Path(__file__).parent / "data")
 
 
 def load_taskset(config: ReplayTasksetConfig) -> MyReplayTaskset:

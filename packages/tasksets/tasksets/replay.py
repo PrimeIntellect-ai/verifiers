@@ -1,23 +1,30 @@
 import json
-from typing import cast
+from pathlib import Path
+from typing import ClassVar, cast
 
 from datasets import load_dataset
 
 import verifiers as vf
-from verifiers.v1 import discover_sibling_dir
 
-DATA_SUBDIR = "data"
+DATA_DIR_FIELD = "data_dir"
 
 
 class ReplayTasksetConfig(vf.TasksetConfig):
     dataset: str | None = None
+    data_dir: str | None = None
 
 
 class ReplayTaskset(vf.Taskset[ReplayTasksetConfig]):
+    data_dir: ClassVar[str | None] = None
+
     def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         if split == "eval":
             return []
         if self.config.dataset is not None:
+            if self.config.data_dir is not None:
+                raise ValueError(
+                    "ReplayTaskset config cannot set both dataset and data_dir."
+                )
             return self.hf_tasks(self.config.dataset)
         return self.local_tasks()
 
@@ -26,17 +33,16 @@ class ReplayTaskset(vf.Taskset[ReplayTasksetConfig]):
         return [replay_task_record(dict(row)) for row in rows]
 
     def local_tasks(self) -> list[vf.JsonData]:
-        data_dir = discover_sibling_dir(type(self), DATA_SUBDIR)
+        data_dir = self.load_data_dir()
         if data_dir is None:
             raise FileNotFoundError(
-                f"{type(self).__name__} requires {DATA_SUBDIR}/ next to "
-                f"{type(self).__module__} when dataset is not set."
+                f"{type(self).__name__} requires dataset or data_dir."
             )
         tasks: list[vf.JsonData] = []
         for item in sorted(data_dir.iterdir(), key=lambda path: path.name):
             if not item.is_file() or not item.name.endswith(".json"):
                 raise ValueError(
-                    f"{DATA_SUBDIR}/ accepts only .json files; found {item.name!r}."
+                    f"{DATA_DIR_FIELD} accepts only .json files; found {item.name!r}."
                 )
             with item.open(encoding="utf-8") as f:
                 record = json.load(f)
@@ -45,9 +51,13 @@ class ReplayTaskset(vf.Taskset[ReplayTasksetConfig]):
             tasks.append(replay_task_record(record))
         if not tasks:
             raise FileNotFoundError(
-                f"{DATA_SUBDIR}/ must contain at least one .json file."
+                f"{DATA_DIR_FIELD} must contain at least one .json file."
             )
         return tasks
+
+    def load_data_dir(self) -> Path | None:
+        data_dir = self.config.data_dir or self.data_dir
+        return Path(data_dir).expanduser() if data_dir is not None else None
 
 
 def replay_task_record(record: dict[str, object]) -> vf.JsonData:

@@ -1,6 +1,4 @@
 import json
-import sys
-import types
 from pathlib import Path
 
 import pytest
@@ -146,13 +144,9 @@ async def test_replay_harness_defaults_to_all_assistant_messages() -> None:
     assert state["completion"][-1] == {"role": "assistant", "content": "reply 10"}
 
 
-def test_replay_taskset_loads_env_local_json_data(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    env_dir = tmp_path / "local_replay_env"
-    data_dir = env_dir / "data"
+def test_replay_taskset_loads_configured_local_json_data(tmp_path: Path) -> None:
+    data_dir = tmp_path / "data"
     data_dir.mkdir(parents=True)
-    (env_dir / "local_replay_env.py").write_text("", encoding="utf-8")
     (data_dir / "example.json").write_text(
         json.dumps(
             {
@@ -165,15 +159,37 @@ def test_replay_taskset_loads_env_local_json_data(
         encoding="utf-8",
     )
 
-    module = types.ModuleType("local_replay_env")
-    module.__file__ = str(env_dir / "local_replay_env.py")
-    monkeypatch.setitem(sys.modules, module.__name__, module)
+    taskset = ReplayTaskset(config=ReplayTasksetConfig(data_dir=str(data_dir)))
+
+    assert taskset.load_tasks() == [
+        {
+            "messages": [
+                {"role": "user", "content": "Say ok."},
+                {"role": "assistant", "content": "ok"},
+            ]
+        }
+    ]
+
+
+def test_replay_taskset_loads_subclass_local_json_data(tmp_path: Path) -> None:
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True)
+    (data_dir / "example.json").write_text(
+        json.dumps(
+            {
+                "messages": [
+                    {"role": "user", "content": "Say ok."},
+                    {"role": "assistant", "content": "ok"},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
     local_taskset_type = type(
         "LocalReplayTaskset",
         (ReplayTaskset,),
-        {"__module__": module.__name__},
+        {"data_dir": str(data_dir)},
     )
-
     taskset = local_taskset_type(config=ReplayTasksetConfig())
 
     assert taskset.load_tasks() == [
@@ -186,24 +202,27 @@ def test_replay_taskset_loads_env_local_json_data(
     ]
 
 
-def test_replay_taskset_rejects_empty_env_local_data_dir(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    env_dir = tmp_path / "empty_replay_env"
-    data_dir = env_dir / "data"
-    data_dir.mkdir(parents=True)
-    (env_dir / "empty_replay_env.py").write_text("", encoding="utf-8")
+def test_replay_taskset_rejects_missing_local_source() -> None:
+    taskset = ReplayTaskset(config=ReplayTasksetConfig())
 
-    module = types.ModuleType("empty_replay_env")
-    module.__file__ = str(env_dir / "empty_replay_env.py")
-    monkeypatch.setitem(sys.modules, module.__name__, module)
-    local_taskset_type = type(
-        "EmptyReplayTaskset",
-        (ReplayTaskset,),
-        {"__module__": module.__name__},
+    with pytest.raises(FileNotFoundError, match="requires dataset or data_dir"):
+        taskset.load_tasks()
+
+
+def test_replay_taskset_rejects_conflicting_sources(tmp_path: Path) -> None:
+    taskset = ReplayTaskset(
+        config=ReplayTasksetConfig(dataset="owner/dataset", data_dir=str(tmp_path))
     )
 
-    taskset = local_taskset_type(config=ReplayTasksetConfig())
+    with pytest.raises(ValueError, match="cannot set both dataset and data_dir"):
+        taskset.load_tasks()
+
+
+def test_replay_taskset_rejects_empty_local_data_dir(tmp_path: Path) -> None:
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True)
+
+    taskset = ReplayTaskset(config=ReplayTasksetConfig(data_dir=str(data_dir)))
 
     with pytest.raises(FileNotFoundError, match="must contain at least one .json"):
         taskset.load_tasks()
