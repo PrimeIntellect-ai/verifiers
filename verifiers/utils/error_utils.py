@@ -96,6 +96,9 @@ def error_data_to_exception(
     chain = error["error_chain_str"] or error["error"]
     detail = error["message"] or error["error_chain_repr"] or error["error"]
     for error_type in error_types:
+        if error_type.__name__ == error["error"]:
+            return error_type(detail)
+    for error_type in error_types:
         if error_type.__name__ in chain:
             return error_type(detail)
     return None
