@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 KEEPALIVE_INTERVAL_SECONDS = float(
     os.environ.get("INTERCEPTION_SERVER_KEEPALIVE_INTERVAL_SECONDS", "3.0")
 )
-DEFAULT_CLIENT_MAX_SIZE_BYTES = 16 * 1024 * 1024
+DEFAULT_CLIENT_MAX_SIZE_BYTES = 24 * 1024 * 1024
 
 
 class StreamInterrupted(InfraError):
@@ -69,6 +69,7 @@ class InterceptionServer:
     """
 
     def __init__(self, port: int, secret: str | None = None):
+        self._initial_port = port  # requested port (0 = OS-assigned); see stop()
         self.port = port
         self.secret = secret or secrets.token_urlsafe(32)
         self._app: Any = None
@@ -158,6 +159,9 @@ class InterceptionServer:
                     self._runner = None
                     self._site = None
                     self._app = None
+                    # Reset to the requested port so the next start() re-resolves
+                    # a fresh OS port instead of re-binding the stale cached one.
+                    self.port = self._initial_port
 
     def _set_rollout_error(self, rollout_id: str, error: BaseException) -> None:
         """Attach `error` to the rollout's state if one is registered and
@@ -912,7 +916,11 @@ def serialize_openai_responses_response(response: Response) -> dict[str, Any]:
     if response.usage is not None:
         usage = {
             "input_tokens": response.usage.prompt_tokens,
+            "input_tokens_details": {"cached_tokens": 0},
             "output_tokens": response.usage.completion_tokens,
+            "output_tokens_details": {
+                "reasoning_tokens": response.usage.reasoning_tokens
+            },
             "total_tokens": response.usage.total_tokens,
         }
     return {

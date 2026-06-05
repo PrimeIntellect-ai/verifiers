@@ -3,7 +3,8 @@
 from pathlib import PurePosixPath
 import shlex
 
-from verifiers.v1.packages.harnesses.mini_swe_agent import (
+from harnesses.mini_swe_agent import (
+    MINI_SWE_AGENT_DEFAULT_PACKAGE,
     build_mini_swe_agent_install_script as build_packaged_mini_swe_agent_install_script,
 )
 
@@ -13,31 +14,25 @@ DEFAULT_SITE_PACKAGES_DIR = f"{DEFAULT_PREFIX_DIR}/site-packages"
 DEFAULT_MINI_BINARY = f"{DEFAULT_PREFIX_DIR}/bin/mini"
 MINI_SWE_AGENT_CLI_PACKAGE = "mini-swe-agent"
 MINI_SWE_AGENT_CLI_VERSION = "2.2.8"
-MINI_SWE_AGENT_CLI_SHA256 = (
-    "694df4de1337e665e3cd82e99f93374f573bf52b8e7c362ac5d8045ad9f7c37c"
-)
-DEFAULT_PACKAGE_VERSION = MINI_SWE_AGENT_CLI_VERSION
-DEFAULT_PACKAGE_SHA256 = MINI_SWE_AGENT_CLI_SHA256
+DEFAULT_PACKAGE = MINI_SWE_AGENT_DEFAULT_PACKAGE
 DEFAULT_INSTRUCTION_PATH = "/mini-swe-agent/prompt.txt"
 DEFAULT_SYSTEM_PROMPT_PATH = "/mini-swe-agent/system.txt"
 DEFAULT_LOG_DIR = "/logs/agent"
 DEFAULT_LOG_PATH = f"{DEFAULT_LOG_DIR}/mini-swe-agent.log"
 DEFAULT_TRAJECTORY_PATH = f"{DEFAULT_LOG_DIR}/mini-swe-agent.traj.json"
 DEFAULT_AGENT_WORKDIR = "${AGENT_WORKDIR:-/app}"
-DEFAULT_CONFIG_SPEC = "mini_textbased"
-DEFAULT_MODEL_CLASS = "litellm_textbased"
+DEFAULT_CONFIG_SPEC = "mini"
+DEFAULT_MODEL_CLASS = "litellm"
 DEFAULT_ENVIRONMENT_TIMEOUT = 120
 
 
 def build_mini_swe_agent_install_script(
-    package_version: str = DEFAULT_PACKAGE_VERSION,
-    package_sha256: str = DEFAULT_PACKAGE_SHA256,
+    package: str = DEFAULT_PACKAGE,
     prefix_dir: str = DEFAULT_PREFIX_DIR,
 ) -> str:
     """Build the shell script that installs mini-SWE-agent."""
     return build_packaged_mini_swe_agent_install_script(
-        package_version=package_version,
-        package_sha256=package_sha256,
+        package=package,
         prefix_dir=prefix_dir,
     )
 
@@ -52,6 +47,7 @@ def build_mini_swe_agent_run_command(
     config_spec: str = DEFAULT_CONFIG_SPEC,
     model_class: str = DEFAULT_MODEL_CLASS,
     environment_timeout: int = DEFAULT_ENVIRONMENT_TIMEOUT,
+    parallel_tool_calls: bool = True,
     extra_config_specs: list[str] | None = None,
 ) -> str:
     """Build the shell command that configures and runs mini-SWE-agent.
@@ -80,6 +76,8 @@ def build_mini_swe_agent_run_command(
         "model.cost_tracking=ignore_errors",
         "-c",
         "model.model_kwargs.custom_llm_provider=openai",
+        "-c",
+        f"model.model_kwargs.parallel_tool_calls={str(parallel_tool_calls).lower()}",
     ]
     # Config specs are the mini CLI's native override format; use them for cwd,
     # timeout, model class, and optional system prompt wiring.
@@ -124,7 +122,6 @@ MINI_SWE_AGENT_CONFIG = {
     "install_script": MINI_SWE_AGENT_INSTALL_SCRIPT,
     "cli_package": MINI_SWE_AGENT_CLI_PACKAGE,
     "cli_version": MINI_SWE_AGENT_CLI_VERSION,
-    "cli_sha256": MINI_SWE_AGENT_CLI_SHA256,
 }
 
 
@@ -136,11 +133,11 @@ def mini_swe_agent_harness(
     system_prompt_path: str = DEFAULT_SYSTEM_PROMPT_PATH,
     log_path: str = DEFAULT_LOG_PATH,
     trajectory_path: str = DEFAULT_TRAJECTORY_PATH,
-    package_version: str = DEFAULT_PACKAGE_VERSION,
-    package_sha256: str = DEFAULT_PACKAGE_SHA256,
+    package: str = DEFAULT_PACKAGE,
     config_spec: str = DEFAULT_CONFIG_SPEC,
     model_class: str = DEFAULT_MODEL_CLASS,
     environment_timeout: int = DEFAULT_ENVIRONMENT_TIMEOUT,
+    parallel_tool_calls: bool = True,
     extra_config_specs: list[str] | None = None,
 ):
     """Create a Harness configured for mini-SWE-agent."""
@@ -156,8 +153,7 @@ def mini_swe_agent_harness(
     # into mini's agent.system_template at runtime.
     return Harness(
         install_script=build_mini_swe_agent_install_script(
-            package_version=package_version,
-            package_sha256=package_sha256,
+            package=package,
         ),
         run_command=build_mini_swe_agent_run_command(
             agent_workdir=agent_workdir,
@@ -168,6 +164,7 @@ def mini_swe_agent_harness(
             config_spec=config_spec,
             model_class=model_class,
             environment_timeout=environment_timeout,
+            parallel_tool_calls=parallel_tool_calls,
             extra_config_specs=extra_config_specs,
         ),
         system_prompt=system_prompt,

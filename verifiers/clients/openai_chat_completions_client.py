@@ -43,6 +43,7 @@ from verifiers.types import (
     ClientConfig,
     FinishReason,
     Message,
+    MessageContent,
     Messages,
     Response,
     ResponseMessage,
@@ -117,6 +118,14 @@ def content_to_text(content: Any) -> str:
                 chunks.append(text)
         return " ".join(chunks).strip()
     return ""
+
+
+def parse_refusal_content(message: Any) -> str | None:
+    if isinstance(message, Mapping):
+        refusal = message.get("refusal")
+    else:
+        refusal = getattr(message, "refusal", None)
+    return refusal if isinstance(refusal, str) and refusal else None
 
 
 DEFAULT_REASONING_FIELDS = [
@@ -331,15 +340,29 @@ class OpenAIChatCompletionsClient(
                 f"Model returned {len(response.choices)} choices, expected 1"
             )
         message = response.choices[0].message
-        has_content = bool(content_to_text(getattr(message, "content", None)))
+        has_content = bool(
+            content_to_text(getattr(message, "content", None))
+            or parse_refusal_content(message)
+        )
         has_tool_calls = bool(getattr(message, "tool_calls", None))
         has_reasoning = bool(parse_reasoning_content(message))
-        if not (has_content or has_tool_calls or has_reasoning):
+        if not (has_content or has_tool_calls):
+            if has_reasoning:
+                raise EmptyModelResponseError(
+                    "Model returned reasoning but no content and did not call any tools"
+                )
             raise EmptyModelResponseError(
-                "Model returned no content, reasoning, and did not call any tools"
+                "Model returned no content and did not call any tools"
             )
 
     async def from_native_response(self, response: OpenAIChatResponse) -> Response:
+        def parse_content(response: OpenAIChatResponse) -> MessageContent | None:
+            message = response.choices[0].message
+            content = message.content
+            if content_to_text(content):
+                return content
+            return parse_refusal_content(message)
+
         def parse_single_tool_call(tool_call: Any) -> ToolCall | None:
             if isinstance(tool_call, ChatCompletionMessageFunctionToolCall):
                 return ToolCall(
@@ -511,7 +534,7 @@ class OpenAIChatCompletionsClient(
             model=model,
             usage=parse_usage(response),
             message=ResponseMessage(
-                content=response.choices[0].message.content,
+                content=parse_content(response),
                 reasoning_content=parse_reasoning_content(response.choices[0].message),
                 finish_reason=parse_finish_reason(response),
                 is_truncated=parse_is_truncated(response),

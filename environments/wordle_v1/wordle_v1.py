@@ -1,10 +1,11 @@
 import re
-from pathlib import Path
 
 import verifiers as vf
-from verifiers.v1.packages.tasksets.textarena import (
+from tasksets.textarena import (
     TextArenaTaskset,
     TextArenaTasksetConfig,
+    TextArenaUser,
+    TextArenaUserConfig,
 )
 
 WORDLE_SYSTEM_PROMPT = """You are a competitive game player. \
@@ -13,29 +14,41 @@ Make sure you read the game instructions carefully, and always follow the requir
 In each turn, think step-by-step, then give your guess inside <guess>...</guess> tags."""
 
 
+class WordleUserConfig(TextArenaUserConfig):
+    pass
+
+
 class WordleTasksetConfig(TextArenaTasksetConfig):
     game: str = "Wordle-v0"
     answer_state_key: str = "secret_word"
-    system_prompt: str | None = WORDLE_SYSTEM_PROMPT
-    path_to_system_prompt: str = ""
+    user: WordleUserConfig | None = WordleUserConfig()
+    system_prompt: vf.PromptInput | vf.SystemPromptConfig | None = WORDLE_SYSTEM_PROMPT
+
+
+class WordleUser(TextArenaUser):
+    config: WordleUserConfig
+
+    async def get_response(
+        self, task: vf.Task, state: vf.State, messages: list[vf.Message]
+    ) -> list[vf.UserMessage]:
+        response = await super().get_response(task, state, messages)
+        if state.get("done") is True:
+            return response
+        assert len(response) == 1
+        content = response[0].content
+        assert isinstance(content, str)
+        latest_feedback = content.split("[GAME]")[-1].strip()
+        if "Feedback:" in latest_feedback:
+            latest_feedback = latest_feedback.split("Feedback:")[-1]
+        return [vf.UserMessage(content=latest_feedback)]
 
 
 class WordleTaskset(TextArenaTaskset[WordleTasksetConfig]):
     guess_pattern = r"<guess>(.*?)</guess>"
     config: WordleTasksetConfig
 
-    def __init__(self, config: WordleTasksetConfig):
-        assert isinstance(config, WordleTasksetConfig)
-        super().__init__(config=config)
-
     def guesses(self, content: str) -> list[str]:
         return re.findall(self.guess_pattern, content, re.DOTALL)
-
-    def format_observation(self, observation: str) -> str:
-        latest_observation = observation.split("[GAME]")[-1].strip()
-        if "Feedback:" in latest_observation:
-            return latest_observation.split("Feedback:")[-1]
-        return latest_observation
 
     @vf.reward(weight=1.0)
     async def correct_answer(self, task: vf.Task, state: vf.State) -> float:
@@ -120,19 +133,12 @@ class WordleTaskset(TextArenaTaskset[WordleTasksetConfig]):
 
 
 def load_taskset(config: WordleTasksetConfig) -> WordleTaskset:
-    assert isinstance(config, WordleTasksetConfig)
-    if config.path_to_system_prompt:
-        system_prompt = (
-            Path(config.path_to_system_prompt).expanduser().read_text(encoding="utf-8")
-        )
-        if not system_prompt:
-            raise ValueError("Wordle system prompt file must not be empty.")
-        config = config.model_copy(update={"system_prompt": system_prompt})
     return WordleTaskset(config=config)
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
+    """Loader pattern for all Taskset/Harness environments."""
     return vf.Env(
         taskset=vf.load_taskset(config=config.taskset),
-        harness=vf.Harness(config=config.harness),
+        harness=vf.load_harness(config=config.harness),
     )

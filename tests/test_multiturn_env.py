@@ -189,7 +189,7 @@ class TestMultiTurnEnv:
 
             async def add_model_response(self, state, prompt_messages, response):  # type: ignore[override]
                 await super().add_model_response(state, prompt_messages, response)
-                await asyncio.sleep(0.05)
+                await asyncio.sleep(1)
 
         env = SlowMultiTurnEnv(
             client=mock_client,
@@ -197,7 +197,7 @@ class TestMultiTurnEnv:
             dataset=sample_chat_dataset,
             parser=Parser(),
             rubric=Rubric(),
-            timeout_seconds=0.01,
+            timeout_seconds=0.2,
         )
         mock_client.set_default_response("Still going")
 

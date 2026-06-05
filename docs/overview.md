@@ -58,7 +58,10 @@ prime env init my-env --v1
 prime env init my-env --v1 --with-harness
 ```
 
-This will create a new module called `my_env` with a basic environment template.
+This will create a new module called `my_env` with a runnable environment
+template. For v1 templates, start by editing the generated `TasksetConfig`,
+`Taskset.load_tasks()`, and `@vf.reward` methods. Use `--with-harness` when the
+environment also owns reusable execution behavior.
 ```
 environments/my_env/
 ├── my_env.py           # Main implementation
@@ -91,24 +94,29 @@ import verifiers as vf
 
 
 class MyTasksetConfig(vf.TasksetConfig):
-    split: str = "train"
+    system_prompt: vf.SystemPrompt = "Answer exactly."
 
 
 class MyTaskset(vf.Taskset[MyTasksetConfig]):
-    def load_tasks(self) -> vf.Tasks:
-        rows = [
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
+        """Return serializable task records as a list, generator, or Dataset."""
+        if split == "eval":
+            return []
+        return [
             {
                 "prompt": [{"role": "user", "content": "Reverse abc."}],
                 "answer": "cba",
-                "split": "train",
                 "max_turns": 1,
             }
         ]
-        return [row for row in rows if row["split"] == self.config.split]
 
     @vf.reward(weight=1.0)
-    async def contains_answer(self, task, state) -> float:
-        return float(task["answer"] in str(state.get("completion") or ""))
+    async def correct_answer(self, task: vf.Task, state: vf.State) -> float:
+        messages = vf.get_messages(state.get("completion") or [], role="assistant")
+        if not messages:
+            return 0.0
+        response = str(messages[-1].content or "").strip()
+        return float(response == task["answer"])
 
 
 def load_taskset(config: MyTasksetConfig) -> MyTaskset:
@@ -116,22 +124,37 @@ def load_taskset(config: MyTasksetConfig) -> MyTaskset:
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
-    return vf.Env(taskset=vf.load_taskset(config=config.taskset))
+    """Loader pattern for all Taskset/Harness environments."""
+    return vf.Env(
+        taskset=vf.load_taskset(config=config.taskset),
+        harness=vf.load_harness(config=config.harness),
+    )
 ```
 See [BYO Harness](byo-harness.md) for the advanced v1 taskset/harness API.
-Reusable v1 taskset and harness packages live under `verifiers.v1.packages`.
-For example, Harbor task directories can run through the bundled OpenCode CLI
-harness with:
+The child loader annotation is the config contract: keep root
+`load_environment` typed as `vf.EnvConfig`, put task settings on
+`TasksetConfig`, and add `load_harness(config: MyHarnessConfig)` only when the
+environment owns a reusable harness.
+Reusable v1 taskset and harness packages live in `tasksets` and `harnesses`.
+Install them with `uv add "verifiers[packages]"`, or with the narrower
+`verifiers[tasksets]`, `verifiers[harnesses]`, and backend-specific extras such
+as `verifiers[nemogym]`. For example, Harbor task directories can run through
+the bundled OpenCode CLI harness with:
 
 ```python
-from verifiers.v1.packages.harnesses import OpenCode, OpenCodeConfig
-from verifiers.v1.packages.tasksets import HarborTaskset, HarborTasksetConfig
+from harnesses import OpenCode, OpenCodeConfig
+from tasksets import HarborTaskset, HarborTasksetConfig
 
 env = vf.Env(
-    taskset=HarborTaskset(config=HarborTasksetConfig()),
+    taskset=HarborTaskset(config=HarborTasksetConfig(bundle_package=__name__)),
     harness=OpenCode(config=OpenCodeConfig()),
 )
 ```
+
+The packaged `Taskset` and `Harness` classes can also be constructed directly in
+ordinary Python code; loaders are the environment/config composition path.
+`NeMoGymTaskset` and `NeMoGymHarness` expose packaged NeMo Gym rows and rollout
+collection through the same taskset/harness composition boundary.
 
 To run a local evaluation with any OpenAI-compatible model, do:
 ```bash

@@ -258,6 +258,13 @@ class TestSavingResults:
         assert result[0].get("foo") == "bar"  # custom field from make_state fixture
         assert result[0]["reward"] == 1.0
 
+    def test_states_to_outputs_requires_example_id(self, make_state):
+        state = make_state()
+        del state["example_id"]
+
+        with pytest.raises(KeyError):
+            states_to_outputs([state], state_columns=[])
+
     def test_states_to_outputs_completion_keeps_messages(self, make_state):
         states = [
             make_state(
@@ -646,6 +653,22 @@ class TestBuilderPassAtK:
         assert metadata["pass_at_k"]["1"] == pytest.approx(0.25)
         # 1 of 4 correct at threshold=0.7: pass^1 = C(1,1)/C(4,1) = 0.25
         assert metadata["pass_all_k"]["1"] == pytest.approx(0.25)
+
+    def test_builder_requires_example_id(self):
+        builder = GenerateOutputsBuilder(
+            env_id="test-env",
+            env_args={},
+            model="test-model",
+            client=ClientConfig(api_base_url="http://localhost:8000/v1"),
+            num_examples=1,
+            rollouts_per_example=1,
+            state_columns=[],
+            sampling_args={},
+            results_path=Path("/tmp/test-results"),
+        )
+
+        with pytest.raises(KeyError):
+            builder.add_outputs([{"reward": 1.0, "metrics": {}}])
 
 
 class TestMetricProtocol:

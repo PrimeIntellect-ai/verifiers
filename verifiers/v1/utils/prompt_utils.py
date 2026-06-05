@@ -1,23 +1,94 @@
-from collections.abc import Callable, Mapping
 import importlib.util
-from os import PathLike
+from dataclasses import dataclass
 from pathlib import Path
-import re
-from typing import Literal, cast
+from typing import TYPE_CHECKING, Literal, TypeAlias, cast
 
-from verifiers.types import MessageContent, Messages, SystemMessage
+from pydantic import model_validator
+from typing_extensions import Self
+from verifiers.types import Messages, SystemMessage
 from verifiers.utils.message_utils import normalize_messages
-from ..types import ConfigData, ConfigMap, PromptInput, SystemPrompt
-from .config_utils import current_config_ref_module, import_config_ref
+
+from ..config import Config
+from ..types import JsonData, PromptInput
+from .config_utils import current_config_ref_module
+
+if TYPE_CHECKING:
+    from ..state import State
+    from ..task import Task
 
 
-SystemPromptMerge = Literal["reject", "concat", "task", "taskset", "harness"]
-SystemPromptLoader = Callable[[], SystemPrompt | None]
+SystemPromptStrategy = Literal["REJECT", "TH", "HT", "T", "H", "T_OR_H", "H_OR_T"]
+SystemPromptTasksetSource = Literal["task", "taskset"]
+
+
+@dataclass(frozen=True)
+class SystemPromptResolution:
+    harness: list[JsonData]
+    taskset: list[JsonData]
+    taskset_source: SystemPromptTasksetSource | None
+
+    def apply_strategy(self, strategy: SystemPromptStrategy) -> list[JsonData]:
+        if strategy == "HT":
+            return [*self._copy(self.harness), *self._copy(self.taskset)]
+        if strategy == "TH":
+            return [*self._copy(self.taskset), *self._copy(self.harness)]
+        if strategy == "REJECT":
+            if self.harness and self.taskset:
+                raise ValueError(
+                    "Multiple system_prompt sides cannot be resolved: "
+                    f"harness, {self.taskset_source or 'taskset'}. "
+                    "Set system_prompt_strategy='HT', 'TH', 'H', 'T', "
+                    "'H_OR_T', or 'T_OR_H'."
+                )
+            return [*self._copy(self.harness), *self._copy(self.taskset)]
+        if strategy == "H_OR_T":
+            return self._copy(self.harness or self.taskset)
+        if strategy == "T_OR_H":
+            return self._copy(self.taskset or self.harness)
+        if strategy == "H":
+            return self._copy(self.harness)
+        if strategy == "T":
+            return self._copy(self.taskset)
+        raise ValueError(
+            "system_prompt_strategy must be one of REJECT, TH, HT, T, H, "
+            "T_OR_H, H_OR_T."
+        )
+
+    @staticmethod
+    def _copy(messages: list[JsonData]) -> list[JsonData]:
+        return [dict(message) for message in messages]
+
+
+class SystemPromptConfig(Config):
+    path: str | None = None
+    messages: list[JsonData] = []
+
+    @model_validator(mode="after")
+    def validate_one_input(self) -> Self:
+        inputs = [
+            self.path is not None,
+            bool(self.messages),
+        ]
+        if sum(inputs) != 1:
+            raise ValueError(
+                "SystemPromptConfig requires exactly one of path or messages."
+            )
+        return self
+
+    def load(self, field_name: str) -> PromptInput | None:
+        if self.path is not None:
+            return read_system_prompt_path(
+                resolve_system_prompt_path(self.path), field_name=field_name
+            )
+        return self.messages
+
+
+SystemPrompt: TypeAlias = PromptInput | SystemPromptConfig | None
 
 
 def normalize_prompt(
     value: PromptInput | None, field_name: str = "prompt"
-) -> list[ConfigData]:
+) -> list[JsonData]:
     messages = normalize_messages(cast(Messages, value or []), field_name=field_name)
     for message in messages:
         if getattr(message, "role", None) == "system":
@@ -29,8 +100,9 @@ def normalize_prompt(
 
 
 def normalize_system_prompt(
-    value: PromptInput | None, field_name: str = "system_prompt"
-) -> list[ConfigData]:
+    value: SystemPrompt,
+    field_name: str = "system_prompt",
+) -> list[JsonData]:
     value = resolve_system_prompt_input(value, field_name=field_name)
     if value is None:
         return []
@@ -44,65 +116,15 @@ def normalize_system_prompt(
 
 
 def resolve_system_prompt_input(
-    value: PromptInput | PathLike[str] | None,
+    value: SystemPrompt,
     *,
     field_name: str,
 ) -> PromptInput | None:
     if value is None:
         return None
-    if not isinstance(value, str):
-        if isinstance(value, PathLike):
-            path = Path(cast(PathLike[str], value))
-            return read_system_prompt_path(path, field_name=field_name)
-        return value
-    if is_system_prompt_path(value):
-        return read_system_prompt_path(resolve_system_prompt_path(value), field_name)
-    if is_system_prompt_ref(value):
-        resolved = import_config_ref(value)
-        if callable(resolved):
-            resolved = cast(SystemPromptLoader, resolved)()
-        if isinstance(resolved, PathLike):
-            path = Path(cast(PathLike[str], resolved))
-            return read_system_prompt_path(path, field_name=field_name)
-        return cast(PromptInput | None, resolved)
+    if isinstance(value, SystemPromptConfig):
+        return value.load(field_name)
     return value
-
-
-def is_system_prompt_ref(value: str) -> bool:
-    if any(character.isspace() for character in value):
-        return False
-    if re.fullmatch(
-        r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*:[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*",
-        value,
-    ):
-        _, _, attr_path = value.partition(":")
-        return is_system_prompt_ref_name(attr_path.rsplit(".", 1)[-1])
-    if current_config_ref_module() is None:
-        return False
-    if not re.fullmatch(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*", value):
-        return False
-    return is_system_prompt_ref_name(value.rsplit(".", 1)[-1])
-
-
-def is_system_prompt_ref_name(value: str) -> bool:
-    return (
-        value.startswith("load_")
-        or value.endswith("_prompt")
-        or value.endswith("_PROMPT")
-        or value.endswith("PROMPT")
-    )
-
-
-def is_system_prompt_path(value: str) -> bool:
-    if any(character.isspace() for character in value):
-        return False
-    path = Path(value).expanduser()
-    return (
-        path.is_absolute()
-        or value.startswith(("./", "../", "~/"))
-        or "/" in value
-        or path.suffix in {".txt", ".md", ".rst"}
-    )
 
 
 def resolve_system_prompt_path(value: str) -> Path:
@@ -120,60 +142,65 @@ def resolve_system_prompt_path(value: str) -> Path:
 
 def read_system_prompt_path(path: Path, field_name: str) -> str:
     try:
-        return path.read_text(encoding="utf-8")
+        text = path.read_text(encoding="utf-8")
     except OSError as exc:
         raise ValueError(f"{field_name} path {str(path)!r} could not be read.") from exc
+    if not text:
+        raise ValueError(f"{field_name} path {str(path)!r} must not be empty.")
+    return text
 
 
 def resolve_system_prompt(
     *,
-    task: ConfigMap,
-    taskset_system_prompt: list[ConfigData],
-    harness_system_prompt: list[ConfigData],
-    merge: str,
-) -> list[ConfigData]:
+    task: "Task",
+    taskset_system_prompt: list[JsonData],
+    harness_system_prompt: list[JsonData],
+    strategy: SystemPromptStrategy,
+) -> list[JsonData]:
+    return system_prompt_resolution(
+        task=task,
+        taskset_system_prompt=taskset_system_prompt,
+        harness_system_prompt=harness_system_prompt,
+    ).apply_strategy(strategy)
+
+
+def system_prompt_resolution(
+    *,
+    task: "Task",
+    taskset_system_prompt: list[JsonData],
+    harness_system_prompt: list[JsonData],
+) -> SystemPromptResolution:
     task_system_prompt = normalize_system_prompt(
         cast(PromptInput | None, task.get("system_prompt")),
         field_name="task.system_prompt",
     )
-    sources = [
-        ("harness", harness_system_prompt),
-        ("taskset", taskset_system_prompt),
-        ("task", task_system_prompt),
-    ]
-    present = [(name, messages) for name, messages in sources if messages]
-
-    if merge == "reject":
-        if len(present) > 1:
-            names = ", ".join(name for name, _ in present)
-            raise ValueError(
-                f"Multiple system_prompt sources cannot be resolved: {names}. "
-                "Set system_prompt_merge='concat' or choose one source."
-            )
-        return [dict(message) for _, messages in present for message in messages]
-    if merge == "concat":
-        return [dict(message) for _, messages in present for message in messages]
-    if merge in {"task", "taskset", "harness"}:
-        for name, messages in present:
-            if name == merge:
-                return [dict(message) for message in messages]
-        return []
-    raise ValueError(
-        "system_prompt_merge must be one of reject, concat, task, taskset, harness."
+    return SystemPromptResolution(
+        harness=[dict(message) for message in harness_system_prompt],
+        taskset=(
+            [dict(message) for message in task_system_prompt]
+            if task_system_prompt
+            else [dict(message) for message in taskset_system_prompt]
+        ),
+        taskset_source=(
+            "task"
+            if task_system_prompt
+            else "taskset"
+            if taskset_system_prompt
+            else None
+        ),
     )
 
 
-def dump_messages(messages: Messages) -> list[ConfigData]:
+def dump_messages(messages: Messages) -> list[JsonData]:
     return [message.model_dump(exclude_none=True) for message in messages]
 
 
 def task_text(
-    task: ConfigMap,
-    state: ConfigMap,
+    task: "Task",
+    state: "State",
     *,
     keys: tuple[str, ...] = ("instruction",),
 ) -> str:
-    _ = state
     for key in keys:
         value = task.get(key)
         if isinstance(value, str) and value:
@@ -181,8 +208,7 @@ def task_text(
     return messages_text(task.get("prompt", []))
 
 
-def state_system_prompt_text(task: ConfigMap, state: ConfigMap) -> str:
-    _ = task
+def state_system_prompt_text(task: "Task", state: "State") -> str:
     return messages_text(state.get("system_prompt", []))
 
 
@@ -196,15 +222,15 @@ def messages_text(messages: object) -> str:
         content = getattr(message, "content", None)
         if content is not None:
             parts.append(content_text(content))
-        elif isinstance(message, Mapping):
-            item = cast(ConfigMap, message)
+        elif isinstance(message, dict):
+            item = cast(JsonData, message)
             parts.append(content_text(item.get("content")))
         else:
             parts.append(str(message))
     return "\n\n".join(part for part in parts if part)
 
 
-def content_text(content: MessageContent | object) -> str:
+def content_text(content: object) -> str:
     if content is None:
         return ""
     if isinstance(content, str):
@@ -212,8 +238,8 @@ def content_text(content: MessageContent | object) -> str:
     if isinstance(content, list):
         text_parts: list[str] = []
         for part in content:
-            if isinstance(part, Mapping):
-                item = cast(ConfigMap, part)
+            if isinstance(part, dict):
+                item = cast(JsonData, part)
                 text = item.get("text")
                 if isinstance(text, str):
                     text_parts.append(text)

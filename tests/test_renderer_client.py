@@ -370,6 +370,14 @@ async def test_renderer_client_rejects_empty_dict_native_response():
 
 
 @pytest.mark.asyncio
+async def test_renderer_client_rejects_reasoning_only_native_response():
+    client = object.__new__(RendererClient)
+
+    with pytest.raises(EmptyModelResponseError, match="reasoning but no content"):
+        await client.raise_from_native_response({"reasoning_content": "hidden chain"})
+
+
+@pytest.mark.asyncio
 async def test_from_native_response_uses_request_id_and_token_lengths():
     """vLLM's /inference/v1/generate returns ``request_id`` (not ``id``) and
     no ``usage``/``model``/``created``. ``Response.id`` should pick up
@@ -602,7 +610,9 @@ async def test_get_incremental_prompt_ids_matches_tool_tail_without_rerendering_
     )
 
     assert result is not None
-    assert result.token_ids == [1, 2, 3, 99, 30, 40]
+    bridged, routed_experts_prompt_start = result
+    assert bridged.token_ids == [1, 2, 3, 99, 30, 40]
+    assert routed_experts_prompt_start == 3
     # The bridge stitches over the completion without re-rendering it —
     # one bridge call, zero render_ids calls (older diff-based bridges
     # called render_ids twice).
@@ -645,7 +655,9 @@ async def test_get_incremental_prompt_ids_accepts_tool_then_user_tail():
     )
 
     assert result is not None
-    assert result.token_ids == [1, 2, 3, 99, 40, 50]
+    bridged, routed_experts_prompt_start = result
+    assert bridged.token_ids == [1, 2, 3, 99, 40, 50]
+    assert routed_experts_prompt_start == 3
 
 
 @pytest.mark.asyncio
@@ -705,7 +717,9 @@ async def test_get_incremental_prompt_ids_accepts_multimodal_tool_user_tail():
     )
 
     assert result is not None
-    assert result.token_ids == [1, 2, 3, 99, 40, 50]
+    bridged, routed_experts_prompt_start = result
+    assert bridged.token_ids == [1, 2, 3, 99, 40, 50]
+    assert routed_experts_prompt_start == 3
 
 
 # ── Live image offload + bridge-matching validation ───────────────────
@@ -899,7 +913,8 @@ async def test_bridge_prefix_matching_survives_image_offload(tmp_path, monkeypat
     )
     # Bridge still matched and extended — prefix logic intact under offload.
     assert result is not None
-    assert result.token_ids == [1, 2, 3, 99, 40, 50]
+    bridged, _routed_experts_prompt_start = result
+    assert bridged.token_ids == [1, 2, 3, 99, 40, 50]
 
 
 @pytest.mark.asyncio
@@ -1021,7 +1036,9 @@ async def test_get_incremental_prompt_ids_bridges_over_truncated_step(
 
     prefix = list(prev_prompt_ids) + list(prev_completion_ids)
     assert result is not None, f"{model_id}: bridge returned None on truncated anchor"
-    result_ids = result.token_ids
+    bridged, routed_experts_prompt_start = result
+    result_ids = bridged.token_ids
+    assert routed_experts_prompt_start == len(prefix) - 1
     assert result_ids[: len(prefix)] == prefix, (
         f"{model_id}: bridge result does not prefix-preserve "
         f"prev_prompt + prev_completion"
@@ -1185,7 +1202,7 @@ async def test_get_native_response_threads_prompt_attribution_into_generate():
     captured: dict = {}
 
     async def _fake_get_incremental(**kwargs):
-        return bridged
+        return bridged, 2
 
     async def _fake_generate(**kwargs):
         captured.update(kwargs)
@@ -1238,6 +1255,7 @@ async def test_get_native_response_threads_prompt_attribution_into_generate():
 
     assert captured.get("prompt_attribution") is bridged
     assert captured.get("prompt_ids") == list(bridged.token_ids)
+    assert captured["sampling_params"]["routed_experts_prompt_start"] == 2
     assert result["prompt_attribution"] is bridged
 
 

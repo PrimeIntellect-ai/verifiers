@@ -13,13 +13,11 @@ import json
 import shlex
 from pathlib import Path, PurePosixPath
 
+from harnesses.utils import split_versioned_agent_spec
+
 # ── Defaults ─────────────────────────────────────────────────────────────
 
-DEFAULT_RELEASE_REPO = "PrimeIntellect-ai/opencode"
-DEFAULT_RELEASE_VERSION = "1.1.63-rl2"
-DEFAULT_RELEASE_SHA256 = (
-    "47f4102796da50769e27d2c9ea6a9cf7941f76898390cb497278cab39c4b6ed4"
-)
+DEFAULT_RELEASE = "PrimeIntellect-ai/opencode@1.1.63-rl2"
 DEFAULT_SYSTEM_PROMPT = (Path(__file__).parent / "prompt.txt").read_text()
 
 DEFAULT_DISABLED_TOOLS = [
@@ -49,9 +47,7 @@ DEFAULT_DISABLED_TOOLS = [
 
 
 def build_install_script(
-    release_repo: str = DEFAULT_RELEASE_REPO,
-    release_version: str = DEFAULT_RELEASE_VERSION,
-    release_sha256: str = DEFAULT_RELEASE_SHA256,
+    release: str = DEFAULT_RELEASE,
     install_ripgrep: bool = True,
 ) -> str:
     """Build the shell script that installs OpenCode in a sandbox."""
@@ -60,7 +56,15 @@ def build_install_script(
         if install_ripgrep
         else ""
     )
-    sha256_check = f'echo "{release_sha256}  /tmp/opencode.tar.gz" | sha256sum -c -'
+    release_repo, release_version = split_versioned_agent_spec(release)
+    release_path = "releases/latest/download"
+    if release_version and release_version != "latest":
+        release_tag = (
+            release_version
+            if release_version.startswith("v")
+            else f"v{release_version}"
+        )
+        release_path = f"releases/download/{release_tag}"
     # Acquire::Retries=3 mitigates transient archive.ubuntu.com CDN sync mismatches
     # (e.g. "File has unexpected size ... Mirror sync in progress?"). See launchpad
     # bug #1876035. apt's default retries is 0, so one bad fetch fails the rollout.
@@ -69,8 +73,8 @@ set -e
 apt-get -o Acquire::Retries=3 update -qq && apt-get -o Acquire::Retries=3 install -y -qq curl tar > /dev/null 2>&1
 {rg_install}
 
-OPENCODE_RELEASE_REPO="{release_repo}"
-OPENCODE_RELEASE_VERSION="{release_version}"
+OPENCODE_RELEASE_REPO={shlex.quote(release_repo)}
+OPENCODE_RELEASE_PATH={shlex.quote(release_path)}
 
 case "$(uname -m)" in
   x86_64) OPENCODE_ARCH=x64 ;;
@@ -79,15 +83,13 @@ case "$(uname -m)" in
 esac
 
 OPENCODE_ASSET="opencode-linux-$OPENCODE_ARCH.tar.gz"
-OPENCODE_RELEASE_TAG="${{OPENCODE_RELEASE_VERSION#v}}"
-OPENCODE_RELEASE_URL="https://github.com/$OPENCODE_RELEASE_REPO/releases/download/v$OPENCODE_RELEASE_TAG/$OPENCODE_ASSET"
+OPENCODE_RELEASE_URL="https://github.com/$OPENCODE_RELEASE_REPO/$OPENCODE_RELEASE_PATH/$OPENCODE_ASSET"
 
 mkdir -p "$HOME/.opencode/bin"
 if [ -x "$HOME/.opencode/bin/opencode" ]; then
   echo "OpenCode already installed, skipping download"
 else
   curl -fsSL "$OPENCODE_RELEASE_URL" -o /tmp/opencode.tar.gz
-  {sha256_check}
   tar -xzf /tmp/opencode.tar.gz -C /tmp
   install -m 755 /tmp/opencode "$HOME/.opencode/bin/opencode"
   rm -f /tmp/opencode.tar.gz /tmp/opencode
@@ -246,9 +248,7 @@ def opencode_harness(
     agent_workdir: str = "/app",
     allow_git: bool = False,
     disable_compaction: bool = True,
-    release_repo: str = DEFAULT_RELEASE_REPO,
-    release_version: str = DEFAULT_RELEASE_VERSION,
-    release_sha256: str = DEFAULT_RELEASE_SHA256,
+    release: str = DEFAULT_RELEASE,
     instruction_path: str = "/opencode/prompt.txt",
     system_prompt_path: str = "/opencode/system.txt",
     log_path: str = "/opencode/logs.txt",
@@ -276,9 +276,7 @@ def opencode_harness(
 
     return Harness(
         install_script=build_install_script(
-            release_repo=release_repo,
-            release_version=release_version,
-            release_sha256=release_sha256,
+            release=release,
         ),
         run_command=build_opencode_run_command(
             agent_workdir=agent_workdir,

@@ -4,43 +4,68 @@ import inspect
 import sys
 import tarfile
 import types
-from collections.abc import Mapping
 from pathlib import Path
+from typing import cast
 
 import pytest
 from datasets import Dataset
+from pydantic import BaseModel
 from verifiers.types import Tool
 
 import verifiers as vf
 from environments.rlm_swe_v1 import rlm_swe_v1
-from verifiers.v1.packages.harnesses import RLM, RLMConfig
-from verifiers.v1.packages.harnesses.rlm import (
+from harnesses import RLM, RLMConfig, RLMProgramConfig
+from harnesses.rlm import (
     DEFAULT_RLM_TOOL_SKILL_MARKER,
     DEFAULT_RLM_TOOL_SKILLS_ARCHIVE_PATH,
     DEFAULT_RLM_TOOL_SKILLS_MANIFEST_NAME,
 )
+from harnesses.utils.rlm_utils import rlm_tool_skills_archive
+from harnesses.utils.rlm_utils import rlm_skills_dir
 from verifiers.v1.utils.program_utils import merge_task_program, merge_task_sandbox
 
 
-def as_mapping(value: object) -> Mapping[str, object]:
-    assert isinstance(value, Mapping)
-    return value
+def as_dict(value: object) -> dict[str, object]:
+    if isinstance(value, vf.ProgramConfig):
+        value = value.data()
+    elif isinstance(value, BaseModel):
+        value = value.model_dump(exclude_none=True)
+    assert isinstance(value, dict)
+    return cast(dict[str, object], value)
 
 
-def load_order_task() -> vf.Tasks:
+def load_order_task(split: vf.TaskSplit = "train") -> vf.Tasks:
+    _ = split
     return [{"prompt": [{"role": "user", "content": "Find order A-1."}]}]
 
 
 class OrderTasksetConfig(vf.TasksetConfig):
-    tasks: str = "load_order_task"
+    pass
+
+
+class OrderTaskset(vf.Taskset[OrderTasksetConfig]):
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
+        return load_order_task(split)
+
+
+def tool_skills_archive(harness: vf.Harness, state: vf.State) -> bytes:
+    if "task" not in state:
+        task = vf.Task({"prompt": []}).freeze()
+        state = vf.State.for_task(task)
+        harness.runtime.prepare_state(task, state)
+    return base64.b64decode(rlm_tool_skills_archive(state, harness.runtime))
 
 
 def test_rlm_harness_builds_sandbox_program_without_eager_checkout():
-    harness = RLM(config=RLMConfig(local_checkout="/tmp/does-not-need-to-exist-yet"))
-    program = as_mapping(harness.program)
-    program_env = as_mapping(program["env"])
-    artifacts = as_mapping(program["artifacts"])
-    setup = program["setup"]
+    harness = RLM(
+        config=RLMConfig(
+            program=RLMProgramConfig(local_checkout="/tmp/does-not-need-to-exist-yet")
+        )
+    )
+    program = as_dict(harness.config.program)
+    program_env = as_dict(program["env"])
+    artifacts = as_dict(program["artifacts"])
+    setup = cast(list[str], program["setup"])
 
     assert isinstance(harness, vf.Harness)
     assert program["sandbox"] is not False
@@ -54,31 +79,48 @@ def test_rlm_harness_builds_sandbox_program_without_eager_checkout():
 def test_rlm_harness_accepts_typed_config_surface():
     harness = RLM(
         config=RLMConfig(
-            local_checkout="/tmp/checkout",
-            rlm_tools=["bash", "edit"],
-            rlm_max_turns=7,
-            rlm_exec_timeout=11,
-            env_vars={"CUSTOM": "1"},
+            program=RLMProgramConfig(
+                local_checkout="/tmp/checkout",
+                rlm_tools=["bash", "edit"],
+                rlm_exec_timeout=11,
+                env_vars={"CUSTOM": "1"},
+            )
         )
     )
-    program = as_mapping(harness.program)
-    program_env = as_mapping(program["env"])
+    program = as_dict(harness.config.program)
+    program_env = as_dict(program["env"])
 
-    assert harness.config.rlm_tools == ["bash", "edit"]
+    assert harness.config.program.rlm_tools == ["bash", "edit"]
     assert program_env["RLM_TOOLS"] == "bash,edit"
-    assert program_env["RLM_MAX_TURNS"] == "7"
     assert program_env["RLM_EXEC_TIMEOUT"] == "11"
     assert program_env["CUSTOM"] == "1"
+
+
+def test_rlm_endpoint_hides_nested_depth_requests():
+    harness = RLM(
+        config=RLMConfig(program=RLMProgramConfig(local_checkout="/tmp/checkout"))
+    )
+
+    assert harness.endpoint.trajectory_visibility({"x-rlm-depth": "0"}) == "append"
+    assert harness.endpoint.trajectory_visibility({"x-rlm-depth": "1"}) == "hidden"
+    assert (
+        harness.endpoint.trajectory_visibility(
+            {"x-rlm-depth": "0", "x-verifiers-trajectory": "hidden"}
+        )
+        == "hidden"
+    )
 
 
 def test_rlm_harness_preserves_program_setup_timeout_override():
     harness = RLM(
         config=RLMConfig(
-            local_checkout="/tmp/checkout",
-            program={"setup_timeout": 123},
+            program=RLMProgramConfig(
+                local_checkout="/tmp/checkout",
+                setup_timeout=123,
+            ),
         )
     )
-    program = as_mapping(harness.program)
+    program = as_dict(harness.config.program)
 
     assert program["setup_timeout"] == 123
 
@@ -86,11 +128,13 @@ def test_rlm_harness_preserves_program_setup_timeout_override():
 def test_rlm_harness_uses_sandbox_setup_timeout_default():
     harness = RLM(
         config=RLMConfig(
-            local_checkout="/tmp/checkout",
-            sandbox={"setup_timeout": "777"},
+            program=RLMProgramConfig(
+                local_checkout="/tmp/checkout",
+                sandbox=vf.SandboxConfig(setup_timeout=777),
+            ),
         )
     )
-    program = as_mapping(harness.program)
+    program = as_dict(harness.config.program)
 
     assert program["setup_timeout"] == 777
 
@@ -98,12 +142,14 @@ def test_rlm_harness_uses_sandbox_setup_timeout_default():
 def test_rlm_harness_keeps_minimum_setup_timeout_for_default_sandbox_config():
     harness = RLM(
         config=RLMConfig(
-            local_checkout="/tmp/checkout",
-            sandbox=vf.SandboxConfig(),
+            program=RLMProgramConfig(
+                local_checkout="/tmp/checkout",
+                sandbox=vf.SandboxConfig(),
+            ),
         )
     )
-    program = as_mapping(harness.program)
-    sandbox = as_mapping(harness.sandbox)
+    program = as_dict(harness.config.program)
+    sandbox = as_dict(harness.sandbox)
 
     assert program["setup_timeout"] == 600
     assert sandbox["setup_timeout"] == 600
@@ -114,14 +160,20 @@ def test_rlm_harness_can_upload_skills(tmp_path: Path):
     (skills / "edit").mkdir(parents=True)
     (skills / "edit" / "SKILL.md").write_text("---\nname: edit\n---\n")
 
-    harness = RLM(config=RLMConfig(local_checkout="/tmp/checkout", skills=str(skills)))
-    program = as_mapping(harness.program)
-    dirs = as_mapping(program["dirs"])
-    files = as_mapping(program["files"])
-    setup = program["setup"]
+    harness = RLM(
+        config=RLMConfig(
+            program=RLMProgramConfig(local_checkout="/tmp/checkout", skills=str(skills))
+        )
+    )
+    program = as_dict(harness.config.program)
+    dirs = as_dict(program["dirs"])
+    files = as_dict(program["files"])
+    setup = cast(list[str], program["setup"])
 
-    assert dirs["/task/rlm-skills"] == skills
-    assert files[DEFAULT_RLM_TOOL_SKILLS_ARCHIVE_PATH] == harness.vf_tool_skills_archive
+    assert dirs["/task/rlm-skills"] == str(skills)
+    assert files[DEFAULT_RLM_TOOL_SKILLS_ARCHIVE_PATH] == {
+        "fn": "harnesses.utils.rlm_utils:rlm_tool_skills_archive"
+    }
     assert isinstance(setup, list)
     assert DEFAULT_RLM_TOOL_SKILLS_ARCHIVE_PATH in setup[1]
     assert DEFAULT_RLM_TOOL_SKILLS_MANIFEST_NAME in setup[1]
@@ -141,12 +193,17 @@ def test_rlm_harness_uploads_taskset_skills_by_default(tmp_path: Path):
 
     env = vf.Env(
         taskset=SkillTaskset(config=vf.TasksetConfig()),
-        harness=RLM(config=RLMConfig(local_checkout="/tmp/checkout")),
+        harness=RLM(
+            config=RLMConfig(program=RLMProgramConfig(local_checkout="/tmp/checkout"))
+        ),
     )
-    program = as_mapping(env.harness.program)
-    dirs = as_mapping(program["dirs"])
+    program = as_dict(env.harness.config.program)
+    dirs = as_dict(program["dirs"])
 
-    assert dirs["/task/rlm-skills"] == skills
+    assert dirs["/task/rlm-skills"] == {
+        "fn": "harnesses.utils.rlm_utils:rlm_skills_dir"
+    }
+    assert rlm_skills_dir(vf.State({}), env.harness.runtime) == skills
 
 
 def test_rlm_harness_recomputes_taskset_skills(tmp_path: Path):
@@ -155,31 +212,39 @@ def test_rlm_harness_recomputes_taskset_skills(tmp_path: Path):
     first_skills.mkdir()
     second_skills.mkdir()
 
-    class SkillTaskset(vf.Taskset):
-        def __init__(self, skills: Path):
-            super().__init__(config=vf.TasksetConfig())
-            self.skills = skills
+    class SkillTasksetConfig(vf.TasksetConfig):
+        skills_path: str
 
+    class SkillTaskset(vf.Taskset[SkillTasksetConfig]):
         def get_upload_dirs(self):
-            return {"skills": self.skills}
+            return {"skills": Path(self.config.skills_path)}
 
     class NoSkillTaskset(vf.Taskset):
         def get_upload_dirs(self):
             return {}
 
-    harness = RLM(config=RLMConfig(local_checkout="/tmp/checkout"))
-    vf.Env(taskset=SkillTaskset(first_skills), harness=harness)
-    vf.Env(taskset=SkillTaskset(second_skills), harness=harness)
-    program = as_mapping(harness.program)
-    dirs = as_mapping(program["dirs"])
+    harness = RLM(
+        config=RLMConfig(program=RLMProgramConfig(local_checkout="/tmp/checkout"))
+    )
+    vf.Env(
+        taskset=SkillTaskset(config=SkillTasksetConfig(skills_path=str(first_skills))),
+        harness=harness,
+    )
+    vf.Env(
+        taskset=SkillTaskset(config=SkillTasksetConfig(skills_path=str(second_skills))),
+        harness=harness,
+    )
+    program = as_dict(harness.config.program)
+    dirs = as_dict(program["dirs"])
 
-    assert dirs["/task/rlm-skills"] == second_skills
+    assert dirs["/task/rlm-skills"] == {
+        "fn": "harnesses.utils.rlm_utils:rlm_skills_dir"
+    }
+    assert rlm_skills_dir(vf.State({}), harness.runtime) == second_skills
 
     vf.Env(taskset=NoSkillTaskset(config=vf.TasksetConfig()), harness=harness)
-    program = as_mapping(harness.program)
-    dirs = as_mapping(program["dirs"])
 
-    assert "/task/rlm-skills" not in dirs
+    assert rlm_skills_dir(vf.State({}), harness.runtime) is None
 
 
 @pytest.mark.asyncio
@@ -188,18 +253,19 @@ async def test_rlm_harness_generates_skills_for_v1_tools():
         """Look up an order by ID."""
         return f"order:{order_id}"
 
-    taskset = vf.Taskset(config=OrderTasksetConfig())
+    taskset = OrderTaskset(config=OrderTasksetConfig())
     taskset.add_toolset(vf.Toolset(tools=[lookup_order]))
     env = vf.Env(
         taskset=taskset,
-        harness=RLM(config=RLMConfig(local_checkout="/tmp/checkout")),
+        harness=RLM(
+            config=RLMConfig(program=RLMProgramConfig(local_checkout="/tmp/checkout"))
+        ),
     )
     task = next(iter(env.taskset))
-    state = vf.State({"task": dict(task), "runtime": {}, "prompt": task["prompt"]})
+    state = vf.State.for_task(task)
 
-    await env.harness.runtime.ensure_rollout_toolsets(task, state)
     env.harness.runtime.prepare_state(task, state)
-    archive = base64.b64decode(env.harness.vf_tool_skills_archive(state))
+    archive = tool_skills_archive(env.harness, state)
 
     with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
         source = (
@@ -214,15 +280,11 @@ async def test_rlm_harness_generates_skills_for_v1_tools():
             .decode()
         )
     assert "async def run(order_id: str, **kwargs) -> object" in source
-    assert "/vf/tools/" not in source
-    assert "dill.loads" in source
+    assert "/vf/tools/" in source
+    assert "dill.loads" not in source
     assert "Look up an order by ID." in skill_markdown
     assert "result = await lookup_order" in skill_markdown
     assert marker == "1\n"
-
-    module = types.ModuleType("lookup_order")
-    exec(source, module.__dict__)
-    assert await module.run(order_id="A-1") == "order:A-1"
 
 
 @pytest.mark.asyncio
@@ -231,18 +293,19 @@ async def test_vf_tool_skill_falls_back_for_runtime_bound_tools():
         """Look up an order with rollout state."""
         return f"{state['tenant']}:{order_id}"
 
-    taskset = vf.Taskset(config=OrderTasksetConfig())
+    taskset = OrderTaskset(config=OrderTasksetConfig())
     taskset.add_toolset(vf.Toolset(tools=[stateful_lookup]))
     env = vf.Env(
         taskset=taskset,
-        harness=RLM(config=RLMConfig(local_checkout="/tmp/checkout")),
+        harness=RLM(
+            config=RLMConfig(program=RLMProgramConfig(local_checkout="/tmp/checkout"))
+        ),
     )
     task = next(iter(env.taskset))
-    state = vf.State({"task": dict(task), "runtime": {}, "prompt": task["prompt"]})
+    state = vf.State.for_task(task)
 
-    await env.harness.runtime.ensure_rollout_toolsets(task, state)
     env.harness.runtime.prepare_state(task, state)
-    archive = base64.b64decode(env.harness.vf_tool_skills_archive(state))
+    archive = tool_skills_archive(env.harness, state)
 
     with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
         source = (
@@ -255,10 +318,14 @@ async def test_vf_tool_skill_falls_back_for_runtime_bound_tools():
     assert "dill.loads" not in source
 
 
-def test_vf_tool_skills_archive_avoids_base_skill_name_collisions(tmp_path: Path):
+def test_rlm_tool_skills_archive_avoids_base_skill_name_collisions(tmp_path: Path):
     skills = tmp_path / "skills"
     (skills / "lookup_order").mkdir(parents=True)
-    harness = RLM(config=RLMConfig(local_checkout="/tmp/checkout", skills=str(skills)))
+    harness = RLM(
+        config=RLMConfig(
+            program=RLMProgramConfig(local_checkout="/tmp/checkout", skills=str(skills))
+        )
+    )
     tool_def = Tool(
         name="lookup_order",
         description="Look up an order.",
@@ -266,7 +333,7 @@ def test_vf_tool_skills_archive_avoids_base_skill_name_collisions(tmp_path: Path
     )
     setattr(harness.runtime, "tool_defs", lambda state: [tool_def])
 
-    archive = base64.b64decode(harness.vf_tool_skills_archive(vf.State({})))
+    archive = tool_skills_archive(harness, vf.State({}))
 
     with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
         names = tar.getnames()
@@ -282,7 +349,9 @@ def test_vf_tool_skills_archive_avoids_base_skill_name_collisions(tmp_path: Path
 
 
 def test_vf_tool_skill_uses_arguments_dict_for_tool_parameters():
-    harness = RLM(config=RLMConfig(local_checkout="/tmp/checkout"))
+    harness = RLM(
+        config=RLMConfig(program=RLMProgramConfig(local_checkout="/tmp/checkout"))
+    )
     tool_def = Tool(
         name="reserved_param",
         description="Reserved parameter.",
@@ -296,7 +365,7 @@ def test_vf_tool_skill_uses_arguments_dict_for_tool_parameters():
         },
     )
     setattr(harness.runtime, "tool_defs", lambda state: [tool_def])
-    archive = base64.b64decode(harness.vf_tool_skills_archive(vf.State({})))
+    archive = tool_skills_archive(harness, vf.State({}))
 
     with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
         source = (
@@ -316,7 +385,9 @@ def test_vf_tool_skill_uses_arguments_dict_for_tool_parameters():
 async def test_vf_tool_skill_filters_extra_kwargs_for_closed_schemas(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    harness = RLM(config=RLMConfig(local_checkout="/tmp/checkout"))
+    harness = RLM(
+        config=RLMConfig(program=RLMProgramConfig(local_checkout="/tmp/checkout"))
+    )
     tool_def = Tool(
         name="list_events",
         description="List calendar events.",
@@ -328,7 +399,7 @@ async def test_vf_tool_skill_filters_extra_kwargs_for_closed_schemas(
         },
     )
     setattr(harness.runtime, "tool_defs", lambda state: [tool_def])
-    archive = base64.b64decode(harness.vf_tool_skills_archive(vf.State({})))
+    archive = tool_skills_archive(harness, vf.State({}))
 
     with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
         source = (
@@ -370,7 +441,9 @@ async def test_vf_tool_skill_filters_extra_kwargs_for_closed_schemas(
 async def test_vf_tool_skill_omits_unset_optional_arguments(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    harness = RLM(config=RLMConfig(local_checkout="/tmp/checkout"))
+    harness = RLM(
+        config=RLMConfig(program=RLMProgramConfig(local_checkout="/tmp/checkout"))
+    )
     tool_def = Tool(
         name="search",
         description="Search documents.",
@@ -384,7 +457,7 @@ async def test_vf_tool_skill_omits_unset_optional_arguments(
         },
     )
     setattr(harness.runtime, "tool_defs", lambda state: [tool_def])
-    archive = base64.b64decode(harness.vf_tool_skills_archive(vf.State({})))
+    archive = tool_skills_archive(harness, vf.State({}))
 
     with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
         source = tar.extractfile("search/src/search/search.py").read().decode()
@@ -427,7 +500,9 @@ async def test_vf_tool_skill_omits_unset_optional_arguments(
 async def test_vf_tool_skill_surfaces_verifier_tool_errors(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    harness = RLM(config=RLMConfig(local_checkout="/tmp/checkout"))
+    harness = RLM(
+        config=RLMConfig(program=RLMProgramConfig(local_checkout="/tmp/checkout"))
+    )
     tool_def = Tool(
         name="list_events",
         description="List calendar events.",
@@ -439,7 +514,7 @@ async def test_vf_tool_skill_surfaces_verifier_tool_errors(
         },
     )
     setattr(harness.runtime, "tool_defs", lambda state: [tool_def])
-    archive = base64.b64decode(harness.vf_tool_skills_archive(vf.State({})))
+    archive = tool_skills_archive(harness, vf.State({}))
 
     with tarfile.open(fileobj=io.BytesIO(archive), mode="r:gz") as tar:
         source = (
@@ -508,15 +583,17 @@ def test_rlm_harness_explicit_skills_override_taskset_skills(tmp_path: Path):
         taskset=SkillTaskset(config=vf.TasksetConfig()),
         harness=RLM(
             config=RLMConfig(
-                local_checkout="/tmp/checkout",
-                skills=str(explicit_skills),
+                program=RLMProgramConfig(
+                    local_checkout="/tmp/checkout",
+                    skills=str(explicit_skills),
+                )
             )
         ),
     )
-    program = as_mapping(env.harness.program)
-    dirs = as_mapping(program["dirs"])
+    program = as_dict(env.harness.config.program)
+    dirs = as_dict(program["dirs"])
 
-    assert dirs["/task/rlm-skills"] == explicit_skills
+    assert dirs["/task/rlm-skills"] == str(explicit_skills)
 
 
 def test_rlm_swe_environment_uses_v1_r2e_taskset(monkeypatch):
@@ -537,18 +614,21 @@ def test_rlm_swe_environment_uses_v1_r2e_taskset(monkeypatch):
                 timeout_minutes=30,
                 env={"CUSTOM": "1"},
             ),
-            harness=RLMConfig(
-                local_checkout="/tmp/checkout",
-                env_vars={"CALLER": "1"},
+            harness=rlm_swe_v1.RlmSweHarnessConfig(
+                program=rlm_swe_v1.RlmSweProgramConfig(
+                    local_checkout="/tmp/checkout",
+                    env_vars={"CALLER": "1"},
+                )
             ),
         ),
     )
     task = next(iter(env.taskset))
-    program = as_mapping(env.harness.program)
-    program_env = as_mapping(program["env"])
+    program = as_dict(env.harness.config.program)
+    program_env = as_dict(program["env"])
     merged_program = merge_task_program(program, task, kind="command")
-    merged_env = as_mapping(merged_program["env"])
-    merged_sandbox = merge_task_sandbox(as_mapping(env.harness.sandbox), task)
+    merged_env = as_dict(merged_program["env"])
+    assert env.harness.sandbox is not None
+    merged_sandbox = merge_task_sandbox(env.harness.sandbox, task).data()
 
     assert isinstance(env, vf.Env)
     assert isinstance(env.taskset, rlm_swe_v1.R2ESWETaskset)
@@ -561,7 +641,7 @@ def test_rlm_swe_environment_uses_v1_r2e_taskset(monkeypatch):
     )
     assert task["sandbox"]["workdir"] == "/workspace/repo"
     assert task["sandbox"]["timeout_minutes"] == 30
-    task_program_env = as_mapping(as_mapping(task["program"])["env"])
+    task_program_env = as_dict(as_dict(task["program"])["env"])
     assert task_program_env["AGENT_WORKDIR"] == "/workspace/repo"
     assert "/workspace/repo/.venv/bin" in task_program_env["AGENT_PATH"]
     assert task_program_env["PAGER"] == "cat"

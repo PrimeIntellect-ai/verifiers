@@ -19,7 +19,7 @@ from datasets.utils import logging as ds_logging
 import verifiers as vf
 from verifiers.types import (
     ClientType,
-    Endpoint,
+    EndpointConfig,
     Endpoints,
     EvalCost,
     EvalConfig,
@@ -135,7 +135,7 @@ def _with_eval_metadata(
     return wrapped_progress
 
 
-def _coerce_endpoint(raw_endpoint: object, source: str) -> Endpoint:
+def _coerce_endpoint(raw_endpoint: object, source: str) -> EndpointConfig:
     if not isinstance(raw_endpoint, dict):
         raise ValueError(f"Endpoint entry must be a table/dict in {source}")
 
@@ -161,8 +161,6 @@ def _coerce_endpoint(raw_endpoint: object, source: str) -> Endpoint:
             f"Fields 'model', 'url', and 'key' must all be strings in {source}"
         )
 
-    endpoint = Endpoint(model=model, url=url, key=key)
-
     if "client_type" in raw_endpoint_dict:
         raise ValueError(
             f"Field 'client_type' is no longer supported in {source}. "
@@ -183,6 +181,7 @@ def _coerce_endpoint(raw_endpoint: object, source: str) -> Endpoint:
     client_type = (
         short_client_type if short_client_type is not None else long_client_type
     )
+    api_client_type: ClientType | None = None
     if client_type is not None:
         allowed_types = (
             "openai_completions",
@@ -198,7 +197,7 @@ def _coerce_endpoint(raw_endpoint: object, source: str) -> Endpoint:
             raise ValueError(
                 f"Field 'type'/'api_client_type' must be one of '{allowed_str}' in {source}"
             )
-        endpoint["api_client_type"] = cast(ClientType, client_type)
+        api_client_type = cast(ClientType, client_type)
 
     raw_headers = raw_endpoint_dict.get("headers")
     raw_extra_headers = raw_endpoint_dict.get("extra_headers")
@@ -207,12 +206,17 @@ def _coerce_endpoint(raw_endpoint: object, source: str) -> Endpoint:
             f"Use only one of 'headers' or 'extra_headers' in {source}, not both"
         )
     header_table = raw_headers if raw_headers is not None else raw_extra_headers
+    extra_headers: dict[str, str] = {}
     if header_table is not None:
-        coerced_headers = _validate_extra_headers_value(header_table)
-        if coerced_headers:
-            endpoint["extra_headers"] = coerced_headers
+        extra_headers = _validate_extra_headers_value(header_table)
 
-    return endpoint
+    return EndpointConfig(
+        model=model,
+        base_url=url,
+        api_key_var=key,
+        api_client_type=api_client_type,
+        extra_headers=extra_headers,
+    )
 
 
 def _normalize_toml_endpoints(raw_toml: object, source: Path) -> Endpoints:
@@ -438,6 +442,24 @@ def normalize_env_id_alias(config: Mapping[str, Any], section: str) -> dict[str,
     return normalized
 
 
+def eval_env_id(config: Mapping[str, Any], section: str) -> str:
+    env_id = config.get("env_id")
+    if isinstance(env_id, str) and env_id:
+        return env_id
+    taskset = config.get("taskset")
+    if not isinstance(taskset, Mapping):
+        env_args = config.get("env_args")
+        if isinstance(env_args, Mapping):
+            env_config = env_args.get("config")
+            if isinstance(env_config, Mapping):
+                taskset = env_config.get("taskset")
+    if isinstance(taskset, Mapping):
+        taskset_id = taskset.get("id") or taskset.get("taskset_id")
+        if isinstance(taskset_id, str) and taskset_id:
+            return taskset_id
+    raise ValueError(f"{section} must contain env_id or taskset.id.")
+
+
 def _merge_sampling_arg_tables(
     base: Mapping[str, Any],
     override: Mapping[str, Any],
@@ -599,9 +621,6 @@ def load_toml_config(
         normalize_env_id_alias(ablation, "[[ablation]]") for ablation in ablation_list
     ]
 
-    if not all("env_id" in e for e in eval_list):
-        raise ValueError(f"All [[eval]] sections must contain an id field: {path}")
-
     # extract global defaults (everything except 'eval' and 'ablation' keys)
     global_defaults = {
         k: v for k, v in raw_config.items() if k not in ("eval", "ablation")
@@ -679,6 +698,7 @@ def load_toml_config(
                 f"Invalid field(s) {invalid_fields} for {eval_config.get('env_id', 'unknown')}. "
                 f"Valid fields are: {sorted(valid_fields)}"
             )
+        eval_config["env_id"] = eval_env_id(eval_config, "[[eval]]")
         eval_config = normalize_sampling_config(
             eval_config, f"[[eval]] {eval_config['env_id']}"
         )
@@ -731,10 +751,7 @@ def load_toml_config(
 
     # Validate all expanded configs have env_id
     for config in merged_eval_list:
-        if "env_id" not in config:
-            raise ValueError(
-                "All eval configs (including expanded ablations) must have an id"
-            )
+        config["env_id"] = eval_env_id(config, "eval config")
 
     # Resolve endpoints_path relative to the config file location
     for merged in merged_eval_list:

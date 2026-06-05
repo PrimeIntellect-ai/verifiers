@@ -78,47 +78,52 @@ class MCPSearchTasksetConfig(vf.TasksetConfig):
 
 
 class MCPSearchTaskset(vf.Taskset[MCPSearchTasksetConfig]):
-    def load_tasks(self) -> vf.Tasks:
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         return load_tasks(
             examples=self.config.examples, max_turns=self.config.max_turns
         )
 
-    def load_system_prompt(self) -> vf.SystemPrompt:
+    def load_system_prompt(self, config: MCPSearchTasksetConfig) -> vf.SystemPrompt:
+        _ = config
         return SYSTEM_PROMPT
 
-    def load_toolsets(self) -> vf.Toolsets:
-        return {"records": load_toolset(mcp_servers=self.config.mcp_servers)}
+    def load_toolsets(self, config: MCPSearchTasksetConfig) -> vf.Toolsets:
+        servers = config.mcp_servers or [dict(server) for server in DEFAULT_MCP_SERVERS]
+        return {
+            "records": vf.Toolset(
+                tools=[
+                    vf.MCPTool(
+                        command=str(server["command"]),
+                        args=[
+                            str(arg)
+                            for arg in cast(
+                                Iterable[str | int | float | bool],
+                                server.get("args") or [],
+                            )
+                        ],
+                        env=cast(dict[str, str] | None, server.get("env")),
+                        cwd=cast(str | None, server.get("cwd")),
+                    )
+                    for server in servers
+                ]
+            )
+        }
 
 
 def load_tasks(
-    examples: Iterable[vf.ConfigMap] | None = None,
+    examples: Iterable[vf.JsonData] | None = None,
     *,
     max_turns: int = 6,
 ):
-    rows = examples if examples is not None else DEFAULT_EXAMPLES
-    for index, row in enumerate(rows):
-        row = cast(vf.ConfigMap, row)
-        question = str(row["question"])
+    records = examples if examples is not None else DEFAULT_EXAMPLES
+    for index, record in enumerate(records):
+        question = str(record["question"])
         yield {
-            **dict(row),
+            **dict(record),
             "example_id": index,
             "max_turns": max_turns,
             "prompt": [{"role": "user", "content": question}],
         }
-
-
-def mcp_tool(config: vf.ConfigMap) -> vf.MCPTool:
-    return vf.MCPTool(
-        command=str(config["command"]),
-        args=[
-            str(arg)
-            for arg in cast(
-                Iterable[str | int | float | bool], config.get("args") or []
-            )
-        ],
-        env=cast(dict[str, str] | None, config.get("env")),
-        cwd=cast(str | None, config.get("cwd")),
-    )
 
 
 @vf.reward(weight=1.0)
@@ -131,20 +136,6 @@ async def exact_title_reward(task: vf.Task, state: vf.State) -> float:
     )
     response = str(messages[-1].content or "") if messages else ""
     return float(str(task["answer"]).lower() in response.lower())
-
-
-def load_toolset(
-    mcp_servers: Iterable[vf.ConfigMap] | None = None,
-    taskset_config: MCPSearchTasksetConfig | None = None,
-    config: vf.ToolsetConfig | None = None,
-) -> vf.Toolset:
-    if mcp_servers is None and taskset_config is not None:
-        mcp_servers = taskset_config.mcp_servers
-    servers = mcp_servers or [dict(server) for server in DEFAULT_MCP_SERVERS]
-    return vf.Toolset(
-        tools=[mcp_tool(server) for server in servers],
-        config=config,
-    )
 
 
 class MCPSearchEnvConfig(vf.EnvConfig):

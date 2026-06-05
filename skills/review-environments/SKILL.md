@@ -42,8 +42,9 @@ prime eval run <env> -m openai/gpt-4.1-mini -n 5
 - Flag any requirement for user-managed background services before `load_environment()`.
 - Require environment-managed lifecycle for sandboxes/sessions.
 3. v1 taskset/harness contracts:
-- Expect new taskset/harness environments to use the v1 `vf.Env(taskset=..., harness=...)` / `vf.Taskset` / `vf.Harness` format as the environment boundary, with `load_taskset(config: MyTasksetConfig)` and `load_harness(config: MyHarnessConfig)` defining child config types.
+- Expect new taskset/harness environments to use the v1 `vf.Env` / `vf.Taskset` / `vf.Harness` boundary, with `load_taskset(config: MyTasksetConfig)` and optional `load_harness(config: MyHarnessConfig)` defining child config types, plus the canonical `load_environment(config: vf.EnvConfig)` shim delegating through `vf.load_taskset(config=config.taskset)` and `vf.load_harness(config=config.harness)`.
 - Expect tasksets to own task data, task-owned tools, user behavior, metrics, rewards, and task-specific config. Flag one-off harness classes that only wrap task behavior.
+- Review v1 implementations against the generated `prime env init my-env --v1` shape: task settings in `TasksetConfig`, tasks in `load_tasks`, task-owned tools in `load_toolsets`, user behavior in `User` subclasses, lifecycle/metrics/rewards as `@vf.*` methods, and typed component entrypoints through `load_taskset`, optional `load_harness`, and `load_environment`.
 - Expect shared dependencies to use bindings owned by the taskset, toolset, user, program, or harness that needs them. Flag pre-initialized resource objects passed through environment loaders; object entries should be serializable loader paths or no-arg loader callables.
 - Verify `Task` data is serializable, `state` remains serializable at rollout boundaries, and model/client controls flow through runtime state rather than top-level dataset columns.
 - For V1 harness programs, verify framework clients consume `state.get_endpoint_config(api="chat")` rather than hardcoding an upstream LLM endpoint. For `CliAgentEnv` agents, verify sandboxed agent code consumes the injected interception endpoint; the proxy is what makes rollouts visible to the rubric.
@@ -60,7 +61,7 @@ prime eval run <env> -m openai/gpt-4.1-mini -n 5
 
 ## Config And Docs Surface
 1. Check that eval, GEPA, RL, and Hosted Training examples use the same public TOML shape where applicable.
-2. For v1 configs, route settings through `[env.taskset]` and `[env.harness]`; use a concrete `EnvConfig` subclass when the loader needs concrete child config types, and avoid root env config knobs.
+2. For v1 configs, route settings through taskset and harness child config sections; do not subclass `EnvConfig` just to narrow child config types, and avoid root env config knobs.
 3. If docs changed public behavior, verify the relevant bundled skill was updated too.
 
 ## Findings Format

@@ -67,19 +67,31 @@ Generation parameters passed to the inference server (e.g., `temperature`, `top_
 ### Tasks
 
 ```python
-TaskRow = Mapping[str, object]
-Tasks = datasets.Dataset | Iterable[TaskRow]
+Tasks = datasets.Dataset | Iterable[JsonData] | Iterable[Task]
+TaskSplit = Literal["train", "eval"]
 ```
 
-v1 task loader return types. `load_tasks(...)` and `load_eval_tasks(...)` should return `vf.Tasks`.
+v1 task loader return types. Define `load_tasks(split=...)` on a
+`vf.Taskset` subclass and return `vf.Tasks`. In `vf.Env`, an empty split is treated as an absent base
+dataset.
 
 ### SystemPrompt
 
 ```python
-SystemPrompt = str | Sequence[Message | Mapping[str, object]] | os.PathLike[str]
+SystemPrompt = PromptInput | SystemPromptConfig | None
+SystemPromptStrategy = Literal["HT", "TH", "H_OR_T", "T_OR_H", "H", "T", "REJECT"]
+
+class SystemPromptConfig:
+    path: str | None = None
+    messages: list[JsonData] = []
 ```
 
-v1 system prompt loader return type. `load_system_prompt(...)` should return `vf.SystemPrompt`.
+v1 system prompt type. Plain strings are prompt text. Use
+`vf.SystemPromptConfig(path="system_prompt.txt")` for file-backed prompts, or
+override `load_system_prompt(config)` when prompt construction belongs to the
+class. System prompt resolution is per task: task prompt overrides taskset
+prompt for the taskset side, then the harness applies
+`system_prompt_strategy`. The default strategy is `HT`.
 
 ### RewardFunc
 
@@ -115,7 +127,7 @@ Selects which `Client` implementation to use. Set via `ClientConfig.client_type`
 
 ```python
 class State(dict):
-    INPUT_FIELDS = ["prompt", "answer", "info", "example_id"]
+    INPUT_FIELDS = ["prompt", "answer", "info"]
 ```
 
 A `dict` subclass that tracks rollout information. Accessing keys in `INPUT_FIELDS` automatically forwards to the nested `input` object.
@@ -151,7 +163,6 @@ A `dict` subclass that tracks rollout information. Accessing keys in `INPUT_FIEL
 ```python
 class RolloutInput(TypedDict):
     prompt: Messages        # Required
-    example_id: int         # Required
     answer: str             # Optional
     info: Info              # Optional
 ```
@@ -161,7 +172,6 @@ class RolloutInput(TypedDict):
 ```python
 class RolloutOutput(dict):
     # Required fields
-    example_id: int
     prompt: Messages | None
     completion: Messages | None
     reward: float
@@ -204,6 +214,7 @@ A single turn in a multi-turn rollout.
 class RoutedExpertsPayload(TypedDict):
     data: Any  # actually memoryview; kept opaque so Pydantic skips schema validation
     shape: list[int]
+    start: int
 ```
 
 ### TrajectoryStepTokens
@@ -219,7 +230,7 @@ class TrajectoryStepTokens(TypedDict):
     is_truncated: bool
     routed_experts: RoutedExpertsPayload | None
     multi_modal_data: NotRequired[Any]  # renderers.MultiModalData sidecar (pixel_values, placeholder ranges) — set only on multimodal rollouts
-    prompt_attribution: NotRequired[Any]  # renderers.RenderedTokens sidecar (per-token is_content / sampled_mask / message_indices / message_roles) — set only on RendererClient rollouts
+    prompt_attribution: NotRequired[Any]  # renderers.RenderedTokens fields as a dict (per-token is_content / sampled_mask / message_indices / message_roles) — set only on RendererClient rollouts
 ```
 
 Token-level data for training.
@@ -618,9 +629,10 @@ Common top-level fields:
 | `answer` | Reference answer or target data. Stays on task, not state. |
 | `info` | Serializable metadata. |
 | `max_turns` | Per-task base-loop turn limit. |
-| `tools` | Tool visibility: `{"show": [...]}` or `{"hide": [...]}`. |
-| `toolsets` | Toolset visibility or rollout-local toolset config. |
+| `tools` | Toolset-keyed tool visibility: `{"wiki": {"show": [...]}}` or `{"wiki": {"hide": [...]}}`. |
+| `toolsets` | Toolset visibility: `{"show": [...]}` or `{"hide": [...]}`. |
 | `sandbox` | Per-task sandbox overrides for sandboxed programs. |
+| `artifacts` | Per-task text/JSON files collected after program execution. |
 | `program` | Task-owned files, dirs, env, setup, artifacts, bindings, and command args. |
 
 `task.runtime` is not public schema. Runtime metadata belongs on `State`.
@@ -630,11 +642,11 @@ Common top-level fields:
 ```python
 class State(dict):
     @classmethod
-    def for_task(task: Mapping[str, Any], ...) -> State: ...
+    def for_task(task: Task, ...) -> State: ...
     def stop(self, condition: str = "state_done") -> None: ...
     def get_model(self) -> str: ...
     def get_client(api: str = "chat_completions", *, sync: bool = False) -> object: ...
-    def get_endpoint_config(api: str = "chat_completions") -> dict[str, str]: ...
+    def get_endpoint_config(api: str = "chat_completions") -> EndpointConfig: ...
     def get_tools() -> dict[str, Callable[..., Awaitable[object]]]: ...
     def get_max_turns(default: int) -> int: ...
     def finalize() -> State: ...
@@ -665,24 +677,33 @@ serialization boundary.
 class Taskset:
     def __init__(config: TasksetConfig | None = None): ...
 
-    def to_task(value: Mapping[str, Any] | Task | str) -> Task: ...
+    def to_task(task: Task | JsonData) -> Task: ...
+    def load_tasks(split: TaskSplit = "train") -> Tasks: ...
     async def init_group(task: Task, num_rollouts: int) -> tuple[list[Task], list[State]]: ...
     def get_dataset() -> Dataset: ...
     def get_eval_dataset() -> Dataset: ...
 ```
 
-Packages task rows and task-owned behavior. Tasksets usually define
-`load_tasks()` and optional `load_eval_tasks()` methods returning `vf.Tasks`,
-which is `datasets.Dataset | Iterable[TaskRow]`. `TasksetConfig.tasks` and
-`TasksetConfig.eval_tasks` remain explicit import-ref override fields.
+Packages tasks and task-owned behavior. Tasksets define
+`load_tasks(split="train" | "eval")`. During rollout,
+records are always materialized as `vf.Task`.
+`Taskset.__init__` is final; subclasses customize behavior through config,
+task-loading methods, lifecycle handlers, `load_toolsets`, `load_user`, and
+other public load methods.
 
 #### Harness
 
 ```python
 class Harness:
-    def __init__(config: HarnessConfig | None = None): ...
+    def __init__(
+        config: HarnessConfig | None = None,
+        *,
+        model: str | ModelConfig | None = None,
+        client: Client | ClientConfig | str | None = None,
+        sampling_args: SamplingArgs | None = None,
+    ): ...
 
-    async def run(task: Task | Mapping[str, Any], state: State | None = None) -> State: ...
+    async def run(task: Task, state: State | None = None) -> State: ...
     async def score_group(tasks: list[Task], states: list[State]) -> list[State]: ...
     async def cleanup_group(tasks: list[Task], states: list[State]) -> None: ...
     async def teardown() -> None: ...
@@ -692,16 +713,23 @@ Runs one task. All model calls go through the v1 interception endpoint so
 trajectory capture, sampling args, tool forwarding, and protocol translation use
 one path across local Python, sandboxed Python, command programs, and the base
 tool loop.
+`Harness.__init__` is final; subclasses customize behavior through config,
+`load_sandbox`, `load_toolsets`, `load_system_prompt`, lifecycle handlers, and
+program config.
 
-`program` forms:
+`HarnessConfig.program` is a `ProgramConfig`. Dict/TOML inputs are accepted as
+shorthand for the same config object:
 
 | Form | Meaning |
 |------|---------|
-| `None` | Default endpoint-backed tool loop. |
-| callable | In-process Python program with `task, state`. |
-| `{"base": true, ...}` | Explicit default loop, usually with sandbox options. |
-| `{"fn": "pkg.module:run", ...}` | Importable Python program. |
-| `{"command": ["cmd", "arg"], ...}` | Local or sandboxed command. |
+| `ProgramConfig()` | Default endpoint-backed tool loop. |
+| `ProgramConfig(base=True, ...)` | Explicit default loop, usually with sandbox options. |
+| `ProgramConfig(fn="pkg.module:run", ...)` | Importable Python program. |
+| `ProgramConfig(command=["cmd", "arg"], ...)` | Local or sandboxed command. |
+
+Reusable command harnesses should subclass `ProgramConfig` and implement
+`resolve()` with `self.resolve_command(command=..., ...)` so typed harness
+settings resolve to a canonical command program without a second loader layer.
 
 Sandboxed `program.fn` refs resolve their owning local package from the resolved
 module root: single-file modules use `pyproject.toml` in the same directory as
@@ -725,20 +753,20 @@ workers. `config` is an `EnvConfig` object or mapping with nested `taskset` and
 ```python
 class Toolset:
     def __init__(
-        tools=(),
+        tools=None,
         show=None,
         hide=None,
         bindings=None,
         objects=None,
-        write: bool = False,
+        write: bool | None = None,
         scope: Literal["rollout", "group", "global"] | None = None,
-        sandbox=None,
-        stops=(),
-        setups=(),
-        updates=(),
-        cleanups=(),
-        teardowns=(),
-        config: ToolsetConfig | Mapping[str, object] | None = None,
+        sandbox: SandboxConfig | Literal["program"] | None = None,
+        stops=None,
+        setups=None,
+        updates=None,
+        cleanups=None,
+        teardowns=None,
+        config: ToolsetConfig | None = None,
     ): ...
 
 class MCPTool:
@@ -750,6 +778,8 @@ hidden bindings, and tool-owned lifecycle handlers. `objects.*` bindings are
 private to the owning toolset/user and are not directly accessible from state.
 String binding sources are framework paths; literal strings should be bound via
 callable sources.
+Tasks show all toolsets/tools by default and can restrict them with `show` or
+`hide` visibility at `task["toolsets"]` and `task["tools"]`.
 
 #### v1 Config Models
 
@@ -764,8 +794,9 @@ MCPToolConfig(...)
 
 v1 config models are strict Pydantic models. Python code builds them directly,
 and TOML config validates into the same models at the loader boundary. TOML
-uses `"module:object"` refs for Python callables and loaders. Unknown fields
-fail validation.
+uses `"module:object"` refs for Python callables and loaders. Users are typed
+`UserConfig` objects materialized through registered `User` subclasses, not
+string refs. Unknown fields fail validation.
 
 ---
 
@@ -999,29 +1030,39 @@ class EnvConfig(Config):
     harness: HarnessConfig
 
 class TasksetConfig(Config):
-    taskset_id: str | None = None
-    system_prompt: object | None = None
-    tasks: str | None = None
-    eval_tasks: str | None = None
-    user: object | None = None
+    taskset_id: str | None = None  # `id` shorthand accepted
+    system_prompt: SystemPrompt = None
+    user: UserConfig | None = None
+    bindings: BindingsConfig = BindingsConfig()
+    objects: ObjectsConfig = ObjectsConfig()
+    artifacts: ArtifactsConfig = ArtifactsConfig()
 
 class HarnessConfig(Config):
-    program: object | None = None
-    system_prompt: object | None = None
+    harness_id: str | None = None  # `id` shorthand accepted
+    program: ProgramConfig = ProgramConfig()
+    model: ModelConfig = ModelConfig()
+    system_prompt: SystemPrompt = None
+    system_prompt_strategy: SystemPromptStrategy = "HT"
     sandbox: SandboxConfig | None = None
-    model: str | None = None
-    sampling_args: dict[str, object] = {}
-    max_turns: int = 10
+    user: UserConfig | None = None
+    bindings: BindingsConfig = BindingsConfig()
+    objects: ObjectsConfig = ObjectsConfig()
+    artifacts: ArtifactsConfig = ArtifactsConfig()
+    max_turns: int = -1  # <= 0 means unbounded (run until a stop condition)
+
+class ModelConfig(Config):
+    name: str | None = None
+    client: ClientConfig | str | None = None
+    sampling_args: SamplingArgs = {}
 ```
 
 `EnvConfig` is the typed v1 loader envelope. TOML `[env.taskset]` and
 `[env.harness]` sections populate `EnvConfig.taskset` and `EnvConfig.harness`.
-Environment-specific fields belong on the taskset or harness config that owns
-them; `EnvConfig` subclasses only bind concrete child config types.
-`taskset` must be typed as a `TasksetConfig` subclass, and `harness` must be
-typed as a `HarnessConfig` subclass.
-Nested config defaults should be explicit config objects, e.g.
-`taskset: MyTasksetConfig = MyTasksetConfig()`.
+The normal environment package loader stays typed as `load_environment(config:
+vf.EnvConfig)` and delegates child coercion to `vf.load_taskset` /
+`vf.load_harness`. Environment-specific fields belong on the taskset or harness
+config that owns them; do not subclass `EnvConfig` just to narrow child config
+types in ordinary environment packages.
 
 `Config` subclasses are strict Pydantic config models. Validate raw mappings
 with `MyConfig.model_validate(...)` or use the typed object directly.
@@ -1046,7 +1087,7 @@ class ClientConfig(BaseModel):
     extra_headers_from_state: dict[str, str] = {}
 ```
 
-`extra_headers_from_state` maps HTTP header names to state field names. For each inference request, the header value is dynamically read from the rollout state dict. For example, `{"X-Session-ID": "example_id"}` adds a `X-Session-ID` header with the value of `state["example_id"]`, enabling sticky routing at the inference router level.
+`extra_headers_from_state` maps HTTP header names to state field names. For each inference request, the header value is dynamically read from the rollout state dict. For example, `{"X-Session-ID": "trajectory_id"}` adds a `X-Session-ID` header with the value of `state["trajectory_id"]`, enabling sticky routing at the inference router level.
 
 `client_type` selects which `Client` implementation to instantiate (see [Client Classes](#client-classes)). Use `endpoint_configs` for multi-endpoint round-robin. In grouped scoring mode, groups are distributed round-robin across endpoint configs.
 
@@ -1091,7 +1132,7 @@ class EvalConfig(BaseModel):
     max_concurrent: int
     independent_scoring: bool = False
     extra_env_kwargs: dict = {}
-    max_retries: int = 0
+    max_retries: int = 3
     verbose: bool = False
     state_columns: list[str] | None = None
     save_results: bool = False
@@ -1100,21 +1141,22 @@ class EvalConfig(BaseModel):
     hf_hub_dataset_name: str | None = None
 ```
 
-### Endpoint
+### EndpointConfig
 
 ```python
-Endpoint = TypedDict(
-    "Endpoint",
-    {
-        "key": str,
-        "url": str,
-        "model": str,
-        "api_client_type": NotRequired[ClientType],
-        "extra_headers": NotRequired[dict[str, str]],
-    },
-)
-Endpoints = dict[str, list[Endpoint]]
+class EndpointConfig(BaseModel):
+    model: str
+    base_url: str
+    api_key_var: str
+    api_client_type: ClientType | None = None
+    extra_headers: dict[str, str] = {}
+
+
+Endpoints = dict[str, list[EndpointConfig]]
 ```
+
+`api_key_var` is a credential reference. Endpoint configs never serialize the
+materialized API key.
 
 `Endpoints` maps an endpoint id to one or more endpoint variants. A single variant is represented as a one-item list.
 

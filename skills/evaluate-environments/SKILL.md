@@ -100,35 +100,46 @@ prime eval run configs/eval/my-benchmark.toml
 4. Use `name` on individual `[[eval]]` entries when the same environment appears multiple times. `id` selects the environment to load; `name` labels the run in displays, summaries, metadata, and saved result paths.
 
 ## Common Evaluation Patterns
-1. Override v1 taskset and harness config through explicit child sections:
+1. For single-environment v1 smoke runs, override typed taskset and harness config with dotted flags:
 ```bash
-prime eval run my-env -a '{"config":{"taskset":{"difficulty":"hard"},"harness":{"max_turns":20}}}'
+prime eval run my-env --taskset.difficulty hard --harness.max-turns 20
 ```
-2. Override legacy/v0 constructor kwargs only when the environment still exposes them; for v1, use `config.taskset` and `config.harness` instead:
+2. For reproducible or multi-eval v1 config, put the same settings in TOML child sections:
+```toml
+[[eval]]
+id = "my-env"
+
+[eval.taskset]
+difficulty = "hard"
+
+[eval.harness]
+max_turns = 20
+```
+3. Override legacy/v0 constructor kwargs only when the environment still exposes them; for v1, use taskset/harness config instead:
 ```bash
 prime eval run my-env -x '{"max_turns":20}'
 ```
-3. Bound per-rollout wall-clock time (use the dedicated `--timeout` flag; wins over `-x` and TOML `[eval.extra_env_kwargs]`):
+4. Bound per-rollout wall-clock time (use the dedicated `--timeout` flag; wins over `-x` and TOML `[eval.extra_env_kwargs]`):
 ```bash
 prime eval run my-env --timeout 600
 ```
-4. Save extra state columns:
+5. Save extra state columns:
 ```bash
 prime eval run my-env -s -C "judge_response,parsed_answer"
 ```
-5. Resume interrupted runs:
+6. Resume interrupted runs:
 ```bash
 prime eval run my-env -n 1000 -s --resume
 ```
-6. Save results to a custom output directory:
+7. Save results to a custom output directory:
 ```bash
 prime eval run my-env -s -o /path/to/output
 ```
-7. Run multi-environment TOML suites:
+8. Run multi-environment TOML suites:
 ```bash
 prime eval run configs/eval/my-benchmark.toml
 ```
-8. Run the same environment more than once with different args by giving each entry a `name`:
+9. Run the same environment more than once with different args by giving each entry a `name`:
 ```toml
 [[eval]]
 id = "reverse-text"

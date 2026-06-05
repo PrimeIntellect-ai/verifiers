@@ -68,10 +68,10 @@ def test_mcp_search_taskset_accepts_v1_taskset_config() -> None:
     env = module.load_environment(
         config=module.MCPSearchEnvConfig(taskset={"max_turns": 3}),
     )
-    rows = [env.taskset.to_task(row) for row in env.taskset.get_dataset()]
+    tasks = list(env.taskset)
 
     assert env.taskset.config.max_turns == 3
-    assert all(row["max_turns"] == 3 for row in rows)
+    assert all(task["max_turns"] == 3 for task in tasks)
 
 
 @pytest.mark.asyncio
