@@ -8,12 +8,10 @@ verification tree runtime.
 import asyncio
 import ast
 import hashlib
-import importlib.util
 import logging
 import math
 import os
 import re
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +23,7 @@ from pydantic import BaseModel
 from verifiers.envs.experimental.composable import SandboxSpec, SandboxTaskSet
 
 from .obj_task_eval.utils.cache_filesys import CacheFileSys
+from .obj_task_eval.utils.load_eval_script import load_eval_script
 
 logger = logging.getLogger(__name__)
 
@@ -178,35 +177,7 @@ def _completion_text(state: vf.State) -> str:
 
 
 def _load_eval_script(script_path: Path) -> Any:
-    if not script_path.is_file():
-        raise FileNotFoundError(script_path)
-    module_name = f"obj_task_eval_dynamic_{_safe_module_component(script_path.stem)}"
-    spec = importlib.util.spec_from_file_location(module_name, script_path)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"Could not load eval script {script_path}")
-
-    # Generated QUEST scripts import the evaluator as top-level
-    # ``obj_task_eval``. Expose this vendored package at that import path
-    # while executing the script.
-    quest_package_parent = Path(__file__).resolve().parent
-    added_path = False
-    if str(quest_package_parent) not in sys.path:
-        sys.path.insert(0, str(quest_package_parent))
-        added_path = True
-    try:
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[module_name] = module
-        spec.loader.exec_module(module)
-    finally:
-        if added_path:
-            try:
-                sys.path.remove(str(quest_package_parent))
-            except ValueError:
-                pass
-    evaluate_answer = getattr(module, "evaluate_answer", None)
-    if not asyncio.iscoroutinefunction(evaluate_answer):
-        raise TypeError(f"{script_path} does not define async evaluate_answer")
-    return evaluate_answer
+    return load_eval_script(str(script_path))
 
 
 class QuestTaskSet(SandboxTaskSet):
@@ -393,24 +364,45 @@ class QuestRubric(vf.Rubric):
         self._scripts_root: Path | None = None
         self.add_reward_func(self.objective_reward, weight=1.0)
 
-    async def score_rollout(self, state: vf.State) -> None:
-        """Score one rollout and preserve QUEST infrastructure failures as ``vf.Error`` values."""
+    async def _objective_score_for_state(self, state: vf.State) -> float:
         if state.get("error") is not None:
-            state["reward"] = 0.0
-            state["metrics"] = {"objective_reward": 0.0}
-            return
+            return 0.0
         try:
-            score = await self.objective_reward(state)
+            return await self.objective_reward(state)
         except vf.Error as exc:
             state["error"] = exc
-            score = 0.0
+            return 0.0
         except Exception as exc:
             error = vf.InfraError("QUEST objective scoring failed")
             error.__cause__ = exc
             state["error"] = error
-            score = 0.0
+            return 0.0
+
+    async def score_rollout(self, state: vf.State) -> None:
+        """Score one rollout and preserve QUEST infrastructure failures as ``vf.Error`` values."""
+        score = await self._objective_score_for_state(state)
         state["reward"] = score
         state["metrics"] = {"objective_reward": score}
+
+    async def score_group(self, states: list[vf.State]) -> None:
+        """Score rollouts while preserving QUEST infrastructure failures as ``vf.Error`` values."""
+        if not states:
+            logger.warning("No states to score")
+            return
+        scores = await asyncio.gather(
+            *(self._objective_score_for_state(state) for state in states)
+        )
+        avg_score = sum(scores) / len(scores)
+        for state, score in zip(states, scores):
+            state["reward"] = score
+            state["advantage"] = score - avg_score
+            for turn in state.get("trajectory", []):
+                if isinstance(turn, dict):
+                    if turn.get("advantage") is None:
+                        turn["advantage"] = state["advantage"]
+                    if turn.get("reward") is None:
+                        turn["reward"] = state["reward"]
+            state["metrics"] = {"objective_reward": score}
 
     async def objective_reward(self, state: vf.State, **_: Any) -> float:
         sandbox_client = state.get("sandbox_client")

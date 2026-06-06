@@ -9,13 +9,27 @@ eval_fn = load_eval_script("/path/to/my_eval_script.py")
 result  = await eval_fn(...)
 """
 
-import importlib.util
-import sys
-import uuid
-import inspect
 import asyncio
+import importlib.util
+import inspect
+import sys
+import threading
+import uuid
 from pathlib import Path
 from types import ModuleType
+
+_IMPORT_PATH_LOCK = threading.Lock()
+
+
+def _ensure_obj_task_eval_importable() -> None:
+    # Generated QUEST scripts import the vendored evaluator as top-level
+    # ``obj_task_eval``. Keep the package parent on sys.path for the process
+    # lifetime so concurrent dynamic imports cannot remove it from each other.
+    quest_package_parent = Path(__file__).resolve().parents[2]
+    with _IMPORT_PATH_LOCK:
+        path = str(quest_package_parent)
+        if path not in sys.path:
+            sys.path.insert(0, path)
 
 
 def load_eval_script(path: str):
@@ -54,6 +68,7 @@ def load_eval_script(path: str):
     if spec is None or spec.loader is None:
         raise ImportError(f"Could not create module spec for {path_obj}")
 
+    _ensure_obj_task_eval_importable()
     module: ModuleType = importlib.util.module_from_spec(spec)
     # Register the module so that any relative imports inside the script work.
     sys.modules[module_name] = module
