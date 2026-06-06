@@ -209,6 +209,15 @@ class State(BaseModel, extra="forbid"):
             return []
         return self.transcript[-1].completion
 
+    @computed_field
+    @property
+    def messages(self) -> Messages:
+        messages: Messages = []
+        for turn in self.transcript:
+            messages.extend(turn.prompt)
+            messages.extend(turn.completion)
+        return messages
+
     def stop(self, condition: str = "state_done") -> None:
         if not condition:
             raise ValueError("State.stop condition must be non-empty.")
@@ -318,6 +327,8 @@ class State(BaseModel, extra="forbid"):
             return self._serialized_messages(self.prompt)
         if column == "completion":
             return self._serialized_messages(self.completion)
+        if column == "messages":
+            return self._serialized_messages(self.messages)
         if column == "scratch":
             return deepcopy(self.scratch)
         if column == "transcript":

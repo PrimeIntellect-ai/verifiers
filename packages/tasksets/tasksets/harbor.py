@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from pydantic import BaseModel
+
 import verifiers.v1 as vf
 from verifiers.utils.import_utils import load_toml
 
@@ -36,7 +38,7 @@ class HarborTasksetConfig(vf.TasksetConfig):
     env: dict[str, str] = {}
 
 
-class HarborRuntimeSpec(vf.Schema):
+class HarborRuntimeSpec(BaseModel, extra="forbid"):
     image: str
     cpu_cores: float = 2.0
     memory_gb: float = 4.0
@@ -46,12 +48,12 @@ class HarborRuntimeSpec(vf.Schema):
     network_access: bool | None = None
 
 
-class HarborProgramSpec(vf.Schema):
+class HarborProgramSpec(BaseModel, extra="forbid"):
     files: dict[str, dict[str, str]]
     env: dict[str, str]
 
 
-class HarborSpec(vf.Schema):
+class HarborSpec(BaseModel, extra="forbid"):
     task_dir: str
     task_name: str
     config: vf.JsonData

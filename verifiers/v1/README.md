@@ -67,13 +67,14 @@ between assistant turns when present.
 
 ```python
 import verifiers.v1 as vf
+from pydantic import BaseModel
 
 
 class MyTask(vf.Task):
     answer: str
 
 
-class MyDetails(vf.Schema):
+class MyDetails(BaseModel, extra="forbid"):
     source: str
 
 
@@ -97,8 +98,9 @@ Config is serializable policy. Live Python functions are allowed as decorated
 methods on loaded `Taskset`/`Harness` objects, not as config values, task fields,
 state fields, tool definitions, or runtime specs.
 
-Use `vf.Schema` for strict nested task/config records. Most environment files
-should only need `import verifiers.v1 as vf`.
+Use ordinary Pydantic models for strict nested task/config records. The v1
+library keeps its own types to framework contracts; example-specific nesting is
+userspace schema.
 
 ## Current Tensions
 

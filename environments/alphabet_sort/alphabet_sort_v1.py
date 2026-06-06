@@ -6,6 +6,8 @@ import re
 import sys
 
 from datasets import Dataset, load_dataset
+from pydantic import BaseModel
+
 import verifiers.v1 as vf
 
 logger = logging.getLogger(__name__)
@@ -278,7 +280,7 @@ def eval_turn(
     return attempt_scores[-1]
 
 
-class AlphabetSortInfo(vf.Schema):
+class AlphabetSortInfo(BaseModel, extra="forbid"):
     follow_ups: list[str]
     turn_names: list[list[str]]
     ground_truths: list[list[str]]

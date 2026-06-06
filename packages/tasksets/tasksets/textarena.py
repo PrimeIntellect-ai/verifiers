@@ -4,6 +4,8 @@ import random
 from collections.abc import Sequence
 from typing import Generic, Protocol, TypeVar, cast
 
+from pydantic import BaseModel
+
 import verifiers.v1 as vf
 
 try:
@@ -45,7 +47,7 @@ class TextArenaTasksetConfig(vf.TasksetConfig):
     answer_state_key: str
 
 
-class TextArenaSpec(vf.Schema):
+class TextArenaSpec(BaseModel, extra="forbid"):
     game: str
     answer_state_key: str
 

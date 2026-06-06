@@ -142,6 +142,8 @@ async def test_v1_model_client_derives_legacy_client_record(mock_client) -> None
         )
     )
 
+    assert [message.content for message in state.messages] == ["first", "done"]
+
     await vf.ModelClient(config=config, client=mock_client).get_response(
         prompt=[vf.UserMessage(content="next")],
         state=state,

@@ -1,5 +1,7 @@
 from difflib import SequenceMatcher
 
+from pydantic import BaseModel
+
 import verifiers.v1 as vf
 
 
@@ -18,7 +20,7 @@ class GroupRewardHarnessConfig(vf.HarnessConfig):
     max_turns: int = 1
 
 
-class Candidate(vf.Schema):
+class Candidate(BaseModel, extra="forbid"):
     id: str
     answer: str
 

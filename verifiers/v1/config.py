@@ -13,8 +13,4 @@ from .utils.config_utils import (
 ConfigSource: TypeAlias = BaseModel | Mapping[str, object] | None
 
 
-class Schema(BaseModel, extra="forbid"):
-    """Strict serializable record for user-defined nested task/config data."""
-
-
 Config = BaseConfig

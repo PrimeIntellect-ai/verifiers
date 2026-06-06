@@ -28,7 +28,6 @@ from verifiers.utils.message_utils import get_messages
 from . import advantages
 from .config import (
     Config,
-    Schema,
 )
 from .env import Env, EnvConfig
 from .harness import Harness, HarnessConfig
@@ -113,7 +112,6 @@ from .user import User
 
 __all__ = [
     "Config",
-    "Schema",
     "Env",
     "EnvConfig",
     "EndpointProtocol",
