@@ -34,7 +34,7 @@ DEFAULT_ANSWER_FILE = "/task/answer.txt"
 DEFAULT_WORKDIR = "/workspace"
 DEFAULT_JUDGE_BASE_URL = "https://api.pinference.ai/api/v1"
 DEFAULT_JUDGE_API_KEY_VAR = "PRIME_API_KEY"
-DEFAULT_JUDGE_MODEL = "openai/gpt-4.1-mini"
+DEFAULT_JUDGE_MODEL = "openai/o4-mini"
 DEFAULT_SANDBOX_IMAGE = "python:3.11-slim"
 
 
@@ -205,7 +205,6 @@ class QuestTaskSet(SandboxTaskSet):
         judge_sampling_args: dict[str, Any] | None = None,
         quest_cache_dir: str | None = None,
         quest_eval_scripts_dir: str | None = None,
-        quest_eval_model: str | None = None,
         quest_eval_concurrency: int = 8,
     ) -> None:
         if category not in {"objective", "open-ended", "all"}:
@@ -235,7 +234,6 @@ class QuestTaskSet(SandboxTaskSet):
         self._judge_sampling_args = dict(judge_sampling_args or {})
         self._quest_cache_dir = quest_cache_dir
         self._quest_eval_scripts_dir = quest_eval_scripts_dir
-        self._quest_eval_model = quest_eval_model or judge_model
         self._quest_eval_concurrency = quest_eval_concurrency
         super().__init__(
             dataset=self._build_dataset,
@@ -320,7 +318,6 @@ class QuestTaskSet(SandboxTaskSet):
             judge_base_url=self._judge_base_url,
             judge_api_key_var=self._judge_api_key_var,
             judge_sampling_args=self._judge_sampling_args,
-            quest_eval_model=self._quest_eval_model,
             eval_concurrency=self._quest_eval_concurrency,
         )
 
@@ -339,7 +336,6 @@ class QuestRubric(vf.Rubric):
         judge_base_url: str | None = DEFAULT_JUDGE_BASE_URL,
         judge_api_key_var: str = DEFAULT_JUDGE_API_KEY_VAR,
         judge_sampling_args: dict[str, Any] | None = None,
-        quest_eval_model: str | None = None,
         eval_concurrency: int = 8,
     ) -> None:
         super().__init__()
@@ -357,7 +353,6 @@ class QuestRubric(vf.Rubric):
         self.judge_base_url = judge_base_url
         self.judge_api_key_var = judge_api_key_var
         self.judge_sampling_args = dict(judge_sampling_args or {})
-        self.quest_eval_model = quest_eval_model or judge_model
         self.eval_concurrency = eval_concurrency
         self._client: QuestOpenAIClient | None = None
         self._semaphore = asyncio.Semaphore(eval_concurrency)
@@ -452,7 +447,7 @@ class QuestRubric(vf.Rubric):
                 cache=cache,
                 semaphore=self._semaphore,
                 logger=logger,
-                model=self.quest_eval_model,
+                model=self.judge_model,
             )
         except vf.Error:
             raise
