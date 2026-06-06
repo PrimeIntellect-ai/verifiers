@@ -492,6 +492,28 @@ def client_type(state):
     return state.get("runtime", {}).get("client_type") or "openai_chat_completions"
 
 
+# Host model-client types whose over-the-wire shape is OpenAI chat completions.
+# The sandbox base program only chooses a *wire protocol* to call the host
+# interception endpoint; the host's bound model client (renderer / token /
+# nemorl) performs the real generation + tokenization when it consumes the
+# intercepted /v1/chat/completions request. So from the sandbox's side these are
+# all plain chat completions (and tool defs are only serialized for the wire
+# protocols, never for "renderer").
+_CHAT_COMPLETIONS_WIRE_CLIENT_TYPES = {
+    "openai_chat_completions",
+    "openai_chat_completions_token",
+    "renderer",
+    "nemorl_chat_completions",
+}
+
+
+def wire_protocol(state):
+    protocol = client_type(state)
+    if protocol in _CHAT_COMPLETIONS_WIRE_CLIENT_TYPES:
+        return "openai_chat_completions"
+    return protocol
+
+
 def sampling_args(state):
     raw = state.get("runtime", {}).get("sampling_args") or {}
     if not isinstance(raw, dict):
@@ -663,7 +685,7 @@ def message_from_anthropic_response(response):
 
 
 async def create_model_message(state, messages, client):
-    protocol = client_type(state)
+    protocol = wire_protocol(state)
     sampling = sampling_args(state)
     model = model_name(state)
     if protocol == "openai_chat_completions":
