@@ -35,7 +35,7 @@ DEFAULT_ANSWER_FILE = "/task/answer.txt"
 DEFAULT_WORKDIR = "/workspace"
 DEFAULT_JUDGE_BASE_URL = "https://api.pinference.ai/api/v1"
 DEFAULT_JUDGE_API_KEY_VAR = "PRIME_API_KEY"
-DEFAULT_JUDGE_MODEL = "openai/o4-mini"
+DEFAULT_JUDGE_MODEL = "openai/gpt-5.4-mini"
 DEFAULT_SANDBOX_IMAGE = "python:3.11-slim"
 
 

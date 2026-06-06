@@ -43,7 +43,7 @@ Wrong or empty answers remain ordinary scored outcomes and return `0.0` without 
 | `split` | `train` | Dataset split. |
 | `category` | `objective` | Initial implementation supports objective tasks only. |
 | `answer_file` | `/task/answer.txt` | Final answer path in the sandbox. |
-| `judge_model` | `openai/o4-mini` | OpenAI-compatible model for QUEST verifier calls. |
+| `judge_model` | `openai/gpt-5.4-mini` | OpenAI-compatible model for QUEST verifier calls. |
 | `judge_base_url` | `https://api.pinference.ai/api/v1` | Judge API base URL. |
 | `judge_api_key_var` | `PRIME_API_KEY` | Env var containing the judge API key. |
 | `quest_eval_scripts_dir` | HF cache | Optional local directory containing `eval_scripts/*.py`. |
