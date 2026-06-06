@@ -1633,9 +1633,7 @@ def test_sandbox_base_program_maps_model_client_types_to_wire_protocol() -> None
     exec(source, namespace)
     wire_protocol = cast(Any, namespace["wire_protocol"])
 
-    # Host model-client types that speak chat-completions on the wire collapse
-    # onto the openai_chat_completions envelope the sandbox knows how to send;
-    # the host's bound client still owns generation/tokenization.
+    # renderer/token/nemorl host clients map onto the chat-completions wire.
     for client_type in (
         "renderer",
         "openai_chat_completions_token",
@@ -1644,7 +1642,7 @@ def test_sandbox_base_program_maps_model_client_types_to_wire_protocol() -> None
         state = {"runtime": {"client_type": client_type}}
         assert wire_protocol(state) == "openai_chat_completions"
 
-    # Genuine wire protocols pass through, and the default is chat completions.
+    # Genuine wire protocols pass through; default is chat completions.
     assert wire_protocol({"runtime": {"client_type": "openai_responses"}}) == (
         "openai_responses"
     )

@@ -492,13 +492,8 @@ def client_type(state):
     return state.get("runtime", {}).get("client_type") or "openai_chat_completions"
 
 
-# Host model-client types whose over-the-wire shape is OpenAI chat completions.
-# The sandbox base program only chooses a *wire protocol* to call the host
-# interception endpoint; the host's bound model client (renderer / token /
-# nemorl) performs the real generation + tokenization when it consumes the
-# intercepted /v1/chat/completions request. So from the sandbox's side these are
-# all plain chat completions (and tool defs are only serialized for the wire
-# protocols, never for "renderer").
+# Host model-client types that speak chat completions on the wire. The sandbox
+# only picks a wire envelope; the host's bound client owns generation/tokenization.
 _CHAT_COMPLETIONS_WIRE_CLIENT_TYPES = {
     "openai_chat_completions",
     "openai_chat_completions_token",
