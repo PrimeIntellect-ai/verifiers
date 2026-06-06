@@ -492,10 +492,8 @@ def tool_error_content(error):
 
 
 def is_tool_content_parts(value):
-    # Mirror verifiers.utils.tool_utils.is_valid_tool_content_parts (not importable
-    # into the dependency-light sandbox runner): a list of {"type": text|image_url}
-    # content parts must pass through to the model intact (e.g. screenshots),
-    # rather than being collapsed by str().
+    # Mirror is_valid_tool_content_parts (can't import into the lean runner):
+    # pass {"type": text|image_url} part lists (e.g. screenshots) through, not str().
     if not isinstance(value, list):
         return False
     return all(
