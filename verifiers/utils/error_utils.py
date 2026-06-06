@@ -1,8 +1,7 @@
-from collections.abc import Mapping
-from typing import Callable, cast
+from typing import Callable, TypeGuard, cast
 
 import verifiers as vf
-from verifiers.types import ErrorInfo
+from verifiers.types import ErrorData
 
 
 def get_error_chain(
@@ -56,22 +55,72 @@ class ErrorChain:
         return " -> ".join([repr(e) for e in self.chain])
 
 
-def error_info(error: BaseException) -> ErrorInfo:
+def error_data(error: BaseException) -> ErrorData:
     error_chain = ErrorChain(error)
-    return ErrorInfo(
+    return ErrorData(
         error=type(error).__name__,
+        message=str(error) or type(error).__name__,
         error_chain_repr=repr(error_chain),
         error_chain_str=str(error_chain),
     )
 
 
-def error_info_to_exception(
-    error: Mapping[str, object],
+def is_error_data(value: object) -> TypeGuard[ErrorData]:
+    expected = {"error", "message", "error_chain_repr", "error_chain_str"}
+    if not isinstance(value, dict):
+        return False
+    match value:
+        case {
+            "error": str(),
+            "message": str(),
+            "error_chain_repr": str(),
+            "error_chain_str": str(),
+        }:
+            return set(value) == expected
+    return False
+
+
+def validate_error_data(value: object) -> ErrorData:
+    if not is_error_data(value):
+        raise TypeError(
+            "ErrorData must contain string error, message, error_chain_repr, "
+            "and error_chain_str fields."
+        )
+    return value
+
+
+def error_data_to_exception(
+    error: ErrorData,
     error_types: tuple[type[Exception], ...],
 ) -> Exception | None:
-    chain = str(error.get("error_chain_str") or error.get("error") or "")
-    detail = str(error.get("error_chain_repr") or error.get("error") or "")
+    chain = error["error_chain_str"] or error["error"]
+    detail = error["error_chain_repr"] or error["error"]
     for error_type in error_types:
         if error_type.__name__ in chain:
             return error_type(detail)
     return None
+
+
+def error_from_data(error: ErrorData) -> vf.Error:
+    exception = error_data_to_exception(error, vf_error_types())
+    if isinstance(exception, vf.Error):
+        return exception
+    detail = error["error_chain_repr"] or error["error"]
+    return vf.Error(detail)
+
+
+def vf_error_types() -> tuple[type[vf.Error], ...]:
+    return (
+        vf.BrowserSandboxError,
+        vf.SandboxError,
+        vf.TunnelError,
+        vf.InfraError,
+        vf.EmptyModelResponseError,
+        vf.InvalidModelResponseError,
+        vf.ModelError,
+        vf.ToolParseError,
+        vf.ToolCallError,
+        vf.ToolError,
+        vf.OverlongPromptError,
+        vf.Error,
+    )

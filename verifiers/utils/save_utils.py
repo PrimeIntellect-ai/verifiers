@@ -13,7 +13,6 @@ from pydantic import BaseModel
 
 from verifiers.types import (
     ClientConfig,
-    ErrorInfo,
     GenerateMetadata,
     GenerateOutputs,
     Response,
@@ -23,7 +22,7 @@ from verifiers.types import (
     TokenUsage,
     Tool,
 )
-from verifiers.utils.error_utils import ErrorChain
+from verifiers.utils.error_utils import error_data, validate_error_data
 from verifiers.utils.message_utils import (
     sanitize_tool_calls,
     serialize_messages_for_output,
@@ -280,26 +279,12 @@ def state_to_output(
             serialize_messages_for_output(completion)
         )
         output["completion"] = output_completion
-    # use repr for error
     error = state.get("error")
     if error is not None:
-        if isinstance(error, Mapping) and {
-            "error",
-            "error_chain_repr",
-            "error_chain_str",
-        } <= set(error):
-            output["error"] = ErrorInfo(
-                error=str(error["error"]),
-                error_chain_repr=str(error["error_chain_repr"]),
-                error_chain_str=str(error["error_chain_str"]),
-            )
+        if isinstance(error, BaseException):
+            output["error"] = error_data(error)
         else:
-            error_chain = ErrorChain(cast(BaseException, error))
-            output["error"] = ErrorInfo(
-                error=type(error).__name__,
-                error_chain_repr=repr(error_chain),
-                error_chain_str=str(error_chain),
-            )
+            output["error"] = validate_error_data(error)
         output["error_chain"] = output["error"]["error_chain_repr"]
         output["long_error_chain"] = output["error"]["error_chain_str"]
     # only include optional fields if non-empty

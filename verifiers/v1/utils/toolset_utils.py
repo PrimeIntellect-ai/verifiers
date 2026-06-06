@@ -177,7 +177,7 @@ def tool_item(value: object) -> "ToolEntry":
         )
     if isinstance(value, dict):
         if "command" in value:
-            config = coerce_config(MCPToolConfig, value)
+            config = coerce_config(MCPToolConfig, cast(ConfigData, value))
             return MCPTool(
                 command=config.command,
                 args=config.args,
@@ -192,7 +192,7 @@ def tool_item(value: object) -> "ToolEntry":
     return cast(Handler, value)
 
 
-def toolset_config_mapping(config: object | None) -> ConfigData:
+def toolset_config_mapping(config: BaseModel | ConfigData | None) -> ConfigData:
     from ..toolset import ToolsetConfig
 
     if config is None:

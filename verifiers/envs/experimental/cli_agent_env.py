@@ -717,7 +717,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         num_turns = len(state.get("trajectory", []))
         stop_condition = state.get("stop_condition", "unknown")
         error = state.get("error")
-        error_info = (
+        error_summary = (
             f"{type(error).__name__}: {truncate(str(error), 80)}" if error else None
         )
         exit_code = state.get("agent_exit_code")
@@ -741,8 +741,8 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
         ]
         if timed_out:
             parts.append("timed_out=True")
-        if error_info:
-            parts.append(f"error={error_info}")
+        if error_summary:
+            parts.append(f"error={error_summary}")
         self.logger.info(" | ".join(parts))
 
     @vf.cleanup

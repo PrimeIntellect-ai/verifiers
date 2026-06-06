@@ -1156,12 +1156,13 @@ def test_lifecycle_fields_are_framework_managed() -> None:
     task = Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
     state = vf.State.for_task(task)
     assert state.uses_v1_contract is True
+    error = vf.Error("boom")
 
     for key, value in {
         "is_completed": True,
         "stop_condition": "done",
         "is_truncated": True,
-        "error": {"message": "boom"},
+        "error": error,
     }.items():
         assert State({key: value})[key] == value
         with pytest.raises(RuntimeError, match="framework-managed"):
@@ -1188,12 +1189,14 @@ def test_lifecycle_fields_are_framework_managed() -> None:
     state._set_completed(True)
     state._set_stop_condition("done")
     state._set_truncated(True)
-    state._set_error({"message": "boom"})
+    with pytest.raises(TypeError, match="vf.Error"):
+        state._set_error(cast(Any, {"message": "boom"}))
+    state._set_error(error)
 
     assert state["is_completed"] is True
     assert state["stop_condition"] == "done"
     assert state["is_truncated"] is True
-    assert state["error"] == {"message": "boom"}
+    assert state["error"] is error
 
 
 def test_toolsets_config_accepts_addressable_map_and_fn_tables() -> None:

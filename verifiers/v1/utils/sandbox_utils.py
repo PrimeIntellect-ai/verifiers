@@ -20,7 +20,11 @@ from verifiers.utils.async_utils import maybe_call_with_named_args
 
 from .program_utils import command_argv, command_env, float_config, int_config
 from .program_utils import program_channels
-from .program_utils import program_option_mapping, program_channel_setup
+from .program_utils import (
+    ProgramMappingInput,
+    program_option_mapping,
+    program_channel_setup,
+)
 from .program_utils import resolve_program_value
 from .program_utils import validate_program_bindings
 from .sandbox_python_utils import (
@@ -862,7 +866,9 @@ async def upload_program_files(
 ) -> None:
     from prime_sandboxes import APIError, UploadTimeoutError
 
-    files = program_option_mapping(program.get("files"), "program.files")
+    files = program_option_mapping(
+        cast(ProgramMappingInput, program.get("files")), "program.files"
+    )
     for path, source in files.items():
         content = await resolve_program_value(source, task, state, runtime, program)
         if not isinstance(content, str):
@@ -889,7 +895,9 @@ async def upload_program_dirs(
     state: State,
     runtime: Runtime,
 ) -> None:
-    dirs = program_option_mapping(program.get("dirs"), "program.dirs")
+    dirs = program_option_mapping(
+        cast(ProgramMappingInput, program.get("dirs")), "program.dirs"
+    )
     for path, source in dirs.items():
         local_source = await resolve_program_value(
             source, task, state, runtime, program
