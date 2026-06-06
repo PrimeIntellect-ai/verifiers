@@ -121,6 +121,7 @@ __all__ = [
     "EnvGroup",
     "Client",
     "AnthropicMessagesClient",
+    "BedrockConverseClient",
     "OpenAIChatCompletionsClient",
     "OpenAICompletionsClient",
     "OpenAIResponsesClient",
@@ -167,6 +168,9 @@ _LAZY_IMPORTS = {
     "Client": "verifiers.clients.client:Client",
     "AnthropicMessagesClient": (
         "verifiers.clients.anthropic_messages_client:AnthropicMessagesClient"
+    ),
+    "BedrockConverseClient": (
+        "verifiers.clients.bedrock_converse_client:BedrockConverseClient"
     ),
     "OpenAIChatCompletionsClient": (
         "verifiers.clients.openai_chat_completions_client:OpenAIChatCompletionsClient"
@@ -284,6 +288,10 @@ def __getattr__(name: str):
             raise AttributeError(
                 "To use verifiers.RendererClient, install as `verifiers[renderers]`."
             ) from e
+        if name == "BedrockConverseClient":
+            raise AttributeError(
+                "To use verifiers.BedrockConverseClient, install as `verifiers[bedrock]`."
+            ) from e
         raise AttributeError(
             f"To use verifiers.{name}, install as `verifiers[all]`. "
         ) from e
@@ -293,6 +301,7 @@ if TYPE_CHECKING:
     from typing import Any
 
     from .clients.anthropic_messages_client import AnthropicMessagesClient  # noqa: F401
+    from .clients.bedrock_converse_client import BedrockConverseClient  # noqa: F401
     from .clients.client import Client  # noqa: F401
     from .clients.openai_chat_completions_client import (  # noqa: F401
         OpenAIChatCompletionsClient,

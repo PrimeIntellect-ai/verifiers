@@ -979,8 +979,9 @@ Abstract base class for all model clients. Wraps a provider-specific SDK client 
 | `RendererClient` | `"renderer"` | `AsyncOpenAI` | Renderer-backed token-in generate client (client-side tokenization via the `renderers` package) |
 | `AnthropicMessagesClient` | `"anthropic_messages"` | `AsyncAnthropic` | Anthropic Messages API |
 | `NeMoRLChatCompletionsClient` | `"nemorl_chat_completions"` | `AsyncOpenAI` | NeMo-RL Chat Completions variant |
+| `BedrockConverseClient` | `"bedrock_converse"` | boto3 `bedrock-runtime` | AWS Bedrock Converse API |
 
-All built-in clients are available as `vf.OpenAIChatCompletionsClient`, `vf.AnthropicMessagesClient`, etc. `RendererClient` requires the optional renderer package; install it with `uv add "verifiers[renderers]"` before importing `vf.RendererClient` or using `client_type="renderer"`.
+All built-in clients are available as `vf.OpenAIChatCompletionsClient`, `vf.AnthropicMessagesClient`, etc. `RendererClient` requires the optional renderer package; install it with `uv add "verifiers[renderers]"` before importing `vf.RendererClient` or using `client_type="renderer"`. `BedrockConverseClient` requires the optional bedrock package; install it with `uv add "verifiers[bedrock]"` before using `client_type="bedrock_converse"`. Authentication and region use the standard boto3 credential chain (`AWS_PROFILE`, `AWS_REGION`, `~/.aws/config`, SSO, or instance role).
 
 ### Response
 

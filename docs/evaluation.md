@@ -19,7 +19,7 @@ This section explains how to run evaluations with Verifiers environments. See [E
   - [Ablation Sweeps](#ablation-sweeps)
   - [Configuration Precedence](#configuration-precedence)
 
-Use `prime eval` to execute rollouts against any supported model provider and report aggregate metrics. Supported providers include OpenAI-compatible APIs (the default) and the Anthropic Messages API (via `--api-client-type anthropic_messages`).
+Use `prime eval` to execute rollouts against any supported model provider and report aggregate metrics. Supported providers include OpenAI-compatible APIs (the default), the Anthropic Messages API (via `--api-client-type anthropic_messages`), and AWS Bedrock (via `--api-client-type bedrock_converse`).
 
 ## Basic Usage
 
@@ -133,12 +133,19 @@ env.set_concurrency(256)
 | `--model` | `-m` | `openai/gpt-4.1-mini` | Model name or endpoint alias |
 | `--api-base-url` | `-b` | `https://api.pinference.ai/api/v1` | API base URL |
 | `--api-key-var` | `-k` | `PRIME_API_KEY` | Environment variable containing API key |
-| `--api-client-type` | — | `openai_chat_completions` | Client type: `openai_completions`, `openai_chat_completions`, `openai_chat_completions_token`, `openai_responses`, `renderer`, `anthropic_messages`, or `nemorl_chat_completions` |
+| `--api-client-type` | — | `openai_chat_completions` | Client type: `openai_completions`, `openai_chat_completions`, `openai_chat_completions_token`, `openai_responses`, `renderer`, `anthropic_messages`, `nemorl_chat_completions`, or `bedrock_converse` |
 | `--endpoints-path` | `-e` | `./configs/endpoints.toml` | Path to TOML endpoints registry |
 | `--header` | — | — | Extra HTTP header (`Name: Value`), repeatable |
 | `--header-from-state` | — | framework session id | Per-request header whose value is read from rollout state (`Name: state_key`), repeatable |
 
 The `renderer` client type requires the optional renderer package. Install it with `uv add "verifiers[renderers]"` before running evals with `--api-client-type renderer`.
+
+The `bedrock_converse` client type requires the optional bedrock package. Install it with `uv add "verifiers[bedrock]"` before running evals with `--api-client-type bedrock_converse`. Authentication and region use the standard boto3 credential chain (`AWS_PROFILE`, `AWS_REGION`, `~/.aws/config`, SSO, or instance role).
+
+```bash
+AWS_REGION=us-east-1 prime eval run my-env -m us.amazon.nova-pro-v1:0 \
+  --api-client-type bedrock_converse
+```
 
 For convenience, define model endpoints in `./configs/endpoints.toml` to avoid repeating URL and key flags.
 
@@ -161,9 +168,14 @@ model = "claude-sonnet-4-5-20250929"
 url = "https://api.anthropic.com"
 key = "ANTHROPIC_API_KEY"
 api_client_type = "anthropic_messages"
+
+[[endpoint]]
+endpoint_id = "nova-pro"
+model = "us.amazon.nova-pro-v1:0"
+api_client_type = "bedrock_converse"
 ```
 
-Each endpoint entry supports an optional `api_client_type` field to select the client implementation (defaults to `"openai_chat_completions"`). Use `"anthropic_messages"` for Anthropic models when calling the Anthropic API directly, and `"openai_responses"` for OpenAI-compatible Responses endpoints.
+Each endpoint entry supports an optional `api_client_type` field to select the client implementation (defaults to `"openai_chat_completions"`). Use `"anthropic_messages"` for Anthropic models when calling the Anthropic API directly, `"openai_responses"` for OpenAI-compatible Responses endpoints, and `"bedrock_converse"` for AWS Bedrock models.
 
 Optional HTTP headers for inference requests use a short TOML key `headers` (inline table). The alias `extra_headers` is accepted with the same shape; do not set both on one row.
 
