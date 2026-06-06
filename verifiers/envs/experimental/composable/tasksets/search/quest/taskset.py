@@ -15,12 +15,13 @@ import re
 from pathlib import Path
 from typing import Any
 
-import httpx
 import verifiers as vf
 from datasets import Dataset, load_dataset
 from openai import AsyncOpenAI, OpenAIError
 from pydantic import BaseModel
 from verifiers.envs.experimental.composable import SandboxSpec, SandboxTaskSet
+from verifiers.types import ClientConfig
+from verifiers.utils.client_utils import setup_openai_client
 
 from .obj_task_eval.utils.cache_filesys import CacheFileSys
 from .obj_task_eval.utils.load_eval_script import load_eval_script
@@ -46,25 +47,13 @@ class QuestOpenAIClient:
     def __init__(
         self,
         *,
-        api_key: str,
-        base_url: str | None,
+        client: AsyncOpenAI,
         model: str,
         sampling_args: dict[str, Any] | None = None,
-        default_headers: dict[str, str] | None = None,
-        timeout: float = 1200.0,
     ) -> None:
         self.model = model
         self.sampling_args = dict(sampling_args or {})
-        self._httpx_client = httpx.AsyncClient(
-            limits=httpx.Limits(max_connections=1024, max_keepalive_connections=512),
-            timeout=httpx.Timeout(timeout),
-        )
-        self._client = AsyncOpenAI(
-            api_key=api_key,
-            base_url=base_url,
-            default_headers=default_headers,
-            http_client=self._httpx_client,
-        )
+        self._client = client
 
     async def async_response(self, *, count_token: bool = False, **kwargs: Any) -> Any:
         response_format = kwargs.pop("response_format", None)
@@ -100,7 +89,6 @@ class QuestOpenAIClient:
 
     async def close(self) -> None:
         await self._client.close()
-        await self._httpx_client.aclose()
 
 
 def _usage_dict(response: Any) -> dict[str, int]:
@@ -464,22 +452,18 @@ class QuestRubric(vf.Rubric):
     def _get_client(self) -> QuestOpenAIClient:
         if self._client is not None:
             return self._client
-        api_key = os.environ.get(self.judge_api_key_var)
-        if not api_key:
-            raise vf.ModelError(
-                f"{self.judge_api_key_var} environment variable is required for QUEST evaluation"
+        api_base_url = self.judge_base_url or "https://api.openai.com/v1"
+        openai_client = setup_openai_client(
+            ClientConfig(
+                api_key_var=self.judge_api_key_var,
+                api_base_url=api_base_url,
+                timeout=1200.0,
             )
-        headers: dict[str, str] = {}
-        if self.judge_api_key_var == "PRIME_API_KEY" and os.environ.get(
-            "PRIME_TEAM_ID"
-        ):
-            headers["X-Prime-Team-ID"] = os.environ["PRIME_TEAM_ID"]
+        )
         self._client = QuestOpenAIClient(
-            api_key=api_key,
-            base_url=self.judge_base_url,
+            client=openai_client,
             model=self.judge_model,
             sampling_args=self.judge_sampling_args,
-            default_headers=headers or None,
         )
         return self._client
 
