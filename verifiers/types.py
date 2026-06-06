@@ -1152,6 +1152,8 @@ class GenerateMetadata(TypedDict):
     base_url: str
     num_examples: int
     rollouts_per_example: int
+    shuffle: NotRequired[bool]
+    shuffle_seed: NotRequired[int | None]
     sampling_args: SamplingArgs
     date: str
     time: float  # whole-eval wall-clock seconds
@@ -1340,6 +1342,8 @@ class EvalConfig(BaseModel):
     sampling_args: SamplingArgs
     num_examples: int
     rollouts_per_example: int
+    shuffle: bool = False
+    shuffle_seed: int | None = None
     max_concurrent: int
     num_workers: int | str = "auto"
     independent_scoring: bool = False

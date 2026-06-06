@@ -187,6 +187,28 @@ def test_taskset_take():
     assert isinstance(taken, MockSandboxTaskSet)
 
 
+def test_composable_env_eval_inputs_can_shuffle_taskset_dataset():
+    taskset = MockTaskSet(dataset=_make_dataset(6), name="math")
+    env = ComposableEnv(
+        taskset=taskset,
+        harness=Harness(run_command="true"),
+    )
+
+    inputs = env._get_eval_inputs(
+        num_examples=3,
+        rollouts_per_example=2,
+        shuffle=True,
+        shuffle_seed=11,
+    )
+    expected = (
+        env.get_eval_dataset().shuffle(seed=11).select(range(3)).repeat(2).to_list()
+    )
+
+    assert [row["example_id"] for row in inputs] == [
+        row["example_id"] for row in expected
+    ]
+
+
 def test_taskset_repr():
     ts = MockTaskSet(dataset=_make_dataset(), name="mytest")
     assert "mytest" in repr(ts)

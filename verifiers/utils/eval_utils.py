@@ -658,6 +658,8 @@ def load_toml_config(
         # evaluation
         "num_examples",
         "rollouts_per_example",
+        "shuffle",
+        "shuffle_seed",
         "max_concurrent",
         "independent_scoring",
         "max_retries",
@@ -1102,7 +1104,7 @@ async def run_evaluation(
 
         logger.debug(f"Starting evaluation with model: {config.model}")
         logger.debug(
-            f"Configuration: num_examples={config.num_examples}, rollouts_per_example={config.rollouts_per_example}, max_concurrent={config.max_concurrent}"
+            f"Configuration: num_examples={config.num_examples}, rollouts_per_example={config.rollouts_per_example}, shuffle={config.shuffle}, shuffle_seed={config.shuffle_seed}, max_concurrent={config.max_concurrent}"
         )
 
         effective_group_max_concurrent = config.max_concurrent
@@ -1127,6 +1129,8 @@ async def run_evaluation(
             sampling_args=config.sampling_args,
             num_examples=config.num_examples,
             rollouts_per_example=config.rollouts_per_example,
+            shuffle=config.shuffle,
+            shuffle_seed=config.shuffle_seed,
             max_concurrent=effective_group_max_concurrent,
             results_path=results_path,
             state_columns=config.state_columns,
