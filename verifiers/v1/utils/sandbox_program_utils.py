@@ -565,11 +565,22 @@ def response_input(messages):
     for message in messages:
         role = message.get("role")
         if role == "tool":
+            content = message.get("content")
+            # Preserve image parts (input_image) instead of str()-collapsing them.
+            if is_tool_content_parts(content):
+                output = [
+                    {"type": "input_image", "image_url": part["image_url"]["url"]}
+                    if part.get("type") == "image_url"
+                    else {"type": "input_text", "text": part.get("text") or ""}
+                    for part in content
+                ]
+            else:
+                output = str(content or "")
             items.append(
                 {
                     "type": "function_call_output",
                     "call_id": message["tool_call_id"],
-                    "output": str(message.get("content") or ""),
+                    "output": output,
                 }
             )
             continue
@@ -602,6 +613,23 @@ def anthropic_payload_messages(messages):
                 system.append(str(content))
             continue
         if role == "tool":
+            # Preserve image parts (image block) instead of str()-collapsing them.
+            if is_tool_content_parts(content):
+                result_content = []
+                for part in content:
+                    if part.get("type") != "image_url":
+                        result_content.append({"type": "text", "text": part.get("text") or ""})
+                        continue
+                    url = part["image_url"]["url"]
+                    if url.startswith("data:"):
+                        header, _, data = url.partition(",")
+                        media_type = header[len("data:"):].split(";")[0] or "image/png"
+                        source = {"type": "base64", "media_type": media_type, "data": data}
+                    else:
+                        source = {"type": "url", "url": url}
+                    result_content.append({"type": "image", "source": source})
+            else:
+                result_content = str(content or "")
             payload_messages.append(
                 {
                     "role": "user",
@@ -609,7 +637,7 @@ def anthropic_payload_messages(messages):
                         {
                             "type": "tool_result",
                             "tool_use_id": message["tool_call_id"],
-                            "content": str(content or ""),
+                            "content": result_content,
                         }
                     ],
                 }
