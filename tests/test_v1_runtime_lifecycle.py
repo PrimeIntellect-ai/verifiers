@@ -1627,6 +1627,30 @@ async def test_sandbox_base_program_max_turns_zero_is_unbounded(
     assert result["stop_condition"] == "no_tools"
 
 
+def test_sandbox_base_program_maps_model_client_types_to_wire_protocol() -> None:
+    namespace: dict[str, object] = {}
+    source = runner_source().rsplit("asyncio.run(main())", 1)[0]
+    exec(source, namespace)
+    wire_protocol = cast(Any, namespace["wire_protocol"])
+
+    # Host model-client types that speak chat-completions on the wire collapse
+    # onto the openai_chat_completions envelope the sandbox knows how to send;
+    # the host's bound client still owns generation/tokenization.
+    for client_type in (
+        "renderer",
+        "openai_chat_completions_token",
+        "nemorl_chat_completions",
+    ):
+        state = {"runtime": {"client_type": client_type}}
+        assert wire_protocol(state) == "openai_chat_completions"
+
+    # Genuine wire protocols pass through, and the default is chat completions.
+    assert wire_protocol({"runtime": {"client_type": "openai_responses"}}) == (
+        "openai_responses"
+    )
+    assert wire_protocol({"runtime": {}}) == "openai_chat_completions"
+
+
 def test_sandbox_program_patch_cannot_set_lifecycle_fields() -> None:
     state = vf.State.for_task(vf.Task({"prompt": []}).freeze())
 
