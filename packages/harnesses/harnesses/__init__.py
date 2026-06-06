@@ -1,11 +1,12 @@
 __version__ = "0.1.2"
 
-from .mini_swe_agent import MiniSWEAgent, MiniSWEAgentConfig, MiniSWEAgentProgramConfig
-from .opencode import OpenCode, OpenCodeConfig, OpenCodeProgramConfig
-from .pi import Pi, PiConfig, PiProgramConfig
+from .command import CommandHarness, CommandHarnessConfig
+from .mini_swe_agent import MiniSWEAgent, MiniSWEAgentConfig
+from .opencode import OpenCode, OpenCodeConfig
+from .pi import Pi, PiConfig
 from .replay import ReplayHarness
-from .rlm import RLM, RLMConfig, RLMProgramConfig
-from .terminus_2 import Terminus2, Terminus2Config, Terminus2ProgramConfig
+from .rlm import RLM, RLMConfig
+from .terminus_2 import Terminus2, Terminus2Config
 
 LAZY_EXPORTS = {
     "NeMoGymHarness": (".nemo_gym", "NeMoGymHarness"),
@@ -13,23 +14,20 @@ LAZY_EXPORTS = {
 }
 
 __all__ = [
+    "CommandHarness",
+    "CommandHarnessConfig",
     "MiniSWEAgent",
     "MiniSWEAgentConfig",
-    "MiniSWEAgentProgramConfig",
     *LAZY_EXPORTS,
     "OpenCode",
     "OpenCodeConfig",
-    "OpenCodeProgramConfig",
     "Pi",
     "PiConfig",
-    "PiProgramConfig",
     "ReplayHarness",
     "RLM",
     "RLMConfig",
-    "RLMProgramConfig",
     "Terminus2",
     "Terminus2Config",
-    "Terminus2ProgramConfig",
 ]
 
 

@@ -2,7 +2,7 @@ import re
 from collections.abc import Mapping
 from typing import cast
 
-import verifiers as vf
+import verifiers.v1 as vf
 from tasksets.openenv import OpenEnvTaskset, OpenEnvTasksetConfig
 from verifiers.types import Messages, UserMessage
 
@@ -18,7 +18,7 @@ def render_textarena_prompt(
     observation: object,
     *,
     context: str = "reset",
-    action_schema: vf.ConfigData | None = None,
+    action_schema: vf.JsonData | None = None,
     contract: str = "gym",
     seed: int = 0,
 ) -> Messages:
@@ -27,7 +27,7 @@ def render_textarena_prompt(
         raise RuntimeError(
             f"openenv-textarena prompt renderer expected dict observation, got {type(observation).__name__}."
         )
-    observation_data = cast(vf.ConfigData, observation)
+    observation_data = cast(vf.JsonData, observation)
 
     message_text = textarena_message_text(observation_data)
     prompt_text = textarena_prompt_text(observation_data)
@@ -48,20 +48,20 @@ def render_textarena_prompt(
     )
 
 
-def textarena_message_text(observation: vf.ConfigData) -> str | None:
+def textarena_message_text(observation: vf.JsonData) -> str | None:
     raw_messages = observation.get("messages")
     if not isinstance(raw_messages, list):
         return None
     for item in reversed(raw_messages):
         if isinstance(item, Mapping):
-            message = cast(vf.ConfigData, item)
+            message = cast(vf.JsonData, item)
             content = message.get("content")
             if isinstance(content, str) and content.strip():
                 return content.strip()
     return None
 
 
-def textarena_prompt_text(observation: vf.ConfigData) -> str | None:
+def textarena_prompt_text(observation: vf.JsonData) -> str | None:
     prompt = observation.get("prompt")
     if not isinstance(prompt, str):
         return None
@@ -84,4 +84,5 @@ def load_environment(config: vf.EnvConfig) -> vf.Env:
     return vf.Env(
         taskset=vf.load_taskset(config=config.taskset),
         harness=vf.load_harness(config=config.harness),
+        runtime=config.runtime,
     )

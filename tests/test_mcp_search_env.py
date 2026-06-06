@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-import verifiers as vf
+import verifiers.v1 as vf
 
 
 def _load_mcp_search_module() -> Any:
@@ -71,19 +71,22 @@ def test_mcp_search_taskset_accepts_v1_taskset_config() -> None:
     tasks = list(env.taskset)
 
     assert env.taskset.config.max_turns == 3
-    assert all(task["max_turns"] == 3 for task in tasks)
+    assert all(task.max_turns == 3 for task in tasks)
 
 
 @pytest.mark.asyncio
 async def test_mcp_search_reward_handles_missing_assistant() -> None:
     module = _load_mcp_search_module()
 
-    task = vf.Task({"answer": "expected"})
-    assert await module.exact_title_reward(task, vf.State({"completion": []})) == 0.0
-    assert (
-        await module.exact_title_reward(
-            task,
-            vf.State({"completion": [{"role": "user", "content": "expected"}]}),
-        )
-        == 0.0
+    task = module.MCPSearchTask(
+        query="expected",
+        question="find expected",
+        answer="expected",
     )
+    taskset = module.MCPSearchTaskset(module.MCPSearchTasksetConfig())
+    state = vf.State(task_id=task.task_id)
+    assert await taskset.exact_title_reward(task, state) == 0.0
+    state.add_turn(
+        vf.Turn(prompt=task.prompt, completion=[vf.UserMessage(content="expected")])
+    )
+    assert await taskset.exact_title_reward(task, state) == 0.0

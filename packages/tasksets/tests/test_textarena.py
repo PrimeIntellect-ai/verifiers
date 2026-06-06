@@ -1,7 +1,7 @@
 import sys
 
 import pytest
-import verifiers as vf
+import verifiers.v1 as vf
 from tasksets import textarena
 
 
@@ -62,8 +62,7 @@ def fake_textarena(monkeypatch):
     return fake_ta
 
 
-@pytest.mark.asyncio
-async def test_textarena_user_steps_empty_guess_when_guess_tag_missing(fake_textarena):
+def test_textarena_user_steps_empty_guess_when_guess_tag_missing(fake_textarena):
     taskset = textarena.TextArenaTaskset(
         config=textarena.TextArenaTasksetConfig(
             game="FakeWordle-v0",
@@ -73,31 +72,32 @@ async def test_textarena_user_steps_empty_guess_when_guess_tag_missing(fake_text
         )
     )
     task = taskset.to_task(
-        vf.Task(
-            {
-                "example_id": 0,
-                "prompt": [],
-                "answer": "apple",
-                "textarena": {
-                    "game": "FakeWordle-v0",
-                    "answer_state_key": "secret_word",
-                },
-            }
+        textarena.TextArenaTask(
+            row_id=0,
+            prompt=[],
+            answer="apple",
+            textarena={
+                "game": "FakeWordle-v0",
+                "answer_state_key": "secret_word",
+            },
         )
     )
-    state = vf.State.for_task(task)
-    state["completion"] = [vf.AssistantMessage(content=None, reasoning_content="think")]
-
-    env = vf.Env(taskset=taskset, harness=vf.Harness(config=vf.HarnessConfig()))
-    state = await env.harness.setup_state(task, state)
-    messages = await env.harness.runtime.user_messages(task, state)
+    textarena.SESSION = textarena.TextArenaSession()
+    completion = [
+        vf.AssistantMessage(content=None, reasoning_content="think").model_dump(
+            mode="json", exclude_none=True
+        )
+    ]
+    payload = textarena.textarena_respond(
+        task.to_record(), {"completion": completion}, []
+    )
     ta_env = fake_textarena.envs[-1]
 
     assert ta_env.guesses == [""]
-    assert messages == [
+    assert payload["messages"] == [
         {
             "role": "user",
             "content": "Board [GAME] Feedback:\nmiss\nY----\ntry again",
         }
     ]
-    assert state.get("done") is None
+    assert "stop_condition" not in payload

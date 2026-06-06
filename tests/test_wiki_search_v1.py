@@ -4,6 +4,7 @@ from pathlib import Path
 from types import ModuleType
 
 import pytest
+import verifiers.v1 as vf
 
 
 class StubEmbeddingFunction:
@@ -39,6 +40,10 @@ def install_wiki_stubs(monkeypatch: pytest.MonkeyPatch) -> None:
     stubs = {
         "chromadb": stub_module("chromadb", PersistentClient=StubPersistentClient),
         "chromadb.api": stub_module("chromadb.api"),
+        "chromadb.api.models": stub_module("chromadb.api.models"),
+        "chromadb.api.models.Collection": stub_module(
+            "chromadb.api.models.Collection", Collection=object
+        ),
         "chromadb.api.types": stub_module(
             "chromadb.api.types",
             Embeddable=object,
@@ -94,16 +99,19 @@ def test_wiki_search_v1_default_and_explicit_toolsets(
 
     assert env.taskset.config.corpus_dataset == "test/corpus"
     assert env.taskset.config.corpus_split == "validation"
-    assert list(env.taskset.named_toolsets) == ["wiki"]
-    assert len(env.taskset.toolsets) == 1
-    assert len(env.taskset.rewards) == 1
+    assert [toolset.name for toolset in env.taskset.toolsets] == ["wiki"]
+    assert [signal["name"] for signal in env.taskset.signals] == ["answer_in_response"]
 
     monkeypatch.setattr(
         module,
         "load_dataset",
         lambda *args, **kwargs: [{"question": "question?", "answer": "answer"}],
     )
-    rows = list(module.load_tasks(max_turns=3))
+    rows = list(
+        module.WikiSearchTaskset(
+            module.WikiSearchTasksetConfig(max_turns=3)
+        ).load_tasks()
+    )
 
     assert rows[0]["max_turns"] == 3
     assert "judge_model" not in rows[0]
@@ -111,11 +119,17 @@ def test_wiki_search_v1_default_and_explicit_toolsets(
     assert "judge_api_key_var" not in rows[0]
 
     taskset = module.WikiSearchTaskset(
-        config=module.WikiSearchTasksetConfig(toolsets={"custom": {"tools": []}})
+        config=module.WikiSearchTasksetConfig(
+            toolsets=[
+                vf.Toolset(
+                    name="custom",
+                    server=vf.MCPServerSpec(command=[sys.executable, "-c", ""]),
+                )
+            ]
+        )
     )
 
-    assert list(taskset.named_toolsets) == ["wiki", "custom"]
-    assert len(taskset.toolsets) == 2
+    assert [toolset.name for toolset in taskset.toolsets] == ["wiki", "custom"]
 
     configured_env = module.load_environment(
         config=module.WikiSearchEnvConfig(harness={"max_turns": 7})
@@ -129,7 +143,7 @@ def test_wiki_search_v1_rejects_legacy_judge_endpoint_kwargs(
 ) -> None:
     wrapper = load_wiki_module("wiki_search", monkeypatch)
 
-    with pytest.raises(ValueError, match="state.get_endpoint_config"):
+    with pytest.raises(ValueError, match="does not use a separate judge endpoint"):
         wrapper.load_environment(
             v1=True,
             judge_base_url="https://judge.example/v1",

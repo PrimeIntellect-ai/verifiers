@@ -1,7 +1,7 @@
 from collections.abc import Mapping
 from typing import cast
 
-import verifiers as vf
+import verifiers.v1 as vf
 from tasksets.openenv import OpenEnvTaskset, OpenEnvTasksetConfig
 from verifiers.types import Messages, UserMessage
 from verifiers.utils.message_utils import MessageInput, normalize_messages
@@ -14,7 +14,7 @@ class OpenEnvEchoTasksetConfig(OpenEnvTasksetConfig):
 def render_openenv_prompt(
     observation: object,
     *,
-    action_schema: vf.ConfigData | None = None,
+    action_schema: vf.JsonData | None = None,
     context: str = "reset",
     contract: str = "mcp",
     seed: int = 0,
@@ -24,7 +24,7 @@ def render_openenv_prompt(
         raise RuntimeError(
             f"openenv-echo prompt renderer expected dict observation, got {type(observation).__name__}."
         )
-    observation_data = cast(vf.ConfigData, observation)
+    observation_data = cast(vf.JsonData, observation)
 
     messages = observation_data.get("messages")
     if isinstance(messages, list) and messages:
@@ -63,4 +63,5 @@ def load_environment(config: vf.EnvConfig) -> vf.Env:
     return vf.Env(
         taskset=vf.load_taskset(config=config.taskset),
         harness=vf.load_harness(config=config.harness),
+        runtime=config.runtime,
     )

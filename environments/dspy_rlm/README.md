@@ -23,7 +23,7 @@
 
 ### How it works
 
-The taskset owns GSM8K train/eval task loading and reward logic. The harness runs an in-process DSPy RLM program, builds its LM from `state.get_endpoint_config(api="chat")`, and routes every model call through the V1 interception endpoint.
+The taskset owns GSM8K train/eval task loading and reward logic. The harness runs an in-process DSPy RLM agent, starts the v1 protocol endpoint for the rollout, and gives DSPy an OpenAI-compatible LM pointed at that endpoint.
 
 DSPy RLM requires Deno to be available in the runtime environment.
 

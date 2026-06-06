@@ -1,203 +1,199 @@
 from pathlib import Path
-from typing import cast
 
-import verifiers as vf
+import verifiers.v1 as vf
 from verifiers.utils.import_utils import load_toml
-from verifiers.v1.utils.sandbox_utils import SandboxClient
 
 from tasksets.utils.harbor_utils import (
     TASKS_SUBDIR,
     bundle_tasks_root,
     download_harbor_dataset,
-    harbor_sandbox,
     harbor_task_dirs,
     parse_gb,
     parse_number,
     parse_reward_text,
-    upload_harbor_tests,
 )
 
-HARBOR_DEFAULT_SANDBOX = vf.SandboxConfig(
-    image="python:3.11-slim",
-    cpu_cores=2.0,
-    memory_gb=4.0,
-    disk_size_gb=10.0,
-    timeout_minutes=120,
-    workdir="/app",
-    command_timeout=900,
-)
+HARBOR_DEFAULT_RUNTIME: vf.JsonData = {
+    "image": "python:3.11-slim",
+    "cpu_cores": 2.0,
+    "memory_gb": 4.0,
+    "disk_size_gb": 10.0,
+    "workdir": "/app",
+    "timeout_seconds": 900.0,
+}
 
 
 class HarborTasksetConfig(vf.TasksetConfig):
-    taskset_id: str | None = "harbor"
+    id: str | None = "harbor"
     dataset: str | None = None
     bundle_package: str | None = None
     task_names: list[str] | None = None
     cache_dir: str | None = None
     refresh: bool = False
-    sandbox: vf.SandboxConfig = HARBOR_DEFAULT_SANDBOX
+    task_runtime: vf.JsonData = dict(HARBOR_DEFAULT_RUNTIME)
     verifier_timeout_seconds: float = 900.0
     task_dir: str = "/task"
     env: dict[str, str] = {}
 
 
+class HarborRuntimeSpec(vf.Schema):
+    image: str
+    cpu_cores: float = 2.0
+    memory_gb: float = 4.0
+    disk_size_gb: float = 10.0
+    workdir: str = "/app"
+    timeout_seconds: float = 900.0
+    network_access: bool | None = None
+
+
+class HarborProgramSpec(vf.Schema):
+    files: dict[str, dict[str, str]]
+    env: dict[str, str]
+
+
+class HarborSpec(vf.Schema):
+    task_dir: str
+    task_name: str
+    config: vf.JsonData
+    docker_image: str | None = None
+    test_timeout: float
+
+
+class HarborTask(vf.Task):
+    task_name: str
+    instruction: str
+    task_toml: str
+    task_dir: str
+    runtime_config: HarborRuntimeSpec
+    program: HarborProgramSpec
+    harbor: HarborSpec
+
+
 class HarborTaskset(vf.Taskset[HarborTasksetConfig]):
+    task_type = HarborTask
+
     def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         if split == "eval":
             return []
-        config = self.config
-        if config.dataset is not None:
-            cache_dir_path = (
-                Path(str(config.cache_dir)).expanduser() if config.cache_dir else None
-            )
-            root = download_harbor_dataset(
-                config.dataset,
-                cache_dir=cache_dir_path,
-                refresh=config.refresh,
-            )
-        else:
-            bundle_package = config.bundle_package
-            if bundle_package is None:
-                raise RuntimeError(
-                    "HarborTaskset() without a dataset requires bundle_package. "
-                    "Pass dataset='...' to fetch from Harbor Hub, or set "
-                    "bundle_package=__name__ from the package that owns tasks/."
-                )
-            root = bundle_tasks_root(bundle_package)
-            if not root.exists():
-                raise FileNotFoundError(
-                    "HarborTaskset() without a dataset requires "
-                    f"{bundle_package}/{TASKS_SUBDIR}/ to contain Harbor task "
-                    f"directories. Not found: {root}"
-                )
-        task_dirs = harbor_task_dirs(root, list(config.task_names or []))
-        tasks: list[vf.JsonData] = []
-        for task_dir in task_dirs:
-            task_toml_path = task_dir / "task.toml"
-            instruction_path = task_dir / "instruction.md"
-            with task_toml_path.open("rb") as f:
-                task_config = load_toml(f)
-            environment = task_config.get("environment", {}) or {}
-            assert isinstance(environment, dict)
-            agent_config = task_config.get("agent", {}) or {}
-            verifier_config = task_config.get("verifier", {}) or {}
-            if not isinstance(agent_config, dict):
-                raise TypeError(f"{task_toml_path} [agent] must be a mapping.")
-            if not isinstance(verifier_config, dict):
-                raise TypeError(f"{task_toml_path} [verifier] must be a mapping.")
-            instruction = instruction_path.read_text().strip()
-            task_remote_dir = config.task_dir.rstrip("/") or "/task"
-            sandbox = harbor_sandbox(HARBOR_DEFAULT_SANDBOX, config.sandbox)
-            sandbox = sandbox.model_copy(
-                update={
-                    "image": environment.get("docker_image") or sandbox.image,
-                    "cpu_cores": parse_number(
-                        environment.get("cpus"), sandbox.cpu_cores
-                    ),
-                    "memory_gb": parse_gb(environment.get("memory"), sandbox.memory_gb),
-                    "disk_size_gb": parse_gb(
-                        environment.get("storage"), sandbox.disk_size_gb
-                    ),
-                    "command_timeout": int(
-                        parse_number(
-                            agent_config.get("timeout_sec"),
-                            sandbox.command_timeout or 900,
-                        )
-                    ),
-                    **(
-                        {"network_access": bool(environment["allow_internet"])}
-                        if "allow_internet" in environment
-                        else {}
-                    ),
-                }
-            )
-            sandbox_data = sandbox.data(fill_defaults=False)
-            workdir = sandbox.workdir or "/app"
-            tasks.append(
-                {
-                    "task_name": task_dir.name,
-                    "instruction": instruction,
-                    "task_toml": task_toml_path.read_text(),
-                    "task_dir": str(task_dir),
-                    "prompt": [{"role": "user", "content": instruction}],
-                    "sandbox": sandbox_data,
-                    "program": {
-                        "files": {
-                            f"{task_remote_dir}/instruction.md": {
-                                "task": "instruction"
-                            },
-                            f"{task_remote_dir}/task.toml": {"task": "task_toml"},
-                        },
-                        "env": {
-                            "HARBOR_TASK_NAME": task_dir.name,
-                            "HARBOR_TASK_DIR": task_remote_dir,
-                            "HARBOR_INSTRUCTION_PATH": f"{task_remote_dir}/instruction.md",
-                            "AGENT_WORKDIR": workdir,
-                            **config.env,
-                        },
-                    },
-                    "harbor": {
-                        "task_dir": str(task_dir),
-                        "task_name": task_dir.name,
-                        "config": task_config,
-                        "docker_image": environment.get("docker_image"),
-                        "test_timeout": parse_number(
-                            verifier_config.get("timeout_sec"),
-                            config.verifier_timeout_seconds,
-                        ),
-                    },
-                    "info": {
-                        "harbor": {
-                            "task_name": task_dir.name,
-                            "docker_image": environment.get("docker_image"),
-                        }
-                    },
-                }
-            )
-        assert tasks, f"No valid Harbor tasks found in {root}."
+        root = self.task_root()
+        task_dirs = harbor_task_dirs(root, self.config.task_names)
+        tasks = [self.task_from_dir(task_dir) for task_dir in task_dirs]
+        if not tasks:
+            raise ValueError(f"No valid Harbor tasks found in {root}.")
         return tasks
 
-    @vf.reward(weight=1.0)
-    async def harbor_reward(self, task: vf.Task, state: vf.State) -> float:
-        if state.get("error") is not None:
-            return 0.0
-        sandbox_id = state["sandbox_id"]
-        assert isinstance(sandbox_id, str)
-        harbor = task["harbor"]
-        assert isinstance(harbor, dict)
-        task_dir = Path(str(harbor["task_dir"]))
-        from prime_sandboxes import AsyncSandboxClient
+    def task_root(self) -> Path:
+        config = self.config
+        if config.dataset is not None:
+            cache_dir = (
+                Path(config.cache_dir).expanduser() if config.cache_dir else None
+            )
+            return download_harbor_dataset(
+                config.dataset,
+                cache_dir=cache_dir,
+                refresh=config.refresh,
+            )
+        if config.bundle_package is None:
+            raise RuntimeError("HarborTaskset requires dataset or bundle_package.")
+        root = bundle_tasks_root(config.bundle_package)
+        if not root.exists():
+            raise FileNotFoundError(
+                "HarborTaskset bundle_package must contain "
+                f"{TASKS_SUBDIR}/. Not found: {root}"
+            )
+        return root
 
-        client = cast(SandboxClient, AsyncSandboxClient())
-        try:
-            await upload_harbor_tests(client, sandbox_id, task_dir)
-            test_timeout = int(parse_number(harbor.get("test_timeout"), 900))
-            result = await client.run_background_job(
-                sandbox_id=sandbox_id,
-                command="bash test.sh",
-                working_dir="/tests",
-                timeout=test_timeout,
-            )
-            state["harbor_tests"] = {
-                "returncode": result.exit_code,
-                "stdout": result.stdout or "",
-                "stderr": result.stderr or "",
-            }
-            reward_result = await client.execute_command(
-                sandbox_id=sandbox_id,
-                command=(
-                    "if [ -s /logs/verifier/reward.txt ]; then "
-                    "cat /logs/verifier/reward.txt; "
-                    "elif [ -s /logs/verifier/reward.json ]; then "
-                    "cat /logs/verifier/reward.json; fi"
+    def task_from_dir(self, task_dir: Path) -> HarborTask:
+        task_toml_path = task_dir / "task.toml"
+        instruction_path = task_dir / "instruction.md"
+        with task_toml_path.open("rb") as f:
+            task_config = load_toml(f)
+        environment = mapping(task_config.get("environment"), "environment")
+        agent_config = mapping(task_config.get("agent"), "agent")
+        verifier_config = mapping(task_config.get("verifier"), "verifier")
+        instruction = instruction_path.read_text().strip()
+        task_remote_dir = self.config.task_dir.rstrip("/") or "/task"
+        runtime = harbor_runtime(
+            self.config.task_runtime,
+            environment=environment,
+            agent_config=agent_config,
+        )
+        workdir = str(runtime.get("workdir") or "/app")
+        return HarborTask(
+            task_name=task_dir.name,
+            instruction=instruction,
+            task_toml=task_toml_path.read_text(),
+            task_dir=str(task_dir),
+            prompt=[{"role": "user", "content": instruction}],
+            image=str(runtime["image"]),
+            runtime_config=runtime,
+            program={
+                "files": {
+                    f"{task_remote_dir}/instruction.md": {"task": "instruction"},
+                    f"{task_remote_dir}/task.toml": {"task": "task_toml"},
+                },
+                "env": {
+                    "HARBOR_TASK_NAME": task_dir.name,
+                    "HARBOR_TASK_DIR": task_remote_dir,
+                    "HARBOR_INSTRUCTION_PATH": f"{task_remote_dir}/instruction.md",
+                    "AGENT_WORKDIR": workdir,
+                    **self.config.env,
+                },
+            },
+            harbor={
+                "task_dir": str(task_dir),
+                "task_name": task_dir.name,
+                "config": task_config,
+                "docker_image": environment.get("docker_image"),
+                "test_timeout": parse_number(
+                    verifier_config.get("timeout_sec"),
+                    self.config.verifier_timeout_seconds,
                 ),
-            )
-        except Exception as e:
-            state["harbor_error"] = str(e)
-            return 0.0
-        finally:
-            await client.aclose()
-        return parse_reward_text(str(reward_result.stdout or "").strip())
+            },
+        )
+
+    @vf.reward(weight=1.0)
+    async def harbor_reward(self, state: vf.State) -> float:
+        reward = state.artifacts.get("harbor_reward")
+        if isinstance(reward, int | float):
+            return float(reward)
+        tests = state.artifacts.get("harbor_tests")
+        if isinstance(tests, dict):
+            reward_text = tests.get("reward")
+            if isinstance(reward_text, str):
+                return parse_reward_text(reward_text)
+            returncode = tests.get("returncode")
+            if isinstance(returncode, int | float) and int(returncode) == 0:
+                return 1.0
+        return 0.0
+
+
+def mapping(value: object, name: str) -> dict[str, object]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise TypeError(f"Harbor task [{name}] must be a mapping.")
+    return dict(value)
+
+
+def harbor_runtime(
+    configured: vf.JsonData,
+    *,
+    environment: dict[str, object],
+    agent_config: dict[str, object],
+) -> vf.JsonData:
+    runtime = dict(configured)
+    runtime["image"] = environment.get("docker_image") or runtime.get("image")
+    runtime["cpu_cores"] = parse_number(environment.get("cpus"), 2.0)
+    runtime["memory_gb"] = parse_gb(environment.get("memory"), 4.0)
+    runtime["disk_size_gb"] = parse_gb(environment.get("storage"), 10.0)
+    runtime["timeout_seconds"] = parse_number(
+        agent_config.get("timeout_sec"),
+        float(runtime.get("timeout_seconds") or 900.0),
+    )
+    if "allow_internet" in environment:
+        runtime["network_access"] = bool(environment["allow_internet"])
+    return runtime
 
 
 def load_taskset(config: HarborTasksetConfig) -> HarborTaskset:

@@ -79,7 +79,7 @@ Notes:
 | `agent_timeout` | 1.0 if rollout hit `timeout_seconds` |
 | `calls_click_link`, `calls_go_back` | navigation tool counts (zero-weight) |
 | `calls_write_todos`, `calls_write_file`, `calls_read_file`, `calls_ls`, `calls_edit_file`, `calls_grep`, `calls_task` | deep-agent tool counts (zero-weight) |
-| `total_tool_calls`, `assistant_turns` | trajectory shape (zero-weight) |
+| `total_tool_calls`, `assistant_turns` | transcript shape (zero-weight) |
 | `invalid_link_rate` | fraction of `click_link` calls that named a non-existent link (hallucination canary, zero-weight) |
 
 ### Notes

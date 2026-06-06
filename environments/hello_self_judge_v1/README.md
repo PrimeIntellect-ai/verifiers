@@ -1,20 +1,14 @@
 # hello-self-judge-v1
 
-V1 example where the answer rollout and the judge rollout share live runtime
-resources.
+V1 example where the answer rollout is reviewed by taskset-owned update logic.
 
-The answer harness runs the base loop locally. The taskset contributes a
-rollout-scoped, sandbox-backed `bash` tool. Each task asks the model to fetch
-public web pages, write `/tmp/evidence.md`, and answer from the evidence. The
-taskset then:
+The answer harness runs the base loop. Each task asks the model to answer with a
+sources line. The taskset then:
 
-1. runs an update-stage judge harness that borrows the live `model` and
-   `bash` tool, appends to the public trajectory, and uses the same
-   tool-owned sandbox to inspect `/tmp/evidence.md`;
-2. stores the update judge's findings under `state["update_judge"]`;
-3. runs a reward-stage judge harness that borrows only the live `model`, keeps
-   its trajectory private, stores JSON under `state["judge"]`, and returns its
-   score.
+1. stores judge findings under `state.scratch["judge"]` and
+   `state.artifacts["judge_findings"]`;
+2. reports source-mention metrics;
+3. computes the reward from the serialized findings.
 
 ```bash
 prime eval run hello-self-judge-v1 -m openai/gpt-5.4-mini -n 3 -r 1 -t 4096

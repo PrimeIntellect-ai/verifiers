@@ -1,12 +1,11 @@
 import asyncio
 import json
-from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from typing import Protocol, cast
 
 from datasets import Dataset
 
-import verifiers as vf
-from verifiers.v1.utils.prompt_utils import normalize_system_prompt
+import verifiers.v1 as vf
 
 if __package__:
     from .wiki_graph import WikiGraph, WikiPair, load_wiki_graph
@@ -17,6 +16,18 @@ else:
 class AgentMessage(Protocol):
     role: str
     content: object
+
+
+DEEP_AGENT_TOOLS = {
+    "write_todos",
+    "write_file",
+    "read_file",
+    "ls",
+    "edit_file",
+    "grep",
+    "task",
+}
+WIKISPEEDIA_TOOLS = {"click_link", "go_back"}
 
 
 def system_prompt(allow_go_back: bool = True) -> str:
@@ -37,23 +48,14 @@ links you can follow. Use the `click_link` tool to navigate to one. \
 {backtracking}
 
 You also have access to deep-agent scaffolding tools (`write_todos`, \
-`write_file`, `read_file`, `ls`, `edit_file`, `task`). Use them when they help: \
-sketch a plan with `write_todos`, jot promising bridge concepts or dead-ends \
-in a file, and call `task` to spawn a focused sub-agent for a sub-search. They \
-are entirely optional.
-
-Try to be quick — think about which broader concepts connect the source to \
-the target, and aim for the article that most likely lists your destination \
-among its links.
+`write_file`, `read_file`, `ls`, `edit_file`, `task`). Use them when they help.
 
 When you reach the target the system will say `TARGET REACHED`. Stop calling \
 tools at that point and reply with a brief confirmation."""
 
 
-SYSTEM_PROMPT = system_prompt()
-
-
 class WikispeediaTasksetConfig(vf.TasksetConfig):
+    id: str = "langchain-deep-agents-wikispeedia"
     cache_dir: str | None = None
     min_path_length: int = 3
     max_path_length: int = 6
@@ -69,20 +71,188 @@ class WikispeediaTasksetConfig(vf.TasksetConfig):
 
 
 class WikispeediaHarnessConfig(vf.HarnessConfig):
-    program: vf.ProgramConfig = vf.ProgramConfig(
-        fn="run_langchain_deep_agents_wikispeedia_program"
-    )
     max_turns: int = 50
     timeout_seconds: float = 1200.0
 
 
+class WikispeediaTask(vf.Task):
+    answer: str
+    source: str
+    target: str
+    shortest_path: int
+    cache_dir: str | None = None
+    links_only: bool = False
+    allow_go_back: bool = True
+
+
 class WikispeediaTaskset(vf.Taskset[WikispeediaTasksetConfig]):
+    task_type = WikispeediaTask
+
+    def load_system_prompt(self, config: WikispeediaTasksetConfig) -> vf.SystemPrompt:
+        return system_prompt(allow_go_back=config.allow_go_back)
+
     def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         return load_tasks(self.config, split=split)
 
+    @vf.reward(weight=1.0)
+    async def reached_target(self, state: vf.State) -> float:
+        return float(bool(state.scratch.get("reached_target", False)))
+
+    @vf.reward(weight=1.0)
+    async def path_efficiency_reward(self, state: vf.State) -> float:
+        if self.config.efficiency_weight <= 0:
+            return 0.0
+        return self.config.efficiency_weight * path_efficiency(state)
+
+    @vf.metric
+    async def path_efficiency(self, state: vf.State) -> float:
+        return path_efficiency(state)
+
+    @vf.metric
+    async def path_length(self, state: vf.State) -> float:
+        return float(max(len(path(state)) - 1, 0))
+
+    @vf.metric
+    async def shortest_path(self, state: vf.State) -> float:
+        value = state.scratch.get("shortest_path", 0)
+        return float(value) if isinstance(value, int | float) else 0.0
+
+    @vf.metric
+    async def agent_timeout(self, state: vf.State) -> float:
+        return float(bool(state.scratch.get("agent_timeout", False)))
+
+    @vf.metric
+    async def total_tool_calls(self, state: vf.State) -> float:
+        return float(count_tool_calls(state))
+
+    @vf.metric
+    async def assistant_turns(self, state: vf.State) -> float:
+        return float(len(state.transcript))
+
+    @vf.metric
+    async def invalid_link_rate(self, state: vf.State) -> float:
+        clicks = 0
+        invalid = 0
+        id_to_name = {
+            tool_call.id: tool_call.name
+            for turn in state.transcript
+            for tool_call in turn.tool_calls
+        }
+        for turn in state.transcript:
+            for result in turn.tool_results:
+                if id_to_name.get(result.tool_call_id) != "click_link":
+                    continue
+                clicks += 1
+                if (
+                    isinstance(result.content, str)
+                    and "is not a valid link" in result.content
+                ):
+                    invalid += 1
+        return float(invalid / clicks) if clicks else 0.0
+
 
 class WikispeediaHarness(vf.Harness[WikispeediaHarnessConfig]):
-    pass
+    async def _run(
+        self,
+        task: WikispeediaTask,
+        state: vf.State,
+        *,
+        ctx: vf.RolloutContext,
+        runtime: vf.RuntimeSession | None = None,
+        tools: vf.MCPToolRegistry | None = None,
+        user: vf.MCPToolRegistry | None = None,
+    ) -> None:
+        if runtime is None:
+            raise ValueError("WikispeediaHarness requires a runtime session.")
+        _ = tools, user
+        from deepagents import create_deep_agent
+        from langchain_core.tools import tool
+        from langchain_openai import ChatOpenAI
+        from langgraph.errors import GraphRecursionError
+
+        wiki = load_wiki_graph(cache_dir(task))
+        init_navigation_state(task, state)
+        prompt = self.initial_messages(task)
+
+        @tool
+        async def click_link(article: str) -> str:
+            """Navigate to a linked Wikipedia article."""
+            return click_link_result(article, wiki, state)
+
+        nav_tools = [click_link]
+        if allow_go_back(task):
+
+            @tool
+            async def go_back() -> str:
+                """Undo the last click_link and return to the previous article."""
+                return go_back_result(wiki, state)
+
+            nav_tools.append(go_back)
+
+        async def stop_check() -> str | None:
+            if await self.is_completed(task, state, ctx=ctx):
+                return state.stop_condition or "stop"
+            return None
+
+        async with vf.InterceptionServer(
+            ctx,
+            task,
+            state,
+            protocols=self.protocols,
+            stop_check=stop_check,
+        ) as endpoint:
+            endpoint_url = await runtime.expose(endpoint.port)
+            endpoint_env = endpoint.env(base_url=endpoint_url, model=ctx.model)
+            system_messages = [
+                message for message in prompt if message.role == "system"
+            ]
+            user_messages = [message for message in prompt if message.role != "system"]
+            model = ChatOpenAI(
+                model=endpoint_env["OPENAI_MODEL"],
+                base_url=endpoint_env["OPENAI_BASE_URL"],
+                api_key=endpoint_env["OPENAI_API_KEY"],
+            )
+            agent = create_deep_agent(
+                model=model,
+                tools=nav_tools,
+                system_prompt=vf.messages_text(system_messages),
+            )
+            invoke_config = (
+                {"recursion_limit": self.config.max_turns}
+                if self.config.max_turns > 0
+                else None
+            )
+            invoke = agent.ainvoke(
+                {
+                    "messages": [
+                        {"role": "user", "content": vf.messages_text(user_messages)}
+                    ]
+                },
+                config=invoke_config,
+            )
+            try:
+                result = await asyncio.wait_for(
+                    invoke, timeout=self.config.timeout_seconds
+                )
+            except (TimeoutError, GraphRecursionError) as exc:
+                state.scratch["agent_timeout"] = True
+                state.stop(
+                    "agent_timeout"
+                    if isinstance(exc, TimeoutError)
+                    else "agent_recursion_limit"
+                )
+                return
+
+        messages = result.get("messages", []) if isinstance(result, Mapping) else []
+        completion = serialize_agent_completion(messages)
+        if completion:
+            final = completion[-1]
+            content = final.content if hasattr(final, "content") else ""
+            state.artifacts["agent_result"] = str(content or "")
+        if not state.transcript:
+            state.add_turn(vf.Turn(prompt=prompt, completion=completion))
+        if not state.is_completed:
+            state.stop("agent_completed")
 
 
 def format_article(wiki: WikiGraph, article: str, links_only: bool = False) -> str:
@@ -94,224 +264,33 @@ def format_article(wiki: WikiGraph, article: str, links_only: bool = False) -> s
     return f"# {article}\n\n{text}\n\n---\nAvailable links: {links_str}"
 
 
-async def click_link(article: str, wiki: WikiGraph, state: vf.State) -> str:
-    """Navigate to a linked Wikipedia article."""
-    links_only = bool(state.get("links_only", False))
-    current = state["current_article"]
-    available = wiki.get_links(current)
-    normalized = wiki.normalize_name(article)
-    if normalized is None or normalized not in available:
-        avail_str = ", ".join(available) if available else "(none)"
-        return (
-            f"'{article}' is not a valid link from '{current}'.\n"
-            f"Available links: {avail_str}"
-        )
-    state["current_article"] = normalized
-    state["path"].append(normalized)
-    if normalized == state["info"]["target"]:
-        state["reached_target"] = True
-        state.stop("target_reached")
-        return (
-            f"TARGET REACHED: {normalized}\n\n"
-            "You successfully navigated to the target. Stop calling tools "
-            "and reply briefly to confirm."
-        )
-    return format_article(wiki, normalized, links_only=links_only)
-
-
-async def go_back(wiki: WikiGraph, state: vf.State) -> str:
-    """Undo the last click_link and return to the previous article."""
-    path = state["path"]
-    if len(path) <= 1:
-        return "You are already at the starting article. Cannot go back."
-    path.pop()
-    state["current_article"] = path[-1]
-    return format_article(
-        wiki, path[-1], links_only=bool(state.get("links_only", False))
-    )
-
-
-DEEP_AGENT_TOOLS = {
-    "write_todos",
-    "write_file",
-    "read_file",
-    "ls",
-    "edit_file",
-    "grep",
-    "task",
-}
-WIKISPEEDIA_TOOLS = {"click_link", "go_back"}
-
-
-async def reached_target(task: vf.Task, state: vf.State) -> float:
-    return 1.0 if state.get("reached_target", False) else 0.0
-
-
-async def path_efficiency(task: vf.Task, state: vf.State) -> float:
-    if not state.get("reached_target", False):
-        return 0.0
-    shortest = float(state["info"]["shortest_path"])
-    actual = max(len(state.get("path", [])) - 1, 1)
-    return min(1.0, shortest / actual)
-
-
-async def path_length(task: vf.Task, state: vf.State) -> float:
-    return float(max(len(state.get("path", [])) - 1, 0))
-
-
-async def shortest_path(task: vf.Task, state: vf.State) -> float:
-    return float(state.get("info", {}).get("shortest_path", 0))
-
-
-async def agent_timeout(task: vf.Task, state: vf.State) -> float:
-    return 1.0 if state.get("agent_timeout", False) else 0.0
-
-
-def iter_tool_calls(state: vf.State) -> Iterator[str]:
-    completion = state.get("completion") or []
-    messages = (
-        vf.get_messages(completion, role="assistant")
-        if isinstance(completion, list)
-        else []
-    )
-    for msg in messages:
-        tool_calls = msg.tool_calls
-        if not isinstance(tool_calls, list):
-            continue
-        for tool_call in tool_calls:
-            yield tool_call.name
-
-
-def count_tool_calls(state: vf.State, name: str | None = None) -> int:
-    if name is None:
-        return sum(1 for _ in iter_tool_calls(state))
-    return sum(1 for tool_name in iter_tool_calls(state) if tool_name == name)
-
-
-def make_tool_count_metric(
-    name: str,
-) -> Callable[[vf.Task, vf.State], Awaitable[float]]:
-    async def metric(task: vf.Task, state: vf.State) -> float:
-        return float(count_tool_calls(state, name))
-
-    metric.__name__ = f"calls_{name}"
-    return metric
-
-
-def load_toolset(
-    cache_dir: str | None = None,
-    allow_go_back: bool = True,
-    config: vf.ToolsetConfig | None = None,
-) -> vf.Toolset:
-    wiki_graph: WikiGraph | None = None
-
-    def wiki() -> WikiGraph:
-        nonlocal wiki_graph
-        if wiki_graph is None:
-            wiki_graph = load_wiki_graph(cache_dir)
-        return wiki_graph
-
-    async def click_link_tool(article: str, state: vf.State) -> str:
-        return await click_link(article, wiki(), state)
-
-    click_link_tool.__name__ = "click_link"
-    click_link_tool.__doc__ = click_link.__doc__
-
-    tools: list[vf.Handler] = [click_link_tool]
-    if allow_go_back:
-
-        async def go_back_tool(state: vf.State) -> str:
-            return await go_back(wiki(), state)
-
-        go_back_tool.__name__ = "go_back"
-        go_back_tool.__doc__ = go_back.__doc__
-        tools.append(go_back_tool)
-    return vf.Toolset(
-        tools=tools,
-        config=config,
-    )
-
-
-async def total_tool_calls(task: vf.Task, state: vf.State) -> float:
-    return float(count_tool_calls(state))
-
-
-async def assistant_turns(task: vf.Task, state: vf.State) -> float:
-    completion = state.get("completion") or []
-    return float(
-        len(vf.get_messages(completion, role="assistant"))
-        if isinstance(completion, list)
-        else 0
-    )
-
-
-async def invalid_link_rate(task: vf.Task, state: vf.State) -> float:
-    clicks = 0
-    invalid = 0
-    completion = state.get("completion") or []
-    if not isinstance(completion, list):
-        return 0.0
-
-    transcript = vf.get_messages(completion)
-    id_to_name: dict[str, str] = {}
-    for msg in transcript:
-        if msg.role == "assistant":
-            tool_calls = msg.tool_calls
-            if tool_calls:
-                for tc in tool_calls:
-                    id_to_name[tc.id] = tc.name
-
-    for msg in transcript:
-        if msg.role != "tool":
-            continue
-        tool_name = id_to_name.get(msg.tool_call_id)
-        if tool_name is None:
-            extra = msg.get("name")
-            tool_name = extra if isinstance(extra, str) else None
-        if tool_name != "click_link":
-            continue
-        clicks += 1
-        content = msg.content
-        if isinstance(content, str) and "is not a valid link" in content:
-            invalid += 1
-    return float(invalid / clicks) if clicks else 0.0
-
-
-@vf.update(priority=-200)
-async def restore_agent_completion(task: vf.Task, state: vf.State) -> None:
-    agent_completion = state.get("agent_completion")
-    if isinstance(agent_completion, list):
-        state["completion"] = agent_completion
-
-
 def build_dataset(
     wiki: WikiGraph,
     pairs: list[WikiPair],
+    cache_dir: str | None,
     links_only: bool,
+    allow_go_back: bool,
     max_turns: int,
 ) -> Dataset:
-    records = []
+    records: list[vf.JsonData] = []
     for source, target, dist in pairs:
         starting = format_article(wiki, source, links_only=links_only)
         prompt_text = (
             f"Your mission: {source} >> {target}\n\n"
             f"Here is the starting article:\n\n{starting}"
         )
-        info: vf.ConfigData = {
-            "source": source,
-            "target": target,
-            "shortest_path": dist,
-        }
-        human = wiki.get_human_stats(source, target)
-        if human is not None:
-            info.update(human)
+        _ = wiki.get_human_stats(source, target)
         records.append(
             {
                 "task_id": f"{source}->{target}",
                 "prompt": [{"role": "user", "content": prompt_text}],
                 "answer": target,
-                "info": info,
+                "source": source,
+                "target": target,
+                "shortest_path": dist,
+                "cache_dir": cache_dir,
                 "links_only": links_only,
+                "allow_go_back": allow_go_back,
                 "max_turns": max_turns,
             }
         )
@@ -339,14 +318,116 @@ def load_tasks(
     return build_dataset(
         load_wiki_graph(config.cache_dir),
         train if split == "train" else eval_,
+        cache_dir=config.cache_dir,
         links_only=config.links_only,
+        allow_go_back=config.allow_go_back,
         max_turns=config.max_turns,
     )
 
 
+def init_navigation_state(task: WikispeediaTask, state: vf.State) -> None:
+    state.scratch["current_article"] = task.source
+    state.scratch["path"] = [task.source]
+    state.scratch["target"] = task.target
+    state.scratch["shortest_path"] = task.shortest_path
+    state.scratch["reached_target"] = False
+    state.scratch["agent_timeout"] = False
+    state.scratch["links_only"] = task.links_only
+
+
+def cache_dir(task: WikispeediaTask) -> str | None:
+    return task.cache_dir
+
+
+def allow_go_back(task: WikispeediaTask) -> bool:
+    return task.allow_go_back
+
+
+def current_article(state: vf.State) -> str:
+    value = state.scratch.get("current_article")
+    if not isinstance(value, str):
+        raise RuntimeError("Wikispeedia current article is not initialized.")
+    return value
+
+
+def target_article(state: vf.State) -> str:
+    value = state.scratch.get("target")
+    if not isinstance(value, str):
+        raise RuntimeError("Wikispeedia target article is not initialized.")
+    return value
+
+
+def path(state: vf.State) -> list[str]:
+    value = state.scratch.get("path")
+    if isinstance(value, list) and all(isinstance(item, str) for item in value):
+        return list(value)
+    return []
+
+
+def set_path(state: vf.State, articles: list[str]) -> None:
+    state.scratch["path"] = articles
+
+
+def click_link_result(article: str, wiki: WikiGraph, state: vf.State) -> str:
+    links_only = bool(state.scratch.get("links_only", False))
+    current = current_article(state)
+    available = wiki.get_links(current)
+    normalized = wiki.normalize_name(article)
+    if normalized is None or normalized not in available:
+        avail_str = ", ".join(available) if available else "(none)"
+        return (
+            f"'{article}' is not a valid link from '{current}'.\n"
+            f"Available links: {avail_str}"
+        )
+    route = path(state)
+    route.append(normalized)
+    set_path(state, route)
+    state.scratch["current_article"] = normalized
+    if normalized == target_article(state):
+        state.scratch["reached_target"] = True
+        state.stop("target_reached")
+        return (
+            f"TARGET REACHED: {normalized}\n\n"
+            "You successfully navigated to the target. Stop calling tools and reply briefly."
+        )
+    return format_article(wiki, normalized, links_only=links_only)
+
+
+def go_back_result(wiki: WikiGraph, state: vf.State) -> str:
+    route = path(state)
+    if len(route) <= 1:
+        return "You are already at the starting article. Cannot go back."
+    route.pop()
+    set_path(state, route)
+    state.scratch["current_article"] = route[-1]
+    return format_article(
+        wiki, route[-1], links_only=bool(state.scratch.get("links_only", False))
+    )
+
+
+def path_efficiency(state: vf.State) -> float:
+    if not bool(state.scratch.get("reached_target", False)):
+        return 0.0
+    shortest = 0.0
+    raw_shortest = state.scratch.get("shortest_path")
+    if isinstance(raw_shortest, int | float) and not isinstance(raw_shortest, bool):
+        shortest = float(raw_shortest)
+    actual = max(len(path(state)) - 1, 1)
+    return min(1.0, shortest / actual) if shortest > 0 else 0.0
+
+
+def count_tool_calls(state: vf.State, name: str | None = None) -> int:
+    names = [
+        tool_call.name for turn in state.transcript for tool_call in turn.tool_calls
+    ]
+    if name is None:
+        return len(names)
+    return sum(1 for tool_name in names if tool_name == name)
+
+
 def serialize_agent_completion(
     messages: Sequence[AgentMessage | vf.JsonData],
-) -> list[vf.ConfigData]:
+) -> vf.Messages:
     role_aliases = {
         "human": "user",
         "ai": "assistant",
@@ -354,13 +435,14 @@ def serialize_agent_completion(
         "system": "system",
     }
     call_names: dict[str, str] = {}
-    serialized: list[vf.ConfigData] = []
+    serialized: list[vf.JsonData] = []
     for message in messages:
         if isinstance(message, Mapping):
-            payload = dict(message)
+            payload = cast(vf.JsonData, dict(message))
         else:
             model_dump = getattr(message, "model_dump", None)
-            payload = (
+            payload = cast(
+                vf.JsonData,
                 model_dump(mode="json", exclude_none=True)
                 if callable(model_dump)
                 else {
@@ -370,21 +452,18 @@ def serialize_agent_completion(
                     "name": getattr(message, "name", None),
                     "tool_call_id": getattr(message, "tool_call_id", None),
                     "tool_calls": getattr(message, "tool_calls", None),
-                }
+                },
             )
         raw_role = payload.get("role") or payload.get("type") or "assistant"
         role = role_aliases.get(str(raw_role), str(raw_role))
-        item: vf.ConfigData = {
-            "role": role,
-            "content": payload.get("content", ""),
-        }
+        item: vf.JsonData = {"role": role, "content": payload.get("content", "")}
         tool_calls = payload.get("tool_calls")
         if isinstance(tool_calls, list) and tool_calls:
-            normalized_tool_calls = []
+            normalized_tool_calls: list[vf.JsonData] = []
             for tool_call in tool_calls:
                 if not isinstance(tool_call, Mapping):
                     continue
-                tool_call_payload = dict(tool_call)
+                tool_call_payload = cast(vf.JsonData, dict(tool_call))
                 name = tool_call_payload.get("name")
                 tool_id = tool_call_payload.get("id") or tool_call_payload.get(
                     "tool_call_id"
@@ -408,175 +487,13 @@ def serialize_agent_completion(
         if isinstance(tool_call_id, str):
             item["tool_call_id"] = tool_call_id
             if item["role"] == "tool" and "name" not in item:
-                name = call_names.get(tool_call_id)
-                if name is not None:
-                    item["name"] = name
+                tool_name = call_names.get(tool_call_id)
+                if tool_name is not None:
+                    item["name"] = tool_name
         serialized.append(item)
     if serialized and serialized[0].get("role") == "user":
-        return serialized[1:]
-    return serialized
-
-
-def langchain_navigation_tools(runtime_tools):
-    from langchain_core.tools import tool
-
-    nav_tools = []
-    if "click_link" in runtime_tools:
-        click_link_tool = runtime_tools["click_link"]
-
-        @tool
-        async def click_link(article: str) -> str:
-            """Navigate to a linked Wikipedia article."""
-            return str(await click_link_tool(article=article))
-
-        nav_tools.append(click_link)
-    if "go_back" in runtime_tools:
-        go_back_tool = runtime_tools["go_back"]
-
-        @tool
-        async def go_back() -> str:
-            """Undo the last click_link and return to the previous article."""
-            return str(await go_back_tool())
-
-        nav_tools.append(go_back)
-    return nav_tools
-
-
-def make_langchain_deep_agents_program(
-    max_turns: int,
-    timeout_seconds: float,
-) -> Callable[[vf.Task, vf.State], Awaitable[vf.State]]:
-    async def run_langchain_deep_agents_wikispeedia_program(
-        task: vf.Task, state: vf.State
-    ) -> vf.State:
-        from deepagents import create_deep_agent
-        from langchain_openai import ChatOpenAI
-        from langgraph.errors import GraphRecursionError
-        from openai import OpenAI
-
-        state["current_article"] = state["info"]["source"]
-        state["path"] = [state["info"]["source"]]
-        state["reached_target"] = False
-        state["agent_timeout"] = False
-        state["links_only"] = bool(task.get("links_only", False))
-
-        endpoint_config = state.get_endpoint_config(api="chat")
-        endpoint_client = cast(OpenAI, state.get_client(api="chat", sync=True))
-        endpoint_api_key = endpoint_client.api_key
-        endpoint_client.close()
-        model = ChatOpenAI(
-            model=endpoint_config.model,
-            base_url=endpoint_config.base_url,
-            api_key=endpoint_api_key,
-        )
-        runtime_tools = state.get_tools()
-        nav_tools = langchain_navigation_tools(runtime_tools)
-        state_system_prompt = ""
-        system_prompt_messages = state.get("system_prompt")
-        if isinstance(system_prompt_messages, list):
-            state_system_prompt = "\n\n".join(
-                str(message.content or "")
-                for message in vf.get_messages(system_prompt_messages)
-            )
-        agent = create_deep_agent(
-            model=model,
-            tools=nav_tools,
-            system_prompt=state_system_prompt or SYSTEM_PROMPT,
-        )
-        prompt = str(cast(list[vf.ConfigData], state["prompt"])[-1]["content"])
-        recursion_limit = state.get_max_turns(max_turns)
-        invoke_config = (
-            {"recursion_limit": recursion_limit} if recursion_limit > 0 else None
-        )
-        invoke = agent.ainvoke(
-            {"messages": [{"role": "user", "content": prompt}]},
-            config=invoke_config,
-        )
-        try:
-            result = await asyncio.wait_for(invoke, timeout=timeout_seconds)
-        except (TimeoutError, GraphRecursionError) as exc:
-            state["agent_timeout"] = True
-            state.stop(
-                "agent_timeout"
-                if isinstance(exc, TimeoutError)
-                else "agent_recursion_limit"
-            )
-            state.setdefault("agent_completion", [])
-            return state
-
-        messages = result.get("messages", []) if isinstance(result, Mapping) else []
-        completion = serialize_agent_completion(messages)
-        state["agent_completion"] = completion
-        state["completion"] = completion
-        if completion:
-            state["agent_result"] = str(completion[-1].get("content") or "")
-        return state
-
-    return run_langchain_deep_agents_wikispeedia_program
-
-
-async def run_langchain_deep_agents_wikispeedia_program(
-    task: vf.Task, state: vf.State, harness: WikispeediaHarness
-) -> vf.State:
-    return await make_langchain_deep_agents_program(
-        max_turns=harness.config.max_turns,
-        timeout_seconds=harness.config.timeout_seconds,
-    )(task, state)
-
-
-def load_taskset(
-    config: WikispeediaTasksetConfig,
-) -> WikispeediaTaskset:
-    rewards = [reached_target]
-    metrics = [
-        path_length,
-        shortest_path,
-        agent_timeout,
-        total_tool_calls,
-        assistant_turns,
-        invalid_link_rate,
-        *[
-            make_tool_count_metric(name)
-            for name in sorted(DEEP_AGENT_TOOLS | WIKISPEEDIA_TOOLS)
-        ],
-    ]
-    if config.efficiency_weight > 0:
-
-        async def weighted_path_efficiency(task: vf.Task, state: vf.State) -> float:
-            return await path_efficiency(task, state)
-
-        weighted_path_efficiency.__name__ = "path_efficiency"
-        rewards.append(
-            vf.reward(weight=config.efficiency_weight)(weighted_path_efficiency)
-        )
-    else:
-        metrics.insert(0, path_efficiency)
-
-    taskset = WikispeediaTaskset(config=config)
-    taskset.taskset_id = "langchain-deep-agents-wikispeedia"
-    taskset.system_prompt = normalize_system_prompt(
-        system_prompt(allow_go_back=config.allow_go_back),
-        field_name="taskset.system_prompt",
-    )
-    taskset.add_toolset(
-        load_toolset(
-            cache_dir=config.cache_dir,
-            allow_go_back=config.allow_go_back,
-        )
-    )
-    for reward in rewards:
-        taskset.add_reward(reward)
-    for metric in metrics:
-        taskset.add_metric(metric)
-    return taskset
-
-
-def load_harness(
-    config: WikispeediaHarnessConfig,
-) -> WikispeediaHarness:
-    harness = WikispeediaHarness(config=config)
-    harness.add_update(restore_agent_completion)
-    return harness
+        serialized = serialized[1:]
+    return vf.get_messages(serialized)
 
 
 class WikispeediaEnvConfig(vf.EnvConfig):
@@ -584,8 +501,17 @@ class WikispeediaEnvConfig(vf.EnvConfig):
     harness: WikispeediaHarnessConfig = WikispeediaHarnessConfig()
 
 
+def load_taskset(config: WikispeediaTasksetConfig) -> WikispeediaTaskset:
+    return WikispeediaTaskset(config=config)
+
+
+def load_harness(config: WikispeediaHarnessConfig) -> WikispeediaHarness:
+    return WikispeediaHarness(config=config)
+
+
 def load_environment(config: WikispeediaEnvConfig) -> vf.Env:
     return vf.Env(
-        taskset=vf.load_taskset(config=config.taskset),
-        harness=vf.load_harness(config=config.harness),
+        taskset=load_taskset(config.taskset),
+        harness=load_harness(config.harness),
+        runtime=config.runtime,
     )

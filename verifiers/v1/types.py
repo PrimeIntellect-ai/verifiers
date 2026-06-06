@@ -1,12 +1,25 @@
 from collections.abc import Awaitable, Callable, Iterable, Sequence
-from typing import Literal, TYPE_CHECKING, TypeAlias
+from dataclasses import dataclass
+from typing import Literal, TYPE_CHECKING, TypeAlias, cast
 
 from datasets import Dataset
+from pydantic import Field
 from verifiers.clients import Client
-from verifiers.types import ClientConfig, Message, MessageContent, Messages
+from verifiers.types import (
+    ClientConfig,
+    Message,
+    MessageContent,
+    Messages,
+    Response,
+    SamplingArgs,
+    Tool,
+)
 from typing_extensions import TypeAliasType
 
+from .config import Config
+
 if TYPE_CHECKING:
+    from .state import State
     from .task import Task
 
 JsonScalar: TypeAlias = str | int | float | bool | None
@@ -15,24 +28,9 @@ JsonValue = TypeAliasType(
     JsonScalar | list["JsonValue"] | dict[str, "JsonValue"],
 )
 JsonData: TypeAlias = dict[str, JsonValue]
-ConfigValue = TypeAliasType(
-    "ConfigValue",
-    JsonScalar
-    | list["ConfigValue"]
-    | tuple["ConfigValue", ...]
-    | dict[str, "ConfigValue"],
-)
-ConfigData: TypeAlias = dict[str, ConfigValue]
 
 HandlerResult: TypeAlias = (
-    JsonValue
-    | JsonData
-    | ConfigData
-    | Message
-    | Messages
-    | MessageContent
-    | Sequence[float]
-    | None
+    JsonValue | JsonData | Message | Messages | MessageContent | Sequence[float] | None
 )
 Handler: TypeAlias = Callable[..., HandlerResult | Awaitable[HandlerResult]]
 
@@ -42,12 +40,80 @@ Tasks: TypeAlias = Dataset | Iterable[JsonData] | Iterable["Task"]
 PromptMessage: TypeAlias = Message | JsonData
 PromptInput: TypeAlias = str | Sequence[PromptMessage]
 
-ModelClient: TypeAlias = Client | ClientConfig
-RuntimeObject: TypeAlias = object
-RuntimeData: TypeAlias = dict[str, RuntimeObject]
-RuntimeCallableResult: TypeAlias = RuntimeObject | Awaitable[RuntimeObject]
-RuntimeCallable: TypeAlias = Callable[..., RuntimeCallableResult]
-ObjectFactoryResult: TypeAlias = RuntimeObject | Awaitable[RuntimeObject]
-ObjectFactory: TypeAlias = Callable[..., ObjectFactoryResult]
-Objects: TypeAlias = dict[str, ObjectFactory]
-ToolParameters: TypeAlias = dict[str, RuntimeObject]
+
+class ModelConfig(Config):
+    client: ClientConfig = Field(default_factory=ClientConfig)
+    model: str
+    sampling_args: JsonData = Field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ModelClient:
+    config: ModelConfig
+    client: Client
+
+    async def get_response(
+        self,
+        *,
+        prompt: Messages,
+        state: "State | None" = None,
+        model: str | None = None,
+        sampling_args: SamplingArgs | None = None,
+        tools: list[Tool] | None = None,
+    ) -> Response:
+        kwargs: dict[str, object] = {}
+        if state is not None:
+            kwargs["state"] = client_state_record(state)
+        return await self.client.get_response(
+            prompt=prompt,
+            model=model or self.config.model,
+            sampling_args=sampling_args or dict(self.config.sampling_args),
+            tools=tools,
+            **kwargs,
+        )
+
+
+@dataclass(frozen=True)
+class RolloutContext:
+    model_client: ModelClient
+    teacher: ModelClient | None = None
+
+    @property
+    def client(self) -> Client:
+        return self.model_client.client
+
+    @property
+    def model(self) -> str:
+        return self.model_client.config.model
+
+    @property
+    def sampling_args(self) -> SamplingArgs:
+        return dict(self.model_client.config.sampling_args)
+
+
+def client_state_record(state: "State") -> dict[str, object]:
+    trajectory: list[dict[str, object]] = []
+    for turn in state.transcript:
+        tokens = (
+            cast(dict[str, object], turn.tokens.model_dump(mode="json"))
+            if turn.tokens is not None
+            else None
+        )
+        trajectory.append(
+            {
+                "prompt": turn.prompt,
+                "completion": turn.completion,
+                "tokens": tokens,
+                "reward": turn.reward,
+                "is_truncated": turn.is_truncated,
+            }
+        )
+    record: dict[str, object] = {
+        "id": state.id,
+        "task_id": state.task_id,
+        "group_id": state.group_id,
+        "scratch": dict(state.scratch),
+        "metadata": dict(state.metadata),
+        "trajectory": trajectory,
+    }
+    return {key: value for key, value in record.items() if value is not None}

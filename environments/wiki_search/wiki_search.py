@@ -43,8 +43,8 @@ def load_environment(
             or judge_api_key_var != DEFAULT_JUDGE_API_KEY_VAR
         ):
             raise ValueError(
-                'v1 wiki_search judges through state.get_endpoint_config(api="chat"); '
-                "set the rollout endpoint and only override judge_model."
+                "v1 wiki_search does not use a separate judge endpoint; set the "
+                "rollout endpoint instead."
             )
         from wiki_search_v1 import (
             WikiSearchEnvConfig,
@@ -56,7 +56,6 @@ def load_environment(
             config=WikiSearchEnvConfig(
                 taskset=WikiSearchTasksetConfig(
                     max_turns=max_turns,
-                    judge_model=judge_model,
                     corpus_dataset=corpus_dataset,
                     corpus_split=corpus_split,
                     chroma_db_dir=chroma_db_dir,

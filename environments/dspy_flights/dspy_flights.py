@@ -2,33 +2,28 @@ import asyncio
 import functools
 import random
 import string
-from collections.abc import Mapping
-from typing import cast
+from collections.abc import Callable, Mapping
+from typing import Literal, TypeAlias, cast
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-import verifiers as vf
+import verifiers.v1 as vf
 
-PROGRAM_SANDBOX = {
-    "image": "python:3.11-slim",
-    "network_access": True,
-    "timeout_minutes": 60,
-    "command_timeout": 900,
-    "install_timeout": 900,
-}
+DSPyToolResult: TypeAlias = (
+    str
+    | None
+    | BaseModel
+    | list[BaseModel]
+    | tuple[str, BaseModel]
+    | tuple[str, dict[str, BaseModel]]
+)
 
 
 class DSPyFlightsHarnessConfig(vf.HarnessConfig):
-    program: vf.ProgramConfig = vf.ProgramConfig(
-        fn="run_dspy_flight_program",
-        sandbox=True,
-    )
-    sandbox: vf.SandboxConfig = vf.SandboxConfig(**PROGRAM_SANDBOX)
+    max_iters: int = 8
 
 
 class Date(BaseModel):
-    # Somehow LLM is bad at specifying `datetime.datetime`, so
-    # we define a custom class to represent the date.
     year: int
     month: int
     day: int
@@ -59,6 +54,27 @@ class Itinerary(BaseModel):
 class Ticket(BaseModel):
     user_request: str
     user_profile: UserProfile
+
+
+class FlightRunResult(vf.Config):
+    process_result: str
+    reasoning: str = ""
+    itinerary_database: dict[str, vf.JsonData]
+    ticket_database: dict[str, vf.JsonData]
+
+
+class ExpectedFlightChange(BaseModel, extra="forbid"):
+    kind: Literal["book", "cancel", "ticket"]
+    user: str | None = None
+    flight_id: str | None = None
+    confirmation_number: str | None = None
+    contains: str | None = None
+
+
+class DSPyFlightsTask(vf.Task):
+    user_request: str
+    expected: ExpectedFlightChange
+    initial_itineraries: dict[str, Itinerary] = Field(default_factory=dict)
 
 
 def user_database() -> dict[str, UserProfile]:
@@ -107,51 +123,16 @@ def flight_database() -> dict[str, Flight]:
     }
 
 
-@vf.reward(weight=1.0)
-async def expected_database_change(task, state) -> float:
-    expected = task["expected"]
-    if expected["kind"] == "book":
-        itineraries = state.get("itinerary_database", {})
-        return float(
-            len(itineraries) == 1
-            and any(
-                item["user_profile"]["name"] == expected["user"]
-                and item["flight"]["flight_id"] == expected["flight_id"]
-                for item in itineraries.values()
-            )
-        )
-    if expected["kind"] == "cancel":
-        return float(
-            expected["confirmation_number"] not in state.get("itinerary_database", {})
-        )
-    if expected["kind"] == "ticket":
-        tickets = state.get("ticket_database", {})
-        return float(
-            len(tickets) == 1
-            and any(
-                item["user_profile"]["name"] == expected["user"]
-                and expected["contains"].lower() in item["user_request"].lower()
-                for item in tickets.values()
-            )
-        )
-    raise ValueError(f"Unknown expected kind: {expected['kind']}")
-
-
-@vf.metric
-async def dspy_calls(task, state) -> float:
-    return float(len(state.get("trajectory", [])))
-
-
-def load_tasks(split: vf.TaskSplit = "train"):
+def load_tasks(split: vf.TaskSplit = "train") -> list[vf.JsonData]:
     _ = split
 
     def record(
         example_id: int,
         user_request: str,
-        expected: vf.ConfigData,
-        initial_itineraries: dict[str, vf.ConfigData] | None = None,
-    ) -> vf.ConfigData:
-        task: vf.ConfigData = {
+        expected: vf.JsonData,
+        initial_itineraries: dict[str, vf.JsonData] | None = None,
+    ) -> vf.JsonData:
+        task: vf.JsonData = {
             "example_id": example_id,
             "user_request": user_request,
             "prompt": [{"role": "user", "content": user_request}],
@@ -193,20 +174,12 @@ def load_tasks(split: vf.TaskSplit = "train"):
                 "my name is David and I need wheelchair assistance added to my "
                 "reservation"
             ),
-            {
-                "kind": "ticket",
-                "user": "David",
-                "contains": "wheelchair assistance",
-            },
+            {"kind": "ticket", "user": "David", "contains": "wheelchair assistance"},
         ),
         record(
             4,
-            ("my name is Adam and I need a vegetarian meal noted for my upcoming trip"),
-            {
-                "kind": "ticket",
-                "user": "Adam",
-                "contains": "vegetarian meal",
-            },
+            "my name is Adam and I need a vegetarian meal noted for my upcoming trip",
+            {"kind": "ticket", "user": "Adam", "contains": "vegetarian meal"},
         ),
         record(
             5,
@@ -239,11 +212,7 @@ def load_tasks(split: vf.TaskSplit = "train"):
         record(
             9,
             "my name is Chelsie and I need to travel with a service animal",
-            {
-                "kind": "ticket",
-                "user": "Chelsie",
-                "contains": "service animal",
-            },
+            {"kind": "ticket", "user": "Chelsie", "contains": "service animal"},
         ),
     ]
 
@@ -259,60 +228,44 @@ def itinerary(confirmation_number: str, user_name: str, flight_id: str) -> Itine
 
 
 def build_airline_tools(
-    task,
-) -> tuple[list[vf.Handler], dict[str, dict[str, BaseModel]]]:
+    task: DSPyFlightsTask,
+) -> tuple[list[Callable[..., DSPyToolResult]], dict[str, dict[str, BaseModel]]]:
     users = user_database()
     flights = flight_database()
-    itineraries = {
-        key: Itinerary.model_validate(value)
-        for key, value in (task.get("initial_itineraries") or {}).items()
-    }
+    itineraries = dict(task.initial_itineraries)
     tickets: dict[str, Ticket] = {}
 
-    def fetch_flight_info(date: Date, origin: str, destination: str):
-        """Fetch flight information from origin to destination on the given date"""
+    def fetch_flight_info(date: Date, origin: str, destination: str) -> list[Flight]:
         date = Date.model_validate(date)
-        matching_flights = []
-
-        for flight in flights.values():
-            if (
-                flight.date_time.year == date.year
-                and flight.date_time.month == date.month
-                and flight.date_time.day == date.day
-                and flight.origin == origin
-                and flight.destination == destination
-            ):
-                matching_flights.append(flight)
-        if len(matching_flights) == 0:
-            raise ValueError("No matching flight found!")
+        matching_flights = [
+            flight
+            for flight in flights.values()
+            if flight.date_time.year == date.year
+            and flight.date_time.month == date.month
+            and flight.date_time.day == date.day
+            and flight.origin == origin
+            and flight.destination == destination
+        ]
+        if not matching_flights:
+            raise ValueError("No matching flight found.")
         return matching_flights
 
-    def fetch_itinerary(confirmation_number: str):
-        """Fetch a booked itinerary information from database"""
+    def fetch_itinerary(confirmation_number: str) -> Itinerary | None:
         return itineraries.get(confirmation_number)
 
-    def pick_flight(flights: list[Flight]):
-        """Pick up the best flight that matches users' request. we pick the shortest, and cheaper one on ties."""
-        sorted_flights = sorted(
-            flights,
-            key=lambda x: (
-                x.get("duration") if isinstance(x, dict) else x.duration,
-                x.get("price") if isinstance(x, dict) else x.price,
-            ),
-        )
-        return sorted_flights[0]
+    def pick_flight(flights: list[Flight]) -> Flight:
+        return sorted(flights, key=lambda flight: (flight.duration, flight.price))[0]
 
-    def _generate_id(length=8):
+    def generate_id(length: int = 8) -> str:
         chars = string.ascii_lowercase + string.digits
         return "".join(random.choices(chars, k=length))
 
-    def book_flight(flight: Flight, user_profile: UserProfile):
-        """Book a flight on behalf of the user."""
+    def book_flight(flight: Flight, user_profile: UserProfile) -> tuple[str, Itinerary]:
         flight = Flight.model_validate(flight)
         user_profile = UserProfile.model_validate(user_profile)
-        confirmation_number = _generate_id()
+        confirmation_number = generate_id()
         while confirmation_number in itineraries:
-            confirmation_number = _generate_id()
+            confirmation_number = generate_id()
         itineraries[confirmation_number] = Itinerary(
             confirmation_number=confirmation_number,
             user_profile=user_profile,
@@ -320,9 +273,8 @@ def build_airline_tools(
         )
         return confirmation_number, itineraries[confirmation_number]
 
-    def cancel_itinerary(confirmation_number: str, user_profile: UserProfile):
-        """Cancel an itinerary on behalf of the user."""
-        _ = UserProfile.model_validate(user_profile)
+    def cancel_itinerary(confirmation_number: str, user_profile: UserProfile) -> None:
+        UserProfile.model_validate(user_profile)
         if confirmation_number in itineraries:
             del itineraries[confirmation_number]
             return
@@ -330,21 +282,19 @@ def build_airline_tools(
             "Cannot find the itinerary, please check your confirmation number."
         )
 
-    def get_user_info(name: str):
-        """Fetch the user profile from database with given name."""
+    def get_user_info(name: str) -> UserProfile | None:
         return users.get(name)
 
-    def file_ticket(user_request: str, user_profile: UserProfile):
-        """File a customer support ticket if this is something the agent cannot handle."""
+    def file_ticket(user_request: str, user_profile: UserProfile) -> str:
         user_profile = UserProfile.model_validate(user_profile)
-        ticket_id = _generate_id(length=6)
+        ticket_id = generate_id(length=6)
         tickets[ticket_id] = Ticket(
             user_request=user_request,
             user_profile=user_profile,
         )
         return ticket_id
 
-    tools: list[vf.Handler] = [
+    tools: list[Callable[..., DSPyToolResult]] = [
         async_tool(fetch_flight_info),
         async_tool(fetch_itinerary),
         async_tool(pick_flight),
@@ -353,94 +303,161 @@ def build_airline_tools(
         async_tool(get_user_info),
         async_tool(file_ticket),
     ]
-    databases: dict[str, dict[str, BaseModel]] = {
-        "itinerary_database": itineraries,
-        "ticket_database": tickets,
-    }
-    return tools, databases
+    return tools, {"itinerary_database": itineraries, "ticket_database": tickets}
 
 
-def async_tool(fn: vf.Handler) -> vf.Handler:
+def async_tool(
+    fn: Callable[..., DSPyToolResult],
+) -> Callable[..., DSPyToolResult]:
     @functools.wraps(fn)
-    async def wrapped(*args: object, **kwargs: object) -> object:
+    async def wrapped(*args: object, **kwargs: object) -> DSPyToolResult:
         return await asyncio.to_thread(fn, *args, **kwargs)
 
     return wrapped
 
 
-def dump_database(database: dict[str, BaseModel]) -> dict[str, vf.ConfigData]:
-    return {key: value.model_dump() for key, value in database.items()}
+def dump_database(database: dict[str, BaseModel]) -> dict[str, vf.JsonData]:
+    return {
+        key: cast(vf.JsonData, value.model_dump(mode="json"))
+        for key, value in database.items()
+    }
 
 
-async def run_dspy_flight_program(task, state):
+async def run_dspy_flight_agent(
+    *,
+    task: DSPyFlightsTask,
+    base_url: str,
+    api_key: str,
+    model: str,
+    max_iters: int,
+) -> FlightRunResult:
     import dspy
-    from openai import OpenAI
 
     class DSPyAirlineCustomerService(dspy.Signature):
-        """You are an airline customer service agent that helps user book and manage flights.
-
-        You are given a list of tools to handle user request, and you should decide the right tool to use in order to
-        fulfill users' request.
-        """
+        """Airline customer service agent for booking and managing flights."""
 
         user_request: str = dspy.InputField()
         process_result: str = dspy.OutputField(
             desc=(
-                "Message that summarizes the process result, and the information users need, e.g., the "
-                "confirmation_number if a new flight is booked."
+                "Message that summarizes the process result and any information "
+                "the user needs, such as a confirmation number."
             )
         )
 
     tools, databases = build_airline_tools(task)
-    endpoint_config = state.get_endpoint_config(api="chat")
-    endpoint_client = cast(OpenAI, state.get_client(api="chat", sync=True))
-    endpoint_api_key = endpoint_client.api_key
-    endpoint_client.close()
     lm = dspy.LM(
-        f"openai/{endpoint_config.model}",
-        api_base=endpoint_config.base_url,
-        api_key=endpoint_api_key,
+        f"openai/{model}",
+        api_base=base_url,
+        api_key=api_key,
         cache=False,
     )
-    agent = dspy.ReAct(DSPyAirlineCustomerService, tools=tools, max_iters=8)
+    agent = dspy.ReAct(DSPyAirlineCustomerService, tools=tools, max_iters=max_iters)
     with dspy.context(lm=lm):
-        result = await agent.acall(user_request=task["user_request"])
+        result = await agent.acall(user_request=task.user_request)
 
-    state["process_result"] = str(result.process_result)
-    state["reasoning"] = str(getattr(result, "reasoning", ""))
-    state["dspy_trajectory"] = stringify_nested(getattr(result, "trajectory", {}))
-    state["itinerary_database"] = dump_database(databases["itinerary_database"])
-    state["ticket_database"] = dump_database(databases["ticket_database"])
-    state["completion"] = [
-        {"role": "assistant", "content": state["process_result"]},
-    ]
-    return state
-
-
-def stringify_nested(value: object) -> object:
-    if isinstance(value, BaseModel):
-        return stringify_nested(value.model_dump())
-    if isinstance(value, Mapping):
-        return {str(key): stringify_nested(item) for key, item in value.items()}
-    if isinstance(value, list | tuple):
-        return [stringify_nested(item) for item in value]
-    if isinstance(value, str | int | float | bool) or value is None:
-        return value
-    return str(value)
+    return FlightRunResult(
+        process_result=str(result.process_result),
+        reasoning=str(getattr(result, "reasoning", "")),
+        itinerary_database=dump_database(databases["itinerary_database"]),
+        ticket_database=dump_database(databases["ticket_database"]),
+    )
 
 
 class DSPyFlightsTasksetConfig(vf.TasksetConfig):
-    rewards: list[str] = ["expected_database_change"]
-    metrics: list[str] = ["dspy_calls"]
+    id: str = "dspy-flights"
 
 
 class DSPyFlightsTaskset(vf.Taskset[DSPyFlightsTasksetConfig]):
+    task_type = DSPyFlightsTask
+
     def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         return load_tasks(split)
 
+    @vf.reward
+    async def expected_database_change(
+        self, task: DSPyFlightsTask, state: vf.State
+    ) -> float:
+        expected = task.expected
+        itineraries = state.artifacts.get("itinerary_database")
+        tickets = state.artifacts.get("ticket_database")
+        itinerary_map = itineraries if isinstance(itineraries, Mapping) else {}
+        ticket_map = tickets if isinstance(tickets, Mapping) else {}
+
+        if expected.kind == "book":
+            return float(
+                len(itinerary_map) == 1
+                and any(
+                    isinstance(item, Mapping)
+                    and isinstance(item.get("user_profile"), Mapping)
+                    and isinstance(item.get("flight"), Mapping)
+                    and item["user_profile"].get("name") == expected.user
+                    and item["flight"].get("flight_id") == expected.flight_id
+                    for item in itinerary_map.values()
+                )
+            )
+        if expected.kind == "cancel":
+            return float(expected.confirmation_number not in itinerary_map)
+        if expected.kind == "ticket":
+            contains = str(expected.contains or "").lower()
+            return float(
+                len(ticket_map) == 1
+                and any(
+                    isinstance(item, Mapping)
+                    and isinstance(item.get("user_profile"), Mapping)
+                    and item["user_profile"].get("name") == expected.user
+                    and contains in str(item.get("user_request", "")).lower()
+                    for item in ticket_map.values()
+                )
+            )
+        raise ValueError(f"Unknown expected kind: {expected.kind!r}.")
+
+    @vf.metric
+    async def dspy_calls(self, state: vf.State) -> float:
+        return float(len(state.transcript))
+
 
 class DSPyFlightsHarness(vf.Harness[DSPyFlightsHarnessConfig]):
-    pass
+    async def _run(
+        self,
+        task: DSPyFlightsTask,
+        state: vf.State,
+        *,
+        ctx: vf.RolloutContext,
+        runtime: vf.RuntimeSession | None = None,
+        tools: vf.MCPToolRegistry | None = None,
+        user: vf.MCPToolRegistry | None = None,
+    ) -> None:
+        _ = tools, user
+        if runtime is None:
+            raise RuntimeError("DSPyFlightsHarness requires a runtime session.")
+        prompt = self.initial_messages(task)
+
+        async def stop_check() -> str | None:
+            if await self.is_completed(task, state, ctx=ctx):
+                return state.stop_condition or "stop"
+            return None
+
+        async with vf.InterceptionServer(
+            ctx,
+            task,
+            state,
+            protocols=self.protocols,
+            stop_check=stop_check,
+        ) as endpoint:
+            endpoint_url = await runtime.expose(endpoint.port)
+            endpoint_env = endpoint.env(base_url=endpoint_url, model=ctx.model)
+            result = await run_dspy_flight_agent(
+                task=task,
+                base_url=endpoint_env["OPENAI_BASE_URL"],
+                api_key=endpoint_env["OPENAI_API_KEY"],
+                model=endpoint_env["OPENAI_MODEL"],
+                max_iters=self.config.max_iters,
+            )
+
+        state.artifacts.update(result.model_dump(mode="json", exclude_none=True))
+        message = vf.AssistantMessage(content=result.process_result)
+        state.add_turn(vf.Turn(prompt=prompt, completion=[message]))
+        state.stop("dspy_completed")
 
 
 class DSPyFlightsEnvConfig(vf.EnvConfig):
@@ -452,4 +469,5 @@ def load_environment(config: DSPyFlightsEnvConfig) -> vf.Env:
     return vf.Env(
         taskset=DSPyFlightsTaskset(config=config.taskset),
         harness=DSPyFlightsHarness(config=config.harness),
+        runtime=config.runtime,
     )

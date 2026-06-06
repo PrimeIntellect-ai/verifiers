@@ -170,8 +170,9 @@ def system_prompt_resolution(
     taskset_system_prompt: list[JsonData],
     harness_system_prompt: list[JsonData],
 ) -> SystemPromptResolution:
+    raw_task_system_prompt = getattr(task, "system_prompt", None)
     task_system_prompt = normalize_system_prompt(
-        cast(PromptInput | None, task.get("system_prompt")),
+        cast(PromptInput | None, raw_task_system_prompt),
         field_name="task.system_prompt",
     )
     return SystemPromptResolution(
@@ -201,15 +202,17 @@ def task_text(
     *,
     keys: tuple[str, ...] = ("instruction",),
 ) -> str:
+    _ = state
     for key in keys:
-        value = task.get(key)
+        value = getattr(task, key, None)
         if isinstance(value, str) and value:
             return value
-    return messages_text(task.get("prompt", []))
+    return messages_text(task.prompt)
 
 
 def state_system_prompt_text(task: "Task", state: "State") -> str:
-    return messages_text(state.get("system_prompt", []))
+    _ = state
+    return messages_text(getattr(task, "system_prompt", []))
 
 
 def messages_text(messages: object) -> str:

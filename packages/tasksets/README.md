@@ -1,6 +1,6 @@
 # tasksets
 
-Reusable v1 `vf.Taskset` implementations for Verifiers.
+Reusable `verifiers.v1` taskset implementations.
 
 Tasksets own task data, task controls, task-owned tools, user behavior, rewards,
 metrics, and task-specific setup/cleanup. They are sibling packages to
@@ -35,7 +35,7 @@ Environment packages should expose a typed child loader and let Verifiers coerce
 the `[env.taskset]` config through that annotation:
 
 ```python
-import verifiers as vf
+import verifiers.v1 as vf
 from tasksets import HarborTaskset, HarborTasksetConfig
 
 
@@ -59,10 +59,10 @@ the intended config from Python/TOML.
 | Taskset | Purpose |
 | --- | --- |
 | `HarborTaskset` | Harbor task directories and Harbor Hub datasets. |
-| `OpenEnvTaskset` | Upstream OpenEnv projects with out-of-the-box task/tool use. |
-| `OpenRewardTaskset` | Upstream OpenReward environments and rollout-local session tools. |
+| `OpenEnvTaskset` | Upstream OpenEnv projects with rollout-local user simulation. |
+| `OpenRewardTaskset` | Upstream OpenReward environments with rollout-local user simulation. |
 | `ReplayTaskset` | HF datasets or explicit local JSONL chat transcripts for replay data. |
-| `TextArenaTaskset` | Compatible TextArena single-player games with a taskset-owned `vf.User`. |
+| `TextArenaTaskset` | Compatible TextArena single-player games with an MCP user server. |
 | `NeMoGymTaskset` | NeMo Gym JSONL task rows. |
 
 Taskset implementations follow the same rules as environment-local tasksets:
@@ -72,8 +72,8 @@ serializable, and utilities exist only for shared messy internals.
 ## Replay Transcript Data
 
 Use `ReplayTaskset` with `ReplayHarness` when each training example is already a
-chat transcript row and each assistant message should become one trajectory
-step.
+chat transcript row and each assistant message should become one transcript
+turn.
 
 For local data, put one JSON object per line in `.jsonl` files under a directory
 owned by the env package:
@@ -85,7 +85,7 @@ owned by the env package:
 `messages` must be a JSON array of message objects. Each message must have a
 string `role`; all other message fields are preserved. Assistant messages may
 appear anywhere in the transcript, and every assistant message is replayed as
-one trajectory step.
+one transcript turn.
 
 Set that local directory explicitly, either through `[env.taskset].data_dir` or
 on the env-local taskset subclass:
@@ -93,7 +93,7 @@ on the env-local taskset subclass:
 ```python
 from pathlib import Path
 
-import verifiers as vf
+import verifiers.v1 as vf
 from harnesses import ReplayHarness
 from tasksets import ReplayTaskset, ReplayTasksetConfig
 

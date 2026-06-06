@@ -1,9 +1,10 @@
 from collections.abc import Iterable
 from pathlib import Path
 import sys
-from typing import cast
 
-import verifiers as vf
+from pydantic import Field
+
+import verifiers.v1 as vf
 
 SYSTEM_PROMPT = "Use the available MCP tools to answer the question."
 
@@ -60,24 +61,27 @@ DEFAULT_EXAMPLES = [
     },
 ]
 MCP_SERVER_PATH = str(Path(__file__).with_name("mcp_server.py"))
-DEFAULT_MCP_SERVERS: list[vf.ConfigData] = [
-    {
-        "name": "records",
-        "command": sys.executable,
-        "args": [MCP_SERVER_PATH],
-        "description": "Synthetic search-record MCP server",
-    },
-]
 
 
 class MCPSearchTasksetConfig(vf.TasksetConfig):
-    rewards: list[str] = ["exact_title_reward"]
-    mcp_servers: list[vf.ConfigData] | None = None
+    mcp_servers: list[vf.MCPServerSpec] = Field(
+        default_factory=lambda: [
+            vf.MCPServerSpec(command=[sys.executable, MCP_SERVER_PATH])
+        ]
+    )
     max_turns: int = 6
-    examples: list[vf.ConfigData] | None = None
+    examples: list[vf.JsonData] | None = None
+
+
+class MCPSearchTask(vf.Task):
+    query: str
+    question: str
+    answer: str
 
 
 class MCPSearchTaskset(vf.Taskset[MCPSearchTasksetConfig]):
+    task_type = MCPSearchTask
+
     def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         return load_tasks(
             examples=self.config.examples, max_turns=self.config.max_turns
@@ -88,26 +92,17 @@ class MCPSearchTaskset(vf.Taskset[MCPSearchTasksetConfig]):
         return SYSTEM_PROMPT
 
     def load_toolsets(self, config: MCPSearchTasksetConfig) -> vf.Toolsets:
-        servers = config.mcp_servers or [dict(server) for server in DEFAULT_MCP_SERVERS]
-        return {
-            "records": vf.Toolset(
-                tools=[
-                    vf.MCPTool(
-                        command=str(server["command"]),
-                        args=[
-                            str(arg)
-                            for arg in cast(
-                                Iterable[str | int | float | bool],
-                                server.get("args") or [],
-                            )
-                        ],
-                        env=cast(dict[str, str] | None, server.get("env")),
-                        cwd=cast(str | None, server.get("cwd")),
-                    )
-                    for server in servers
-                ]
-            )
-        }
+        return [
+            vf.Toolset(name=f"records_{index}", server=server)
+            for index, server in enumerate(config.mcp_servers)
+        ]
+
+    @vf.reward(weight=1.0)
+    async def exact_title_reward(self, task: MCPSearchTask, state: vf.State) -> float:
+        completion = state.completion
+        messages = vf.get_messages(completion, role="assistant")
+        response = str(messages[-1].content or "") if messages else ""
+        return float(task.answer.lower() in response.lower())
 
 
 def load_tasks(
@@ -126,18 +121,6 @@ def load_tasks(
         }
 
 
-@vf.reward(weight=1.0)
-async def exact_title_reward(task: vf.Task, state: vf.State) -> float:
-    completion = state.get("completion") or []
-    messages = (
-        vf.get_messages(completion, role="assistant")
-        if isinstance(completion, list)
-        else []
-    )
-    response = str(messages[-1].content or "") if messages else ""
-    return float(str(task["answer"]).lower() in response.lower())
-
-
 class MCPSearchEnvConfig(vf.EnvConfig):
     taskset: MCPSearchTasksetConfig = MCPSearchTasksetConfig()
     harness: vf.HarnessConfig = vf.HarnessConfig()
@@ -147,4 +130,5 @@ def load_environment(config: MCPSearchEnvConfig) -> vf.Env:
     return vf.Env(
         taskset=MCPSearchTaskset(config=config.taskset),
         harness=vf.Harness(config=config.harness),
+        runtime=config.runtime,
     )

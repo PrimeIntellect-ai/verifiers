@@ -1,11 +1,10 @@
-import asyncio
-import random
 import re
+import sys
+import random
 from collections.abc import Sequence
-from typing import Generic, TypeVar
-from typing import Protocol, cast
+from typing import Generic, Protocol, TypeVar, cast
 
-import verifiers as vf
+import verifiers.v1 as vf
 
 try:
     import nltk
@@ -32,44 +31,37 @@ class TextArenaRuntimeEnv(Protocol):
     def step(self, action: str) -> object: ...
 
 
-class TextArenaUserConfig(vf.UserConfig):
-    objects: vf.ObjectsConfig = vf.ObjectsConfig.model_validate(
-        {"session": "tasksets.textarena:TextArenaSession"}
-    )
-
-
 class TextArenaTasksetConfig(vf.TasksetConfig):
-    taskset_id: str | None = "textarena"
+    id: str | None = "textarena"
     game: str
-    user: TextArenaUserConfig | None = TextArenaUserConfig()
+    user: vf.User | None = vf.User(
+        server=vf.MCPServerSpec(
+            command=[sys.executable, "-m", "tasksets.textarena", "--user-server"]
+        )
+    )
     num_train_examples: int = 2000
     num_eval_examples: int = 20
     seed: int = 0
     answer_state_key: str
 
 
-TextArenaConfigT = TypeVar("TextArenaConfigT", bound=TextArenaTasksetConfig)
+class TextArenaSpec(vf.Schema):
+    game: str
+    answer_state_key: str
 
 
-def _content_text(content: object) -> str:
-    if isinstance(content, str):
-        return content
-    if isinstance(content, Sequence) and not isinstance(
-        content, (str, bytes, bytearray)
-    ):
-        chunks: list[str] = []
-        for part in content:
-            if isinstance(part, vf.TextContentPart):
-                chunks.append(part.text)
-            elif isinstance(part, dict):
-                text = cast(dict[str, object], part).get("text")
-                if isinstance(text, str):
-                    chunks.append(text)
-        return "\n".join(chunks)
-    return ""
+class TextArenaTask(vf.Task):
+    answer: str
+    textarena: TextArenaSpec
 
 
-class TextArenaTaskset(vf.Taskset[TextArenaConfigT], Generic[TextArenaConfigT]):
+ConfigT = TypeVar("ConfigT", bound=TextArenaTasksetConfig)
+
+
+class TextArenaTaskset(vf.Taskset[ConfigT], Generic[ConfigT]):
+    config: ConfigT
+    task_type = TextArenaTask
+
     def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         if split == "eval":
             return self.textarena_tasks(
@@ -96,17 +88,9 @@ class TextArenaTaskset(vf.Taskset[TextArenaConfigT], Generic[TextArenaConfigT]):
         assert isinstance(template, ta.Env)
         template.reset(num_players=1)
         _, initial_prompt = template.get_observation()
-        assert isinstance(initial_prompt, str)
-        assert initial_prompt
-        words = template.word_list
-        if isinstance(words, dict):
-            words = [
-                word
-                for values in words.values()
-                for word in (values if isinstance(values, (list, tuple)) else [values])
-            ]
-        word_list = [str(word) for word in words]
-        assert word_list
+        if not isinstance(initial_prompt, str) or not initial_prompt:
+            raise ValueError("TextArena initial prompt must be a non-empty string.")
+        word_list = textarena_word_list(template)
         rng = random.Random(config.seed)
         for _ in range(first_seed_offset):
             rng.choice(word_list)
@@ -137,46 +121,100 @@ class TextArenaSession:
         return self.env
 
 
-class TextArenaUser(vf.User[TextArenaUserConfig]):
-    async def get_response(
-        self,
-        task: vf.Task,
-        state: vf.State,
-        messages: list[vf.Message],
-    ) -> list[vf.UserMessage]:
-        session = await self.get_object("session", task, state)
-        assert isinstance(session, TextArenaSession)
-        textarena_config = task["textarena"]
-        assert isinstance(textarena_config, dict)
-        game = textarena_config["game"]
-        assert isinstance(game, str)
-        answer_state_key = textarena_config["answer_state_key"]
-        assert isinstance(answer_state_key, str)
-        ta_env = session.env or session.reset(game)
-        answer = task["answer"]
-        assert isinstance(answer, str)
-        assert answer
-        ta_env.state.game_state[answer_state_key] = answer
-
-        assistant_messages = vf.get_messages(messages, role="assistant")
-        last_text = (
-            _content_text(assistant_messages[-1].content) if assistant_messages else ""
-        )
-        matches = re.findall(r"<guess>(.*?)</guess>", last_text, re.DOTALL)
-        guess = matches[-1].strip() if matches else ""
-        await asyncio.to_thread(ta_env.step, guess)
-        if ta_env.state.done:
-            reason = str(ta_env.state.game_info[0]["reason"])
-            state["final_env_response"] = reason
-            state.stop("textarena_done")
-            return [vf.UserMessage(content=reason)]
-
-        _, observation = await asyncio.to_thread(ta_env.get_observation)
-        assert isinstance(observation, str)
-        return [vf.UserMessage(content=observation)]
+SESSION = TextArenaSession()
 
 
-def load_taskset(
-    config: TextArenaTasksetConfig,
-) -> TextArenaTaskset:
+def textarena_word_list(env: object) -> list[str]:
+    raw_words = getattr(env, "word_list", None)
+    if isinstance(raw_words, dict):
+        raw_words = [
+            word
+            for values in raw_words.values()
+            for word in (values if isinstance(values, list | tuple) else [values])
+        ]
+    if not isinstance(raw_words, Sequence) or isinstance(raw_words, str | bytes):
+        raise ValueError("TextArena environment must expose a word_list sequence.")
+    words = [str(word) for word in raw_words]
+    if not words:
+        raise ValueError("TextArena word_list must not be empty.")
+    return words
+
+
+def content_text(content: object) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, Sequence) and not isinstance(
+        content, str | bytes | bytearray
+    ):
+        chunks: list[str] = []
+        for part in content:
+            if isinstance(part, dict):
+                text = part.get("text")
+                if isinstance(text, str):
+                    chunks.append(text)
+        return "\n".join(chunks)
+    return ""
+
+
+def run_user_server() -> None:
+    from mcp.server.fastmcp import FastMCP
+
+    mcp = FastMCP("textarena-user")
+
+    @mcp.tool()
+    def respond(task: dict, state: dict, transcript: list[dict]) -> dict:
+        return textarena_respond(task, state, transcript)
+
+    mcp.run(transport="stdio")
+
+
+def textarena_respond(task: dict, state: dict, transcript: list[dict]) -> dict:
+    _ = transcript
+    textarena = task.get("textarena")
+    if not isinstance(textarena, dict):
+        raise ValueError("TextArena task requires textarena config.")
+    game = textarena.get("game")
+    answer_state_key = textarena.get("answer_state_key")
+    answer = task.get("answer")
+    if not isinstance(game, str) or not isinstance(answer_state_key, str):
+        raise TypeError("TextArena task config must contain string fields.")
+    if not isinstance(answer, str) or not answer:
+        raise TypeError("TextArena task requires a non-empty answer.")
+    env = SESSION.env or SESSION.reset(game)
+    env.state.game_state[answer_state_key] = answer
+
+    raw_completion = state["completion"]
+    if not isinstance(raw_completion, list):
+        raise TypeError("TextArena state.completion must be a list.")
+    assistant_messages = [
+        message
+        for message in raw_completion
+        if isinstance(message, dict) and message.get("role") == "assistant"
+    ]
+    last_text = (
+        content_text(assistant_messages[-1].get("content"))
+        if assistant_messages
+        else ""
+    )
+    matches = re.findall(r"<guess>(.*?)</guess>", last_text, re.DOTALL)
+    guess = matches[-1].strip() if matches else ""
+    env.step(guess)
+    if env.state.done:
+        reason = str(env.state.game_info[0]["reason"])
+        return {
+            "messages": [vf.UserMessage(content=reason).model_dump(mode="json")],
+            "scratch": {"final_env_response": reason},
+            "stop_condition": "textarena_done",
+        }
+    _, observation = env.get_observation()
+    if not isinstance(observation, str):
+        raise TypeError("TextArena observation must be a string.")
+    return {"messages": [vf.UserMessage(content=observation).model_dump(mode="json")]}
+
+
+def load_taskset(config: TextArenaTasksetConfig) -> TextArenaTaskset:
     return TextArenaTaskset(config=config)
+
+
+if __name__ == "__main__" and sys.argv[1:] == ["--user-server"]:
+    run_user_server()

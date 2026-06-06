@@ -4,7 +4,7 @@ from typing import ClassVar, cast
 
 from datasets import load_dataset
 
-import verifiers as vf
+import verifiers.v1 as vf
 
 DATA_DIR_FIELD = "data_dir"
 DATA_FILE_SUFFIX = ".jsonl"

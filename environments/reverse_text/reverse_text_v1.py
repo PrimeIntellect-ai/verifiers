@@ -3,14 +3,14 @@ from difflib import SequenceMatcher
 
 from datasets import load_dataset
 
-import verifiers as vf
+import verifiers.v1 as vf
 
 
 class TagExtractor:
     def __init__(self, tag: str):
         self.pattern = re.compile(rf"<{tag}>(.*?)</{tag}>", re.DOTALL)
 
-    def __call__(self, completion: list[vf.ConfigData]) -> str:
+    def __call__(self, completion: vf.Messages) -> str:
         messages = vf.get_messages(completion, role="assistant")
         if not messages:
             return ""
@@ -31,13 +31,24 @@ class ReverseTextTasksetConfig(vf.TasksetConfig):
     )
 
 
+class ReverseTextEnvConfig(vf.EnvConfig):
+    taskset: ReverseTextTasksetConfig = ReverseTextTasksetConfig()
+    harness: vf.HarnessConfig = vf.HarnessConfig()
+
+
+class ReverseTextTask(vf.Task):
+    question: str
+    answer: str
+
+
 class ReverseTextTaskset(vf.Taskset[ReverseTextTasksetConfig]):
+    task_type = ReverseTextTask
+
     def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         def map_row(row):
             return {
                 "question": row["prompt"],
                 "answer": row["prompt"][::-1],
-                "info": {},
             }
 
         dataset = load_dataset(
@@ -47,27 +58,25 @@ class ReverseTextTaskset(vf.Taskset[ReverseTextTasksetConfig]):
         dataset = dataset.remove_columns(["prompt"])
         for index, row in enumerate(dataset):
             yield {
-                "example_id": index,
+                "row_id": index,
                 "prompt": [{"role": "user", "content": row["question"]}],
                 "question": row["question"],
                 "answer": row["answer"],
-                "info": row.get("info") or {},
             }
 
     @vf.reward(weight=1.0)
-    async def lcs_reward(self, task, state) -> float:
-        response = REVERSED_TEXT_EXTRACTOR(state.get("completion") or [])
-        answer = str(task["answer"])
-        return SequenceMatcher(None, response, answer).ratio()
+    async def lcs_reward(self, task: ReverseTextTask, state: vf.State) -> float:
+        response = REVERSED_TEXT_EXTRACTOR(state.completion or [])
+        return SequenceMatcher(None, response, task.answer).ratio()
 
 
 def load_taskset(config: ReverseTextTasksetConfig) -> ReverseTextTaskset:
     return ReverseTextTaskset(config=config)
 
 
-def load_environment(config: vf.EnvConfig) -> vf.Env:
-    """Loader pattern for all Taskset/Harness environments."""
+def load_environment(config: ReverseTextEnvConfig) -> vf.Env:
     return vf.Env(
-        taskset=vf.load_taskset(config=config.taskset),
-        harness=vf.load_harness(config=config.harness),
+        taskset=ReverseTextTaskset(config=config.taskset),
+        harness=vf.Harness(config=config.harness),
+        runtime=config.runtime,
     )

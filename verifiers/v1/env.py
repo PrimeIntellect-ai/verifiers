@@ -1,18 +1,25 @@
-import asyncio
+from __future__ import annotations
+
 import uuid
 from typing import TYPE_CHECKING, cast
 
-import verifiers as vf
-from verifiers.clients import Client
-from verifiers.types import ClientConfig
-from verifiers.types import RolloutInput, SamplingArgs
+from verifiers.types import (
+    RolloutInput,
+)
+from verifiers.utils.async_utils import maybe_retry
 
 from .config import Config
 from .harness import Harness, HarnessConfig
+from .runtime import (
+    RuntimeConfig,
+    RuntimeConfigValue,
+    RuntimeProvider,
+)
 from .state import State
-from .taskset import Taskset, TasksetConfig
-from .types import JsonData, RuntimeData
-from .utils.taskset_utils import task_from_dataset_record
+from .task import Task
+from .taskset import Taskset, TasksetConfig, collect_owner_signals
+from .types import Handler, JsonData, ModelClient, ModelConfig
+from .utils.scoring_utils import score_group as score_group_signals
 
 if TYPE_CHECKING:
     from datasets import Dataset
@@ -21,183 +28,183 @@ if TYPE_CHECKING:
 class EnvConfig(Config):
     taskset: TasksetConfig = TasksetConfig()
     harness: HarnessConfig = HarnessConfig()
-
-    @classmethod
-    def __pydantic_init_subclass__(cls, **kwargs: object) -> None:
-        super().__pydantic_init_subclass__(**kwargs)
-        extra_fields = set(cls.model_fields) - set(EnvConfig.model_fields)
-        if extra_fields:
-            raise TypeError(
-                f"{cls.__name__} defines unsupported root env config fields: "
-                f"{', '.join(sorted(extra_fields))}. Put env-specific settings on "
-                "a TasksetConfig or HarnessConfig instead."
-            )
-        for field_name, expected_type in (
-            ("taskset", TasksetConfig),
-            ("harness", HarnessConfig),
-        ):
-            annotation = cls.model_fields[field_name].annotation
-            if not (
-                isinstance(annotation, type) and issubclass(annotation, expected_type)
-            ):
-                raise TypeError(
-                    f"{cls.__name__}.{field_name} must be typed as a "
-                    f"{expected_type.__name__} subclass."
-                )
+    runtime: RuntimeConfig | None = None
 
 
-class Env(vf.Environment):
+class Env:
     def __init__(
         self,
         *,
-        taskset: Taskset | None = None,
+        taskset: Taskset,
         harness: Harness | None = None,
+        runtime: RuntimeProvider | RuntimeConfigValue | None = None,
     ):
-        if taskset is None:
-            raise TypeError("Env requires a taskset.")
         if not isinstance(taskset, Taskset):
             raise TypeError("Env taskset must be a Taskset.")
         if harness is not None and not isinstance(harness, Harness):
             raise TypeError("Env harness must be a Harness.")
         self.taskset = taskset
-        self.harness = harness or Harness(config=HarnessConfig())
+        self.harness = harness or Harness()
+        self.harness.bind(taskset=self.taskset, runtime=runtime)
+        self.runtime_config = self.harness.runtime_config
+        self.runtime_provider = self.harness.runtime_provider
         self.config = EnvConfig(
             taskset=cast(TasksetConfig, self.taskset.config),
             harness=cast(HarnessConfig, self.harness.config),
+            runtime=self.runtime_config,
         )
-        self.harness.taskset = self.taskset
-        self.taskset.runtime_refresh = self.harness.rebuild_runtime
-        self.harness.rebuild_runtime()
-        super().__init__(
-            dataset=self.taskset.get_dataset,
-            eval_dataset=self.taskset.get_eval_dataset,
-            rubric=vf.Rubric(),
-        )
-        self._empty_dataset_checked = False
-        self._empty_eval_dataset_checked = False
-
-    def build_dataset(self) -> "Dataset | None":
-        if self.dataset is not None:
-            return self.dataset
-        if self._empty_dataset_checked:
-            return None
-        dataset = self.taskset.get_dataset()
-        if not len(dataset):
-            self._empty_dataset_checked = True
-            return None
-        self.dataset = self._format_dataset_source(dataset)
-        return self.dataset
-
-    def build_eval_dataset(self) -> "Dataset | None":
-        if self.eval_dataset is not None:
-            return self.eval_dataset
-        if self._empty_eval_dataset_checked:
-            return None
-        eval_dataset = self.taskset.get_eval_dataset()
-        if not len(eval_dataset):
-            self._empty_eval_dataset_checked = True
-            return None
-        self.eval_dataset = self._format_dataset_source(eval_dataset)
-        return self.eval_dataset
-
-    @vf.teardown
-    async def teardown_harness(self) -> None:
-        await self.harness.teardown()
+        self.env_id = ""
+        self.env_args: JsonData = {}
+        self.pass_threshold = 0.5
 
     @property
     def requires_group_rollouts(self) -> bool:
         uses_custom_init_group = type(self.taskset).init_group is not Taskset.init_group
-        return self.harness.runtime.has_group_stage or uses_custom_init_group
+        return (
+            self.taskset.has_group_signals
+            or any(signal["stage"] == "group" for signal in self.harness.signals)
+            or uses_custom_init_group
+        )
 
     @property
     def provides_advantages(self) -> bool:
-        return self.harness.runtime.has_group_advantages
-
-    async def rollout(
-        self,
-        input: RolloutInput,
-        client: Client | ClientConfig,
-        model: str,
-        sampling_args: SamplingArgs | None = None,
-    ) -> State:
-        task = task_from_dataset_record(cast(JsonData, input), self.taskset.taskset_id)
-        state = State.for_task(task)
-        self.apply_controls(
-            [state],
-            {
-                "client": client,
-                "model": model,
-                "sampling_args": sampling_args or {},
-                "score_rollout": self.score_rollouts,
-            },
+        return self.taskset.has_advantages or any(
+            signal["kind"] == "advantage" for signal in self.harness.signals
         )
-        return await self.harness.run(task, state)
 
-    async def _run_rollout_state(
-        self,
-        input: RolloutInput,
-        client: Client,
-        model: str,
-        sampling_args: SamplingArgs,
-    ) -> State:
-        return await self.rollout(input, client, model, sampling_args)
+    def get_dataset(self, n: int = -1, seed: int | None = None) -> "Dataset":
+        dataset = self.taskset.get_dataset()
+        if seed is not None:
+            dataset = dataset.shuffle(seed=seed)
+        if n > 0:
+            return dataset.select(range(min(n, len(dataset))))
+        return dataset
 
-    async def _run_group_states(
+    def get_eval_dataset(self, n: int = -1, seed: int | None = None) -> "Dataset":
+        dataset = self.taskset.get_eval_dataset()
+        if not len(dataset):
+            dataset = self.taskset.get_dataset()
+        if seed is not None:
+            dataset = dataset.shuffle(seed=seed)
+        if n > 0:
+            return dataset.select(range(min(n, len(dataset))))
+        return dataset
+
+    async def run_handlers_for_group(
         self,
-        group_inputs: list[RolloutInput],
-        client: Client,
-        model: str,
-        sampling_args: SamplingArgs,
-    ) -> list[vf.State]:
-        base_task = task_from_dataset_record(
-            cast(JsonData, group_inputs[0]), self.taskset.taskset_id
-        )
-        tasks, states = await self.taskset.init_group(base_task, len(group_inputs))
-        if len(tasks) != len(group_inputs) or len(states) != len(group_inputs):
-            raise ValueError(
-                "Taskset.init_group must return one task/state per rollout."
+        kind: str,
+        tasks: list[Task],
+        states: list[State],
+        teacher: ModelClient | None = None,
+    ) -> None:
+        handlers = [
+            *cast(list[Handler], self.taskset.handlers[kind]),
+            *cast(list[Handler], self.harness.handlers[kind]),
+        ]
+        for handler in handlers:
+            if getattr(handler, f"{kind}_stage", "rollout") != "group":
+                continue
+            result = await self.harness.call_handler(
+                handler,
+                tasks[0],
+                states[0],
+                tasks=tasks,
+                states=states,
+                teacher=teacher,
+                teacher_client=teacher.client if teacher is not None else None,
+                teacher_model=teacher.config.model if teacher is not None else None,
             )
-        group_key = uuid.uuid4().hex
-        for state in states:
-            state.runtime_state()["group_key"] = group_key
-        self.apply_controls(
-            states,
-            {
-                "client": client,
-                "model": model,
-                "sampling_args": sampling_args,
-                "score_rollout": self.score_rollouts,
-            },
+            if result is not None:
+                raise TypeError(f"Group {kind} handlers must mutate states in place.")
+
+    async def run_rollout(
+        self,
+        input: RolloutInput | Task,
+        *,
+        model: ModelConfig,
+        teacher: ModelConfig | None = None,
+        state: State | None = None,
+        max_retries: int = 0,
+    ) -> State:
+        task = self.taskset.to_task(
+            input if isinstance(input, Task) else cast(JsonData, input)
         )
-        states = await asyncio.gather(
-            *[self.harness.run(task, state) for task, state in zip(tasks, states)]
+
+        async def attempt() -> State:
+            rollout_state = state or State(task_id=task.task_id)
+            rollout_state.task_id = task.task_id
+            rollout_state.model = model
+            rollout_state.teacher = teacher
+            return await self.harness.run(
+                task,
+                rollout_state,
+                model=model,
+                teacher=teacher,
+            )
+
+        return await maybe_retry(attempt, max_retries=max_retries)()
+
+    async def score_group(
+        self,
+        tasks: list[Task],
+        states: list[State],
+        *,
+        model: ModelConfig | None = None,
+        teacher: ModelConfig | None = None,
+    ) -> list[State]:
+        model_config = (
+            model if model is not None else (states[0].model if states else None)
+        )
+        teacher_config = (
+            teacher if teacher is not None else (states[0].teacher if states else None)
+        )
+        if model_config is not None:
+            for state in states:
+                if state.model is None:
+                    state.model = model_config
+                elif state.model != model_config:
+                    raise ValueError("Group states must use one model config.")
+        if teacher_config is not None:
+            for state in states:
+                if state.teacher is None:
+                    state.teacher = teacher_config
+                elif state.teacher != teacher_config:
+                    raise ValueError("Group states must use one teacher config.")
+        group_id = uuid.uuid4().hex
+        for state in states:
+            state.group_id = state.group_id or group_id
+        model_client = (
+            self.harness.load_model_client(model_config)
+            if model_config is not None
+            else None
+        )
+        teacher_client = (
+            self.harness.load_model_client(teacher_config)
+            if teacher_config is not None
+            else None
         )
         try:
-            if self.score_rollouts:
-                await self.harness.score_group(tasks, states)
-        finally:
-            await self.harness.cleanup_group(tasks, states)
-        for state in states:
-            state.strip_runtime_handles()
-            state.assert_serializable()
-        return cast(list[vf.State], states)
-
-    def apply_controls(
-        self, states: list[State], controls: RuntimeData | None = None
-    ) -> list[State]:
-        if controls is None:
-            return states
-        serializable_controls = {
-            key: value for key, value in controls.items() if key != "client"
-        }
-        for state in states:
-            runtime_state = state.runtime_state()
-            client = controls.get("client")
-            self.harness.runtime.bind_model_client(
-                state,
-                cast(Client | ClientConfig | None, client)
-                if client is not None
-                else None,
+            await score_group_signals(
+                collect_owner_signals(self.taskset, self.harness),
+                tasks,
+                states,
+                model_client=model_client,
+                teacher=teacher_client,
             )
-            runtime_state.update(serializable_controls)
+            await self.run_handlers_for_group(
+                "update", tasks, states, teacher=teacher_client
+            )
+        finally:
+            await self.run_handlers_for_group(
+                "cleanup", tasks, states, teacher=teacher_client
+            )
+            if teacher_client is not None:
+                await self.harness.close_model_client(teacher_client)
+            if model_client is not None:
+                await self.harness.close_model_client(model_client)
+            for state in states:
+                state.finalize()
         return states
+
+    async def close(self) -> None:
+        await self.harness.close()

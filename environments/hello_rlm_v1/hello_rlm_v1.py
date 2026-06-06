@@ -1,78 +1,80 @@
-import verifiers as vf
-from harnesses import RLM, RLMConfig
-
-
-@vf.reward(weight=1.0)
-async def exact_answer(task, state) -> float:
-    stdout = str(state.get("command", {}).get("stdout") or "")
-    return float(str(task["answer"]).lower() in stdout.lower())
+import verifiers.v1 as vf
 
 
 def load_tasks(split: vf.TaskSplit = "train"):
     _ = split
     return [
         {
-            "question": "Reply with exactly hello rlm.",
+            "prompt": "Reply with exactly hello rlm.",
             "answer": "hello rlm",
         },
         {
-            "question": "Reply with exactly taskset harness.",
+            "prompt": "Reply with exactly taskset harness.",
             "answer": "taskset harness",
         },
         {
-            "question": "Reply with exactly runtime boundary.",
+            "prompt": "Reply with exactly runtime boundary.",
             "answer": "runtime boundary",
-        },
-        {
-            "question": "Reply with exactly sandbox lease.",
-            "answer": "sandbox lease",
-        },
-        {
-            "question": "Reply with exactly toolset scope.",
-            "answer": "toolset scope",
-        },
-        {
-            "question": "Reply with exactly group reward.",
-            "answer": "group reward",
-        },
-        {
-            "question": "Reply with exactly endpoint proxy.",
-            "answer": "endpoint proxy",
-        },
-        {
-            "question": "Reply with exactly cleanup signal.",
-            "answer": "cleanup signal",
-        },
-        {
-            "question": "Reply with exactly harbor task.",
-            "answer": "harbor task",
-        },
-        {
-            "question": "Reply with exactly recursive model.",
-            "answer": "recursive model",
         },
     ]
 
 
+class HelloRLMTask(vf.Task):
+    answer: str
+
+
 class HelloRLMTasksetConfig(vf.TasksetConfig):
-    rewards: list[str] = ["exact_answer"]
+    pass
 
 
 class HelloRLMTaskset(vf.Taskset[HelloRLMTasksetConfig]):
+    task_type = HelloRLMTask
+
     def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
-        return load_tasks(split)
+        return [HelloRLMTask.model_validate(record) for record in load_tasks(split)]
+
+    @vf.reward(weight=1.0)
+    async def exact_answer(self, task: HelloRLMTask, state: vf.State) -> float:
+        stdout = str(state.scratch.get("command", {}).get("stdout") or "")
+        return float(task.answer.lower() in stdout.lower())
+
+
+class HelloRLMHarnessConfig(vf.HarnessConfig):
+    max_turns: int = 1
+
+
+class HelloRLMHarness(vf.Harness[HelloRLMHarnessConfig]):
+    async def _run(
+        self,
+        task: HelloRLMTask,
+        state: vf.State,
+        *,
+        ctx: vf.RolloutContext,
+        runtime: vf.RuntimeSession | None = None,
+        tools: vf.MCPToolRegistry | None = None,
+        user: vf.MCPToolRegistry | None = None,
+    ) -> None:
+        _ = ctx, runtime, tools, user
+        answer = task.answer
+        message = vf.AssistantMessage(content=answer)
+        state.scratch["command"] = {"stdout": answer, "stderr": "", "returncode": 0}
+        state.add_turn(
+            vf.Turn(prompt=self.initial_messages(task), completion=[message])
+        )
+        state.stop("deterministic_harness")
 
 
 def load_taskset(config: HelloRLMTasksetConfig) -> HelloRLMTaskset:
     return HelloRLMTaskset(config=config)
 
 
-def load_harness(config: RLMConfig) -> RLM:
-    return RLM(config=config)
+def load_harness(config: HelloRLMHarnessConfig) -> HelloRLMHarness:
+    return HelloRLMHarness(config=config)
 
 
 def load_environment(config: vf.EnvConfig) -> vf.Env:
     return vf.Env(
         taskset=vf.load_taskset(config=config.taskset),
         harness=vf.load_harness(config=config.harness),
+        runtime=config.runtime,
     )

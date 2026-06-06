@@ -1,107 +1,85 @@
 import importlib
 import importlib.resources as resources
-import json
-import uuid
 from collections.abc import Iterable
 from contextlib import suppress
-from copy import deepcopy
 from importlib.abc import Traversable
 from pathlib import Path
 from typing import cast
 
 from datasets import Dataset
-from verifiers.types import task_payload_from_info
 
 from ..task import Task
 from ..types import JsonData, Tasks
-from .serialization_utils import serializable
+from .json_utils import jsonable
 
 
-def task_from_dataset_record(record: JsonData, taskset_id: str) -> Task:
-    record_data = serializable(record)
+def task_from_dataset_record(record: JsonData, task_type: type[Task] = Task) -> Task:
+    record_data = jsonable(record)
     assert isinstance(record_data, dict)
     record_json = cast(JsonData, record_data)
-    serialized_task = task_payload_from_info(record_json.get("info"))
-    if serialized_task is not None:
-        record_json = serialized_task
-    data = deepcopy(dict(record_json))
-    if "prompt" not in data:
-        question = data.get("question")
-        data["prompt"] = (
-            [{"role": "user", "content": str(question)}] if question is not None else []
-        )
-    return prepare_task(Task(cast(JsonData, data)), taskset_id)
+    return prepare_task(task_type.model_validate(record_json))
 
 
-def prepare_task(task: Task, taskset_id: str) -> Task:
+def prepare_task(task: Task) -> Task:
     if not isinstance(task, Task):
         raise TypeError("v1 task loaders must return Task objects.")
-    prepared = Task(cast(JsonData, dict(task)))
-    prepared["taskset_id"] = taskset_id
-    if prepared.get("task_id") is not None:
-        prepared["task_id"] = str(prepared["task_id"])
-    else:
-        prepared["task_id"] = uuid.uuid4().hex
-    return prepared.freeze()
+    return task
 
 
 def dataset_record_from_task(
     task: Task,
-    taskset_id: str,
     index: int,
     record: JsonData | None = None,
 ) -> JsonData:
-    data = Task(cast(JsonData, dict(task)))
-    data["example_id"] = index
-    normalized = prepare_task(data, taskset_id)
-    task_payload = dict(normalized)
-    dataset_record = deepcopy(dict(record or {}))
-    dataset_record["prompt"] = task_payload["prompt"]
-    dataset_record["example_id"] = task_payload["example_id"]
-    info = dataset_record.get("info")
-    if not isinstance(info, dict):
-        info = {}
-    dataset_record["info"] = {**info, "task": json.dumps(task_payload)}
-    if "answer" in normalized:
-        dataset_record["answer"] = normalized["answer"]
-    return cast(JsonData, dataset_record)
+    data = task.to_record()
+    data["row_id"] = index
+    normalized = prepare_task(type(task).model_validate(data))
+    task_payload = normalized.to_record()
+    task_payload["example_id"] = index
+    return cast(JsonData, task_payload)
 
 
-def dataset_records_from_tasks(
-    tasks: Iterable[Task], taskset_id: str
-) -> list[JsonData]:
+def dataset_records_from_tasks(tasks: Iterable[Task]) -> list[JsonData]:
     dataset_records: list[JsonData] = []
     for index, task in enumerate(tasks):
-        dataset_records.append(dataset_record_from_task(task, taskset_id, index))
+        dataset_records.append(dataset_record_from_task(task, index))
     return dataset_records
 
 
-def dataset_from_result(result: Tasks, taskset_id: str) -> Dataset:
+def dataset_from_result(result: Tasks) -> Dataset:
+    return dataset_from_result_typed(result, Task)
+
+
+def dataset_from_result_typed(result: Tasks, task_type: type[Task]) -> Dataset:
     if isinstance(result, Dataset):
         records: list[JsonData] = []
         for index, record in enumerate(result):
             row = cast(JsonData, dict(record))
             row["example_id"] = index
-            task = task_from_dataset_record(row, taskset_id)
-            records.append(dataset_record_from_task(task, taskset_id, index, row))
+            task = task_from_dataset_record(row, task_type)
+            records.append(dataset_record_from_task(task, index, row))
         return Dataset.from_list(records)
-    tasks = tasks_from_result(result, taskset_id)
-    return Dataset.from_list(dataset_records_from_tasks(tasks, taskset_id))
+    tasks = tasks_from_result_typed(result, task_type)
+    return Dataset.from_list(dataset_records_from_tasks(tasks))
 
 
-def tasks_from_result(result: Tasks, taskset_id: str) -> list[Task]:
+def tasks_from_result(result: Tasks) -> list[Task]:
+    return tasks_from_result_typed(result, Task)
+
+
+def tasks_from_result_typed(result: Tasks, task_type: type[Task]) -> list[Task]:
     if isinstance(result, Dataset):
         return [
-            task_from_dataset_record(cast(JsonData, dict(record)), taskset_id)
+            task_from_dataset_record(cast(JsonData, dict(record)), task_type)
             for record in result
         ]
     if isinstance(result, Iterable):
         tasks: list[Task] = []
         for item in result:
             if isinstance(item, Task):
-                tasks.append(prepare_task(item, taskset_id))
+                tasks.append(prepare_task(item))
             elif isinstance(item, dict):
-                tasks.append(task_from_dataset_record(cast(JsonData, item), taskset_id))
+                tasks.append(task_from_dataset_record(cast(JsonData, item), task_type))
             else:
                 raise TypeError(
                     "Task loader iterables must contain Task objects or JSON task "

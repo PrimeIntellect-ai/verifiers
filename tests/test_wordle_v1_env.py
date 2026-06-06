@@ -2,10 +2,10 @@ import pytest
 
 
 @pytest.mark.asyncio
-async def test_wordle_user_extracts_latest_feedback(monkeypatch):
-    from environments.wordle_v1 import wordle_v1
+async def test_wordle_textarena_user_returns_observation(monkeypatch):
     from tasksets import textarena
-    import verifiers as vf
+    from tasksets.textarena import TextArenaTask
+    import verifiers.v1 as vf
 
     class FakeTextArenaState:
         def __init__(self):
@@ -34,27 +34,34 @@ async def test_wordle_user_extracts_latest_feedback(monkeypatch):
             return FakeTextArenaEnv()
 
     monkeypatch.setattr(textarena, "ta", FakeTextArenaModule())
-    task = vf.Task(
-        {
-            "answer": "apple",
-            "textarena": {"game": "Wordle-v0", "answer_state_key": "secret_word"},
-        }
-    ).freeze()
-    state = vf.State.for_task(task)
-    state["completion"] = [vf.AssistantMessage(content="<guess>[berry]</guess>")]
+    textarena.SESSION.env = None
+    task = TextArenaTask(
+        answer="apple",
+        textarena={"game": "Wordle-v0", "answer_state_key": "secret_word"},
+    )
+    state = vf.State(task_id=task.task_id)
+    state.add_turn(
+        vf.Turn(
+            prompt=task.prompt,
+            completion=[vf.AssistantMessage(content="<guess>[berry]</guess>")],
+        )
+    )
 
-    taskset = wordle_v1.WordleTaskset(config=wordle_v1.WordleTasksetConfig())
-    env = vf.Env(taskset=taskset)
-    state = await env.harness.setup_state(task, state)
-    response = await env.harness.runtime.user_messages(task, state)
+    response = textarena.textarena_respond(
+        task.to_record(),
+        state.model_dump(mode="json", exclude_none=True),
+        [],
+    )
 
-    assert response == [vf.UserMessage(content="\nmiss\nY----\ntry again")]
+    assert response["messages"] == [
+        {"role": "user", "content": "intro [GAME] Feedback:\nmiss\nY----\ntry again"}
+    ]
 
 
 def test_wordle_load_environment_coerces_taskset_config():
     from environments.wordle_v1 import wordle_v1
     from tasksets.textarena import TextArenaTasksetConfig
-    import verifiers as vf
+    import verifiers.v1 as vf
 
     env = wordle_v1.load_environment(
         vf.EnvConfig(
@@ -75,12 +82,13 @@ def test_wordle_taskset_uses_textarena_loaders():
     taskset = wordle_v1.WordleTaskset(config=wordle_v1.WordleTasksetConfig())
 
     assert callable(taskset.load_tasks)
-    assert isinstance(taskset.user, wordle_v1.WordleUser)
+    assert taskset.user is not None
+    assert taskset.user.server.command is not None
 
 
 def test_wordle_v1_load_taskset_reads_system_prompt_path(tmp_path):
     from environments.wordle_v1 import wordle_v1
-    import verifiers as vf
+    import verifiers.v1 as vf
 
     prompt = "Optimized Wordle prompt.\n\nPreserve exact text.\n"
     prompt_path = tmp_path / "system_prompt.txt"
@@ -99,7 +107,7 @@ def test_wordle_v1_load_taskset_reads_system_prompt_path(tmp_path):
 
 def test_wordle_v1_load_taskset_rejects_empty_system_prompt_path(tmp_path):
     from environments.wordle_v1 import wordle_v1
-    import verifiers as vf
+    import verifiers.v1 as vf
 
     prompt_path = tmp_path / "system_prompt.txt"
     prompt_path.write_text("", encoding="utf-8")
@@ -115,16 +123,25 @@ def test_wordle_v1_load_taskset_rejects_empty_system_prompt_path(tmp_path):
 @pytest.mark.asyncio
 async def test_wordle_v1_rewards_match_wordle_protocol():
     from environments.wordle_v1 import wordle_v1
-    import verifiers as vf
+    from tasksets.textarena import TextArenaTask
+    import verifiers.v1 as vf
 
-    taskset = wordle_v1.WordleTaskset.__new__(wordle_v1.WordleTaskset)
-    task = vf.Task({"answer": "apple"}).freeze()
-    state = vf.State.for_task(task)
-    state["completion"] = [
-        vf.AssistantMessage(content="<guess>[berry]</guess>"),
-        vf.UserMessage(content="miss\nGY---\ntry again"),
-        vf.AssistantMessage(content="<guess>[apple]</guess>"),
-    ]
+    taskset = wordle_v1.WordleTaskset(config=wordle_v1.WordleTasksetConfig())
+    task = TextArenaTask(
+        answer="apple",
+        textarena={"game": "Wordle-v0", "answer_state_key": "secret_word"},
+    )
+    state = vf.State(task_id=task.task_id)
+    state.add_turn(
+        vf.Turn(
+            prompt=task.prompt,
+            completion=[
+                vf.AssistantMessage(content="<guess>[berry]</guess>"),
+                vf.UserMessage(content="miss\nGY---\ntry again"),
+                vf.AssistantMessage(content="<guess>[apple]</guess>"),
+            ],
+        )
+    )
 
     assert await taskset.correct_answer(task, state) == 1.0
     assert await taskset.length_bonus(task, state) == 0.5
@@ -135,16 +152,25 @@ async def test_wordle_v1_rewards_match_wordle_protocol():
 @pytest.mark.asyncio
 async def test_wordle_v1_partial_answer_scans_past_non_guess_messages():
     from environments.wordle_v1 import wordle_v1
-    import verifiers as vf
+    from tasksets.textarena import TextArenaTask
+    import verifiers.v1 as vf
 
-    taskset = wordle_v1.WordleTaskset.__new__(wordle_v1.WordleTaskset)
-    task = vf.Task({"answer": "apple"}).freeze()
-    state = vf.State.for_task(task)
-    state["completion"] = [
-        vf.UserMessage(content="miss\nGGGGG\ntry again"),
-        vf.AssistantMessage(content="<guess>[apple]</guess>"),
-        vf.AssistantMessage(content="I already found it."),
-    ]
+    taskset = wordle_v1.WordleTaskset(config=wordle_v1.WordleTasksetConfig())
+    task = TextArenaTask(
+        answer="apple",
+        textarena={"game": "Wordle-v0", "answer_state_key": "secret_word"},
+    )
+    state = vf.State(task_id=task.task_id)
+    state.add_turn(
+        vf.Turn(
+            prompt=task.prompt,
+            completion=[
+                vf.UserMessage(content="miss\nGGGGG\ntry again"),
+                vf.AssistantMessage(content="<guess>[apple]</guess>"),
+                vf.AssistantMessage(content="I already found it."),
+            ],
+        )
+    )
 
     assert await taskset.partial_answer(task, state) == 0.0
 
@@ -152,11 +178,15 @@ async def test_wordle_v1_partial_answer_scans_past_non_guess_messages():
 @pytest.mark.asyncio
 async def test_wordle_v1_rewards_treat_missing_completion_as_empty():
     from environments.wordle_v1 import wordle_v1
-    import verifiers as vf
+    from tasksets.textarena import TextArenaTask
+    import verifiers.v1 as vf
 
-    taskset = wordle_v1.WordleTaskset.__new__(wordle_v1.WordleTaskset)
-    task = vf.Task({"answer": "apple"}).freeze()
-    state = vf.State.for_task(task)
+    taskset = wordle_v1.WordleTaskset(config=wordle_v1.WordleTasksetConfig())
+    task = TextArenaTask(
+        answer="apple",
+        textarena={"game": "Wordle-v0", "answer_state_key": "secret_word"},
+    )
+    state = vf.State(task_id=task.task_id)
 
     assert await taskset.correct_answer(task, state) == 0.0
     assert await taskset.length_bonus(task, state) == 0.0

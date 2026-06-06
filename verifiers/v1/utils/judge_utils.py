@@ -1,9 +1,11 @@
 import json
 from typing import cast
-from ..types import ConfigData
 
 
-def parse_judge_json(text: str) -> ConfigData:
+from ..types import JsonData
+
+
+def parse_judge_json(text: str) -> JsonData:
     value = parsed_json_object(text)
     if value is not None:
         return value
@@ -16,13 +18,13 @@ def parse_judge_json(text: str) -> ConfigData:
     return {"score": 0.0, "reason": "judge did not return JSON", "raw": text}
 
 
-def parsed_json_object(text: str) -> ConfigData | None:
+def parsed_json_object(text: str) -> JsonData | None:
     try:
         value = json.loads(text)
     except json.JSONDecodeError:
         return None
     if isinstance(value, dict):
-        return cast(ConfigData, value)
+        return cast(JsonData, value)
     return None
 
 
@@ -39,7 +41,7 @@ def clamp_float(value: object) -> float:
 def truncate_command_record(record: object) -> object:
     if not isinstance(record, dict):
         return record
-    record = cast(ConfigData, record)
+    record = cast(JsonData, record)
     return {
         **dict(record),
         "command": truncate_text(str(record.get("command") or ""), limit=2_000),

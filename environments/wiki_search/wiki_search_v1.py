@@ -1,40 +1,99 @@
+from __future__ import annotations
+
 import asyncio
 import os
-from typing import cast
+import sys
+from typing import TYPE_CHECKING, cast
 
-import chromadb
-from chromadb.api.types import Embeddable, EmbeddingFunction
-from chromadb.utils import embedding_functions
 from datasets import load_dataset
 
-import verifiers as vf
+import verifiers.v1 as vf
+
+if TYPE_CHECKING:
+    from chromadb.api.models.Collection import Collection
 
 CHROMA_DB_DIR = ".chroma_db"
+SYSTEM_PROMPT = "Use the provided Wikipedia search tools to help answer questions."
 _chroma_semaphore: asyncio.Semaphore | None = None
 
-SYSTEM_PROMPT = "Use the provided Wikipedia search tools to help answer questions."
-JUDGE_PROMPT = """Given a ground truth answer \
-and a response, determine if the response is both correct and coherent.
 
-Question:
-```
-{question}
-```
+class WikiIndex:
+    def __init__(
+        self,
+        *,
+        collection: Collection,
+        page_id_to_title: dict[str, str],
+        page_id_to_content: dict[str, str],
+    ):
+        self.collection = collection
+        self.page_id_to_title = page_id_to_title
+        self.page_id_to_content = page_id_to_content
 
-Ground truth answer:
-```
-{answer}
-```
 
-Response:
-```
-{response}
-```
+class WikiSearchTasksetConfig(vf.TasksetConfig):
+    max_turns: int = 10
+    corpus_dataset: str = "willcb/rare-wiki-pages"
+    corpus_split: str = "train"
+    chroma_db_dir: str = CHROMA_DB_DIR
+    embed_model: str = "text-embedding-3-small"
+    embed_base_url: str = "https://api.openai.com/v1"
+    embed_api_key_var: str = "OPENAI_API_KEY"
 
-Respond either "yes" or "no" only.
 
-If a response contains incoherent text, respond with "no" even if the correct answer is also present.
-"""
+class WikiSearchEnvConfig(vf.EnvConfig):
+    taskset: WikiSearchTasksetConfig = WikiSearchTasksetConfig()
+    harness: vf.HarnessConfig = vf.HarnessConfig()
+
+
+class WikiSearchTask(vf.Task):
+    question: str
+    answer: str
+
+
+class WikiSearchTaskset(vf.Taskset[WikiSearchTasksetConfig]):
+    task_type = WikiSearchTask
+
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
+        _ = split
+        dataset = load_dataset("willcb/wiki-trivia-questions-v4", split="train")
+        for index, row in enumerate(dataset):
+            record = cast(dict[str, object], row)
+            yield {
+                "row_id": index,
+                "question": str(record["question"]),
+                "answer": str(record["answer"]),
+                "max_turns": self.config.max_turns,
+                "prompt": [{"role": "user", "content": str(record["question"])}],
+            }
+
+    def load_system_prompt(self, config: WikiSearchTasksetConfig) -> vf.SystemPrompt:
+        _ = config
+        return SYSTEM_PROMPT
+
+    def load_toolsets(self, config: WikiSearchTasksetConfig) -> vf.Toolsets:
+        return [
+            vf.Toolset(
+                name="wiki",
+                scope="env",
+                server=vf.MCPServerSpec(
+                    command=[sys.executable, __file__, "--tool-server"],
+                    env={
+                        "VF_WIKI_CORPUS_DATASET": config.corpus_dataset,
+                        "VF_WIKI_CORPUS_SPLIT": config.corpus_split,
+                        "VF_WIKI_CHROMA_DB_DIR": config.chroma_db_dir,
+                        "VF_WIKI_EMBED_MODEL": config.embed_model,
+                        "VF_WIKI_EMBED_BASE_URL": config.embed_base_url,
+                        "VF_WIKI_EMBED_API_KEY_VAR": config.embed_api_key_var,
+                    },
+                ),
+            )
+        ]
+
+    @vf.reward(weight=1.0)
+    async def answer_in_response(self, task: WikiSearchTask, state: vf.State) -> float:
+        messages = vf.get_messages(state.completion, role="assistant")
+        response = str(messages[-1].content or "") if messages else ""
+        return float(task.answer.lower() in response.lower())
 
 
 def get_chroma_semaphore() -> asyncio.Semaphore:
@@ -44,21 +103,25 @@ def get_chroma_semaphore() -> asyncio.Semaphore:
     return _chroma_semaphore
 
 
-def load_wiki(
-    corpus_dataset: str,
-    corpus_split: str,
-    chroma_db_dir: str,
-    embed_model: str,
-    embed_base_url: str,
-    embed_api_key_var: str,
-) -> vf.ConfigData:
+def load_wiki() -> WikiIndex:
+    import chromadb
+    from chromadb.api.types import Embeddable, EmbeddingFunction
+    from chromadb.utils import embedding_functions
+
+    corpus_dataset = os.environ["VF_WIKI_CORPUS_DATASET"]
+    corpus_split = os.environ["VF_WIKI_CORPUS_SPLIT"]
+    chroma_db_dir = os.environ["VF_WIKI_CHROMA_DB_DIR"]
+    embed_model = os.environ["VF_WIKI_EMBED_MODEL"]
+    embed_base_url = os.environ["VF_WIKI_EMBED_BASE_URL"]
+    embed_api_key_var = os.environ["VF_WIKI_EMBED_API_KEY_VAR"]
     page_id_to_title: dict[str, str] = {}
     page_id_to_content: dict[str, str] = {}
     corpus = load_dataset(corpus_dataset, split=corpus_split)
     for row in corpus:
-        row = cast(dict, row)
-        page_id_to_title[row["id"]] = row["title"]
-        page_id_to_content[row["id"]] = row["content"]
+        record = cast(dict[str, object], row)
+        page_id = str(record["id"])
+        page_id_to_title[page_id] = str(record["title"])
+        page_id_to_content[page_id] = str(record["content"])
 
     openai_ef = embedding_functions.OpenAIEmbeddingFunction(
         model_name=embed_model,
@@ -71,18 +134,18 @@ def load_wiki(
         embedding_function=cast(EmbeddingFunction[Embeddable], openai_ef),
     )
     init_chroma(collection, page_id_to_title)
-    return {
-        "collection": collection,
-        "page_id_to_title": page_id_to_title,
-        "page_id_to_content": page_id_to_content,
-    }
+    return WikiIndex(
+        collection=collection,
+        page_id_to_title=page_id_to_title,
+        page_id_to_content=page_id_to_content,
+    )
 
 
-def init_chroma(collection, page_id_to_title: dict[str, str]) -> None:
+def init_chroma(collection: Collection, page_id_to_title: dict[str, str]) -> None:
     all_ids = list(page_id_to_title)
     existing: set[str] = set()
-    for i in range(0, len(all_ids), 500):
-        batch = all_ids[i : i + 500]
+    for index in range(0, len(all_ids), 500):
+        batch = all_ids[index : index + 500]
         got = collection.get(ids=batch)
         existing.update(got.get("ids", []))
     missing = [page_id for page_id in all_ids if page_id not in existing]
@@ -91,16 +154,16 @@ def init_chroma(collection, page_id_to_title: dict[str, str]) -> None:
     documents = []
     metadatas = []
     for page_id in missing:
-        title = str(page_id_to_title[page_id]).strip()
+        title = page_id_to_title[page_id].strip()
         if not title:
             raise ValueError(f"Empty title for page_id {page_id}")
         documents.append(title)
         metadatas.append({"title": title})
-    for i in range(0, len(missing), 100):
+    for index in range(0, len(missing), 100):
         collection.upsert(
-            ids=missing[i : i + 100],
-            documents=documents[i : i + 100],
-            metadatas=metadatas[i : i + 100],
+            ids=missing[index : index + 100],
+            documents=documents[index : index + 100],
+            metadatas=metadatas[index : index + 100],
         )
 
 
@@ -108,38 +171,38 @@ def normalize_id(text: str) -> str:
     return text.strip().lower().replace(" ", "_")
 
 
-async def search_pages(query: str, wiki) -> list[dict]:
-    """Search for top 10 relevant articles using title embedding similarity."""
+async def search_pages(query: str, wiki: WikiIndex) -> list[dict[str, str]]:
     async with get_chroma_semaphore():
         results = await asyncio.to_thread(
-            wiki["collection"].query, query_texts=[query], n_results=10
+            wiki.collection.query,
+            query_texts=[query],
+            n_results=10,
         )
     if not results or not results["metadatas"]:
         raise ValueError(f"No results found for query: {query}")
-    output = []
-    for i in range(len(results["ids"][0])):
+    output: list[dict[str, str]] = []
+    for index in range(len(results["ids"][0])):
         output.append(
             {
-                "page_id": results["ids"][0][i],
-                "title": results["metadatas"][0][i]["title"],
+                "page_id": str(results["ids"][0][index]),
+                "title": str(results["metadatas"][0][index]["title"]),
             }
         )
     return output
 
 
-async def view_sections(page_id: str, wiki) -> list[dict]:
-    """View the sections of a page."""
-    content = wiki["page_id_to_content"][page_id]
-    sections = []
+async def view_sections(page_id: str, wiki: WikiIndex) -> list[dict[str, str]]:
+    content = wiki.page_id_to_content[page_id]
+    sections: list[dict[str, str | int]] = []
     lines = content.split("\n")
-    for i, line in enumerate(lines):
+    for index, line in enumerate(lines):
         if line.startswith("#"):
             section_name = line.lstrip("#").strip()
             sections.append(
                 {
                     "section_id": f"{page_id}:{normalize_id(section_name)}",
                     "section_name": section_name,
-                    "start_line": i,
+                    "start_line": index,
                 }
             )
     if not sections:
@@ -151,169 +214,72 @@ async def view_sections(page_id: str, wiki) -> list[dict]:
             }
         )
     return [
-        {"section_id": section["section_id"], "section_name": section["section_name"]}
+        {
+            "section_id": str(section["section_id"]),
+            "section_name": str(section["section_name"]),
+        }
         for section in sections
     ]
 
 
-async def read_section(section_id: str, wiki) -> str:
-    """Read a section of a page."""
+async def read_section(section_id: str, wiki: WikiIndex) -> str:
     if ":" not in section_id:
         raise ValueError("Invalid section_id format. Expected: page_id:section_name")
     page_id, section_name_id = section_id.split(":", 1)
-    content = wiki["page_id_to_content"][page_id]
+    content = wiki.page_id_to_content[page_id]
     if section_name_id == "full":
         return content
     lines = content.split("\n")
     section_start = None
     section_end = None
-    for i, line in enumerate(lines):
+    for index, line in enumerate(lines):
         if line.startswith("#"):
             current_section = normalize_id(line.lstrip("#").strip())
             if current_section == section_name_id and section_start is None:
-                section_start = i
+                section_start = index
             elif section_start is not None and section_end is None:
-                section_end = i
+                section_end = index
                 break
     if section_start is None:
         raise ValueError(f"Section not found: {section_id}")
     return "\n".join(lines[section_start : section_end or len(lines)])
 
 
-def load_tasks(
-    max_turns: int = 10,
-    judge_model: str | None = None,
-):
-    dataset = load_dataset("willcb/wiki-trivia-questions-v4", split="train")
-    for index, row in enumerate(dataset):
-        row = cast(dict, row)
-        task = {
-            **row,
-            "example_id": index,
-            "max_turns": max_turns,
-            "prompt": [{"role": "user", "content": row["question"]}],
-        }
-        if judge_model is not None:
-            task["judge_model"] = judge_model
-        yield task
+def run_tool_server() -> None:
+    from mcp.server.fastmcp import FastMCP
 
+    wiki_index: WikiIndex | None = None
 
-@vf.reward(weight=1.0)
-async def judge_reward(task, state) -> float:
-    completion = state.get("completion") or []
-    messages = vf.get_messages(completion, role="assistant")
-    response = str(messages[-1].content or "") if messages else ""
-    prompt = JUDGE_PROMPT.format(
-        question=task["question"],
-        answer=task["answer"],
-        response=response,
-    )
-    endpoint_config = state.get_endpoint_config(api="chat")
-    judge_model = task.get("judge_model") or endpoint_config.model
-    judge_client = state.get_client(api="chat")
-    try:
-        result = await judge_client.chat.completions.create(
-            model=str(judge_model),
-            messages=[{"role": "user", "content": prompt}],
-        )
-    finally:
-        await judge_client.close()
-    text = result.choices[0].message.content or ""
-    return 1.0 if "yes" in text.lower() else 0.0
-
-
-def load_toolset(
-    corpus_dataset: str = "willcb/rare-wiki-pages",
-    corpus_split: str = "train",
-    chroma_db_dir: str = CHROMA_DB_DIR,
-    embed_model: str = "text-embedding-3-small",
-    embed_base_url: str = "https://api.openai.com/v1",
-    embed_api_key_var: str = "OPENAI_API_KEY",
-    config=None,
-):
-    def load_wiki_index() -> vf.ConfigData:
-        return load_wiki(
-            corpus_dataset=corpus_dataset,
-            corpus_split=corpus_split,
-            chroma_db_dir=chroma_db_dir,
-            embed_model=embed_model,
-            embed_base_url=embed_base_url,
-            embed_api_key_var=embed_api_key_var,
-        )
-
-    wiki_index: vf.ConfigData | None = None
-
-    def wiki() -> vf.ConfigData:
+    def wiki() -> WikiIndex:
         nonlocal wiki_index
         if wiki_index is None:
-            wiki_index = load_wiki_index()
+            wiki_index = load_wiki()
         return wiki_index
 
-    async def search_pages_tool(query: str) -> list[dict]:
+    mcp = FastMCP("wiki-search")
+
+    @mcp.tool()
+    async def search_pages_tool(query: str) -> list[dict[str, str]]:
         return await search_pages(query, wiki())
 
-    async def view_sections_tool(page_id: str) -> list[dict]:
+    @mcp.tool()
+    async def view_sections_tool(page_id: str) -> list[dict[str, str]]:
         return await view_sections(page_id, wiki())
 
+    @mcp.tool()
     async def read_section_tool(section_id: str) -> str:
         return await read_section(section_id, wiki())
 
-    search_pages_tool.__name__ = "search_pages"
-    search_pages_tool.__doc__ = search_pages.__doc__
-    view_sections_tool.__name__ = "view_sections"
-    view_sections_tool.__doc__ = view_sections.__doc__
-    read_section_tool.__name__ = "read_section"
-    read_section_tool.__doc__ = read_section.__doc__
-
-    return vf.Toolset(
-        tools=[search_pages_tool, view_sections_tool, read_section_tool],
-        config=config,
-    )
-
-
-class WikiSearchTasksetConfig(vf.TasksetConfig):
-    rewards: list[str] = ["judge_reward"]
-    max_turns: int = 10
-    corpus_dataset: str = "willcb/rare-wiki-pages"
-    corpus_split: str = "train"
-    chroma_db_dir: str = CHROMA_DB_DIR
-    embed_model: str = "text-embedding-3-small"
-    embed_base_url: str = "https://api.openai.com/v1"
-    embed_api_key_var: str = "OPENAI_API_KEY"
-    judge_model: str | None = None
-
-
-class WikiSearchEnvConfig(vf.EnvConfig):
-    taskset: WikiSearchTasksetConfig = WikiSearchTasksetConfig()
-    harness: vf.HarnessConfig = vf.HarnessConfig()
-
-
-class WikiSearchTaskset(vf.Taskset[WikiSearchTasksetConfig]):
-    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
-        return load_tasks(
-            max_turns=self.config.max_turns,
-            judge_model=self.config.judge_model,
-        )
-
-    def load_system_prompt(self, config: WikiSearchTasksetConfig) -> vf.SystemPrompt:
-        _ = config
-        return SYSTEM_PROMPT
-
-    def load_toolsets(self, config: WikiSearchTasksetConfig) -> vf.Toolsets:
-        return {
-            "wiki": load_toolset(
-                corpus_dataset=config.corpus_dataset,
-                corpus_split=config.corpus_split,
-                chroma_db_dir=config.chroma_db_dir,
-                embed_model=config.embed_model,
-                embed_base_url=config.embed_base_url,
-                embed_api_key_var=config.embed_api_key_var,
-            )
-        }
+    mcp.run(transport="stdio")
 
 
 def load_environment(config: WikiSearchEnvConfig) -> vf.Env:
     return vf.Env(
         taskset=WikiSearchTaskset(config=config.taskset),
         harness=vf.Harness(config=config.harness),
+        runtime=config.runtime,
     )
+
+
+if __name__ == "__main__" and sys.argv[1:] == ["--tool-server"]:
+    run_tool_server()

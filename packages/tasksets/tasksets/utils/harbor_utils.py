@@ -4,15 +4,10 @@ import re
 import shutil
 import subprocess
 import sys
-import tarfile
-import tempfile
 from collections.abc import Iterable
 from importlib.resources import files
 from pathlib import Path
 from typing import cast
-
-from verifiers.v1.sandbox import SandboxConfig
-from verifiers.v1.utils.sandbox_utils import SandboxClient
 
 TASKS_SUBDIR = "tasks"
 
@@ -27,12 +22,6 @@ def bundle_tasks_root(module_name: str) -> Path:
         if not isinstance(module_file, str):
             raise exc
         return Path(module_file).resolve().parent / TASKS_SUBDIR
-
-
-def harbor_sandbox(default: SandboxConfig, configured: SandboxConfig) -> SandboxConfig:
-    return SandboxConfig.model_validate(
-        {**default.data(fill_defaults=False), **configured.data(fill_defaults=False)}
-    )
 
 
 def harbor_task_dirs(root: Path, task_names: Iterable[str] | None = None) -> list[Path]:
@@ -129,33 +118,6 @@ def download_harbor_dataset(
         command.append("--overwrite")
     subprocess.run(command, check=True)
     return task_root
-
-
-async def upload_harbor_tests(
-    client: SandboxClient, sandbox_id: str, task_dir: Path
-) -> None:
-    with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp_file:
-        tar_path = Path(tmp_file.name)
-    try:
-        with tarfile.open(tar_path, "w:gz") as tar:
-            for dirname, arc_root in (("solution", "oracle"), ("tests", "tests")):
-                root = task_dir / dirname
-                if not root.exists():
-                    continue
-                for item in root.iterdir():
-                    tar.add(item, arcname=f"{arc_root}/{item.name}")
-        remote_tar = "/tmp/harbor_tests.tar.gz"
-        await client.upload_file(sandbox_id, remote_tar, str(tar_path))
-        await client.execute_command(
-            sandbox_id=sandbox_id,
-            command=(
-                f"mkdir -p /oracle /tests /logs/verifier && "
-                f"tar -xzf {remote_tar} -C / && rm {remote_tar}"
-            ),
-            timeout=900,
-        )
-    finally:
-        tar_path.unlink(missing_ok=True)
 
 
 def parse_reward_text(reward_text: str) -> float:

@@ -1,33 +1,36 @@
-import json
 import sys
 import types
 
 from datasets import Dataset
 
-from verifiers.v1 import Taskset
-from verifiers.v1.utils.taskset_utils import dataset_from_result, discover_sibling_dir
+from verifiers.v1 import Task, Taskset
+from verifiers.v1.utils.taskset_utils import (
+    dataset_from_result_typed,
+    discover_sibling_dir,
+)
 
 
-def task_payload(row: dict) -> dict:
-    return json.loads(row["info"]["task"])
+class ReverseTextTask(Task):
+    question: str
+    answer: str
 
 
 def test_dataset_from_result_assigns_example_id_to_iterable_records():
-    dataset = dataset_from_result(
+    dataset = dataset_from_result_typed(
         [
             {"question": "Reverse abc.", "answer": "cba"},
             {"question": "Reverse xyz.", "answer": "zyx"},
         ],
-        "ReverseTextTaskset",
+        ReverseTextTask,
     )
 
     rows = list(dataset)
-    payloads = [task_payload(row) for row in rows]
 
     assert [row["example_id"] for row in rows] == [0, 1]
-    assert [payload["example_id"] for payload in payloads] == [0, 1]
-    assert all(len(payload["task_id"]) == 32 for payload in payloads)
-    assert {payload["task_id"] for payload in payloads}.isdisjoint({"0", "1"})
+    assert [row["row_id"] for row in rows] == [0, 1]
+    assert [row["answer"] for row in rows] == ["cba", "zyx"]
+    assert all(len(row["task_id"]) == 32 for row in rows)
+    assert {row["task_id"] for row in rows}.isdisjoint({"0", "1"})
 
 
 def test_dataset_from_result_overwrites_existing_example_id_column():
@@ -38,15 +41,15 @@ def test_dataset_from_result_overwrites_existing_example_id_column():
         ]
     )
 
-    dataset = dataset_from_result(raw_dataset, "ReverseTextTaskset")
+    dataset = dataset_from_result_typed(raw_dataset, ReverseTextTask)
 
     rows = list(dataset)
-    payloads = [task_payload(row) for row in rows]
 
     assert [row["example_id"] for row in rows] == [0, 1]
-    assert [payload["example_id"] for payload in payloads] == [0, 1]
-    assert all(len(payload["task_id"]) == 32 for payload in payloads)
-    assert {payload["task_id"] for payload in payloads}.isdisjoint({"0", "1", "99"})
+    assert [row["row_id"] for row in rows] == [0, 1]
+    assert [row["answer"] for row in rows] == ["cba", "zyx"]
+    assert all(len(row["task_id"]) == 32 for row in rows)
+    assert {row["task_id"] for row in rows}.isdisjoint({"0", "1", "99"})
 
 
 def test_discover_sibling_dir_returns_empty_existing_dir(tmp_path, monkeypatch) -> None:

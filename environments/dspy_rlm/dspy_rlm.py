@@ -1,63 +1,34 @@
 import re
-from typing import cast
 
-import verifiers as vf
+import verifiers.v1 as vf
 from verifiers.utils.data_utils import load_example_dataset
 
 
 class DSPYRLMTasksetConfig(vf.TasksetConfig):
-    rewards: list[str] = ["answer_reward"]
-    taskset_id: str = "gsm8k-dspy-rlm"
+    id: str = "gsm8k-dspy-rlm"
     num_train_examples: int = 50
     num_eval_examples: int = 20
 
 
-async def run_dspy_rlm_program(task: vf.Task, state: vf.State) -> vf.State:
-    import dspy
-    from openai import OpenAI
-
-    endpoint_config = state.get_endpoint_config(api="chat")
-    endpoint_client = cast(OpenAI, state.get_client(api="chat", sync=True))
-    endpoint_api_key = endpoint_client.api_key
-    endpoint_client.close()
-    lm = dspy.LM(
-        f"openai/{endpoint_config.model}",
-        api_base=endpoint_config.base_url,
-        api_key=endpoint_api_key,
-        cache=False,
-    )
-
-    with dspy.context(lm=lm):
-        question = task.get("question")
-        if question is not None:
-            query = str(question)
-        else:
-            query = ""
-            prompt = task.get("prompt")
-            if isinstance(prompt, list) and prompt:
-                query = str(vf.get_messages(prompt)[-1].content or "")
-        rlm = dspy.RLM("query -> answer", max_iterations=10)
-        result = await rlm.aforward(query=query)
-
-    final_output = str(result.answer)
-    state["agent_result"] = final_output
-    state["completion"] = [{"role": "assistant", "content": final_output}]
-    return state
+class DSPYRLMHarnessConfig(vf.HarnessConfig):
+    max_iterations: int = 10
 
 
-def load_gsm8k_tasks(split: str, num_examples: int):
+class DSPYRLMTask(vf.Task):
+    question: str
+    answer: str
+
+
+def load_gsm8k_tasks(split: str, num_examples: int) -> vf.Tasks:
     n = num_examples if num_examples > 0 else None
-    return load_example_dataset("gsm8k", split=split, n=n)
-
-
-def load_tasks(
-    split: vf.TaskSplit = "train",
-    num_train_examples: int = 50,
-    num_eval_examples: int = 20,
-):
-    dataset_split = "train" if split == "train" else "test"
-    num_examples = num_train_examples if split == "train" else num_eval_examples
-    return load_gsm8k_tasks(dataset_split, num_examples)
+    return [
+        {
+            **row,
+            "row_id": index,
+            "prompt": [{"role": "user", "content": str(row["question"])}],
+        }
+        for index, row in enumerate(load_example_dataset("gsm8k", split=split, n=n))
+    ]
 
 
 def extract_dspy_answer(text: str) -> str:
@@ -83,40 +54,103 @@ def answers_match(agent_answer: str, answer: str) -> float:
         parsed_agent_answer = float(agent_answer.replace(",", ""))
         parsed_answer = float(answer.replace(",", ""))
     except (ValueError, TypeError):
-        return 1.0 if agent_answer.strip() == answer.strip() else 0.0
-    return 1.0 if abs(parsed_agent_answer - parsed_answer) < 0.01 else 0.0
+        return float(agent_answer.strip() == answer.strip())
+    return float(abs(parsed_agent_answer - parsed_answer) < 0.01)
 
 
-def answer_reward(task: vf.Task, state: vf.State) -> float:
-    """Check if the agent's final output contains the correct answer."""
-    result = state.get("agent_result")
-    if result is not None:
-        text = str(result)
-    else:
-        completion = state.get("completion")
-        messages = []
-        if isinstance(completion, list):
-            messages = vf.get_messages(completion, role="assistant") or vf.get_messages(
-                completion
-            )
-        text = str(messages[-1].content or "") if messages else ""
-    agent_answer = extract_dspy_answer(text)
-    if not agent_answer:
-        return 0.0
-    return answers_match(agent_answer, str(task.get("answer", "")))
+def final_text(state: vf.State) -> str:
+    result = state.artifacts.get("agent_result")
+    if isinstance(result, str):
+        return result
+    messages = vf.get_messages(
+        state.completion or [], role="assistant"
+    ) or vf.get_messages(state.completion or [])
+    return str(messages[-1].content or "") if messages else ""
 
 
 class DSPYRLMTaskset(vf.Taskset[DSPYRLMTasksetConfig]):
+    task_type = DSPYRLMTask
+
     def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
-        return load_tasks(
-            split=split,
-            num_train_examples=self.config.num_train_examples,
-            num_eval_examples=self.config.num_eval_examples,
+        dataset_split = "train" if split == "train" else "test"
+        num_examples = (
+            self.config.num_train_examples
+            if split == "train"
+            else self.config.num_eval_examples
         )
+        return load_gsm8k_tasks(dataset_split, num_examples)
+
+    @vf.reward
+    async def answer_reward(self, task: DSPYRLMTask, state: vf.State) -> float:
+        answer = extract_dspy_answer(final_text(state))
+        return answers_match(answer, task.answer) if answer else 0.0
 
 
-class DSPYRLMHarnessConfig(vf.HarnessConfig):
-    program: vf.ProgramConfig = vf.ProgramConfig(fn="run_dspy_rlm_program")
+class DSPYRLMHarness(vf.Harness[DSPYRLMHarnessConfig]):
+    async def _run(
+        self,
+        task: DSPYRLMTask,
+        state: vf.State,
+        *,
+        ctx: vf.RolloutContext,
+        runtime: vf.RuntimeSession | None = None,
+        tools: vf.MCPToolRegistry | None = None,
+        user: vf.MCPToolRegistry | None = None,
+    ) -> None:
+        _ = tools, user
+        if runtime is None:
+            raise ValueError("DSPYRLMHarness requires a runtime session.")
+        prompt = self.initial_messages(task)
+
+        async def stop_check() -> str | None:
+            if await self.is_completed(task, state, ctx=ctx):
+                return state.stop_condition or "stop"
+            return None
+
+        async with vf.InterceptionServer(
+            ctx,
+            task,
+            state,
+            protocols=self.protocols,
+            stop_check=stop_check,
+        ) as endpoint:
+            endpoint_url = await runtime.expose(endpoint.port)
+            endpoint_env = endpoint.env(base_url=endpoint_url, model=ctx.model)
+            final_output = await run_dspy_rlm(
+                query=task.question,
+                base_url=endpoint_env["OPENAI_BASE_URL"],
+                api_key=endpoint_env["OPENAI_API_KEY"],
+                model=endpoint_env["OPENAI_MODEL"],
+                max_iterations=self.config.max_iterations,
+            )
+
+        state.artifacts["agent_result"] = final_output
+        message = vf.AssistantMessage(content=final_output)
+        if not state.transcript:
+            state.add_turn(vf.Turn(prompt=prompt, completion=[message]))
+        state.stop("dspy_completed")
+
+
+async def run_dspy_rlm(
+    *,
+    query: str,
+    base_url: str,
+    api_key: str,
+    model: str,
+    max_iterations: int,
+) -> str:
+    import dspy
+
+    lm = dspy.LM(
+        f"openai/{model}",
+        api_base=base_url,
+        api_key=api_key,
+        cache=False,
+    )
+    with dspy.context(lm=lm):
+        rlm = dspy.RLM("query -> answer", max_iterations=max_iterations)
+        result = await rlm.aforward(query=query)
+    return str(result.answer)
 
 
 class DSPYRLMEnvConfig(vf.EnvConfig):
@@ -127,5 +161,6 @@ class DSPYRLMEnvConfig(vf.EnvConfig):
 def load_environment(config: DSPYRLMEnvConfig) -> vf.Env:
     return vf.Env(
         taskset=DSPYRLMTaskset(config=config.taskset),
-        harness=vf.Harness(config=config.harness),
+        harness=DSPYRLMHarness(config=config.harness),
+        runtime=config.runtime,
     )

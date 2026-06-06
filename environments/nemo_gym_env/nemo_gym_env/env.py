@@ -1,4 +1,4 @@
-import verifiers as vf
+import verifiers.v1 as vf
 from harnesses import NeMoGymHarness, NeMoGymHarnessConfig
 from tasksets import NeMoGymTaskset, NeMoGymTasksetConfig
 
@@ -15,4 +15,5 @@ def load_environment(config: NeMoGymEnvConfig) -> vf.Env:
     return vf.Env(
         taskset=NeMoGymTaskset(config=config.taskset),
         harness=NeMoGymHarness(config=config.harness),
+        runtime=config.runtime,
     )

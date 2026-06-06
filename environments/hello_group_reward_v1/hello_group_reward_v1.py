@@ -1,7 +1,6 @@
 from difflib import SequenceMatcher
-from statistics import mean
 
-import verifiers as vf
+import verifiers.v1 as vf
 
 
 SYSTEM_PROMPT = """\
@@ -11,25 +10,31 @@ Return the assigned candidate exactly.
 
 
 class GroupRewardTasksetConfig(vf.TasksetConfig):
-    metrics: list[str] = [
-        "answer_length",
-        "group_quality",
-        "group_rank",
-    ]
-    rewards: list[str] = [
-        "rollout_similarity",
-        "relative_group_reward",
-    ]
-    advantages: list[str] = ["centered_group_advantage"]
-    updates: list[str] = ["summarize_group"]
-    cleanups: list[str] = ["mark_group_cleaned"]
     system_prompt: str = SYSTEM_PROMPT
     num_examples: int = -1
 
 
 class GroupRewardHarnessConfig(vf.HarnessConfig):
-    program: vf.ProgramConfig = vf.ProgramConfig(fn="candidate_program")
     max_turns: int = 1
+
+
+class Candidate(vf.Schema):
+    id: str
+    answer: str
+
+
+class GroupRewardTask(vf.Task):
+    question: str
+    target: str
+    answer: str
+    candidates: list[Candidate]
+
+
+class CandidateTask(GroupRewardTask):
+    parent_task_id: str
+    candidate_id: str
+    candidate_answer: str
+    rollout_index: int
 
 
 def group_reward_task(
@@ -39,11 +44,12 @@ def group_reward_task(
     near: str,
     partial: str,
     wrong: str,
-) -> vf.ConfigData:
+) -> vf.JsonData:
     return {
         "task_id": task_id,
         "question": question,
         "target": target,
+        "prompt": question,
         "candidates": [
             {"id": "exact", "answer": target},
             {"id": "near", "answer": near},
@@ -53,7 +59,7 @@ def group_reward_task(
     }
 
 
-TASKS: list[vf.ConfigData] = [
+TASKS: list[vf.JsonData] = [
     group_reward_task(
         "distributed-systems",
         "Describe v1 verifiers in one short phrase.",
@@ -138,159 +144,118 @@ TASKS: list[vf.ConfigData] = [
 
 
 class GroupRewardTaskset(vf.Taskset[GroupRewardTasksetConfig]):
+    task_type = GroupRewardTask
+
     def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
-        return load_tasks(num_examples=self.config.num_examples)
+        return [
+            GroupRewardTask.model_validate(record)
+            for record in load_tasks(num_examples=self.config.num_examples)
+        ]
 
     async def init_group(
-        self, task: vf.Task, num_rollouts: int
-    ) -> tuple[list[vf.Task], list[vf.State]]:
-        candidates = task.get("candidates")
-        if not isinstance(candidates, list) or not candidates:
+        self, task: GroupRewardTask, num_rollouts: int
+    ) -> tuple[list[CandidateTask], list[vf.State]]:
+        candidates = task.candidates
+        if not candidates:
             raise ValueError("hello_group_reward_v1 tasks require candidates.")
-        tasks: list[vf.Task] = []
+        tasks: list[CandidateTask] = []
         states: list[vf.State] = []
         for rollout_index in range(num_rollouts):
             candidate = candidates[rollout_index % len(candidates)]
-            if not isinstance(candidate, dict):
-                raise TypeError("candidate entries must be mappings.")
-            candidate_id = str(candidate["id"])
-            candidate_answer = str(candidate["answer"])
-            group_task = vf.Task(
+            task_data = task.to_record()
+            task_data.pop("task_id", None)
+            group_task = CandidateTask.model_validate(
                 {
-                    **dict(task),
-                    "candidate_id": candidate_id,
-                    "candidate_answer": candidate_answer,
+                    **task_data,
+                    "parent_task_id": task.task_id,
+                    "candidate_id": candidate.id,
+                    "candidate_answer": candidate.answer,
                     "rollout_index": rollout_index,
-                    "prompt": [
-                        {
-                            "role": "user",
-                            "content": (
-                                f"Question: {task['question']}\n"
-                                f"Assigned candidate id: {candidate_id}\n"
-                                f"Assigned candidate answer: {candidate_answer}\n\n"
-                                "Return the assigned candidate answer exactly."
-                            ),
-                        }
-                    ],
+                    "prompt": (
+                        f"Question: {task.question}\n"
+                        f"Assigned candidate id: {candidate.id}\n"
+                        f"Assigned candidate answer: {candidate.answer}\n\n"
+                        "Return the assigned candidate answer exactly."
+                    ),
                     "max_turns": 1,
                 }
-            ).freeze()
-            state = vf.State.for_task(group_task)
-            state["group_setup"] = {
-                "base_task_id": task["task_id"],
+            )
+            state = vf.State(task_id=group_task.task_id)
+            state.scratch["group_setup"] = {
+                "base_task_id": task.task_id,
                 "num_rollouts": num_rollouts,
-                "candidate_id": candidate_id,
+                "candidate_id": candidate.id,
             }
             tasks.append(group_task)
             states.append(state)
         return tasks, states
 
+    @vf.metric
+    async def answer_length(self, state: vf.State) -> float:
+        return float(len(str(state.scratch.get("answer") or "")))
+
+    @vf.reward(weight=0.1)
+    async def rollout_similarity(self, task: CandidateTask, state: vf.State) -> float:
+        return candidate_quality(task.target, str(state.scratch.get("answer") or ""))
+
+    @vf.metric(stage="group")
+    async def group_quality(
+        self, tasks: list[CandidateTask], states: list[vf.State]
+    ) -> list[float]:
+        return [
+            candidate_quality(task.target, str(state.scratch.get("answer") or ""))
+            for task, state in zip(tasks, states, strict=True)
+        ]
+
+    @vf.metric(stage="group")
+    async def group_rank(
+        self, tasks: list[CandidateTask], states: list[vf.State]
+    ) -> list[float]:
+        qualities = [
+            candidate_quality(task.target, str(state.scratch.get("answer") or ""))
+            for task, state in zip(tasks, states, strict=True)
+        ]
+        return [float(rank) for rank in dense_ranks(qualities)]
+
+    @vf.reward(stage="group", weight=1.0)
+    async def relative_group_reward(
+        self, tasks: list[CandidateTask], states: list[vf.State]
+    ) -> list[float]:
+        qualities = [
+            candidate_quality(task.target, str(state.scratch.get("answer") or ""))
+            for task, state in zip(tasks, states, strict=True)
+        ]
+        if not qualities:
+            return []
+        low = min(qualities)
+        high = max(qualities)
+        if high == low:
+            return [0.5 for _ in qualities]
+        return [(quality - low) / (high - low) for quality in qualities]
+
+    grpo = staticmethod(vf.advantages.grpo)
+
 
 class GroupRewardHarness(vf.Harness[GroupRewardHarnessConfig]):
-    pass
-
-
-async def candidate_program(task: vf.Task, state: vf.State) -> vf.State:
-    answer = str(task["candidate_answer"])
-    state["answer"] = answer
-    state["candidate_id"] = task["candidate_id"]
-    state["completion"] = [{"role": "assistant", "content": answer}]
-    state.stop("candidate_program")
-    return state
-
-
-@vf.metric
-async def answer_length(task, state) -> float:
-    _ = task
-    return float(len(str(state.get("answer") or "")))
-
-
-@vf.reward(weight=0.1)
-async def rollout_similarity(task, state) -> float:
-    return candidate_quality(str(task["target"]), str(state.get("answer") or ""))
-
-
-@vf.update(stage="group", priority=10)
-async def summarize_group(tasks, states) -> None:
-    qualities = [
-        candidate_quality(str(task["target"]), str(state.get("answer") or ""))
-        for task, state in zip(tasks, states)
-    ]
-    ranks = dense_ranks(qualities)
-    best_index = min(
-        range(len(states)),
-        key=lambda index: (
-            -qualities[index],
-            len(str(states[index].get("answer") or "")),
-        ),
-    )
-    candidates = [
-        {
-            "candidate_id": str(state.get("candidate_id")),
-            "quality": qualities[index],
-            "rank": ranks[index],
-        }
-        for index, state in enumerate(states)
-    ]
-    for index, state in enumerate(states):
-        state["group_summary"] = {
-            "best_candidate_id": str(states[best_index].get("candidate_id")),
-            "best_answer": str(states[best_index].get("answer") or ""),
-            "quality": qualities[index],
-            "rank": ranks[index],
-            "group_size": len(states),
-            "candidates": candidates,
-        }
-
-
-@vf.metric(stage="group")
-async def group_quality(tasks, states) -> list[float]:
-    return [
-        candidate_quality(str(task["target"]), str(state.get("answer") or ""))
-        for task, state in zip(tasks, states)
-    ]
-
-
-@vf.metric(stage="group")
-async def group_rank(tasks, states) -> list[float]:
-    _ = tasks
-    qualities = [
-        float(state.get("group_summary", {}).get("quality", 0.0)) for state in states
-    ]
-    return [float(rank) for rank in dense_ranks(qualities)]
-
-
-@vf.reward(stage="group", weight=1.0)
-async def relative_group_reward(tasks, states) -> list[float]:
-    _ = tasks
-    qualities = [
-        float(state.get("group_summary", {}).get("quality", 0.0)) for state in states
-    ]
-    if not qualities:
-        return []
-    low = min(qualities)
-    high = max(qualities)
-    if high == low:
-        return [0.5 for _ in qualities]
-    return [(quality - low) / (high - low) for quality in qualities]
-
-
-@vf.advantage
-async def centered_group_advantage(tasks, states) -> list[float]:
-    _ = tasks
-    rewards = [
-        float(state.get("metrics", {}).get("relative_group_reward", 0.0))
-        for state in states
-    ]
-    baseline = mean(rewards) if rewards else 0.0
-    return [reward - baseline for reward in rewards]
-
-
-@vf.cleanup(stage="group")
-async def mark_group_cleaned(tasks, states) -> None:
-    _ = tasks
-    for state in states:
-        state["group_cleaned"] = True
+    async def _run(
+        self,
+        task: CandidateTask,
+        state: vf.State,
+        *,
+        ctx: vf.RolloutContext,
+        runtime: vf.RuntimeSession | None = None,
+        tools: vf.MCPToolRegistry | None = None,
+        user: vf.MCPToolRegistry | None = None,
+    ) -> None:
+        _ = ctx, runtime, tools, user
+        answer = task.candidate_answer
+        message = vf.AssistantMessage(content=answer)
+        state.scratch["answer"] = answer
+        state.scratch["candidate_id"] = task.candidate_id
+        state.add_turn(
+            vf.Turn(prompt=self.initial_messages(task), completion=[message])
+        )
+        state.stop("candidate_program")
 
 
 def candidate_quality(target: str, answer: str) -> float:
@@ -332,4 +297,5 @@ def load_environment(config: GroupRewardEnvConfig) -> vf.Env:
     return vf.Env(
         taskset=GroupRewardTaskset(config=config.taskset),
         harness=GroupRewardHarness(config=config.harness),
+        runtime=config.runtime,
     )

@@ -24,7 +24,10 @@ def test_init_v1_writes_taskset_template(tmp_path: Path) -> None:
     content = read_env_file(tmp_path, "bar")
 
     assert "class BarTasksetConfig(vf.TasksetConfig):" in content
+    assert "class BarTask(vf.Task):" in content
+    assert "answer: str" in content
     assert "class BarTaskset(vf.Taskset[BarTasksetConfig]):" in content
+    assert "task_type = BarTask" in content
     assert 'system_prompt: vf.SystemPrompt = "Answer exactly."' in content
     assert '"""Taskset implementation for bar.' in content
     assert 'def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:' in content
@@ -33,7 +36,9 @@ def test_init_v1_writes_taskset_template(tmp_path: Path) -> None:
         in content
     )
     assert "def load_system_prompt" not in content
-    assert "async def correct_answer(self, task: vf.Task, state: vf.State)" in content
+    assert "async def correct_answer(self, task: BarTask, state: vf.State)" in content
+    assert "task.answer" in content
+    assert "task.data" not in content
     assert "def load_taskset(config: BarTasksetConfig) -> BarTaskset:" in content
     assert '"""Typed taskset loader used by vf.load_taskset."""' in content
     assert "return BarTaskset(config=config)" in content

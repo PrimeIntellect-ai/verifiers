@@ -1,15 +1,11 @@
 import json
 from copy import deepcopy
 from pathlib import Path
-from typing import TypeAlias, cast
+from typing import cast
 
-import verifiers as vf
-from verifiers.v1.utils.endpoint_utils import normalize_openai_responses_input
+import verifiers.v1 as vf
 
 DEFAULT_NEMO_GYM_DATA_NAME = "example.jsonl"
-ConfigData: TypeAlias = dict[str, object]
-ConfigMap: TypeAlias = dict[str, object]
-TaskRow: TypeAlias = dict[str, object]
 
 
 def nemo_gym_package_root() -> Path:
@@ -32,15 +28,15 @@ def resolve_nemo_gym_data_path(
     return path
 
 
-def agent_ref_name(value: object) -> str | None:
+def agent_ref_name(value: vf.JsonValue) -> str | None:
     if not isinstance(value, dict):
         return None
-    name = cast(ConfigMap, value).get("name")
+    name = value.get("name")
     return name if isinstance(name, str) and name else None
 
 
 class NeMoGymTasksetConfig(vf.TasksetConfig):
-    taskset_id: str | None = "nemo_gym"
+    id: str | None = "nemo_gym"
     nemo_env: str | None = None
     jsonl_path: str | None = None
     data_name: str = DEFAULT_NEMO_GYM_DATA_NAME
@@ -48,12 +44,14 @@ class NeMoGymTasksetConfig(vf.TasksetConfig):
     limit: int | None = None
 
 
-class NeMoGymTaskset(vf.Taskset[NeMoGymTasksetConfig]):
-    """Taskset adapter for NeMo Gym JSONL rows.
+class NeMoGymTask(vf.Task):
+    nemo_gym_row: vf.JsonData
+    info: vf.JsonData = {}
+    system_prompt: list[vf.JsonData] = []
 
-    Each task keeps the original NeMo Gym row under ``nemo_gym_row`` so the
-    harness can post it to the configured NeMo Gym agent unchanged.
-    """
+
+class NeMoGymTaskset(vf.Taskset[NeMoGymTasksetConfig]):
+    task_type = NeMoGymTask
 
     def jsonl_path(self) -> Path | None:
         raw_path = self.config.jsonl_path
@@ -72,12 +70,12 @@ class NeMoGymTaskset(vf.Taskset[NeMoGymTasksetConfig]):
         jsonl_path = self.jsonl_path()
         if jsonl_path is None:
             raise ValueError("NeMoGymTaskset requires nemo_env=... or jsonl_path=...")
-        raw_rows: list[TaskRow] = []
+        raw_rows: list[vf.JsonData] = []
         with jsonl_path.open(encoding="utf-8") as f:
             for line in f:
                 stripped = line.strip()
                 if stripped:
-                    raw_rows.append(cast(TaskRow, json.loads(stripped)))
+                    raw_rows.append(cast(vf.JsonData, json.loads(stripped)))
         if self.config.limit is not None:
             raw_rows = raw_rows[: self.config.limit]
         tasks = [
@@ -88,26 +86,26 @@ class NeMoGymTaskset(vf.Taskset[NeMoGymTasksetConfig]):
 
 
 def normalize_nemo_gym_task_row(
-    row: TaskRow,
+    row: vf.JsonData,
     index: int,
     *,
     agent_name: str | None = None,
-) -> ConfigData:
-    nemo_row: ConfigData = deepcopy(dict(row))
+) -> vf.JsonData:
+    nemo_row: vf.JsonData = deepcopy(dict(row))
     if agent_name and not agent_ref_name(nemo_row.get("agent_ref")):
         nemo_row["agent_ref"] = {
             "type": "responses_api_agents",
             "name": agent_name,
         }
-    task_row: ConfigData = deepcopy(nemo_row)
+    task_row: vf.JsonData = deepcopy(nemo_row)
     task_row["nemo_gym_row"] = nemo_row
-    task_row.setdefault("example_id", index)
+    task_row.setdefault("row_id", index)
     prompt, system_prompt = prompt_parts_from_nemo_gym_row(nemo_row)
     task_row.setdefault("prompt", prompt)
     if system_prompt:
         task_row.setdefault("system_prompt", system_prompt)
     raw_info = task_row.get("info")
-    info = dict(cast(ConfigMap, raw_info)) if isinstance(raw_info, dict) else {}
+    info = dict(raw_info) if isinstance(raw_info, dict) else {}
     info.setdefault(
         "nemo_gym",
         {
@@ -119,22 +117,34 @@ def normalize_nemo_gym_task_row(
 
 
 def prompt_parts_from_nemo_gym_row(
-    row: TaskRow,
-) -> tuple[list[ConfigData], list[ConfigData]]:
+    row: vf.JsonData,
+) -> tuple[list[vf.JsonData], list[vf.JsonData]]:
     create_params = row.get("responses_create_params")
     if not isinstance(create_params, dict):
         return [], []
-    create_params = cast(ConfigMap, create_params)
     try:
-        messages = normalize_openai_responses_input(create_params.get("input"))
+        messages = normalize_responses_input(create_params.get("input"))
     except Exception:
         return [], []
-    prompt: list[ConfigData] = []
-    system_prompt: list[ConfigData] = []
+    prompt: list[vf.JsonData] = []
+    system_prompt: list[vf.JsonData] = []
     for message in messages:
-        dumped = cast(ConfigData, message.model_dump(exclude_none=True))
+        dumped = cast(vf.JsonData, message.model_dump(exclude_none=True))
         if getattr(message, "role", None) == "system":
             system_prompt.append(dumped)
         else:
             prompt.append(dumped)
     return prompt, system_prompt
+
+
+def normalize_responses_input(value: vf.JsonValue) -> vf.Messages:
+    if isinstance(value, str):
+        return [vf.UserMessage(content=value)]
+    if isinstance(value, list):
+        raw_messages: list[vf.JsonData] = []
+        for item in value:
+            if not isinstance(item, dict):
+                raise TypeError("responses_create_params.input must contain objects.")
+            raw_messages.append(cast(vf.JsonData, item))
+        return vf.get_messages(raw_messages)
+    raise TypeError("responses_create_params.input must be a string or message list.")

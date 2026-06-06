@@ -3,11 +3,10 @@ import json
 import logging
 import random
 import re
+import sys
 
 from datasets import Dataset, load_dataset
-from pydantic import model_validator
-
-import verifiers as vf
+import verifiers.v1 as vf
 
 logger = logging.getLogger(__name__)
 
@@ -239,13 +238,13 @@ def score_response(
 
 
 def eval_turn(
-    completion: list[vf.ConfigData],
+    completion: vf.Messages,
     turn_num: int,
-    state: dict,
+    info: "AlphabetSortInfo",
     similarity_power: int,
     apply_power: bool,
 ) -> float:
-    ground_truths = state.get("info", {}).get("ground_truths", [])
+    ground_truths = info.ground_truths
     if turn_num > len(ground_truths):
         return 0.0
     expected = ground_truths[turn_num - 1]
@@ -279,44 +278,32 @@ def eval_turn(
     return attempt_scores[-1]
 
 
-@vf.reward(weight=1.0)
-async def weighted_reward(task, state) -> float:
-    completion = state.get("completion") or []
-    actual_turns = state["info"]["num_turns"]
-    similarity_power = int(task.get("similarity_power", 4))
-    power_per_turn = bool(task.get("power_per_turn", True))
-    total = 0.0
-    for turn_num in range(1, actual_turns + 1):
-        total += eval_turn(
-            completion,
-            turn_num,
-            state,
-            similarity_power,
-            apply_power=power_per_turn,
-        )
-    if actual_turns <= 0:
-        return 0.0
-    if power_per_turn:
-        return total / actual_turns
-    return (total / actual_turns) ** similarity_power
+class AlphabetSortInfo(vf.Schema):
+    follow_ups: list[str]
+    turn_names: list[list[str]]
+    ground_truths: list[list[str]]
+    num_turns: int
+    sort_by_first: bool
 
 
-class AlphabetUserConfig(vf.UserConfig):
-    pass
+class AlphabetSortTask(vf.Task):
+    answer: str
+    info: AlphabetSortInfo
+    similarity_power: int = 4
+    power_per_turn: bool = True
 
 
-class AlphabetUser(vf.User[AlphabetUserConfig]):
-    async def get_response(self, task, state, messages) -> list[dict[str, str]]:
-        assistant_count = len(vf.get_messages(messages, role="assistant"))
-        follow_ups = state["info"]["follow_ups"]
-        if assistant_count <= 0 or assistant_count > len(follow_ups):
-            return []
-        return [{"role": "user", "content": follow_ups[assistant_count - 1]}]
+def transcript_completion_messages(state: vf.State) -> vf.Messages:
+    messages: vf.Messages = []
+    for turn in state.transcript:
+        messages.extend(turn.completion)
+    return messages
 
 
 class AlphabetSortTasksetConfig(vf.TasksetConfig):
-    user: AlphabetUserConfig | None = AlphabetUserConfig()
-    rewards: list[str] = ["weighted_reward"]
+    user: vf.User | None = vf.User(
+        server=vf.MCPServerSpec(command=[sys.executable, __file__, "--user-server"])
+    )
     min_turns: int = 1
     max_turns: int = 3
     min_names_per_turn: int = 1
@@ -327,16 +314,6 @@ class AlphabetSortTasksetConfig(vf.TasksetConfig):
     dataset_split: str = "train"
     seed: int = 1337420
 
-    @model_validator(mode="after")
-    def validate_task_shape(self) -> "AlphabetSortTasksetConfig":
-        validate_parameters(
-            min_turns=self.min_turns,
-            max_turns=self.max_turns,
-            min_names_per_turn=self.min_names_per_turn,
-            max_names_per_turn=self.max_names_per_turn,
-        )
-        return self
-
 
 class AlphabetSortEnvConfig(vf.EnvConfig):
     taskset: AlphabetSortTasksetConfig = AlphabetSortTasksetConfig()
@@ -344,6 +321,8 @@ class AlphabetSortEnvConfig(vf.EnvConfig):
 
 
 class AlphabetSortTaskset(vf.Taskset[AlphabetSortTasksetConfig]):
+    task_type = AlphabetSortTask
+
     def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         return load_tasks(
             min_turns=self.config.min_turns,
@@ -357,9 +336,60 @@ class AlphabetSortTaskset(vf.Taskset[AlphabetSortTasksetConfig]):
             seed=self.config.seed,
         )
 
+    @vf.reward(weight=1.0)
+    async def weighted_reward(self, task: AlphabetSortTask, state: vf.State) -> float:
+        completion = transcript_completion_messages(state)
+        actual_turns = task.info.num_turns
+        total = 0.0
+        for turn_num in range(1, actual_turns + 1):
+            total += eval_turn(
+                completion,
+                turn_num,
+                task.info,
+                task.similarity_power,
+                apply_power=task.power_per_turn,
+            )
+        if actual_turns <= 0:
+            return 0.0
+        if task.power_per_turn:
+            return total / actual_turns
+        return (total / actual_turns) ** task.similarity_power
+
 
 def load_environment(config: AlphabetSortEnvConfig) -> vf.Env:
     return vf.Env(
         taskset=AlphabetSortTaskset(config=config.taskset),
         harness=vf.Harness(config=config.harness),
+        runtime=config.runtime,
     )
+
+
+def run_user_server() -> None:
+    from mcp.server.fastmcp import FastMCP
+
+    mcp = FastMCP("alphabet-sort-user")
+
+    @mcp.tool()
+    def respond(task: dict, state: dict, transcript: list[dict]) -> dict:
+        _ = state
+        info = task.get("info") or {}
+        follow_ups = info.get("follow_ups") or []
+        assistant_count = 0
+        for turn in transcript:
+            completion = turn.get("completion") or []
+            assistant_count += sum(
+                1 for message in completion if message.get("role") == "assistant"
+            )
+        if assistant_count <= 0 or assistant_count > len(follow_ups):
+            return {"messages": []}
+        return {
+            "messages": [
+                {"role": "user", "content": str(follow_ups[assistant_count - 1])}
+            ],
+        }
+
+    mcp.run(transport="stdio")
+
+
+if __name__ == "__main__" and sys.argv[1:] == ["--user-server"]:
+    run_user_server()

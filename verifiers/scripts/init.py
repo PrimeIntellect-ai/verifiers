@@ -156,7 +156,7 @@ def load_environment(**kwargs) -> vf.Environment:
 """
 
 V1_TASKSET_TEMPLATE = """\
-import verifiers as vf
+import verifiers.v1 as vf
 
 
 class {taskset_config_name}(vf.TasksetConfig):
@@ -165,12 +165,18 @@ class {taskset_config_name}(vf.TasksetConfig):
     system_prompt: vf.SystemPrompt = "Answer exactly."
 
 
+class {task_name}(vf.Task):
+    answer: str
+
+
 class {taskset_name}(vf.Taskset[{taskset_config_name}]):
     \"\"\"Taskset implementation for {env_id_dash}.
 
     Add task loading, task-owned toolsets, user behavior, lifecycle hooks,
     metrics, rewards, and advantages on this class.
     \"\"\"
+
+    task_type = {task_name}
 
     def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         \"\"\"Return serializable task records as a list, generator, or Dataset.\"\"\"
@@ -185,13 +191,13 @@ class {taskset_name}(vf.Taskset[{taskset_config_name}]):
         ]
 
     @vf.reward(weight=1.0)
-    async def correct_answer(self, task: vf.Task, state: vf.State) -> float:
+    async def correct_answer(self, task: {task_name}, state: vf.State) -> float:
         \"\"\"Score the final assistant response for one rollout.\"\"\"
-        messages = vf.get_messages(state.get("completion") or [], role="assistant")
+        messages = vf.get_messages(state.completion or [], role="assistant")
         if not messages:
             return 0.0
         response = str(messages[-1].content or "").strip()
-        return float(response == task["answer"])
+        return float(response == task.answer)
 
 
 def load_taskset(config: {taskset_config_name}) -> {taskset_name}:
@@ -227,6 +233,7 @@ def load_environment(config: vf.EnvConfig) -> vf.Env:
     return vf.Env(
         taskset=vf.load_taskset(config=config.taskset),
         harness=vf.load_harness(config=config.harness),
+        runtime=config.runtime,
     )
 """
 
@@ -236,7 +243,7 @@ V1_HARNESS_ENVIRONMENT_TEMPLATE = (
 )
 
 OPENENV_ENVIRONMENT_TEMPLATE = """\
-import verifiers as vf
+import verifiers.v1 as vf
 from tasksets import OpenEnvTaskset, OpenEnvTasksetConfig
 
 
@@ -249,6 +256,7 @@ def load_environment(config: vf.EnvConfig) -> vf.Env:
     return vf.Env(
         taskset=vf.load_taskset(config=config.taskset),
         harness=vf.load_harness(config=config.harness),
+        runtime=config.runtime,
     )
 """
 
@@ -413,6 +421,7 @@ def init_environment(
     env_id_dash = env.replace("_", "-")
     env_id_underscore = env_id_dash.replace("-", "_")
     taskset_config_name = _class_name(env_id_underscore, "TasksetConfig")
+    task_name = _class_name(env_id_underscore, "Task")
     taskset_name = _class_name(env_id_underscore, "Taskset")
     harness_config_name = _class_name(env_id_underscore, "HarnessConfig")
     harness_name = _class_name(env_id_underscore, "Harness")
@@ -487,6 +496,7 @@ def init_environment(
         environment_file.write_text(
             template.replace("{env_id_dash}", env_id_dash)
             .replace("{taskset_config_name}", taskset_config_name)
+            .replace("{task_name}", task_name)
             .replace("{taskset_name}", taskset_name)
             .replace("{harness_config_name}", harness_config_name)
             .replace("{harness_name}", harness_name)

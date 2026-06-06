@@ -1,12 +1,15 @@
 import json
 import re
+import time
 from collections.abc import Sequence
 from typing import cast
 
-import verifiers as vf
+from pydantic import Field
+
+import verifiers.v1 as vf
 from verifiers.types import (
     AssistantMessage,
-    MessageContent,
+    Message,
     Messages,
     Tool,
     ToolCall,
@@ -15,24 +18,33 @@ from verifiers.types import (
 )
 from verifiers.utils.message_utils import message_role, normalize_messages
 
-from verifiers.v1.utils.endpoint_utils import assistant_completion_from_messages
-from verifiers.v1.utils.config_utils import explicit_config_data
-from verifiers.v1.utils.json_utils import json_args
-
 _BFCL_PATCHED = False
 BFCLRawMessage = str | vf.JsonData
 BFCLRawTurn = str | vf.JsonData | Sequence[BFCLRawMessage] | None
 
 
+class BFCLTask(vf.Task):
+    category: str
+    question: list[list[vf.JsonData]]
+    function: vf.JsonValue
+    function_with_hints: vf.JsonValue | None = None
+    ground_truth: vf.JsonValue | None = None
+    initial_config: vf.JsonData = Field(default_factory=dict)
+    involved_classes: vf.JsonValue | None = None
+    missed_function: vf.JsonData = Field(default_factory=dict)
+    missed_function_with_hints: vf.JsonData = Field(default_factory=dict)
+    max_steps_per_turn: int | None = None
+
+
 class BFCLTasksetConfig(vf.TasksetConfig):
-    rewards: list[str] = ["bfcl_reward"]
+    id: str = "bfcl-v3"
     test_category: str = "simple_python"
     test_categories: list[str] | None = None
     examples_per_category: int = -1
 
 
 class BFCLHarnessConfig(vf.HarnessConfig):
-    test_category: str = "simple_python"
+    max_turns: int = 1
 
 
 class BFCLEnvConfig(vf.EnvConfig):
@@ -83,7 +95,7 @@ def bfcl_tool_defs(functions: object) -> list[Tool]:
     oai_tools = convert_to_tool(
         functions, GORILLA_TO_OPENAPI, ModelStyle.OPENAI_COMPLETIONS
     )
-    tool_defs = []
+    tool_defs: list[Tool] = []
     for tool in oai_tools:
         function = tool["function"]
         tool_defs.append(
@@ -97,34 +109,22 @@ def bfcl_tool_defs(functions: object) -> list[Tool]:
     return tool_defs
 
 
-class BFCLSchemaTool:
-    def __init__(self, tool_def: Tool):
-        self.name = tool_def.name
-        self.__name__ = tool_def.name
-        self.__doc__ = tool_def.description
-        self.tool_def = tool_def
-
-    async def __call__(self, state: vf.State, **arguments: object) -> str:
-        calls = cast(
-            list[vf.ConfigData], state.setdefault("bfcl_executed_tool_calls", [])
-        )
-        calls.append({self.name: arguments})
-        return "recorded"
+def bfcl_functions(task: vf.Task) -> object:
+    task = cast(BFCLTask, task)
+    return (
+        task.function_with_hints
+        if task.function_with_hints is not None
+        else task.function
+    )
 
 
-def bfcl_functions(task: vf.JsonData) -> object:
-    return task.get("function_with_hints") or task["function"]
-
-
-def bfcl_missed_function(task: vf.JsonData) -> vf.JsonData:
-    value = task.get("missed_function_with_hints") or task.get("missed_function") or {}
-    if not isinstance(value, dict):
-        raise TypeError("BFCL missed_function must be a mapping.")
-    return cast(vf.JsonData, value)
+def bfcl_missed_function(task: vf.Task) -> vf.JsonData:
+    task = cast(BFCLTask, task)
+    return task.missed_function_with_hints or task.missed_function
 
 
 def build_task_loader(test_category: str, examples_per_category: int = -1):
-    def factory():
+    def factory() -> list[vf.JsonData]:
         patch_bfcl_eval()
         from bfcl_eval.utils import (
             is_multi_turn,
@@ -144,7 +144,7 @@ def build_task_loader(test_category: str, examples_per_category: int = -1):
         else:
             ground_truth_entries = load_ground_truth_entry(test_category)
         limit = len(entries) if examples_per_category < 0 else examples_per_category
-        rows = []
+        rows: list[vf.JsonData] = []
         for index, (entry, hinted_entry, ground_truth) in enumerate(
             zip(entries, entries_with_hints, ground_truth_entries)
         ):
@@ -152,8 +152,8 @@ def build_task_loader(test_category: str, examples_per_category: int = -1):
                 break
             row = bfcl_row(
                 test_category,
-                entry,
-                hinted_entry,
+                cast(vf.JsonData, entry),
+                cast(vf.JsonData, hinted_entry),
                 cast(vf.JsonData | None, ground_truth),
             )
             if is_multi_turn(test_category):
@@ -179,14 +179,13 @@ def bfcl_row(
     entry: vf.JsonData,
     hinted_entry: vf.JsonData,
     ground_truth: vf.JsonData | None,
-) -> vf.ConfigData:
+) -> vf.JsonData:
     question = cast(list[BFCLRawTurn], entry["question"])
     first_turn_system_prompt, first_turn_prompt = split_system_prompt(
         normalize_turn(question[0])
     )
-    row: vf.ConfigData = {
+    row: vf.JsonData = {
         "task_id": str(entry["id"]),
-        "id": str(entry["id"]),
         "category": test_category,
         "prompt": first_turn_prompt,
         "question": [
@@ -198,10 +197,7 @@ def bfcl_row(
     }
     if first_turn_system_prompt:
         row["system_prompt"] = first_turn_system_prompt
-    for key in (
-        "initial_config",
-        "involved_classes",
-    ):
+    for key in ("initial_config", "involved_classes"):
         if key in entry:
             row[key] = entry[key]
     if "missed_function" in entry:
@@ -209,12 +205,11 @@ def bfcl_row(
     if "missed_function" in hinted_entry:
         row["missed_function_with_hints"] = hinted_entry["missed_function"]
     if ground_truth is not None:
-        for key, value in ground_truth.items():
-            row[key] = value
+        row.update(ground_truth)
     return row
 
 
-def normalize_turn(value: object) -> list[vf.ConfigData]:
+def normalize_turn(value: object) -> list[vf.JsonData]:
     if value is None:
         return []
     if isinstance(value, str):
@@ -222,7 +217,7 @@ def normalize_turn(value: object) -> list[vf.ConfigData]:
     if isinstance(value, dict):
         return [dict(cast(vf.JsonData, value))]
     if isinstance(value, Sequence):
-        messages = []
+        messages: list[vf.JsonData] = []
         for item in value:
             if isinstance(item, str):
                 messages.append({"role": "user", "content": item})
@@ -236,9 +231,9 @@ def normalize_turn(value: object) -> list[vf.ConfigData]:
 
 def split_system_prompt(
     messages: Sequence[vf.JsonData],
-) -> tuple[list[vf.ConfigData], list[vf.ConfigData]]:
-    system_prompt = []
-    prompt = []
+) -> tuple[list[vf.JsonData], list[vf.JsonData]]:
+    system_prompt: list[vf.JsonData] = []
+    prompt: list[vf.JsonData] = []
     for message in messages:
         target = system_prompt if message.get("role") == "system" else prompt
         target.append(dict(message))
@@ -252,38 +247,47 @@ def maximum_step_limit() -> int:
     return cast(int, MAXIMUM_STEP_LIMIT)
 
 
-def model_name(state: vf.JsonData) -> str:
-    runtime = state.get("runtime") or {}
-    if isinstance(runtime, dict):
-        runtime_map = cast(vf.JsonData, runtime)
-        model = runtime_map.get("model")
-        if isinstance(model, str) and model:
-            return model
-    return "unknown"
+def model_name(state: vf.State) -> str:
+    value = state.metadata.get("model")
+    return value if isinstance(value, str) and value else "unknown"
 
 
-def assistant_tool_calls(state: vf.JsonData) -> list[ToolCall]:
-    completion = state.get("completion") or []
-    if not isinstance(completion, Sequence):
-        return []
+def assistant_tool_calls(state: vf.State) -> list[ToolCall]:
+    completion = state.completion or []
     messages = vf.get_messages(completion, role="assistant")
     if not messages:
         return []
     return parse_tool_calls(messages[-1])
 
 
-def parse_tool_calls(message: object) -> list[ToolCall]:
+def transcript_completion_messages(state: vf.State) -> Messages:
+    if not state.transcript:
+        return []
+    seen = list(state.transcript[0].prompt)
+    messages: Messages = []
+    for index, turn in enumerate(state.transcript):
+        if index:
+            prompt_delta = list(turn.prompt[len(seen) :])
+            messages.extend(prompt_delta)
+            seen.extend(prompt_delta)
+        messages.extend(turn.completion)
+        seen.extend(turn.completion)
+        messages.extend(turn.tool_results)
+        seen.extend(turn.tool_results)
+    return messages
+
+
+def parse_tool_calls(message: Message | vf.JsonData) -> list[ToolCall]:
     if isinstance(message, AssistantMessage):
         return list(message.tool_calls or [])
     raw_tool_calls: object
     if isinstance(message, dict):
-        message_map = cast(vf.JsonData, message)
-        raw_tool_calls = message_map.get("tool_calls") or []
+        raw_tool_calls = message.get("tool_calls") or []
     else:
         raw_tool_calls = getattr(message, "tool_calls", []) or []
     if not isinstance(raw_tool_calls, Sequence):
         return []
-    calls = []
+    calls: list[ToolCall] = []
     for raw_call in raw_tool_calls:
         if isinstance(raw_call, ToolCall):
             calls.append(raw_call)
@@ -313,17 +317,16 @@ def parse_tool_calls(message: object) -> list[ToolCall]:
     return calls
 
 
-def convert_to_gorilla(tool_calls: list[ToolCall]) -> list[vf.ConfigData]:
-    decoded_output = []
-    for tool_call in tool_calls:
-        decoded_output.append({tool_call.name: json_args(tool_call.arguments)})
-    return decoded_output
+def convert_to_gorilla(tool_calls: list[ToolCall]) -> list[vf.JsonData]:
+    return [
+        {tool_call.name: tool_args(tool_call.arguments)} for tool_call in tool_calls
+    ]
 
 
 def convert_to_func_calls(tool_calls: list[ToolCall]) -> list[str]:
-    func_calls = []
+    func_calls: list[str] = []
     for tool_call in tool_calls:
-        params = json_args(tool_call.arguments)
+        params = tool_args(tool_call.arguments)
         args = ",".join(f"{key}={value!r}" for key, value in params.items())
         func_calls.append(f"{tool_call.name}({args})")
     return func_calls
@@ -333,24 +336,19 @@ def json_clone(value: object) -> object:
     return json.loads(json.dumps(value))
 
 
-@vf.reward(weight=1.0)
-async def bfcl_reward(task: vf.Task, state: vf.State) -> float:
-    patch_bfcl_eval()
-    from bfcl_eval.utils import is_multi_turn, is_relevance_or_irrelevance
-
-    category = str(task["category"])
-    if is_relevance_or_irrelevance(category):
-        return relevance_reward(task, state)
-    if is_multi_turn(category):
-        return multi_turn_reward(task, state)
-    return ast_reward(task, state)
+def tool_args(value: str) -> vf.JsonData:
+    parsed = json.loads(value or "{}")
+    if not isinstance(parsed, dict):
+        raise TypeError("BFCL tool arguments must decode to an object.")
+    return cast(vf.JsonData, parsed)
 
 
-def relevance_reward(task: vf.JsonData, state: vf.JsonData) -> float:
+def relevance_reward(task: vf.Task, state: vf.State) -> float:
     patch_bfcl_eval()
     from bfcl_eval.utils import is_empty_output
 
-    category = str(task["category"])
+    task = cast(BFCLTask, task)
+    category = task.category
     try:
         gorilla_tool_calls = convert_to_gorilla(assistant_tool_calls(state))
         contain_func_call = not is_empty_output(gorilla_tool_calls)
@@ -361,7 +359,7 @@ def relevance_reward(task: vf.JsonData, state: vf.JsonData) -> float:
     return float(contain_func_call)
 
 
-def ast_reward(task: vf.JsonData, state: vf.JsonData) -> float:
+def ast_reward(task: vf.Task, state: vf.State) -> float:
     patch_bfcl_eval()
     from bfcl_eval.constants.enums import Language
     from bfcl_eval.eval_checker.ast_eval.ast_checker import ast_checker
@@ -371,7 +369,8 @@ def ast_reward(task: vf.JsonData, state: vf.JsonData) -> float:
         is_js,
     )
 
-    category = str(task["category"])
+    task = cast(BFCLTask, task)
+    category = task.category
     try:
         gorilla_tool_calls = convert_to_gorilla(assistant_tool_calls(state))
         if not is_function_calling_format_output(gorilla_tool_calls):
@@ -387,9 +386,9 @@ def ast_reward(task: vf.JsonData, state: vf.JsonData) -> float:
         language = Language.PYTHON
 
     checker_result = ast_checker(
-        task["function"],
+        task.function,
         gorilla_tool_calls,
-        task["ground_truth"],
+        task.ground_truth,
         language,
         category,
         model_name(state),
@@ -397,17 +396,16 @@ def ast_reward(task: vf.JsonData, state: vf.JsonData) -> float:
     return float(bool(checker_result["valid"]))
 
 
-def multi_turn_reward(task: vf.JsonData, state: vf.JsonData) -> float:
+def multi_turn_reward(task: vf.Task, state: vf.State) -> float:
     patch_bfcl_eval()
     from bfcl_eval.eval_checker.multi_turn_eval.multi_turn_checker import (
         multi_turn_checker,
     )
     from bfcl_eval.model_handler.base_handler import is_empty_execute_response
 
-    completion = state.get("completion") or []
-    if not isinstance(completion, Sequence):
-        return 0.0
-    raw_ground_truth = task["ground_truth"]
+    task = cast(BFCLTask, task)
+    completion = transcript_completion_messages(state)
+    raw_ground_truth = task.ground_truth
     if not isinstance(raw_ground_truth, Sequence):
         return 0.0
     all_ground_truth = cast(list[list[str]], raw_ground_truth)
@@ -438,185 +436,151 @@ def multi_turn_reward(task: vf.JsonData, state: vf.JsonData) -> float:
         all_func_calls,
         all_ground_truth,
         {
-            "initial_config": task.get("initial_config", {}),
-            "involved_classes": task["involved_classes"],
-            "id": task["id"],
+            "initial_config": task.initial_config,
+            "involved_classes": task.involved_classes,
+            "id": task.task_id,
         },
-        str(task["id"]).rsplit("_", 1)[0],
+        task.task_id.rsplit("_", 1)[0],
         model_name(state),
     )
     return float(bool(result["valid"]))
 
 
-async def bfcl_multi_turn_program(
-    task: vf.Task, state: vf.State, harness: vf.Harness
-) -> vf.State:
-    patch_bfcl_eval()
-    from bfcl_eval.constants.default_prompts import (
-        DEFAULT_USER_PROMPT_FOR_ADDITIONAL_FUNCTION_FC,
-    )
-    from bfcl_eval.eval_checker.multi_turn_eval.multi_turn_utils import (
-        execute_multi_turn_func_call,
-    )
-    from bfcl_eval.model_handler.base_handler import is_empty_execute_response
-
-    messages = [
-        *normalize_messages(
-            state.get("system_prompt", []), field_name="state.system_prompt"
-        ),
-        *normalize_messages(state.get("prompt", []), field_name="state.prompt"),
-    ]
-    prompt_messages = [message.model_dump(exclude_none=True) for message in messages]
-
-    def sync_completion() -> list[vf.ConfigData]:
-        rendered_messages = [
-            message.model_dump(exclude_none=True) for message in messages
-        ]
-        state["completion"] = assistant_completion_from_messages(
-            prompt_messages, rendered_messages
-        )
-        return rendered_messages
-
-    category = str(task["category"])
-    tool_defs = bfcl_tool_defs(bfcl_functions(task))
-    next_prompts = list(cast(Sequence[list[vf.ConfigData]], task["question"]))[1:]
-    holdout_function = bfcl_missed_function(task)
-    initial_config = cast(vf.ConfigData, json_clone(task.get("initial_config") or {}))
-    involved_classes = cast(list[str], json_clone(task["involved_classes"]))
-    max_steps_per_turn = int(task.get("max_steps_per_turn") or maximum_step_limit())
-    turn_idx = 0
-    steps_per_turn = 0
-    runtime = harness.runtime
-
-    execute_multi_turn_func_call(
-        [],
-        initial_config,
-        involved_classes,
-        model_name(state).replace("/", "_").replace("-", "_").replace(".", "_"),
-        str(task["id"]),
-        long_context=("long_context" in category or "composite" in category),
-    )
-
-    while True:
-        if await runtime.is_completed(task, state):
-            return state
-        response = await runtime.submit_model_request(
-            cast(Messages, messages),
-            task,
-            state,
-            tool_defs=tool_defs,
-        )
-        messages.append(response.message)
-        sync_completion()
-        tool_calls = list(response.message.tool_calls or [])
-        try:
-            func_calls = convert_to_func_calls(tool_calls)
-            if is_empty_execute_response(func_calls):
-                func_calls = None
-        except Exception:
-            func_calls = None
-
-        if func_calls:
-            execution_results, _ = execute_multi_turn_func_call(
-                func_call_list=func_calls,
-                initial_config=initial_config,
-                involved_classes=involved_classes,
-                model_name=model_name(state)
-                .replace("/", "_")
-                .replace("-", "_")
-                .replace(".", "_"),
-                test_entry_id=str(task["id"]),
-                long_context=("long_context" in category or "composite" in category),
-            )
-            for execution_result, tool_call in zip(execution_results, tool_calls):
-                messages.append(
-                    ToolMessage(
-                        tool_call_id=tool_call.id,
-                        content=cast(MessageContent, execution_result),
-                    )
-                )
-                sync_completion()
-            steps_per_turn += 1
-            if steps_per_turn >= max_steps_per_turn:
-                state.stop("max_steps_per_turn_reached")
-                return state
-            continue
-
-        steps_per_turn = 0
-        turn_idx += 1
-        if not next_prompts:
-            state.stop("no_next_prompt_and_no_tool_calls")
-            return state
-        next_prompt = normalize_turn(next_prompts.pop(0))
-        if str(turn_idx) in holdout_function:
-            tool_defs.extend(bfcl_tool_defs(holdout_function[str(turn_idx)]))
-            if next_prompt:
-                raise ValueError("BFCL holdout turns must not include user messages.")
-            messages.append(
-                UserMessage(content=DEFAULT_USER_PROMPT_FOR_ADDITIONAL_FUNCTION_FC)
-            )
-        else:
-            messages.extend(normalize_messages(cast(Messages, next_prompt)))
-        sync_completion()
-
-
 class BFCLTaskset(vf.Taskset[BFCLTasksetConfig]):
-    def load_toolsets(self, config: BFCLTasksetConfig) -> vf.Toolsets:
-        _ = config
-        return {"bfcl": vf.Toolset(scope="rollout")}
+    task_type = BFCLTask
 
     def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
-        return load_tasks(
-            test_category=self.config.test_category,
-            examples_per_category=self.config.examples_per_category,
-        )
+        _ = split
+        categories = self.config.test_categories or [self.config.test_category]
+        rows: list[vf.JsonData] = []
+        for category in categories:
+            rows.extend(load_tasks(category, self.config.examples_per_category))
+        return rows
 
-    @vf.setup
-    async def setup_bfcl_tools(self, task: vf.Task, state: vf.State) -> None:
+    @vf.reward(weight=1.0)
+    async def bfcl_reward(self, task: vf.Task, state: vf.State) -> float:
+        patch_bfcl_eval()
+        from bfcl_eval.utils import is_multi_turn, is_relevance_or_irrelevance
+
+        task = cast(BFCLTask, task)
+        category = task.category
+        if is_relevance_or_irrelevance(category):
+            return relevance_reward(task, state)
+        if is_multi_turn(category):
+            return multi_turn_reward(task, state)
+        return ast_reward(task, state)
+
+
+class BFCLHarness(vf.Harness[BFCLHarnessConfig]):
+    async def _run(
+        self,
+        task: BFCLTask,
+        state: vf.State,
+        *,
+        ctx: vf.RolloutContext,
+        runtime: vf.RuntimeSession | None = None,
+        tools: vf.MCPToolRegistry | None = None,
+        user: vf.MCPToolRegistry | None = None,
+    ) -> None:
+        _ = runtime, tools, user
         patch_bfcl_eval()
         from bfcl_eval.utils import is_multi_turn
 
-        if is_multi_turn(str(task["category"])):
+        state.metadata["model"] = ctx.model
+        if is_multi_turn(task.category):
+            await self.run_multi_turn(ctx, task, state)
             return
-        for tool_def in bfcl_tool_defs(bfcl_functions(task)):
-            state.add_tool("bfcl", BFCLSchemaTool(tool_def))
-
-
-def load_harness(config: BFCLHarnessConfig) -> vf.Harness:
-    patch_bfcl_eval()
-    from bfcl_eval.utils import is_multi_turn
-
-    if is_multi_turn(config.test_category):
-        config = config.model_copy(
-            update={"program": vf.ProgramConfig(fn="bfcl_multi_turn_program")}
+        prompt = self.initial_messages(task)
+        start = time.time()
+        response = await ctx.model_client.get_response(
+            prompt=prompt,
+            model=ctx.model,
+            sampling_args=self.sampling_args(task, ctx.sampling_args),
+            tools=bfcl_tool_defs(bfcl_functions(task)),
+            state=state,
         )
-    return vf.Harness(config=config)
+        end = time.time()
+        await state.add_response_turn(prompt, response, start=start, end=end)
+        state.stop("assistant_completed")
 
+    async def run_multi_turn(
+        self,
+        ctx: vf.RolloutContext,
+        task: BFCLTask,
+        state: vf.State,
+    ) -> None:
+        from bfcl_eval.constants.default_prompts import (
+            DEFAULT_USER_PROMPT_FOR_ADDITIONAL_FUNCTION_FC,
+        )
+        from bfcl_eval.model_handler.base_handler import is_empty_execute_response
 
-def load_environment(config: BFCLEnvConfig) -> vf.Env | vf.EnvGroup:
-    taskset_template = config.taskset
-    harness_template = config.harness
-    categories = taskset_template.test_categories or [taskset_template.test_category]
-    envs: list[vf.Env] = []
-    for category in categories:
-        taskset_config = BFCLTasksetConfig.model_validate(
-            {
-                **explicit_config_data(taskset_template),
-                "test_category": category,
-            }
-        )
-        harness_config = BFCLHarnessConfig.model_validate(
-            {
-                **explicit_config_data(harness_template),
-                "test_category": category,
-            }
-        )
-        envs.append(
-            vf.Env(
-                taskset=BFCLTaskset(config=taskset_config),
-                harness=load_harness(config=harness_config),
+        messages = list(self.initial_messages(task))
+        next_prompts = list(task.question)[1:]
+        holdout_function = bfcl_missed_function(task)
+        tool_defs = bfcl_tool_defs(bfcl_functions(task))
+        max_steps_per_turn = int(task.max_steps_per_turn or maximum_step_limit())
+        turn_idx = 0
+        steps_per_turn = 0
+        while True:
+            response = await ctx.model_client.get_response(
+                prompt=messages,
+                model=ctx.model,
+                sampling_args=self.sampling_args(task, ctx.sampling_args),
+                tools=tool_defs,
+                state=state,
             )
-        )
-    if taskset_template.test_categories is not None:
-        return vf.EnvGroup(envs=envs, env_names=categories)
-    return envs[0]
+            turn = await state.add_response_turn(messages, response)
+            messages.extend(turn.completion)
+            tool_calls = list(turn.tool_calls)
+            try:
+                func_calls = convert_to_func_calls(tool_calls)
+                if is_empty_execute_response(func_calls):
+                    func_calls = []
+            except Exception:
+                func_calls = []
+            if func_calls:
+                tool_messages = [
+                    ToolMessage(tool_call_id=tool_call.id, content="recorded")
+                    for tool_call in tool_calls
+                ]
+                turn.tool_results = tool_messages
+                messages.extend(tool_messages)
+                steps_per_turn += 1
+                if steps_per_turn >= max_steps_per_turn:
+                    state.stop("max_steps_per_turn_reached")
+                    return
+                continue
+
+            steps_per_turn = 0
+            turn_idx += 1
+            if not next_prompts:
+                state.stop("no_next_prompt_and_no_tool_calls")
+                return
+            next_prompt = normalize_turn(next_prompts.pop(0))
+            if str(turn_idx) in holdout_function:
+                tool_defs.extend(bfcl_tool_defs(holdout_function[str(turn_idx)]))
+                if next_prompt:
+                    raise ValueError(
+                        "BFCL holdout turns must not include user messages."
+                    )
+                messages.append(
+                    UserMessage(content=DEFAULT_USER_PROMPT_FOR_ADDITIONAL_FUNCTION_FC)
+                )
+            else:
+                messages.extend(normalize_messages(cast(Messages, next_prompt)))
+
+
+def load_taskset(config: BFCLTasksetConfig) -> BFCLTaskset:
+    return BFCLTaskset(config=config)
+
+
+def load_harness(config: BFCLHarnessConfig) -> BFCLHarness:
+    return BFCLHarness(config=config)
+
+
+def load_environment(config: BFCLEnvConfig) -> vf.Env:
+    return vf.Env(
+        taskset=load_taskset(config.taskset),
+        harness=load_harness(config.harness),
+        runtime=config.runtime,
+    )
