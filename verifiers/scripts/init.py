@@ -104,7 +104,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build]
-include = ["{{env_file}}.py", "pyproject.toml"] 
+include = [{{build_include}}]
 
 [tool.verifiers.eval]
 num_examples = 5
@@ -163,6 +163,22 @@ class {taskset_config_name}(vf.TasksetConfig):
     \"\"\"User-facing task settings for {env_id_dash}.\"\"\"
 
     system_prompt: vf.SystemPrompt = "Answer exactly."
+    # Optional MCP stubs live in servers/. Wire them in only when this taskset
+    # needs user simulation or tools:
+    #
+    # user: vf.User | None = vf.User(
+    #     server=vf.MCPServerSpec(
+    #         command=["python", "-m", "{env_id_underscore}.servers.user"]
+    #     )
+    # )
+    # toolsets: vf.Toolsets = [
+    #     vf.Toolset(
+    #         name="tools",
+    #         server=vf.MCPServerSpec(
+    #             command=["python", "-m", "{env_id_underscore}.servers.tools"]
+    #         ),
+    #     )
+    # ]
 
 
 class {task_name}(vf.Task):
@@ -241,6 +257,45 @@ V1_ENVIRONMENT_TEMPLATE = V1_TASKSET_TEMPLATE + V1_ENV_LOADER_TEMPLATE
 V1_HARNESS_ENVIRONMENT_TEMPLATE = (
     V1_TASKSET_TEMPLATE + V1_HARNESS_TEMPLATE + V1_ENV_LOADER_TEMPLATE
 )
+
+V1_SERVERS_INIT_TEMPLATE = """\
+\"\"\"Optional MCP servers for {env_id_dash}.\"\"\"
+"""
+
+V1_USER_SERVER_TEMPLATE = """\
+from mcp.server.fastmcp import FastMCP
+
+
+mcp = FastMCP("{env_id_dash}-user")
+
+
+@mcp.tool()
+def respond(task: dict, state: dict, transcript: list[dict]) -> dict:
+    \"\"\"Return user messages, scratch updates, or stop signals.\"\"\"
+    _ = task, state, transcript
+    return {{"messages": []}}
+
+
+if __name__ == "__main__":
+    mcp.run(transport="stdio")
+"""
+
+V1_TOOLS_SERVER_TEMPLATE = """\
+from mcp.server.fastmcp import FastMCP
+
+
+mcp = FastMCP("{env_id_dash}-tools")
+
+
+@mcp.tool()
+def reverse_text(text: str) -> str:
+    \"\"\"Example tool stub.\"\"\"
+    return text[::-1]
+
+
+if __name__ == "__main__":
+    mcp.run(transport="stdio")
+"""
 
 OPENENV_ENVIRONMENT_TEMPLATE = """\
 import verifiers.v1 as vf
@@ -447,24 +502,35 @@ def init_environment(
     else:
         print(f"README.md already exists at {readme_file}, skipping...")
 
+    package_layout = multi_file or (v1 and not openenv)
+
     # create pyproject.toml if it doesn't exist
     pyproject_file = local_dir / "pyproject.toml"
     if not pyproject_file.exists():
         pyproject_template = (
             OPENENV_PYPROJECT_TEMPLATE if openenv else PYPROJECT_TEMPLATE
         )
+        build_include = (
+            f'"{env_id_underscore}/**/*", "pyproject.toml", "README.md"'
+            if package_layout
+            else f'"{env_id_underscore}.py", "pyproject.toml"'
+        )
         pyproject_file.write_text(
-            pyproject_template.format(env_id=env_id_dash, env_file=env_id_underscore)
+            pyproject_template.format(
+                env_id=env_id_dash,
+                env_file=env_id_underscore,
+                build_include=build_include,
+            )
         )
     else:
         print(f"pyproject.toml already exists at {pyproject_file}, skipping...")
 
     # create environment directory if it doesn't exist
-    environment_dir = local_dir / env_id_underscore if multi_file else local_dir
+    environment_dir = local_dir / env_id_underscore if package_layout else local_dir
     environment_dir.mkdir(parents=True, exist_ok=True)
 
     # create init file if it doesn't exist
-    if multi_file:
+    if package_layout:
         init_file = environment_dir / "__init__.py"
         if not init_file.exists():
             exports = ["load_environment"]
@@ -500,11 +566,32 @@ def init_environment(
             .replace("{taskset_name}", taskset_name)
             .replace("{harness_config_name}", harness_config_name)
             .replace("{harness_name}", harness_name)
+            .replace("{env_id_underscore}", env_id_underscore)
         )
     else:
         print(
             f"{env_id_underscore}.py already exists at {environment_file}, skipping..."
         )
+
+    if v1 and not openenv:
+        servers_dir = environment_dir / "servers"
+        servers_dir.mkdir(parents=True, exist_ok=True)
+        server_files = {
+            "__init__.py": V1_SERVERS_INIT_TEMPLATE,
+            "user.py": V1_USER_SERVER_TEMPLATE,
+            "tools.py": V1_TOOLS_SERVER_TEMPLATE,
+        }
+        for filename, template in server_files.items():
+            server_file = servers_dir / filename
+            if not server_file.exists():
+                server_file.write_text(
+                    template.format(
+                        env_id_dash=env_id_dash,
+                        env_id_underscore=env_id_underscore,
+                    )
+                )
+            else:
+                print(f"{server_file} already exists, skipping...")
 
     if openenv:
         _init_openenv_proj(local_dir, env_id_dash, env_id_underscore)

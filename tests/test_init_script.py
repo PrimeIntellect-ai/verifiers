@@ -5,7 +5,15 @@ from verifiers.scripts.init import init_environment
 
 def read_env_file(root: Path, env_id: str) -> str:
     module_name = env_id.replace("-", "_")
+    package_file = root / module_name / module_name / f"{module_name}.py"
+    if package_file.exists():
+        return package_file.read_text()
     return (root / module_name / f"{module_name}.py").read_text()
+
+
+def package_dir(root: Path, env_id: str) -> Path:
+    module_name = env_id.replace("-", "_")
+    return root / module_name / module_name
 
 
 def test_init_default_writes_v0_stub(tmp_path: Path) -> None:
@@ -22,6 +30,11 @@ def test_init_default_writes_v0_stub(tmp_path: Path) -> None:
 def test_init_v1_writes_taskset_template(tmp_path: Path) -> None:
     init_environment("bar", path=str(tmp_path), v1=True)
     content = read_env_file(tmp_path, "bar")
+    package = package_dir(tmp_path, "bar")
+    init_content = (package / "__init__.py").read_text()
+    pyproject = (tmp_path / "bar" / "pyproject.toml").read_text()
+    user_server = (package / "servers" / "user.py").read_text()
+    tools_server = (package / "servers" / "tools.py").read_text()
 
     assert "class BarTasksetConfig(vf.TasksetConfig):" in content
     assert "class BarTask(vf.Task):" in content
@@ -42,9 +55,19 @@ def test_init_v1_writes_taskset_template(tmp_path: Path) -> None:
     assert "def load_taskset(config: BarTasksetConfig) -> BarTaskset:" in content
     assert '"""Typed taskset loader used by vf.load_taskset."""' in content
     assert "return BarTaskset(config=config)" in content
+    assert 'command=["python", "-m", "bar.servers.user"]' in content
+    assert 'command=["python", "-m", "bar.servers.tools"]' in content
     assert "taskset=vf.load_taskset(config=config.taskset)" in content
     assert '"""Loader pattern for all Taskset/Harness environments."""' in content
     assert "harness=vf.load_harness(config=config.harness)" in content
+    assert "from .bar import load_environment, load_taskset" in init_content
+    assert 'include = ["bar/**/*", "pyproject.toml", "README.md"]' in pyproject
+    assert 'mcp = FastMCP("bar-user")' in user_server
+    assert "def respond(task: dict, state: dict, transcript: list[dict]) -> dict:" in (
+        user_server
+    )
+    assert 'mcp = FastMCP("bar-tools")' in tools_server
+    assert "def reverse_text(text: str) -> str:" in tools_server
     assert "class EnvTaskset(" not in content
     assert "_default_" not in content
     assert 'tasks: str = "load_tasks"' not in content
@@ -89,14 +112,16 @@ def test_init_with_harness_without_v1_warns_and_uses_v0(tmp_path: Path, capsys) 
 
 def test_init_v1_multifile_exports_component_loaders(tmp_path: Path) -> None:
     init_environment("pkg-env", path=str(tmp_path), v1=True, multi_file=True)
-    package_dir = tmp_path / "pkg_env" / "pkg_env"
-    init_content = (package_dir / "__init__.py").read_text()
-    env_content = (package_dir / "pkg_env.py").read_text()
+    package = package_dir(tmp_path, "pkg-env")
+    init_content = (package / "__init__.py").read_text()
+    env_content = (package / "pkg_env.py").read_text()
 
     assert "from .pkg_env import load_environment, load_taskset" in init_content
     assert "__all__ = ['load_environment', 'load_taskset']" in init_content
     assert "class PkgEnvTaskset(vf.Taskset[PkgEnvTasksetConfig]):" in env_content
     assert "return PkgEnvTaskset(config=config)" in env_content
+    assert (package / "servers" / "user.py").exists()
+    assert (package / "servers" / "tools.py").exists()
 
 
 def test_init_openenv_writes_v1_taskset_template(tmp_path: Path) -> None:
