@@ -38,6 +38,8 @@ DEFAULT_JUDGE_API_KEY_VAR = "PRIME_API_KEY"
 DEFAULT_JUDGE_MODEL = "openai/gpt-5.4-mini"
 DEFAULT_SANDBOX_IMAGE = "python:3.11-slim"
 
+_EVAL_SCRIPTS_ROOT_CACHE: dict[str, Path] = {}
+
 
 class QuestOpenAIClient:
     """OpenAI-compatible client adapter for QUEST's ``async_response`` API."""
@@ -168,6 +170,55 @@ def _load_eval_script(script_path: Path) -> Any:
     return load_eval_script(str(script_path))
 
 
+def _normalize_eval_scripts_root(path: Path) -> Path:
+    root = path.expanduser()
+    if root.name == "eval_scripts" and root.is_dir():
+        return root.parent
+    if (root / "eval_scripts").is_dir():
+        return root
+    raise vf.InfraError(
+        f"QUEST eval scripts directory must contain eval_scripts/*.py: {root}"
+    )
+
+
+def _resolve_eval_scripts_root(
+    *,
+    dataset_name: str,
+    eval_scripts_dir: str | None,
+) -> Path:
+    if eval_scripts_dir is not None:
+        return _normalize_eval_scripts_root(Path(eval_scripts_dir))
+
+    cached = _EVAL_SCRIPTS_ROOT_CACHE.get(dataset_name)
+    if cached is not None:
+        return cached
+
+    try:
+        from huggingface_hub import snapshot_download
+
+        try:
+            root = snapshot_download(
+                repo_id=dataset_name,
+                repo_type="dataset",
+                allow_patterns=["eval_scripts/*.py"],
+                local_files_only=True,
+            )
+        except Exception:
+            root = snapshot_download(
+                repo_id=dataset_name,
+                repo_type="dataset",
+                allow_patterns=["eval_scripts/*.py"],
+            )
+    except Exception as exc:
+        raise vf.InfraError(
+            f"Failed to resolve QUEST eval scripts from {dataset_name}"
+        ) from exc
+
+    scripts_root = _normalize_eval_scripts_root(Path(root))
+    _EVAL_SCRIPTS_ROOT_CACHE[dataset_name] = scripts_root
+    return scripts_root
+
+
 class QuestTaskSet(SandboxTaskSet):
     """QUEST objective search/research taskset."""
 
@@ -221,7 +272,10 @@ class QuestTaskSet(SandboxTaskSet):
         self._judge_api_key_var = judge_api_key_var
         self._judge_sampling_args = dict(judge_sampling_args or {})
         self._quest_cache_dir = quest_cache_dir
-        self._quest_eval_scripts_dir = quest_eval_scripts_dir
+        self._quest_eval_scripts_root = _resolve_eval_scripts_root(
+            dataset_name=dataset_name,
+            eval_scripts_dir=quest_eval_scripts_dir,
+        )
         self._quest_eval_concurrency = quest_eval_concurrency
         super().__init__(
             dataset=self._build_dataset,
@@ -300,7 +354,7 @@ class QuestTaskSet(SandboxTaskSet):
         return QuestRubric(
             answer_file=self.answer_file,
             dataset_name=self.dataset_name,
-            eval_scripts_dir=self._quest_eval_scripts_dir,
+            eval_scripts_dir=str(self._quest_eval_scripts_root),
             cache_dir=self._quest_cache_dir,
             judge_model=self._judge_model,
             judge_base_url=self._judge_base_url,
@@ -479,22 +533,11 @@ class QuestRubric(vf.Rubric):
     def _ensure_eval_scripts_dir(self) -> Path:
         if self._scripts_root is not None:
             return self._scripts_root
-        if self.eval_scripts_dir is not None:
-            self._scripts_root = self.eval_scripts_dir
-            return self._scripts_root
-        try:
-            from huggingface_hub import snapshot_download
-
-            root = snapshot_download(
-                repo_id=self.dataset_name,
-                repo_type="dataset",
-                allow_patterns="eval_scripts/*.py",
-            )
-        except Exception as exc:
+        if self.eval_scripts_dir is None:
             raise vf.InfraError(
-                f"Failed to download QUEST eval scripts from {self.dataset_name}"
-            ) from exc
-        self._scripts_root = Path(root)
+                "QUEST eval scripts root was not resolved before scoring"
+            )
+        self._scripts_root = _normalize_eval_scripts_root(self.eval_scripts_dir)
         return self._scripts_root
 
     @vf.cleanup
