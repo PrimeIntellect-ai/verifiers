@@ -56,6 +56,7 @@ own a reusable execution mechanism.
 | `RLM` | Recursive language model command harness. |
 | `ReplayHarness` | Replays stored assistant messages into trajectory steps without model calls. |
 | `NeMoGymHarness` | NeMo Gym rollout collection. |
+| `DeepAgents` | LangChain Deep Agents scaffold. |
 
 Harness implementations resolve to one `ProgramConfig` shape. Command harness
 configs may expose task-relevant execution knobs, but the harness owns command
