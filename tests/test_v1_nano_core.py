@@ -9,6 +9,7 @@ import pytest
 import verifiers.v1 as vf
 from verifiers.types import ClientConfig, EvalConfig, Response
 from verifiers.utils import eval_utils
+from verifiers.v1.loaders import load_environment_from_components
 from verifiers.v1.mcp import MCPToolRegistry
 
 
@@ -57,23 +58,23 @@ class NanoTaskset(vf.Taskset):
         return float(text.strip() == task.answer)
 
 
-class CandidateNanoTask(NanoTask):
+class GroupNanoTask(NanoTask):
     candidate: int
 
 
 class GroupTaskset(NanoTaskset):
     async def init_group(
         self, task: NanoTask, num_rollouts: int
-    ) -> tuple[list[CandidateNanoTask], list[vf.State]]:
+    ) -> tuple[list[GroupNanoTask], list[vf.State]]:
         tasks = [
-            CandidateNanoTask.model_validate({**task.to_record(), "candidate": index})
+            GroupNanoTask.model_validate({**task.to_record(), "candidate": index})
             for index in range(num_rollouts)
         ]
         return tasks, [vf.State(task_id=task.task_id) for task in tasks]
 
     @vf.reward(stage="group")
     async def relative(
-        self, tasks: list[CandidateNanoTask], states: list[vf.State]
+        self, tasks: list[GroupNanoTask], states: list[vf.State]
     ) -> list[float]:
         _ = states
         return [float(task.candidate == 0) for task in tasks]
@@ -216,9 +217,9 @@ async def test_v1_empty_prompt_bootstraps_from_user_server(mock_client) -> None:
 
 @pytest.mark.asyncio
 async def test_migrated_hello_rlm_v1_runs_without_old_runtime(mock_client) -> None:
-    from environments.hello_rlm_v1.hello_rlm_v1 import load_environment
+    from environments.hello_rlm_v1.hello_rlm_v1 import taskset as module
 
-    env = load_environment(vf.EnvConfig())
+    env = load_environment_from_components(module, {})
     model = attach_mock_model(env, mock_client, "unused-model")
     row = env.get_dataset()[0]
     task = env.taskset.to_task(row)

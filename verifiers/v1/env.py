@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, cast, final
 
 from verifiers.types import (
     RolloutInput,
@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from datasets import Dataset
 
 
+@final
 class EnvConfig(Config):
     taskset: TasksetConfig = TasksetConfig()
     harness: HarnessConfig = HarnessConfig()

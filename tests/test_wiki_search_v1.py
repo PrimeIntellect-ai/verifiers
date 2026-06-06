@@ -1,10 +1,11 @@
-import importlib.util
+import importlib
 import sys
 from pathlib import Path
 from types import ModuleType
 
 import pytest
 import verifiers.v1 as vf
+from verifiers.v1.loaders import load_environment_from_components
 
 
 class StubEmbeddingFunction:
@@ -70,31 +71,48 @@ def install_wiki_stubs(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setitem(sys.modules, name, module)
 
 
-def load_wiki_module(name: str, monkeypatch: pytest.MonkeyPatch) -> ModuleType:
+def load_wiki_v1(monkeypatch: pytest.MonkeyPatch) -> tuple[ModuleType, ModuleType]:
     install_wiki_stubs(monkeypatch)
-    module_path = (
-        Path(__file__).parents[1] / "environments" / "wiki_search" / f"{name}.py"
+    env_dir = Path(__file__).parents[1] / "environments" / "wiki_search_v1"
+    monkeypatch.syspath_prepend(str(env_dir))
+    for name in (
+        "wiki_search_v1",
+        "wiki_search_v1.taskset",
+        "wiki_search_v1.servers",
+        "wiki_search_v1.servers.tools",
+    ):
+        sys.modules.pop(name, None)
+    return (
+        importlib.import_module("wiki_search_v1"),
+        importlib.import_module("wiki_search_v1.taskset"),
     )
-    spec = importlib.util.spec_from_file_location(name, module_path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    monkeypatch.setitem(sys.modules, name, module)
-    spec.loader.exec_module(module)
-    return module
+
+
+def load_wiki_v0(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
+    install_wiki_stubs(monkeypatch)
+    env_dir = Path(__file__).parents[1] / "environments" / "wiki_search"
+    monkeypatch.syspath_prepend(str(env_dir))
+    sys.modules.pop("wiki_search", None)
+    return importlib.import_module("wiki_search")
 
 
 def test_wiki_search_v1_default_and_explicit_toolsets(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    module = load_wiki_module("wiki_search_v1", monkeypatch)
-    wrapper = load_wiki_module("wiki_search", monkeypatch)
+    package, module = load_wiki_v1(monkeypatch)
 
-    env = wrapper.load_environment(
-        v1=True,
-        corpus_dataset="test/corpus",
-        corpus_split="validation",
-        chroma_db_dir="/tmp/wiki",
-        embed_model="test-embed",
+    env = load_environment_from_components(
+        package,
+        {
+            "config": {
+                "taskset": {
+                    "corpus_dataset": "test/corpus",
+                    "corpus_split": "validation",
+                    "chroma_db_dir": "/tmp/wiki",
+                    "embed_model": "test-embed",
+                }
+            }
+        },
     )
 
     assert env.taskset.config.corpus_dataset == "test/corpus"
@@ -131,20 +149,19 @@ def test_wiki_search_v1_default_and_explicit_toolsets(
 
     assert [toolset.name for toolset in taskset.toolsets] == ["wiki", "custom"]
 
-    configured_env = module.load_environment(
-        config=module.WikiSearchEnvConfig(harness={"max_turns": 7})
+    configured_env = load_environment_from_components(
+        package, {"config": {"harness": {"max_turns": 7}}}
     )
 
     assert configured_env.harness.config.max_turns == 7
 
 
-def test_wiki_search_v1_rejects_legacy_judge_endpoint_kwargs(
+def test_wiki_search_v0_is_v0_only(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    wrapper = load_wiki_module("wiki_search", monkeypatch)
+    wrapper = load_wiki_v0(monkeypatch)
 
-    with pytest.raises(ValueError, match="does not use a separate judge endpoint"):
+    with pytest.raises(TypeError):
         wrapper.load_environment(
             v1=True,
-            judge_base_url="https://judge.example/v1",
         )

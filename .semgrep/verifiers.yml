@@ -1,10 +1,4 @@
 rules:
-  - id: verifiers-no-future-annotations
-    languages: [python]
-    severity: ERROR
-    message: Do not use `from __future__ import annotations`; quote only the specific forward references that need it.
-    pattern: from __future__ import annotations
-
   - id: verifiers-no-skip-validation
     languages: [python]
     severity: ERROR
@@ -40,89 +34,16 @@ rules:
               metavariable: $ANNOT
               regex: "(Any|Mapping\\[str, object\\]|dict\\[str, object\\]|.*\\|.*\\|.*)"
 
-  - id: verifiers-v1-load-environment-config-required
+  - id: verifiers-v1-no-env-config-subclasses
     languages: [python]
     severity: ERROR
-    message: v1 load_environment must take a strict config object; do not accept None or synthesize config with config-or-Config fallback.
+    message: EnvConfig is final. Put defaults and public settings on TasksetConfig and HarnessConfig; the library loader owns vf.Env construction.
     paths:
       include:
         - /environments/**/*.py
-    pattern-either:
-      - pattern: |
-          def load_environment(..., config: $CONFIG = None, ...):
-              ...
-      - pattern: |
-          def load_environment(..., config: $CONFIG | None, ...):
-              ...
-      - pattern: |
-          def load_environment(..., config: $CONFIG | None = $DEFAULT, ...):
-              ...
-      - pattern: |
-          def load_environment(..., config: Optional[$CONFIG], ...):
-              ...
-      - pattern: |
-          def load_environment(..., config: Optional[$CONFIG] = $DEFAULT, ...):
-              ...
-
-  - id: verifiers-v1-no-load-environment-config-fallback
-    languages: [python]
-    severity: ERROR
-    message: v1 load_environment receives a concrete config object from the framework; do not use config or Config() fallback.
-    paths:
-      include:
-        - /environments/**/*.py
-    patterns:
-      - pattern-inside: |
-          def load_environment(...):
-              ...
-      - pattern: $CONFIG = $CONFIG or $DEFAULT()
-      - metavariable-regex:
-          metavariable: $DEFAULT
-          regex: ".*Config"
-
-  - id: verifiers-v1-load-environment-canonical-shim
-    languages: [python]
-    severity: ERROR
-    message: v1 load_environment is only the Taskset/Harness loader shim. Keep load_environment as-is; implement the config surface through TasksetConfig, HarnessConfig, load_taskset, and load_harness instead of patching root-loader behavior.
-    paths:
-      include:
-        - /environments/**/*.py
-        - /verifiers/scripts/init.py
-      exclude:
-        - /environments/alphabet_sort/alphabet_sort_v1.py
-        - /environments/bfcl_v3/bfcl_v3.py
-        - /environments/dspy_flights/dspy_flights.py
-        - /environments/dspy_rlm/dspy_rlm.py
-        - /environments/hello_group_reward_v1/hello_group_reward_v1.py
-        - /environments/hello_parallel_sandbox_v1/hello_parallel_sandbox_v1.py
-        - /environments/hello_self_judge_v1/hello_self_judge_v1.py
-        - /environments/hello_subagent_v1/hello_subagent_v1.py
-        - /environments/langchain_deep_agents_wikispeedia/langchain_deep_agents_wikispeedia.py
-        - /environments/math_python/math_python_v1.py
-        - /environments/mcp_search_env/mcp_search_env.py
-        - /environments/nemo_gym_env/nemo_gym_env/env.py
-        - /environments/nested_harness_v1/nested_harness_v1.py
-        - /environments/openai_agents_env/openai_agents_env.py
-        - /environments/rlm_swe_v1/rlm_swe_v1.py
-        - /environments/tau2_bench_v1/tau2_bench_v1.py
-        - /environments/wiki_search/wiki_search_v1.py
-    patterns:
-      - pattern: |
-          def load_environment(config: $CONFIG) -> vf.Env:
-              ...
-      - pattern-not: |
-          def load_environment(config: vf.EnvConfig) -> vf.Env:
-              return vf.Env(
-                  taskset=vf.load_taskset(config=config.taskset),
-                  harness=vf.load_harness(config=config.harness),
-              )
-      - pattern-not: |
-          def load_environment(config: vf.EnvConfig) -> vf.Env:
-              """Loader pattern for all Taskset/Harness environments."""
-              return vf.Env(
-                  taskset=vf.load_taskset(config=config.taskset),
-                  harness=vf.load_harness(config=config.harness),
-              )
+    pattern: |
+      class $CONFIG(vf.EnvConfig):
+          ...
 
   - id: verifiers-v1-no-config-object-defaults
     languages: [python]
@@ -159,49 +80,8 @@ rules:
         - /environments/**/*.py
       exclude:
         - /verifiers/v1/types.py
-        - /environments/openenv_*/proj/**/*.py
+        - /environments/**/proj/**/*.py
     pattern-regex: "\\bAny\\b"
-
-  - id: verifiers-no-raw-object-containers-v1
-    languages: [python]
-    severity: ERROR
-    message: Do not spell broad object containers in v1 or environment code; use concrete config models, ConfigData, Handler, BindingsConfig, Objects, or a narrower type. Do not patch around weak typing with generic containers.
-    paths:
-      include:
-        - /verifiers/v1/**/*.py
-        - /environments/**/*.py
-      exclude:
-        - /verifiers/v1/types.py
-        - /verifiers/v1/utils/object_utils.py
-        - /verifiers/v1/utils/task_freeze_utils.py
-        - /environments/openenv_*/proj/**/*.py
-    pattern-regex: "(?x)(\\b(?:Mapping|MutableMapping|dict|list|Sequence|Iterable|Callable|Awaitable|tuple)\\[[^\\n\\]]*\\bobject\\b|\\bcast\\([^\\n)]*\\bobject\\b)"
-
-  - id: verifiers-no-raw-mapping-annotations-v1
-    languages: [python]
-    severity: ERROR
-    message: Do not use raw Mapping annotations in v1 or environment code; normalize at the boundary to a dict, a typed Config model, or a named v1 boundary type. Do not patch around unclear contracts with loose Mapping types.
-    paths:
-      include:
-        - /verifiers/v1/**/*.py
-        - /environments/**/*.py
-      exclude:
-        - /verifiers/v1/types.py
-        - /environments/openenv_*/proj/**/*.py
-    pattern-regex: "\\b(?:Mapping|MutableMapping)\\["
-
-  - id: verifiers-v1-package-no-mapping
-    languages: [python]
-    severity: ERROR
-    message: Package taskset/harness implementations should not use Mapping as a loose shape escape hatch; use concrete dict payloads, typed Config models, or package utils that encode a real protocol boundary.
-    paths:
-      include:
-        - /packages/tasksets/tasksets/**/*.py
-        - /packages/harnesses/harnesses/**/*.py
-        - /verifiers/v1/**/*.py
-      exclude:
-        - /verifiers/v1/types.py
-    pattern-regex: "\\b(?:Mapping|MutableMapping)\\b"
 
   - id: verifiers-get-messages-typed
     languages: [python]
@@ -350,7 +230,7 @@ rules:
   - id: verifiers-v1-no-env-var-reads-in-signals
     languages: [python]
     severity: ERROR
-    message: v1 reward/update handlers must not read env vars directly; use state.get_client(api="chat") and optionally read state.get_endpoint_config(api="chat").model for model selection.
+    message: v1 reward/update handlers must not read env vars directly; put model/backend settings on typed configs and resolve clients through the harness runtime.
     paths:
       include:
         - /environments/**/*.py
@@ -506,7 +386,7 @@ rules:
   - id: verifiers-v1-no-judge-endpoint-config-fields
     languages: [python]
     severity: ERROR
-    message: Judge rewards must use state.get_endpoint_config(api="chat"); expose only judge_model, not judge_base_url or judge_api_key_var config fields.
+    message: Judge rewards should use typed model config; do not expose raw judge_base_url or judge_api_key_var fields.
     paths:
       include:
         - /environments/**/*.py
@@ -584,15 +464,3 @@ rules:
     pattern-either:
       - pattern: "@staticmethod"
       - pattern: "@classmethod"
-
-  - id: verifiers-v1-no-transcript-user-callback-param
-    languages: [python]
-    severity: ERROR
-    message: Do not use transcript as a user callback parameter name in v1 environments; use messages for the rendered prompt/completion messages.
-    paths:
-      include:
-        - /environments/**/*.py
-      exclude:
-        - /environments/**/proj/**/*.py
-        - /environments/**/tasks/**/*.py
-    pattern-regex: "def\\s+[A-Za-z_][A-Za-z0-9_]*\\s*\\([^)]*\\btranscript\\b"

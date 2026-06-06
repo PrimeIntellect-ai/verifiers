@@ -1,40 +1,45 @@
-import importlib.util
+import importlib
 import sys
 from pathlib import Path
 from typing import Any
 
+import pytest
 import verifiers.v1 as vf
 from harnesses import OpenCode, OpenCodeConfig
 from tasksets import HarborTaskset
+from verifiers.v1.loaders import load_environment_from_components
 
 
-def _load_opencode_module() -> Any:
-    module_path = (
-        Path(__file__).resolve().parent.parent
-        / "environments"
-        / "opencode_harbor"
-        / "opencode_harbor.py"
+def _load_opencode_modules(monkeypatch: pytest.MonkeyPatch) -> tuple[Any, Any]:
+    env_dir = (
+        Path(__file__).resolve().parent.parent / "environments" / "opencode_harbor_v1"
     )
-    spec = importlib.util.spec_from_file_location(
-        "test_opencode_harbor_module", module_path
+    monkeypatch.syspath_prepend(str(env_dir))
+    for name in (
+        "opencode_harbor_v1",
+        "opencode_harbor_v1.taskset",
+        "opencode_harbor_v1.harness",
+    ):
+        sys.modules.pop(name, None)
+    return (
+        importlib.import_module("opencode_harbor_v1"),
+        importlib.import_module("opencode_harbor_v1.taskset"),
     )
-    assert spec is not None
-    assert spec.loader is not None
-
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
 
 
-def test_load_environment_uses_v1_taskset_and_harness() -> None:
-    module = _load_opencode_module()
+def test_load_environment_uses_v1_taskset_and_harness(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package, module = _load_opencode_modules(monkeypatch)
 
-    env = module.load_environment(
-        config=vf.EnvConfig(
-            taskset=module.HarborTasksetConfig(),
-            harness=module.OpenCodeConfig(),
-        )
+    env = load_environment_from_components(
+        package,
+        {
+            "config": vf.EnvConfig(
+                taskset=module.HarborTasksetConfig(),
+                harness=module.OpenCodeConfig(),
+            )
+        },
     )
 
     assert isinstance(env, vf.Env)
@@ -43,7 +48,7 @@ def test_load_environment_uses_v1_taskset_and_harness() -> None:
     assert isinstance(env.harness.config, OpenCodeConfig)
     assert not hasattr(module, "OpenCodeHarborHarnessConfig")
     assert not hasattr(module, "TERMINAL_BENCH_SAMPLE_TASKS")
-    assert env.taskset.config.bundle_package == module.__name__
+    assert env.taskset.config.bundle_package == "opencode_harbor_v1"
     task = next(iter(env.taskset))
     assert Path(task.task_dir).parent == Path(module.__file__).parent / "tasks"
     assert env.harness.config.max_turns == 4
@@ -56,24 +61,29 @@ def test_load_environment_uses_v1_taskset_and_harness() -> None:
     assert '"question": false' in command[2]
 
 
-def test_load_environment_accepts_v1_taskset_and_harness_config() -> None:
-    module = _load_opencode_module()
+def test_load_environment_accepts_v1_taskset_and_harness_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package, module = _load_opencode_modules(monkeypatch)
 
-    env = module.load_environment(
-        config=vf.EnvConfig(
-            taskset=module.HarborTasksetConfig(
-                task_names=["hello-world"],
-                task_runtime={"cpu_cores": 1.5},
-            ),
-            harness=module.OpenCodeConfig(
-                cwd="/workspace",
-                disabled_tools=["webfetch"],
-                max_turns=2,
-            ),
-        )
+    env = load_environment_from_components(
+        package,
+        {
+            "config": vf.EnvConfig(
+                taskset=module.HarborTasksetConfig(
+                    task_names=["hello-world"],
+                    task_runtime={"cpu_cores": 1.5},
+                ),
+                harness=module.OpenCodeConfig(
+                    cwd="/workspace",
+                    disabled_tools=["webfetch"],
+                    max_turns=2,
+                ),
+            )
+        },
     )
 
-    assert env.taskset.config.bundle_package == module.__name__
+    assert env.taskset.config.bundle_package == "opencode_harbor_v1"
     task = next(iter(env.taskset))
     assert task.task_dir == str(Path(module.__file__).parent / "tasks" / "hello-world")
     assert env.taskset.config.task_names == ["hello-world"]
@@ -86,8 +96,10 @@ def test_load_environment_accepts_v1_taskset_and_harness_config() -> None:
     assert '"question": false' not in command[2]
 
 
-def test_pyproject_does_not_define_unsupported_harness_defaults() -> None:
-    module = _load_opencode_module()
-    pyproject = Path(module.__file__).parent / "pyproject.toml"
+def test_pyproject_does_not_define_unsupported_harness_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, module = _load_opencode_modules(monkeypatch)
+    pyproject = Path(module.__file__).parents[1] / "pyproject.toml"
 
     assert "[tool.verifiers.harness]" not in pyproject.read_text()

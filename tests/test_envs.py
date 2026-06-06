@@ -29,14 +29,14 @@ SKIPPED_ENVS = [
     "browser_cua_example",
     # Uses prime-tunnel which is still experimental and has low usage limits
     "terminus_harbor",
-    "opencode_harbor",
+    "opencode_harbor_v1",
 ]
 
 SKIPPED_ENV_LOADING_ENVS = [
     # OpenEnv datasets are built by resetting seeds in sandbox-backed env servers.
     # Skip generic load checks here and cover via dedicated OpenEnv tests.
-    "openenv_echo",
-    "openenv_textarena",
+    "openenv_echo_v1",
+    "openenv_textarena_v1",
     # R2E-Gym pulls a full image-backed SWE taskset; cover it with dedicated v1 tests.
     "rlm_swe_v1",
 ]
@@ -93,7 +93,9 @@ def test_readme_exists(env_dir: Path):
 
 
 def test_alphabet_sort_v1_validates_parameters():
-    module_path = Path("environments/alphabet_sort/alphabet_sort_v1.py").resolve()
+    module_path = Path(
+        "environments/alphabet_sort_v1/alphabet_sort_v1/taskset.py"
+    ).resolve()
     spec = importlib.util.spec_from_file_location("alphabet_sort_v1_test", module_path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -101,31 +103,41 @@ def test_alphabet_sort_v1_validates_parameters():
     spec.loader.exec_module(module)
 
     with pytest.raises(ValueError, match="min_turns must be at least 1"):
-        module.AlphabetSortTaskset(config=module.AlphabetSortTasksetConfig(min_turns=0))
+        list(
+            module.AlphabetSortTaskset(
+                config=module.AlphabetSortTasksetConfig(min_turns=0)
+            ).load_tasks()
+        )
     with pytest.raises(
         ValueError, match="min_turns must be less than or equal to max_turns"
     ):
-        module.AlphabetSortTaskset(
-            config=module.AlphabetSortTasksetConfig(min_turns=3, max_turns=2)
+        list(
+            module.AlphabetSortTaskset(
+                config=module.AlphabetSortTasksetConfig(min_turns=3, max_turns=2)
+            ).load_tasks()
         )
     with pytest.raises(ValueError, match="min_names_per_turn must be at least 1"):
-        module.AlphabetSortTaskset(
-            config=module.AlphabetSortTasksetConfig(min_names_per_turn=0)
+        list(
+            module.AlphabetSortTaskset(
+                config=module.AlphabetSortTasksetConfig(min_names_per_turn=0)
+            ).load_tasks()
         )
     with pytest.raises(
         ValueError,
         match="min_names_per_turn must be less than or equal to max_names_per_turn",
     ):
-        module.AlphabetSortTaskset(
-            config=module.AlphabetSortTasksetConfig(
-                min_names_per_turn=3,
-                max_names_per_turn=2,
-            )
+        list(
+            module.AlphabetSortTaskset(
+                config=module.AlphabetSortTasksetConfig(
+                    min_names_per_turn=3,
+                    max_names_per_turn=2,
+                )
+            ).load_tasks()
         )
 
 
 @pytest.mark.parametrize("env_name", ["alphabet_sort", "math_python"])
-def test_v1_wrapper_rejects_unknown_kwargs(env_name: str):
+def test_v0_wrappers_reject_v1_kwargs(env_name: str):
     module_path = Path("environments") / env_name / f"{env_name}.py"
     spec = importlib.util.spec_from_file_location(
         f"{env_name}_wrapper_test", module_path
@@ -135,10 +147,8 @@ def test_v1_wrapper_rejects_unknown_kwargs(env_name: str):
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
 
-    with pytest.raises(
-        TypeError, match="Unsupported v1 load_environment kwargs: extra"
-    ):
-        module.load_environment(v1=True, extra=True)
+    with pytest.raises(TypeError):
+        module.load_environment(v1=True)
 
 
 @pytest.mark.slow

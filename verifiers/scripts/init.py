@@ -141,6 +141,10 @@ from .{env_id} import {imports}
 __all__ = {exports}
 """
 
+V1_INIT_TEMPLATE = """\
+\"\"\"{env_id_dash} environment package.\"\"\"
+"""
+
 V0_ENVIRONMENT_TEMPLATE = """\
 import verifiers as vf
 
@@ -223,6 +227,7 @@ def load_taskset(config: {taskset_config_name}) -> {taskset_name}:
 
 
 V1_HARNESS_TEMPLATE = """\
+import verifiers.v1 as vf
 
 class {harness_config_name}(vf.HarnessConfig):
     \"\"\"Execution settings for {env_id_dash}.\"\"\"
@@ -240,23 +245,6 @@ def load_harness(config: {harness_config_name}) -> {harness_name}:
     \"\"\"Typed harness loader used by vf.load_harness.\"\"\"
     return {harness_name}(config=config)
 """
-
-
-V1_ENV_LOADER_TEMPLATE = """\
-
-def load_environment(config: vf.EnvConfig) -> vf.Env:
-    \"\"\"Loader pattern for all Taskset/Harness environments.\"\"\"
-    return vf.Env(
-        taskset=vf.load_taskset(config=config.taskset),
-        harness=vf.load_harness(config=config.harness),
-        runtime=config.runtime,
-    )
-"""
-
-V1_ENVIRONMENT_TEMPLATE = V1_TASKSET_TEMPLATE + V1_ENV_LOADER_TEMPLATE
-V1_HARNESS_ENVIRONMENT_TEMPLATE = (
-    V1_TASKSET_TEMPLATE + V1_HARNESS_TEMPLATE + V1_ENV_LOADER_TEMPLATE
-)
 
 V1_SERVERS_INIT_TEMPLATE = """\
 \"\"\"Optional MCP servers for {env_id_dash}.\"\"\"
@@ -533,45 +521,65 @@ def init_environment(
     if package_layout:
         init_file = environment_dir / "__init__.py"
         if not init_file.exists():
-            exports = ["load_environment"]
-            if v1:
-                exports.append("load_taskset")
-            if v1 and with_harness and not openenv:
-                exports.append("load_harness")
-            init_file.write_text(
-                INIT_TEMPLATE.format(
-                    env_id=env_id_underscore,
-                    imports=", ".join(exports),
-                    exports=repr(exports),
+            if v1 and not openenv:
+                init_file.write_text(V1_INIT_TEMPLATE.format(env_id_dash=env_id_dash))
+            else:
+                exports = ["load_environment"]
+                if openenv:
+                    exports.append("load_taskset")
+                init_file.write_text(
+                    INIT_TEMPLATE.format(
+                        env_id=env_id_underscore,
+                        imports=", ".join(exports),
+                        exports=repr(exports),
+                    )
                 )
-            )
         else:
             print(f"__init__.py already exists at {init_file}, skipping...")
 
-    # create environment file if it doesn't exist
-    environment_file = environment_dir / f"{env_id_underscore}.py"
-    if not environment_file.exists():
-        if openenv:
-            template = OPENENV_ENVIRONMENT_TEMPLATE
-        elif v1 and with_harness:
-            template = V1_HARNESS_ENVIRONMENT_TEMPLATE
-        elif v1:
-            template = V1_ENVIRONMENT_TEMPLATE
+    if v1 and not openenv:
+        taskset_file = environment_dir / "taskset.py"
+        if not taskset_file.exists():
+            taskset_file.write_text(
+                V1_TASKSET_TEMPLATE.replace("{env_id_dash}", env_id_dash)
+                .replace("{taskset_config_name}", taskset_config_name)
+                .replace("{task_name}", task_name)
+                .replace("{taskset_name}", taskset_name)
+                .replace("{env_id_underscore}", env_id_underscore)
+            )
         else:
-            template = V0_ENVIRONMENT_TEMPLATE
-        environment_file.write_text(
-            template.replace("{env_id_dash}", env_id_dash)
-            .replace("{taskset_config_name}", taskset_config_name)
-            .replace("{task_name}", task_name)
-            .replace("{taskset_name}", taskset_name)
-            .replace("{harness_config_name}", harness_config_name)
-            .replace("{harness_name}", harness_name)
-            .replace("{env_id_underscore}", env_id_underscore)
-        )
+            print(f"taskset.py already exists at {taskset_file}, skipping...")
+
+        if with_harness:
+            harness_file = environment_dir / "harness.py"
+            if not harness_file.exists():
+                harness_file.write_text(
+                    V1_HARNESS_TEMPLATE.replace("{env_id_dash}", env_id_dash)
+                    .replace("{harness_config_name}", harness_config_name)
+                    .replace("{harness_name}", harness_name)
+                )
+            else:
+                print(f"harness.py already exists at {harness_file}, skipping...")
     else:
-        print(
-            f"{env_id_underscore}.py already exists at {environment_file}, skipping..."
-        )
+        # create environment file if it doesn't exist
+        environment_file = environment_dir / f"{env_id_underscore}.py"
+        if not environment_file.exists():
+            template = (
+                OPENENV_ENVIRONMENT_TEMPLATE if openenv else V0_ENVIRONMENT_TEMPLATE
+            )
+            environment_file.write_text(
+                template.replace("{env_id_dash}", env_id_dash)
+                .replace("{taskset_config_name}", taskset_config_name)
+                .replace("{task_name}", task_name)
+                .replace("{taskset_name}", taskset_name)
+                .replace("{harness_config_name}", harness_config_name)
+                .replace("{harness_name}", harness_name)
+                .replace("{env_id_underscore}", env_id_underscore)
+            )
+        else:
+            print(
+                f"{env_id_underscore}.py already exists at {environment_file}, skipping..."
+            )
 
     if v1 and not openenv:
         servers_dir = environment_dir / "servers"

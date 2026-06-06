@@ -8,15 +8,15 @@ from verifiers.clients import Client
 from verifiers.types import ClientConfig
 from verifiers.types import RolloutInput
 
-from environments.hello_group_reward_v1.hello_group_reward_v1 import (
-    GroupRewardEnvConfig,
-    load_environment,
-)
+from environments.hello_group_reward_v1.hello_group_reward_v1 import taskset as module
+from verifiers.v1.loaders import load_environment_from_components
 
 
 @pytest.mark.asyncio
 async def test_hello_group_reward_v1_scores_full_group_lifecycle() -> None:
-    env = load_environment(config=GroupRewardEnvConfig(taskset={"num_examples": 1}))
+    env = load_environment_from_components(
+        module, {"config": {"taskset": {"num_examples": 1}}}
+    )
     assert env.requires_group_rollouts
     assert env.provides_advantages
 

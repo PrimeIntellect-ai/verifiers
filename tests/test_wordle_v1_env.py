@@ -59,16 +59,20 @@ async def test_wordle_textarena_user_returns_observation(monkeypatch):
 
 
 def test_wordle_load_environment_coerces_taskset_config():
-    from environments.wordle_v1 import wordle_v1
+    from environments.wordle_v1.wordle_v1 import taskset as wordle_v1
     from tasksets.textarena import TextArenaTasksetConfig
     import verifiers.v1 as vf
+    from verifiers.v1.loaders import load_environment_from_components
 
-    env = wordle_v1.load_environment(
-        vf.EnvConfig(
-            taskset=TextArenaTasksetConfig(
-                game="Wordle-v0", answer_state_key="secret_word"
+    env = load_environment_from_components(
+        wordle_v1,
+        {
+            "config": vf.EnvConfig(
+                taskset=TextArenaTasksetConfig(
+                    game="Wordle-v0", answer_state_key="secret_word"
+                )
             )
-        )
+        },
     )
 
     assert isinstance(env.taskset.config, wordle_v1.WordleTasksetConfig)
@@ -77,7 +81,7 @@ def test_wordle_load_environment_coerces_taskset_config():
 
 
 def test_wordle_taskset_uses_textarena_loaders():
-    from environments.wordle_v1 import wordle_v1
+    from environments.wordle_v1.wordle_v1 import taskset as wordle_v1
 
     taskset = wordle_v1.WordleTaskset(config=wordle_v1.WordleTasksetConfig())
 
@@ -87,7 +91,7 @@ def test_wordle_taskset_uses_textarena_loaders():
 
 
 def test_wordle_v1_load_taskset_reads_system_prompt_path(tmp_path):
-    from environments.wordle_v1 import wordle_v1
+    from environments.wordle_v1.wordle_v1 import taskset as wordle_v1
     import verifiers.v1 as vf
 
     prompt = "Optimized Wordle prompt.\n\nPreserve exact text.\n"
@@ -106,7 +110,7 @@ def test_wordle_v1_load_taskset_reads_system_prompt_path(tmp_path):
 
 
 def test_wordle_v1_load_taskset_rejects_empty_system_prompt_path(tmp_path):
-    from environments.wordle_v1 import wordle_v1
+    from environments.wordle_v1.wordle_v1 import taskset as wordle_v1
     import verifiers.v1 as vf
 
     prompt_path = tmp_path / "system_prompt.txt"
@@ -122,7 +126,7 @@ def test_wordle_v1_load_taskset_rejects_empty_system_prompt_path(tmp_path):
 
 @pytest.mark.asyncio
 async def test_wordle_v1_rewards_match_wordle_protocol():
-    from environments.wordle_v1 import wordle_v1
+    from environments.wordle_v1.wordle_v1 import taskset as wordle_v1
     from tasksets.textarena import TextArenaTask
     import verifiers.v1 as vf
 
@@ -151,7 +155,7 @@ async def test_wordle_v1_rewards_match_wordle_protocol():
 
 @pytest.mark.asyncio
 async def test_wordle_v1_partial_answer_scans_past_non_guess_messages():
-    from environments.wordle_v1 import wordle_v1
+    from environments.wordle_v1.wordle_v1 import taskset as wordle_v1
     from tasksets.textarena import TextArenaTask
     import verifiers.v1 as vf
 
@@ -177,7 +181,7 @@ async def test_wordle_v1_partial_answer_scans_past_non_guess_messages():
 
 @pytest.mark.asyncio
 async def test_wordle_v1_rewards_treat_missing_completion_as_empty():
-    from environments.wordle_v1 import wordle_v1
+    from environments.wordle_v1.wordle_v1 import taskset as wordle_v1
     from tasksets.textarena import TextArenaTask
     import verifiers.v1 as vf
 
@@ -195,7 +199,7 @@ async def test_wordle_v1_rewards_treat_missing_completion_as_empty():
 
 
 def test_wordle_taskset_declares_rewards_as_methods():
-    from environments.wordle_v1 import wordle_v1
+    from environments.wordle_v1.wordle_v1 import taskset as wordle_v1
 
     for name in ("correct_answer", "partial_answer", "length_bonus", "format_reward"):
         assert getattr(getattr(wordle_v1.WordleTaskset, name), "reward") is True

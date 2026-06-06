@@ -1,0 +1,21 @@
+[project]
+name = "openenv-textarena-v1"
+description = "OpenEnv TextArena (Wordle-v0) environment via the v1 OpenEnv taskset"
+tags = ["openenv", "gym", "textarena", "wordle", "example"]
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "verifiers>=0.1.15.dev11",
+    "tasksets[openenv]>=0.1.1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["openenv_textarena_v1/**/*", "README.md", "pyproject.toml"]
+
+[tool.verifiers.eval]
+num_examples = 5
+rollouts_per_example = 3

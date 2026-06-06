@@ -1,0 +1,21 @@
+[project]
+name = "reverse-text-v1"
+version = "0.1.4"
+tags = ["text", "transformation", "single-turn", "xml"]
+license = "Apache-2.0"
+description = "Reverse a given text; evaluated by LCS similarity between the parsed answer and ground-truth reversal."
+dependencies = [
+    "verifiers>=0.1.5.post0",
+    "datasets",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["reverse_text_v1/**/*", "README.md", "pyproject.toml"]
+
+[tool.verifiers.eval]
+num_examples = 5
+rollouts_per_example = 3

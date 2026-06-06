@@ -14,7 +14,8 @@ Tune the taskset and harness through typed v1 config objects:
 ```python
 import verifiers.v1 as vf
 from harnesses import RLMConfig
-from rlm_swe_v1 import RlmSweTasksetConfig, load_environment
+import verifiers.v1 as vf
+from rlm_swe_v1.taskset import RlmSweTasksetConfig
 
 env = load_environment(
     config=vf.EnvConfig(

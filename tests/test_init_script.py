@@ -1,10 +1,14 @@
 from pathlib import Path
 import verifiers as vf
+import verifiers.v1 as vf1
 from verifiers.scripts.init import init_environment
 
 
 def read_env_file(root: Path, env_id: str) -> str:
     module_name = env_id.replace("-", "_")
+    taskset_file = root / module_name / module_name / "taskset.py"
+    if taskset_file.exists():
+        return taskset_file.read_text()
     package_file = root / module_name / module_name / f"{module_name}.py"
     if package_file.exists():
         return package_file.read_text()
@@ -57,10 +61,9 @@ def test_init_v1_writes_taskset_template(tmp_path: Path) -> None:
     assert "return BarTaskset(config=config)" in content
     assert 'command=["python", "-m", "bar.servers.user"]' in content
     assert 'command=["python", "-m", "bar.servers.tools"]' in content
-    assert "taskset=vf.load_taskset(config=config.taskset)" in content
-    assert '"""Loader pattern for all Taskset/Harness environments."""' in content
-    assert "harness=vf.load_harness(config=config.harness)" in content
-    assert "from .bar import load_environment, load_taskset" in init_content
+    assert "def load_environment" not in content
+    assert '"""bar environment package."""' in init_content
+    assert "load_environment" not in init_content
     assert 'include = ["bar/**/*", "pyproject.toml", "README.md"]' in pyproject
     assert 'mcp = FastMCP("bar-user")' in user_server
     assert "def respond(task: dict, state: dict, transcript: list[dict]) -> dict:" in (
@@ -81,23 +84,28 @@ def test_init_v1_template_loads_with_vf_load_environment(
     monkeypatch.syspath_prepend(str(tmp_path / "loadable_v1"))
 
     env = vf.load_environment("loadable-v1")
+    taskset = vf1.load_taskset("loadable-v1")
 
     dataset = env.get_dataset()
 
     assert len(dataset) == 1
     assert dataset[0]["answer"] == "cba"
+    assert taskset.config.system_prompt == "Answer exactly."
 
 
 def test_init_v1_with_harness_writes_harness_stub(tmp_path: Path) -> None:
     init_environment("baz", path=str(tmp_path), v1=True, with_harness=True)
-    content = read_env_file(tmp_path, "baz")
+    taskset_content = read_env_file(tmp_path, "baz")
+    harness_content = (package_dir(tmp_path, "baz") / "harness.py").read_text()
 
-    assert "class BazTaskset(vf.Taskset[BazTasksetConfig]):" in content
-    assert "class BazHarnessConfig(vf.HarnessConfig):" in content
-    assert "class BazHarness(vf.Harness[BazHarnessConfig]):" in content
-    assert "def load_harness(config: BazHarnessConfig) -> BazHarness:" in content
-    assert "taskset=vf.load_taskset(config=config.taskset)" in content
-    assert "harness=vf.load_harness(config=config.harness)" in content
+    assert "class BazTaskset(vf.Taskset[BazTasksetConfig]):" in taskset_content
+    assert "class BazHarnessConfig(vf.HarnessConfig):" in harness_content
+    assert "class BazHarness(vf.Harness[BazHarnessConfig]):" in harness_content
+    assert "def load_harness(config: BazHarnessConfig) -> BazHarness:" in (
+        harness_content
+    )
+    assert "def load_environment" not in taskset_content
+    assert "def load_environment" not in harness_content
 
 
 def test_init_with_harness_without_v1_warns_and_uses_v0(tmp_path: Path, capsys) -> None:
@@ -114,12 +122,12 @@ def test_init_v1_multifile_exports_component_loaders(tmp_path: Path) -> None:
     init_environment("pkg-env", path=str(tmp_path), v1=True, multi_file=True)
     package = package_dir(tmp_path, "pkg-env")
     init_content = (package / "__init__.py").read_text()
-    env_content = (package / "pkg_env.py").read_text()
+    taskset_content = (package / "taskset.py").read_text()
 
-    assert "from .pkg_env import load_environment, load_taskset" in init_content
-    assert "__all__ = ['load_environment', 'load_taskset']" in init_content
-    assert "class PkgEnvTaskset(vf.Taskset[PkgEnvTasksetConfig]):" in env_content
-    assert "return PkgEnvTaskset(config=config)" in env_content
+    assert '"""pkg-env environment package."""' in init_content
+    assert "load_environment" not in init_content
+    assert "class PkgEnvTaskset(vf.Taskset[PkgEnvTasksetConfig]):" in taskset_content
+    assert "return PkgEnvTaskset(config=config)" in taskset_content
     assert (package / "servers" / "user.py").exists()
     assert (package / "servers" / "tools.py").exists()
 

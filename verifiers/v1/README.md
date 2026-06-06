@@ -65,6 +65,21 @@ between assistant turns when present.
 
 ## Authoring Pattern
 
+The default v1 package layout is component-first:
+
+```text
+my_env/
+  my_env/
+    taskset.py
+    harness.py        # optional
+    servers/
+      user.py         # optional
+      tools.py        # optional
+```
+
+`vf.load_environment("my-env")` imports the package, discovers `taskset.py` and
+optional `harness.py`, and constructs `vf.Env` internally.
+
 ```python
 import verifiers.v1 as vf
 from pydantic import BaseModel
@@ -78,7 +93,11 @@ class MyDetails(BaseModel, extra="forbid"):
     source: str
 
 
-class MyTaskset(vf.Taskset):
+class MyTasksetConfig(vf.TasksetConfig):
+    system_prompt: vf.SystemPrompt = "Say exactly what is requested."
+
+
+class MyTaskset(vf.Taskset[MyTasksetConfig]):
     task_type = MyTask
 
     def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
@@ -90,8 +109,8 @@ class MyTaskset(vf.Taskset):
         return float(str(message.content).strip() == task.answer)
 
 
-def load_environment(config: vf.EnvConfig) -> vf.Env:
-    return vf.Env(taskset=MyTaskset(config=config.taskset), harness=vf.Harness())
+def load_taskset(config: MyTasksetConfig) -> MyTaskset:
+    return MyTaskset(config=config)
 ```
 
 Config is serializable policy. Live Python functions are allowed as decorated

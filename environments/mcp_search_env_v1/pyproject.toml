@@ -1,0 +1,21 @@
+[project]
+name = "mcp-search-env-v1"
+description = "v1 MCP search environment example"
+tags = ["eval", "mcp", "v1", "tool-use"]
+version = "0.2.0"
+requires-python = ">=3.11"
+dependencies = [
+    "verifiers>=0.1.14",
+    "mcp>=1.0.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["mcp_search_env_v1/**/*", "README.md", "pyproject.toml"]
+
+[tool.verifiers.eval]
+num_examples = 5
+rollouts_per_example = 3

@@ -1,59 +1,32 @@
-import importlib.util
-import inspect
-import sys
-from pathlib import Path
-from typing import Any
+from environments.mcp_search_env_v1.mcp_search_env_v1 import taskset as module
 
 import pytest
 import verifiers.v1 as vf
-
-
-def _load_mcp_search_module() -> Any:
-    module_path = (
-        Path(__file__).resolve().parent.parent
-        / "environments"
-        / "mcp_search_env"
-        / "mcp_search_env.py"
-    )
-    spec = importlib.util.spec_from_file_location("test_mcp_search_env", module_path)
-    assert spec is not None
-    assert spec.loader is not None
-
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
+from verifiers.v1.loaders import load_environment_from_components
 
 
 def test_mcp_search_env_is_v1_only() -> None:
-    module = _load_mcp_search_module()
-
-    env = module.load_environment(
-        config=module.MCPSearchEnvConfig(taskset={"max_turns": 4})
+    env = load_environment_from_components(
+        module, {"config": {"taskset": {"max_turns": 4}}}
     )
 
     assert isinstance(env, vf.Env)
     assert isinstance(env.taskset, vf.Taskset)
     assert isinstance(env.harness, vf.Harness)
-    assert "v1" not in inspect.signature(module.load_environment).parameters
+    assert not hasattr(module, "load_environment")
     assert not hasattr(module, "load_v1_environment")
-    assert not (Path(module.__file__).parent / "mcp_search_v1.py").exists()
     assert env.taskset.config.max_turns == 4
 
 
 def test_mcp_search_env_preserves_harness_config() -> None:
-    module = _load_mcp_search_module()
-
-    env = module.load_environment(
-        config=module.MCPSearchEnvConfig(harness={"max_turns": 7})
+    env = load_environment_from_components(
+        module, {"config": {"harness": {"max_turns": 7}}}
     )
 
     assert env.harness.config.max_turns == 7
 
 
 def test_mcp_search_default_taskset_has_stable_non_doc_fixture() -> None:
-    module = _load_mcp_search_module()
-
     rows = list(module.load_tasks())
 
     assert len(rows) >= 10
@@ -63,10 +36,8 @@ def test_mcp_search_default_taskset_has_stable_non_doc_fixture() -> None:
 
 
 def test_mcp_search_taskset_accepts_v1_taskset_config() -> None:
-    module = _load_mcp_search_module()
-
-    env = module.load_environment(
-        config=module.MCPSearchEnvConfig(taskset={"max_turns": 3}),
+    env = load_environment_from_components(
+        module, {"config": {"taskset": {"max_turns": 3}}}
     )
     tasks = list(env.taskset)
 
@@ -76,8 +47,6 @@ def test_mcp_search_taskset_accepts_v1_taskset_config() -> None:
 
 @pytest.mark.asyncio
 async def test_mcp_search_reward_handles_missing_assistant() -> None:
-    module = _load_mcp_search_module()
-
     task = module.MCPSearchTask(
         query="expected",
         question="find expected",

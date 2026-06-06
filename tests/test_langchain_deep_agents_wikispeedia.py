@@ -5,16 +5,27 @@ from pathlib import Path
 import pytest
 
 import verifiers.v1 as vf
+from verifiers.v1.loaders import load_environment_from_components
 
 
-def load_module(monkeypatch: pytest.MonkeyPatch):
+def load_modules(monkeypatch: pytest.MonkeyPatch):
     env_dir = (
-        Path(__file__).parents[1] / "environments" / "langchain_deep_agents_wikispeedia"
+        Path(__file__).parents[1]
+        / "environments"
+        / "langchain_deep_agents_wikispeedia_v1"
     )
     monkeypatch.syspath_prepend(str(env_dir))
-    sys.modules.pop("langchain_deep_agents_wikispeedia", None)
-    sys.modules.pop("wiki_graph", None)
-    return importlib.import_module("langchain_deep_agents_wikispeedia")
+    for name in (
+        "langchain_deep_agents_wikispeedia_v1",
+        "langchain_deep_agents_wikispeedia_v1.taskset",
+        "langchain_deep_agents_wikispeedia_v1.harness",
+        "langchain_deep_agents_wikispeedia_v1.wiki_graph",
+    ):
+        sys.modules.pop(name, None)
+    return (
+        importlib.import_module("langchain_deep_agents_wikispeedia_v1"),
+        importlib.import_module("langchain_deep_agents_wikispeedia_v1.taskset"),
+    )
 
 
 def make_small_wiki(module):
@@ -38,9 +49,9 @@ def make_small_wiki(module):
 def test_wikispeedia_loads_as_v1_taskset_harness(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    module = load_module(monkeypatch)
+    package, _ = load_modules(monkeypatch)
 
-    env = module.load_environment(config=module.WikispeediaEnvConfig())
+    env = load_environment_from_components(package, {})
 
     assert isinstance(env, vf.Env)
     assert isinstance(env.taskset, vf.Taskset)
@@ -51,24 +62,27 @@ def test_wikispeedia_loads_as_v1_taskset_harness(
 def test_wikispeedia_env_config_reaches_taskset_and_harness(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    module = load_module(monkeypatch)
+    package, module = load_modules(monkeypatch)
     wiki = make_small_wiki(module)
     monkeypatch.setattr(module, "load_wiki_graph", lambda cache_dir=None: wiki)
 
-    env = module.load_environment(
-        config=module.WikispeediaEnvConfig(
-            taskset={
-                "train_size": 2,
-                "eval_size": 1,
-                "min_path_length": 1,
-                "max_path_length": 1,
-                "eval_target_fraction": 0.5,
-                "allow_go_back": False,
-                "links_only": True,
-                "max_turns": 7,
-            },
-            harness={"max_turns": 8, "timeout_seconds": 9.0},
-        )
+    env = load_environment_from_components(
+        package,
+        {
+            "config": {
+                "taskset": {
+                    "train_size": 2,
+                    "eval_size": 1,
+                    "min_path_length": 1,
+                    "max_path_length": 1,
+                    "eval_target_fraction": 0.5,
+                    "allow_go_back": False,
+                    "links_only": True,
+                    "max_turns": 7,
+                },
+                "harness": {"max_turns": 8, "timeout_seconds": 9.0},
+            }
+        },
     )
 
     train_rows = list(env.taskset)
@@ -88,7 +102,7 @@ def test_wikispeedia_env_config_reaches_taskset_and_harness(
 def test_wikispeedia_rows_use_v1_task_shape(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    module = load_module(monkeypatch)
+    _, module = load_modules(monkeypatch)
     wiki = make_small_wiki(module)
     dataset = module.build_dataset(
         wiki,
@@ -112,7 +126,7 @@ def test_wikispeedia_rows_use_v1_task_shape(
 def test_wikispeedia_navigation_uses_state_scratch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    module = load_module(monkeypatch)
+    _, module = load_modules(monkeypatch)
     wiki = make_small_wiki(module)
     task = module.WikispeediaTask(
         prompt=[{"role": "user", "content": "start"}],
@@ -137,7 +151,7 @@ def test_wikispeedia_navigation_uses_state_scratch(
 async def test_wikispeedia_scores_from_scratch_and_transcript(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    module = load_module(monkeypatch)
+    _, module = load_modules(monkeypatch)
     taskset = module.WikispeediaTaskset(
         module.WikispeediaTasksetConfig(efficiency_weight=0.5)
     )

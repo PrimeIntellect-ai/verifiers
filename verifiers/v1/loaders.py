@@ -19,6 +19,11 @@ EnvConfigLoadData: TypeAlias = dict[str, object]
 EnvConfigChildInput: TypeAlias = ConfigMapping | EnvConfigLoadData
 EnvConfigInput: TypeAlias = BaseModel | ConfigMapping
 
+FACTORY_MODULES = {
+    "load_taskset": "taskset",
+    "load_harness": "harness",
+}
+
 
 def env_module_name(env_id: str) -> str:
     return env_id.replace("-", "_").split("/")[-1]
@@ -67,6 +72,7 @@ def load_taskset_from_module(
     *,
     config: TasksetConfig | ConfigMapping | None = None,
 ) -> Taskset:
+    module = factory_module(module, "load_taskset")
     factory = getattr(module, "load_taskset", None)
     if factory is None:
         taskset_id = child_loader_id(config)
@@ -92,6 +98,7 @@ def load_harness_from_module(
     *,
     config: HarnessConfig | ConfigMapping | None = None,
 ) -> Harness:
+    module = factory_module(module, "load_harness")
     factory = getattr(module, "load_harness", None)
     if factory is None:
         harness_id = child_loader_id(config)
@@ -297,6 +304,7 @@ def factory_config_type(
     factory_name: str,
     base_type: type[BaseModel],
 ) -> type[BaseModel] | None:
+    module = factory_module(module, factory_name)
     factory = getattr(module, factory_name, None)
     if factory is None:
         return None
@@ -314,6 +322,19 @@ def factory_config_type(
         base_type,
         f"{module.__name__}.{factory_name}.config",
     )
+
+
+def factory_module(module: ModuleType, factory_name: str) -> ModuleType:
+    if getattr(module, factory_name, None) is not None:
+        return module
+    child_name = FACTORY_MODULES.get(factory_name)
+    if child_name is None or not hasattr(module, "__path__"):
+        return module
+    module_name = f"{module.__name__}.{child_name}"
+    spec = importlib.util.find_spec(module_name)
+    if spec is None:
+        return module
+    return importlib.import_module(module_name)
 
 
 def config_type_from_annotation(

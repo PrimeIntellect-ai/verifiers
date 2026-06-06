@@ -200,35 +200,11 @@ def load_environment(
     dataset_name: str = "kalomaze/alphabetic-arxiv-authors-it1",
     dataset_split: str = "train",
     seed: int = 1337420,
-    v1: bool = False,
     **kwargs,
 ) -> vf.Environment:
-    if v1:
-        if kwargs:
-            unexpected = ", ".join(sorted(kwargs))
-            raise TypeError(f"Unsupported v1 load_environment kwargs: {unexpected}")
-
-        from alphabet_sort_v1 import (
-            AlphabetSortEnvConfig,
-            AlphabetSortTasksetConfig,
-            load_environment as load_v1,
-        )
-
-        return load_v1(
-            config=AlphabetSortEnvConfig(
-                taskset=AlphabetSortTasksetConfig(
-                    max_turns=max_turns,
-                    min_turns=min_turns,
-                    min_names_per_turn=min_names_per_turn,
-                    max_names_per_turn=max_names_per_turn,
-                    similarity_power=similarity_power,
-                    power_per_turn=power_per_turn,
-                    dataset_name=dataset_name,
-                    dataset_split=dataset_split,
-                    seed=seed,
-                )
-            )
-        )
+    if kwargs:
+        unexpected = ", ".join(sorted(kwargs))
+        raise TypeError(f"Unsupported load_environment kwargs: {unexpected}")
 
     assert min_turns >= 1, "min_turns must be at least 1"
     assert min_turns <= max_turns, "min_turns must be less than or equal to max_turns"

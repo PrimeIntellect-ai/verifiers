@@ -1,0 +1,22 @@
+[project]
+name = "math-python-v1"
+description = "Solve math problems using Python in a sandbox environment"
+tags = ["tool-use", "math", "sandbox", "train", "prime-sandboxes", "python", "coding"]
+version = "0.1.10"
+requires-python = ">=3.11"
+dependencies = [
+    "verifiers>=0.1.8.post2",
+    "math-verify>=0.8.0",
+    "prime-sandboxes>=0.2.7",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+include = ["math_python_v1/**/*", "README.md", "pyproject.toml"]
+
+[tool.verifiers.eval]
+num_examples = 5
+rollouts_per_example = 3
