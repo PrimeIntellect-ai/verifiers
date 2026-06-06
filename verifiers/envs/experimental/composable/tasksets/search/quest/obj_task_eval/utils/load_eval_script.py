@@ -58,7 +58,10 @@ def load_eval_script(path: str):
     TypeError
         If `evaluate_answer` is not an async function or has an invalid signature.
     """
-    path_obj = Path(path).expanduser().resolve()
+    # Keep the original .py path instead of resolving Hugging Face cache
+    # symlinks to extensionless blob paths; importlib uses the suffix to pick
+    # the Python source loader.
+    path_obj = Path(path).expanduser()
     if not path_obj.exists():
         raise FileNotFoundError(path_obj)
 
