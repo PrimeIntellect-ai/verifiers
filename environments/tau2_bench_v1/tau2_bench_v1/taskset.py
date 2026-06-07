@@ -3,6 +3,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from pydantic import TypeAdapter
 import verifiers.v1 as vf
 
 from .servers.user import UserConfig
@@ -31,6 +32,7 @@ class Tau2Task(vf.Task):
     domain: str
     system_prompt: str
     tau2_task: vf.JsonData
+    tau2_user: vf.JsonData
 
 
 class Tau2Taskset(vf.Taskset[Tau2TasksetConfig]):
@@ -40,15 +42,52 @@ class Tau2Taskset(vf.Taskset[Tau2TasksetConfig]):
         if split == "eval":
             return []
         return list(
-            load_tasks(domain=self.config.domain, max_turns=self.config.max_turns)
+            load_tasks(
+                domain=self.config.domain,
+                max_turns=self.config.max_turns,
+                user_model=self.config.user_model,
+                user_args=self.config.user_args or {},
+                user_base_url=self.config.user_base_url,
+                user_api_key_var=self.config.user_api_key_var,
+                max_errors=self.config.max_errors,
+            )
         )
 
     @vf.reward(weight=1.0)
-    async def tau2_reward(self, state: vf.State) -> float:
+    async def tau2_reward(self, task: Tau2Task, state: vf.State) -> float:
         tau2 = state.extras.get("tau2")
         if not isinstance(tau2, dict):
             return 0.0
-        return float(tau2.get("reward", 0.0) or 0.0)
+        messages_data = tau2.get("messages")
+        if not isinstance(messages_data, list):
+            return 0.0
+        from tau2.data_model.message import Message as TauMessage
+        from tau2.data_model.simulation import SimulationRun, TerminationReason
+        from tau2.data_model.tasks import Task as TauTask
+        from tau2.evaluator.evaluator import EvaluationType, evaluate_simulation
+        from tau2.utils.utils import get_now
+
+        messages = TypeAdapter(list[TauMessage]).validate_python(messages_data)
+        now = get_now()
+        simulation = SimulationRun(
+            id=state.id,
+            task_id=task.task_id or task.tau2_task["id"],
+            start_time=now,
+            end_time=now,
+            duration=state.timing.total,
+            termination_reason=TerminationReason.USER_STOP,
+            messages=messages,
+        )
+        reward_info = evaluate_simulation(
+            simulation=simulation,
+            task=TauTask.model_validate(task.tau2_task),
+            evaluation_type=EvaluationType.ALL,
+            solo_mode=False,
+            domain=task.domain,
+        )
+        tau2["reward"] = float(reward_info.reward)
+        tau2["reward_info"] = reward_info.model_dump(mode="json", exclude_none=True)
+        return float(reward_info.reward)
 
     @vf.metric
     async def tau2_num_steps(self, state: vf.State) -> float:
@@ -90,7 +129,15 @@ def download_tau2_data() -> None:
             shutil.rmtree(temp_dir)
 
 
-def load_tasks(domain: str, max_turns: int):
+def load_tasks(
+    domain: str,
+    max_turns: int,
+    user_model: str,
+    user_args: vf.JsonData,
+    user_base_url: str,
+    user_api_key_var: str,
+    max_errors: int,
+):
     from tau2.agent.llm_agent import AGENT_INSTRUCTION, SYSTEM_PROMPT
     from tau2.registry import registry
     from tau2.run import load_tasks as load_tau2_tasks
@@ -113,6 +160,13 @@ def load_tasks(domain: str, max_turns: int):
             "max_turns": max_turns,
             "prompt": [],
             "tau2_task": task.model_dump(mode="json", exclude_none=True),
+            "tau2_user": {
+                "model": user_model,
+                "args": user_args,
+                "base_url": user_base_url,
+                "api_key_var": user_api_key_var,
+                "max_errors": max_errors,
+            },
         }
 
 

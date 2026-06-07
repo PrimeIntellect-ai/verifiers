@@ -142,6 +142,7 @@ def load_environment_from_components(
         taskset=load_taskset_from_module(module, config=config.taskset),
         harness=load_harness_from_module(module, config=config.harness),
         runtime=config.runtime,
+        advantage=config.advantage,
     )
 
 

@@ -1,12 +1,39 @@
 from __future__ import annotations
 
 import math
+from typing import TypeAlias, cast
 
-import verifiers.v1 as vf
+from .decorators import advantage
+from .state import State
+from .task import Task
+from .types import Handler
+from .utils.scoring_utils import SignalRecord, signal_from_function
+from .utils.config_utils import import_config_ref
 
 
-@vf.advantage
-def grpo(tasks: list[vf.Task], states: list[vf.State]) -> None:
+AdvantageConfig: TypeAlias = str | None
+
+
+def resolve_config(value: AdvantageConfig) -> Handler | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise TypeError("Env advantage must be a non-empty function path.")
+    ref = value if ":" in value else f"verifiers.v1.advantages:{value}"
+    resolved = import_config_ref(ref)
+    if not callable(resolved):
+        raise TypeError(f"Env advantage {ref!r} must resolve to a callable.")
+    if not getattr(resolved, "advantage", False):
+        raise TypeError(f"Env advantage {ref!r} must be decorated with @vf.advantage.")
+    return cast(Handler, resolved)
+
+
+def signal(fn: Handler) -> SignalRecord:
+    return signal_from_function(fn)
+
+
+@advantage
+def grpo(tasks: list[Task], states: list[State]) -> None:
     _ = tasks
     if not states:
         return
@@ -28,8 +55,8 @@ def grpo(tasks: list[vf.Task], states: list[vf.State]) -> None:
                 ]
 
 
-@vf.advantage
-def rloo(tasks: list[vf.Task], states: list[vf.State]) -> None:
+@advantage
+def rloo(tasks: list[Task], states: list[State]) -> None:
     _ = tasks
     if not states:
         return
@@ -57,8 +84,8 @@ def rloo(tasks: list[vf.Task], states: list[vf.State]) -> None:
                 ]
 
 
-@vf.advantage
-def reinforce(tasks: list[vf.Task], states: list[vf.State]) -> None:
+@advantage
+def reinforce(tasks: list[Task], states: list[State]) -> None:
     _ = tasks
     for state in states:
         value = float(state.reward)

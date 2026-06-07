@@ -93,7 +93,12 @@ class GroupTaskset(NanoTaskset):
         _ = states
         return [float(task.candidate == 0) for task in tasks]
 
-    grpo = staticmethod(vf.advantages.grpo)
+
+@vf.advantage
+def custom_env_advantage(tasks: list[vf.Task], states: list[vf.State]) -> None:
+    _ = tasks
+    for index, state in enumerate(states):
+        state.advantage = float(index + 10)
 
 
 class EmptyPromptUserConfig(vf.UserConfig):
@@ -549,7 +554,7 @@ async def test_harness_run_rejects_nested_scoring_context(mock_client) -> None:
 @pytest.mark.asyncio
 async def test_v1_group_rewards_and_advantages_apply_to_turns(mock_client) -> None:
     mock_client.set_default_response("ok")
-    env = vf.Env(taskset=GroupTaskset(), harness=vf.Harness())
+    env = vf.Env(taskset=GroupTaskset(), harness=vf.Harness(), advantage="grpo")
     model = attach_mock_model(env, mock_client)
     row = env.get_dataset()[0]
     base_task = env.taskset.to_task(row)
@@ -961,6 +966,31 @@ def test_v1_default_advantages_fill_turn_tokens() -> None:
     assert states[0].transcript[0].tokens.completion_advantages == pytest.approx(
         [1.0, 1.0, 1.0]
     )
+
+
+@pytest.mark.asyncio
+async def test_env_advantage_config_sets_group_default() -> None:
+    tasks = [vf.Task(prompt="p"), vf.Task(prompt="p")]
+    states = [vf.State(reward=2.0), vf.State(reward=0.0)]
+    env = vf.Env(
+        taskset=NanoTaskset(),
+        advantage="reinforce",
+    )
+
+    await env.score_group(tasks, states)
+
+    assert [state.advantage for state in states] == pytest.approx([2.0, 0.0])
+
+
+@pytest.mark.asyncio
+async def test_env_advantage_path_supports_user_authored_group_logic() -> None:
+    tasks = [vf.Task(prompt="p"), vf.Task(prompt="p")]
+    states = [vf.State(reward=2.0), vf.State(reward=0.0)]
+    env = vf.Env(taskset=NanoTaskset(), advantage=f"{__name__}:custom_env_advantage")
+
+    await env.score_group(tasks, states)
+
+    assert [state.advantage for state in states] == pytest.approx([10.0, 11.0])
 
 
 def test_v1_runtime_default_resolves_taskset_and_harness_fields() -> None:

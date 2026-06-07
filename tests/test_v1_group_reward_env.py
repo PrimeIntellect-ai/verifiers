@@ -15,7 +15,7 @@ from verifiers.v1.loaders import load_environment_from_components
 @pytest.mark.asyncio
 async def test_hello_group_reward_v1_scores_full_group_lifecycle() -> None:
     env = load_environment_from_components(
-        module, {"config": {"taskset": {"num_examples": 1}}}
+        module, {"config": {"taskset": {"num_examples": 1}, "advantage": "grpo"}}
     )
     assert env.requires_group_rollouts
     assert env.provides_advantages

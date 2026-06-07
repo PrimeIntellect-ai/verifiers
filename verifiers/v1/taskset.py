@@ -185,6 +185,12 @@ class Taskset(Generic[ConfigT]):
             )
             self.handlers = self.load_handlers()
             self.signals = build_signals(self)
+            for signal in self.signals:
+                if signal["kind"] == "advantage":
+                    raise ValueError(
+                        "Taskset signals must be metrics or rewards; configure "
+                        "env advantages with Env(advantage=...)."
+                    )
         self._dataset: Dataset | None = None
         self._eval_dataset: Dataset | None = None
 
@@ -219,10 +225,6 @@ class Taskset(Generic[ConfigT]):
     @property
     def has_group_signals(self) -> bool:
         return any(signal["stage"] == "group" for signal in self.signals)
-
-    @property
-    def has_advantages(self) -> bool:
-        return any(signal["kind"] == "advantage" for signal in self.signals)
 
     def to_task(self, task: Task | JsonData) -> Task:
         if isinstance(task, Task):

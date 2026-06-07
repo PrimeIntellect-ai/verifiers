@@ -10,6 +10,7 @@ from verifiers.types import (
 )
 from verifiers.utils.async_utils import maybe_retry
 
+from . import advantages
 from .config import Config
 from .harness import Harness
 from .runtime import (
@@ -34,6 +35,7 @@ class EnvConfig(Config):
     taskset: dict[str, object] = Field(default_factory=dict)
     harness: dict[str, object] = Field(default_factory=dict)
     runtime: RuntimeConfig | None = None
+    advantage: advantages.AdvantageConfig = None
 
     @field_validator("taskset", "harness", mode="before")
     @classmethod
@@ -52,6 +54,7 @@ class Env:
         taskset: Taskset,
         harness: Harness | None = None,
         runtime: RuntimeProvider | RuntimeConfigValue | None = None,
+        advantage: advantages.AdvantageConfig = None,
     ):
         if not isinstance(taskset, Taskset):
             raise TypeError("Env taskset must be a Taskset.")
@@ -60,12 +63,15 @@ class Env:
         self.taskset = taskset
         self.harness = harness or Harness()
         self.harness.bind(taskset=self.taskset, runtime=runtime)
+        self.advantage = advantage
+        self.advantage_function = advantages.resolve_config(advantage)
         self.runtime_config = self.harness.runtime_config
         self.runtime_provider = self.harness.runtime_provider
         self.config = EnvConfig(
             taskset=explicit_config_data(self.taskset.config),
             harness=explicit_config_data(self.harness.config),
             runtime=self.runtime_config,
+            advantage=self.advantage,
         )
         self.env_id = ""
         self.env_args: JsonData = {}
@@ -75,16 +81,15 @@ class Env:
     def requires_group_rollouts(self) -> bool:
         uses_custom_init_group = type(self.taskset).init_group is not Taskset.init_group
         return (
-            self.taskset.has_group_signals
+            self.advantage_function is not None
+            or self.taskset.has_group_signals
             or any(signal["stage"] == "group" for signal in self.harness.signals)
             or uses_custom_init_group
         )
 
     @property
     def provides_advantages(self) -> bool:
-        return self.taskset.has_advantages or any(
-            signal["kind"] == "advantage" for signal in self.harness.signals
-        )
+        return self.advantage_function is not None
 
     def get_dataset(self, n: int = -1, seed: int | None = None) -> "Dataset":
         dataset = self.taskset.get_dataset()
@@ -199,8 +204,14 @@ class Env:
             else None
         )
         try:
+            signals = self.harness.owner_signals()
+            if self.advantage_function is not None:
+                signals = [
+                    signal for signal in signals if signal["kind"] != "advantage"
+                ]
+                signals.append(advantages.signal(self.advantage_function))
             await score_group_signals(
-                self.harness.owner_signals(),
+                signals,
                 tasks,
                 states,
                 model_client=model_client,

@@ -18,6 +18,7 @@ import urllib.error
 import urllib.request
 
 from pydantic import Field
+from pydantic import ValidationError
 from verifiers.errors import ToolError
 from verifiers.types import MessageContent, Messages, Tool
 
@@ -834,6 +835,11 @@ def server_response(content: JsonValue) -> ServerResponse:
         if "content" in content or "messages" in content:
             return ServerResponse.model_validate(content)
         return ServerResponse(content=json.dumps(content))
+    if isinstance(content, list):
+        try:
+            return ServerResponse(content=content)
+        except ValidationError:
+            return ServerResponse(content=json.dumps(content))
     return ServerResponse(content=json.dumps(content))
 
 

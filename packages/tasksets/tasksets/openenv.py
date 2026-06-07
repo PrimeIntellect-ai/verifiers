@@ -1,7 +1,7 @@
 import asyncio
 import importlib.util
 import json
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from pathlib import Path
 from typing import Literal, Protocol, TypeAlias, cast
 
@@ -149,6 +149,12 @@ class OpenEnvSession:
             await client.step(CallToolAction(tool_name=name, arguments=input)),
         )
 
+    async def tool_defs(self) -> list[vf.JsonData]:
+        client = await self.start()
+        if not isinstance(client, MCPToolClient):
+            return []
+        return openenv_tool_defs(await client.list_tools())
+
     async def close(self) -> None:
         if self.client is not None:
             await maybe_await(self.client.close)
@@ -285,6 +291,31 @@ def mcp_tool_content(observation: object) -> vf.JsonValue:
     return json_value(value)
 
 
+def openenv_tool_defs(tools: Iterable[object]) -> list[vf.JsonData]:
+    tool_defs: list[vf.JsonData] = []
+    for tool in tools:
+        name = getattr(tool, "name", None)
+        if not isinstance(name, str) or not name:
+            raise TypeError("OpenEnv MCP tools must have non-empty names.")
+        description = getattr(tool, "description", "") or ""
+        schema = getattr(tool, "input_schema", None)
+        if schema is None:
+            schema = getattr(tool, "inputSchema", None)
+        parameters = (
+            json_data(schema, context=f"OpenEnv tool {name} schema")
+            if isinstance(schema, dict)
+            else {"type": "object", "properties": {}}
+        )
+        tool_defs.append(
+            {
+                "name": name,
+                "description": str(description),
+                "parameters": parameters,
+            }
+        )
+    return tool_defs
+
+
 def result_payload(
     *,
     messages: list[vf.JsonData],
@@ -293,6 +324,7 @@ def result_payload(
 ) -> vf.JsonData:
     payload: dict[str, object] = {
         "messages": messages,
+        "observation": json_value(result.observation),
         "openenv_done": bool(result.done),
     }
     if include_reward:
@@ -308,31 +340,64 @@ class OpenEnvUser(vf.User[OpenEnvUserConfig]):
     def start(self) -> None:
         self.session = None
 
+    def stop(self) -> None:
+        if self.session is not None:
+            asyncio.run(self.session.close())
+        self.session = None
+
+    @vf.tool(
+        hidden=True,
+        args={"openenv": "task.openenv"},
+        sets={
+            "observation": "state.extras.openenv.observation",
+            "openenv_done": "state.extras.openenv.done",
+            "finished": "state.is_completed",
+            "stop_condition": "state.stop_condition",
+        },
+    )
+    async def setup(self, openenv: vf.JsonData) -> vf.JsonData:
+        config = OpenEnvRuntimeConfig.model_validate(openenv)
+        self.session = OpenEnvSession(config)
+        result = await self.session.reset()
+        payload: dict[str, object] = {
+            "observation": json_value(result.observation),
+            "openenv_done": bool(result.done),
+        }
+        if result.done:
+            payload["finished"] = True
+            payload["stop_condition"] = "openenv_done"
+        if config.contract == "mcp":
+            payload["tools"] = await self.session.tool_defs()
+        return json_data(payload)
+
     @vf.user(
         args={
             "openenv": "task.openenv",
+            "observation": "state.extras.openenv.observation",
             "completion": "state.completion",
         },
         sets={
-            "openenv_done": "state.extras.openenv_done",
+            "observation": "state.extras.openenv.observation",
+            "openenv_done": "state.extras.openenv.done",
             "reward": "state.transcript.last.reward",
             "stop_condition": "state.stop_condition",
         },
     )
     async def respond(
-        self, openenv: vf.JsonData, completion: list[vf.JsonData]
+        self,
+        openenv: vf.JsonData,
+        observation: vf.JsonValue,
+        completion: list[vf.JsonData],
     ) -> vf.JsonData:
         config = OpenEnvRuntimeConfig.model_validate(openenv)
         if self.session is None:
-            self.session = OpenEnvSession(config)
-            result = await self.session.reset()
-            return result_payload(
-                messages=await render_messages(
-                    config, self.session, result.observation, "reset"
-                ),
-                result=result,
-                include_reward=False,
-            )
+            raise RuntimeError("OpenEnv setup has not started.")
+        if not completion:
+            return {
+                "messages": await render_messages(
+                    config, self.session, observation, "reset"
+                )
+            }
         if config.contract == "mcp":
             return {"messages": [], "stop_condition": "openenv_no_tool_calls"}
         action = latest_assistant_json(completion)
@@ -346,12 +411,14 @@ class OpenEnvUser(vf.User[OpenEnvUserConfig]):
         )
 
     @vf.tool(
+        hidden=True,
         sets={
-            "openenv_done": "state.extras.openenv_done",
+            "observation": "state.extras.openenv.observation",
+            "openenv_done": "state.extras.openenv.done",
             "reward": "state.transcript.last.reward",
             "finished": "state.is_completed",
             "stop_condition": "state.stop_condition",
-        }
+        },
     )
     async def call_tool(self, name: str, input: vf.JsonData) -> vf.JsonData:
         """Call an OpenEnv MCP tool by name with JSON input."""
@@ -363,6 +430,7 @@ class OpenEnvUser(vf.User[OpenEnvUserConfig]):
             "content": content
             if isinstance(content, str)
             else json.dumps(json_value(content)),
+            "observation": json_value(result.observation),
             "openenv_done": bool(result.done),
         }
         if result.reward is not None:

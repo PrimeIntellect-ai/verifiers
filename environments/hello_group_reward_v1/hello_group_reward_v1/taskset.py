@@ -234,8 +234,6 @@ class GroupRewardTaskset(vf.Taskset[GroupRewardTasksetConfig]):
             return [0.5 for _ in qualities]
         return [(quality - low) / (high - low) for quality in qualities]
 
-    grpo = staticmethod(vf.advantages.grpo)
-
 
 class GroupRewardHarness(vf.Harness[GroupRewardHarnessConfig]):
     async def run_with_context(self, context: vf.Context) -> None:

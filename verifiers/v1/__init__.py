@@ -25,6 +25,7 @@ from verifiers.types import (
 )
 
 from . import advantages
+from .advantages import AdvantageConfig
 from .config import (
     Config,
 )
@@ -137,6 +138,7 @@ __all__ = [
     "OpenAICompletionsProtocol",
     "OpenAIResponsesProtocol",
     "AnthropicMessagesProtocol",
+    "AdvantageConfig",
     "ProtocolRoute",
     "Context",
     "ModelClient",
