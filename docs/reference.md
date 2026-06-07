@@ -960,9 +960,10 @@ class Config(BaseConfig):
 
 @final
 class EnvConfig(Config):
-    taskset: dict[str, object]
-    harness: dict[str, object]
+    taskset: dict[str, object] = Field(default_factory=dict)
+    harness: dict[str, object] = Field(default_factory=dict)
     runtime: RuntimeConfig | None = None
+    advantage: AdvantageConfig = "rl"
 
 class TasksetConfig(Config):
     id: str | None = None
