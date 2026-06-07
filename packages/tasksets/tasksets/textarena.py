@@ -6,6 +6,7 @@ from typing import Generic, Protocol, TypeVar, cast
 from pydantic import BaseModel
 
 import verifiers.v1 as vf
+from verifiers.v1.utils.json_utils import json_data
 
 try:
     import nltk
@@ -51,7 +52,7 @@ class TextArenaSpec(BaseModel, extra="forbid"):
     answer_state_key: str
 
 
-class TextArenaTask(vf.Task):
+class TextArenaTask(vf.Task, frozen=True):
     answer: str
     textarena: TextArenaSpec
 
@@ -96,14 +97,14 @@ class TextArenaTaskset(vf.Taskset[ConfigT], Generic[ConfigT]):
         for _ in range(first_seed_offset):
             rng.choice(word_list)
         return [
-            {
-                "prompt": [vf.UserMessage(content=initial_prompt)],
-                "answer": rng.choice(word_list),
-                "textarena": {
-                    "game": config.game,
-                    "answer_state_key": config.answer_state_key,
-                },
-            }
+            TextArenaTask(
+                prompt=[vf.UserMessage(content=initial_prompt)],
+                answer=rng.choice(word_list),
+                textarena=TextArenaSpec(
+                    game=config.game,
+                    answer_state_key=config.answer_state_key,
+                ),
+            )
             for _ in range(num_examples)
         ]
 
@@ -147,7 +148,7 @@ def content_text(content: object) -> str:
         chunks: list[str] = []
         for part in content:
             if isinstance(part, dict):
-                text = part.get("text")
+                text = json_data(part).get("text")
                 if isinstance(text, str):
                     chunks.append(text)
         return "\n".join(chunks)

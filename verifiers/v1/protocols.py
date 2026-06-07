@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from typing import cast
 
 from aiohttp import web
 from pydantic import TypeAdapter
@@ -21,6 +20,7 @@ from verifiers.types import (
 
 from .interception import EndpointProtocol, InterceptedRequest, ProtocolRoute
 from .types import JsonData, JsonValue
+from .utils.json_utils import json_data, json_value
 
 _MESSAGES_ADAPTER = TypeAdapter(Messages)
 
@@ -42,7 +42,7 @@ class OpenAIProtocol:
             "total_tokens": response.usage.total_tokens,
         }
 
-    def tool_calls(self, response: Response) -> list[JsonData] | None:
+    def tool_calls(self, response: Response) -> list[JsonValue] | None:
         calls = response.message.tool_calls
         if not calls:
             return None
@@ -74,7 +74,7 @@ class OpenAIChatCompletionsProtocol(OpenAIProtocol, EndpointProtocol):
     def serialize(self, response: Response, request: InterceptedRequest) -> JsonData:
         message: JsonData = {
             "role": "assistant",
-            "content": response.message.content,
+            "content": message_content(response.message.content),
         }
         tool_calls = self.tool_calls(response)
         if tool_calls:
@@ -147,7 +147,7 @@ class OpenAIResponsesProtocol(OpenAIProtocol, EndpointProtocol):
         )
 
     def serialize(self, response: Response, request: InterceptedRequest) -> JsonData:
-        output: list[JsonData] = []
+        output: list[JsonValue] = []
         tool_calls = response.message.tool_calls or []
         for call in tool_calls:
             output.append(
@@ -168,15 +168,18 @@ class OpenAIResponsesProtocol(OpenAIProtocol, EndpointProtocol):
                     "content": [{"type": "output_text", "text": content}],
                 }
             )
-        return {
-            "id": response.id or "vf-v1-intercept",
-            "object": "response",
-            "created_at": response.created,
-            "model": response.model or request.model or "",
-            "output": output,
-            "output_text": content,
-            "usage": self.usage(response),
-        }
+        return json_data(
+            {
+                "id": response.id or "vf-v1-intercept",
+                "object": "response",
+                "created_at": response.created,
+                "model": response.model or request.model or "",
+                "output": output,
+                "output_text": content,
+                "usage": self.usage(response),
+            },
+            context="OpenAI responses serialization",
+        )
 
 
 class AnthropicMessagesProtocol(EndpointProtocol):
@@ -202,7 +205,7 @@ class AnthropicMessagesProtocol(EndpointProtocol):
         )
 
     def serialize(self, response: Response, request: InterceptedRequest) -> JsonData:
-        content: list[JsonData] = []
+        content: list[JsonValue] = []
         text = content_text(response.message.content)
         if text:
             content.append({"type": "text", "text": text})
@@ -221,15 +224,18 @@ class AnthropicMessagesProtocol(EndpointProtocol):
                 "input_tokens": response.usage.prompt_tokens,
                 "output_tokens": response.usage.completion_tokens,
             }
-        return {
-            "id": response.id or "vf-v1-intercept",
-            "type": "message",
-            "role": "assistant",
-            "model": response.model or request.model or "",
-            "content": content,
-            "stop_reason": response.message.finish_reason or "end_turn",
-            "usage": usage,
-        }
+        return json_data(
+            {
+                "id": response.id or "vf-v1-intercept",
+                "type": "message",
+                "role": "assistant",
+                "model": response.model or request.model or "",
+                "content": content,
+                "stop_reason": response.message.finish_reason or "end_turn",
+                "usage": usage,
+            },
+            context="Anthropic messages serialization",
+        )
 
 
 def default_protocols() -> list[EndpointProtocol]:
@@ -248,7 +254,7 @@ def parse_openai_messages(raw: JsonValue | None) -> Messages:
     for item in raw:
         if not isinstance(item, dict):
             raise TypeError("OpenAI message entries must be objects.")
-        messages.append(parse_openai_message(cast(JsonData, item)))
+        messages.append(parse_openai_message(json_data(item)))
     return messages
 
 
@@ -279,11 +285,11 @@ def parse_openai_tool_calls(raw: JsonValue | None) -> list[ToolCall] | None:
     for item in raw:
         if not isinstance(item, dict):
             continue
-        data = cast(JsonData, item)
+        data = json_data(item)
         function = data.get("function")
         if not isinstance(function, dict):
             continue
-        function_data = cast(JsonData, function)
+        function_data = json_data(function)
         calls.append(
             ToolCall(
                 id=str(data.get("id") or ""),
@@ -303,11 +309,11 @@ def parse_openai_tools(raw: JsonValue | None) -> list[Tool] | None:
     for item in raw:
         if not isinstance(item, dict):
             continue
-        data = cast(JsonData, item)
+        data = json_data(item)
         function = data.get("function")
         if data.get("type") != "function" or not isinstance(function, dict):
             continue
-        function_data = cast(JsonData, function)
+        function_data = json_data(function)
         tools.append(
             Tool(
                 name=str(function_data.get("name") or ""),
@@ -328,7 +334,7 @@ def parse_responses_tools(raw: JsonValue | None) -> list[Tool] | None:
     for item in raw:
         if not isinstance(item, dict):
             continue
-        data = cast(JsonData, item)
+        data = json_data(item)
         tools.append(
             Tool(
                 name=str(data.get("name") or ""),
@@ -349,7 +355,7 @@ def parse_anthropic_tools(raw: JsonValue | None) -> list[Tool] | None:
     for item in raw:
         if not isinstance(item, dict):
             continue
-        data = cast(JsonData, item)
+        data = json_data(item)
         tools.append(
             Tool(
                 name=str(data.get("name") or ""),
@@ -369,7 +375,7 @@ def parse_openai_responses_input(raw: JsonValue | None) -> Messages:
     for item in raw:
         if not isinstance(item, dict):
             raise TypeError("Responses input entries must be objects.")
-        data = cast(JsonData, item)
+        data = json_data(item)
         item_type = data.get("type")
         if item_type == "function_call":
             call_id = data.get("call_id") or data.get("id")
@@ -420,7 +426,7 @@ def parse_anthropic_messages(body: JsonData) -> Messages:
     for item in raw_messages:
         if not isinstance(item, dict):
             raise TypeError("Anthropic message entries must be objects.")
-        data = cast(JsonData, item)
+        data = json_data(item)
         role = data.get("role")
         if role == "assistant":
             messages.append(parse_anthropic_assistant_message(data.get("content")))
@@ -441,7 +447,7 @@ def parse_anthropic_assistant_message(content: JsonValue | None) -> AssistantMes
     for block in content:
         if not isinstance(block, dict):
             continue
-        data = cast(JsonData, block)
+        data = json_data(block)
         if data.get("type") == "text":
             text_parts.append(content_text(data.get("text")))
         elif data.get("type") == "tool_use":
@@ -471,7 +477,7 @@ def parse_anthropic_user_messages(content: JsonValue | None) -> Messages:
     for block in content:
         if not isinstance(block, dict):
             continue
-        data = cast(JsonData, block)
+        data = json_data(block)
         if data.get("type") == "text":
             text_parts.append(content_text(data.get("text")))
         elif data.get("type") == "tool_result":
@@ -506,16 +512,23 @@ def anthropic_sampling_args(body: JsonData) -> dict[str, JsonValue]:
     return {key: body[key] for key in keys if key in body}
 
 
-def content_text(content: JsonValue | None) -> str:
+def message_content(content: object) -> JsonValue | None:
     if content is None:
+        return None
+    return json_value(content, context="message content")
+
+
+def content_text(content: object) -> str:
+    value = message_content(content)
+    if value is None:
         return ""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
         text_parts: list[str] = []
-        for item in content:
+        for item in value:
             if isinstance(item, dict):
-                data = cast(JsonData, item)
+                data = json_data(item)
                 text = data.get("text")
                 if isinstance(text, str):
                     text_parts.append(text)

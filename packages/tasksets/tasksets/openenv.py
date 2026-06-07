@@ -13,7 +13,7 @@ from pydantic import TypeAdapter
 import verifiers.v1 as vf
 from verifiers.utils.async_utils import maybe_await, maybe_call_with_named_args
 from verifiers.v1.config import import_config_ref
-from verifiers.v1.utils.json_utils import jsonable
+from verifiers.v1.utils.json_utils import json_data, json_value
 
 from tasksets.utils.openenv_utils import PrimeSandboxOpenEnvProvider
 
@@ -34,17 +34,17 @@ def default_openenv_prompt_renderer(observation: object) -> vf.PromptInput:
     if isinstance(observation, str):
         return [{"role": "user", "content": observation}]
     if isinstance(observation, dict):
-        observation_map = cast(vf.JsonData, observation)
-        messages = observation_map.get("messages")
+        observation_data = json_data(observation)
+        messages = observation_data.get("messages")
         if messages is not None:
             if not isinstance(messages, list):
                 raise TypeError("OpenEnv observation messages must be a list.")
-            return cast(vf.PromptInput, messages)
+            return _MESSAGES_ADAPTER.validate_python(messages)
         for key in ("prompt", "question", "instruction", "content", "text"):
-            value = observation_map.get(key)
+            value = observation_data.get(key)
             if isinstance(value, str) and value.strip():
                 return [{"role": "user", "content": value}]
-        return [{"role": "user", "content": json.dumps(jsonable(observation))}]
+        return [{"role": "user", "content": json.dumps(observation_data)}]
     return [{"role": "user", "content": str(observation)}]
 
 
@@ -127,7 +127,7 @@ class OpenEnvSession:
             raise
         action_schema = schema.get("action", {})
         if isinstance(action_schema, dict):
-            self.action_schema = cast(vf.JsonData, dict(action_schema))
+            self.action_schema = json_data(action_schema)
         return self.client
 
     async def reset(self) -> OpenEnvResult:
@@ -231,7 +231,7 @@ async def render_messages(
     session: OpenEnvSession,
     observation: object,
     context: str,
-) -> list[dict[str, object]]:
+) -> list[vf.JsonData]:
     renderer = import_config_ref(config.prompt_renderer)
     if not callable(renderer):
         raise TypeError("OpenEnv prompt_renderer must be callable.")
@@ -249,17 +249,13 @@ async def render_messages(
         else _MESSAGES_ADAPTER.validate_python(rendered)
     )
     return [
-        cast(dict[str, object], message.model_dump(mode="json", exclude_none=True))
+        json_data(message.model_dump(mode="json", exclude_none=True))
         for message in messages
     ]
 
 
 def latest_assistant_json(raw_completion: list[dict]) -> vf.JsonData:
-    messages = [
-        cast(dict[str, object], message)
-        for message in raw_completion
-        if isinstance(message, dict)
-    ]
+    messages = [message for message in raw_completion if isinstance(message, dict)]
     assistant_messages = [
         message for message in messages if message.get("role") == "assistant"
     ]
@@ -268,33 +264,33 @@ def latest_assistant_json(raw_completion: list[dict]) -> vf.JsonData:
     content = assistant_messages[-1].get("content")
     text = content if isinstance(content, str) else json.dumps(content)
     action = json.loads(text.strip())
-    if not isinstance(action, dict):
-        raise TypeError("OpenEnv assistant action must decode to an object.")
-    return cast(vf.JsonData, action)
+    return json_data(action, context="OpenEnv assistant action")
 
 
 def mcp_tool_content(observation: object) -> vf.JsonValue:
-    if hasattr(observation, "model_dump"):
-        observation = observation.model_dump()
+    model_dump = getattr(observation, "model_dump", None)
+    if callable(model_dump):
+        observation = model_dump()
     if not isinstance(observation, dict):
-        return cast(vf.JsonValue, jsonable(observation))
-    if observation.get("error") is not None:
-        return cast(vf.JsonValue, {"error": jsonable(observation.get("error"))})
-    value = observation.get("result")
+        return json_value(observation)
+    observation_data = json_data(observation)
+    if observation_data.get("error") is not None:
+        return {"error": json_value(observation_data.get("error"))}
+    value = observation_data.get("result")
     data = getattr(value, "data", None)
     if data is not None:
-        return cast(vf.JsonValue, jsonable(data))
+        return json_value(data)
     if isinstance(value, dict) and "data" in value:
-        return cast(vf.JsonValue, jsonable(value["data"]))
-    return cast(vf.JsonValue, jsonable(value))
+        return json_value(value["data"])
+    return json_value(value)
 
 
 def result_payload(
     *,
-    messages: list[dict[str, object]],
+    messages: list[vf.JsonData],
     result: OpenEnvResult,
     include_reward: bool,
-) -> dict[str, object]:
+) -> vf.JsonData:
     payload: dict[str, object] = {
         "messages": messages,
         "openenv_done": bool(result.done),
@@ -303,7 +299,7 @@ def result_payload(
         payload["reward"] = float(result.reward or 0.0)
     if result.done:
         payload["stop_condition"] = "openenv_done"
-    return payload
+    return json_data(payload)
 
 
 class OpenEnvUser(vf.User[OpenEnvUserConfig]):
@@ -323,7 +319,9 @@ class OpenEnvUser(vf.User[OpenEnvUserConfig]):
             "stop_condition": "state.stop_condition",
         },
     )
-    async def respond(self, openenv: dict, completion: list[dict]) -> dict:
+    async def respond(
+        self, openenv: vf.JsonData, completion: list[vf.JsonData]
+    ) -> vf.JsonData:
         config = OpenEnvRuntimeConfig.model_validate(openenv)
         if self.session is None:
             self.session = OpenEnvSession(config)
@@ -355,7 +353,7 @@ class OpenEnvUser(vf.User[OpenEnvUserConfig]):
             "stop_condition": "state.stop_condition",
         }
     )
-    async def call_tool(self, name: str, input: vf.JsonData) -> dict[str, object]:
+    async def call_tool(self, name: str, input: vf.JsonData) -> vf.JsonData:
         """Call an OpenEnv MCP tool by name with JSON input."""
         if self.session is None:
             raise RuntimeError("OpenEnv session has not started.")
@@ -364,7 +362,7 @@ class OpenEnvUser(vf.User[OpenEnvUserConfig]):
         payload: dict[str, object] = {
             "content": content
             if isinstance(content, str)
-            else json.dumps(jsonable(content)),
+            else json.dumps(json_value(content)),
             "openenv_done": bool(result.done),
         }
         if result.reward is not None:
@@ -372,7 +370,7 @@ class OpenEnvUser(vf.User[OpenEnvUserConfig]):
         if result.done:
             payload["finished"] = True
             payload["stop_condition"] = "openenv_done"
-        return payload
+        return json_data(payload)
 
 
 def load_taskset(config: OpenEnvTasksetConfig) -> OpenEnvTaskset:

@@ -30,6 +30,7 @@ from .env import Env
 from .state import State
 from .task import Task
 from .types import ModelConfig
+from .utils.json_utils import json_data
 
 
 def eval_inputs(
@@ -37,7 +38,10 @@ def eval_inputs(
     num_examples: int,
     rollouts_per_example: int,
 ) -> list[RolloutInput]:
-    rows = cast(list[RolloutInput], env.get_eval_dataset(n=num_examples).to_list())
+    rows = [
+        cast(RolloutInput, json_data(row))
+        for row in env.get_eval_dataset(n=num_examples)
+    ]
     if rollouts_per_example <= 1:
         return rows
     return [
@@ -76,8 +80,8 @@ async def run_rollouts(
         else:
             async with semaphore:
                 state = await env.run_rollout(row, model=model, max_retries=max_retries)
-        task = env.taskset.to_task(cast(dict[str, object], row))
-        return cast(RolloutOutput, state.to_output(task, state_columns))
+        task = env.taskset.to_task(json_data(row))
+        return RolloutOutput(state.to_output(task, state_columns))
 
     return list(await asyncio.gather(*(run_one(row) for row in inputs)))
 
@@ -96,7 +100,7 @@ async def run_rollout_groups(
         groups[row["example_id"]].append(row)
 
     async def run_rows(rows: list[RolloutInput]) -> list[RolloutOutput]:
-        base_task = env.taskset.to_task(cast(dict[str, object], rows[0]))
+        base_task = env.taskset.to_task(json_data(rows[0]))
         tasks, states = await env.taskset.init_group(base_task, len(rows))
         group_id = rows[0]["example_id"]
         for state in states:
@@ -131,7 +135,7 @@ async def run_rollout_groups(
                 )
         states = await env.score_group(tasks, states)
         return [
-            cast(RolloutOutput, state.to_output(task, state_columns))
+            RolloutOutput(state.to_output(task, state_columns))
             for task, state in zip(tasks, states, strict=True)
         ]
 
@@ -216,22 +220,24 @@ async def run_evaluation(
             on_log(f"Saving results to {builder.results_path}")
 
         if config.independent_scoring or not env.requires_group_rollouts:
+            state_columns = config.state_columns or []
             new_outputs = await run_rollouts(
                 env,
                 filtered_inputs,
                 model_config,
                 config.max_concurrent,
                 config.max_retries,
-                config.state_columns,
+                state_columns,
             )
         else:
+            state_columns = config.state_columns or []
             new_outputs = await run_rollout_groups(
                 env,
                 filtered_inputs,
                 model_config,
                 effective_max_concurrent(config),
                 config.max_retries,
-                config.state_columns,
+                state_columns,
             )
         builder.add_outputs(new_outputs)
         metadata = builder.build_metadata()

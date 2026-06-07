@@ -1,8 +1,8 @@
 import json
-from typing import cast
 
 
 from ..types import JsonData
+from .json_utils import json_data
 
 
 def parse_judge_json(text: str) -> JsonData:
@@ -24,7 +24,7 @@ def parsed_json_object(text: str) -> JsonData | None:
     except json.JSONDecodeError:
         return None
     if isinstance(value, dict):
-        return cast(JsonData, value)
+        return json_data(value, context="Judge response")
     return None
 
 
@@ -41,12 +41,12 @@ def clamp_float(value: object) -> float:
 def truncate_command_record(record: object) -> object:
     if not isinstance(record, dict):
         return record
-    record = cast(JsonData, record)
+    record_data = json_data(record)
     return {
-        **dict(record),
-        "command": truncate_text(str(record.get("command") or ""), limit=2_000),
-        "stdout": truncate_text(str(record.get("stdout") or "")),
-        "stderr": truncate_text(str(record.get("stderr") or "")),
+        **record_data,
+        "command": truncate_text(str(record_data.get("command") or ""), limit=2_000),
+        "stdout": truncate_text(str(record_data.get("stdout") or "")),
+        "stderr": truncate_text(str(record_data.get("stderr") or "")),
     }
 
 

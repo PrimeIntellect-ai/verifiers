@@ -78,7 +78,7 @@ def collect_signals(*signal_lists: Iterable[SignalRecord]) -> list[SignalRecord]
     seen: set[str] = set()
     for signal_list in signal_lists:
         for signal in signal_list:
-            name = cast(str, signal["name"])
+            name = signal["name"]
             if name in seen:
                 raise ValueError(f"Signal {name!r} is defined twice.")
             seen.add(name)
@@ -135,15 +135,15 @@ async def score_rollout(
         extra_kwargs: SignalKwargs = {}
         if resolve_kwargs is not None:
             extra_kwargs = await resolve_kwargs(
-                cast(Handler, signal["fn"]),
+                signal["fn"],
                 task,
                 state,
                 protected_args,
             )
         value = await call_rollout_signal(signal, framework_kwargs, extra_kwargs)
-        metrics[cast(str, signal["name"])] = value
+        metrics[signal["name"]] = value
         if signal["kind"] == "reward":
-            reward += value * cast(float, signal["weight"])
+            reward += value * signal["weight"]
     state.metrics = metrics
     state.reward = reward
     state.timing.scoring.start = start_time
@@ -184,7 +184,7 @@ async def score_group(
         extra_kwargs: SignalKwargs = {}
         if resolve_kwargs is not None:
             extra_kwargs = await resolve_kwargs(
-                cast(Handler, signal["fn"]),
+                signal["fn"],
                 tasks,
                 states,
                 protected_args,
@@ -192,17 +192,17 @@ async def score_group(
         values = await call_group_signal(signal, framework_kwargs, extra_kwargs)
         for index, value in enumerate(values):
             metrics = dict(states[index].metrics)
-            metrics[cast(str, signal["name"])] = value
+            metrics[signal["name"]] = value
             states[index].metrics = metrics
             if signal["kind"] == "reward":
-                rewards[index] += value * cast(float, signal["weight"])
+                rewards[index] += value * signal["weight"]
         for index, state in enumerate(states):
             state.reward = rewards[index]
     for signal in advantage_signals:
         extra_kwargs: SignalKwargs = {}
         if resolve_kwargs is not None:
             extra_kwargs = await resolve_kwargs(
-                cast(Handler, signal["fn"]),
+                signal["fn"],
                 tasks,
                 states,
                 protected_args,
@@ -216,7 +216,7 @@ async def score_group(
 
 
 def add_signal(signals: MutableSequence[SignalRecord], signal: SignalRecord) -> None:
-    name = cast(str, signal["name"])
+    name = signal["name"]
     if any(existing["name"] == name for existing in signals):
         raise ValueError(f"Signal {name!r} is defined twice.")
     validate_signal(signal)
@@ -248,7 +248,12 @@ def signal_from_function(fn: Handler, kind: SignalKind | None = None) -> SignalR
             f"Signal function {function_name(fn)!r} must be decorated or given a kind."
         )
     priority = int(getattr(fn, f"{resolved_kind}_priority", 0))
-    stage = cast(SignalStage, getattr(fn, f"{resolved_kind}_stage", "rollout"))
+    raw_stage = getattr(fn, f"{resolved_kind}_stage", "rollout")
+    if raw_stage not in ("rollout", "group"):
+        raise ValueError(
+            f"Signal function {function_name(fn)!r} has invalid stage {raw_stage!r}."
+        )
+    stage: SignalStage = raw_stage
     weight = 0.0
     if resolved_kind == "reward":
         weight = float(getattr(fn, "reward_weight", 1.0))
@@ -278,8 +283,7 @@ def decorated_kind(fn: Handler) -> SignalKind | None:
 
 
 def validate_signal(signal: SignalRecord) -> None:
-    fn = cast(Handler, signal["fn"])
-    inspect.signature(fn)
+    inspect.signature(signal["fn"])
     if signal["stage"] == "rollout":
         if signal["kind"] == "advantage":
             raise ValueError(
@@ -292,7 +296,7 @@ async def call_rollout_signal(
     framework_kwargs: SignalKwargs,
     extra_kwargs: SignalKwargs | None = None,
 ) -> float:
-    fn = cast(Handler, signal["fn"])
+    fn = signal["fn"]
     kwargs = {**dict(extra_kwargs or {}), **dict(framework_kwargs)}
     validate_required_kwargs(fn, kwargs, signal_context(signal))
     value = await maybe_call_with_named_args(fn, **kwargs)
@@ -304,15 +308,20 @@ async def call_group_signal(
     framework_kwargs: SignalKwargs,
     extra_kwargs: SignalKwargs | None = None,
 ) -> list[float]:
-    fn = cast(Handler, signal["fn"])
+    fn = signal["fn"]
     kwargs = {**dict(extra_kwargs or {}), **dict(framework_kwargs)}
     validate_required_kwargs(fn, kwargs, signal_context(signal))
     value = await maybe_call_with_named_args(fn, **kwargs)
-    name = cast(str, signal["name"])
+    name = signal["name"]
     if not isinstance(value, Sequence) or isinstance(value, str | bytes):
         raise TypeError(f"Group signal {name!r} must return a list of floats.")
     values = [float(item) for item in value]
-    states = cast(list[State], framework_kwargs["states"])
+    states_value = framework_kwargs["states"]
+    if not isinstance(states_value, list) or not all(
+        isinstance(state, State) for state in states_value
+    ):
+        raise TypeError("Group signal framework kwargs must include states.")
+    states = states_value
     if len(values) != len(states):
         raise ValueError(
             f"Group signal {name!r} returned {len(values)} values for "
@@ -326,7 +335,7 @@ async def call_group_advantage_signal(
     framework_kwargs: SignalKwargs,
     extra_kwargs: SignalKwargs | None = None,
 ) -> None:
-    fn = cast(Handler, signal["fn"])
+    fn = signal["fn"]
     kwargs = {**dict(extra_kwargs or {}), **dict(framework_kwargs)}
     validate_required_kwargs(fn, kwargs, signal_context(signal))
     value = await maybe_call_with_named_args(fn, **kwargs)
@@ -413,10 +422,10 @@ def signal_context(signal: SignalRecord) -> str:
 
 def signal_sort_key(signal: SignalRecord) -> tuple[int, str, str, str]:
     return (
-        -cast(int, signal["priority"]),
-        cast(str, signal["name"]),
-        cast(str, signal["kind"]),
-        cast(str, signal["stage"]),
+        -signal["priority"],
+        signal["name"],
+        signal["kind"],
+        signal["stage"],
     )
 
 

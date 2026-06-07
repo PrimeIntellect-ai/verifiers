@@ -4,20 +4,16 @@ from collections.abc import Iterable
 from contextlib import suppress
 from importlib.abc import Traversable
 from pathlib import Path
-from typing import cast
 
 from datasets import Dataset
 
 from ..task import Task
 from ..types import JsonData, Tasks
-from .json_utils import jsonable
+from .json_utils import json_data
 
 
 def task_from_dataset_record(record: JsonData, task_type: type[Task] = Task) -> Task:
-    record_data = jsonable(record)
-    assert isinstance(record_data, dict)
-    record_json = cast(JsonData, record_data)
-    return prepare_task(task_type.model_validate(record_json))
+    return prepare_task(task_type.model_validate(json_data(record)))
 
 
 def prepare_task(task: Task) -> Task:
@@ -29,20 +25,13 @@ def prepare_task(task: Task) -> Task:
 def dataset_record_from_task(
     task: Task,
     index: int,
-    record: JsonData | None = None,
 ) -> JsonData:
-    data = cast(
-        JsonData,
-        task.model_dump(mode="json", exclude_none=True),
-    )
+    data = json_data(task.model_dump(mode="json", exclude_none=True))
     data["row_id"] = index
     normalized = prepare_task(type(task).model_validate(data))
-    task_payload = cast(
-        JsonData,
-        normalized.model_dump(mode="json", exclude_none=True),
-    )
+    task_payload = json_data(normalized.model_dump(mode="json", exclude_none=True))
     task_payload["example_id"] = index
-    return cast(JsonData, task_payload)
+    return task_payload
 
 
 def dataset_records_from_tasks(tasks: Iterable[Task]) -> list[JsonData]:
@@ -60,10 +49,10 @@ def dataset_from_result_typed(result: Tasks, task_type: type[Task]) -> Dataset:
     if isinstance(result, Dataset):
         records: list[JsonData] = []
         for index, record in enumerate(result):
-            row = cast(JsonData, dict(record))
+            row = json_data(dict(record))
             row["example_id"] = index
             task = task_from_dataset_record(row, task_type)
-            records.append(dataset_record_from_task(task, index, row))
+            records.append(dataset_record_from_task(task, index))
         return Dataset.from_list(records)
     tasks = tasks_from_result_typed(result, task_type)
     return Dataset.from_list(dataset_records_from_tasks(tasks))
@@ -76,7 +65,7 @@ def tasks_from_result(result: Tasks) -> list[Task]:
 def tasks_from_result_typed(result: Tasks, task_type: type[Task]) -> list[Task]:
     if isinstance(result, Dataset):
         return [
-            task_from_dataset_record(cast(JsonData, dict(record)), task_type)
+            task_from_dataset_record(json_data(dict(record)), task_type)
             for record in result
         ]
     if isinstance(result, Iterable):
@@ -85,7 +74,7 @@ def tasks_from_result_typed(result: Tasks, task_type: type[Task]) -> list[Task]:
             if isinstance(item, Task):
                 tasks.append(prepare_task(item))
             elif isinstance(item, dict):
-                tasks.append(task_from_dataset_record(cast(JsonData, item), task_type))
+                tasks.append(task_from_dataset_record(json_data(item), task_type))
             else:
                 raise TypeError(
                     "Task loader iterables must contain Task objects or JSON task "

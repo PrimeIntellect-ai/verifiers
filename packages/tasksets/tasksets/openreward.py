@@ -14,7 +14,7 @@ from openreward.api.environments.types import (
 )
 
 import verifiers.v1 as vf
-from verifiers.v1.utils.json_utils import jsonable
+from verifiers.v1.utils.json_utils import json_data, json_value
 
 
 class OpenRewardSplit(Protocol):
@@ -51,7 +51,7 @@ class OpenRewardTasksetConfig(vf.TasksetConfig):
 
 
 class OpenRewardSession:
-    def __init__(self, task: dict[str, object]):
+    def __init__(self, task: vf.JsonData):
         self.task = task
         self.client: OpenReward | None = None
         self.session_context: OpenRewardAPISession | None = None
@@ -63,25 +63,35 @@ class OpenRewardSession:
         spec = self.task["openreward"]
         if not isinstance(spec, dict):
             raise TypeError("OpenReward task requires openreward config.")
-        task_data = spec["task"]
+        spec_data = spec
+        task_data = spec_data.get("task")
         if not isinstance(task_data, dict):
             raise TypeError("OpenReward task requires task data.")
-        task_spec = task_data["task_spec"]
+        task_spec = task_data.get("task_spec")
         if not isinstance(task_spec, dict):
             raise TypeError("OpenReward task_spec must be a mapping.")
+        variant = spec_data.get("variant")
+        if variant is not None and not isinstance(variant, str):
+            raise TypeError("OpenReward variant must be a string or null.")
+        base_url = spec_data.get("base_url")
+        if base_url is not None and not isinstance(base_url, str):
+            raise TypeError("OpenReward base_url must be a string or null.")
+        namespace = task_data.get("namespace")
+        if namespace is not None and not isinstance(namespace, str):
+            raise TypeError("OpenReward namespace must be a string or null.")
         client = OpenReward()
         self.client = client
         environment = await asyncio.to_thread(
             client.environments.get,
-            name=str(spec["environment"]),
-            variant=cast(str | None, spec["variant"]),
-            base_url=cast(str | None, spec["base_url"]),
+            name=str(spec_data["environment"]),
+            variant=variant,
+            base_url=base_url,
         )
         self.session_context = environment.session(
             task=OpenRewardTask(
                 server_name=str(task_data["server_name"]),
                 environment_name=str(task_data["environment_name"]),
-                namespace=cast(str | None, task_data["namespace"]),
+                namespace=namespace,
                 task_spec=cast(
                     OpenRewardJSONObject,
                     {str(key): value for key, value in task_spec.items()},
@@ -212,27 +222,30 @@ class OpenRewardTaskset(vf.Taskset[OpenRewardTasksetConfig]):
         config = self.config
         data: list[vf.JsonData] = []
         for task in tasks:
-            task_spec = jsonable(task.task_spec)
+            task_spec = json_value(task.task_spec)
             if not isinstance(task_spec, dict):
                 raise TypeError("OpenReward task_spec must serialize to a mapping.")
             data.append(
-                {
-                    "prompt": [],
-                    "openreward": {
-                        "environment": config.environment,
-                        "variant": config.variant,
-                        "base_url": config.base_url,
-                        "split": task_split,
-                        "task": {
-                            "server_name": task.server_name,
-                            "environment_name": task.environment_name,
-                            "namespace": task.namespace,
-                            "task_spec": {
-                                str(key): value for key, value in task_spec.items()
+                json_data(
+                    {
+                        "prompt": [],
+                        "openreward": {
+                            "environment": config.environment,
+                            "variant": config.variant,
+                            "base_url": config.base_url,
+                            "split": task_split,
+                            "task": {
+                                "server_name": task.server_name,
+                                "environment_name": task.environment_name,
+                                "namespace": task.namespace,
+                                "task_spec": {
+                                    str(key): value for key, value in task_spec.items()
+                                },
                             },
                         },
                     },
-                }
+                    context="OpenReward task record",
+                )
             )
         return data
 
@@ -257,15 +270,22 @@ class OpenRewardUser(vf.User[OpenRewardUserConfig]):
             "stop_condition": "state.stop_condition",
         },
     )
-    async def respond(self, task: dict, state: dict, transcript: list[dict]) -> dict:
+    async def respond(
+        self,
+        task: vf.JsonData,
+        state: vf.JsonData,
+        transcript: list[vf.JsonData],
+    ) -> vf.JsonData:
         _ = state, transcript
         if self.session is None:
             self.session = OpenRewardSession(task)
             prompt = await self.session.prompt()
             return {
                 "messages": [
-                    vf.UserMessage(content=self.session.content(prompt)).model_dump(
-                        mode="json"
+                    json_data(
+                        vf.UserMessage(content=self.session.content(prompt)).model_dump(
+                            mode="json"
+                        )
                     )
                 ],
             }
@@ -278,7 +298,7 @@ class OpenRewardUser(vf.User[OpenRewardUserConfig]):
             "stop_condition": "state.stop_condition",
         }
     )
-    async def call_tool(self, name: str, input: vf.JsonData) -> dict[str, object]:
+    async def call_tool(self, name: str, input: vf.JsonData) -> vf.JsonData:
         """Call an OpenReward task tool by name with JSON input."""
         if self.session is None:
             raise RuntimeError("OpenReward session has not started.")
@@ -287,14 +307,14 @@ class OpenRewardUser(vf.User[OpenRewardUserConfig]):
         payload: dict[str, object] = {
             "content": content
             if isinstance(content, str)
-            else json.dumps(jsonable(content)),
+            else json.dumps(json_value(content)),
         }
         if output.reward is not None:
             payload["reward"] = float(output.reward)
         if output.finished:
             payload["finished"] = True
             payload["stop_condition"] = "openreward_finished"
-        return payload
+        return json_data(payload)
 
 
 def load_taskset(config: OpenRewardTasksetConfig) -> OpenRewardTaskset:

@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Literal, TypeAlias
 
 from pydantic import TypeAdapter, model_validator
 from typing_extensions import Self
-from verifiers.types import Messages, SystemMessage, UserMessage
+from verifiers.types import Messages, SystemMessage
 
 from ..config import Config
 from ..types import JsonData, PromptInput
@@ -28,10 +28,12 @@ class SystemPromptResolution:
     taskset_source: SystemPromptTasksetSource | None
 
     def apply_strategy(self, strategy: SystemPromptStrategy) -> list[JsonData]:
+        harness = [dict(message) for message in self.harness]
+        taskset = [dict(message) for message in self.taskset]
         if strategy == "HT":
-            return [*self._copy(self.harness), *self._copy(self.taskset)]
+            return [*harness, *taskset]
         if strategy == "TH":
-            return [*self._copy(self.taskset), *self._copy(self.harness)]
+            return [*taskset, *harness]
         if strategy == "REJECT":
             if self.harness and self.taskset:
                 raise ValueError(
@@ -40,23 +42,19 @@ class SystemPromptResolution:
                     "Set system_prompt_strategy='HT', 'TH', 'H', 'T', "
                     "'H_OR_T', or 'T_OR_H'."
                 )
-            return [*self._copy(self.harness), *self._copy(self.taskset)]
+            return [*harness, *taskset]
         if strategy == "H_OR_T":
-            return self._copy(self.harness or self.taskset)
+            return harness or taskset
         if strategy == "T_OR_H":
-            return self._copy(self.taskset or self.harness)
+            return taskset or harness
         if strategy == "H":
-            return self._copy(self.harness)
+            return harness
         if strategy == "T":
-            return self._copy(self.taskset)
+            return taskset
         raise ValueError(
             "system_prompt_strategy must be one of REJECT, TH, HT, T, H, "
             "T_OR_H, H_OR_T."
         )
-
-    @staticmethod
-    def _copy(messages: list[JsonData]) -> list[JsonData]:
-        return [dict(message) for message in messages]
 
 
 class SystemPromptConfig(Config):
@@ -84,24 +82,6 @@ class SystemPromptConfig(Config):
 
 
 SystemPrompt: TypeAlias = PromptInput | SystemPromptConfig | None
-
-
-def normalize_prompt(
-    value: PromptInput | None, field_name: str = "prompt"
-) -> list[JsonData]:
-    _ = field_name
-    messages = (
-        [UserMessage(content=value)]
-        if isinstance(value, str)
-        else _MESSAGES_ADAPTER.validate_python(value or [])
-    )
-    for message in messages:
-        if getattr(message, "role", None) == "system":
-            raise ValueError(
-                f"{field_name} must not contain system messages. "
-                "Use system_prompt instead."
-            )
-    return dump_messages(messages)
 
 
 def normalize_system_prompt(

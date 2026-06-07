@@ -28,15 +28,13 @@ from .toolset import (
     ToolBinding,
     ToolSpec,
     Toolset,
-    iter_tool_specs,
-    load_toolset,
 )
 from .types import JsonData, JsonValue
 from .utils.config_utils import import_config_ref, registered_config_type
-from .utils.json_utils import jsonable
+from .utils.json_utils import json_data, json_value
 
 if TYPE_CHECKING:
-    from mcp import ClientSession
+    from mcp.client.session import ClientSession
     from .task import TaskVisibility
 
 _BINDINGS_TOOL = "__vf_bindings"
@@ -114,7 +112,7 @@ class MCPToolRegistry:
     async def __aenter__(self) -> "MCPToolRegistry":
         if not self.servers:
             return self
-        from mcp import ClientSession
+        from mcp.client.session import ClientSession
 
         for toolset_name, server in self.servers.items():
             if not isinstance(toolset_name, str) or not toolset_name:
@@ -136,9 +134,12 @@ class MCPToolRegistry:
                 exposed_name = f"{toolset_name}_{tool_name}"
                 if exposed_name in self._dispatch:
                     raise ValueError(f"MCP tool {exposed_name!r} is defined twice.")
-                schema = getattr(raw_tool, "inputSchema", None)
-                if not isinstance(schema, dict):
-                    schema = {"type": "object", "properties": {}}
+                raw_schema = getattr(raw_tool, "inputSchema", None)
+                schema: dict[str, object] = (
+                    dict(raw_schema)
+                    if isinstance(raw_schema, dict)
+                    else {"type": "object", "properties": {}}
+                )
                 binding = bindings.get(
                     tool_name, ToolBinding(args={}, sets={}, extends={}, hidden=False)
                 )
@@ -381,7 +382,7 @@ class MCPToolRegistry:
         return split_result(content, dispatch.binding)
 
     def register_setup_tools(self, setup: ToolDispatch, value: JsonValue) -> None:
-        if not isinstance(value, Mapping):
+        if not isinstance(value, dict):
             return
         if "messages" in value:
             raise ValueError("Toolset setup cannot return messages.")
@@ -432,13 +433,13 @@ async def server_bindings(session: "ClientSession") -> dict[str, ToolBinding]:
     content = mcp_content_value(getattr(result, "content", []))
     data = mapping_result(content)
     tools = data.get("tools", {})
-    if not isinstance(tools, Mapping):
+    if not isinstance(tools, dict):
         raise TypeError("Server bindings metadata must contain a tools object.")
     bindings: dict[str, ToolBinding] = {}
     for tool_name, value in tools.items():
         if not isinstance(tool_name, str):
             raise TypeError("Server binding tool names must be strings.")
-        if not isinstance(value, Mapping):
+        if not isinstance(value, dict):
             raise TypeError(f"Server binding {tool_name!r} must be an object.")
         bindings[tool_name] = ToolBinding(
             args=dict_mapping(value.get("args", {}), field=f"{tool_name}.args"),
@@ -536,8 +537,8 @@ def serializable_content(item: object) -> JsonValue:
         return text
     model_dump = getattr(item, "model_dump", None)
     if callable(model_dump):
-        return cast(JsonValue, jsonable(model_dump(mode="json", exclude_none=True)))
-    return cast(JsonValue, jsonable(item))
+        return json_value(model_dump(mode="json", exclude_none=True))
+    return json_value(item)
 
 
 def tool_visible(server: ServerConfig, tool_name: str) -> bool:
@@ -595,7 +596,7 @@ def build_fastmcp(toolset: Toolset):
             "extends": dict(spec.extends),
             "hidden": spec.hidden,
         }
-        for name, spec in iter_tool_specs(type(toolset)).items()
+        for name, spec in type(toolset).tool_specs().items()
     }
 
     @mcp.tool(name=_BINDINGS_TOOL)
@@ -638,7 +639,7 @@ def server_tool_wrapper(
 
     invoke.__name__ = getattr(method, "__name__", "tool")
     invoke.__doc__ = getattr(method, "__doc__", None)
-    invoke.__signature__ = signature.replace(parameters=parameters)  # type: ignore[attr-defined]
+    setattr(invoke, "__signature__", signature.replace(parameters=parameters))
     annotations = dict(getattr(method, "__annotations__", {}))
     for arg_name in resource_args:
         annotations.pop(arg_name, None)
@@ -652,8 +653,8 @@ def resolve_resource(toolset: Toolset, source: str) -> object:
         raise ValueError(f"Resource binding {source!r} must start with resources.")
     value: object = toolset.resources
     for part in parts[1:]:
-        if isinstance(value, Mapping):
-            value = value[part]
+        if isinstance(value, dict):
+            value = cast(dict[str, object], value)[part]
         else:
             value = getattr(value, part)
     return value
@@ -672,9 +673,10 @@ def _run_toolset_server(config_json: str, transport: str = "stdio") -> None:
     data = payload.get("config")
     if not isinstance(data, dict):
         raise TypeError("Toolset runner payload requires a config object.")
+    config_data = json_data(data, context="Toolset runner config")
     config_cls = config_type_for_server(server)
-    config = config_cls.model_validate(data)
-    toolset = load_toolset(server, config)
+    config = config_cls.model_validate(config_data)
+    toolset = Toolset.load_ref(server, config)
     toolset.name = name
     toolset.start()
     toolset.load_resources()
@@ -741,7 +743,7 @@ def resolve_binding(context: JsonData, source: str) -> JsonValue:
     for part in source.split("."):
         if not part:
             raise ValueError(f"Binding source {source!r} has an empty path segment.")
-        if isinstance(value, Mapping):
+        if isinstance(value, dict):
             if part not in value:
                 raise KeyError(f"Binding source {source!r} is missing {part!r}.")
             value = value[part]
@@ -761,7 +763,7 @@ def resolve_binding(context: JsonData, source: str) -> JsonValue:
             raise TypeError(
                 f"Binding source {source!r} cannot traverse {type(value).__name__}."
             )
-    return cast(JsonValue, deepcopy(jsonable(value)))
+    return deepcopy(value)
 
 
 def split_result(content: JsonValue, binding: ToolBinding) -> ServerResult:
@@ -776,7 +778,7 @@ def split_result(content: JsonValue, binding: ToolBinding) -> ServerResult:
         updates.append(
             BoundUpdate(
                 target=target,
-                value=cast(JsonValue, deepcopy(result[result_key])),
+                value=deepcopy(result[result_key]),
                 mode="set",
             )
         )
@@ -787,7 +789,7 @@ def split_result(content: JsonValue, binding: ToolBinding) -> ServerResult:
         updates.append(
             BoundUpdate(
                 target=target,
-                value=cast(JsonValue, deepcopy(result[result_key])),
+                value=deepcopy(result[result_key]),
                 mode="extend",
             )
         )
@@ -801,17 +803,17 @@ def split_result(content: JsonValue, binding: ToolBinding) -> ServerResult:
     return ServerResult(
         response=server_response(model_content),
         updates=tuple(updates),
-        value=cast(JsonValue, deepcopy(dict(result))),
+        value=deepcopy(dict(result)),
     )
 
 
-def mapping_result(content: JsonValue) -> Mapping[str, JsonValue]:
-    if isinstance(content, Mapping):
-        return cast(Mapping[str, JsonValue], content)
+def mapping_result(content: JsonValue) -> JsonData:
+    if isinstance(content, dict):
+        return content
     if isinstance(content, str):
         parsed = json.loads(content)
-        if isinstance(parsed, Mapping):
-            return cast(Mapping[str, JsonValue], parsed)
+        if isinstance(parsed, dict):
+            return json_data(parsed, context="Bound MCP tool return")
     raise TypeError("Bound MCP tool returns must be JSON objects.")
 
 

@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 import inspect
-import json
 import time
 from contextlib import AsyncExitStack, asynccontextmanager
 from copy import deepcopy
-from pydantic import BaseModel
 from pydantic import TypeAdapter
 from typing import TYPE_CHECKING, AsyncIterator, Generic, TypeVar, cast, final
 
@@ -40,13 +38,14 @@ from .utils.config_utils import (
     registered_config_type,
     register_config_type,
 )
+from .utils.json_utils import json_args, json_data
 from .utils.prompt_utils import (
     SystemPrompt,
     SystemPromptStrategy,
     normalize_system_prompt,
     resolve_system_prompt,
 )
-from .utils.scoring_utils import build_signals
+from .utils.scoring_utils import SignalRecord, build_signals
 from .utils.scoring_utils import score_rollout
 
 if TYPE_CHECKING:
@@ -105,8 +104,8 @@ class Harness(Generic[ConfigT]):
         self.runtime_provider: RuntimeProvider | None = None
         self._env_toolsets: MCPToolRegistry | None = None
         self._env_user: MCPToolRegistry | None = None
-        self.extras_schema: type[Extras] | None = extras_schema(self.config.extras)
-        self.extras_defaults: JsonData = extras_defaults(self.config.extras)
+        self.extras_schema: type[Extras] | None = Extras.schema_for(self.config.extras)
+        self.extras_defaults: JsonData = Extras.defaults_for(self.config.extras)
 
     def load_system_prompt(self, config: ConfigT) -> SystemPrompt:
         return config.system_prompt
@@ -120,7 +119,7 @@ class Harness(Generic[ConfigT]):
             "teardown": [],
         }
         for kind in handlers:
-            handlers[kind].extend(cast(list[Handler], discover_decorated(self, kind)))
+            handlers[kind].extend(discover_decorated(self, kind))
         return handlers
 
     def load_protocols(self) -> list[EndpointProtocol]:
@@ -141,11 +140,11 @@ class Harness(Generic[ConfigT]):
         self.taskset = taskset
         taskset_runtime = taskset.config.runtime if taskset is not None else None
         taskset_extras = None if taskset is None else taskset.config.extras
-        self.extras_schema = realize_extras_schema(
-            extras_schema(taskset_extras), extras_schema(self.config.extras)
+        self.extras_schema = Extras.realize_schema(
+            Extras.schema_for(taskset_extras), Extras.schema_for(self.config.extras)
         )
-        self.extras_defaults = merge_extras_defaults(
-            extras_defaults(taskset_extras), extras_defaults(self.config.extras)
+        self.extras_defaults = Extras.merge_defaults(
+            Extras.defaults_for(taskset_extras), Extras.defaults_for(self.config.extras)
         )
         if isinstance(runtime, RuntimeProvider):
             self.runtime_provider = runtime
@@ -507,10 +506,10 @@ class Harness(Generic[ConfigT]):
     def owner_handlers(self, kind: str) -> list[Handler]:
         taskset_handlers: list[Handler] = []
         if self.taskset is not None:
-            taskset_handlers = cast(list[Handler], self.taskset.handlers[kind])
-        return [*taskset_handlers, *cast(list[Handler], self.handlers[kind])]
+            taskset_handlers = self.taskset.handlers[kind]
+        return [*taskset_handlers, *self.handlers[kind]]
 
-    def owner_signals(self) -> list[dict[str, object]]:
+    def owner_signals(self) -> list[SignalRecord]:
         signals = list(getattr(self.taskset, "signals", [])) if self.taskset else []
         seen = {str(signal["name"]) for signal in signals}
         for signal in self.signals:
@@ -531,7 +530,8 @@ class Harness(Generic[ConfigT]):
         )
         return [*_MESSAGES_ADAPTER.validate_python(system_prompt), *task.prompt]
 
-    def has_model_prompt(self, messages: Messages) -> bool:
+    @staticmethod
+    def has_model_prompt(messages: Messages) -> bool:
         return any(getattr(message, "role", None) != "system" for message in messages)
 
     def max_turns(self, task: Task) -> int:
@@ -553,10 +553,8 @@ class Harness(Generic[ConfigT]):
         updates: list[BoundUpdate] = []
         for tool_call in tool_calls:
             try:
-                arguments = json.loads(tool_call.arguments or "{}")
-                if not isinstance(arguments, dict):
-                    raise TypeError("Tool arguments must decode to an object.")
-                result = await toolsets.call(tool_call.name, cast(JsonData, arguments))
+                arguments = json_args(tool_call.arguments or "{}")
+                result = await toolsets.call(tool_call.name, arguments)
                 updates.extend(result.updates)
                 call_tool_results, call_messages = self.tool_response_messages(
                     tool_call.id, result.response
@@ -585,8 +583,9 @@ class Harness(Generic[ConfigT]):
             )
         return tool_results, server_messages
 
+    @staticmethod
     def tool_response_messages(
-        self, tool_call_id: str, response: ServerResponse
+        tool_call_id: str, response: ServerResponse
     ) -> tuple[list[ToolMessage], Messages]:
         if response.content is not None:
             return [
@@ -597,18 +596,17 @@ class Harness(Generic[ConfigT]):
         tool_results = [
             message for message in response.messages if isinstance(message, ToolMessage)
         ]
-        extra_messages = [
-            message
-            for message in response.messages
-            if not isinstance(message, ToolMessage)
-        ]
+        extra_messages: Messages = []
+        for message in response.messages:
+            if not isinstance(message, ToolMessage):
+                extra_messages.append(message)
         if not tool_results:
             tool_results = [ToolMessage(tool_call_id=tool_call_id, content="")]
         return tool_results, extra_messages
 
-    def binding_context(self, task: Task, state: State) -> JsonData:
-        return cast(
-            JsonData,
+    @staticmethod
+    def binding_context(task: Task, state: State) -> JsonData:
+        return json_data(
             {
                 "task": task.model_dump(
                     mode="json", exclude_none=True, exclude_defaults=True
@@ -619,6 +617,7 @@ class Harness(Generic[ConfigT]):
                     for turn in state.transcript
                 ],
             },
+            context="binding context",
         )
 
     def apply_tool_result(self, state: State, result: ServerResult) -> ServerResponse:
@@ -631,7 +630,7 @@ class Harness(Generic[ConfigT]):
             assignments.extend(self.bound_assignments(update))
         for index, (target, _, mode) in enumerate(assignments):
             for existing, _, existing_mode in assignments[:index]:
-                if assignment_conflicts(existing, existing_mode, target, mode):
+                if self.assignment_conflicts(existing, existing_mode, target, mode):
                     raise ValueError(
                         f"Conflicting bound state updates: {existing!r} and {target!r}."
                     )
@@ -641,9 +640,8 @@ class Harness(Generic[ConfigT]):
             state.assert_serializable()
             self.validate_extras(state)
 
-    def bound_assignments(
-        self, update: BoundUpdate
-    ) -> list[tuple[str, JsonValue, str]]:
+    @staticmethod
+    def bound_assignments(update: BoundUpdate) -> list[tuple[str, JsonValue, str]]:
         target = update.target
         if not target.startswith("state."):
             raise ValueError(f"Bound return target {target!r} must start with state.")
@@ -658,19 +656,25 @@ class Harness(Generic[ConfigT]):
             return [(target, deepcopy(update.value), "set")]
         raise ValueError(f"Unknown bound return mode {update.mode!r}.")
 
+    @staticmethod
     def apply_assignment(
-        self, state: State, target: str, value: JsonValue, mode: str
+        state: State, target: str, value: JsonValue, mode: str
     ) -> None:
         parts = target.split(".")
         field = parts[1]
         if field in {"extras", "metadata", "artifacts"}:
             if len(parts) < 3:
                 raise ValueError(f"Bound return target {target!r} needs a key.")
-            container = cast(JsonData, getattr(state, field))
-            if mode == "extend":
-                extend_mapping_path(container, parts[2:], value)
+            if field == "extras":
+                container = state.extras
+            elif field == "metadata":
+                container = state.metadata
             else:
-                set_mapping_path(container, parts[2:], value)
+                container = state.artifacts
+            if mode == "extend":
+                Harness.extend_mapping_path(container, parts[2:], value)
+            else:
+                Harness.set_mapping_path(container, parts[2:], value)
             return
         if mode != "set":
             raise ValueError(f"Bound return target {target!r} only supports set.")
@@ -725,6 +729,59 @@ class Harness(Generic[ConfigT]):
             state.stop(value)
             return
         raise ValueError(f"Bound return target {target!r} is not writable.")
+
+    @staticmethod
+    def assignment_conflicts(
+        left: str, left_mode: str, right: str, right_mode: str
+    ) -> bool:
+        if left_mode == right_mode == "extend" and left == right:
+            return False
+        return Harness.paths_conflict(left, right)
+
+    @staticmethod
+    def paths_conflict(left: str, right: str) -> bool:
+        return (
+            left == right
+            or left.startswith(f"{right}.")
+            or right.startswith(f"{left}.")
+        )
+
+    @staticmethod
+    def set_mapping_path(
+        container: JsonData, path: list[str], value: JsonValue
+    ) -> None:
+        target = Harness.nested_mapping(container, path[:-1])
+        target[path[-1]] = deepcopy(value)
+
+    @staticmethod
+    def extend_mapping_path(
+        container: JsonData, path: list[str], value: JsonValue
+    ) -> None:
+        if not isinstance(value, list):
+            raise TypeError(f"Bound extend target {'.'.join(path)!r} requires a list.")
+        target = Harness.nested_mapping(container, path[:-1])
+        existing = target.get(path[-1])
+        if existing is None:
+            target[path[-1]] = deepcopy(value)
+            return
+        if not isinstance(existing, list):
+            raise TypeError(f"Bound extend target {'.'.join(path)!r} is not a list.")
+        existing.extend(deepcopy(value))
+
+    @staticmethod
+    def nested_mapping(container: JsonData, path: list[str]) -> JsonData:
+        current = container
+        for part in path:
+            value = current.get(part)
+            if value is None:
+                child: JsonData = {}
+                current[part] = child
+                current = child
+                continue
+            if not isinstance(value, dict):
+                raise TypeError(f"Bound return path {part!r} traverses a non-object.")
+            current = value
+        return current
 
     async def call_user(
         self, user: MCPToolRegistry | None, task: Task, state: State
@@ -857,102 +914,3 @@ class Harness(Generic[ConfigT]):
             await self._env_toolsets.__aexit__(None, None, None)
             self._env_toolsets = None
         await self.teardown()
-
-
-def assignment_conflicts(
-    left: str, left_mode: str, right: str, right_mode: str
-) -> bool:
-    if left_mode == right_mode == "extend" and left == right:
-        return False
-    return paths_conflict(left, right)
-
-
-def paths_conflict(left: str, right: str) -> bool:
-    return left == right or left.startswith(f"{right}.") or right.startswith(f"{left}.")
-
-
-def set_mapping_path(container: JsonData, path: list[str], value: JsonValue) -> None:
-    target = nested_mapping(container, path[:-1])
-    target[path[-1]] = deepcopy(value)
-
-
-def extend_mapping_path(container: JsonData, path: list[str], value: JsonValue) -> None:
-    if not isinstance(value, list):
-        raise TypeError(f"Bound extend target {'.'.join(path)!r} requires a list.")
-    target = nested_mapping(container, path[:-1])
-    existing = target.get(path[-1])
-    if existing is None:
-        target[path[-1]] = deepcopy(value)
-        return
-    if not isinstance(existing, list):
-        raise TypeError(f"Bound extend target {'.'.join(path)!r} is not a list.")
-    existing.extend(deepcopy(value))
-
-
-def nested_mapping(container: JsonData, path: list[str]) -> JsonData:
-    current = container
-    for part in path:
-        value = current.get(part)
-        if value is None:
-            child: JsonData = {}
-            current[part] = child
-            current = child
-            continue
-        if not isinstance(value, dict):
-            raise TypeError(f"Bound return path {part!r} traverses a non-object.")
-        current = value
-    return current
-
-
-def extras_schema(extras: Extras | None) -> type[Extras] | None:
-    if extras is None:
-        return None
-    schema = type(extras)
-    if not issubclass(schema, Extras):
-        raise TypeError("extras config must be a vf.Extras object.")
-    return schema
-
-
-def extras_defaults(extras: Extras | None) -> JsonData:
-    if extras is None:
-        return {}
-    return cast(JsonData, extras.model_dump(mode="json", exclude_none=True))
-
-
-def merge_extras_defaults(
-    taskset_defaults: JsonData, harness_defaults: JsonData
-) -> JsonData:
-    conflicts = sorted(set(taskset_defaults) & set(harness_defaults))
-    if conflicts:
-        raise ValueError(
-            f"Extras config keys are defined twice: {', '.join(conflicts)}."
-        )
-    return {**deepcopy(taskset_defaults), **deepcopy(harness_defaults)}
-
-
-def realize_extras_schema(
-    taskset_schema: type[Extras] | None,
-    harness_schema: type[Extras] | None,
-) -> type[Extras] | None:
-    schemas = [schema for schema in (taskset_schema, harness_schema) if schema]
-    if not schemas:
-        return None
-    if len(schemas) == 1:
-        return schemas[0]
-    seen: dict[str, type[BaseModel]] = {}
-    for schema in schemas:
-        for field_name in schema.model_fields:
-            if field_name in seen:
-                raise ValueError(
-                    f"Extras field {field_name!r} is defined by both "
-                    f"{seen[field_name].__name__} and {schema.__name__}."
-                )
-            seen[field_name] = schema
-    return cast(
-        type[Extras],
-        type(
-            "RealizedExtras",
-            tuple(schemas),
-            {"__module__": __name__},
-        ),
-    )

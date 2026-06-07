@@ -1,10 +1,10 @@
 import json
 from copy import deepcopy
 from pathlib import Path
-from typing import cast
 
 from pydantic import TypeAdapter
 import verifiers.v1 as vf
+from verifiers.v1.utils.json_utils import json_data, json_value
 
 DEFAULT_NEMO_GYM_DATA_NAME = "example.jsonl"
 _MESSAGES_ADAPTER = TypeAdapter(vf.Messages)
@@ -46,7 +46,7 @@ class NeMoGymTasksetConfig(vf.TasksetConfig):
     limit: int | None = None
 
 
-class NeMoGymTask(vf.Task):
+class NeMoGymTask(vf.Task, frozen=True):
     nemo_gym_row: vf.JsonData
     info: vf.JsonData = {}
     system_prompt: list[vf.JsonData] = []
@@ -77,14 +77,14 @@ class NeMoGymTaskset(vf.Taskset[NeMoGymTasksetConfig]):
             for line in f:
                 stripped = line.strip()
                 if stripped:
-                    raw_rows.append(cast(vf.JsonData, json.loads(stripped)))
+                    raw_rows.append(json_data(json.loads(stripped)))
         if self.config.limit is not None:
             raw_rows = raw_rows[: self.config.limit]
         tasks = [
             normalize_nemo_gym_task_row(row, index, agent_name=self.config.agent_name)
             for index, row in enumerate(raw_rows)
         ]
-        return cast(vf.Tasks, tasks)
+        return tasks
 
 
 def normalize_nemo_gym_task_row(
@@ -103,9 +103,10 @@ def normalize_nemo_gym_task_row(
     task_row["nemo_gym_row"] = nemo_row
     task_row.setdefault("row_id", index)
     prompt, system_prompt = prompt_parts_from_nemo_gym_row(nemo_row)
-    task_row.setdefault("prompt", prompt)
-    if system_prompt:
-        task_row.setdefault("system_prompt", system_prompt)
+    if "prompt" not in task_row:
+        task_row["prompt"] = json_value(prompt)
+    if system_prompt and "system_prompt" not in task_row:
+        task_row["system_prompt"] = json_value(system_prompt)
     raw_info = task_row.get("info")
     info = dict(raw_info) if isinstance(raw_info, dict) else {}
     info.setdefault(
@@ -131,7 +132,7 @@ def prompt_parts_from_nemo_gym_row(
     prompt: list[vf.JsonData] = []
     system_prompt: list[vf.JsonData] = []
     for message in messages:
-        dumped = cast(vf.JsonData, message.model_dump(exclude_none=True))
+        dumped = json_data(message.model_dump(exclude_none=True))
         if getattr(message, "role", None) == "system":
             system_prompt.append(dumped)
         else:
@@ -147,6 +148,6 @@ def normalize_responses_input(value: vf.JsonValue) -> vf.Messages:
         for item in value:
             if not isinstance(item, dict):
                 raise TypeError("responses_create_params.input must contain objects.")
-            raw_messages.append(cast(vf.JsonData, item))
+            raw_messages.append(json_data(item))
         return _MESSAGES_ADAPTER.validate_python(raw_messages)
     raise TypeError("responses_create_params.input must be a string or message list.")

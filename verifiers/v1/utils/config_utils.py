@@ -201,7 +201,8 @@ def config_dump_value(value: object) -> object:
         return explicit_model_config_data(value)
     if isinstance(value, Mapping):
         return {
-            key: config_dump_value(item) for key, item in string_mapping(value).items()
+            key: config_dump_value(item)
+            for key, item in string_mapping(cast(Mapping[str, object], value)).items()
         }
     if isinstance(value, list | tuple):
         return [config_dump_value(item) for item in value]
@@ -269,7 +270,7 @@ def config_ref_module(config: BaseModel | Mapping[str, object] | None) -> str | 
     return None
 
 
-def string_mapping(value: Mapping[object, object]) -> dict[str, object]:
+def string_mapping(value: Mapping[str, object]) -> dict[str, object]:
     result: dict[str, object] = {}
     for key, item in value.items():
         if not isinstance(key, str):

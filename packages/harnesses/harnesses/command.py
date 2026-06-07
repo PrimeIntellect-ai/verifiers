@@ -1,6 +1,6 @@
 import json
 import shlex
-from typing import Generic, TypeVar, cast
+from typing import Generic, TypeVar
 
 import verifiers.v1 as vf
 
@@ -92,5 +92,5 @@ def command_metrics(state: vf.State, key: str) -> float:
     command = state.artifacts.get("command")
     if not isinstance(command, dict):
         return 0.0
-    value = cast(dict[str, object], command).get(key)
+    value = command.get(key)
     return float(value) if isinstance(value, int | float) else 0.0

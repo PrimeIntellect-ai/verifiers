@@ -29,7 +29,7 @@ from verifiers.utils.error_utils import error_data, validate_error_data
 from verifiers.utils.save_utils import serialize_messages_for_output
 
 from .types import JsonData, ModelConfig
-from .utils.json_utils import jsonable
+from .utils.json_utils import json_data
 from .utils.task_freeze_utils import assert_serializable
 
 if TYPE_CHECKING:
@@ -163,7 +163,59 @@ class Turn(BaseModel, extra="forbid"):
 
 
 class Extras(BaseModel, extra="forbid"):
-    pass
+    @staticmethod
+    def schema_for(extras: "Extras | None") -> type["Extras"] | None:
+        if extras is None:
+            return None
+        schema = type(extras)
+        if not issubclass(schema, Extras):
+            raise TypeError("extras config must be a vf.Extras object.")
+        return schema
+
+    @staticmethod
+    def defaults_for(extras: "Extras | None") -> JsonData:
+        if extras is None:
+            return {}
+        return json_data(extras.model_dump(mode="json", exclude_none=True))
+
+    @staticmethod
+    def merge_defaults(
+        taskset_defaults: JsonData, harness_defaults: JsonData
+    ) -> JsonData:
+        conflicts = sorted(set(taskset_defaults) & set(harness_defaults))
+        if conflicts:
+            raise ValueError(
+                f"Extras config keys are defined twice: {', '.join(conflicts)}."
+            )
+        return {**deepcopy(taskset_defaults), **deepcopy(harness_defaults)}
+
+    @staticmethod
+    def realize_schema(
+        taskset_schema: type["Extras"] | None,
+        harness_schema: type["Extras"] | None,
+    ) -> type["Extras"] | None:
+        schemas = [schema for schema in (taskset_schema, harness_schema) if schema]
+        if not schemas:
+            return None
+        if len(schemas) == 1:
+            return schemas[0]
+        seen: dict[str, type[BaseModel]] = {}
+        for schema in schemas:
+            for field_name in schema.model_fields:
+                if field_name in seen:
+                    raise ValueError(
+                        f"Extras field {field_name!r} is defined by both "
+                        f"{seen[field_name].__name__} and {schema.__name__}."
+                    )
+                seen[field_name] = schema
+        return cast(
+            type[Extras],
+            type(
+                "RealizedExtras",
+                tuple(schemas),
+                {"__module__": __name__},
+            ),
+        )
 
 
 class State(BaseModel, extra="forbid"):
@@ -224,14 +276,49 @@ class State(BaseModel, extra="forbid"):
     def assert_serializable(self) -> None:
         assert_serializable(self.model_dump(mode="json", exclude_none=True))
 
+    @staticmethod
+    def serialized_messages(messages: object) -> list[JsonData]:
+        serialized: list[JsonData] = []
+        for index, message in enumerate(serialize_messages_for_output(messages)):
+            serialized.append(json_data(message, context=f"message[{index}]"))
+        return serialized
+
+    @staticmethod
+    def turn_record(turn: Turn) -> dict[str, object]:
+        return {
+            "id": turn.id,
+            "prompt": State.serialized_messages(turn.prompt),
+            "completion": State.serialized_messages(turn.completion),
+            "tool_calls": [
+                json_data(tool_call, context="tool_call")
+                for tool_call in turn.tool_calls
+            ],
+            "tool_results": State.serialized_messages(turn.tool_results),
+            "response_id": turn.response_id,
+            "model": turn.model,
+            "created": turn.created,
+            "finish_reason": turn.finish_reason,
+            "usage": turn.usage.model_dump(mode="json", exclude_none=True)
+            if turn.usage is not None
+            else None,
+            "tokens": turn.tokens.model_dump(mode="json", exclude_none=True)
+            if turn.tokens is not None
+            else None,
+            "reward": turn.reward,
+            "is_truncated": turn.is_truncated,
+            "timing": turn.timing.model_dump(mode="json", exclude_none=True),
+        }
+
     def to_output(
         self, task: "Task", state_columns: list[str] | None = None
     ) -> dict[str, object]:
         prompt = self.prompt or task.prompt
+        serialize_messages = type(self).serialized_messages
+        turn_record = type(self).turn_record
         output: dict[str, object] = {
             "example_id": task.row_id,
-            "prompt": self._serialized_messages(prompt),
-            "completion": self._serialized_messages(self.completion),
+            "prompt": serialize_messages(prompt),
+            "completion": serialize_messages(self.completion),
             "reward": float(self.reward),
             "timing": self.timing.model_dump(mode="json"),
             "is_completed": self.is_completed,
@@ -239,14 +326,14 @@ class State(BaseModel, extra="forbid"):
             "metrics": dict(self.metrics),
             "extras": deepcopy(self.extras),
             "stop_condition": self.stop_condition,
-            "transcript": [self._turn_record(turn) for turn in self.transcript],
+            "transcript": [turn_record(turn) for turn in self.transcript],
         }
         answer = getattr(task, "answer", None)
         if answer is not None:
             output["answer"] = str(answer)
         info = getattr(task, "info", None)
         if isinstance(info, dict) and info:
-            output["info"] = cast(dict[str, object], deepcopy(info))
+            output["info"] = deepcopy(info)
         if self.error is not None:
             output["error"] = validate_error_data(self.error)
             output["error_chain"] = self.error["error_chain_repr"]
@@ -271,60 +358,26 @@ class State(BaseModel, extra="forbid"):
         for key, value in self.metrics.items():
             output[key] = value
         for column in state_columns or []:
-            output[column] = self._column_value(column)
+            if column == "prompt":
+                output[column] = serialize_messages(self.prompt)
+            elif column == "completion":
+                output[column] = serialize_messages(self.completion)
+            elif column == "messages":
+                output[column] = serialize_messages(self.messages)
+            elif column == "extras":
+                output[column] = deepcopy(self.extras)
+            elif column == "transcript":
+                output[column] = [turn_record(turn) for turn in self.transcript]
+            elif column in type(self).model_fields:
+                value = getattr(self, column)
+                model_dump = getattr(value, "model_dump", None)
+                if callable(model_dump):
+                    output[column] = model_dump(mode="json", exclude_none=True)
+                else:
+                    output[column] = deepcopy(value)
+            elif column in self.extras:
+                output[column] = deepcopy(self.extras[column])
+            else:
+                output[column] = None
         json.dumps(output)
         return output
-
-    def _column_value(self, column: str) -> object:
-        if column == "prompt":
-            return self._serialized_messages(self.prompt)
-        if column == "completion":
-            return self._serialized_messages(self.completion)
-        if column == "messages":
-            return self._serialized_messages(self.messages)
-        if column == "extras":
-            return deepcopy(self.extras)
-        if column == "transcript":
-            return [self._turn_record(turn) for turn in self.transcript]
-        if column in type(self).model_fields:
-            value = getattr(self, column)
-            model_dump = getattr(value, "model_dump", None)
-            if callable(model_dump):
-                return model_dump(mode="json", exclude_none=True)
-            return deepcopy(value)
-        if column in self.extras:
-            return deepcopy(self.extras[column])
-        return None
-
-    def _serialized_messages(self, messages: Messages) -> list[dict[str, object]]:
-        return [
-            cast(dict[str, object], jsonable(message))
-            for message in serialize_messages_for_output(messages)
-        ]
-
-    def _turn_record(self, turn: Turn) -> dict[str, object]:
-        return {
-            "id": turn.id,
-            "prompt": self._serialized_messages(turn.prompt),
-            "completion": self._serialized_messages(turn.completion),
-            "tool_calls": [
-                cast(dict[str, object], jsonable(tool_call))
-                for tool_call in turn.tool_calls
-            ],
-            "tool_results": self._serialized_messages(
-                cast(Messages, turn.tool_results)
-            ),
-            "response_id": turn.response_id,
-            "model": turn.model,
-            "created": turn.created,
-            "finish_reason": turn.finish_reason,
-            "usage": turn.usage.model_dump(mode="json", exclude_none=True)
-            if turn.usage is not None
-            else None,
-            "tokens": turn.tokens.model_dump(mode="json", exclude_none=True)
-            if turn.tokens is not None
-            else None,
-            "reward": turn.reward,
-            "is_truncated": turn.is_truncated,
-            "timing": turn.timing.model_dump(mode="json", exclude_none=True),
-        }

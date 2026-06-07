@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import uuid
+import hashlib
+import json
 from collections.abc import Mapping
 from copy import deepcopy
-from typing import TypeVar, cast
 
 from pydantic import (
     BaseModel,
@@ -39,7 +39,7 @@ class TaskVisibility(BaseModel, extra="forbid", frozen=True):
 class Task(BaseModel, extra="forbid", frozen=True):
     """Immutable serializable task specification. Subclass for task-specific data."""
 
-    task_id: str = Field(default_factory=lambda: uuid.uuid4().hex)
+    task_id: str = ""
     row_id: int = 0
     prompt: Messages = Field(default_factory=list)
     system_prompt: SystemPrompt = None
@@ -73,11 +73,9 @@ class Task(BaseModel, extra="forbid", frozen=True):
                 raw["row_id"] = raw.pop("example_id")
             raw.pop("example_id", None)
             if "prompt" in raw:
-                raw["prompt"] = normalized_task_prompt(raw["prompt"])
+                raw["prompt"] = cls.normalize_prompt(raw["prompt"])
             if "system_prompt" in raw:
-                raw["system_prompt"] = normalized_task_system_prompt(
-                    raw["system_prompt"]
-                )
+                raw["system_prompt"] = cls.normalize_system_prompt(raw["system_prompt"])
             return raw
         return value
 
@@ -89,12 +87,14 @@ class Task(BaseModel, extra="forbid", frozen=True):
             isinstance(self.max_turns, bool) or not isinstance(self.max_turns, int)
         ):
             raise TypeError("task.max_turns must be an integer.")
-        object.__setattr__(self, "prompt", normalized_task_prompt(self.prompt))
+        object.__setattr__(self, "prompt", type(self).normalize_prompt(self.prompt))
         object.__setattr__(
             self,
             "system_prompt",
-            normalized_task_system_prompt(self.system_prompt),
+            type(self).normalize_system_prompt(self.system_prompt),
         )
+        if not self.task_id:
+            object.__setattr__(self, "task_id", self.default_task_id())
         assert_serializable(self.model_dump(mode="json", exclude_none=True))
         return self
 
@@ -107,51 +107,63 @@ class Task(BaseModel, extra="forbid", frozen=True):
         data = handler(self)
         if not isinstance(data, dict):
             raise TypeError("Task serializer expected a JSON object.")
+        serialized = {str(key): value for key, value in data.items()}
         if info.mode != "json":
-            return cast(dict[str, object], data)
-        if "prompt" in data:
-            data["prompt"] = dump_messages(self.prompt)
-        if "system_prompt" in data:
+            return serialized
+        if "prompt" in serialized:
+            serialized["prompt"] = dump_messages(self.prompt)
+        if "system_prompt" in serialized:
             if self.system_prompt:
-                data["system_prompt"] = list(
-                    normalized_task_system_prompt(self.system_prompt)
+                serialized["system_prompt"] = list(
+                    type(self).normalize_system_prompt(self.system_prompt)
                 )
             else:
-                data.pop("system_prompt", None)
-        return cast(dict[str, object], data)
+                serialized.pop("system_prompt", None)
+        return serialized
 
+    @classmethod
+    def normalize_prompt(cls, value: object) -> Messages:
+        messages: Messages
+        if isinstance(value, str):
+            messages = [UserMessage(content=value)]
+        else:
+            messages = MESSAGES_ADAPTER.validate_python(value or [])
+        for message in messages:
+            if getattr(message, "role", None) == "system":
+                raise ValueError("task.prompt must not contain system messages.")
+        return messages
 
-TaskT = TypeVar("TaskT", bound=Task)
+    @classmethod
+    def normalize_system_prompt(cls, value: object) -> list[JsonData]:
+        return normalize_system_prompt(
+            cls.system_prompt_input(value),
+            field_name="task.system_prompt",
+        )
 
+    @classmethod
+    def system_prompt_input(cls, value: object) -> SystemPrompt:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return value
+        if isinstance(value, list):
+            return MESSAGES_ADAPTER.validate_python(value)
+        from .utils.prompt_utils import SystemPromptConfig
 
-def normalized_task_prompt(value: object) -> Messages:
-    messages = (
-        [UserMessage(content=value)]
-        if isinstance(value, str)
-        else MESSAGES_ADAPTER.validate_python(value or [])
-    )
-    for message in messages:
-        if getattr(message, "role", None) == "system":
-            raise ValueError("task.prompt must not contain system messages.")
-    return messages
+        if isinstance(value, SystemPromptConfig):
+            return value
+        raise TypeError("task.system_prompt must be a string, messages list, or null.")
 
-
-def normalized_task_system_prompt(value: object) -> list[JsonData]:
-    return normalize_system_prompt(
-        task_system_prompt_input(value),
-        field_name="task.system_prompt",
-    )
-
-
-def task_system_prompt_input(value: object) -> SystemPrompt:
-    if value is None:
-        return None
-    if isinstance(value, str):
-        return value
-    if isinstance(value, list):
-        return value
-    from .utils.prompt_utils import SystemPromptConfig
-
-    if isinstance(value, SystemPromptConfig):
-        return value
-    raise TypeError("task.system_prompt must be a string, messages list, or null.")
+    def default_task_id(self) -> str:
+        data = self.model_dump(
+            mode="json",
+            exclude={"task_id"},
+            exclude_none=True,
+            exclude_defaults=True,
+        )
+        payload = {
+            "type": f"{type(self).__module__}.{type(self).__qualname__}",
+            "task": data,
+        }
+        raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(raw.encode()).hexdigest()[:24]

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass
-from typing import Literal, TYPE_CHECKING, TypeAlias, cast
+from typing import Literal, TYPE_CHECKING, TypeAlias
 
 from datasets import Dataset
 from pydantic import Field
@@ -112,23 +112,23 @@ class Context:
 
 
 def client_state_record(state: "State") -> JsonData:
-    from .utils.json_utils import jsonable
+    from .utils.json_utils import json_data, json_value
 
     transcript: list[JsonValue] = []
     for turn in state.transcript:
-        tokens = jsonable(turn.tokens.model_dump(mode="json")) if turn.tokens else None
+        tokens = (
+            json_value(turn.tokens.model_dump(mode="json")) if turn.tokens else None
+        )
         transcript.append(
-            cast(
-                JsonValue,
-                jsonable(
-                    {
-                        "prompt": turn.prompt,
-                        "completion": turn.completion,
-                        "tokens": tokens,
-                        "reward": turn.reward,
-                        "is_truncated": turn.is_truncated,
-                    }
-                ),
+            json_value(
+                {
+                    "prompt": turn.prompt,
+                    "completion": turn.completion,
+                    "tokens": tokens,
+                    "reward": turn.reward,
+                    "is_truncated": turn.is_truncated,
+                },
+                context="client state turn",
             )
         )
     record = {
@@ -139,7 +139,7 @@ def client_state_record(state: "State") -> JsonData:
         "metadata": state.metadata,
         "transcript": transcript,
     }
-    return cast(
-        JsonData,
-        jsonable({key: value for key, value in record.items() if value is not None}),
+    return json_data(
+        {key: value for key, value in record.items() if value is not None},
+        context="client state",
     )

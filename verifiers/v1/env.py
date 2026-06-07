@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from typing import TYPE_CHECKING, cast, final
+from typing import TYPE_CHECKING, final
 
 from pydantic import Field, field_validator
 from pydantic import BaseModel
@@ -19,9 +19,10 @@ from .runtime import (
 )
 from .state import State
 from .task import Task
-from .taskset import Taskset, collect_owner_signals
-from .types import Handler, JsonData, ModelClient, ModelConfig
+from .taskset import Taskset
+from .types import JsonData, ModelClient, ModelConfig
 from .utils.config_utils import explicit_config_data
+from .utils.json_utils import json_data
 from .utils.scoring_utils import score_group as score_group_signals
 
 if TYPE_CHECKING:
@@ -110,10 +111,7 @@ class Env:
         states: list[State],
         teacher: ModelClient | None = None,
     ) -> None:
-        handlers = [
-            *cast(list[Handler], self.taskset.handlers[kind]),
-            *cast(list[Handler], self.harness.handlers[kind]),
-        ]
+        handlers = [*self.taskset.handlers[kind], *self.harness.handlers[kind]]
         for handler in handlers:
             if getattr(handler, f"{kind}_stage", "rollout") != "group":
                 continue
@@ -139,9 +137,12 @@ class Env:
         state: State | None = None,
         max_retries: int = 0,
     ) -> State:
-        task = self.taskset.to_task(
-            input if isinstance(input, Task) else cast(JsonData, input)
-        )
+        if isinstance(input, Task):
+            task = self.taskset.to_task(input)
+        elif isinstance(input, dict):
+            task = self.taskset.to_task(json_data(input))
+        else:
+            raise TypeError("Env.run_rollout input must be a Task or mapping.")
 
         async def attempt() -> State:
             rollout_state = state or State(task_id=task.task_id)
@@ -199,7 +200,7 @@ class Env:
         )
         try:
             await score_group_signals(
-                collect_owner_signals(self.taskset, self.harness),
+                self.harness.owner_signals(),
                 tasks,
                 states,
                 model_client=model_client,

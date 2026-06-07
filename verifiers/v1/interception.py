@@ -4,7 +4,6 @@ import secrets
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
-from typing import cast
 
 from aiohttp import web
 from pydantic import BaseModel, Field
@@ -15,6 +14,7 @@ from verifiers.utils.response_utils import parse_response_message
 from .state import State, Turn, TurnTokens, TurnUsage
 from .task import Task
 from .types import JsonData, JsonValue, Context
+from .utils.json_utils import json_data
 
 StopCheck = Callable[[], Awaitable[str | None]]
 
@@ -161,6 +161,4 @@ class InterceptionServer:
 
 async def json_body(request: web.Request) -> JsonData:
     body = await request.json()
-    if not isinstance(body, dict):
-        raise TypeError("Protocol request body must be a JSON object.")
-    return cast(JsonData, body)
+    return json_data(body, context="Protocol request body")

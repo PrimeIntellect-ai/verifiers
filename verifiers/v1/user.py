@@ -7,9 +7,6 @@ from .toolset import (
     Scope,
     ServerConfig,
     Toolset,
-    config_package,
-    load_toolset,
-    resolve_server_ref,
     tool,
 )
 
@@ -26,7 +23,7 @@ class UserConfig(ServerConfig):
                 "the framework package."
             )
         if module_name.endswith(".config"):
-            package = config_package(module_name)
+            package = type(self).config_package(module_name)
             if config_type.__name__ == "UserConfig":
                 impl_name = "User"
             elif config_type.__name__.endswith("Config"):
@@ -38,11 +35,11 @@ class UserConfig(ServerConfig):
             ref = f"{module_name}:{config_type.__name__.removesuffix('Config')}"
         else:
             ref = f"{module_name}:{config_type.__name__}User"
-        return resolve_server_ref(ref, config_type)
+        return type(self).resolve_ref(ref, config_type)
 
     def load(self) -> "User":
         server = self.implementation_ref()
-        user = load_toolset(server, self)
+        user = Toolset.load_ref(server, self)
         if not isinstance(user, User):
             raise TypeError(f"User server {server!r} did not return a User.")
         return user

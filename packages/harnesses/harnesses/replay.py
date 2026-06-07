@@ -29,8 +29,14 @@ class ReplayHarness(vf.Harness[vf.HarnessConfig]):
         final_turn = len(assistant_indices) - 1
         for turn_index, message_index in enumerate(assistant_indices):
             message = messages[message_index]
+            if not isinstance(message, vf.AssistantMessage):
+                raise TypeError(
+                    "Replay assistant indices must point to assistant messages."
+                )
             prompt = messages[:message_index]
             is_truncated = max_turns_reached and turn_index == final_turn
+            message_finish_reason = getattr(message, "finish_reason", None)
+            message_is_truncated = bool(getattr(message, "is_truncated", False))
             turn = vf.Turn(
                 prompt=prompt,
                 completion=[message],
@@ -38,9 +44,9 @@ class ReplayHarness(vf.Harness[vf.HarnessConfig]):
                 response_id=f"replay-{state.id}-{turn_index}",
                 model=context.model or "replay",
                 created=created,
-                finish_reason=message.finish_reason
+                finish_reason=message_finish_reason
                 or ("tool_calls" if message.tool_calls else "stop"),
-                is_truncated=is_truncated or bool(message.is_truncated),
+                is_truncated=is_truncated or message_is_truncated,
             )
             state.transcript.append(turn)
             if turn.is_truncated:

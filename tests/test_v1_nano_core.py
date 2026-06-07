@@ -301,6 +301,17 @@ def test_v1_state_is_pydantic_and_extras_owned() -> None:
     assert state.to_output(task)["transcript"] == []
 
 
+def test_v1_task_id_is_deterministic_from_task_contents() -> None:
+    first = NanoTask(prompt="hello", answer="world")
+    second = NanoTask(prompt="hello", answer="world")
+    changed = NanoTask(prompt="hello", answer="there")
+    explicit = NanoTask(task_id="chosen", prompt="hello", answer="world")
+
+    assert first.task_id == second.task_id
+    assert first.task_id != changed.task_id
+    assert explicit.task_id == "chosen"
+
+
 def test_task_user_defaults_to_auto_and_omits_from_json() -> None:
     task = vf.Task(prompt="hello")
 

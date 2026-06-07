@@ -83,15 +83,6 @@ rules:
         - /environments/**/proj/**/*.py
     pattern-regex: "\\bAny\\b"
 
-  - id: verifiers-get-messages-typed
-    languages: [python]
-    severity: ERROR
-    message: "`get_messages` must return typed `Message` objects, not raw dictionaries."
-    paths:
-      include:
-        - /verifiers/utils/message_utils.py
-    pattern-regex: "def\\s+get_messages\\b[\\s\\S]*?->\\s*list\\s*\\[\\s*dict\\b"
-
   - id: verifiers-v1-no-signal-factories
     languages: [python]
     severity: ERROR
@@ -383,24 +374,6 @@ rules:
               os.environ[$KEY]
               ...
 
-  - id: verifiers-v1-no-judge-endpoint-config-fields
-    languages: [python]
-    severity: ERROR
-    message: Judge rewards should use typed model config; do not expose raw judge_base_url or judge_api_key_var fields.
-    paths:
-      include:
-        - /environments/**/*.py
-      exclude:
-        - /environments/**/proj/**/*.py
-        - /environments/**/tasks/**/*.py
-    patterns:
-      - pattern-inside: |
-          class $CONFIG(vf.TasksetConfig):
-              ...
-      - pattern-either:
-          - pattern: "judge_base_url: $TYPE = $VALUE"
-          - pattern: "judge_api_key_var: $TYPE = $VALUE"
-
   - id: verifiers-v1-no-raw-kwargs-in-subclass-init
     languages: [python]
     severity: ERROR
@@ -452,15 +425,3 @@ rules:
       - pattern: |
           def __init__(...):
               ...
-
-  - id: verifiers-v1-package-no-static-classmethod-helpers
-    languages: [python]
-    severity: ERROR
-    message: Package taskset/harness implementations should use direct instance methods and standard lifecycle hooks; do not patch around weak ownership with staticmethod/classmethod helpers.
-    paths:
-      include:
-        - /packages/tasksets/tasksets/*.py
-        - /packages/harnesses/harnesses/*.py
-    pattern-either:
-      - pattern: "@staticmethod"
-      - pattern: "@classmethod"

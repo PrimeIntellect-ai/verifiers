@@ -6,7 +6,7 @@ import inspect
 import sys
 from collections.abc import Mapping
 from types import ModuleType, UnionType
-from typing import TypeAlias, Union, cast, get_args, get_origin, get_type_hints
+from typing import TypeAlias, TypeVar, Union, cast, get_args, get_origin, get_type_hints
 
 from pydantic import BaseModel
 
@@ -19,6 +19,7 @@ ConfigMapping: TypeAlias = Mapping[str, object]
 EnvConfigLoadData: TypeAlias = dict[str, object]
 EnvConfigChildInput: TypeAlias = ConfigMapping | EnvConfigLoadData
 EnvConfigInput: TypeAlias = BaseModel | ConfigMapping
+ConfigBaseT = TypeVar("ConfigBaseT", bound=BaseModel)
 
 FACTORY_MODULES = {
     "load_taskset": "taskset",
@@ -91,9 +92,7 @@ def load_taskset_from_module(
     config_type = factory_config_type(module, "load_taskset", TasksetConfig)
     if config_type is None:
         raise TypeError(f"{module.__name__}.load_taskset must accept config.")
-    taskset = factory(
-        config=coerce_config(cast(type[TasksetConfig], config_type), config)
-    )
+    taskset = factory(config=coerce_config(config_type, config))
     if not isinstance(taskset, Taskset):
         raise TypeError(f"{module.__name__}.load_taskset must return a Taskset.")
     return taskset
@@ -119,9 +118,7 @@ def load_harness_from_module(
     config_type = factory_config_type(module, "load_harness", HarnessConfig)
     if config_type is None:
         raise TypeError(f"{module.__name__}.load_harness must accept config.")
-    harness = factory(
-        config=coerce_config(cast(type[HarnessConfig], config_type), config)
-    )
+    harness = factory(config=coerce_config(config_type, config))
     if not isinstance(harness, Harness):
         raise TypeError(f"{module.__name__}.load_harness must return a Harness.")
     return harness
@@ -250,8 +247,8 @@ def matches_loader(module_name: str, loader_id: str) -> bool:
 def factory_config_type(
     module: ModuleType,
     factory_name: str,
-    base_type: type[BaseModel],
-) -> type[BaseModel] | None:
+    base_type: type[ConfigBaseT],
+) -> type[ConfigBaseT] | None:
     module = factory_module(module, factory_name)
     factory = getattr(module, factory_name, None)
     if factory is None:
@@ -287,9 +284,9 @@ def factory_module(module: ModuleType, factory_name: str) -> ModuleType:
 
 def config_type_from_annotation(
     annotation: object,
-    base_type: type[BaseModel],
+    base_type: type[ConfigBaseT],
     context: str,
-) -> type[BaseModel]:
+) -> type[ConfigBaseT]:
     if annotation is inspect.Parameter.empty:
         raise TypeError(f"{context} must be annotated.")
     origin = get_origin(annotation)

@@ -4,11 +4,13 @@ import inspect
 from collections.abc import Callable
 from typing import Literal, TypeVar, overload
 
+from .types import Handler
+
 SignalStage = Literal["rollout", "group"]
 F = TypeVar("F", bound=Callable[..., object])
 
 
-def discover_decorated(obj: object, attr: str) -> list[Callable[..., object]]:
+def discover_decorated(obj: object, attr: str) -> list[Handler]:
     methods = [
         method
         for _, method in inspect.getmembers(obj, predicate=inspect.ismethod)

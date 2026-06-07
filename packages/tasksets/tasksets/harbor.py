@@ -4,6 +4,7 @@ from pydantic import BaseModel
 
 import verifiers.v1 as vf
 from verifiers.utils.import_utils import load_toml
+from verifiers.v1.utils.json_utils import json_data
 
 from tasksets.utils.harbor_utils import (
     TASKS_SUBDIR,
@@ -61,7 +62,7 @@ class HarborSpec(BaseModel, extra="forbid"):
     test_timeout: float
 
 
-class HarborTask(vf.Task):
+class HarborTask(vf.Task, frozen=True):
     task_name: str
     instruction: str
     task_toml: str
@@ -121,37 +122,41 @@ class HarborTaskset(vf.Taskset[HarborTasksetConfig]):
             agent_config=agent_config,
         )
         workdir = str(runtime.get("workdir") or "/app")
+        program = HarborProgramSpec(
+            files={
+                f"{task_remote_dir}/instruction.md": {"task": "instruction"},
+                f"{task_remote_dir}/task.toml": {"task": "task_toml"},
+            },
+            env={
+                "HARBOR_TASK_NAME": task_dir.name,
+                "HARBOR_TASK_DIR": task_remote_dir,
+                "HARBOR_INSTRUCTION_PATH": f"{task_remote_dir}/instruction.md",
+                "AGENT_WORKDIR": workdir,
+                **self.config.env,
+            },
+        )
+        raw_docker_image = environment.get("docker_image")
+        docker_image = raw_docker_image if isinstance(raw_docker_image, str) else None
+        harbor = HarborSpec(
+            task_dir=str(task_dir),
+            task_name=task_dir.name,
+            config=json_data(task_config, context="Harbor task config"),
+            docker_image=docker_image,
+            test_timeout=parse_number(
+                verifier_config.get("timeout_sec"),
+                self.config.verifier_timeout_seconds,
+            ),
+        )
         return HarborTask(
             task_name=task_dir.name,
             instruction=instruction,
             task_toml=task_toml_path.read_text(),
             task_dir=str(task_dir),
-            prompt=[{"role": "user", "content": instruction}],
+            prompt=[vf.UserMessage(content=instruction)],
             image=str(runtime["image"]),
-            runtime_config=runtime,
-            program={
-                "files": {
-                    f"{task_remote_dir}/instruction.md": {"task": "instruction"},
-                    f"{task_remote_dir}/task.toml": {"task": "task_toml"},
-                },
-                "env": {
-                    "HARBOR_TASK_NAME": task_dir.name,
-                    "HARBOR_TASK_DIR": task_remote_dir,
-                    "HARBOR_INSTRUCTION_PATH": f"{task_remote_dir}/instruction.md",
-                    "AGENT_WORKDIR": workdir,
-                    **self.config.env,
-                },
-            },
-            harbor={
-                "task_dir": str(task_dir),
-                "task_name": task_dir.name,
-                "config": task_config,
-                "docker_image": environment.get("docker_image"),
-                "test_timeout": parse_number(
-                    verifier_config.get("timeout_sec"),
-                    self.config.verifier_timeout_seconds,
-                ),
-            },
+            runtime_config=HarborRuntimeSpec.model_validate(runtime),
+            program=program,
+            harbor=harbor,
         )
 
     @vf.reward(weight=1.0)
@@ -175,7 +180,7 @@ def mapping(value: object, name: str) -> dict[str, object]:
         return {}
     if not isinstance(value, dict):
         raise TypeError(f"Harbor task [{name}] must be a mapping.")
-    return dict(value)
+    return {str(key): item for key, item in value.items()}
 
 
 def harbor_runtime(
@@ -183,15 +188,19 @@ def harbor_runtime(
     *,
     environment: dict[str, object],
     agent_config: dict[str, object],
-) -> vf.JsonData:
-    runtime = dict(configured)
+) -> dict[str, object]:
+    runtime: dict[str, object] = dict(configured)
     runtime["image"] = environment.get("docker_image") or runtime.get("image")
     runtime["cpu_cores"] = parse_number(environment.get("cpus"), 2.0)
     runtime["memory_gb"] = parse_gb(environment.get("memory"), 4.0)
     runtime["disk_size_gb"] = parse_gb(environment.get("storage"), 10.0)
+    timeout_value = runtime.get("timeout_seconds")
+    timeout_default = (
+        float(timeout_value) if isinstance(timeout_value, str | int | float) else 900.0
+    )
     runtime["timeout_seconds"] = parse_number(
         agent_config.get("timeout_sec"),
-        float(runtime.get("timeout_seconds") or 900.0),
+        timeout_default,
     )
     if "allow_internet" in environment:
         runtime["network_access"] = bool(environment["allow_internet"])
