@@ -307,11 +307,14 @@ def openenv_tool_defs(tools: Iterable[object]) -> list[vf.JsonData]:
             else {"type": "object", "properties": {}}
         )
         tool_defs.append(
-            {
-                "name": name,
-                "description": str(description),
-                "parameters": parameters,
-            }
+            json_data(
+                {
+                    "name": name,
+                    "description": str(description),
+                    "parameters": parameters,
+                },
+                context=f"OpenEnv tool {name}",
+            )
         )
     return tool_defs
 
@@ -393,13 +396,17 @@ class OpenEnvUser(vf.User[OpenEnvUserConfig]):
         if self.session is None:
             raise RuntimeError("OpenEnv setup has not started.")
         if not completion:
-            return {
-                "messages": await render_messages(
-                    config, self.session, observation, "reset"
-                )
-            }
+            return json_data(
+                {
+                    "messages": await render_messages(
+                        config, self.session, observation, "reset"
+                    )
+                }
+            )
         if config.contract == "mcp":
-            return {"messages": [], "stop_condition": "openenv_no_tool_calls"}
+            return json_data(
+                {"messages": [], "stop_condition": "openenv_no_tool_calls"}
+            )
         action = latest_assistant_json(completion)
         result = await self.session.step(action)
         return result_payload(
