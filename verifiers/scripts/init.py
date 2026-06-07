@@ -128,7 +128,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build]
-include = ["{{env_file}}.py", "pyproject.toml", "README.md", "proj/**/*", "proj/.build.json"]
+include = ["{{env_file}}/**/*", "pyproject.toml", "README.md"]
 
 [tool.verifiers.eval]
 num_examples = 5
@@ -167,20 +167,16 @@ class {taskset_config_name}(vf.TasksetConfig):
     \"\"\"User-facing task settings for {env_id_dash}.\"\"\"
 
     system_prompt: vf.SystemPrompt = "Answer exactly."
-    # Optional MCP stubs live in servers/. Wire them in only when this taskset
-    # needs user simulation or tools:
+    # Optional user/toolset stubs live in servers/. Wire them in here only when
+    # this taskset needs user simulation or tools:
     #
-    # user: vf.User | None = vf.User(
-    #     server=vf.MCPServerSpec(
-    #         command=["python", "-m", "{env_id_underscore}.servers.user"]
-    #     )
+    # user: vf.UserConfig | None = vf.UserConfig(
+    #     loader="{env_id_underscore}.servers.user:ExampleUser"
     # )
-    # toolsets: vf.Toolsets = [
-    #     vf.Toolset(
+    # toolsets: list[vf.ToolsetConfig] = [
+    #     vf.ToolsetConfig(
+    #         loader="{env_id_underscore}.servers.toolset:ExampleToolset",
     #         name="tools",
-    #         server=vf.MCPServerSpec(
-    #             command=["python", "-m", "{env_id_underscore}.servers.tools"]
-    #         ),
     #     )
     # ]
 
@@ -247,60 +243,44 @@ def load_harness(config: {harness_config_name}) -> {harness_name}:
 """
 
 V1_SERVERS_INIT_TEMPLATE = """\
-\"\"\"Optional MCP servers for {env_id_dash}.\"\"\"
+\"\"\"Optional user/toolset implementations for {env_id_dash}.\"\"\"
 """
 
 V1_USER_SERVER_TEMPLATE = """\
-from mcp.server.fastmcp import FastMCP
+import verifiers.v1 as vf
 
 
-mcp = FastMCP("{env_id_dash}-user")
-
-
-@mcp.tool()
-def respond(task: dict, state: dict, transcript: list[dict]) -> dict:
-    \"\"\"Return user messages, scratch updates, or stop signals.\"\"\"
-    _ = task, state, transcript
-    return {{"messages": []}}
-
-
-if __name__ == "__main__":
-    mcp.run(transport="stdio")
+class ExampleUser(vf.User):
+    @vf.tool(
+        args={{
+            "task": "task",
+            "state": "state",
+            "transcript": "transcript",
+        }}
+    )
+    def respond(self, task: dict, state: dict, transcript: list[dict]) -> dict:
+        \"\"\"Return user messages, extras updates, or stop signals.\"\"\"
+        _ = task, state, transcript
+        return {{"messages": []}}
 """
 
 V1_TOOLS_SERVER_TEMPLATE = """\
-from mcp.server.fastmcp import FastMCP
+import verifiers.v1 as vf
 
 
-mcp = FastMCP("{env_id_dash}-tools")
-
-
-@mcp.tool()
-def reverse_text(text: str) -> str:
-    \"\"\"Example tool stub.\"\"\"
-    return text[::-1]
-
-
-if __name__ == "__main__":
-    mcp.run(transport="stdio")
+class ExampleToolset(vf.Toolset):
+    @vf.tool
+    def reverse_text(self, text: str) -> str:
+        \"\"\"Example tool stub.\"\"\"
+        return text[::-1]
 """
 
-OPENENV_ENVIRONMENT_TEMPLATE = """\
-import verifiers.v1 as vf
+OPENENV_TASKSET_TEMPLATE = """\
 from tasksets import OpenEnvTaskset, OpenEnvTasksetConfig
 
 
 def load_taskset(config: OpenEnvTasksetConfig) -> OpenEnvTaskset:
     return OpenEnvTaskset(config=config)
-
-
-def load_environment(config: vf.EnvConfig) -> vf.Env:
-    \"\"\"Loader pattern for all Taskset/Harness environments.\"\"\"
-    return vf.Env(
-        taskset=vf.load_taskset(config=config.taskset),
-        harness=vf.load_harness(config=config.harness),
-        runtime=config.runtime,
-    )
 """
 
 OPENENV_PROJ_README_TEMPLATE = """\
@@ -490,7 +470,7 @@ def init_environment(
     else:
         print(f"README.md already exists at {readme_file}, skipping...")
 
-    package_layout = multi_file or (v1 and not openenv)
+    package_layout = multi_file or v1 or openenv
 
     # create pyproject.toml if it doesn't exist
     pyproject_file = local_dir / "pyproject.toml"
@@ -521,12 +501,10 @@ def init_environment(
     if package_layout:
         init_file = environment_dir / "__init__.py"
         if not init_file.exists():
-            if v1 and not openenv:
+            if v1 or openenv:
                 init_file.write_text(V1_INIT_TEMPLATE.format(env_id_dash=env_id_dash))
             else:
                 exports = ["load_environment"]
-                if openenv:
-                    exports.append("load_taskset")
                 init_file.write_text(
                     INIT_TEMPLATE.format(
                         env_id=env_id_underscore,
@@ -537,11 +515,14 @@ def init_environment(
         else:
             print(f"__init__.py already exists at {init_file}, skipping...")
 
-    if v1 and not openenv:
+    if v1 or openenv:
         taskset_file = environment_dir / "taskset.py"
         if not taskset_file.exists():
+            taskset_template = (
+                OPENENV_TASKSET_TEMPLATE if openenv else V1_TASKSET_TEMPLATE
+            )
             taskset_file.write_text(
-                V1_TASKSET_TEMPLATE.replace("{env_id_dash}", env_id_dash)
+                taskset_template.replace("{env_id_dash}", env_id_dash)
                 .replace("{taskset_config_name}", taskset_config_name)
                 .replace("{task_name}", task_name)
                 .replace("{taskset_name}", taskset_name)
@@ -550,7 +531,7 @@ def init_environment(
         else:
             print(f"taskset.py already exists at {taskset_file}, skipping...")
 
-        if with_harness:
+        if with_harness and not openenv:
             harness_file = environment_dir / "harness.py"
             if not harness_file.exists():
                 harness_file.write_text(
@@ -564,11 +545,8 @@ def init_environment(
         # create environment file if it doesn't exist
         environment_file = environment_dir / f"{env_id_underscore}.py"
         if not environment_file.exists():
-            template = (
-                OPENENV_ENVIRONMENT_TEMPLATE if openenv else V0_ENVIRONMENT_TEMPLATE
-            )
             environment_file.write_text(
-                template.replace("{env_id_dash}", env_id_dash)
+                V0_ENVIRONMENT_TEMPLATE.replace("{env_id_dash}", env_id_dash)
                 .replace("{taskset_config_name}", taskset_config_name)
                 .replace("{task_name}", task_name)
                 .replace("{taskset_name}", taskset_name)
@@ -587,7 +565,7 @@ def init_environment(
         server_files = {
             "__init__.py": V1_SERVERS_INIT_TEMPLATE,
             "user.py": V1_USER_SERVER_TEMPLATE,
-            "tools.py": V1_TOOLS_SERVER_TEMPLATE,
+            "toolset.py": V1_TOOLS_SERVER_TEMPLATE,
         }
         for filename, template in server_files.items():
             server_file = servers_dir / filename
@@ -602,7 +580,7 @@ def init_environment(
                 print(f"{server_file} already exists, skipping...")
 
     if openenv:
-        _init_openenv_proj(local_dir, env_id_dash, env_id_underscore)
+        _init_openenv_proj(environment_dir, env_id_dash, env_id_underscore)
 
     return local_dir
 

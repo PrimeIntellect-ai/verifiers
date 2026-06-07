@@ -201,10 +201,6 @@ def load_taskset(config: DemoTasksetConfig):
 
 def load_harness(config: DemoHarnessConfig):
     raise RuntimeError("not used")
-
-
-def load_environment(config: vf.EnvConfig):
-    raise RuntimeError("not used")
 """,
         encoding="utf-8",
     )

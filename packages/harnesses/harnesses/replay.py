@@ -5,17 +5,9 @@ from verifiers.types import Response, ResponseMessage
 
 
 class ReplayHarness(vf.Harness[vf.HarnessConfig]):
-    async def _run(
-        self,
-        task: vf.Task,
-        state: vf.State,
-        *,
-        ctx: vf.RolloutContext,
-        runtime: vf.RuntimeSession | None = None,
-        tools: vf.MCPToolRegistry | None = None,
-        user: vf.MCPToolRegistry | None = None,
-    ) -> None:
-        _ = ctx, runtime, tools, user
+    async def run_with_context(self, context: vf.Context) -> None:
+        task = context.task
+        state = context.state
         messages = replay_messages(task)
         assistant_indices = [
             index
@@ -37,7 +29,7 @@ class ReplayHarness(vf.Harness[vf.HarnessConfig]):
             is_truncated = max_turns_reached and turn_index == final_turn
             response = replay_response(
                 message=message,
-                model=ctx.model or "replay",
+                model=context.model or "replay",
                 created=created,
                 turn=turn_index,
                 state_id=state.id,

@@ -173,13 +173,17 @@ class Turn(BaseModel, extra="forbid"):
         return self
 
 
+class Extras(BaseModel, extra="forbid"):
+    pass
+
+
 class State(BaseModel, extra="forbid"):
     """Strict serializable v1 rollout state."""
 
     id: str = Field(default_factory=lambda: uuid.uuid4().hex)
     task_id: str | None = None
     transcript: list[Turn] = Field(default_factory=list)
-    scratch: JsonData = Field(default_factory=dict)
+    extras: JsonData = Field(default_factory=dict)
     metrics: dict[str, float] = Field(default_factory=dict)
     reward: float = 0.0
     advantage: float | None = None
@@ -295,6 +299,7 @@ class State(BaseModel, extra="forbid"):
             "is_completed": self.is_completed,
             "is_truncated": self.is_truncated,
             "metrics": dict(self.metrics),
+            "extras": deepcopy(self.extras),
             "stop_condition": self.stop_condition,
             "transcript": [self.turn_record(turn) for turn in self.transcript],
         }
@@ -329,8 +334,8 @@ class State(BaseModel, extra="forbid"):
             return self._serialized_messages(self.completion)
         if column == "messages":
             return self._serialized_messages(self.messages)
-        if column == "scratch":
-            return deepcopy(self.scratch)
+        if column == "extras":
+            return deepcopy(self.extras)
         if column == "transcript":
             return [self.turn_record(turn) for turn in self.transcript]
         if column in type(self).model_fields:
@@ -339,8 +344,8 @@ class State(BaseModel, extra="forbid"):
             if callable(model_dump):
                 return model_dump(mode="json", exclude_none=True)
             return deepcopy(value)
-        if column in self.scratch:
-            return deepcopy(self.scratch[column])
+        if column in self.extras:
+            return deepcopy(self.extras[column])
         return None
 
     def _record_usage(self, usage: Usage | None) -> None:

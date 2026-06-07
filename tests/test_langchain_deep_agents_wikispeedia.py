@@ -123,7 +123,7 @@ def test_wikispeedia_rows_use_v1_task_shape(
     assert row["shortest_path"] == 1
 
 
-def test_wikispeedia_navigation_uses_state_scratch(
+def test_wikispeedia_navigation_uses_state_extras(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _, module = load_modules(monkeypatch)
@@ -141,14 +141,14 @@ def test_wikispeedia_navigation_uses_state_scratch(
     result = module.click_link_result("B", wiki, state)
 
     assert result.startswith("TARGET REACHED")
-    assert state.scratch["current_article"] == "B"
-    assert state.scratch["path"] == ["A", "B"]
-    assert state.scratch["reached_target"] is True
+    assert state.extras["current_article"] == "B"
+    assert state.extras["path"] == ["A", "B"]
+    assert state.extras["reached_target"] is True
     assert state.stop_condition == "target_reached"
 
 
 @pytest.mark.asyncio
-async def test_wikispeedia_scores_from_scratch_and_transcript(
+async def test_wikispeedia_scores_from_extras_and_transcript(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _, module = load_modules(monkeypatch)
@@ -163,7 +163,7 @@ async def test_wikispeedia_scores_from_scratch_and_transcript(
         shortest_path=1,
     )
     state = vf.State(task_id=task.task_id)
-    state.scratch.update(
+    state.extras.update(
         {
             "path": ["A", "B"],
             "reached_target": True,

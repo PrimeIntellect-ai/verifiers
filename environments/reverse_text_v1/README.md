@@ -1,11 +1,11 @@
-# reverse-text
+# reverse-text-v1
 
-<a href="https://github.com/PrimeIntellect-ai/verifiers/tree/main/environments/reverse_text">
+<a href="https://github.com/PrimeIntellect-ai/verifiers/tree/main/environments/reverse_text_v1">
 <img src="https://img.shields.io/badge/GitHub-181717?style=for-the-badge&logo=github&logoColor=white" alt="Source Code">
 </a>
 
 ### Overview
-- **Environment ID**: `reverse-text`
+- **Environment ID**: `reverse-text-v1`
 - **Short description**: Reverse a given text; evaluated by LCS similarity between the parsed answer and ground-truth reversal.
 - **Tags**: text, transformation, single-turn, xml
 
@@ -22,13 +22,13 @@
 Run an evaluation with default settings:
 
 ```bash
-prime eval run reverse-text
+prime eval run reverse-text-v1
 ```
 
 Configure model and sampling:
 
 ```bash
-prime eval run reverse-text \
+prime eval run reverse-text-v1 \
   -m openai/gpt-4.1-mini \
   -n 20 -r 3 -t 1024 -T 0.7
 ```
@@ -41,7 +41,7 @@ Notes:
 | --- | ---- | ------- | ----------- |
 | `dataset_name` | str | `"PrimeIntellect/Reverse-Text-RL"` | Name of the dataset to use |
 | `dataset_split` | str | `"train"` | Split of the dataset to use |
-| `system_prompt` | str | None | `"Reverse the text character-by-character. Put your answer in <reversed_text> tags."` | System prompt to use |
+| `system_prompt` | str | `"Reverse the text character-by-character. Put your answer in <reversed_text> tags."` | System prompt to use |
 
 ### Metrics
 | Metric | Meaning |

@@ -5,7 +5,7 @@ V1 example where the answer rollout is reviewed by taskset-owned update logic.
 The answer harness runs the base loop. Each task asks the model to answer with a
 sources line. The taskset then:
 
-1. stores judge findings under `state.scratch["judge"]` and
+1. stores judge findings under `state.extras["judge"]` and
    `state.artifacts["judge_findings"]`;
 2. reports source-mention metrics;
 3. computes the reward from the serialized findings.

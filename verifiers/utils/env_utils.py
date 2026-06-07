@@ -3,30 +3,20 @@ from __future__ import annotations
 import importlib
 import inspect
 import logging
-from collections.abc import Mapping
 from types import ModuleType
 from typing import (
     Callable,
     TYPE_CHECKING,
-    TypeAlias,
 )
 
-from pydantic import BaseModel
 from verifiers.envs.environment import Environment
 from verifiers.utils.config_utils import MissingKeyError
 
 if TYPE_CHECKING:
-    from verifiers.v1.env import Env, EnvConfig
-    from verifiers.v1.harness import Harness, HarnessConfig
-    from verifiers.v1.taskset import Taskset, TasksetConfig
-
-ConfigMapping: TypeAlias = Mapping[str, object]
-EnvConfigLoadData: TypeAlias = dict[str, object]
-EnvConfigChildInput: TypeAlias = ConfigMapping | EnvConfigLoadData
-EnvConfigInput: TypeAlias = BaseModel | ConfigMapping
+    from verifiers.v1.env import Env
 
 
-def load_environment(env_id: str, **env_args) -> Environment:
+def load_environment(env_id: str, **env_args) -> Environment | "Env":
     logger = logging.getLogger("verifiers.utils.env_utils")
     logger.info(f"Loading environment: {env_id}")
 
@@ -38,6 +28,8 @@ def load_environment(env_id: str, **env_args) -> Environment:
             module, "load_environment", None
         )
         if env_load_func is None:
+            from verifiers.v1.loaders import load_environment_from_components
+
             env_instance = load_environment_from_components(module, env_args)
             env_instance.env_id = env_instance.env_id or env_id
             env_instance.env_args = env_instance.env_args or env_args
@@ -86,8 +78,7 @@ def load_environment(env_id: str, **env_args) -> Environment:
             if default_values:
                 logger.info(f"Using default args: {', '.join(default_values)}")
 
-        call_env_args = prepare_typed_env_config(module, env_load_func, sig, env_args)
-        env_instance: Environment = env_load_func(**call_env_args)
+        env_instance: Environment = env_load_func(**env_args)
         env_instance.env_id = env_instance.env_id or env_id
         env_instance.env_args = env_instance.env_args or env_args
 
@@ -117,144 +108,3 @@ def env_module_name(env_id: str) -> str:
 
 def import_env_module(env_id: str) -> ModuleType:
     return importlib.import_module(env_module_name(env_id))
-
-
-def load_taskset(
-    env_id: str | None = None,
-    *,
-    config: TasksetConfig | ConfigMapping | None = None,
-) -> Taskset:
-    from verifiers.v1.loaders import load_taskset as load_v1_taskset
-
-    return load_v1_taskset(env_id, config=config)
-
-
-def load_harness(
-    env_id: str | None = None,
-    *,
-    config: HarnessConfig | ConfigMapping | None = None,
-) -> Harness:
-    from verifiers.v1.loaders import load_harness as load_v1_harness
-
-    return load_v1_harness(env_id, config=config)
-
-
-def load_taskset_from_module(
-    module: ModuleType,
-    *,
-    config: TasksetConfig | ConfigMapping | None = None,
-) -> Taskset:
-    from verifiers.v1.loaders import load_taskset_from_module as load_v1_taskset
-
-    return load_v1_taskset(module, config=config)
-
-
-def load_harness_from_module(
-    module: ModuleType,
-    *,
-    config: HarnessConfig | ConfigMapping | None = None,
-) -> Harness:
-    from verifiers.v1.loaders import load_harness_from_module as load_v1_harness
-
-    return load_v1_harness(module, config=config)
-
-
-def prepare_typed_env_config(
-    module: ModuleType,
-    env_load_func: Callable[..., Environment],
-    sig: inspect.Signature,
-    env_args: dict,
-) -> dict:
-    from verifiers.v1.loaders import prepare_typed_env_config as prepare_v1_config
-
-    return prepare_v1_config(module, env_load_func, sig, env_args)
-
-
-def load_environment_from_components(
-    module: ModuleType,
-    env_args: dict,
-) -> Env:
-    from verifiers.v1.loaders import (
-        load_environment_from_components as load_v1_components,
-    )
-
-    return load_v1_components(module, env_args)
-
-
-def env_config_annotation(
-    env_load_func: Callable[..., Environment],
-    sig: inspect.Signature,
-) -> type[EnvConfig] | None:
-    from verifiers.v1.loaders import env_config_annotation as v1_config_annotation
-
-    return v1_config_annotation(env_load_func, sig)
-
-
-def env_config_type(annotation: object) -> type[EnvConfig] | None:
-    from verifiers.v1.loaders import env_config_type as v1_config_type
-
-    return v1_config_type(annotation)
-
-
-def load_env_config(
-    module: ModuleType,
-    config_type: type[EnvConfig],
-    value: EnvConfigInput,
-    *,
-    child_types: Mapping[str, type[BaseModel]] | None = None,
-) -> EnvConfig:
-    from verifiers.v1.loaders import load_env_config as load_v1_env_config
-
-    return load_v1_env_config(
-        module,
-        config_type,
-        value,
-        child_types=child_types,
-    )
-
-
-def env_config_child_types(
-    module: ModuleType,
-    config_type: type[EnvConfig],
-    value: EnvConfigChildInput | None = None,
-) -> dict[str, type[BaseModel]]:
-    from verifiers.v1.loaders import env_config_child_types as v1_child_types
-
-    return v1_child_types(module, config_type, value)
-
-
-def child_config_requires_loader_type(
-    config: object,
-    base_type: type[BaseModel],
-) -> bool:
-    from verifiers.v1.loaders import (
-        child_config_requires_loader_type as v1_requires_loader_type,
-    )
-
-    return v1_requires_loader_type(config, base_type)
-
-
-def child_loader_id(config: object) -> str | None:
-    from verifiers.v1.loaders import child_loader_id as v1_child_loader_id
-
-    return v1_child_loader_id(config)
-
-
-def factory_config_type(
-    module: ModuleType,
-    factory_name: str,
-    base_type: type[BaseModel],
-) -> type[BaseModel] | None:
-    from verifiers.v1.loaders import factory_config_type as v1_factory_config_type
-
-    return v1_factory_config_type(module, factory_name, base_type)
-
-
-def config_type_from_annotation(
-    annotation: object,
-    base_type: type[BaseModel],
-    context: str,
-) -> type[BaseModel]:
-    from verifiers.v1.loaders import config_type_from_annotation as v1_config_type
-
-    return v1_config_type(annotation, base_type, context)

@@ -25,35 +25,32 @@ class CommandHarness(vf.Harness[ConfigT], Generic[ConfigT]):
         return list(self.config.command)
 
     def command_env(self, task: vf.Task, state: vf.State) -> dict[str, str]:
+        prompt_text = "\n\n".join(
+            str(getattr(message, "content", "") or "")
+            for message in self.initial_messages(task)
+        )
         return {
             **self.config.env,
             "VF_TASK_JSON": json.dumps(task.to_record(), ensure_ascii=False),
             "VF_STATE_ID": state.id,
-            "VF_PROMPT": vf.messages_text(self.initial_messages(task)),
+            "VF_PROMPT": prompt_text,
         }
 
-    async def _run(
-        self,
-        task: vf.Task,
-        state: vf.State,
-        *,
-        ctx: vf.RolloutContext,
-        runtime: vf.RuntimeSession | None = None,
-        tools: vf.MCPToolRegistry | None = None,
-        user: vf.MCPToolRegistry | None = None,
-    ) -> None:
+    async def run_with_context(self, context: vf.Context) -> None:
+        task = context.task
+        state = context.state
+        runtime = context.runtime
         if runtime is None:
-            raise ValueError("CommandHarness requires a runtime session.")
-        _ = tools, user
+            raise ValueError("CommandHarness requires a runtime.")
         prompt = self.initial_messages(task)
 
         async def stop_check() -> str | None:
-            if await self.is_completed(task, state, ctx=ctx):
+            if await self.is_completed(context):
                 return state.stop_condition or "stop"
             return None
 
         async with vf.InterceptionServer(
-            ctx,
+            context,
             task,
             state,
             protocols=self.protocols,
@@ -65,7 +62,7 @@ class CommandHarness(vf.Harness[ConfigT], Generic[ConfigT]):
                 cwd=self.config.cwd,
                 env={
                     **self.command_env(task, state),
-                    **endpoint.env(base_url=endpoint_url, model=ctx.model),
+                    **endpoint.env(base_url=endpoint_url, model=context.model),
                 },
                 timeout=self.config.timeout_seconds,
             )

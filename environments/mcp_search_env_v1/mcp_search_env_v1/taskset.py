@@ -1,9 +1,8 @@
 from collections.abc import Iterable
-import sys
-
-from pydantic import Field
 
 import verifiers.v1 as vf
+
+from .servers.toolset import SearchToolsetConfig
 
 SYSTEM_PROMPT = "Use the available MCP tools to answer the question."
 
@@ -62,15 +61,9 @@ DEFAULT_EXAMPLES = [
 
 
 class MCPSearchTasksetConfig(vf.TasksetConfig):
-    mcp_servers: list[vf.MCPServerSpec] = Field(
-        default_factory=lambda: [
-            vf.MCPServerSpec(
-                command=[sys.executable, "-m", "mcp_search_env_v1.servers.tools"]
-            )
-        ]
-    )
     max_turns: int = 6
     examples: list[vf.JsonData] | None = None
+    toolsets: list[vf.ToolsetConfig] = [SearchToolsetConfig()]
 
 
 class MCPSearchTask(vf.Task):
@@ -90,12 +83,6 @@ class MCPSearchTaskset(vf.Taskset[MCPSearchTasksetConfig]):
     def load_system_prompt(self, config: MCPSearchTasksetConfig) -> vf.SystemPrompt:
         _ = config
         return SYSTEM_PROMPT
-
-    def load_toolsets(self, config: MCPSearchTasksetConfig) -> vf.Toolsets:
-        return [
-            vf.Toolset(name=f"records_{index}", server=server)
-            for index, server in enumerate(config.mcp_servers)
-        ]
 
     @vf.reward(weight=1.0)
     async def exact_title_reward(self, task: MCPSearchTask, state: vf.State) -> float:

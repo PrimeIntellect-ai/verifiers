@@ -13,7 +13,7 @@ from verifiers.types import Messages, Response, Tool
 
 from .state import State
 from .task import Task
-from .types import JsonData, JsonValue, RolloutContext
+from .types import JsonData, JsonValue, Context
 
 StopCheck = Callable[[], Awaitable[str | None]]
 
@@ -58,7 +58,7 @@ class EndpointProtocol(ABC):
 class InterceptionServer:
     def __init__(
         self,
-        ctx: RolloutContext,
+        context: Context,
         task: Task,
         state: State,
         *,
@@ -69,7 +69,7 @@ class InterceptionServer:
             from .protocols import default_protocols
 
             protocols = default_protocols()
-        self.ctx = ctx
+        self.context = context
         self.task = task
         self.state = state
         self.protocols = list(protocols)
@@ -117,11 +117,11 @@ class InterceptionServer:
                         {"error": f"rollout stopped: {stop_condition}"},
                         status=400,
                     )
-                response = await self.ctx.model_client.get_response(
+                response = await self.context.model_client.get_response(
                     prompt=intercepted.prompt,
-                    model=intercepted.model or self.ctx.model,
+                    model=intercepted.model or self.context.model,
                     sampling_args={
-                        **self.ctx.sampling_args,
+                        **self.context.sampling_args,
                         **intercepted.sampling_args,
                     },
                     tools=intercepted.tools,

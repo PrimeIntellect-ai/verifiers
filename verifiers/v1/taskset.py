@@ -9,12 +9,12 @@ from pydantic import Field
 
 from .config import Config, ConfigSource
 from .decorators import discover_decorated
-from .state import State
+from .state import Extras, State
 from .task import Task
-from .toolset import Toolset
+from .toolset import ToolsetConfig
 from .runtime import RuntimeConfig
 from .types import Handler, JsonData, TaskSplit, Tasks
-from .user import User
+from .user import UserConfig
 from .utils.config_utils import (
     coerce_config,
     config_ref_context,
@@ -40,9 +40,10 @@ LifecycleKind = str
 class TasksetConfig(Config):
     id: str | None = None
     system_prompt: SystemPrompt = None
-    user: User | None = None
-    toolsets: list[Toolset] = Field(default_factory=list)
+    user: UserConfig | None = None
+    toolsets: list[ToolsetConfig] = Field(default_factory=list)
     runtime: RuntimeConfig | None = None
+    extras: Extras | None = None
 
 
 ConfigT = TypeVar("ConfigT", bound=TasksetConfig)
@@ -78,11 +79,8 @@ class Taskset(Generic[ConfigT]):
             )
             self.user = self.load_user(self.config.user)
             self.toolsets = [
-                normalize_toolset(item)
-                for item in [
-                    *(self.load_toolsets(self.config) or []),
-                    *self.config.toolsets,
-                ]
+                *(self.load_toolsets(self.config) or []),
+                *self.config.toolsets,
             ]
             self.handlers = self.load_handlers()
             self.signals = build_signals(self)
@@ -99,10 +97,10 @@ class Taskset(Generic[ConfigT]):
     def load_system_prompt(self, config: ConfigT) -> SystemPrompt:
         return config.system_prompt
 
-    def load_user(self, config: User | None) -> User | None:
+    def load_user(self, config: UserConfig | None) -> UserConfig | None:
         return config
 
-    def load_toolsets(self, config: ConfigT) -> list[Toolset]:
+    def load_toolsets(self, config: ConfigT) -> list[ToolsetConfig]:
         return []
 
     def load_handlers(self) -> dict[LifecycleKind, list[Handler]]:
@@ -174,11 +172,3 @@ def collect_owner_signals(taskset: Taskset, harness: "Harness") -> list[SignalRe
             raise ValueError(f"Signal {signal['name']!r} is defined twice.")
         signals.append(signal)
     return sorted(signals, key=lambda signal: (-signal["priority"], signal["name"]))
-
-
-def normalize_toolset(value: Toolset | dict[str, object]) -> Toolset:
-    if isinstance(value, Toolset):
-        return value
-    if isinstance(value, dict):
-        return Toolset.model_validate(value)
-    raise TypeError("Taskset toolsets must be Toolset objects or mappings.")

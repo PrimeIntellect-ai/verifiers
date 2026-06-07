@@ -43,7 +43,7 @@ async def test_hello_group_reward_v1_scores_full_group_lifecycle() -> None:
     states = await env.score_group(tasks, states)
 
     assert len(states) == 4
-    by_candidate = {state.scratch["candidate_id"]: state for state in states}
+    by_candidate = {state.extras["candidate_id"]: state for state in states}
     exact = by_candidate["exact"]
     off_topic = by_candidate["off-topic"]
 

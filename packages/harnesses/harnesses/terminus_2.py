@@ -23,8 +23,17 @@ class Terminus2(CommandHarness[Terminus2Config]):
 
     def command(self, task: vf.Task, state: vf.State) -> list[str]:
         _ = state
-        instruction = vf.task_text(task, state, keys=("instruction", "question"))
-        system_prompt = vf.messages_text(vf.get_messages(self.system_prompt))
+        instruction = str(
+            getattr(task, "instruction", None) or getattr(task, "question", None) or ""
+        )
+        if not instruction:
+            instruction = "\n\n".join(
+                str(getattr(message, "content", "") or "") for message in task.prompt
+            )
+        system_prompt = "\n\n".join(
+            str(getattr(message, "content", "") or "")
+            for message in vf.get_messages(self.system_prompt)
+        )
         if system_prompt:
             instruction = f"{system_prompt}\n\n{instruction}"
         script = f"""

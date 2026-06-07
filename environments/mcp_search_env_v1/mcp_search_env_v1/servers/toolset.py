@@ -1,8 +1,6 @@
 import json
 
-from mcp.server.fastmcp import FastMCP
-
-mcp = FastMCP("mcp-search-env")
+import verifiers.v1 as vf
 
 RECORDS = {
     "kiln_battery_loop": {
@@ -58,25 +56,26 @@ RECORDS = {
 }
 
 
-@mcp.tool()
-def search_records(query: str) -> str:
-    normalized_tokens = set(query.lower().split())
-    matches = []
-    for record_id, record in RECORDS.items():
-        keywords = set(record["keywords"])
-        title_tokens = set(str(record["title"]).lower().split())
-        if normalized_tokens & (keywords | title_tokens):
-            matches.append({"record_id": record_id, "title": record["title"]})
-    return json.dumps(matches)
+class SearchToolsetConfig(vf.ToolsetConfig):
+    loader: str = "mcp_search_env_v1.servers.toolset:SearchToolset"
+    name: str | None = "records"
 
 
-@mcp.tool()
-def read_record(record_id: str) -> str:
-    if record_id not in RECORDS:
-        raise ValueError(f"Unknown record_id: {record_id}")
-    record = RECORDS[record_id]
-    return f"{record['title']}\n\n{record['summary']}"
+class SearchToolset(vf.Toolset[SearchToolsetConfig]):
+    @vf.tool
+    def search_records(self, query: str) -> str:
+        normalized_tokens = set(query.lower().split())
+        matches = []
+        for record_id, record in RECORDS.items():
+            keywords = set(record["keywords"])
+            title_tokens = set(str(record["title"]).lower().split())
+            if normalized_tokens & (keywords | title_tokens):
+                matches.append({"record_id": record_id, "title": record["title"]})
+        return json.dumps(matches)
 
-
-if __name__ == "__main__":
-    mcp.run(transport="stdio")
+    @vf.tool
+    def read_record(self, record_id: str) -> str:
+        if record_id not in RECORDS:
+            raise ValueError(f"Unknown record_id: {record_id}")
+        record = RECORDS[record_id]
+        return f"{record['title']}\n\n{record['summary']}"

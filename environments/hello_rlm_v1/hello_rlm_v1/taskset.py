@@ -1,4 +1,5 @@
 import verifiers.v1 as vf
+from harnesses import RLM, RLMConfig
 
 
 def load_tasks(split: vf.TaskSplit = "train"):
@@ -35,38 +36,18 @@ class HelloRLMTaskset(vf.Taskset[HelloRLMTasksetConfig]):
 
     @vf.reward(weight=1.0)
     async def exact_answer(self, task: HelloRLMTask, state: vf.State) -> float:
-        stdout = str(state.scratch.get("command", {}).get("stdout") or "")
+        command = state.artifacts.get("command")
+        stdout = str(command.get("stdout") if isinstance(command, dict) else "")
         return float(task.answer.lower() in stdout.lower())
 
 
-class HelloRLMHarnessConfig(vf.HarnessConfig):
-    max_turns: int = 1
-
-
-class HelloRLMHarness(vf.Harness[HelloRLMHarnessConfig]):
-    async def _run(
-        self,
-        task: HelloRLMTask,
-        state: vf.State,
-        *,
-        ctx: vf.RolloutContext,
-        runtime: vf.RuntimeSession | None = None,
-        tools: vf.MCPToolRegistry | None = None,
-        user: vf.MCPToolRegistry | None = None,
-    ) -> None:
-        _ = ctx, runtime, tools, user
-        answer = task.answer
-        message = vf.AssistantMessage(content=answer)
-        state.scratch["command"] = {"stdout": answer, "stderr": "", "returncode": 0}
-        state.add_turn(
-            vf.Turn(prompt=self.initial_messages(task), completion=[message])
-        )
-        state.stop("deterministic_harness")
+class HelloRLMHarnessConfig(RLMConfig):
+    cwd: str | None = None
 
 
 def load_taskset(config: HelloRLMTasksetConfig) -> HelloRLMTaskset:
     return HelloRLMTaskset(config=config)
 
 
-def load_harness(config: HelloRLMHarnessConfig) -> HelloRLMHarness:
-    return HelloRLMHarness(config=config)
+def load_harness(config: HelloRLMHarnessConfig) -> RLM:
+    return RLM(config=config)

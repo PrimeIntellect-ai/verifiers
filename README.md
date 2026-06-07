@@ -140,15 +140,21 @@ def load_environment(dataset_name: str = 'gsm8k') -> vf.Environment:
 For new environments with reusable tasksets, toolsets, custom programs, or
 custom harnesses, use the v1 Taskset/Harness path:
 ```python
-# my_env.py
-import verifiers as vf
+# my_env/taskset.py
+import verifiers.v1 as vf
 
 
 class MyTasksetConfig(vf.TasksetConfig):
     system_prompt: vf.SystemPrompt = "Reverse text exactly."
 
 
+class MyTask(vf.Task):
+    answer: str
+
+
 class MyTaskset(vf.Taskset[MyTasksetConfig]):
+    task_type = MyTask
+
     def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         rows = [
             {
@@ -161,23 +167,15 @@ class MyTaskset(vf.Taskset[MyTasksetConfig]):
         return [row for row in rows if row["split"] == split]
 
     @vf.reward(weight=1.0)
-    async def contains_answer(self, task, state) -> float:
-        return float(task["answer"] in str(state.get("completion") or ""))
+    async def contains_answer(self, task: MyTask, state: vf.State) -> float:
+        return float(task.answer in str(state.completion or ""))
 
 
 def load_taskset(config: MyTasksetConfig) -> MyTaskset:
     return MyTaskset(config=config)
-
-
-def load_environment(config: vf.EnvConfig) -> vf.Env:
-    """Loader pattern for all Taskset/Harness environments."""
-    return vf.Env(
-        taskset=vf.load_taskset(config=config.taskset),
-        harness=vf.load_harness(config=config.harness),
-    )
 ```
-The child loader annotation defines the taskset config shape; root
-`load_environment` stays typed as `vf.EnvConfig`. See
+The child loader annotation defines the taskset config shape. The package
+loader assembles `vf.Env` from `taskset.py` and optional `harness.py`. See
 **[BYO Harness](docs/byo-harness.md)** for the advanced v1 taskset/harness API.
 Reusable taskset and harness packages live in `tasksets` and `harnesses`.
 Install them with `uv add "verifiers[packages]"`, or with the narrower

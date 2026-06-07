@@ -67,7 +67,7 @@ class NeMoRLChatCompletionsClient(OpenAIChatCompletionsClient):
         tools: list[Tool] | None = None,
         **kwargs,
     ) -> Response:
-        """Annotate prior assistant messages with their trajectory tokens before delegating to the parent client."""
+        """Annotate prior assistant messages with their token ids before delegation."""
         state = kwargs.get("state")
         if state is not None:
             _attach_trajectory_tokens_to_prompt(prompt, state)
@@ -96,12 +96,12 @@ class NeMoRLChatCompletionsClient(OpenAIChatCompletionsClient):
 def _attach_trajectory_tokens_to_prompt(
     prompt: Messages, state: dict[str, Any]
 ) -> None:
-    """Attach each past assistant message's token ids from the trajectory."""
-    trajectory = state.get("trajectory") or []
-    if not trajectory:
+    """Attach each past assistant message's token ids from recorded turns."""
+    turns = state.get("transcript") or state.get("trajectory") or []
+    if not turns:
         return
     indices = [i for i, m in enumerate(prompt) if isinstance(m, AssistantMessage)]
-    step_tokens = [step.get("tokens") for step in trajectory]
+    step_tokens = [step.get("tokens") for step in turns]
     n = min(len(indices), len(step_tokens))
     for i, tokens in zip(indices[-n:], step_tokens[-n:]):
         if tokens is None:

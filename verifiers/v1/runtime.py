@@ -79,7 +79,7 @@ RUNTIME_CONFIG_TYPES = (
 )
 
 
-class RuntimeSession(ABC):
+class Runtime(ABC):
     @abstractmethod
     async def start(self) -> None: ...
 
@@ -125,7 +125,7 @@ class RuntimeSession(ABC):
             command = f"{command} {shlex.quote(input_path)}"
         return await self.run(["sh", "-c", command], env=env, timeout=timeout)
 
-    async def __aenter__(self) -> "RuntimeSession":
+    async def __aenter__(self) -> "Runtime":
         await self.start()
         return self
 
@@ -135,31 +135,31 @@ class RuntimeSession(ABC):
 
 class RuntimeProvider(ABC):
     @abstractmethod
-    def session(self) -> RuntimeSession: ...
+    def create_runtime(self) -> Runtime: ...
 
 
 class LocalRuntimeProvider(RuntimeProvider):
     def __init__(self, config: LocalRuntimeConfig | None = None) -> None:
         self.config = config or LocalRuntimeConfig()
 
-    def session(self) -> RuntimeSession:
-        return LocalRuntimeSession(self.config)
+    def create_runtime(self) -> Runtime:
+        return LocalRuntime(self.config)
 
 
 class DockerRuntimeProvider(RuntimeProvider):
     def __init__(self, config: DockerRuntimeConfig) -> None:
         self.config = config
 
-    def session(self) -> RuntimeSession:
-        return DockerRuntimeSession(self.config)
+    def create_runtime(self) -> Runtime:
+        return DockerRuntime(self.config)
 
 
 class PrimeRuntimeProvider(RuntimeProvider):
     def __init__(self, config: PrimeRuntimeConfig) -> None:
         self.config = config
 
-    def session(self) -> RuntimeSession:
-        return PrimeRuntimeSession(self.config)
+    def create_runtime(self) -> Runtime:
+        return PrimeRuntime(self.config)
 
 
 def make_runtime_provider(config: RuntimeConfigValue) -> RuntimeProvider:
@@ -195,7 +195,7 @@ def resolve_runtime_config(
     return resolved or LocalRuntimeConfig()
 
 
-class LocalRuntimeSession(RuntimeSession):
+class LocalRuntime(Runtime):
     def __init__(self, config: LocalRuntimeConfig) -> None:
         self.config = config
         self.workdir: Path | None = None
@@ -220,7 +220,7 @@ class LocalRuntimeSession(RuntimeSession):
         timeout: float | None = None,
     ) -> CommandResult:
         if not command:
-            raise ValueError("RuntimeSession.run requires a command.")
+            raise ValueError("Runtime.run requires a command.")
         full_env = {
             name: os.environ[name] for name in _SUBPROCESS_ENV if name in os.environ
         }
@@ -262,7 +262,7 @@ class LocalRuntimeSession(RuntimeSession):
         return value if value.is_absolute() else self.workdir / value
 
 
-class DockerRuntimeSession(RuntimeSession):
+class DockerRuntime(Runtime):
     def __init__(self, config: DockerRuntimeConfig) -> None:
         self.config = config
         self.container: str | None = None
@@ -361,7 +361,7 @@ class DockerRuntimeSession(RuntimeSession):
         return self.container
 
 
-class PrimeRuntimeSession(RuntimeSession):
+class PrimeRuntime(Runtime):
     def __init__(self, config: PrimeRuntimeConfig) -> None:
         self.config = config
         self.client = None

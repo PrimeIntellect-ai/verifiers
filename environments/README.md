@@ -1,6 +1,6 @@
 # Environments
 
-This folder contains installable example environments that showcase common usage patterns in Verifiers. Each module exposes a `load_environment(...)` function that returns a ready-to-use `vf.Environment` object.
+This folder contains installable example environments that showcase common usage patterns in Verifiers. v0 packages expose `load_environment(...)`; v1 packages expose `taskset.py` and optional `harness.py` components and are assembled by the library loader.
 
 ## Quick start
 
@@ -60,7 +60,7 @@ This folder contains installable example environments that showcase common usage
   - **dspy_flights_v1**: Sandboxed DSPy flight-support `program.fn` entrypoint installed from its package `pyproject.toml` and configured against the v1 interception endpoint.
   - **hello_group_reward_v1**: Deterministic v1 reference for group updates, metrics, rewards, advantages, and cleanup.
   - **nemo_gym_env_v1**: Minimal v1 example that wraps a packaged NeMo Gym task with `NeMoGymTaskset` and `NeMoGymHarness`.
-  - **sft-replay**: Thin v1 replay environment using `ReplayTaskset` and `ReplayHarness` to turn stored transcripts into trajectory steps without model calls.
+  - **sft_replay_v1**: Thin v1 replay environment using `ReplayTaskset` and `ReplayHarness` to turn stored transcripts into rollout `Turn`s without model calls.
   - **tau2_bench_v1**: `tau2-bench-v1` τ²-bench taskset/user/tool pattern on the v1 harness runtime.
   - **wordle_v1**: TextArena Wordle through the packaged v1 `TextArenaTaskset` boundary.
 
@@ -71,7 +71,7 @@ This folder contains installable example environments that showcase common usage
 - **Nested harnesses**
   - **hello_subagent_v1**: Minimal parent/child harness hand-off through a tool.
   - **nested_harness_v1**: v1 example showing a tool that calls a child `Harness` as its own rollout scope.
-  - **hello_self_judge_v1**: v1 example where a judge harness shares model, endpoint, trajectory, and sandbox evidence from the answer rollout.
+  - **hello_self_judge_v1**: v1 example where a judge harness shares model, endpoint, transcript, and sandbox evidence from the answer rollout.
   - **hello_parallel_sandbox_v1**: v1 example where parallel child harnesses share a sandbox-backed tool across update and reward stages.
 
 - **RubricGroup**
@@ -102,7 +102,7 @@ This folder contains installable example environments that showcase common usage
 - **Multimodal**: `mmmu`
 
 ## Running examples
-All environments export `load_environment(...)`. 
+All examples are loadable through `vf.load_environment(...)`. v0 packages do this with a package `load_environment(...)`; v1 packages do it through discovered taskset/harness components.
 
 In-line usage:
 ```python

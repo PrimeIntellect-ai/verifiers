@@ -1,0 +1,218 @@
+# v1 vs vf-nano
+
+This document describes the current v1 refactor checkpoint relative to
+`~/dev/vf-nano`.
+
+## Shared Philosophy
+
+Both systems separate serializable specification from live execution:
+
+- Task data is immutable and serializable.
+- Rollout output is a strict Pydantic record.
+- Live model clients, runtimes, MCP sessions, and file handles stay in live
+  runtime objects, not task/state records.
+- Runtime backends sit behind one execution contract.
+- Toolset/User implementations are loader-backed owner objects rather than
+  Python callables passed through config.
+- Decorated Python methods are allowed only on loaded owner objects.
+
+## Naming Map
+
+| vf-nano | v1 checkpoint | Notes |
+|---|---|---|
+| `Trace` | `State` | v1 keeps `State` as the canonical rollout record. |
+| `trajectory` | `transcript` | v1 hard-renames the live/output field to transcript. |
+| `Rollout` | `Harness.run(...)` lifecycle | v1 keeps the authoring name `Harness`; it is the agent. |
+| `Agent.run(...)` | `Harness.run_with_context(...)` | v1 subclasses branch at the live context boundary. |
+| `RolloutContext` | `Context` | v1 context includes task, state, model client, runtime, tools, user, and parent. |
+| `Runtime` | `Runtime` | v1 now uses Runtime for the live backend handle. |
+| `RuntimeConfig` | `RuntimeConfig` | Serializable runtime spec. |
+| `ToolServer` | `Toolset` / `User` | nano exposes generic tool servers; v1 keeps Verifiers authoring names and uses loader-backed configs. |
+
+## v1 Additions Over nano
+
+### Taskset/Harness Authoring
+
+v1 preserves the Verifiers authoring split:
+
+- `Taskset` owns task data, prompts, users, toolsets, metrics, rewards,
+  advantages, and task lifecycle.
+- `Harness` owns agent execution, runtime use, protocol interception, and
+  reusable execution mechanisms.
+- `Env` is a thin adapter for eval/training loaders.
+
+Nano calls the execution object an `Agent`. v1 keeps `Harness` because that is
+the existing Verifiers design language, but the object now behaves like nano's
+agent.
+
+### State Extras Schema
+
+v1 has `state.extras` as the only user-owned mutable rollout surface. Taskset
+and harness configs may each provide an `Extras` schema/default object; v1
+realizes a combined schema and rejects duplicate keys.
+
+Nano's `Trace` can be subclassed to add typed fields. v1 keeps a single `State`
+type and realizes a merged `Extras` schema from taskset and harness config, so
+shared rollout mutation has one predictable target.
+
+### Tool Data Flow
+
+v1 has explicit tool/user data-flow metadata on the decorated method:
+
+```python
+@vf.tool(
+    args={"case": "state.metadata.case"},
+    extends={"events": "state.extras.events"},
+    sets={"last": "state.extras.last"},
+)
+def search(self, query: str, case: str) -> dict: ...
+```
+
+Bound args are hidden from model-visible schemas. `sets` replaces one state path;
+`extends` appends a returned list. Same-path extends in a parallel batch are
+allowed; overlapping sets conflict.
+
+Nano is simpler: a taskset returns `ToolServer` objects and rollout/tool
+placement is controlled by `taskset.tools`. Servers are script, command, or URL
+MCP endpoints, and the agent receives a map of MCP URLs. Nano does not model
+hidden state reads or bound state writes at the framework layer.
+
+### Users As MCP Servers
+
+v1 treats users as MCP servers with a hidden `respond` tool. User and tool
+servers both return `ServerResponse` data with `messages`, and both write state
+through `@vf.tool` data-flow metadata.
+
+`ToolsetConfig` and `UserConfig` are sibling `ServerConfig` specializations
+with the same loader contract:
+
+```python
+vf.ToolsetConfig(loader="my_env.servers.toolset:SearchToolset", name="search")
+vf.UserConfig(loader="my_env.servers.user:DialogueUser")
+```
+
+The template convention is `servers/toolset.py` for task tools and
+`servers/user.py` for user simulation. Authors write `Toolset` and `User`
+classes; v1 owns the MCP lifecycle behind that contract.
+
+`TasksetConfig.toolsets` is the list of toolset instances attached to a taskset.
+Each `ToolsetConfig.loader` is the implementation pointer for one configured
+toolset. Those are not parallel loading paths: the field is the collection, the
+loader is the element's code identity.
+
+Nano examples use MCP servers for tools. User simulation is not yet the same
+first-class server contract in nano.
+
+### Group Rewards And Advantages
+
+v1 has group scoring and v1-only advantage functions (`grpo`, `rloo`,
+`reinforce`) that mutate token advantages in place.
+
+Nano's `Episode` supports cross-rollout group rewards, but deliberately leaves
+advantage computation to trainers above the environment layer.
+
+## Runtime And Context Differences
+
+Nano has explicit `Rollout` and `Episode` objects:
+
+- `Rollout` creates the runtime, runs the agent, and scores per-rollout
+  rewards/metrics while that runtime is still live.
+- `Episode` runs all rollouts for one task, guarantees runtime teardown, and
+  then runs `Taskset.score_group(...)` over the resulting traces.
+
+v1 currently has:
+
+- `Harness.run(...)` creates the live `Context`.
+- `Context` carries task, state, model client, teacher, runtime, tools, user,
+  parent, and scoring flags.
+- `RuntimeProvider.create_runtime()` materializes the live `Runtime`.
+- `Env.score_group(...)` scores after rollout runtimes are closed.
+
+This is the largest remaining architectural difference. v1 kept the Verifiers
+`State`/`Env.score_group` contract and did not introduce a public `Episode`
+object. Nano is now cleaner about ownership because rollout lifetime and
+cross-rollout scoring are separate objects. Supporting runtime-backed group
+scoring in either design would require either:
+
+- adding an internal episode-like owner for grouped rollout lifetimes, or
+- making `Env.score_group(...)` accept live contexts/runtimes and own their
+  teardown.
+
+The first option is closer to nano and cleaner for resource ownership. The
+second keeps the v1 public surface smaller but makes group runtime lifetime more
+implicit.
+
+## Scoring Contract
+
+v1 direct harness runs default to generation only:
+
+```python
+state = await harness.run(task="hello", model="openai/gpt-5", score=False)
+```
+
+`Env.run_rollout(...)` calls `Harness.run(..., score=True)`. Nested judge or
+self-check calls should pass the parent `Context` and keep `score=False`.
+Requesting `score=True` inside an active scoring context raises.
+
+Rewards and advantages are taskset-owned. Harnesses may define metrics for
+execution telemetry, but harness rewards/advantages are rejected because scoring
+semantics belong to the task.
+
+Nano scores inside `Rollout.run()` and group-scores inside `Episode.run()`. v1
+keeps scoring optional on direct `Harness.run(...)` because reward functions may
+call a harness recursively for judging.
+
+## Branching And Compaction
+
+Nano records a flat `trajectory` but exposes `trace.branches` and
+`trace.num_branches`. Branches are inferred from explicit branch headers, token
+prefixes, or message prefixes. The compact agent intentionally rewrites context
+each turn, so every turn becomes its own branch.
+
+v1 currently records `state.transcript` as a flat list of `Turn`s and leaves
+branch/compaction interpretation to the harness or downstream consumer. If v1
+wants compacting agents or subagent transcript visualization as a first-class
+contract, nano's branch view is the better reference than reintroducing
+trajectory aliases.
+
+## Server Response Differences
+
+v1 server calls produce:
+
+```python
+class ServerResponse(vf.Config):
+    messages: vf.Messages = []
+```
+
+The default harness converts a single text tool response into a protocol
+`ToolMessage`. Explicit multi-message responses are appended after tool results,
+which supports compaction and richer server-controlled conversation updates.
+
+Nano's tool serving is oriented around exposing MCP URLs to the agent program.
+It does not currently model bound state writes or multi-message server
+responses as a framework-level contract.
+
+## Compatibility Position
+
+v1 is not trying to preserve old v1 APIs. The compatibility boundary is:
+
+- v0 remains top-level `verifiers`.
+- v1 code imports `verifiers.v1 as vf`.
+- `MultiTurnEnv` remains on the legacy path.
+- v1 examples/packages should teach only the current v1 pattern.
+
+## Current Tensions
+
+- Whether v1 should introduce an internal `Episode` to own grouped rollout
+  lifetimes and make `Env.score_group(...)` a smaller adapter.
+- Whether group-scoped toolsets should become first-class, or whether
+  `state.group_id` plus env-scoped toolsets is enough for the first v1 release.
+- Whether `ServerResponse.messages` should become the only visible server return
+  channel, or whether advanced tool-call protocols need a stricter message
+  contract.
+- Whether `Context` should be passed into every handler/signal by default or
+  remain opt-in by parameter name.
+- Whether v1 advantages belong in Verifiers long term or should move up into
+  trainers like nano suggests.
+- Whether v1 should adopt a branch view over `transcript` for compaction and
+  subagent runs, without renaming back to `trajectory`.

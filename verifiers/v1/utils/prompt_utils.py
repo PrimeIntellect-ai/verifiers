@@ -13,7 +13,6 @@ from ..types import JsonData, PromptInput
 from .config_utils import current_config_ref_module
 
 if TYPE_CHECKING:
-    from ..state import State
     from ..task import Task
 
 
@@ -194,59 +193,3 @@ def system_prompt_resolution(
 
 def dump_messages(messages: Messages) -> list[JsonData]:
     return [message.model_dump(exclude_none=True) for message in messages]
-
-
-def task_text(
-    task: "Task",
-    state: "State",
-    *,
-    keys: tuple[str, ...] = ("instruction",),
-) -> str:
-    _ = state
-    for key in keys:
-        value = getattr(task, key, None)
-        if isinstance(value, str) and value:
-            return value
-    return messages_text(task.prompt)
-
-
-def state_system_prompt_text(task: "Task", state: "State") -> str:
-    _ = state
-    return messages_text(getattr(task, "system_prompt", []))
-
-
-def messages_text(messages: object) -> str:
-    if isinstance(messages, str):
-        return messages
-    if not isinstance(messages, list):
-        return str(messages or "")
-    parts: list[str] = []
-    for message in messages:
-        content = getattr(message, "content", None)
-        if content is not None:
-            parts.append(content_text(content))
-        elif isinstance(message, dict):
-            item = cast(JsonData, message)
-            parts.append(content_text(item.get("content")))
-        else:
-            parts.append(str(message))
-    return "\n\n".join(part for part in parts if part)
-
-
-def content_text(content: object) -> str:
-    if content is None:
-        return ""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        text_parts: list[str] = []
-        for part in content:
-            if isinstance(part, dict):
-                item = cast(JsonData, part)
-                text = item.get("text")
-                if isinstance(text, str):
-                    text_parts.append(text)
-            elif isinstance(part, str):
-                text_parts.append(part)
-        return "\n".join(text_parts)
-    return str(content)

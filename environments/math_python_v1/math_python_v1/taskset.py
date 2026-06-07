@@ -1,8 +1,8 @@
-import sys
-
 from math_verify import parse, verify
 import verifiers.v1 as vf
 from verifiers.utils.data_utils import extract_boxed_answer, load_example_dataset
+
+from .servers.toolset import PythonToolsetConfig
 
 
 def build_system_prompt(pip_install_packages: str = "numpy sympy scipy") -> str:
@@ -20,6 +20,7 @@ def build_system_prompt(pip_install_packages: str = "numpy sympy scipy") -> str:
 
 class MathPythonTasksetConfig(vf.TasksetConfig):
     system_prompt: str | None = None
+    toolsets: list[vf.ToolsetConfig] = [PythonToolsetConfig()]
     pip_install_packages: str = "numpy sympy scipy"
     dataset_name: str = "math"
     dataset_split: str = "train"
@@ -53,17 +54,6 @@ class MathPythonTaskset(vf.Taskset[MathPythonTasksetConfig]):
                 "prompt": [{"role": "user", "content": row["question"]}],
             }
             for index, row in enumerate(dataset)
-        ]
-
-    def load_toolsets(self, config: MathPythonTasksetConfig) -> list[vf.Toolset]:
-        _ = config
-        return [
-            vf.Toolset(
-                name="python",
-                server=vf.MCPServerSpec(
-                    command=[sys.executable, "-m", "math_python_v1.servers.tools"]
-                ),
-            )
         ]
 
     @vf.reward(weight=1.0)

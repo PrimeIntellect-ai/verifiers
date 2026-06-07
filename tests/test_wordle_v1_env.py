@@ -48,9 +48,9 @@ async def test_wordle_textarena_user_returns_observation(monkeypatch):
     )
 
     response = textarena.textarena_respond(
-        task.to_record(),
-        state.model_dump(mode="json", exclude_none=True),
-        [],
+        task.textarena.model_dump(mode="json"),
+        task.answer,
+        [message.model_dump(mode="json") for message in state.completion],
     )
 
     assert response["messages"] == [
@@ -87,7 +87,7 @@ def test_wordle_taskset_uses_textarena_loaders():
 
     assert callable(taskset.load_tasks)
     assert taskset.user is not None
-    assert taskset.user.server.command is not None
+    assert taskset.user.loader == "tasksets.textarena:TextArenaUser"
 
 
 def test_wordle_v1_load_taskset_reads_system_prompt_path(tmp_path):

@@ -38,7 +38,7 @@ def test_init_v1_writes_taskset_template(tmp_path: Path) -> None:
     init_content = (package / "__init__.py").read_text()
     pyproject = (tmp_path / "bar" / "pyproject.toml").read_text()
     user_server = (package / "servers" / "user.py").read_text()
-    tools_server = (package / "servers" / "tools.py").read_text()
+    tools_server = (package / "servers" / "toolset.py").read_text()
 
     assert "class BarTasksetConfig(vf.TasksetConfig):" in content
     assert "class BarTask(vf.Task):" in content
@@ -59,18 +59,23 @@ def test_init_v1_writes_taskset_template(tmp_path: Path) -> None:
     assert "def load_taskset(config: BarTasksetConfig) -> BarTaskset:" in content
     assert '"""Typed taskset loader used by vf.load_taskset."""' in content
     assert "return BarTaskset(config=config)" in content
-    assert 'command=["python", "-m", "bar.servers.user"]' in content
-    assert 'command=["python", "-m", "bar.servers.tools"]' in content
+    assert 'loader="bar.servers.user:ExampleUser"' in content
+    assert 'loader="bar.servers.toolset:ExampleToolset"' in content
+    assert "def load_user(" not in content
+    assert "def load_toolsets(" not in content
     assert "def load_environment" not in content
     assert '"""bar environment package."""' in init_content
     assert "load_environment" not in init_content
     assert 'include = ["bar/**/*", "pyproject.toml", "README.md"]' in pyproject
-    assert 'mcp = FastMCP("bar-user")' in user_server
-    assert "def respond(task: dict, state: dict, transcript: list[dict]) -> dict:" in (
-        user_server
+    assert "class ExampleUser(vf.User):" in user_server
+    assert "@vf.tool(" in user_server
+    assert (
+        "def respond(self, task: dict, state: dict, transcript: list[dict]) -> dict:"
+        in (user_server)
     )
-    assert 'mcp = FastMCP("bar-tools")' in tools_server
-    assert "def reverse_text(text: str) -> str:" in tools_server
+    assert "class ExampleToolset(vf.Toolset):" in tools_server
+    assert "@vf.tool" in tools_server
+    assert "def reverse_text(self, text: str) -> str:" in tools_server
     assert "class EnvTaskset(" not in content
     assert "_default_" not in content
     assert 'tasks: str = "load_tasks"' not in content
@@ -129,25 +134,29 @@ def test_init_v1_multifile_exports_component_loaders(tmp_path: Path) -> None:
     assert "class PkgEnvTaskset(vf.Taskset[PkgEnvTasksetConfig]):" in taskset_content
     assert "return PkgEnvTaskset(config=config)" in taskset_content
     assert (package / "servers" / "user.py").exists()
-    assert (package / "servers" / "tools.py").exists()
+    assert (package / "servers" / "toolset.py").exists()
 
 
 def test_init_openenv_writes_v1_taskset_template(tmp_path: Path) -> None:
     init_environment("openenv-sample", path=str(tmp_path), openenv=True)
     content = read_env_file(tmp_path, "openenv-sample")
+    package = package_dir(tmp_path, "openenv-sample")
     pyproject = (tmp_path / "openenv_sample" / "pyproject.toml").read_text()
 
     assert "from tasksets import OpenEnvTaskset, OpenEnvTasksetConfig" in content
     assert (
         "def load_taskset(config: OpenEnvTasksetConfig) -> OpenEnvTaskset:" in content
     )
-    assert "taskset=vf.load_taskset(config=config.taskset)" in content
-    assert "harness=vf.load_harness(config=config.harness)" in content
+    assert "def load_environment" not in content
     assert "vf.OpenEnvEnv" not in content
     assert '"tasksets[openenv]>=0.1.5"' in pyproject
+    assert 'include = ["openenv_sample/**/*", "pyproject.toml", "README.md"]' in (
+        pyproject
+    )
+    assert (package / "proj" / "openenv.yaml").exists()
 
 
-def test_init_openenv_multifile_exports_taskset_loader(tmp_path: Path) -> None:
+def test_init_openenv_multifile_uses_component_package(tmp_path: Path) -> None:
     init_environment(
         "openenv-pkg",
         path=str(tmp_path),
@@ -158,5 +167,7 @@ def test_init_openenv_multifile_exports_taskset_loader(tmp_path: Path) -> None:
         tmp_path / "openenv_pkg" / "openenv_pkg" / "__init__.py"
     ).read_text()
 
-    assert "from .openenv_pkg import load_environment, load_taskset" in init_content
-    assert "__all__ = ['load_environment', 'load_taskset']" in init_content
+    assert '"""openenv-pkg environment package."""' in init_content
+    assert "load_environment" not in init_content
+    assert (tmp_path / "openenv_pkg" / "openenv_pkg" / "taskset.py").exists()
+    assert (tmp_path / "openenv_pkg" / "openenv_pkg" / "proj").is_dir()

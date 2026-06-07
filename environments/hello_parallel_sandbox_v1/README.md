@@ -10,7 +10,7 @@ program sandbox instead of creating a separate tool sandbox. The parent writes
 `/tmp/answer.txt`, then:
 
 1. two update-stage audits run concurrently and store serializable findings in
-   `state.scratch` and `state.artifacts`;
+   `state.extras` and `state.artifacts`;
 2. reward scoring reads those findings and writes a scalar rollout reward.
 
 ```bash

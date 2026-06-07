@@ -23,7 +23,13 @@ class RLM(CommandHarness[RLMConfig]):
         if self.config.command:
             return list(self.config.command)
         _ = state
-        instruction = vf.task_text(task, state, keys=("instruction", "question"))
+        instruction = str(
+            getattr(task, "instruction", None) or getattr(task, "question", None) or ""
+        )
+        if not instruction:
+            instruction = "\n\n".join(
+                str(getattr(message, "content", "") or "") for message in task.prompt
+            )
         return shell_command(f"rlm {instruction!r}")
 
     def command_env(self, task: vf.Task, state: vf.State) -> dict[str, str]:

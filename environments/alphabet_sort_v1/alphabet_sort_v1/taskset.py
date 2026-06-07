@@ -3,7 +3,6 @@ import json
 import logging
 import random
 import re
-import sys
 
 from datasets import Dataset, load_dataset
 from pydantic import BaseModel
@@ -303,10 +302,8 @@ def transcript_completion_messages(state: vf.State) -> vf.Messages:
 
 
 class AlphabetSortTasksetConfig(vf.TasksetConfig):
-    user: vf.User | None = vf.User(
-        server=vf.MCPServerSpec(
-            command=[sys.executable, "-m", "alphabet_sort_v1.servers.user"]
-        )
+    user: vf.UserConfig | None = vf.UserConfig(
+        loader="alphabet_sort_v1.servers.user:AlphabetSortUser"
     )
     min_turns: int = 1
     max_turns: int = 3

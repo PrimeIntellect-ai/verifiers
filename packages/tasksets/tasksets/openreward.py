@@ -1,5 +1,4 @@
 import asyncio
-import sys
 from collections.abc import Iterable
 from typing import Protocol, cast
 
@@ -36,10 +35,8 @@ class OpenRewardEnvironment(Protocol):
 
 class OpenRewardTasksetConfig(vf.TasksetConfig):
     id: str | None = "openreward"
-    user: vf.User | None = vf.User(
-        server=vf.MCPServerSpec(
-            command=[sys.executable, "-m", "tasksets.openreward", "--user-server"]
-        )
+    user: vf.UserConfig | None = vf.UserConfig(
+        loader="tasksets.openreward:OpenRewardUser"
     )
     environment: str
     variant: str | None = None
@@ -236,13 +233,18 @@ class OpenRewardTaskset(vf.Taskset[OpenRewardTasksetConfig]):
         return float(state.reward)
 
 
-def run_user_server() -> None:
-    from mcp.server.fastmcp import FastMCP
-
-    mcp = FastMCP("openreward-user")
-
-    @mcp.tool()
-    async def respond(task: dict, state: dict, transcript: list[dict]) -> dict:
+class OpenRewardUser(vf.User):
+    @vf.tool(
+        args={
+            "task": "task",
+            "state": "state",
+            "transcript": "transcript",
+        },
+        sets={
+            "stop_condition": "state.stop_condition",
+        },
+    )
+    async def respond(self, task: dict, state: dict, transcript: list[dict]) -> dict:
         _ = state, transcript
         global SESSION
         if SESSION is None:
@@ -257,12 +259,6 @@ def run_user_server() -> None:
             }
         return {"messages": [], "stop_condition": "openreward_waiting_for_tools"}
 
-    mcp.run(transport="stdio")
-
 
 def load_taskset(config: OpenRewardTasksetConfig) -> OpenRewardTaskset:
     return OpenRewardTaskset(config=config)
-
-
-if __name__ == "__main__" and sys.argv[1:] == ["--user-server"]:
-    run_user_server()

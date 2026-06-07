@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import sys
 from typing import TYPE_CHECKING, cast
 
 from datasets import load_dataset
@@ -65,22 +64,20 @@ class WikiSearchTaskset(vf.Taskset[WikiSearchTasksetConfig]):
         _ = config
         return SYSTEM_PROMPT
 
-    def load_toolsets(self, config: WikiSearchTasksetConfig) -> vf.Toolsets:
+    def load_toolsets(self, config: WikiSearchTasksetConfig) -> list[vf.ToolsetConfig]:
         return [
-            vf.Toolset(
+            vf.ToolsetConfig(
+                loader="wiki_search_v1.servers.toolset:WikiToolset",
                 name="wiki",
                 scope="env",
-                server=vf.MCPServerSpec(
-                    command=[sys.executable, "-m", "wiki_search_v1.servers.tools"],
-                    env={
-                        "VF_WIKI_CORPUS_DATASET": config.corpus_dataset,
-                        "VF_WIKI_CORPUS_SPLIT": config.corpus_split,
-                        "VF_WIKI_CHROMA_DB_DIR": config.chroma_db_dir,
-                        "VF_WIKI_EMBED_MODEL": config.embed_model,
-                        "VF_WIKI_EMBED_BASE_URL": config.embed_base_url,
-                        "VF_WIKI_EMBED_API_KEY_VAR": config.embed_api_key_var,
-                    },
-                ),
+                env={
+                    "VF_WIKI_CORPUS_DATASET": config.corpus_dataset,
+                    "VF_WIKI_CORPUS_SPLIT": config.corpus_split,
+                    "VF_WIKI_CHROMA_DB_DIR": config.chroma_db_dir,
+                    "VF_WIKI_EMBED_MODEL": config.embed_model,
+                    "VF_WIKI_EMBED_BASE_URL": config.embed_base_url,
+                    "VF_WIKI_EMBED_API_KEY_VAR": config.embed_api_key_var,
+                },
             )
         ]
 

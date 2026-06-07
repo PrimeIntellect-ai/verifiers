@@ -1,7 +1,6 @@
 import os
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 
 import verifiers.v1 as vf
@@ -15,10 +14,8 @@ DEFAULT_MAX_ERRORS = 10
 
 class Tau2TasksetConfig(vf.TasksetConfig):
     id: str | None = "tau2_telecom"
-    user: vf.User | None = vf.User(
-        server=vf.MCPServerSpec(
-            command=[sys.executable, "-m", "tau2_bench_v1.servers.user"]
-        )
+    user: vf.UserConfig | None = vf.UserConfig(
+        loader="tau2_bench_v1.servers.user:Tau2User"
     )
     domain: str = "telecom"
     user_model: str = DEFAULT_USER_MODEL
@@ -48,19 +45,19 @@ class Tau2Taskset(vf.Taskset[Tau2TasksetConfig]):
 
     @vf.reward(weight=1.0)
     async def tau2_reward(self, state: vf.State) -> float:
-        tau2 = state.scratch.get("tau2")
+        tau2 = state.extras.get("tau2")
         if not isinstance(tau2, dict):
             return 0.0
         return float(tau2.get("reward", 0.0) or 0.0)
 
     @vf.metric
     async def tau2_num_steps(self, state: vf.State) -> float:
-        tau2 = state.scratch.get("tau2")
+        tau2 = state.extras.get("tau2")
         return float(tau2.get("step_count", 0.0) if isinstance(tau2, dict) else 0.0)
 
     @vf.metric
     async def tau2_num_errors(self, state: vf.State) -> float:
-        tau2 = state.scratch.get("tau2")
+        tau2 = state.extras.get("tau2")
         return float(tau2.get("num_errors", 0.0) if isinstance(tau2, dict) else 0.0)
 
 

@@ -31,18 +31,10 @@ from harnesses import OpenCode, OpenCodeConfig
 
 def load_harness(config: OpenCodeConfig) -> OpenCode:
     return OpenCode(config=config)
-
-
-def load_environment(config: vf.EnvConfig) -> vf.Env:
-    """Loader pattern for all Taskset/Harness environments."""
-    return vf.Env(
-        taskset=vf.load_taskset(config=config.taskset),
-        harness=vf.load_harness(config=config.harness),
-    )
 ```
 
-Use `vf.load_harness(config=config.harness)` when the environment does not
-own a reusable execution mechanism.
+Omit `harness.py` when the environment does not own a reusable execution
+mechanism; the component loader will use the base harness.
 
 ## Included Harnesses
 

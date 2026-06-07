@@ -73,8 +73,8 @@ Environment modules should expose a `load_environment` function which returns an
 environment object. For simple legacy environments, this can still be a direct
 constructor:
 ```python
-# my_env.py
-import verifiers as vf
+# my_env/taskset.py
+import verifiers.v1 as vf
 
 def load_environment(dataset_name: str = 'gsm8k') -> vf.Environment:
     dataset = vf.load_example_dataset(dataset_name) # 'question'
@@ -89,15 +89,21 @@ def load_environment(dataset_name: str = 'gsm8k') -> vf.Environment:
 For new environments with reusable tasksets, toolsets, custom programs, or
 custom harnesses, use the v1 Taskset/Harness path:
 ```python
-# my_env.py
-import verifiers as vf
+# my_env/taskset.py
+import verifiers.v1 as vf
 
 
 class MyTasksetConfig(vf.TasksetConfig):
     system_prompt: vf.SystemPrompt = "Answer exactly."
 
 
+class MyTask(vf.Task):
+    answer: str
+
+
 class MyTaskset(vf.Taskset[MyTasksetConfig]):
+    task_type = MyTask
+
     def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         """Return serializable task records as a list, generator, or Dataset."""
         if split == "eval":
@@ -111,30 +117,22 @@ class MyTaskset(vf.Taskset[MyTasksetConfig]):
         ]
 
     @vf.reward(weight=1.0)
-    async def correct_answer(self, task: vf.Task, state: vf.State) -> float:
-        messages = vf.get_messages(state.get("completion") or [], role="assistant")
+    async def correct_answer(self, task: MyTask, state: vf.State) -> float:
+        messages = vf.get_messages(state.completion or [], role="assistant")
         if not messages:
             return 0.0
         response = str(messages[-1].content or "").strip()
-        return float(response == task["answer"])
+        return float(response == task.answer)
 
 
 def load_taskset(config: MyTasksetConfig) -> MyTaskset:
     return MyTaskset(config=config)
-
-
-def load_environment(config: vf.EnvConfig) -> vf.Env:
-    """Loader pattern for all Taskset/Harness environments."""
-    return vf.Env(
-        taskset=vf.load_taskset(config=config.taskset),
-        harness=vf.load_harness(config=config.harness),
-    )
 ```
 See [BYO Harness](byo-harness.md) for the advanced v1 taskset/harness API.
-The child loader annotation is the config contract: keep root
-`load_environment` typed as `vf.EnvConfig`, put task settings on
-`TasksetConfig`, and add `load_harness(config: MyHarnessConfig)` only when the
-environment owns a reusable harness.
+The child loader annotation is the config contract: put task settings on
+`TasksetConfig`, and add `harness.py` with
+`load_harness(config: MyHarnessConfig)` only when the environment owns a
+reusable harness. The package loader assembles `vf.Env` from those components.
 Reusable v1 taskset and harness packages live in `tasksets` and `harnesses`.
 Install them with `uv add "verifiers[packages]"`, or with the narrower
 `verifiers[tasksets]`, `verifiers[harnesses]`, and backend-specific extras such

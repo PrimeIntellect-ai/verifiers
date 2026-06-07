@@ -3,9 +3,8 @@ import contextlib
 import io
 import traceback
 
-from mcp.server.fastmcp import FastMCP
+import verifiers.v1 as vf
 
-mcp = FastMCP("math-python")
 HISTORY: list[str] = []
 
 
@@ -29,17 +28,19 @@ def execute_python(code: str) -> str:
     return stdout.getvalue().strip() or "(no output)"
 
 
-@mcp.tool()
-def python(code: str) -> dict:
-    try:
-        content = execute_python(code)
-    except BaseException:
-        content = traceback.format_exc()
-    return {
-        "content": content,
-        "scratch": {"python_history": list(HISTORY)},
-    }
+class PythonToolsetConfig(vf.ToolsetConfig):
+    loader: str = "math_python_v1.servers.toolset:PythonToolset"
+    name: str | None = "python"
 
 
-if __name__ == "__main__":
-    mcp.run(transport="stdio")
+class PythonToolset(vf.Toolset[PythonToolsetConfig]):
+    @vf.tool(sets={"python_history": "state.extras.python_history"})
+    def python(self, code: str) -> dict:
+        try:
+            content = execute_python(code)
+        except BaseException:
+            content = traceback.format_exc()
+        return {
+            "content": content,
+            "python_history": list(HISTORY),
+        }

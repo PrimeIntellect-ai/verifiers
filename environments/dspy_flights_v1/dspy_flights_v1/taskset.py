@@ -1,6 +1,7 @@
 import asyncio
 import functools
 import random
+import re
 import string
 from collections.abc import Callable, Mapping
 from typing import Literal, TypeAlias, cast
@@ -59,6 +60,8 @@ class Ticket(BaseModel):
 class FlightRunResult(vf.Config):
     process_result: str
     reasoning: str = ""
+    dspy_calls: int = 0
+    dspy_trajectory: vf.JsonValue | None = None
     itinerary_database: dict[str, vf.JsonData]
     ticket_database: dict[str, vf.JsonData]
 
@@ -323,6 +326,34 @@ def dump_database(database: dict[str, BaseModel]) -> dict[str, vf.JsonData]:
     }
 
 
+def jsonable_dspy(value: object) -> vf.JsonValue:
+    if isinstance(value, BaseModel):
+        return jsonable_dspy(value.model_dump(mode="json"))
+    if isinstance(value, Mapping):
+        return {str(key): jsonable_dspy(item) for key, item in value.items()}
+    if isinstance(value, list | tuple):
+        return [jsonable_dspy(item) for item in value]
+    if isinstance(value, str | int | float | bool) or value is None:
+        return value
+    return str(value)
+
+
+def dspy_iteration_count(result: object) -> int:
+    trajectory = getattr(result, "trajectory", None)
+    if isinstance(trajectory, Mapping):
+        indices = {
+            match.group(1)
+            for key in trajectory
+            if (match := re.search(r"_(\d+)$", str(key)))
+        }
+        if indices:
+            return len(indices)
+        return len(trajectory)
+    if isinstance(trajectory, list | tuple):
+        return len(trajectory)
+    return 0
+
+
 async def run_dspy_flight_agent(
     *,
     task: DSPyFlightsTask,
@@ -358,6 +389,8 @@ async def run_dspy_flight_agent(
     return FlightRunResult(
         process_result=str(result.process_result),
         reasoning=str(getattr(result, "reasoning", "")),
+        dspy_calls=dspy_iteration_count(result),
+        dspy_trajectory=jsonable_dspy(getattr(result, "trajectory", None)),
         itinerary_database=dump_database(databases["itinerary_database"]),
         ticket_database=dump_database(databases["ticket_database"]),
     )
@@ -413,39 +446,33 @@ class DSPyFlightsTaskset(vf.Taskset[DSPyFlightsTasksetConfig]):
 
     @vf.metric
     async def dspy_calls(self, state: vf.State) -> float:
-        return float(len(state.transcript))
+        value = state.artifacts.get("dspy_calls")
+        return float(value) if isinstance(value, int | float) else 0.0
 
 
 class DSPyFlightsHarness(vf.Harness[DSPyFlightsHarnessConfig]):
-    async def _run(
-        self,
-        task: DSPyFlightsTask,
-        state: vf.State,
-        *,
-        ctx: vf.RolloutContext,
-        runtime: vf.RuntimeSession | None = None,
-        tools: vf.MCPToolRegistry | None = None,
-        user: vf.MCPToolRegistry | None = None,
-    ) -> None:
-        _ = tools, user
+    async def run_with_context(self, context: vf.Context) -> None:
+        task = DSPyFlightsTask.model_validate(context.task.model_dump())
+        state = context.state
+        runtime = context.runtime
         if runtime is None:
-            raise RuntimeError("DSPyFlightsHarness requires a runtime session.")
+            raise RuntimeError("DSPyFlightsHarness requires a runtime.")
         prompt = self.initial_messages(task)
 
         async def stop_check() -> str | None:
-            if await self.is_completed(task, state, ctx=ctx):
+            if await self.is_completed(context):
                 return state.stop_condition or "stop"
             return None
 
         async with vf.InterceptionServer(
-            ctx,
+            context,
             task,
             state,
             protocols=self.protocols,
             stop_check=stop_check,
         ) as endpoint:
             endpoint_url = await runtime.expose(endpoint.port)
-            endpoint_env = endpoint.env(base_url=endpoint_url, model=ctx.model)
+            endpoint_env = endpoint.env(base_url=endpoint_url, model=context.model)
             result = await run_dspy_flight_agent(
                 task=task,
                 base_url=endpoint_env["OPENAI_BASE_URL"],

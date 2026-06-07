@@ -41,14 +41,6 @@ from tasksets import HarborTaskset, HarborTasksetConfig
 
 def load_taskset(config: HarborTasksetConfig) -> HarborTaskset:
     return HarborTaskset(config=config)
-
-
-def load_environment(config: vf.EnvConfig) -> vf.Env:
-    """Loader pattern for all Taskset/Harness environments."""
-    return vf.Env(
-        taskset=vf.load_taskset(config=config.taskset),
-        harness=vf.load_harness(config=config.harness),
-    )
 ```
 
 Do not mutate config objects in loaders. Put defaults on the config class or pass

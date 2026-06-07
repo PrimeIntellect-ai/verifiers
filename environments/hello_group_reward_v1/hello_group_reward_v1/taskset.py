@@ -178,7 +178,7 @@ class GroupRewardTaskset(vf.Taskset[GroupRewardTasksetConfig]):
                 }
             )
             state = vf.State(task_id=group_task.task_id)
-            state.scratch["group_setup"] = {
+            state.extras["group_setup"] = {
                 "base_task_id": task.task_id,
                 "num_rollouts": num_rollouts,
                 "candidate_id": candidate_id,
@@ -189,20 +189,20 @@ class GroupRewardTaskset(vf.Taskset[GroupRewardTasksetConfig]):
 
     @vf.metric
     async def answer_length(self, state: vf.State) -> float:
-        return float(len(str(state.scratch.get("answer") or "")))
+        return float(len(str(state.extras.get("answer") or "")))
 
     @vf.reward(weight=0.1)
     async def rollout_similarity(
         self, task: GroupRolloutTask, state: vf.State
     ) -> float:
-        return candidate_quality(task.target, str(state.scratch.get("answer") or ""))
+        return candidate_quality(task.target, str(state.extras.get("answer") or ""))
 
     @vf.metric(stage="group")
     async def group_quality(
         self, tasks: list[GroupRolloutTask], states: list[vf.State]
     ) -> list[float]:
         return [
-            candidate_quality(task.target, str(state.scratch.get("answer") or ""))
+            candidate_quality(task.target, str(state.extras.get("answer") or ""))
             for task, state in zip(tasks, states, strict=True)
         ]
 
@@ -211,7 +211,7 @@ class GroupRewardTaskset(vf.Taskset[GroupRewardTasksetConfig]):
         self, tasks: list[GroupRolloutTask], states: list[vf.State]
     ) -> list[float]:
         qualities = [
-            candidate_quality(task.target, str(state.scratch.get("answer") or ""))
+            candidate_quality(task.target, str(state.extras.get("answer") or ""))
             for task, state in zip(tasks, states, strict=True)
         ]
         return [float(rank) for rank in dense_ranks(qualities)]
@@ -221,7 +221,7 @@ class GroupRewardTaskset(vf.Taskset[GroupRewardTasksetConfig]):
         self, tasks: list[GroupRolloutTask], states: list[vf.State]
     ) -> list[float]:
         qualities = [
-            candidate_quality(task.target, str(state.scratch.get("answer") or ""))
+            candidate_quality(task.target, str(state.extras.get("answer") or ""))
             for task, state in zip(tasks, states, strict=True)
         ]
         if not qualities:
@@ -236,21 +236,13 @@ class GroupRewardTaskset(vf.Taskset[GroupRewardTasksetConfig]):
 
 
 class GroupRewardHarness(vf.Harness[GroupRewardHarnessConfig]):
-    async def _run(
-        self,
-        task: GroupRolloutTask,
-        state: vf.State,
-        *,
-        ctx: vf.RolloutContext,
-        runtime: vf.RuntimeSession | None = None,
-        tools: vf.MCPToolRegistry | None = None,
-        user: vf.MCPToolRegistry | None = None,
-    ) -> None:
-        _ = ctx, runtime, tools, user
+    async def run_with_context(self, context: vf.Context) -> None:
+        task = GroupRolloutTask.model_validate(context.task.model_dump())
+        state = context.state
         answer = task.candidate_answer
         message = vf.AssistantMessage(content=answer)
-        state.scratch["answer"] = answer
-        state.scratch["candidate_id"] = task.candidate_id
+        state.extras["answer"] = answer
+        state.extras["candidate_id"] = task.candidate_id
         state.add_turn(
             vf.Turn(prompt=self.initial_messages(task), completion=[message])
         )

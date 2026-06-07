@@ -141,6 +141,7 @@ class Env:
                 rollout_state,
                 model=model,
                 teacher=teacher,
+                score=True,
             )
 
         return await maybe_retry(attempt, max_retries=max_retries)()
@@ -204,6 +205,7 @@ class Env:
             if model_client is not None:
                 await self.harness.close_model_client(model_client)
             for state in states:
+                self.harness.validate_extras(state)
                 state.finalize()
         return states
 

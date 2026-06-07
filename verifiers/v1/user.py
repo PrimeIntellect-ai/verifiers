@@ -1,33 +1,18 @@
 from __future__ import annotations
 
-from typing import Literal
-
-from pydantic import BaseModel, Field
-from verifiers.types import Messages
-
-from .config import Config
-from .toolset import MCPServerSpec
-from .types import JsonData
+from .toolset import Scope, ServerConfig, Toolset, load_toolset
 
 
-class User(Config):
-    """MCP server used by the harness as the environment/user simulator."""
+class UserConfig(ServerConfig):
+    name: str | None = "user"
+    scope: Scope = "rollout"
 
-    class TurnRequest(BaseModel):
-        task: JsonData
-        state: JsonData
-        transcript: list[JsonData]
+    def load(self) -> "User":
+        user = load_toolset(self.loader, self)
+        if not isinstance(user, User):
+            raise TypeError(f"User loader {self.loader!r} did not return a User.")
+        return user
 
-    class TurnResult(BaseModel):
-        messages: Messages = Field(default_factory=list)
-        scratch: JsonData = Field(default_factory=dict)
-        metrics: dict[str, float] = Field(default_factory=dict)
-        artifacts: JsonData = Field(default_factory=dict)
-        reward_delta: float = 0.0
-        stop_condition: str | None = None
-        is_completed: bool | None = None
-        is_truncated: bool | None = None
 
-    name: str = "user"
-    server: MCPServerSpec
-    scope: Literal["rollout", "env"] = "rollout"
+class User(Toolset[UserConfig]):
+    pass

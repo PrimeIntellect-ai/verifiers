@@ -44,22 +44,22 @@ from .protocols import (
     OpenAIResponsesProtocol,
     default_protocols,
 )
-from .mcp import MCPToolRegistry
+from .mcp import MCPToolRegistry, ServerResponse
 from .runtime import (
     CommandResult,
     DockerRuntimeConfig,
     DockerRuntimeProvider,
-    DockerRuntimeSession,
+    DockerRuntime,
     LocalRuntimeConfig,
     LocalRuntimeProvider,
-    LocalRuntimeSession,
+    LocalRuntime,
     PrimeRuntimeConfig,
     PrimeRuntimeProvider,
-    PrimeRuntimeSession,
+    PrimeRuntime,
     RuntimeConfig,
     RuntimeConfigValue,
     RuntimeProvider,
-    RuntimeSession,
+    Runtime,
     TrajectoryVisibility,
     make_runtime_provider,
     resolve_runtime_config,
@@ -74,6 +74,7 @@ from .utils.scoring_utils import (
     score_rollout,
 )
 from .state import (
+    Extras,
     State,
     Timing,
     TimeSpan,
@@ -84,19 +85,15 @@ from .state import (
 from .task import Task
 from .taskset import Taskset, TasksetConfig, discover_sibling_dir
 from .toolset import (
-    MCPServerSpec,
+    Scope,
+    ServerConfig,
     Toolset,
     ToolsetConfig,
     Toolsets,
     VisibilityConfig,
+    tool,
 )
-from .utils.prompt_utils import (
-    SystemPrompt,
-    SystemPromptConfig,
-    SystemPromptStrategy,
-    messages_text,
-    task_text,
-)
+from .utils.prompt_utils import SystemPrompt, SystemPromptConfig, SystemPromptStrategy
 from .types import (
     Handler,
     JsonData,
@@ -104,16 +101,17 @@ from .types import (
     ModelClient,
     ModelConfig,
     PromptInput,
-    RolloutContext,
+    Context,
     TaskSplit,
     Tasks,
 )
-from .user import User
+from .user import User, UserConfig
 
 __all__ = [
     "Config",
     "Env",
     "EnvConfig",
+    "Extras",
     "EndpointProtocol",
     "AssistantMessage",
     "Harness",
@@ -124,7 +122,7 @@ __all__ = [
     "JsonData",
     "JsonValue",
     "MCPToolRegistry",
-    "MCPServerSpec",
+    "ServerResponse",
     "Message",
     "MessageContent",
     "Messages",
@@ -133,30 +131,30 @@ __all__ = [
     "OpenAIResponsesProtocol",
     "AnthropicMessagesProtocol",
     "ProtocolRoute",
-    "RolloutContext",
+    "Context",
     "ModelClient",
     "ModelConfig",
     "RuntimeConfig",
     "RuntimeConfigValue",
     "RuntimeProvider",
-    "RuntimeSession",
+    "Runtime",
+    "Scope",
+    "ServerConfig",
     "CommandResult",
     "DockerRuntimeConfig",
     "DockerRuntimeProvider",
-    "DockerRuntimeSession",
+    "DockerRuntime",
     "LocalRuntimeConfig",
     "LocalRuntimeProvider",
-    "LocalRuntimeSession",
+    "LocalRuntime",
     "PrimeRuntimeConfig",
     "PrimeRuntimeProvider",
-    "PrimeRuntimeSession",
+    "PrimeRuntime",
     "PromptInput",
     "State",
     "SystemPrompt",
     "SystemPromptConfig",
     "SystemPromptStrategy",
-    "messages_text",
-    "task_text",
     "Task",
     "TaskSplit",
     "Tasks",
@@ -177,6 +175,7 @@ __all__ = [
     "TurnUsage",
     "UserMessage",
     "User",
+    "UserConfig",
     "VisibilityConfig",
     "add_metric",
     "add_reward",
@@ -192,6 +191,7 @@ __all__ = [
     "make_runtime_provider",
     "resolve_runtime_config",
     "get_messages",
+    "load_environment",
     "load_harness",
     "load_taskset",
     "reward",
@@ -200,12 +200,13 @@ __all__ = [
     "setup",
     "stop",
     "teardown",
+    "tool",
     "update",
 ]
 
 
 def __getattr__(name: str):
-    if name in ("load_harness", "load_taskset"):
+    if name in ("load_environment", "load_harness", "load_taskset"):
         module = importlib.import_module("verifiers.v1.loaders")
         return getattr(module, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

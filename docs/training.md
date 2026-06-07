@@ -99,10 +99,10 @@ max_turns = 8
 [env.taskset]
 system_prompt = "Answer exactly."
 
-[env.taskset.toolsets.search]
-tools = ["my_env.tools:search"]
-objects = { index = "my_env.tools:load_index" }
-bindings = { "search.index" = "objects.index" }
+[[env.taskset.toolsets]]
+loader = "my_env.servers.toolset:SearchToolset"
+name = "search"
+scope = "rollout"
 
 [[env.taskset.rewards]]
 fn = "my_env.signals:exact_answer"

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Literal, TYPE_CHECKING, TypeAlias, cast
@@ -19,6 +21,8 @@ from typing_extensions import TypeAliasType
 from .config import Config
 
 if TYPE_CHECKING:
+    from .mcp import MCPToolRegistry
+    from .runtime import Runtime
     from .state import State
     from .task import Task
 
@@ -73,10 +77,18 @@ class ModelClient:
         )
 
 
-@dataclass(frozen=True)
-class RolloutContext:
+@dataclass
+class Context:
+    task: Task
+    state: State
     model_client: ModelClient
     teacher: ModelClient | None = None
+    runtime: Runtime | None = None
+    tools: MCPToolRegistry | None = None
+    user: MCPToolRegistry | None = None
+    parent: Context | None = None
+    score: bool = False
+    scoring: bool = False
 
     @property
     def client(self) -> Client:
@@ -90,30 +102,44 @@ class RolloutContext:
     def sampling_args(self) -> SamplingArgs:
         return dict(self.model_client.config.sampling_args)
 
+    def has_active_scoring(self) -> bool:
+        context: Context | None = self
+        while context is not None:
+            if context.scoring:
+                return True
+            context = context.parent
+        return False
 
-def client_state_record(state: "State") -> dict[str, object]:
-    trajectory: list[dict[str, object]] = []
+
+def client_state_record(state: "State") -> JsonData:
+    from .utils.json_utils import jsonable
+
+    transcript: list[JsonValue] = []
     for turn in state.transcript:
-        tokens = (
-            cast(dict[str, object], turn.tokens.model_dump(mode="json"))
-            if turn.tokens is not None
-            else None
+        tokens = jsonable(turn.tokens.model_dump(mode="json")) if turn.tokens else None
+        transcript.append(
+            cast(
+                JsonValue,
+                jsonable(
+                    {
+                        "prompt": turn.prompt,
+                        "completion": turn.completion,
+                        "tokens": tokens,
+                        "reward": turn.reward,
+                        "is_truncated": turn.is_truncated,
+                    }
+                ),
+            )
         )
-        trajectory.append(
-            {
-                "prompt": turn.prompt,
-                "completion": turn.completion,
-                "tokens": tokens,
-                "reward": turn.reward,
-                "is_truncated": turn.is_truncated,
-            }
-        )
-    record: dict[str, object] = {
+    record = {
         "id": state.id,
         "task_id": state.task_id,
         "group_id": state.group_id,
-        "scratch": dict(state.scratch),
-        "metadata": dict(state.metadata),
-        "trajectory": trajectory,
+        "extras": state.extras,
+        "metadata": state.metadata,
+        "transcript": transcript,
     }
-    return {key: value for key, value in record.items() if value is not None}
+    return cast(
+        JsonData,
+        jsonable({key: value for key, value in record.items() if value is not None}),
+    )

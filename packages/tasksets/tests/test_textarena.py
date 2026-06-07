@@ -89,7 +89,9 @@ def test_textarena_user_steps_empty_guess_when_guess_tag_missing(fake_textarena)
         )
     ]
     payload = textarena.textarena_respond(
-        task.to_record(), {"completion": completion}, []
+        task.textarena.model_dump(mode="json"),
+        task.answer,
+        completion,
     )
     ta_env = fake_textarena.envs[-1]
 

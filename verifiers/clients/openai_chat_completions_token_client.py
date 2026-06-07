@@ -22,6 +22,7 @@ from verifiers.types import SamplingArgs, State
 from verifiers.utils.client_utils import (
     post_chat_completion_with_routed_experts_sidecar,
 )
+from verifiers.utils.message_utils import normalize_messages
 
 
 def _has_multimodal_content(messages) -> bool:
@@ -40,6 +41,14 @@ def _has_multimodal_content(messages) -> bool:
                 ):
                     return True
     return False
+
+
+def _state_turns(state: State) -> list[Any]:
+    if hasattr(state, "get"):
+        turns = state.get("transcript") or state.get("trajectory") or []
+    else:
+        turns = getattr(state, "transcript", None) or getattr(state, "trajectory", [])
+    return list(turns)
 
 
 # copy from vllm/entrypoints/openai/protocol.py
@@ -95,13 +104,16 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
         # N) and token-stitching (TITO) produces broken prompts.  Falling back
         # to message-based inference (MITO) lets vLLM handle expansion
         # correctly on every turn.
+        turns = _state_turns(state)
         has_multimodal = _has_multimodal_content(prompt) or any(
-            _has_multimodal_content(step["prompt"]) for step in state["trajectory"]
+            _has_multimodal_content(step["prompt"]) for step in turns
         )
-        if len(state["trajectory"]) == 0 or has_multimodal:
+        if len(turns) == 0 or has_multimodal:
             return await super().get_native_response(
                 prompt, model, sampling_args, tools, extra_headers=extra_headers
             )
+        if hasattr(state, "get") and state.get("model") is None:
+            state = cast(State, {**state, "model": model})
         # The bridge tokenize calls inside get_prompt_ids must run under the
         # same chat-template config as the engine's actual generation,
         # otherwise the bridge tokens won't line up with what vLLM streamed
@@ -114,14 +126,15 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
             "chat_template_kwargs", {}
         )
         prompt_ids = await self.get_prompt_ids(
-            state, prompt, tools, chat_template_kwargs=chat_template_kwargs
+            state,
+            prompt,
+            tools,
+            chat_template_kwargs=chat_template_kwargs,
         )
         if prompt_ids is None:
-            # Reaching this branch means we have a non-empty trajectory but
-            # could not stitch — surface it loudly so ops catches regressions.
-            self.logger.warning(
-                f"TITO fell back to MITO on turn {len(state['trajectory']) + 1}"
-            )
+            # Reaching this branch means we have prior turns but could not stitch;
+            # surface it loudly so ops catches regressions.
+            self.logger.warning(f"TITO fell back to MITO on turn {len(turns) + 1}")
             return await super().get_native_response(
                 prompt, model, sampling_args, tools, extra_headers=extra_headers
             )
@@ -148,6 +161,8 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
         state: State,
         prompt_messages: OpenAIChatMessages,
         oai_tools: list[OpenAITool] | None,
+        *,
+        model: str | None = None,
         chat_template_kwargs: dict | None = None,
     ) -> list[int] | None:
         """
@@ -163,7 +178,7 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
 
         def normalize_for_comparison(value: Any) -> Any:
             if hasattr(value, "model_dump"):
-                return normalize_for_comparison(value.model_dump())
+                return normalize_for_comparison(value.model_dump(exclude_none=True))
             if isinstance(value, Mapping):
                 normalized = {
                     str(key): normalize_for_comparison(val)
@@ -182,17 +197,20 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
             return value
 
         async def find_largest_prefix_match() -> tuple[list[int], bool, int] | None:
-            """Scan trajectory backwards for the step whose messages form the
+            """Scan previous turns backwards for the step whose messages form the
             longest prefix of prompt_messages. Returns
             (token_ids, is_truncated, prefix_len) or None."""
             normalized_prompt_messages = normalize_for_comparison(prompt_messages)
             best_prefix_len = -1
             best_step = None
-            for step in reversed(state["trajectory"]):
+            for step in reversed(_state_turns(state)):
                 step_tokens = step["tokens"]
                 if step_tokens is None:
                     continue
-                step_messages = cast(Any, [*step["prompt"], *step["completion"]])
+                step_messages = normalize_messages(
+                    cast(Any, [*step["prompt"], *step["completion"]]),
+                    field_name="state.turn.messages",
+                )
                 step_prompt_messages, _ = await self.to_native_prompt(step_messages)
                 normalized_step_messages = normalize_for_comparison(
                     step_prompt_messages
@@ -312,18 +330,19 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
             if chat_template_kwargs
             else {}
         )
+        tokenize_model = model or state["model"]
 
         try:
             bridge_full_ids = await self.tokenize(
                 messages=[dummy_assistant] + env_messages,
                 tools=oai_tools,
-                model=state["model"],
+                model=tokenize_model,
                 extra_kwargs=dict(forwarded_ctk),
             )
             bridge_base_ids = await self.tokenize(
                 messages=[dummy_assistant],
                 tools=oai_tools,
-                model=state["model"],
+                model=tokenize_model,
                 extra_kwargs=dict(add_generation_prompt=False, **forwarded_ctk),
             )
         except Exception:

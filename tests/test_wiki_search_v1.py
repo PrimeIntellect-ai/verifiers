@@ -79,7 +79,7 @@ def load_wiki_v1(monkeypatch: pytest.MonkeyPatch) -> tuple[ModuleType, ModuleTyp
         "wiki_search_v1",
         "wiki_search_v1.taskset",
         "wiki_search_v1.servers",
-        "wiki_search_v1.servers.tools",
+        "wiki_search_v1.servers.toolset",
     ):
         sys.modules.pop(name, None)
     return (
@@ -139,9 +139,9 @@ def test_wiki_search_v1_default_and_explicit_toolsets(
     taskset = module.WikiSearchTaskset(
         config=module.WikiSearchTasksetConfig(
             toolsets=[
-                vf.Toolset(
+                vf.ToolsetConfig(
                     name="custom",
-                    server=vf.MCPServerSpec(command=[sys.executable, "-c", ""]),
+                    loader="wiki_search_v1.servers.toolset:WikiToolset",
                 )
             ]
         )

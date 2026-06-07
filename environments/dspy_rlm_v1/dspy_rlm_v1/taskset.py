@@ -87,35 +87,28 @@ class DSPYRLMTaskset(vf.Taskset[DSPYRLMTasksetConfig]):
 
 
 class DSPYRLMHarness(vf.Harness[DSPYRLMHarnessConfig]):
-    async def _run(
-        self,
-        task: DSPYRLMTask,
-        state: vf.State,
-        *,
-        ctx: vf.RolloutContext,
-        runtime: vf.RuntimeSession | None = None,
-        tools: vf.MCPToolRegistry | None = None,
-        user: vf.MCPToolRegistry | None = None,
-    ) -> None:
-        _ = tools, user
+    async def run_with_context(self, context: vf.Context) -> None:
+        task = DSPYRLMTask.model_validate(context.task.model_dump())
+        state = context.state
+        runtime = context.runtime
         if runtime is None:
-            raise ValueError("DSPYRLMHarness requires a runtime session.")
+            raise ValueError("DSPYRLMHarness requires a runtime.")
         prompt = self.initial_messages(task)
 
         async def stop_check() -> str | None:
-            if await self.is_completed(task, state, ctx=ctx):
+            if await self.is_completed(context):
                 return state.stop_condition or "stop"
             return None
 
         async with vf.InterceptionServer(
-            ctx,
+            context,
             task,
             state,
             protocols=self.protocols,
             stop_check=stop_check,
         ) as endpoint:
             endpoint_url = await runtime.expose(endpoint.port)
-            endpoint_env = endpoint.env(base_url=endpoint_url, model=ctx.model)
+            endpoint_env = endpoint.env(base_url=endpoint_url, model=context.model)
             final_output = await run_dspy_rlm(
                 query=task.question,
                 base_url=endpoint_env["OPENAI_BASE_URL"],

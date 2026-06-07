@@ -93,7 +93,7 @@ class WikispeediaTaskset(vf.Taskset[WikispeediaTasksetConfig]):
 
     @vf.reward(weight=1.0)
     async def reached_target(self, state: vf.State) -> float:
-        return float(bool(state.scratch.get("reached_target", False)))
+        return float(bool(state.extras.get("reached_target", False)))
 
     @vf.reward(weight=1.0)
     async def path_efficiency_reward(self, state: vf.State) -> float:
@@ -111,12 +111,12 @@ class WikispeediaTaskset(vf.Taskset[WikispeediaTasksetConfig]):
 
     @vf.metric
     async def shortest_path(self, state: vf.State) -> float:
-        value = state.scratch.get("shortest_path", 0)
+        value = state.extras.get("shortest_path", 0)
         return float(value) if isinstance(value, int | float) else 0.0
 
     @vf.metric
     async def agent_timeout(self, state: vf.State) -> float:
-        return float(bool(state.scratch.get("agent_timeout", False)))
+        return float(bool(state.extras.get("agent_timeout", False)))
 
     @vf.metric
     async def total_tool_calls(self, state: vf.State) -> float:
@@ -149,19 +149,12 @@ class WikispeediaTaskset(vf.Taskset[WikispeediaTasksetConfig]):
 
 
 class WikispeediaHarness(vf.Harness[WikispeediaHarnessConfig]):
-    async def _run(
-        self,
-        task: WikispeediaTask,
-        state: vf.State,
-        *,
-        ctx: vf.RolloutContext,
-        runtime: vf.RuntimeSession | None = None,
-        tools: vf.MCPToolRegistry | None = None,
-        user: vf.MCPToolRegistry | None = None,
-    ) -> None:
+    async def run_with_context(self, context: vf.Context) -> None:
+        task = WikispeediaTask.model_validate(context.task.model_dump())
+        state = context.state
+        runtime = context.runtime
         if runtime is None:
-            raise ValueError("WikispeediaHarness requires a runtime session.")
-        _ = tools, user
+            raise ValueError("WikispeediaHarness requires a runtime.")
         from deepagents import create_deep_agent
         from langchain_core.tools import tool
         from langchain_openai import ChatOpenAI
@@ -187,19 +180,19 @@ class WikispeediaHarness(vf.Harness[WikispeediaHarnessConfig]):
             nav_tools.append(go_back)
 
         async def stop_check() -> str | None:
-            if await self.is_completed(task, state, ctx=ctx):
+            if await self.is_completed(context):
                 return state.stop_condition or "stop"
             return None
 
         async with vf.InterceptionServer(
-            ctx,
+            context,
             task,
             state,
             protocols=self.protocols,
             stop_check=stop_check,
         ) as endpoint:
             endpoint_url = await runtime.expose(endpoint.port)
-            endpoint_env = endpoint.env(base_url=endpoint_url, model=ctx.model)
+            endpoint_env = endpoint.env(base_url=endpoint_url, model=context.model)
             system_messages = [
                 message for message in prompt if message.role == "system"
             ]
@@ -212,7 +205,9 @@ class WikispeediaHarness(vf.Harness[WikispeediaHarnessConfig]):
             agent = create_deep_agent(
                 model=model,
                 tools=nav_tools,
-                system_prompt=vf.messages_text(system_messages),
+                system_prompt="\n\n".join(
+                    str(message.content or "") for message in system_messages
+                ),
             )
             invoke_config = (
                 {"recursion_limit": self.config.max_turns}
@@ -222,7 +217,12 @@ class WikispeediaHarness(vf.Harness[WikispeediaHarnessConfig]):
             invoke = agent.ainvoke(
                 {
                     "messages": [
-                        {"role": "user", "content": vf.messages_text(user_messages)}
+                        {
+                            "role": "user",
+                            "content": "\n\n".join(
+                                str(message.content or "") for message in user_messages
+                            ),
+                        }
                     ]
                 },
                 config=invoke_config,
@@ -232,7 +232,7 @@ class WikispeediaHarness(vf.Harness[WikispeediaHarnessConfig]):
                     invoke, timeout=self.config.timeout_seconds
                 )
             except (TimeoutError, GraphRecursionError) as exc:
-                state.scratch["agent_timeout"] = True
+                state.extras["agent_timeout"] = True
                 state.stop(
                     "agent_timeout"
                     if isinstance(exc, TimeoutError)
@@ -323,13 +323,13 @@ def load_tasks(
 
 
 def init_navigation_state(task: WikispeediaTask, state: vf.State) -> None:
-    state.scratch["current_article"] = task.source
-    state.scratch["path"] = [task.source]
-    state.scratch["target"] = task.target
-    state.scratch["shortest_path"] = task.shortest_path
-    state.scratch["reached_target"] = False
-    state.scratch["agent_timeout"] = False
-    state.scratch["links_only"] = task.links_only
+    state.extras["current_article"] = task.source
+    state.extras["path"] = [task.source]
+    state.extras["target"] = task.target
+    state.extras["shortest_path"] = task.shortest_path
+    state.extras["reached_target"] = False
+    state.extras["agent_timeout"] = False
+    state.extras["links_only"] = task.links_only
 
 
 def cache_dir(task: WikispeediaTask) -> str | None:
@@ -341,32 +341,32 @@ def allow_go_back(task: WikispeediaTask) -> bool:
 
 
 def current_article(state: vf.State) -> str:
-    value = state.scratch.get("current_article")
+    value = state.extras.get("current_article")
     if not isinstance(value, str):
         raise RuntimeError("Wikispeedia current article is not initialized.")
     return value
 
 
 def target_article(state: vf.State) -> str:
-    value = state.scratch.get("target")
+    value = state.extras.get("target")
     if not isinstance(value, str):
         raise RuntimeError("Wikispeedia target article is not initialized.")
     return value
 
 
 def path(state: vf.State) -> list[str]:
-    value = state.scratch.get("path")
+    value = state.extras.get("path")
     if isinstance(value, list) and all(isinstance(item, str) for item in value):
         return list(value)
     return []
 
 
 def set_path(state: vf.State, articles: list[str]) -> None:
-    state.scratch["path"] = articles
+    state.extras["path"] = articles
 
 
 def click_link_result(article: str, wiki: WikiGraph, state: vf.State) -> str:
-    links_only = bool(state.scratch.get("links_only", False))
+    links_only = bool(state.extras.get("links_only", False))
     current = current_article(state)
     available = wiki.get_links(current)
     normalized = wiki.normalize_name(article)
@@ -379,9 +379,9 @@ def click_link_result(article: str, wiki: WikiGraph, state: vf.State) -> str:
     route = path(state)
     route.append(normalized)
     set_path(state, route)
-    state.scratch["current_article"] = normalized
+    state.extras["current_article"] = normalized
     if normalized == target_article(state):
-        state.scratch["reached_target"] = True
+        state.extras["reached_target"] = True
         state.stop("target_reached")
         return (
             f"TARGET REACHED: {normalized}\n\n"
@@ -396,17 +396,17 @@ def go_back_result(wiki: WikiGraph, state: vf.State) -> str:
         return "You are already at the starting article. Cannot go back."
     route.pop()
     set_path(state, route)
-    state.scratch["current_article"] = route[-1]
+    state.extras["current_article"] = route[-1]
     return format_article(
-        wiki, route[-1], links_only=bool(state.scratch.get("links_only", False))
+        wiki, route[-1], links_only=bool(state.extras.get("links_only", False))
     )
 
 
 def path_efficiency(state: vf.State) -> float:
-    if not bool(state.scratch.get("reached_target", False)):
+    if not bool(state.extras.get("reached_target", False)):
         return 0.0
     shortest = 0.0
-    raw_shortest = state.scratch.get("shortest_path")
+    raw_shortest = state.extras.get("shortest_path")
     if isinstance(raw_shortest, int | float) and not isinstance(raw_shortest, bool):
         shortest = float(raw_shortest)
     actual = max(len(path(state)) - 1, 1)

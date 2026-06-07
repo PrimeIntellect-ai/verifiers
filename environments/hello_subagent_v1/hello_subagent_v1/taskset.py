@@ -1,6 +1,6 @@
-import sys
-
 import verifiers.v1 as vf
+
+from .servers.toolset import SubagentToolsetConfig
 
 NAME_GROUPS = [
     ["world"],
@@ -18,10 +18,11 @@ NAME_GROUPS = [
 
 class SubagentTasksetConfig(vf.TasksetConfig):
     system_prompt: str = (
-        "You are a parent coordinator. Call ask_subagent once for each requested "
-        "name. After all tool results are available, join the child answers with "
-        "', ' and output only that final joined text."
+        "You are a parent coordinator. Call subagent_ask_subagent once for each "
+        "requested name. After all tool results are available, join the child "
+        "answers with ', ' and output only that final joined text."
     )
+    toolsets: list[vf.ToolsetConfig] = [SubagentToolsetConfig()]
 
 
 class SubagentHarnessConfig(vf.HarnessConfig):
@@ -48,21 +49,9 @@ class SubagentTaskset(vf.Taskset[SubagentTasksetConfig]):
             for names in NAME_GROUPS
         ]
 
-    def load_toolsets(self, config: SubagentTasksetConfig) -> list[vf.Toolset]:
-        _ = config
-        return [
-            vf.Toolset(
-                name="subagent",
-                scope="rollout",
-                server=vf.MCPServerSpec(
-                    command=[sys.executable, "-m", "hello_subagent_v1.servers.tools"]
-                ),
-            )
-        ]
-
     @vf.metric
     async def subagent_calls(self, state: vf.State) -> float:
-        calls = state.scratch.get("subagent_calls")
+        calls = state.extras.get("subagent_calls")
         return float(len(calls) if isinstance(calls, list) else 0)
 
     @vf.reward(weight=1.0)

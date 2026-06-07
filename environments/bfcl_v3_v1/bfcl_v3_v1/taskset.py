@@ -10,6 +10,7 @@ import verifiers.v1 as vf
 from verifiers.types import (
     AssistantMessage,
     Message,
+    MessageContent,
     Messages,
     Tool,
     ToolCall,
@@ -331,6 +332,13 @@ def json_clone(value: object) -> object:
     return json.loads(json.dumps(value))
 
 
+def bfcl_involved_classes(task: BFCLTask) -> list[str]:
+    value = json_clone(task.involved_classes)
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise TypeError("BFCL multi-turn tasks require involved_classes.")
+    return value
+
+
 def tool_args(value: str) -> vf.JsonData:
     parsed = json.loads(value or "{}")
     if not isinstance(parsed, dict):
@@ -467,30 +475,22 @@ class BFCLTaskset(vf.Taskset[BFCLTasksetConfig]):
 
 
 class BFCLHarness(vf.Harness[BFCLHarnessConfig]):
-    async def _run(
-        self,
-        task: BFCLTask,
-        state: vf.State,
-        *,
-        ctx: vf.RolloutContext,
-        runtime: vf.RuntimeSession | None = None,
-        tools: vf.MCPToolRegistry | None = None,
-        user: vf.MCPToolRegistry | None = None,
-    ) -> None:
-        _ = runtime, tools, user
+    async def run_with_context(self, context: vf.Context) -> None:
+        task = BFCLTask.model_validate(context.task.model_dump())
+        state = context.state
         patch_bfcl_eval()
         from bfcl_eval.utils import is_multi_turn
 
-        state.metadata["model"] = ctx.model
+        state.metadata["model"] = context.model
         if is_multi_turn(task.category):
-            await self.run_multi_turn(ctx, task, state)
+            await self.run_multi_turn(context, task, state)
             return
         prompt = self.initial_messages(task)
         start = time.time()
-        response = await ctx.model_client.get_response(
+        response = await context.model_client.get_response(
             prompt=prompt,
-            model=ctx.model,
-            sampling_args=self.sampling_args(task, ctx.sampling_args),
+            model=context.model,
+            sampling_args=self.sampling_args(task, context.sampling_args),
             tools=bfcl_tool_defs(bfcl_functions(task)),
             state=state,
         )
@@ -500,12 +500,15 @@ class BFCLHarness(vf.Harness[BFCLHarnessConfig]):
 
     async def run_multi_turn(
         self,
-        ctx: vf.RolloutContext,
+        context: vf.Context,
         task: BFCLTask,
         state: vf.State,
     ) -> None:
         from bfcl_eval.constants.default_prompts import (
             DEFAULT_USER_PROMPT_FOR_ADDITIONAL_FUNCTION_FC,
+        )
+        from bfcl_eval.eval_checker.multi_turn_eval.multi_turn_utils import (
+            execute_multi_turn_func_call,
         )
         from bfcl_eval.model_handler.base_handler import is_empty_execute_response
 
@@ -513,14 +516,28 @@ class BFCLHarness(vf.Harness[BFCLHarnessConfig]):
         next_prompts = list(task.question)[1:]
         holdout_function = bfcl_missed_function(task)
         tool_defs = bfcl_tool_defs(bfcl_functions(task))
+        initial_config = cast(vf.JsonData, json_clone(task.initial_config or {}))
+        involved_classes = bfcl_involved_classes(task)
+        simulator_model = (
+            model_name(state).replace("/", "_").replace("-", "_").replace(".", "_")
+        )
+        long_context = "long_context" in task.category or "composite" in task.category
         max_steps_per_turn = int(task.max_steps_per_turn or maximum_step_limit())
         turn_idx = 0
         steps_per_turn = 0
+        execute_multi_turn_func_call(
+            [],
+            initial_config,
+            involved_classes,
+            simulator_model,
+            task.task_id,
+            long_context=long_context,
+        )
         while True:
-            response = await ctx.model_client.get_response(
+            response = await context.model_client.get_response(
                 prompt=messages,
-                model=ctx.model,
-                sampling_args=self.sampling_args(task, ctx.sampling_args),
+                model=context.model,
+                sampling_args=self.sampling_args(task, context.sampling_args),
                 tools=tool_defs,
                 state=state,
             )
@@ -534,9 +551,22 @@ class BFCLHarness(vf.Harness[BFCLHarnessConfig]):
             except Exception:
                 func_calls = []
             if func_calls:
+                execution_results, _ = execute_multi_turn_func_call(
+                    func_call_list=func_calls,
+                    initial_config=initial_config,
+                    involved_classes=involved_classes,
+                    model_name=simulator_model,
+                    test_entry_id=task.task_id,
+                    long_context=long_context,
+                )
                 tool_messages = [
-                    ToolMessage(tool_call_id=tool_call.id, content="recorded")
-                    for tool_call in tool_calls
+                    ToolMessage(
+                        tool_call_id=tool_call.id,
+                        content=cast(MessageContent, execution_result),
+                    )
+                    for execution_result, tool_call in zip(
+                        execution_results, tool_calls
+                    )
                 ]
                 turn.tool_results = tool_messages
                 messages.extend(tool_messages)

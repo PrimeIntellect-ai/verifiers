@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import asyncio
+from types import ModuleType
 
 from aiohttp import ClientSession, web
 import pytest
@@ -9,8 +10,12 @@ import pytest
 import verifiers.v1 as vf
 from verifiers.types import ClientConfig, EvalConfig, Response
 from verifiers.utils import eval_utils
-from verifiers.v1.loaders import load_environment_from_components
-from verifiers.v1.mcp import MCPToolRegistry
+from verifiers.v1.loaders import (
+    load_environment_from_components,
+    load_harness_from_module,
+    load_taskset_from_module,
+)
+from verifiers.v1.mcp import BoundUpdate, MCPToolRegistry
 
 
 def attach_mock_model(
@@ -48,8 +53,8 @@ class NanoTaskset(vf.Taskset):
         ]
 
     @vf.setup
-    async def setup_scratch(self, state: vf.State) -> None:
-        state.scratch["seen_setup"] = True
+    async def setup_extras(self, state: vf.State) -> None:
+        state.extras["seen_setup"] = True
 
     @vf.reward
     async def exact(self, task: NanoTask, state: vf.State) -> float:
@@ -82,24 +87,15 @@ class GroupTaskset(NanoTaskset):
     grpo = staticmethod(vf.advantages.grpo)
 
 
-EMPTY_PROMPT_USER_SCRIPT = """
-from mcp.server.fastmcp import FastMCP
-
-mcp = FastMCP("bootstrap-user")
-
-@mcp.tool()
-def respond(task: dict, state: dict, transcript: list[dict]) -> dict:
-    return {"messages": [{"role": "user", "content": "server prompt"}]}
-
-mcp.run(transport="stdio")
-"""
+class EmptyPromptUser(vf.User):
+    @vf.tool
+    def respond(self) -> dict:
+        return {"messages": [{"role": "user", "content": "server prompt"}]}
 
 
 class EmptyPromptTasksetConfig(vf.TasksetConfig):
-    user: vf.User | None = vf.User(
-        server=vf.MCPServerSpec(
-            command=[sys.executable, "-c", EMPTY_PROMPT_USER_SCRIPT]
-        )
+    user: vf.UserConfig | None = vf.UserConfig(
+        loader=f"{EmptyPromptUser.__module__}:EmptyPromptUser"
     )
 
 
@@ -110,23 +106,213 @@ class EmptyPromptTaskset(vf.Taskset[EmptyPromptTasksetConfig]):
         return [{"example_id": 0, "prompt": [], "max_turns": 1}]
 
 
-def test_v1_state_is_pydantic_and_scratch_owned() -> None:
+class PatchOnlyUser(vf.User):
+    @vf.tool(
+        sets={
+            "done": "state.extras.done",
+            "stop_condition": "state.stop_condition",
+        }
+    )
+    def respond(self) -> dict:
+        return {"done": True, "stop_condition": "user_bootstrap_done"}
+
+
+class PatchOnlyUserTasksetConfig(vf.TasksetConfig):
+    user: vf.UserConfig | None = vf.UserConfig(
+        loader=f"{PatchOnlyUser.__module__}:PatchOnlyUser"
+    )
+
+
+class PatchOnlyUserTaskset(vf.Taskset[PatchOnlyUserTasksetConfig]):
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
+        if split == "eval":
+            return []
+        return [{"example_id": 0, "prompt": [], "max_turns": 1}]
+
+
+class TaskSetupToolset(vf.Toolset):
+    count = 0
+
+    @vf.tool(
+        args={"task": "task"},
+        sets={
+            "grader_case": "state.metadata.grader_case",
+            "setup_count": "state.extras.setup_count",
+            "setup": "state.artifacts.setup",
+        },
+    )
+    def materialize(self, task: dict) -> dict:
+        type(self).count += 1
+        count = type(self).count
+        return {
+            "content": "",
+            "grader_case": f"{task['task_id']}:{count}",
+            "setup_count": count,
+            "setup": {"count": count},
+        }
+
+
+class ServerSetupTaskset(vf.Taskset):
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
+        if split == "eval":
+            return []
+        return [
+            {"example_id": 0, "prompt": "say ok", "max_turns": 1},
+            {"example_id": 1, "prompt": "say ok", "max_turns": 1},
+        ]
+
+    def load_toolsets(self, config: vf.TasksetConfig) -> list[vf.ToolsetConfig]:
+        _ = config
+        return [
+            vf.ToolsetConfig(
+                loader=f"{TaskSetupToolset.__module__}:TaskSetupToolset",
+                name="setup",
+                scope="env",
+                hide=["materialize"],
+            )
+        ]
+
+    @vf.setup
+    async def materialize_task(
+        self,
+        task: vf.Task,
+        state: vf.State,
+        harness: vf.Harness,
+        runtime: vf.Runtime,
+        tools: MCPToolRegistry,
+    ) -> None:
+        _ = task
+        result = await tools.call_hidden("materialize", {})
+        harness.apply_tool_result(state, result)
+        case = state.metadata["grader_case"]
+        assert isinstance(case, str)
+        await runtime.write("grader_case.txt", case.encode())
+
+
+class DemoToolset(vf.Toolset):
+    @vf.tool
+    def echo(self, text: str) -> str:
+        return text.upper()
+
+    @vf.tool
+    def suffix(self, text: str) -> str:
+        return text + "!"
+
+
+class BoundToolset(vf.Toolset):
+    @vf.tool(
+        args={"task_name": "task.name"},
+        extends={"events": "state.extras.events"},
+        sets={
+            "profile": "state.extras.profile",
+        },
+    )
+    def record(self, name: str, task_name: str) -> dict:
+        return {
+            "content": f"{task_name}:{name}",
+            "events": [{"task": task_name, "name": name}],
+            "profile": {"task": task_name},
+        }
+
+
+def test_v1_state_is_pydantic_and_extras_owned() -> None:
     task = NanoTask(prompt="hello", answer="world")
     state = vf.State(task_id=task.task_id)
 
-    state.scratch["x"] = 1
+    state.extras["x"] = 1
     state.reward += 0.5
     state.assert_serializable()
 
-    assert state.scratch == {"x": 1}
+    assert state.extras == {"x": 1}
     assert state.reward == 0.5
     with pytest.raises(TypeError):
         state["x"] = 2
     assert state.to_output(task)["transcript"] == []
 
 
+def test_v1_loader_does_not_recurse_to_same_package_config_id() -> None:
+    module = ModuleType("same_env.taskset")
+
+    with pytest.raises(AttributeError, match="does not expose load_taskset"):
+        load_taskset_from_module(module, config={"id": "same-env"})
+
+    with pytest.raises(AttributeError, match="does not expose load_harness"):
+        load_harness_from_module(module, config={"id": "same-env"})
+
+
+def test_v1_harness_allows_metrics_but_rejects_rewards() -> None:
+    class MetricHarness(vf.Harness):
+        @vf.metric
+        async def command_calls(self) -> float:
+            return 1.0
+
+    assert MetricHarness().signals[0]["name"] == "command_calls"
+
+    class RewardHarness(vf.Harness):
+        @vf.reward
+        async def execution_reward(self) -> float:
+            return 1.0
+
+    with pytest.raises(ValueError, match="Harness signals must be metrics"):
+        RewardHarness()
+
+
+class TaskExtras(vf.Extras):
+    task_flag: bool = True
+
+
+class HarnessExtras(vf.Extras):
+    harness_count: int = 2
+
+
+class ExtrasTasksetConfig(vf.TasksetConfig):
+    extras: TaskExtras = TaskExtras()
+
+
+class ExtrasHarnessConfig(vf.HarnessConfig):
+    extras: HarnessExtras = HarnessExtras()
+    max_turns: int = 1
+
+
+class ExtrasTaskset(vf.Taskset[ExtrasTasksetConfig]):
+    def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
+        if split == "eval":
+            return []
+        return [{"example_id": 0, "prompt": "say ok"}]
+
+
+def test_v1_extras_config_schemas_realize_and_reject_conflicts() -> None:
+    env = vf.Env(taskset=ExtrasTaskset(), harness=vf.Harness(ExtrasHarnessConfig()))
+    state = vf.State()
+    env.harness.initialize_extras(state)
+
+    assert state.extras == {"task_flag": True, "harness_count": 2}
+    env.harness.validate_extras(state)
+
+    class TaskConflict(vf.Extras):
+        shared: int = 1
+
+    class HarnessConflict(vf.Extras):
+        shared: str = "x"
+
+    class ConflictTasksetConfig(vf.TasksetConfig):
+        extras: TaskConflict = TaskConflict()
+
+    class ConflictHarnessConfig(vf.HarnessConfig):
+        extras: HarnessConflict = HarnessConflict()
+
+    class ConflictTaskset(vf.Taskset[ConflictTasksetConfig]):
+        pass
+
+    with pytest.raises(ValueError, match="defined by both"):
+        vf.Env(
+            taskset=ConflictTaskset(),
+            harness=vf.Harness(ConflictHarnessConfig()),
+        )
+
+
 @pytest.mark.asyncio
-async def test_v1_model_client_derives_legacy_client_record(mock_client) -> None:
+async def test_v1_model_client_uses_serialized_transcript_record(mock_client) -> None:
     config = vf.ModelConfig(client=ClientConfig(), model="test-model")
     state = vf.State(task_id="task-1")
     state.add_turn(
@@ -151,10 +337,10 @@ async def test_v1_model_client_derives_legacy_client_record(mock_client) -> None
     )
 
     client_state = mock_client.last_call_kwargs["state"]
-    assert "transcript" not in client_state
+    assert "trajectory" not in client_state
     assert client_state["task_id"] == "task-1"
-    assert client_state["trajectory"][0]["prompt"][0].content == "first"
-    assert client_state["trajectory"][0]["tokens"]["completion_ids"] == [2]
+    assert client_state["transcript"][0]["prompt"][0]["content"] == "first"
+    assert client_state["transcript"][0]["tokens"]["completion_ids"] == [2]
 
 
 @pytest.mark.asyncio
@@ -172,6 +358,49 @@ async def test_v1_standalone_env_rollout_scores_from_transcript(mock_client) -> 
     assert output["metrics"]["exact"] == 1.0
     assert output["metrics"]["num_turns"] == 1.0
     assert output["transcript"][0]["completion"][0]["content"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_harness_run_accepts_string_task_and_model(mock_client) -> None:
+    mock_client.set_default_response("ok")
+    harness = vf.Harness()
+    configs: list[vf.ModelConfig] = []
+
+    def load_model_client(config: vf.ModelConfig) -> vf.ModelClient:
+        configs.append(config)
+        return vf.ModelClient(config=config, client=mock_client)
+
+    async def close_model_client(_: vf.ModelClient) -> None:
+        return None
+
+    harness.load_model_client = load_model_client
+    harness.close_model_client = close_model_client
+
+    state = await harness.run(task="hello world", model="openai/gpt-5")
+
+    assert state.task_id is not None
+    assert state.prompt[0].content == "hello world"
+    assert state.completion[0].content == "ok"
+    assert configs[0].model == "openai/gpt-5"
+    assert configs[0].client.api_key_var == "PRIME_API_KEY"
+    assert configs[0].client.api_base_url == "https://api.pinference.ai/api/v1"
+    assert mock_client.last_call_kwargs["model"] == "openai/gpt-5"
+
+
+@pytest.mark.asyncio
+async def test_harness_run_rejects_nested_scoring_context(mock_client) -> None:
+    task = vf.Task(prompt="judge")
+    state = vf.State(task_id=task.task_id)
+    model = vf.ModelConfig(client=ClientConfig(), model="test-model")
+    context = vf.Context(
+        task=task,
+        state=state,
+        model_client=vf.ModelClient(config=model, client=mock_client),
+        scoring=True,
+    )
+
+    with pytest.raises(RuntimeError, match="Nested scored harness runs"):
+        await vf.Harness().run(task="nested judge", context=context, score=True)
 
 
 @pytest.mark.asyncio
@@ -216,10 +445,59 @@ async def test_v1_empty_prompt_bootstraps_from_user_server(mock_client) -> None:
 
 
 @pytest.mark.asyncio
+async def test_user_server_can_return_only_bound_state_updates(mock_client) -> None:
+    mock_client.set_default_response("should not run")
+    env = vf.Env(taskset=PatchOnlyUserTaskset(), harness=vf.Harness())
+    model = attach_mock_model(env, mock_client)
+
+    state = await env.run_rollout(env.get_dataset()[0], model=model)
+
+    assert state.extras["done"] is True
+    assert state.stop_condition == "user_bootstrap_done"
+    assert state.transcript == []
+    assert mock_client.last_call_kwargs == {}
+    await env.close()
+
+
+@pytest.mark.asyncio
+async def test_v1_setup_can_materialize_task_local_state_from_env_server(
+    mock_client,
+) -> None:
+    mock_client.set_default_response("ok")
+    env = vf.Env(taskset=ServerSetupTaskset(), harness=vf.Harness())
+    model = attach_mock_model(env, mock_client)
+    rows = list(env.get_dataset())
+
+    states = [await env.run_rollout(row, model=model) for row in rows]
+
+    assert [state.extras["setup_count"] for state in states] == [1, 2]
+    assert [state.artifacts["setup"]["count"] for state in states] == [1, 2]
+    assert states[0].metadata["grader_case"].endswith(":1")
+    assert states[1].metadata["grader_case"].endswith(":2")
+    assert "setup_materialize" not in [
+        tool.name for tool in mock_client.last_call_kwargs["tools"] or []
+    ]
+    await env.close()
+
+
+@pytest.mark.asyncio
 async def test_migrated_hello_rlm_v1_runs_without_old_runtime(mock_client) -> None:
     from environments.hello_rlm_v1.hello_rlm_v1 import taskset as module
 
-    env = load_environment_from_components(module, {})
+    env = load_environment_from_components(
+        module,
+        {
+            "config": vf.EnvConfig(
+                harness=module.HelloRLMHarnessConfig(
+                    command=[
+                        sys.executable,
+                        "-c",
+                        "import os; print(os.environ['VF_PROMPT'].split('exactly ', 1)[1].rstrip('.'))",
+                    ]
+                )
+            )
+        },
+    )
     model = attach_mock_model(env, mock_client, "unused-model")
     row = env.get_dataset()[0]
     task = env.taskset.to_task(row)
@@ -234,24 +512,9 @@ async def test_migrated_hello_rlm_v1_runs_without_old_runtime(mock_client) -> No
 
 @pytest.mark.asyncio
 async def test_mcp_toolset_exposes_multiple_server_tools() -> None:
-    script = """
-from mcp.server.fastmcp import FastMCP
-
-mcp = FastMCP("echo")
-
-@mcp.tool()
-def echo(text: str) -> str:
-    return text.upper()
-
-@mcp.tool()
-def suffix(text: str) -> str:
-    return text + "!"
-
-mcp.run(transport="stdio")
-"""
-    toolset = vf.Toolset(
+    toolset = vf.ToolsetConfig(
+        loader=f"{DemoToolset.__module__}:DemoToolset",
         name="demo",
-        server=vf.MCPServerSpec(command=[sys.executable, "-c", script]),
     )
 
     async with MCPToolRegistry([toolset]) as registry:
@@ -259,12 +522,64 @@ mcp.run(transport="stdio")
         result = await registry.call("demo_echo", {"text": "ok"})
 
     assert names == ["demo_echo", "demo_suffix"]
-    assert result == "OK"
+    assert result.response.messages[0].content == "OK"
+
+
+@pytest.mark.asyncio
+async def test_mcp_bindings_hide_args_and_bind_returns() -> None:
+    toolset = vf.ToolsetConfig(
+        loader=f"{BoundToolset.__module__}:BoundToolset",
+        name="bound",
+    )
+    state = vf.State()
+    task = vf.Task(name="demo", prompt="say ok")
+    harness = vf.Harness()
+
+    async with MCPToolRegistry([toolset]) as registry:
+        registry.set_context(harness.binding_context(task, state))
+        tools = registry.tool_defs() or []
+        result = await registry.call("bound_record", {"name": "alpha"})
+
+    properties = tools[0].parameters["properties"]
+    assert "name" in properties
+    assert "task_name" not in properties
+    assert result.response.messages[0].content == "demo:alpha"
+
+    harness.apply_bound_updates(state, list(result.updates))
+    assert state.extras == {
+        "events": [{"task": "demo", "name": "alpha"}],
+        "profile": {"task": "demo"},
+    }
+
+
+def test_bound_state_updates_allow_extends_and_reject_set_conflicts() -> None:
+    harness = vf.Harness()
+    state = vf.State()
+
+    harness.apply_bound_updates(
+        state,
+        [
+            BoundUpdate("state.extras.events", [{"name": "a"}], "extend"),
+            BoundUpdate("state.extras.events", [{"name": "b"}], "extend"),
+        ],
+    )
+    assert sorted(event["name"] for event in state.extras["events"]) == ["a", "b"]
+
+    with pytest.raises(ValueError, match="Conflicting bound state updates"):
+        harness.apply_bound_updates(
+            state,
+            [
+                BoundUpdate("state.extras.profile", {"name": "a"}),
+                BoundUpdate("state.extras.profile.name", "b"),
+            ],
+        )
 
 
 @pytest.mark.asyncio
 async def test_v1_local_runtime_session_read_write_run() -> None:
-    async with vf.make_runtime_provider(vf.LocalRuntimeConfig()).session() as runtime:
+    async with vf.make_runtime_provider(
+        vf.LocalRuntimeConfig()
+    ).create_runtime() as runtime:
         await runtime.write("payload.txt", b"hello runtime")
         result = await runtime.run(
             [
@@ -437,8 +752,10 @@ async def test_v1_interception_supports_custom_protocols(mock_client) -> None:
     task = vf.Task(prompt=[])
     state = vf.State(task_id=task.task_id)
     model = vf.ModelConfig(client=ClientConfig(), model="fallback-model")
-    ctx = vf.RolloutContext(
-        model_client=vf.ModelClient(config=model, client=mock_client)
+    ctx = vf.Context(
+        task=task,
+        state=state,
+        model_client=vf.ModelClient(config=model, client=mock_client),
     )
 
     async with vf.InterceptionServer(

@@ -77,7 +77,10 @@ class OpenCode(CommandHarness[OpenCodeConfig]):
             "small_model": "openai/model",
             "agent": {
                 "build": {
-                    "prompt": vf.messages_text(vf.get_messages(self.system_prompt)),
+                    "prompt": "\n\n".join(
+                        str(getattr(message, "content", "") or "")
+                        for message in vf.get_messages(self.system_prompt)
+                    ),
                     "tools": {name: False for name in self.config.disabled_tools},
                 }
             },

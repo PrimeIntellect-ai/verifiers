@@ -1,7 +1,6 @@
 import asyncio
 import importlib.util
 import json
-import sys
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Literal, Protocol, TypeAlias, cast
@@ -75,11 +74,7 @@ class OpenEnvBuildConfig(vf.Config):
 
 class OpenEnvTasksetConfig(vf.TasksetConfig):
     id: str | None = "openenv"
-    user: vf.User | None = vf.User(
-        server=vf.MCPServerSpec(
-            command=[sys.executable, "-m", "tasksets.openenv", "--user-server"]
-        )
-    )
+    user: vf.UserConfig | None = vf.UserConfig(loader="tasksets.openenv:OpenEnvUser")
     prompt_renderer: str = "tasksets.openenv:default_openenv_prompt_renderer"
     openenv_project: str = "proj"
     num_train_examples: int = 100
@@ -243,10 +238,7 @@ async def render_messages(
     ]
 
 
-def latest_assistant_json(state: dict) -> vf.JsonData:
-    raw_completion = state["completion"]
-    if not isinstance(raw_completion, list):
-        raise TypeError("OpenEnv state.completion must be a list.")
+def latest_assistant_json(raw_completion: list[dict]) -> vf.JsonData:
     messages = [
         cast(dict[str, object], message)
         for message in raw_completion
@@ -270,24 +262,29 @@ def result_payload(
 ) -> dict[str, object]:
     payload: dict[str, object] = {
         "messages": messages,
-        "scratch": {"openenv_done": bool(result.done)},
-        "reward_delta": float(result.reward or 0.0),
+        "openenv_done": bool(result.done),
+        "reward": float(result.reward or 0.0),
     }
     if result.done:
         payload["stop_condition"] = "openenv_done"
     return payload
 
 
-def run_user_server() -> None:
-    from mcp.server.fastmcp import FastMCP
-
-    mcp = FastMCP("openenv-user")
-
-    @mcp.tool()
-    async def respond(task: dict, state: dict, transcript: list[dict]) -> dict:
-        _ = transcript
+class OpenEnvUser(vf.User):
+    @vf.tool(
+        args={
+            "openenv": "task.openenv",
+            "completion": "state.completion",
+        },
+        sets={
+            "openenv_done": "state.extras.openenv_done",
+            "reward": "state.reward",
+            "stop_condition": "state.stop_condition",
+        },
+    )
+    async def respond(self, openenv: dict, completion: list[dict]) -> dict:
         global SESSION
-        config = OpenEnvRuntimeConfig.model_validate(task["openenv"])
+        config = OpenEnvRuntimeConfig.model_validate(openenv)
         if SESSION is None:
             SESSION = OpenEnvSession(config)
             result = await SESSION.reset()
@@ -297,19 +294,13 @@ def run_user_server() -> None:
                 ),
                 result=result,
             )
-        action = latest_assistant_json(state)
+        action = latest_assistant_json(completion)
         result = await SESSION.step(action)
         return result_payload(
             messages=await render_messages(config, SESSION, result.observation, "step"),
             result=result,
         )
 
-    mcp.run(transport="stdio")
-
 
 def load_taskset(config: OpenEnvTasksetConfig) -> OpenEnvTaskset:
     return OpenEnvTaskset(config=config)
-
-
-if __name__ == "__main__" and sys.argv[1:] == ["--user-server"]:
-    run_user_server()

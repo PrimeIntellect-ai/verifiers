@@ -15,10 +15,10 @@ from verifiers.clients import Client
 from verifiers.types import Messages
 from verifiers.utils.async_utils import maybe_call_with_named_args
 
-from ..runtime import RuntimeSession
+from ..runtime import Runtime
 from ..state import State, Turn
 from ..task import Task
-from ..types import Handler, JsonData, ModelClient
+from ..types import Context, Handler, JsonData, ModelClient
 
 SignalKind = Literal["metric", "reward", "advantage"]
 SignalStage = Literal["rollout", "group"]
@@ -47,7 +47,8 @@ SignalKwarg = (
     | str
     | ModelClient
     | Client
-    | RuntimeSession
+    | Runtime
+    | Context
     | None
 )
 SignalKwargs = dict[str, SignalKwarg]
@@ -101,9 +102,10 @@ async def score_rollout(
     signals: Iterable[SignalRecord],
     task: Task,
     state: State,
-    runtime: RuntimeSession | None = None,
+    runtime: Runtime | None = None,
     model_client: ModelClient | None = None,
     teacher: ModelClient | None = None,
+    context: Context | None = None,
     resolve_kwargs: Callable[
         [
             Handler,
@@ -124,6 +126,7 @@ async def score_rollout(
         runtime=runtime,
         model_client=model_client,
         teacher=teacher,
+        context=context,
     )
     protected_args = set(framework_kwargs)
     for signal in sorted(signals, key=signal_sort_key):
@@ -338,14 +341,15 @@ def rollout_framework_kwargs(
     task: Task,
     state: State,
     *,
-    runtime: RuntimeSession | None = None,
+    runtime: Runtime | None = None,
     model_client: ModelClient | None = None,
     teacher: ModelClient | None = None,
+    context: Context | None = None,
 ) -> SignalKwargs:
     kwargs: SignalKwargs = {
         "task": task,
         "state": state,
-        "scratch": state.scratch,
+        "extras": state.extras,
         "transcript": state.transcript,
         "completion": state.completion,
         "metrics": state.metrics,
@@ -358,6 +362,7 @@ def rollout_framework_kwargs(
         "teacher": teacher,
         "teacher_client": teacher.client if teacher is not None else None,
         "teacher_model": teacher.config.model if teacher is not None else None,
+        "context": context,
     }
     if runtime is not None:
         kwargs["runtime"] = runtime

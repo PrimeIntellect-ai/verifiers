@@ -31,7 +31,13 @@ class MiniSWEAgent(CommandHarness[MiniSWEAgentConfig]):
 
     def command(self, task: vf.Task, state: vf.State) -> list[str]:
         _ = state
-        instruction = vf.task_text(task, state, keys=("instruction", "question"))
+        instruction = str(
+            getattr(task, "instruction", None) or getattr(task, "question", None) or ""
+        )
+        if not instruction:
+            instruction = "\n\n".join(
+                str(getattr(message, "content", "") or "") for message in task.prompt
+            )
         config_args = [
             "-c",
             self.config.config_spec,

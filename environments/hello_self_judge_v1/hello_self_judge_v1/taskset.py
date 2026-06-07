@@ -68,19 +68,19 @@ class SelfJudgeTaskset(vf.Taskset[SelfJudgeTasksetConfig]):
             "mentions_sources_line": "sources:" in response.lower(),
             "mentions_hint": task.answer_hint.lower() in response.lower(),
         }
-        state.scratch["judge"] = findings
+        state.extras["judge"] = findings
         state.artifacts["judge_findings"] = findings
 
     @vf.metric
     async def source_mentions(self, state: vf.State) -> float:
-        judge = state.scratch.get("judge")
+        judge = state.extras.get("judge")
         if not isinstance(judge, dict):
             return 0.0
         return float(bool(judge.get("mentions_source")))
 
     @vf.reward(weight=1.0)
     async def self_consistency_score(self, state: vf.State) -> float:
-        judge = state.scratch.get("judge")
+        judge = state.extras.get("judge")
         if not isinstance(judge, dict):
             return 0.0
         checks = [

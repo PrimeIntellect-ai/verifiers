@@ -10,7 +10,6 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "true")
 
 import argparse
 import asyncio
-import inspect
 import importlib.util
 import json
 import logging
@@ -39,8 +38,7 @@ from verifiers.utils.eval_utils import (
     run_evaluations,
     run_evaluations_tui,
 )
-from verifiers.utils.env_utils import (
-    env_config_annotation,
+from verifiers.v1.loaders import (
     env_config_child_types,
     import_env_module,
     load_env_config,
@@ -326,29 +324,16 @@ def apply_env_config_cli_overrides(
         return dict(env_args)
 
     module = import_env_module(env_id)
-    env_load_func = getattr(module, "load_environment", None)
-    config_type: type[EnvConfig] | None
-    if env_load_func is None:
-        config_type = EnvConfig
-    else:
-        sig = inspect.signature(env_load_func)
-        config_type = env_config_annotation(env_load_func, sig)
-    if config_type is None:
-        raise ValueError(
-            "Taskset/harness CLI overrides require a v1 loader shaped as "
-            "load_environment(config: vf.EnvConfig)."
-        )
-
     merged_env_args = dict(env_args)
     base_config_data = explicit_config_data(merged_env_args.get("config", {}))
-    child_types = env_config_child_types(module, config_type, base_config_data)
+    child_types = env_config_child_types(module, EnvConfig, base_config_data)
     base_config = load_env_config(
         module,
-        config_type,
+        EnvConfig,
         merged_env_args.get("config", {}),
         child_types=child_types,
     )
-    cli_type = env_config_cli_type(config_type, base_config, child_types)
+    cli_type = env_config_cli_type(EnvConfig, base_config, child_types)
     try:
         config = parse_pydantic_config_cli(
             cli_type,

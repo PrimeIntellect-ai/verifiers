@@ -100,8 +100,14 @@ def _get_value(obj: Any, key: str, default: Any = None) -> Any:
     return getattr(obj, key, default)
 
 
+def _state_turns(state: Any) -> list[Any]:
+    return list(
+        _get_value(state, "transcript") or _get_value(state, "trajectory") or []
+    )
+
+
 def _normalize_for_comparison(value: Any, _key: str | None = None) -> Any:
-    # tool_call.arguments is serialized as a string on one side (our trajectory
+    # tool_call.arguments is serialized as a string on one side (our stored turns
     # uses json.dumps with default separators) and often comes back from
     # upstream scaffolds re-stringified with JS JSON.stringify (compact, no
     # spaces). Both encode the same dict; parse and normalize structurally so
@@ -300,15 +306,15 @@ async def _get_incremental_prompt_ids(
 ) -> "tuple[RenderedTokens, int] | None":
     """Return the bridged prompt and routed-experts replay start.
 
-    Returns ``None`` when no prior trajectory step lines up with the new
+    Returns ``None`` when no prior turn lines up with the new
     prompt's prefix or the renderer's ``bridge_to_next_turn`` can't extend
     — both cases fall back to a full re-render in :func:`generate`.
     """
     if not state:
         return None
 
-    trajectory = _get_value(state, "trajectory")
-    if not trajectory:
+    turns = _state_turns(state)
+    if not turns:
         return None
 
     # Each renderer's bridge_to_next_turn (or the generic fallback) decides
@@ -318,7 +324,7 @@ async def _get_incremental_prompt_ids(
     # falls back to a full re-render — matching main's TITO-on-truncation
     # behavior.
     normalized_prompt = _normalize_for_comparison(prompt)
-    for step in reversed(list(trajectory)):
+    for step in reversed(turns):
         token_ids = _step_token_ids(step)
         if token_ids is None:
             continue

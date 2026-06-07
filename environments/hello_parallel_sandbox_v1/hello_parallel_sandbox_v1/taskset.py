@@ -64,17 +64,17 @@ class ParallelSandboxTaskset(vf.Taskset[ParallelSandboxTasksetConfig]):
             audit_shape(task, response),
         )
         audits = [file_audit, command_audit]
-        state.scratch["parallel_audits"] = audits
+        state.extras["parallel_audits"] = audits
         state.artifacts["parallel_audits"] = audits
 
     @vf.metric
     async def update_audits(self, state: vf.State) -> float:
-        audits = state.scratch.get("parallel_audits")
+        audits = state.extras.get("parallel_audits")
         return float(len(audits) if isinstance(audits, list) else 0)
 
     @vf.reward(weight=1.0)
     async def sandbox_stage_score(self, state: vf.State) -> float:
-        audits = state.scratch.get("parallel_audits")
+        audits = state.extras.get("parallel_audits")
         if not isinstance(audits, list) or not audits:
             return 0.0
         passed = [

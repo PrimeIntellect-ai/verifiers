@@ -1,5 +1,4 @@
 import re
-import sys
 import random
 from collections.abc import Sequence
 from typing import Generic, Protocol, TypeVar, cast
@@ -36,10 +35,8 @@ class TextArenaRuntimeEnv(Protocol):
 class TextArenaTasksetConfig(vf.TasksetConfig):
     id: str | None = "textarena"
     game: str
-    user: vf.User | None = vf.User(
-        server=vf.MCPServerSpec(
-            command=[sys.executable, "-m", "tasksets.textarena", "--user-server"]
-        )
+    user: vf.UserConfig | None = vf.UserConfig(
+        loader="tasksets.textarena:TextArenaUser"
     )
     num_train_examples: int = 2000
     num_eval_examples: int = 20
@@ -158,26 +155,25 @@ def content_text(content: object) -> str:
     return ""
 
 
-def run_user_server() -> None:
-    from mcp.server.fastmcp import FastMCP
+class TextArenaUser(vf.User):
+    @vf.tool(
+        args={
+            "textarena": "task.textarena",
+            "answer": "task.answer",
+            "completion": "state.completion",
+        },
+        sets={
+            "final_env_response": "state.extras.final_env_response",
+            "stop_condition": "state.stop_condition",
+        },
+    )
+    def respond(self, textarena: dict, answer: str, completion: list[dict]) -> dict:
+        return textarena_respond(textarena, answer, completion)
 
-    mcp = FastMCP("textarena-user")
 
-    @mcp.tool()
-    def respond(task: dict, state: dict, transcript: list[dict]) -> dict:
-        return textarena_respond(task, state, transcript)
-
-    mcp.run(transport="stdio")
-
-
-def textarena_respond(task: dict, state: dict, transcript: list[dict]) -> dict:
-    _ = transcript
-    textarena = task.get("textarena")
-    if not isinstance(textarena, dict):
-        raise ValueError("TextArena task requires textarena config.")
+def textarena_respond(textarena: dict, answer: str, completion: list[dict]) -> dict:
     game = textarena.get("game")
     answer_state_key = textarena.get("answer_state_key")
-    answer = task.get("answer")
     if not isinstance(game, str) or not isinstance(answer_state_key, str):
         raise TypeError("TextArena task config must contain string fields.")
     if not isinstance(answer, str) or not answer:
@@ -185,12 +181,9 @@ def textarena_respond(task: dict, state: dict, transcript: list[dict]) -> dict:
     env = SESSION.env or SESSION.reset(game)
     env.state.game_state[answer_state_key] = answer
 
-    raw_completion = state["completion"]
-    if not isinstance(raw_completion, list):
-        raise TypeError("TextArena state.completion must be a list.")
     assistant_messages = [
         message
-        for message in raw_completion
+        for message in completion
         if isinstance(message, dict) and message.get("role") == "assistant"
     ]
     last_text = (
@@ -205,7 +198,7 @@ def textarena_respond(task: dict, state: dict, transcript: list[dict]) -> dict:
         reason = str(env.state.game_info[0]["reason"])
         return {
             "messages": [vf.UserMessage(content=reason).model_dump(mode="json")],
-            "scratch": {"final_env_response": reason},
+            "final_env_response": reason,
             "stop_condition": "textarena_done",
         }
     _, observation = env.get_observation()
@@ -216,7 +209,3 @@ def textarena_respond(task: dict, state: dict, transcript: list[dict]) -> dict:
 
 def load_taskset(config: TextArenaTasksetConfig) -> TextArenaTaskset:
     return TextArenaTaskset(config=config)
-
-
-if __name__ == "__main__" and sys.argv[1:] == ["--user-server"]:
-    run_user_server()

@@ -1,6 +1,6 @@
-import sys
-
 import verifiers.v1 as vf
+
+from .servers.toolset import NestedToolsetConfig
 
 CHILD_PROMPT_GROUPS = [
     ["hello"],
@@ -17,7 +17,7 @@ CHILD_PROMPT_GROUPS = [
 
 
 class NestedTasksetConfig(vf.TasksetConfig):
-    pass
+    toolsets: list[vf.ToolsetConfig] = [NestedToolsetConfig()]
 
 
 class NestedHarnessConfig(vf.HarnessConfig):
@@ -51,20 +51,9 @@ class NestedTaskset(vf.Taskset[NestedTasksetConfig]):
             for child_prompts in CHILD_PROMPT_GROUPS
         ]
 
-    def load_toolsets(self, config: NestedTasksetConfig) -> list[vf.Toolset]:
-        _ = config
-        return [
-            vf.Toolset(
-                name="nested",
-                server=vf.MCPServerSpec(
-                    command=[sys.executable, "-m", "nested_harness_v1.servers.tools"]
-                ),
-            )
-        ]
-
     @vf.metric
     async def child_calls(self, state: vf.State) -> float:
-        answers = state.scratch.get("child_answers")
+        answers = state.extras.get("child_answers")
         return float(len(answers) if isinstance(answers, list) else 0)
 
     @vf.reward(weight=1.0)
@@ -75,24 +64,19 @@ class NestedTaskset(vf.Taskset[NestedTasksetConfig]):
 
 
 class NestedHarness(vf.Harness[NestedHarnessConfig]):
-    async def _run(
-        self,
-        task: NestedTask,
-        state: vf.State,
-        *,
-        ctx: vf.RolloutContext,
-        runtime: vf.RuntimeSession | None = None,
-        tools: vf.MCPToolRegistry | None = None,
-        user: vf.MCPToolRegistry | None = None,
-    ) -> None:
-        _ = ctx, runtime, user
+    async def run_with_context(self, context: vf.Context) -> None:
+        task = NestedTask.model_validate(context.task.model_dump())
+        state = context.state
+        tools = context.tools
         if tools is None:
             raise ValueError("NestedHarness requires tools.")
         answers: list[str] = []
         for prompt in task.child_prompts:
             result = await tools.call("nested_call_harness", {"prompt": str(prompt)})
-            answers.append(str(result))
-        state.scratch["child_answers"] = answers
+            response = result.response
+            answer = str(response.messages[0].content) if response.messages else ""
+            answers.append(answer)
+        state.extras["child_answers"] = answers
         answer = " ".join(answers)
         message = vf.AssistantMessage(content=answer)
         state.add_turn(
