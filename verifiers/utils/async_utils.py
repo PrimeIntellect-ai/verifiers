@@ -13,7 +13,7 @@ from pydantic import BaseModel
 
 import verifiers as vf
 from verifiers.utils.error_utils import ErrorChain
-from verifiers.utils.error_utils import error_data_to_exception
+from verifiers.utils.error_utils import error_from_data, is_error_data
 from verifiers.utils.logging_utils import print_time
 
 logger = logging.getLogger(__name__)
@@ -161,25 +161,28 @@ def maybe_retry(
     if max_retries <= 0:
         return func
 
+    def reraise_one(err, error_types: tuple[type[Exception], ...]):
+        if not err:
+            return
+        # Live error (v0 / direct path): subclass check.
+        if any(isinstance(err, err_type) for err_type in error_types):
+            raise err
+        # Serialized ErrorData (v1 harness serializes before returning):
+        # rebuild the concrete vf error and subclass-check, so base retryable
+        # types match (e.g. SandboxError -> InfraError). Name-substring matching
+        # missed these.
+        if isinstance(err, Mapping) and is_error_data(err):
+            rebuilt = error_from_data(err)
+            if isinstance(rebuilt, error_types):
+                raise rebuilt
+
     def reraise_error_from_state(result, error_types: tuple[type[Exception], ...]):
         """Re-raise specified errors from state(s) to trigger tenacity retry."""
         if isinstance(result, dict):
-            err = result.get("error")
-            if err and any(isinstance(err, err_type) for err_type in error_types):
-                raise err
-            if isinstance(err, Mapping):
-                retry_error = error_data_to_exception(err, error_types)
-                if retry_error is not None:
-                    raise retry_error
+            reraise_one(result.get("error"), error_types)
         elif isinstance(result, list):
             for state in result:
-                err = state.get("error")
-                if err and any(isinstance(err, err_type) for err_type in error_types):
-                    raise err
-                if isinstance(err, Mapping):
-                    retry_error = error_data_to_exception(err, error_types)
-                    if retry_error is not None:
-                        raise retry_error
+                reraise_one(state.get("error"), error_types)
 
     def log_retry(retry_state: tc.RetryCallState) -> None:
         """Log a warning with the exception and the number of attempts."""
