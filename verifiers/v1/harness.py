@@ -313,6 +313,7 @@ class Harness(Generic[ConfigT]):
             try:
                 state.timing.setup.begin()
                 await self.run_handlers("setup", "rollout", context)
+                await self.resolve_toolsets(context)
                 self.validate_extras(state)
                 state.timing.setup.finish()
                 state.timing.generation.begin()
@@ -363,6 +364,19 @@ class Harness(Generic[ConfigT]):
         if self.extras_schema is None:
             return
         self.extras_schema.model_validate(state.extras)
+
+    async def resolve_toolsets(self, context: Context) -> None:
+        if context.toolsets is None:
+            return
+        task = context.task
+        state = context.state
+        await context.toolsets.resolve(
+            context=self.binding_context(task, state),
+            resolution_key=f"{state.id}:{task.task_id}",
+            apply_updates=lambda updates: self.apply_bound_updates(state, updates),
+        )
+        self.validate_extras(state)
+        state.assert_serializable()
 
     async def run_with_context(self, context: Context) -> None:
         task = context.task

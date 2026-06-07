@@ -322,6 +322,108 @@ class MCPToolRegistry:
                 return parent.tool_allowed(name)
         return False
 
+    async def resolve(
+        self,
+        *,
+        context: JsonData,
+        resolution_key: str,
+        apply_updates: Callable[[list[BoundUpdate]], None] | None = None,
+    ) -> None:
+        if self._resolution_key == resolution_key:
+            return
+        self._dynamic_dispatch.clear()
+        self._dynamic_tools.clear()
+        self.set_context(context)
+        updates: list[BoundUpdate] = []
+        for setup in self.setup_dispatches():
+            result = await self.call_dispatch(setup, {})
+            if result.updates:
+                updates.extend(result.updates)
+            self.register_setup_tools(setup, result.value)
+        if updates:
+            if apply_updates is None:
+                raise RuntimeError("Toolset setup returned state updates.")
+            apply_updates(updates)
+        self._resolution_key = resolution_key
+
+    def setup_dispatches(self) -> list[ToolDispatch]:
+        dispatches: list[ToolDispatch] = []
+        for parent in self.parents:
+            dispatches.extend(parent.setup_dispatches())
+        for dispatch in self._dispatch.values():
+            if dispatch.raw_name != "setup":
+                continue
+            if not dispatch.binding.hidden:
+                raise ValueError(
+                    f"Toolset {dispatch.toolset_name!r} setup tool must be hidden."
+                )
+            if visibility_allows(dispatch.toolset_name, self._toolsets_visibility):
+                dispatches.append(dispatch)
+        return dispatches
+
+    async def call_dispatch(
+        self, dispatch: ToolDispatch, arguments: JsonData
+    ) -> ServerResult:
+        payload: JsonData = dict(arguments)
+        for arg_name, source in dispatch.binding.args.items():
+            if source.startswith("resources."):
+                continue
+            if arg_name in payload:
+                raise ToolError(
+                    f"MCP tool {dispatch.raw_name!r} argument {arg_name!r} is bound "
+                    "and cannot be provided by the model."
+                )
+            payload[arg_name] = resolve_binding(self._context, source)
+        result = await dispatch.session.call_tool(dispatch.raw_name, payload)
+        if bool(getattr(result, "isError", False)):
+            raise ToolError(str(mcp_content_value(getattr(result, "content", []))))
+        content = mcp_content_value(getattr(result, "content", []))
+        return split_result(content, dispatch.binding)
+
+    def register_setup_tools(self, setup: ToolDispatch, value: JsonValue) -> None:
+        if not isinstance(value, Mapping):
+            return
+        if "messages" in value:
+            raise ValueError("Toolset setup cannot return messages.")
+        raw_tools = value.get("tools")
+        if raw_tools is None:
+            return
+        if not isinstance(raw_tools, list):
+            raise TypeError("Toolset setup tools must be a list.")
+        through = string_field(value, "through", default="call_tool")
+        name_arg = string_field(value, "name_arg", default="name")
+        input_arg = string_field(value, "input_arg", default="input")
+        route = self.dispatch_for(setup.toolset_name, through)
+        if not route.binding.hidden:
+            raise ValueError(
+                f"Dynamic tool route {setup.toolset_name}.{through} must be hidden."
+            )
+        for raw_tool in raw_tools:
+            tool = Tool.model_validate(raw_tool)
+            if self.has_tool(tool.name):
+                raise ValueError(f"Dynamic tool {tool.name!r} is defined twice.")
+            self._dynamic_tools.append(tool)
+            self._dynamic_dispatch[tool.name] = ToolDispatch(
+                session=route.session,
+                toolset_name=route.toolset_name,
+                raw_name=route.raw_name,
+                binding=route.binding,
+                dynamic_name=tool.name,
+                name_arg=name_arg,
+                input_arg=input_arg,
+            )
+
+    def dispatch_for(self, toolset_name: str, raw_name: str) -> ToolDispatch:
+        for dispatch in self._dispatch.values():
+            if dispatch.toolset_name == toolset_name and dispatch.raw_name == raw_name:
+                return dispatch
+        for parent in self.parents:
+            try:
+                return parent.dispatch_for(toolset_name, raw_name)
+            except KeyError:
+                pass
+        raise KeyError(f"Toolset {toolset_name!r} has no hidden tool {raw_name!r}.")
+
 
 async def server_bindings(session: "ClientSession") -> dict[str, ToolBinding]:
     result = await session.call_tool(_BINDINGS_TOOL, {})
@@ -358,6 +460,13 @@ def dict_mapping(value: object, *, field: str) -> dict[str, str]:
             raise TypeError(f"Server binding {field} must map strings to strings.")
         result[key] = item
     return result
+
+
+def string_field(data: Mapping[str, JsonValue], field: str, *, default: str) -> str:
+    value = data.get(field, default)
+    if not isinstance(value, str) or not value:
+        raise TypeError(f"Toolset setup {field} must be a non-empty string.")
+    return value
 
 
 def free_port() -> int:
@@ -692,7 +801,7 @@ def split_result(content: JsonValue, binding: ToolBinding) -> ServerResult:
     return ServerResult(
         response=server_response(model_content),
         updates=tuple(updates),
-        value=cast(JsonValue, deepcopy(content)),
+        value=cast(JsonValue, deepcopy(dict(result))),
     )
 
 

@@ -247,6 +247,37 @@ class BoundToolset(vf.Toolset[BoundToolsetConfig]):
         }
 
 
+class DynamicToolsetConfig(vf.ToolsetConfig):
+    pass
+
+
+class DynamicToolset(vf.Toolset[DynamicToolsetConfig]):
+    @vf.tool(
+        hidden=True,
+        args={"task_name": "task.name"},
+        sets={"ready": "state.extras.dynamic_ready"},
+    )
+    def setup(self, task_name: str) -> dict:
+        return {
+            "ready": True,
+            "tools": [
+                {
+                    "name": "dynamic_echo",
+                    "description": f"Echo through {task_name}",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"text": {"type": "string"}},
+                        "required": ["text"],
+                    },
+                }
+            ],
+        }
+
+    @vf.tool(hidden=True, sets={"called": "state.extras.dynamic_called"})
+    def call_tool(self, name: str, input: vf.JsonData) -> dict:
+        return {"content": f"{name}:{input['text']}", "called": True}
+
+
 class ConfiguredToolsetTasksetConfig(vf.TasksetConfig):
     toolsets: vf.ToolsetConfigs = {"demo": DemoToolsetConfig()}
 
@@ -675,6 +706,32 @@ async def test_mcp_bindings_hide_args_and_bind_returns() -> None:
         "events": [{"task": "demo", "name": "alpha"}],
         "profile": {"task": "demo"},
     }
+
+
+@pytest.mark.asyncio
+async def test_mcp_toolset_setup_registers_dynamic_tools() -> None:
+    toolsets = {"dynamic": DynamicToolsetConfig()}
+    state = vf.State()
+    task = vf.Task(name="demo", prompt="say ok")
+    harness = vf.Harness()
+
+    async with MCPToolRegistry(toolsets) as registry:
+        await registry.resolve(
+            context=harness.binding_context(task, state),
+            resolution_key=f"{state.id}:{task.task_id}",
+            apply_updates=lambda updates: harness.apply_bound_updates(state, updates),
+        )
+        names = [tool.name for tool in registry.tools() or []]
+        assert registry.has_hidden("setup")
+        assert registry.has_hidden("call_tool")
+        result = await registry.call("dynamic_echo", {"text": "ok"})
+
+    harness.apply_tool_result(state, result)
+
+    assert names == ["dynamic_echo"]
+    assert result.response.content == "dynamic_echo:ok"
+    assert state.extras["dynamic_ready"] is True
+    assert state.extras["dynamic_called"] is True
 
 
 def test_bound_state_updates_allow_extends_and_reject_set_conflicts() -> None:

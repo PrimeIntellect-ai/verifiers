@@ -103,13 +103,13 @@ class MyHarness(vf.Harness[MyHarnessConfig]):
     async def run_with_context(self, context: vf.Context) -> None:
         task = context.task
         state = context.state
-        tools = context.tools
+        toolsets = context.toolsets
         prompt = self.initial_messages(task)
         response = await context.model_client.get_response(
             prompt=prompt,
             model=context.model,
             sampling_args=context.sampling_args,
-            tools=tools.tool_defs() if tools is not None else None,
+            tools=toolsets.tools() if toolsets is not None else None,
             state=state,
         )
         turn = vf.Turn(
