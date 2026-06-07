@@ -93,7 +93,7 @@ from .types import (
 if TYPE_CHECKING:
     from .taskset import Taskset
 
-ProgramResult: TypeAlias = State | ConfigData | None
+ProgramResult: TypeAlias = State | JsonData | None
 ProgramRunner: TypeAlias = Callable[[Task, State], Awaitable[ProgramResult]]
 
 

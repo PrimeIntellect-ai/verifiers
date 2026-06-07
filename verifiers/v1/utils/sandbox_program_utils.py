@@ -502,6 +502,26 @@ def is_tool_content_parts(value):
     )
 
 
+def tool_part_text(part):
+    text = part.get("text")
+    if isinstance(text, str):
+        return text
+    if text is None:
+        return ""
+    return str(text)
+
+
+def tool_part_image_url(part):
+    image_url = part.get("image_url")
+    if isinstance(image_url, dict):
+        url = image_url.get("url")
+    elif isinstance(image_url, str):
+        url = image_url
+    else:
+        return None
+    return url if isinstance(url, str) and url else None
+
+
 def client_type(state):
     return state.get("runtime", {}).get("client_type") or "openai_chat_completions"
 
@@ -568,12 +588,16 @@ def response_input(messages):
             content = message.get("content")
             # Preserve image parts (input_image) instead of str()-collapsing them.
             if is_tool_content_parts(content):
-                output = [
-                    {"type": "input_image", "image_url": part["image_url"]["url"]}
-                    if part.get("type") == "image_url"
-                    else {"type": "input_text", "text": part.get("text") or ""}
-                    for part in content
-                ]
+                output = []
+                for part in content:
+                    if part.get("type") != "image_url":
+                        output.append({"type": "input_text", "text": tool_part_text(part)})
+                        continue
+                    url = tool_part_image_url(part)
+                    if url is None:
+                        output.append({"type": "input_text", "text": str(part)})
+                    else:
+                        output.append({"type": "input_image", "image_url": url})
             else:
                 output = str(content or "")
             items.append(
@@ -618,9 +642,12 @@ def anthropic_payload_messages(messages):
                 result_content = []
                 for part in content:
                     if part.get("type") != "image_url":
-                        result_content.append({"type": "text", "text": part.get("text") or ""})
+                        result_content.append({"type": "text", "text": tool_part_text(part)})
                         continue
-                    url = part["image_url"]["url"]
+                    url = tool_part_image_url(part)
+                    if url is None:
+                        result_content.append({"type": "text", "text": str(part)})
+                        continue
                     if url.startswith("data:"):
                         header, _, data = url.partition(",")
                         media_type = header[len("data:"):].split(";")[0] or "image/png"

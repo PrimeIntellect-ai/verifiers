@@ -1633,10 +1633,41 @@ def test_sandbox_base_program_maps_model_client_types_to_wire_protocol() -> None
     exec(source, namespace)
     wire_protocol = cast(Any, namespace["wire_protocol"])
 
+    for client_type in (
+        "renderer",
+        "openai_chat_completions_token",
+        "nemorl_chat_completions",
+    ):
+        state = {"runtime": {"client_type": client_type}}
+        assert wire_protocol(state) == "openai_chat_completions"
+
     assert wire_protocol({"runtime": {"client_type": "openai_responses"}}) == (
         "openai_responses"
     )
     assert wire_protocol({"runtime": {}}) == "openai_chat_completions"
+
+
+def test_sandbox_base_program_handles_malformed_image_tool_parts() -> None:
+    namespace: dict[str, object] = {}
+    source = runner_source().rsplit("asyncio.run(main())", 1)[0]
+    exec(source, namespace)
+    response_input = cast(Any, namespace["response_input"])
+    anthropic_payload_messages = cast(Any, namespace["anthropic_payload_messages"])
+
+    messages = [
+        {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "content": [{"type": "image_url"}],
+        }
+    ]
+
+    responses_output = response_input(messages)[0]["output"]
+    assert responses_output == [{"type": "input_text", "text": "{'type': 'image_url'}"}]
+
+    _, anthropic_messages = anthropic_payload_messages(messages)
+    tool_result = anthropic_messages[0]["content"][0]["content"]
+    assert tool_result == [{"type": "text", "text": "{'type': 'image_url'}"}]
 
 
 def test_sandbox_program_patch_cannot_set_lifecycle_fields() -> None:
