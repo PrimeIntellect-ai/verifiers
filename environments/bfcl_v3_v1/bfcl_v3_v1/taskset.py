@@ -4,7 +4,7 @@ import time
 from collections.abc import Sequence
 from typing import cast
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 import verifiers.v1 as vf
 from verifiers.types import (
@@ -42,6 +42,15 @@ class BFCLTasksetConfig(vf.TasksetConfig):
     test_category: str = "simple_python"
     test_categories: list[str] | None = None
     examples_per_category: int = -1
+
+    @model_validator(mode="after")
+    def validate_category_routing(self) -> "BFCLTasksetConfig":
+        if self.test_categories is not None:
+            raise ValueError(
+                "BFCL v1 accepts one test_category per taskset. Configure separate "
+                "evals for multiple categories."
+            )
+        return self
 
 
 class BFCLHarnessConfig(vf.HarnessConfig):
@@ -453,11 +462,7 @@ class BFCLTaskset(vf.Taskset[BFCLTasksetConfig]):
 
     def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         _ = split
-        categories = self.config.test_categories or [self.config.test_category]
-        rows: list[vf.JsonData] = []
-        for category in categories:
-            rows.extend(load_tasks(category, self.config.examples_per_category))
-        return rows
+        return load_tasks(self.config.test_category, self.config.examples_per_category)
 
     @vf.reward(weight=1.0)
     async def bfcl_reward(self, task: vf.Task, state: vf.State) -> float:

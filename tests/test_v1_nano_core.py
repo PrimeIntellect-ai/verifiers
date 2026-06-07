@@ -11,7 +11,7 @@ from aiohttp import ClientSession, web
 import pytest
 
 import verifiers.v1 as vf
-from verifiers.errors import ToolError
+from verifiers.errors import InfraError, ToolError
 from verifiers.types import ClientConfig, EvalConfig, Response
 from verifiers.utils import eval_utils
 from verifiers.v1.loaders import (
@@ -369,6 +369,15 @@ def test_v1_state_to_output_preserves_empty_turn_prompt() -> None:
 
     assert state.prompt == []
     assert state.to_output(task)["prompt"] == []
+
+
+def test_v1_state_to_output_state_columns_preserve_task_prompt_fallback() -> None:
+    task = vf.Task(prompt="fallback")
+    state = vf.State()
+
+    assert state.to_output(task, state_columns=["prompt"])["prompt"] == [
+        {"role": "user", "content": "fallback"}
+    ]
 
 
 def test_v1_task_id_is_deterministic_from_task_contents() -> None:
@@ -1033,6 +1042,43 @@ async def test_score_group_empty_group_returns_empty_states() -> None:
     env = vf.Env(taskset=NanoTaskset())
 
     assert await env.score_group([], []) == []
+
+
+@pytest.mark.asyncio
+async def test_run_rollout_retries_copy_supplied_state() -> None:
+    class RetryHarness(vf.Harness):
+        attempts: int = 0
+
+        async def run(
+            self,
+            task: vf.Task | str,
+            state: vf.State | None = None,
+            *,
+            model: vf.ModelConfig | str | None = None,
+            teacher: vf.ModelConfig | str | None = None,
+            context: vf.Context | None = None,
+            score: bool = False,
+        ) -> vf.State:
+            _ = task, model, teacher, context, score
+            self.attempts += 1
+            rollout_state = state or vf.State()
+            rollout_state.transcript.append(vf.Turn(prompt=[], completion=[]))
+            if self.attempts == 1:
+                raise InfraError("retry")
+            return rollout_state
+
+    initial_state = vf.State()
+    env = vf.Env(taskset=NanoTaskset(), harness=RetryHarness())
+
+    result = await env.run_rollout(
+        NanoTask(prompt="hello", answer="ok"),
+        model=vf.ModelConfig(model="student"),
+        state=initial_state,
+        max_retries=1,
+    )
+
+    assert len(result.transcript) == 1
+    assert initial_state.transcript == []
 
 
 @pytest.mark.asyncio

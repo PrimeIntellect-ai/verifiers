@@ -360,7 +360,7 @@ class State(BaseModel, extra="forbid"):
             output[key] = value
         for column in state_columns or []:
             if column == "prompt":
-                output[column] = serialize_messages(self.prompt)
+                output[column] = serialize_messages(prompt)
             elif column == "completion":
                 output[column] = serialize_messages(self.completion)
             elif column == "messages":

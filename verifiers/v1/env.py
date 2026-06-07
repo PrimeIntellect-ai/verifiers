@@ -151,7 +151,12 @@ class Env:
             raise TypeError("Env.run_rollout input must be a Task or mapping.")
 
         async def attempt() -> State:
-            rollout_state = state or State(task_id=task.task_id)
+            if state is None:
+                rollout_state = State(task_id=task.task_id)
+            elif max_retries > 0:
+                rollout_state = state.model_copy(deep=True)
+            else:
+                rollout_state = state
             rollout_state.task_id = task.task_id
             rollout_state.model = model
             rollout_state.teacher = teacher
