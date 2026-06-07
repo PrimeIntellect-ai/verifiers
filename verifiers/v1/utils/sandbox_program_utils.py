@@ -366,6 +366,9 @@ def vf_url(state, path):
 
 
 CONTROL_ENDPOINT_TIMEOUT = 300.0
+# Sandbox-local tools POST to a loopback service in this sandbox; allow up to the
+# service's own per-call bound (600s) plus buffer for slow browser ops.
+SANDBOX_LOCAL_TOOL_TIMEOUT = 660.0
 
 
 def post_json(url, payload, headers=None, timeout=CONTROL_ENDPOINT_TIMEOUT):
@@ -408,6 +411,38 @@ async def call_tool(state, name, arguments):
     if "error" in payload:
         raise RuntimeError(str(payload["error"]))
     return payload.get("result")
+
+
+async def call_sandbox_local_tool(state, name, arguments, endpoint):
+    # In-sandbox dispatch: POST straight to the tool's loopback service in this
+    # sandbox instead of the host /vf/tools tunnel + a per-call sandbox.execute.
+    # Removes the control-plane round-trip and fresh-process import from each call.
+    host = endpoint.get("host") or "127.0.0.1"
+    port = int(endpoint["port"])
+    path = endpoint.get("path") or "/"
+    url = f"http://{host}:{port}{path}"
+    payload = await asyncio.to_thread(
+        post_json,
+        url,
+        {"tool_name": name, "args": arguments},
+        {"Content-Type": "application/json"},
+        SANDBOX_LOCAL_TOOL_TIMEOUT,
+    )
+    if isinstance(payload, dict) and payload.get("ok") is False:
+        raise RuntimeError(
+            f"{payload.get('error_type')}: {payload.get('error_message')}"
+        )
+    # Apply rollout-state events the tool returned (verifier evidence); they ride
+    # home in the runner's state patch.
+    appends = payload.get("state_appends") if isinstance(payload, dict) else None
+    if isinstance(appends, dict):
+        for key, value in appends.items():
+            bucket = state.get(key)
+            if not isinstance(bucket, list):
+                bucket = []
+                state[key] = bucket
+            bucket.append(value)
+    return payload.get("content") if isinstance(payload, dict) else payload
 
 
 async def call_user(state, transcript):
@@ -485,19 +520,29 @@ def load_tool_defs(protocol):
 
 
 class ToolProxy:
-    def __init__(self, state, name, description=None):
+    def __init__(self, state, name, description=None, sandbox_endpoint=None):
         self.state = state
         self.name = name
         self.__name__ = name
         self.__doc__ = description or ""
+        self.sandbox_endpoint = sandbox_endpoint
 
     async def __call__(self, **arguments):
+        if self.sandbox_endpoint:
+            return await call_sandbox_local_tool(
+                self.state, self.name, arguments, self.sandbox_endpoint
+            )
         return await call_tool(self.state, self.name, arguments)
 
 
 def load_tools(state):
     return {
-        tool["name"]: ToolProxy(state, tool["name"], tool.get("description"))
+        tool["name"]: ToolProxy(
+            state,
+            tool["name"],
+            tool.get("description"),
+            tool.get("sandbox_endpoint"),
+        )
         for tool in load_tool_defs("vf")
     }
 
@@ -517,6 +562,11 @@ async def run_base(task, state):
     messages = list(prompt_messages)
     config = json.loads(open(RUNNER_CONFIG_PATH).read())
     max_turns = int(config["max_turns"])
+    # Tools tagged with a sandbox_endpoint dispatch in-sandbox (loopback) instead
+    # of the host /vf/tools tunnel.
+    tool_endpoints = {
+        d["name"]: d.get("sandbox_endpoint") for d in load_tool_defs("vf")
+    }
     turn = 0
     while max_turns <= 0 or turn < max_turns:
         if await check_stop(state):
@@ -533,10 +583,16 @@ async def run_base(task, state):
             set_stop_condition(state, "no_tools")
             break
         for tool_call in tool_calls:
+            name = tool_call_name(tool_call)
+            arguments = tool_call_arguments(tool_call)
+            endpoint = tool_endpoints.get(name)
             try:
-                result = await call_tool(
-                    state, tool_call_name(tool_call), tool_call_arguments(tool_call)
-                )
+                if endpoint:
+                    result = await call_sandbox_local_tool(
+                        state, name, arguments, endpoint
+                    )
+                else:
+                    result = await call_tool(state, name, arguments)
                 content = result if is_tool_content_parts(result) else str(result)
             except Exception as exc:
                 content = tool_error_content(exc)

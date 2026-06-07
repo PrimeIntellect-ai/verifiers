@@ -194,6 +194,12 @@ class Tool(CustomBaseModel):
     description: str
     parameters: dict[str, object]
     strict: bool | None = None
+    # Optional in-sandbox transport: when set (``{"host","port","path"}``), the
+    # sandbox base-program runner dispatches this tool by POSTing directly to that
+    # loopback service in its own sandbox, instead of the host ``/vf/tools`` tunnel
+    # + a per-call ``sandbox.execute``. Only emitted on the "vf" protocol, so it
+    # never reaches the model. None preserves the default host-dispatched path.
+    sandbox_endpoint: dict[str, object] | None = None
 
 
 ToolLike: TypeAlias = str | Tool | Callable[..., object]
