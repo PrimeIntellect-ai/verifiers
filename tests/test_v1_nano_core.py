@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import importlib
 import json
 import sys
@@ -1203,6 +1204,31 @@ async def test_v1_subprocess_runtime_session_read_write_run() -> None:
     assert result.returncode == 0
     assert result.stdout.strip() == "hello runtime"
     assert payload == b"hello runtime"
+
+
+@pytest.mark.asyncio
+async def test_v1_docker_runtime_read_preserves_binary_bytes() -> None:
+    payload = b"\xff\x00binary"
+
+    class ReadOnlyDockerRuntime(vf.DockerRuntime):
+        async def run(
+            self,
+            command: list[str],
+            *,
+            cwd: str | None = None,
+            env: dict[str, str] | None = None,
+            timeout: float | None = None,
+        ) -> vf.CommandResult:
+            _ = cwd, env, timeout
+            assert command == ["sh", "-c", "base64 < /payload.bin"]
+            return vf.CommandResult(
+                returncode=0,
+                stdout=base64.b64encode(payload).decode(),
+            )
+
+    runtime = ReadOnlyDockerRuntime(vf.DockerRuntimeConfig())
+
+    assert await runtime.read("/payload.bin") == payload
 
 
 def test_v1_runtime_image_is_container_only() -> None:

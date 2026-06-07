@@ -453,10 +453,10 @@ class DockerRuntime(Runtime):
         )
 
     async def read(self, path: str) -> bytes:
-        result = await self.run(["cat", path])
+        result = await self.run(["sh", "-c", f"base64 < {shlex.quote(path)}"])
         if result.returncode != 0:
             raise RuntimeError(f"read {path!r}: {result.stderr.strip()}")
-        return result.stdout.encode()
+        return base64.b64decode(result.stdout)
 
     async def write(self, path: str, data: bytes) -> None:
         container = self._container()

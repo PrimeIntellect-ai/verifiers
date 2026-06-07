@@ -93,6 +93,7 @@ or execution-level lifecycle.
 
 ```python
 import verifiers.v1 as vf
+from verifiers.utils.response_utils import parse_response_message
 
 
 class MyHarnessConfig(vf.HarnessConfig):
