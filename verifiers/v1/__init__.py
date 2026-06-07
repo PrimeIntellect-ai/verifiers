@@ -14,6 +14,7 @@ from .decorators import (
 )
 from verifiers.types import (
     AssistantMessage,
+    ClientConfig,
     Message,
     MessageContent,
     Messages,
@@ -122,6 +123,7 @@ __all__ = [
     "Extras",
     "EndpointProtocol",
     "AssistantMessage",
+    "ClientConfig",
     "Harness",
     "HarnessConfig",
     "Handler",

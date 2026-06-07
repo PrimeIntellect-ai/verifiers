@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from typing import cast
 
 from aiohttp import web
 from pydantic import TypeAdapter
@@ -8,6 +9,7 @@ from pydantic import TypeAdapter
 from verifiers.types import (
     AssistantMessage,
     Message,
+    MessageContent,
     Messages,
     Response,
     SystemMessage,
@@ -473,13 +475,15 @@ def parse_anthropic_user_messages(content: JsonValue | None) -> Messages:
     if not isinstance(content, list):
         return [UserMessage(content=content_text(content))]
     messages: Messages = []
-    text_parts: list[str] = []
+    content_parts: list[JsonData] = []
     for block in content:
         if not isinstance(block, dict):
-            continue
+            raise TypeError("Anthropic user content blocks must be objects.")
         data = json_data(block)
         if data.get("type") == "text":
-            text_parts.append(content_text(data.get("text")))
+            content_parts.append(
+                {"type": "text", "text": content_text(data.get("text"))}
+            )
         elif data.get("type") == "tool_result":
             tool_use_id = data.get("tool_use_id")
             if isinstance(tool_use_id, str):
@@ -489,8 +493,22 @@ def parse_anthropic_user_messages(content: JsonValue | None) -> Messages:
                         content=content_text(data.get("content")),
                     )
                 )
-    if text_parts:
-        messages.insert(0, UserMessage(content="\n".join(text_parts)))
+        else:
+            content_parts.append(data)
+    if content_parts:
+        if all(part.get("type") == "text" for part in content_parts):
+            messages.insert(
+                0,
+                UserMessage(
+                    content="\n".join(
+                        content_text(part.get("text")) for part in content_parts
+                    )
+                ),
+            )
+        else:
+            messages.insert(0, UserMessage(content=cast(MessageContent, content_parts)))
+    if not messages:
+        raise ValueError("Anthropic user message contained no supported content.")
     return messages
 
 

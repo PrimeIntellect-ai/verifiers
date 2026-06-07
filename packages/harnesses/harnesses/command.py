@@ -1,5 +1,4 @@
 import json
-import shlex
 from typing import Generic, TypeVar
 
 import verifiers.v1 as vf
@@ -82,15 +81,3 @@ class CommandHarness(vf.Harness[ConfigT], Generic[ConfigT]):
 
 def shell_command(command: str) -> list[str]:
     return ["bash", "-lc", command]
-
-
-def quote_join(parts: list[str]) -> str:
-    return " ".join(shlex.quote(part) for part in parts)
-
-
-def command_metrics(state: vf.State, key: str) -> float:
-    command = state.artifacts.get("command")
-    if not isinstance(command, dict):
-        return 0.0
-    value = command.get(key)
-    return float(value) if isinstance(value, int | float) else 0.0

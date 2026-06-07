@@ -227,7 +227,6 @@ class State(BaseModel, extra="forbid"):
     extras: JsonData = Field(default_factory=dict)
     metrics: dict[str, float] = Field(default_factory=dict)
     reward: float = 0.0
-    advantage: float | None = None
     artifacts: JsonData = Field(default_factory=dict)
     usage: dict[str, float] = Field(default_factory=dict)
     timing: Timing = Field(default_factory=Timing)
@@ -353,9 +352,11 @@ class State(BaseModel, extra="forbid"):
                 "input_tokens": float(usage.get("input_tokens", 0.0)),
                 "output_tokens": float(usage.get("output_tokens", 0.0)),
             }
-        if self.advantage is not None:
-            output["advantage"] = self.advantage
         for key, value in self.metrics.items():
+            if key in output:
+                raise ValueError(
+                    f"Metric name {key!r} conflicts with a reserved output field."
+                )
             output[key] = value
         for column in state_columns or []:
             if column == "prompt":

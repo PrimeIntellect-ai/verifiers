@@ -51,6 +51,5 @@ async def test_hello_group_reward_v1_scores_full_group_lifecycle() -> None:
     assert exact.metrics["relative_group_reward"] == 1.0
     assert off_topic.metrics["relative_group_reward"] == 0.0
     assert exact.reward > off_topic.reward
-    assert sum(float(state.advantage) for state in states) == pytest.approx(0.0)
     assert all(state.transcript for state in states)
     assert all("runtime_id" not in state.metadata for state in states)

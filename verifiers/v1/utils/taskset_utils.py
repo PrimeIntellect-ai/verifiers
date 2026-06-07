@@ -13,13 +13,16 @@ from .json_utils import json_data
 
 
 def task_from_dataset_record(record: JsonData, task_type: type[Task] = Task) -> Task:
-    return prepare_task(task_type.model_validate(json_data(record)))
+    return prepare_task(task_type.model_validate(json_data(record)), task_type)
 
 
-def prepare_task(task: Task) -> Task:
+def prepare_task(task: Task, task_type: type[Task] = Task) -> Task:
     if not isinstance(task, Task):
         raise TypeError("v1 task loaders must return Task objects.")
-    return task
+    if isinstance(task, task_type):
+        return task
+    data = json_data(task.model_dump(mode="json", exclude_none=True))
+    return task_type.model_validate(data)
 
 
 def dataset_record_from_task(
@@ -28,7 +31,7 @@ def dataset_record_from_task(
 ) -> JsonData:
     data = json_data(task.model_dump(mode="json", exclude_none=True))
     data["row_id"] = index
-    normalized = prepare_task(type(task).model_validate(data))
+    normalized = prepare_task(type(task).model_validate(data), type(task))
     task_payload = json_data(normalized.model_dump(mode="json", exclude_none=True))
     task_payload["example_id"] = index
     return task_payload
@@ -72,7 +75,7 @@ def tasks_from_result_typed(result: Tasks, task_type: type[Task]) -> list[Task]:
         tasks: list[Task] = []
         for item in result:
             if isinstance(item, Task):
-                tasks.append(prepare_task(item))
+                tasks.append(prepare_task(item, task_type))
             elif isinstance(item, dict):
                 tasks.append(task_from_dataset_record(json_data(item), task_type))
             else:

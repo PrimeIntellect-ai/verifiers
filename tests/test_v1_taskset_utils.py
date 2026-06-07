@@ -2,11 +2,13 @@ import sys
 import types
 
 from datasets import Dataset
+import pytest
 
 from verifiers.v1 import Task, Taskset
 from verifiers.v1.utils.taskset_utils import (
     dataset_from_result_typed,
     discover_sibling_dir,
+    tasks_from_result_typed,
 )
 
 
@@ -29,8 +31,9 @@ def test_dataset_from_result_assigns_example_id_to_iterable_records():
     assert [row["example_id"] for row in rows] == [0, 1]
     assert [row["row_id"] for row in rows] == [0, 1]
     assert [row["answer"] for row in rows] == ["cba", "zyx"]
-    assert all(len(row["task_id"]) == 32 for row in rows)
+    assert all(len(row["task_id"]) == 24 for row in rows)
     assert {row["task_id"] for row in rows}.isdisjoint({"0", "1"})
+    assert rows[0]["task_id"] != rows[1]["task_id"]
 
 
 def test_dataset_from_result_overwrites_existing_example_id_column():
@@ -48,8 +51,32 @@ def test_dataset_from_result_overwrites_existing_example_id_column():
     assert [row["example_id"] for row in rows] == [0, 1]
     assert [row["row_id"] for row in rows] == [0, 1]
     assert [row["answer"] for row in rows] == ["cba", "zyx"]
-    assert all(len(row["task_id"]) == 32 for row in rows)
+    assert all(len(row["task_id"]) == 24 for row in rows)
     assert {row["task_id"] for row in rows}.isdisjoint({"0", "1", "99"})
+    assert rows[0]["task_id"] != rows[1]["task_id"]
+
+
+def test_tasks_from_result_typed_validates_existing_task_objects():
+    base_task = Task(prompt="Reverse abc.", row_id=3)
+
+    with pytest.raises(ValueError):
+        tasks_from_result_typed([base_task], ReverseTextTask)
+
+    typed_task = ReverseTextTask(
+        prompt="Reverse abc.",
+        question="Reverse abc.",
+        answer="cba",
+    )
+
+    assert tasks_from_result_typed([typed_task], ReverseTextTask) == [typed_task]
+
+
+def test_task_system_prompt_accepts_config_mapping():
+    prompt_path = {"messages": [{"role": "system", "content": "Use short answers."}]}
+
+    task = Task(prompt="hello", system_prompt=prompt_path)
+
+    assert task.system_prompt == [{"role": "system", "content": "Use short answers."}]
 
 
 def test_discover_sibling_dir_returns_empty_existing_dir(tmp_path, monkeypatch) -> None:

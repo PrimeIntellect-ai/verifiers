@@ -46,7 +46,6 @@ def grpo(tasks: list[Task], states: list[State]) -> None:
     else:
         values = [float(value / scale) for value in values]
     for state, value in zip(states, values, strict=True):
-        state.advantage = float(value)
         for turn in state.transcript:
             if turn.tokens is not None:
                 turn.tokens.prompt_advantages = [0.0 for _ in turn.tokens.prompt_ids]
@@ -61,7 +60,6 @@ def rloo(tasks: list[Task], states: list[State]) -> None:
     if not states:
         return
     if len(states) == 1:
-        states[0].advantage = 0.0
         for turn in states[0].transcript:
             if turn.tokens is not None:
                 turn.tokens.prompt_advantages = [0.0 for _ in turn.tokens.prompt_ids]
@@ -75,7 +73,6 @@ def rloo(tasks: list[Task], states: list[State]) -> None:
         for state in states
     ]
     for state, value in zip(states, values, strict=True):
-        state.advantage = float(value)
         for turn in state.transcript:
             if turn.tokens is not None:
                 turn.tokens.prompt_advantages = [0.0 for _ in turn.tokens.prompt_ids]
@@ -89,10 +86,21 @@ def reinforce(tasks: list[Task], states: list[State]) -> None:
     _ = tasks
     for state in states:
         value = float(state.reward)
-        state.advantage = value
         for turn in state.transcript:
             if turn.tokens is not None:
                 turn.tokens.prompt_advantages = [0.0 for _ in turn.tokens.prompt_ids]
                 turn.tokens.completion_advantages = [
                     value for _ in turn.tokens.completion_ids
+                ]
+
+
+@advantage
+def sft(tasks: list[Task], states: list[State]) -> None:
+    _ = tasks
+    for state in states:
+        for turn in state.transcript:
+            if turn.tokens is not None:
+                turn.tokens.prompt_advantages = [1.0 for _ in turn.tokens.prompt_ids]
+                turn.tokens.completion_advantages = [
+                    1.0 for _ in turn.tokens.completion_ids
                 ]

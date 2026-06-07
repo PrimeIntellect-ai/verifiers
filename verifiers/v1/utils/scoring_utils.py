@@ -11,7 +11,6 @@ from typing import Literal, cast
 
 from typing_extensions import TypedDict
 
-from verifiers.clients import Client
 from verifiers.types import Messages
 from verifiers.utils.async_utils import maybe_call_with_named_args
 
@@ -46,7 +45,6 @@ SignalKwarg = (
     | int
     | str
     | ModelClient
-    | Client
     | Runtime
     | Context
     | None
@@ -365,12 +363,10 @@ def rollout_framework_kwargs(
         "reward": state.reward,
         "prompt": state.prompt or task.prompt,
         "example_id": task.row_id,
-        "model_client": model_client,
-        "client": model_client.client if model_client is not None else None,
-        "model": model_client.config.model if model_client is not None else None,
+        "model": model_client,
+        "model_name": model_client.config.model if model_client is not None else None,
         "teacher": teacher,
-        "teacher_client": teacher.client if teacher is not None else None,
-        "teacher_model": teacher.config.model if teacher is not None else None,
+        "teacher_name": teacher.config.model if teacher is not None else None,
         "context": context,
     }
     if runtime is not None:
@@ -388,12 +384,10 @@ def group_framework_kwargs(
     return {
         "tasks": tasks,
         "states": states,
-        "model_client": model_client,
-        "client": model_client.client if model_client is not None else None,
-        "model": model_client.config.model if model_client is not None else None,
+        "model": model_client,
+        "model_name": model_client.config.model if model_client is not None else None,
         "teacher": teacher,
-        "teacher_client": teacher.client if teacher is not None else None,
-        "teacher_model": teacher.config.model if teacher is not None else None,
+        "teacher_name": teacher.config.model if teacher is not None else None,
     }
 
 

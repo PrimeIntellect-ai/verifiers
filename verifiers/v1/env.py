@@ -116,6 +116,8 @@ class Env:
         states: list[State],
         teacher: ModelClient | None = None,
     ) -> None:
+        if not tasks or not states:
+            return
         handlers = [*self.taskset.handlers[kind], *self.harness.handlers[kind]]
         for handler in handlers:
             if getattr(handler, f"{kind}_stage", "rollout") != "group":
@@ -127,8 +129,7 @@ class Env:
                 tasks=tasks,
                 states=states,
                 teacher=teacher,
-                teacher_client=teacher.client if teacher is not None else None,
-                teacher_model=teacher.config.model if teacher is not None else None,
+                teacher_name=teacher.config.model if teacher is not None else None,
             )
             if result is not None:
                 raise TypeError(f"Group {kind} handlers must mutate states in place.")
@@ -172,6 +173,10 @@ class Env:
         model: ModelConfig | None = None,
         teacher: ModelConfig | None = None,
     ) -> list[State]:
+        if len(tasks) != len(states):
+            raise ValueError("score_group requires one state per task.")
+        if not states:
+            return states
         model_config = (
             model if model is not None else (states[0].model if states else None)
         )
@@ -193,17 +198,19 @@ class Env:
         group_id = uuid.uuid4().hex
         for state in states:
             state.group_id = state.group_id or group_id
-        model_client = (
-            self.harness.load_model_client(model_config)
-            if model_config is not None
-            else None
-        )
-        teacher_client = (
-            self.harness.load_model_client(teacher_config)
-            if teacher_config is not None
-            else None
-        )
+        model_client: ModelClient | None = None
+        teacher_client: ModelClient | None = None
         try:
+            model_client = (
+                self.harness.load_model_client(model_config)
+                if model_config is not None
+                else None
+            )
+            teacher_client = (
+                self.harness.load_model_client(teacher_config)
+                if teacher_config is not None
+                else None
+            )
             signals = self.harness.owner_signals()
             if self.advantage_function is not None:
                 signals = [

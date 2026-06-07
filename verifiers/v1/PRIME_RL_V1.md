@@ -28,6 +28,23 @@ interleaving, logging, or advantage handling.
 - group scoring is detected through `env.rubric`.
 - `run_group(...)` asks the v0 env to run and score the group in one call.
 
+`src/prime_rl/orchestrator/dispatcher.py` is also v0-shaped:
+
+- each scheduling unit is a `run_rollout` task, except group-scored envs where
+  one task calls `run_group`;
+- a single `ClientConfig` is pinned per group for prefix-cache locality;
+- train rollouts use the rollout inference pool, while SFT train rollouts use
+  the teacher pool as the sampled model;
+- completed rollout tasks are normalized to `FinishedRollout.raw`, which is
+  expected to be a `vf.RolloutOutput`.
+
+`src/prime_rl/orchestrator/train_sink.py` assumes trainer-side scalar
+advantages:
+
+- `process_rollout(...)` tokenizes immediately from `raw["trajectory"]`;
+- `process_group(...)` calls `assign_advantages(...)`;
+- each `TrainingSample` receives `sample.advantage = rollout.advantage`.
+
 `src/prime_rl/orchestrator/trajectories.py` also assumes the v0 rollout shape:
 
 - rollout output has `output["trajectory"]`.
@@ -68,21 +85,23 @@ class EnvAdapter(Protocol):
     ) -> list[RolloutView]: ...
 ```
 
-`RolloutView` is a trainer-local view, not a Verifiers public type. Its job is
-to give tokenization/interleaving one shape:
+`RolloutView` is a trainer-local view, not a Verifiers public type. It replaces
+direct reads from `vf.RolloutOutput` inside prime-rl:
 
 ```python
 class RolloutView(Protocol):
     example_id: str | int | None
     error: object | None
     stop_condition: str | None
+    reward: float
 
     def iter_turns(self) -> Iterable[TurnView]: ...
     def has_env_token_advantages(self) -> bool: ...
+    def raw_for_storage(self) -> dict[str, object]: ...
 ```
 
 The v0 implementation wraps `output["trajectory"]`. The v1 implementation wraps
-`state["transcript"]` or the live `State` before serialization.
+the live `State` and exposes `state.transcript`.
 
 ## v1 Environment Adapter
 
@@ -97,7 +116,7 @@ class V1EnvAdapter:
 
     @property
     def requires_group_scoring(self) -> bool:
-        return self.env.requires_group_scoring
+        return self.env.requires_group_rollouts
 
     async def run_rollout(
         self,
@@ -108,11 +127,11 @@ class V1EnvAdapter:
         cache_salt: str | None,
         teacher: vf1.ModelConfig | None = None,
     ) -> RolloutView:
-        task = self.env.taskset.task_from_row(example)
+        task = self.env.taskset.to_task(example)
         model_config = vf1.ModelConfig(
-            name=model,
+            model=model,
             client=vf1.ClientConfig.model_validate(client.model_dump()),
-            sampling=self._sampling_args_with_salt(cache_salt),
+            sampling_args=self._sampling_args_with_salt(cache_salt),
         )
         state = await self.env.run_rollout(
             task,
@@ -123,16 +142,15 @@ class V1EnvAdapter:
 
     async def score_group(self, *, views: list[RolloutView]) -> list[RolloutView]:
         v1_views = cast(list[V1RolloutView], views)
-        self.env.score_group(
+        await self.env.score_group(
             tasks=[view.task for view in v1_views],
             states=[view.state for view in v1_views],
         )
         return v1_views
 ```
 
-The exact `ClientConfig` conversion should use the current concrete type names
-in `prime-rl` and `verifiers.v1`, but the rule is simple: convert config data at
-the boundary, never put live clients into `State`.
+The rule is simple: convert config data at the adapter boundary, never put live
+clients into `State`.
 
 ## Dataset And Task Rows
 
@@ -140,7 +158,7 @@ v1 `Taskset` owns row-to-task construction. `prime-rl` should keep train/eval
 sampling as row dictionaries and ask the adapter to realize each row:
 
 ```python
-task = env.taskset.task_from_row(example)
+task = env.taskset.to_task(example)
 ```
 
 That lets dynamic task construction remain taskset-owned. If an environment
@@ -167,6 +185,8 @@ Then the existing renderer/tokenizer logic can be shared:
 - v0 adapter maps `TrajectoryStep.prompt` and `TrajectoryStep.completion`.
 - v1 adapter maps `Turn.prompt` and `Turn.completion`.
 - token backfill stays a trainer concern when the env did not return tokens.
+- v1 token advantages are copied into `TrainingSample` during interleaving, not
+  carried through a rollout-level scalar.
 
 This keeps `transcript` canonical for v1 and avoids emitting a derived
 `trajectory` field from v1 just to satisfy `prime-rl`.
@@ -185,22 +205,24 @@ environment-provided token advantages.
 The minimal precedence rule is:
 
 1. token advantages on turns win;
-2. otherwise use v1 state-level rewards/advantages if the selected trainer
-   algorithm supports scalar rollout advantages;
-3. otherwise compute advantages in `prime-rl`.
+2. otherwise compute advantages in `prime-rl`.
 
 The v1 adapter should expose this as one method on `RolloutView`, so the trainer
 does not inspect Verifiers internals:
 
 ```python
 if all(view.has_env_token_advantages() for view in group):
-    samples = interleave_rollout_view(view, use_env_advantages=True)
+    interleave_rollout_view(view, advantage_source="env")
 else:
-    compute_trainer_advantages(group)
+    assign_advantages(group, advantage_fn)
 ```
 
 Mixed groups should fail fast. A group where some rollouts have env token
 advantages and others do not is ambiguous for normalization.
+
+For v1, `assign_advantages(...)` should become a no-op when env token
+advantages are present. For v0, it keeps the current scalar rollout advantage
+behavior.
 
 ## Teacher Flow
 
@@ -208,14 +230,14 @@ Model and teacher should be symmetric config data:
 
 ```python
 student = vf1.ModelConfig(
-    name=model_name,
+    model=model_name,
     client=client_config,
-    sampling=student_sampling,
+    sampling_args=student_sampling,
 )
 teacher = vf1.ModelConfig(
-    name=teacher_model_name,
+    model=teacher_model_name,
     client=teacher_client_config,
-    sampling=teacher_sampling,
+    sampling_args=teacher_sampling,
 )
 ```
 
@@ -224,6 +246,12 @@ requests teacher behavior. The adapter passes it to `env.run_rollout(...)`.
 
 No live teacher client should be stored in `State`. The v1 harness resolves the
 client from `ModelConfig` inside the live context.
+
+When an environment-level advantage needs tokenizer or logprob alignment, the
+advantage function should request `model: vf1.ModelClient` or
+`teacher: vf1.ModelClient | None` and call `model.get_renderer()` explicitly.
+`State` stores only `state.model` / `state.teacher` configs, never renderer or
+client handles.
 
 ## Group Scoring
 
@@ -244,8 +272,11 @@ group lifecycle owner before `prime-rl` can support that case.
 ## Env Server Process
 
 The first v1 path should run in-process inside the `prime-rl` env worker rather
-than forcing v1 through the v0 ZMQ `RolloutInput` API. That keeps the v1 state
-contract intact and avoids inventing a trajectory compatibility layer.
+than forcing v1 through the v0 ZMQ `RolloutInput` API. The existing v0 path can
+keep `ZMQEnvServer` unchanged.
+
+This keeps the v1 state contract intact and avoids inventing a trajectory
+compatibility layer.
 
 If v1 needs a remote env server later, add a v1-specific RPC surface that sends:
 
@@ -257,17 +288,27 @@ Do not route v1 through v0 `vf.RolloutInput`.
 
 ## Minimal Diff Plan
 
-1. Add `V0EnvAdapter` around the current `Env` implementation.
-2. Add `V1EnvAdapter` that imports `verifiers.v1 as vf1` and returns
-   `RolloutView`s.
+1. Split `orchestrator/envs.py` into a v0 adapter preserving the current ZMQ
+   implementation and a v1 adapter using in-process `vf1.Env`.
+2. Change the dispatcher to call `env.run_group(...)` only when the adapter
+   actually provides that method; for v1, dispatch individual `run_rollout`
+   tasks and let the sink call `score_group(...)` once the group is complete.
 3. Replace `REQUIRED_STATE_COLUMNS = ["trajectory"]` with adapter-owned output
-   requirements.
-4. Move `backfill_rollout_tokens` and `interleave_rollout` onto
-   `RolloutView`/`TurnView` inputs.
-5. Add teacher config plumbing next to the existing student model/client
-   config.
-6. Add advantage precedence handling before trainer-side advantage computation.
-7. Add tests with one v0 env and three v1 envs: simple rollout, group scoring,
+   requirements. v0 keeps `"trajectory"`; v1 keeps `"transcript"`.
+4. Introduce `RolloutView` / `TurnView` in prime-rl and move
+   `backfill_rollout_tokens`, `interleave_rollout`, filters, length penalties,
+   and eval metrics onto that view.
+5. Keep existing v0 scalar advantage assignment. For v1, skip scalar assignment
+   when every rollout in the group has token advantages; otherwise run the
+   trainer-side advantage function and fan out scalar values over completion
+   tokens.
+6. Add teacher config plumbing next to the existing student model/client
+   config. In SFT, train rollouts can keep using the teacher pool as the sampled
+   model; v1 additionally passes `teacher` when an env advantage or reward needs
+   the student/teacher pair.
+7. Store v1 outputs with `transcript`, not `trajectory`. Save/log code can use
+   `RolloutView.raw_for_storage()` to keep v0/v1 output shapes honest.
+8. Add tests with one v0 env and three v1 envs: simple rollout, group scoring,
    and env-provided token advantages.
 
 ## Open Design Tensions

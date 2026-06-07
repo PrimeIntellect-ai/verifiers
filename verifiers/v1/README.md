@@ -13,7 +13,8 @@ v1 classes from top-level `verifiers`, and v0 code should not rely on
 ## Model
 
 - `Taskset` owns tasks, task prompts, task tools, user simulation, metrics,
-  rewards, advantages, and task-specific lifecycle.
+  rewards, and task-specific lifecycle.
+- `Env` owns the selected group advantage function.
 - `Harness` is the agent. Its `run(...)` method owns the rollout lifecycle:
   runtime, MCP connections, setup/generation/update/optional scoring/cleanup,
   and finalization. Direct `Harness.run(...)` defaults to `score=False`;
@@ -32,7 +33,8 @@ stored in `Task` or `State`.
 ## Runtime And Protocols
 
 Runtime providers expose one live `Runtime` contract: `start`, `stop`, `expose`,
-`run`, `read`, and `write`. The built-in configs are `local`, `docker`, and `prime`.
+`run`, `read`, and `write`. The built-in configs are `subprocess`, `docker`,
+and `prime`; `modal` and `daytona` are reserved provider stubs.
 Task rows may set `image` for serializable per-task runtime image selection;
 live runtimes stay owned by the harness lifecycle.
 
@@ -153,9 +155,9 @@ userspace schema.
 
 ## Current Tensions
 
-- Group rewards and advantages are first-class, but group scoring currently runs
-  after per-rollout runtimes close. Supporting runtime-backed group
-  scoring would require an explicit group runtime lifetime.
+- Group rewards and token-level advantages are first-class, but group scoring
+  currently runs after per-rollout runtimes close. Supporting runtime-backed
+  group scoring would require an explicit group runtime lifetime.
 - Env-scope toolsets are first-class. Group-specific resources should use
   `state.group_id` plus env-scope toolset state rather than a third tool scope.
 - The base harness is model-loop native. Command/program agents should be

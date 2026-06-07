@@ -191,9 +191,15 @@ def harbor_runtime(
 ) -> dict[str, object]:
     runtime: dict[str, object] = dict(configured)
     runtime["image"] = environment.get("docker_image") or runtime.get("image")
-    runtime["cpu_cores"] = parse_number(environment.get("cpus"), 2.0)
-    runtime["memory_gb"] = parse_gb(environment.get("memory"), 4.0)
-    runtime["disk_size_gb"] = parse_gb(environment.get("storage"), 10.0)
+    runtime["cpu_cores"] = parse_number(
+        environment.get("cpus"), parse_number(runtime.get("cpu_cores"), 2.0)
+    )
+    runtime["memory_gb"] = parse_gb(
+        environment.get("memory"), parse_gb(runtime.get("memory_gb"), 4.0)
+    )
+    runtime["disk_size_gb"] = parse_gb(
+        environment.get("storage"), parse_gb(runtime.get("disk_size_gb"), 10.0)
+    )
     timeout_value = runtime.get("timeout_seconds")
     timeout_default = (
         float(timeout_value) if isinstance(timeout_value, str | int | float) else 900.0

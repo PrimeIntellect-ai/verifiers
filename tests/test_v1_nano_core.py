@@ -17,7 +17,9 @@ from verifiers.v1.loaders import (
     load_harness_from_module,
     load_taskset_from_module,
 )
-from verifiers.v1.mcp import BoundUpdate, MCPToolRegistry
+from verifiers.v1.mcp import BoundUpdate, MCPToolRegistry, split_result
+from verifiers.v1.protocols import parse_anthropic_user_messages
+from verifiers.v1.toolset import ToolBinding
 
 
 def attach_mock_model(
@@ -98,7 +100,13 @@ class GroupTaskset(NanoTaskset):
 def custom_env_advantage(tasks: list[vf.Task], states: list[vf.State]) -> None:
     _ = tasks
     for index, state in enumerate(states):
-        state.advantage = float(index + 10)
+        value = float(index + 10)
+        for turn in state.transcript:
+            if turn.tokens is not None:
+                turn.tokens.prompt_advantages = [0.0 for _ in turn.tokens.prompt_ids]
+                turn.tokens.completion_advantages = [
+                    value for _ in turn.tokens.completion_ids
+                ]
 
 
 class EmptyPromptUserConfig(vf.UserConfig):
@@ -475,6 +483,16 @@ async def test_v1_model_client_uses_serialized_transcript_record(mock_client) ->
     assert client_state["transcript"][0]["tokens"]["completion_ids"] == [2]
 
 
+def test_v1_model_client_renderer_handle_is_live_only(mock_client) -> None:
+    config = vf.ModelConfig(client=ClientConfig(), model="test-model")
+    model = vf.ModelClient(config=config, client=mock_client)
+    assert model.get_renderer() is None
+
+    renderer = object()
+    model = vf.ModelClient(config=config, client=mock_client, renderer=renderer)
+    assert model.get_renderer() is renderer
+
+
 @pytest.mark.asyncio
 async def test_v1_standalone_env_rollout_scores_from_transcript(mock_client) -> None:
     mock_client.set_default_response("ok")
@@ -552,6 +570,36 @@ async def test_harness_run_rejects_nested_scoring_context(mock_client) -> None:
 
 
 @pytest.mark.asyncio
+async def test_harness_run_with_context_preserves_parent_state_task_id(
+    mock_client,
+) -> None:
+    mock_client.set_default_response("child")
+    harness = vf.Harness()
+    model = vf.ModelConfig(model="test-model")
+
+    def load_model_client(config: vf.ModelConfig) -> vf.ModelClient:
+        return vf.ModelClient(config=config, client=mock_client)
+
+    async def close_model_client(_: vf.ModelClient) -> None:
+        return None
+
+    harness.load_model_client = load_model_client
+    harness.close_model_client = close_model_client
+    parent_task = vf.Task(task_id="parent-task", prompt="parent")
+    state = vf.State(task_id="parent-task")
+
+    async with harness.open_context(
+        task=parent_task,
+        state=state,
+        model=model,
+    ) as context:
+        await harness.run("child prompt", context=context)
+
+    assert state.task_id == "parent-task"
+    assert state.transcript[-1].prompt[-1].content == "child prompt"
+
+
+@pytest.mark.asyncio
 async def test_v1_group_rewards_and_advantages_apply_to_turns(mock_client) -> None:
     mock_client.set_default_response("ok")
     env = vf.Env(taskset=GroupTaskset(), harness=vf.Harness(), advantage="grpo")
@@ -570,7 +618,7 @@ async def test_v1_group_rewards_and_advantages_apply_to_turns(mock_client) -> No
     outputs = [state.to_output(task) for task, state in zip(tasks, states, strict=True)]
 
     assert [output["reward"] for output in outputs] == [2.0, 1.0]
-    assert sum(float(output["advantage"]) for output in outputs) == pytest.approx(0.0)
+    assert "advantage" not in outputs[0]
     assert "advantage" not in outputs[0]["transcript"][0]
 
 
@@ -772,6 +820,9 @@ def test_bound_state_updates_allow_extends_and_reject_set_conflicts() -> None:
             ],
         )
 
+    with pytest.raises(ValueError, match="state.advantage"):
+        harness.apply_bound_updates(state, [BoundUpdate("state.advantage", 1.0)])
+
 
 def test_bound_state_updates_write_latest_turn_reward() -> None:
     harness = vf.Harness()
@@ -791,6 +842,110 @@ def test_bound_state_updates_write_latest_turn_reward() -> None:
 
     assert state.reward == 0.0
     assert state.transcript[-1].reward == 0.75
+
+
+def test_state_to_output_rejects_metric_reserved_field_collision() -> None:
+    state = vf.State(metrics={"reward": 1.0})
+    task = vf.Task(prompt="hello")
+
+    with pytest.raises(ValueError, match="Metric name 'reward' conflicts"):
+        state.to_output(task)
+
+
+def test_split_result_copies_unbound_content() -> None:
+    content: vf.JsonData = {"messages": [{"role": "user", "content": "before"}]}
+    result = split_result(content, ToolBinding())
+
+    messages = content["messages"]
+    assert isinstance(messages, list)
+    first = messages[0]
+    assert isinstance(first, dict)
+    first["content"] = "after"
+
+    assert result.value == {"messages": [{"role": "user", "content": "before"}]}
+
+
+def test_parse_anthropic_user_messages_preserves_structured_content() -> None:
+    messages = parse_anthropic_user_messages(
+        [
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": "abc",
+                },
+            }
+        ]
+    )
+
+    assert len(messages) == 1
+    message = messages[0]
+    assert isinstance(message, vf.UserMessage)
+    assert message.content == [
+        {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "abc",
+            },
+        }
+    ]
+
+
+def test_harbor_runtime_preserves_configured_resources_without_env_override() -> None:
+    from tasksets.harbor import harbor_runtime
+
+    runtime = harbor_runtime(
+        {
+            "image": "python:3.13",
+            "cpu_cores": 8.0,
+            "memory_gb": 12.0,
+            "disk_size_gb": 99.0,
+        },
+        environment={},
+        agent_config={},
+    )
+
+    assert runtime["cpu_cores"] == 8.0
+    assert runtime["memory_gb"] == 12.0
+    assert runtime["disk_size_gb"] == 99.0
+
+
+@pytest.mark.asyncio
+async def test_score_group_empty_group_returns_empty_states() -> None:
+    env = vf.Env(taskset=NanoTaskset())
+
+    assert await env.score_group([], []) == []
+
+
+@pytest.mark.asyncio
+async def test_score_group_closes_model_client_if_teacher_load_fails(
+    mock_client,
+) -> None:
+    env = vf.Env(taskset=NanoTaskset())
+    task = NanoTask(prompt="hello", answer="ok")
+    state = vf.State(task_id=task.task_id)
+    model = vf.ModelConfig(model="student")
+    teacher = vf.ModelConfig(model="teacher")
+    closed: list[str] = []
+
+    def load_model_client(config: vf.ModelConfig) -> vf.ModelClient:
+        if config.model == "teacher":
+            raise RuntimeError("teacher failed")
+        return vf.ModelClient(config=config, client=mock_client)
+
+    async def close_model_client(model_client: vf.ModelClient) -> None:
+        closed.append(model_client.config.model)
+
+    env.harness.load_model_client = load_model_client
+    env.harness.close_model_client = close_model_client
+
+    with pytest.raises(RuntimeError, match="teacher failed"):
+        await env.score_group([task], [state], model=model, teacher=teacher)
+
+    assert closed == ["student"]
 
 
 @pytest.mark.asyncio
@@ -960,9 +1115,14 @@ def test_v1_default_advantages_fill_turn_tokens() -> None:
     tasks = [vf.Task(prompt="p"), vf.Task(prompt="p")]
     vf.advantages.grpo(tasks, states)
 
-    assert [state.advantage for state in states] == pytest.approx([1.0, -1.0])
     assert states[0].transcript[0].tokens is not None
     assert states[0].transcript[0].tokens.prompt_advantages == pytest.approx([0.0, 0.0])
+    assert states[0].transcript[0].tokens.completion_advantages == pytest.approx(
+        [1.0, 1.0, 1.0]
+    )
+
+    vf.advantages.sft(tasks, states)
+    assert states[0].transcript[0].tokens.prompt_advantages == pytest.approx([1.0, 1.0])
     assert states[0].transcript[0].tokens.completion_advantages == pytest.approx(
         [1.0, 1.0, 1.0]
     )
@@ -971,7 +1131,40 @@ def test_v1_default_advantages_fill_turn_tokens() -> None:
 @pytest.mark.asyncio
 async def test_env_advantage_config_sets_group_default() -> None:
     tasks = [vf.Task(prompt="p"), vf.Task(prompt="p")]
-    states = [vf.State(reward=2.0), vf.State(reward=0.0)]
+    states = [
+        vf.State(
+            transcript=[
+                vf.Turn(
+                    prompt=[{"role": "user", "content": "p"}],
+                    completion=[{"role": "assistant", "content": "a"}],
+                    tokens=vf.TurnTokens(
+                        prompt_ids=[1],
+                        prompt_mask=[1],
+                        completion_ids=[2, 3],
+                        completion_mask=[1, 1],
+                        completion_logprobs=[0.1, 0.2],
+                    ),
+                )
+            ],
+            reward=2.0,
+        ),
+        vf.State(
+            transcript=[
+                vf.Turn(
+                    prompt=[{"role": "user", "content": "p"}],
+                    completion=[{"role": "assistant", "content": "b"}],
+                    tokens=vf.TurnTokens(
+                        prompt_ids=[4],
+                        prompt_mask=[1],
+                        completion_ids=[5],
+                        completion_mask=[1],
+                        completion_logprobs=[0.3],
+                    ),
+                )
+            ],
+            reward=0.0,
+        ),
+    ]
     env = vf.Env(
         taskset=NanoTaskset(),
         advantage="reinforce",
@@ -979,18 +1172,59 @@ async def test_env_advantage_config_sets_group_default() -> None:
 
     await env.score_group(tasks, states)
 
-    assert [state.advantage for state in states] == pytest.approx([2.0, 0.0])
+    assert states[0].transcript[0].tokens is not None
+    assert states[0].transcript[0].tokens.completion_advantages == pytest.approx(
+        [2.0, 2.0]
+    )
+    assert states[1].transcript[0].tokens is not None
+    assert states[1].transcript[0].tokens.completion_advantages == pytest.approx([0.0])
 
 
 @pytest.mark.asyncio
 async def test_env_advantage_path_supports_user_authored_group_logic() -> None:
     tasks = [vf.Task(prompt="p"), vf.Task(prompt="p")]
-    states = [vf.State(reward=2.0), vf.State(reward=0.0)]
+    states = [
+        vf.State(
+            transcript=[
+                vf.Turn(
+                    prompt=[{"role": "user", "content": "p"}],
+                    completion=[{"role": "assistant", "content": "a"}],
+                    tokens=vf.TurnTokens(
+                        prompt_ids=[1],
+                        prompt_mask=[1],
+                        completion_ids=[2],
+                        completion_mask=[1],
+                        completion_logprobs=[0.1],
+                    ),
+                )
+            ],
+            reward=2.0,
+        ),
+        vf.State(
+            transcript=[
+                vf.Turn(
+                    prompt=[{"role": "user", "content": "p"}],
+                    completion=[{"role": "assistant", "content": "b"}],
+                    tokens=vf.TurnTokens(
+                        prompt_ids=[3],
+                        prompt_mask=[1],
+                        completion_ids=[4],
+                        completion_mask=[1],
+                        completion_logprobs=[0.2],
+                    ),
+                )
+            ],
+            reward=0.0,
+        ),
+    ]
     env = vf.Env(taskset=NanoTaskset(), advantage=f"{__name__}:custom_env_advantage")
 
     await env.score_group(tasks, states)
 
-    assert [state.advantage for state in states] == pytest.approx([10.0, 11.0])
+    assert states[0].transcript[0].tokens is not None
+    assert states[0].transcript[0].tokens.completion_advantages == pytest.approx([10.0])
+    assert states[1].transcript[0].tokens is not None
+    assert states[1].transcript[0].tokens.completion_advantages == pytest.approx([11.0])
 
 
 def test_v1_runtime_default_resolves_taskset_and_harness_fields() -> None:

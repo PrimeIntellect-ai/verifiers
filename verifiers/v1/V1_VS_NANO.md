@@ -35,8 +35,9 @@ Both systems separate serializable specification from live execution:
 
 v1 preserves the Verifiers authoring split:
 
-- `Taskset` owns task data, prompts, users, toolsets, metrics, rewards,
-  advantages, and task lifecycle.
+- `Taskset` owns task data, prompts, users, toolsets, metrics, rewards, and
+  task lifecycle.
+- `Env` owns the selected group advantage function.
 - `Harness` owns agent execution, runtime use, protocol interception, and
   reusable execution mechanisms.
 - `Env` is a thin adapter for eval/training loaders.
@@ -112,7 +113,8 @@ first-class server contract in nano.
 ### Group Rewards And Advantages
 
 v1 has group scoring and v1-only advantage functions (`grpo`, `rloo`,
-`reinforce`) that mutate token advantages in place.
+`reinforce`, `sft`) that mutate token advantages in place. `State` does not
+store a scalar advantage.
 
 Nano's `Episode` supports cross-rollout group rewards, but deliberately leaves
 advantage computation to trainers above the environment layer.
@@ -160,7 +162,8 @@ state = await harness.run(task="hello", model="openai/gpt-5", score=False)
 self-check calls should pass the parent `Context` and keep `score=False`.
 Requesting `score=True` inside an active scoring context raises.
 
-Rewards and advantages are taskset-owned. Harnesses may define metrics for
+Rewards are taskset-owned. The selected advantage function is env-owned and
+mutates turn token advantages in place. Harnesses may define metrics for
 execution telemetry, but harness rewards/advantages are rejected because scoring
 semantics belong to the task.
 

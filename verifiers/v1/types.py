@@ -21,10 +21,16 @@ from typing_extensions import TypeAliasType
 from .config import Config
 
 if TYPE_CHECKING:
+    from renderers import Renderer, RendererPool
+
     from .mcp import MCPToolRegistry
     from .runtime import Runtime
     from .state import State
     from .task import Task
+
+    RendererHandle: TypeAlias = Renderer | RendererPool
+else:
+    RendererHandle: TypeAlias = object
 
 JsonScalar: TypeAlias = str | int | float | bool | None
 JsonValue = TypeAliasType(
@@ -55,6 +61,7 @@ class ModelConfig(Config):
 class ModelClient:
     config: ModelConfig
     client: Client
+    renderer: RendererHandle | None = None
 
     async def get_response(
         self,
@@ -74,6 +81,20 @@ class ModelClient:
             sampling_args=sampling_args or dict(self.config.sampling_args),
             tools=tools,
             **kwargs,
+        )
+
+    def get_renderer(self) -> RendererHandle | None:
+        if self.renderer is not None:
+            return self.renderer
+        if self.config.client.client_type != "renderer":
+            return None
+        from verifiers.clients import RendererClient
+
+        if not isinstance(self.client, RendererClient):
+            return None
+        return self.client.get_renderer(
+            self.config.model,
+            sampling_args=dict(self.config.sampling_args),
         )
 
 

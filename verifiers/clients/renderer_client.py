@@ -511,6 +511,27 @@ class RendererClient(
 
         return self._shared_pools[cache_key]
 
+    def get_renderer(
+        self,
+        model: str,
+        *,
+        sampling_args: SamplingArgs | None = None,
+    ) -> Renderer | RendererPool:
+        args = dict(sampling_args or {})
+        sampling_params = dict(args.pop("extra_body", None) or {})
+        chat_template_kwargs = sampling_params.pop("chat_template_kwargs", None)
+        renderer_model = (
+            self._config.renderer_model_name
+            if self._config is not None and self._config.renderer_model_name is not None
+            else model
+        )
+        renderer_config = _resolve_renderer_config(
+            self._config.renderer_config if self._config is not None else None,
+            chat_template_kwargs,
+            renderer_model=renderer_model,
+        )
+        return self._get_renderer_or_pool(model, renderer_config=renderer_config)
+
     # ── Type conversions ────────────────────────────────────────────
 
     async def to_native_prompt(

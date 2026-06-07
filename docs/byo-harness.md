@@ -150,8 +150,7 @@ Use:
 - `state.prompt`, `state.completion`, and `state.messages` for derived views of
   the current transcript.
 - `state.extras` for user-owned per-rollout mutable JSON.
-- `state.metrics`, `state.reward`, `state.advantage`, and token advantages for
-  scoring.
+- `state.metrics`, `state.reward`, and `Turn.tokens.*_advantages` for scoring.
 - `state.artifacts` for serializable outputs worth saving.
 
 Do not store live clients, functions, runtimes, file handles, or other
@@ -277,7 +276,8 @@ Custom runtimes implement `vf.RuntimeProvider` and `vf.Runtime`.
 
 ## Scoring
 
-Tasksets and harnesses can define lifecycle, metrics, rewards, and advantages:
+Tasksets define task lifecycle, metrics, and rewards. Harnesses may define
+lifecycle and metrics for reusable execution telemetry:
 
 ```python
 class MyTaskset(vf.Taskset[MyTasksetConfig]):
@@ -294,11 +294,11 @@ class MyTaskset(vf.Taskset[MyTasksetConfig]):
         return float(state.completion[-1].content == task.answer)
 ```
 
-Group rewards and advantages run through `env.score_group(tasks, states)`.
-Advantage functions mutate token-level advantages in place:
+Group rewards run through `env.score_group(tasks, states)`. Env-level advantage
+functions mutate token-level advantages in place:
 
 ```python
-grpo = staticmethod(vf.advantages.grpo)
+env = vf.Env(taskset=MyTaskset(), advantage="grpo")
 ```
 
 ## Evaluation

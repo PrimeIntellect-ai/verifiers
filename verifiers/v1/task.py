@@ -150,6 +150,8 @@ class Task(BaseModel, extra="forbid", frozen=True):
             return MESSAGES_ADAPTER.validate_python(value)
         from .utils.prompt_utils import SystemPromptConfig
 
+        if isinstance(value, Mapping):
+            return SystemPromptConfig.model_validate(dict(value))
         if isinstance(value, SystemPromptConfig):
             return value
         raise TypeError("task.system_prompt must be a string, messages list, or null.")

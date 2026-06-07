@@ -92,12 +92,22 @@ class Tau2Taskset(vf.Taskset[Tau2TasksetConfig]):
     @vf.metric
     async def tau2_num_steps(self, state: vf.State) -> float:
         tau2 = state.extras.get("tau2")
-        return float(tau2.get("step_count", 0.0) if isinstance(tau2, dict) else 0.0)
+        if not isinstance(tau2, dict):
+            return 0.0
+        value = tau2.get("step_count")
+        if isinstance(value, bool) or not isinstance(value, int | float | str):
+            return 0.0
+        return float(value)
 
     @vf.metric
     async def tau2_num_errors(self, state: vf.State) -> float:
         tau2 = state.extras.get("tau2")
-        return float(tau2.get("num_errors", 0.0) if isinstance(tau2, dict) else 0.0)
+        if not isinstance(tau2, dict):
+            return 0.0
+        value = tau2.get("num_errors")
+        if isinstance(value, bool) or not isinstance(value, int | float | str):
+            return 0.0
+        return float(value)
 
 
 def download_tau2_data() -> None:

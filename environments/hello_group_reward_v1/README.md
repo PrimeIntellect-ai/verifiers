@@ -10,7 +10,7 @@ all rollouts finish, the group stage:
 - runs a group update that writes per-rollout ranks and group summaries;
 - records group metrics;
 - adds a relative group reward;
-- writes explicit centered advantages;
+- writes explicit centered token advantages when model tokens are present;
 - runs group cleanup.
 
 This is meant as a compact reference for `@vf.reward(stage="group")` and

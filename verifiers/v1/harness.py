@@ -245,6 +245,7 @@ class Harness(Generic[ConfigT]):
             teacher = ModelConfig(model=teacher)
         if context is not None and score and context.has_active_scoring():
             raise RuntimeError("Nested scored harness runs are not supported.")
+        using_context_state = state is None and context is not None
         if state is None:
             state = (
                 context.state if context is not None else State(task_id=task.task_id)
@@ -255,7 +256,8 @@ class Harness(Generic[ConfigT]):
             model = context.model_client.config
         if teacher is None and context is not None and context.teacher is not None:
             teacher = context.teacher.config
-        state.task_id = task.task_id
+        if not using_context_state or state.task_id is None:
+            state.task_id = task.task_id
         state.model = state.model or model
         state.teacher = state.teacher or teacher
         self.initialize_extras(state)
@@ -458,15 +460,17 @@ class Harness(Generic[ConfigT]):
                     if toolset.scope == "env"
                 }
             )
-            self._env_toolsets = MCPToolRegistry(toolsets)
-            await self._env_toolsets.__aenter__()
+            env_toolsets = MCPToolRegistry(toolsets)
+            await env_toolsets.__aenter__()
+            self._env_toolsets = env_toolsets
         if self._env_user is None:
             user = None if taskset is None else taskset.user
             user_toolsets = (
                 {} if user is None or user.scope != "env" else {"user": user}
             )
-            self._env_user = MCPToolRegistry(user_toolsets)
-            await self._env_user.__aenter__()
+            env_user = MCPToolRegistry(user_toolsets)
+            await env_user.__aenter__()
+            self._env_user = env_user
 
     def rollout_toolsets(
         self, runtime: Runtime, user: MCPToolRegistry | None = None
@@ -703,16 +707,6 @@ class Harness(Generic[ConfigT]):
                 raise TypeError("state.reward requires a number.")
             state.reward = float(value)
             return
-        if field == "advantage":
-            if len(parts) != 2:
-                raise ValueError("state.advantage does not support nested targets.")
-            if value is None:
-                state.advantage = None
-                return
-            if isinstance(value, bool) or not isinstance(value, int | float):
-                raise TypeError("state.advantage requires a number or null.")
-            state.advantage = float(value)
-            return
         if field == "is_completed":
             if len(parts) != 2 or not isinstance(value, bool):
                 raise TypeError("state.is_completed requires a boolean.")
@@ -815,14 +809,10 @@ class Harness(Generic[ConfigT]):
                 runtime=context.runtime,
                 toolsets=context.toolsets,
                 user=context.user,
-                model_client=context.model_client,
-                client=context.client,
-                model=context.model,
+                model=context.model_client,
+                model_name=context.model,
                 teacher=context.teacher,
-                teacher_client=context.teacher.client
-                if context.teacher is not None
-                else None,
-                teacher_model=context.teacher.config.model
+                teacher_name=context.teacher.config.model
                 if context.teacher is not None
                 else None,
             ):
@@ -855,14 +845,10 @@ class Harness(Generic[ConfigT]):
                 runtime=context.runtime,
                 toolsets=context.toolsets,
                 user=context.user,
-                model_client=context.model_client,
-                client=context.client,
-                model=context.model,
+                model=context.model_client,
+                model_name=context.model,
                 teacher=context.teacher,
-                teacher_client=context.teacher.client
-                if context.teacher is not None
-                else None,
-                teacher_model=context.teacher.config.model
+                teacher_name=context.teacher.config.model
                 if context.teacher is not None
                 else None,
             )

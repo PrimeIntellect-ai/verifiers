@@ -495,20 +495,13 @@ async def wait_for_http(url: str) -> None:
 
 @contextlib.asynccontextmanager
 async def connect_streamable_http(url: str, headers: dict[str, str]):
-    from mcp.client.streamable_http import streamable_http_client
+    from mcp.client.streamable_http import streamablehttp_client
 
-    if headers:
-        import httpx
-
-        async with httpx.AsyncClient(headers=headers) as http_client:
-            async with streamable_http_client(url, http_client=http_client) as (
-                read,
-                write,
-                *_,
-            ):
-                yield read, write
-        return
-    async with streamable_http_client(url) as (read, write, *_):
+    async with streamablehttp_client(url, headers=headers or None) as (
+        read,
+        write,
+        *_,
+    ):
         yield read, write
 
 
@@ -769,7 +762,7 @@ def resolve_binding(context: JsonData, source: str) -> JsonValue:
 
 def split_result(content: JsonValue, binding: ToolBinding) -> ServerResult:
     if not binding.sets and not binding.extends:
-        return ServerResult(response=server_response(content), value=content)
+        return ServerResult(response=server_response(content), value=deepcopy(content))
     result = mapping_result(content)
     visible = dict(result)
     updates: list[BoundUpdate] = []

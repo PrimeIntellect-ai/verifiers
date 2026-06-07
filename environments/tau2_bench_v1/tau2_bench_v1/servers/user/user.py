@@ -341,5 +341,6 @@ class User(vf.User[UserConfig]):
                 for item in content:
                     if isinstance(item, dict) and isinstance(item.get("text"), str):
                         parts.append(item["text"])
-                return "\n".join(parts)
+                if parts:
+                    return "\n".join(parts)
         return ""
