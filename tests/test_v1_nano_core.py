@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from contextlib import asynccontextmanager
 import importlib
 import json
 import sys
@@ -879,6 +880,54 @@ async def test_mcp_owned_runtime_stops_when_server_start_fails(monkeypatch) -> N
             pass
 
     assert events == ["start", "run_background", "stop"]
+
+
+@pytest.mark.asyncio
+async def test_mcp_registry_closes_partial_stack_when_enter_fails(monkeypatch) -> None:
+    import mcp.client.session as session_module
+
+    events: list[str] = []
+
+    class FailingClientSession:
+        def __init__(self, read: object, write: object) -> None:
+            _ = read, write
+
+        async def __aenter__(self) -> "FailingClientSession":
+            events.append("session_enter")
+            return self
+
+        async def __aexit__(self, *exc: object) -> None:
+            _ = exc
+            events.append("session_exit")
+
+        async def initialize(self) -> None:
+            events.append("initialize")
+            raise RuntimeError("initialize failed")
+
+    @asynccontextmanager
+    async def open_server(_name: str, _server: vf.ServerConfig):
+        events.append("server_enter")
+        try:
+            yield object(), object()
+        finally:
+            events.append("server_exit")
+
+    monkeypatch.setattr(session_module, "ClientSession", FailingClientSession)
+    registry = MCPToolRegistry({"demo": DemoToolsetConfig()})
+    monkeypatch.setattr(registry, "open_server", open_server)
+
+    with pytest.raises(RuntimeError, match="initialize failed"):
+        async with registry:
+            pass
+
+    assert events == [
+        "server_enter",
+        "session_enter",
+        "initialize",
+        "session_exit",
+        "server_exit",
+    ]
+    assert registry.tools() is None
 
 
 @pytest.mark.asyncio

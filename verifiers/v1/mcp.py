@@ -115,56 +115,69 @@ class MCPToolRegistry:
             return self
         from mcp.client.session import ClientSession
 
-        for toolset_name, server in self.servers.items():
-            if not isinstance(toolset_name, str) or not toolset_name:
-                raise TypeError("MCP server names must be non-empty strings.")
-            seen_tools: set[str] = set()
-            read, write = await self._stack.enter_async_context(
-                self.open_server(toolset_name, server)
-            )
-            session = await self._stack.enter_async_context(ClientSession(read, write))
-            await session.initialize()
-            bindings = await server_bindings(session)
-            for raw_tool in (await session.list_tools()).tools:
-                tool_name = getattr(raw_tool, "name", "")
-                if not isinstance(tool_name, str) or not tool_name:
-                    raise TypeError("MCP tools require a non-empty name.")
-                if tool_name == _BINDINGS_TOOL:
-                    continue
-                seen_tools.add(tool_name)
-                exposed_name = f"{toolset_name}_{tool_name}"
-                if exposed_name in self._dispatch:
-                    raise ValueError(f"MCP tool {exposed_name!r} is defined twice.")
-                raw_schema = getattr(raw_tool, "inputSchema", None)
-                schema: dict[str, object] = (
-                    dict(raw_schema)
-                    if isinstance(raw_schema, dict)
-                    else {"type": "object", "properties": {}}
+        try:
+            for toolset_name, server in self.servers.items():
+                if not isinstance(toolset_name, str) or not toolset_name:
+                    raise TypeError("MCP server names must be non-empty strings.")
+                seen_tools: set[str] = set()
+                read, write = await self._stack.enter_async_context(
+                    self.open_server(toolset_name, server)
                 )
-                binding = bindings.get(
-                    tool_name, ToolBinding(args={}, sets={}, extends={}, hidden=False)
+                session = await self._stack.enter_async_context(
+                    ClientSession(read, write)
                 )
-                visible_schema = model_visible_schema(tool_name, schema, binding)
-                if tool_visible(server, tool_name) and not binding.hidden:
-                    self._tools.append(
-                        Tool(
-                            name=exposed_name,
-                            description=str(getattr(raw_tool, "description", "") or ""),
-                            parameters=visible_schema,
-                        )
+                await session.initialize()
+                bindings = await server_bindings(session)
+                for raw_tool in (await session.list_tools()).tools:
+                    tool_name = getattr(raw_tool, "name", "")
+                    if not isinstance(tool_name, str) or not tool_name:
+                        raise TypeError("MCP tools require a non-empty name.")
+                    if tool_name == _BINDINGS_TOOL:
+                        continue
+                    seen_tools.add(tool_name)
+                    exposed_name = f"{toolset_name}_{tool_name}"
+                    if exposed_name in self._dispatch:
+                        raise ValueError(f"MCP tool {exposed_name!r} is defined twice.")
+                    raw_schema = getattr(raw_tool, "inputSchema", None)
+                    schema: dict[str, object] = (
+                        dict(raw_schema)
+                        if isinstance(raw_schema, dict)
+                        else {"type": "object", "properties": {}}
                     )
-                self._dispatch[exposed_name] = ToolDispatch(
-                    session=session,
-                    toolset_name=toolset_name,
-                    raw_name=tool_name,
-                    binding=binding,
-                )
-            missing = sorted(set(bindings) - seen_tools)
-            if missing:
-                raise ValueError(
-                    f"Toolset {toolset_name!r} binds unknown tools: "
-                    f"{', '.join(missing)}."
-                )
+                    binding = bindings.get(
+                        tool_name,
+                        ToolBinding(args={}, sets={}, extends={}, hidden=False),
+                    )
+                    visible_schema = model_visible_schema(tool_name, schema, binding)
+                    if tool_visible(server, tool_name) and not binding.hidden:
+                        self._tools.append(
+                            Tool(
+                                name=exposed_name,
+                                description=str(
+                                    getattr(raw_tool, "description", "") or ""
+                                ),
+                                parameters=visible_schema,
+                            )
+                        )
+                    self._dispatch[exposed_name] = ToolDispatch(
+                        session=session,
+                        toolset_name=toolset_name,
+                        raw_name=tool_name,
+                        binding=binding,
+                    )
+                missing = sorted(set(bindings) - seen_tools)
+                if missing:
+                    raise ValueError(
+                        f"Toolset {toolset_name!r} binds unknown tools: "
+                        f"{', '.join(missing)}."
+                    )
+        except BaseException:
+            await self._stack.aclose()
+            self._dispatch.clear()
+            self._dynamic_dispatch.clear()
+            self._tools.clear()
+            self._dynamic_tools.clear()
+            raise
         return self
 
     @contextlib.asynccontextmanager
