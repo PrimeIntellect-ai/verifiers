@@ -156,8 +156,8 @@ class OpenAIResponsesClient(
             if isinstance(message, ToolMessage):
                 output = message.content
                 if not isinstance(output, str):
-                    text = content_to_text(output)
-                    output = text if text else str(output)
+                    # Keep images: image_url parts -> Responses input_image (not text).
+                    output = normalize_message_content(output)
                 return [
                     {
                         "type": "function_call_output",

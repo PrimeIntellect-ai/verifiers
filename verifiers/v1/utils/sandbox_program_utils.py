@@ -365,16 +365,15 @@ def vf_url(state, path):
     return f"{state['endpoint_root_url'].rstrip('/')}/vf/{path}"
 
 
-def endpoint_timeout():
-    return 300.0
+CONTROL_ENDPOINT_TIMEOUT = 300.0
 
 
-def post_json(url, payload, headers=None):
+def post_json(url, payload, headers=None, timeout=CONTROL_ENDPOINT_TIMEOUT):
     response = requests.post(
         url,
         json=payload,
         headers=headers or endpoint_headers(),
-        timeout=endpoint_timeout(),
+        timeout=timeout,
     )
     try:
         response.raise_for_status()
@@ -385,9 +384,9 @@ def post_json(url, payload, headers=None):
     return response.json()
 
 
-async def vf_post(state, path, payload):
+async def vf_post(state, path, payload, timeout=CONTROL_ENDPOINT_TIMEOUT):
     return await asyncio.to_thread(
-        post_json, vf_url(state, path), payload, endpoint_headers()
+        post_json, vf_url(state, path), payload, endpoint_headers(), timeout
     )
 
 
@@ -440,45 +439,13 @@ def import_ref(ref):
     return obj
 
 
-def to_plain(value):
-    if isinstance(value, dict):
-        return value
-    if hasattr(value, "model_dump"):
-        return value.model_dump(exclude_none=True)
-    if hasattr(value, "model_dump_json"):
-        return json.loads(value.model_dump_json(exclude_none=True))
-    return json.loads(json.dumps(value))
-
-
-def message_from_response(response):
-    choice = response.choices[0]
-    message = choice.message
-    data = {"role": getattr(message, "role", "assistant")}
-    content = getattr(message, "content", None)
-    if content is not None:
-        data["content"] = content
-    tool_calls = getattr(message, "tool_calls", None)
-    if tool_calls:
-        data["tool_calls"] = [
-            {
-                "id": call.id,
-                "type": getattr(call, "type", "function"),
-                "function": {
-                    "name": call.function.name,
-                    "arguments": call.function.arguments,
-                },
-            }
-            for call in tool_calls
-        ]
-    return data
-
-
 def tool_call_name(tool_call):
-    return tool_call["function"]["name"]
+    # The /vf/model bridge returns canonical vf tool calls ({id, name, arguments}).
+    return tool_call["name"]
 
 
 def tool_call_arguments(tool_call):
-    raw = tool_call["function"].get("arguments") or "{}"
+    raw = tool_call.get("arguments") or "{}"
     if isinstance(raw, str):
         return json.loads(raw)
     return raw
@@ -488,22 +455,15 @@ def tool_error_content(error):
     return str(error)
 
 
-def client_type(state):
-    return state.get("runtime", {}).get("client_type") or "openai_chat_completions"
-
-
-def sampling_args(state):
-    raw = state.get("runtime", {}).get("sampling_args") or {}
-    if not isinstance(raw, dict):
-        raise RuntimeError("state.runtime.sampling_args must be a mapping.")
-    return dict(raw)
-
-
-def model_name(state):
-    model = state.get("runtime", {}).get("model")
-    if not model:
-        raise RuntimeError("sandbox base program requires state.runtime.model.")
-    return model
+def is_tool_content_parts(value):
+    # Mirror is_valid_tool_content_parts (can't import into the lean runner):
+    # pass {"type": text|image_url} part lists (e.g. screenshots) through, not str().
+    if not isinstance(value, list):
+        return False
+    return all(
+        isinstance(part, dict) and part.get("type") in ("text", "image_url")
+        for part in value
+    )
 
 
 def load_tool_defs(protocol):
@@ -529,180 +489,17 @@ def load_tools(state):
     }
 
 
-def response_input(messages):
-    items = []
-    for message in messages:
-        role = message.get("role")
-        if role == "tool":
-            items.append(
-                {
-                    "type": "function_call_output",
-                    "call_id": message["tool_call_id"],
-                    "output": str(message.get("content") or ""),
-                }
-            )
-            continue
-        tool_calls = message.get("tool_calls") or []
-        if tool_calls:
-            if message.get("content"):
-                items.append({"role": "assistant", "content": message["content"]})
-            for tool_call in tool_calls:
-                items.append(
-                    {
-                        "type": "function_call",
-                        "call_id": tool_call["id"],
-                        "name": tool_call["function"]["name"],
-                        "arguments": tool_call["function"].get("arguments") or "{}",
-                    }
-                )
-            continue
-        items.append({"role": role or "user", "content": message.get("content") or ""})
-    return items
+async def create_model_message(state, messages):
+    # The sandbox sends canonical Messages over the /vf/model bridge; the host
+    # resolves the bound client, tokenizes, and records the trajectory step, then
+    # returns the assistant message. The sandbox never formats a provider payload.
+    payload = await vf_post(state, "model", {"messages": messages}, timeout=None)
+    if "error" in payload:
+        raise RuntimeError(str(payload["error"]))
+    return payload["message"]
 
 
-def anthropic_payload_messages(messages):
-    payload_messages = []
-    system = []
-    for message in messages:
-        role = message.get("role")
-        content = message.get("content")
-        if role == "system":
-            if content:
-                system.append(str(content))
-            continue
-        if role == "tool":
-            payload_messages.append(
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": message["tool_call_id"],
-                            "content": str(content or ""),
-                        }
-                    ],
-                }
-            )
-            continue
-        if role == "assistant":
-            blocks = []
-            if content:
-                blocks.append({"type": "text", "text": str(content)})
-            for tool_call in message.get("tool_calls") or []:
-                arguments = tool_call["function"].get("arguments") or "{}"
-                try:
-                    tool_input = json.loads(arguments)
-                except json.JSONDecodeError:
-                    tool_input = {"arguments": arguments}
-                blocks.append(
-                    {
-                        "type": "tool_use",
-                        "id": tool_call["id"],
-                        "name": tool_call["function"]["name"],
-                        "input": tool_input,
-                    }
-                )
-            payload_messages.append({"role": "assistant", "content": blocks or ""})
-            continue
-        payload_messages.append({"role": "user", "content": str(content or "")})
-    return "\n".join(system), payload_messages
-
-
-def message_from_responses_response(response):
-    message = {"role": "assistant"}
-    text_parts = []
-    tool_calls = []
-    for item in response.get("output") or []:
-        if item.get("type") == "message":
-            for content in item.get("content") or []:
-                if content.get("type") in {"output_text", "text"}:
-                    text_parts.append(str(content.get("text") or ""))
-        elif item.get("type") == "function_call":
-            call_id = item.get("call_id") or item.get("id")
-            if call_id:
-                tool_calls.append(
-                    {
-                        "id": call_id,
-                        "type": "function",
-                        "function": {
-                            "name": item["name"],
-                            "arguments": item.get("arguments") or "{}",
-                        },
-                    }
-                )
-    if text_parts:
-        message["content"] = "\n".join(text_parts)
-    if tool_calls:
-        message["tool_calls"] = tool_calls
-    return message
-
-
-def message_from_anthropic_response(response):
-    message = {"role": "assistant"}
-    text_parts = []
-    tool_calls = []
-    for block in response.get("content") or []:
-        if block.get("type") == "text":
-            text_parts.append(str(block.get("text") or ""))
-        elif block.get("type") == "tool_use":
-            tool_calls.append(
-                {
-                    "id": block["id"],
-                    "type": "function",
-                    "function": {
-                        "name": block["name"],
-                        "arguments": json.dumps(block.get("input") or {}),
-                    },
-                }
-            )
-    if text_parts:
-        message["content"] = "\n".join(text_parts)
-    if tool_calls:
-        message["tool_calls"] = tool_calls
-    return message
-
-
-async def create_model_message(state, messages, client):
-    protocol = client_type(state)
-    sampling = sampling_args(state)
-    model = model_name(state)
-    if protocol == "openai_chat_completions":
-        payload = {"model": model, "messages": messages, **sampling}
-        tool_defs = load_tool_defs(protocol)
-        if tool_defs:
-            payload["tools"] = tool_defs
-        response = await client.chat.completions.create(**payload)
-        return message_from_response(response)
-    if protocol == "openai_responses":
-        payload = {"model": model, "input": response_input(messages), **sampling}
-        tool_defs = load_tool_defs(protocol)
-        if tool_defs:
-            payload["tools"] = tool_defs
-        response = await client.responses.create(**payload)
-        return message_from_responses_response(to_plain(response))
-    if protocol == "anthropic_messages":
-        system, provider_messages = anthropic_payload_messages(messages)
-        if "max_tokens" in sampling:
-            max_tokens = int(sampling.pop("max_tokens"))
-        else:
-            max_tokens = int(sampling.pop("max_completion_tokens", 4096))
-        payload = {
-            "model": model,
-            "messages": provider_messages,
-            "max_tokens": max_tokens,
-            **sampling,
-        }
-        if system:
-            payload["system"] = system
-        tool_defs = load_tool_defs(protocol)
-        if tool_defs:
-            payload["tools"] = tool_defs
-        response = await client.messages.create(**payload)
-        return message_from_anthropic_response(to_plain(response))
-    raise RuntimeError(f"Unsupported sandbox base client type: {protocol}")
-
-
-async def run_base(task, state, client):
+async def run_base(task, state):
     prompt_messages = [*(state.get("system_prompt") or []), *(state.get("prompt") or [])]
     messages = list(prompt_messages)
     config = json.loads(open(RUNNER_CONFIG_PATH).read())
@@ -711,7 +508,7 @@ async def run_base(task, state, client):
     while max_turns <= 0 or turn < max_turns:
         if await check_stop(state):
             break
-        message = await create_model_message(state, messages, client)
+        message = await create_model_message(state, messages)
         turn += 1
         messages.append(message)
         tool_calls = list(message.get("tool_calls") or [])
@@ -727,7 +524,7 @@ async def run_base(task, state, client):
                 result = await call_tool(
                     state, tool_call_name(tool_call), tool_call_arguments(tool_call)
                 )
-                content = str(result)
+                content = result if is_tool_content_parts(result) else str(result)
             except Exception as exc:
                 content = tool_error_content(exc)
             messages.append(
@@ -754,11 +551,14 @@ async def main():
     task = json.loads(open(TASK_PATH).read())
     state = json.loads(open(STATE_INPUT_PATH).read())
     original_state = json.loads(json.dumps(state))
-    client = Client(state)
-    try:
-        if mode == "base":
-            result = await run_base(task, state, client)
-        elif mode == "fn":
+    if mode == "base":
+        # Base loop talks to the host over /vf/model; no provider SDK client.
+        result = await run_base(task, state)
+    elif mode == "fn":
+        # fn-mode authors call the model via the OpenAI/Anthropic SDK, which the
+        # interception server transparently handles, so they still need a client.
+        client = Client(state)
+        try:
             result = await maybe_call(
                 import_ref(sys.argv[2]),
                 task=task,
@@ -767,10 +567,10 @@ async def main():
                 tools=load_tools(state),
                 tool_defs=load_tool_defs("vf"),
             )
-        else:
-            raise ValueError(f"Unknown sandbox program mode: {mode}")
-    finally:
-        await client.close()
+        finally:
+            await client.close()
+    else:
+        raise ValueError(f"Unknown sandbox program mode: {mode}")
     if result is not None:
         if not isinstance(result, dict):
             raise TypeError("Sandbox Python program must return None or a mapping.")

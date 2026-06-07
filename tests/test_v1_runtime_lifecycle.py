@@ -110,6 +110,15 @@ class BlockingModelClient(CapturingModelClient):
         return await super().get_response(**kwargs)
 
 
+class RaisingModelClient:
+    def __init__(self, error: vf.Error):
+        self.error = error
+
+    async def get_response(self, **kwargs: object) -> Response:
+        _ = kwargs
+        raise self.error
+
+
 class FakeCreateSandboxRequest:
     def __init__(self, **kwargs: object):
         self.kwargs = kwargs
@@ -517,6 +526,31 @@ async def endpoint_program(task, state):
     }
 
 
+async def endpoint_model_error_program(task, state):
+    _ = task
+    root = state["endpoint_root_url"].rstrip("/")
+    endpoint_client = cast(OpenAI, state.get_client(api="chat", sync=True))
+    auth_headers = {"Authorization": f"Bearer {endpoint_client.api_key}"}
+    endpoint_client.close()
+
+    def post_model() -> None:
+        request = urllib.request.Request(
+            f"{root}/vf/model",
+            data=json.dumps(
+                {"messages": [{"role": "user", "content": "too long"}]}
+            ).encode(),
+            headers={"content-type": "application/json", **auth_headers},
+        )
+        with urllib.request.urlopen(request):
+            pass
+
+    try:
+        await asyncio.to_thread(post_model)
+    except Exception as exc:
+        raise vf.SandboxError("Sandbox command failed") from exc
+    raise AssertionError("Expected /vf/model to fail")
+
+
 async def endpoint_trajectory_program(task, state):
     _ = task
     root = state["endpoint_root_url"].rstrip("/")
@@ -725,6 +759,7 @@ for _name, _value in {
     "initialize_from_taskset": initialize_from_taskset,
     "child_reads_program_sandbox": child_reads_program_sandbox,
     "endpoint_program": endpoint_program,
+    "endpoint_model_error_program": endpoint_model_error_program,
     "endpoint_trajectory_program": endpoint_trajectory_program,
     "concurrent_endpoint_program": concurrent_endpoint_program,
     "mcp_proxy_program": mcp_proxy_program,
@@ -825,6 +860,41 @@ async def test_endpoint_exposes_tool_user_and_stop_surfaces() -> None:
     assert state["endpoint_config"]["api_key_var"] not in os.environ
     assert "runtime_id" not in state["runtime"]
     assert "endpoint_root_url" not in state
+
+
+@pytest.mark.asyncio
+async def test_vf_model_bridge_preserves_overlong_prompt_error() -> None:
+    harness = make_harness(
+        program={"fn": program_ref("endpoint_model_error_program")},
+        model="test-model",
+        client=RaisingModelClient(vf.OverlongPromptError("too long")),
+    )
+    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+
+    state = await harness.run(task)
+    await harness.teardown()
+
+    assert state["prompt_too_long"] is True
+    assert state["is_truncated"] is True
+    assert state["stop_condition"] == "prompt_too_long"
+    assert state.get("error") is None
+
+
+@pytest.mark.asyncio
+async def test_vf_model_bridge_preserves_model_error() -> None:
+    harness = make_harness(
+        program={"fn": program_ref("endpoint_model_error_program")},
+        model="test-model",
+        client=RaisingModelClient(vf.ModelError("model failed")),
+    )
+    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+
+    state = await harness.run(task)
+    await harness.teardown()
+
+    assert state["stop_condition"] == "has_error"
+    assert state["error"]["error"] == "ModelError"
+    assert "SandboxError" not in state["error"]["error_chain_str"]
 
 
 @pytest.mark.asyncio
@@ -1463,6 +1533,70 @@ async def test_create_sandbox_cleans_up_wait_failure_with_retry(
 
 
 @pytest.mark.asyncio
+async def test_upload_program_files_retries_transient_transfer_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sandboxes(monkeypatch)
+    disable_sandbox_retry_sleep(monkeypatch)
+
+    class FlakyUploadClient:
+        calls = 0
+
+        async def upload_bytes(self, *args: object, **kwargs: object) -> None:
+            _ = args, kwargs
+            self.calls += 1
+            if self.calls == 1:
+                raise FakeAPIError("Upload failed: ")
+
+    client = FlakyUploadClient()
+    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+    state = vf.State.for_task(task)
+
+    await sandbox_utils.upload_program_files(
+        cast(sandbox_utils.SandboxClient, client),
+        "sbx-upload",
+        {"files": {"/tmp/file.txt": "content"}},
+        task,
+        state,
+        Runtime(),
+    )
+
+    assert client.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_upload_program_files_does_not_retry_non_transient_api_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sandboxes(monkeypatch)
+    disable_sandbox_retry_sleep(monkeypatch)
+
+    class FailingUploadClient:
+        calls = 0
+
+        async def upload_bytes(self, *args: object, **kwargs: object) -> None:
+            _ = args, kwargs
+            self.calls += 1
+            raise FakeAPIError("Upload failed: HTTP 400: bad request")
+
+    client = FailingUploadClient()
+    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+    state = vf.State.for_task(task)
+
+    with pytest.raises(vf.SandboxError, match="HTTP 400"):
+        await sandbox_utils.upload_program_files(
+            cast(sandbox_utils.SandboxClient, client),
+            "sbx-upload",
+            {"files": {"/tmp/file.txt": "content"}},
+            task,
+            state,
+            Runtime(),
+        )
+
+    assert client.calls == 1
+
+
+@pytest.mark.asyncio
 async def test_create_sandbox_cancellation_deletes_late_provider_result(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1603,8 +1737,8 @@ async def test_sandbox_base_program_max_turns_zero_is_unbounded(
     config_path.write_text(json.dumps({"max_turns": 0}))
     namespace["RUNNER_CONFIG_PATH"] = str(config_path)
 
-    async def create_model_message(state, messages, client):
-        _ = state, messages, client
+    async def create_model_message(state, messages):
+        _ = state, messages
         return {"role": "assistant", "content": "done"}
 
     async def call_user(state, messages):
@@ -1621,10 +1755,53 @@ async def test_sandbox_base_program_max_turns_zero_is_unbounded(
 
     state = {"prompt": [{"role": "user", "content": "hi"}], "runtime": {}}
     run_base = cast(Any, namespace["run_base"])
-    result = await run_base({}, state, object())
+    result = await run_base({}, state)
 
     assert result["completion"] == [{"role": "assistant", "content": "done"}]
     assert result["stop_condition"] == "no_tools"
+
+
+@pytest.mark.asyncio
+async def test_sandbox_base_program_model_call_uses_vf_model_bridge() -> None:
+    namespace: dict[str, object] = {}
+    source = runner_source().rsplit("asyncio.run(main())", 1)[0]
+    exec(source, namespace)
+
+    posted: list[tuple[str, Any, object]] = []
+
+    async def vf_post(state, path, payload, timeout=None):
+        _ = state
+        posted.append((path, payload, timeout))
+        return {"message": {"role": "assistant", "content": "ok"}}
+
+    namespace["vf_post"] = vf_post
+    create_model_message = cast(Any, namespace["create_model_message"])
+
+    # Canonical Messages (incl. an image content part) are sent unchanged over the
+    # /vf/model bridge; the host owns client resolution + tokenization and returns
+    # the assistant message.
+    messages = [
+        {"role": "user", "content": "hi"},
+        {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "content": [
+                {"type": "text", "text": "shot"},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,AAA"},
+                },
+            ],
+        },
+    ]
+    message = await create_model_message({"runtime": {}}, messages)
+
+    assert message == {"role": "assistant", "content": "ok"}
+    assert len(posted) == 1
+    path, payload, timeout = posted[0]
+    assert path == "model"
+    assert payload["messages"] == messages  # image part preserved verbatim
+    assert timeout is None
 
 
 def test_sandbox_program_patch_cannot_set_lifecycle_fields() -> None:
