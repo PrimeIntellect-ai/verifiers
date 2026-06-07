@@ -67,18 +67,8 @@ from .runtime import (
     SubprocessRuntimeConfig,
     SubprocessRuntimeProvider,
     SubprocessRuntime,
-    TrajectoryVisibility,
     make_runtime_provider,
     resolve_runtime_config,
-)
-from .utils.scoring_utils import (
-    add_metric,
-    add_reward,
-    add_advantage,
-    build_signals,
-    collect_signals,
-    score_group,
-    score_rollout,
 )
 from .state import (
     Extras,
@@ -89,7 +79,7 @@ from .state import (
     TurnTokens,
     TurnUsage,
 )
-from .task import Task, TaskVisibility
+from .task import Resources, Task, TaskVisibility
 from .taskset import Taskset, TasksetConfig, discover_sibling_dir
 from .toolset import (
     Scope,
@@ -149,6 +139,7 @@ __all__ = [
     "RuntimeConfigValue",
     "RuntimeProvider",
     "Runtime",
+    "Resources",
     "Scope",
     "ServerPlacement",
     "ServerConfig",
@@ -188,7 +179,6 @@ __all__ = [
     "ToolsetConfig",
     "ToolsetConfigs",
     "ToolMessage",
-    "TrajectoryVisibility",
     "Turn",
     "TurnTokens",
     "TurnUsage",
@@ -196,14 +186,9 @@ __all__ = [
     "User",
     "UserConfig",
     "VisibilityConfig",
-    "add_metric",
-    "add_reward",
-    "add_advantage",
     "advantages",
     "advantage",
-    "build_signals",
     "cleanup",
-    "collect_signals",
     "discover_sibling_dir",
     "default_protocols",
     "metric",
@@ -213,8 +198,6 @@ __all__ = [
     "load_harness",
     "load_taskset",
     "reward",
-    "score_group",
-    "score_rollout",
     "setup",
     "stop",
     "teardown",

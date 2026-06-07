@@ -291,6 +291,36 @@ class DynamicToolset(vf.Toolset[DynamicToolsetConfig]):
         return {"content": f"{name}:{input['text']}", "called": True}
 
 
+class DynamicUserConfig(vf.UserConfig):
+    pass
+
+
+class DynamicUser(vf.User[DynamicUserConfig]):
+    @vf.tool(
+        hidden=True,
+        sets={"ready": "state.extras.user_dynamic_ready"},
+    )
+    def setup(self) -> dict:
+        return {
+            "ready": True,
+            "tools": [
+                {
+                    "name": "user_echo",
+                    "description": "Echo through user server",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"text": {"type": "string"}},
+                        "required": ["text"],
+                    },
+                }
+            ],
+        }
+
+    @vf.tool(hidden=True, sets={"called": "state.extras.user_dynamic_called"})
+    def call_tool(self, name: str, input: vf.JsonData) -> dict:
+        return {"content": f"{name}:{input['text']}", "called": True}
+
+
 class ConfiguredToolsetTasksetConfig(vf.TasksetConfig):
     toolsets: vf.ToolsetConfigs = {"demo": DemoToolsetConfig()}
 
@@ -798,6 +828,32 @@ async def test_mcp_toolset_setup_registers_dynamic_tools() -> None:
     assert state.extras["dynamic_called"] is True
 
 
+@pytest.mark.asyncio
+async def test_user_setup_registers_dynamic_model_tools() -> None:
+    state = vf.State()
+    task = vf.Task(name="demo", prompt="say ok")
+    harness = vf.Harness()
+
+    async with MCPToolRegistry({"user": DynamicUserConfig()}) as user_registry:
+        async with MCPToolRegistry({}, parents=[user_registry]) as registry:
+            await registry.resolve(
+                context=harness.binding_context(task, state),
+                resolution_key=f"{state.id}:{task.task_id}",
+                apply_updates=lambda updates: harness.apply_bound_updates(
+                    state, updates
+                ),
+            )
+            tools = registry.tools() or []
+            result = await registry.call("user_echo", {"text": "ok"})
+
+    harness.apply_tool_result(state, result)
+
+    assert [tool.name for tool in tools] == ["user_echo"]
+    assert result.response.content == "user_echo:ok"
+    assert state.extras["user_dynamic_ready"] is True
+    assert state.extras["user_dynamic_called"] is True
+
+
 def test_bound_state_updates_allow_extends_and_reject_set_conflicts() -> None:
     harness = vf.Harness()
     state = vf.State()
@@ -1076,6 +1132,52 @@ def test_v1_runtime_image_is_container_only() -> None:
     assert docker_config.image == "python:3.12-slim"
 
 
+def test_v1_runtime_config_applies_task_resources_with_config_precedence() -> None:
+    task = vf.Task(
+        {
+            "prompt": [],
+            "resources": {
+                "cpu_cores": 2.0,
+                "memory_gb": 4.0,
+                "gpu_count": 1,
+                "disk_gb": 12.0,
+            },
+        }
+    )
+    default_env = vf.Env(taskset=NanoTaskset(), runtime=vf.DockerRuntimeConfig())
+    configured_env = vf.Env(
+        taskset=NanoTaskset(),
+        runtime=vf.DockerRuntimeConfig(cpu_cores=8.0, memory_gb=16.0),
+    )
+    prime_env = vf.Env(taskset=NanoTaskset(), runtime=vf.PrimeRuntimeConfig())
+    subprocess_env = vf.Env(taskset=NanoTaskset(), runtime=vf.SubprocessRuntimeConfig())
+
+    docker_config = default_env.harness.runtime_for(task)
+    configured_config = configured_env.harness.runtime_for(task)
+    prime_config = prime_env.harness.runtime_for(task)
+
+    assert isinstance(docker_config, vf.DockerRuntimeConfig)
+    assert docker_config.cpu_cores == 2.0
+    assert docker_config.memory_gb == 4.0
+    assert docker_config.gpu_count == 1
+    assert docker_config.disk_gb == 12.0
+
+    assert isinstance(configured_config, vf.DockerRuntimeConfig)
+    assert configured_config.cpu_cores == 8.0
+    assert configured_config.memory_gb == 16.0
+    assert configured_config.gpu_count == 1
+    assert configured_config.disk_gb == 12.0
+
+    assert isinstance(prime_config, vf.PrimeRuntimeConfig)
+    assert prime_config.cpu_cores == 2.0
+    assert prime_config.memory_gb == 4.0
+    assert prime_config.gpu_count == 1
+    assert prime_config.disk_gb == 12.0
+
+    with pytest.raises(ValueError, match="does not support"):
+        subprocess_env.harness.runtime_for(task)
+
+
 def test_v1_default_advantages_fill_turn_tokens() -> None:
     states = [
         vf.State(
@@ -1121,11 +1223,24 @@ def test_v1_default_advantages_fill_turn_tokens() -> None:
         [1.0, 1.0, 1.0]
     )
 
+    vf.advantages.rl(tasks, states)
+    assert states[0].transcript[0].tokens.completion_advantages == pytest.approx(
+        [1.0, 1.0, 1.0]
+    )
+
     vf.advantages.sft(tasks, states)
     assert states[0].transcript[0].tokens.prompt_advantages == pytest.approx([1.0, 1.0])
     assert states[0].transcript[0].tokens.completion_advantages == pytest.approx(
         [1.0, 1.0, 1.0]
     )
+
+
+def test_env_advantage_defaults_to_rl() -> None:
+    env = vf.Env(taskset=NanoTaskset())
+
+    assert env.advantage == "rl"
+    assert env.provides_advantages
+    assert env.requires_group_rollouts
 
 
 @pytest.mark.asyncio

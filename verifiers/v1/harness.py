@@ -161,16 +161,28 @@ class Harness(Generic[ConfigT]):
         return make_runtime_provider(config)
 
     def runtime_for(self, task: Task) -> RuntimeConfigValue:
-        image = task.image or getattr(self.runtime_config, "image", None)
-        if image is None:
+        updates: JsonData = {}
+        if task.image is not None:
+            if isinstance(self.runtime_config, SubprocessRuntimeConfig):
+                raise ValueError(
+                    f"task {task.task_id!r} declares an image; use docker or "
+                    "prime runtime."
+                )
+            if not isinstance(task.image, str) or not task.image:
+                raise TypeError("task.image must be a non-empty string.")
+            updates["image"] = task.image
+        for field, value in task.resources.model_dump(exclude_none=True).items():
+            spec = type(self.runtime_config).model_fields.get(field)
+            if spec is None:
+                raise ValueError(
+                    f"task {task.task_id!r} declares resource {field!r}; runtime "
+                    f"{self.runtime_config.type!r} does not support it."
+                )
+            if getattr(self.runtime_config, field) == spec.default:
+                updates[field] = value
+        if not updates:
             return self.runtime_config
-        if isinstance(self.runtime_config, SubprocessRuntimeConfig):
-            raise ValueError(
-                f"task {task.task_id!r} declares an image; use docker or prime runtime."
-            )
-        if not isinstance(image, str) or not image:
-            raise TypeError("task.image must be a non-empty string.")
-        return self.runtime_config.model_copy(update={"image": image})
+        return self.runtime_config.model_copy(update=updates)
 
     def runtime_provider_for(self, task: Task) -> RuntimeProvider:
         if self.runtime_provider is not None:

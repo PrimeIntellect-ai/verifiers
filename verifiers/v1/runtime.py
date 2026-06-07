@@ -18,8 +18,6 @@ from pydantic import Field
 from .config import Config
 from .types import JsonData
 
-TrajectoryVisibility = Literal["visible", "hidden"]
-
 _ENSURE_UV = "command -v uv >/dev/null 2>&1 || pip install -q uv"
 _SUBPROCESS_ENV = (
     "PATH",
@@ -56,15 +54,26 @@ class DockerRuntimeConfig(Config):
     type: Literal["docker"] = "docker"
     image: str = "python:3.11-slim"
     workdir: str = "/app"
+    cpu_cores: float | None = None
+    memory_gb: float | None = None
+    gpu_count: int | None = None
+    disk_gb: float | None = None
 
 
 class PrimeRuntimeConfig(Config):
     type: Literal["prime"] = "prime"
     image: str = "python:3.11-slim"
     workdir: str = "/app"
+    network_access: bool = True
+    vm: bool = False
+    guaranteed: bool = False
+    region: str | None = None
+    gpu_type: str | None = None
+    timeout_minutes: int | Literal["auto"] = 360
     cpu_cores: float = 1.0
     memory_gb: float = 2.0
-    network_access: bool = True
+    gpu_count: int = 0
+    disk_gb: float = 5.0
 
 
 class ModalRuntimeConfig(Config):
@@ -385,11 +394,19 @@ class DockerRuntime(Runtime):
             detail = (version.stderr or version.stdout).strip()
             raise RuntimeError(f"Docker daemon is not reachable: {detail}")
         self.container = f"vf-v1-{uuid.uuid4().hex[:12]}"
+        limits: list[str] = []
+        if self.config.cpu_cores is not None:
+            limits += ["--cpus", str(self.config.cpu_cores)]
+        if self.config.memory_gb is not None:
+            limits += ["--memory", f"{self.config.memory_gb}g"]
+        if self.config.gpu_count:
+            limits += ["--gpus", str(self.config.gpu_count)]
         result = await docker(
             "run",
             "--detach",
             "--network",
             "host",
+            *limits,
             "--workdir",
             self.config.workdir,
             "--name",
@@ -512,13 +529,25 @@ class PrimeRuntime(Runtime):
         from prime_sandboxes import AsyncSandboxClient, CreateSandboxRequest
 
         self.client = AsyncSandboxClient()
+        timeout = (
+            24 * 60
+            if self.config.timeout_minutes == "auto"
+            else self.config.timeout_minutes
+        )
         sandbox = await self.client.create(
             CreateSandboxRequest(
                 name="vf-v1-runtime",
                 docker_image=self.config.image,
                 cpu_cores=self.config.cpu_cores,
                 memory_gb=self.config.memory_gb,
+                disk_size_gb=self.config.disk_gb,
+                gpu_count=self.config.gpu_count,
+                timeout_minutes=timeout,
                 network_access=self.config.network_access,
+                vm=self.config.vm,
+                guaranteed=self.config.guaranteed,
+                gpu_type=self.config.gpu_type,
+                region=self.config.region,
             )
         )
         self.sandbox_id = sandbox.id

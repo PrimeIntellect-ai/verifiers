@@ -52,7 +52,7 @@
 
     <rect x="382" y="304" width="360" height="58" rx="12" fill="#f0fdfa" stroke="#2dd4bf" stroke-width="2"/>
     <text x="406" y="339" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="18" font-weight="700" fill="#0f766e">updates</text>
-    <text x="568" y="339" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="14" fill="#475569">sync trajectory, enrich state</text>
+    <text x="568" y="339" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="14" fill="#475569">sync transcript, enrich state</text>
 
     <rect x="382" y="394" width="360" height="58" rx="12" fill="#fdf2f8" stroke="#f472b6" stroke-width="2"/>
     <text x="406" y="429" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="18" font-weight="700" fill="#be185d">score + cleanup</text>

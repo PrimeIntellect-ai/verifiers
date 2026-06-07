@@ -154,6 +154,11 @@ class HarborTaskset(vf.Taskset[HarborTasksetConfig]):
             task_dir=str(task_dir),
             prompt=[vf.UserMessage(content=instruction)],
             image=str(runtime["image"]),
+            resources=vf.Resources(
+                cpu_cores=parse_number(runtime.get("cpu_cores"), 2.0),
+                memory_gb=parse_gb(runtime.get("memory_gb"), 4.0),
+                disk_gb=parse_gb(runtime.get("disk_size_gb"), 10.0),
+            ),
             runtime_config=HarborRuntimeSpec.model_validate(runtime),
             program=program,
             harbor=harbor,

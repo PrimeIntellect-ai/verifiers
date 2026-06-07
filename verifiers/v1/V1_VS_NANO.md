@@ -112,9 +112,9 @@ first-class server contract in nano.
 
 ### Group Rewards And Advantages
 
-v1 has group scoring and v1-only advantage functions (`grpo`, `rloo`,
+v1 has group scoring and v1-only advantage functions (`rl`, `grpo`, `rloo`,
 `reinforce`, `sft`) that mutate token advantages in place. `State` does not
-store a scalar advantage.
+store a scalar advantage. The env default is `advantage="rl"`.
 
 Nano's `Episode` supports cross-rollout group rewards, but deliberately leaves
 advantage computation to trainers above the environment layer.
@@ -134,6 +134,8 @@ v1 currently has:
 - `Context` carries task, state, model client, teacher, runtime, tools, user,
   parent, and scoring flags.
 - `RuntimeProvider.create_runtime()` materializes the live `Runtime`.
+- `Task.image` and `Task.resources` are serializable task-level runtime
+  requests. Harness runtime config wins when it explicitly sets the same field.
 - `Env.score_group(...)` scores after rollout runtimes are closed.
 
 This is the largest remaining architectural difference. v1 kept the Verifiers

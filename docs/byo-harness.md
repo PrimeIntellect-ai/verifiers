@@ -175,6 +175,8 @@ Task records must be serializable. Common fields:
 | `prompt` | Initial non-system prompt messages. May be empty when a user server starts the rollout. |
 | `system_prompt` | Per-task taskset system prompt override. |
 | `answer` | Reference answer or target data. |
+| `image` | Per-task runtime image selection. |
+| `resources` | Per-task runtime CPU, memory, GPU, and disk requests. Runtime config wins when explicitly set. |
 | `max_turns` | Per-task base-loop turn limit. |
 | `toolsets` | Per-task toolset visibility. |
 | `tools` | Per-tool visibility. |
@@ -295,7 +297,9 @@ class MyTaskset(vf.Taskset[MyTasksetConfig]):
 ```
 
 Group rewards run through `env.score_group(tasks, states)`. Env-level advantage
-functions mutate token-level advantages in place:
+functions mutate token-level advantages in place. The default v1 advantage is
+`"rl"`; pass `advantage=None` only when the caller wants trainer-owned
+advantages.
 
 ```python
 env = vf.Env(taskset=MyTaskset(), advantage="grpo")

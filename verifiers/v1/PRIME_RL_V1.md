@@ -193,7 +193,8 @@ This keeps `transcript` canonical for v1 and avoids emitting a derived
 
 ## Advantages
 
-v1 environments may provide token-level advantages directly:
+v1 environments default to `advantage="rl"` and may provide token-level
+advantages directly:
 
 - `Turn.tokens.prompt_advantages`
 - `Turn.tokens.completion_advantages`

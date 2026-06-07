@@ -14,7 +14,8 @@ v1 classes from top-level `verifiers`, and v0 code should not rely on
 
 - `Taskset` owns tasks, task prompts, task tools, user simulation, metrics,
   rewards, and task-specific lifecycle.
-- `Env` owns the selected group advantage function.
+- `Env` owns the selected group advantage function. The default is `"rl"`;
+  pass `advantage=None` to disable environment-provided token advantages.
 - `Harness` is the agent. Its `run(...)` method owns the rollout lifecycle:
   runtime, MCP connections, setup/generation/update/optional scoring/cleanup,
   and finalization. Direct `Harness.run(...)` defaults to `score=False`;
@@ -35,8 +36,10 @@ stored in `Task` or `State`.
 Runtime providers expose one live `Runtime` contract: `start`, `stop`, `expose`,
 `run`, `read`, and `write`. The built-in configs are `subprocess`, `docker`,
 and `prime`; `modal` and `daytona` are reserved provider stubs.
-Task rows may set `image` for serializable per-task runtime image selection;
-live runtimes stay owned by the harness lifecycle.
+Task rows may set `image` and `resources` for serializable per-task runtime
+selection. Runtime config wins over task resources when the config field is set
+away from its provider default. Live runtimes stay owned by the harness
+lifecycle.
 
 Harnesses that run external agents start an `InterceptionServer` and expose it
 through the active runtime. Built-in endpoint protocols cover OpenAI
@@ -155,7 +158,8 @@ userspace schema.
 
 ## Current Tensions
 
-- Group rewards and token-level advantages are first-class, but group scoring
+- Group rewards and token-level advantages are first-class, and v1 envs default
+  to the built-in `"rl"` advantage. Group scoring
   currently runs after per-rollout runtimes close. Supporting runtime-backed
   group scoring would require an explicit group runtime lifetime.
 - Env-scope toolsets are first-class. Group-specific resources should use

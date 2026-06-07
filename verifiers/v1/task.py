@@ -36,6 +36,13 @@ class TaskVisibility(BaseModel, extra="forbid", frozen=True):
         return self
 
 
+class Resources(BaseModel, extra="forbid", frozen=True):
+    cpu_cores: float | None = None
+    memory_gb: float | None = None
+    gpu_count: int | None = None
+    disk_gb: float | None = None
+
+
 class Task(BaseModel, extra="forbid", frozen=True):
     """Immutable serializable task specification. Subclass for task-specific data."""
 
@@ -49,6 +56,7 @@ class Task(BaseModel, extra="forbid", frozen=True):
     name: str | None = None
     description: str | None = None
     image: str | None = None
+    resources: Resources = Field(default_factory=Resources)
     max_turns: int | None = None
 
     def __init__(

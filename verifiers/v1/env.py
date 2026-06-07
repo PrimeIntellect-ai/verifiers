@@ -35,7 +35,7 @@ class EnvConfig(Config):
     taskset: dict[str, object] = Field(default_factory=dict)
     harness: dict[str, object] = Field(default_factory=dict)
     runtime: RuntimeConfig | None = None
-    advantage: advantages.AdvantageConfig = None
+    advantage: advantages.AdvantageConfig = "rl"
 
     @field_validator("taskset", "harness", mode="before")
     @classmethod
@@ -54,7 +54,7 @@ class Env:
         taskset: Taskset,
         harness: Harness | None = None,
         runtime: RuntimeProvider | RuntimeConfigValue | None = None,
-        advantage: advantages.AdvantageConfig = None,
+        advantage: advantages.AdvantageConfig = "rl",
     ):
         if not isinstance(taskset, Taskset):
             raise TypeError("Env taskset must be a Taskset.")

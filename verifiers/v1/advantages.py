@@ -33,6 +33,11 @@ def signal(fn: Handler) -> SignalRecord:
 
 
 @advantage
+def rl(tasks: list[Task], states: list[State]) -> None:
+    grpo(tasks, states)
+
+
+@advantage
 def grpo(tasks: list[Task], states: list[State]) -> None:
     _ = tasks
     if not states:
