@@ -31,11 +31,11 @@ Configure model and sampling:
 prime eval run math-python \
   -m openai/gpt-4.1-mini \
   -n 20 -r 3 -t 1024 -T 0.7 \
-  -a '{"dataset_name": "math", "dataset_split": "train", "num_train_examples": -1}'
+  -a '{"config": {"taskset": {"dataset_name": "math", "dataset_split": "train", "num_train_examples": -1}}}'
 ```
 
 Notes:
-- Use `-a` / `--env-args` to pass environment-specific configuration as a JSON object.
+- v1 task settings belong under `config.taskset` when passed through `-a` / `--env-args`.
 
 ### Environment Arguments
 | Arg | Type | Default | Description |

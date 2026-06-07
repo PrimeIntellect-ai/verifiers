@@ -28,8 +28,8 @@ prime eval run opencode-harbor -m openai/gpt-4.1-mini -n 20 -r 3 -t 1024 -T 0.7
 ```
 
 Notes:
-- Use `-a` / `--env-args` for flat environment arguments.
-- Use `taskset` and `harness` config sections for v1 object configuration.
+- v1 task settings belong under `config.taskset` when passed through `-a` / `--env-args`.
+- Use `taskset` and `harness` config sections for v1 object configuration in TOML.
 
 ### Environment Arguments
 

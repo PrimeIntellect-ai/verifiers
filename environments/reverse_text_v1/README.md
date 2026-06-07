@@ -34,7 +34,7 @@ prime eval run reverse-text-v1 \
 ```
 
 Notes:
-- Use `-a` / `--env-args` to pass environment-specific configuration as a JSON object.
+- v1 task settings belong under `config.taskset` when passed through `-a` / `--env-args`.
 
 ### Environment Arguments
 | Arg | Type | Default | Description |
