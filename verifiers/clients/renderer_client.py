@@ -99,14 +99,14 @@ def reset_bridge_metrics() -> None:
             _bridge_metrics[k] = 0
 
 
-# Size 1 by default. HF fast tokenizers encode a short chat prompt in a few
-# tens of microseconds, so even 2k rollouts tokenize serially in ~100ms — far
-# cheaper than dispatching each one through asyncio.to_thread and queueing on
-# a multi-slot pool. Larger pools mostly just inflate startup time: each slot
-# instantiates its own AutoTokenizer (300-600ms each, and GIL-bound, so extra
-# workers don't parallelize well). Callers with genuinely long prompts or
-# big tokenizers can bump this per-client.
-_DEFAULT_POOL_SIZE = 1
+# 1 is right for text (HF fast tokenizers encode in ~tens of µs, so serial is
+# fine). Multimodal prompts tokenize image pixel_values per turn — orders of
+# magnitude heavier — so a size-1 pool serializes every concurrent rollout on a
+# worker (the multimodal throughput cap). Rust tokenizers / image processors
+# release the GIL, so a multi-slot pool parallelizes. Hosted training doesn't
+# surface OrchestratorConfig.pool_size, so default higher here for the
+# multimodal env. ClientConfig.renderer_pool_size still overrides per-client.
+_DEFAULT_POOL_SIZE = 16
 
 
 # ── Helpers ─────────────────────────────────────────────────────────
