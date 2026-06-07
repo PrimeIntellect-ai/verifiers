@@ -14,9 +14,11 @@ from verifiers.errors import Error, TunnelError
 from verifiers.types import (
     AssistantMessage,
     ClientType,
+    ContentPart,
     EndpointApi,
     EndpointClient,
     EndpointConfig,
+    MessageContent,
     Messages,
     SystemMessage,
     Tool,
@@ -652,13 +654,13 @@ def responses_content_text(content: object) -> str:
     return "" if content is None else str(content)
 
 
-def responses_tool_output_content(output: object) -> str | list[dict[str, object]]:
+def responses_tool_output_content(output: object) -> MessageContent:
     """Responses function_call_output -> internal tool content, keeping images
     (input_image -> image_url); text-only falls back to a string."""
 
     if not isinstance(output, list):
         return responses_content_text(output)
-    parts: list[dict[str, object]] = []
+    parts: list[ContentPart] = []
     has_image = False
     for item in output:
         if not isinstance(item, dict):
@@ -676,13 +678,13 @@ def responses_tool_output_content(output: object) -> str | list[dict[str, object
     return parts if has_image else responses_content_text(output)
 
 
-def anthropic_tool_result_content(content: object) -> str | list[dict[str, object]]:
+def anthropic_tool_result_content(content: object) -> MessageContent:
     """Anthropic tool_result content -> internal tool content, keeping images
     (image block -> image_url); text-only falls back to a string."""
 
     if not isinstance(content, list):
         return anthropic_block_content_text(content)
-    parts: list[dict[str, object]] = []
+    parts: list[ContentPart] = []
     has_image = False
     for block in content:
         if not isinstance(block, dict):
