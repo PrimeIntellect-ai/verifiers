@@ -164,13 +164,9 @@ def maybe_retry(
     def reraise_one(err, error_types: tuple[type[Exception], ...]):
         if not err:
             return
-        # Live error (v0 / direct path): subclass check.
         if any(isinstance(err, err_type) for err_type in error_types):
             raise err
-        # Serialized ErrorData (v1 harness serializes before returning):
-        # rebuild the concrete vf error and subclass-check, so base retryable
-        # types match (e.g. SandboxError -> InfraError). Name-substring matching
-        # missed these.
+        # Rebuild serialized ErrorData so base types match (SandboxError -> InfraError).
         if isinstance(err, Mapping) and is_error_data(err):
             rebuilt = error_from_data(err)
             if isinstance(rebuilt, error_types):
