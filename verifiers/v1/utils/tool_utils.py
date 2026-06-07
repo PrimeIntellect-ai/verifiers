@@ -55,4 +55,7 @@ def tool_schema(tool: Tool, hidden_args: set[str]) -> Tool:
         description=tool.description,
         parameters=parameters,
         strict=tool.strict,
+        # Preserve the in-sandbox loopback transport hint; the runner reads it to
+        # dispatch the tool directly in its sandbox instead of the host tunnel.
+        sandbox_endpoint=tool.sandbox_endpoint,
     )
