@@ -976,6 +976,14 @@ def test_state_to_output_rejects_metric_reserved_field_collision() -> None:
         state.to_output(task)
 
 
+def test_state_to_output_rejects_state_column_metric_collision() -> None:
+    state = vf.State(metrics={"custom": 1.0})
+    task = vf.Task(prompt="hello")
+
+    with pytest.raises(ValueError, match="State column 'custom' conflicts"):
+        state.to_output(task, state_columns=["custom"])
+
+
 def test_split_result_copies_unbound_content() -> None:
     content: vf.JsonData = {"messages": [{"role": "user", "content": "before"}]}
     result = split_result(content, ToolBinding())

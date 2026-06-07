@@ -352,6 +352,7 @@ class State(BaseModel, extra="forbid"):
                 "input_tokens": float(usage.get("input_tokens", 0.0)),
                 "output_tokens": float(usage.get("output_tokens", 0.0)),
             }
+        reserved_output_fields = set(output)
         for key, value in self.metrics.items():
             if key in output:
                 raise ValueError(
@@ -359,6 +360,12 @@ class State(BaseModel, extra="forbid"):
                 )
             output[key] = value
         for column in state_columns or []:
+            if column in output:
+                if column in reserved_output_fields:
+                    continue
+                raise ValueError(
+                    f"State column {column!r} conflicts with an existing output field."
+                )
             if column == "prompt":
                 output[column] = serialize_messages(prompt)
             elif column == "completion":

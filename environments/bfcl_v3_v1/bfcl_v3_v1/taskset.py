@@ -47,7 +47,7 @@ class BFCLTasksetConfig(vf.TasksetConfig):
     def validate_category_routing(self) -> "BFCLTasksetConfig":
         if self.test_categories is not None:
             raise ValueError(
-                "BFCL v1 accepts one test_category per taskset. Configure separate "
+                "BFCL v3 accepts one test_category per taskset. Configure separate "
                 "evals for multiple categories."
             )
         return self
