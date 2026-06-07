@@ -395,8 +395,6 @@ class OpenEnvUser(vf.User[OpenEnvUserConfig]):
         if result.done:
             payload["finished"] = True
             payload["stop_condition"] = "openenv_done"
-        if config.contract == "mcp":
-            payload["tools"] = await self.session.tool_defs()
         return json_data(payload)
 
     @vf.user(
