@@ -808,6 +808,116 @@ async def test_migrated_hello_rlm_v1_runs_without_old_runtime(mock_client) -> No
 
 
 @pytest.mark.asyncio
+async def test_bfcl_multi_turn_respects_completed_state(
+    monkeypatch, mock_client
+) -> None:
+    from environments.bfcl_v3_v1.bfcl_v3_v1 import taskset as bfcl
+
+    for package_name in [
+        "bfcl_eval",
+        "bfcl_eval.constants",
+        "bfcl_eval.eval_checker",
+        "bfcl_eval.eval_checker.multi_turn_eval",
+        "bfcl_eval.model_handler",
+    ]:
+        package = ModuleType(package_name)
+        package.__path__ = []
+        monkeypatch.setitem(sys.modules, package_name, package)
+
+    default_prompts = ModuleType("bfcl_eval.constants.default_prompts")
+    default_prompts.DEFAULT_USER_PROMPT_FOR_ADDITIONAL_FUNCTION_FC = "add tools"
+    monkeypatch.setitem(
+        sys.modules,
+        "bfcl_eval.constants.default_prompts",
+        default_prompts,
+    )
+
+    simulator_calls: list[list[str]] = []
+    multi_turn_utils = ModuleType(
+        "bfcl_eval.eval_checker.multi_turn_eval.multi_turn_utils"
+    )
+
+    def execute_multi_turn_func_call(
+        func_call_list: list[str],
+        initial_config: vf.JsonData,
+        involved_classes: list[str],
+        model_name: str,
+        test_entry_id: str,
+        *,
+        long_context: bool,
+    ) -> tuple[list[str], None]:
+        _ = initial_config, involved_classes, model_name, test_entry_id, long_context
+        simulator_calls.append(func_call_list)
+        return [], None
+
+    multi_turn_utils.execute_multi_turn_func_call = execute_multi_turn_func_call
+    monkeypatch.setitem(
+        sys.modules,
+        "bfcl_eval.eval_checker.multi_turn_eval.multi_turn_utils",
+        multi_turn_utils,
+    )
+
+    base_handler = ModuleType("bfcl_eval.model_handler.base_handler")
+    base_handler.is_empty_execute_response = lambda value: not value
+    monkeypatch.setitem(
+        sys.modules,
+        "bfcl_eval.model_handler.base_handler",
+        base_handler,
+    )
+    monkeypatch.setattr(bfcl, "bfcl_tool_defs", lambda _functions: [])
+    monkeypatch.setattr(bfcl, "bfcl_missed_function", lambda _task: {})
+    monkeypatch.setattr(bfcl, "bfcl_involved_classes", lambda _task: [])
+
+    task = bfcl.BFCLTask(
+        row_id=0,
+        prompt="first",
+        category="multi_turn_base",
+        question=[
+            [{"role": "user", "content": "first"}],
+            [{"role": "user", "content": "second"}],
+        ],
+        function=[],
+        initial_config={},
+        involved_classes=[],
+        max_steps_per_turn=1,
+        max_turns=2,
+    )
+    state = vf.State(task_id=task.task_id)
+    state.stop("precompleted")
+    model = vf.ModelConfig(client=ClientConfig(), model="test-model")
+    context = vf.Context(
+        task=task,
+        state=state,
+        model_client=vf.ModelClient(config=model, client=mock_client),
+    )
+
+    await bfcl.BFCLHarness(config=bfcl.BFCLHarnessConfig()).run_multi_turn(
+        context, task, state
+    )
+
+    assert simulator_calls == [[]]
+    assert mock_client.last_call_kwargs == {}
+    assert state.stop_condition == "precompleted"
+
+    bounded_task = task.model_copy(update={"task_id": "bounded", "max_turns": 1})
+    bounded_state = vf.State(task_id=bounded_task.task_id)
+    bounded_context = vf.Context(
+        task=bounded_task,
+        state=bounded_state,
+        model_client=vf.ModelClient(config=model, client=mock_client),
+    )
+
+    mock_client.set_default_response("done")
+    await bfcl.BFCLHarness(config=bfcl.BFCLHarnessConfig()).run_multi_turn(
+        bounded_context, bounded_task, bounded_state
+    )
+
+    assert mock_client.call_count == 1
+    assert len(bounded_state.transcript) == 1
+    assert bounded_state.stop_condition == "max_turns"
+
+
+@pytest.mark.asyncio
 async def test_mcp_toolset_exposes_multiple_server_tools() -> None:
     toolsets = {"demo": DemoToolsetConfig()}
 

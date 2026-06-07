@@ -545,6 +545,8 @@ class BFCLHarness(vf.Harness[BFCLHarnessConfig]):
         )
         long_context = "long_context" in task.category or "composite" in task.category
         max_steps_per_turn = int(task.max_steps_per_turn or maximum_step_limit())
+        max_turns = self.max_turns(task)
+        model_turns = 0
         turn_idx = 0
         steps_per_turn = 0
         execute_multi_turn_func_call(
@@ -555,7 +557,9 @@ class BFCLHarness(vf.Harness[BFCLHarnessConfig]):
             task.task_id,
             long_context=long_context,
         )
-        while True:
+        while max_turns <= 0 or model_turns < max_turns:
+            if await self.is_completed(context):
+                return
             response = await context.model_client.get_response(
                 prompt=messages,
                 model=context.model,
@@ -579,6 +583,7 @@ class BFCLHarness(vf.Harness[BFCLHarnessConfig]):
                 is_truncated=bool(response.message.is_truncated),
             )
             state.transcript.append(turn)
+            model_turns += 1
             if turn.is_truncated:
                 state.is_truncated = True
             messages.extend(turn.completion)
@@ -647,6 +652,7 @@ class BFCLHarness(vf.Harness[BFCLHarnessConfig]):
                         raise ValueError(
                             f"Unsupported BFCL prompt message role: {role!r}."
                         )
+        state.stop("max_turns")
 
 
 def load_taskset(config: BFCLTasksetConfig) -> BFCLTaskset:
