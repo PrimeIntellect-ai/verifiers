@@ -837,7 +837,7 @@ def server_response(content: JsonValue) -> ServerResponse:
         return ServerResponse(content=json.dumps(content))
     if isinstance(content, list):
         try:
-            return ServerResponse(content=content)
+            return ServerResponse(content=cast(MessageContent, content))
         except ValidationError:
             return ServerResponse(content=json.dumps(content))
     return ServerResponse(content=json.dumps(content))

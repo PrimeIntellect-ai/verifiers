@@ -167,11 +167,14 @@ def openreward_tool_defs(tools: Iterable[object]) -> list[vf.JsonData]:
             else {"type": "object", "properties": {}}
         )
         tool_defs.append(
-            {
-                "name": name,
-                "description": str(description),
-                "parameters": parameters,
-            }
+            json_data(
+                {
+                    "name": name,
+                    "description": str(description),
+                    "parameters": parameters,
+                },
+                context=f"OpenReward tool {name}",
+            )
         )
     return tool_defs
 
@@ -302,10 +305,12 @@ class OpenRewardUser(vf.User[OpenRewardUserConfig]):
     async def setup(self, task: vf.JsonData) -> vf.JsonData:
         self.session = OpenRewardSession(task)
         prompt = await self.session.prompt()
-        return {
-            "prompt": json_value(self.session.content(prompt)),
-            "tools": await self.session.tool_defs(),
-        }
+        return json_data(
+            {
+                "prompt": json_value(self.session.content(prompt)),
+                "tools": await self.session.tool_defs(),
+            }
+        )
 
     @vf.user(
         args={
@@ -324,16 +329,20 @@ class OpenRewardUser(vf.User[OpenRewardUserConfig]):
         if self.session is None:
             raise RuntimeError("OpenReward setup has not started.")
         if completion:
-            return {"messages": [], "stop_condition": "openreward_waiting_for_tools"}
-        return {
-            "messages": [
-                json_data(
-                    vf.UserMessage(content=cast(vf.MessageContent, prompt)).model_dump(
-                        mode="json"
+            return json_data(
+                {"messages": [], "stop_condition": "openreward_waiting_for_tools"}
+            )
+        return json_data(
+            {
+                "messages": [
+                    json_data(
+                        vf.UserMessage(
+                            content=cast(vf.MessageContent, prompt)
+                        ).model_dump(mode="json")
                     )
-                )
-            ],
-        }
+                ],
+            }
+        )
 
     @vf.tool(
         hidden=True,
