@@ -27,13 +27,15 @@ A reward of `0.0` with no `state["error"]` means the QUEST evaluator ran and jud
 
 ## Error Handling
 
-QUEST uses Verifiers' framework-managed error field for non-answer failures:
+QUEST uses Verifiers' framework-managed error field for non-answer failures when the failure comes from external runtime systems:
 
 - Missing live sandbox or answer-file read failure: `vf.SandboxError`.
-- Missing judge API key or OpenAI-compatible judge request failure: `vf.ModelError`.
-- Missing task metadata, eval script download failure, eval script load failure, or generated evaluator crash: `vf.InfraError`.
+- Transient judge provider/network/rate-limit/server failures: retryable `vf.InfraError`.
+- Empty or invalid judge responses: retryable `vf.InvalidModelResponseError` / `vf.EmptyModelResponseError`.
+- Judge auth, model-not-found, content-filter, or invalid request failures: non-retryable `vf.ModelError`.
+- QUEST eval-script download/cache resolution failure: `vf.InfraError`.
 
-Wrong or empty answers remain ordinary scored outcomes and return `0.0` without setting `state["error"]`.
+Wrong answers, empty answers, and inaccessible or irrelevant cited sources remain ordinary scored outcomes and return `0.0` without setting `state["error"]`. Generated eval-script source errors, missing task metadata, missing eval-script files, import/load failures, and unexpected evaluator runtime bugs are not converted to `vf.Error`; they raise normally so broken evaluator code fails hard.
 
 ## Common Arguments
 

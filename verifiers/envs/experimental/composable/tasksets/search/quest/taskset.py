@@ -13,11 +13,27 @@ import math
 import os
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 import verifiers as vf
 from datasets import Dataset, load_dataset
-from openai import AsyncOpenAI, OpenAIError
+from openai import (
+    APIConnectionError,
+    APIResponseValidationError,
+    APITimeoutError,
+    APIStatusError,
+    AsyncOpenAI,
+    AuthenticationError,
+    BadRequestError,
+    ConflictError,
+    ContentFilterFinishReasonError,
+    InternalServerError,
+    LengthFinishReasonError,
+    NotFoundError,
+    PermissionDeniedError,
+    RateLimitError,
+    UnprocessableEntityError,
+)
 from pydantic import BaseModel
 from verifiers.envs.experimental.composable import SandboxSpec, SandboxTaskSet
 from verifiers.types import ClientConfig
@@ -39,6 +55,104 @@ DEFAULT_JUDGE_MODEL = "openai/gpt-5.4-mini"
 DEFAULT_SANDBOX_IMAGE = "python:3.11-slim"
 
 _EVAL_SCRIPTS_ROOT_CACHE: dict[str, Path] = {}
+
+
+_CONTEXT_LENGTH_ERROR_PHRASES = (
+    "this model's maximum context length is",
+    "is longer than the model's context length",
+    "is longer than the maximum model length",
+    "exceeds the model's context length",
+    "exceed the configured limit",
+    "exceeds the configured limit",
+    "exceeded model",
+    "prompt_too_long",
+    "context length",
+    "maximum model length",
+)
+
+
+def _is_context_length_error(exc: BadRequestError) -> bool:
+    response = getattr(exc, "response", None)
+    response_text = getattr(response, "text", "") or ""
+    error_text = f"{response_text}\n{exc}".lower()
+    return any(phrase in error_text for phrase in _CONTEXT_LENGTH_ERROR_PHRASES)
+
+
+_QUEST_JUDGE_ERROR_TYPES = (
+    APIConnectionError,
+    APIResponseValidationError,
+    APITimeoutError,
+    APIStatusError,
+    AuthenticationError,
+    BadRequestError,
+    ConflictError,
+    ContentFilterFinishReasonError,
+    InternalServerError,
+    LengthFinishReasonError,
+    NotFoundError,
+    PermissionDeniedError,
+    RateLimitError,
+    UnprocessableEntityError,
+)
+
+
+def _single_choice(response: Any, *, context: str) -> Any:
+    if response is None:
+        raise vf.EmptyModelResponseError(f"QUEST judge returned no {context} response")
+    choices = getattr(response, "choices", None)
+    if choices is None:
+        raise vf.EmptyModelResponseError(
+            f"QUEST judge returned no {context} response choices"
+        )
+    if len(choices) != 1:
+        raise vf.InvalidModelResponseError(
+            f"QUEST judge returned {len(choices)} {context} choices, expected 1"
+        )
+    return choices[0]
+
+
+def _raise_quest_judge_error(exc: Exception, *, model: str) -> NoReturn:
+    if isinstance(exc, BadRequestError) and _is_context_length_error(exc):
+        raise vf.OverlongPromptError(
+            f"QUEST judge prompt exceeded model context for {model}: {exc}"
+        ) from exc
+    if isinstance(
+        exc,
+        (
+            APIConnectionError,
+            APITimeoutError,
+            RateLimitError,
+            InternalServerError,
+            ConflictError,
+        ),
+    ):
+        raise vf.InfraError(
+            f"QUEST judge transient request failed for {model}: {exc}"
+        ) from exc
+    if isinstance(exc, APIResponseValidationError):
+        raise vf.InvalidModelResponseError(
+            f"QUEST judge SDK response validation failed for {model}: {exc}"
+        ) from exc
+    if isinstance(exc, LengthFinishReasonError):
+        raise vf.InvalidModelResponseError(
+            f"QUEST judge stopped due to length for {model}: {exc}"
+        ) from exc
+    if isinstance(
+        exc,
+        (
+            AuthenticationError,
+            PermissionDeniedError,
+            NotFoundError,
+            UnprocessableEntityError,
+            ContentFilterFinishReasonError,
+            BadRequestError,
+            APIStatusError,
+        ),
+    ):
+        raise vf.ModelError(f"QUEST judge request failed for {model}: {exc}") from exc
+    raise AssertionError(
+        f"Unhandled QUEST judge exception type: {type(exc).__name__}"
+    ) from exc
 
 
 class QuestOpenAIClient:
@@ -63,29 +177,40 @@ class QuestOpenAIClient:
         model = kwargs.pop("model", self.model) or self.model
         request_kwargs = dict(self.sampling_args)
         request_kwargs.update(kwargs)
-        try:
-            if isinstance(response_format, type) and issubclass(
-                response_format, BaseModel
-            ):
+        if isinstance(response_format, type) and issubclass(response_format, BaseModel):
+            try:
                 response = await self._client.beta.chat.completions.parse(
                     model=model,
                     messages=messages,
                     response_format=response_format,
                     **request_kwargs,
                 )
-                parsed = response.choices[0].message.parsed
-                usage = _usage_dict(response)
-                return (parsed, usage) if count_token else parsed
-            if response_format is not None:
-                request_kwargs["response_format"] = response_format
+            except _QUEST_JUDGE_ERROR_TYPES as exc:
+                _raise_quest_judge_error(exc, model=model)
+            choice = _single_choice(response, context="structured")
+            parsed = choice.message.parsed
+            if parsed is None:
+                raise vf.InvalidModelResponseError(
+                    f"QUEST judge returned no parsed structured response for {model}"
+                )
+            usage = _usage_dict(response)
+            return (parsed, usage) if count_token else parsed
+        if response_format is not None:
+            request_kwargs["response_format"] = response_format
+        try:
             response = await self._client.chat.completions.create(
                 model=model,
                 messages=messages,
                 **request_kwargs,
             )
-        except OpenAIError as exc:
-            raise vf.ModelError(f"QUEST judge model request failed: {exc}") from exc
-        content = response.choices[0].message.content or ""
+        except _QUEST_JUDGE_ERROR_TYPES as exc:
+            _raise_quest_judge_error(exc, model=model)
+        choice = _single_choice(response, context="text")
+        content = choice.message.content
+        if content is None:
+            raise vf.EmptyModelResponseError(
+                f"QUEST judge returned no text content for {model}"
+            )
         usage = _usage_dict(response)
         return (content, usage) if count_token else content
 
@@ -176,7 +301,7 @@ def _normalize_eval_scripts_root(path: Path) -> Path:
         return root.parent
     if (root / "eval_scripts").is_dir():
         return root
-    raise vf.InfraError(
+    raise ValueError(
         f"QUEST eval scripts directory must contain eval_scripts/*.py: {root}"
     )
 
@@ -409,11 +534,6 @@ class QuestRubric(vf.Rubric):
         except vf.Error as exc:
             state["error"] = exc
             return 0.0
-        except Exception as exc:
-            error = vf.InfraError("QUEST objective scoring failed")
-            error.__cause__ = exc
-            state["error"] = error
-            return 0.0
 
     async def score_rollout(self, state: vf.State) -> None:
         """Score one rollout and preserve QUEST infrastructure failures as ``vf.Error`` values."""
@@ -469,32 +589,22 @@ class QuestRubric(vf.Rubric):
         info = state.get("info") or {}
         task_id = info.get("task_id")
         if not isinstance(task_id, str) or not task_id:
-            raise vf.InfraError("QUEST objective task is missing task_id metadata")
+            raise ValueError("QUEST objective task is missing task_id metadata")
         state["quest_task_id"] = task_id
         script_path = self._script_path(task_id)
         cache = CacheFileSys(str(self.cache_dir / _safe_module_component(task_id)))
-        try:
-            evaluate_answer = _load_eval_script(script_path)
-        except Exception as exc:
-            raise vf.InfraError(
-                f"Failed to load QUEST eval script for task_id={task_id!r}"
-            ) from exc
+        evaluate_answer = _load_eval_script(script_path)
         client = self._get_client()
-        try:
-            summary = await evaluate_answer(
-                client=client,
-                answer=answer,
-                agent_name="rlm",
-                answer_name=str(state.get("trajectory_id") or task_id),
-                cache=cache,
-                semaphore=self._semaphore,
-                logger=logger,
-                model=self.judge_model,
-            )
-        except vf.Error:
-            raise
-        except Exception as exc:
-            raise vf.InfraError(f"QUEST eval failed for task_id={task_id!r}") from exc
+        summary = await evaluate_answer(
+            client=client,
+            answer=answer,
+            agent_name="rlm",
+            answer_name=str(state.get("trajectory_id") or task_id),
+            cache=cache,
+            semaphore=self._semaphore,
+            logger=logger,
+            model=self.judge_model,
+        )
         state["quest_eval_summary"] = summary
         final_score = float(summary.get("final_score", 0.0) or 0.0)
         if not math.isfinite(final_score):
@@ -525,7 +635,7 @@ class QuestRubric(vf.Rubric):
         scripts_root = self._ensure_eval_scripts_dir()
         script_path = scripts_root / "eval_scripts" / f"{task_id}.py"
         if not script_path.is_file():
-            raise vf.InfraError(
+            raise FileNotFoundError(
                 f"QUEST eval script not found for task_id={task_id!r}: {script_path}"
             )
         return script_path
@@ -534,7 +644,7 @@ class QuestRubric(vf.Rubric):
         if self._scripts_root is not None:
             return self._scripts_root
         if self.eval_scripts_dir is None:
-            raise vf.InfraError(
+            raise RuntimeError(
                 "QUEST eval scripts root was not resolved before scoring"
             )
         self._scripts_root = _normalize_eval_scripts_root(self.eval_scripts_dir)

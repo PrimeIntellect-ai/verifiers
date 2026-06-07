@@ -8,6 +8,7 @@ from dataclasses import dataclass  # @dataclass
 from enum import Enum, auto  # Enum type (auto for auto-increment values)
 from typing import List, Optional, Union, Type, Tuple, Any
 
+import verifiers as vf
 from pydantic import BaseModel
 import threading
 
@@ -751,7 +752,8 @@ class Evaluator:
             try:
                 return self._parse_model_payload(template_class, extraction["result"])
             except Exception:
-                # Schema may have changed; fall through and re-extract.
+                # Cached state may have been written by an older schema; fall through
+                # and re-extract instead of failing a fresh evaluation.
                 break
 
         # Intelligent routing
@@ -1004,39 +1006,8 @@ class Evaluator:
             self._auto_save_state("verify_done")
             return result
 
-        except Exception as e:
-            if node:
-                node.score = 0.0
-                node.status = "failed"
-                self._record_verification_snapshot(
-                    node=node,
-                    claim=claim,
-                    sources=sources,
-                    additional_instruction=additional_instruction,
-                )
-                self._auto_save_state("verify_failed")
-                error_context = {
-                    **verify_context,
-                    "error": str(e),
-                    "error_type": type(e).__name__,
-                }
-                self.verifier.logger.error(
-                    f"❌ [{main_op_id}] Verification failed for node {node.id}: {e}",
-                    extra=error_context,
-                )
-            else:
-                error_context = {
-                    **verify_context,
-                    "error": str(e),
-                    "error_type": type(e).__name__,
-                }
-                self.verifier.logger.error(
-                    f"❌ [{main_op_id}] Standalone verification failed: {e}",
-                    extra=error_context,
-                )
-            if node is None:
-                self._auto_save_state("verify_failed")
-            return False
+        except vf.Error:
+            raise
 
     def _get_auto_preconditions(
         self,

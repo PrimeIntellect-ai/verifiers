@@ -26,6 +26,7 @@ except ImportError:  # pragma: no cover - fallback for lightweight installs
             return FallbackEncoding()
 
     tiktoken = FallbackTiktoken()
+import verifiers as vf
 from pydantic import BaseModel
 
 from .api_tools import tool_pdf
@@ -153,6 +154,12 @@ class BaseEvaluator:
                     + "\n\nBelow are rendered page screenshots to provide non-textual context:",
                 }
             ]
+            # Upstream QUEST's obj_task_eval keeps screenshot image parts disabled
+            # even though this prompt mentions screenshots. QUEST-RL-Data's
+            # generated eval scripts target this text-oriented runtime rather than
+            # the separate Mind2Web2 browser/screenshot evaluator. Keep the
+            # upstream-compatible behavior here unless we intentionally add a
+            # non-upstream visual verification mode.
             # msg_content.extend(image_content)
             return msg_content
         else:
@@ -403,13 +410,8 @@ class Extractor(BaseEvaluator):
 
             return result
 
-        except Exception as e:
-            self.logger.error(
-                f"❌ [{op_id}] Extraction failed: {str(e)}",
-                extra={**extract_context, "status": "error", "error": str(e)},
-            )
-            # Return empty template instance
-            return template_class()
+        except vf.Error:
+            raise
 
     async def _core_extract(
         self, template_class: Type[BaseModel], message_content: Union[str, List[dict]]
@@ -831,21 +833,8 @@ class Verifier(BaseEvaluator):
                 node.status = status
             raise
 
-        except Exception as e:
-            status = "error"
-            description = node.desc if node else "Verification failed"
-            if verify_context.get("url"):
-                description += f" @ {verify_context['url']}"
-
-            self.logger.error(
-                f"[{op_id}] ❌ ERROR - {description}: {str(e)}",
-                extra={**verify_context, "status": status, "error": str(e)},
-            )
-
-            if node is not None:
-                node.score = 0.0
-                node.status = "failed"
-            return False
+        except vf.Error:
+            raise
 
     async def simple_verify(
         self,
@@ -916,19 +905,19 @@ class Verifier(BaseEvaluator):
         self.logger.debug(f"[{op_id}] Fetching page content from {url}")
         screenshot_b64, web_text = await self.get_page_info(url, cancellation_event)
 
-        # if screenshot_b64 is None or web_text is None:
-        #     self.logger.warning(
-        #         f"[{op_id}] Failed to retrieve page content from {url}",
-        #         extra=verify_context
-        #     )
-        #     if node is not None:
-        #         node.score = 0.0
-        #         node.status = "failed"
-        #     return False
+        if web_text is None:
+            self.logger.warning(
+                f"[{op_id}] Failed to retrieve page content from {url}; skipping URL judge call",
+                extra=verify_context,
+            )
+            if node is not None:
+                node.score = 0.0
+                node.status = "failed"
+            return False
 
-        # self.logger.debug(
-        #     f"[{op_id}] Page content retrieved: text_length={len(web_text) if web_text else 0}, has_screenshot={bool(screenshot_b64)}"
-        # )
+        self.logger.debug(
+            f"[{op_id}] Page content retrieved: text_length={len(web_text)}, has_screenshot={bool(screenshot_b64)}"
+        )
 
         # Build prompt
         params = self._process_verify_params(**kwargs)
@@ -1030,9 +1019,8 @@ class Verifier(BaseEvaluator):
             except asyncio.CancelledError:
                 self.logger.debug(f"     ⏭️ [{sub_op_id}] Verification cancelled")
                 return url, False
-            except Exception as e:
-                self.logger.error(f"     ❌ [{sub_op_id}] Error verifying URL: {e}")
-                return url, False
+            except vf.Error:
+                raise
 
         # Create all tasks
         tasks = [
