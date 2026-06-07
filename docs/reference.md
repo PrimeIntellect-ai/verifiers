@@ -689,8 +689,8 @@ flags.
 
 `RuntimeConfig` is the serializable backend spec. `Runtime` is the live handle
 with `start`, `stop`, `expose`, `run`, `read`, and `write`. Built-in configs are
-`SubprocessRuntimeConfig`, `DockerRuntimeConfig`, `PrimeRuntimeConfig`,
-`ModalRuntimeConfig`, and `DaytonaRuntimeConfig`.
+`SubprocessRuntimeConfig`, `DockerRuntimeConfig`, and `PrimeRuntimeConfig`.
+`ModalRuntimeConfig` and `DaytonaRuntimeConfig` are reserved stubs.
 
 #### Toolset And User
 
@@ -955,7 +955,7 @@ Provider-agnostic tool definition. Environments define tools using this type; ea
 ### v1 Config
 
 ```python
-class Config(BaseModel, extra="forbid"):
+class Config(BaseConfig):
     ...
 
 @final
@@ -993,8 +993,9 @@ and `[env.harness]` sections populate `EnvConfig.taskset` and
 Environment-specific fields belong on the taskset or harness config that owns
 them; `EnvConfig` is final.
 
-`Config` subclasses are strict Pydantic config models. Validate raw mappings
-with `MyConfig.model_validate(...)` or use the typed object directly.
+`Config` is the v1 alias for `pydantic_config.BaseConfig`. Config subclasses
+validate raw mappings with `MyConfig.model_validate(...)` or accept typed
+objects directly.
 
 ### ClientConfig
 
