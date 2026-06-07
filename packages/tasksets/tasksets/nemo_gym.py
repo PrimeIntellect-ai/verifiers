@@ -2,7 +2,7 @@ import json
 from copy import deepcopy
 from pathlib import Path
 
-from pydantic import TypeAdapter
+from pydantic import Field, TypeAdapter
 import verifiers.v1 as vf
 from verifiers.v1.utils.json_utils import json_data, json_value
 
@@ -48,8 +48,8 @@ class NeMoGymTasksetConfig(vf.TasksetConfig):
 
 class NeMoGymTask(vf.Task, frozen=True):
     nemo_gym_row: vf.JsonData
-    info: vf.JsonData = {}
-    system_prompt: list[vf.JsonData] = []
+    info: vf.JsonData = Field(default_factory=dict)
+    system_prompt: list[vf.JsonData] = Field(default_factory=list)
 
 
 class NeMoGymTaskset(vf.Taskset[NeMoGymTasksetConfig]):

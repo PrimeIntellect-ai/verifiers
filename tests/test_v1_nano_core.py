@@ -391,6 +391,26 @@ def test_v1_task_id_is_deterministic_from_task_contents() -> None:
     assert explicit.task_id == "chosen"
 
 
+def test_v1_state_messages_uses_latest_prompt_once() -> None:
+    first_prompt = [vf.UserMessage(content="first")]
+    first_completion = [vf.AssistantMessage(content="one")]
+    second_prompt = [*first_prompt, *first_completion, vf.UserMessage(content="second")]
+    second_completion = [vf.AssistantMessage(content="two")]
+    state = vf.State(
+        transcript=[
+            vf.Turn(prompt=first_prompt, completion=first_completion),
+            vf.Turn(prompt=second_prompt, completion=second_completion),
+        ]
+    )
+
+    assert [message.content for message in state.messages] == [
+        "first",
+        "one",
+        "second",
+        "two",
+    ]
+
+
 def test_task_user_defaults_to_auto_and_omits_from_json() -> None:
     task = vf.Task(prompt="hello")
 
@@ -727,6 +747,8 @@ async def test_user_server_hides_respond_and_exposes_user_tools() -> None:
         names = [tool.name for tool in registry.tools() or []]
         prompt = await registry.call_hidden("respond", {})
         result = await registry.call("user_ping", {})
+        with pytest.raises(ToolError, match="disabled"):
+            await registry.call("user_respond", {})
 
     assert names == ["user_ping"]
     assert prompt.response.messages[0].content == "server prompt"
@@ -862,6 +884,24 @@ async def test_mcp_toolset_setup_registers_dynamic_tools() -> None:
     assert result.response.content == "dynamic_echo:ok"
     assert state.extras["dynamic_ready"] is True
     assert state.extras["dynamic_called"] is True
+
+
+@pytest.mark.asyncio
+async def test_dynamic_tools_obey_toolset_config_visibility() -> None:
+    toolsets = {"dynamic": DynamicToolsetConfig(hide=["dynamic_echo"])}
+    state = vf.State()
+    task = vf.Task(name="demo", prompt="say ok")
+    harness = vf.Harness()
+
+    async with MCPToolRegistry(toolsets) as registry:
+        await registry.resolve(
+            context=harness.binding_context(task, state),
+            resolution_key=f"{state.id}:{task.task_id}",
+            apply_updates=lambda updates: harness.apply_bound_updates(state, updates),
+        )
+        assert registry.tools() is None
+        with pytest.raises(ToolError, match="Unknown MCP tool"):
+            await registry.call("dynamic_echo", {"text": "ok"})
 
 
 @pytest.mark.asyncio

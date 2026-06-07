@@ -256,11 +256,10 @@ class State(BaseModel, extra="forbid"):
     @computed_field
     @property
     def messages(self) -> Messages:
-        messages: Messages = []
-        for turn in self.transcript:
-            messages.extend(turn.prompt)
-            messages.extend(turn.completion)
-        return messages
+        if not self.transcript:
+            return []
+        latest = self.transcript[-1]
+        return [*latest.prompt, *latest.completion]
 
     def stop(self, condition: str = "state_done") -> None:
         if not condition:

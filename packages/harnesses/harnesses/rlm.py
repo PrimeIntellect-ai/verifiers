@@ -1,3 +1,5 @@
+from pydantic import Field
+
 import verifiers.v1 as vf
 
 from .command import CommandHarness, CommandHarnessConfig, shell_command
@@ -7,9 +9,9 @@ RLM_DEFAULT_TOOLS = ["ipython"]
 
 
 class RLMConfig(CommandHarnessConfig):
-    command: list[str] = []
+    command: list[str] = Field(default_factory=list)
     cwd: str | None = RLM_DEFAULT_WORKDIR
-    tools: list[str] = RLM_DEFAULT_TOOLS
+    tools: list[str] = Field(default_factory=lambda: list(RLM_DEFAULT_TOOLS))
     exec_timeout: int = 300
     max_depth: int = 0
     summarize_at_tokens: int | None = None

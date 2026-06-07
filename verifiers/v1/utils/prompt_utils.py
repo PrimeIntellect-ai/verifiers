@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypeAlias
 
-from pydantic import TypeAdapter, model_validator
+from pydantic import Field, TypeAdapter, model_validator
 from typing_extensions import Self
 from verifiers.types import Messages, SystemMessage
 
@@ -59,7 +59,7 @@ class SystemPromptResolution:
 
 class SystemPromptConfig(Config):
     path: str | None = None
-    messages: list[JsonData] = []
+    messages: list[JsonData] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_one_input(self) -> Self:

@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 import verifiers.v1 as vf
 from verifiers.utils.import_utils import load_toml
@@ -33,10 +33,12 @@ class HarborTasksetConfig(vf.TasksetConfig):
     task_names: list[str] | None = None
     cache_dir: str | None = None
     refresh: bool = False
-    task_runtime: vf.JsonData = dict(HARBOR_DEFAULT_RUNTIME)
+    task_runtime: vf.JsonData = Field(
+        default_factory=lambda: dict(HARBOR_DEFAULT_RUNTIME)
+    )
     verifier_timeout_seconds: float = 900.0
     task_dir: str = "/task"
-    env: dict[str, str] = {}
+    env: dict[str, str] = Field(default_factory=dict)
 
 
 class HarborRuntimeSpec(BaseModel, extra="forbid"):

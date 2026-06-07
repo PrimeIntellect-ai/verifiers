@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+from pydantic import Field
+
 import verifiers.v1 as vf
 
 from .command import CommandHarness, CommandHarnessConfig, shell_command
@@ -10,14 +12,14 @@ DEFAULT_NEMO_GYM_DATA_NAME = "example.jsonl"
 
 
 class NeMoGymHarnessConfig(CommandHarnessConfig):
-    command: list[str] = []
+    command: list[str] = Field(default_factory=list)
     nemo_env: str | None = None
     config_name: str | None = None
-    config_paths: list[str] = []
+    config_paths: list[str] = Field(default_factory=list)
     server_name: str | None = None
     agent_name: str | None = None
     timeout_seconds: float | None = None
-    global_config: vf.JsonData = {}
+    global_config: vf.JsonData = Field(default_factory=dict)
 
 
 class NeMoGymHarness(CommandHarness[NeMoGymHarnessConfig]):

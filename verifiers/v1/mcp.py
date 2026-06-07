@@ -314,11 +314,18 @@ class MCPToolRegistry:
         return any(parent.has_hidden(raw_name) for parent in self.parents)
 
     def tool_allowed(self, name: str) -> bool:
-        dispatch = self._dynamic_dispatch.get(name) or self._dispatch.get(name)
+        dispatch = self._dynamic_dispatch.get(name)
         if dispatch is not None:
             return visibility_allows(
                 dispatch.toolset_name, self._toolsets_visibility
             ) and visibility_allows(name, self._tools_visibility)
+        dispatch = self._dispatch.get(name)
+        if dispatch is not None:
+            return (
+                not dispatch.binding.hidden
+                and visibility_allows(dispatch.toolset_name, self._toolsets_visibility)
+                and visibility_allows(name, self._tools_visibility)
+            )
         for parent in self.parents:
             if parent.has_tool(name):
                 return parent.tool_allowed(name)
@@ -400,8 +407,11 @@ class MCPToolRegistry:
             raise ValueError(
                 f"Dynamic tool route {setup.toolset_name}.{through} must be hidden."
             )
+        server = self.server_config(route.toolset_name)
         for raw_tool in raw_tools:
             tool = Tool.model_validate(raw_tool)
+            if server is not None and not tool_visible(server, tool.name):
+                continue
             if self.has_tool(tool.name):
                 raise ValueError(f"Dynamic tool {tool.name!r} is defined twice.")
             self._dynamic_tools.append(tool)
@@ -414,6 +424,16 @@ class MCPToolRegistry:
                 name_arg=name_arg,
                 input_arg=input_arg,
             )
+
+    def server_config(self, toolset_name: str) -> ServerConfig | None:
+        server = self.servers.get(toolset_name)
+        if server is not None:
+            return server
+        for parent in self.parents:
+            server = parent.server_config(toolset_name)
+            if server is not None:
+                return server
+        return None
 
     def dispatch_for(self, toolset_name: str, raw_name: str) -> ToolDispatch:
         for dispatch in self._dispatch.values():

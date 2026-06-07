@@ -24,6 +24,9 @@ v1 classes from top-level `verifiers`, and v0 code should not rely on
   harness, scores groups, and serializes output.
 - `State` is the canonical rollout record. It is a strict Pydantic model with
   `transcript: list[Turn]`; there is no live `trajectory` alias.
+- `state.messages` is a convenience rendering of the latest conversation
+  prompt plus completion. `state.transcript` remains the canonical record for
+  per-request history.
 - `state.extras` is the user-owned mutable rollout data surface. Taskset and
   harness configs may provide typed `vf.Extras` defaults; v1 realizes one schema
   from both and rejects duplicate keys.
@@ -92,7 +95,8 @@ Users use the sibling `UserConfig` / `User` path over the same server base. A
 user exposes a hidden `respond` tool and returns `messages`. Toolsets use the
 same response shape; the default harness converts single text tool responses
 into protocol `tool` messages and appends explicit multi-message responses
-after tool results.
+after tool results. Hidden tools are callable only by the harness through the
+hidden-call path, not by model-visible tool calls.
 
 ## Authoring Pattern
 

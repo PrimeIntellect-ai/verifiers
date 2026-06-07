@@ -192,12 +192,15 @@ v1 server calls produce:
 
 ```python
 class ServerResponse(vf.Config):
+    content: vf.MessageContent | None = None
     messages: vf.Messages = []
 ```
 
 The default harness converts a single text tool response into a protocol
 `ToolMessage`. Explicit multi-message responses are appended after tool results,
 which supports compaction and richer server-controlled conversation updates.
+Hidden tools are excluded from model-visible schemas and from public tool-call
+dispatch; the harness calls them through the hidden-call path.
 
 Nano's tool serving is oriented around exposing MCP URLs to the agent program.
 It does not currently model bound state writes or multi-message server

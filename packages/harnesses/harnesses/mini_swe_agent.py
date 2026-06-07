@@ -1,5 +1,7 @@
 import shlex
 
+from pydantic import Field
+
 import verifiers.v1 as vf
 
 from .command import CommandHarness, CommandHarnessConfig, shell_command
@@ -22,7 +24,7 @@ class MiniSWEAgentConfig(CommandHarnessConfig):
     model_class: str = MINI_SWE_AGENT_DEFAULT_MODEL_CLASS
     environment_timeout: int = MINI_SWE_AGENT_DEFAULT_ENVIRONMENT_TIMEOUT
     parallel_tool_calls: bool = True
-    extra_config_specs: list[str] = []
+    extra_config_specs: list[str] = Field(default_factory=list)
     max_turns: int = 4
 
 

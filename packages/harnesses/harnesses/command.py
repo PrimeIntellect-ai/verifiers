@@ -1,13 +1,15 @@
 import json
 from typing import Generic, TypeVar
 
+from pydantic import Field
+
 import verifiers.v1 as vf
 
 
 class CommandHarnessConfig(vf.HarnessConfig):
-    command: list[str] = []
+    command: list[str] = Field(default_factory=list)
     cwd: str | None = None
-    env: dict[str, str] = {}
+    env: dict[str, str] = Field(default_factory=dict)
     timeout_seconds: float | None = None
 
 
