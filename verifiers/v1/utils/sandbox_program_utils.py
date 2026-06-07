@@ -385,9 +385,22 @@ def post_json(url, payload, headers=None, timeout=CONTROL_ENDPOINT_TIMEOUT):
 
 
 async def vf_post(state, path, payload, timeout=CONTROL_ENDPOINT_TIMEOUT):
-    return await asyncio.to_thread(
+    import sys as _sys
+    import time as _time
+
+    _t0 = _time.perf_counter()
+    result = await asyncio.to_thread(
         post_json, vf_url(state, path), payload, endpoint_headers(), timeout
     )
+    # TEMP perf instrumentation: runner-side round-trip (tunnel + host worker) for
+    # every /vf/ call. Compared with the host worker-handle timer this isolates
+    # the sandbox<->host tunnel cost.
+    print(
+        f"tool_timing runner vf_post path={path} dt={_time.perf_counter() - _t0:.2f}s",
+        file=_sys.stderr,
+        flush=True,
+    )
+    return result
 
 
 async def call_tool(state, name, arguments):

@@ -347,9 +347,18 @@ class InterceptionServer:
             )
 
         try:
+            _t0 = time.perf_counter()
             result = tool_handler(request.match_info["tool_name"], arguments)
             if inspect.isawaitable(result):
                 result = await result
+            # TEMP perf instrumentation: worker-side tool dispatch time (call_tool
+            # -> worldsims tool -> sandbox.execute -> service). Compare with the
+            # worldsims `sandbox.execute` timer to isolate dispatch vs exec.
+            logger.info(
+                "tool_timing worker handle tool=%s dt=%.2fs",
+                request.match_info["tool_name"],
+                time.perf_counter() - _t0,
+            )
             result = jsonable(result)
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
