@@ -6,5 +6,35 @@
   "image_status": "COMPLETED",
   "port": 8000,
   "schema_version": 1,
-  "start_command": "sh -lc \"cd /app/env && /app/.venv/bin/uvicorn server.app:app --host 0.0.0.0 --port 8000\""
+  "start_command": "sh -lc \"cd /app/env && /app/.venv/bin/uvicorn server.app:app --host 0.0.0.0 --port 8000\"",
+  "tools": [
+    {
+      "name": "echo_message",
+      "description": "Echo back the provided message.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": ["message"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "echo_with_length",
+      "description": "Echo back the message with its length.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": ["message"],
+        "additionalProperties": false
+      }
+    }
+  ]
 }

@@ -1440,6 +1440,119 @@ async def test_openenv_and_openreward_rewards_sum_turn_rewards() -> None:
     ) == pytest.approx(0.75)
 
 
+def test_openenv_build_config_accepts_current_build_metadata() -> None:
+    from tasksets.openenv import OpenEnvBuildConfig
+
+    config = OpenEnvBuildConfig.model_validate(
+        {
+            "app": "server.app:app",
+            "contract": "mcp",
+            "environment_id": "openenv-echo",
+            "image": "owner/openenv-echo:latest",
+            "image_status": "COMPLETED",
+            "port": 8000,
+            "schema_version": 1,
+            "start_command": "uvicorn server.app:app",
+            "tools": [
+                {"name": "echo", "description": "", "parameters": {"type": "object"}}
+            ],
+        }
+    )
+
+    assert config.image == "owner/openenv-echo:latest"
+    assert config.contract == "mcp"
+    assert config.tools == [
+        {"name": "echo", "description": "", "parameters": {"type": "object"}}
+    ]
+
+
+def test_openenv_and_openreward_task_schemas_are_explicit() -> None:
+    from tasksets.openenv import OpenEnvTask
+    from tasksets.openreward import OpenRewardVFTask
+
+    openenv_task = OpenEnvTask.model_validate(
+        {
+            "prompt": [],
+            "openenv": {"image": "owner/env:latest"},
+            "info": {"seed": 0},
+        }
+    )
+    openreward_task = OpenRewardVFTask.model_validate(
+        {
+            "prompt": [],
+            "openreward": {"environment": "demo"},
+        }
+    )
+
+    assert openenv_task.openenv == {"image": "owner/env:latest"}
+    assert openreward_task.openreward == {"environment": "demo"}
+
+
+@pytest.mark.asyncio
+async def test_openenv_mcp_setup_lists_tools_without_reset(monkeypatch) -> None:
+    import tasksets.openenv as openenv_module
+    from tasksets.openenv import OpenEnvUser, OpenEnvUserConfig
+
+    calls: list[str] = []
+
+    class FakeOpenEnvSession:
+        def __init__(self, config: object) -> None:
+            self.config = config
+
+        async def start(self) -> None:
+            calls.append("start")
+
+        async def reset(self) -> None:
+            calls.append("reset")
+
+        async def tool_defs(self) -> list[vf.JsonData]:
+            calls.append("tool_defs")
+            return [{"name": "echo", "description": "", "parameters": {}}]
+
+    monkeypatch.setattr(openenv_module, "OpenEnvSession", FakeOpenEnvSession)
+
+    config: vf.JsonData = {
+        "openenv_project": "proj",
+        "prompt_renderer": "x:y",
+        "image": "owner/env:latest",
+        "port": 8000,
+        "start_command": "serve",
+        "contract": "mcp",
+        "seed": 0,
+        "startup_timeout_seconds": 1,
+        "startup_poll_interval_seconds": 0.1,
+        "health_request_timeout_seconds": 1.0,
+        "schema_request_timeout_seconds": 1.0,
+        "wait_for_creation_max_attempts": 1,
+        "max_retries": 1,
+        "base_delay": 0.1,
+        "backoff_factor": 1.0,
+        "max_backoff_seconds": 1.0,
+        "jitter": 0.0,
+    }
+
+    payload = await OpenEnvUser(OpenEnvUserConfig()).setup(config)
+
+    assert calls == ["start", "tool_defs"]
+    assert payload["openenv_done"] is False
+    assert payload["tools"] == [{"name": "echo", "description": "", "parameters": {}}]
+
+    calls.clear()
+    payload = await OpenEnvUser(OpenEnvUserConfig()).setup(
+        {
+            **config,
+            "tools": [
+                {"name": "build_echo", "description": "", "parameters": {}},
+            ],
+        }
+    )
+
+    assert calls == ["start"]
+    assert payload["tools"] == [
+        {"name": "build_echo", "description": "", "parameters": {}},
+    ]
+
+
 @pytest.mark.asyncio
 async def test_openenv_user_tool_returns_bound_turn_reward_payload() -> None:
     from tasksets.openenv import OpenEnvUser, OpenEnvUserConfig

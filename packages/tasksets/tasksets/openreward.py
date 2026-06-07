@@ -49,6 +49,10 @@ class OpenRewardTasksetConfig(vf.TasksetConfig):
     num_eval_examples: int = 0
 
 
+class OpenRewardVFTask(vf.Task, frozen=True):
+    openreward: vf.JsonData
+
+
 class OpenRewardSession:
     def __init__(self, task: vf.JsonData):
         self.task = task
@@ -180,6 +184,8 @@ def openreward_tool_defs(tools: Iterable[object]) -> list[vf.JsonData]:
 
 
 class OpenRewardTaskset(vf.Taskset[OpenRewardTasksetConfig]):
+    task_type = OpenRewardVFTask
+
     def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         if split == "eval":
             if self.config.num_eval_examples <= 0:

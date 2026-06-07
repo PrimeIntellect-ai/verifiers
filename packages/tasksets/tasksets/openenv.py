@@ -8,7 +8,7 @@ from typing import Literal, Protocol, TypeAlias, cast
 from openenv.core.generic_client import GenericEnvClient
 from openenv.core.env_server.mcp_types import CallToolAction
 from openenv.core.mcp_client import MCPToolClient
-from pydantic import TypeAdapter
+from pydantic import Field, TypeAdapter
 
 import verifiers.v1 as vf
 from verifiers.utils.async_utils import maybe_await, maybe_call_with_named_args
@@ -55,6 +55,7 @@ class OpenEnvRuntimeConfig(vf.Config):
     port: int
     start_command: str
     contract: Literal["gym", "mcp"]
+    tools: list[vf.JsonData] = Field(default_factory=list)
     seed: int
     startup_timeout_seconds: int
     startup_poll_interval_seconds: float
@@ -69,10 +70,15 @@ class OpenEnvRuntimeConfig(vf.Config):
 
 
 class OpenEnvBuildConfig(vf.Config):
+    app: str | None = None
     image: str
+    environment_id: str | None = None
+    image_status: str | None = None
     port: int = 8000
+    schema_version: int | None = None
     start_command: str
     contract: Literal["gym", "mcp"]
+    tools: list[vf.JsonData] = Field(default_factory=list)
 
 
 class OpenEnvUserConfig(vf.UserConfig):
@@ -99,6 +105,11 @@ class OpenEnvTasksetConfig(vf.TasksetConfig):
     jitter: float = 1e-3
 
 
+class OpenEnvTask(vf.Task, frozen=True):
+    openenv: vf.JsonData
+    info: vf.JsonData
+
+
 class OpenEnvSession:
     def __init__(self, config: OpenEnvRuntimeConfig):
         self.config = config
@@ -121,6 +132,8 @@ class OpenEnvSession:
                 start_command=config.start_command,
                 env_vars={"ENABLE_WEB_INTERFACE": "false"},
             )
+            if isinstance(self.client, MCPToolClient):
+                self.client.use_production_mode = True
             schema = await asyncio.to_thread(provider.fetch_schema)
         except Exception:
             provider.stop_container()
@@ -165,6 +178,8 @@ class OpenEnvSession:
 
 
 class OpenEnvTaskset(vf.Taskset[OpenEnvTasksetConfig]):
+    task_type = OpenEnvTask
+
     def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         if split == "eval":
             return self.openenv_tasks(
@@ -214,6 +229,7 @@ class OpenEnvTaskset(vf.Taskset[OpenEnvTasksetConfig]):
             port=build.port,
             start_command=build.start_command,
             contract=build.contract,
+            tools=list(build.tools),
             seed=seed,
             startup_timeout_seconds=config.startup_timeout_seconds,
             startup_poll_interval_seconds=config.startup_poll_interval_seconds,
@@ -361,6 +377,16 @@ class OpenEnvUser(vf.User[OpenEnvUserConfig]):
     async def setup(self, openenv: vf.JsonData) -> vf.JsonData:
         config = OpenEnvRuntimeConfig.model_validate(openenv)
         self.session = OpenEnvSession(config)
+        if config.contract == "mcp":
+            await self.session.start()
+            tools = list(config.tools) or await self.session.tool_defs()
+            return json_data(
+                {
+                    "observation": {},
+                    "openenv_done": False,
+                    "tools": tools,
+                }
+            )
         result = await self.session.reset()
         payload: dict[str, object] = {
             "observation": json_value(result.observation),

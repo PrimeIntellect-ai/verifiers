@@ -53,9 +53,8 @@ def render_openenv_prompt(
             vf.UserMessage(
                 content=(
                     "You are connected to an OpenEnv MCP environment. "
-                    "Call user_call_tool before your final response. "
-                    "Available tool names are echo_message and echo_with_length. "
-                    "Use user_call_tool(name: str, input: object)."
+                    "Call the echo_message tool with message='hello from openenv', "
+                    "then answer with the echoed message."
                 )
             )
         ]

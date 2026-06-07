@@ -35,11 +35,13 @@ from uuid import uuid4
 try:
     # In-repo imports (when running from OpenEnv repository)
     from openenv.core.env_server.mcp_environment import MCPEnvironment
-    from openenv.core.env_server.types import Action, Observation, State
+    from openenv.core.env_server.mcp_types import CallToolObservation
+    from openenv.core.env_server.types import Action, State
 except ImportError:
     # Standalone imports (when environment is standalone with openenv from pip)
     from openenv.core.env_server.mcp_environment import MCPEnvironment
-    from openenv.core.env_server.types import Action, Observation, State
+    from openenv.core.env_server.mcp_types import CallToolObservation
+    from openenv.core.env_server.types import Action, State
 
 from fastmcp import FastMCP
 
@@ -107,7 +109,7 @@ class EchoEnvironment(MCPEnvironment):
         seed: Optional[int] = None,
         episode_id: Optional[str] = None,
         **kwargs: Any,
-    ) -> Observation:
+    ) -> CallToolObservation:
         """
         Reset the environment.
 
@@ -125,7 +127,9 @@ class EchoEnvironment(MCPEnvironment):
         )
         self._reset_count += 1
 
-        return Observation(
+        return CallToolObservation(
+            tool_name="reset",
+            result={"status": "ready", "message": "Echo environment ready!"},
             done=False,
             reward=0.0,
             metadata={"status": "ready", "message": "Echo environment ready!"},
@@ -136,7 +140,7 @@ class EchoEnvironment(MCPEnvironment):
         action: Action,
         timeout_s: Optional[float] = None,
         **kwargs: Any,
-    ) -> Observation:
+    ) -> CallToolObservation:
         """
         Handle non-MCP actions.
 
@@ -151,7 +155,9 @@ class EchoEnvironment(MCPEnvironment):
         Returns:
             Observation with error for unknown action types
         """
-        return Observation(
+        return CallToolObservation(
+            tool_name=type(action).__name__,
+            result=None,
             done=False,
             reward=0.0,
             metadata={
@@ -165,7 +171,7 @@ class EchoEnvironment(MCPEnvironment):
         action: Action,
         timeout_s: Optional[float] = None,
         **kwargs: Any,
-    ) -> Observation:
+    ) -> CallToolObservation:
         """
         Execute a step in the environment.
 
