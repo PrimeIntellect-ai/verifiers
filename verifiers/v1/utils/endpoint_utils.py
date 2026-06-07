@@ -10,7 +10,7 @@ from typing import Literal, Protocol, TypeAlias, cast
 from anthropic import Anthropic, AsyncAnthropic
 from openai import AsyncOpenAI, OpenAI
 
-from verifiers.errors import Error, TunnelError
+from verifiers.errors import Error, OverlongPromptError, TunnelError
 from verifiers.types import (
     AssistantMessage,
     ClientType,
@@ -334,9 +334,10 @@ async def run_intercepted_program(
         return await runtime.user_messages(task, state, transcript=transcript)
 
     async def check_stop() -> JsonData:
+        done = await runtime.is_completed(task, state)
         stop_condition = state.get("stop_condition")
         return {
-            "done": await runtime.is_completed(task, state),
+            "done": done,
             "stop_condition": stop_condition
             if isinstance(stop_condition, str) or stop_condition is None
             else str(stop_condition),
@@ -364,7 +365,13 @@ async def run_intercepted_program(
         try:
             response = await request
         except Error as exc:
-            state._set_error(exc)
+            if isinstance(exc, OverlongPromptError):
+                state["prompt_too_long"] = True
+                state._set_truncated(True)
+                state._set_stop_condition("prompt_too_long", overwrite=True)
+            else:
+                state._set_error(exc)
+                state._set_stop_condition("has_error", overwrite=True)
             raise
         finally:
             if request.done():

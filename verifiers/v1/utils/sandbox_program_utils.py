@@ -365,16 +365,15 @@ def vf_url(state, path):
     return f"{state['endpoint_root_url'].rstrip('/')}/vf/{path}"
 
 
-def endpoint_timeout():
-    return 300.0
+CONTROL_ENDPOINT_TIMEOUT = 300.0
 
 
-def post_json(url, payload, headers=None):
+def post_json(url, payload, headers=None, timeout=CONTROL_ENDPOINT_TIMEOUT):
     response = requests.post(
         url,
         json=payload,
         headers=headers or endpoint_headers(),
-        timeout=endpoint_timeout(),
+        timeout=timeout,
     )
     try:
         response.raise_for_status()
@@ -385,9 +384,9 @@ def post_json(url, payload, headers=None):
     return response.json()
 
 
-async def vf_post(state, path, payload):
+async def vf_post(state, path, payload, timeout=CONTROL_ENDPOINT_TIMEOUT):
     return await asyncio.to_thread(
-        post_json, vf_url(state, path), payload, endpoint_headers()
+        post_json, vf_url(state, path), payload, endpoint_headers(), timeout
     )
 
 
@@ -494,7 +493,7 @@ async def create_model_message(state, messages):
     # The sandbox sends canonical Messages over the /vf/model bridge; the host
     # resolves the bound client, tokenizes, and records the trajectory step, then
     # returns the assistant message. The sandbox never formats a provider payload.
-    payload = await vf_post(state, "model", {"messages": messages})
+    payload = await vf_post(state, "model", {"messages": messages}, timeout=None)
     if "error" in payload:
         raise RuntimeError(str(payload["error"]))
     return payload["message"]

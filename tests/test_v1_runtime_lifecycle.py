@@ -110,6 +110,15 @@ class BlockingModelClient(CapturingModelClient):
         return await super().get_response(**kwargs)
 
 
+class RaisingModelClient:
+    def __init__(self, error: vf.Error):
+        self.error = error
+
+    async def get_response(self, **kwargs: object) -> Response:
+        _ = kwargs
+        raise self.error
+
+
 class FakeCreateSandboxRequest:
     def __init__(self, **kwargs: object):
         self.kwargs = kwargs
@@ -517,6 +526,31 @@ async def endpoint_program(task, state):
     }
 
 
+async def endpoint_model_error_program(task, state):
+    _ = task
+    root = state["endpoint_root_url"].rstrip("/")
+    endpoint_client = cast(OpenAI, state.get_client(api="chat", sync=True))
+    auth_headers = {"Authorization": f"Bearer {endpoint_client.api_key}"}
+    endpoint_client.close()
+
+    def post_model() -> None:
+        request = urllib.request.Request(
+            f"{root}/vf/model",
+            data=json.dumps(
+                {"messages": [{"role": "user", "content": "too long"}]}
+            ).encode(),
+            headers={"content-type": "application/json", **auth_headers},
+        )
+        with urllib.request.urlopen(request):
+            pass
+
+    try:
+        await asyncio.to_thread(post_model)
+    except Exception as exc:
+        raise vf.SandboxError("Sandbox command failed") from exc
+    raise AssertionError("Expected /vf/model to fail")
+
+
 async def endpoint_trajectory_program(task, state):
     _ = task
     root = state["endpoint_root_url"].rstrip("/")
@@ -725,6 +759,7 @@ for _name, _value in {
     "initialize_from_taskset": initialize_from_taskset,
     "child_reads_program_sandbox": child_reads_program_sandbox,
     "endpoint_program": endpoint_program,
+    "endpoint_model_error_program": endpoint_model_error_program,
     "endpoint_trajectory_program": endpoint_trajectory_program,
     "concurrent_endpoint_program": concurrent_endpoint_program,
     "mcp_proxy_program": mcp_proxy_program,
@@ -825,6 +860,41 @@ async def test_endpoint_exposes_tool_user_and_stop_surfaces() -> None:
     assert state["endpoint_config"]["api_key_var"] not in os.environ
     assert "runtime_id" not in state["runtime"]
     assert "endpoint_root_url" not in state
+
+
+@pytest.mark.asyncio
+async def test_vf_model_bridge_preserves_overlong_prompt_error() -> None:
+    harness = make_harness(
+        program={"fn": program_ref("endpoint_model_error_program")},
+        model="test-model",
+        client=RaisingModelClient(vf.OverlongPromptError("too long")),
+    )
+    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+
+    state = await harness.run(task)
+    await harness.teardown()
+
+    assert state["prompt_too_long"] is True
+    assert state["is_truncated"] is True
+    assert state["stop_condition"] == "prompt_too_long"
+    assert state.get("error") is None
+
+
+@pytest.mark.asyncio
+async def test_vf_model_bridge_preserves_model_error() -> None:
+    harness = make_harness(
+        program={"fn": program_ref("endpoint_model_error_program")},
+        model="test-model",
+        client=RaisingModelClient(vf.ModelError("model failed")),
+    )
+    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+
+    state = await harness.run(task)
+    await harness.teardown()
+
+    assert state["stop_condition"] == "has_error"
+    assert state["error"]["error"] == "ModelError"
+    assert "SandboxError" not in state["error"]["error_chain_str"]
 
 
 @pytest.mark.asyncio
@@ -1633,11 +1703,11 @@ async def test_sandbox_base_program_model_call_uses_vf_model_bridge() -> None:
     source = runner_source().rsplit("asyncio.run(main())", 1)[0]
     exec(source, namespace)
 
-    posted: list[tuple[str, Any]] = []
+    posted: list[tuple[str, Any, object]] = []
 
     async def vf_post(state, path, payload, timeout=None):
-        _ = state, timeout
-        posted.append((path, payload))
+        _ = state
+        posted.append((path, payload, timeout))
         return {"message": {"role": "assistant", "content": "ok"}}
 
     namespace["vf_post"] = vf_post
@@ -1664,9 +1734,10 @@ async def test_sandbox_base_program_model_call_uses_vf_model_bridge() -> None:
 
     assert message == {"role": "assistant", "content": "ok"}
     assert len(posted) == 1
-    path, payload = posted[0]
+    path, payload, timeout = posted[0]
     assert path == "model"
     assert payload["messages"] == messages  # image part preserved verbatim
+    assert timeout is None
 
 
 def test_sandbox_program_patch_cannot_set_lifecycle_fields() -> None:
