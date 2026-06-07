@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import inspect
-import json
-import os
-import sys
+import importlib.util
+import asyncio
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Generic, Literal, TypeAlias, TypeVar, cast
@@ -11,10 +10,12 @@ from typing import Generic, Literal, TypeAlias, TypeVar, cast
 from pydantic import Field, model_validator
 
 from .config import Config, ConfigSource
+from .runtime import RuntimeConfig, SubprocessRuntimeConfig
 from .types import JsonData
 from .utils.config_utils import (
     coerce_config,
     config_type_from_class,
+    explicit_config_data,
     import_config_ref,
     registered_config_type,
     register_config_type,
@@ -22,6 +23,7 @@ from .utils.config_utils import (
 
 
 Scope: TypeAlias = Literal["rollout", "env"]
+ServerPlacement: TypeAlias = Literal["runtime", "harness", "remote"]
 
 
 class VisibilityConfig(Config):
@@ -36,50 +38,61 @@ class VisibilityConfig(Config):
 
 
 class ServerConfig(VisibilityConfig):
-    loader: str
-    name: str | None = None
+    source: str | None = None
+    enabled: bool = True
     scope: Scope = "rollout"
+    placement: ServerPlacement = "runtime"
+    runtime: RuntimeConfig | None = Field(default_factory=SubprocessRuntimeConfig)
+    url: str | None = None
+    headers: dict[str, str] = Field(default_factory=dict)
     env: dict[str, str] = Field(default_factory=dict)
     resources: JsonData = Field(default_factory=dict)
 
     @model_validator(mode="after")
-    def validate_loader(self) -> "ServerConfig":
-        if not self.loader:
-            raise ValueError("ServerConfig.loader must be non-empty.")
+    def validate_server(self) -> "ServerConfig":
+        if self.scope == "env" and self.placement == "harness":
+            raise ValueError("env-scope servers cannot use harness placement.")
+        if self.placement == "remote":
+            if not self.url:
+                raise ValueError("Remote server configs require url.")
+            return self
+        if self.url is not None:
+            raise ValueError("Only remote server configs may set url.")
         return self
 
-    def server_command(self) -> list[str]:
-        return [
-            sys.executable,
-            "-m",
-            "verifiers.v1.toolset_runner",
-            self.model_dump_json(),
-        ]
+    def default_server_ref(self) -> str:
+        config_type = type(self)
+        module_name = config_type.__module__
+        if module_name.startswith("verifiers.v1."):
+            raise ValueError(
+                f"{config_type.__name__} cannot infer a toolset implementation from "
+                "the framework package."
+            )
+        package = config_package(module_name)
+        class_name = config_type.__name__
+        if module_name.endswith(".config"):
+            if class_name.endswith("ToolsetConfig"):
+                impl_name = f"{class_name.removesuffix('Config')}"
+            else:
+                basename = package.rsplit(".", 1)[-1]
+                impl_name = f"{snake_to_pascal(basename)}Toolset"
+            return f"{package}.toolset:{impl_name}"
+        if class_name.endswith("Config"):
+            impl_name = f"{class_name.removesuffix('Config')}"
+        else:
+            impl_name = f"{class_name}Toolset"
+        return f"{module_name}:{impl_name}"
 
-    def server_env(self) -> dict[str, str]:
-        resolved = dict(self.env)
-        pythonpath = os.pathsep.join(path for path in sys.path if path)
-        if pythonpath:
-            resolved.setdefault("PYTHONPATH", pythonpath)
-        return resolved
+    def implementation_ref(self) -> str:
+        if self.placement == "remote":
+            raise ValueError("Remote server configs do not have an implementation ref.")
+        ref = resolve_server_ref(self.default_server_ref(), type(self))
+        if not ref:
+            raise ValueError("Server implementation ref must be non-empty.")
+        return ref
 
     def load(self) -> "Toolset":
-        return load_toolset(self.loader, self)
-
-    def resolved_name(self) -> str:
-        if self.name is not None:
-            return self.name
-        return self.load().name
-
-    def tool_bindings(self) -> dict[str, "ToolBinding"]:
-        return {
-            name: ToolBinding(
-                args=dict(spec.args),
-                sets=dict(spec.sets),
-                extends=dict(spec.extends),
-            )
-            for name, spec in iter_tool_specs(type(self.load())).items()
-        }
+        return load_toolset(self.implementation_ref(), self)
 
 
 class ToolsetConfig(ServerConfig):
@@ -107,13 +120,34 @@ class Toolset(Generic[ConfigT]):
     def __init__(self, config: ConfigSource = None):
         config_type = registered_config_type(type(self), ServerConfig)
         self.config = cast(ConfigT, coerce_config(config_type, config))
-        self.name = self.config.name or toolset_name(type(self))
+        self.name = toolset_name(type(self))
+        self.resources: dict[str, object] = {}
+
+    def start(self) -> None:
+        return None
+
+    def stop(self) -> None:
+        return None
+
+    def load_resources(self) -> None:
+        for method_name, method in inspect.getmembers(self, predicate=callable):
+            spec = getattr(
+                getattr(type(self), method_name, None), "__vf_resource__", None
+            )
+            if not isinstance(spec, ResourceSpec):
+                continue
+            name = spec.name or method_name
+            value = method()
+            if inspect.isawaitable(value):
+                value = asyncio.run(value)
+            self.resources[name] = value
 
 
 class ToolBinding(Config):
     args: dict[str, str] = Field(default_factory=dict)
     sets: dict[str, str] = Field(default_factory=dict)
     extends: dict[str, str] = Field(default_factory=dict)
+    hidden: bool = False
 
 
 @dataclass(frozen=True)
@@ -122,6 +156,12 @@ class ToolSpec:
     args: dict[str, str]
     sets: dict[str, str]
     extends: dict[str, str]
+    hidden: bool
+
+
+@dataclass(frozen=True)
+class ResourceSpec:
+    name: str | None
 
 
 ToolFunc = TypeVar("ToolFunc", bound=Callable[..., object])
@@ -134,6 +174,7 @@ def tool(
     sets: Mapping[str, str] | None = None,
     extends: Mapping[str, str] | None = None,
     name: str | None = None,
+    hidden: bool = False,
 ) -> ToolFunc | Callable[[ToolFunc], ToolFunc]:
     def decorate(item: ToolFunc) -> ToolFunc:
         setattr(
@@ -144,6 +185,7 @@ def tool(
                 args=dict(args or {}),
                 sets=dict(sets or {}),
                 extends=dict(extends or {}),
+                hidden=hidden,
             ),
         )
         return item
@@ -153,18 +195,106 @@ def tool(
     return decorate
 
 
-Toolsets: TypeAlias = list[ToolsetConfig]
+ResourceFunc = TypeVar("ResourceFunc", bound=Callable[..., object])
 
 
-def load_toolset(loader: str, config: ServerConfig) -> Toolset:
-    obj = import_config_ref(loader)
+def resource(
+    func: ResourceFunc | None = None,
+    *,
+    name: str | None = None,
+) -> ResourceFunc | Callable[[ResourceFunc], ResourceFunc]:
+    def decorate(item: ResourceFunc) -> ResourceFunc:
+        setattr(item, "__vf_resource__", ResourceSpec(name=name))
+        return item
+
+    if func is not None:
+        return decorate(func)
+    return decorate
+
+
+ToolsetConfigs: TypeAlias = dict[str, ToolsetConfig]
+
+
+def load_toolset(server: str, config: ServerConfig) -> Toolset:
+    obj = import_config_ref(server)
     if isinstance(obj, type) and issubclass(obj, Toolset):
         return obj(config=config)
     if callable(obj):
         loaded = obj(config)
         if isinstance(loaded, Toolset):
             return loaded
-    raise TypeError(f"Toolset loader {loader!r} must be a Toolset class or loader.")
+    raise TypeError(f"Server {server!r} must be a Toolset class or loader.")
+
+
+def resolve_server_config(
+    name: str,
+    value: object,
+    *,
+    default: ServerConfig | None,
+    base_type: type[ConfigT],
+) -> ConfigT:
+    if isinstance(value, base_type):
+        if default is not None:
+            validate_default_source(
+                name,
+                source=value.source,
+                default=default,
+                base_type=base_type,
+            )
+        return value
+    data = explicit_config_data(cast(ConfigSource, value))
+    source = data.get("source")
+    if default is not None:
+        validate_default_source(
+            name,
+            source=source,
+            default=default,
+            base_type=base_type,
+        )
+        config_type = type(default)
+        merged = default.model_dump(mode="json", exclude_none=True)
+        merged.update(data)
+        return cast(ConfigT, config_type.model_validate(merged))
+    if data.get("enabled") is False and source is None:
+        raise ValueError(
+            f"Server {name!r} is not declared by the taskset and cannot be disabled."
+        )
+    if not isinstance(source, str) or not source:
+        raise ValueError(
+            f"Server {name!r} is not declared by the taskset; set source to a "
+            f"{base_type.__name__} class."
+        )
+    config_type = server_config_source_type(source, base_type)
+    return cast(ConfigT, config_type.model_validate(data))
+
+
+def validate_default_source(
+    name: str,
+    *,
+    source: object,
+    default: ServerConfig,
+    base_type: type[ConfigT],
+) -> None:
+    if source is None:
+        return
+    if not isinstance(source, str) or not source:
+        raise TypeError(f"Server {name!r} source must be a non-empty string.")
+    config_type = server_config_source_type(source, base_type)
+    if config_type is not type(default):
+        raise TypeError(
+            f"Server {name!r} source must match taskset-defined "
+            f"{type(default).__name__}; got {config_type.__name__}."
+        )
+
+
+def server_config_source_type(
+    source: str,
+    base_type: type[ConfigT],
+) -> type[ConfigT]:
+    obj = import_config_ref(source)
+    if isinstance(obj, type) and issubclass(obj, base_type):
+        return obj
+    raise TypeError(f"Server source {source!r} must point to a {base_type.__name__}.")
 
 
 def iter_tool_specs(toolset: type[Toolset]) -> dict[str, ToolSpec]:
@@ -183,7 +313,10 @@ def iter_tool_specs(toolset: type[Toolset]) -> dict[str, ToolSpec]:
 
 
 def toolset_name(toolset: type[Toolset]) -> str:
-    name = toolset.__name__
+    return toolset_name_from_class(toolset.__name__)
+
+
+def toolset_name_from_class(name: str) -> str:
     if name.endswith("Toolset") and len(name) > len("Toolset"):
         name = name[: -len("Toolset")]
     return camel_to_snake(name or "toolset")
@@ -198,34 +331,21 @@ def camel_to_snake(value: str) -> str:
     return "".join(result).replace("-", "_")
 
 
-def build_fastmcp(toolset: Toolset):
-    from mcp.server.fastmcp import FastMCP
-
-    mcp = FastMCP(toolset.name)
-    for method_name, method in inspect.getmembers(toolset, predicate=callable):
-        spec = getattr(getattr(type(toolset), method_name, None), "__vf_tool__", None)
-        if not isinstance(spec, ToolSpec):
-            continue
-        tool_name = spec.name or method_name
-        mcp.tool(name=tool_name)(method)
-    return mcp
+def snake_to_pascal(value: str) -> str:
+    return "".join(part[:1].upper() + part[1:] for part in value.split("_") if part)
 
 
-def run_toolset(config_json: str) -> None:
-    data = json.loads(config_json)
-    if not isinstance(data, dict):
-        raise TypeError("Toolset runner config must decode to an object.")
-    loader = data.get("loader")
-    if not isinstance(loader, str) or not loader:
-        raise TypeError("Toolset runner config requires a loader.")
-    config_cls = config_type_for_loader(loader)
-    config = config_cls.model_validate(data)
-    toolset = load_toolset(loader, config)
-    build_fastmcp(toolset).run(transport="stdio")
+def config_package(module_name: str) -> str:
+    if module_name.endswith(".config"):
+        return module_name.rsplit(".", 1)[0]
+    return module_name.rsplit(".", 1)[0]
 
 
-def config_type_for_loader(loader: str) -> type[ServerConfig]:
-    obj = import_config_ref(loader)
-    if isinstance(obj, type) and issubclass(obj, Toolset):
-        return registered_config_type(obj, ServerConfig)
-    return ServerConfig
+def resolve_server_ref(ref: str, config_type: type[ServerConfig]) -> str:
+    module_name, separator, attr_path = ref.partition(":")
+    if not separator:
+        raise ValueError(f"Server ref {ref!r} must use 'module:object'.")
+    if module_name.startswith("."):
+        package = config_package(config_type.__module__)
+        module_name = importlib.util.resolve_name(module_name, package)
+    return f"{module_name}:{attr_path}"

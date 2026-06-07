@@ -3,9 +3,11 @@ from copy import deepcopy
 from pathlib import Path
 from typing import cast
 
+from pydantic import TypeAdapter
 import verifiers.v1 as vf
 
 DEFAULT_NEMO_GYM_DATA_NAME = "example.jsonl"
+_MESSAGES_ADAPTER = TypeAdapter(vf.Messages)
 
 
 def nemo_gym_package_root() -> Path:
@@ -146,5 +148,5 @@ def normalize_responses_input(value: vf.JsonValue) -> vf.Messages:
             if not isinstance(item, dict):
                 raise TypeError("responses_create_params.input must contain objects.")
             raw_messages.append(cast(vf.JsonData, item))
-        return vf.get_messages(raw_messages)
+        return _MESSAGES_ADAPTER.validate_python(raw_messages)
     raise TypeError("responses_create_params.input must be a string or message list.")

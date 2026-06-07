@@ -8,6 +8,7 @@ v1 is intentionally separate from v0. Author v1 files with:
 
 ```python
 import verifiers.v1 as vf
+from verifiers.utils.response_utils import parse_response_message
 ```
 
 The top-level `verifiers` package remains the v0 authoring surface. The public
@@ -103,14 +104,31 @@ class MyHarness(vf.Harness[MyHarnessConfig]):
         task = context.task
         state = context.state
         tools = context.tools
+        prompt = self.initial_messages(task)
         response = await context.model_client.get_response(
-            prompt=self.initial_messages(task),
+            prompt=prompt,
             model=context.model,
             sampling_args=context.sampling_args,
             tools=tools.tool_defs() if tools is not None else None,
             state=state,
         )
-        await state.add_response_turn(self.initial_messages(task), response)
+        turn = vf.Turn(
+            prompt=prompt,
+            completion=await parse_response_message(response),
+            tool_calls=list(response.message.tool_calls or []),
+            response_id=response.id,
+            model=response.model,
+            created=response.created,
+            finish_reason=response.message.finish_reason,
+            usage=vf.TurnUsage.from_usage(response.usage),
+            tokens=vf.TurnTokens.from_response(
+                response.message.tokens,
+                is_truncated=bool(response.message.is_truncated),
+            ),
+            is_truncated=bool(response.message.is_truncated),
+        )
+        state.transcript.append(turn)
+        state.is_truncated = state.is_truncated or turn.is_truncated
         state.stop("assistant_completed")
 
 
@@ -169,6 +187,10 @@ Tasksets declare toolsets through `ToolsetConfig`. A toolset implementation is
 a `vf.Toolset` subclass with `@vf.tool` methods.
 
 ```python
+class SearchToolsetConfig(vf.ToolsetConfig):
+    scope: vf.Scope = "rollout"
+
+
 class SearchToolset(vf.Toolset):
     @vf.tool(
         args={"case": "state.metadata.case"},
@@ -180,14 +202,12 @@ class SearchToolset(vf.Toolset):
 
 
 class SearchTasksetConfig(vf.TasksetConfig):
-    toolsets: list[vf.ToolsetConfig] = [
-        vf.ToolsetConfig(
-            loader="my_env.servers.toolset:SearchToolset",
-            name="search",
-            scope="rollout",
-        )
-    ]
+    toolsets: vf.ToolsetConfigs = {"search": SearchToolsetConfig()}
 ```
+
+The mapping key is the tool prefix exposed to the model. A config file can
+override taskset-defined keys directly, and can add a new key by setting
+`source` to a `ToolsetConfig` class path.
 
 Use `scope="rollout"` for per-rollout servers and `scope="env"` for servers
 that live for the environment lifetime. Group-shared resources should use
@@ -210,8 +230,12 @@ Users follow the same pattern. A user implementation exposes a hidden
 the first model request when `task.prompt` is empty.
 
 ```python
+class DialogueUserConfig(vf.UserConfig):
+    pass
+
+
 class DialogueUser(vf.User):
-    @vf.tool(
+    @vf.user(
         args={"transcript": "transcript"},
         sets={"turn_count": "state.extras.turn_count"},
     )
@@ -223,10 +247,7 @@ class DialogueUser(vf.User):
 
 
 class DialogueTasksetConfig(vf.TasksetConfig):
-    user: vf.UserConfig | None = vf.UserConfig(
-        loader="my_env.servers.user:DialogueUser",
-        scope="rollout",
-    )
+    user: vf.UserConfig | None = DialogueUserConfig()
 ```
 
 ## Runtime
@@ -237,9 +258,11 @@ State stores only serializable runtime metadata and artifacts.
 
 Available runtime providers:
 
-- `vf.LocalRuntimeConfig`
+- `vf.SubprocessRuntimeConfig`
 - `vf.DockerRuntimeConfig`
 - `vf.PrimeRuntimeConfig`
+- `vf.ModalRuntimeConfig`
+- `vf.DaytonaRuntimeConfig`
 
 Live runtimes expose:
 

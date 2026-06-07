@@ -167,18 +167,14 @@ class {taskset_config_name}(vf.TasksetConfig):
     \"\"\"User-facing task settings for {env_id_dash}.\"\"\"
 
     system_prompt: vf.SystemPrompt = "Answer exactly."
-    # Optional user/toolset stubs live in servers/. Wire them in here only when
-    # this taskset needs user simulation or tools:
+    # Optional user/toolset configs live in servers/. Wire them in here only
+    # when this taskset needs user simulation or tools:
     #
-    # user: vf.UserConfig | None = vf.UserConfig(
-    #     loader="{env_id_underscore}.servers.user:ExampleUser"
-    # )
-    # toolsets: list[vf.ToolsetConfig] = [
-    #     vf.ToolsetConfig(
-    #         loader="{env_id_underscore}.servers.toolset:ExampleToolset",
-    #         name="tools",
-    #     )
-    # ]
+    # from .servers.example import ExampleToolsetConfig
+    # from .servers.user import UserConfig
+    #
+    # user: vf.UserConfig | None = UserConfig()
+    # toolsets: vf.ToolsetConfigs = {"example": ExampleToolsetConfig()}
 
 
 class {task_name}(vf.Task):
@@ -209,7 +205,9 @@ class {taskset_name}(vf.Taskset[{taskset_config_name}]):
     @vf.reward(weight=1.0)
     async def correct_answer(self, task: {task_name}, state: vf.State) -> float:
         \"\"\"Score the final assistant response for one rollout.\"\"\"
-        messages = vf.get_messages(state.completion or [], role="assistant")
+        messages = [
+            message for message in state.completion if message.role == "assistant"
+        ]
         if not messages:
             return 0.0
         response = str(messages[-1].content or "").strip()
@@ -246,12 +244,28 @@ V1_SERVERS_INIT_TEMPLATE = """\
 \"\"\"Optional user/toolset implementations for {env_id_dash}.\"\"\"
 """
 
-V1_USER_SERVER_TEMPLATE = """\
+V1_USER_INIT_TEMPLATE = """\
+from .config import UserConfig
+
+__all__ = ["UserConfig"]
+"""
+
+V1_USER_CONFIG_TEMPLATE = """\
 import verifiers.v1 as vf
 
 
-class ExampleUser(vf.User):
-    @vf.tool(
+class UserConfig(vf.UserConfig):
+    pass
+"""
+
+V1_USER_SERVER_TEMPLATE = """\
+import verifiers.v1 as vf
+
+from .config import UserConfig
+
+
+class User(vf.User[UserConfig]):
+    @vf.user(
         args={{
             "task": "task",
             "state": "state",
@@ -264,11 +278,27 @@ class ExampleUser(vf.User):
         return {{"messages": []}}
 """
 
-V1_TOOLS_SERVER_TEMPLATE = """\
+V1_TOOLSET_INIT_TEMPLATE = """\
+from .config import ExampleToolsetConfig
+
+__all__ = ["ExampleToolsetConfig"]
+"""
+
+V1_TOOLSET_CONFIG_TEMPLATE = """\
 import verifiers.v1 as vf
 
 
-class ExampleToolset(vf.Toolset):
+class ExampleToolsetConfig(vf.ToolsetConfig):
+    pass
+"""
+
+V1_TOOLS_SERVER_TEMPLATE = """\
+import verifiers.v1 as vf
+
+from .config import ExampleToolsetConfig
+
+
+class ExampleToolset(vf.Toolset[ExampleToolsetConfig]):
     @vf.tool
     def reverse_text(self, text: str) -> str:
         \"\"\"Example tool stub.\"\"\"
@@ -564,11 +594,16 @@ def init_environment(
         servers_dir.mkdir(parents=True, exist_ok=True)
         server_files = {
             "__init__.py": V1_SERVERS_INIT_TEMPLATE,
-            "user.py": V1_USER_SERVER_TEMPLATE,
-            "toolset.py": V1_TOOLS_SERVER_TEMPLATE,
+            "user/__init__.py": V1_USER_INIT_TEMPLATE,
+            "user/config.py": V1_USER_CONFIG_TEMPLATE,
+            "user/user.py": V1_USER_SERVER_TEMPLATE,
+            "example/__init__.py": V1_TOOLSET_INIT_TEMPLATE,
+            "example/config.py": V1_TOOLSET_CONFIG_TEMPLATE,
+            "example/toolset.py": V1_TOOLS_SERVER_TEMPLATE,
         }
         for filename, template in server_files.items():
             server_file = servers_dir / filename
+            server_file.parent.mkdir(parents=True, exist_ok=True)
             if not server_file.exists():
                 server_file.write_text(
                     template.format(

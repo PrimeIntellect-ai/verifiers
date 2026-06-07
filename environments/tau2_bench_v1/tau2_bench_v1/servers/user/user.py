@@ -1,9 +1,11 @@
 from tau2.data_model.tasks import Task as TauTask
 import verifiers.v1 as vf
 
+from .config import UserConfig
 
-class Tau2User(vf.User):
-    @vf.tool(
+
+class User(vf.User[UserConfig]):
+    @vf.user(
         args={
             "tau2_task": "task.tau2_task",
             "completion": "state.completion",

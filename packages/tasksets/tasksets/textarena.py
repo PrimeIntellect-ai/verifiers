@@ -32,12 +32,14 @@ class TextArenaRuntimeEnv(Protocol):
     def step(self, action: str) -> object: ...
 
 
+class TextArenaUserConfig(vf.UserConfig):
+    pass
+
+
 class TextArenaTasksetConfig(vf.TasksetConfig):
     id: str | None = "textarena"
     game: str
-    user: vf.UserConfig | None = vf.UserConfig(
-        loader="tasksets.textarena:TextArenaUser"
-    )
+    user: vf.UserConfig | None = TextArenaUserConfig()
     num_train_examples: int = 2000
     num_eval_examples: int = 20
     seed: int = 0
@@ -120,9 +122,6 @@ class TextArenaSession:
         return self.env
 
 
-SESSION = TextArenaSession()
-
-
 def textarena_word_list(env: object) -> list[str]:
     raw_words = getattr(env, "word_list", None)
     if isinstance(raw_words, dict):
@@ -155,8 +154,13 @@ def content_text(content: object) -> str:
     return ""
 
 
-class TextArenaUser(vf.User):
-    @vf.tool(
+class TextArenaUser(vf.User[TextArenaUserConfig]):
+    session: TextArenaSession
+
+    def start(self) -> None:
+        self.session = TextArenaSession()
+
+    @vf.user(
         args={
             "textarena": "task.textarena",
             "answer": "task.answer",
@@ -168,17 +172,19 @@ class TextArenaUser(vf.User):
         },
     )
     def respond(self, textarena: dict, answer: str, completion: list[dict]) -> dict:
-        return textarena_respond(textarena, answer, completion)
+        return textarena_respond(self.session, textarena, answer, completion)
 
 
-def textarena_respond(textarena: dict, answer: str, completion: list[dict]) -> dict:
+def textarena_respond(
+    session: TextArenaSession, textarena: dict, answer: str, completion: list[dict]
+) -> dict:
     game = textarena.get("game")
     answer_state_key = textarena.get("answer_state_key")
     if not isinstance(game, str) or not isinstance(answer_state_key, str):
         raise TypeError("TextArena task config must contain string fields.")
     if not isinstance(answer, str) or not answer:
         raise TypeError("TextArena task requires a non-empty answer.")
-    env = SESSION.env or SESSION.reset(game)
+    env = session.env or session.reset(game)
     env.state.game_state[answer_state_key] = answer
 
     assistant_messages = [

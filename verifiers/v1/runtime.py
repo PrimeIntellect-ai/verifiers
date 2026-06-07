@@ -48,8 +48,8 @@ class CommandResult(Config):
         return self.returncode
 
 
-class LocalRuntimeConfig(Config):
-    type: Literal["local"] = "local"
+class SubprocessRuntimeConfig(Config):
+    type: Literal["subprocess"] = "subprocess"
 
 
 class DockerRuntimeConfig(Config):
@@ -67,15 +67,37 @@ class PrimeRuntimeConfig(Config):
     network_access: bool = True
 
 
+class ModalRuntimeConfig(Config):
+    type: Literal["modal"] = "modal"
+    image: str = "python:3.11-slim"
+
+
+class DaytonaRuntimeConfig(Config):
+    type: Literal["daytona"] = "daytona"
+    image: str = "python:3.11-slim"
+
+
 RuntimeConfig = Annotated[
-    LocalRuntimeConfig | DockerRuntimeConfig | PrimeRuntimeConfig,
+    SubprocessRuntimeConfig
+    | DockerRuntimeConfig
+    | PrimeRuntimeConfig
+    | ModalRuntimeConfig
+    | DaytonaRuntimeConfig,
     Field(discriminator="type"),
 ]
-RuntimeConfigValue = LocalRuntimeConfig | DockerRuntimeConfig | PrimeRuntimeConfig
+RuntimeConfigValue = (
+    SubprocessRuntimeConfig
+    | DockerRuntimeConfig
+    | PrimeRuntimeConfig
+    | ModalRuntimeConfig
+    | DaytonaRuntimeConfig
+)
 RUNTIME_CONFIG_TYPES = (
-    LocalRuntimeConfig,
+    SubprocessRuntimeConfig,
     DockerRuntimeConfig,
     PrimeRuntimeConfig,
+    ModalRuntimeConfig,
+    DaytonaRuntimeConfig,
 )
 
 
@@ -88,6 +110,10 @@ class Runtime(ABC):
 
     @abstractmethod
     async def expose(self, port: int) -> str: ...
+
+    async def public_url(self, port: int) -> str | None:
+        _ = port
+        return None
 
     @abstractmethod
     async def run(
@@ -104,6 +130,19 @@ class Runtime(ABC):
 
     @abstractmethod
     async def write(self, path: str, data: bytes) -> None: ...
+
+    async def run_background(
+        self,
+        command: list[str],
+        *,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        log: str | None = None,
+    ) -> None:
+        _ = command, cwd, env, log
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support background commands."
+        )
 
     async def run_uv_script(
         self,
@@ -138,12 +177,12 @@ class RuntimeProvider(ABC):
     def create_runtime(self) -> Runtime: ...
 
 
-class LocalRuntimeProvider(RuntimeProvider):
-    def __init__(self, config: LocalRuntimeConfig | None = None) -> None:
-        self.config = config or LocalRuntimeConfig()
+class SubprocessRuntimeProvider(RuntimeProvider):
+    def __init__(self, config: SubprocessRuntimeConfig | None = None) -> None:
+        self.config = config or SubprocessRuntimeConfig()
 
     def create_runtime(self) -> Runtime:
-        return LocalRuntime(self.config)
+        return SubprocessRuntime(self.config)
 
 
 class DockerRuntimeProvider(RuntimeProvider):
@@ -162,12 +201,32 @@ class PrimeRuntimeProvider(RuntimeProvider):
         return PrimeRuntime(self.config)
 
 
+class ModalRuntimeProvider(RuntimeProvider):
+    def __init__(self, config: ModalRuntimeConfig) -> None:
+        self.config = config
+
+    def create_runtime(self) -> Runtime:
+        return ModalRuntime(self.config)
+
+
+class DaytonaRuntimeProvider(RuntimeProvider):
+    def __init__(self, config: DaytonaRuntimeConfig) -> None:
+        self.config = config
+
+    def create_runtime(self) -> Runtime:
+        return DaytonaRuntime(self.config)
+
+
 def make_runtime_provider(config: RuntimeConfigValue) -> RuntimeProvider:
     if isinstance(config, PrimeRuntimeConfig):
         return PrimeRuntimeProvider(config)
     if isinstance(config, DockerRuntimeConfig):
         return DockerRuntimeProvider(config)
-    return LocalRuntimeProvider(config)
+    if isinstance(config, ModalRuntimeConfig):
+        return ModalRuntimeProvider(config)
+    if isinstance(config, DaytonaRuntimeConfig):
+        return DaytonaRuntimeProvider(config)
+    return SubprocessRuntimeProvider(config)
 
 
 def resolve_runtime_config(
@@ -192,23 +251,39 @@ def resolve_runtime_config(
         }
         if updates:
             resolved = resolved.model_copy(update=updates)
-    return resolved or LocalRuntimeConfig()
+    return resolved or SubprocessRuntimeConfig()
 
 
-class LocalRuntime(Runtime):
-    def __init__(self, config: LocalRuntimeConfig) -> None:
+class SubprocessRuntime(Runtime):
+    def __init__(self, config: SubprocessRuntimeConfig) -> None:
         self.config = config
         self.workdir: Path | None = None
+        self.processes: list[asyncio.subprocess.Process] = []
 
     async def start(self) -> None:
         self.workdir = Path(tempfile.mkdtemp(prefix="vf-v1-", dir="/tmp"))
 
     async def stop(self) -> None:
+        for process in self.processes:
+            if process.returncode is None:
+                with contextlib.suppress(ProcessLookupError):
+                    process.terminate()
+        for process in self.processes:
+            if process.returncode is None:
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(process.wait(), timeout=5)
+            if process.returncode is None:
+                with contextlib.suppress(ProcessLookupError):
+                    process.kill()
+        self.processes = []
         if self.workdir is not None:
             await asyncio.to_thread(shutil.rmtree, self.workdir, True)
             self.workdir = None
 
     async def expose(self, port: int) -> str:
+        return f"http://127.0.0.1:{port}"
+
+    async def public_url(self, port: int) -> str | None:
         return f"http://127.0.0.1:{port}"
 
     async def run(
@@ -253,9 +328,43 @@ class LocalRuntime(Runtime):
         target.parent.mkdir(parents=True, exist_ok=True)
         await asyncio.to_thread(target.write_bytes, data)
 
+    async def run_background(
+        self,
+        command: list[str],
+        *,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        log: str | None = None,
+    ) -> None:
+        if not command:
+            raise ValueError("Runtime.run_background requires a command.")
+        full_env = {
+            name: os.environ[name] for name in _SUBPROCESS_ENV if name in os.environ
+        }
+        full_env.update(env or {})
+        stdout = stderr = asyncio.subprocess.DEVNULL
+        log_file = None
+        if log is not None:
+            log_path = self._path(log)
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            log_file = log_path.open("ab")
+            stdout = stderr = log_file
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *command,
+                cwd=self._path(cwd) if cwd is not None else self.workdir,
+                env=full_env,
+                stdout=stdout,
+                stderr=stderr,
+            )
+        finally:
+            if log_file is not None:
+                log_file.close()
+        self.processes.append(process)
+
     def _path(self, path: str | None) -> Path:
         if self.workdir is None:
-            raise RuntimeError("Local runtime has not started.")
+            raise RuntimeError("Subprocess runtime has not started.")
         if path is None:
             return self.workdir
         value = Path(path)
@@ -355,6 +464,37 @@ class DockerRuntime(Runtime):
                 f"write {path!r}: {stderr.decode(errors='replace').strip()}"
             )
 
+    async def run_background(
+        self,
+        command: list[str],
+        *,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        log: str | None = None,
+    ) -> None:
+        if not command:
+            raise ValueError("Runtime.run_background requires a command.")
+        container = self._container()
+        env_args = [
+            arg
+            for key, value in (env or {}).items()
+            for arg in ("--env", f"{key}={value}")
+        ]
+        log_path = shlex.quote(log or "/tmp/vf-background.log")
+        result = await docker(
+            "exec",
+            "--detach",
+            *env_args,
+            "--workdir",
+            cwd or self.config.workdir,
+            container,
+            "sh",
+            "-c",
+            f"exec {shlex.join(command)} >> {log_path} 2>&1",
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"docker background command failed: {result.stderr}")
+
     def _container(self) -> str:
         if self.container is None:
             raise RuntimeError("Docker runtime has not started.")
@@ -411,6 +551,10 @@ class PrimeRuntime(Runtime):
         self.tunnels.append(tunnel)
         return url
 
+    async def public_url(self, port: int) -> str | None:
+        _ = port
+        return None
+
     async def run(
         self,
         command: list[str],
@@ -452,6 +596,95 @@ class PrimeRuntime(Runtime):
         )
         if result.returncode != 0:
             raise RuntimeError(f"write {path!r}: {result.stderr.strip()}")
+
+    async def run_background(
+        self,
+        command: list[str],
+        *,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        log: str | None = None,
+    ) -> None:
+        log_path = shlex.quote(log or "/tmp/vf-background.log")
+        result = await self.run(
+            [
+                "sh",
+                "-c",
+                f"nohup {shlex.join(command)} >> {log_path} 2>&1 &",
+            ],
+            cwd=cwd,
+            env=env,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"prime background command failed: {result.stderr}")
+
+
+class ModalRuntime(Runtime):
+    def __init__(self, config: ModalRuntimeConfig) -> None:
+        self.config = config
+
+    async def start(self) -> None:
+        raise NotImplementedError("Modal runtime is not implemented yet.")
+
+    async def stop(self) -> None:
+        return None
+
+    async def expose(self, port: int) -> str:
+        _ = port
+        raise NotImplementedError("Modal runtime is not implemented yet.")
+
+    async def run(
+        self,
+        command: list[str],
+        *,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        timeout: float | None = None,
+    ) -> CommandResult:
+        _ = command, cwd, env, timeout
+        raise NotImplementedError("Modal runtime is not implemented yet.")
+
+    async def read(self, path: str) -> bytes:
+        _ = path
+        raise NotImplementedError("Modal runtime is not implemented yet.")
+
+    async def write(self, path: str, data: bytes) -> None:
+        _ = path, data
+        raise NotImplementedError("Modal runtime is not implemented yet.")
+
+
+class DaytonaRuntime(Runtime):
+    def __init__(self, config: DaytonaRuntimeConfig) -> None:
+        self.config = config
+
+    async def start(self) -> None:
+        raise NotImplementedError("Daytona runtime is not implemented yet.")
+
+    async def stop(self) -> None:
+        return None
+
+    async def expose(self, port: int) -> str:
+        _ = port
+        raise NotImplementedError("Daytona runtime is not implemented yet.")
+
+    async def run(
+        self,
+        command: list[str],
+        *,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        timeout: float | None = None,
+    ) -> CommandResult:
+        _ = command, cwd, env, timeout
+        raise NotImplementedError("Daytona runtime is not implemented yet.")
+
+    async def read(self, path: str) -> bytes:
+        _ = path
+        raise NotImplementedError("Daytona runtime is not implemented yet.")
+
+    async def write(self, path: str, data: bytes) -> None:
+        _ = path, data
+        raise NotImplementedError("Daytona runtime is not implemented yet.")
 
 
 async def docker(*args: str, timeout: float | None = None) -> CommandResult:

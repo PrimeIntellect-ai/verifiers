@@ -65,11 +65,9 @@ class SimpleEnvironment(Environment):
             state["trajectory"].append(trajectory_step)
             state["is_completed"] = True
 
-            from verifiers.utils.message_utils import concat_messages
-
             last_prompt = state["trajectory"][-1]["prompt"]
             last_completion = state["trajectory"][-1]["completion"]
-            full_conversation = concat_messages([last_prompt, last_completion])
+            full_conversation = [*last_prompt, *last_completion]
             state["completion"] = full_conversation[len(state["prompt"]) :]
         except vf.Error as e:
             state["error"] = e

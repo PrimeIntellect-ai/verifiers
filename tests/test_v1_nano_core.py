@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-import sys
 import asyncio
+import json
+import sys
 from types import ModuleType
 
 from aiohttp import ClientSession, web
 import pytest
 
 import verifiers.v1 as vf
+from verifiers.errors import ToolError
 from verifiers.types import ClientConfig, EvalConfig, Response
 from verifiers.utils import eval_utils
 from verifiers.v1.loaders import (
@@ -72,7 +74,14 @@ class GroupTaskset(NanoTaskset):
         self, task: NanoTask, num_rollouts: int
     ) -> tuple[list[GroupNanoTask], list[vf.State]]:
         tasks = [
-            GroupNanoTask.model_validate({**task.to_record(), "candidate": index})
+            GroupNanoTask.model_validate(
+                {
+                    **task.model_dump(
+                        mode="json", exclude_none=True, exclude_defaults=True
+                    ),
+                    "candidate": index,
+                }
+            )
             for index in range(num_rollouts)
         ]
         return tasks, [vf.State(task_id=task.task_id) for task in tasks]
@@ -87,16 +96,18 @@ class GroupTaskset(NanoTaskset):
     grpo = staticmethod(vf.advantages.grpo)
 
 
-class EmptyPromptUser(vf.User):
-    @vf.tool
+class EmptyPromptUserConfig(vf.UserConfig):
+    pass
+
+
+class EmptyPromptUser(vf.User[EmptyPromptUserConfig]):
+    @vf.user
     def respond(self) -> dict:
         return {"messages": [{"role": "user", "content": "server prompt"}]}
 
 
 class EmptyPromptTasksetConfig(vf.TasksetConfig):
-    user: vf.UserConfig | None = vf.UserConfig(
-        loader=f"{EmptyPromptUser.__module__}:EmptyPromptUser"
-    )
+    user: vf.UserConfig | None = EmptyPromptUserConfig()
 
 
 class EmptyPromptTaskset(vf.Taskset[EmptyPromptTasksetConfig]):
@@ -106,8 +117,12 @@ class EmptyPromptTaskset(vf.Taskset[EmptyPromptTasksetConfig]):
         return [{"example_id": 0, "prompt": [], "max_turns": 1}]
 
 
-class PatchOnlyUser(vf.User):
-    @vf.tool(
+class PatchOnlyUserConfig(vf.UserConfig):
+    pass
+
+
+class PatchOnlyUser(vf.User[PatchOnlyUserConfig]):
+    @vf.user(
         sets={
             "done": "state.extras.done",
             "stop_condition": "state.stop_condition",
@@ -118,9 +133,7 @@ class PatchOnlyUser(vf.User):
 
 
 class PatchOnlyUserTasksetConfig(vf.TasksetConfig):
-    user: vf.UserConfig | None = vf.UserConfig(
-        loader=f"{PatchOnlyUser.__module__}:PatchOnlyUser"
-    )
+    user: vf.UserConfig | None = PatchOnlyUserConfig()
 
 
 class PatchOnlyUserTaskset(vf.Taskset[PatchOnlyUserTasksetConfig]):
@@ -130,7 +143,25 @@ class PatchOnlyUserTaskset(vf.Taskset[PatchOnlyUserTasksetConfig]):
         return [{"example_id": 0, "prompt": [], "max_turns": 1}]
 
 
-class TaskSetupToolset(vf.Toolset):
+class ToolUserConfig(vf.UserConfig):
+    pass
+
+
+class ToolUser(vf.User[ToolUserConfig]):
+    @vf.user
+    def respond(self) -> dict:
+        return {"messages": [{"role": "user", "content": "server prompt"}]}
+
+    @vf.tool
+    def ping(self) -> str:
+        return "pong"
+
+
+class TaskSetupToolsetConfig(vf.ToolsetConfig):
+    scope: vf.Scope = "env"
+
+
+class TaskSetupToolset(vf.Toolset[TaskSetupToolsetConfig]):
     count = 0
 
     @vf.tool(
@@ -161,16 +192,9 @@ class ServerSetupTaskset(vf.Taskset):
             {"example_id": 1, "prompt": "say ok", "max_turns": 1},
         ]
 
-    def load_toolsets(self, config: vf.TasksetConfig) -> list[vf.ToolsetConfig]:
+    def load_toolsets(self, config: vf.TasksetConfig) -> vf.ToolsetConfigs:
         _ = config
-        return [
-            vf.ToolsetConfig(
-                loader=f"{TaskSetupToolset.__module__}:TaskSetupToolset",
-                name="setup",
-                scope="env",
-                hide=["materialize"],
-            )
-        ]
+        return {"setup": TaskSetupToolsetConfig(hide=["materialize"])}
 
     @vf.setup
     async def materialize_task(
@@ -179,17 +203,21 @@ class ServerSetupTaskset(vf.Taskset):
         state: vf.State,
         harness: vf.Harness,
         runtime: vf.Runtime,
-        tools: MCPToolRegistry,
+        toolsets: MCPToolRegistry,
     ) -> None:
         _ = task
-        result = await tools.call_hidden("materialize", {})
+        result = await toolsets.call_hidden("materialize", {})
         harness.apply_tool_result(state, result)
         case = state.metadata["grader_case"]
         assert isinstance(case, str)
         await runtime.write("grader_case.txt", case.encode())
 
 
-class DemoToolset(vf.Toolset):
+class DemoToolsetConfig(vf.ToolsetConfig):
+    pass
+
+
+class DemoToolset(vf.Toolset[DemoToolsetConfig]):
     @vf.tool
     def echo(self, text: str) -> str:
         return text.upper()
@@ -199,7 +227,11 @@ class DemoToolset(vf.Toolset):
         return text + "!"
 
 
-class BoundToolset(vf.Toolset):
+class BoundToolsetConfig(vf.ToolsetConfig):
+    pass
+
+
+class BoundToolset(vf.Toolset[BoundToolsetConfig]):
     @vf.tool(
         args={"task_name": "task.name"},
         extends={"events": "state.extras.events"},
@@ -215,6 +247,14 @@ class BoundToolset(vf.Toolset):
         }
 
 
+class ConfiguredToolsetTasksetConfig(vf.TasksetConfig):
+    toolsets: vf.ToolsetConfigs = {"demo": DemoToolsetConfig()}
+
+
+class ConfiguredToolsetTaskset(vf.Taskset[ConfiguredToolsetTasksetConfig]):
+    pass
+
+
 def test_v1_state_is_pydantic_and_extras_owned() -> None:
     task = NanoTask(prompt="hello", answer="world")
     state = vf.State(task_id=task.task_id)
@@ -228,6 +268,16 @@ def test_v1_state_is_pydantic_and_extras_owned() -> None:
     with pytest.raises(TypeError):
         state["x"] = 2
     assert state.to_output(task)["transcript"] == []
+
+
+def test_task_user_defaults_to_auto_and_omits_from_json() -> None:
+    task = vf.Task(prompt="hello")
+
+    assert task.user is None
+    assert "user" not in task.model_dump(mode="json", exclude_none=True)
+    assert (
+        vf.Task(user=False).model_dump(mode="json", exclude_none=True)["user"] is False
+    )
 
 
 def test_v1_loader_does_not_recurse_to_same_package_config_id() -> None:
@@ -311,11 +361,46 @@ def test_v1_extras_config_schemas_realize_and_reject_conflicts() -> None:
         )
 
 
+def test_toolset_config_sources_and_enabled_flags_resolve_directly() -> None:
+    taskset = ConfiguredToolsetTaskset(
+        config={"toolsets": {"demo": {"enabled": False}}}
+    )
+    assert taskset.toolsets == {}
+
+    taskset = ConfiguredToolsetTaskset(
+        config={
+            "toolsets": {
+                "custom": {
+                    "source": f"{__name__}:DemoToolsetConfig",
+                }
+            }
+        }
+    )
+    assert list(taskset.toolsets) == ["demo", "custom"]
+
+    with pytest.raises(ValueError, match="cannot be disabled"):
+        ConfiguredToolsetTaskset(config={"toolsets": {"custom": {"enabled": False}}})
+
+    with pytest.raises(ValueError, match="set source"):
+        ConfiguredToolsetTaskset(config={"toolsets": {"custom": {}}})
+
+    with pytest.raises(TypeError, match="source must match"):
+        ConfiguredToolsetTaskset(
+            config={
+                "toolsets": {
+                    "demo": {
+                        "source": f"{__name__}:BoundToolsetConfig",
+                    }
+                }
+            }
+        )
+
+
 @pytest.mark.asyncio
 async def test_v1_model_client_uses_serialized_transcript_record(mock_client) -> None:
     config = vf.ModelConfig(client=ClientConfig(), model="test-model")
     state = vf.State(task_id="task-1")
-    state.add_turn(
+    state.transcript.append(
         vf.Turn(
             prompt=[vf.UserMessage(content="first")],
             completion=[vf.AssistantMessage(content="done")],
@@ -385,6 +470,22 @@ async def test_harness_run_accepts_string_task_and_model(mock_client) -> None:
     assert configs[0].client.api_key_var == "PRIME_API_KEY"
     assert configs[0].client.api_base_url == "https://api.pinference.ai/api/v1"
     assert mock_client.last_call_kwargs["model"] == "openai/gpt-5"
+
+
+@pytest.mark.asyncio
+async def test_harness_run_requires_user_when_task_user_is_true(mock_client) -> None:
+    mock_client.set_default_response("ok")
+    env = vf.Env(taskset=NanoTaskset(), harness=vf.Harness())
+    model = attach_mock_model(env, mock_client)
+
+    state = await env.run_rollout(
+        {"prompt": "say ok", "answer": "ok", "user": True, "max_turns": 1},
+        model=model,
+    )
+
+    assert state.stop_condition == "has_error"
+    assert state.error is not None
+    assert "requires a user server" in state.error["message"]
 
 
 @pytest.mark.asyncio
@@ -460,6 +561,18 @@ async def test_user_server_can_return_only_bound_state_updates(mock_client) -> N
 
 
 @pytest.mark.asyncio
+async def test_user_server_hides_respond_and_exposes_user_tools() -> None:
+    async with MCPToolRegistry({"user": ToolUserConfig()}) as registry:
+        names = [tool.name for tool in registry.tools() or []]
+        prompt = await registry.call_hidden("respond", {})
+        result = await registry.call("user_ping", {})
+
+    assert names == ["user_ping"]
+    assert prompt.response.messages[0].content == "server prompt"
+    assert result.response.content == "pong"
+
+
+@pytest.mark.asyncio
 async def test_v1_setup_can_materialize_task_local_state_from_env_server(
     mock_client,
 ) -> None:
@@ -487,15 +600,15 @@ async def test_migrated_hello_rlm_v1_runs_without_old_runtime(mock_client) -> No
     env = load_environment_from_components(
         module,
         {
-            "config": vf.EnvConfig(
-                harness=module.HelloRLMHarnessConfig(
-                    command=[
+            "config": {
+                "harness": {
+                    "command": [
                         sys.executable,
                         "-c",
                         "import os; print(os.environ['VF_PROMPT'].split('exactly ', 1)[1].rstrip('.'))",
                     ]
-                )
-            )
+                }
+            }
         },
     )
     model = attach_mock_model(env, mock_client, "unused-model")
@@ -512,38 +625,50 @@ async def test_migrated_hello_rlm_v1_runs_without_old_runtime(mock_client) -> No
 
 @pytest.mark.asyncio
 async def test_mcp_toolset_exposes_multiple_server_tools() -> None:
-    toolset = vf.ToolsetConfig(
-        loader=f"{DemoToolset.__module__}:DemoToolset",
-        name="demo",
-    )
+    toolsets = {"demo": DemoToolsetConfig()}
 
-    async with MCPToolRegistry([toolset]) as registry:
-        names = [tool.name for tool in registry.tool_defs() or []]
+    async with MCPToolRegistry(toolsets) as registry:
+        names = [tool.name for tool in registry.tools() or []]
         result = await registry.call("demo_echo", {"text": "ok"})
 
     assert names == ["demo_echo", "demo_suffix"]
-    assert result.response.messages[0].content == "OK"
+    assert result.response.content == "OK"
+
+
+@pytest.mark.asyncio
+async def test_mcp_tool_registry_applies_task_visibility() -> None:
+    toolsets = {"demo": DemoToolsetConfig()}
+
+    async with MCPToolRegistry(toolsets) as registry:
+        registry.set_visibility(
+            toolsets=vf.TaskVisibility(show=["demo"]),
+            tools=vf.TaskVisibility(hide=["demo_suffix"]),
+        )
+        names = [tool.name for tool in registry.tools() or []]
+        result = await registry.call("demo_echo", {"text": "ok"})
+        with pytest.raises(ToolError, match="disabled"):
+            await registry.call("demo_suffix", {"text": "ok"})
+
+    assert names == ["demo_echo"]
+    assert result.response.content == "OK"
 
 
 @pytest.mark.asyncio
 async def test_mcp_bindings_hide_args_and_bind_returns() -> None:
-    toolset = vf.ToolsetConfig(
-        loader=f"{BoundToolset.__module__}:BoundToolset",
-        name="bound",
-    )
+    toolsets = {"bound": BoundToolsetConfig()}
     state = vf.State()
     task = vf.Task(name="demo", prompt="say ok")
     harness = vf.Harness()
 
-    async with MCPToolRegistry([toolset]) as registry:
+    async with MCPToolRegistry(toolsets) as registry:
         registry.set_context(harness.binding_context(task, state))
-        tools = registry.tool_defs() or []
+        tools = registry.tools() or []
         result = await registry.call("bound_record", {"name": "alpha"})
 
     properties = tools[0].parameters["properties"]
     assert "name" in properties
     assert "task_name" not in properties
-    assert result.response.messages[0].content == "demo:alpha"
+    assert result.response.content == "demo:alpha"
 
     harness.apply_bound_updates(state, list(result.updates))
     assert state.extras == {
@@ -575,10 +700,122 @@ def test_bound_state_updates_allow_extends_and_reject_set_conflicts() -> None:
         )
 
 
+def test_bound_state_updates_write_latest_turn_reward() -> None:
+    harness = vf.Harness()
+    state = vf.State(
+        transcript=[
+            vf.Turn(
+                prompt=[vf.UserMessage(content="go")],
+                completion=[vf.AssistantMessage(content="done")],
+            )
+        ]
+    )
+
+    harness.apply_bound_updates(
+        state,
+        [BoundUpdate("state.transcript.last.reward", 0.75)],
+    )
+
+    assert state.reward == 0.0
+    assert state.transcript[-1].reward == 0.75
+
+
 @pytest.mark.asyncio
-async def test_v1_local_runtime_session_read_write_run() -> None:
+async def test_openenv_and_openreward_rewards_sum_turn_rewards() -> None:
+    from tasksets.openenv import OpenEnvTaskset, OpenEnvTasksetConfig
+    from tasksets.openreward import OpenRewardTaskset, OpenRewardTasksetConfig
+
+    state = vf.State(
+        reward=99.0,
+        transcript=[
+            vf.Turn(prompt=[], completion=[], reward=0.25),
+            vf.Turn(prompt=[], completion=[], reward=0.5),
+        ],
+    )
+
+    assert (
+        await OpenEnvTaskset(OpenEnvTasksetConfig()).openenv_reward(state)
+    ) == pytest.approx(0.75)
+    assert (
+        await OpenRewardTaskset(
+            OpenRewardTasksetConfig(environment="test")
+        ).openreward_reward(state)
+    ) == pytest.approx(0.75)
+
+
+@pytest.mark.asyncio
+async def test_openenv_user_tool_returns_bound_turn_reward_payload() -> None:
+    from tasksets.openenv import OpenEnvUser, OpenEnvUserConfig
+
+    class FakeOpenEnvResult:
+        observation = {"result": {"data": {"echo": "ok"}}}
+        reward = 1.25
+        done = True
+
+    class FakeOpenEnvSession:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, vf.JsonData]] = []
+
+        async def call_tool(self, name: str, input: vf.JsonData) -> FakeOpenEnvResult:
+            self.calls.append((name, input))
+            return FakeOpenEnvResult()
+
+    session = FakeOpenEnvSession()
+    user = OpenEnvUser(OpenEnvUserConfig())
+    user.session = session
+
+    payload = await user.call_tool("echo", {"message": "hi"})
+
+    assert session.calls == [("echo", {"message": "hi"})]
+    assert json.loads(str(payload["content"])) == {"echo": "ok"}
+    assert payload["openenv_done"] is True
+    assert payload["reward"] == pytest.approx(1.25)
+    assert payload["finished"] is True
+    assert payload["stop_condition"] == "openenv_done"
+
+
+@pytest.mark.asyncio
+async def test_openreward_user_tool_returns_bound_turn_reward_payload() -> None:
+    from tasksets.openreward import OpenRewardUser, OpenRewardUserConfig
+
+    class FakeOpenRewardOutput:
+        blocks = ["raw"]
+        reward = 0.5
+        finished = True
+
+    class FakeOpenRewardSession:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, vf.JsonData]] = []
+
+        async def call_tool(
+            self, name: str, input: vf.JsonData
+        ) -> FakeOpenRewardOutput:
+            self.calls.append((name, input))
+            return FakeOpenRewardOutput()
+
+        def content(self, blocks: object) -> str:
+            assert blocks == ["raw"]
+            return "judged"
+
+    session = FakeOpenRewardSession()
+    user = OpenRewardUser(OpenRewardUserConfig())
+    user.session = session
+
+    payload = await user.call_tool("score", {"answer": "ok"})
+
+    assert session.calls == [("score", {"answer": "ok"})]
+    assert payload == {
+        "content": "judged",
+        "reward": 0.5,
+        "finished": True,
+        "stop_condition": "openreward_finished",
+    }
+
+
+@pytest.mark.asyncio
+async def test_v1_subprocess_runtime_session_read_write_run() -> None:
     async with vf.make_runtime_provider(
-        vf.LocalRuntimeConfig()
+        vf.SubprocessRuntimeConfig()
     ).create_runtime() as runtime:
         await runtime.write("payload.txt", b"hello runtime")
         result = await runtime.run(
@@ -597,14 +834,14 @@ async def test_v1_local_runtime_session_read_write_run() -> None:
 
 def test_v1_runtime_image_is_container_only() -> None:
     task = vf.Task({"prompt": [], "image": "python:3.12-slim"})
-    local_env = vf.Env(taskset=NanoTaskset(), runtime=vf.LocalRuntimeConfig())
+    subprocess_env = vf.Env(taskset=NanoTaskset(), runtime=vf.SubprocessRuntimeConfig())
     docker_env = vf.Env(
         taskset=NanoTaskset(),
         runtime=vf.DockerRuntimeConfig(image="python:3.11-slim"),
     )
 
     with pytest.raises(ValueError, match="declares an image"):
-        local_env.harness.runtime_for(task)
+        subprocess_env.harness.runtime_for(task)
     docker_config = docker_env.harness.runtime_for(task)
 
     assert isinstance(docker_config, vf.DockerRuntimeConfig)

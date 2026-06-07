@@ -1,6 +1,6 @@
 import verifiers.v1 as vf
 
-from .servers.toolset import SubagentToolsetConfig
+from .servers.subagent import SubagentToolsetConfig
 
 NAME_GROUPS = [
     ["world"],
@@ -22,7 +22,7 @@ class SubagentTasksetConfig(vf.TasksetConfig):
         "requested name. After all tool results are available, join the child "
         "answers with ', ' and output only that final joined text."
     )
-    toolsets: list[vf.ToolsetConfig] = [SubagentToolsetConfig()]
+    toolsets: vf.ToolsetConfigs = {"subagent": SubagentToolsetConfig()}
 
 
 class SubagentHarnessConfig(vf.HarnessConfig):
@@ -56,7 +56,9 @@ class SubagentTaskset(vf.Taskset[SubagentTasksetConfig]):
 
     @vf.reward(weight=1.0)
     async def exact_answer(self, task: SubagentTask, state: vf.State) -> float:
-        messages = vf.get_messages(state.completion or [], role="assistant")
+        messages = [
+            message for message in state.completion if message.role == "assistant"
+        ]
         answer = str(messages[-1].content or "").strip() if messages else ""
         return float(answer == task.answer)
 

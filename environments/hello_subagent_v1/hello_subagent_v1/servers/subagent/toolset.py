@@ -1,9 +1,6 @@
 import verifiers.v1 as vf
 
-
-class SubagentToolsetConfig(vf.ToolsetConfig):
-    loader: str = "hello_subagent_v1.servers.toolset:SubagentToolset"
-    name: str | None = "subagent"
+from .config import SubagentToolsetConfig
 
 
 class SubagentToolset(vf.Toolset[SubagentToolsetConfig]):

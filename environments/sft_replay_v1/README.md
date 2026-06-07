@@ -2,7 +2,7 @@
 
 ### Overview
 - **Environment ID**: `sft-replay`
-- **Short description**: Replay stored chat transcripts into trajectory steps without making model requests.
+- **Short description**: Replay stored chat transcripts into v1 transcript turns without making model requests.
 - **Tags**: replay, sft, v1
 
 ### Datasets
@@ -23,7 +23,7 @@ canonical serialized message format.
 ### Task
 - **Type**: replay
 - **Output format expectations (optional)**: Stored assistant messages are replayed exactly in their canonical message shape.
-- **Rubric overview**: No default reward; this environment produces replay trajectories for downstream SFT-style processing.
+- **Rubric overview**: No default reward; this environment produces replay transcripts for downstream SFT-style processing.
 
 ### Quickstart
 Run an evaluation with default settings:
@@ -59,4 +59,4 @@ Set `max_turns` to cap the number of assistant messages replayed per rollout.
 
 | Metric | Meaning |
 | ------ | ------- |
-| `num_model_requests` | Number of assistant messages replayed into trajectory steps. |
+| `num_model_requests` | Number of assistant messages replayed into transcript turns. |

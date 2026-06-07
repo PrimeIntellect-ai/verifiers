@@ -2,7 +2,7 @@ from collections.abc import Iterable
 
 import verifiers.v1 as vf
 
-from .servers.toolset import SearchToolsetConfig
+from .servers.search import SearchToolsetConfig
 
 SYSTEM_PROMPT = "Use the available MCP tools to answer the question."
 
@@ -63,7 +63,7 @@ DEFAULT_EXAMPLES = [
 class MCPSearchTasksetConfig(vf.TasksetConfig):
     max_turns: int = 6
     examples: list[vf.JsonData] | None = None
-    toolsets: list[vf.ToolsetConfig] = [SearchToolsetConfig()]
+    toolsets: vf.ToolsetConfigs = {"records": SearchToolsetConfig()}
 
 
 class MCPSearchTask(vf.Task):
@@ -87,7 +87,7 @@ class MCPSearchTaskset(vf.Taskset[MCPSearchTasksetConfig]):
     @vf.reward(weight=1.0)
     async def exact_title_reward(self, task: MCPSearchTask, state: vf.State) -> float:
         completion = state.completion
-        messages = vf.get_messages(completion, role="assistant")
+        messages = [message for message in completion if message.role == "assistant"]
         response = str(messages[-1].content or "") if messages else ""
         return float(task.answer.lower() in response.lower())
 

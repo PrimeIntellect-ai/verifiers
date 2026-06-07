@@ -5,6 +5,8 @@ from pathlib import Path
 
 import verifiers.v1 as vf
 
+from .servers.user import UserConfig
+
 DEFAULT_USER_MODEL = "openai/gpt-4.1-mini"
 DEFAULT_USER_BASE_URL = "https://api.pinference.ai/api/v1"
 DEFAULT_USER_API_KEY_VAR = "PRIME_API_KEY"
@@ -14,9 +16,7 @@ DEFAULT_MAX_ERRORS = 10
 
 class Tau2TasksetConfig(vf.TasksetConfig):
     id: str | None = "tau2_telecom"
-    user: vf.UserConfig | None = vf.UserConfig(
-        loader="tau2_bench_v1.servers.user:Tau2User"
-    )
+    user: vf.UserConfig | None = UserConfig()
     domain: str = "telecom"
     user_model: str = DEFAULT_USER_MODEL
     user_args: vf.JsonData | None = None

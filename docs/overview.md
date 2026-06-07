@@ -118,7 +118,9 @@ class MyTaskset(vf.Taskset[MyTasksetConfig]):
 
     @vf.reward(weight=1.0)
     async def correct_answer(self, task: MyTask, state: vf.State) -> float:
-        messages = vf.get_messages(state.completion or [], role="assistant")
+        messages = [
+            message for message in state.completion if message.role == "assistant"
+        ]
         if not messages:
             return 0.0
         response = str(messages[-1].content or "").strip()

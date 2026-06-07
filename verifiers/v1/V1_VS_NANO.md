@@ -80,25 +80,31 @@ hidden state reads or bound state writes at the framework layer.
 ### Users As MCP Servers
 
 v1 treats users as MCP servers with a hidden `respond` tool. User and tool
-servers both return `ServerResponse` data with `messages`, and both write state
-through `@vf.tool` data-flow metadata.
+servers both return `ServerResponse` data with `messages`. Toolsets write state
+through `@vf.tool` data-flow metadata; users use the sibling `@vf.user`
+decorator.
 
 `ToolsetConfig` and `UserConfig` are sibling `ServerConfig` specializations
-with the same loader contract:
+with the same server contract:
 
 ```python
-vf.ToolsetConfig(loader="my_env.servers.toolset:SearchToolset", name="search")
-vf.UserConfig(loader="my_env.servers.user:DialogueUser")
+class SearchToolsetConfig(vf.ToolsetConfig):
+    scope: vf.Scope = "rollout"
+
+
+class DialogueUserConfig(vf.UserConfig):
+    pass
 ```
 
-The template convention is `servers/toolset.py` for task tools and
-`servers/user.py` for user simulation. Authors write `Toolset` and `User`
-classes; v1 owns the MCP lifecycle behind that contract.
+The template convention is one folder per configured server, for example
+`servers/search/config.py` plus `servers/search/toolset.py`, and
+`servers/user/config.py` plus `servers/user/user.py`. Authors write `Toolset`
+and `User` classes; v1 owns the MCP lifecycle behind that contract.
 
-`TasksetConfig.toolsets` is the list of toolset instances attached to a taskset.
-Each `ToolsetConfig.loader` is the implementation pointer for one configured
-toolset. Those are not parallel loading paths: the field is the collection, the
-loader is the element's code identity.
+`TasksetConfig.toolsets` is a mapping from toolset name to config. The key is
+the model-visible tool prefix. Taskset-defined keys can be overridden in TOML
+without `source`; new keys require `source` pointing to a `ToolsetConfig` class.
+The tool implementation is derived from that config class.
 
 Nano examples use MCP servers for tools. User simulation is not yet the same
 first-class server contract in nano.

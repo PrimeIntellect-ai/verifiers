@@ -34,13 +34,13 @@ async def test_wordle_textarena_user_returns_observation(monkeypatch):
             return FakeTextArenaEnv()
 
     monkeypatch.setattr(textarena, "ta", FakeTextArenaModule())
-    textarena.SESSION.env = None
+    session = textarena.TextArenaSession()
     task = TextArenaTask(
         answer="apple",
         textarena={"game": "Wordle-v0", "answer_state_key": "secret_word"},
     )
     state = vf.State(task_id=task.task_id)
-    state.add_turn(
+    state.transcript.append(
         vf.Turn(
             prompt=task.prompt,
             completion=[vf.AssistantMessage(content="<guess>[berry]</guess>")],
@@ -48,6 +48,7 @@ async def test_wordle_textarena_user_returns_observation(monkeypatch):
     )
 
     response = textarena.textarena_respond(
+        session,
         task.textarena.model_dump(mode="json"),
         task.answer,
         [message.model_dump(mode="json") for message in state.completion],
@@ -60,18 +61,17 @@ async def test_wordle_textarena_user_returns_observation(monkeypatch):
 
 def test_wordle_load_environment_coerces_taskset_config():
     from environments.wordle_v1.wordle_v1 import taskset as wordle_v1
-    from tasksets.textarena import TextArenaTasksetConfig
-    import verifiers.v1 as vf
     from verifiers.v1.loaders import load_environment_from_components
 
     env = load_environment_from_components(
         wordle_v1,
         {
-            "config": vf.EnvConfig(
-                taskset=TextArenaTasksetConfig(
-                    game="Wordle-v0", answer_state_key="secret_word"
-                )
-            )
+            "config": {
+                "taskset": {
+                    "game": "Wordle-v0",
+                    "answer_state_key": "secret_word",
+                }
+            }
         },
     )
 
@@ -87,7 +87,7 @@ def test_wordle_taskset_uses_textarena_loaders():
 
     assert callable(taskset.load_tasks)
     assert taskset.user is not None
-    assert taskset.user.loader == "tasksets.textarena:TextArenaUser"
+    assert taskset.user.implementation_ref() == "tasksets.textarena:TextArenaUser"
 
 
 def test_wordle_v1_load_taskset_reads_system_prompt_path(tmp_path):
@@ -136,7 +136,7 @@ async def test_wordle_v1_rewards_match_wordle_protocol():
         textarena={"game": "Wordle-v0", "answer_state_key": "secret_word"},
     )
     state = vf.State(task_id=task.task_id)
-    state.add_turn(
+    state.transcript.append(
         vf.Turn(
             prompt=task.prompt,
             completion=[
@@ -165,7 +165,7 @@ async def test_wordle_v1_partial_answer_scans_past_non_guess_messages():
         textarena={"game": "Wordle-v0", "answer_state_key": "secret_word"},
     )
     state = vf.State(task_id=task.task_id)
-    state.add_turn(
+    state.transcript.append(
         vf.Turn(
             prompt=task.prompt,
             completion=[

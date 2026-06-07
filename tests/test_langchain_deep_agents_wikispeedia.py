@@ -171,7 +171,7 @@ async def test_wikispeedia_scores_from_extras_and_transcript(
             "shortest_path": 1,
         }
     )
-    state.add_turn(
+    state.transcript.append(
         vf.Turn(
             prompt=[],
             completion=[vf.AssistantMessage(content="done")],

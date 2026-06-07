@@ -247,7 +247,7 @@ class WikispeediaHarness(vf.Harness[WikispeediaHarnessConfig]):
             content = final.content if hasattr(final, "content") else ""
             state.artifacts["agent_result"] = str(content or "")
         if not state.transcript:
-            state.add_turn(vf.Turn(prompt=prompt, completion=completion))
+            state.transcript.append(vf.Turn(prompt=prompt, completion=completion))
         if not state.is_completed:
             state.stop("agent_completed")
 
@@ -490,7 +490,20 @@ def serialize_agent_completion(
         serialized.append(item)
     if serialized and serialized[0].get("role") == "user":
         serialized = serialized[1:]
-    return vf.get_messages(serialized)
+    parsed: vf.Messages = []
+    for item in serialized:
+        role = item.get("role")
+        if role == "assistant":
+            parsed.append(vf.AssistantMessage.model_validate(item))
+        elif role == "user":
+            parsed.append(vf.UserMessage.model_validate(item))
+        elif role == "tool":
+            parsed.append(vf.ToolMessage.model_validate(item))
+        elif role == "system":
+            parsed.append(vf.SystemMessage.model_validate(item))
+        else:
+            raise ValueError(f"Unsupported LangChain message role: {role!r}.")
+    return parsed
 
 
 def load_taskset(config: WikispeediaTasksetConfig) -> WikispeediaTaskset:

@@ -84,7 +84,7 @@ class Context:
     model_client: ModelClient
     teacher: ModelClient | None = None
     runtime: Runtime | None = None
-    tools: MCPToolRegistry | None = None
+    toolsets: MCPToolRegistry | None = None
     user: MCPToolRegistry | None = None
     parent: Context | None = None
     score: bool = False

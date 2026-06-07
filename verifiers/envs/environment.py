@@ -26,6 +26,7 @@ from typing import (
     final,
 )
 
+from pydantic import TypeAdapter
 from verifiers.clients import Client, resolve_client
 from verifiers.decorators import discover_decorated
 from verifiers.serve import ZMQEnvClient
@@ -63,6 +64,7 @@ from verifiers.types import (
     State,
     TokenUsage,
     Tool,
+    UserMessage,
     flatten_task_input,
 )
 from verifiers.utils.async_utils import (
@@ -72,7 +74,6 @@ from verifiers.utils.async_utils import (
     with_sem,
 )
 from verifiers.utils.error_utils import ErrorChain
-from verifiers.utils.message_utils import normalize_messages
 from verifiers.utils.save_utils import (
     GenerateOutputsBuilder,
     load_outputs,
@@ -87,6 +88,7 @@ from verifiers.utils.save_utils import (
 )
 from verifiers.utils.usage_utils import StateUsageTracker
 
+_MESSAGES_ADAPTER = TypeAdapter(Messages)
 _MESSAGE_TYPE_UNSET = object()
 
 
@@ -559,7 +561,11 @@ class Environment(ABC):
         # Convert prompt to Pydantic messages
         raw_prompt = state_input.get("prompt")
         if isinstance(raw_prompt, (str, list)):
-            state["prompt"] = normalize_messages(raw_prompt, field_name="input.prompt")
+            state["prompt"] = (
+                [UserMessage(content=raw_prompt)]
+                if isinstance(raw_prompt, str)
+                else _MESSAGES_ADAPTER.validate_python(raw_prompt)
+            )
 
         state["client"] = resolve_client(client)
         state["model"] = model

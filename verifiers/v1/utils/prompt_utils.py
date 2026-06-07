@@ -1,12 +1,11 @@
 import importlib.util
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, TypeAlias, cast
+from typing import TYPE_CHECKING, Literal, TypeAlias
 
-from pydantic import model_validator
+from pydantic import TypeAdapter, model_validator
 from typing_extensions import Self
-from verifiers.types import Messages, SystemMessage
-from verifiers.utils.message_utils import normalize_messages
+from verifiers.types import Messages, SystemMessage, UserMessage
 
 from ..config import Config
 from ..types import JsonData, PromptInput
@@ -14,6 +13,8 @@ from .config_utils import current_config_ref_module
 
 if TYPE_CHECKING:
     from ..task import Task
+
+_MESSAGES_ADAPTER = TypeAdapter(Messages)
 
 
 SystemPromptStrategy = Literal["REJECT", "TH", "HT", "T", "H", "T_OR_H", "H_OR_T"]
@@ -88,7 +89,12 @@ SystemPrompt: TypeAlias = PromptInput | SystemPromptConfig | None
 def normalize_prompt(
     value: PromptInput | None, field_name: str = "prompt"
 ) -> list[JsonData]:
-    messages = normalize_messages(cast(Messages, value or []), field_name=field_name)
+    _ = field_name
+    messages = (
+        [UserMessage(content=value)]
+        if isinstance(value, str)
+        else _MESSAGES_ADAPTER.validate_python(value or [])
+    )
     for message in messages:
         if getattr(message, "role", None) == "system":
             raise ValueError(
@@ -107,7 +113,7 @@ def normalize_system_prompt(
         return []
     if isinstance(value, str):
         return [SystemMessage(content=value).model_dump(exclude_none=True)]
-    messages = normalize_messages(cast(Messages, value), field_name=field_name)
+    messages = _MESSAGES_ADAPTER.validate_python(value)
     for message in messages:
         if getattr(message, "role", None) != "system":
             raise ValueError(f"{field_name} accepts only system messages.")
@@ -169,9 +175,8 @@ def system_prompt_resolution(
     taskset_system_prompt: list[JsonData],
     harness_system_prompt: list[JsonData],
 ) -> SystemPromptResolution:
-    raw_task_system_prompt = getattr(task, "system_prompt", None)
     task_system_prompt = normalize_system_prompt(
-        cast(PromptInput | None, raw_task_system_prompt),
+        task.system_prompt,
         field_name="task.system_prompt",
     )
     return SystemPromptResolution(

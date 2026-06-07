@@ -9,6 +9,7 @@ from openai.types.chat.chat_completion_message_function_tool_call_param import (
     ChatCompletionMessageFunctionToolCallParam,
     Function,
 )
+from pydantic import TypeAdapter
 
 from verifiers.clients.openai_chat_completions_client import (
     OpenAIChatCompletionsClient,
@@ -18,11 +19,12 @@ from verifiers.clients.openai_chat_completions_client import (
     OpenAITool,
     handle_openai_overlong_prompt,
 )
-from verifiers.types import SamplingArgs, State
+from verifiers.types import Messages, SamplingArgs, State
 from verifiers.utils.client_utils import (
     post_chat_completion_with_routed_experts_sidecar,
 )
-from verifiers.utils.message_utils import normalize_messages
+
+_MESSAGES_ADAPTER = TypeAdapter(Messages)
 
 
 def _has_multimodal_content(messages) -> bool:
@@ -207,9 +209,8 @@ class OpenAIChatCompletionsTokenClient(OpenAIChatCompletionsClient):
                 step_tokens = step["tokens"]
                 if step_tokens is None:
                     continue
-                step_messages = normalize_messages(
-                    cast(Any, [*step["prompt"], *step["completion"]]),
-                    field_name="state.turn.messages",
+                step_messages = _MESSAGES_ADAPTER.validate_python(
+                    cast(Any, [*step["prompt"], *step["completion"]])
                 )
                 step_prompt_messages, _ = await self.to_native_prompt(step_messages)
                 normalized_step_messages = normalize_for_comparison(

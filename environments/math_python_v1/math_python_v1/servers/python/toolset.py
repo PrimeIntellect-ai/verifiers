@@ -5,12 +5,12 @@ import traceback
 
 import verifiers.v1 as vf
 
-HISTORY: list[str] = []
+from .config import PythonToolsetConfig
 
 
-def execute_python(code: str) -> str:
+def execute_python(code: str, history: list[str]) -> str:
     namespace: dict[str, object] = {}
-    for snippet in HISTORY:
+    for snippet in history:
         exec(compile(snippet, "<history>", "exec"), namespace, namespace)
     tree = ast.parse(code, "<tool>", "exec")
     stdout = io.StringIO()
@@ -24,23 +24,25 @@ def execute_python(code: str) -> str:
                 print(repr(result))
         else:
             exec(compile(tree, "<tool>", "exec"), namespace, namespace)
-    HISTORY.append(code)
+    history.append(code)
     return stdout.getvalue().strip() or "(no output)"
 
 
-class PythonToolsetConfig(vf.ToolsetConfig):
-    loader: str = "math_python_v1.servers.toolset:PythonToolset"
-    name: str | None = "python"
-
-
 class PythonToolset(vf.Toolset[PythonToolsetConfig]):
-    @vf.tool(sets={"python_history": "state.extras.python_history"})
-    def python(self, code: str) -> dict:
+    @vf.resource
+    def history(self) -> list[str]:
+        return []
+
+    @vf.tool(
+        args={"history": "resources.history"},
+        sets={"python_history": "state.extras.python_history"},
+    )
+    def python(self, code: str, history: list[str]) -> dict:
         try:
-            content = execute_python(code)
+            content = execute_python(code, history)
         except BaseException:
             content = traceback.format_exc()
         return {
             "content": content,
-            "python_history": list(HISTORY),
+            "python_history": list(history),
         }

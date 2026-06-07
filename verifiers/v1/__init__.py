@@ -23,7 +23,6 @@ from verifiers.types import (
     ToolMessage,
     UserMessage,
 )
-from verifiers.utils.message_utils import get_messages
 
 from . import advantages
 from .config import (
@@ -47,12 +46,15 @@ from .protocols import (
 from .mcp import MCPToolRegistry, ServerResponse
 from .runtime import (
     CommandResult,
+    DaytonaRuntimeConfig,
+    DaytonaRuntimeProvider,
+    DaytonaRuntime,
     DockerRuntimeConfig,
     DockerRuntimeProvider,
     DockerRuntime,
-    LocalRuntimeConfig,
-    LocalRuntimeProvider,
-    LocalRuntime,
+    ModalRuntimeConfig,
+    ModalRuntimeProvider,
+    ModalRuntime,
     PrimeRuntimeConfig,
     PrimeRuntimeProvider,
     PrimeRuntime,
@@ -60,6 +62,9 @@ from .runtime import (
     RuntimeConfigValue,
     RuntimeProvider,
     Runtime,
+    SubprocessRuntimeConfig,
+    SubprocessRuntimeProvider,
+    SubprocessRuntime,
     TrajectoryVisibility,
     make_runtime_provider,
     resolve_runtime_config,
@@ -82,15 +87,17 @@ from .state import (
     TurnTokens,
     TurnUsage,
 )
-from .task import Task
+from .task import Task, TaskVisibility
 from .taskset import Taskset, TasksetConfig, discover_sibling_dir
 from .toolset import (
     Scope,
+    ServerPlacement,
     ServerConfig,
     Toolset,
     ToolsetConfig,
-    Toolsets,
+    ToolsetConfigs,
     VisibilityConfig,
+    resource,
     tool,
 )
 from .utils.prompt_utils import SystemPrompt, SystemPromptConfig, SystemPromptStrategy
@@ -105,7 +112,7 @@ from .types import (
     TaskSplit,
     Tasks,
 )
-from .user import User, UserConfig
+from .user import User, UserConfig, user
 
 __all__ = [
     "Config",
@@ -139,23 +146,31 @@ __all__ = [
     "RuntimeProvider",
     "Runtime",
     "Scope",
+    "ServerPlacement",
     "ServerConfig",
     "CommandResult",
+    "DaytonaRuntimeConfig",
+    "DaytonaRuntimeProvider",
+    "DaytonaRuntime",
     "DockerRuntimeConfig",
     "DockerRuntimeProvider",
     "DockerRuntime",
-    "LocalRuntimeConfig",
-    "LocalRuntimeProvider",
-    "LocalRuntime",
+    "ModalRuntimeConfig",
+    "ModalRuntimeProvider",
+    "ModalRuntime",
     "PrimeRuntimeConfig",
     "PrimeRuntimeProvider",
     "PrimeRuntime",
+    "SubprocessRuntimeConfig",
+    "SubprocessRuntimeProvider",
+    "SubprocessRuntime",
     "PromptInput",
     "State",
     "SystemPrompt",
     "SystemPromptConfig",
     "SystemPromptStrategy",
     "Task",
+    "TaskVisibility",
     "TaskSplit",
     "Tasks",
     "Taskset",
@@ -167,7 +182,7 @@ __all__ = [
     "ToolCall",
     "Toolset",
     "ToolsetConfig",
-    "Toolsets",
+    "ToolsetConfigs",
     "ToolMessage",
     "TrajectoryVisibility",
     "Turn",
@@ -190,7 +205,6 @@ __all__ = [
     "metric",
     "make_runtime_provider",
     "resolve_runtime_config",
-    "get_messages",
     "load_environment",
     "load_harness",
     "load_taskset",
@@ -200,7 +214,9 @@ __all__ = [
     "setup",
     "stop",
     "teardown",
+    "resource",
     "tool",
+    "user",
     "update",
 ]
 

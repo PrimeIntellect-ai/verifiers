@@ -11,7 +11,7 @@ class TagExtractor:
         self.pattern = re.compile(rf"<{tag}>(.*?)</{tag}>", re.DOTALL)
 
     def __call__(self, completion: vf.Messages) -> str:
-        messages = vf.get_messages(completion, role="assistant")
+        messages = [message for message in completion if message.role == "assistant"]
         if not messages:
             return ""
         message = messages[-1]

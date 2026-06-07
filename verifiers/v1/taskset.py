@@ -1,17 +1,18 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from importlib.abc import Traversable
 from pathlib import Path
 from typing import TYPE_CHECKING, Generic, TypeVar, cast, final
 
 from datasets import Dataset
-from pydantic import Field
+from pydantic import Field, field_serializer, model_validator
 
 from .config import Config, ConfigSource
 from .decorators import discover_decorated
 from .state import Extras, State
 from .task import Task
-from .toolset import ToolsetConfig
+from .toolset import ToolsetConfig, ToolsetConfigs, resolve_server_config
 from .runtime import RuntimeConfig
 from .types import Handler, JsonData, TaskSplit, Tasks
 from .user import UserConfig
@@ -41,9 +42,104 @@ class TasksetConfig(Config):
     id: str | None = None
     system_prompt: SystemPrompt = None
     user: UserConfig | None = None
-    toolsets: list[ToolsetConfig] = Field(default_factory=list)
+    toolsets: ToolsetConfigs = Field(default_factory=dict)
     runtime: RuntimeConfig | None = None
     extras: Extras | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def resolve_server_sources(cls, value: object) -> object:
+        if not isinstance(value, Mapping):
+            return value
+        data = dict(value)
+        if "toolsets" in data:
+            data["toolsets"] = resolve_toolsets_config(
+                data["toolsets"],
+                default_toolsets_config(cls),
+            )
+        if "user" in data:
+            data["user"] = resolve_user_config(
+                data["user"],
+                default_user_config(cls),
+            )
+        return data
+
+    @field_serializer("user")
+    def serialize_user(self, value: UserConfig | None) -> dict[str, object] | None:
+        if value is None:
+            return None
+        return value.model_dump(mode="json", exclude_none=True)
+
+    @field_serializer("toolsets")
+    def serialize_toolsets(self, value: ToolsetConfigs) -> dict[str, dict[str, object]]:
+        return {
+            name: config.model_dump(mode="json", exclude_none=True)
+            for name, config in value.items()
+        }
+
+
+def default_toolsets_config(config_type: type[TasksetConfig]) -> ToolsetConfigs:
+    value = config_type.model_fields["toolsets"].get_default(call_default_factory=True)
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise TypeError(f"{config_type.__name__}.toolsets must be a mapping.")
+    toolsets: ToolsetConfigs = {}
+    for name, item in value.items():
+        if not isinstance(name, str) or not name:
+            raise TypeError(f"{config_type.__name__}.toolsets keys must be strings.")
+        toolsets[name] = resolve_server_config(
+            name,
+            item,
+            default=None,
+            base_type=ToolsetConfig,
+        )
+    return toolsets
+
+
+def resolve_toolsets_config(value: object, defaults: ToolsetConfigs) -> ToolsetConfigs:
+    if not isinstance(value, Mapping):
+        raise TypeError("TasksetConfig.toolsets must be a mapping.")
+    toolsets: ToolsetConfigs = dict(defaults)
+    for name, item in value.items():
+        if not isinstance(name, str) or not name:
+            raise TypeError("TasksetConfig.toolsets keys must be non-empty strings.")
+        toolsets[name] = resolve_server_config(
+            name,
+            item,
+            default=defaults.get(name),
+            base_type=ToolsetConfig,
+        )
+    return toolsets
+
+
+def enabled_toolsets(toolsets: ToolsetConfigs) -> ToolsetConfigs:
+    return {
+        name: toolset for name, toolset in toolsets.items() if bool(toolset.enabled)
+    }
+
+
+def default_user_config(config_type: type[TasksetConfig]) -> UserConfig | None:
+    value = config_type.model_fields["user"].get_default(call_default_factory=True)
+    if value is None:
+        return None
+    return resolve_server_config(
+        "user",
+        value,
+        default=None,
+        base_type=UserConfig,
+    )
+
+
+def resolve_user_config(value: object, default: UserConfig | None) -> UserConfig | None:
+    if value is None:
+        return None
+    return resolve_server_config(
+        "user",
+        value,
+        default=default,
+        base_type=UserConfig,
+    )
 
 
 ConfigT = TypeVar("ConfigT", bound=TasksetConfig)
@@ -78,10 +174,12 @@ class Taskset(Generic[ConfigT]):
                 field_name="taskset.system_prompt",
             )
             self.user = self.load_user(self.config.user)
-            self.toolsets = [
-                *(self.load_toolsets(self.config) or []),
-                *self.config.toolsets,
-            ]
+            self.toolsets = enabled_toolsets(
+                {
+                    **(self.load_toolsets(self.config) or {}),
+                    **self.config.toolsets,
+                }
+            )
             self.handlers = self.load_handlers()
             self.signals = build_signals(self)
         self._dataset: Dataset | None = None
@@ -100,8 +198,8 @@ class Taskset(Generic[ConfigT]):
     def load_user(self, config: UserConfig | None) -> UserConfig | None:
         return config
 
-    def load_toolsets(self, config: ConfigT) -> list[ToolsetConfig]:
-        return []
+    def load_toolsets(self, config: ConfigT) -> ToolsetConfigs:
+        return {}
 
     def load_handlers(self) -> dict[LifecycleKind, list[Handler]]:
         handlers: dict[LifecycleKind, list[Handler]] = {

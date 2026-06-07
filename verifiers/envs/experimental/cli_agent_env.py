@@ -13,6 +13,7 @@ from prime_sandboxes import (
     CreateSandboxRequest,
 )
 from prime_tunnel import Tunnel
+from pydantic import TypeAdapter
 
 import verifiers as vf
 from verifiers.clients import Client
@@ -38,9 +39,9 @@ from verifiers.utils.interception_utils import (
     synthesize_stream,
 )
 from verifiers.utils.logging_utils import print_time, truncate
-from verifiers.utils.message_utils import normalize_messages
 
 logger = logging.getLogger(__name__)
+_MESSAGES_ADAPTER = TypeAdapter(Messages)
 
 
 class AgentError(vf.InfraError):
@@ -497,7 +498,7 @@ class CliAgentEnv(SandboxMixin, vf.MultiTurnEnv):
 
         Assumes that agent requests arrive in OpenAI-format.
         """
-        return await asyncio.to_thread(normalize_messages, intercepted_messages)  # type: ignore
+        return _MESSAGES_ADAPTER.validate_python(intercepted_messages)
 
     async def normalize_response(self, response: Response) -> Response:
         """Hook to normalize the model response before it is stored in the trajectory.

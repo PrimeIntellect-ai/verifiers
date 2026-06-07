@@ -35,10 +35,10 @@ def test_load_environment_uses_v1_taskset_and_harness(
     env = load_environment_from_components(
         package,
         {
-            "config": vf.EnvConfig(
-                taskset=module.HarborTasksetConfig(),
-                harness=module.OpenCodeConfig(),
-            )
+            "config": {
+                "taskset": {},
+                "harness": {},
+            }
         },
     )
 
@@ -69,17 +69,17 @@ def test_load_environment_accepts_v1_taskset_and_harness_config(
     env = load_environment_from_components(
         package,
         {
-            "config": vf.EnvConfig(
-                taskset=module.HarborTasksetConfig(
-                    task_names=["hello-world"],
-                    task_runtime={"cpu_cores": 1.5},
-                ),
-                harness=module.OpenCodeConfig(
-                    cwd="/workspace",
-                    disabled_tools=["webfetch"],
-                    max_turns=2,
-                ),
-            )
+            "config": {
+                "taskset": {
+                    "task_names": ["hello-world"],
+                    "task_runtime": {"cpu_cores": 1.5},
+                },
+                "harness": {
+                    "cwd": "/workspace",
+                    "disabled_tools": ["webfetch"],
+                    "max_turns": 2,
+                },
+            }
         },
     )
 

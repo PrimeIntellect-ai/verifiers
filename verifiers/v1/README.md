@@ -51,6 +51,10 @@ Toolsets are declared with `ToolsetConfig` and implemented as `Toolset`
 subclasses:
 
 ```python
+class SearchToolsetConfig(vf.ToolsetConfig):
+    scope: vf.Scope = "rollout"
+
+
 class SearchToolset(vf.Toolset):
     @vf.tool(
         args={"query_context": "state.extras.query_context"},
@@ -61,14 +65,12 @@ class SearchToolset(vf.Toolset):
 
 
 class SearchTasksetConfig(vf.TasksetConfig):
-    toolsets: list[vf.ToolsetConfig] = [
-        vf.ToolsetConfig(
-            loader="my_env.servers.toolset:SearchToolset",
-            name="wiki",
-            scope="rollout",
-        )
-    ]
+    toolsets: vf.ToolsetConfigs = {"wiki": SearchToolsetConfig()}
 ```
+
+The `toolsets` key is the model-visible tool prefix. Config may override a
+taskset-defined toolset by key without repeating its source, and may add a new
+toolset by pointing `source` at a `ToolsetConfig` class.
 
 One `Toolset` may expose multiple tools. Supported scopes are:
 
@@ -97,8 +99,12 @@ my_env/
     taskset.py
     harness.py        # optional
     servers/
-      user.py         # optional
-      toolset.py      # optional
+      search/
+        config.py
+        toolset.py
+      user/
+        config.py
+        user.py
 ```
 
 `vf.load_environment("my-env")` imports the package, discovers `taskset.py` and

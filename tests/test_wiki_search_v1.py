@@ -4,7 +4,6 @@ from pathlib import Path
 from types import ModuleType
 
 import pytest
-import verifiers.v1 as vf
 from verifiers.v1.loaders import load_environment_from_components
 
 
@@ -79,7 +78,9 @@ def load_wiki_v1(monkeypatch: pytest.MonkeyPatch) -> tuple[ModuleType, ModuleTyp
         "wiki_search_v1",
         "wiki_search_v1.taskset",
         "wiki_search_v1.servers",
-        "wiki_search_v1.servers.toolset",
+        "wiki_search_v1.servers.wiki",
+        "wiki_search_v1.servers.wiki.config",
+        "wiki_search_v1.servers.wiki.toolset",
     ):
         sys.modules.pop(name, None)
     return (
@@ -106,18 +107,22 @@ def test_wiki_search_v1_default_and_explicit_toolsets(
         {
             "config": {
                 "taskset": {
-                    "corpus_dataset": "test/corpus",
-                    "corpus_split": "validation",
-                    "chroma_db_dir": "/tmp/wiki",
-                    "embed_model": "test-embed",
+                    "toolsets": {
+                        "wiki": {
+                            "corpus_dataset": "test/corpus",
+                            "corpus_split": "validation",
+                            "chroma_db_dir": "/tmp/wiki",
+                            "embed_model": "test-embed",
+                        }
+                    }
                 }
             }
         },
     )
 
-    assert env.taskset.config.corpus_dataset == "test/corpus"
-    assert env.taskset.config.corpus_split == "validation"
-    assert [toolset.name for toolset in env.taskset.toolsets] == ["wiki"]
+    assert env.taskset.toolsets["wiki"].corpus_dataset == "test/corpus"
+    assert env.taskset.toolsets["wiki"].corpus_split == "validation"
+    assert list(env.taskset.toolsets) == ["wiki"]
     assert [signal["name"] for signal in env.taskset.signals] == ["answer_in_response"]
 
     monkeypatch.setattr(
@@ -138,16 +143,24 @@ def test_wiki_search_v1_default_and_explicit_toolsets(
 
     taskset = module.WikiSearchTaskset(
         config=module.WikiSearchTasksetConfig(
-            toolsets=[
-                vf.ToolsetConfig(
-                    name="custom",
-                    loader="wiki_search_v1.servers.toolset:WikiToolset",
-                )
-            ]
+            toolsets={"custom": module.WikiToolsetConfig()}
         )
     )
 
-    assert [toolset.name for toolset in taskset.toolsets] == ["wiki", "custom"]
+    assert list(taskset.toolsets) == ["wiki", "custom"]
+
+    configured_taskset = module.WikiSearchTaskset(
+        config={
+            "toolsets": {
+                "custom": {
+                    "source": "wiki_search_v1.servers.wiki.config:WikiToolsetConfig",
+                    "corpus_dataset": "custom/corpus",
+                }
+            }
+        }
+    )
+
+    assert configured_taskset.toolsets["custom"].corpus_dataset == "custom/corpus"
 
     configured_env = load_environment_from_components(
         package, {"config": {"harness": {"max_turns": 7}}}

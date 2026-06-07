@@ -159,7 +159,9 @@ class GroupRewardTaskset(vf.Taskset[GroupRewardTasksetConfig]):
         states: list[vf.State] = []
         for rollout_index in range(num_rollouts):
             candidate_id, candidate_answer = candidates[rollout_index % len(candidates)]
-            task_data = task.to_record()
+            task_data = task.model_dump(
+                mode="json", exclude_none=True, exclude_defaults=True
+            )
             task_data.pop("task_id", None)
             group_task = GroupRolloutTask.model_validate(
                 {
@@ -243,7 +245,7 @@ class GroupRewardHarness(vf.Harness[GroupRewardHarnessConfig]):
         message = vf.AssistantMessage(content=answer)
         state.extras["answer"] = answer
         state.extras["candidate_id"] = task.candidate_id
-        state.add_turn(
+        state.transcript.append(
             vf.Turn(prompt=self.initial_messages(task), completion=[message])
         )
         state.stop("candidate_program")

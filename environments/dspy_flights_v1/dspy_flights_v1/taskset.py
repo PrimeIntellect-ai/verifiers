@@ -483,7 +483,7 @@ class DSPyFlightsHarness(vf.Harness[DSPyFlightsHarnessConfig]):
 
         state.artifacts.update(result.model_dump(mode="json", exclude_none=True))
         message = vf.AssistantMessage(content=result.process_result)
-        state.add_turn(vf.Turn(prompt=prompt, completion=[message]))
+        state.transcript.append(vf.Turn(prompt=prompt, completion=[message]))
         state.stop("dspy_completed")
 
 

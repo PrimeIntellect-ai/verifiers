@@ -82,13 +82,14 @@ def test_textarena_user_steps_empty_guess_when_guess_tag_missing(fake_textarena)
             },
         )
     )
-    textarena.SESSION = textarena.TextArenaSession()
+    session = textarena.TextArenaSession()
     completion = [
         vf.AssistantMessage(content=None, reasoning_content="think").model_dump(
             mode="json", exclude_none=True
         )
     ]
     payload = textarena.textarena_respond(
+        session,
         task.textarena.model_dump(mode="json"),
         task.answer,
         completion,

@@ -5,6 +5,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
+    Annotated,
     Any,
     Awaitable,
     Callable,
@@ -23,6 +24,7 @@ from pydantic import (
     Field,
     computed_field,
     field_validator,
+    model_validator,
 )
 
 from verifiers.errors import Error
@@ -162,6 +164,30 @@ class ToolCall(CustomBaseModel):
     name: str
     arguments: str
 
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_openai_tool_call(cls, value: object) -> object:
+        if not isinstance(value, Mapping):
+            return value
+        data = dict(value)
+        if "name" in data and "arguments" in data:
+            return data
+        function = data.get("function")
+        if not isinstance(function, Mapping):
+            return data
+        name = function.get("name")
+        if not isinstance(name, str):
+            return data
+        arguments = function.get("arguments")
+        if not isinstance(arguments, str):
+            arguments = json.dumps(arguments if arguments is not None else {})
+        tool_call_id = data.get("id")
+        return {
+            "id": tool_call_id if isinstance(tool_call_id, str) else name,
+            "name": name,
+            "arguments": arguments,
+        }
+
 
 ThinkingBlock: TypeAlias = AnthropicThinkingBlock | RedactedThinkingBlock
 
@@ -180,9 +206,10 @@ class ToolMessage(CustomBaseModel):
     content: MessageContent
 
 
-Message: TypeAlias = (
-    SystemMessage | UserMessage | AssistantMessage | ToolMessage | TextMessage
-)
+Message: TypeAlias = Annotated[
+    SystemMessage | UserMessage | AssistantMessage | ToolMessage | TextMessage,
+    Field(discriminator="role"),
+]
 Messages = list[Message]
 
 

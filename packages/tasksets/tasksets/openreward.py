@@ -1,4 +1,5 @@
 import asyncio
+import json
 from collections.abc import Iterable
 from typing import Protocol, cast
 
@@ -9,6 +10,7 @@ from openreward.api.environments.types import (
     JSONObject as OpenRewardJSONObject,
     Task as OpenRewardTask,
     TextBlock as OpenRewardTextBlock,
+    ToolOutput as OpenRewardToolOutput,
 )
 
 import verifiers.v1 as vf
@@ -33,11 +35,13 @@ class OpenRewardEnvironment(Protocol):
     ) -> Iterable[OpenRewardTask]: ...
 
 
+class OpenRewardUserConfig(vf.UserConfig):
+    pass
+
+
 class OpenRewardTasksetConfig(vf.TasksetConfig):
     id: str | None = "openreward"
-    user: vf.UserConfig | None = vf.UserConfig(
-        loader="tasksets.openreward:OpenRewardUser"
-    )
+    user: vf.UserConfig | None = OpenRewardUserConfig()
     environment: str
     variant: str | None = None
     base_url: str | None = None
@@ -91,6 +95,13 @@ class OpenRewardSession:
         session = await self.start()
         return await asyncio.to_thread(session.get_prompt)
 
+    async def call_tool(self, name: str, input: vf.JsonData) -> OpenRewardToolOutput:
+        session = await self.start()
+        return cast(
+            OpenRewardToolOutput,
+            await asyncio.to_thread(session.call_tool, name, input),
+        )
+
     def content(self, blocks: object) -> vf.MessageContent:
         block_list = (
             list(blocks)
@@ -126,9 +137,6 @@ class OpenRewardSession:
         self.session_context = None
         self.session = None
         self.client = None
-
-
-SESSION: OpenRewardSession | None = None
 
 
 class OpenRewardTaskset(vf.Taskset[OpenRewardTasksetConfig]):
@@ -230,11 +238,16 @@ class OpenRewardTaskset(vf.Taskset[OpenRewardTasksetConfig]):
 
     @vf.reward(weight=1.0)
     async def openreward_reward(self, state: vf.State) -> float:
-        return float(state.reward)
+        return sum(float(turn.reward or 0.0) for turn in state.transcript)
 
 
-class OpenRewardUser(vf.User):
-    @vf.tool(
+class OpenRewardUser(vf.User[OpenRewardUserConfig]):
+    session: OpenRewardSession | None
+
+    def start(self) -> None:
+        self.session = None
+
+    @vf.user(
         args={
             "task": "task",
             "state": "state",
@@ -246,18 +259,42 @@ class OpenRewardUser(vf.User):
     )
     async def respond(self, task: dict, state: dict, transcript: list[dict]) -> dict:
         _ = state, transcript
-        global SESSION
-        if SESSION is None:
-            SESSION = OpenRewardSession(task)
-            prompt = await SESSION.prompt()
+        if self.session is None:
+            self.session = OpenRewardSession(task)
+            prompt = await self.session.prompt()
             return {
                 "messages": [
-                    vf.UserMessage(content=SESSION.content(prompt)).model_dump(
+                    vf.UserMessage(content=self.session.content(prompt)).model_dump(
                         mode="json"
                     )
                 ],
             }
         return {"messages": [], "stop_condition": "openreward_waiting_for_tools"}
+
+    @vf.tool(
+        sets={
+            "reward": "state.transcript.last.reward",
+            "finished": "state.is_completed",
+            "stop_condition": "state.stop_condition",
+        }
+    )
+    async def call_tool(self, name: str, input: vf.JsonData) -> dict[str, object]:
+        """Call an OpenReward task tool by name with JSON input."""
+        if self.session is None:
+            raise RuntimeError("OpenReward session has not started.")
+        output = await self.session.call_tool(name, input)
+        content = self.session.content(output.blocks)
+        payload: dict[str, object] = {
+            "content": content
+            if isinstance(content, str)
+            else json.dumps(jsonable(content)),
+        }
+        if output.reward is not None:
+            payload["reward"] = float(output.reward)
+        if output.finished:
+            payload["finished"] = True
+            payload["stop_condition"] = "openreward_finished"
+        return payload
 
 
 def load_taskset(config: OpenRewardTasksetConfig) -> OpenRewardTaskset:

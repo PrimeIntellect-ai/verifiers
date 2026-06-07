@@ -9,6 +9,8 @@ from pydantic import BaseModel
 
 import verifiers.v1 as vf
 
+from .servers.user import UserConfig
+
 logger = logging.getLogger(__name__)
 
 
@@ -251,7 +253,8 @@ def eval_turn(
     expected = ground_truths[turn_num - 1]
     assistant_msgs = [
         str(message.content or "")
-        for message in vf.get_messages(completion, role="assistant")
+        for message in completion
+        if message.role == "assistant"
     ]
     if len(assistant_msgs) < turn_num:
         return 0.0
@@ -302,9 +305,7 @@ def transcript_completion_messages(state: vf.State) -> vf.Messages:
 
 
 class AlphabetSortTasksetConfig(vf.TasksetConfig):
-    user: vf.UserConfig | None = vf.UserConfig(
-        loader="alphabet_sort_v1.servers.user:AlphabetSortUser"
-    )
+    user: vf.UserConfig | None = UserConfig()
     min_turns: int = 1
     max_turns: int = 3
     min_names_per_turn: int = 1

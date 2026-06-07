@@ -4,6 +4,7 @@ import json
 from typing import cast
 
 from aiohttp import web
+from pydantic import TypeAdapter
 
 from verifiers.types import (
     AssistantMessage,
@@ -11,15 +12,17 @@ from verifiers.types import (
     Messages,
     Response,
     SystemMessage,
+    TextMessage,
     Tool,
     ToolCall,
     ToolMessage,
     UserMessage,
 )
-from verifiers.utils.message_utils import normalize_messages
 
 from .interception import EndpointProtocol, InterceptedRequest, ProtocolRoute
 from .types import JsonData, JsonValue
+
+_MESSAGES_ADAPTER = TypeAdapter(Messages)
 
 
 class OpenAIProtocol:
@@ -98,10 +101,13 @@ class OpenAICompletionsProtocol(OpenAIProtocol, EndpointProtocol):
 
     async def parse(self, request: web.Request, body: JsonData) -> InterceptedRequest:
         _ = request
+        raw_prompt = body.get("prompt")
         return InterceptedRequest(
             protocol=self.name,
-            prompt=normalize_messages(
-                body.get("prompt"), field_name="completion.prompt"
+            prompt=(
+                [TextMessage(content=raw_prompt)]
+                if isinstance(raw_prompt, str)
+                else _MESSAGES_ADAPTER.validate_python(raw_prompt or [])
             ),
             model=string_value(body.get("model")),
             sampling_args=openai_sampling_args(body),

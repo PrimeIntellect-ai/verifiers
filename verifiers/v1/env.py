@@ -3,13 +3,15 @@ from __future__ import annotations
 import uuid
 from typing import TYPE_CHECKING, cast, final
 
+from pydantic import Field, field_validator
+from pydantic import BaseModel
 from verifiers.types import (
     RolloutInput,
 )
 from verifiers.utils.async_utils import maybe_retry
 
 from .config import Config
-from .harness import Harness, HarnessConfig
+from .harness import Harness
 from .runtime import (
     RuntimeConfig,
     RuntimeConfigValue,
@@ -17,8 +19,9 @@ from .runtime import (
 )
 from .state import State
 from .task import Task
-from .taskset import Taskset, TasksetConfig, collect_owner_signals
+from .taskset import Taskset, collect_owner_signals
 from .types import Handler, JsonData, ModelClient, ModelConfig
+from .utils.config_utils import explicit_config_data
 from .utils.scoring_utils import score_group as score_group_signals
 
 if TYPE_CHECKING:
@@ -27,9 +30,18 @@ if TYPE_CHECKING:
 
 @final
 class EnvConfig(Config):
-    taskset: TasksetConfig = TasksetConfig()
-    harness: HarnessConfig = HarnessConfig()
+    taskset: dict[str, object] = Field(default_factory=dict)
+    harness: dict[str, object] = Field(default_factory=dict)
     runtime: RuntimeConfig | None = None
+
+    @field_validator("taskset", "harness", mode="before")
+    @classmethod
+    def serialize_child_config(cls, value: object) -> object:
+        if value is None:
+            return {}
+        if isinstance(value, BaseModel):
+            return explicit_config_data(value)
+        return value
 
 
 class Env:
@@ -50,8 +62,8 @@ class Env:
         self.runtime_config = self.harness.runtime_config
         self.runtime_provider = self.harness.runtime_provider
         self.config = EnvConfig(
-            taskset=cast(TasksetConfig, self.taskset.config),
-            harness=cast(HarnessConfig, self.harness.config),
+            taskset=explicit_config_data(self.taskset.config),
+            harness=explicit_config_data(self.harness.config),
             runtime=self.runtime_config,
         )
         self.env_id = ""
@@ -206,7 +218,7 @@ class Env:
                 await self.harness.close_model_client(model_client)
             for state in states:
                 self.harness.validate_extras(state)
-                state.finalize()
+                state.assert_serializable()
         return states
 
     async def close(self) -> None:

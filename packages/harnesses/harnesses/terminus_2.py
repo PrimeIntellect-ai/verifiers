@@ -31,8 +31,7 @@ class Terminus2(CommandHarness[Terminus2Config]):
                 str(getattr(message, "content", "") or "") for message in task.prompt
             )
         system_prompt = "\n\n".join(
-            str(getattr(message, "content", "") or "")
-            for message in vf.get_messages(self.system_prompt)
+            str(message.get("content") or "") for message in self.system_prompt
         )
         if system_prompt:
             instruction = f"{system_prompt}\n\n{instruction}"

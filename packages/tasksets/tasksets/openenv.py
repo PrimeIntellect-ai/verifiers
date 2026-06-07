@@ -6,15 +6,18 @@ from pathlib import Path
 from typing import Literal, Protocol, TypeAlias, cast
 
 from openenv.core.generic_client import GenericEnvClient
+from openenv.core.env_server.mcp_types import CallToolAction
 from openenv.core.mcp_client import MCPToolClient
+from pydantic import TypeAdapter
 
 import verifiers.v1 as vf
 from verifiers.utils.async_utils import maybe_await, maybe_call_with_named_args
-from verifiers.utils.message_utils import get_messages, normalize_messages
 from verifiers.v1.config import import_config_ref
 from verifiers.v1.utils.json_utils import jsonable
 
 from tasksets.utils.openenv_utils import PrimeSandboxOpenEnvProvider
+
+_MESSAGES_ADAPTER = TypeAdapter(vf.Messages)
 
 OpenEnvPromptRenderer: TypeAlias = Callable[
     ..., vf.PromptInput | Awaitable[vf.PromptInput]
@@ -72,9 +75,13 @@ class OpenEnvBuildConfig(vf.Config):
     contract: Literal["gym", "mcp"]
 
 
+class OpenEnvUserConfig(vf.UserConfig):
+    pass
+
+
 class OpenEnvTasksetConfig(vf.TasksetConfig):
     id: str | None = "openenv"
-    user: vf.UserConfig | None = vf.UserConfig(loader="tasksets.openenv:OpenEnvUser")
+    user: vf.UserConfig | None = OpenEnvUserConfig()
     prompt_renderer: str = "tasksets.openenv:default_openenv_prompt_renderer"
     openenv_project: str = "proj"
     num_train_examples: int = 100
@@ -133,6 +140,15 @@ class OpenEnvSession:
             raise RuntimeError("MCP OpenEnv tasks require an MCP tool server.")
         return cast(OpenEnvResult, await client.step(action))
 
+    async def call_tool(self, name: str, input: vf.JsonData) -> OpenEnvResult:
+        client = await self.start()
+        if not isinstance(client, MCPToolClient):
+            raise RuntimeError("Gym OpenEnv tasks require assistant JSON actions.")
+        return cast(
+            OpenEnvResult,
+            await client.step(CallToolAction(tool_name=name, arguments=input)),
+        )
+
     async def close(self) -> None:
         if self.client is not None:
             await maybe_await(self.client.close)
@@ -140,9 +156,6 @@ class OpenEnvSession:
             self.provider.stop_container()
         self.client = None
         self.provider = None
-
-
-SESSION: OpenEnvSession | None = None
 
 
 class OpenEnvTaskset(vf.Taskset[OpenEnvTasksetConfig]):
@@ -210,7 +223,7 @@ class OpenEnvTaskset(vf.Taskset[OpenEnvTasksetConfig]):
 
     @vf.reward(weight=1.0)
     async def openenv_reward(self, state: vf.State) -> float:
-        return float(state.reward)
+        return sum(float(turn.reward or 0.0) for turn in state.transcript)
 
 
 async def render_messages(
@@ -230,11 +243,14 @@ async def render_messages(
         contract=config.contract,
         seed=config.seed,
     )
+    messages = (
+        [vf.UserMessage(content=rendered)]
+        if isinstance(rendered, str)
+        else _MESSAGES_ADAPTER.validate_python(rendered)
+    )
     return [
         cast(dict[str, object], message.model_dump(mode="json", exclude_none=True))
-        for message in normalize_messages(
-            cast(vf.PromptInput, rendered), field_name="openenv"
-        )
+        for message in messages
     ]
 
 
@@ -244,10 +260,12 @@ def latest_assistant_json(raw_completion: list[dict]) -> vf.JsonData:
         for message in raw_completion
         if isinstance(message, dict)
     ]
-    assistant_messages = get_messages(messages, role="assistant")
+    assistant_messages = [
+        message for message in messages if message.get("role") == "assistant"
+    ]
     if not assistant_messages:
         return {}
-    content = assistant_messages[-1].content
+    content = assistant_messages[-1].get("content")
     text = content if isinstance(content, str) else json.dumps(content)
     action = json.loads(text.strip())
     if not isinstance(action, dict):
@@ -255,51 +273,106 @@ def latest_assistant_json(raw_completion: list[dict]) -> vf.JsonData:
     return cast(vf.JsonData, action)
 
 
+def mcp_tool_content(observation: object) -> vf.JsonValue:
+    if hasattr(observation, "model_dump"):
+        observation = observation.model_dump()
+    if not isinstance(observation, dict):
+        return cast(vf.JsonValue, jsonable(observation))
+    if observation.get("error") is not None:
+        return cast(vf.JsonValue, {"error": jsonable(observation.get("error"))})
+    value = observation.get("result")
+    data = getattr(value, "data", None)
+    if data is not None:
+        return cast(vf.JsonValue, jsonable(data))
+    if isinstance(value, dict) and "data" in value:
+        return cast(vf.JsonValue, jsonable(value["data"]))
+    return cast(vf.JsonValue, jsonable(value))
+
+
 def result_payload(
     *,
     messages: list[dict[str, object]],
     result: OpenEnvResult,
+    include_reward: bool,
 ) -> dict[str, object]:
     payload: dict[str, object] = {
         "messages": messages,
         "openenv_done": bool(result.done),
-        "reward": float(result.reward or 0.0),
     }
+    if include_reward:
+        payload["reward"] = float(result.reward or 0.0)
     if result.done:
         payload["stop_condition"] = "openenv_done"
     return payload
 
 
-class OpenEnvUser(vf.User):
-    @vf.tool(
+class OpenEnvUser(vf.User[OpenEnvUserConfig]):
+    session: OpenEnvSession | None
+
+    def start(self) -> None:
+        self.session = None
+
+    @vf.user(
         args={
             "openenv": "task.openenv",
             "completion": "state.completion",
         },
         sets={
             "openenv_done": "state.extras.openenv_done",
-            "reward": "state.reward",
+            "reward": "state.transcript.last.reward",
             "stop_condition": "state.stop_condition",
         },
     )
     async def respond(self, openenv: dict, completion: list[dict]) -> dict:
-        global SESSION
         config = OpenEnvRuntimeConfig.model_validate(openenv)
-        if SESSION is None:
-            SESSION = OpenEnvSession(config)
-            result = await SESSION.reset()
+        if self.session is None:
+            self.session = OpenEnvSession(config)
+            result = await self.session.reset()
             return result_payload(
                 messages=await render_messages(
-                    config, SESSION, result.observation, "reset"
+                    config, self.session, result.observation, "reset"
                 ),
                 result=result,
+                include_reward=False,
             )
+        if config.contract == "mcp":
+            return {"messages": [], "stop_condition": "openenv_no_tool_calls"}
         action = latest_assistant_json(completion)
-        result = await SESSION.step(action)
+        result = await self.session.step(action)
         return result_payload(
-            messages=await render_messages(config, SESSION, result.observation, "step"),
+            messages=await render_messages(
+                config, self.session, result.observation, "step"
+            ),
             result=result,
+            include_reward=True,
         )
+
+    @vf.tool(
+        sets={
+            "openenv_done": "state.extras.openenv_done",
+            "reward": "state.transcript.last.reward",
+            "finished": "state.is_completed",
+            "stop_condition": "state.stop_condition",
+        }
+    )
+    async def call_tool(self, name: str, input: vf.JsonData) -> dict[str, object]:
+        """Call an OpenEnv MCP tool by name with JSON input."""
+        if self.session is None:
+            raise RuntimeError("OpenEnv session has not started.")
+        result = await self.session.call_tool(name, input)
+        content = mcp_tool_content(result.observation)
+        payload: dict[str, object] = {
+            "content": content
+            if isinstance(content, str)
+            else json.dumps(jsonable(content)),
+            "openenv_done": bool(result.done),
+        }
+        if result.reward is not None:
+            payload["reward"] = float(result.reward)
+        if result.done:
+            payload["finished"] = True
+            payload["stop_condition"] = "openenv_done"
+        return payload
 
 
 def load_taskset(config: OpenEnvTasksetConfig) -> OpenEnvTaskset:

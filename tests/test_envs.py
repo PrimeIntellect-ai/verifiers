@@ -93,14 +93,12 @@ def test_readme_exists(env_dir: Path):
 
 
 def test_alphabet_sort_v1_validates_parameters():
-    module_path = Path(
-        "environments/alphabet_sort_v1/alphabet_sort_v1/taskset.py"
-    ).resolve()
-    spec = importlib.util.spec_from_file_location("alphabet_sort_v1_test", module_path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
+    env_dir = Path("environments/alphabet_sort_v1").resolve()
+    sys.path.insert(0, str(env_dir))
+    try:
+        module = importlib.import_module("alphabet_sort_v1.taskset")
+    finally:
+        sys.path.remove(str(env_dir))
 
     with pytest.raises(ValueError, match="min_turns must be at least 1"):
         list(

@@ -3,11 +3,13 @@ from pathlib import Path
 from typing import ClassVar, cast
 
 from datasets import load_dataset
+from pydantic import TypeAdapter
 
 import verifiers.v1 as vf
 
 DATA_DIR_FIELD = "data_dir"
 DATA_FILE_SUFFIX = ".jsonl"
+_MESSAGES_ADAPTER = TypeAdapter(vf.Messages)
 
 
 class ReplayTasksetConfig(vf.TasksetConfig):
@@ -88,7 +90,7 @@ def replay_messages(record: dict[str, object]) -> vf.Messages:
         if not isinstance(message, dict):
             raise TypeError("Replay task messages must contain JSON objects.")
         raw_messages.append(cast(dict[str, object], message))
-    return vf.get_messages(raw_messages)
+    return _MESSAGES_ADAPTER.validate_python(raw_messages)
 
 
 def load_taskset(config: ReplayTasksetConfig) -> ReplayTaskset:

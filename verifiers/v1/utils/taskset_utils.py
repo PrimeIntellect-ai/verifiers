@@ -31,10 +31,16 @@ def dataset_record_from_task(
     index: int,
     record: JsonData | None = None,
 ) -> JsonData:
-    data = task.to_record()
+    data = cast(
+        JsonData,
+        task.model_dump(mode="json", exclude_none=True),
+    )
     data["row_id"] = index
     normalized = prepare_task(type(task).model_validate(data))
-    task_payload = normalized.to_record()
+    task_payload = cast(
+        JsonData,
+        normalized.model_dump(mode="json", exclude_none=True),
+    )
     task_payload["example_id"] = index
     return cast(JsonData, task_payload)
 

@@ -2,7 +2,7 @@ from math_verify import parse, verify
 import verifiers.v1 as vf
 from verifiers.utils.data_utils import extract_boxed_answer, load_example_dataset
 
-from .servers.toolset import PythonToolsetConfig
+from .servers.python import PythonToolsetConfig
 
 
 def build_system_prompt(pip_install_packages: str = "numpy sympy scipy") -> str:
@@ -20,7 +20,7 @@ def build_system_prompt(pip_install_packages: str = "numpy sympy scipy") -> str:
 
 class MathPythonTasksetConfig(vf.TasksetConfig):
     system_prompt: str | None = None
-    toolsets: list[vf.ToolsetConfig] = [PythonToolsetConfig()]
+    toolsets: vf.ToolsetConfigs = {"python": PythonToolsetConfig()}
     pip_install_packages: str = "numpy sympy scipy"
     dataset_name: str = "math"
     dataset_split: str = "train"
@@ -58,7 +58,9 @@ class MathPythonTaskset(vf.Taskset[MathPythonTasksetConfig]):
 
     @vf.reward(weight=1.0)
     async def correct_answer(self, task: MathPythonTask, state: vf.State) -> float:
-        messages = vf.get_messages(state.completion or [], role="assistant")
+        messages = [
+            message for message in state.completion if message.role == "assistant"
+        ]
         response_text = str(messages[-1].content or "") if messages else ""
         response = extract_boxed_answer(response_text)
         if not response or len(response) > 50_000:

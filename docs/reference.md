@@ -123,6 +123,9 @@ Selects which `Client` implementation to use. Set via `ClientConfig.client_type`
 
 ## Data Types
 
+This section documents the top-level v0 data types. v1 data types live under
+`verifiers.v1` and are documented in [v1 Taskset/Harness Classes](#v1-tasksetharness-classes).
+
 ### State
 
 ```python
@@ -360,6 +363,9 @@ class RolloutScores(TypedDict):
 ## Classes
 
 ### Environment Classes
+
+Top-level environment classes are v0. v1 code should import `verifiers.v1 as vf`
+and use the taskset/harness classes below.
 
 #### Environment
 
@@ -683,11 +689,16 @@ flags.
 
 `RuntimeConfig` is the serializable backend spec. `Runtime` is the live handle
 with `start`, `stop`, `expose`, `run`, `read`, and `write`. Built-in configs are
-`LocalRuntimeConfig`, `DockerRuntimeConfig`, and `PrimeRuntimeConfig`.
+`SubprocessRuntimeConfig`, `DockerRuntimeConfig`, `PrimeRuntimeConfig`,
+`ModalRuntimeConfig`, and `DaytonaRuntimeConfig`.
 
 #### Toolset And User
 
 ```python
+class SearchToolsetConfig(vf.ToolsetConfig):
+    scope: vf.Scope = "rollout"
+
+
 class SearchToolset(vf.Toolset):
     @vf.tool(
         args={"case": "state.metadata.case"},
@@ -697,15 +708,14 @@ class SearchToolset(vf.Toolset):
         ...
 
 
-vf.ToolsetConfig(
-    loader="my_env.servers.toolset:SearchToolset",
-    name="search",
-    scope="rollout",
-)
+class MyTasksetConfig(vf.TasksetConfig):
+    toolsets: vf.ToolsetConfigs = {"search": SearchToolsetConfig()}
 ```
 
-`ToolsetConfig.loader` points to a `Toolset` class or loader. `UserConfig` is a
-sibling config for `User` servers over the same server base. `@vf.tool` hides
+The `toolsets` mapping key is the tool prefix. Config can add a new key with
+`source = "my_env.servers.search.config:SearchToolsetConfig"`, which points to
+the config class; the tool implementation is derived from that class.
+`UserConfig` is a sibling config for `User` servers over the same server base. `@vf.tool` hides
 bound `args` from model-visible schemas and binds selected return keys back into
 state through `sets` and `extends`. Toolsets and users return messages through
 the shared `vf.ServerResponse` shape.
@@ -950,15 +960,16 @@ class Config(BaseModel, extra="forbid"):
 
 @final
 class EnvConfig(Config):
-    taskset: TasksetConfig
-    harness: HarnessConfig
+    taskset: dict[str, object]
+    harness: dict[str, object]
     runtime: RuntimeConfig | None = None
 
 class TasksetConfig(Config):
     id: str | None = None
     system_prompt: SystemPrompt = None
     runtime: RuntimeConfig | None = None
-    user: User | None = None
+    user: UserConfig | None = None
+    toolsets: dict[str, ToolsetConfig]
     extras: Extras | None = None
 
 class HarnessConfig(Config):

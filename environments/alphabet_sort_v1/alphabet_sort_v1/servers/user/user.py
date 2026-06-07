@@ -1,8 +1,10 @@
 import verifiers.v1 as vf
 
+from .config import UserConfig
 
-class AlphabetSortUser(vf.User):
-    @vf.tool(
+
+class User(vf.User[UserConfig]):
+    @vf.user(
         args={
             "info": "task.info",
             "transcript": "transcript",

@@ -2,6 +2,8 @@ import json
 
 import verifiers.v1 as vf
 
+from .config import SearchToolsetConfig
+
 RECORDS = {
     "kiln_battery_loop": {
         "title": "Kiln Battery Loop",
@@ -54,11 +56,6 @@ RECORDS = {
         "summary": "A curbside routing system that schedules short delivery stops.",
     },
 }
-
-
-class SearchToolsetConfig(vf.ToolsetConfig):
-    loader: str = "mcp_search_env_v1.servers.toolset:SearchToolset"
-    name: str | None = "records"
 
 
 class SearchToolset(vf.Toolset[SearchToolsetConfig]):

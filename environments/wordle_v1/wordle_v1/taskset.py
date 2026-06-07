@@ -30,7 +30,7 @@ class WordleTaskset(TextArenaTaskset[WordleTasksetConfig]):
     async def correct_answer(self, task: TextArenaTask, state: vf.State) -> float:
         answer = task.answer
         completion = state.completion
-        for message in reversed(vf.get_messages(completion)):
+        for message in reversed(completion):
             if not isinstance(message, vf.AssistantMessage):
                 continue
             content = message.content
@@ -46,7 +46,7 @@ class WordleTaskset(TextArenaTaskset[WordleTasksetConfig]):
         completion = state.completion
         guess = ""
         num_guesses = 0
-        for message in vf.get_messages(completion):
+        for message in completion:
             if not isinstance(message, vf.AssistantMessage):
                 continue
             content = message.content
@@ -64,7 +64,7 @@ class WordleTaskset(TextArenaTaskset[WordleTasksetConfig]):
     async def partial_answer(self, task: TextArenaTask, state: vf.State) -> float:
         answer = task.answer
         completion = state.completion
-        for message in reversed(vf.get_messages(completion)):
+        for message in reversed(completion):
             if not isinstance(message, vf.AssistantMessage):
                 continue
             content = message.content
@@ -74,7 +74,7 @@ class WordleTaskset(TextArenaTaskset[WordleTasksetConfig]):
                 if matches[-1].strip() == f"[{answer}]":
                     return 0.0
                 break
-        for message in reversed(vf.get_messages(completion)):
+        for message in reversed(completion):
             if not isinstance(message, vf.UserMessage):
                 continue
             content = message.content
@@ -90,7 +90,7 @@ class WordleTaskset(TextArenaTaskset[WordleTasksetConfig]):
         _ = task
         completion = state.completion
         found = False
-        for message in vf.get_messages(completion):
+        for message in completion:
             if not isinstance(message, vf.AssistantMessage):
                 continue
             found = True

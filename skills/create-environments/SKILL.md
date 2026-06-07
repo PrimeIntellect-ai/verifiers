@@ -53,7 +53,7 @@ prime env install math-python --from-repo
 ### V1 Authoring Rules
 1. Keep v1 environment entrypoints tiny: `import verifiers.v1 as vf`, define `TasksetConfig` / optional `HarnessConfig` subclasses for user-facing knobs, define `Taskset` / optional `Harness` classes, then expose typed child loaders in `taskset.py` and optional `harness.py`.
 2. Keep shared dependencies behind the taskset or harness that owns them. Use bindings as the canonical injection path; prefer serializable loader paths for bound objects in config, and use no-arg loader callables only for Python-only construction. Do not pass already-instantiated resource objects through environment loaders. Do not introduce v1 Parser/Rubric wrappers; parsing is ordinary Python.
-3. Use `vf.get_messages(state.completion or [], role="assistant")` when reading state completions. The helper returns typed message objects and should not receive `None`.
+3. Iterate over `state.completion` directly when reading rollout messages. Filter by `message.role` with ordinary Python.
 4. Use `program.channels` for v1 program protocol/channel selection. Do not use stale `program.tools` terminology.
 5. Use generated child loaders as typed component entrypoints. Add implementation behavior to the taskset or harness class through config fields, `load_*` methods, `User` subclasses, `Toolset`, and `@vf.*` lifecycle methods.
 6. Put settings as leaf fields on the taskset or harness config that owns them.
@@ -117,7 +117,9 @@ class MyTaskset(vf.Taskset[MyTasksetConfig]):
 
     @vf.reward(weight=1.0)
     async def correct_answer(self, task: MyTask, state: vf.State) -> float:
-        messages = vf.get_messages(state.completion or [], role="assistant")
+        messages = [
+            message for message in state.completion if message.role == "assistant"
+        ]
         if not messages:
             return 0.0
         response = str(messages[-1].content or "").strip()

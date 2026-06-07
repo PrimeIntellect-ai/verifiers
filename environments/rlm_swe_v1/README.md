@@ -9,21 +9,21 @@ import verifiers.v1 as vf
 env = vf.load_environment("rlm-swe-v1")
 ```
 
-Tune the taskset and harness through typed v1 config objects:
+Tune the taskset, harness, and runtime through TOML-shaped v1 config data:
 
 ```python
 import verifiers.v1 as vf
-from harnesses import RLMConfig
-from rlm_swe_v1.taskset import RlmSweTasksetConfig
 
-env = load_environment(
-    config=vf.EnvConfig(
-        taskset=RlmSweTasksetConfig(timeout_minutes=90),
-        harness=RLMConfig(
-            tools=["bash", "edit"],
-            cwd="/testbed",
-        ),
-    )
+env = vf.load_environment(
+    "rlm-swe-v1",
+    config={
+        "taskset": {"timeout_minutes": 90},
+        "harness": {
+            "tools": ["bash", "edit"],
+            "cwd": "/testbed",
+        },
+        "runtime": {"type": "subprocess"},
+    },
 )
 ```
 

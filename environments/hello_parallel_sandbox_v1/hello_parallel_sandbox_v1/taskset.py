@@ -106,7 +106,7 @@ async def audit_shape(task: ParallelSandboxTask, response: str) -> vf.JsonData:
 
 
 def assistant_text(state: vf.State) -> str:
-    messages = vf.get_messages(state.completion or [], role="assistant")
+    messages = [message for message in state.completion if message.role == "assistant"]
     return str(messages[-1].content or "") if messages else ""
 
 

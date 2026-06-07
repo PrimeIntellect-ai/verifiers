@@ -20,15 +20,12 @@ from verifiers.types import (
     ErrorData,
     FinishReason,
     Messages,
-    Response,
     ResponseTokens,
     ToolCall,
     ToolMessage,
     Usage,
 )
 from verifiers.utils.error_utils import error_data, validate_error_data
-from verifiers.utils.message_utils import normalize_messages
-from verifiers.utils.response_utils import parse_response_message
 from verifiers.utils.save_utils import serialize_messages_for_output
 
 from .types import JsonData, ModelConfig
@@ -164,14 +161,6 @@ class Turn(BaseModel, extra="forbid"):
     is_truncated: bool = False
     timing: TimeSpan = Field(default_factory=TimeSpan)
 
-    @model_validator(mode="after")
-    def normalize_turn_messages(self) -> "Turn":
-        self.prompt = normalize_messages(self.prompt, field_name="turn.prompt")
-        self.completion = normalize_messages(
-            self.completion, field_name="turn.completion"
-        )
-        return self
-
 
 class Extras(BaseModel, extra="forbid"):
     pass
@@ -232,57 +221,6 @@ class State(BaseModel, extra="forbid"):
         self.error = error_data(error)
         self.stop("has_error")
 
-    def add_turn(self, turn: Turn) -> None:
-        self.transcript.append(turn)
-        if turn.is_truncated:
-            self.is_truncated = True
-
-    async def add_response_turn(
-        self,
-        prompt: Messages,
-        response: Response,
-        *,
-        start: float | None = None,
-        end: float | None = None,
-    ) -> Turn:
-        completion = await parse_response_message(response)
-        turn = Turn(
-            prompt=prompt,
-            completion=completion,
-            tool_calls=list(response.message.tool_calls or []),
-            response_id=response.id,
-            model=response.model,
-            created=response.created,
-            finish_reason=response.message.finish_reason,
-            usage=TurnUsage.from_usage(response.usage),
-            tokens=TurnTokens.from_response(
-                response.message.tokens,
-                is_truncated=bool(response.message.is_truncated),
-            ),
-            is_truncated=bool(response.message.is_truncated),
-            timing=TimeSpan(start=start or 0.0, end=end or 0.0),
-        )
-        self.add_turn(turn)
-        self._record_usage(response.usage)
-        return turn
-
-    def add_step_reward(self, reward: float | int | None) -> None:
-        if reward is None:
-            return
-        if isinstance(reward, bool) or not isinstance(reward, int | float):
-            raise TypeError("State.add_step_reward requires a numeric reward.")
-        if not self.transcript:
-            raise RuntimeError("State.add_step_reward requires a transcript turn.")
-        turn = self.transcript[-1]
-        turn.reward = float(turn.reward or 0.0) + float(reward)
-
-    def total_step_reward(self) -> float:
-        return sum(float(turn.reward or 0.0) for turn in self.transcript)
-
-    def finalize(self) -> "State":
-        self.assert_serializable()
-        return self
-
     def assert_serializable(self) -> None:
         assert_serializable(self.model_dump(mode="json", exclude_none=True))
 
@@ -301,7 +239,7 @@ class State(BaseModel, extra="forbid"):
             "metrics": dict(self.metrics),
             "extras": deepcopy(self.extras),
             "stop_condition": self.stop_condition,
-            "transcript": [self.turn_record(turn) for turn in self.transcript],
+            "transcript": [self._turn_record(turn) for turn in self.transcript],
         }
         answer = getattr(task, "answer", None)
         if answer is not None:
@@ -313,21 +251,31 @@ class State(BaseModel, extra="forbid"):
             output["error"] = validate_error_data(self.error)
             output["error_chain"] = self.error["error_chain_repr"]
             output["long_error_chain"] = self.error["error_chain_str"]
-        if self.usage:
+        usage = dict(self.usage)
+        for turn in self.transcript:
+            if turn.usage is None:
+                continue
+            usage["input_tokens"] = usage.get("input_tokens", 0.0) + float(
+                turn.usage.prompt_tokens
+            )
+            usage["output_tokens"] = usage.get("output_tokens", 0.0) + float(
+                turn.usage.completion_tokens
+            )
+        if usage:
             output["token_usage"] = {
-                "input_tokens": float(self.usage.get("input_tokens", 0.0)),
-                "output_tokens": float(self.usage.get("output_tokens", 0.0)),
+                "input_tokens": float(usage.get("input_tokens", 0.0)),
+                "output_tokens": float(usage.get("output_tokens", 0.0)),
             }
         if self.advantage is not None:
             output["advantage"] = self.advantage
         for key, value in self.metrics.items():
             output[key] = value
         for column in state_columns or []:
-            output[column] = self.column_value(column)
+            output[column] = self._column_value(column)
         json.dumps(output)
         return output
 
-    def column_value(self, column: str) -> object:
+    def _column_value(self, column: str) -> object:
         if column == "prompt":
             return self._serialized_messages(self.prompt)
         if column == "completion":
@@ -337,7 +285,7 @@ class State(BaseModel, extra="forbid"):
         if column == "extras":
             return deepcopy(self.extras)
         if column == "transcript":
-            return [self.turn_record(turn) for turn in self.transcript]
+            return [self._turn_record(turn) for turn in self.transcript]
         if column in type(self).model_fields:
             value = getattr(self, column)
             model_dump = getattr(value, "model_dump", None)
@@ -348,23 +296,13 @@ class State(BaseModel, extra="forbid"):
             return deepcopy(self.extras[column])
         return None
 
-    def _record_usage(self, usage: Usage | None) -> None:
-        if usage is None:
-            return
-        self.usage["input_tokens"] = self.usage.get("input_tokens", 0.0) + float(
-            usage.prompt_tokens
-        )
-        self.usage["output_tokens"] = self.usage.get("output_tokens", 0.0) + float(
-            usage.completion_tokens
-        )
-
     def _serialized_messages(self, messages: Messages) -> list[dict[str, object]]:
         return [
             cast(dict[str, object], jsonable(message))
             for message in serialize_messages_for_output(messages)
         ]
 
-    def turn_record(self, turn: Turn) -> dict[str, object]:
+    def _turn_record(self, turn: Turn) -> dict[str, object]:
         return {
             "id": turn.id,
             "prompt": self._serialized_messages(turn.prompt),

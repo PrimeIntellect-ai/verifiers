@@ -55,7 +55,7 @@ async def test_mcp_search_reward_handles_missing_assistant() -> None:
     taskset = module.MCPSearchTaskset(module.MCPSearchTasksetConfig())
     state = vf.State(task_id=task.task_id)
     assert await taskset.exact_title_reward(task, state) == 0.0
-    state.add_turn(
+    state.transcript.append(
         vf.Turn(prompt=task.prompt, completion=[vf.UserMessage(content="expected")])
     )
     assert await taskset.exact_title_reward(task, state) == 0.0

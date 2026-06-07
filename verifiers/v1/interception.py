@@ -10,8 +10,9 @@ from aiohttp import web
 from pydantic import BaseModel, Field
 
 from verifiers.types import Messages, Response, Tool
+from verifiers.utils.response_utils import parse_response_message
 
-from .state import State
+from .state import State, Turn, TurnTokens, TurnUsage
 from .task import Task
 from .types import JsonData, JsonValue, Context
 
@@ -127,7 +128,24 @@ class InterceptionServer:
                     tools=intercepted.tools,
                     state=self.state,
                 )
-                await self.state.add_response_turn(intercepted.prompt, response)
+                turn = Turn(
+                    prompt=intercepted.prompt,
+                    completion=await parse_response_message(response),
+                    tool_calls=list(response.message.tool_calls or []),
+                    response_id=response.id,
+                    model=response.model,
+                    created=response.created,
+                    finish_reason=response.message.finish_reason,
+                    usage=TurnUsage.from_usage(response.usage),
+                    tokens=TurnTokens.from_response(
+                        response.message.tokens,
+                        is_truncated=bool(response.message.is_truncated),
+                    ),
+                    is_truncated=bool(response.message.is_truncated),
+                )
+                self.state.transcript.append(turn)
+                if turn.is_truncated:
+                    self.state.is_truncated = True
                 return web.json_response(protocol.serialize(response, intercepted))
             except BaseException as exc:
                 status, payload = protocol.serialize_error(exc)

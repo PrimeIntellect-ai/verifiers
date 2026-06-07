@@ -1,18 +1,70 @@
 from __future__ import annotations
 
-from .toolset import Scope, ServerConfig, Toolset, load_toolset
+from collections.abc import Callable, Mapping
+from typing import Generic, TypeVar
+
+from .toolset import (
+    Scope,
+    ServerConfig,
+    Toolset,
+    config_package,
+    load_toolset,
+    resolve_server_ref,
+    tool,
+)
 
 
 class UserConfig(ServerConfig):
-    name: str | None = "user"
     scope: Scope = "rollout"
 
+    def default_server_ref(self) -> str:
+        config_type = type(self)
+        module_name = config_type.__module__
+        if module_name.startswith("verifiers.v1."):
+            raise ValueError(
+                f"{config_type.__name__} cannot infer a user implementation from "
+                "the framework package."
+            )
+        if module_name.endswith(".config"):
+            package = config_package(module_name)
+            if config_type.__name__ == "UserConfig":
+                impl_name = "User"
+            elif config_type.__name__.endswith("Config"):
+                impl_name = config_type.__name__.removesuffix("Config")
+            else:
+                impl_name = "User"
+            return f"{package}.user:{impl_name}"
+        if config_type.__name__.endswith("Config"):
+            ref = f"{module_name}:{config_type.__name__.removesuffix('Config')}"
+        else:
+            ref = f"{module_name}:{config_type.__name__}User"
+        return resolve_server_ref(ref, config_type)
+
     def load(self) -> "User":
-        user = load_toolset(self.loader, self)
+        server = self.implementation_ref()
+        user = load_toolset(server, self)
         if not isinstance(user, User):
-            raise TypeError(f"User loader {self.loader!r} did not return a User.")
+            raise TypeError(f"User server {server!r} did not return a User.")
         return user
 
 
-class User(Toolset[UserConfig]):
+UserConfigT = TypeVar("UserConfigT", bound=UserConfig)
+
+
+class User(Toolset[UserConfigT], Generic[UserConfigT]):
     pass
+
+
+UserFunc = TypeVar("UserFunc", bound=Callable[..., object])
+
+
+def user(
+    func: UserFunc | None = None,
+    *,
+    args: Mapping[str, str] | None = None,
+    sets: Mapping[str, str] | None = None,
+    extends: Mapping[str, str] | None = None,
+) -> UserFunc | Callable[[UserFunc], UserFunc]:
+    return tool(
+        func, args=args, sets=sets, extends=extends, name="respond", hidden=True
+    )

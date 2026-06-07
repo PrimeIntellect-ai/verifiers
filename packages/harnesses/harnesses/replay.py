@@ -1,14 +1,19 @@
 import time
 
+from pydantic import TypeAdapter
 import verifiers.v1 as vf
-from verifiers.types import Response, ResponseMessage
+
+_MESSAGES_ADAPTER = TypeAdapter(vf.Messages)
 
 
 class ReplayHarness(vf.Harness[vf.HarnessConfig]):
     async def run_with_context(self, context: vf.Context) -> None:
         task = context.task
         state = context.state
-        messages = replay_messages(task)
+        task_messages = getattr(task, "messages", None)
+        if not isinstance(task_messages, list):
+            raise TypeError("task.messages must be a list.")
+        messages = _MESSAGES_ADAPTER.validate_python(task_messages)
         assistant_indices = [
             index
             for index, message in enumerate(messages)
@@ -22,54 +27,25 @@ class ReplayHarness(vf.Harness[vf.HarnessConfig]):
             assistant_indices = assistant_indices[:max_turns]
         created = int(time.time())
         final_turn = len(assistant_indices) - 1
-        completion: vf.Messages = []
         for turn_index, message_index in enumerate(assistant_indices):
             message = messages[message_index]
             prompt = messages[:message_index]
             is_truncated = max_turns_reached and turn_index == final_turn
-            response = replay_response(
-                message=message,
+            turn = vf.Turn(
+                prompt=prompt,
+                completion=[message],
+                tool_calls=list(message.tool_calls or []),
+                response_id=f"replay-{state.id}-{turn_index}",
                 model=context.model or "replay",
                 created=created,
-                turn=turn_index,
-                state_id=state.id,
-                is_truncated=is_truncated,
+                finish_reason=message.finish_reason
+                or ("tool_calls" if message.tool_calls else "stop"),
+                is_truncated=is_truncated or bool(message.is_truncated),
             )
-            await state.add_response_turn(prompt, response)
-            completion.append(message)
+            state.transcript.append(turn)
+            if turn.is_truncated:
+                state.is_truncated = True
         state.stop("max_turns" if max_turns_reached else "replayed_messages")
-
-
-def replay_messages(task: vf.Task) -> vf.Messages:
-    value = getattr(task, "messages", None)
-    if not isinstance(value, list):
-        raise TypeError("task.messages must be a list.")
-    return vf.get_messages(value)
-
-
-def replay_response(
-    *,
-    message: vf.Message,
-    model: str,
-    created: int,
-    turn: int,
-    state_id: str,
-    is_truncated: bool,
-) -> Response:
-    message_data = message.model_dump(mode="json", exclude_none=True)
-    message_data.setdefault(
-        "finish_reason", "tool_calls" if message_data.get("tool_calls") else "stop"
-    )
-    message_data["is_truncated"] = is_truncated or bool(
-        message_data.get("is_truncated", False)
-    )
-    return Response(
-        id=f"replay-{state_id}-{turn}",
-        created=created,
-        model=model,
-        usage=None,
-        message=ResponseMessage.model_validate(message_data),
-    )
 
 
 def load_harness(config: vf.HarnessConfig) -> ReplayHarness:

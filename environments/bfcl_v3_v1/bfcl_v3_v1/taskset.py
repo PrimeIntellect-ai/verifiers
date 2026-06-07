@@ -17,7 +17,7 @@ from verifiers.types import (
     ToolMessage,
     UserMessage,
 )
-from verifiers.utils.message_utils import message_role, normalize_messages
+from verifiers.utils.response_utils import parse_response_message
 
 _BFCL_PATCHED = False
 BFCLRawMessage = str | vf.JsonData
@@ -249,8 +249,7 @@ def model_name(state: vf.State) -> str:
 
 
 def assistant_tool_calls(state: vf.State) -> list[ToolCall]:
-    completion = state.completion or []
-    messages = vf.get_messages(completion, role="assistant")
+    messages = [message for message in state.completion if message.role == "assistant"]
     if not messages:
         return []
     return parse_tool_calls(messages[-1])
@@ -415,7 +414,7 @@ def multi_turn_reward(task: vf.Task, state: vf.State) -> float:
     all_func_calls: list[list[list[str]]] = [[]]
     try:
         for message in completion:
-            role = message_role(message)
+            role = message.role
             if role == "user":
                 all_func_calls.append([])
             elif role == "tool":
@@ -495,7 +494,25 @@ class BFCLHarness(vf.Harness[BFCLHarnessConfig]):
             state=state,
         )
         end = time.time()
-        await state.add_response_turn(prompt, response, start=start, end=end)
+        turn = vf.Turn(
+            prompt=prompt,
+            completion=await parse_response_message(response),
+            tool_calls=list(response.message.tool_calls or []),
+            response_id=response.id,
+            model=response.model,
+            created=response.created,
+            finish_reason=response.message.finish_reason,
+            usage=vf.TurnUsage.from_usage(response.usage),
+            tokens=vf.TurnTokens.from_response(
+                response.message.tokens,
+                is_truncated=bool(response.message.is_truncated),
+            ),
+            is_truncated=bool(response.message.is_truncated),
+            timing=vf.TimeSpan(start=start, end=end),
+        )
+        state.transcript.append(turn)
+        if turn.is_truncated:
+            state.is_truncated = True
         state.stop("assistant_completed")
 
     async def run_multi_turn(
@@ -541,7 +558,24 @@ class BFCLHarness(vf.Harness[BFCLHarnessConfig]):
                 tools=tool_defs,
                 state=state,
             )
-            turn = await state.add_response_turn(messages, response)
+            turn = vf.Turn(
+                prompt=messages,
+                completion=await parse_response_message(response),
+                tool_calls=list(response.message.tool_calls or []),
+                response_id=response.id,
+                model=response.model,
+                created=response.created,
+                finish_reason=response.message.finish_reason,
+                usage=vf.TurnUsage.from_usage(response.usage),
+                tokens=vf.TurnTokens.from_response(
+                    response.message.tokens,
+                    is_truncated=bool(response.message.is_truncated),
+                ),
+                is_truncated=bool(response.message.is_truncated),
+            )
+            state.transcript.append(turn)
+            if turn.is_truncated:
+                state.is_truncated = True
             messages.extend(turn.completion)
             tool_calls = list(turn.tool_calls)
             try:
@@ -592,7 +626,22 @@ class BFCLHarness(vf.Harness[BFCLHarnessConfig]):
                     UserMessage(content=DEFAULT_USER_PROMPT_FOR_ADDITIONAL_FUNCTION_FC)
                 )
             else:
-                messages.extend(normalize_messages(cast(Messages, next_prompt)))
+                for message in next_prompt:
+                    role = message.get("role")
+                    if role == "assistant":
+                        messages.append(AssistantMessage.model_validate(message))
+                    elif role == "user":
+                        messages.append(UserMessage.model_validate(message))
+                    elif role == "tool":
+                        messages.append(ToolMessage.model_validate(message))
+                    elif role == "system":
+                        raise ValueError(
+                            "BFCL turn prompts must not include system messages."
+                        )
+                    else:
+                        raise ValueError(
+                            f"Unsupported BFCL prompt message role: {role!r}."
+                        )
 
 
 def load_taskset(config: BFCLTasksetConfig) -> BFCLTaskset:

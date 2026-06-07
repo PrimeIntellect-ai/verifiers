@@ -31,7 +31,10 @@ class CommandHarness(vf.Harness[ConfigT], Generic[ConfigT]):
         )
         return {
             **self.config.env,
-            "VF_TASK_JSON": json.dumps(task.to_record(), ensure_ascii=False),
+            "VF_TASK_JSON": json.dumps(
+                task.model_dump(mode="json", exclude_none=True, exclude_defaults=True),
+                ensure_ascii=False,
+            ),
             "VF_STATE_ID": state.id,
             "VF_PROMPT": prompt_text,
         }
@@ -70,7 +73,7 @@ class CommandHarness(vf.Harness[ConfigT], Generic[ConfigT]):
         content = result.stdout.strip() or result.stderr.strip()
         if not state.transcript:
             message = vf.AssistantMessage(content=content)
-            state.add_turn(vf.Turn(prompt=prompt, completion=[message]))
+            state.transcript.append(vf.Turn(prompt=prompt, completion=[message]))
         if result.returncode == 0:
             state.stop("command_completed")
         else:

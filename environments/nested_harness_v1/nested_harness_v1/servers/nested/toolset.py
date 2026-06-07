@@ -1,9 +1,6 @@
 import verifiers.v1 as vf
 
-
-class NestedToolsetConfig(vf.ToolsetConfig):
-    loader: str = "nested_harness_v1.servers.toolset:NestedToolset"
-    name: str | None = "nested"
+from .config import NestedToolsetConfig
 
 
 class NestedToolset(vf.Toolset[NestedToolsetConfig]):

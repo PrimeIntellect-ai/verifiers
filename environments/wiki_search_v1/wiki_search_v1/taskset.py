@@ -8,10 +8,11 @@ from datasets import load_dataset
 
 import verifiers.v1 as vf
 
+from .servers.wiki import WikiToolsetConfig
+
 if TYPE_CHECKING:
     from chromadb.api.models.Collection import Collection
 
-CHROMA_DB_DIR = ".chroma_db"
 SYSTEM_PROMPT = "Use the provided Wikipedia search tools to help answer questions."
 _chroma_semaphore: asyncio.Semaphore | None = None
 
@@ -31,12 +32,7 @@ class WikiIndex:
 
 class WikiSearchTasksetConfig(vf.TasksetConfig):
     max_turns: int = 10
-    corpus_dataset: str = "willcb/rare-wiki-pages"
-    corpus_split: str = "train"
-    chroma_db_dir: str = CHROMA_DB_DIR
-    embed_model: str = "text-embedding-3-small"
-    embed_base_url: str = "https://api.openai.com/v1"
-    embed_api_key_var: str = "OPENAI_API_KEY"
+    toolsets: vf.ToolsetConfigs = {"wiki": WikiToolsetConfig()}
 
 
 class WikiSearchTask(vf.Task):
@@ -64,26 +60,11 @@ class WikiSearchTaskset(vf.Taskset[WikiSearchTasksetConfig]):
         _ = config
         return SYSTEM_PROMPT
 
-    def load_toolsets(self, config: WikiSearchTasksetConfig) -> list[vf.ToolsetConfig]:
-        return [
-            vf.ToolsetConfig(
-                loader="wiki_search_v1.servers.toolset:WikiToolset",
-                name="wiki",
-                scope="env",
-                env={
-                    "VF_WIKI_CORPUS_DATASET": config.corpus_dataset,
-                    "VF_WIKI_CORPUS_SPLIT": config.corpus_split,
-                    "VF_WIKI_CHROMA_DB_DIR": config.chroma_db_dir,
-                    "VF_WIKI_EMBED_MODEL": config.embed_model,
-                    "VF_WIKI_EMBED_BASE_URL": config.embed_base_url,
-                    "VF_WIKI_EMBED_API_KEY_VAR": config.embed_api_key_var,
-                },
-            )
-        ]
-
     @vf.reward(weight=1.0)
     async def answer_in_response(self, task: WikiSearchTask, state: vf.State) -> float:
-        messages = vf.get_messages(state.completion, role="assistant")
+        messages = [
+            message for message in state.completion if message.role == "assistant"
+        ]
         response = str(messages[-1].content or "") if messages else ""
         return float(task.answer.lower() in response.lower())
 
@@ -95,20 +76,14 @@ def get_chroma_semaphore() -> asyncio.Semaphore:
     return _chroma_semaphore
 
 
-def load_wiki() -> WikiIndex:
+def load_wiki(config: WikiToolsetConfig) -> WikiIndex:
     import chromadb
     from chromadb.api.types import Embeddable, EmbeddingFunction
     from chromadb.utils import embedding_functions
 
-    corpus_dataset = os.environ["VF_WIKI_CORPUS_DATASET"]
-    corpus_split = os.environ["VF_WIKI_CORPUS_SPLIT"]
-    chroma_db_dir = os.environ["VF_WIKI_CHROMA_DB_DIR"]
-    embed_model = os.environ["VF_WIKI_EMBED_MODEL"]
-    embed_base_url = os.environ["VF_WIKI_EMBED_BASE_URL"]
-    embed_api_key_var = os.environ["VF_WIKI_EMBED_API_KEY_VAR"]
     page_id_to_title: dict[str, str] = {}
     page_id_to_content: dict[str, str] = {}
-    corpus = load_dataset(corpus_dataset, split=corpus_split)
+    corpus = load_dataset(config.corpus_dataset, split=config.corpus_split)
     for row in corpus:
         record = cast(dict[str, object], row)
         page_id = str(record["id"])
@@ -116,11 +91,11 @@ def load_wiki() -> WikiIndex:
         page_id_to_content[page_id] = str(record["content"])
 
     openai_ef = embedding_functions.OpenAIEmbeddingFunction(
-        model_name=embed_model,
-        api_base=embed_base_url,
-        api_key=os.getenv(embed_api_key_var, "EMPTY"),
+        model_name=config.embed_model,
+        api_base=config.embed_base_url,
+        api_key=os.getenv(config.embed_api_key_var, "EMPTY"),
     )
-    client = chromadb.PersistentClient(path=chroma_db_dir)
+    client = chromadb.PersistentClient(path=config.chroma_db_dir)
     collection = client.get_or_create_collection(
         name="wiki_titles",
         embedding_function=cast(EmbeddingFunction[Embeddable], openai_ef),

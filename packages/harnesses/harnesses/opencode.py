@@ -78,8 +78,8 @@ class OpenCode(CommandHarness[OpenCodeConfig]):
             "agent": {
                 "build": {
                     "prompt": "\n\n".join(
-                        str(getattr(message, "content", "") or "")
-                        for message in vf.get_messages(self.system_prompt)
+                        str(message.get("content") or "")
+                        for message in self.system_prompt
                     ),
                     "tools": {name: False for name in self.config.disabled_tools},
                 }

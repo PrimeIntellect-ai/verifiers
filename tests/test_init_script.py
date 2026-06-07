@@ -37,8 +37,10 @@ def test_init_v1_writes_taskset_template(tmp_path: Path) -> None:
     package = package_dir(tmp_path, "bar")
     init_content = (package / "__init__.py").read_text()
     pyproject = (tmp_path / "bar" / "pyproject.toml").read_text()
-    user_server = (package / "servers" / "user.py").read_text()
-    tools_server = (package / "servers" / "toolset.py").read_text()
+    user_config = (package / "servers" / "user" / "config.py").read_text()
+    user_server = (package / "servers" / "user" / "user.py").read_text()
+    toolset_config = (package / "servers" / "example" / "config.py").read_text()
+    toolset_server = (package / "servers" / "example" / "toolset.py").read_text()
 
     assert "class BarTasksetConfig(vf.TasksetConfig):" in content
     assert "class BarTask(vf.Task):" in content
@@ -59,23 +61,30 @@ def test_init_v1_writes_taskset_template(tmp_path: Path) -> None:
     assert "def load_taskset(config: BarTasksetConfig) -> BarTaskset:" in content
     assert '"""Typed taskset loader used by vf.load_taskset."""' in content
     assert "return BarTaskset(config=config)" in content
-    assert 'loader="bar.servers.user:ExampleUser"' in content
-    assert 'loader="bar.servers.toolset:ExampleToolset"' in content
+    assert "from .servers.user import UserConfig" in content
+    assert "from .servers.example import ExampleToolsetConfig" in content
+    assert "UserConfig()" in content
+    assert (
+        'toolsets: vf.ToolsetConfigs = {"example": ExampleToolsetConfig()}' in content
+    )
     assert "def load_user(" not in content
     assert "def load_toolsets(" not in content
     assert "def load_environment" not in content
     assert '"""bar environment package."""' in init_content
     assert "load_environment" not in init_content
     assert 'include = ["bar/**/*", "pyproject.toml", "README.md"]' in pyproject
-    assert "class ExampleUser(vf.User):" in user_server
-    assert "@vf.tool(" in user_server
+    assert "class UserConfig(vf.UserConfig):" in user_config
+    assert "class User(vf.User[UserConfig]):" in user_server
+    assert "@vf.user(" in user_server
     assert (
         "def respond(self, task: dict, state: dict, transcript: list[dict]) -> dict:"
         in (user_server)
     )
-    assert "class ExampleToolset(vf.Toolset):" in tools_server
-    assert "@vf.tool" in tools_server
-    assert "def reverse_text(self, text: str) -> str:" in tools_server
+    assert "class ExampleToolsetConfig(vf.ToolsetConfig):" in toolset_config
+    assert "name:" not in toolset_config
+    assert "class ExampleToolset(vf.Toolset[ExampleToolsetConfig]):" in toolset_server
+    assert "@vf.tool" in toolset_server
+    assert "def reverse_text(self, text: str) -> str:" in toolset_server
     assert "class EnvTaskset(" not in content
     assert "_default_" not in content
     assert 'tasks: str = "load_tasks"' not in content
@@ -133,8 +142,10 @@ def test_init_v1_multifile_exports_component_loaders(tmp_path: Path) -> None:
     assert "load_environment" not in init_content
     assert "class PkgEnvTaskset(vf.Taskset[PkgEnvTasksetConfig]):" in taskset_content
     assert "return PkgEnvTaskset(config=config)" in taskset_content
-    assert (package / "servers" / "user.py").exists()
-    assert (package / "servers" / "toolset.py").exists()
+    assert (package / "servers" / "user" / "config.py").exists()
+    assert (package / "servers" / "user" / "user.py").exists()
+    assert (package / "servers" / "example" / "config.py").exists()
+    assert (package / "servers" / "example" / "toolset.py").exists()
 
 
 def test_init_openenv_writes_v1_taskset_template(tmp_path: Path) -> None:

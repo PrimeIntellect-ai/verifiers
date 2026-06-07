@@ -6,14 +6,15 @@ import time
 from contextlib import AsyncExitStack, asynccontextmanager
 from copy import deepcopy
 from pydantic import BaseModel
+from pydantic import TypeAdapter
 from typing import TYPE_CHECKING, AsyncIterator, Generic, TypeVar, cast, final
 
 
 from verifiers.clients import resolve_client
 from verifiers.errors import Error, OverlongPromptError, ToolError
-from verifiers.types import Messages, SamplingArgs, TextMessage, ToolMessage
+from verifiers.types import Messages, SamplingArgs, ToolMessage, UserMessage
 from verifiers.utils.async_utils import maybe_call_with_named_args
-from verifiers.utils.message_utils import normalize_messages
+from verifiers.utils.response_utils import parse_response_message
 
 from .config import Config, ConfigSource
 from .decorators import discover_decorated
@@ -21,15 +22,15 @@ from .interception import EndpointProtocol
 from .protocols import default_protocols
 from .mcp import BoundUpdate, ServerResult, MCPToolRegistry, ServerResponse
 from .runtime import (
-    LocalRuntimeConfig,
     RuntimeConfig,
     RuntimeConfigValue,
     RuntimeProvider,
     Runtime,
+    SubprocessRuntimeConfig,
     make_runtime_provider,
     resolve_runtime_config,
 )
-from .state import Extras, State
+from .state import Extras, State, TimeSpan, Turn, TurnTokens, TurnUsage
 from .task import Task
 from .types import Handler, JsonData, JsonValue, ModelClient, ModelConfig, Context
 from .utils.config_utils import (
@@ -50,6 +51,8 @@ from .utils.scoring_utils import score_rollout
 
 if TYPE_CHECKING:
     from .taskset import Taskset
+
+_MESSAGES_ADAPTER = TypeAdapter(Messages)
 
 
 class HarnessConfig(Config):
@@ -100,7 +103,7 @@ class Harness(Generic[ConfigT]):
         self.taskset: Taskset | None = None
         self.runtime_config = resolve_runtime_config(self.config.runtime)
         self.runtime_provider: RuntimeProvider | None = None
-        self._env_tools: MCPToolRegistry | None = None
+        self._env_toolsets: MCPToolRegistry | None = None
         self._env_user: MCPToolRegistry | None = None
         self.extras_schema: type[Extras] | None = extras_schema(self.config.extras)
         self.extras_defaults: JsonData = extras_defaults(self.config.extras)
@@ -162,7 +165,7 @@ class Harness(Generic[ConfigT]):
         image = task.image or getattr(self.runtime_config, "image", None)
         if image is None:
             return self.runtime_config
-        if isinstance(self.runtime_config, LocalRuntimeConfig):
+        if isinstance(self.runtime_config, SubprocessRuntimeConfig):
             raise ValueError(
                 f"task {task.task_id!r} declares an image; use docker or prime runtime."
             )
@@ -184,7 +187,7 @@ class Harness(Generic[ConfigT]):
         model: ModelConfig,
         teacher: ModelConfig | None = None,
         runtime: Runtime | None = None,
-        tools: MCPToolRegistry | None = None,
+        toolsets: MCPToolRegistry | None = None,
         user: MCPToolRegistry | None = None,
         parent: Context | None = None,
         score: bool = False,
@@ -210,7 +213,7 @@ class Harness(Generic[ConfigT]):
                 model_client=model_client,
                 teacher=teacher_client,
                 runtime=runtime,
-                tools=tools,
+                toolsets=toolsets,
                 user=user,
                 parent=parent,
                 score=score,
@@ -265,29 +268,41 @@ class Harness(Generic[ConfigT]):
                 model=model,
                 teacher=teacher,
                 runtime=context.runtime,
-                tools=context.tools,
+                toolsets=context.toolsets,
                 user=context.user,
                 parent=context,
                 score=score,
             ) as child_context:
+                if child_context.toolsets is not None:
+                    child_context.toolsets.set_visibility(
+                        toolsets=task.toolsets,
+                        tools=task.tools,
+                    )
                 await self.run_lifecycle(child_context)
             return state
 
         async with self.runtime_provider_for(task).create_runtime() as runtime:
             await self.ensure_env_servers()
             async with AsyncExitStack() as stack:
-                tools = await stack.enter_async_context(self.rollout_tools(runtime))
-                user = await stack.enter_async_context(self.rollout_user(runtime))
+                user = await stack.enter_async_context(self.rollout_user(runtime, task))
+                toolsets = await stack.enter_async_context(
+                    self.rollout_toolsets(runtime, user)
+                )
                 async with self.open_context(
                     task=task,
                     state=state,
                     model=model,
                     teacher=teacher,
                     runtime=runtime,
-                    tools=tools,
+                    toolsets=toolsets,
                     user=user,
                     score=score,
                 ) as root_context:
+                    if toolsets is not None:
+                        toolsets.set_visibility(
+                            toolsets=task.toolsets,
+                            tools=task.tools,
+                        )
                     await self.run_lifecycle(root_context)
         return state
 
@@ -338,7 +353,7 @@ class Harness(Generic[ConfigT]):
             if "num_turns" not in state.metrics:
                 state.metrics["num_turns"] = float(len(state.transcript))
             self.validate_extras(state)
-            state.finalize()
+            state.assert_serializable()
 
     def initialize_extras(self, state: State) -> None:
         for key, value in self.extras_defaults.items():
@@ -352,7 +367,7 @@ class Harness(Generic[ConfigT]):
     async def run_with_context(self, context: Context) -> None:
         task = context.task
         state = context.state
-        tools = context.tools
+        toolsets = context.toolsets
         user = context.user
         messages = self.initial_messages(task)
         if not self.has_model_prompt(messages):
@@ -376,20 +391,36 @@ class Harness(Generic[ConfigT]):
                 prompt=messages,
                 model=context.model,
                 sampling_args=sampling,
-                tools=tools.tool_defs() if tools is not None else None,
+                tools=toolsets.tools() if toolsets is not None else None,
                 state=state,
             )
             end = time.time()
-            turn = await state.add_response_turn(
-                messages, response, start=start, end=end
+            turn = Turn(
+                prompt=messages,
+                completion=await parse_response_message(response),
+                tool_calls=list(response.message.tool_calls or []),
+                response_id=response.id,
+                model=response.model,
+                created=response.created,
+                finish_reason=response.message.finish_reason,
+                usage=TurnUsage.from_usage(response.usage),
+                tokens=TurnTokens.from_response(
+                    response.message.tokens,
+                    is_truncated=bool(response.message.is_truncated),
+                ),
+                is_truncated=bool(response.message.is_truncated),
+                timing=TimeSpan(start=start, end=end),
             )
+            state.transcript.append(turn)
+            if turn.is_truncated:
+                state.is_truncated = True
             messages = [*messages, *turn.completion]
             turns += 1
             if turn.tool_calls:
-                if tools is None:
+                if toolsets is None:
                     raise RuntimeError("Model requested tools but no tools are loaded.")
                 tool_messages, server_messages = await self.call_tools(
-                    task, state, tools, turn.tool_calls
+                    task, state, toolsets, turn.tool_calls
                 )
                 turn.tool_results = tool_messages
                 messages = [*messages, *tool_messages, *server_messages]
@@ -404,38 +435,56 @@ class Harness(Generic[ConfigT]):
 
     async def ensure_env_servers(self) -> None:
         taskset = self.taskset
-        if self._env_tools is None:
+        if self._env_toolsets is None:
             toolsets = (
-                []
+                {}
                 if taskset is None
-                else [toolset for toolset in taskset.toolsets if toolset.scope == "env"]
+                else {
+                    name: toolset
+                    for name, toolset in taskset.toolsets.items()
+                    if toolset.scope == "env"
+                }
             )
-            self._env_tools = MCPToolRegistry(toolsets)
-            await self._env_tools.__aenter__()
+            self._env_toolsets = MCPToolRegistry(toolsets)
+            await self._env_toolsets.__aenter__()
         if self._env_user is None:
             user = None if taskset is None else taskset.user
-            user_toolsets = [] if user is None or user.scope != "env" else [user]
-            self._env_user = MCPToolRegistry(user_toolsets, expose_tools=False)
+            user_toolsets = (
+                {} if user is None or user.scope != "env" else {"user": user}
+            )
+            self._env_user = MCPToolRegistry(user_toolsets)
             await self._env_user.__aenter__()
 
-    def rollout_tools(self, runtime: Runtime) -> MCPToolRegistry:
+    def rollout_toolsets(
+        self, runtime: Runtime, user: MCPToolRegistry | None = None
+    ) -> MCPToolRegistry:
         _ = runtime
         taskset = self.taskset
-        parents = [self._env_tools] if self._env_tools is not None else []
+        parents = [
+            parent for parent in (self._env_toolsets, user) if parent is not None
+        ]
         toolsets = (
-            []
+            {}
             if taskset is None
-            else [toolset for toolset in taskset.toolsets if toolset.scope == "rollout"]
+            else {
+                name: toolset
+                for name, toolset in taskset.toolsets.items()
+                if toolset.scope == "rollout"
+            }
         )
-        return MCPToolRegistry(toolsets, parents=parents)
+        return MCPToolRegistry(toolsets, runtime=runtime, parents=parents)
 
-    def rollout_user(self, runtime: Runtime) -> MCPToolRegistry:
+    def rollout_user(self, runtime: Runtime, task: Task) -> MCPToolRegistry:
         _ = runtime
+        if task.user is False:
+            return MCPToolRegistry({}, expose_tools=False)
         taskset = self.taskset
         parents = [self._env_user] if self._env_user is not None else []
         user = None if taskset is None else taskset.user
-        user_toolsets = [] if user is None or user.scope != "rollout" else [user]
-        return MCPToolRegistry(user_toolsets, parents=parents, expose_tools=False)
+        user_toolsets = (
+            {} if user is None or user.scope != "rollout" else {"user": user}
+        )
+        return MCPToolRegistry(user_toolsets, runtime=runtime, parents=parents)
 
     @property
     def stop_handlers(self) -> list[Handler]:
@@ -466,8 +515,7 @@ class Harness(Generic[ConfigT]):
             harness_system_prompt=self.system_prompt,
             strategy=self.system_prompt_strategy,
         )
-        prompt = normalize_messages(task.prompt, field_name="task.prompt")
-        return [*normalize_messages(system_prompt, field_name="system_prompt"), *prompt]
+        return [*_MESSAGES_ADAPTER.validate_python(system_prompt), *task.prompt]
 
     def has_model_prompt(self, messages: Messages) -> bool:
         return any(getattr(message, "role", None) != "system" for message in messages)
@@ -483,9 +531,9 @@ class Harness(Generic[ConfigT]):
         return dict(sampling_args)
 
     async def call_tools(
-        self, task: Task, state: State, tools: MCPToolRegistry, tool_calls
+        self, task: Task, state: State, toolsets: MCPToolRegistry, tool_calls
     ) -> tuple[list[ToolMessage], Messages]:
-        tools.set_context(self.binding_context(task, state))
+        toolsets.set_context(self.binding_context(task, state))
         tool_results: list[ToolMessage] = []
         server_messages: Messages = []
         updates: list[BoundUpdate] = []
@@ -494,7 +542,7 @@ class Harness(Generic[ConfigT]):
                 arguments = json.loads(tool_call.arguments or "{}")
                 if not isinstance(arguments, dict):
                     raise TypeError("Tool arguments must decode to an object.")
-                result = await tools.call(tool_call.name, cast(JsonData, arguments))
+                result = await toolsets.call(tool_call.name, cast(JsonData, arguments))
                 updates.extend(result.updates)
                 call_tool_results, call_messages = self.tool_response_messages(
                     tool_call.id, result.response
@@ -526,17 +574,12 @@ class Harness(Generic[ConfigT]):
     def tool_response_messages(
         self, tool_call_id: str, response: ServerResponse
     ) -> tuple[list[ToolMessage], Messages]:
+        if response.content is not None:
+            return [
+                ToolMessage(tool_call_id=tool_call_id, content=response.content)
+            ], list(response.messages)
         if not response.messages:
             return [ToolMessage(tool_call_id=tool_call_id, content="")], []
-        if len(response.messages) == 1 and isinstance(
-            response.messages[0], TextMessage
-        ):
-            return [
-                ToolMessage(
-                    tool_call_id=tool_call_id,
-                    content=response.messages[0].content,
-                )
-            ], []
         tool_results = [
             message for message in response.messages if isinstance(message, ToolMessage)
         ]
@@ -553,7 +596,9 @@ class Harness(Generic[ConfigT]):
         return cast(
             JsonData,
             {
-                "task": task.to_record(),
+                "task": task.model_dump(
+                    mode="json", exclude_none=True, exclude_defaults=True
+                ),
                 "state": state.model_dump(mode="json", exclude_none=True),
                 "transcript": [
                     turn.model_dump(mode="json", exclude_none=True)
@@ -615,6 +660,17 @@ class Harness(Generic[ConfigT]):
             return
         if mode != "set":
             raise ValueError(f"Bound return target {target!r} only supports set.")
+        if field == "transcript":
+            if parts != ["state", "transcript", "last", "reward"]:
+                raise ValueError(
+                    "state.transcript only supports state.transcript.last.reward."
+                )
+            if not state.transcript:
+                raise RuntimeError("state.transcript.last.reward requires a turn.")
+            if isinstance(value, bool) or not isinstance(value, int | float):
+                raise TypeError("state.transcript.last.reward requires a number.")
+            state.transcript[-1].reward = float(value)
+            return
         if field == "metrics":
             if len(parts) != 3:
                 raise ValueError(f"Metric target {target!r} must name one metric.")
@@ -659,13 +715,20 @@ class Harness(Generic[ConfigT]):
     async def call_user(
         self, user: MCPToolRegistry | None, task: Task, state: State
     ) -> Messages:
+        if task.user is False:
+            return []
         if user is None or not user.has_hidden("respond"):
+            if task.user is True:
+                raise ValueError("Task requires a user server, but none is loaded.")
             return []
         user.set_context(self.binding_context(task, state))
         result = await user.call_hidden("respond", {})
         self.apply_bound_updates(state, list(result.updates))
         state.assert_serializable()
-        return normalize_messages(result.response.messages, field_name="user.messages")
+        messages = list(result.response.messages)
+        if result.response.content is not None:
+            messages.insert(0, UserMessage(content=result.response.content))
+        return messages
 
     async def is_completed(self, context: Context) -> bool:
         task = context.task
@@ -679,6 +742,8 @@ class Harness(Generic[ConfigT]):
                 state,
                 context=context,
                 runtime=context.runtime,
+                toolsets=context.toolsets,
+                user=context.user,
                 model_client=context.model_client,
                 client=context.client,
                 model=context.model,
@@ -707,8 +772,8 @@ class Harness(Generic[ConfigT]):
             if handler_stage != stage:
                 continue
             binding_context = self.binding_context(task, state)
-            if context.tools is not None:
-                context.tools.set_context(binding_context)
+            if context.toolsets is not None:
+                context.toolsets.set_context(binding_context)
             if context.user is not None:
                 context.user.set_context(binding_context)
             result = await self.call_handler(
@@ -717,7 +782,7 @@ class Harness(Generic[ConfigT]):
                 state,
                 context=context,
                 runtime=context.runtime,
-                tools=context.tools,
+                toolsets=context.toolsets,
                 user=context.user,
                 model_client=context.model_client,
                 client=context.client,
@@ -759,7 +824,7 @@ class Harness(Generic[ConfigT]):
             harness=self,
             context=extra.pop("context", None),
             runtime=runtime,
-            tools=extra.pop("tools", None),
+            toolsets=extra.pop("toolsets", None),
             user=extra.pop("user", None),
             **extra,
         )
@@ -774,9 +839,9 @@ class Harness(Generic[ConfigT]):
         if self._env_user is not None:
             await self._env_user.__aexit__(None, None, None)
             self._env_user = None
-        if self._env_tools is not None:
-            await self._env_tools.__aexit__(None, None, None)
-            self._env_tools = None
+        if self._env_toolsets is not None:
+            await self._env_toolsets.__aexit__(None, None, None)
+            self._env_toolsets = None
         await self.teardown()
 
 

@@ -172,12 +172,9 @@ def load_env_config(
         if child_types is None
         else child_types
     )
-    defaults: EnvConfig | None = None
     for field_name, child_type in resolved_child_types.items():
         if field_name not in data:
-            defaults = config_type() if defaults is None else defaults
-            child = getattr(defaults, field_name)
-            data[field_name] = child if isinstance(child, child_type) else child_type()
+            data[field_name] = child_type()
             continue
         child = data[field_name]
         if isinstance(child, child_type):
@@ -189,15 +186,7 @@ def load_env_config(
         data[field_name] = child_type.model_validate(
             explicit_config_data(cast(EnvConfigInput, child))
         )
-    config = config_type.model_validate(data)
-    for field_name, child_type in resolved_child_types.items():
-        child = getattr(config, field_name)
-        if not isinstance(child, child_type):
-            raise TypeError(
-                f"config.{field_name} must be {child_type.__name__}; "
-                f"got {type(child).__name__}."
-            )
-    return config
+    return config_type.model_validate(data)
 
 
 def env_config_child_types(
@@ -210,17 +199,10 @@ def env_config_child_types(
         ("taskset", "load_taskset", TasksetConfig),
         ("harness", "load_harness", HarnessConfig),
     ):
-        field_type = config_type_from_annotation(
-            config_type.model_fields[field_name].annotation,
-            base_type,
-            f"{config_type.__name__}.{field_name}",
-        )
         factory_type = factory_config_type(module, factory_name, base_type)
         child_config = value.get(field_name) if value is not None else None
-        if (
-            factory_type is None
-            and field_type is base_type
-            and child_config_requires_loader_type(child_config, base_type)
+        if factory_type is None and child_config_requires_loader_type(
+            child_config, base_type
         ):
             loader_id = child_loader_id(child_config)
             if loader_id is not None and not matches_loader(module.__name__, loader_id):
@@ -228,15 +210,9 @@ def env_config_child_types(
                     import_env_module(loader_id), factory_name, base_type
                 )
         if factory_type is not None:
-            if not issubclass(factory_type, field_type):
-                raise TypeError(
-                    f"{module.__name__}.{factory_name} config type "
-                    f"{factory_type.__name__} does not match "
-                    f"{config_type.__name__}.{field_name}: {field_type.__name__}."
-                )
             child_types[field_name] = factory_type
         else:
-            child_types[field_name] = field_type
+            child_types[field_name] = base_type
     return child_types
 
 

@@ -29,8 +29,7 @@ class Pi(CommandHarness[PiConfig]):
                 str(getattr(message, "content", "") or "") for message in task.prompt
             )
         system_prompt = "\n\n".join(
-            str(getattr(message, "content", "") or "")
-            for message in vf.get_messages(self.system_prompt)
+            str(message.get("content") or "") for message in self.system_prompt
         )
         system_prompt_arg = (
             f"--system-prompt {system_prompt!r}" if system_prompt else ""

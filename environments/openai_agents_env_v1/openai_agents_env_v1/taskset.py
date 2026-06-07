@@ -63,9 +63,9 @@ def final_text(state: vf.State) -> str:
     result = state.artifacts.get("agent_result")
     if isinstance(result, str):
         return result
-    messages = vf.get_messages(
-        state.completion or [], role="assistant"
-    ) or vf.get_messages(state.completion or [])
+    messages = [
+        message for message in state.completion if message.role == "assistant"
+    ] or state.completion
     return str(messages[-1].content or "") if messages else ""
 
 
@@ -120,7 +120,7 @@ class OpenAIAgentsHarness(vf.Harness[OpenAIAgentsHarnessConfig]):
         state.artifacts["agent_result"] = final_output
         message = vf.AssistantMessage(content=final_output)
         if not state.transcript:
-            state.add_turn(vf.Turn(prompt=prompt, completion=[message]))
+            state.transcript.append(vf.Turn(prompt=prompt, completion=[message]))
         state.stop("agent_completed")
 
 
