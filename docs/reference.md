@@ -653,12 +653,12 @@ class State(BaseModel, extra="forbid"):
     metadata: JsonData
     metrics: dict[str, float]
     reward: float
-    advantage: float | None
     artifacts: JsonData
 ```
 
 `State` is the rollout record. `state.transcript` is canonical; there is no live
 `trajectory` alias. User-owned mutable rollout data belongs in `state.extras`.
+Advantages are token-level fields on `TurnTokens`, not scalar state fields.
 Live model clients, runtimes, MCP sessions, functions, and file handles never go
 on `State`.
 
@@ -969,7 +969,7 @@ class TasksetConfig(Config):
     system_prompt: SystemPrompt = None
     runtime: RuntimeConfig | None = None
     user: UserConfig | None = None
-    toolsets: dict[str, ToolsetConfig]
+    toolsets: ToolsetConfigs = Field(default_factory=dict)
     extras: Extras | None = None
 
 class HarnessConfig(Config):
