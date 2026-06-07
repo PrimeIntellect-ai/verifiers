@@ -99,14 +99,10 @@ def reset_bridge_metrics() -> None:
             _bridge_metrics[k] = 0
 
 
-# 1 is right for text (HF fast tokenizers encode in ~tens of µs, so serial is
-# fine). Multimodal prompts tokenize image pixel_values per turn — orders of
-# magnitude heavier — so a size-1 pool serializes every concurrent rollout on a
-# worker (the multimodal throughput cap). Rust tokenizers / image processors
-# release the GIL, so a multi-slot pool parallelizes. Hosted training doesn't
-# surface OrchestratorConfig.pool_size, so default higher here for the
-# multimodal env. ClientConfig.renderer_pool_size still overrides per-client.
-_DEFAULT_POOL_SIZE = 16
+# Text tokenization is fine with one slot, but multimodal prompts process image
+# pixels per turn. Hosted training does not expose OrchestratorConfig.pool_size;
+# ClientConfig.renderer_pool_size still overrides this default.
+_DEFAULT_POOL_SIZE = 4
 
 
 # ── Helpers ─────────────────────────────────────────────────────────
