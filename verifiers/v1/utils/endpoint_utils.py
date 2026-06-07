@@ -533,7 +533,7 @@ def normalize_anthropic_user_message(content: object) -> Messages:
             messages.append(
                 ToolMessage(
                     tool_call_id=tool_use_id,
-                    content=anthropic_block_content_text(block.get("content")),
+                    content=anthropic_tool_result_content(block.get("content")),
                 )
             )
     if text_parts:
@@ -622,7 +622,7 @@ def normalize_openai_responses_input(raw_input: object) -> Messages:
                 messages.append(
                     ToolMessage(
                         tool_call_id=call_id,
-                        content=responses_content_text(item.get("output")),
+                        content=responses_tool_output_content(item.get("output")),
                     )
                 )
             continue
@@ -650,6 +650,62 @@ def responses_content_text(content: object) -> str:
                     text_parts.append(text)
         return "\n".join(text_parts)
     return "" if content is None else str(content)
+
+
+def responses_tool_output_content(output: object) -> str | list[dict[str, object]]:
+    """Responses function_call_output -> internal tool content, keeping images
+    (input_image -> image_url); text-only falls back to a string."""
+
+    if not isinstance(output, list):
+        return responses_content_text(output)
+    parts: list[dict[str, object]] = []
+    has_image = False
+    for item in output:
+        if not isinstance(item, dict):
+            continue
+        item = cast(ConfigData, item)
+        if item.get("type") == "input_image":
+            url = item.get("image_url")
+            if isinstance(url, str) and url:
+                parts.append({"type": "image_url", "image_url": {"url": url}})
+                has_image = True
+        else:
+            text = item.get("text")
+            if isinstance(text, str):
+                parts.append({"type": "text", "text": text})
+    return parts if has_image else responses_content_text(output)
+
+
+def anthropic_tool_result_content(content: object) -> str | list[dict[str, object]]:
+    """Anthropic tool_result content -> internal tool content, keeping images
+    (image block -> image_url); text-only falls back to a string."""
+
+    if not isinstance(content, list):
+        return anthropic_block_content_text(content)
+    parts: list[dict[str, object]] = []
+    has_image = False
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        block = cast(ConfigData, block)
+        if block.get("type") == "image":
+            source = block.get("source")
+            url = ""
+            if isinstance(source, dict):
+                if source.get("type") == "base64":
+                    media_type = str(source.get("media_type") or "image/png")
+                    data = str(source.get("data") or "")
+                    url = f"data:{media_type};base64,{data}"
+                elif source.get("type") == "url":
+                    url = str(source.get("url") or "")
+            if url:
+                parts.append({"type": "image_url", "image_url": {"url": url}})
+                has_image = True
+        else:
+            text = block.get("text")
+            if isinstance(text, str):
+                parts.append({"type": "text", "text": text})
+    return parts if has_image else anthropic_block_content_text(content)
 
 
 def normalize_endpoint_tools(tools: object, protocol: str) -> list[Tool] | None:
