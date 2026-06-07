@@ -1,7 +1,7 @@
-# opencode-harbor
+# opencode-harbor-v1
 
 ### Overview
-- **Environment ID**: `opencode-harbor`
+- **Environment ID**: `opencode-harbor-v1`
 - **Short description**: Environment for running an agent with OpenCode on Harbor tasks
 - **Tags**: opencode, cli_agent, harbor
 
@@ -18,45 +18,51 @@
 Run the environment:
 
 ```bash
-prime eval run opencode-harbor
+prime eval run opencode-harbor-v1
 ```
 
 Configure model and sampling:
 
 ```bash
-prime eval run opencode-harbor -m openai/gpt-4.1-mini -n 20 -r 3 -t 1024 -T 0.7
+prime eval run opencode-harbor-v1 -m openai/gpt-4.1-mini -n 20 -r 3 -t 1024 -T 0.7
 ```
 
 Notes:
 - v1 task settings belong under `config.taskset` when passed through `-a` / `--env-args`.
 - Use `taskset` and `harness` config sections for v1 object configuration in TOML.
 
-### Environment Arguments
+### Taskset Config
 
 | Arg | Type | Default | Description |
 | --- | ---- | ------- | ----------- |
 | `task_names` | list[str] | `null` | Explicit Harbor task names to run. |
 | `dataset` | str | `null` | Harbor Hub dataset id. Defaults to bundled `tasks/`. |
+| `task_runtime` | object | Harbor default runtime | Base runtime settings merged with each Harbor task. |
+| `verifier_timeout_seconds` | float | `900.0` | Default timeout for Harbor verifier scripts. |
+| `task_dir` | str | `"/task"` | Remote task metadata directory. |
+| `env` | dict[str, str] | `{}` | Extra environment variables passed to the agent program. |
 
-OpenCode settings belong under the v1 harness config:
+### Harness Config
+
+OpenCode settings belong under `config.harness`:
 
 ```toml
 [env.harness]
 max_turns = 4
-
-[env.harness.program]
-agent_workdir = "/app"
+version = "PrimeIntellect-ai/opencode@1.1.63-rl2"
+cwd = "/app"
 ```
 
-This environment does not set a custom disabled-tool list. It inherits the
-packaged `OpenCodeConfig` defaults.
+The harness also accepts the packaged `OpenCodeConfig` fields for `system_prompt`,
+`log_path`, `disabled_tools`, `allow_git`, `disable_compaction`,
+`provider_timeout_ms`, and runtime settings.
 
 ### Metrics
-Summarize key metrics your rubric emits and how they’re interpreted.
 
 | Metric | Meaning |
 | ------ | ------- |
-| `reward` | Main scalar reward (weighted sum of criteria) |
+| `reward` | Harbor verifier reward, usually `0.0` or `1.0` |
+| `num_turns` | Number of intercepted assistant turns |
 
 
 ## How It Works

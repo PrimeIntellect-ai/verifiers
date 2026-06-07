@@ -1,7 +1,7 @@
-# nemo-gym-env
+# nemo-gym-env-v1
 
 ### Overview
-- **Environment ID**: `nemo-gym-env`
+- **Environment ID**: `nemo-gym-env-v1`
 - **Short description**: Minimal v1 Verifiers environment that runs a NeMo Gym task through `NeMoGymTaskset` and `NeMoGymHarness`.
 - **Tags**: nemo-gym, tool-use, v1, train, eval
 
@@ -21,19 +21,19 @@ The taskset loads NeMo Gym JSONL rows from the installed `nemo-gym` package and 
 Run an evaluation with default settings:
 
 ```bash
-prime eval run nemo-gym-env
+prime eval run nemo-gym-env-v1
 ```
 
 When running directly from this repository before the NeMo Gym integration is released on PyPI, point Prime at the in-repo environments directory:
 
 ```bash
-prime eval run nemo-gym-env --env-dir-path environments
+prime eval run nemo-gym-env-v1 --env-dir-path environments
 ```
 
 Configure model and sampling:
 
 ```bash
-prime eval run nemo-gym-env \
+prime eval run nemo-gym-env-v1 \
   -m gpt-4.1-mini \
   -n 1 -r 1 -t 128
 ```

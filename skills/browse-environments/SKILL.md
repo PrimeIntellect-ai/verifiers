@@ -23,7 +23,7 @@ prime env list --starred
    - Prefer environments published by `primeintellect` first.
    - Keep only candidates with passing latest action/CI status from `--show-actions` or `prime env status`.
    - Prefer candidates updated in roughly the last 2 months.
-   - Prefer candidates on version `v0.1.8` or newer.
+   - Prefer candidates whose latest published version matches current Verifiers docs and package metadata.
 4. Inspect details for shortlisted candidates:
 ```bash
 prime env info owner/name

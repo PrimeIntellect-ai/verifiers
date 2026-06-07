@@ -1,5 +1,6 @@
 import os
 import importlib.util
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -90,6 +91,26 @@ def test_pyproject_has_metadata(env_dir: Path):
 def test_readme_exists(env_dir: Path):
     """Test that the README.md file exists for the given environment directory."""
     assert (env_dir / "README.md").exists(), "README.md does not exist"
+
+
+@pytest.mark.parametrize(
+    "env_dir",
+    sorted(Path("environments").glob("*_v1")),
+    ids=lambda x: x.name,
+)
+def test_v1_readme_uses_project_name(env_dir: Path):
+    with open(env_dir / "pyproject.toml", "rb") as f:
+        project_name = tomllib.load(f)["project"]["name"]
+    readme = (env_dir / "README.md").read_text()
+    tokens: list[str] = []
+    tokens.extend(re.findall(r"^#\s+(.+)$", readme, flags=re.MULTILINE))
+    tokens.extend(re.findall(r"\*\*Environment ID\*\*: `([^`]+)`", readme))
+    tokens.extend(re.findall(r"\bprime eval run ([^\s\\]+)", readme))
+    mismatches = [token for token in tokens if token != project_name]
+    assert not mismatches, (
+        f"{env_dir.name} README should use project name {project_name!r}; "
+        f"found {mismatches!r}."
+    )
 
 
 def test_alphabet_sort_v1_validates_parameters():

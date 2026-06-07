@@ -36,7 +36,7 @@ prime eval run reverse-text-v1 \
 Notes:
 - v1 task settings belong under `config.taskset` when passed through `-a` / `--env-args`.
 
-### Environment Arguments
+### Taskset Config
 | Arg | Type | Default | Description |
 | --- | ---- | ------- | ----------- |
 | `dataset_name` | str | `"PrimeIntellect/Reverse-Text-RL"` | Name of the dataset to use |

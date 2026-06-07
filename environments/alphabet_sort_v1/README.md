@@ -37,7 +37,7 @@ prime eval run alphabet-sort-v1 \
 Notes:
 - v1 task settings belong under `config.taskset` when passed through `-a` / `--env-args`.
 
-### Environment Arguments
+### Taskset Config
 | Arg | Type | Default | Description |
 | --- | ---- | ------- | ----------- |
 | `max_turns` | int | `3` | Maximum number of assistant turns |
@@ -53,18 +53,3 @@ Notes:
 | Metric | Meaning |
 | ------ | ------- |
 | `reward` | Average per-turn sequence similarity raised to `similarity_power` |
-
-### Changelog
-
-#### v0.1.9
-- Updated to verifiers 0.1.8 API, misc cleanup.
-
-#### v0.1.8
-- **Added `power_per_turn` flag**: New parameter (defaults to `True`) that controls how the similarity power is applied. When `True`, applies power scaling to each turn individually before averaging (preserves v0.1.7 behavior). When `False`, averages raw similarities across turns first, then applies power scaling holistically to the final average.
-
-#### v0.1.7
-- **Randomized ICL template counts**: Template examples now show a random number of placeholder names (within valid range) instead of always matching the actual task count.
-
-#### v0.1.6
-- **Added multi-attempt evaluation**: Now handles multiple XML tag instances in model responses. If a model provides multiple attempts within a single response, all subsequent attempts must improve over previous ones, otherwise the score is 0.
-- **Added first/last name sorting**: Randomly chooses between sorting by first name or last name for each sample, making the task more diverse and challenging.

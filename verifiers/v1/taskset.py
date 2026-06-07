@@ -176,13 +176,8 @@ class Taskset(Generic[ConfigT]):
                 self.load_system_prompt(self.config),
                 field_name="taskset.system_prompt",
             )
-            self.user = self.load_user(self.config.user)
-            self.toolsets = TasksetConfig.enabled_toolsets(
-                {
-                    **(self.load_toolsets(self.config) or {}),
-                    **self.config.toolsets,
-                }
-            )
+            self.user = self.config.user
+            self.toolsets = TasksetConfig.enabled_toolsets(self.config.toolsets)
             self.handlers = self.load_handlers()
             self.signals = build_signals(self)
             for signal in self.signals:
@@ -203,12 +198,6 @@ class Taskset(Generic[ConfigT]):
 
     def load_system_prompt(self, config: ConfigT) -> SystemPrompt:
         return config.system_prompt
-
-    def load_user(self, config: UserConfig | None) -> UserConfig | None:
-        return config
-
-    def load_toolsets(self, config: ConfigT) -> ToolsetConfigs:
-        return {}
 
     def load_handlers(self) -> dict[LifecycleKind, list[Handler]]:
         handlers: dict[LifecycleKind, list[Handler]] = {

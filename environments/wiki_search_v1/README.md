@@ -1,13 +1,13 @@
-# wiki-search
+# wiki-search-v1
 
-<a href="https://github.com/PrimeIntellect-ai/verifiers/tree/main/environments/wiki_search">
+<a href="https://github.com/PrimeIntellect-ai/verifiers/tree/main/environments/wiki_search_v1">
 <img src="https://img.shields.io/badge/GitHub-181717?style=for-the-badge&logo=github&logoColor=white" alt="Source Code">
 </a>
 
 ### Overview
-- **Environment ID**: `wiki-search`
-- **Short description**: Multi-turn tool-use QA over a small Wikipedia corpus using ChromaDB and OpenAI embeddings, with judge-based scoring.
-- **Tags**: retrieval, tools, multi-turn, embeddings, judge
+- **Environment ID**: `wiki-search-v1`
+- **Short description**: Multi-turn tool-use QA over a small Wikipedia corpus using a v1 task-owned MCP toolset backed by ChromaDB and OpenAI embeddings.
+- **Tags**: retrieval, tools, multi-turn, embeddings, v1
 
 ### Datasets
 - **Primary dataset(s)**: `willcb/wiki-trivia-questions` (HF) and a Wikipedia corpus indexed in ChromaDB (from `willcb/rare-wiki-pages`, indexed at `.chroma_db` on first run)
@@ -15,8 +15,8 @@
 - **Split sizes**: Uses the `train` split for prompts
 
 ### Task
-- **Type**: multi-turn tool use
-- **Rubric overview**: Combines the default tool rubric with a `JudgeRubric` for answer quality
+- **Type**: `vf.Env` with a wiki QA `vf.Taskset`, base `vf.Harness`, and env-scope wiki `Toolset`.
+- **Rubric overview**: Answer-substring reward against the reference answer.
 
 ### How it works
 - **Corpus load**: Reads `willcb/rare-wiki-pages` (HF) into memory: `id → title`, `id → content`.
@@ -25,22 +25,22 @@
   - `search_pages(query)`: Embedding search over titles; returns top 10 `{page_id, title}`.
   - `view_sections(page_id)`: Parses the page content for Markdown-style headings (`# ...`) and returns section ids/names. Falls back to a single `full` section if no headings.
   - `read_section(section_id)`: Returns the content slice for the requested section (or full page).
-- **Scoring**: Adds a `JudgeRubric` on top of the default tool rubric for answer quality.
+- **Scoring**: The taskset rewards final assistant responses that contain the reference answer.
 
 ### Quickstart
 Run an evaluation with default settings:
 
 ```bash
-prime eval run wiki-search
+prime eval run wiki-search-v1
 ```
 
 Configure model and sampling:
 
 ```bash
-prime eval run wiki-search \
+prime eval run wiki-search-v1 \
   -m openai/gpt-4.1-mini \
   -n 20 -r 3 -t 1024 -T 0.7 \
-  -a '{"judge_model": "gpt-4.1-mini", "judge_base_url": "https://api.openai.com/v1", "judge_api_key_var": "OPENAI_API_KEY", "embed_model": "text-embedding-3-small", "embed_base_url": "https://api.openai.com/v1", "embed_api_key_var": "OPENAI_API_KEY"}'
+  -a '{"config": {"taskset": {"max_turns": 10, "toolsets": {"wiki": {"embed_model": "text-embedding-3-small", "embed_base_url": "https://api.openai.com/v1", "embed_api_key_var": "OPENAI_API_KEY"}}}}}'
 ```
 
 Notes:
@@ -50,14 +50,16 @@ Notes:
 
 | Variable | Description |
 | -------- | ----------- |
-| `OPENAI_API_KEY` | Required for judge and embedding calls (or set custom vars via `judge_api_key_var`/`embed_api_key_var`) |
+| `OPENAI_API_KEY` | Required for embedding calls unless `embed_api_key_var` is changed |
 
-### Environment Arguments
-| Arg | Type | Default | Description |
+### Taskset Config
+| Field | Type | Default | Description |
 | --- | ---- | ------- | ----------- |
-| `judge_model` | str | `"gpt-4.1-mini"` | Judge model name |
-| `judge_base_url` | str | `"https://api.openai.com/v1"` | Judge provider base URL |
-| `judge_api_key_var` | str | `"OPENAI_API_KEY"` | Env var for judge API key |
+| `max_turns` | int | `10` | Maximum model turns per rollout |
+
+### Wiki Toolset Config
+| Field | Type | Default | Description |
+| --- | ---- | ------- | ----------- |
 | `embed_model` | str | `"text-embedding-3-small"` | Embedding model name |
 | `embed_base_url` | str | `"https://api.openai.com/v1"` | Embedding provider base URL |
 | `embed_api_key_var` | str | `"OPENAI_API_KEY"` | Env var for embed API key |
@@ -68,10 +70,5 @@ Notes:
 ### Metrics
 | Metric | Meaning |
 | ------ | ------- |
-| ToolRubric metrics | Tool execution success and format adherence |
-| JudgeRubric metrics | Judge-scored answer quality |
-
-### Changelog
-
-#### v0.1.22 (Jan 22, 2026)
-- Make ChromaDB initialization lazy to allow multiple env instances to run concurrently
+| `reward` | 1.0 if the final assistant response contains the reference answer, else 0.0 |
+| `num_turns` | Number of recorded model turns |

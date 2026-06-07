@@ -1,4 +1,4 @@
-# dspy-flights
+# dspy-flights-v1
 
 Minimal v1 environment for a third-party DSPy flight-support program.
 

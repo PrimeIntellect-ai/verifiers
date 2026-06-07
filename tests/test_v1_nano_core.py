@@ -199,7 +199,13 @@ class TaskSetupToolset(vf.Toolset[TaskSetupToolsetConfig]):
         }
 
 
-class ServerSetupTaskset(vf.Taskset):
+class ServerSetupTasksetConfig(vf.TasksetConfig):
+    toolsets: vf.ToolsetConfigs = {
+        "setup": TaskSetupToolsetConfig(hide=["materialize"])
+    }
+
+
+class ServerSetupTaskset(vf.Taskset[ServerSetupTasksetConfig]):
     def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         if split == "eval":
             return []
@@ -207,10 +213,6 @@ class ServerSetupTaskset(vf.Taskset):
             {"example_id": 0, "prompt": "say ok", "max_turns": 1},
             {"example_id": 1, "prompt": "say ok", "max_turns": 1},
         ]
-
-    def load_toolsets(self, config: vf.TasksetConfig) -> vf.ToolsetConfigs:
-        _ = config
-        return {"setup": TaskSetupToolsetConfig(hide=["materialize"])}
 
     @vf.setup
     async def materialize_task(

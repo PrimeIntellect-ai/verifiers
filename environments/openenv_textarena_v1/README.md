@@ -1,12 +1,12 @@
-# openenv-textarena
+# openenv-textarena-v1
 
-<a href="https://github.com/PrimeIntellect-ai/verifiers/tree/main/environments/openenv_textarena">
+<a href="https://github.com/PrimeIntellect-ai/verifiers/tree/main/environments/openenv_textarena_v1">
 <img src="https://img.shields.io/badge/GitHub-181717?style=for-the-badge&logo=github&logoColor=white" alt="Source Code">
 </a>
 
 ### Overview
 
-- **Environment ID**: `openenv-textarena`
+- **Environment ID**: `openenv-textarena-v1`
 - **Short description**: OpenEnv TextArena gym integration (default game: `Wordle-v0`) via `OpenEnvTaskset`.
 - **Tags**: openenv, gym, textarena, wordle, example
 
@@ -27,13 +27,13 @@
 Build and register the bundled OpenEnv Docker image in the Prime registry:
 
 ```bash
-uv run vf-build openenv-textarena
+uv run vf-build openenv-textarena-v1
 ```
 
 Run an evaluation with default settings:
 
 ```bash
-prime eval run openenv-textarena
+prime eval run openenv-textarena-v1
 ```
 
 ### Taskset Config

@@ -1,9 +1,9 @@
-# langchain-deep-agents-wikispeedia
+# langchain-deep-agents-wikispeedia-v1
 
 LangChain deep-agents trained on Wikispeedia navigation through a v1 `Taskset`/`Harness`.
 
 ### Overview
-- **Environment ID**: `langchain-deep-agents-wikispeedia`
+- **Environment ID**: `langchain-deep-agents-wikispeedia-v1`
 - **Short description**: Multi-turn navigation through the Wikispeedia article graph with LangChain `create_deep_agent` (todos, virtual files, sub-agents) plus two task tools (`click_link`, `go_back`).
 - **Tags**: v1, taskset, harness, multi-turn, tool-use, langchain, deep-agents, wikispeedia, navigation
 
@@ -22,12 +22,12 @@ LangChain deep-agents trained on Wikispeedia navigation through a v1 `Taskset`/`
 
 Run an evaluation with default settings:
 ```bash
-prime eval run langchain-deep-agents-wikispeedia
+prime eval run langchain-deep-agents-wikispeedia-v1
 ```
 
 Configure model and difficulty band:
 ```bash
-prime eval run langchain-deep-agents-wikispeedia \
+prime eval run langchain-deep-agents-wikispeedia-v1 \
   -m openai/gpt-4.1-mini \
   -n 20 -r 3 -t 4096 -T 0.7 \
   -a '{"config": {"taskset": {"min_path_length": 4, "max_path_length": 6, "max_turns": 40}}}'
@@ -35,7 +35,7 @@ prime eval run langchain-deep-agents-wikispeedia \
 
 Disable `go_back` (force planning over backtracking):
 ```bash
-prime eval run langchain-deep-agents-wikispeedia \
+prime eval run langchain-deep-agents-wikispeedia-v1 \
   -m openai/gpt-4.1-mini -n 20 -r 3 \
   -a '{"config": {"taskset": {"allow_go_back": false}}}'
 ```

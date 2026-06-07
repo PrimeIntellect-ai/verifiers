@@ -1,12 +1,12 @@
-# openenv-echo
+# openenv-echo-v1
 
-<a href="https://github.com/PrimeIntellect-ai/verifiers/tree/main/environments/openenv_echo">
+<a href="https://github.com/PrimeIntellect-ai/verifiers/tree/main/environments/openenv_echo_v1">
 <img src="https://img.shields.io/badge/GitHub-181717?style=for-the-badge&logo=github&logoColor=white" alt="Source Code">
 </a>
 
 ### Overview
 
-- **Environment ID**: `openenv-echo`
+- **Environment ID**: `openenv-echo-v1`
 - **Short description**: OpenEnv Echo environment via `OpenEnvTaskset`, demonstrating MCP tool-calling in Prime Sandboxes.
 - **Tags**: openenv, mcp, tools, example
 
@@ -27,7 +27,7 @@
 Build and register the bundled OpenEnv Docker image in the Prime registry:
 
 ```bash
-uv run vf-build openenv-echo
+uv run vf-build openenv-echo-v1
 ```
 
 This writes `environments/openenv_echo_v1/openenv_echo_v1/proj/.build.json` with the fully qualified image reference and runtime metadata.
@@ -41,21 +41,21 @@ prime images list
 Run an evaluation with default settings:
 
 ```bash
-prime eval run openenv-echo
+prime eval run openenv-echo-v1
 ```
 
 Configure model and sampling:
 
 ```bash
-prime eval run openenv-echo \
+prime eval run openenv-echo-v1 \
   -m openai/gpt-4.1-mini \
   -n 20 -r 3 -t 1024 -T 0.7
 ```
 
 Notes:
 - If your environments directory is not `./environments`, run:
-`uv run vf-build openenv-echo -p /path/to/environments`
-- If you customize the bundled OpenEnv project, rerun `uv run vf-build openenv-echo` (the `proj/.build.json` manifest is updated).
+`uv run vf-build openenv-echo-v1 -p /path/to/environments`
+- If you customize the bundled OpenEnv project, rerun `uv run vf-build openenv-echo-v1` (the `proj/.build.json` manifest is updated).
 - `openenv_echo_v1/taskset.py` defines `render_openenv_prompt` and passes it via `prompt_renderer` to keep the initial MCP prompt concise.
 
 ### Troubleshooting

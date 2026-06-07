@@ -1,11 +1,11 @@
-# mcp-search-env
+# mcp-search-env-v1
 
 v1 `vf.Env` example for MCP-backed tool use. The taskset asks short synthetic
 search questions, and the bundled stdio MCP server exposes `search_records` and
 `read_record` over a small stable record corpus.
 
 ```bash
-prime eval run mcp-search-env -m openai/gpt-4.1-mini -n 5 -r 1
+prime eval run mcp-search-env-v1 -m openai/gpt-4.1-mini -n 5 -r 1
 ```
 
 Configuration belongs under v1 sections:

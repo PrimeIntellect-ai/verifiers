@@ -1,7 +1,7 @@
-# sft-replay
+# sft-replay-v1
 
 ### Overview
-- **Environment ID**: `sft-replay`
+- **Environment ID**: `sft-replay-v1`
 - **Short description**: Replay stored chat transcripts into v1 transcript turns without making model requests.
 - **Tags**: replay, sft, v1
 
@@ -29,13 +29,13 @@ canonical serialized message format.
 Run an evaluation with default settings:
 
 ```bash
-prime eval run sft-replay
+prime eval run sft-replay-v1
 ```
 
 Configure model and sampling:
 
 ```bash
-prime eval run sft-replay \
+prime eval run sft-replay-v1 \
   -m openai/gpt-4.1-mini \
   -n 20 -r 3 -t 1024 -T 0.7
 ```
@@ -49,7 +49,7 @@ Notes:
 | Field | Type | Default | Description |
 | --- | ---- | ------- | ----------- |
 | `dataset` | str \| null | `null` | Hugging Face dataset ID to load instead of env-local `data/*.jsonl` files. |
-| `data_dir` | str \| null | `null` | Local JSONL directory. When unset, `sft-replay` uses its packaged `data/` directory. |
+| `data_dir` | str \| null | `null` | Local JSONL directory. When unset, `sft-replay-v1` uses its packaged `data/` directory. |
 
 ### Harness Config
 Uses `vf.HarnessConfig`. By default, every assistant message is replayed.

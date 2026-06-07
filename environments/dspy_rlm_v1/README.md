@@ -1,12 +1,12 @@
-# dspy-rlm
+# dspy-rlm-v1
 
-<a href="https://github.com/PrimeIntellect-ai/verifiers/tree/main/environments/dspy_rlm">
+<a href="https://github.com/PrimeIntellect-ai/verifiers/tree/main/environments/dspy_rlm_v1">
 <img src="https://img.shields.io/badge/GitHub-181717?style=for-the-badge&logo=github&logoColor=white" alt="Source Code">
 </a>
 
 ### Overview
 
-- **Environment ID**: `dspy-rlm`
+- **Environment ID**: `dspy-rlm-v1`
 - **Short description**: V1 Taskset/Harness example using DSPy's RLM (Recursive Language Model) module on GSM8K math problems.
 - **Tags**: v1, taskset, harness, dspy, rlm, math, gsm8k
 
@@ -32,13 +32,13 @@ DSPy RLM requires Deno to be available in the runtime environment.
 Run an evaluation with default settings:
 
 ```bash
-prime eval run dspy-rlm
+prime eval run dspy-rlm-v1
 ```
 
 Configure model and sampling:
 
 ```bash
-prime eval run dspy-rlm \
+prime eval run dspy-rlm-v1 \
   -m gpt-4.1-mini \
   -n 10 -r 3 -t 1024 -T 0.7
 ```

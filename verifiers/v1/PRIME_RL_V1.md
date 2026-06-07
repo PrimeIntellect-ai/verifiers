@@ -21,7 +21,7 @@ interleaving, logging, or advantage handling.
 
 `src/prime_rl/orchestrator/envs.py` currently assumes the v0 contract:
 
-- `vf.load_environment(...)` returns `vf.Environment`.
+- top-level `vf.load_environment(...)` returns a v0 `vf.Environment`.
 - `REQUIRED_STATE_COLUMNS = ["trajectory"]`.
 - `run_rollout(...)` passes `vf.RolloutInput`, `client`, `model`,
   `sampling_args`, `state_columns`, and `env_client`.
@@ -64,7 +64,7 @@ class EnvAdapter(Protocol):
     sampling_args: dict
 
     @property
-    def requires_group_scoring(self) -> bool: ...
+    def requires_group_rollouts(self) -> bool: ...
 
     def get_dataset(self, seed: int | None = None) -> Any: ...
 
@@ -115,7 +115,7 @@ class V1EnvAdapter:
         self.sampling_args = config.sampling.to_sampling_args()
 
     @property
-    def requires_group_scoring(self) -> bool:
+    def requires_group_rollouts(self) -> bool:
         return self.env.requires_group_rollouts
 
     async def run_rollout(
@@ -291,8 +291,9 @@ Do not route v1 through v0 `vf.RolloutInput`.
 
 1. Split `orchestrator/envs.py` into a v0 adapter preserving the current ZMQ
    implementation and a v1 adapter using in-process `vf1.Env`.
-2. Change the dispatcher to call `env.run_group(...)` only when the adapter
-   actually provides that method; for v1, dispatch individual `run_rollout`
+2. Change the dispatcher to reserve group scheduling for adapters whose
+   `requires_group_rollouts` property is true. For v0, keep the existing
+   environment-owned group call; for v1, dispatch individual `run_rollout`
    tasks and let the sink call `score_group(...)` once the group is complete.
 3. Replace `REQUIRED_STATE_COLUMNS = ["trajectory"]` with adapter-owned output
    requirements. v0 keeps `"trajectory"`; v1 keeps `"transcript"`.
