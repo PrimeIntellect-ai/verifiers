@@ -2,6 +2,7 @@ import logging
 from collections import Counter
 
 from verifiers.utils.display_utils import format_numeric, format_timing_plain
+from verifiers.utils.error_utils import ErrorChain, is_error_data
 from verifiers.utils.logging_utils import truncate
 
 from ..state import State
@@ -50,8 +51,11 @@ def log_rollout_finish(state: State) -> None:
         f"reward={format_numeric(state.get('reward') or 0.0)}",
         "metrics={" + metric_summary + "}",
     ]
-    if state.get("error"):
-        parts.append(f"error={truncate(state['error']['error_chain_str'], 200)}")
+    error = state.get("error")
+    if isinstance(error, BaseException):
+        parts.append(f"error={truncate(str(ErrorChain(error)), 200)}")
+    elif is_error_data(error):
+        parts.append(f"error={truncate(error['error_chain_str'], 200)}")
     if state.get("is_truncated"):
         parts.append("truncated=True")
     logger.info(" | ".join(parts))

@@ -5,7 +5,7 @@ import os
 import time
 import uuid
 from collections.abc import Awaitable, Callable
-from typing import Literal, Protocol, cast
+from typing import Literal, Protocol, TypeAlias, cast
 
 from anthropic import Anthropic, AsyncAnthropic
 from openai import AsyncOpenAI, OpenAI
@@ -14,41 +14,53 @@ from verifiers.errors import Error, TunnelError
 from verifiers.types import (
     AssistantMessage,
     ClientType,
+    ContentPart,
     EndpointApi,
+    EndpointClient,
     EndpointConfig,
+    MessageContent,
     Messages,
+    Response,
     SystemMessage,
     Tool,
     ToolCall,
     ToolMessage,
     UserMessage,
 )
-from verifiers.utils.error_utils import error_info
 from verifiers.utils.interception_utils import (
     InterceptionServer,
     deliver_response,
     synthesize_stream,
 )
 from verifiers.utils.message_utils import normalize_messages
+from verifiers.utils.response_utils import parse_response_message
 
 from ..runtime import ModelRequestContext, Runtime, TrajectoryVisibility
 from ..state import State
 from ..task import Task
-from ..types import ConfigData, PromptMessage, ToolParameters
+from ..types import JsonData, PromptMessage, RuntimeObject, ToolParameters
+from .serialization_utils import serializable
 
 VF_TRAJECTORY_VISIBILITY_HEADER = "x-verifiers-trajectory"
 VF_ENDPOINT_API_KEY_VAR = "VF_ENDPOINT_API_KEY"
+NormalizedEndpointApi: TypeAlias = Literal[
+    "chat_completions",
+    "completions",
+    "responses",
+    "messages",
+]
+EndpointInterceptData: TypeAlias = dict[str, RuntimeObject]
 
 
 class TunnelHandle(Protocol):
     is_running: bool
-    url: object
+    url: str | None
 
-    async def start(self) -> object: ...
+    async def start(self) -> str: ...
 
     async def check_registered(self) -> bool: ...
 
-    def sync_stop(self) -> object: ...
+    def sync_stop(self) -> None: ...
 
 
 def client_from_state(
@@ -56,7 +68,7 @@ def client_from_state(
     api: EndpointApi | ClientType = "chat_completions",
     *,
     sync: bool = False,
-) -> object:
+) -> EndpointClient:
     endpoint = endpoint_from_state(state)
     return endpoint.client(state, api=api, sync=sync)
 
@@ -81,7 +93,7 @@ def endpoint_from_state(state: State) -> "Endpoint":
 
 
 def endpoint_api_client_type(
-    api: Literal["chat_completions", "completions", "responses", "messages"],
+    api: NormalizedEndpointApi,
 ) -> Literal[
     "openai_chat_completions",
     "openai_completions",
@@ -99,7 +111,7 @@ def endpoint_api_client_type(
 
 def normalize_endpoint_api(
     api: EndpointApi | ClientType,
-) -> Literal["chat_completions", "completions", "responses", "messages"]:
+) -> NormalizedEndpointApi:
     if api in {
         "chat_completions",
         "openai_chat_completions",
@@ -154,9 +166,10 @@ class Endpoint:
         self,
         state: State,
         tool_handler: object | None = None,
-        tool_defs: object | None = None,
+        tool_defs: list[Tool] | None = None,
         user_handler: object | None = None,
         stop_handler: object | None = None,
+        model_handler: object | None = None,
     ) -> str:
         await self.start()
         rollout_key = f"rollout_{uuid.uuid4().hex[:8]}"
@@ -167,6 +180,7 @@ class Endpoint:
             tool_defs=tool_defs,
             user_handler=user_handler,
             stop_handler=stop_handler,
+            model_handler=model_handler,
         )
         self._rollout_queues[rollout_key] = cast(asyncio.Queue[str], request_queue)
         endpoint_root_url = f"{await self.url_base()}/rollout/{rollout_key}"
@@ -183,7 +197,7 @@ class Endpoint:
         api: EndpointApi | ClientType = "chat_completions",
         *,
         sync: bool = False,
-    ) -> AsyncOpenAI | OpenAI | AsyncAnthropic | Anthropic:
+    ) -> EndpointClient:
         api = normalize_endpoint_api(api)
         api_key = self.secret or "intercepted"
         if api == "messages":
@@ -221,11 +235,11 @@ class Endpoint:
     def rollout_queue(self, rollout_key: str) -> asyncio.Queue[str]:
         return self._rollout_queues[rollout_key]
 
-    def get_request(self, request_id: str) -> ConfigData:
-        return cast(ConfigData, self.server.intercepts[request_id])
+    def get_request(self, request_id: str) -> EndpointInterceptData:
+        return cast(EndpointInterceptData, self.server.intercepts[request_id])
 
     def request_context(
-        self, request_id: str, request: ConfigData
+        self, request_id: str, request: EndpointInterceptData
     ) -> ModelRequestContext:
         headers = request.get("headers") or {}
         if not isinstance(headers, dict):
@@ -307,23 +321,56 @@ class Endpoint:
 
 
 async def run_intercepted_program(
-    program: Callable[[Task, State], Awaitable[State | ConfigData | None]],
+    program: Callable[[Task, State], Awaitable[State | JsonData | None]],
     endpoint: Endpoint,
     runtime: Runtime,
     task: Task,
     state: State,
-) -> object:
-    async def call_tool(name: str, arguments: ConfigData) -> object:
+) -> State | JsonData | None:
+    async def call_tool(name: str, arguments: ToolParameters) -> object:
         return await runtime.call_tool(name, task, state, **dict(arguments))
 
-    async def call_user(transcript: list[PromptMessage]) -> object:
+    async def call_user(transcript: list[PromptMessage]) -> list[JsonData]:
         return await runtime.user_messages(task, state, transcript=transcript)
 
-    async def check_stop() -> object:
+    async def check_stop() -> JsonData:
+        stop_condition = state.get("stop_condition")
         return {
             "done": await runtime.is_completed(task, state),
-            "stop_condition": state.get("stop_condition"),
+            "stop_condition": stop_condition
+            if isinstance(stop_condition, str) or stop_condition is None
+            else str(stop_condition),
         }
+
+    model_tasks: set[asyncio.Task[Response]] = set()
+
+    async def call_model(messages: list[PromptMessage], tools: object) -> JsonData:
+        # Sandbox sends canonical Messages; host resolves the client, tokenizes,
+        # and records the step. Tool defs come from the runtime.
+        del tools
+        prompt = normalize_messages(
+            cast(Messages, messages), field_name="vf.model.messages"
+        )
+        request = asyncio.ensure_future(
+            runtime.submit_model_request(
+                prompt,
+                task,
+                state,
+                tool_defs=runtime.tool_defs(state),
+                context=ModelRequestContext(source="endpoint"),
+            )
+        )
+        model_tasks.add(request)
+        try:
+            response = await request
+        except Error as exc:
+            state._set_error(exc)
+            raise
+        finally:
+            if request.done():
+                model_tasks.discard(request)
+        completion = await parse_response_message(response)
+        return cast(JsonData, serializable(completion[0]))
 
     await endpoint.register_rollout(
         state,
@@ -331,9 +378,10 @@ async def run_intercepted_program(
         tool_defs=runtime.tool_defs(state),
         user_handler=call_user,
         stop_handler=check_stop,
+        model_handler=call_model,
     )
 
-    async def execute_program() -> State | ConfigData | None:
+    async def execute_program() -> State | JsonData | None:
         return await program(task, state)
 
     execution = asyncio.create_task(execute_program())
@@ -396,6 +444,7 @@ async def run_intercepted_program(
             execution.cancel()
             await asyncio.gather(execution, return_exceptions=True)
         await cancel_forwarders(pending)
+        await cancel_forwarders(cast("set[asyncio.Task[None]]", model_tasks))
         endpoint.unregister_rollout(rollout_key)
 
 
@@ -414,7 +463,9 @@ async def cancel_forwarders(pending: set[asyncio.Task[None]]) -> None:
         await asyncio.gather(*pending, return_exceptions=True)
 
 
-async def raise_execution_error(execution: asyncio.Task[object]) -> None:
+async def raise_execution_error(
+    execution: asyncio.Task[State | JsonData | None],
+) -> None:
     if execution.cancelled():
         await execution
     error = execution.exception()
@@ -447,7 +498,7 @@ async def forward_request(
     except BaseException as e:
         error = e
         if isinstance(e, Error):
-            state._set_error(error_info(e))
+            state._set_error(e)
         raise
     finally:
         if bool(request.get("stream")):
@@ -460,7 +511,7 @@ async def forward_request(
             deliver_response(request, response, error)
 
 
-def normalize_endpoint_prompt(request: ConfigData) -> Messages:
+def normalize_endpoint_prompt(request: EndpointInterceptData) -> Messages:
     protocol = request.get("protocol")
     if protocol == "anthropic_messages":
         return normalize_anthropic_messages(request)
@@ -481,7 +532,7 @@ def normalize_endpoint_messages(messages: object) -> Messages:
     raise TypeError("Endpoint messages must be vf.Messages or str.")
 
 
-def normalize_anthropic_messages(request: ConfigData) -> Messages:
+def normalize_anthropic_messages(request: EndpointInterceptData) -> Messages:
     messages: Messages = []
     system = request.get("system")
     if isinstance(system, str) and system:
@@ -492,7 +543,7 @@ def normalize_anthropic_messages(request: ConfigData) -> Messages:
     for raw_message in raw_messages:
         if not isinstance(raw_message, dict):
             raise TypeError("Anthropic endpoint message entries must be dicts.")
-        raw_message = cast(ConfigData, raw_message)
+        raw_message = cast(JsonData, raw_message)
         role = raw_message.get("role")
         content = raw_message.get("content")
         if role == "user":
@@ -514,7 +565,7 @@ def normalize_anthropic_user_message(content: object) -> Messages:
     for block in content:
         if not isinstance(block, dict):
             continue
-        block = cast(ConfigData, block)
+        block = cast(JsonData, block)
         block_type = block.get("type")
         if block_type == "text" and isinstance(block.get("text"), str):
             text_parts.append(str(block["text"]))
@@ -525,7 +576,7 @@ def normalize_anthropic_user_message(content: object) -> Messages:
             messages.append(
                 ToolMessage(
                     tool_call_id=tool_use_id,
-                    content=anthropic_block_content_text(block.get("content")),
+                    content=anthropic_tool_result_content(block.get("content")),
                 )
             )
     if text_parts:
@@ -543,7 +594,7 @@ def normalize_anthropic_assistant_message(content: object) -> AssistantMessage:
     for block in content:
         if not isinstance(block, dict):
             continue
-        block = cast(ConfigData, block)
+        block = cast(JsonData, block)
         block_type = block.get("type")
         if block_type == "text" and isinstance(block.get("text"), str):
             text_parts.append(str(block["text"]))
@@ -572,7 +623,7 @@ def anthropic_block_content_text(content: object) -> str:
         for block in content:
             if not isinstance(block, dict):
                 continue
-            block = cast(ConfigData, block)
+            block = cast(JsonData, block)
             text = block.get("text")
             if isinstance(text, str):
                 text_parts.append(text)
@@ -589,7 +640,7 @@ def normalize_openai_responses_input(raw_input: object) -> Messages:
     for item in raw_input:
         if not isinstance(item, dict):
             raise TypeError("OpenAI Responses input entries must be dicts.")
-        item = cast(ConfigData, item)
+        item = cast(JsonData, item)
         item_type = item.get("type")
         if item_type == "function_call":
             call_id = item.get("call_id") or item.get("id")
@@ -614,7 +665,7 @@ def normalize_openai_responses_input(raw_input: object) -> Messages:
                 messages.append(
                     ToolMessage(
                         tool_call_id=call_id,
-                        content=responses_content_text(item.get("output")),
+                        content=responses_tool_output_content(item.get("output")),
                     )
                 )
             continue
@@ -636,12 +687,68 @@ def responses_content_text(content: object) -> str:
         text_parts: list[str] = []
         for part in content:
             if isinstance(part, dict):
-                part = cast(ConfigData, part)
+                part = cast(JsonData, part)
                 text = part.get("text")
                 if isinstance(text, str):
                     text_parts.append(text)
         return "\n".join(text_parts)
     return "" if content is None else str(content)
+
+
+def responses_tool_output_content(output: object) -> MessageContent:
+    """Responses function_call_output -> internal tool content, keeping images
+    (input_image -> image_url); text-only falls back to a string."""
+
+    if not isinstance(output, list):
+        return responses_content_text(output)
+    parts: list[ContentPart] = []
+    has_image = False
+    for item in output:
+        if not isinstance(item, dict):
+            continue
+        item = cast(JsonData, item)
+        if item.get("type") == "input_image":
+            url = item.get("image_url")
+            if isinstance(url, str) and url:
+                parts.append({"type": "image_url", "image_url": {"url": url}})
+                has_image = True
+        else:
+            text = item.get("text")
+            if isinstance(text, str):
+                parts.append({"type": "text", "text": text})
+    return parts if has_image else responses_content_text(output)
+
+
+def anthropic_tool_result_content(content: object) -> MessageContent:
+    """Anthropic tool_result content -> internal tool content, keeping images
+    (image block -> image_url); text-only falls back to a string."""
+
+    if not isinstance(content, list):
+        return anthropic_block_content_text(content)
+    parts: list[ContentPart] = []
+    has_image = False
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        block = cast(JsonData, block)
+        if block.get("type") == "image":
+            source = block.get("source")
+            url = ""
+            if isinstance(source, dict):
+                if source.get("type") == "base64":
+                    media_type = str(source.get("media_type") or "image/png")
+                    data = str(source.get("data") or "")
+                    url = f"data:{media_type};base64,{data}"
+                elif source.get("type") == "url":
+                    url = str(source.get("url") or "")
+            if url:
+                parts.append({"type": "image_url", "image_url": {"url": url}})
+                has_image = True
+        else:
+            text = block.get("text")
+            if isinstance(text, str):
+                parts.append({"type": "text", "text": text})
+    return parts if has_image else anthropic_block_content_text(content)
 
 
 def normalize_endpoint_tools(tools: object, protocol: str) -> list[Tool] | None:
@@ -709,6 +816,6 @@ def endpoint_tool_parameters(value: object) -> ToolParameters:
 
 
 def assistant_completion_from_messages(
-    prompt: list[ConfigData], messages: list[ConfigData]
-) -> list[ConfigData]:
+    prompt: list[JsonData], messages: list[JsonData]
+) -> list[JsonData]:
     return messages[len(prompt) :]

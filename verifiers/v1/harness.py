@@ -15,7 +15,6 @@ from verifiers.types import (
     ToolMessage,
 )
 from verifiers.utils.async_utils import maybe_call_with_named_args
-from verifiers.utils.error_utils import error_info
 from verifiers.utils.message_utils import normalize_messages
 from verifiers.utils.response_utils import parse_response_message
 from verifiers.utils.tool_utils import is_valid_tool_content_parts
@@ -94,7 +93,7 @@ from .types import (
 if TYPE_CHECKING:
     from .taskset import Taskset
 
-ProgramResult: TypeAlias = State | ConfigData | None
+ProgramResult: TypeAlias = State | JsonData | None
 ProgramRunner: TypeAlias = Callable[[Task, State], Awaitable[ProgramResult]]
 
 
@@ -106,6 +105,7 @@ class HarnessConfig(LifecycleConfig):
     )
     program: ProgramConfig = ProgramConfig()
     model: ModelConfig = ModelConfig()
+    version: str | None = None
     system_prompt: SystemPrompt = None
     system_prompt_strategy: SystemPromptStrategy = "HT"
     sandbox: SandboxConfig | None = None
@@ -189,7 +189,7 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
             ):
                 raise TypeError("harness_id must be a string.")
             self.harness_id = resolved_harness_id or type(self).__name__
-            self.program_config = self.config.program.resolve()
+            self.program_config = self.load_program_config(self.config)
             system_prompt_value = self.load_system_prompt(self.config)
             self.system_prompt = normalize_system_prompt(
                 system_prompt_value, field_name="harness.system_prompt"
@@ -219,6 +219,9 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
 
     def load_system_prompt(self, config: ConfigT) -> SystemPrompt:
         return config.system_prompt
+
+    def load_program_config(self, config: ConfigT) -> ProgramConfig:
+        return config.program.resolve()
 
     def load_sandbox(self, config: SandboxConfig | None) -> SandboxConfig | None:
         sandbox = self.program_config.sandbox
@@ -273,6 +276,7 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
                 else:
                     state.strip_runtime_handles()
             elif completed:
+                state.serialize_error()
                 state.assert_serializable()
             log_rollout_finish(state)
         return state
@@ -283,7 +287,7 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
             state._set_truncated(True)
             state._set_stop_condition("prompt_too_long", overwrite=True)
             return
-        state._set_error(error_info(error))
+        state._set_error(error)
         state._set_stop_condition("has_error", overwrite=True)
 
     async def score_group(self, tasks: list[Task], states: list[State]) -> list[State]:
@@ -313,6 +317,11 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
         if not isinstance(trajectory, list):
             raise TypeError("state.trajectory must be a list.")
         return float(len(trajectory))
+
+    @vf.stop
+    async def max_turns_reached(self, state: State) -> bool:
+        max_turns = state.get_max_turns(self.config.max_turns)
+        return max_turns > 0 and self.runtime.visible_model_requests(state) >= max_turns
 
     async def setup_state(self, task: Task, state: State) -> State:
         await self.setup_runtime_state(task, state)
@@ -546,9 +555,6 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
             )
             sync_completion()
             if await self.runtime.is_completed(task, state):
-                return state
-            if max_turns > 0 and turn >= max_turns:
-                state._set_stop_condition("max_turns_reached", overwrite=True)
                 return state
         return state
 

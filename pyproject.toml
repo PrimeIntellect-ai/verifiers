@@ -89,14 +89,14 @@ ta = [
     "textarena",
 ]
 tasksets = [
-    "tasksets[openenv,openreward,ta]>=0.1.1",
+    "tasksets[openenv,openreward,ta]>=0.1.5",
 ]
 harnesses = [
-    "harnesses>=0.1.1",
+    "harnesses>=0.1.2",
 ]
 packages = [
-    "harnesses>=0.1.1",
-    "tasksets[openenv,openreward,ta]>=0.1.1",
+    "harnesses>=0.1.2",
+    "tasksets[openenv,openreward,ta]>=0.1.5",
 ]
 browser = [
     "stagehand>=3.0.0",
@@ -104,14 +104,14 @@ browser = [
     "python-dotenv>=1.0.0",
 ]
 openenv = [
-    "tasksets[openenv]>=0.1.1",
+    "tasksets[openenv]>=0.1.5",
 ]
 openreward = [
-    "tasksets[openreward]>=0.1.1",
+    "tasksets[openreward]>=0.1.5",
 ]
 nemogym = [
-    "harnesses[nemogym]>=0.1.1",
-    "tasksets[nemogym]>=0.1.1",
+    "harnesses[nemogym]>=0.1.2",
+    "tasksets[nemogym]>=0.1.5",
 ]
 renderers = [
     "renderers>=0.1.8.dev28",

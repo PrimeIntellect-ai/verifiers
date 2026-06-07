@@ -72,6 +72,8 @@ def run_cli(make_metadata, make_state, make_input):
             "headers_from_state": None,
             "num_examples": 1,
             "rollouts_per_example": 1,
+            "shuffle": False,
+            "shuffle_seed": None,
             "max_concurrent": 1,
             "independent_scoring": False,
             "max_tokens": 42,
@@ -175,6 +177,20 @@ def test_parse_args_accepts_v1_env_config_overrides():
 def test_parse_args_rejects_unknown_eval_flags():
     with pytest.raises(SystemExit):
         vf_eval.parse_args(["env1", "--unknown-flag", "value"])
+
+
+def test_cli_shuffle_defaults_seed_when_enabled(monkeypatch, run_cli):
+    captured = run_cli(
+        monkeypatch,
+        {
+            "shuffle": True,
+            "shuffle_seed": None,
+        },
+    )
+
+    config = captured["configs"][0]
+    assert config.shuffle is True
+    assert config.shuffle_seed == 0
 
 
 def test_cli_v1_env_config_overrides_preserve_env_args_config(
@@ -1186,6 +1202,15 @@ def test_cli_toml_per_env_rollouts_per_example(monkeypatch, run_cli):
     assert len(configs) == 2
     assert configs[0].rollouts_per_example == 3
     assert configs[1].rollouts_per_example == 5
+
+
+def test_cli_toml_per_env_shuffle(monkeypatch, run_cli):
+    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False, mode="w") as f:
+        f.write('[[eval]]\nenv_id = "env1"\nshuffle = true\nshuffle_seed = 321\n')
+        f.flush()
+        captured = run_cli(monkeypatch, {"env_id_or_config": f.name})
+
+    assert captured["configs"][0].shuffle_seed == 321
 
 
 def test_cli_toml_per_eval_settings_used(monkeypatch, run_cli):

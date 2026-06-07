@@ -5,7 +5,7 @@ from pathlib import PurePosixPath
 import verifiers as vf
 from verifiers.v1.utils.mcp_proxy_utils import proxy_command
 
-PI_DEFAULT_PACKAGE = "@earendil-works/pi-coding-agent@latest"
+PI_DEFAULT_VERSION = "@earendil-works/pi-coding-agent@latest"
 PI_DEFAULT_WORKDIR = "/app"
 PI_DEFAULT_INSTRUCTION_PATH = "/pi/instruction.txt"
 PI_DEFAULT_SYSTEM_PROMPT_PATH = "/pi/system.txt"
@@ -18,11 +18,10 @@ class PiProgramConfig(vf.ProgramConfig):
     instruction_path: str = PI_DEFAULT_INSTRUCTION_PATH
     system_prompt_path: str = PI_DEFAULT_SYSTEM_PROMPT_PATH
     log_path: str = PI_DEFAULT_LOG_PATH
-    package: str = PI_DEFAULT_PACKAGE
     install_mcp_adapter: bool = True
     sandbox: vf.SandboxConfig | None = vf.SandboxConfig()
 
-    def resolve(self) -> vf.ProgramConfig:
+    def resolve(self, version: str = PI_DEFAULT_VERSION) -> vf.ProgramConfig:
         files: dict[str, vf.ProgramValue] = {
             self.instruction_path: {"fn": "verifiers.v1.utils.prompt_utils:task_text"},
             self.system_prompt_path: {
@@ -82,7 +81,7 @@ apt-get -o Acquire::Retries=3 update -qq && apt-get -o Acquire::Retries=3 instal
 npm install -g --ignore-scripts n
 n 22.19.0
 hash -r
-npm install -g --ignore-scripts {shlex.quote(self.package)}
+npm install -g --ignore-scripts {shlex.quote(version)}
 """
         artifacts = vf.ArtifactsConfig.model_validate(
             {
@@ -127,12 +126,16 @@ class PiConfig(vf.HarnessConfig):
     system_prompt: vf.PromptInput | vf.SystemPromptConfig | None = (
         PI_DEFAULT_SYSTEM_PROMPT
     )
+    version: str = PI_DEFAULT_VERSION
     program: PiProgramConfig = PiProgramConfig()
     max_turns: int = 4
 
 
 class Pi(vf.Harness[PiConfig]):
     config: PiConfig
+
+    def load_program_config(self, config: PiConfig) -> vf.ProgramConfig:
+        return config.program.resolve(version=config.version)
 
 
 def load_harness(config: PiConfig) -> Pi:

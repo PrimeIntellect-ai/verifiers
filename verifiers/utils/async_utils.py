@@ -13,7 +13,7 @@ from pydantic import BaseModel
 
 import verifiers as vf
 from verifiers.utils.error_utils import ErrorChain
-from verifiers.utils.error_utils import error_info_to_exception
+from verifiers.utils.error_utils import error_data_to_exception
 from verifiers.utils.logging_utils import print_time
 
 logger = logging.getLogger(__name__)
@@ -168,7 +168,7 @@ def maybe_retry(
             if err and any(isinstance(err, err_type) for err_type in error_types):
                 raise err
             if isinstance(err, Mapping):
-                retry_error = error_info_to_exception(err, error_types)
+                retry_error = error_data_to_exception(err, error_types)
                 if retry_error is not None:
                     raise retry_error
         elif isinstance(result, list):
@@ -177,7 +177,7 @@ def maybe_retry(
                 if err and any(isinstance(err, err_type) for err_type in error_types):
                     raise err
                 if isinstance(err, Mapping):
-                    retry_error = error_info_to_exception(err, error_types)
+                    retry_error = error_data_to_exception(err, error_types)
                     if retry_error is not None:
                         raise retry_error
 

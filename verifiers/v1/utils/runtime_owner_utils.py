@@ -1,9 +1,15 @@
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Callable, Generic, TypeVar
 
-from ..config import LifecycleConfig
+from ..config import LifecycleConfig, ToolsetCollectionData
 from ..artifact import Artifacts, ArtifactsConfig
-from ..toolset import Toolset, Toolsets, collect_toolsets, normalize_toolset_collection
+from ..toolset import (
+    Toolset,
+    ToolsetCollection,
+    Toolsets,
+    collect_toolsets,
+    normalize_toolset_collection,
+)
 from ..types import Handler, Objects
 from ..user import User, UserConfig, user_from_config
 from .binding_utils import BindingSources, ObjectsConfig
@@ -66,7 +72,9 @@ class RuntimeOwnerMixin(Generic[ConfigT]):
     def initialize_runtime_user(self, user: UserConfig | None) -> None:
         self.user = None if user is None else self.load_user(user)
 
-    def initialize_runtime_toolsets(self, config: ConfigT, toolsets: object) -> None:
+    def initialize_runtime_toolsets(
+        self, config: ConfigT, toolsets: ToolsetCollectionData
+    ) -> None:
         self.toolsets, self.named_toolsets = collect_toolsets(
             self.load_toolsets(config), toolsets
         )
@@ -101,7 +109,7 @@ class RuntimeOwnerMixin(Generic[ConfigT]):
         self.advantages.append(fn)
         self.refresh_runtime()
 
-    def add_toolset(self, toolset: object) -> None:
+    def add_toolset(self, toolset: ToolsetCollection) -> None:
         toolsets, named_toolsets = normalize_toolset_collection(toolset)
         duplicate = set(self.named_toolsets) & set(named_toolsets)
         if duplicate:

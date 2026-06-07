@@ -493,7 +493,7 @@ def load_taskset(
 
 class RlmSweProgramConfig(RLMProgramConfig):
     workdir: str = DEFAULT_REPO_PATH
-    rlm_tools: list[str] = list(DEFAULT_RLM_TOOLS)
+    tools: list[str] = list(DEFAULT_RLM_TOOLS)
 
 
 class RlmSweHarnessConfig(RLMConfig):

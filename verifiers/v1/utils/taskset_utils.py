@@ -112,7 +112,7 @@ def tasks_from_result(result: Tasks, taskset_id: str) -> list[Task]:
 
 
 def discover_sibling_dir(
-    taskset_cls: type[object], dirname: str
+    taskset_cls: type[object], dirname: str, *, require_non_empty: bool = False
 ) -> Traversable | Path | None:
     module = importlib.import_module(taskset_cls.__module__)
     package_name = module_package_name(module)
@@ -125,14 +125,24 @@ def discover_sibling_dir(
             ValueError,
         ):
             candidate = resources.files(package_name) / dirname
-            if candidate.is_dir() and any(candidate.iterdir()):
+            if sibling_dir_matches(candidate, require_non_empty=require_non_empty):
                 return candidate
     module_file = module.__dict__.get("__file__")
     if isinstance(module_file, str):
         candidate_path = Path(module_file).resolve().parent / dirname
-        if candidate_path.is_dir() and any(candidate_path.iterdir()):
+        if sibling_dir_matches(candidate_path, require_non_empty=require_non_empty):
             return candidate_path
     return None
+
+
+def sibling_dir_matches(
+    candidate: Traversable | Path, *, require_non_empty: bool
+) -> bool:
+    if not candidate.is_dir():
+        return False
+    if not require_non_empty:
+        return True
+    return any(candidate.iterdir())
 
 
 def module_package_name(module: object) -> str | None:

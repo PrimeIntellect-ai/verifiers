@@ -187,31 +187,48 @@ def test_taskset_take():
     assert isinstance(taken, MockSandboxTaskSet)
 
 
+def test_composable_env_eval_inputs_can_shuffle_taskset_dataset():
+    taskset = MockTaskSet(dataset=_make_dataset(6), name="math")
+    env = ComposableEnv(
+        taskset=taskset,
+        harness=Harness(run_command="true"),
+    )
+
+    inputs = env._get_eval_inputs(
+        num_examples=3,
+        rollouts_per_example=2,
+        shuffle=True,
+        shuffle_seed=11,
+    )
+    expected = (
+        env.get_eval_dataset().shuffle(seed=11).select(range(3)).repeat(2).to_list()
+    )
+
+    assert [row["example_id"] for row in inputs] == [
+        row["example_id"] for row in expected
+    ]
+
+
 def test_taskset_repr():
     ts = MockTaskSet(dataset=_make_dataset(), name="mytest")
     assert "mytest" in repr(ts)
     assert "3" in repr(ts)
 
 
-def test_composable_mini_swe_agent_unversioned_package_uses_unpinned_requirement():
-    setup = build_mini_swe_agent_install_script(package="  mini-swe-agent  ")
+def test_composable_mini_swe_agent_install_script_uses_pip_requirement():
+    setup = build_mini_swe_agent_install_script()
 
-    assert (
-        "vf_python_install --target /opt/mini-swe-agent/prefix/site-packages mini-swe-agent"
-        in setup
-    )
-    assert "mini-swe-agent==mini-swe-agent" not in setup
+    assert "mini-swe-agent==2.2.8" in setup
+    assert "files.pythonhosted.org" not in setup
 
 
-def test_composable_opencode_unversioned_release_uses_latest_download_url():
+def test_composable_opencode_install_script_owns_release_download():
     setup = build_opencode_install_script(
-        release="  PrimeIntellect-ai/opencode  ",
         install_ripgrep=False,
     )
 
-    assert "OPENCODE_RELEASE_REPO=PrimeIntellect-ai/opencode" in setup
-    assert "OPENCODE_RELEASE_PATH=releases/latest/download" in setup
-    assert "releases/download/vPrimeIntellect-ai/opencode" not in setup
+    assert "PrimeIntellect-ai/opencode/releases/download/v1.1.63-rl2" in setup
+    assert "tar -xzf /tmp/opencode.tar.gz" in setup
 
 
 @pytest.mark.asyncio

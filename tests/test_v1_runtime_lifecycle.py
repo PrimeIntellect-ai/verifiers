@@ -18,7 +18,7 @@ from pydantic import BaseModel
 
 import verifiers as vf
 from verifiers.clients import Client
-from verifiers.types import ClientConfig
+from verifiers.types import ClientConfig, Messages
 from verifiers.types import Response, ResponseMessage, ToolCall
 from verifiers.types import Tool
 from verifiers.types import Usage
@@ -95,6 +95,18 @@ class CapturingModelClient(FakeModelClient):
         if isinstance(prompt, list):
             kwargs["prompt"] = list(prompt)
         self.requests.append(dict(kwargs))
+        return await super().get_response(**kwargs)
+
+
+class BlockingModelClient(CapturingModelClient):
+    def __init__(self, responses: list[Response]):
+        super().__init__(responses)
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def get_response(self, **kwargs: object) -> Response:
+        self.entered.set()
+        await self.release.wait()
         return await super().get_response(**kwargs)
 
 
@@ -537,6 +549,37 @@ async def endpoint_trajectory_program(task, state):
     return state
 
 
+async def concurrent_endpoint_program(task, state):
+    _ = task
+    root = state["endpoint_root_url"].rstrip("/")
+    config = state.get_endpoint_config(api="chat")
+    endpoint_client = cast(OpenAI, state.get_client(api="chat", sync=True))
+    api_key = endpoint_client.api_key
+    endpoint_client.close()
+
+    def post_chat(content: str) -> dict[str, object]:
+        payload = {
+            "model": config.model,
+            "messages": [{"role": "user", "content": content}],
+        }
+        request = urllib.request.Request(
+            f"{root}/v1/chat/completions",
+            data=json.dumps(payload).encode(),
+            headers={
+                "content-type": "application/json",
+                "Authorization": f"Bearer {api_key}",
+            },
+        )
+        with urllib.request.urlopen(request) as response:
+            return json.loads(response.read().decode())
+
+    state["endpoint_concurrent_responses"] = await asyncio.gather(
+        asyncio.to_thread(post_chat, "first"),
+        asyncio.to_thread(post_chat, "second"),
+    )
+    return state
+
+
 async def mcp_proxy_program(task, state):
     _ = task
     from mcp import ClientSession, StdioServerParameters
@@ -683,6 +726,7 @@ for _name, _value in {
     "child_reads_program_sandbox": child_reads_program_sandbox,
     "endpoint_program": endpoint_program,
     "endpoint_trajectory_program": endpoint_trajectory_program,
+    "concurrent_endpoint_program": concurrent_endpoint_program,
     "mcp_proxy_program": mcp_proxy_program,
     "child_program": child_program,
     "parent_program": parent_program,
@@ -806,6 +850,36 @@ async def test_endpoint_request_can_hide_internal_model_call_from_trajectory() -
     assert (
         state["endpoint_shown_response"]["choices"][0]["message"]["content"] == "shown"
     )
+
+
+@pytest.mark.asyncio
+async def test_endpoint_max_turns_counts_inflight_visible_requests() -> None:
+    client = BlockingModelClient(
+        [fake_response("allowed"), fake_response("unexpected")]
+    )
+    harness = make_harness(
+        program={"fn": program_ref("concurrent_endpoint_program")},
+        client=client,
+        model="test-model",
+        max_turns=1,
+    )
+    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+
+    run_task = asyncio.create_task(harness.run(task))
+    await asyncio.wait_for(client.entered.wait(), timeout=1.0)
+    await asyncio.sleep(0.05)
+    client.release.set()
+    state = await run_task
+    await harness.teardown()
+
+    contents = [
+        response["choices"][0]["message"]["content"]
+        for response in state["endpoint_concurrent_responses"]
+    ]
+    assert sorted(contents) == ["", "allowed"]
+    assert len(client.requests) == 1
+    assert len(state["trajectory"]) == 1
+    assert state["stop_condition"] == "max_turns_reached"
 
 
 @pytest.mark.asyncio
@@ -948,6 +1022,38 @@ async def test_base_program_submits_system_prompt_before_prompt() -> None:
     ]
     assert state["prompt"][0]["role"] == "system"
     assert state["completion"][-1]["content"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_base_program_max_turns_uses_stop_condition() -> None:
+    client = CapturingModelClient(
+        [fake_response(content="done"), fake_response(content="unexpected")]
+    )
+    harness = make_harness(client=cast(Client, client), model="fake", max_turns=1)
+    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+
+    state = await harness.run(task)
+
+    assert len(client.requests) == 1
+    assert len(state["trajectory"]) == 1
+    assert state["stop_condition"] == "max_turns_reached"
+
+
+@pytest.mark.asyncio
+async def test_model_request_reservation_released_when_client_resolution_fails() -> (
+    None
+):
+    harness = make_harness(model="fake", max_turns=1)
+    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+    state = await harness.setup_state(task, vf.State.for_task(task))
+
+    with pytest.raises(RuntimeError, match="no model client"):
+        await harness.runtime.submit_model_request(
+            cast(Messages, state["prompt"]), task, state
+        )
+
+    assert harness.runtime.visible_model_requests(state) == 0
+    assert state["trajectory"] == []
 
 
 @pytest.mark.asyncio
@@ -1497,8 +1603,8 @@ async def test_sandbox_base_program_max_turns_zero_is_unbounded(
     config_path.write_text(json.dumps({"max_turns": 0}))
     namespace["RUNNER_CONFIG_PATH"] = str(config_path)
 
-    async def create_model_message(state, messages, client):
-        _ = state, messages, client
+    async def create_model_message(state, messages):
+        _ = state, messages
         return {"role": "assistant", "content": "done"}
 
     async def call_user(state, messages):
@@ -1515,10 +1621,52 @@ async def test_sandbox_base_program_max_turns_zero_is_unbounded(
 
     state = {"prompt": [{"role": "user", "content": "hi"}], "runtime": {}}
     run_base = cast(Any, namespace["run_base"])
-    result = await run_base({}, state, object())
+    result = await run_base({}, state)
 
     assert result["completion"] == [{"role": "assistant", "content": "done"}]
     assert result["stop_condition"] == "no_tools"
+
+
+@pytest.mark.asyncio
+async def test_sandbox_base_program_model_call_uses_vf_model_bridge() -> None:
+    namespace: dict[str, object] = {}
+    source = runner_source().rsplit("asyncio.run(main())", 1)[0]
+    exec(source, namespace)
+
+    posted: list[tuple[str, Any]] = []
+
+    async def vf_post(state, path, payload, timeout=None):
+        _ = state, timeout
+        posted.append((path, payload))
+        return {"message": {"role": "assistant", "content": "ok"}}
+
+    namespace["vf_post"] = vf_post
+    create_model_message = cast(Any, namespace["create_model_message"])
+
+    # Canonical Messages (incl. an image content part) are sent unchanged over the
+    # /vf/model bridge; the host owns client resolution + tokenization and returns
+    # the assistant message.
+    messages = [
+        {"role": "user", "content": "hi"},
+        {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "content": [
+                {"type": "text", "text": "shot"},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,AAA"},
+                },
+            ],
+        },
+    ]
+    message = await create_model_message({"runtime": {}}, messages)
+
+    assert message == {"role": "assistant", "content": "ok"}
+    assert len(posted) == 1
+    path, payload = posted[0]
+    assert path == "model"
+    assert payload["messages"] == messages  # image part preserved verbatim
 
 
 def test_sandbox_program_patch_cannot_set_lifecycle_fields() -> None:
@@ -1540,14 +1688,19 @@ def test_sandbox_program_patch_cannot_set_lifecycle_fields() -> None:
     patch = {
         "stop_condition": "no_tools",
         "is_truncated": True,
-        "error": {"message": "handled"},
+        "error": vf.ErrorData(
+            error="SandboxError",
+            message="handled",
+            error_chain_repr="SandboxError('handled')",
+            error_chain_str="SandboxError",
+        ),
     }
     apply_internal_state_patch(state, patch, mode="base")
 
     assert patch == {}
     assert state["stop_condition"] == "no_tools"
     assert state["is_truncated"] is True
-    assert state["error"] == {"message": "handled"}
+    assert isinstance(state["error"], vf.SandboxError)
 
 
 def test_program_channels_mcp_injects_proxy_into_sandbox_program() -> None:

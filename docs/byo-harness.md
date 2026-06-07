@@ -551,8 +551,9 @@ def load_environment(config: vf.EnvConfig) -> vf.Env:
     )
 ```
 
-Tasksets include Harbor, OpenEnv, OpenReward, TextArena, and NeMoGym. Harnesses
-include OpenCode, Pi, mini-swe-agent, Terminus, RLM, and NeMoGymHarness.
+Tasksets include Harbor, OpenEnv, OpenReward, ReplayTaskset, TextArena, and
+NeMoGym. Harnesses include OpenCode, Pi, mini-swe-agent, Terminus, RLM,
+ReplayHarness, and NeMoGymHarness.
 
 ## TOML And CLI
 
