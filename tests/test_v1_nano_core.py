@@ -819,6 +819,69 @@ async def test_mcp_toolset_exposes_multiple_server_tools() -> None:
 
 
 @pytest.mark.asyncio
+async def test_mcp_owned_runtime_stops_when_server_start_fails(monkeypatch) -> None:
+    mcp_module = importlib.import_module("verifiers.v1.mcp")
+    events: list[str] = []
+
+    class FailingRuntime(vf.Runtime):
+        async def start(self) -> None:
+            events.append("start")
+
+        async def stop(self) -> None:
+            events.append("stop")
+
+        async def expose(self, port: int) -> str:
+            return f"http://127.0.0.1:{port}"
+
+        async def run(
+            self,
+            command: list[str],
+            *,
+            cwd: str | None = None,
+            env: dict[str, str] | None = None,
+            timeout: float | None = None,
+        ) -> vf.CommandResult:
+            _ = command, cwd, env, timeout
+            return vf.CommandResult(returncode=0)
+
+        async def read(self, path: str) -> bytes:
+            _ = path
+            return b""
+
+        async def write(self, path: str, data: bytes) -> None:
+            _ = path, data
+
+        async def run_background(
+            self,
+            command: list[str],
+            *,
+            cwd: str | None = None,
+            env: dict[str, str] | None = None,
+            log: str | None = None,
+        ) -> None:
+            _ = command, cwd, env, log
+            events.append("run_background")
+            raise RuntimeError("server failed")
+
+    class FailingProvider(vf.RuntimeProvider):
+        def create_runtime(self) -> vf.Runtime:
+            return FailingRuntime()
+
+    monkeypatch.setattr(
+        mcp_module,
+        "make_runtime_provider",
+        lambda _: FailingProvider(),
+    )
+    registry = MCPToolRegistry({})
+
+    with pytest.raises(RuntimeError, match="server failed"):
+        async with registry.open_server("demo", DemoToolsetConfig()):
+            pass
+
+    assert events == ["start", "run_background", "stop"]
+
+
+@pytest.mark.asyncio
 async def test_mcp_tool_registry_applies_task_visibility() -> None:
     toolsets = {"demo": DemoToolsetConfig()}
 

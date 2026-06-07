@@ -38,7 +38,7 @@ class BFCLTask(vf.Task):
 
 
 class BFCLTasksetConfig(vf.TasksetConfig):
-    id: str = "bfcl-v3"
+    id: str = "bfcl-v3-v1"
     test_category: str = "simple_python"
     test_categories: list[str] | None = None
     examples_per_category: int = -1

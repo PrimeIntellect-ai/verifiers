@@ -192,24 +192,24 @@ class MCPToolRegistry:
             raise ValueError("Harness server placement requires a running runtime.")
 
         assert runtime is not None
-        port = free_port()
-        env = _server_env(server)
-        env["MCP_PORT"] = str(port)
-        log = f"vf_server_{name}.log"
-        await runtime.run_background(
-            _server_command(
-                server,
-                name,
-                in_runtime=not isinstance(runtime, SubprocessRuntime),
-            ),
-            env=env,
-            log=log,
-        )
-        base_url = await runtime.public_url(port)
-        if base_url is None:
-            base_url = f"http://127.0.0.1:{port}"
-        url = f"{base_url.rstrip('/')}/mcp"
         try:
+            port = free_port()
+            env = _server_env(server)
+            env["MCP_PORT"] = str(port)
+            log = f"vf_server_{name}.log"
+            await runtime.run_background(
+                _server_command(
+                    server,
+                    name,
+                    in_runtime=not isinstance(runtime, SubprocessRuntime),
+                ),
+                env=env,
+                log=log,
+            )
+            base_url = await runtime.public_url(port)
+            if base_url is None:
+                base_url = f"http://127.0.0.1:{port}"
+            url = f"{base_url.rstrip('/')}/mcp"
             await wait_for_http(url)
             async with connect_streamable_http(url, server.headers) as (read, write):
                 yield read, write
