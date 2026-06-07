@@ -20,6 +20,7 @@ from verifiers.types import (
     EndpointConfig,
     MessageContent,
     Messages,
+    Response,
     SystemMessage,
     Tool,
     ToolCall,
@@ -32,11 +33,13 @@ from verifiers.utils.interception_utils import (
     synthesize_stream,
 )
 from verifiers.utils.message_utils import normalize_messages
+from verifiers.utils.response_utils import parse_response_message
 
 from ..runtime import ModelRequestContext, Runtime, TrajectoryVisibility
 from ..state import State
 from ..task import Task
 from ..types import JsonData, PromptMessage, RuntimeObject, ToolParameters
+from .serialization_utils import serializable
 
 VF_TRAJECTORY_VISIBILITY_HEADER = "x-verifiers-trajectory"
 VF_ENDPOINT_API_KEY_VAR = "VF_ENDPOINT_API_KEY"
@@ -166,6 +169,7 @@ class Endpoint:
         tool_defs: list[Tool] | None = None,
         user_handler: object | None = None,
         stop_handler: object | None = None,
+        model_handler: object | None = None,
     ) -> str:
         await self.start()
         rollout_key = f"rollout_{uuid.uuid4().hex[:8]}"
@@ -176,6 +180,7 @@ class Endpoint:
             tool_defs=tool_defs,
             user_handler=user_handler,
             stop_handler=stop_handler,
+            model_handler=model_handler,
         )
         self._rollout_queues[rollout_key] = cast(asyncio.Queue[str], request_queue)
         endpoint_root_url = f"{await self.url_base()}/rollout/{rollout_key}"
@@ -337,12 +342,43 @@ async def run_intercepted_program(
             else str(stop_condition),
         }
 
+    model_tasks: set[asyncio.Task[Response]] = set()
+
+    async def call_model(messages: list[PromptMessage], tools: object) -> JsonData:
+        # Sandbox sends canonical Messages; host resolves the client, tokenizes,
+        # and records the step. Tool defs come from the runtime.
+        del tools
+        prompt = normalize_messages(
+            cast(Messages, messages), field_name="vf.model.messages"
+        )
+        request = asyncio.ensure_future(
+            runtime.submit_model_request(
+                prompt,
+                task,
+                state,
+                tool_defs=runtime.tool_defs(state),
+                context=ModelRequestContext(source="endpoint"),
+            )
+        )
+        model_tasks.add(request)
+        try:
+            response = await request
+        except Error as exc:
+            state._set_error(exc)
+            raise
+        finally:
+            if request.done():
+                model_tasks.discard(request)
+        completion = await parse_response_message(response)
+        return cast(JsonData, serializable(completion[0]))
+
     await endpoint.register_rollout(
         state,
         tool_handler=call_tool,
         tool_defs=runtime.tool_defs(state),
         user_handler=call_user,
         stop_handler=check_stop,
+        model_handler=call_model,
     )
 
     async def execute_program() -> State | JsonData | None:
@@ -408,6 +444,7 @@ async def run_intercepted_program(
             execution.cancel()
             await asyncio.gather(execution, return_exceptions=True)
         await cancel_forwarders(pending)
+        await cancel_forwarders(cast("set[asyncio.Task[None]]", model_tasks))
         endpoint.unregister_rollout(rollout_key)
 
 

@@ -1603,8 +1603,8 @@ async def test_sandbox_base_program_max_turns_zero_is_unbounded(
     config_path.write_text(json.dumps({"max_turns": 0}))
     namespace["RUNNER_CONFIG_PATH"] = str(config_path)
 
-    async def create_model_message(state, messages, client):
-        _ = state, messages, client
+    async def create_model_message(state, messages):
+        _ = state, messages
         return {"role": "assistant", "content": "done"}
 
     async def call_user(state, messages):
@@ -1621,53 +1621,52 @@ async def test_sandbox_base_program_max_turns_zero_is_unbounded(
 
     state = {"prompt": [{"role": "user", "content": "hi"}], "runtime": {}}
     run_base = cast(Any, namespace["run_base"])
-    result = await run_base({}, state, object())
+    result = await run_base({}, state)
 
     assert result["completion"] == [{"role": "assistant", "content": "done"}]
     assert result["stop_condition"] == "no_tools"
 
 
-def test_sandbox_base_program_maps_model_client_types_to_wire_protocol() -> None:
+@pytest.mark.asyncio
+async def test_sandbox_base_program_model_call_uses_vf_model_bridge() -> None:
     namespace: dict[str, object] = {}
     source = runner_source().rsplit("asyncio.run(main())", 1)[0]
     exec(source, namespace)
-    wire_protocol = cast(Any, namespace["wire_protocol"])
 
-    for client_type in (
-        "renderer",
-        "openai_chat_completions_token",
-        "nemorl_chat_completions",
-    ):
-        state = {"runtime": {"client_type": client_type}}
-        assert wire_protocol(state) == "openai_chat_completions"
+    posted: list[tuple[str, Any]] = []
 
-    assert wire_protocol({"runtime": {"client_type": "openai_responses"}}) == (
-        "openai_responses"
-    )
-    assert wire_protocol({"runtime": {}}) == "openai_chat_completions"
+    async def vf_post(state, path, payload, timeout=None):
+        _ = state, timeout
+        posted.append((path, payload))
+        return {"message": {"role": "assistant", "content": "ok"}}
 
+    namespace["vf_post"] = vf_post
+    create_model_message = cast(Any, namespace["create_model_message"])
 
-def test_sandbox_base_program_handles_malformed_image_tool_parts() -> None:
-    namespace: dict[str, object] = {}
-    source = runner_source().rsplit("asyncio.run(main())", 1)[0]
-    exec(source, namespace)
-    response_input = cast(Any, namespace["response_input"])
-    anthropic_payload_messages = cast(Any, namespace["anthropic_payload_messages"])
-
+    # Canonical Messages (incl. an image content part) are sent unchanged over the
+    # /vf/model bridge; the host owns client resolution + tokenization and returns
+    # the assistant message.
     messages = [
+        {"role": "user", "content": "hi"},
         {
             "role": "tool",
             "tool_call_id": "call_1",
-            "content": [{"type": "image_url"}],
-        }
+            "content": [
+                {"type": "text", "text": "shot"},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,AAA"},
+                },
+            ],
+        },
     ]
+    message = await create_model_message({"runtime": {}}, messages)
 
-    responses_output = response_input(messages)[0]["output"]
-    assert responses_output == [{"type": "input_text", "text": "{'type': 'image_url'}"}]
-
-    _, anthropic_messages = anthropic_payload_messages(messages)
-    tool_result = anthropic_messages[0]["content"][0]["content"]
-    assert tool_result == [{"type": "text", "text": "{'type': 'image_url'}"}]
+    assert message == {"role": "assistant", "content": "ok"}
+    assert len(posted) == 1
+    path, payload = posted[0]
+    assert path == "model"
+    assert payload["messages"] == messages  # image part preserved verbatim
 
 
 def test_sandbox_program_patch_cannot_set_lifecycle_fields() -> None:
