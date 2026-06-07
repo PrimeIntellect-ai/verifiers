@@ -6,7 +6,7 @@ from pydantic import AliasChoices, Field
 
 import verifiers as vf
 from verifiers.clients.client import Client
-from verifiers.errors import Error, OverlongPromptError
+from verifiers.errors import Error, OverlongPromptError, SandboxError
 from verifiers.types import (
     ClientConfig,
     MessageContent,
@@ -282,6 +282,13 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
         return state
 
     def record_error(self, state: State, error: Error) -> None:
+        if state.get("prompt_too_long"):
+            state._set_truncated(True)
+            state._set_stop_condition("prompt_too_long", overwrite=True)
+            return
+        if isinstance(error, SandboxError) and isinstance(state.get("error"), Error):
+            state._set_stop_condition("has_error", overwrite=True)
+            return
         if isinstance(error, OverlongPromptError):
             state["prompt_too_long"] = True
             state._set_truncated(True)
