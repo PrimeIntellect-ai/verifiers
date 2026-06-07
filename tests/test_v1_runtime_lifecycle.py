@@ -1533,6 +1533,70 @@ async def test_create_sandbox_cleans_up_wait_failure_with_retry(
 
 
 @pytest.mark.asyncio
+async def test_upload_program_files_retries_transient_transfer_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sandboxes(monkeypatch)
+    disable_sandbox_retry_sleep(monkeypatch)
+
+    class FlakyUploadClient:
+        calls = 0
+
+        async def upload_bytes(self, *args: object, **kwargs: object) -> None:
+            _ = args, kwargs
+            self.calls += 1
+            if self.calls == 1:
+                raise FakeAPIError("Upload failed: ")
+
+    client = FlakyUploadClient()
+    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+    state = vf.State.for_task(task)
+
+    await sandbox_utils.upload_program_files(
+        cast(sandbox_utils.SandboxClient, client),
+        "sbx-upload",
+        {"files": {"/tmp/file.txt": "content"}},
+        task,
+        state,
+        Runtime(),
+    )
+
+    assert client.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_upload_program_files_does_not_retry_non_transient_api_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fake_sandboxes(monkeypatch)
+    disable_sandbox_retry_sleep(monkeypatch)
+
+    class FailingUploadClient:
+        calls = 0
+
+        async def upload_bytes(self, *args: object, **kwargs: object) -> None:
+            _ = args, kwargs
+            self.calls += 1
+            raise FakeAPIError("Upload failed: HTTP 400: bad request")
+
+    client = FailingUploadClient()
+    task = vf.Task({"prompt": [{"role": "user", "content": "hi"}]}).freeze()
+    state = vf.State.for_task(task)
+
+    with pytest.raises(vf.SandboxError, match="HTTP 400"):
+        await sandbox_utils.upload_program_files(
+            cast(sandbox_utils.SandboxClient, client),
+            "sbx-upload",
+            {"files": {"/tmp/file.txt": "content"}},
+            task,
+            state,
+            Runtime(),
+        )
+
+    assert client.calls == 1
+
+
+@pytest.mark.asyncio
 async def test_create_sandbox_cancellation_deletes_late_provider_result(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
