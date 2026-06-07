@@ -914,6 +914,11 @@ async def test_bfcl_multi_turn_respects_completed_state(
 
     assert mock_client.call_count == 1
     assert len(bounded_state.transcript) == 1
+    assert bounded_state.transcript[0].timing.start > 0.0
+    assert (
+        bounded_state.transcript[0].timing.end
+        >= bounded_state.transcript[0].timing.start
+    )
     assert bounded_state.stop_condition == "max_turns"
 
 

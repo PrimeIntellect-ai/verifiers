@@ -560,6 +560,7 @@ class BFCLHarness(vf.Harness[BFCLHarnessConfig]):
         while max_turns <= 0 or model_turns < max_turns:
             if await self.is_completed(context):
                 return
+            start = time.time()
             response = await context.model_client.get_response(
                 prompt=messages,
                 model=context.model,
@@ -567,6 +568,7 @@ class BFCLHarness(vf.Harness[BFCLHarnessConfig]):
                 tools=tool_defs,
                 state=state,
             )
+            end = time.time()
             turn = vf.Turn(
                 prompt=list(messages),
                 completion=await parse_response_message(response),
@@ -581,6 +583,7 @@ class BFCLHarness(vf.Harness[BFCLHarnessConfig]):
                     is_truncated=bool(response.message.is_truncated),
                 ),
                 is_truncated=bool(response.message.is_truncated),
+                timing=vf.TimeSpan(start=start, end=end),
             )
             state.transcript.append(turn)
             model_turns += 1
