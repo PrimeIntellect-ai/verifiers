@@ -81,7 +81,7 @@ def load_taskset(config: ReverseTasksetConfig) -> ReverseTaskset:
     return ReverseTaskset(config=config)
 ```
 
-`load_taskset(config: MyTasksetConfig)` is the taskset entrypoint and defines
+`load_taskset(config: ReverseTasksetConfig)` is the taskset entrypoint and defines
 the `[taskset]` config schema for eval, RL, GEPA, and hosted workers.
 
 ## Custom Harness

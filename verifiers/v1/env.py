@@ -228,13 +228,17 @@ class Env:
                 "update", tasks, states, teacher=teacher_client
             )
         finally:
-            await self.run_handlers_for_group(
-                "cleanup", tasks, states, teacher=teacher_client
-            )
-            if teacher_client is not None:
-                await self.harness.close_model_client(teacher_client)
-            if model_client is not None:
-                await self.harness.close_model_client(model_client)
+            try:
+                await self.run_handlers_for_group(
+                    "cleanup", tasks, states, teacher=teacher_client
+                )
+            finally:
+                try:
+                    if teacher_client is not None:
+                        await self.harness.close_model_client(teacher_client)
+                finally:
+                    if model_client is not None:
+                        await self.harness.close_model_client(model_client)
             for state in states:
                 self.harness.validate_extras(state)
                 state.assert_serializable()

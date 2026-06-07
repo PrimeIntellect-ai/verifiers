@@ -559,7 +559,7 @@ class BFCLHarness(vf.Harness[BFCLHarnessConfig]):
                 state=state,
             )
             turn = vf.Turn(
-                prompt=messages,
+                prompt=list(messages),
                 completion=await parse_response_message(response),
                 tool_calls=list(response.message.tool_calls or []),
                 response_id=response.id,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
 import sys
 from types import ModuleType
@@ -321,6 +322,23 @@ class DynamicUser(vf.User[DynamicUserConfig]):
         return {"content": f"{name}:{input['text']}", "called": True}
 
 
+class EnvScopedToolsetConfig(vf.ToolsetConfig):
+    scope: vf.Scope = "env"
+
+
+class EnvScopedUserConfig(vf.UserConfig):
+    scope: vf.Scope = "env"
+
+
+class EnvServerTasksetConfig(vf.TasksetConfig):
+    toolsets: vf.ToolsetConfigs = {"demo": EnvScopedToolsetConfig()}
+    user: vf.UserConfig | None = EnvScopedUserConfig()
+
+
+class EnvServerTaskset(vf.Taskset[EnvServerTasksetConfig]):
+    pass
+
+
 class ConfiguredToolsetTasksetConfig(vf.TasksetConfig):
     toolsets: vf.ToolsetConfigs = {"demo": DemoToolsetConfig()}
 
@@ -342,6 +360,14 @@ def test_v1_state_is_pydantic_and_extras_owned() -> None:
     with pytest.raises(TypeError):
         state["x"] = 2
     assert state.to_output(task)["transcript"] == []
+
+
+def test_v1_state_to_output_preserves_empty_turn_prompt() -> None:
+    task = vf.Task(prompt="fallback")
+    state = vf.State(transcript=[vf.Turn(prompt=[], completion=[])])
+
+    assert state.prompt == []
+    assert state.to_output(task)["prompt"] == []
 
 
 def test_v1_task_id_is_deterministic_from_task_contents() -> None:
@@ -854,6 +880,38 @@ async def test_user_setup_registers_dynamic_model_tools() -> None:
     assert state.extras["user_dynamic_called"] is True
 
 
+@pytest.mark.asyncio
+async def test_env_user_startup_failure_closes_started_env_toolsets(
+    monkeypatch,
+) -> None:
+    harness_module = importlib.import_module("verifiers.v1.harness")
+    events: list[str] = []
+
+    class FakeRegistry:
+        def __init__(self, servers, **_: object) -> None:
+            self.kind = "user" if "user" in servers else "toolsets"
+
+        async def __aenter__(self) -> "FakeRegistry":
+            events.append(f"enter:{self.kind}")
+            if self.kind == "user":
+                raise RuntimeError("user failed")
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            events.append(f"exit:{self.kind}")
+
+    monkeypatch.setattr(harness_module, "MCPToolRegistry", FakeRegistry)
+    harness = vf.Harness()
+    harness.bind(taskset=EnvServerTaskset())
+
+    with pytest.raises(RuntimeError, match="user failed"):
+        await harness.ensure_env_servers()
+
+    assert events == ["enter:toolsets", "enter:user", "exit:user", "exit:toolsets"]
+    assert harness._env_toolsets is None
+    assert harness._env_user is None
+
+
 def test_bound_state_updates_allow_extends_and_reject_set_conflicts() -> None:
     harness = vf.Harness()
     state = vf.State()
@@ -1002,6 +1060,37 @@ async def test_score_group_closes_model_client_if_teacher_load_fails(
         await env.score_group([task], [state], model=model, teacher=teacher)
 
     assert closed == ["student"]
+
+
+@pytest.mark.asyncio
+async def test_score_group_closes_model_clients_if_cleanup_fails(mock_client) -> None:
+    env = vf.Env(taskset=NanoTaskset())
+    task = NanoTask(prompt="hello", answer="ok")
+    state = vf.State(task_id=task.task_id)
+    model = vf.ModelConfig(model="student")
+    teacher = vf.ModelConfig(model="teacher")
+    closed: list[str] = []
+
+    def load_model_client(config: vf.ModelConfig) -> vf.ModelClient:
+        return vf.ModelClient(config=config, client=mock_client)
+
+    async def close_model_client(model_client: vf.ModelClient) -> None:
+        closed.append(model_client.config.model)
+
+    async def run_handlers_for_group(
+        kind: str, *args: object, **kwargs: object
+    ) -> None:
+        if kind == "cleanup":
+            raise RuntimeError("cleanup failed")
+
+    env.harness.load_model_client = load_model_client
+    env.harness.close_model_client = close_model_client
+    env.run_handlers_for_group = run_handlers_for_group
+
+    with pytest.raises(RuntimeError, match="cleanup failed"):
+        await env.score_group([task], [state], model=model, teacher=teacher)
+
+    assert closed == ["teacher", "student"]
 
 
 @pytest.mark.asyncio

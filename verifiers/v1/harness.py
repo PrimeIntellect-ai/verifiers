@@ -462,27 +462,45 @@ class Harness(Generic[ConfigT]):
 
     async def ensure_env_servers(self) -> None:
         taskset = self.taskset
-        if self._env_toolsets is None:
-            toolsets = (
-                {}
-                if taskset is None
-                else {
-                    name: toolset
-                    for name, toolset in taskset.toolsets.items()
-                    if toolset.scope == "env"
-                }
-            )
-            env_toolsets = MCPToolRegistry(toolsets)
-            await env_toolsets.__aenter__()
-            self._env_toolsets = env_toolsets
-        if self._env_user is None:
-            user = None if taskset is None else taskset.user
-            user_toolsets = (
-                {} if user is None or user.scope != "env" else {"user": user}
-            )
-            env_user = MCPToolRegistry(user_toolsets)
-            await env_user.__aenter__()
-            self._env_user = env_user
+        started_toolsets = False
+        try:
+            if self._env_toolsets is None:
+                toolsets = (
+                    {}
+                    if taskset is None
+                    else {
+                        name: toolset
+                        for name, toolset in taskset.toolsets.items()
+                        if toolset.scope == "env"
+                    }
+                )
+                env_toolsets = MCPToolRegistry(toolsets)
+                try:
+                    await env_toolsets.__aenter__()
+                except BaseException:
+                    await env_toolsets.__aexit__(None, None, None)
+                    raise
+                self._env_toolsets = env_toolsets
+                started_toolsets = True
+            if self._env_user is None:
+                user = None if taskset is None else taskset.user
+                user_toolsets = (
+                    {} if user is None or user.scope != "env" else {"user": user}
+                )
+                env_user = MCPToolRegistry(user_toolsets)
+                try:
+                    await env_user.__aenter__()
+                except BaseException:
+                    await env_user.__aexit__(None, None, None)
+                    raise
+                self._env_user = env_user
+        except BaseException:
+            if started_toolsets and self._env_toolsets is not None:
+                try:
+                    await self._env_toolsets.__aexit__(None, None, None)
+                finally:
+                    self._env_toolsets = None
+            raise
 
     def rollout_toolsets(
         self, runtime: Runtime, user: MCPToolRegistry | None = None
@@ -888,7 +906,7 @@ class Harness(Generic[ConfigT]):
             completion=state.completion,
             metrics=state.metrics,
             reward=state.reward,
-            prompt=state.prompt or task.prompt,
+            prompt=state.prompt if state.transcript else task.prompt,
             example_id=task.row_id,
             harness=self,
             context=extra.pop("context", None),
@@ -905,10 +923,16 @@ class Harness(Generic[ConfigT]):
                 await result
 
     async def close(self) -> None:
-        if self._env_user is not None:
-            await self._env_user.__aexit__(None, None, None)
-            self._env_user = None
-        if self._env_toolsets is not None:
-            await self._env_toolsets.__aexit__(None, None, None)
+        env_user = self._env_user
+        self._env_user = None
+        try:
+            if env_user is not None:
+                await env_user.__aexit__(None, None, None)
+        finally:
+            env_toolsets = self._env_toolsets
             self._env_toolsets = None
-        await self.teardown()
+            try:
+                if env_toolsets is not None:
+                    await env_toolsets.__aexit__(None, None, None)
+            finally:
+                await self.teardown()

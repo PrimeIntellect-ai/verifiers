@@ -361,7 +361,7 @@ def rollout_framework_kwargs(
         "completion": state.completion,
         "metrics": state.metrics,
         "reward": state.reward,
-        "prompt": state.prompt or task.prompt,
+        "prompt": state.prompt if state.transcript else task.prompt,
         "example_id": task.row_id,
         "model": model_client,
         "model_name": model_client.config.model if model_client is not None else None,

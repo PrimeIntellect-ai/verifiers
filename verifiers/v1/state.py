@@ -311,7 +311,7 @@ class State(BaseModel, extra="forbid"):
     def to_output(
         self, task: "Task", state_columns: list[str] | None = None
     ) -> dict[str, object]:
-        prompt = self.prompt or task.prompt
+        prompt = self.prompt if self.transcript else task.prompt
         serialize_messages = type(self).serialized_messages
         turn_record = type(self).turn_record
         output: dict[str, object] = {
