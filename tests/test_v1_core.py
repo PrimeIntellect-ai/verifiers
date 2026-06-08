@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 import io
 import importlib
 import json
+import os
 import sys
 import tarfile
 from types import ModuleType
@@ -2025,6 +2026,30 @@ async def test_v1_prime_runtime_public_url_exposes_sandbox_port() -> None:
     runtime.sandbox_id = "sandbox-id"
 
     assert await runtime.public_url(8765) == "https://sandbox.example/mcp"
+
+
+@pytest.mark.asyncio
+@pytest.mark.prime_sandbox
+async def test_v1_prime_runtime_live_run_read_write() -> None:
+    if not os.environ.get("PRIME_API_KEY") or not os.environ.get("PRIME_TEAM_ID"):
+        pytest.skip("Prime sandbox credentials are required.")
+
+    runtime = vf.PrimeRuntime(
+        vf.PrimeRuntimeConfig(
+            idle_timeout_minutes=5,
+            labels=["ci"],
+        )
+    )
+    try:
+        await runtime.start()
+        result = await runtime.run(["python", "--version"])
+        assert result.returncode == 0
+        assert "Python" in f"{result.stdout}\n{result.stderr}"
+
+        await runtime.write("probe.txt", b"prime runtime ok")
+        assert await runtime.read("/app/probe.txt") == b"prime runtime ok"
+    finally:
+        await runtime.stop()
 
 
 @pytest.mark.asyncio
