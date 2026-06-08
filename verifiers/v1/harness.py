@@ -482,6 +482,11 @@ class Harness(Generic[ConfigT]):
                 self._env_scope_count = 1
             except BaseException:
                 self._env_scope_count = 0
+                try:
+                    if self._env_user is not None:
+                        await self._env_user.__aexit__(None, None, None)
+                finally:
+                    self._env_user = None
                 if started_toolsets and self._env_toolsets is not None:
                     try:
                         await self._env_toolsets.__aexit__(None, None, None)

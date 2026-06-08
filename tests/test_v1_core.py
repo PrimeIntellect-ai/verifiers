@@ -1259,6 +1259,86 @@ async def test_env_user_startup_failure_closes_started_env_toolsets(
     assert harness._env_user is None
 
 
+@pytest.mark.asyncio
+async def test_env_scope_startup_failure_closes_entered_env_user(
+    monkeypatch,
+) -> None:
+    harness_module = importlib.import_module("verifiers.v1.harness")
+    events: list[str] = []
+
+    class FakeRegistry:
+        def __init__(self, servers, **_: object) -> None:
+            self.kind = "user" if "user" in servers else "toolsets"
+
+        async def __aenter__(self) -> "FakeRegistry":
+            events.append(f"enter:{self.kind}")
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            events.append(f"exit:{self.kind}")
+
+    class FailingScopeCountHarness(vf.Harness):
+        def __init__(self) -> None:
+            self.fail_entered_scope = False
+            self.scope_count_value = 0
+            super().__init__()
+
+        @property
+        def _env_scope_count(self) -> int:
+            return self.scope_count_value
+
+        @_env_scope_count.setter
+        def _env_scope_count(self, value: int) -> None:
+            if value == 1 and self.fail_entered_scope:
+                raise RuntimeError("scope count failed")
+            self.scope_count_value = value
+
+    monkeypatch.setattr(harness_module, "MCPToolRegistry", FakeRegistry)
+    harness = FailingScopeCountHarness()
+    harness.bind(taskset=EnvServerTaskset())
+    harness.fail_entered_scope = True
+
+    with pytest.raises(RuntimeError, match="scope count failed"):
+        await harness.start_env_scope()
+
+    assert events == ["enter:toolsets", "enter:user", "exit:user", "exit:toolsets"]
+    assert harness._env_toolsets is None
+    assert harness._env_user is None
+
+
+def test_nemo_gym_task_row_preserves_explicit_task_fields() -> None:
+    from tasksets.nemo_gym import normalize_nemo_gym_task_row
+
+    row: vf.JsonData = {
+        "responses_create_params": {
+            "input": [
+                {"role": "system", "content": "source system"},
+                {"role": "user", "content": "source prompt"},
+            ]
+        },
+        "prompt": [{"role": "user", "content": "override prompt"}],
+        "system_prompt": [{"role": "system", "content": "override system"}],
+        "info": {"source": "override"},
+        "row_id": 99,
+        "custom_root_field": "not a task field",
+    }
+
+    task_row = normalize_nemo_gym_task_row(row, index=3, agent_name="agent")
+
+    assert task_row["prompt"] == row["prompt"]
+    assert task_row["system_prompt"] == row["system_prompt"]
+    assert task_row["info"] == {
+        "source": "override",
+        "nemo_gym": {"agent_name": "agent"},
+    }
+    assert task_row["row_id"] == 99
+    assert "custom_root_field" not in task_row
+    assert task_row["nemo_gym_row"]["agent_ref"] == {
+        "type": "responses_api_agents",
+        "name": "agent",
+    }
+
+
 def test_bound_state_updates_allow_extends_and_reject_set_conflicts() -> None:
     harness = vf.Harness()
     state = vf.State()

@@ -100,7 +100,9 @@ def normalize_nemo_gym_task_row(
             "name": agent_name,
         }
     task_row: vf.JsonData = {"nemo_gym_row": nemo_row}
-    task_row["nemo_gym_row"] = nemo_row
+    for key in NeMoGymTask.model_fields:
+        if key != "nemo_gym_row" and key in row:
+            task_row[key] = deepcopy(row[key])
     task_row.setdefault("row_id", index)
     prompt, system_prompt = prompt_parts_from_nemo_gym_row(nemo_row)
     if "prompt" not in task_row:
