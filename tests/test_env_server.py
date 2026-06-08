@@ -417,6 +417,31 @@ class TestIdempotentRetries:
         finally:
             await router.close()
 
+    @pytest.mark.asyncio
+    async def test_start_worker_does_not_duplicate_ipc_paths(self):
+        """Worker IPC paths are deterministic, so restarts should not re-add them."""
+        router = EnvRouter(env_id="test")
+        process = MagicMock()
+        process.pid = 123
+        ctx = MagicMock()
+        ctx.Process.return_value = process
+
+        try:
+            with (
+                patch(
+                    "verifiers.serve.server.env_router.mp.get_context",
+                    return_value=ctx,
+                ),
+                patch.object(router.ctx, "socket", return_value=MagicMock()),
+            ):
+                router.start_worker(0)
+                router.start_worker(0)
+
+            worker_path = router.get_worker_address(0).replace("ipc://", "")
+            assert router.ipc_paths.count(worker_path) == 1
+        finally:
+            await router.close()
+
 
 class TestSendCancelErrorHandling:
     """Tests that ``send_cancel`` swallows transport errors but not

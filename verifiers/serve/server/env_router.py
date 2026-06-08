@@ -182,7 +182,9 @@ class EnvRouter:
         worker_name = self.get_worker_name(worker_id)
         worker_addr = self.get_worker_address(worker_id)
         incarnation = uuid.uuid4().hex[:8]
-        self.ipc_paths.append(worker_addr.replace("ipc://", ""))
+        ipc_path = worker_addr.replace("ipc://", "")
+        if ipc_path not in self.ipc_paths:
+            self.ipc_paths.append(ipc_path)
 
         ctx = mp.get_context("spawn")
         process = ctx.Process(
