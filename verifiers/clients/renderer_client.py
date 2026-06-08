@@ -8,6 +8,7 @@ A shared RendererPool (one per model) offloads sync tokenization to threads so
 concurrent rollouts tokenize in parallel instead of blocking the event loop.
 """
 
+import asyncio
 import base64
 import ctypes
 import gc
@@ -939,7 +940,13 @@ class RendererClient(
     ) -> tuple[list[RendererMessage], dict]:
         extra_kwargs: dict[str, Any] = {}
         if _image_offload_enabled():
-            extra_kwargs["_image_offload_stats"] = _offload_prompt_images(messages)
+            # Offload the synchronous image work (base64 decode + NFS writes/touch)
+            # to a thread: on a shared NFS dir these fs ops can block for seconds,
+            # and inline on the event loop they stall the env-worker heartbeat
+            # (-> 30s timeout -> restart) under high inflight. See render-loop lag.
+            extra_kwargs["_image_offload_stats"] = await asyncio.to_thread(
+                _offload_prompt_images, messages
+            )
         return (
             _attach_tool_call_names([_to_renderer_message(m) for m in messages]),
             extra_kwargs,
