@@ -1025,6 +1025,7 @@ class Environment(ABC):
                 on_log(f"Saving results to {builder.results_path}")
 
             tasks: dict[asyncio.Task, int] = {}
+            wrote_incremental_results = False
             try:
                 # create tasks based on mode
                 if independent_scoring:
@@ -1088,6 +1089,7 @@ class Environment(ABC):
                         await asyncio.to_thread(
                             save_new_outputs, new_outputs, builder.results_path
                         )
+                        wrote_incremental_results = True
                         await asyncio.to_thread(
                             save_metadata, metadata, builder.results_path
                         )
@@ -1104,9 +1106,10 @@ class Environment(ABC):
 
             # save if requested
             if save_results:
-                await asyncio.to_thread(
-                    save_outputs, results["outputs"], builder.results_path
-                )
+                if not wrote_incremental_results:
+                    await asyncio.to_thread(
+                        save_outputs, results["outputs"], builder.results_path
+                    )
                 await asyncio.to_thread(
                     save_metadata, results["metadata"], builder.results_path
                 )

@@ -1,5 +1,6 @@
 """Tests for the base Environment class."""
 
+import asyncio
 import json
 from typing import cast
 from unittest.mock import AsyncMock, Mock, patch
@@ -75,6 +76,21 @@ class SimpleEnvironment(Environment):
             state["error"] = e
 
         return state
+
+
+class DelayedEnvironment(SimpleEnvironment):
+    """Simple environment that completes lower example IDs later."""
+
+    async def rollout(
+        self,
+        input: RolloutInput,
+        client,
+        model: str,
+        sampling_args: SamplingArgs | None = None,
+    ):
+        if input["example_id"] == 0:
+            await asyncio.sleep(0.05)
+        return await super().rollout(input, client, model, sampling_args)
 
 
 class TestEnvironmentBase:
@@ -466,6 +482,40 @@ class TestEnvironmentBase:
         assert "reward" in dataset.column_names
         assert "example_id" in dataset.column_names
         assert "foo" in dataset.column_names  # custom field from make_output fixture
+
+    @pytest.mark.asyncio
+    async def test_generate_does_not_rewrite_incremental_results_file(
+        self, mock_client, sample_dataset, make_input, tmp_path
+    ):
+        """Final result sorting should not rewrite append-streamed JSONL rows."""
+
+        def reward_func(completion):
+            _ = completion
+            return 1.0
+
+        env = DelayedEnvironment(
+            dataset=sample_dataset,
+            parser=Parser(),
+            rubric=Rubric(funcs=[reward_func]),
+        )
+        inputs = [make_input(example_id=0), make_input(example_id=1)]
+
+        results = await env.generate(
+            inputs,
+            client=mock_client,
+            model="test-model",
+            max_concurrent=2,
+            results_path=tmp_path,
+            save_results=True,
+            independent_scoring=True,
+        )
+
+        assert [output["example_id"] for output in results["outputs"]] == [0, 1]
+        saved_rows = [
+            json.loads(line)
+            for line in (tmp_path / "results.jsonl").read_text().splitlines()
+        ]
+        assert [row["example_id"] for row in saved_rows] == [1, 0]
 
     @pytest.mark.asyncio
     async def test_generate_updates_metadata(self, mock_client):
