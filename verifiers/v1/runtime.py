@@ -25,7 +25,11 @@ from verifiers.types import Messages, Response, ResponseMessage, Tool
 from verifiers.types import ClientConfig, ClientType, SamplingArgs
 from verifiers.utils.async_utils import maybe_call_with_named_args
 from verifiers.utils.client_utils import resolve_client_config
-from verifiers.utils.loop_debug import looptime
+from verifiers.utils.loop_debug import (
+    looptime,
+    looptime_scope_begin,
+    looptime_scope_end,
+)
 from verifiers.utils.message_utils import normalize_messages
 from verifiers.utils.response_utils import parse_response_message, parse_response_tokens
 from verifiers.utils.tool_utils import convert_func_to_tool_def
@@ -883,6 +887,17 @@ class Runtime:
         if not reserved:
             return self._completed_model_response(state)
         released = False
+        # Per-request timing scope: every nested looptime() in this model
+        # request (prepare/render/mm/engine/parse/serialize, incl. to_thread
+        # work) rolls up into ONE aggregated LOOPSUM line keyed by this id —
+        # the full "ping cycle" for one request. See utils/loop_debug.py.
+        try:
+            _vf_rid = str(state.get("trajectory_id", "?"))
+            _vf_step = len(state.get("trajectory", []) or [])
+            _vf_rid = f"{_vf_rid}#s{_vf_step}"
+        except Exception:
+            _vf_rid = None
+        _vf_scope = looptime_scope_begin("model_request", rid=_vf_rid)
         try:
             with looptime("prepare_prompt"):
                 prompt = await self._prepare_prompt(prompt, state)
@@ -929,6 +944,7 @@ class Runtime:
                 )
             return response
         finally:
+            looptime_scope_end(_vf_scope)
             if not released:
                 self._release_model_request(state, context)
 

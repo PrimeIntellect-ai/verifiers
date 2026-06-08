@@ -62,115 +62,30 @@ from verifiers.utils.loop_debug import looptime
 try:
     import renderers.client as _renderers_client
 
-    # SIGSEGV ROOT-CAUSE TEST/FIX: _build_mm_features is offloaded to worker
-    # threads (via _maybe_offload) and is NOT under the renderer pool lock, so
-    # many rollouts run it concurrently. Its body does native torch + vLLM
-    # (MultiModalKwargsItems.from_hf_inputs / MsgpackEncoder) with no thread
-    # safety — concurrent native calls (and the lazy `import torch`/`import vllm`
-    # racing on first concurrent call) are the prime suspect for the exitcode=-11
-    # segfaults. Serialize the native encode with a process-global lock; if the
-    # crashes stop, that's the root cause. Pre-import torch+vllm so the first
-    # call doesn't race on import either.
-    import threading as _vf_threading
-    import os as _vf_os_gl
-
-    _VF_MM_ENCODE_LOCK = _vf_threading.Lock()
-    # CONCURRENCY ROOT-CAUSE TEST/FIX: the pool lock serializes render-vs-render
-    # only. render (-> image_processor, torchvision native) is NOT serialized
-    # against the two offloads we added for heartbeat (_build_mm_features = torch
-    # native; _offload_prompt_images = PIL native), so at high inflight 3 threads
-    # do concurrent native work on shared torch/torchvision/PIL state -> heap
-    # corruption -> SIGSEGV. With VF_GLOBAL_NATIVE_LOCK=1 we serialize ALL three
-    # native paths under ONE process-global lock (still off the event loop, so
-    # the heartbeat stays safe). If the -11 stops, native concurrency from our
-    # offloads is the root cause and this lock is the fix.
-    _VF_GLOBAL_NATIVE_LOCK = _vf_threading.Lock()
-    def _vf_glock_on():
-        return bool(_vf_os_gl.environ.get("VF_GLOBAL_NATIVE_LOCK"))
-    try:
-        import torch as _vf_torch_preimport  # noqa: F401
-        import vllm.multimodal.inputs as _vf_vllm_preimport  # noqa: F401
-    except Exception as _vf_preimp_exc:
-        logging.getLogger("vf.looptime").warning(
-            "mm pre-import skipped: %r", _vf_preimp_exc
-        )
-
+    # BASE-NO-OFFLOADS REPRO BRANCH: ALL of our heartbeat thread-offloads /
+    # locks / toggles / pre-imports are REMOVED here to test whether they caused
+    # the exitcode=-11. KEPT: event-loop timing (looptime) + breadcrumbs only.
+    # _build_mm_features runs SYNC on the event loop (base behavior) — no lock,
+    # no to_thread.
     if not getattr(_renderers_client, "_vf_looptime_patched", False):
         _vf_orig_build_mm = getattr(_renderers_client, "_build_mm_features", None)
         if callable(_vf_orig_build_mm):
             def _vf_timed_build_mm(*args, _orig=_vf_orig_build_mm, **kwargs):
-                # Serialize concurrent native mm-encode across threads. When the
-                # global-native-lock test is on, use the SHARED lock so this is
-                # serialized against render (image_processor) and image-offload.
-                _lk = _VF_GLOBAL_NATIVE_LOCK if _vf_glock_on() else _VF_MM_ENCODE_LOCK
-                with _lk:
-                    with looptime("rdr_build_mm_features"):
-                        return _orig(*args, **kwargs)
+                # TIMING ONLY — no lock, no offload (base behavior).
+                with looptime("rdr_build_mm_features"):
+                    return _orig(*args, **kwargs)
 
             _renderers_client._build_mm_features = _vf_timed_build_mm
         _renderers_client._vf_looptime_patched = True
         logging.getLogger("vf.looptime").info(
-            "renderers._build_mm_features looptime patch: %s",
+            "renderers._build_mm_features looptime patch (timing only): %s",
             "applied" if callable(_vf_orig_build_mm) else "skipped (fn not found)",
         )
 
-    # FIX: _build_mm_features runs SYNC on the event loop inside generate
-    # (~1.2s/render, measured). Offload it by source-patching generate's call site
-    # (sync -> ``await asyncio.to_thread``). Can't be done by function-monkeypatch
-    # (the call site is sync). Fully defensive: on any failure we keep the original
-    # generate, so the worst case is the pre-fix behaviour (no crash, no regression).
-    if not getattr(_renderers_client, "_vf_generate_offload_patched", False):
-        import asyncio as _vf_aio
-        import inspect as _vf_inspect
-        import textwrap as _vf_textwrap
-
-        _vf_needle = "_build_mm_features(renderer, mm_data)"
-        _vf_src = _vf_textwrap.dedent(_vf_inspect.getsource(_renderers_client.generate))
-        if _vf_needle in _vf_src and "to_thread(_build_mm_features" not in _vf_src:
-            _vf_src = _vf_src.replace(
-                _vf_needle,
-                "(await asyncio.to_thread(_build_mm_features, renderer, mm_data))",
-            )
-            exec(
-                compile(_vf_src, _renderers_client.__file__, "exec"),
-                _renderers_client.__dict__,
-            )
-            if _vf_aio.iscoroutinefunction(_renderers_client.generate):
-                globals()["generate"] = _renderers_client.generate
-                _renderers_client._vf_generate_offload_patched = True
-                logging.getLogger("vf.looptime").warning(
-                    "renderers.generate _build_mm_features offload: APPLIED"
-                )
-            else:
-                logging.getLogger("vf.looptime").warning(
-                    "renderers.generate offload: skipped (not a coroutine after patch)"
-                )
-        else:
-            logging.getLogger("vf.looptime").warning(
-                "renderers.generate offload: skipped (call site not found)"
-            )
-
-    # SIGSEGV THREADING TEST: render (-> _process_image -> the torchvision
-    # image_processor) is offloaded to a to_thread pool worker via
-    # _maybe_offload. The size=1 pool lock serializes it (no concurrency race),
-    # but running native torch/torchvision off the main thread on a rotating
-    # pool thread can still fault. With VF_DISABLE_RENDER_OFFLOAD=1 we run the
-    # render INLINE on the event loop (no thread hop). If the -11 stops -> the
-    # threading is the trigger; if it persists -> the image/processor itself.
-    try:
-        import os as _vf_os
-        import renderers.client as _rc_off
-        _vf_orig_mo = _rc_off._maybe_offload
-        async def _vf_maybe_offload(renderer, fn, _o=_vf_orig_mo):
-            if _vf_os.environ.get("VF_DISABLE_RENDER_OFFLOAD"):
-                return fn()
-            return await _o(renderer, fn)
-        _rc_off._maybe_offload = _vf_maybe_offload
-        logging.getLogger("vf.looptime").info(
-            "renderers _maybe_offload toggle installed (VF_DISABLE_RENDER_OFFLOAD)"
-        )
-    except Exception as _e:
-        logging.getLogger("vf.looptime").warning("_maybe_offload toggle: %r", _e)
+    # (REMOVED on this branch: the generate _build_mm_features->to_thread offload
+    # and the VF_DISABLE_RENDER_OFFLOAD / _maybe_offload toggle. Base behavior:
+    # _build_mm_features runs sync on the loop; render uses the base feature's
+    # own _maybe_offload unchanged.)
 
     # CRASH LOCALIZATION: the -11 is in the renderer cold-build native path.
     # Wrap each native sub-call to print a BC breadcrumb to stdout (the only
@@ -221,23 +136,18 @@ try:
         import renderers.qwen35 as _q35
         import os as _vf_os_q
         _qcls = getattr(_q35, "Qwen35Renderer", None)
-        # _process_image holds the crashing native (image_processor). Wrap it to
-        # (a) breadcrumb and (b) take the global native lock when the
-        # concurrency test is on — serializing it vs _build_mm_features /
-        # _offload_prompt_images so no two native ops run at once.
-        def _vf_native_lock_wrap(obj, attr, label):
+        # BC breadcrumb + looptime category so the call rolls into the
+        # per-request LOOPSUM (image_processor is the crash-relevant native).
+        def _vf_bc_time_wrap(obj, attr, label, cat):
             _orig = getattr(obj, attr, None)
             if not callable(_orig):
                 return
-            def _w(*a, _o=_orig, _l=label, **k):
+            def _w(*a, _o=_orig, _l=label, _c=cat, **k):
                 try:
                     print(f"BC {_l} START", flush=True)
                 except Exception:
                     pass
-                if _vf_glock_on():
-                    with _VF_GLOBAL_NATIVE_LOCK:
-                        r = _o(*a, **k)
-                else:
+                with looptime(_c):
                     r = _o(*a, **k)
                 try:
                     print(f"BC {_l} OK", flush=True)
@@ -249,9 +159,9 @@ try:
             except Exception:
                 pass
         if _qcls is not None:
-            _vf_native_lock_wrap(_qcls, "_process_image", "q35._process_image")
+            _vf_bc_time_wrap(_qcls, "_process_image", "q35._process_image", "image_processor")
             _vf_bc_wrap(_qcls, "_encode", "q35._encode")
-            _vf_bc_wrap(_qcls, "render", "q35.render")
+            _vf_bc_time_wrap(_qcls, "render", "q35.render", "render")
             _vf_bc_wrap(_qcls, "bridge_to_next_turn", "q35.bridge_to_next_turn")
         # SPLIT _process_image's two natives + CAPTURE the killer image. Wrap the
         # module-level _load_pil_image: print IMG_PROBE with the decoded image's
@@ -1194,19 +1104,11 @@ class RendererClient(
     ) -> tuple[list[RendererMessage], dict]:
         extra_kwargs: dict[str, Any] = {}
         if _image_offload_enabled():
-            # Offload the synchronous image work (base64 decode + NFS writes/touch)
-            # to a thread: on a shared NFS dir these fs ops can block for seconds,
-            # and inline on the event loop they stall the env-worker heartbeat
-            # (-> 30s timeout -> restart) under high inflight. See render-loop lag.
-            # VF_GLOBAL_NATIVE_LOCK: serialize this native PIL/base64 work against
-            # render(image_processor) + _build_mm_features (concurrency SIGSEGV test/fix).
-            def _vf_locked_offload(_m=messages):
-                _g = globals().get("_VF_GLOBAL_NATIVE_LOCK")
-                if _g is not None and globals().get("_vf_glock_on", lambda: False)():
-                    with _g:
-                        return _offload_prompt_images(_m)
-                return _offload_prompt_images(_m)
-            extra_kwargs["_image_offload_stats"] = await asyncio.to_thread(_vf_locked_offload)
+            # BASE behavior on this repro branch: run the image offload SYNC on the
+            # event loop (our to_thread offload is REMOVED here to test whether it
+            # caused the -11). NOTE: this can stall the heartbeat under high inflight
+            # — the 60s heartbeat timeout is kept to give it slack.
+            extra_kwargs["_image_offload_stats"] = _offload_prompt_images(messages)
         return (
             _attach_tool_call_names([_to_renderer_message(m) for m in messages]),
             extra_kwargs,
