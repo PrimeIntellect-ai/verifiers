@@ -7,9 +7,12 @@ responses + stats back.
 """
 
 import asyncio
+import faulthandler
 import gc
 import logging
+import os
 import signal
+import sys
 import time
 from multiprocessing.connection import Connection
 from pathlib import Path
@@ -34,6 +37,63 @@ from verifiers.utils.async_utils import EventLoopLagMonitor, EventLoopLagStats
 from verifiers.utils.client_utils import resolve_client_config
 from verifiers.utils.process_utils import monitor_death_pipe, set_proc_title
 from verifiers.utils.serve_utils import msgpack_encoder
+
+
+# ── Event-loop diagnostics (VF_LOOP_DEBUG) ──────────────────────────────────
+# Attribute env-worker event-loop stalls. ON by default; set VF_LOOP_DEBUG=0 to
+# disable. Low overhead: a faulthandler watchdog only dumps when the loop is
+# *already* stalled past the threshold, and the gc callback only logs slow
+# collections. VF_LOOP_DEBUG_ASYNCIO=1 additionally enables asyncio debug mode
+# (slow-callback logging with source) — heavier, opt-in.
+_loopdbg_log = logging.getLogger("vf.loopdbg")
+
+
+def _loopdbg_on() -> bool:
+    return os.getenv("VF_LOOP_DEBUG", "1").strip().lower() not in (
+        "0", "off", "false", "no", "",
+    )
+
+
+def _loopdbg_lag_s() -> float:
+    try:
+        return float(os.getenv("VF_LOOP_DEBUG_LAG_S", "3.0") or 3.0)
+    except ValueError:
+        return 3.0
+
+
+def _rss_mb() -> float:
+    try:
+        with open("/proc/self/statm") as f:
+            pages = int(f.read().split()[1])
+        return pages * (os.sysconf("SC_PAGE_SIZE") / 1e6)
+    except Exception:
+        return -1.0
+
+
+def _install_gc_debug(worker_name: str) -> None:
+    """Log every gc collection that takes >VF_LOOP_DEBUG_GC_S (default 0.2s),
+    with generation, duration, and current RSS — to confirm/refute growing
+    stop-the-world gen-2 pauses as a loop-stall source."""
+    try:
+        thresh = float(os.getenv("VF_LOOP_DEBUG_GC_S", "0.2") or 0.2)
+    except ValueError:
+        thresh = 0.2
+    state = {"t0": 0.0}
+
+    def _gc_cb(phase: str, info: dict) -> None:
+        if phase == "start":
+            state["t0"] = time.perf_counter()
+            return
+        dt = time.perf_counter() - state["t0"]
+        if dt >= thresh:
+            counts = gc.get_count()
+            _loopdbg_log.warning(
+                "GC %s gen=%s dt=%.2fs rss=%.0fMB counts=%s collected=%s",
+                worker_name, info.get("generation"), dt, _rss_mb(),
+                counts, info.get("collected"),
+            )
+
+    gc.callbacks.append(_gc_cb)
 
 
 class EnvWorkerStats(BaseModel):
@@ -285,6 +345,27 @@ class EnvWorker:
         gc.freeze()
         gc.set_threshold(150_000, 10, 10)
 
+        loopdbg = _loopdbg_on()
+        watchdog_task: asyncio.Task | None = None
+        if loopdbg:
+            _install_gc_debug(self.worker_name)
+            if os.getenv("VF_LOOP_DEBUG_ASYNCIO", "").strip().lower() in (
+                "1", "true", "on", "yes",
+            ):
+                loop = asyncio.get_event_loop()
+                loop.set_debug(True)
+                try:
+                    loop.slow_callback_duration = float(
+                        os.getenv("VF_LOOP_DEBUG_SLOW_S", "0.5") or 0.5
+                    )
+                except ValueError:
+                    loop.slow_callback_duration = 0.5
+            watchdog_task = asyncio.create_task(self._loop_watchdog())
+            self.logger.info(
+                f"VF_LOOP_DEBUG on for {self.worker_name}: lag-dump>="
+                f"{_loopdbg_lag_s():.1f}s + gc logging"
+            )
+
         lag_task = asyncio.create_task(self.lag_monitor.run())
         stats_task = asyncio.create_task(self.stats_loop())
 
@@ -337,9 +418,37 @@ class EnvWorker:
                     self.logger.error(f"Error in serve loop: {e}", exc_info=True)
         finally:
             poller.unregister(self.pull_socket)
-            for t in (stats_task, lag_task):
+            tasks = [stats_task, lag_task]
+            if watchdog_task is not None:
+                tasks.append(watchdog_task)
+                try:
+                    faulthandler.cancel_dump_traceback_later()
+                except Exception:
+                    pass
+            for t in tasks:
                 t.cancel()
-            await asyncio.gather(stats_task, lag_task, return_exceptions=True)
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _loop_watchdog(self) -> None:
+        """Re-arm a faulthandler timer each tick; if the event loop stalls past
+        the threshold the C timer fires *during* the stall and dumps all-thread
+        tracebacks to stderr (the loop thread + every to_thread worker), so we
+        capture exactly what is blocking the loop (gc / NFS read / sandbox / etc.)."""
+        lag_s = _loopdbg_lag_s()
+        interval = max(0.5, lag_s / 3.0)
+        while True:
+            try:
+                faulthandler.dump_traceback_later(
+                    lag_s, repeat=False, file=sys.stderr, exit=False
+                )
+                _loopdbg_log.debug(
+                    "loop-watchdog armed (%s, lag>=%.1fs, rss=%.0fMB)",
+                    self.worker_name, lag_s, _rss_mb(),
+                )
+            except Exception as exc:
+                _loopdbg_log.warning("loop-watchdog arm failed: %r", exc)
+                return
+            await asyncio.sleep(interval)
 
     async def close(self) -> None:
         self.shutting_down = True
