@@ -55,7 +55,9 @@ class HarborTask(vf.Task, frozen=True):
             task_config = load_toml(f)
         sections: dict[str, dict[str, object]] = {}
         for name in ("environment", "task", "metadata", "agent", "verifier"):
-            section = task_config.get(name) or {}
+            section = task_config.get(name)
+            if section is None:
+                section = {}
             if not isinstance(section, dict):
                 raise TypeError(f"Harbor task [{name}] must be a mapping.")
             sections[name] = {str(key): value for key, value in section.items()}

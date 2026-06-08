@@ -1375,6 +1375,18 @@ def test_harbor_taskset_rejects_dockerfile_only_tasks(tmp_path) -> None:
         HarborTask.from_dir(task_dir, require_image=False)
 
 
+def test_harbor_taskset_rejects_falsy_non_mapping_sections(tmp_path) -> None:
+    from tasksets.harbor import HarborTask
+
+    task_dir = tmp_path / "bad-section"
+    task_dir.mkdir()
+    (task_dir / "instruction.md").write_text("fix it\n")
+    (task_dir / "task.toml").write_text("task = false\n")
+
+    with pytest.raises(TypeError, match=r"\[task\] must be a mapping"):
+        HarborTask.from_dir(task_dir, require_image=False)
+
+
 @pytest.mark.asyncio
 async def test_harbor_reward_runs_verifier_in_live_runtime(tmp_path) -> None:
     from tasksets.harbor import (
