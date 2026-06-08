@@ -18,7 +18,23 @@ from pydantic import Field
 from .config import Config
 from .types import JsonData
 
-_ENSURE_UV = "command -v uv >/dev/null 2>&1 || pip install -q uv"
+_INSTALL_CURL = (
+    "{ command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1; } "
+    "|| { apt-get update -qq && apt-get install -y -qq curl ca-certificates; } "
+    "|| apk add --no-cache curl ca-certificates"
+)
+_DOWNLOAD_UV = (
+    "{ command -v curl >/dev/null 2>&1 && "
+    "curl -LsSf https://astral.sh/uv/install.sh | sh; } "
+    "|| { command -v wget >/dev/null 2>&1 && "
+    "wget -qO- https://astral.sh/uv/install.sh | sh; }"
+)
+_ENSURE_UV = (
+    'export PATH="$HOME/.local/bin:$PATH" UV_INSTALL_DIR="$HOME/.local/bin"; '
+    "command -v uv >/dev/null 2>&1 "
+    "|| pip install -q uv 2>/dev/null "
+    f"|| {{ {_INSTALL_CURL}; {_DOWNLOAD_UV}; }}"
+)
 _SUBPROCESS_ENV = (
     "PATH",
     "HOME",
@@ -581,8 +597,17 @@ class PrimeRuntime(Runtime):
         return url
 
     async def public_url(self, port: int) -> str | None:
-        _ = port
-        return None
+        if self.client is None or self.sandbox_id is None:
+            raise RuntimeError("Prime runtime has not started.")
+        try:
+            exposed = await self.client.expose(self.sandbox_id, port)
+        except Exception as exc:
+            raise RuntimeError(
+                "Prime port exposure failed. Runtime-placed servers on Prime "
+                "require sandbox port exposure; use a supported region/port or "
+                "place the server in a host/subprocess runtime."
+            ) from exc
+        return str(exposed.url).rstrip("/")
 
     async def run(
         self,
@@ -614,17 +639,26 @@ class PrimeRuntime(Runtime):
         return base64.b64decode(result.stdout)
 
     async def write(self, path: str, data: bytes) -> None:
-        encoded = base64.b64encode(data).decode()
-        parent = shlex.quote(str(PurePosixPath(path).parent))
-        result = await self.run(
-            [
-                "sh",
-                "-c",
-                f"mkdir -p {parent} && printf %s {encoded} | base64 -d > {shlex.quote(path)}",
-            ]
+        if self.client is None or self.sandbox_id is None:
+            raise RuntimeError("Prime runtime has not started.")
+        target = (
+            path
+            if path.startswith("/")
+            else f"{self.config.workdir.rstrip('/')}/{path}"
         )
+        parent = shlex.quote(str(PurePosixPath(target).parent))
+        result = await self.run(["sh", "-c", f"mkdir -p {parent}"])
         if result.returncode != 0:
             raise RuntimeError(f"write {path!r}: {result.stderr.strip()}")
+        try:
+            await self.client.upload_bytes(
+                self.sandbox_id,
+                target,
+                data,
+                filename=PurePosixPath(target).name,
+            )
+        except Exception as exc:
+            raise RuntimeError(f"write {path!r}: {exc}") from exc
 
     async def run_background(
         self,

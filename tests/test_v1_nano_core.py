@@ -1314,6 +1314,22 @@ def test_harbor_runtime_preserves_configured_resources_without_env_override() ->
     assert runtime["disk_size_gb"] == 99.0
 
 
+def test_harbor_taskset_rejects_dockerfile_only_tasks(tmp_path) -> None:
+    from tasksets.harbor import HarborTaskset, HarborTasksetConfig
+
+    task_dir = tmp_path / "dockerfile-only"
+    (task_dir / "environment").mkdir(parents=True)
+    (task_dir / "environment" / "Dockerfile").write_text("FROM python:3.11\n")
+    (task_dir / "instruction.md").write_text("fix it\n")
+    (task_dir / "task.toml").write_text("[environment]\n")
+    taskset = HarborTaskset(
+        config=HarborTasksetConfig(bundle_package="unused", task_runtime={})
+    )
+
+    with pytest.raises(ValueError, match="Dockerfile"):
+        taskset.task_from_dir(task_dir)
+
+
 @pytest.mark.asyncio
 async def test_score_group_empty_group_returns_empty_states() -> None:
     env = vf.Env(taskset=NanoTaskset())
@@ -1665,6 +1681,62 @@ async def test_v1_docker_runtime_read_preserves_binary_bytes() -> None:
     runtime = ReadOnlyDockerRuntime(vf.DockerRuntimeConfig())
 
     assert await runtime.read("/payload.bin") == payload
+
+
+@pytest.mark.asyncio
+async def test_v1_prime_runtime_write_uses_gateway_upload() -> None:
+    class FakePrimeClient:
+        def __init__(self) -> None:
+            self.uploads: list[tuple[str, str, bytes, str]] = []
+
+        async def upload_bytes(
+            self, sandbox_id: str, path: str, data: bytes, *, filename: str
+        ) -> None:
+            self.uploads.append((sandbox_id, path, data, filename))
+
+    runtime = vf.PrimeRuntime(vf.PrimeRuntimeConfig(workdir="/app"))
+    client = FakePrimeClient()
+    runtime.client = client
+    runtime.sandbox_id = "sandbox-id"
+    commands: list[list[str]] = []
+
+    async def run(
+        command: list[str],
+        *,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        timeout: float | None = None,
+    ) -> vf.CommandResult:
+        _ = cwd, env, timeout
+        commands.append(command)
+        return vf.CommandResult(returncode=0)
+
+    runtime.run = run
+
+    await runtime.write("payload.bin", b"large payload")
+
+    assert commands == [["sh", "-c", "mkdir -p /app"]]
+    assert client.uploads == [
+        ("sandbox-id", "/app/payload.bin", b"large payload", "payload.bin")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_v1_prime_runtime_public_url_exposes_sandbox_port() -> None:
+    class ExposedPort:
+        url = "https://sandbox.example/mcp/"
+
+    class FakePrimeClient:
+        async def expose(self, sandbox_id: str, port: int) -> ExposedPort:
+            assert sandbox_id == "sandbox-id"
+            assert port == 8765
+            return ExposedPort()
+
+    runtime = vf.PrimeRuntime(vf.PrimeRuntimeConfig())
+    runtime.client = FakePrimeClient()
+    runtime.sandbox_id = "sandbox-id"
+
+    assert await runtime.public_url(8765) == "https://sandbox.example/mcp"
 
 
 def test_v1_runtime_image_is_container_only() -> None:

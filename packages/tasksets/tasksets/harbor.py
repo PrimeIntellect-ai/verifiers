@@ -118,6 +118,14 @@ class HarborTaskset(vf.Taskset[HarborTasksetConfig]):
         verifier_config = mapping(task_config.get("verifier"), "verifier")
         instruction = instruction_path.read_text().strip()
         task_remote_dir = self.config.task_dir.rstrip("/") or "/task"
+        raw_docker_image = environment.get("docker_image")
+        docker_image = raw_docker_image if isinstance(raw_docker_image, str) else None
+        if docker_image is None and (task_dir / "environment" / "Dockerfile").exists():
+            raise ValueError(
+                f"Harbor task {task_dir.name!r} declares environment/Dockerfile "
+                "but no pullable [environment].docker_image. Building Harbor "
+                "Dockerfiles is not supported."
+            )
         runtime = harbor_runtime(
             self.config.task_runtime,
             environment=environment,
@@ -137,8 +145,6 @@ class HarborTaskset(vf.Taskset[HarborTasksetConfig]):
                 **self.config.env,
             },
         )
-        raw_docker_image = environment.get("docker_image")
-        docker_image = raw_docker_image if isinstance(raw_docker_image, str) else None
         harbor = HarborSpec(
             task_dir=str(task_dir),
             task_name=task_dir.name,

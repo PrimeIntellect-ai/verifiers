@@ -152,6 +152,32 @@ The first option is closer to nano and cleaner for resource ownership. The
 second keeps the v1 public surface smaller but makes group runtime lifetime more
 implicit.
 
+### Latest nano runtime/Harbor checkpoint
+
+The latest nano Harbor example clarified three runtime contracts that v1 now
+matches:
+
+- Harbor tasks with `environment/Dockerfile` but no pullable
+  `[environment].docker_image` fail during task loading. Verifiers does not
+  build Harbor Dockerfiles, and silently falling back to the default image
+  scores the wrong environment.
+- Prime runtime file writes use the sandbox upload gateway and resolve relative
+  paths against the runtime workdir. Large Harbor test bundles must not be
+  base64-inlined into an exec command.
+- Prime runtime `public_url(...)` exposes sandbox ports natively, which lets
+  runtime-placed MCP servers be reached from other runtimes without a host-local
+  URL leak.
+
+Nano also strengthened `run_uv_script(...)` for bare task images by bootstrapping
+`uv` through `pip`, `curl`/`wget`, `apt`, or `apk`. v1 mirrors that because
+Harbor-style images often lack the Python tooling expected by ordinary examples.
+
+Nano's current eval runner added durable incremental `results.jsonl`, resolved
+`config.toml`, deterministic shuffle, and a rich dashboard that reads live
+rollout phase/runtime descriptors. Those are eval/UI improvements rather than
+core v1 authoring contracts. They are worth adopting in the eval layer, but not
+as additional v1 state fields or helpers.
+
 ## Scoring Contract
 
 v1 direct harness runs default to generation only:
@@ -176,9 +202,10 @@ call a harness recursively for judging.
 ## Branching And Compaction
 
 Nano records a flat `trajectory` but exposes `trace.branches` and
-`trace.num_branches`. Branches are inferred from explicit branch headers, token
-prefixes, or message prefixes. The compact agent intentionally rewrites context
-each turn, so every turn becomes its own branch.
+`trace.num_branches`. Branches are inferred from token prefixes when token data
+is available, otherwise message prefixes. The message fallback ignores
+`reasoning_content` and treats `None` and empty assistant content as equal, so
+tool-call-only assistant messages do not split branches accidentally.
 
 v1 currently records `state.transcript` as a flat list of `Turn`s and leaves
 branch/compaction interpretation to the harness or downstream consumer. If v1
