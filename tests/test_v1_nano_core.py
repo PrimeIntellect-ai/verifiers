@@ -1617,7 +1617,6 @@ async def test_score_group_closes_model_clients_if_cleanup_fails(mock_client) ->
 @pytest.mark.asyncio
 async def test_openenv_and_openreward_rewards_sum_turn_rewards() -> None:
     from tasksets.openenv import OpenEnvTaskset, OpenEnvTasksetConfig
-    from tasksets.openreward import OpenRewardTaskset, OpenRewardTasksetConfig
 
     state = vf.State(
         reward=99.0,
@@ -1630,6 +1629,9 @@ async def test_openenv_and_openreward_rewards_sum_turn_rewards() -> None:
     assert (
         await OpenEnvTaskset(OpenEnvTasksetConfig()).openenv_reward(state)
     ) == pytest.approx(0.75)
+    pytest.importorskip("openreward")
+    from tasksets.openreward import OpenRewardTaskset, OpenRewardTasksetConfig
+
     assert (
         await OpenRewardTaskset(
             OpenRewardTasksetConfig(environment="test")
@@ -1665,7 +1667,6 @@ def test_openenv_build_config_accepts_current_build_metadata() -> None:
 
 def test_openenv_and_openreward_task_schemas_are_explicit() -> None:
     from tasksets.openenv import OpenEnvTask
-    from tasksets.openreward import OpenRewardVFTask
 
     openenv_task = OpenEnvTask.model_validate(
         {
@@ -1674,6 +1675,9 @@ def test_openenv_and_openreward_task_schemas_are_explicit() -> None:
             "info": {"seed": 0},
         }
     )
+    pytest.importorskip("openreward")
+    from tasksets.openreward import OpenRewardVFTask
+
     openreward_task = OpenRewardVFTask.model_validate(
         {
             "prompt": [],
@@ -1783,6 +1787,7 @@ async def test_openenv_user_tool_returns_bound_turn_reward_payload() -> None:
 
 @pytest.mark.asyncio
 async def test_openreward_user_tool_returns_bound_turn_reward_payload() -> None:
+    pytest.importorskip("openreward")
     from tasksets.openreward import OpenRewardUser, OpenRewardUserConfig
 
     class FakeOpenRewardOutput:

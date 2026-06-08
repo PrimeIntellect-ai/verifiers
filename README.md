@@ -170,7 +170,8 @@ class MyTaskset(vf.Taskset[MyTasksetConfig]):
 
     @vf.reward(weight=1.0)
     async def contains_answer(self, task: MyTask, state: vf.State) -> float:
-        return float(task.answer in str(state.completion or ""))
+        content = state.completion[-1].content if state.completion else ""
+        return float(task.answer in str(content))
 
 
 def load_taskset(config: MyTasksetConfig) -> MyTaskset:

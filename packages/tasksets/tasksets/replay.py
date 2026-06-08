@@ -18,7 +18,12 @@ class ReplayTasksetConfig(vf.TasksetConfig):
     data_dir: str | None = None
 
 
+class ReplayTask(vf.Task, frozen=True):
+    messages: vf.Messages
+
+
 class ReplayTaskset(vf.Taskset[ReplayTasksetConfig]):
+    task_type = ReplayTask
     data_dir: ClassVar[str | None] = None
 
     def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
