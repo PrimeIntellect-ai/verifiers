@@ -115,6 +115,8 @@ class HarborTask(vf.Task, frozen=True):
         if raw_category is not None and not isinstance(raw_category, str):
             raise TypeError("Harbor task [metadata].category must be a string.")
         raw_keywords = task_meta.get("keywords", [])
+        if raw_keywords is None:
+            raw_keywords = []
         if not isinstance(raw_keywords, list):
             raise TypeError("Harbor task [task].keywords must be a list.")
         keywords: list[str] = []
@@ -123,6 +125,8 @@ class HarborTask(vf.Task, frozen=True):
                 raise TypeError("Harbor task [task].keywords must contain strings.")
             keywords.append(keyword)
         raw_tags = metadata.get("tags", [])
+        if raw_tags is None:
+            raw_tags = []
         if not isinstance(raw_tags, list):
             raise TypeError("Harbor task [metadata].tags must be a list.")
         tags: list[str] = []
