@@ -4,7 +4,7 @@ import time
 from collections.abc import Sequence
 from typing import cast
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, field_serializer, field_validator, model_validator
 
 import verifiers.v1 as vf
 from verifiers.types import (
@@ -24,7 +24,7 @@ BFCLRawMessage = str | vf.JsonData
 BFCLRawTurn = str | vf.JsonData | Sequence[BFCLRawMessage] | None
 
 
-class BFCLTask(vf.Task):
+class BFCLTask(vf.Task, frozen=True):
     category: str
     question: list[list[vf.JsonData]]
     function: vf.JsonValue
@@ -42,6 +42,14 @@ class BFCLTask(vf.Task):
         if isinstance(value, str):
             return json.loads(value)
         return value
+
+    @field_serializer(
+        "function", "function_with_hints", "ground_truth", when_used="json"
+    )
+    def serialize_json_blob(self, value: vf.JsonValue | None) -> str | None:
+        if value is None:
+            return None
+        return json.dumps(value)
 
 
 class BFCLTasksetConfig(vf.TasksetConfig):
@@ -196,19 +204,22 @@ def bfcl_row(
     first_turn_system_prompt, first_turn_prompt = split_system_prompt(
         normalize_turn(question[0])
     )
-    row: vf.JsonData = {
-        "task_id": str(entry["id"]),
-        "category": test_category,
-        "prompt": first_turn_prompt,
-        "question": [
-            first_turn_prompt,
-            *[normalize_turn(turn) for turn in question[1:]],
-        ],
-        "function": json.dumps(entry["function"]),
-        "function_with_hints": json.dumps(hinted_entry["function"]),
-    }
+    row = cast(
+        vf.JsonData,
+        {
+            "task_id": str(entry["id"]),
+            "category": test_category,
+            "prompt": first_turn_prompt,
+            "question": [
+                first_turn_prompt,
+                *[normalize_turn(turn) for turn in question[1:]],
+            ],
+            "function": json.dumps(entry["function"]),
+            "function_with_hints": json.dumps(hinted_entry["function"]),
+        },
+    )
     if first_turn_system_prompt:
-        row["system_prompt"] = first_turn_system_prompt
+        row["system_prompt"] = cast(vf.JsonValue, first_turn_system_prompt)
     for key in ("initial_config", "involved_classes"):
         if key in entry:
             row[key] = entry[key]
@@ -354,7 +365,7 @@ def bfcl_involved_classes(task: BFCLTask) -> list[str]:
     value = json_clone(task.involved_classes)
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
         raise TypeError("BFCL multi-turn tasks require involved_classes.")
-    return value
+    return cast(list[str], value)
 
 
 def tool_args(value: str) -> vf.JsonData:
