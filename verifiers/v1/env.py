@@ -8,11 +8,11 @@ from pydantic import BaseModel
 from verifiers.types import (
     RolloutInput,
 )
-from verifiers.utils.async_utils import maybe_retry
 
 from . import advantages
 from .config import Config
 from .harness import Harness
+from .lifecycle import EnvRun
 from .runtime import (
     RuntimeConfig,
     RuntimeConfigValue,
@@ -23,7 +23,6 @@ from .task import Task
 from .taskset import Taskset
 from .types import JsonData, ModelClient, ModelConfig
 from .utils.config_utils import explicit_config_data
-from .utils.json_utils import json_data
 from .utils.scoring_utils import score_group as score_group_signals
 
 if TYPE_CHECKING:
@@ -109,6 +108,9 @@ class Env:
             return dataset.select(range(min(n, len(dataset))))
         return dataset
 
+    def run(self) -> EnvRun:
+        return EnvRun(env=self)
+
     async def run_handlers_for_group(
         self,
         kind: str,
@@ -143,32 +145,15 @@ class Env:
         state: State | None = None,
         max_retries: int = 0,
     ) -> State:
-        if isinstance(input, Task):
-            task = self.taskset.to_task(input)
-        elif isinstance(input, dict):
-            task = self.taskset.to_task(json_data(input))
-        else:
-            raise TypeError("Env.run_rollout input must be a Task or mapping.")
-
-        async def attempt() -> State:
-            if state is None:
-                rollout_state = State(task_id=task.task_id)
-            elif max_retries > 0:
-                rollout_state = state.model_copy(deep=True)
-            else:
-                rollout_state = state
-            rollout_state.task_id = task.task_id
-            rollout_state.model = model
-            rollout_state.teacher = teacher
-            return await self.harness.run(
-                task,
-                rollout_state,
+        async with self.run() as env_run:
+            return await env_run.run_rollout(
+                input,
                 model=model,
                 teacher=teacher,
+                state=state,
                 score=True,
+                max_retries=max_retries,
             )
-
-        return await maybe_retry(attempt, max_retries=max_retries)()
 
     async def score_group(
         self,

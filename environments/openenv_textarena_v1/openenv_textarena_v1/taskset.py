@@ -31,17 +31,21 @@ def render_textarena_prompt(
 
     message_text = textarena_message_text(observation_data)
     prompt_text = textarena_prompt_text(observation_data)
+    action_instruction = (
+        '\n\nReturn only a JSON object like {"message": "[guess]"}. '
+        "Do not include markdown or any other text."
+    )
 
     if context == "step":
         if message_text is not None:
-            return [UserMessage(content=message_text)]
+            return [UserMessage(content=message_text + action_instruction)]
         if prompt_text is not None:
-            return [UserMessage(content=prompt_text)]
+            return [UserMessage(content=prompt_text + action_instruction)]
     else:
         if prompt_text is not None:
-            return [UserMessage(content=prompt_text)]
+            return [UserMessage(content=prompt_text + action_instruction)]
         if message_text is not None:
-            return [UserMessage(content=message_text)]
+            return [UserMessage(content=message_text + action_instruction)]
 
     raise RuntimeError(
         "openenv-textarena observation did not include renderable prompt text."

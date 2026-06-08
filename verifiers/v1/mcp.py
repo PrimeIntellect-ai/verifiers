@@ -194,15 +194,15 @@ class MCPToolRegistry:
 
         owns_runtime = False
         runtime = self.runtime
-        if server.placement == "runtime":
+        if server.placement == "dedicated":
             runtime_config = server.runtime
             if runtime_config is None:
-                raise ValueError("Runtime server placement requires runtime config.")
+                raise ValueError("Dedicated server placement requires runtime config.")
             runtime = make_runtime_provider(runtime_config).create_runtime()
             owns_runtime = True
             await runtime.start()
         elif runtime is None:
-            raise ValueError("Harness server placement requires a running runtime.")
+            raise ValueError("Colocated server placement requires a running runtime.")
 
         assert runtime is not None
         try:
@@ -404,7 +404,9 @@ class MCPToolRegistry:
 
     def register_setup_tools(self, setup: ToolDispatch, value: JsonValue) -> None:
         if not isinstance(value, dict):
-            return
+            raise TypeError(
+                f"Toolset {setup.toolset_name!r} setup must return a JSON object."
+            )
         if "messages" in value:
             raise ValueError("Toolset setup cannot return messages.")
         raw_tools = value.get("tools")

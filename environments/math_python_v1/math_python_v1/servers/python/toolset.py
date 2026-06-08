@@ -35,14 +35,15 @@ class PythonToolset(vf.Toolset[PythonToolsetConfig]):
 
     @vf.tool(
         args={"history": "resources.history"},
-        sets={"python_history": "state.extras.python_history"},
+        extends={"python_history": "state.extras.python_history"},
     )
     def python(self, code: str, history: list[str]) -> dict:
+        start = len(history)
         try:
             content = execute_python(code, history)
         except BaseException:
             content = traceback.format_exc()
         return {
             "content": content,
-            "python_history": list(history),
+            "python_history": list(history[start:]),
         }

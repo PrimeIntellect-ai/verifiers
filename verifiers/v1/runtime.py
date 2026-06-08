@@ -4,6 +4,7 @@ import asyncio
 import base64
 import contextlib
 import os
+import signal
 import shlex
 import shutil
 import tempfile
@@ -67,10 +68,12 @@ class PrimeRuntimeConfig(Config):
     region: str | None = None
     gpu_type: str | None = None
     timeout_minutes: int | Literal["auto"] = 360
+    idle_timeout_minutes: int | None = None
     cpu_cores: float = 1.0
     memory_gb: float = 2.0
     gpu_count: int = 0
     disk_gb: float = 5.0
+    labels: list[str] = Field(default_factory=list)
 
 
 class ModalRuntimeConfig(Config):
@@ -250,6 +253,14 @@ class SubprocessRuntime(Runtime):
         self.workdir = Path(tempfile.mkdtemp(prefix="vf-v1-", dir="/tmp"))
 
     async def stop(self) -> None:
+        for process in self.processes:
+            if process.returncode is None:
+                with contextlib.suppress(ProcessLookupError):
+                    process.send_signal(signal.SIGINT)
+        for process in self.processes:
+            if process.returncode is None:
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(process.wait(), timeout=5)
         for process in self.processes:
             if process.returncode is None:
                 with contextlib.suppress(ProcessLookupError):
@@ -503,7 +514,11 @@ class PrimeRuntime(Runtime):
         self.tunnels: list[RuntimeTunnel] = []
 
     async def start(self) -> None:
-        from prime_sandboxes import AsyncSandboxClient, CreateSandboxRequest
+        from prime_sandboxes import (
+            AdvancedConfigs,
+            AsyncSandboxClient,
+            CreateSandboxRequest,
+        )
 
         self.client = AsyncSandboxClient()
         timeout = (
@@ -511,28 +526,47 @@ class PrimeRuntime(Runtime):
             if self.config.timeout_minutes == "auto"
             else self.config.timeout_minutes
         )
-        sandbox = await self.client.create(
-            CreateSandboxRequest(
-                name="vf-v1-runtime",
-                docker_image=self.config.image,
-                cpu_cores=self.config.cpu_cores,
-                memory_gb=self.config.memory_gb,
-                disk_size_gb=self.config.disk_gb,
-                gpu_count=self.config.gpu_count,
-                timeout_minutes=timeout,
-                network_access=self.config.network_access,
-                vm=self.config.vm,
-                guaranteed=self.config.guaranteed,
-                gpu_type=self.config.gpu_type,
-                region=self.config.region,
+        advanced_configs = (
+            None
+            if self.config.idle_timeout_minutes is None
+            else AdvancedConfigs.model_validate(
+                {"idle_timeout_minutes": self.config.idle_timeout_minutes}
             )
         )
-        self.sandbox_id = sandbox.id
-        await self.client.wait_for_creation(self.sandbox_id)
-        await self.client.run_background_job(
-            self.sandbox_id,
-            f"mkdir -p {shlex.quote(self.config.workdir)}",
-        )
+        labels = ["vf-v1-runtime", *self.config.labels]
+        if evaluation_id := os.environ.get("EVALUATION_ID"):
+            labels.append(f"eval-{evaluation_id}")
+        if job_id := os.environ.get("PRIME_JOB_ID"):
+            labels.append(f"prime-job-{job_id}")
+        labels = list(dict.fromkeys(labels))
+        try:
+            sandbox = await self.client.create(
+                CreateSandboxRequest(
+                    name="vf-v1-runtime",
+                    docker_image=self.config.image,
+                    cpu_cores=self.config.cpu_cores,
+                    memory_gb=self.config.memory_gb,
+                    disk_size_gb=self.config.disk_gb,
+                    gpu_count=self.config.gpu_count,
+                    timeout_minutes=timeout,
+                    network_access=self.config.network_access,
+                    vm=self.config.vm,
+                    guaranteed=self.config.guaranteed,
+                    gpu_type=self.config.gpu_type,
+                    region=self.config.region,
+                    advanced_configs=advanced_configs,
+                    labels=labels,
+                )
+            )
+            self.sandbox_id = sandbox.id
+            await self.client.wait_for_creation(self.sandbox_id)
+            await self.client.run_background_job(
+                self.sandbox_id,
+                f"mkdir -p {shlex.quote(self.config.workdir)}",
+            )
+        except Exception:
+            await self.stop()
+            raise
 
     async def stop(self) -> None:
         for tunnel in self.tunnels:

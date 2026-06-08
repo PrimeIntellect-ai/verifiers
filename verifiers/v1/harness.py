@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import inspect
 import time
-from contextlib import AsyncExitStack, asynccontextmanager
+from contextlib import asynccontextmanager
 from copy import deepcopy
 from pydantic import TypeAdapter
 from typing import TYPE_CHECKING, AsyncIterator, Generic, TypeVar, cast, final
@@ -104,6 +105,8 @@ class Harness(Generic[ConfigT]):
         self.runtime_provider: RuntimeProvider | None = None
         self._env_toolsets: MCPToolRegistry | None = None
         self._env_user: MCPToolRegistry | None = None
+        self._env_servers_lock = asyncio.Lock()
+        self._env_scope_count = 0
         self.extras_schema: type[Extras] | None = Extras.schema_for(self.config.extras)
         self.extras_defaults: JsonData = Extras.defaults_for(self.config.extras)
 
@@ -294,30 +297,16 @@ class Harness(Generic[ConfigT]):
                 await self.run_lifecycle(child_context)
             return state
 
-        async with self.runtime_provider_for(task).create_runtime() as runtime:
-            await self.ensure_env_servers()
-            async with AsyncExitStack() as stack:
-                user = await stack.enter_async_context(self.rollout_user(runtime, task))
-                toolsets = await stack.enter_async_context(
-                    self.rollout_toolsets(runtime, user)
-                )
-                async with self.open_context(
-                    task=task,
-                    state=state,
-                    model=model,
-                    teacher=teacher,
-                    runtime=runtime,
-                    toolsets=toolsets,
-                    user=user,
-                    score=score,
-                ) as root_context:
-                    if toolsets is not None:
-                        toolsets.set_visibility(
-                            toolsets=task.toolsets,
-                            tools=task.tools,
-                        )
-                    await self.run_lifecycle(root_context)
-        return state
+        from .lifecycle import EnvRun
+
+        async with EnvRun(harness=self) as env_run:
+            return await env_run.run_context(
+                task,
+                state,
+                model=model,
+                teacher=teacher,
+                score=score,
+            )
 
     async def run_lifecycle(self, context: Context) -> None:
         task = context.task
@@ -460,47 +449,70 @@ class Harness(Generic[ConfigT]):
             return
         state.stop("max_turns")
 
-    async def ensure_env_servers(self) -> None:
-        taskset = self.taskset
-        started_toolsets = False
-        try:
-            if self._env_toolsets is None:
-                toolsets = (
-                    {}
-                    if taskset is None
-                    else {
-                        name: toolset
-                        for name, toolset in taskset.toolsets.items()
-                        if toolset.scope == "env"
-                    }
-                )
-                env_toolsets = MCPToolRegistry(toolsets)
+    async def start_env_scope(self) -> None:
+        async with self._env_servers_lock:
+            if self._env_scope_count > 0:
+                self._env_scope_count += 1
+                return
+            taskset = self.taskset
+            started_toolsets = False
+            try:
+                if self._env_toolsets is None:
+                    toolsets = (
+                        {}
+                        if taskset is None
+                        else {
+                            name: toolset
+                            for name, toolset in taskset.toolsets.items()
+                            if toolset.scope == "env"
+                        }
+                    )
+                    env_toolsets = MCPToolRegistry(toolsets)
+                    try:
+                        await env_toolsets.__aenter__()
+                    except BaseException:
+                        await env_toolsets.__aexit__(None, None, None)
+                        raise
+                    self._env_toolsets = env_toolsets
+                    started_toolsets = True
+                if self._env_user is None:
+                    user = None if taskset is None else taskset.user
+                    user_toolsets = (
+                        {} if user is None or user.scope != "env" else {"user": user}
+                    )
+                    env_user = MCPToolRegistry(user_toolsets)
+                    try:
+                        await env_user.__aenter__()
+                    except BaseException:
+                        await env_user.__aexit__(None, None, None)
+                        raise
+                    self._env_user = env_user
+                self._env_scope_count = 1
+            except BaseException:
+                self._env_scope_count = 0
+                if started_toolsets and self._env_toolsets is not None:
+                    try:
+                        await self._env_toolsets.__aexit__(None, None, None)
+                    finally:
+                        self._env_toolsets = None
+                raise
+
+    async def stop_env_scope(self, *, force: bool = False) -> None:
+        async with self._env_servers_lock:
+            if not force and self._env_scope_count > 1:
+                self._env_scope_count -= 1
+                return
+            self._env_scope_count = 0
+            try:
+                if self._env_user is not None:
+                    await self._env_user.__aexit__(None, None, None)
+            finally:
+                self._env_user = None
                 try:
-                    await env_toolsets.__aenter__()
-                except BaseException:
-                    await env_toolsets.__aexit__(None, None, None)
-                    raise
-                self._env_toolsets = env_toolsets
-                started_toolsets = True
-            if self._env_user is None:
-                user = None if taskset is None else taskset.user
-                user_toolsets = (
-                    {} if user is None or user.scope != "env" else {"user": user}
-                )
-                env_user = MCPToolRegistry(user_toolsets)
-                try:
-                    await env_user.__aenter__()
-                except BaseException:
-                    await env_user.__aexit__(None, None, None)
-                    raise
-                self._env_user = env_user
-        except BaseException:
-            if started_toolsets and self._env_toolsets is not None:
-                try:
-                    await self._env_toolsets.__aexit__(None, None, None)
+                    if self._env_toolsets is not None:
+                        await self._env_toolsets.__aexit__(None, None, None)
                 finally:
                     self._env_toolsets = None
-            raise
 
     def rollout_toolsets(
         self, runtime: Runtime, user: MCPToolRegistry | None = None
@@ -640,16 +652,21 @@ class Harness(Generic[ConfigT]):
 
     @staticmethod
     def binding_context(task: Task, state: State) -> JsonData:
+        state_data = state.model_dump(
+            mode="json",
+            exclude_none=True,
+            exclude_computed_fields=True,
+        )
+        state_data["prompt"] = State.serialized_messages(state.prompt)
+        state_data["completion"] = State.serialized_messages(state.completion)
+        state_data["messages"] = State.serialized_messages(state.messages)
         return json_data(
             {
                 "task": task.model_dump(
                     mode="json", exclude_none=True, exclude_defaults=True
                 ),
-                "state": state.model_dump(mode="json", exclude_none=True),
-                "transcript": [
-                    turn.model_dump(mode="json", exclude_none=True)
-                    for turn in state.transcript
-                ],
+                "state": state_data,
+                "extras": state.extras,
             },
             context="binding context",
         )
@@ -677,8 +694,12 @@ class Harness(Generic[ConfigT]):
     @staticmethod
     def bound_assignments(update: BoundUpdate) -> list[tuple[str, JsonValue, str]]:
         target = update.target
+        if target.startswith("extras."):
+            target = f"state.{target}"
         if not target.startswith("state."):
-            raise ValueError(f"Bound return target {target!r} must start with state.")
+            raise ValueError(
+                f"Bound return target {target!r} must start with state. or extras."
+            )
         parts = target.split(".")
         if len(parts) < 2:
             raise ValueError(f"Bound return target {target!r} is incomplete.")
@@ -923,16 +944,7 @@ class Harness(Generic[ConfigT]):
                 await result
 
     async def close(self) -> None:
-        env_user = self._env_user
-        self._env_user = None
         try:
-            if env_user is not None:
-                await env_user.__aexit__(None, None, None)
+            await self.stop_env_scope(force=True)
         finally:
-            env_toolsets = self._env_toolsets
-            self._env_toolsets = None
-            try:
-                if env_toolsets is not None:
-                    await env_toolsets.__aexit__(None, None, None)
-            finally:
-                await self.teardown()
+            await self.teardown()

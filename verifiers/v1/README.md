@@ -17,12 +17,20 @@ v1 classes from top-level `verifiers`, and v0 code should not rely on
   rewards, and task-specific lifecycle.
 - `Env` owns the selected group advantage function. The default is `"rl"`;
   pass `advantage=None` to disable environment-provided token advantages.
-- `Harness` is the agent. Its `run(...)` method owns the rollout lifecycle:
-  runtime, MCP connections, setup/generation/update/optional scoring/cleanup,
-  and finalization. Direct `Harness.run(...)` defaults to `score=False`;
+- `EnvRun` owns one environment execution: env-scope toolsets/users,
+  per-rollout runtime creation, and grouped rollout coordination. Eval creates
+  one `EnvRun` for the evaluation. Direct `Env.run_rollout(...)` is a one-shot
+  convenience around `EnvRun`.
+- `Group` owns the tasks and states for one grouped example and calls
+  `env.score_group(...)` after its member rollouts finish.
+- `Harness` is the agent. Its `run(...)` method starts a standalone `EnvRun`
+  when no parent `Context` is supplied; nested calls reuse the parent
+  `Context`. Direct `Harness.run(...)` defaults to `score=False`;
   `Env.run_rollout(...)` opts into rollout scoring.
-- `Env` is the thin adapter that creates `State`, delegates rollouts to the
-  harness, scores groups, and serializes output.
+- `Context` is the live per-harness execution record: task, state, runtime,
+  model/teacher clients, toolsets, user, parent context, and scoring flags.
+- `Env` is the thin adapter that pairs taskset and harness, opens `EnvRun`
+  contexts, scores groups, and serializes output.
 - `State` is the canonical rollout record. It is a strict Pydantic model with
   `transcript: list[Turn]`; there is no live `trajectory` alias.
 - `state.messages` is a convenience rendering of the latest conversation
@@ -84,13 +92,21 @@ toolset by pointing `source` at a `ToolsetConfig` class.
 One `Toolset` may expose multiple tools. Supported scopes are:
 
 - `rollout`: started for one rollout and cleaned up afterward.
-- `env`: started once and reused for the loaded environment lifetime.
+- `env`: started once for an `EnvRun` and reused by all rollouts in that run.
+
+Supported placements are:
+
+- `dedicated`: start the toolset/user in its own runtime.
+- `colocated`: start the toolset/user in the owning rollout runtime.
+- `remote`: connect to an existing URL.
 
 `@vf.tool(args=..., sets=..., extends=...)` is the only framework wiring path
 for hidden args and state writes. Bound args are hidden from the model and
-injected from serialized task/state paths. `sets` replaces one path; `extends`
-appends a returned list to a list path. Multiple same-path extends in one
-tool-call batch are allowed, with no ordering guarantee.
+injected from serialized `task.*`, `state.*`, `extras.*`, and server-local
+`resources.*` paths. `sets` replaces one `state.*` or `extras.*` path;
+`extends` appends a returned list to one `state.*` or `extras.*` list path.
+Multiple same-path extends in one tool-call batch are allowed, with no ordering
+guarantee.
 
 Users use the sibling `UserConfig` / `User` path over the same server base. A
 user exposes a hidden `respond` tool and returns `messages`. Toolsets use the

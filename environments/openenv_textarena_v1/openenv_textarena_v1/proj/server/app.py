@@ -59,6 +59,7 @@ app = create_app(
     TextArenaAction,
     TextArenaObservation,
     env_name="textarena_env",
+    max_concurrent_envs=64,
 )
 
 

@@ -80,6 +80,8 @@ def _import_textarena() -> Any:
 class TextArenaEnvironment(Environment):
     """Wrap any TextArena game behind the OpenEnv ``Environment`` API."""
 
+    SUPPORTS_CONCURRENT_SESSIONS = True
+
     def __init__(
         self,
         env_id: str = "Wordle-v0",

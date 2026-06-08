@@ -41,13 +41,13 @@ interleaving, logging, or advantage handling.
 `src/prime_rl/orchestrator/train_sink.py` assumes trainer-side scalar
 advantages:
 
-- `process_rollout(...)` tokenizes immediately from `raw["trajectory"]`;
+- `process_rollout(...)` tokenizes immediately from v0 trajectory records;
 - `process_group(...)` calls `assign_advantages(...)`;
 - each `TrainingSample` receives `sample.advantage = rollout.advantage`.
 
 `src/prime_rl/orchestrator/trajectories.py` also assumes the v0 rollout shape:
 
-- rollout output has `output["trajectory"]`.
+- rollout output carries v0 trajectory records.
 - each step is a `vf.TrajectoryStep`.
 - token backfill reconstructs missing step tokens from `prompt` and
   `completion`.
@@ -100,7 +100,7 @@ class RolloutView(Protocol):
     def raw_for_storage(self) -> dict[str, object]: ...
 ```
 
-The v0 implementation wraps `output["trajectory"]`. The v1 implementation wraps
+The v0 implementation wraps trajectory records. The v1 implementation wraps
 the live `State` and exposes `state.transcript`.
 
 ## v1 Environment Adapter
@@ -188,8 +188,8 @@ Then the existing renderer/tokenizer logic can be shared:
 - v1 token advantages are copied into `TrainingSample` during interleaving, not
   carried through a rollout-level scalar.
 
-This keeps `transcript` canonical for v1 and avoids emitting a derived
-`trajectory` field from v1 just to satisfy `prime-rl`.
+This keeps `transcript` canonical for v1. The v1 adapter should not emit a
+derived trajectory field just to satisfy `prime-rl`.
 
 ## Advantages
 

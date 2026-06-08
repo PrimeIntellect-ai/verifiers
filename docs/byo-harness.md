@@ -213,8 +213,9 @@ override taskset-defined keys directly, and can add a new key by setting
 `source` to a `ToolsetConfig` class path.
 
 Use `scope="rollout"` for per-rollout servers and `scope="env"` for servers
-that live for the environment lifetime. Group-shared resources should use
-`state.group_id` plus env-scope server state.
+that live for one `EnvRun`. Eval creates one `EnvRun` per evaluation, so
+env-scope servers are shared across all rollouts in that evaluation.
+Group-shared resources should use `state.group_id` plus env-scope server state.
 
 `@vf.tool(args=..., sets=..., extends=...)` is the data-flow contract. `args`
 are removed from the model-visible tool schema and injected from serialized
@@ -239,7 +240,7 @@ class DialogueUserConfig(vf.UserConfig):
 
 class DialogueUser(vf.User):
     @vf.user(
-        args={"transcript": "transcript"},
+        args={"transcript": "state.transcript"},
         sets={"turn_count": "state.extras.turn_count"},
     )
     def respond(self, transcript: list[dict]) -> dict:

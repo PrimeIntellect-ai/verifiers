@@ -38,6 +38,7 @@ from .interception import (
     InterceptionServer,
     ProtocolRoute,
 )
+from .lifecycle import EnvRun, Group
 from .protocols import (
     AnthropicMessagesProtocol,
     OpenAIChatCompletionsProtocol,
@@ -110,6 +111,7 @@ __all__ = [
     "Config",
     "Env",
     "EnvConfig",
+    "EnvRun",
     "Extras",
     "EndpointProtocol",
     "AssistantMessage",
@@ -117,6 +119,7 @@ __all__ = [
     "Harness",
     "HarnessConfig",
     "Handler",
+    "Group",
     "InterceptedRequest",
     "InterceptionServer",
     "JsonData",

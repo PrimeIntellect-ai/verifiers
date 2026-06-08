@@ -690,6 +690,11 @@ harness. `Context` is the live rollout object: task, state, model client,
 teacher client, runtime, MCP tools/user registries, parent context, and scoring
 flags.
 
+`EnvRun` is the environment execution object. It starts env-scope toolsets/users
+once, creates one runtime per rollout, and owns grouped rollout coordination.
+`Group` owns the tasks/states for one grouped example and calls `score_group`
+after its member rollouts finish.
+
 #### Runtime
 
 `RuntimeConfig` is the serializable backend spec. `Runtime` is the live handle
@@ -720,16 +725,19 @@ class MyTasksetConfig(vf.TasksetConfig):
 The `toolsets` mapping key is the tool prefix. Config can add a new key with
 `source = "my_env.servers.search.config:SearchToolsetConfig"`, which points to
 the config class; the tool implementation is derived from that class.
-`UserConfig` is a sibling config for `User` servers over the same server base. `@vf.tool` hides
-bound `args` from model-visible schemas and binds selected return keys back into
-state through `sets` and `extends`. Toolsets and users return messages through
-the shared `vf.ServerResponse` shape.
+`UserConfig` is a sibling config for `User` servers over the same server base.
+`@vf.tool` hides bound `args` from model-visible schemas and binds selected
+return keys back into state through `sets` and `extends`. Binding inputs may
+read `task.*`, `state.*`, `extras.*`, and server-local `resources.*`; binding
+outputs may write `state.*` or `extras.*`. Toolsets and users return messages
+through the shared `vf.ServerResponse` shape.
 
 #### Env
 
 ```python
 class Env:
     def __init__(*, taskset: Taskset, harness: Harness | None = None): ...
+    def run() -> EnvRun: ...
     async def run_rollout(input, *, model, teacher=None, state=None) -> State: ...
     async def score_group(tasks: list[Task], states: list[State], ...) -> list[State]: ...
 ```

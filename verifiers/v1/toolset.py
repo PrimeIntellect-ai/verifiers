@@ -23,7 +23,7 @@ from .utils.config_utils import (
 
 
 Scope: TypeAlias = Literal["rollout", "env"]
-ServerPlacement: TypeAlias = Literal["runtime", "harness", "remote"]
+ServerPlacement: TypeAlias = Literal["dedicated", "colocated", "remote"]
 ConfigT = TypeVar("ConfigT", bound="ServerConfig")
 
 
@@ -42,7 +42,7 @@ class ServerConfig(VisibilityConfig):
     source: str | None = None
     enabled: bool = True
     scope: Scope = "rollout"
-    placement: ServerPlacement = "runtime"
+    placement: ServerPlacement = "dedicated"
     runtime: RuntimeConfig | None = Field(default_factory=SubprocessRuntimeConfig)
     url: str | None = None
     headers: dict[str, str] = Field(default_factory=dict)
@@ -51,8 +51,8 @@ class ServerConfig(VisibilityConfig):
 
     @model_validator(mode="after")
     def validate_server(self) -> "ServerConfig":
-        if self.scope == "env" and self.placement == "harness":
-            raise ValueError("env-scope servers cannot use harness placement.")
+        if self.scope == "env" and self.placement == "colocated":
+            raise ValueError("env-scope servers cannot use colocated placement.")
         if self.placement == "remote":
             if not self.url:
                 raise ValueError("Remote server configs require url.")

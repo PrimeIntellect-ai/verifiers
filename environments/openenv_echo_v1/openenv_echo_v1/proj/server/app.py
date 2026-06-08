@@ -37,7 +37,11 @@ except ImportError:
 # Pass the class (factory) instead of an instance for WebSocket session support
 # Use MCP types for action/observation since this is a pure MCP environment
 app = create_app(
-    EchoEnvironment, CallToolAction, CallToolObservation, env_name="echo_env"
+    EchoEnvironment,
+    CallToolAction,
+    CallToolObservation,
+    env_name="echo_env",
+    max_concurrent_envs=64,
 )
 
 

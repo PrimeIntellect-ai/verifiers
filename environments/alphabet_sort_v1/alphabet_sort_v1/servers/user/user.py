@@ -7,7 +7,7 @@ class User(vf.User[UserConfig]):
     @vf.user(
         args={
             "info": "task.info",
-            "transcript": "transcript",
+            "transcript": "state.transcript",
         }
     )
     def respond(self, info: dict, transcript: list[dict]) -> dict:

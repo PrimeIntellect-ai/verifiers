@@ -1,6 +1,7 @@
 from pathlib import Path
 import verifiers as vf
 import verifiers.v1 as vf1
+from verifiers.scripts.build import _resolve_project_dir
 from verifiers.scripts.init import init_environment
 
 
@@ -182,3 +183,16 @@ def test_init_openenv_multifile_uses_component_package(tmp_path: Path) -> None:
     assert "load_environment" not in init_content
     assert (tmp_path / "openenv_pkg" / "openenv_pkg" / "taskset.py").exists()
     assert (tmp_path / "openenv_pkg" / "openenv_pkg" / "proj").is_dir()
+
+
+def test_vf_build_resolves_openenv_component_project(tmp_path: Path) -> None:
+    init_environment(
+        "openenv-pkg",
+        path=str(tmp_path),
+        openenv=True,
+        multi_file=True,
+    )
+
+    project_dir = _resolve_project_dir(tmp_path, "openenv_pkg")
+
+    assert project_dir == tmp_path / "openenv_pkg" / "openenv_pkg" / "proj"

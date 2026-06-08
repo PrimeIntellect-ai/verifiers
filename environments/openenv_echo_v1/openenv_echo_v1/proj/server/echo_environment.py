@@ -68,6 +68,8 @@ class EchoEnvironment(MCPEnvironment):
         ...     print(result)
     """
 
+    SUPPORTS_CONCURRENT_SESSIONS = True
+
     def __init__(self):
         """Initialize the echo environment with MCP server and tools."""
         # Create MCP server and define tools inline
@@ -189,7 +191,32 @@ class EchoEnvironment(MCPEnvironment):
         self._state.step_count += 1
 
         # Let the base class handle MCP actions and non-MCP routing
-        return super().step(action, timeout_s=timeout_s, **kwargs)
+        observation = super().step(action, timeout_s=timeout_s, **kwargs)
+        return self._with_echo_reward(action, observation)
+
+    async def step_async(
+        self,
+        action: Action,
+        timeout_s: Optional[float] = None,
+        **kwargs: Any,
+    ) -> CallToolObservation:
+        self._state.step_count += 1
+        observation = await super().step_async(action, timeout_s=timeout_s, **kwargs)
+        return self._with_echo_reward(action, observation)
+
+    @staticmethod
+    def _with_echo_reward(
+        action: Action, observation: CallToolObservation
+    ) -> CallToolObservation:
+        if getattr(action, "tool_name", None) not in {
+            "echo_message",
+            "echo_with_length",
+        }:
+            return observation
+        arguments = getattr(action, "arguments", {})
+        message = arguments.get("message") if isinstance(arguments, dict) else None
+        reward = len(message) * 0.1 if isinstance(message, str) else 0.0
+        return observation.model_copy(update={"reward": reward})
 
     @property
     def state(self) -> State:

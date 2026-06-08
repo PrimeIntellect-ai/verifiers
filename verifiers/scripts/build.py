@@ -41,11 +41,18 @@ def _resolve_project_dir(environments_root: Path, env_id_underscore: str) -> Pat
             f"Environment not found: {env_path}. Expected directory '{env_id_underscore}' under {environments_root}."
         )
 
-    project_dir = env_path / "proj"
-    if not project_dir.exists() or not project_dir.is_dir():
+    candidates = [
+        env_path / "proj",
+        env_path / env_id_underscore / "proj",
+    ]
+    project_dir = next(
+        (candidate for candidate in candidates if candidate.is_dir()),
+        None,
+    )
+    if project_dir is None:
+        expected = " or ".join(str(candidate) for candidate in candidates)
         raise FileNotFoundError(
-            f"Embedded project directory not found: {project_dir}. "
-            "Required structure: environments/<env_id_underscore>/proj/"
+            f"Embedded OpenEnv project directory not found. Expected one of: {expected}"
         )
 
     required = [

@@ -1,8 +1,8 @@
 {
   "app": "server.app:app",
   "contract": "gym",
-  "environment_id": "openenv-textarena",
-  "image": "cmaeni8ji0001ql2z5gw8204f/openenv-textarena:latest",
+  "environment_id": "openenv-textarena-v1",
+  "image": "team-cmlr3u2er002zhr01tj8f48ts/openenv-textarena-v1:latest",
   "image_status": "COMPLETED",
   "port": 8000,
   "schema_version": 1,

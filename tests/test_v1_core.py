@@ -15,8 +15,7 @@ import pytest
 
 import verifiers.v1 as vf
 from verifiers.errors import InfraError, ToolError
-from verifiers.types import ClientConfig, EvalConfig, Response
-from verifiers.utils import eval_utils
+from verifiers.types import ClientConfig, Response
 from verifiers.v1.loaders import (
     load_environment_from_components,
     load_harness_from_module,
@@ -42,18 +41,18 @@ def attach_mock_model(
     return config
 
 
-class NanoTask(vf.Task):
+class ExactMatchTask(vf.Task):
     answer: str
 
 
-class NanoTaskset(vf.Taskset):
-    task_type = NanoTask
+class ExactMatchTaskset(vf.Taskset):
+    task_type = ExactMatchTask
 
     def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
         if split == "eval":
             return []
         return [
-            NanoTask(
+            ExactMatchTask(
                 row_id=0,
                 prompt=[{"role": "user", "content": "say ok"}],
                 answer="ok",
@@ -66,27 +65,27 @@ class NanoTaskset(vf.Taskset):
         state.extras["seen_setup"] = True
 
     @vf.reward
-    async def exact(self, task: NanoTask, state: vf.State) -> float:
+    async def exact(self, task: ExactMatchTask, state: vf.State) -> float:
         completion = state.completion
         text = str(completion[-1].content if completion else "")
         return float(text.strip() == task.answer)
 
 
-class GroupNanoTask(NanoTask):
-    candidate: int
+class GroupVariantTask(ExactMatchTask):
+    variant: int
 
 
-class GroupTaskset(NanoTaskset):
+class GroupTaskset(ExactMatchTaskset):
     async def init_group(
-        self, task: NanoTask, num_rollouts: int
-    ) -> tuple[list[GroupNanoTask], list[vf.State]]:
+        self, task: ExactMatchTask, num_rollouts: int
+    ) -> tuple[list[GroupVariantTask], list[vf.State]]:
         tasks = [
-            GroupNanoTask.model_validate(
+            GroupVariantTask.model_validate(
                 {
                     **task.model_dump(
                         mode="json", exclude_none=True, exclude_defaults=True
                     ),
-                    "candidate": index,
+                    "variant": index,
                 }
             )
             for index in range(num_rollouts)
@@ -95,10 +94,10 @@ class GroupTaskset(NanoTaskset):
 
     @vf.reward(stage="group")
     async def relative(
-        self, tasks: list[GroupNanoTask], states: list[vf.State]
+        self, tasks: list[GroupVariantTask], states: list[vf.State]
     ) -> list[float]:
         _ = states
-        return [float(task.candidate == 0) for task in tasks]
+        return [float(task.variant == 0) for task in tasks]
 
 
 @vf.advantage
@@ -354,7 +353,7 @@ class ConfiguredToolsetTaskset(vf.Taskset[ConfiguredToolsetTasksetConfig]):
 
 
 def test_v1_state_is_pydantic_and_extras_owned() -> None:
-    task = NanoTask(prompt="hello", answer="world")
+    task = ExactMatchTask(prompt="hello", answer="world")
     state = vf.State(task_id=task.task_id)
 
     state.extras["x"] = 1
@@ -386,10 +385,10 @@ def test_v1_state_to_output_state_columns_preserve_task_prompt_fallback() -> Non
 
 
 def test_v1_task_id_is_deterministic_from_task_contents() -> None:
-    first = NanoTask(prompt="hello", answer="world")
-    second = NanoTask(prompt="hello", answer="world")
-    changed = NanoTask(prompt="hello", answer="there")
-    explicit = NanoTask(task_id="chosen", prompt="hello", answer="world")
+    first = ExactMatchTask(prompt="hello", answer="world")
+    second = ExactMatchTask(prompt="hello", answer="world")
+    changed = ExactMatchTask(prompt="hello", answer="there")
+    explicit = ExactMatchTask(task_id="chosen", prompt="hello", answer="world")
 
     assert first.task_id == second.task_id
     assert first.task_id != changed.task_id
@@ -587,7 +586,7 @@ def test_v1_model_client_renderer_handle_is_live_only(mock_client) -> None:
 @pytest.mark.asyncio
 async def test_v1_standalone_env_rollout_scores_from_transcript(mock_client) -> None:
     mock_client.set_default_response("ok")
-    env = vf.Env(taskset=NanoTaskset(), harness=vf.Harness())
+    env = vf.Env(taskset=ExactMatchTaskset(), harness=vf.Harness())
     model = attach_mock_model(env, mock_client)
     row = env.get_dataset()[0]
     task = env.taskset.to_task(row)
@@ -631,7 +630,7 @@ async def test_harness_run_accepts_string_task_and_model(mock_client) -> None:
 @pytest.mark.asyncio
 async def test_harness_run_requires_user_when_task_user_is_true(mock_client) -> None:
     mock_client.set_default_response("ok")
-    env = vf.Env(taskset=NanoTaskset(), harness=vf.Harness())
+    env = vf.Env(taskset=ExactMatchTaskset(), harness=vf.Harness())
     model = attach_mock_model(env, mock_client)
 
     state = await env.run_rollout(
@@ -769,7 +768,8 @@ async def test_v1_setup_can_materialize_task_local_state_from_env_server(
     model = attach_mock_model(env, mock_client)
     rows = list(env.get_dataset())
 
-    states = [await env.run_rollout(row, model=model) for row in rows]
+    async with env.run() as env_run:
+        states = [await env_run.run_rollout(row, model=model) for row in rows]
 
     assert [state.extras["setup_count"] for state in states] == [1, 2]
     assert [state.artifacts["setup"]["count"] for state in states] == [1, 2]
@@ -1002,6 +1002,37 @@ async def test_mcp_owned_runtime_stops_when_server_start_fails(monkeypatch) -> N
 
 
 @pytest.mark.asyncio
+async def test_subprocess_runtime_stop_gracefully_interrupts_background_process(
+    tmp_path,
+) -> None:
+    marker = tmp_path / "cleanup.txt"
+    runtime = vf.SubprocessRuntime(vf.SubprocessRuntimeConfig())
+    await runtime.start()
+    await runtime.write(
+        "worker.py",
+        b"""
+import sys
+import time
+
+try:
+    while True:
+        time.sleep(0.05)
+except KeyboardInterrupt:
+    pass
+finally:
+    with open(sys.argv[1], "w", encoding="utf-8") as f:
+        f.write("clean")
+""",
+    )
+    await runtime.run_background([sys.executable, "worker.py", str(marker)])
+    await asyncio.sleep(0.2)
+
+    await runtime.stop()
+
+    assert marker.read_text() == "clean"
+
+
+@pytest.mark.asyncio
 async def test_mcp_registry_closes_partial_stack_when_enter_fails(monkeypatch) -> None:
     import mcp.client.session as session_module
 
@@ -1162,6 +1193,40 @@ async def test_user_setup_registers_dynamic_model_tools() -> None:
 
 
 @pytest.mark.asyncio
+async def test_env_scope_servers_start_once_under_concurrent_rollouts(
+    monkeypatch,
+) -> None:
+    harness_module = importlib.import_module("verifiers.v1.harness")
+    events: list[str] = []
+
+    class FakeRegistry:
+        def __init__(self, servers, **_: object) -> None:
+            self.kind = "user" if "user" in servers else "toolsets"
+
+        async def __aenter__(self) -> "FakeRegistry":
+            events.append(f"enter:{self.kind}")
+            await asyncio.sleep(0.01)
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            events.append(f"exit:{self.kind}")
+
+    monkeypatch.setattr(harness_module, "MCPToolRegistry", FakeRegistry)
+    harness = vf.Harness()
+    harness.bind(taskset=EnvServerTaskset())
+
+    await asyncio.gather(*(harness.start_env_scope() for _ in range(8)))
+    await harness.close()
+
+    assert events == [
+        "enter:toolsets",
+        "enter:user",
+        "exit:user",
+        "exit:toolsets",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_env_user_startup_failure_closes_started_env_toolsets(
     monkeypatch,
 ) -> None:
@@ -1186,7 +1251,7 @@ async def test_env_user_startup_failure_closes_started_env_toolsets(
     harness.bind(taskset=EnvServerTaskset())
 
     with pytest.raises(RuntimeError, match="user failed"):
-        await harness.ensure_env_servers()
+        await harness.start_env_scope()
 
     assert events == ["enter:toolsets", "enter:user", "exit:user", "exit:toolsets"]
     assert harness._env_toolsets is None
@@ -1200,8 +1265,8 @@ def test_bound_state_updates_allow_extends_and_reject_set_conflicts() -> None:
     harness.apply_bound_updates(
         state,
         [
-            BoundUpdate("state.extras.events", [{"name": "a"}], "extend"),
-            BoundUpdate("state.extras.events", [{"name": "b"}], "extend"),
+            BoundUpdate("extras.events", [{"name": "a"}], "extend"),
+            BoundUpdate("extras.events", [{"name": "b"}], "extend"),
         ],
     )
     assert sorted(event["name"] for event in state.extras["events"]) == ["a", "b"]
@@ -1513,7 +1578,7 @@ async def test_harbor_reward_returns_zero_when_tests_missing(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_score_group_empty_group_returns_empty_states() -> None:
-    env = vf.Env(taskset=NanoTaskset())
+    env = vf.Env(taskset=ExactMatchTaskset())
 
     assert await env.score_group([], []) == []
 
@@ -1523,29 +1588,17 @@ async def test_run_rollout_retries_copy_supplied_state() -> None:
     class RetryHarness(vf.Harness):
         attempts: int = 0
 
-        async def run(
-            self,
-            task: vf.Task | str,
-            state: vf.State | None = None,
-            *,
-            model: vf.ModelConfig | str | None = None,
-            teacher: vf.ModelConfig | str | None = None,
-            context: vf.Context | None = None,
-            score: bool = False,
-        ) -> vf.State:
-            _ = task, model, teacher, context, score
+        async def run_with_context(self, context: vf.Context) -> None:
             self.attempts += 1
-            rollout_state = state or vf.State()
-            rollout_state.transcript.append(vf.Turn(prompt=[], completion=[]))
+            context.state.transcript.append(vf.Turn(prompt=[], completion=[]))
             if self.attempts == 1:
                 raise InfraError("retry")
-            return rollout_state
 
     initial_state = vf.State()
-    env = vf.Env(taskset=NanoTaskset(), harness=RetryHarness())
+    env = vf.Env(taskset=ExactMatchTaskset(), harness=RetryHarness())
 
     result = await env.run_rollout(
-        NanoTask(prompt="hello", answer="ok"),
+        ExactMatchTask(prompt="hello", answer="ok"),
         model=vf.ModelConfig(model="student"),
         state=initial_state,
         max_retries=1,
@@ -1559,8 +1612,8 @@ async def test_run_rollout_retries_copy_supplied_state() -> None:
 async def test_score_group_closes_model_client_if_teacher_load_fails(
     mock_client,
 ) -> None:
-    env = vf.Env(taskset=NanoTaskset())
-    task = NanoTask(prompt="hello", answer="ok")
+    env = vf.Env(taskset=ExactMatchTaskset())
+    task = ExactMatchTask(prompt="hello", answer="ok")
     state = vf.State(task_id=task.task_id)
     model = vf.ModelConfig(model="student")
     teacher = vf.ModelConfig(model="teacher")
@@ -1585,8 +1638,8 @@ async def test_score_group_closes_model_client_if_teacher_load_fails(
 
 @pytest.mark.asyncio
 async def test_score_group_closes_model_clients_if_cleanup_fails(mock_client) -> None:
-    env = vf.Env(taskset=NanoTaskset())
-    task = NanoTask(prompt="hello", answer="ok")
+    env = vf.Env(taskset=ExactMatchTaskset())
+    task = ExactMatchTask(prompt="hello", answer="ok")
     state = vf.State(task_id=task.task_id)
     model = vf.ModelConfig(model="student")
     teacher = vf.ModelConfig(model="teacher")
@@ -1697,8 +1750,9 @@ async def test_openenv_mcp_setup_lists_tools_without_reset(monkeypatch) -> None:
     calls: list[str] = []
 
     class FakeOpenEnvSession:
-        def __init__(self, config: object) -> None:
+        def __init__(self, config: object, server: object) -> None:
             self.config = config
+            self.server = server
 
         async def start(self) -> None:
             calls.append("start")
@@ -1709,6 +1763,9 @@ async def test_openenv_mcp_setup_lists_tools_without_reset(monkeypatch) -> None:
         async def tool_defs(self) -> list[vf.JsonData]:
             calls.append("tool_defs")
             return [{"name": "echo", "description": "", "parameters": {}}]
+
+        async def close(self) -> None:
+            calls.append("close")
 
     monkeypatch.setattr(openenv_module, "OpenEnvSession", FakeOpenEnvSession)
 
@@ -1732,36 +1789,80 @@ async def test_openenv_mcp_setup_lists_tools_without_reset(monkeypatch) -> None:
         "jitter": 0.0,
     }
 
-    payload = await OpenEnvUser(OpenEnvUserConfig()).setup(config)
+    user = OpenEnvUser(OpenEnvUserConfig())
+    user.start()
 
-    assert calls == ["start", "tool_defs"]
+    payload = await user.setup("state-1", config)
+
+    assert calls == ["tool_defs"]
     assert payload["openenv_done"] is False
     assert payload["tools"] == [{"name": "echo", "description": "", "parameters": {}}]
 
     calls.clear()
-    payload = await OpenEnvUser(OpenEnvUserConfig()).setup(
+    payload = await user.setup(
+        "state-2",
         {
             **config,
             "tools": [
                 {"name": "build_echo", "description": "", "parameters": {}},
             ],
-        }
+        },
     )
 
-    assert calls == ["start"]
+    assert calls == []
     assert payload["tools"] == [
         {"name": "build_echo", "description": "", "parameters": {}},
     ]
+
+
+def test_openenv_user_reuses_server_across_rollout_seeds() -> None:
+    from tasksets.openenv import OpenEnvRuntimeConfig, OpenEnvUser, OpenEnvUserConfig
+
+    base: vf.JsonData = {
+        "openenv_project": "proj",
+        "prompt_renderer": "x:y",
+        "image": "owner/env:latest",
+        "port": 8000,
+        "start_command": "serve",
+        "contract": "mcp",
+        "tools": [],
+        "startup_timeout_seconds": 1,
+        "startup_poll_interval_seconds": 0.1,
+        "health_request_timeout_seconds": 1.0,
+        "schema_request_timeout_seconds": 1.0,
+        "wait_for_creation_max_attempts": 1,
+        "max_retries": 1,
+        "base_delay": 0.1,
+        "backoff_factor": 1.0,
+        "max_backoff_seconds": 1.0,
+        "jitter": 0.0,
+    }
+    config_a = OpenEnvRuntimeConfig.model_validate({**base, "seed": 1})
+    config_b = OpenEnvRuntimeConfig.model_validate({**base, "seed": 2})
+
+    user = OpenEnvUser(OpenEnvUserConfig())
+    user.start()
+
+    assert user.server_for(config_a) is user.server_for(config_b)
 
 
 @pytest.mark.asyncio
 async def test_openenv_user_tool_returns_bound_turn_reward_payload() -> None:
     from tasksets.openenv import OpenEnvUser, OpenEnvUserConfig
 
+    class FakeOpenEnvObservation(vf.Config):
+        result: vf.JsonData
+        reward: float
+        done: bool
+
     class FakeOpenEnvResult:
-        observation = {"result": {"data": {"echo": "ok"}}}
-        reward = 1.25
-        done = True
+        observation = FakeOpenEnvObservation(
+            result={"data": {"echo": "ok"}},
+            reward=1.25,
+            done=True,
+        )
+        reward = None
+        done = False
 
     class FakeOpenEnvSession:
         def __init__(self) -> None:
@@ -1773,9 +1874,10 @@ async def test_openenv_user_tool_returns_bound_turn_reward_payload() -> None:
 
     session = FakeOpenEnvSession()
     user = OpenEnvUser(OpenEnvUserConfig())
-    user.session = session
+    user.start()
+    user.sessions["state-1"] = session
 
-    payload = await user.call_tool("echo", {"message": "hi"})
+    payload = await user.call_tool("state-1", "echo", {"message": "hi"})
 
     assert session.calls == [("echo", {"message": "hi"})]
     assert json.loads(str(payload["content"])) == {"echo": "ok"}
@@ -1925,11 +2027,167 @@ async def test_v1_prime_runtime_public_url_exposes_sandbox_port() -> None:
     assert await runtime.public_url(8765) == "https://sandbox.example/mcp"
 
 
+@pytest.mark.asyncio
+async def test_v1_prime_runtime_start_labels_child_sandbox(monkeypatch) -> None:
+    prime_sandboxes = ModuleType("prime_sandboxes")
+    requests: list[dict[str, object]] = []
+
+    class Sandbox:
+        id = "sandbox-id"
+
+    class FakeRequest:
+        def __init__(self, **kwargs: object) -> None:
+            requests.append(kwargs)
+
+    class FakeAdvancedConfigs:
+        @classmethod
+        def model_validate(cls, data: object) -> "FakeAdvancedConfigs":
+            if not isinstance(data, dict):
+                raise TypeError
+            return cls(**data)
+
+        def __init__(self, **kwargs: object) -> None:
+            self.data = kwargs
+
+    class FakePrimeClient:
+        def __init__(self) -> None:
+            self.deleted: list[str] = []
+            self.closed = False
+
+        async def create(self, request: FakeRequest) -> Sandbox:
+            _ = request
+            return Sandbox()
+
+        async def wait_for_creation(self, sandbox_id: str) -> None:
+            assert sandbox_id == "sandbox-id"
+
+        async def run_background_job(self, sandbox_id: str, command: str) -> None:
+            assert sandbox_id == "sandbox-id"
+            assert command == "mkdir -p /app"
+
+        async def delete(self, sandbox_id: str) -> None:
+            self.deleted.append(sandbox_id)
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    prime_sandboxes.AsyncSandboxClient = FakePrimeClient
+    prime_sandboxes.AdvancedConfigs = FakeAdvancedConfigs
+    prime_sandboxes.CreateSandboxRequest = FakeRequest
+    monkeypatch.setitem(sys.modules, "prime_sandboxes", prime_sandboxes)
+    monkeypatch.setenv("EVALUATION_ID", "eval-id")
+    monkeypatch.setenv("PRIME_JOB_ID", "job-id")
+
+    runtime = vf.PrimeRuntime(
+        vf.PrimeRuntimeConfig(
+            idle_timeout_minutes=7,
+            labels=["custom", "vf-v1-runtime"],
+        )
+    )
+
+    await runtime.start()
+
+    assert requests == [
+        {
+            "name": "vf-v1-runtime",
+            "docker_image": "python:3.11-slim",
+            "cpu_cores": 1.0,
+            "memory_gb": 2.0,
+            "disk_size_gb": 5.0,
+            "gpu_count": 0,
+            "timeout_minutes": 360,
+            "network_access": True,
+            "vm": False,
+            "guaranteed": False,
+            "gpu_type": None,
+            "region": None,
+            "advanced_configs": requests[0]["advanced_configs"],
+            "labels": [
+                "vf-v1-runtime",
+                "custom",
+                "eval-eval-id",
+                "prime-job-job-id",
+            ],
+        }
+    ]
+    advanced_configs = requests[0]["advanced_configs"]
+    assert isinstance(advanced_configs, FakeAdvancedConfigs)
+    assert advanced_configs.data == {"idle_timeout_minutes": 7}
+
+    client = runtime.client
+    await runtime.stop()
+
+    assert client.deleted == ["sandbox-id"]
+    assert client.closed is True
+
+
+@pytest.mark.asyncio
+async def test_v1_prime_runtime_start_failure_deletes_child_sandbox(
+    monkeypatch,
+) -> None:
+    prime_sandboxes = ModuleType("prime_sandboxes")
+    clients: list[FakePrimeClient] = []
+
+    class Sandbox:
+        id = "sandbox-id"
+
+    class FakeRequest:
+        def __init__(self, **kwargs: object) -> None:
+            self.kwargs = kwargs
+
+    class FakeAdvancedConfigs:
+        @classmethod
+        def model_validate(cls, data: object) -> "FakeAdvancedConfigs":
+            if not isinstance(data, dict):
+                raise TypeError
+            return cls(**data)
+
+        def __init__(self, **kwargs: object) -> None:
+            self.data = kwargs
+
+    class FakePrimeClient:
+        def __init__(self) -> None:
+            self.deleted: list[str] = []
+            self.closed = False
+            clients.append(self)
+
+        async def create(self, request: FakeRequest) -> Sandbox:
+            _ = request
+            return Sandbox()
+
+        async def wait_for_creation(self, sandbox_id: str) -> None:
+            assert sandbox_id == "sandbox-id"
+            raise RuntimeError("creation failed")
+
+        async def delete(self, sandbox_id: str) -> None:
+            self.deleted.append(sandbox_id)
+
+        async def aclose(self) -> None:
+            self.closed = True
+
+    prime_sandboxes.AsyncSandboxClient = FakePrimeClient
+    prime_sandboxes.AdvancedConfigs = FakeAdvancedConfigs
+    prime_sandboxes.CreateSandboxRequest = FakeRequest
+    monkeypatch.setitem(sys.modules, "prime_sandboxes", prime_sandboxes)
+
+    runtime = vf.PrimeRuntime(vf.PrimeRuntimeConfig())
+
+    with pytest.raises(RuntimeError, match="creation failed"):
+        await runtime.start()
+
+    assert runtime.client is None
+    assert runtime.sandbox_id is None
+    assert clients[0].deleted == ["sandbox-id"]
+    assert clients[0].closed is True
+
+
 def test_v1_runtime_image_is_container_only() -> None:
     task = vf.Task({"prompt": [], "image": "python:3.12-slim"})
-    subprocess_env = vf.Env(taskset=NanoTaskset(), runtime=vf.SubprocessRuntimeConfig())
+    subprocess_env = vf.Env(
+        taskset=ExactMatchTaskset(), runtime=vf.SubprocessRuntimeConfig()
+    )
     docker_env = vf.Env(
-        taskset=NanoTaskset(),
+        taskset=ExactMatchTaskset(),
         runtime=vf.DockerRuntimeConfig(image="python:3.11-slim"),
     )
 
@@ -1953,13 +2211,15 @@ def test_v1_runtime_config_applies_task_resources_with_config_precedence() -> No
             },
         }
     )
-    default_env = vf.Env(taskset=NanoTaskset(), runtime=vf.DockerRuntimeConfig())
+    default_env = vf.Env(taskset=ExactMatchTaskset(), runtime=vf.DockerRuntimeConfig())
     configured_env = vf.Env(
-        taskset=NanoTaskset(),
+        taskset=ExactMatchTaskset(),
         runtime=vf.DockerRuntimeConfig(cpu_cores=8.0, memory_gb=16.0),
     )
-    prime_env = vf.Env(taskset=NanoTaskset(), runtime=vf.PrimeRuntimeConfig())
-    subprocess_env = vf.Env(taskset=NanoTaskset(), runtime=vf.SubprocessRuntimeConfig())
+    prime_env = vf.Env(taskset=ExactMatchTaskset(), runtime=vf.PrimeRuntimeConfig())
+    subprocess_env = vf.Env(
+        taskset=ExactMatchTaskset(), runtime=vf.SubprocessRuntimeConfig()
+    )
 
     docker_config = default_env.harness.runtime_for(task)
     configured_config = configured_env.harness.runtime_for(task)
@@ -2045,7 +2305,7 @@ def test_v1_default_advantages_fill_turn_tokens() -> None:
 
 
 def test_env_advantage_defaults_to_rl() -> None:
-    env = vf.Env(taskset=NanoTaskset())
+    env = vf.Env(taskset=ExactMatchTaskset())
 
     assert env.advantage == "rl"
     assert env.provides_advantages
@@ -2090,7 +2350,7 @@ async def test_env_advantage_config_sets_group_default() -> None:
         ),
     ]
     env = vf.Env(
-        taskset=NanoTaskset(),
+        taskset=ExactMatchTaskset(),
         advantage="reinforce",
     )
 
@@ -2141,7 +2401,9 @@ async def test_env_advantage_path_supports_user_authored_group_logic() -> None:
             reward=0.0,
         ),
     ]
-    env = vf.Env(taskset=NanoTaskset(), advantage=f"{__name__}:custom_env_advantage")
+    env = vf.Env(
+        taskset=ExactMatchTaskset(), advantage=f"{__name__}:custom_env_advantage"
+    )
 
     await env.score_group(tasks, states)
 
@@ -2161,7 +2423,7 @@ def test_v1_runtime_default_resolves_taskset_and_harness_fields() -> None:
         config: RuntimeTasksetConfig
 
         def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
-            return NanoTaskset().load_tasks(split)
+            return ExactMatchTaskset().load_tasks(split)
 
     class RuntimeHarnessConfig(vf.HarnessConfig):
         runtime: vf.RuntimeConfig | None = vf.DockerRuntimeConfig(workdir="/workspace")
@@ -2184,7 +2446,7 @@ def test_v1_runtime_default_rejects_provider_conflicts() -> None:
         config: RuntimeTasksetConfig
 
         def load_tasks(self, split: vf.TaskSplit = "train") -> vf.Tasks:
-            return NanoTaskset().load_tasks(split)
+            return ExactMatchTaskset().load_tasks(split)
 
     class RuntimeHarnessConfig(vf.HarnessConfig):
         runtime: vf.RuntimeConfig | None = vf.PrimeRuntimeConfig()
@@ -2273,37 +2535,3 @@ async def test_v1_interception_supports_custom_protocols(mock_client) -> None:
     assert mock_client.last_call_kwargs["prompt"][0].content == "hello protocol"
     assert state.transcript[0].prompt[0].content == "hello protocol"
     assert state.completion[-1].content == "This is a test response"
-
-
-@pytest.mark.asyncio
-async def test_eval_runner_uses_v1_native_rollouts(
-    tmp_path, monkeypatch, mock_client
-) -> None:
-    mock_client.set_default_response("ok")
-    env = vf.Env(taskset=NanoTaskset(), harness=vf.Harness())
-    env.env_id = "nano-env"
-    attach_mock_model(env, mock_client)
-
-    monkeypatch.setattr(eval_utils.vf, "load_environment", lambda **_: env)
-
-    config = EvalConfig(
-        env_id="nano-env",
-        env_args={},
-        env_dir_path="./environments",
-        model="test-model",
-        client_config=ClientConfig(),
-        sampling_args={},
-        num_examples=1,
-        rollouts_per_example=1,
-        max_concurrent=1,
-        output_dir=str(tmp_path),
-        save_results=True,
-    )
-
-    results = await eval_utils.run_evaluation(config)
-    result_path = results["metadata"]["path_to_save"]
-
-    assert results["outputs"][0]["reward"] == 1.0
-    assert results["outputs"][0]["transcript"][0]["completion"][0]["content"] == "ok"
-    assert (result_path / "results.jsonl").exists()
-    assert (result_path / "metadata.json").exists()

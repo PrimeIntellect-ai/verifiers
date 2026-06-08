@@ -27,8 +27,7 @@ from verifiers.utils.save_utils import (
 )
 
 from .env import Env
-from .state import State
-from .task import Task
+from .lifecycle import EnvRun
 from .types import ModelConfig
 from .utils.json_utils import json_data
 
@@ -66,7 +65,7 @@ def progress_inputs(
 
 
 async def run_rollouts(
-    env: Env,
+    env_run: EnvRun,
     inputs: list[RolloutInput],
     model: ModelConfig,
     max_concurrent: int,
@@ -77,18 +76,20 @@ async def run_rollouts(
 
     async def run_one(row: RolloutInput) -> RolloutOutput:
         if semaphore is None:
-            state = await env.run_rollout(row, model=model, max_retries=max_retries)
+            state = await env_run.run_rollout(row, model=model, max_retries=max_retries)
         else:
             async with semaphore:
-                state = await env.run_rollout(row, model=model, max_retries=max_retries)
-        task = env.taskset.to_task(json_data(row))
+                state = await env_run.run_rollout(
+                    row, model=model, max_retries=max_retries
+                )
+        task = env_run.to_task(row)
         return RolloutOutput(state.to_output(task, state_columns))
 
     return list(await asyncio.gather(*(run_one(row) for row in inputs)))
 
 
 async def run_rollout_groups(
-    env: Env,
+    env_run: EnvRun,
     inputs: list[RolloutInput],
     model: ModelConfig,
     max_concurrent: int,
@@ -101,43 +102,15 @@ async def run_rollout_groups(
         groups[row["example_id"]].append(row)
 
     async def run_rows(rows: list[RolloutInput]) -> list[RolloutOutput]:
-        base_task = env.taskset.to_task(json_data(rows[0]))
-        tasks, states = await env.taskset.init_group(base_task, len(rows))
-        group_id = rows[0]["example_id"]
-        for state in states:
-            state.group_id = str(group_id)
-
-        async def run_member(task: Task, state: State) -> State:
-            return await env.run_rollout(
-                task,
-                model=model,
-                state=state,
-                max_retries=max_retries,
-            )
-
+        group = await env_run.group(rows)
         if semaphore is None:
-            states = list(
-                await asyncio.gather(
-                    *(
-                        run_member(task, state)
-                        for task, state in zip(tasks, states, strict=True)
-                    )
-                )
-            )
+            states = await group.run(model=model, max_retries=max_retries)
         else:
             async with semaphore:
-                states = list(
-                    await asyncio.gather(
-                        *(
-                            run_member(task, state)
-                            for task, state in zip(tasks, states, strict=True)
-                        )
-                    ),
-                )
-        states = await env.score_group(tasks, states)
+                states = await group.run(model=model, max_retries=max_retries)
         return [
             RolloutOutput(state.to_output(task, state_columns))
-            for task, state in zip(tasks, states, strict=True)
+            for task, state in zip(group.tasks, states, strict=True)
         ]
 
     grouped_outputs = await asyncio.gather(
@@ -223,24 +196,26 @@ async def run_evaluation(
 
         if config.independent_scoring or not env.requires_group_rollouts:
             state_columns = config.state_columns or []
-            new_outputs = await run_rollouts(
-                env,
-                filtered_inputs,
-                model_config,
-                config.max_concurrent,
-                config.max_retries,
-                state_columns,
-            )
+            async with env.run() as env_run:
+                new_outputs = await run_rollouts(
+                    env_run,
+                    filtered_inputs,
+                    model_config,
+                    config.max_concurrent,
+                    config.max_retries,
+                    state_columns,
+                )
         else:
             state_columns = config.state_columns or []
-            new_outputs = await run_rollout_groups(
-                env,
-                filtered_inputs,
-                model_config,
-                effective_max_concurrent(config),
-                config.max_retries,
-                state_columns,
-            )
+            async with env.run() as env_run:
+                new_outputs = await run_rollout_groups(
+                    env_run,
+                    filtered_inputs,
+                    model_config,
+                    effective_max_concurrent(config),
+                    config.max_retries,
+                    state_columns,
+                )
         builder.add_outputs(new_outputs)
         metadata = builder.build_metadata()
         for callback in callbacks:

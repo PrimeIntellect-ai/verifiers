@@ -1,6 +1,7 @@
 import os
 import importlib.util
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -179,10 +180,18 @@ def test_env(env_dir: Path, tmp_path_factory: pytest.TempPathFactory):
         pytest.skip(f"Skipping {env_dir.name}")
     if env_dir.name in SKIPPED_ENV_LOADING_ENVS:
         pytest.skip(f"Skipping dedicated-runtime smoke test for {env_dir.name}")
+    if env_dir.name in {"toxicity_explanation", "wiki_search"} and not os.getenv(
+        "OPENAI_API_KEY"
+    ):
+        pytest.skip(f"Skipping {env_dir.name} load test without OPENAI_API_KEY")
+    if env_dir.name == "nemo_gym_env_v1" and sys.version_info < (3, 12):
+        pytest.skip("Skipping nemo_gym_env_v1 install test on Python < 3.12")
     tmp_venv_dir = tmp_path_factory.mktemp(f"venv_{env_dir.name}")
     repo_root = Path(__file__).parent.parent
+    python = shlex.quote(sys.executable)
     cmd = (
-        f"cd {tmp_venv_dir} && uv venv --clear && source .venv/bin/activate && "
+        f"cd {tmp_venv_dir} && uv venv --clear --python {python} && "
+        "source .venv/bin/activate && "
         "uv pip install "
         "--exclude-newer-package prime-pydantic-config=2026-05-20T00:00:00Z "
         f"{repo_root.as_posix()} && "
