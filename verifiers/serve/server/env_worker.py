@@ -632,8 +632,17 @@ class EnvWorker:
                     with open(_cp) as _cf:
                         _cc = _cf.read()
                     if _cc.strip():
-                        print(f"===PRIORCRASH BEGIN {_cp} bytes={len(_cc)}===", flush=True)
-                        for _cl in _cc.splitlines():
+                        # The faulthandler fatal dump is appended at the END of
+                        # the file (the rest is buffered stderr INFO logs). The
+                        # transport caps how many relayed lines survive, so emit
+                        # only the TAIL — where the crash stack actually is.
+                        _cls = _cc.splitlines()
+                        print(
+                            f"===PRIORCRASH BEGIN {_cp} bytes={len(_cc)} "
+                            f"lines={len(_cls)} (tail 250)===",
+                            flush=True,
+                        )
+                        for _cl in _cls[-250:]:
                             print(f"PRIORCRASH| {_cl}", flush=True)
                         print("===PRIORCRASH END===", flush=True)
                     os.remove(_cp)
