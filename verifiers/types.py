@@ -17,6 +17,8 @@ from typing import (
     cast,
 )
 
+from anthropic import Anthropic, AsyncAnthropic
+from openai import AsyncOpenAI, OpenAI
 from pydantic import (
     AliasChoices,
     BaseModel,
@@ -26,6 +28,8 @@ from pydantic import (
     field_validator,
 )
 
+from verifiers.errors import Error
+
 if TYPE_CHECKING:
     from anthropic.types import RedactedThinkingBlock
     from anthropic.types import ThinkingBlock as AnthropicThinkingBlock
@@ -33,7 +37,6 @@ if TYPE_CHECKING:
     from renderers import RendererConfig
 
     from verifiers.clients import Client
-    from verifiers.errors import Error
 else:
     RedactedThinkingBlock = Any
     AnthropicThinkingBlock = Any
@@ -72,6 +75,7 @@ EndpointApi = Literal[
     "openai_responses",
     "anthropic_messages",
 ]
+EndpointClient: TypeAlias = AsyncOpenAI | OpenAI | AsyncAnthropic | Anthropic
 MessageType = Literal["chat", "completion"]  # deprecated
 
 
@@ -388,8 +392,9 @@ class RolloutTiming(CustomBaseModel):
         )
 
 
-class ErrorInfo(TypedDict):
+class ErrorData(TypedDict):
     error: str
+    message: str
     error_chain_repr: str
     error_chain_str: str
 
@@ -420,7 +425,7 @@ class RolloutOutput(dict):
     # Optional fields
     answer: str
     info: Info
-    error: ErrorInfo | None
+    error: ErrorData | None
     stop_condition: str | None
     trajectory: list["TrajectoryStep"]
     tool_defs: list[Tool]
@@ -489,7 +494,7 @@ class State(dict):
     advantage: float | None
     metrics: dict[str, float] | None
     timing: RolloutTiming | None
-    error: "Error | ErrorInfo | None"
+    error: Error | None
     usage: TokenUsage | None
     usage_tracker: object
     _vf_state_contract: Literal["legacy", "v1"]
@@ -589,7 +594,9 @@ class State(dict):
     def _set_completed(self, value: bool = True) -> None:
         self._set_internal("is_completed", value)
 
-    def _set_error(self, value: Any) -> None:
+    def _set_error(self, value: Error | None) -> None:
+        if value is not None and not isinstance(value, Error):
+            raise TypeError("state.error must be a vf.Error or None.")
         self._set_internal("error", value)
 
     def _set_stop_condition(
@@ -656,7 +663,7 @@ class State(dict):
         api: EndpointApi | ClientType = "chat_completions",
         *,
         sync: bool = False,
-    ) -> object:
+    ) -> EndpointClient:
         from verifiers.v1.utils.endpoint_utils import client_from_state
 
         return client_from_state(self, api, sync=sync)
@@ -848,8 +855,16 @@ class State(dict):
 
     def finalize(self) -> "State":
         self.strip_runtime_handles()
+        self.serialize_error()
         self.assert_serializable()
         return self
+
+    def serialize_error(self) -> None:
+        error = self.get("error")
+        if isinstance(error, Error):
+            from verifiers.utils.error_utils import error_data
+
+            self._set_internal("error", error_data(error))
 
     @classmethod
     def _legacy_for_task(cls, task: Mapping[str, Any]) -> "State":
@@ -1066,9 +1081,43 @@ def _strip_runtime_handles(value: object) -> None:
             _strip_runtime_handles(item)
 
 
+def _json_gate_default(obj: object) -> object:
+    # Gate parity with the trainer transport (serve_utils.msgpack_encoder):
+    # accept what msgpack ships (it reaches the trainer via msgpack, not JSON),
+    # as cheap stand-ins; json re-invokes this on nested values. Unknown raises.
+    import dataclasses
+    from datetime import date, datetime
+    from enum import Enum
+
+    if isinstance(obj, (Path, uuid.UUID)):
+        return str(obj)  # filesystem path / uuid
+    if isinstance(obj, Enum):
+        return obj.value  # enum member
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()  # timestamps
+    if isinstance(obj, (bytes, bytearray, memoryview)):
+        return f"<{type(obj).__name__}>"  # raw buffers (e.g. routed_experts data)
+    np = sys.modules.get("numpy")
+    if np is not None and isinstance(obj, (np.integer, np.floating)):
+        return obj.item()  # numpy scalar -> python scalar
+    if np is not None and isinstance(obj, np.ndarray):
+        return {"dtype": str(obj.dtype), "shape": list(obj.shape)}  # array: shape only
+    torch = sys.modules.get("torch")
+    if torch is not None and isinstance(obj, torch.Tensor):
+        return {"dtype": str(obj.dtype), "shape": list(obj.shape)}  # tensor: shape only
+    model_dump = getattr(obj, "model_dump", None)
+    if callable(model_dump):
+        return model_dump(exclude_none=True)  # pydantic model
+    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+        # renderer sidecars (MultiModalData / PlaceholderRange); shallow so json
+        # recurses into fields without deep-copying pixel arrays.
+        return {f.name: getattr(obj, f.name) for f in dataclasses.fields(obj)}
+    raise TypeError(f"{type(obj).__name__} is not JSON-serializable")
+
+
 def assert_json_serializable(value: object) -> None:
     try:
-        json.dumps(value)
+        json.dumps(value, default=_json_gate_default)
     except TypeError as e:
         raise TypeError("Task and State values must be JSON-serializable.") from e
 
@@ -1137,6 +1186,8 @@ class GenerateMetadata(TypedDict):
     base_url: str
     num_examples: int
     rollouts_per_example: int
+    shuffle: NotRequired[bool]
+    shuffle_seed: NotRequired[int | None]
     sampling_args: SamplingArgs
     date: str
     time: float  # whole-eval wall-clock seconds
@@ -1325,6 +1376,8 @@ class EvalConfig(BaseModel):
     sampling_args: SamplingArgs
     num_examples: int
     rollouts_per_example: int
+    shuffle: bool = False
+    shuffle_seed: int | None = None
     max_concurrent: int
     num_workers: int | str = "auto"
     independent_scoring: bool = False

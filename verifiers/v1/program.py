@@ -277,8 +277,6 @@ def program_list_items(
         return []
     if isinstance(value, list):
         return cast(list[ProgramValue], list(value))
-    if isinstance(value, tuple):
-        return cast(list[ProgramValue], list(value))
     if isinstance(value, str) or isinstance(value, dict):
         return [cast(ProgramValue, value)]
     raise TypeError(f"{field_name} must be a string, mapping, or list.")

@@ -1730,7 +1730,7 @@ class Runtime:
                 source_root = binding_source_root(source)
                 validate_binding_source(source, f"User binding {name!r}")
                 if source_root == "objects":
-                    object_name = binding_object_name(source)
+                    object_name = binding_object_name(cast(str, source))
                     if object_name not in user.objects:
                         raise KeyError(
                             f"User binding {name!r} references unknown User object "
@@ -1778,7 +1778,7 @@ class Runtime:
             )
             source_root = binding_source_root(source)
             if source_root == "objects":
-                object_name = binding_object_name(source)
+                object_name = binding_object_name(cast(str, source))
                 if object_name not in owner.objects:
                     raise KeyError(
                         f"Binding {binding_key!r} references unknown object "
@@ -1818,7 +1818,7 @@ class Runtime:
                     "for callable tools owned by the same Toolset."
                 )
             if source_root == "objects":
-                object_name = binding_object_name(source)
+                object_name = binding_object_name(cast(str, source))
                 if object_name not in toolset.objects:
                     raise KeyError(
                         f"Binding {binding_key!r} references unknown Toolset object "

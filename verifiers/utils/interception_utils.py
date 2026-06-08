@@ -120,6 +120,10 @@ class InterceptionServer:
                 "/rollout/{rollout_id}/vf/stop",
                 self._handle_stop_request,
             )
+            app.router.add_post(
+                "/rollout/{rollout_id}/vf/model",
+                self._handle_model_request,
+            )
             app.router.add_get(
                 "/health",
                 lambda _: web.json_response({"status": "ok"}),
@@ -192,6 +196,7 @@ class InterceptionServer:
         tool_defs: Any | None = None,
         user_handler: Any | None = None,
         stop_handler: Any | None = None,
+        model_handler: Any | None = None,
     ) -> asyncio.Queue:
         request_queue: asyncio.Queue = asyncio.Queue()
         self.active_rollouts[rollout_id] = {
@@ -201,6 +206,7 @@ class InterceptionServer:
             "tool_defs": tool_defs,
             "user_handler": user_handler,
             "stop_handler": stop_handler,
+            "model_handler": model_handler,
         }
         return request_queue
 
@@ -414,6 +420,38 @@ class InterceptionServer:
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
         return web.json_response(result)
+
+    async def _handle_model_request(self, request: Any) -> Any:
+        if not self._authorized(request):
+            return web.json_response({"error": "Unauthorized"}, status=401)
+
+        rollout_id = request.match_info["rollout_id"]
+        context = self.active_rollouts.get(rollout_id)
+        if not context:
+            return web.json_response({"error": "Rollout not found"}, status=404)
+        model_handler = context.get("model_handler")
+        if model_handler is None:
+            return web.json_response({"error": "Model proxy unavailable"}, status=404)
+
+        try:
+            request_body = await request.json()
+        except Exception as e:
+            return web.json_response({"error": f"Invalid JSON: {e}"}, status=400)
+        messages = request_body.get("messages")
+        if not isinstance(messages, list):
+            return web.json_response(
+                {"error": "Model request messages must be a list"}, status=400
+            )
+        tools = request_body.get("tools")
+
+        try:
+            result = model_handler(messages, tools)
+            if inspect.isawaitable(result):
+                result = await result
+            message = jsonable(result)
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+        return web.json_response({"message": message})
 
     async def _handle_streaming_response(
         self, http_request: Any, rollout_id: str, intercept: dict

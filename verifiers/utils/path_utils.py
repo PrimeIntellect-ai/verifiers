@@ -107,6 +107,8 @@ def find_latest_incomplete_eval_results_path(
     model: str,
     num_examples: int,
     rollouts_per_example: int,
+    shuffle: bool = False,
+    shuffle_seed: int | None = None,
     env_dir_path: str = "./environments",
     output_dir: str | None = None,
     name: str | None = None,
@@ -147,6 +149,12 @@ def find_latest_incomplete_eval_results_path(
             continue
         if metadata.get("rollouts_per_example") != rollouts_per_example:
             continue
+        if bool(metadata.get("shuffle", False)) != shuffle:
+            continue
+        if shuffle:
+            expected_shuffle_seed = 0 if shuffle_seed is None else shuffle_seed
+            if metadata.get("shuffle_seed") != expected_shuffle_seed:
+                continue
 
         saved_num_examples = metadata.get("num_examples")
         if not isinstance(saved_num_examples, int) or saved_num_examples > num_examples:

@@ -6,7 +6,7 @@ from pydantic import AliasChoices, Field
 
 import verifiers as vf
 from verifiers.clients.client import Client
-from verifiers.errors import Error, OverlongPromptError
+from verifiers.errors import Error, OverlongPromptError, SandboxError
 from verifiers.types import (
     ClientConfig,
     MessageContent,
@@ -15,7 +15,6 @@ from verifiers.types import (
     ToolMessage,
 )
 from verifiers.utils.async_utils import maybe_call_with_named_args
-from verifiers.utils.error_utils import error_info
 from verifiers.utils.message_utils import normalize_messages
 from verifiers.utils.response_utils import parse_response_message
 from verifiers.utils.tool_utils import is_valid_tool_content_parts
@@ -94,7 +93,7 @@ from .types import (
 if TYPE_CHECKING:
     from .taskset import Taskset
 
-ProgramResult: TypeAlias = State | ConfigData | None
+ProgramResult: TypeAlias = State | JsonData | None
 ProgramRunner: TypeAlias = Callable[[Task, State], Awaitable[ProgramResult]]
 
 
@@ -277,17 +276,25 @@ class Harness(RuntimeOwnerMixin[ConfigT], Generic[ConfigT]):
                 else:
                     state.strip_runtime_handles()
             elif completed:
+                state.serialize_error()
                 state.assert_serializable()
             log_rollout_finish(state)
         return state
 
     def record_error(self, state: State, error: Error) -> None:
+        if state.get("prompt_too_long"):
+            state._set_truncated(True)
+            state._set_stop_condition("prompt_too_long", overwrite=True)
+            return
+        if isinstance(error, SandboxError) and isinstance(state.get("error"), Error):
+            state._set_stop_condition("has_error", overwrite=True)
+            return
         if isinstance(error, OverlongPromptError):
             state["prompt_too_long"] = True
             state._set_truncated(True)
             state._set_stop_condition("prompt_too_long", overwrite=True)
             return
-        state._set_error(error_info(error))
+        state._set_error(error)
         state._set_stop_condition("has_error", overwrite=True)
 
     async def score_group(self, tasks: list[Task], states: list[State]) -> list[State]:
