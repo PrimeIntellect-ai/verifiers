@@ -710,7 +710,13 @@ class EnvWorker:
                         for _cl in _cls[-250:]:
                             print(f"PRIORCRASH| {_cl}", flush=True)
                         print("===PRIORCRASH END===", flush=True)
-                    os.remove(_cp)
+                    # PERSIST for kubectl retrieval: rename the dead worker's crash
+                    # file to vf_FATAL_<pid>.txt instead of deleting it, so the FULL
+                    # native dump survives on the pod. Minh: `cat /tmp/vf_FATAL_*.txt`.
+                    try:
+                        os.rename(_cp, _cp.replace("vf_crash_", "vf_FATAL_"))
+                    except Exception:
+                        pass
                 except Exception as _ce:
                     print(f"PRIORCRASH read-err {_cp} {_ce!r}", flush=True)
         except Exception as _e:
@@ -718,14 +724,16 @@ class EnvWorker:
 
         global _FAULTHANDLER_FILE
         try:
-            # REPRO CAPTURE: route stderr (fd 2) -> STDOUT (fd 1) instead of a
-            # pod-local file. torch's c10 fatal handler + faulthandler write the
-            # native C++ backtrace to fd 2; on the raw stdout channel those
-            # plain-text frames survive `prime train logs` intact, whereas the
-            # file-relay got truncated by the log transport. (Cost: stderr INFO
-            # logs now also flood stdout — acceptable for a capture run.)
-            os.dup2(1, 2)  # fd 2 = stderr -> stdout (captured raw)
-            faulthandler.enable(all_threads=True)  # target = stderr = stdout now
+            # Route stderr (fd 2) -> a pod-local FILE. torch's c10 fatal handler +
+            # faulthandler write the native C++ backtrace + Python dump to fd 2 on
+            # crash, so the FULL dump lands in this file (the END of it). Routing
+            # to a file (not stdout) keeps the worker at its natural crash cadence
+            # — stdout flooding suppressed the fault. On crash the file is RENAMED
+            # to /tmp/vf_FATAL_<pid>.txt (NOT deleted) so it persists for kubectl
+            # retrieval; live workers keep vf_crash_<pid>.txt.
+            _FAULTHANDLER_FILE = open(f"/tmp/vf_crash_{os.getpid()}.txt", "w", buffering=1)
+            os.dup2(_FAULTHANDLER_FILE.fileno(), 2)  # fd 2 = stderr -> file
+            faulthandler.enable(all_threads=True)     # default target = stderr = file
         except Exception as exc:  # never block worker startup on diagnostics
             logging.getLogger("vf.loopdbg").warning("stderr-redirect/faulthandler failed: %r", exc)
 
