@@ -412,12 +412,16 @@ class EnvRouter:
                     f"Worker {worker_id} (pid={worker.process.pid}) died "
                     f"(exitcode={exitcode}), restarting [crashfile={fault_info}]"
                 )
-                # The log transport truncates a message at its first newline, so
-                # emit the multi-line crash dump as SEPARATE single-line records.
+                # The JSON logger truncates messages; raw stdout writes are
+                # captured verbatim (the faulthandler watchdog dumps proved it).
+                # So relay the crash file RAW to stdout, bracketed for grepping.
                 if fault:
-                    for _ln in fault.splitlines()[-80:]:
-                        if _ln.strip():
-                            self.logger.warning(f"CRASHDUMP w{worker_id}| {_ln}")
+                    import sys as _sys
+                    _sys.stdout.write(
+                        f"\n===CRASHDUMP-BEGIN w{worker_id} pid={worker.process.pid}===\n"
+                        f"{fault}\n===CRASHDUMP-END===\n"
+                    )
+                    _sys.stdout.flush()
                 await self.restart_worker(worker_id)
             elif (
                 now - worker.last_heartbeat > self.worker_heartbeat_timeout

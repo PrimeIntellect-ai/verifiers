@@ -334,6 +334,15 @@ class EnvWorker:
         while True:
             await asyncio.sleep(interval)
 
+            # Re-arm faulthandler so a lazily-imported native lib (torch/vLLM)
+            # that installed its own fatal handler can't permanently override
+            # ours — the last enable() wins. Writes to fd 2 (redirected to the
+            # crash file in run_worker).
+            try:
+                faulthandler.enable(all_threads=True)
+            except Exception:
+                pass
+
             stats = EnvWorkerStats(
                 worker_id=self.worker_id,
                 timestamp=time.time(),
