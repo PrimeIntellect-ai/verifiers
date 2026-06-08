@@ -50,6 +50,9 @@ from verifiers.utils.serve_utils import msgpack_encoder
 # (slow-callback logging with source) — heavier, opt-in.
 _loopdbg_log = logging.getLogger("vf.loopdbg")
 
+# Kept alive so faulthandler's fatal-signal file isn't GC-closed (set in run_worker).
+_FAULTHANDLER_FILE = None
+
 
 def _loopdbg_on() -> bool:
     return os.getenv("VF_LOOP_DEBUG", "1").strip().lower() not in (
@@ -592,8 +595,14 @@ class EnvWorker:
         # pipeline) so the next crash dumps every thread's Python stack and
         # points at the native call site. faulthandler re-raises the signal, so
         # the process still dies with -11 — we just learn where.
+        # stdout-at-crash is lost (the process dies before the pipe is shipped),
+        # so write the fatal dump to a pod-local FILE the router reads after the
+        # worker dies (same container → shared /tmp). Keep the file object alive
+        # (module global) so it isn't GC-closed out from under faulthandler.
+        global _FAULTHANDLER_FILE
         try:
-            faulthandler.enable(file=sys.stdout, all_threads=True)
+            _FAULTHANDLER_FILE = open(f"/tmp/vf_faulthandler_{os.getpid()}.txt", "w")
+            faulthandler.enable(file=_FAULTHANDLER_FILE, all_threads=True)
         except Exception as exc:  # never block worker startup on diagnostics
             logging.getLogger("vf.loopdbg").warning("faulthandler.enable failed: %r", exc)
         try:

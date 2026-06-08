@@ -394,10 +394,25 @@ class EnvRouter:
                 # (-9 SIGKILL/OOM, -11 SIGSEGV native crash, -15 SIGTERM/evict);
                 # positive => clean-ish exit code. Without it "died" is ambiguous.
                 exitcode = worker.process.exitcode
-                self.logger.warning(
+                # On SIGSEGV the worker's stdout is lost, but faulthandler wrote
+                # the all-thread crash stack to a pod-local file (same container,
+                # shared /tmp). Read+relay it via the router logger (captured).
+                fault = ""
+                try:
+                    _fp = f"/tmp/vf_faulthandler_{worker.process.pid}.txt"
+                    if os.path.exists(_fp):
+                        with open(_fp) as _f:
+                            fault = _f.read().strip()
+                        os.remove(_fp)
+                except Exception:
+                    pass
+                msg = (
                     f"Worker {worker_id} (pid={worker.process.pid}) died "
                     f"(exitcode={exitcode}), restarting"
                 )
+                if fault:
+                    msg += f" | FAULTHANDLER:\n{fault[-4000:]}"
+                self.logger.warning(msg)
                 await self.restart_worker(worker_id)
             elif (
                 now - worker.last_heartbeat > self.worker_heartbeat_timeout
