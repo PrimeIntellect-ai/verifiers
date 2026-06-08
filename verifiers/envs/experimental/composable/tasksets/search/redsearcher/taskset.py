@@ -379,17 +379,12 @@ class RedSearcherRubric(vf.Rubric):
         existing_error = state.get("error")
         if existing_error is not None:
             state["redsearcher_agent_error"] = repr(existing_error)
+            return 0.0
         try:
-            score = await self.answer_reward(state)
+            return await self.answer_reward(state)
         except vf.Error as exc:
             state["error"] = exc
             return 0.0
-        if (
-            existing_error is not None
-            and state.get("redsearcher_answer_source") != "missing"
-        ):
-            state["error"] = None
-        return score
 
     async def score_rollout(self, state: vf.State) -> None:
         """Score one rollout and preserve judge failures as ``vf.Error`` values."""
