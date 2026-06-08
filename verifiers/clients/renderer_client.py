@@ -62,12 +62,34 @@ from verifiers.utils.loop_debug import looptime
 try:
     import renderers.client as _renderers_client
 
+    # SIGSEGV ROOT-CAUSE TEST/FIX: _build_mm_features is offloaded to worker
+    # threads (via _maybe_offload) and is NOT under the renderer pool lock, so
+    # many rollouts run it concurrently. Its body does native torch + vLLM
+    # (MultiModalKwargsItems.from_hf_inputs / MsgpackEncoder) with no thread
+    # safety — concurrent native calls (and the lazy `import torch`/`import vllm`
+    # racing on first concurrent call) are the prime suspect for the exitcode=-11
+    # segfaults. Serialize the native encode with a process-global lock; if the
+    # crashes stop, that's the root cause. Pre-import torch+vllm so the first
+    # call doesn't race on import either.
+    import threading as _vf_threading
+
+    _VF_MM_ENCODE_LOCK = _vf_threading.Lock()
+    try:
+        import torch as _vf_torch_preimport  # noqa: F401
+        import vllm.multimodal.inputs as _vf_vllm_preimport  # noqa: F401
+    except Exception as _vf_preimp_exc:
+        logging.getLogger("vf.looptime").warning(
+            "mm pre-import skipped: %r", _vf_preimp_exc
+        )
+
     if not getattr(_renderers_client, "_vf_looptime_patched", False):
         _vf_orig_build_mm = getattr(_renderers_client, "_build_mm_features", None)
         if callable(_vf_orig_build_mm):
             def _vf_timed_build_mm(*args, _orig=_vf_orig_build_mm, **kwargs):
-                with looptime("rdr_build_mm_features"):
-                    return _orig(*args, **kwargs)
+                # Serialize concurrent native mm-encode across threads.
+                with _VF_MM_ENCODE_LOCK:
+                    with looptime("rdr_build_mm_features"):
+                        return _orig(*args, **kwargs)
 
             _renderers_client._build_mm_features = _vf_timed_build_mm
         _renderers_client._vf_looptime_patched = True
