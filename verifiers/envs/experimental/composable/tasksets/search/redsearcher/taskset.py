@@ -196,10 +196,7 @@ def _exact_answer_match(*, response: str, answer: str) -> bool:
     normalized_response = _normalize_for_match(response)
     if not normalized_answer or not normalized_response:
         return False
-    return (
-        normalized_answer == normalized_response
-        or f" {normalized_answer} " in f" {normalized_response} "
-    )
+    return normalized_answer == normalized_response
 
 
 def _parse_judge_choice(content: str) -> float | None:
@@ -449,7 +446,9 @@ class RedSearcherRubric(vf.Rubric):
         question = str(info.get("question") or info.get("problem") or "")
         answer = str(state.get("answer") or info.get("answer") or "").strip()
         if not answer:
-            raise ValueError("REDSearcher task is missing ground-truth answer metadata")
+            raise vf.InfraError(
+                "REDSearcher task is missing ground-truth answer metadata"
+            )
         state["redsearcher_ground_truth"] = answer
         if self.use_exact_match_shortcut and _exact_answer_match(
             response=response, answer=answer
@@ -525,7 +524,7 @@ class RedSearcherRubric(vf.Rubric):
             logger.warning(
                 "Failed to parse REDSearcher judge response on attempt %s/%s: %r",
                 attempt + 1,
-                self.judge_max_retries,
+                max_attempts,
                 last_content[:200],
             )
         raise vf.InvalidModelResponseError(
